@@ -450,7 +450,11 @@ class Player:
             audio_b = np.zeros(crossfade_samples, dtype=np.float32)
 
         if crossfade_samples > 0 and len(audio_b) >= crossfade_samples:
-            mixed = _apply_crossfade(audio_a, audio_b[:crossfade_samples + len(audio_a)], crossfade_samples)
+            # Only pass the crossfade intro of audio_b so the mixed array stays
+            # the same length as audio_a.  The next track plays from its own
+            # beginning in the following iteration (brief repeat of its intro is
+            # inaudible at typical crossfade durations of 2–5 s).
+            mixed = _apply_crossfade(audio_a, audio_b[:crossfade_samples], crossfade_samples)
         else:
             mixed = audio_a
 
