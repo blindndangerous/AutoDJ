@@ -81,16 +81,13 @@ class TestDownloadModelIfNeeded:
     def test_calls_snapshot_download_if_not_cached(
         self, model_config_auto: ModelConfig, index_config: IndexConfig, tmp_path: Path
     ) -> None:
-        """When model is not cached, snapshot_download is called."""
+        """When model is not cached, _snapshot_download_with_timeout is called."""
         index_config = IndexConfig(
             index_dir=tmp_path / "index",
             model_dir=tmp_path / "models",
         )
-        expected_cache = tmp_path / "models" / "MERT-v1-330M"
 
-        with patch("autodj.model.snapshot_download") as mock_dl:
-            mock_dl.return_value = str(expected_cache)
-            expected_cache.mkdir(parents=True)
+        with patch("autodj.model._snapshot_download_with_timeout") as mock_dl:
             result = download_model_if_needed(model_config_auto, index_config)
 
         mock_dl.assert_called_once()
@@ -104,9 +101,80 @@ class TestDownloadModelIfNeeded:
             index_dir=tmp_path / "index",
             model_dir=tmp_path / "models",
         )
-        with patch("autodj.model.snapshot_download", side_effect=Exception("network error")):
+        with patch(
+            "autodj.model._snapshot_download_with_timeout",
+            side_effect=Exception("network error"),
+        ):
             with pytest.raises(ModelLoadError, match="download"):
                 download_model_if_needed(model_config_auto, index_config)
+
+    def test_retries_on_timeout(
+        self, model_config_auto: ModelConfig, tmp_path: Path
+    ) -> None:
+        """Download is retried up to max_retries times on TimeoutError."""
+        index_config = IndexConfig(
+            index_dir=tmp_path / "index",
+            model_dir=tmp_path / "models",
+        )
+        call_count = {"n": 0}
+
+        def _fail_twice_then_succeed(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] < 3:
+                raise TimeoutError("stuck")
+
+        with (
+            patch("autodj.model._snapshot_download_with_timeout", side_effect=_fail_twice_then_succeed),
+            patch("autodj.model.time") as mock_time,
+        ):
+            result = download_model_if_needed(model_config_auto, index_config)
+
+        assert call_count["n"] == 3
+        # sleep was called between retries (twice for 3 attempts)
+        assert mock_time.sleep.call_count == 2
+
+    def test_raises_after_all_retries_exhausted(
+        self, model_config_auto: ModelConfig, tmp_path: Path
+    ) -> None:
+        """ModelLoadError raised with manual-download instructions after all retries fail."""
+        index_config = IndexConfig(
+            index_dir=tmp_path / "index",
+            model_dir=tmp_path / "models",
+        )
+        with (
+            patch(
+                "autodj.model._snapshot_download_with_timeout",
+                side_effect=TimeoutError("stuck"),
+            ),
+            patch("autodj.model.time"),
+        ):
+            with pytest.raises(ModelLoadError, match="manual_path"):
+                download_model_if_needed(model_config_auto, index_config)
+
+    def test_retry_count_equals_max_retries(
+        self, model_config_auto: ModelConfig, tmp_path: Path
+    ) -> None:
+        """Exactly _DEFAULT_MAX_RETRIES attempts are made before giving up."""
+        from autodj.model import _DEFAULT_MAX_RETRIES
+
+        index_config = IndexConfig(
+            index_dir=tmp_path / "index",
+            model_dir=tmp_path / "models",
+        )
+        call_count = {"n": 0}
+
+        def _always_timeout(*args, **kwargs):
+            call_count["n"] += 1
+            raise TimeoutError("stuck")
+
+        with (
+            patch("autodj.model._snapshot_download_with_timeout", side_effect=_always_timeout),
+            patch("autodj.model.time"),
+        ):
+            with pytest.raises(ModelLoadError):
+                download_model_if_needed(model_config_auto, index_config)
+
+        assert call_count["n"] == _DEFAULT_MAX_RETRIES
 
 
 # ---------------------------------------------------------------------------
@@ -193,3 +261,51 @@ class TestMertWrapper:
         wrapper.embed_array(audio, sample_rate=22050)
 
         model.assert_called_once()
+
+    def test_resamples_to_mert_rate_when_needed(self) -> None:
+        """Audio not at 24000 Hz must be resampled before the processor sees it."""
+        import torch
+        from autodj.model import MERT_SAMPLE_RATE
+
+        processor = MagicMock()
+        processor.return_value = {"input_values": torch.zeros(1, MERT_SAMPLE_RATE)}
+
+        model = MagicMock()
+        hidden = torch.randn(1, 50, 768)
+        model_output = MagicMock()
+        model_output.last_hidden_state = hidden
+        model.return_value = model_output
+
+        wrapper = MertWrapper(model=model, processor=processor, device="cpu")
+
+        # 44100 Hz audio — should be silently resampled
+        audio_44k = np.random.randn(44100).astype(np.float32)
+        result = wrapper.embed_array(audio_44k, sample_rate=44100)
+
+        assert result.shape == (768,)
+        # Processor must have been called with 24000, not 44100
+        call_kwargs = processor.call_args
+        assert call_kwargs.kwargs.get("sampling_rate") == MERT_SAMPLE_RATE
+
+    def test_embed_works_at_native_24k(self) -> None:
+        """Audio already at 24000 Hz embeds without error and returns correct shape."""
+        import torch
+        from autodj.model import MERT_SAMPLE_RATE
+
+        processor = MagicMock()
+        processor.return_value = {"input_values": torch.zeros(1, MERT_SAMPLE_RATE)}
+
+        model = MagicMock()
+        hidden = torch.randn(1, 50, 768)
+        model_output = MagicMock()
+        model_output.last_hidden_state = hidden
+        model.return_value = model_output
+
+        wrapper = MertWrapper(model=model, processor=processor, device="cpu")
+
+        audio_24k = np.random.randn(24000).astype(np.float32)
+        result = wrapper.embed_array(audio_24k, sample_rate=MERT_SAMPLE_RATE)
+
+        assert result.shape == (768,)
+        # Processor received 24000 Hz
+        assert processor.call_args.kwargs.get("sampling_rate") == MERT_SAMPLE_RATE

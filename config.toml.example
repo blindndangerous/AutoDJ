@@ -21,6 +21,17 @@ beets_db = "C:/Users/you/.config/beets/library.db"
 # Audio formats to scan for
 supported_formats = ["mp3", "flac", "m4a"]
 
+# NAS path remapping — only needed if your beets database stores paths with a
+# different prefix than the drive letter your music is mounted under on Windows.
+#
+# Beets on a NAS often stores paths like:  /volume1/Mike/Beetsmusic/Artist/track.flac
+# But on Windows the same share is mapped:  Z:/Beetsmusic/Artist/track.flac
+#
+# Set beets_path_prefix to the prefix stored inside beets (the NAS side).
+# The indexer will strip that prefix and prepend music_dir automatically.
+# Leave commented out if your beets paths already match your music_dir.
+# beets_path_prefix = "/volume1/Mike/Beetsmusic"
+
 [index]
 # Directory where the FAISS index and metadata are stored.
 # Can be a local path or a NAS path — if you run `autodj index` on a GPU machine

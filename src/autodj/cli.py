@@ -18,6 +18,14 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+# Force UTF-8 output on Windows (default terminal encoding is cp1252 which
+# cannot print Unicode box-drawing characters or em-dashes used in track names).
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except AttributeError:
+    pass
+
 import click
 from rich.console import Console
 from rich.panel import Panel

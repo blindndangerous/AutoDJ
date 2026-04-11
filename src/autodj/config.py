@@ -31,11 +31,19 @@ class LibraryConfig:
         music_dir: Path to the root music folder (local or NAS mapped drive).
         beets_db: Optional path to the beets SQLite library database.
         supported_formats: List of audio file extensions to index (without dots).
+        beets_path_prefix: Optional NAS path prefix stored in the beets database
+            that differs from the local ``music_dir``.  When set, this prefix is
+            stripped from every beets track path and replaced with ``music_dir``
+            so the indexer can locate files on the locally-mounted drive.
+            Example: beets stores ``/volume1/Mike/Beetsmusic/Artist/track.flac``
+            but the drive is mounted at ``Z:/Beetsmusic`` on Windows — set
+            ``beets_path_prefix = "/volume1/Mike/Beetsmusic"``.
     """
 
     music_dir: Path
     beets_db: Path | None
     supported_formats: list[str]
+    beets_path_prefix: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "LibraryConfig":
@@ -53,10 +61,12 @@ class LibraryConfig:
         if "music_dir" not in data:
             raise KeyError("config.toml [library] section is missing 'music_dir'")
         beets_raw = data.get("beets_db")
+        prefix_raw = data.get("beets_path_prefix")
         return cls(
             music_dir=Path(data["music_dir"]),
             beets_db=Path(beets_raw) if beets_raw else None,
             supported_formats=data.get("supported_formats", ["mp3", "flac", "m4a"]),
+            beets_path_prefix=prefix_raw if prefix_raw else None,
         )
 
 

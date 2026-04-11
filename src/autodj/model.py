@@ -23,6 +23,9 @@ Example:
 from __future__ import annotations
 
 import logging
+import threading
+import time
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -48,6 +51,62 @@ MERT_SAMPLE_RATE = 24_000
 
 class ModelLoadError(RuntimeError):
     """Raised when the MERT model cannot be loaded or downloaded."""
+
+
+# ---------------------------------------------------------------------------
+# Download helpers
+# ---------------------------------------------------------------------------
+
+# Defaults for retry behaviour — overridable via config
+_DEFAULT_TIMEOUT_SECONDS = 300   # 5 minutes per attempt before declaring it stuck
+_DEFAULT_MAX_RETRIES = 3
+_DEFAULT_RETRY_DELAY = 5         # seconds between attempts
+
+
+def _snapshot_download_with_timeout(
+    repo_id: str,
+    local_dir: str,
+    ignore_patterns: list[str],
+    token: str | None,
+    timeout: int,
+) -> None:
+    """Run ``snapshot_download`` in a thread; raise ``TimeoutError`` if it hangs.
+
+    Args:
+        repo_id: HuggingFace model repository ID.
+        local_dir: Local directory to download files into.
+        ignore_patterns: File patterns to skip (e.g. TF/Flax weights).
+        token: Optional HuggingFace API token.
+        timeout: Maximum seconds to wait before declaring the download stuck.
+
+    Raises:
+        TimeoutError: If the download thread does not finish within *timeout* seconds.
+        Exception: Any exception raised by ``snapshot_download`` itself.
+    """
+    exc_holder: list[BaseException] = []
+
+    def _run() -> None:
+        try:
+            snapshot_download(
+                repo_id=repo_id,
+                local_dir=local_dir,
+                ignore_patterns=ignore_patterns,
+                token=token,
+            )
+        except Exception as exc:
+            exc_holder.append(exc)
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    thread.join(timeout=timeout)
+
+    if thread.is_alive():
+        raise TimeoutError(
+            f"Download of '{repo_id}' did not complete within {timeout}s — "
+            "the connection appears stuck."
+        )
+    if exc_holder:
+        raise exc_holder[0]
 
 
 # ---------------------------------------------------------------------------
@@ -106,33 +165,70 @@ def download_model_if_needed(
         logger.info("Model already cached at %s", cache_dir)
         return cache_dir
 
-    # --- download ---
+    # --- download with retry ---
     cache_dir.mkdir(parents=True, exist_ok=True)
     logger.info("Downloading model %s to %s ...", model_name, cache_dir)
     print(
         f"\n[AutoDJ] Downloading model '{model_name}' (~1.3 GB) to {cache_dir}\n"
         "This is a one-time download. Please wait...\n"
     )
-    try:
-        snapshot_download(
-            repo_id=model_name,
-            local_dir=str(cache_dir),
-            ignore_patterns=["*.msgpack", "flax_model*", "tf_model*", "rust_model*"],
-            token=hf_token,
-        )
-    except Exception as exc:
-        raise ModelLoadError(
-            f"Failed to download model '{model_name}': {exc}\n\n"
-            "Manual download instructions:\n"
-            f"  1. Visit https://huggingface.co/{model_name}\n"
-            "  2. Click 'Files and versions' and download all files\n"
-            f"  3. Place them in: {cache_dir}\n"
-            "  4. Add to config.toml:\n"
-            f"     [model]\n"
-            f"     manual_path = \"{cache_dir}\"\n"
-        ) from exc
 
-    return cache_dir
+    max_retries = _DEFAULT_MAX_RETRIES
+    timeout = _DEFAULT_TIMEOUT_SECONDS
+    retry_delay = _DEFAULT_RETRY_DELAY
+    ignore_patterns = ["*.msgpack", "flax_model*", "tf_model*", "rust_model*"]
+
+    last_exc: BaseException | None = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            logger.info(
+                "Download attempt %d/%d (timeout=%ds) ...", attempt, max_retries, timeout
+            )
+            if attempt > 1:
+                print(f"[AutoDJ] Retry {attempt}/{max_retries} ...\n")
+            _snapshot_download_with_timeout(
+                repo_id=model_name,
+                local_dir=str(cache_dir),
+                ignore_patterns=ignore_patterns,
+                token=hf_token,
+                timeout=timeout,
+            )
+            logger.info("Download complete.")
+            return cache_dir
+        except TimeoutError as exc:
+            last_exc = exc
+            logger.warning(
+                "Attempt %d/%d timed out after %ds: %s",
+                attempt, max_retries, timeout, exc,
+            )
+            print(
+                f"[AutoDJ] Attempt {attempt}/{max_retries} timed out "
+                f"after {timeout}s — retrying in {retry_delay}s...\n"
+            )
+        except Exception as exc:
+            last_exc = exc
+            logger.warning(
+                "Attempt %d/%d failed: %s", attempt, max_retries, exc
+            )
+            print(
+                f"[AutoDJ] Attempt {attempt}/{max_retries} failed "
+                f"({exc}) — retrying in {retry_delay}s...\n"
+            )
+
+        if attempt < max_retries:
+            time.sleep(retry_delay)
+
+    raise ModelLoadError(
+        f"Failed to download model '{model_name}' after {max_retries} attempts.\n"
+        f"Last error: {last_exc}\n\n"
+        "Manual download instructions:\n"
+        f"  1. Visit https://huggingface.co/{model_name}\n"
+        "  2. Click 'Files and versions' and download all files\n"
+        f"  3. Place them in: {cache_dir}\n"
+        "  4. Add to config.toml:\n"
+        f"     [model]\n"
+        f"     manual_path = \"{cache_dir}\"\n"
+    ) from last_exc
 
 
 # ---------------------------------------------------------------------------
@@ -169,18 +265,23 @@ class MertWrapper:
     def embed_array(self, audio: np.ndarray, sample_rate: int) -> np.ndarray:
         """Embed a raw audio array into a 768-dimensional L2-normalized vector.
 
-        The audio is resampled to MERT's expected 24 kHz if needed (librosa
-        resampling is called by the processor). The model's last hidden states
-        are mean-pooled across the time axis to produce a fixed-size vector,
-        then L2-normalized.
+        The audio is resampled to MERT's required 24 kHz using librosa if the
+        provided sample rate differs. The model's last hidden states are
+        mean-pooled across the time axis to produce a fixed-size vector, then
+        L2-normalized.
 
         Args:
             audio: 1-D float32 numpy array of audio samples.
-            sample_rate: Sample rate of *audio* in Hz.
+            sample_rate: Sample rate of *audio* in Hz (44100, 48000, 96000, etc.).
 
         Returns:
             A float32 numpy array of shape ``(768,)``, L2-normalized.
         """
+        if sample_rate != MERT_SAMPLE_RATE:
+            import librosa as _librosa
+            audio = _librosa.resample(audio, orig_sr=sample_rate, target_sr=MERT_SAMPLE_RATE)
+            sample_rate = MERT_SAMPLE_RATE
+
         inputs = self.processor(
             audio,
             sampling_rate=sample_rate,
@@ -190,7 +291,7 @@ class MertWrapper:
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
         with torch.no_grad():
-            outputs = self.model(**inputs)
+            outputs = self.model(**inputs, return_dict=True)
 
         # outputs.last_hidden_state: [batch=1, time_frames, hidden=768]
         hidden: torch.Tensor = outputs.last_hidden_state
@@ -234,8 +335,17 @@ def load_model(model_path: Path) -> MertWrapper:
     logger.info("Loading MERT model from %s on device=%s", model_path, device)
 
     try:
-        processor = AutoProcessor.from_pretrained(str(model_path), trust_remote_code=True)
-        model = AutoModel.from_pretrained(str(model_path), trust_remote_code=True)
+        # Suppress a harmless deprecation inside transformers where MERT's saved
+        # config uses the old `use_return_dict` key instead of `return_dict`.
+        # We pass `return_dict=True` explicitly at inference time (see embed_array).
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=".*use_return_dict.*deprecated.*",
+                category=UserWarning,
+            )
+            processor = AutoProcessor.from_pretrained(str(model_path), trust_remote_code=True)
+            model = AutoModel.from_pretrained(str(model_path), trust_remote_code=True)
     except Exception as exc:
         raise ModelLoadError(
             f"Failed to load model from {model_path}: {exc}\n"

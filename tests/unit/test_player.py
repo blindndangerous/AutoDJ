@@ -168,3 +168,21 @@ class TestPlayerState:
         assert e0.path not in state.recently_played
         assert e1.path in state.recently_played
         assert e2.path in state.recently_played
+
+    def test_volume_defaults_to_one(self) -> None:
+        assert PlayerState().volume == 1.0
+
+    def test_mute_defaults_to_false(self) -> None:
+        assert PlayerState().is_muted is False
+
+    def test_volume_can_be_set(self) -> None:
+        state = PlayerState()
+        state.volume = 0.5
+        assert state.volume == pytest.approx(0.5)
+
+    def test_mute_toggle(self) -> None:
+        state = PlayerState()
+        state.is_muted = True
+        assert state.is_muted is True
+        state.is_muted = False
+        assert state.is_muted is False

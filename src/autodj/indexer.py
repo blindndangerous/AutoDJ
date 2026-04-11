@@ -42,6 +42,33 @@ logger = logging.getLogger(__name__)
 # Combined feature vector dimension: 768 (MERT) + 16 (librosa)
 FEATURE_DIM = 784
 
+
+def _remap_beets_path(path: Path, beets_prefix: str, music_dir: Path) -> Path:
+    """Remap a beets NAS path to the locally-mounted music directory.
+
+    Beets may store absolute NAS paths (e.g. ``/volume1/Mike/Beetsmusic/…``)
+    that differ from the Windows mapped-drive path (e.g. ``Z:/Beetsmusic/…``).
+    This function strips *beets_prefix* from the start of *path* and prepends
+    *music_dir*, so the resulting path is reachable from the local machine.
+
+    If *path* does not start with *beets_prefix* it is returned unchanged.
+
+    Args:
+        path: Original path from the beets database.
+        beets_prefix: The NAS prefix stored in beets (e.g. ``/volume1/Mike/Beetsmusic``).
+        music_dir: Local mount point that corresponds to *beets_prefix*.
+
+    Returns:
+        Remapped :class:`~pathlib.Path` pointing to the local file.
+    """
+    # Normalise both sides to forward slashes for portable comparison
+    raw = str(path).replace("\\", "/")
+    prefix = beets_prefix.replace("\\", "/").rstrip("/")
+    if raw.startswith(prefix):
+        relative = raw[len(prefix):].lstrip("/")
+        return music_dir / relative
+    return path
+
 # Librosa feature vector dimension
 _LIBROSA_DIM = 16
 
@@ -364,6 +391,27 @@ def build_index(
         except BeetsNotFoundError:
             logger.warning("Beets DB not found, falling back to filesystem scan")
 
+    # Remap NAS paths to the locally-mounted music_dir when configured
+    if tracks and cfg.library.beets_path_prefix:
+        tracks = [
+            Track(
+                path=_remap_beets_path(t.path, cfg.library.beets_path_prefix, cfg.library.music_dir),
+                title=t.title,
+                artist=t.artist,
+                album=t.album,
+                genre=t.genre,
+                bpm=t.bpm,
+                year=t.year,
+                length=t.length,
+            )
+            for t in tracks
+        ]
+        logger.info(
+            "Remapped beets paths: prefix '%s' → '%s'",
+            cfg.library.beets_path_prefix,
+            cfg.library.music_dir,
+        )
+
     if not tracks:
         paths = walk_music_dir(cfg.library.music_dir, cfg.library.supported_formats)
         tracks = [
@@ -412,11 +460,30 @@ def build_index(
             logger.warning("Skipping %s: %s", track.path, exc)
 
     # --- merge and save ---
+    if not new_entries:
+        if not existing_entries:
+            print(
+                "[AutoDJ] No tracks could be indexed. "
+                "Check that paths in the beets DB match the local music_dir "
+                "(set [library] beets_path_prefix in config.toml if needed)."
+            )
+            return
+        # All new tracks were skipped — nothing changed
+        print(
+            f"[AutoDJ] No new tracks indexed "
+            f"({len(new_tracks)} attempted, all failed). "
+            "Check warnings above for details."
+        )
+        return
+
     all_entries = existing_entries + new_entries
 
     if existing_vectors:
         all_vectors = np.vstack(
-            [np.array(existing_vectors, dtype=np.float32), np.array(new_vectors, dtype=np.float32)]
+            [
+                np.array(existing_vectors, dtype=np.float32),
+                np.array(new_vectors, dtype=np.float32),
+            ]
         )
     else:
         all_vectors = np.array(new_vectors, dtype=np.float32)

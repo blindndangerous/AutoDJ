@@ -33,6 +33,9 @@ from typing import Optional
 import numpy as np
 import sounddevice as sd
 import soundfile as sf
+from rich.console import Console
+from rich.live import Live
+from rich.panel import Panel
 
 from autodj.indexer import IndexEntry
 
@@ -40,6 +43,26 @@ logger = logging.getLogger(__name__)
 
 # Default output sample rate; sounddevice converts if the device differs.
 _DEFAULT_SR = 44_100
+
+# Keyboard seek step and volume increment
+_SEEK_SECONDS = 10
+_VOLUME_STEP = 0.05
+
+# Shared Rich console — used for the Live status panel and transient log lines
+_CONSOLE = Console()
+
+
+def _fmt_time(seconds: float) -> str:
+    """Format a duration in seconds as ``MM:SS``.
+
+    Args:
+        seconds: Non-negative duration in seconds.
+
+    Returns:
+        String of the form ``"03:47"``.
+    """
+    m, s = divmod(max(0, int(seconds)), 60)
+    return f"{m:02d}:{s:02d}"
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +170,8 @@ class PlayerState:
     should_stop: bool = False
     no_repeat_window: int = 50
     recently_played: deque = field(default_factory=deque)
+    volume: float = 1.0       # 0.0 (silent) – 1.0 (full)
+    is_muted: bool = False
 
     def __post_init__(self) -> None:
         """Initialise the bounded recently-played deque."""
@@ -242,6 +267,64 @@ class Player:
         self._crossfade_samples: dict[int, int] = {}  # populated per-track based on SR
         self._skip_event = threading.Event()
         self._lock = threading.Lock()
+        # Shared playback position (samples) — written by callback, read/written by
+        # keyboard seek handler.  Using a list so both sides share the same object.
+        self._playback_pos: list[int] = [0]
+        self._playback_len: int = 0   # length of the current audio array in samples
+        self._current_sr: int = _DEFAULT_SR
+        # Rich Live display — set inside run(), None between sessions
+        self._live: Live | None = None
+
+    def _build_status(self) -> Panel:
+        """Build the Rich Panel rendered in the bottom status bar.
+
+        Returns:
+            A :class:`rich.panel.Panel` showing now-playing info, volume, and controls.
+        """
+        current = self._state.current_track
+        next_t = self._state.next_track
+
+        # --- Line 1: play state + current track + elapsed time ---
+        if current:
+            icon = "[yellow]⏸ PAUSED[/yellow]" if self._state.is_paused else "[green]▶[/green]"
+            elapsed = self._playback_pos[0] / max(1, self._current_sr)
+            total = current.length or 0.0
+            elapsed = min(elapsed, total)
+            bpm = f"  BPM {current.bpm:.0f}" if current.bpm else ""
+            pos = f"  {_fmt_time(elapsed)} / {_fmt_time(total)}" if total > 0 else ""
+            now_line = f"{icon} [bold]{current.display_name}[/bold][dim]{bpm}{pos}[/dim]"
+        else:
+            now_line = "[dim]Loading...[/dim]"
+
+        # --- Line 2: next track + volume bar ---
+        vol_pct = int(round(self._state.volume * 100))
+        filled = int(round(self._state.volume * 10))
+        bar = "█" * filled + "░" * (10 - filled)
+        vol = (
+            "[red]MUTED[/red]"
+            if self._state.is_muted
+            else f"[cyan]{bar} {vol_pct}%[/cyan]"
+        )
+        nxt = f"[dim]Next:[/dim] {next_t.display_name}  " if next_t else ""
+        next_line = f"{nxt}[dim]Vol:[/dim] {vol}"
+
+        # --- Line 3: controls hint ---
+        controls = (
+            "[dim]Space=Pause  N=Skip  Q=Quit"
+            "  \u2190/\u2192=Seek\u00b110s  \u2191/\u2193=Volume  M=Mute[/dim]"
+        )
+
+        return Panel(
+            f"{now_line}\n{next_line}\n{controls}",
+            title="[bold blue]AutoDJ[/bold blue]",
+            border_style="blue",
+            padding=(0, 1),
+        )
+
+    def _refresh_status(self) -> None:
+        """Push an updated status panel to the Live display if it is active."""
+        if self._live is not None:
+            self._live.update(self._build_status())
 
     def run(self, seed_entry: Optional[IndexEntry]) -> None:
         """Start the playback loop.
@@ -260,31 +343,40 @@ class Player:
             seed_entry = random.choice(self._sim.entries)
 
         self._setup_keyboard()
-        self._print_controls()
 
         current = seed_entry
+        self._state.current_track = current
         self._state.record_played(current)
 
-        while not self._state.should_stop:
-            self._state.current_track = current
-            self._skip_event.clear()
+        with Live(
+            self._build_status(),
+            console=_CONSOLE,
+            refresh_per_second=2,
+            vertical_overflow="visible",
+        ) as live:
+            self._live = live
+            try:
+                while not self._state.should_stop:
+                    self._state.current_track = current
+                    self._skip_event.clear()
 
-            # Embed current track and pre-select the next one
-            next_entry = self._pick_next(current)
-            self._state.next_track = next_entry
-            self._display_now_playing(current, next_entry)
+                    next_entry = self._pick_next(current)
+                    self._state.next_track = next_entry
+                    self._refresh_status()
 
-            if not self._dry_run:
-                self._play_with_crossfade(current, next_entry)
-            else:
-                print(f"[dry-run] Would play: {current.display_name}")
-                time.sleep(0.1)
+                    if not self._dry_run:
+                        self._play_with_crossfade(current, next_entry)
+                    else:
+                        _CONSOLE.print(f"  [dim]dry-run:[/dim] {current.display_name}")
+                        time.sleep(0.1)
 
-            if self._state.should_stop:
-                break
+                    if self._state.should_stop:
+                        break
 
-            self._state.record_played(next_entry)
-            current = next_entry
+                    self._state.record_played(next_entry)
+                    current = next_entry
+            finally:
+                self._live = None
 
     def _pick_next(self, current: IndexEntry) -> IndexEntry:
         """Select the next track by looking up the current track's stored vector.
@@ -292,17 +384,37 @@ class Player:
         Retrieves the pre-computed embedding from the FAISS index by path —
         no model inference required.
 
+        If the no-repeat window covers the entire index (e.g. a small test
+        index), falls back to only excluding the current track so playback
+        can continue indefinitely.
+
         Args:
             current: The track currently playing.
 
         Returns:
             The recommended next :class:`~autodj.indexer.IndexEntry`.
         """
-        return self._sim.find_next_for_path(
-            current_path=current.path,
-            recently_played=self._state.recently_played,
-            n_candidates=10,
-        )
+        from autodj.similarity import SimilarityError
+
+        try:
+            return self._sim.find_next_for_path(
+                current_path=current.path,
+                recently_played=self._state.recently_played,
+                n_candidates=10,
+            )
+        except SimilarityError:
+            # The repeat window is >= index size — relax it to just the
+            # current track so we can keep playing.
+            logger.info(
+                "No candidates after applying repeat window (%d tracks) — "
+                "relaxing to avoid only the current track.",
+                len(self._state.recently_played),
+            )
+            return self._sim.find_next_for_path(
+                current_path=current.path,
+                recently_played=deque([current.path]),
+                n_candidates=10,
+            )
 
     def _play_with_crossfade(
         self,
@@ -348,29 +460,42 @@ class Player:
         """Stream a mono float32 audio array through sounddevice.
 
         Blocks until playback finishes, is skipped, or stopped.
+        Volume, mute, and seek are applied in real time via shared state.
 
         Args:
             audio: Mono float32 audio array.
             sr: Sample rate of *audio* in Hz.
         """
+        self._current_sr = sr
+        self._playback_len = len(audio)
+        pos = self._playback_pos
+        pos[0] = 0
+
         finished = threading.Event()
 
         def callback(outdata, frames, time_info, status):
-            nonlocal offset
             if self._state.is_paused or self._skip_event.is_set() or self._state.should_stop:
                 outdata[:] = 0
                 if self._skip_event.is_set() or self._state.should_stop:
                     raise sd.CallbackStop()
                 return
-            chunk = audio[offset : offset + frames]
+
+            chunk = audio[pos[0] : pos[0] + frames]
             if len(chunk) < frames:
                 outdata[: len(chunk), 0] = chunk
                 outdata[len(chunk) :] = 0
-                raise sd.CallbackStop()
-            outdata[:, 0] = chunk
-            offset += frames
+            else:
+                outdata[:, 0] = chunk
 
-        offset = 0
+            # Apply volume / mute
+            if self._state.is_muted:
+                outdata[:] = 0
+            elif self._state.volume < 1.0:
+                outdata[:] *= self._state.volume
+
+            pos[0] += frames
+            if len(chunk) < frames:
+                raise sd.CallbackStop()
 
         try:
             with sd.OutputStream(
@@ -381,7 +506,6 @@ class Player:
                 finished_callback=finished.set,
             ):
                 while not finished.is_set():
-                    # Spin-wait with short sleep, handling pause
                     if self._state.is_paused:
                         time.sleep(0.05)
                     else:
@@ -402,15 +526,41 @@ class Player:
 
                 if key == keyboard.Key.space:
                     self._state.is_paused = not self._state.is_paused
-                    status = "Paused" if self._state.is_paused else "Resumed"
-                    print(f"\n[{status}] Press Space to toggle.")
+                    self._refresh_status()
+
                 elif char == "n":
-                    print("\n[Skip] Moving to next track...")
+                    _CONSOLE.print("  [dim]→ Skip[/dim]")
                     self._skip_event.set()
+
                 elif char == "q":
-                    print("\n[Quit] Stopping AutoDJ...")
+                    _CONSOLE.print("  [dim]Quit[/dim]")
                     self._state.should_stop = True
                     self._skip_event.set()
+
+                elif key == keyboard.Key.right:
+                    seek = _SEEK_SECONDS * self._current_sr
+                    self._playback_pos[0] = min(
+                        self._playback_len - 1,
+                        self._playback_pos[0] + seek,
+                    )
+                    _CONSOLE.print(f"  [dim]Seek +{_SEEK_SECONDS}s[/dim]")
+
+                elif key == keyboard.Key.left:
+                    seek = _SEEK_SECONDS * self._current_sr
+                    self._playback_pos[0] = max(0, self._playback_pos[0] - seek)
+                    _CONSOLE.print(f"  [dim]Seek -{_SEEK_SECONDS}s[/dim]")
+
+                elif key == keyboard.Key.up:
+                    self._state.volume = min(1.0, self._state.volume + _VOLUME_STEP)
+                    self._refresh_status()
+
+                elif key == keyboard.Key.down:
+                    self._state.volume = max(0.0, self._state.volume - _VOLUME_STEP)
+                    self._refresh_status()
+
+                elif char == "m":
+                    self._state.is_muted = not self._state.is_muted
+                    self._refresh_status()
 
             listener = keyboard.Listener(on_press=on_press)
             listener.daemon = True
@@ -418,23 +568,3 @@ class Player:
         except Exception as exc:
             logger.warning("Keyboard controls unavailable: %s", exc)
 
-    def _display_now_playing(
-        self, current: IndexEntry, next_entry: Optional[IndexEntry]
-    ) -> None:
-        """Print the now-playing status to the terminal.
-
-        Args:
-            current: The track currently starting playback.
-            next_entry: The track queued to play next (may be ``None``).
-        """
-        print(f"\n{'─' * 60}")
-        print(f"  Now playing : {current.display_name}")
-        if current.bpm:
-            print(f"  BPM         : {current.bpm:.0f}")
-        if next_entry:
-            print(f"  Up next     : {next_entry.display_name}")
-        print(f"{'─' * 60}")
-
-    def _print_controls(self) -> None:
-        """Print keyboard control hints to the terminal."""
-        print("\nControls: Space=Pause/Resume  N=Skip  Q=Quit\n")
