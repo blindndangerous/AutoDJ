@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AutoDJ</title>
+  <style>
+    /* ----------------------------------------------------------------
+       Design tokens
+       #e0e0e0 on #1a1a2e → contrast ≈ 12.9:1  (WCAG AAA)
+       #ffffff on #2d5a87 → contrast ≈ 7.2:1   (WCAG AA)
+       #7eb3e8 thumb on #16213e → contrast ≈ 7.2:1 (non-text ≥ 3:1 ✓)
+       Focus ring: 2px solid #7eb3e8 — visible on all bg colors
+    ---------------------------------------------------------------- */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #1a1a2e;
+      --bg-card:   #16213e;
+      --border:    #0f3460;
+      --accent:    #7eb3e8;
+      --text:      #e0e0e0;
+      --text-dim:  #a0a0b0;
+      --btn-bg:    #2d5a87;
+      --btn-hover: #3a72a8;
+      --btn-text:  #ffffff;
+      --danger:    #c0392b;
+      --green:     #27ae60;
+      --radius:    6px;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      font-size: 1rem;
+      line-height: 1.5;
+      min-height: 100vh;
+    }
+
+    /* Skip-to-content link (WCAG 2.4.1) */
+    .skip-link {
+      position: absolute;
+      top: -999px;
+      left: 0;
+      background: var(--accent);
+      color: #000;
+      padding: 0.5rem 1rem;
+      z-index: 9999;
+      font-weight: 600;
+      border-radius: 0 0 var(--radius) 0;
+    }
+    .skip-link:focus { top: 0; }
+
+    /* Focus ring — never removed */
+    :focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 3px;
+    }
+
+    header {
+      background: var(--bg-card);
+      border-bottom: 1px solid var(--border);
+      padding: 1rem 1.5rem;
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+    header h1 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+    }
+    #conn-status {
+      font-size: 0.8rem;
+      padding: 0.2rem 0.6rem;
+      border-radius: 999px;
+      background: var(--border);
+      color: var(--text-dim);
+    }
+    #conn-status.connected   { background: var(--green);  color: #fff; }
+    /* Fix 1: #e67e22 on white only reaches 2.85:1 — use dark text instead */
+    #conn-status.connecting  { background: #e67e22; color: #000; }
+    #conn-status.error       { background: var(--danger);  color: #fff; }
+
+    main {
+      max-width: 780px;
+      margin: 0 auto;
+      padding: 1.5rem 1rem 3rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.25rem 1.5rem;
+    }
+    .card h2 {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--text-dim);
+      margin-bottom: 0.75rem;
+    }
+
+    /* ---- Now playing ---- */
+    #now-playing-announce {
+      font-size: 1.2rem;
+      font-weight: 600;
+      line-height: 1.3;
+      margin-bottom: 0.4rem;
+    }
+    #now-playing-meta {
+      font-size: 0.875rem;
+      color: var(--text-dim);
+    }
+    #progress-bar-wrap {
+      margin-top: 0.75rem;
+    }
+    #progress-bar-label {
+      font-size: 0.8rem;
+      color: var(--text-dim);
+      margin-bottom: 0.3rem;
+    }
+    #progress-track {
+      width: 100%;
+      height: 6px;
+      background: var(--border);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    #progress-fill {
+      height: 100%;
+      background: var(--accent);
+      border-radius: 3px;
+      width: 0%;
+      transition: width 0.5s linear;
+    }
+
+    /* ---- Controls ---- */
+    .controls-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      align-items: center;
+    }
+
+    button {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.55rem 1.1rem;
+      background: var(--btn-bg);
+      color: var(--btn-text);
+      border: none;
+      border-radius: var(--radius);
+      font-size: 0.95rem;
+      font-weight: 500;
+      cursor: pointer;
+      min-width: 44px;   /* WCAG 2.5.5 touch target */
+      min-height: 44px;
+      transition: background 0.15s;
+    }
+    button:hover  { background: var(--btn-hover); }
+    button:active { background: var(--accent); color: #000; }
+    /* Fix 1: #e67e22 on white only reaches 2.85:1 — use dark text */
+    button[aria-pressed="true"] {
+      background: #e67e22;
+      color: #000;
+    }
+    button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    /* ---- Volume ---- */
+    .volume-row {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+    }
+    #vol-label-text { font-size: 0.875rem; min-width: 3.5rem; }
+
+    input[type="range"] {
+      -webkit-appearance: none;
+      appearance: none;
+      flex: 1;
+      min-width: 120px;
+      height: 6px;
+      background: var(--border);
+      border-radius: 3px;
+      cursor: pointer;
+      accent-color: var(--accent);
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: var(--accent);
+      border: 2px solid var(--bg);
+    }
+    input[type="range"]::-moz-range-thumb {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: var(--accent);
+      border: 2px solid var(--bg);
+    }
+    #vol-pct { font-size: 0.875rem; min-width: 3rem; text-align: right; }
+
+    /* ---- Up next ---- */
+    #next-track-text {
+      font-size: 1rem;
+      color: var(--text-dim);
+    }
+
+    /* ---- Search ---- */
+    .search-row {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+    }
+    #search-input {
+      flex: 1;
+      min-width: 180px;
+      padding: 0.55rem 0.85rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-size: 0.95rem;
+    }
+    #search-input::placeholder { color: var(--text-dim); }
+    #search-input:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    #search-results {
+      margin-top: 0.75rem;
+      list-style: none;
+    }
+    #search-results li {
+      padding: 0.45rem 0.25rem;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.9rem;
+    }
+    #search-results li:last-child { border-bottom: none; }
+    #search-results .no-results { color: var(--text-dim); font-style: italic; }
+
+    /* ---- History ---- */
+    #history-list {
+      list-style: none;
+    }
+    #history-list li {
+      padding: 0.4rem 0.25rem;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.875rem;
+      color: var(--text-dim);
+    }
+    #history-list li:last-child { border-bottom: none; }
+    #history-list .history-title { color: var(--text); font-weight: 500; }
+
+    @media (max-width: 480px) {
+      .controls-row { justify-content: center; }
+      header { padding: 0.75rem 1rem; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- Skip navigation link (WCAG 2.4.1) -->
+<a class="skip-link" href="#main-content">Skip to main content</a>
+
+<header role="banner">
+  <h1>AutoDJ</h1>
+  <!-- Fix 4: no static aria-label — text content is the live announcement -->
+  <span id="conn-status" role="status" aria-live="polite">Connecting…</span>
+</header>
+
+<main id="main-content" role="main">
+
+  <!-- Now Playing -->
+  <section class="card" aria-labelledby="now-playing-heading">
+    <h2 id="now-playing-heading">Now Playing</h2>
+
+    <!-- aria-live region: screen reader announces track changes automatically -->
+    <div id="now-playing-announce"
+         aria-live="polite"
+         aria-atomic="true">
+      Loading…
+    </div>
+    <div id="now-playing-meta" aria-hidden="true"></div>
+
+    <!-- Fix 3: removed role="img" which suppresses inner aria-live regions -->
+    <div id="progress-bar-wrap">
+      <div id="progress-bar-label" aria-live="polite" aria-atomic="true">0:00 / 0:00</div>
+      <div id="progress-track" aria-hidden="true">
+        <div id="progress-fill"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Controls -->
+  <section class="card" aria-labelledby="controls-heading">
+    <h2 id="controls-heading">Controls</h2>
+
+    <!-- Fix 5: role="toolbar" instead of <nav> — nav is for navigation, not action toolbars -->
+    <div role="toolbar" aria-label="Playback controls">
+      <div class="controls-row">
+        <!-- Fix 2: emoji wrapped in aria-hidden so screen readers don't double-announce -->
+        <button id="btn-pause"
+                aria-pressed="false"
+                title="Pause or resume playback">
+          <span aria-hidden="true">⏸</span> Pause
+        </button>
+        <button id="btn-skip"
+                title="Skip to the next track">
+          <span aria-hidden="true">⏭</span> Skip
+        </button>
+      </div>
+    </div>
+
+    <!-- Volume -->
+    <div class="volume-row" style="margin-top:1rem;" role="group" aria-labelledby="vol-group-label">
+      <span id="vol-group-label" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap">Volume controls</span>
+      <span id="vol-label-text" aria-hidden="true">Volume</span>
+      <input type="range"
+             id="vol"
+             min="0" max="100" value="100"
+             aria-label="Volume">
+      <span id="vol-pct" aria-live="polite" aria-atomic="true">100%</span>
+      <!-- Fix 2: emoji wrapped in aria-hidden -->
+      <button id="btn-mute"
+              aria-pressed="false"
+              title="Toggle mute">
+        <span aria-hidden="true">🔊</span> Mute
+      </button>
+    </div>
+  </section>
+
+  <!-- Up Next -->
+  <section class="card" aria-labelledby="up-next-heading">
+    <h2 id="up-next-heading">Up Next</h2>
+    <p id="next-track-text" aria-live="polite" aria-atomic="true">—</p>
+  </section>
+
+  <!-- Search -->
+  <section class="card" aria-labelledby="search-heading">
+    <h2 id="search-heading">Search Library</h2>
+    <div class="search-row">
+      <!-- Fix 6: label provides accessible name; removed duplicate aria-label -->
+      <label for="search-input"
+             style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap">
+        Search by artist or title
+      </label>
+      <input type="search"
+             id="search-input"
+             placeholder="Artist or title…"
+             autocomplete="off"
+             aria-expanded="false"
+             aria-controls="search-results">
+      <button id="btn-search" aria-label="Search">Search</button>
+    </div>
+    <!-- aria-atomic="false": announce count separately, not the entire list -->
+    <ul id="search-results" role="list" aria-label="Search results"></ul>
+    <div id="search-count" aria-live="polite" aria-atomic="true" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap"></div>
+  </section>
+
+  <!-- History -->
+  <section class="card" aria-labelledby="history-heading">
+    <h2 id="history-heading">Recently Played</h2>
+    <ul id="history-list" role="list" aria-label="Recently played tracks">
+      <li><span class="no-results" style="color:var(--text-dim);font-style:italic">Nothing played yet.</span></li>
+    </ul>
+  </section>
+
+</main>
+
+<script>
+"use strict";
+
+// ----------------------------------------------------------------
+// Utilities
+// ----------------------------------------------------------------
+
+function fmtTime(sec) {
+  if (!sec || isNaN(sec)) return "0:00";
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+function fmtTrack(t) {
+  if (!t) return "—";
+  if (t.artist && t.title) return `${t.artist} \u2014 ${t.title}`;
+  return t.display_name || t.title || "Unknown";
+}
+
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+// ----------------------------------------------------------------
+// DOM refs
+// ----------------------------------------------------------------
+
+const connStatus   = document.getElementById("conn-status");
+const npAnnounce   = document.getElementById("now-playing-announce");
+const npMeta       = document.getElementById("now-playing-meta");
+const progressFill = document.getElementById("progress-fill");
+const progressLbl  = document.getElementById("progress-bar-label");
+const nextText     = document.getElementById("next-track-text");
+const btnPause     = document.getElementById("btn-pause");
+const btnSkip      = document.getElementById("btn-skip");
+const volSlider    = document.getElementById("vol");
+const volPct       = document.getElementById("vol-pct");
+const btnMute      = document.getElementById("btn-mute");
+const searchInput  = document.getElementById("search-input");
+const btnSearch    = document.getElementById("btn-search");
+const searchResults= document.getElementById("search-results");
+const searchCount  = document.getElementById("search-count");
+const historyList  = document.getElementById("history-list");
+
+// ----------------------------------------------------------------
+// State
+// ----------------------------------------------------------------
+
+let lastTrackKey = null;   // detect track changes for aria-live announce
+const historyItems = [];   // most-recent first
+
+// ----------------------------------------------------------------
+// State update — called on every WS push and on manual API calls
+// ----------------------------------------------------------------
+
+function applyState(s) {
+  // Now Playing
+  const trackKey   = s.current_track ? s.current_track.path : null;
+  const trackLabel = fmtTrack(s.current_track);
+
+  if (trackKey !== lastTrackKey) {
+    // Track changed — update aria-live region so screen readers announce it
+    npAnnounce.textContent = trackLabel;
+    lastTrackKey = trackKey;
+
+    // Push to history (skip duplicates at top)
+    if (trackKey && historyItems[0] !== trackLabel) {
+      historyItems.unshift(trackLabel);
+      if (historyItems.length > 20) historyItems.pop();
+      renderHistory();
+    }
+  }
+
+  // Meta line: album · BPM
+  const parts = [];
+  if (s.current_track) {
+    if (s.current_track.album) parts.push(s.current_track.album);
+    if (s.current_track.bpm)   parts.push(`${Math.round(s.current_track.bpm)} BPM`);
+  }
+  npMeta.textContent = parts.join(" \u00b7 ");
+
+  // Progress bar
+  const dur = s.duration || 0;
+  const pct = dur > 0 ? Math.min(100, (s.elapsed / dur) * 100) : 0;
+  progressFill.style.width = pct.toFixed(1) + "%";
+  progressLbl.textContent  = `${fmtTime(s.elapsed)} / ${fmtTime(dur)}`;
+
+  // Pause button
+  const isPaused = s.is_paused;
+  btnPause.setAttribute("aria-pressed", isPaused ? "true" : "false");
+  // Update visible label to match state
+  btnPause.innerHTML = isPaused
+    ? '<span aria-hidden="true">\u25B6</span> Resume'
+    : '<span aria-hidden="true">\u23F8</span> Pause';
+
+  // Volume — keep aria-valuenow in sync with value
+  const volInt = Math.round(s.volume * 100);
+  volSlider.value = volInt;
+  volPct.textContent = volInt + "%";
+
+  // Mute
+  const isMuted = s.is_muted;
+  btnMute.setAttribute("aria-pressed", isMuted ? "true" : "false");
+  btnMute.innerHTML = isMuted
+    ? '<span aria-hidden="true">\uD83D\uDD07</span> Unmute'
+    : '<span aria-hidden="true">\uD83D\uDD0A</span> Mute';
+
+  // Up Next
+  nextText.textContent = fmtTrack(s.next_track);
+}
+
+function renderHistory() {
+  if (historyItems.length === 0) return;
+  historyList.innerHTML = historyItems
+    .map(name => `<li><span class="history-title">${escHtml(name)}</span></li>`)
+    .join("");
+}
+
+// ----------------------------------------------------------------
+// WebSocket
+// ----------------------------------------------------------------
+
+function setConnStatus(state, label) {
+  connStatus.className  = state;
+  connStatus.textContent = label;
+}
+
+function connectWS() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+  setConnStatus("connecting", "Connecting\u2026");
+
+  ws.onopen  = () => setConnStatus("connected", "Live");
+
+  ws.onmessage = (ev) => {
+    try { applyState(JSON.parse(ev.data)); } catch (_) {}
+  };
+
+  ws.onclose = () => {
+    setConnStatus("error", "Disconnected");
+    setTimeout(connectWS, 3000);
+  };
+
+  ws.onerror = () => setConnStatus("error", "Error");
+}
+
+connectWS();
+
+// ----------------------------------------------------------------
+// Button handlers
+// ----------------------------------------------------------------
+
+btnPause.addEventListener("click", async () => {
+  const res  = await fetch("/api/pause", { method: "POST" });
+  const data = await res.json();
+  const isPaused = data.paused;
+  btnPause.setAttribute("aria-pressed", isPaused ? "true" : "false");
+  btnPause.innerHTML = isPaused
+    ? '<span aria-hidden="true">\u25B6</span> Resume'
+    : '<span aria-hidden="true">\u23F8</span> Pause';
+});
+
+btnSkip.addEventListener("click", async () => {
+  btnSkip.disabled = true;
+  await fetch("/api/skip", { method: "POST" });
+  setTimeout(() => { btnSkip.disabled = false; }, 800);
+});
+
+btnMute.addEventListener("click", async () => {
+  const res   = await fetch("/api/mute", { method: "POST" });
+  const data  = await res.json();
+  const muted = data.muted;
+  btnMute.setAttribute("aria-pressed", muted ? "true" : "false");
+  btnMute.innerHTML = muted
+    ? '<span aria-hidden="true">\uD83D\uDD07</span> Unmute'
+    : '<span aria-hidden="true">\uD83D\uDD0A</span> Mute';
+});
+
+// Volume slider — debounced to avoid flooding the server
+let volTimer = null;
+volSlider.addEventListener("input", () => {
+  const val = parseInt(volSlider.value, 10);
+  volPct.textContent = val + "%";
+  clearTimeout(volTimer);
+  volTimer = setTimeout(() => {
+    fetch("/api/volume", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ volume: val / 100 }),
+    });
+  }, 120);
+});
+
+// ----------------------------------------------------------------
+// Search
+// ----------------------------------------------------------------
+
+async function doSearch() {
+  const q = searchInput.value.trim();
+  if (!q) {
+    searchResults.innerHTML = "";
+    searchInput.setAttribute("aria-expanded", "false");
+    searchCount.textContent = "";
+    return;
+  }
+
+  const res  = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+  const data = await res.json();
+  const results = data.results || [];
+
+  if (results.length === 0) {
+    searchResults.innerHTML = `<li><span class="no-results">No results for \u201c${escHtml(q)}\u201d.</span></li>`;
+    searchInput.setAttribute("aria-expanded", "true");
+    searchCount.textContent = "No results found.";
+    return;
+  }
+
+  searchResults.innerHTML = results
+    .map(t => `<li>${escHtml(fmtTrack(t))}</li>`)
+    .join("");
+  searchInput.setAttribute("aria-expanded", "true");
+  // Announce count separately (not the full list) per advisory
+  searchCount.textContent = `${results.length} result${results.length === 1 ? "" : "s"} found.`;
+}
+
+btnSearch.addEventListener("click", doSearch);
+searchInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") doSearch();
+});
+
+// Collapse results when input is cleared
+searchInput.addEventListener("input", () => {
+  if (!searchInput.value.trim()) {
+    searchResults.innerHTML = "";
+    searchInput.setAttribute("aria-expanded", "false");
+    searchCount.textContent = "";
+  }
+});
+
+// ----------------------------------------------------------------
+// Initial state fetch
+// ----------------------------------------------------------------
+
+fetch("/api/status")
+  .then(r => r.json())
+  .then(applyState)
+  .catch(() => {});
+</script>
+</body>
+</html>

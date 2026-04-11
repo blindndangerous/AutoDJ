@@ -74,6 +74,25 @@ name = "m-a-p/MERT-v1-330M"  # Model used for audio embeddings
 
 See `config.toml` for all options with full inline documentation.
 
+### NAS / beets path remapping
+
+If you use beets and your music lives on a NAS, beets stores paths using the NAS's internal path (e.g. `/volume1/Mike/Beetsmusic/...`), but your Windows machine mounts it differently (e.g. `Z:\Beetsmusic\...`). AutoDJ will silently skip every track unless you tell it how to remap the prefix.
+
+Add `beets_path_prefix` to `config.toml`:
+
+```toml
+[library]
+music_dir         = "Z:/Beetsmusic"
+beets_db          = "C:/Users/you/.config/beets/library.db"
+
+# Strip this prefix from beets paths, then prepend music_dir
+# NAS internal path  → /volume1/Mike/Beetsmusic/Artist/Album/song.flac
+# After remap        → Z:/Beetsmusic/Artist/Album/song.flac
+beets_path_prefix = "/volume1/Mike/Beetsmusic"
+```
+
+The prefix is stripped from the beets path and the remainder is appended to `music_dir`. Forward slashes and trailing slashes are normalized automatically.
+
 ---
 
 ## Building the index
@@ -144,11 +163,47 @@ uv run autodj play --dry-run
 
 ### Keyboard controls during playback
 
-| Key     | Action           |
-|---------|------------------|
-| `Space` | Pause / Resume   |
-| `N`     | Skip to next     |
-| `Q`     | Quit             |
+| Key       | Action                         |
+|-----------|--------------------------------|
+| `Space`   | Pause / Resume                 |
+| `N`       | Skip to next track             |
+| `Q`       | Quit                           |
+| `←` / `→` | Seek −10 s / +10 s             |
+| `↑` / `↓` | Volume up / down (5% per step) |
+| `M`       | Mute / Unmute                  |
+
+### Status bar
+
+While playing, a persistent status panel is pinned to the bottom of the terminal:
+
+```
+  Now playing : Portishead — Glory Box                    [playing]  1:23 / 4:50
+  Up next     : Massive Attack — Teardrop                 Vol: ████████░░  80%
+  Controls: Space=Pause/Resume  N=Skip  Q=Quit  ←/→=Seek±10s  ↑/↓=Volume  M=Mute
+```
+
+The panel refreshes twice per second. All other output (skip messages, volume changes) prints above it so the panel is always visible at the bottom.
+
+---
+
+## Web UI
+
+AutoDJ includes a browser-based control panel powered by FastAPI and WebSockets.
+
+```bash
+# Start the web UI (defaults: http://127.0.0.1:8080)
+uv run autodj serve
+
+# Choose a seed track, custom port, open browser automatically
+uv run autodj serve --seed "Portishead" --port 8080 --open
+
+# Bind to all interfaces (LAN access)
+uv run autodj serve --host 0.0.0.0 --port 8080
+```
+
+The web UI displays the currently playing track, the up-next track, playback state, and volume. All playback controls (pause/resume, skip, volume, mute) are available from the browser — keyboard controls continue to work in the terminal at the same time.
+
+Live state is pushed to the browser via a WebSocket connection every second — no polling, no page refreshes.
 
 ---
 
@@ -192,13 +247,16 @@ autodj/
 ├── config.toml          ← Edit this to set your music path and preferences
 ├── pyproject.toml       ← Dependencies and project metadata
 ├── src/autodj/
-│   ├── cli.py           ← CLI entry point (index + play subcommands)
+│   ├── cli.py           ← CLI entry point (index / play / serve subcommands)
 │   ├── config.py        ← Config loading from config.toml
 │   ├── model.py         ← MERT model loader + auto-download
 │   ├── beets.py         ← Beets library.db reader
 │   ├── indexer.py       ← Index builder: MERT + librosa → FAISS
 │   ├── similarity.py    ← FAISS query + next-song selection
-│   └── player.py        ← Crossfade playback + keyboard controls
+│   ├── player.py        ← Crossfade playback + keyboard controls
+│   ├── server.py        ← FastAPI app + PlayerBridge + WebSocket broadcast
+│   └── static/
+│       └── index.html   ← Self-contained web UI (WCAG 2.2 AA)
 ├── tests/
 │   ├── unit/            ← Fast, fully mocked tests per module
 │   ├── integration/     ← Pipeline round-trip tests (real FAISS, mock model)
@@ -225,3 +283,12 @@ autodj/
 
 **Very slow indexing on CPU**
 → Use `--limit N` to index in smaller batches, or index on the GPU machine (see [Indexing on a GPU machine](#indexing-on-a-gpu-machine)).
+
+**Indexer skips all tracks / `0 new entries` when using beets**
+→ Your beets database stores NAS paths that don't match your local mount point. Set `beets_path_prefix` in `config.toml` to the NAS internal prefix — see [NAS / beets path remapping](#nas--beets-path-remapping) above.
+
+**Sampling rate warnings during indexing**
+→ Warnings like `"The model was trained using a sampling rate of 24000"` are expected and harmless — AutoDJ automatically resamples your audio (44.1/48/96 kHz) to 24 kHz before feeding it to MERT. You can safely ignore these warnings.
+
+**`use_return_dict is deprecated` warning**
+→ This has been fixed in the current version. If you see it, make sure you're running the latest code (`git pull` then `uv sync`).

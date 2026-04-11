@@ -287,3 +287,114 @@ def cmd_play(
         player.run(seed_entry=seed_entry)
     except KeyboardInterrupt:
         console.print("\n[yellow]Stopped.[/]")
+
+
+# ---------------------------------------------------------------------------
+# serve subcommand
+# ---------------------------------------------------------------------------
+
+
+@cli.command("serve")
+@click.option(
+    "--seed",
+    default=None,
+    type=str,
+    help=(
+        "Search term to choose the starting track (matched against title and artist). "
+        "Omit to start from a random track."
+    ),
+)
+@click.option(
+    "--host",
+    default="127.0.0.1",
+    show_default=True,
+    type=str,
+    help="Interface to bind the web server to. Use 0.0.0.0 for LAN access.",
+)
+@click.option(
+    "--port",
+    default=8080,
+    show_default=True,
+    type=int,
+    help="Port to bind the web server to.",
+)
+@click.option(
+    "--open",
+    "open_browser",
+    is_flag=True,
+    default=False,
+    help="Open the web UI in the default browser after starting.",
+)
+@click.pass_context
+def cmd_serve(
+    ctx: click.Context,
+    seed: Optional[str],
+    host: str,
+    port: int,
+    open_browser: bool,
+) -> None:
+    """Start the auto-DJ player with a browser-based control panel.
+
+    Runs the AutoDJ player in the background and serves a web UI at
+    http://HOST:PORT.  All playback controls (pause, skip, volume, mute)
+    are available from the browser.  Keyboard controls continue to work
+    in the terminal at the same time.
+
+    \b
+    Examples:
+      uv run autodj serve
+      uv run autodj serve --seed "Portishead" --open
+      uv run autodj serve --host 0.0.0.0 --port 8080
+    """
+    from autodj.config import load_config
+    from autodj.similarity import SimilarityIndex
+    from autodj.server import serve
+
+    try:
+        cfg = load_config(ctx.obj["config_path"])
+    except FileNotFoundError as exc:
+        console.print(f"[bold red]Config not found:[/] {exc}")
+        sys.exit(1)
+
+    try:
+        sim = SimilarityIndex.from_index_dir(cfg.index.index_dir)
+    except FileNotFoundError as exc:
+        console.print(f"[bold red]Index not found:[/] {exc}")
+        sys.exit(1)
+
+    console.print(
+        Panel(
+            f"[bold green]AutoDJ[/] — {sim.ntotal} tracks indexed",
+            expand=False,
+        )
+    )
+
+    # Resolve seed entry (same logic as cmd_play)
+    seed_entry = None
+    if seed:
+        q = seed.lower()
+        from autodj.indexer import IndexEntry  # noqa: F401
+        matching = [
+            e for e in sim.entries
+            if q in e.title.lower() or q in e.artist.lower()
+        ]
+        if matching:
+            seed_entry = matching[0]
+            console.print(f"Seed: [bold]{seed_entry.display_name}[/]")
+        else:
+            console.print(f"[yellow]No indexed tracks match '{seed}'. Starting random.[/]")
+
+    url = f"http://{host}:{port}"
+    console.print(f"  Web UI  : [link={url}]{url}[/link]")
+    console.print("  Press [bold]Ctrl+C[/] to quit\n")
+
+    if open_browser:
+        import webbrowser
+        import threading
+        # Small delay so uvicorn is ready before the browser tries to connect
+        threading.Timer(1.5, lambda: webbrowser.open(url)).start()
+
+    try:
+        serve(cfg=cfg, sim=sim, seed_entry=seed_entry, host=host, port=port)
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Stopped.[/]")
