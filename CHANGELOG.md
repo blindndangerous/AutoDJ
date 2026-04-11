@@ -8,8 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Planned
-- Web UI (`autodj serve`) — FastAPI + WebSocket browser control panel
+### Added
+- Web UI search results now have **▶ Now** and **⏭ Next** buttons — queue any
+  indexed track from the browser to play immediately or after the current track
+- `POST /api/play-next` endpoint — accepts `{"path": "...", "now": bool}`;
+  sets `PlayerState.queued_next` and optionally skips the current track
+
+### Fixed
+- Crossfade slice bug: `_play_with_crossfade` was passing
+  `audio_b[:crossfade_samples + len(audio_a)]` to `_apply_crossfade`, causing
+  every track to play at ~2× its actual length then replay from the start;
+  corrected to `audio_b[:crossfade_samples]`
 
 ---
 

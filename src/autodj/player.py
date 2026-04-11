@@ -166,6 +166,7 @@ class PlayerState:
 
     current_track: Optional[IndexEntry] = None
     next_track: Optional[IndexEntry] = None
+    queued_next: Optional[IndexEntry] = None   # set by web UI "play next/now"
     is_paused: bool = False
     should_stop: bool = False
     no_repeat_window: int = 50
@@ -381,8 +382,9 @@ class Player:
     def _pick_next(self, current: IndexEntry) -> IndexEntry:
         """Select the next track by looking up the current track's stored vector.
 
-        Retrieves the pre-computed embedding from the FAISS index by path —
-        no model inference required.
+        If a track has been queued via the web UI (``state.queued_next``), it
+        is returned immediately and the queue slot is cleared.  Otherwise the
+        FAISS similarity index is queried as normal.
 
         If the no-repeat window covers the entire index (e.g. a small test
         index), falls back to only excluding the current track so playback
@@ -394,6 +396,12 @@ class Player:
         Returns:
             The recommended next :class:`~autodj.indexer.IndexEntry`.
         """
+        if self._state.queued_next is not None:
+            entry = self._state.queued_next
+            self._state.queued_next = None
+            logger.info("Playing queued track: %s", entry.display_name)
+            return entry
+
         from autodj.similarity import SimilarityError
 
         try:

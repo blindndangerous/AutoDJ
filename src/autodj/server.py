@@ -20,10 +20,9 @@ Routes
 ``POST /api/volume``        → set volume (body: ``{"volume": 0.75}``)
 ``POST /api/mute``          → toggle mute
 ``GET  /api/search?q=``     → fuzzy search of indexed tracks
+``POST /api/play-next``     → queue a track by path to play after the current one
 ``WS   /ws``                → push state JSON every 1 second
 """
-
-from __future__ import annotations
 
 import asyncio
 import contextlib
@@ -49,6 +48,13 @@ class VolumeBody(BaseModel):
     """Request body for POST /api/volume."""
 
     volume: float
+
+
+class PlayNextBody(BaseModel):
+    """Request body for POST /api/play-next."""
+
+    path: str
+    now: bool = False  # if True, also skip the current track
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +190,33 @@ class PlayerBridge:
                     break
         return results
 
+    # ------------------------------------------------------------------
+    # Queue control
+    # ------------------------------------------------------------------
+
+    def play_next(self, path: str, now: bool = False) -> bool:
+        """Queue a track by path to play after the current one.
+
+        Args:
+            path: The :attr:`~autodj.indexer.IndexEntry.path` string of the
+                track to queue.
+            now: If ``True``, also skip the current track so the queued track
+                starts immediately.
+
+        Returns:
+            ``True`` if the track was found in the index, ``False`` otherwise.
+        """
+        entry = next(
+            (e for e in self.sim.entries if e.path == path),  # type: ignore[attr-defined]
+            None,
+        )
+        if entry is None:
+            return False
+        self.player._state.queued_next = entry  # type: ignore[attr-defined]
+        if now:
+            self.player._skip_event.set()  # type: ignore[attr-defined]
+        return True
+
 
 # ---------------------------------------------------------------------------
 # FastAPI application factory
@@ -252,6 +285,11 @@ def create_app(bridge: PlayerBridge):
     async def api_mute():
         muted = bridge.toggle_mute()
         return {"muted": muted}
+
+    @app.post("/api/play-next")
+    async def api_play_next(body: PlayNextBody):
+        found = bridge.play_next(body.path, now=body.now)
+        return {"ok": found}
 
     @app.get("/api/search")
     async def api_search(q: str = ""):

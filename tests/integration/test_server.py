@@ -246,6 +246,49 @@ class TestSearch:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# POST /api/play-next
+# ---------------------------------------------------------------------------
+
+
+class TestPlayNext:
+    def test_play_next_returns_200(self, bridge) -> None:
+        from fastapi.testclient import TestClient
+        path = bridge.sim.entries[2].path
+        resp = TestClient(create_app(bridge)).post("/api/play-next", json={"path": path})
+        assert resp.status_code == 200
+
+    def test_play_next_returns_ok_true_for_valid_path(self, bridge) -> None:
+        from fastapi.testclient import TestClient
+        path = bridge.sim.entries[0].path
+        data = TestClient(create_app(bridge)).post("/api/play-next", json={"path": path}).json()
+        assert data["ok"] is True
+
+    def test_play_next_returns_ok_false_for_unknown_path(self, bridge) -> None:
+        from fastapi.testclient import TestClient
+        data = TestClient(create_app(bridge)).post("/api/play-next", json={"path": "Z:/nope.flac"}).json()
+        assert data["ok"] is False
+
+    def test_play_next_sets_queued_next(self, bridge) -> None:
+        from fastapi.testclient import TestClient
+        path = bridge.sim.entries[1].path
+        TestClient(create_app(bridge)).post("/api/play-next", json={"path": path})
+        assert bridge.player._state.queued_next is not None
+        assert bridge.player._state.queued_next.path == path
+
+    def test_play_now_also_triggers_skip(self, bridge) -> None:
+        from fastapi.testclient import TestClient
+        path = bridge.sim.entries[0].path
+        TestClient(create_app(bridge)).post("/api/play-next", json={"path": path, "now": True})
+        bridge.player._skip_event.set.assert_called_once()
+
+    def test_play_next_does_not_skip(self, bridge) -> None:
+        from fastapi.testclient import TestClient
+        path = bridge.sim.entries[0].path
+        TestClient(create_app(bridge)).post("/api/play-next", json={"path": path, "now": False})
+        bridge.player._skip_event.set.assert_not_called()
+
+
 class TestWebSocket:
     def test_websocket_connects(self, client) -> None:
         with client.websocket_connect("/ws") as ws:
@@ -306,3 +349,22 @@ class TestPlayerBridge:
     def test_search_limit_respected(self, bridge) -> None:
         results = bridge.search("song", limit=2)
         assert len(results) <= 2
+
+    def test_play_next_queues_entry(self, bridge) -> None:
+        path = bridge.sim.entries[0].path
+        assert bridge.play_next(path) is True
+        assert bridge.player._state.queued_next.path == path
+
+    def test_play_next_unknown_path_returns_false(self, bridge) -> None:
+        assert bridge.play_next("Z:/does_not_exist.flac") is False
+        assert bridge.player._state.queued_next is None
+
+    def test_play_next_now_skips(self, bridge) -> None:
+        path = bridge.sim.entries[0].path
+        bridge.play_next(path, now=True)
+        bridge.player._skip_event.set.assert_called_once()
+
+    def test_play_next_without_now_does_not_skip(self, bridge) -> None:
+        path = bridge.sim.entries[0].path
+        bridge.play_next(path, now=False)
+        bridge.player._skip_event.set.assert_not_called()

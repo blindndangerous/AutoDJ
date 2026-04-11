@@ -205,6 +205,17 @@ The web UI displays the currently playing track, the up-next track, playback sta
 
 Live state is pushed to the browser via a WebSocket connection every second — no polling, no page refreshes.
 
+### Search and queue from the browser
+
+The **Search Library** panel lets you search by artist or title. Each result has two buttons:
+
+| Button | Action |
+|--------|--------|
+| **▶ Now** | Queue the track and immediately skip to it |
+| **⏭ Next** | Queue the track to play after the current one finishes |
+
+The queue holds one track at a time. If you queue a second track before the first plays, it replaces the first.
+
 ---
 
 ## Running tests

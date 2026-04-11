@@ -247,12 +247,29 @@
       list-style: none;
     }
     #search-results li {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
       padding: 0.45rem 0.25rem;
       border-bottom: 1px solid var(--border);
       font-size: 0.9rem;
     }
     #search-results li:last-child { border-bottom: none; }
     #search-results .no-results { color: var(--text-dim); font-style: italic; }
+    .result-name {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .result-btn {
+      flex-shrink: 0;
+      padding: 0.25rem 0.6rem;
+      font-size: 0.8rem;
+      min-height: 36px;
+      min-width: 36px;
+    }
 
     /* ---- History ---- */
     #history-list {
@@ -606,9 +623,21 @@ async function doSearch() {
     return;
   }
 
-  searchResults.innerHTML = results
-    .map(t => `<li>${escHtml(fmtTrack(t))}</li>`)
-    .join("");
+  searchResults.innerHTML = results.map(t => {
+    const name = escHtml(fmtTrack(t));
+    const path = escHtml(t.path);
+    return `<li>
+      <span class="result-name" title="${name}">${name}</span>
+      <button class="result-btn"
+              aria-label="Play ${name} now"
+              data-path="${path}"
+              data-now="true"><span aria-hidden="true">&#9654;</span> Now</button>
+      <button class="result-btn"
+              aria-label="Queue ${name} as next track"
+              data-path="${path}"
+              data-now="false"><span aria-hidden="true">&#9197;</span> Next</button>
+    </li>`;
+  }).join("");
   searchInput.setAttribute("aria-expanded", "true");
   // Announce count separately (not the full list) per advisory
   searchCount.textContent = `${results.length} result${results.length === 1 ? "" : "s"} found.`;
@@ -625,6 +654,26 @@ searchInput.addEventListener("input", () => {
     searchResults.innerHTML = "";
     searchInput.setAttribute("aria-expanded", "false");
     searchCount.textContent = "";
+  }
+});
+
+// Play-next / play-now buttons (event delegation on the results list)
+searchResults.addEventListener("click", async (e) => {
+  const btn = e.target.closest(".result-btn");
+  if (!btn) return;
+  const path = btn.dataset.path;
+  const now  = btn.dataset.now === "true";
+  btn.disabled = true;
+  try {
+    await fetch("/api/play-next", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, now }),
+    });
+  } finally {
+    // Re-enable and restore focus so keyboard users don't lose their place
+    btn.disabled = false;
+    btn.focus();
   }
 });
 
