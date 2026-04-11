@@ -1,0 +1,45 @@
+# AutoDJ Configuration
+# Copy this file and adjust paths to match your setup.
+# All paths can use forward slashes (/) on Windows.
+
+[library]
+# Full path to your music folder (local or mapped NAS drive)
+# Example: "Z:/Music" or "C:/Users/you/Music"
+music_dir = "Z:/Music"
+
+# Full path to your beets SQLite library database
+# Find it by running: beet config | grep library
+# Leave blank to skip beets integration and use filesystem scanning instead
+beets_db = "C:/Users/you/.config/beets/library.db"
+
+# Audio formats to scan for
+supported_formats = ["mp3", "flac", "m4a"]
+
+[index]
+# Directory where the FAISS index and metadata are stored.
+# Can be a local path or a NAS path — if you run `autodj index` on a GPU machine
+# and `autodj play` on another machine, point both configs here to the same NAS path.
+# Example: "Z:/autodj-index"
+index_dir = "index"
+
+# Directory where the MERT model checkpoint is cached after download
+model_dir = "models"
+
+[playback]
+# Duration of the crossfade between tracks, in seconds.
+# Set to 0.0 to disable crossfade (instant cuts).
+crossfade_seconds = 3.0
+
+# How many recently played tracks to exclude from the next-song candidates.
+# Prevents songs from repeating too soon. Higher = less repetition.
+no_repeat_window = 50
+
+[model]
+# HuggingFace model ID for the music embedding model.
+# MERT-v1-330M is recommended: music-specific SSL training, 768-dim embeddings.
+# Fallback to "m-a-p/MERT-v1-95M" for a smaller (~380MB) but less capable model.
+name = "m-a-p/MERT-v1-330M"
+
+# Uncomment to skip auto-download and point directly to a local model directory.
+# This directory must contain the HuggingFace model files (config.json, model.safetensors, etc.)
+# manual_path = "C:/path/to/MERT-v1-330M"
