@@ -197,9 +197,7 @@ def cmd_play(
       uv run autodj play --dry-run
     """
     from autodj.config import load_config
-    from autodj.model import download_model_if_needed, load_model
     from autodj.similarity import SimilarityIndex
-    from autodj.beets import search_tracks
     from autodj.player import Player
 
     try:
@@ -276,15 +274,7 @@ def cmd_play(
             except (click.Abort, EOFError):
                 console.print("[yellow]Cancelled — starting random.[/]")
 
-    # Load model for real-time embedding during playback
-    try:
-        model_path = download_model_if_needed(cfg.model, cfg.index, hf_token=cfg.huggingface.token)
-        wrapper = load_model(model_path)
-    except Exception as exc:
-        console.print(f"[bold red]Model load failed:[/] {exc}")
-        sys.exit(1)
-
-    player = Player(cfg, sim, wrapper, dry_run=dry_run)
+    player = Player(cfg, sim, dry_run=dry_run)
     try:
         player.run(seed_entry=seed_entry)
     except KeyboardInterrupt:

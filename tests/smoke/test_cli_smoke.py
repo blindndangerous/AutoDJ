@@ -205,8 +205,6 @@ class TestPlayCommand:
         vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
         save_index(entries, vectors, index_dir)
 
-        fake_wrapper = MagicMock()
-
         # Player.run loops forever — limit to 1 iteration via side effect
         call_count = {"n": 0}
 
@@ -215,11 +213,7 @@ class TestPlayCommand:
             if call_count["n"] >= 2:
                 raise KeyboardInterrupt
 
-        with (
-            patch("autodj.model.download_model_if_needed", return_value=tmp_path / "model"),
-            patch("autodj.model.load_model", return_value=fake_wrapper),
-            patch("autodj.player.Player.run", side_effect=fake_run),
-        ):
+        with patch("autodj.player.Player.run", side_effect=fake_run):
             result = runner.invoke(
                 cli,
                 ["--config", str(config_path), "play", "--dry-run"],

@@ -19,6 +19,9 @@ from autodj.player import (
     _make_fade_in,
 )
 
+# Note: Player no longer accepts a model wrapper — vectors are looked up
+# from the pre-built FAISS index at play time via SimilarityIndex.find_next_for_path
+
 
 # ---------------------------------------------------------------------------
 # Helpers

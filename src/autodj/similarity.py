@@ -6,11 +6,14 @@ wraps the index with recently-played exclusion and candidate ranking logic.
 Cosine similarity is computed via inner product on L2-normalized vectors
 (``IndexFlatIP``), so higher scores mean more similar tracks.
 
+Vectors are pre-computed during ``autodj index`` and stored in the FAISS index.
+Playback looks them up by path — no model inference needed at play time.
+
 Example:
     >>> from autodj.similarity import SimilarityIndex
     >>> from collections import deque
     >>> sim = SimilarityIndex.from_index_dir(Path("index"))
-    >>> next_track = sim.find_next(query_vec, recently_played=deque(), n_candidates=10)
+    >>> next_track = sim.find_next_for_path("Z:/Music/song.flac", recently_played=deque())
     >>> print(next_track.display_name)
     Portishead — Mysterons
 """
@@ -58,12 +61,16 @@ class SimilarityIndex:
     entries: list[IndexEntry]
 
     def __post_init__(self) -> None:
-        """Validate that the FAISS index and entries list are consistent."""
+        """Validate consistency and build the path → FAISS index position map."""
         if self.faiss_index.ntotal != len(self.entries):
             raise ValueError(
                 f"Index/metadata mismatch: FAISS has {self.faiss_index.ntotal} vectors "
                 f"but metadata has {len(self.entries)} entries."
             )
+        # Maps each track's path string to its row position in the FAISS index
+        self._path_to_idx: dict[str, int] = {
+            e.path: i for i, e in enumerate(self.entries)
+        }
 
     @property
     def ntotal(self) -> int:
@@ -157,3 +164,43 @@ class SimilarityIndex:
             f"No candidates available after excluding {len(excluded)} recently played tracks. "
             f"Try reducing [playback] no_repeat_window in config.toml."
         )
+
+    def find_next_for_path(
+        self,
+        current_path: str,
+        recently_played: deque[str],
+        n_candidates: int = 10,
+    ) -> IndexEntry:
+        """Find the next track using the pre-computed vector for *current_path*.
+
+        Reconstructs the stored embedding vector from the FAISS index by path,
+        then delegates to :meth:`find_next`.  No model inference is needed —
+        vectors are looked up from the index built by ``autodj index``.
+
+        Args:
+            current_path: The file path string of the currently playing track,
+                as stored in :attr:`IndexEntry.path`.
+            recently_played: Deque of file path strings to exclude from results.
+            n_candidates: Number of candidates to retrieve before filtering.
+
+        Returns:
+            The :class:`IndexEntry` for the recommended next track.
+
+        Raises:
+            SimilarityError: If *current_path* is not in the index, or if no
+                candidates remain after exclusions.
+
+        Example:
+            >>> next_track = sim.find_next_for_path(
+            ...     "Z:/Music/Portishead/Dummy/01 - Mysterons.flac",
+            ...     recently_played=deque(),
+            ... )
+        """
+        idx = self._path_to_idx.get(current_path)
+        if idx is None:
+            raise SimilarityError(
+                f"Track not in index: {current_path}\n"
+                "Run 'autodj index' to add it, then retry."
+            )
+        query_vector = self.faiss_index.reconstruct(idx)
+        return self.find_next(query_vector, recently_played, n_candidates)

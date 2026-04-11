@@ -214,7 +214,6 @@ class Player:
     Args:
         cfg: Full AutoDJ configuration (used for playback settings).
         sim_index: Loaded similarity index for next-track selection.
-        wrapper: Loaded MERT model wrapper for embedding tracks.
         dry_run: If ``True``, print track selections without playing audio.
     """
 
@@ -222,24 +221,20 @@ class Player:
         self,
         cfg,
         sim_index,
-        wrapper,
         dry_run: bool = False,
     ) -> None:
-        """Initialise the player with configuration, index, and model.
+        """Initialise the player with configuration and index.
+
+        No model is needed at play time — next-track vectors are looked up
+        directly from the pre-built FAISS index.
 
         Args:
             cfg: Full :class:`~autodj.config.AutoDJConfig` instance.
             sim_index: Loaded :class:`~autodj.similarity.SimilarityIndex`.
-            wrapper: Loaded :class:`~autodj.model.MertWrapper` for embedding.
             dry_run: If ``True``, print track selections without playing audio.
         """
-        from autodj.config import AutoDJConfig
-        from autodj.similarity import SimilarityIndex
-        from autodj.model import MertWrapper
-
         self._cfg = cfg
         self._sim = sim_index
-        self._wrapper = wrapper
         self._dry_run = dry_run
         self._state = PlayerState(
             no_repeat_window=cfg.playback.no_repeat_window
@@ -292,7 +287,10 @@ class Player:
             current = next_entry
 
     def _pick_next(self, current: IndexEntry) -> IndexEntry:
-        """Select the next track via the similarity index.
+        """Select the next track by looking up the current track's stored vector.
+
+        Retrieves the pre-computed embedding from the FAISS index by path —
+        no model inference required.
 
         Args:
             current: The track currently playing.
@@ -300,20 +298,8 @@ class Player:
         Returns:
             The recommended next :class:`~autodj.indexer.IndexEntry`.
         """
-        try:
-            audio, sr = load_audio(str(current.path))
-            query_vec = self._wrapper.embed_array(audio, sample_rate=sr)
-        except Exception as exc:
-            logger.warning("Could not embed current track (%s): %s", current.path, exc)
-            query_vec = np.random.randn(768).astype(np.float32)
-            # Pad or trim to FEATURE_DIM
-            from autodj.indexer import FEATURE_DIM
-            full_vec = np.zeros(FEATURE_DIM, dtype=np.float32)
-            full_vec[:768] = query_vec
-            query_vec = full_vec / np.linalg.norm(full_vec)
-
-        return self._sim.find_next(
-            query_vector=query_vec,
+        return self._sim.find_next_for_path(
+            current_path=current.path,
             recently_played=self._state.recently_played,
             n_candidates=10,
         )

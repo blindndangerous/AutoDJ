@@ -142,6 +142,42 @@ class TestFindNext:
 
 
 # ---------------------------------------------------------------------------
+# find_next_for_path
+# ---------------------------------------------------------------------------
+
+
+class TestFindNextForPath:
+    def test_returns_entry_for_known_path(self) -> None:
+        sim, vectors = _make_similarity_index(10)
+        result = sim.find_next_for_path(
+            current_path=sim.entries[0].path,
+            recently_played=deque([sim.entries[0].path]),
+        )
+        assert isinstance(result, IndexEntry)
+        assert result.path != sim.entries[0].path
+
+    def test_raises_for_unknown_path(self) -> None:
+        sim, _ = _make_similarity_index(5)
+        with pytest.raises(SimilarityError, match="not in index"):
+            sim.find_next_for_path(
+                current_path="Z:/Music/unknown.flac",
+                recently_played=deque(),
+            )
+
+    def test_result_consistent_with_find_next(self) -> None:
+        """find_next_for_path and find_next with the reconstructed vector agree."""
+        sim, vectors = _make_similarity_index(20)
+        path = sim.entries[3].path
+        excluded = deque([path])
+
+        by_path = sim.find_next_for_path(path, recently_played=deque([path]))
+        reconstructed = sim.faiss_index.reconstruct(3)
+        by_vec = sim.find_next(reconstructed, recently_played=deque([path]))
+
+        assert by_path.path == by_vec.path
+
+
+# ---------------------------------------------------------------------------
 # from_index_dir (loads from disk)
 # ---------------------------------------------------------------------------
 
