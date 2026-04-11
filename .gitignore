@@ -1,6 +1,9 @@
 # Claude Code local settings
 .claude/
 
+# Personal config (contains local paths) — use config.toml.example as the template
+config.toml
+
 # Python
 __pycache__/
 *.py[cod]

@@ -161,6 +161,31 @@ class ModelConfig:
         )
 
 
+@dataclass
+class HuggingFaceConfig:
+    """Settings for HuggingFace Hub access.
+
+    Attributes:
+        token: Optional HuggingFace API token (read-only scope is sufficient).
+            Without a token, downloads are unauthenticated and rate-limited.
+            Get one free at https://huggingface.co/settings/tokens
+    """
+
+    token: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "HuggingFaceConfig":
+        """Construct a HuggingFaceConfig from a raw TOML section dict.
+
+        Args:
+            data: Dictionary of keys from the ``[huggingface]`` TOML section.
+
+        Returns:
+            A populated HuggingFaceConfig instance.
+        """
+        return cls(token=data.get("token") or None)
+
+
 # ---------------------------------------------------------------------------
 # Root config dataclass
 # ---------------------------------------------------------------------------
@@ -175,6 +200,7 @@ class AutoDJConfig:
         index: FAISS index storage settings.
         playback: Playback behaviour settings.
         model: MERT model settings.
+        huggingface: HuggingFace Hub access settings.
         config_path: Path to the config file this instance was loaded from.
     """
 
@@ -182,6 +208,7 @@ class AutoDJConfig:
     index: IndexConfig
     playback: PlaybackConfig
     model: ModelConfig
+    huggingface: HuggingFaceConfig
     config_path: Path
 
 
@@ -227,5 +254,6 @@ def load_config(path: str | Path = "config.toml") -> AutoDJConfig:
         index=IndexConfig.from_dict(raw.get("index", {})),
         playback=PlaybackConfig.from_dict(raw.get("playback", {})),
         model=ModelConfig.from_dict(raw.get("model", {})),
+        huggingface=HuggingFaceConfig.from_dict(raw.get("huggingface", {})),
         config_path=config_path,
     )

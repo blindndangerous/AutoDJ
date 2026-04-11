@@ -55,7 +55,11 @@ class ModelLoadError(RuntimeError):
 # ---------------------------------------------------------------------------
 
 
-def download_model_if_needed(model_cfg: ModelConfig, index_cfg: IndexConfig) -> Path:
+def download_model_if_needed(
+    model_cfg: ModelConfig,
+    index_cfg: IndexConfig,
+    hf_token: str | None = None,
+) -> Path:
     """Ensure the MERT model checkpoint is available locally.
 
     If ``model_cfg.manual_path`` is set, that path is used directly (no
@@ -66,6 +70,9 @@ def download_model_if_needed(model_cfg: ModelConfig, index_cfg: IndexConfig) -> 
     Args:
         model_cfg: Model configuration (name, optional manual path).
         index_cfg: Index configuration providing the model cache directory.
+        hf_token: Optional HuggingFace API token.  Enables authenticated
+            requests with higher rate limits and faster downloads.  Set via
+            ``[huggingface] token`` in ``config.toml``.
 
     Returns:
         The local :class:`~pathlib.Path` to the model directory.
@@ -75,7 +82,7 @@ def download_model_if_needed(model_cfg: ModelConfig, index_cfg: IndexConfig) -> 
             HuggingFace download fails.
 
     Example:
-        >>> path = download_model_if_needed(cfg.model, cfg.index)
+        >>> path = download_model_if_needed(cfg.model, cfg.index, hf_token="hf_...")
         >>> print(path)
         models/MERT-v1-330M
     """
@@ -111,6 +118,7 @@ def download_model_if_needed(model_cfg: ModelConfig, index_cfg: IndexConfig) -> 
             repo_id=model_name,
             local_dir=str(cache_dir),
             ignore_patterns=["*.msgpack", "flax_model*", "tf_model*", "rust_model*"],
+            token=hf_token,
         )
     except Exception as exc:
         raise ModelLoadError(

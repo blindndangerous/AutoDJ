@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 from autodj.beets import get_all_tracks
-from autodj.config import AutoDJConfig, IndexConfig, LibraryConfig, ModelConfig, PlaybackConfig
+from autodj.config import AutoDJConfig, HuggingFaceConfig, IndexConfig, LibraryConfig, ModelConfig, PlaybackConfig
 from autodj.indexer import FEATURE_DIM, build_index, load_index
 
 
@@ -81,6 +81,7 @@ def fake_config(tmp_path: Path) -> AutoDJConfig:
         ),
         playback=PlaybackConfig(),
         model=ModelConfig(),
+        huggingface=HuggingFaceConfig(),
         config_path=tmp_path / "config.toml",
     )
 

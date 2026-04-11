@@ -123,7 +123,7 @@ def cmd_index(ctx: click.Context, limit: Optional[int], force: bool) -> None:
     console.print()
 
     try:
-        model_path = download_model_if_needed(cfg.model, cfg.index)
+        model_path = download_model_if_needed(cfg.model, cfg.index, hf_token=cfg.huggingface.token)
         wrapper = load_model(model_path)
         build_index(cfg, wrapper=wrapper, limit=limit, force=force)
     except Exception as exc:
@@ -278,7 +278,7 @@ def cmd_play(
 
     # Load model for real-time embedding during playback
     try:
-        model_path = download_model_if_needed(cfg.model, cfg.index)
+        model_path = download_model_if_needed(cfg.model, cfg.index, hf_token=cfg.huggingface.token)
         wrapper = load_model(model_path)
     except Exception as exc:
         console.print(f"[bold red]Model load failed:[/] {exc}")

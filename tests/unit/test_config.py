@@ -11,6 +11,7 @@ import pytest
 
 from autodj.config import (
     AutoDJConfig,
+    HuggingFaceConfig,
     IndexConfig,
     LibraryConfig,
     ModelConfig,
@@ -200,6 +201,30 @@ class TestModelConfig:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# HuggingFaceConfig
+# ---------------------------------------------------------------------------
+
+
+class TestHuggingFaceConfig:
+    def test_token_none_by_default(self) -> None:
+        hf = HuggingFaceConfig.from_dict({})
+        assert hf.token is None
+
+    def test_token_set(self) -> None:
+        hf = HuggingFaceConfig.from_dict({"token": "hf_abc123"})
+        assert hf.token == "hf_abc123"
+
+    def test_empty_string_token_treated_as_none(self) -> None:
+        hf = HuggingFaceConfig.from_dict({"token": ""})
+        assert hf.token is None
+
+
+# ---------------------------------------------------------------------------
+# AutoDJConfig integration
+# ---------------------------------------------------------------------------
+
+
 class TestAutoDJConfig:
     def test_round_trips_all_sections(self, full_toml: Path) -> None:
         cfg = load_config(full_toml)
@@ -207,7 +232,12 @@ class TestAutoDJConfig:
         assert isinstance(cfg.index, IndexConfig)
         assert isinstance(cfg.playback, PlaybackConfig)
         assert isinstance(cfg.model, ModelConfig)
+        assert isinstance(cfg.huggingface, HuggingFaceConfig)
 
     def test_config_dir_property(self, minimal_toml: Path) -> None:
         cfg = load_config(minimal_toml)
         assert cfg.config_path == minimal_toml
+
+    def test_huggingface_token_defaults_none(self, minimal_toml: Path) -> None:
+        cfg = load_config(minimal_toml)
+        assert cfg.huggingface.token is None

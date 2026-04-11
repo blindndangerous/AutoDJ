@@ -1,6 +1,12 @@
 # AutoDJ Configuration
-# Copy this file and adjust paths to match your setup.
-# All paths can use forward slashes (/) on Windows.
+# Copy this file to config.toml and adjust paths to match your setup.
+#
+# IMPORTANT — Windows paths: always use forward slashes (/) in this file.
+#   Correct:   music_dir = "C:/Users/you/Music"
+#   Wrong:     music_dir = "C:\Users\you\Music"   ← backslashes break TOML parsing
+#
+# Backslashes are escape characters in TOML strings (\U, \b, \D etc. are
+# interpreted as unicode/control sequences and will cause a parse error).
 
 [library]
 # Full path to your music folder (local or mapped NAS drive)
@@ -43,3 +49,9 @@ name = "m-a-p/MERT-v1-330M"
 # Uncomment to skip auto-download and point directly to a local model directory.
 # This directory must contain the HuggingFace model files (config.json, model.safetensors, etc.)
 # manual_path = "C:/path/to/MERT-v1-330M"
+
+[huggingface]
+# Optional — but strongly recommended.
+# Without a token, downloads are rate-limited and slower.
+# Get a free token at https://huggingface.co/settings/tokens (read-only is fine)
+# token = "hf_..."
