@@ -21,14 +21,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683    # v4.2.2
-      - uses: aquasecurity/trivy-action@dc5a429b52fcf669ce959baa2c2dd26090d2a6c4   # 0.32.0
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25   # v0.36.0
         with:
           scan-type: fs
           format: sarif
           output: trivy.sarif
           severity: HIGH,CRITICAL
           exit-code: 1
-      - uses: github/codeql-action/upload-sarif@8ec46723261d36a83ea54a0c9f5e54d6926b6d05   # v3.30.10
+      - uses: github/codeql-action/upload-sarif@e46ed2cbd01164d986452f91f178727624ae40d7   # v4.35.3
         if: always()
         with:
           sarif_file: trivy.sarif
@@ -38,7 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683    # v4.2.2
-      - uses: google/osv-scanner-action/osv-scanner-action@e69cc6c86b31f1e7e23935bbe7031b50e51082de   # v2.2.4
+      - uses: google/osv-scanner-action/osv-scanner-action@c5996e0193a3df57d695c1b8a1dec2a4c62e8730   # v2.3.3
         with:
           scan-args: --recursive --skip-git ./
 
