@@ -234,3 +234,30 @@ class TestGlitch:
     def test_empty_input_returns_empty(self) -> None:
         out = glitch(np.zeros(0, dtype=np.float32), SR)
         assert out.shape == (0,)
+
+
+class TestTransitionsExtraBranches:
+    def test_reverb_tail_short_input_skips_long_combs(self) -> None:
+        from autodj.transitions import reverb_tail
+
+        # 50 sample tail — shorter than any of the comb/allpass delays at
+        # SR = 44100, so the inner `if d >= len(tail)` early-continues fire.
+        short = np.linspace(-0.1, 0.1, 50, dtype=np.float32)
+        out = reverb_tail(short, SR)
+        assert out.shape == short.shape
+
+    def test_tape_stop_linear_curve(self) -> None:
+        from autodj.transitions import tape_stop
+
+        a = _audio(0.5)
+        out = tape_stop(a, SR, curve="linear")
+        assert out.shape == a.shape
+
+    def test_backspin_short_source_returns_tail(self) -> None:
+        from autodj.transitions import backspin
+
+        # 10 ms — shorter than the head_n setup, src ends up empty
+        a = _audio(0.01)
+        out = backspin(a, SR)
+        # len-zero src → returns the original tail unchanged
+        assert out.shape == a.shape
