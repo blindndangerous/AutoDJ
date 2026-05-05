@@ -143,6 +143,108 @@ class TestFindNext:
         )
         assert isinstance(result, IndexEntry)
 
+    def test_invert_smart_shuffle(self) -> None:
+        """invert=True picks least-similar candidate."""
+        sim, vectors = _make_similarity_index(20)
+        result = sim.find_next(
+            query_vector=vectors[0],
+            recently_played=deque([sim.entries[0].path]),
+            n_candidates=10,
+            invert=True,
+        )
+        assert isinstance(result, IndexEntry)
+
+    def test_excluded_artist_skipped(self) -> None:
+        sim, vectors = _make_similarity_index(8)
+        # Force entry artists known
+        for i, e in enumerate(sim.entries):
+            e.artist = "Banned" if i < 4 else f"Artist {i}"
+        result = sim.find_next(
+            query_vector=vectors[0],
+            recently_played=deque([sim.entries[0].path]),
+            n_candidates=8,
+            excluded_artists={"banned"},
+        )
+        assert result.artist != "Banned"
+
+    def test_excluded_album_skipped(self) -> None:
+        sim, vectors = _make_similarity_index(8)
+        for i, e in enumerate(sim.entries):
+            e.album = "Stale" if i < 4 else f"Album {i}"
+        result = sim.find_next(
+            query_vector=vectors[0],
+            recently_played=deque([sim.entries[0].path]),
+            n_candidates=8,
+            excluded_albums={"stale"},
+        )
+        assert result.album != "Stale"
+
+    def test_excluded_title_skipped(self) -> None:
+        sim, vectors = _make_similarity_index(8)
+        for i, e in enumerate(sim.entries):
+            e.title = "Same Song" if i < 4 else f"Track {i}"
+        result = sim.find_next(
+            query_vector=vectors[0],
+            recently_played=deque([sim.entries[0].path]),
+            n_candidates=8,
+            excluded_titles={"same song"},
+        )
+        assert result.title != "Same Song"
+
+    def test_bpm_range_filter(self) -> None:
+        sim, vectors = _make_similarity_index(8)
+        for i, e in enumerate(sim.entries):
+            e.bpm = 80.0 if i < 4 else 130.0
+        result = sim.find_next(
+            query_vector=vectors[0],
+            recently_played=deque(),
+            n_candidates=8,
+            bpm_range=(120.0, 140.0),
+        )
+        # Hit the high band
+        assert result.bpm == 130.0
+
+    def test_bpm_filter_relaxes_when_empty(self) -> None:
+        """All candidates fail BPM filter → fallback to relaxed pool."""
+        sim, vectors = _make_similarity_index(5)
+        for e in sim.entries:
+            e.bpm = 80.0
+        # 200-220 range matches no track; should still return SOMETHING
+        result = sim.find_next(
+            query_vector=vectors[0],
+            recently_played=deque([sim.entries[0].path]),
+            n_candidates=5,
+            bpm_range=(200.0, 220.0),
+        )
+        assert isinstance(result, IndexEntry)
+
+    def test_target_energy_rerank(self) -> None:
+        sim, vectors = _make_similarity_index(8)
+        for i, e in enumerate(sim.entries):
+            e.energy = 0.1 * i
+        result = sim.find_next(
+            query_vector=vectors[0],
+            recently_played=deque([sim.entries[0].path]),
+            n_candidates=8,
+            target_energy=0.6,
+        )
+        assert isinstance(result, IndexEntry)
+
+    def test_harmonic_only_filter(self) -> None:
+        sim, vectors = _make_similarity_index(6)
+        for e in sim.entries:
+            e.key = 0
+            e.mode = 1  # 8B C major
+        result = sim.find_next(
+            query_vector=vectors[0],
+            recently_played=deque([sim.entries[0].path]),
+            n_candidates=6,
+            harmonic_from=(0, 1),
+            harmonic_mode="strict",
+        )
+        # Strict: result must be 8B too — it is, all entries have key=0, mode=1
+        assert result.key == 0 and result.mode == 1
+
 
 # ---------------------------------------------------------------------------
 # find_next_for_path
