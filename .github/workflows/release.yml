@@ -1,0 +1,113 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write       # gh release create / upload
+  id-token: write       # cosign keyless signing
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false   # never cancel a release midway
+
+jobs:
+  verify-tag:
+    name: Verify tag matches CHANGELOG
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683    # v4.2.2
+        with: { fetch-depth: 0 }
+
+      - name: Confirm tag has CHANGELOG entry
+        run: |
+          tag="${GITHUB_REF#refs/tags/v}"
+          grep -q "^## \[$tag\]" CHANGELOG.md || \
+            { echo "::error::Tag $tag has no CHANGELOG entry"; exit 1; }
+
+  build:
+    name: Build sdist + wheel
+    needs: verify-tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683    # v4.2.2
+
+      - uses: astral-sh/setup-uv@22695119d769bdb6f7032ad67b9bca0ef8c4a174   # v6.5.0
+        with: { enable-cache: true }
+
+      - name: Build artefacts
+        run: uv build --sdist --wheel
+
+      - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882   # v4.4.3
+        with:
+          name: dist
+          path: dist/
+
+  sbom:
+    name: Generate SBOM
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683    # v4.2.2
+
+      - uses: anchore/sbom-action@9f73e2c87f80a93abc0b0b9fb260d31b14bcf9f3   # v0.20.6
+        with:
+          format: cyclonedx-json
+          output-file: sbom.cdx.json
+
+      - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882   # v4.4.3
+        with:
+          name: sbom
+          path: sbom.cdx.json
+
+  release:
+    name: GitHub release
+    needs: [build, sbom]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683    # v4.2.2
+
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16   # v4.1.8
+        with: { path: ./artefacts }
+
+      - uses: sigstore/cosign-installer@d5d1a2c0e8ec7daa1dadd6e0f4bdbef58a1f29df   # v3.7.0
+
+      - name: Sign artefacts (keyless OIDC)
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          shopt -s globstar nullglob
+          for f in ./artefacts/dist/*; do
+            cosign sign-blob --yes \
+              --bundle "${f}.bundle" \
+              --output-signature "${f}.sig" \
+              "$f"
+          done
+          for f in ./artefacts/sbom/*; do
+            cosign sign-blob --yes \
+              --bundle "${f}.bundle" \
+              --output-signature "${f}.sig" \
+              "$f"
+          done
+
+      - name: Extract release notes from CHANGELOG
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          version="${tag#v}"
+          awk "/^## \\[$version\\]/ {flag=1; next} /^## \\[/ {flag=0} flag" CHANGELOG.md > RELEASE_NOTES.md
+          [ -s RELEASE_NOTES.md ] || echo "Release $tag" > RELEASE_NOTES.md
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file RELEASE_NOTES.md \
+            --verify-tag \
+            ./artefacts/dist/* \
+            ./artefacts/sbom/* \
+            ./artefacts/dist/*.bundle ./artefacts/dist/*.sig \
+            ./artefacts/sbom/*.bundle ./artefacts/sbom/*.sig

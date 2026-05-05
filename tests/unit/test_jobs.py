@@ -83,3 +83,60 @@ class TestSpawnFailure:
             ok = mgr.start("prune")
         assert ok is False
         assert mgr.snapshot()["exit_code"] == -1
+
+
+class TestReadLoopAndStop:
+    def test_read_loop_handles_oserror(self) -> None:
+        """OSError mid-stream → recorded, loop still completes."""
+        import time as _time
+
+        mgr = JobManager()
+        mgr._proc = MagicMock()
+        mgr._proc.stdout = MagicMock()
+        mgr._proc.stdout.__iter__ = lambda self: iter([])
+        mgr._proc.wait = MagicMock(return_value=0)
+        mgr._started_at = _time.time()
+
+        # Force the iter to raise OSError.
+        def _bad_iter(self):
+            raise OSError("pipe closed")
+
+        mgr._proc.stdout.__iter__ = _bad_iter
+
+        mgr._read_loop()
+        snap = mgr.snapshot()
+        assert any("read error" in line for line in snap["lines"])
+        assert snap["exit_code"] == 0
+
+    def test_read_loop_handles_wait_timeout(self) -> None:
+        """subprocess.TimeoutExpired on wait() → exit_code -2."""
+        import subprocess as _sub
+        import time as _time
+
+        mgr = JobManager()
+        mgr._proc = MagicMock()
+        mgr._proc.stdout = MagicMock()
+        mgr._proc.stdout.__iter__ = lambda self: iter([])
+        mgr._proc.wait = MagicMock(side_effect=_sub.TimeoutExpired("x", 5))
+        mgr._started_at = _time.time()
+
+        mgr._read_loop()
+        assert mgr.snapshot()["exit_code"] == -2
+
+    def test_stop_terminates_running(self) -> None:
+        """stop() while running calls terminate()."""
+        mgr = JobManager()
+        proc = MagicMock()
+        proc.poll = MagicMock(return_value=None)  # running
+        mgr._proc = proc
+        assert mgr.stop() is True
+        proc.terminate.assert_called_once()
+
+    def test_stop_swallows_terminate_oserror(self) -> None:
+        """OSError from terminate() is suppressed."""
+        mgr = JobManager()
+        proc = MagicMock()
+        proc.poll = MagicMock(return_value=None)
+        proc.terminate = MagicMock(side_effect=OSError("already gone"))
+        mgr._proc = proc
+        assert mgr.stop() is True  # no exception

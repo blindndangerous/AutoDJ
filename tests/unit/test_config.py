@@ -288,6 +288,49 @@ class TestHuggingFaceConfig:
 # ---------------------------------------------------------------------------
 
 
+class TestDeepMergeAndOverlays:
+    def test_local_overlay_merges_recursively(self, tmp_path: Path) -> None:
+        base = tmp_path / "config.toml"
+        base.write_text(
+            '[library]\nmusic_dir = "Z:/Music"\n'
+            '[index]\nindex_dir = "index"\n'
+            "[playback]\ncrossfade_seconds = 3.0\n",
+            encoding="utf-8",
+        )
+        local = tmp_path / "config.local.toml"
+        local.write_text(
+            '[library]\nmusic_dir = "/srv/music"\n[playback]\ncrossfade_seconds = 5.0\n',
+            encoding="utf-8",
+        )
+        cfg = load_config(base)
+        assert str(cfg.library.music_dir).replace("\\", "/").endswith("/srv/music")
+        assert cfg.playback.crossfade_seconds == 5.0
+
+    def test_presets_sidecar_loaded(self, tmp_path: Path) -> None:
+        base = tmp_path / "config.toml"
+        base.write_text(
+            '[library]\nmusic_dir = "Z:/Music"\n[index]\n[playback]\n',
+            encoding="utf-8",
+        )
+        sidecar = tmp_path / "presets.toml"
+        sidecar.write_text(
+            "[presets.chill]\nbpm_target = 75\nbpm_weight = 0.2\n",
+            encoding="utf-8",
+        )
+        cfg = load_config(base)
+        assert "chill" in cfg.presets
+
+    def test_legacy_inline_presets_loaded(self, tmp_path: Path) -> None:
+        base = tmp_path / "config.toml"
+        base.write_text(
+            '[library]\nmusic_dir = "Z:/Music"\n[index]\n[playback]\n'
+            "[presets.legacy]\nbpm_target = 100\nbpm_weight = 0.3\n",
+            encoding="utf-8",
+        )
+        cfg = load_config(base)
+        assert "legacy" in cfg.presets
+
+
 class TestAutoDJConfig:
     def test_round_trips_all_sections(self, full_toml: Path) -> None:
         cfg = load_config(full_toml)

@@ -163,6 +163,29 @@ class TestSaveFrom:
         # Should not raise
         save_from_player({"preset": "chill"}, None)
 
+    def test_save_oserror_logged_not_raised(self, tmp_path, monkeypatch) -> None:
+        """When os.replace raises OSError, save logs and returns silently."""
+        import os as _os
+
+        def _bad(_a, _b):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(_os, "replace", _bad)
+        # No exception bubbles
+        save_from_player({"preset": "chill"}, tmp_path)
+
+    def test_load_unknown_preset_swallowed(self, tmp_path) -> None:
+        """Unknown preset name in saved state → silently skipped."""
+        from autodj.runtime_state import load_into_player
+
+        (tmp_path / "web_state.json").write_text(
+            '{"preset": "nosuchpreset_xyz"}',
+            encoding="utf-8",
+        )
+        p = _make_player()
+        load_into_player(p, tmp_path)  # no exception
+        assert p._preset is None
+
 
 class TestRoundTrip:
     def test_save_then_load_preserves_settings(self, tmp_path) -> None:

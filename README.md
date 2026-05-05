@@ -1,5 +1,9 @@
 # AutoDJ
 
+[![CI](https://github.com/blindndangerous/AutoDJ/actions/workflows/ci.yml/badge.svg)](https://github.com/blindndangerous/AutoDJ/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/blindndangerous/AutoDJ/graph/badge.svg)](https://codecov.io/gh/blindndangerous/AutoDJ)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 An AI-powered local music continuity player. Give it your music library and it plays songs that sound like each other, forever — no cloud, no subscriptions, fully offline.
 
 Uses [MuQ-large-msd-iter](https://huggingface.co/OpenMuQ/MuQ-large-msd-iter) (a music-specific deep learning model trained with Mel-Residual Vector Quantization on the Million Song Dataset) and [FAISS](https://github.com/facebookresearch/faiss) nearest-neighbor search to select and queue the next most sonically similar song.

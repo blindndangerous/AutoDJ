@@ -1,0 +1,10 @@
+# Default: every file owned by the repo author until other owners step in.
+*               @blindndangerous
+
+# Web UI
+src/autodj/static/   @blindndangerous
+
+# Security-sensitive surfaces
+src/autodj/jobs.py   @blindndangerous
+src/autodj/server.py @blindndangerous
+.github/             @blindndangerous
