@@ -1,0 +1,25 @@
+# Per-machine overlay applied on top of config.toml at load time.
+# Copy this file to `config.local.toml` on your Linux host and adjust
+# the paths to match your local mount points / library locations.
+#
+# This file is NOT shared between machines — `config.local.toml` is
+# gitignored.  Each host keeps its own.
+
+[library]
+# Where the beets-relative paths in metadata.json are anchored.
+# Example values:
+#   "/home/you/Music"                 local copy
+#   "/mnt/nas/music"                  generic NAS mount
+#   "/volume1/share/music"            Synology DSM internal mount path
+music_dir = "/home/you/Music"
+
+# Path to the beets SQLite database on this host.
+beets_db = "~/.config/beets/library.db"
+
+# Optional cross-OS bridge for absolute paths from another machine.
+# Useful if you indexed on Windows then moved the metadata to Linux —
+# the leftover Z:/ paths get rewritten to the Linux mount on the fly.
+# Once `autodj prune` rewrites paths to relative form, no longer needed.
+# path_remap = [
+#     ["Z:/Music/", "/home/you/Music/"],
+# ]

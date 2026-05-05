@@ -2,86 +2,138 @@
 
 ## Project Goal
 
-Build a local auto-DJ system that:
-1. Analyzes a music library and indexes every song
-2. Given a playing (or chosen) song, picks the next most sonically similar song
-3. Continues indefinitely, creating a natural-feeling listening flow
+A local auto-DJ system that:
+1. Indexes a music library and extracts a sonic fingerprint per track
+2. Given the currently playing song, picks the next most sonically similar one
+3. Plays continuously, creating a natural-feeling listening flow
 
-No cloud services. No Spotify API. Runs fully offline on the user's local music files.
+Fully offline. No cloud services. No Spotify API. Runs against the user's local files (and optional beets metadata).
 
-## Chosen Approach: Pre-trained Embeddings + FAISS
+## Approach: Pre-trained Embeddings + FAISS
 
-### Why this approach
-- No model training required — use pre-trained CLAP weights
-- Rich multi-dimensional similarity (mood, timbre, energy, key, BPM all factored in)
-- Fast at query time even for large libraries (FAISS nearest-neighbor search)
-
-### Core libraries
+### Stack
 | Library | Purpose |
 |---|---|
-| `laion_clap` | Pre-trained audio embeddings (512-dim vectors capturing musical "feel") |
-| `librosa` | Traditional audio feature extraction (BPM, key, loudness, chroma, etc.) |
-| `faiss-cpu` | Fast nearest-neighbor vector search across the library index |
-| `numpy` | Vector math and storage |
-| `soundfile` / `sounddevice` | Audio playback |
+| `muq` | Pre-trained audio embeddings (`OpenMuQ/MuQ-large-msd-iter`, 1024-dim, 24 kHz, fp32) |
+| `librosa` | Spectral / chroma features + resampling |
+| `faiss-cpu` | Nearest-neighbor vector search (`IndexFlatIP`, exact cosine) |
+| `numpy` | Vector math |
+| `soundfile` / `sounddevice` | Audio decode + playback |
+| `click` + `rich` | CLI + terminal UI |
+| `fastapi` + `uvicorn` | Web UI server |
+| `pynput` | Keyboard controls during playback |
+| `mutagen` | ReplayGain tags, embedded album art, LRC sidecar parsing |
+| `scipy` | Butterworth biquads for EQ-ducked crossfades |
 
-### CLAP model to use
-- Repo: https://github.com/LAION-AI/CLAP
-- Checkpoint: `music_audioset_epoch_15_esc_90.14.pt` (music-specific, best for this use case)
-- Why LAION over Microsoft CLAP: music-specific training data, larger dataset, better community adoption for music tasks
+### Model
+- **MuQ-large-msd-iter** (Tencent, Jan 2025) — self-supervised music representation with Mel-RVQ tokenizer, ~300M params, SOTA on MARBLE music-understanding benchmarks.
+- Replaced MERT-v1-330M (used in earlier versions) — MuQ is newer, designed to address MERT's heavy EnCodec tokenizer, and beats MERT on genre / instrument / structure tasks.
+- Hard requirements: 24 kHz mono input, fp32 inference (fp16 may produce NaN).
 
-## Architecture Plan
+## Architecture
 
 ```
 library/
-    song.mp3 --> [CLAP] --> 512-dim embedding
-                [librosa] --> BPM, key, loudness, chroma, spectral centroid, etc.
-                         --> combined into one rich vector
+    song.mp3 ──► [MuQ]     ──► 1024-dim embedding
+              ──► [librosa] ──► 16 spectral/chroma features
+                            ──► concat + L2-normalize ──► 1040-dim FAISS vector
 
 index/
-    vectors.index   (FAISS index)
-    metadata.json   (song paths + extracted features)
+    vectors.index   (FAISS IndexFlatIP)
+    metadata.json   (per-track: path, title, artist, bpm, key, mode, energy, tempo_confidence, ...)
 
-autodj.py           (main: index builder + playback loop)
+src/autodj/
+    cli.py          CLI entry point (index / prune / play / serve / playlist / stats)
+    config.py       config.toml + config.local.toml overlay; typed dataclasses
+    model.py        MuQ loader + MuqWrapper.embed_array
+    beets.py        Read-only beets library.db reader
+    indexer.py      Build FAISS index; atomic save_index; prune_index w/ safety
+    similarity.py   FAISS query, next-song selection, discovery, smart-shuffle
+    player.py       Crossfade (linear or EQ-ducked) playback + keyboard + M3U
+    audio_meta.py   ReplayGain tag read, embedded cover art, LRC parsing
+    dj_meta.py      Intro/outro detect, beat grid, Camelot wheel, sidecar cache
+    transitions.py  8 DJ transition effects (echo, reverb, riser, tape stop, ...)
+    presets.py      BPM-shaping envelopes + optional genre filter
+    stats.py        Rich library statistics
+    server.py       FastAPI app + WS broadcast + queue/art/lyrics endpoints
+    static/index.html  Self-contained web UI (now-playing, art, lyrics, queue)
 ```
 
-### Pipeline steps
-1. **Index build** (one-time, slow): walk library, extract CLAP embedding + librosa features per song, combine into single vector, store in FAISS
-2. **Query** (instant): embed the current song, query FAISS for top-N neighbors, exclude recently played, pick next
-3. **Playback loop**: play song -> on finish (or hotkey) -> query -> play next
+## Pipeline
+1. **Index** (one-time, slow): walk library → extract MuQ embedding + librosa features per track → concat + normalize → store in FAISS index. Incremental on subsequent runs (skips already-indexed paths).
+2. **Query** (instant): look up the current track's stored vector in FAISS → top-N nearest neighbors → filter recently-played → optionally re-rank by preset BPM target → pick next.
+3. **Playback loop**: play song → on finish (or hotkey skip) → query → crossfade into next.
 
-## Rich Feature Vector Design
+## Beets path handling
+Recent beets versions store track paths *relative* to the library `directory` setting (the `relative_path` migration). AutoDJ resolves them by prepending `[library] music_dir` for relative paths; absolute paths are used as-is. There is no NAS prefix-stripping config — `music_dir` must simply match the local mount point of the beets library root.
 
-Each song gets a vector combining:
-- CLAP 512-dim embedding (captures overall sonic character)
-- BPM (normalized)
-- Key (one-hot or circular encoding)
-- Mode (major/minor)
-- Loudness (RMS)
-- Spectral centroid
-- Zero crossing rate
-- Chroma mean features (12-dim)
-- Onset strength
+## Index portability (cross-machine)
+Track paths in `metadata.json` are stored RELATIVE to `music_dir` (forward-slashed) so a single index built on one host runs on any other machine that mounts the library at a different absolute path. Per-machine overrides go in a sibling `config.local.toml` (gitignored). Legacy absolute paths can be remapped on the fly via `[library] path_remap`. Per-machine venv via `UV_PROJECT_ENVIRONMENT` keeps OS-specific binary wheels off the shared NAS tree.
 
-These can be weighted differently — e.g., weight CLAP heavily for mood matching, add BPM weight if smooth transitions are desired.
+## Safety
+- `save_index` writes to `*.tmp` then `os.replace()` — partial writes (common on SMB / NFS) leave the existing on-disk index intact.
+- `prune_index` raises `PruneSafetyError` when more than 20 % of the index would be removed in one pass (almost always indicates a misconfigured `music_dir`). Override with `--force`.
 
-## User's Setup
-- OS: Windows 11
-- Music library format: TBD (MP3/FLAC/WAV)
-- GPU: Unknown — CLAP will fall back to CPU if no CUDA GPU available (slower index build, same query speed)
-- Python version target: 3.10+
+## Recommended setup
+- **Python 3.13+**
+- **Package manager**: `uv`
+- **Indexing host**: machine with NVIDIA GPU recommended (CUDA accelerates the
+  MuQ embedding pass massively).  CPU works but is much slower.
+- **Listening host**: any machine with a sound device.  Can be the same as the
+  indexing host, or a separate one that shares the index over a network mount.
+- **Library on a network share**: fully supported.  See "Index portability"
+  above for the per-machine overlay pattern.
 
 ## Status
-- [ ] Project scaffolded
-- [ ] Dependencies installed
-- [ ] CLAP model downloaded
-- [ ] Index builder written
-- [ ] Query function written
-- [ ] Playback loop written
-- [ ] Basic UI or CLI interface
+- [x] Project scaffolded
+- [x] Dependencies pinned in `pyproject.toml`
+- [x] Index builder, similarity engine, crossfade player
+- [x] Presets, discovery mode, BPM filter, M3U export, play history
+- [x] Web UI (FastAPI + WebSocket) with search and queue
+- [x] Stats command
+- [x] 400+ tests, ruff + mypy + bandit + pre-commit
+- [x] Migrated from MERT-v1-330M to MuQ-large-msd-iter
+- [x] **Prune subcommand + auto-prune + safety threshold + atomic writes**
+- [x] **Cross-machine index portability + `config.local.toml` overlay + `path_remap`**
+- [x] **ReplayGain loudness normalisation (`[replaygain]` config, opt-in)**
+- [x] **EQ-ducked crossfade (Butterworth high-pass on outgoing, opt-in)**
+- [x] **LRC lyric sidecars (web UI scrolling + active-line aria-live)**
+- [x] **Embedded album art in web UI**
+- [x] **Genre-aware presets (`genres = [...]` filter)**
+- [x] **Smart-shuffle mode (`--smart-shuffle`, opposite of similarity)**
+- [x] **Reorderable web queue (Up/Down/Remove buttons, no drag-drop)**
+- [x] **Pro-DJ mixing layer**: harmonic (Camelot), beatmatch, outro/intro align, phrase align, filter sweep
+- [x] **3-band EQ in web UI** (low/mid/high real-time gain) + Reset
+- [x] **Live BPM / key / energy / beatmatch badges in now-playing card**
+- [x] **DJ-meta sidecar cache** (`index/dj_meta.json`) — lazy detect, never re-index
+- [x] **20 transition effects** (echo_out, reverb_tail, highpass_sweep, lowpass_sweep, tape_stop, gate_stutter, noise_riser, noise_drop, backspin, forward_spin, cross_eq_swap, bitcrusher, flanger, pitch_swell, telephone, distortion, chorus, submerge, vinyl_wow, freeze, glitch) + random / rotate meta-modes
+- [x] **AudioWorklet** for sample-accurate effects: bitcrusher, gate_stutter, freeze, glitch
+- [x] **`autodj enrich`** — refresh title/artist/album/genre/bpm/year/length/key from beets without re-embedding
+- [x] **Daypart mood profiles** (`[playback] enable_daypart`) — pick BPM/energy targets by local time of day
+- [x] **Genre normaliser** (`autodj.genres`) — preset filters now match across spelling variants (Electronic = EDM = IDM = Synthwave …)
+- [x] **Mobile-friendly web UI** — single-column layout ≤ 720 px, WCAG 2.5.5 touch targets
+- [x] **Multi-token search** across title + artist + album, default limit 100, `?limit=` clamped to 500
+- [x] **Named indexes** — `<index_dir>/<name>/` layout, `--name` flag on every subcommand, `autodj list-indexes` enumerator
+- [x] **Logarithmic volume curve** — perceptual dB-spaced fader (−60/−30/0 dB at 0/50/100 %)
+- [x] **Per-track checkpoint** — every successful embed durable immediately (was every 500)
+- [x] **Keyboard scope** — pynput global hook disabled in `serve` (browser handles controls)
+- [x] **90 % test coverage** (`fail_under = 89` in pyproject after the 2026-05 feature push — effective coverage ≈ 89.9 %), hardware paths excluded via `# pragma: no cover`
+- [x] **`serve` defaults to browser-driven playback** (`--no-playback` is default; `--server-audio` opts back into server-side audio output) — fully decouples web UI from CLI player so skip / volume / device changes only affect the local browser
+- [x] **Gapless prefetch** — standby deck fetches the next track as soon as the server picks it; `<audio preload="auto">`; analyser-driven silence detector triggers the crossfade early when the active track ends in dead air
+- [x] **Pure-shuffle mode** (`--pure-shuffle` CLI / web checkbox) — random next, ignores similarity.  Toggle off mid-set and similarity resumes from the current song
+- [x] **Lyrics toggle** (`--show-lyrics/--no-show-lyrics`, `[playback] show_lyrics`, web checkbox) covering LRC, beets `lyrics` field, and embedded ID3 USLT / Vorbis LYRICS / MP4 ©lyr tags
+- [x] **Auto-skip unplayable tracks** — browser auto-advances on any audio element error; CLI player silently moves to the next pick when load fails
+- [x] **Browser titlebar updates** with `AutoDJ - artist - title - album` on every track change (also feeds OS Media Session)
+- [x] **Audio device fix** — selection now uses `AudioContext.setSinkId` (Chromium / Edge) so Web-Audio-routed playback actually switches outputs; element-level `setSinkId` remains a Firefox fallback; permission-denied flow is recoverable (button re-enables, Permissions API auto-detects re-grants)
+- [x] **Harmonic mixing combo box** — `harmonic_mode` config / dropdown with `off`, `compatible`, `strict`, `neighbour`, `mood_change`, `energy_boost`
 
-## Next Steps (start here in a new session)
-1. Scaffold `pyproject.toml` or `requirements.txt` with all dependencies
-2. Write `index_library.py` — walks a folder, extracts features, builds FAISS index
-3. Write `autodj.py` — loads index, plays song, queries next, loops
-4. Test on a small subset of the library first (10-20 songs)
+## Running
+```bash
+uv sync                              # install deps (per-machine; UV_PROJECT_ENVIRONMENT recommended for shared NAS code)
+uv run autodj index --limit 50       # smoke-test on a small batch
+uv run autodj index                  # full library (slow on CPU; run on GPU machine overnight)
+uv run autodj prune                  # drop entries whose files were deleted/moved
+uv run autodj play                   # start the auto-DJ
+uv run autodj play --smart-shuffle   # invert similarity for genuinely surprising sequences
+uv run autodj serve                  # web UI at http://127.0.0.1:8080
+```

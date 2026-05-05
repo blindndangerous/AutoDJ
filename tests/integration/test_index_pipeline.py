@@ -1,7 +1,7 @@
 """Integration test for the full index build pipeline.
 
 Uses a real in-memory SQLite beets database and a real FAISS index, but
-mocks the MERT model (replaced with random normalized vectors) so no model
+mocks the MuQ model (replaced with random normalized vectors) so no model
 download or audio decoding is required.
 """
 
@@ -12,9 +12,19 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from autodj.beets import get_all_tracks
-from autodj.config import AutoDJConfig, HuggingFaceConfig, IndexConfig, LibraryConfig, ModelConfig, PlaybackConfig
+from autodj.config import (
+    AutoDJConfig,
+    HuggingFaceConfig,
+    IndexConfig,
+    LibraryConfig,
+    ModelConfig,
+    PlaybackConfig,
+)
 from autodj.indexer import FEATURE_DIM, build_index, load_index
+from autodj.model import EMBEDDING_DIM
+
+_FAKE_AUDIO = np.zeros(22050, dtype=np.float32)
+_FAKE_SR = 22050
 
 
 # ---------------------------------------------------------------------------
@@ -36,7 +46,7 @@ def _create_beets_db(path: Path, n_tracks: int) -> Path:
             "INSERT INTO items VALUES (?,?,?,?,?,?,?,?,?)",
             (
                 i,
-                f"Z:/Music/song_{i}.flac".encode("utf-8"),
+                f"Z:/Music/song_{i}.flac".encode(),
                 f"Song {i}",
                 f"Artist {i % 3}",
                 "Album",
@@ -52,11 +62,11 @@ def _create_beets_db(path: Path, n_tracks: int) -> Path:
 
 
 def _fake_wrapper():
-    """Return a MertWrapper mock that produces random L2-normalized 768-dim vectors."""
+    """Return a MuqWrapper mock that produces random L2-normalized embedding vectors."""
     wrapper = MagicMock()
 
     def fake_embed(audio, sample_rate):
-        v = np.random.randn(768).astype(np.float32)
+        v = np.random.randn(EMBEDDING_DIM).astype(np.float32)
         return v / np.linalg.norm(v)
 
     wrapper.embed_array.side_effect = fake_embed
@@ -96,33 +106,43 @@ class TestIndexPipeline:
         wrapper = _fake_wrapper()
 
         with (
+            patch("autodj.indexer.sf") as mock_sf,
             patch("autodj.indexer.librosa") as mock_librosa,
         ):
+            mock_sf.read.return_value = (_FAKE_AUDIO, _FAKE_SR)
             _setup_librosa_mock(mock_librosa)
             build_index(fake_config, wrapper=wrapper, limit=None, force=False)
 
-        assert (fake_config.index.index_dir / "vectors.index").exists()
-        assert (fake_config.index.index_dir / "metadata.json").exists()
+        assert (fake_config.index.active_dir / "vectors.index").exists()
+        assert (fake_config.index.active_dir / "metadata.json").exists()
 
     def test_build_index_indexes_all_tracks(self, fake_config: AutoDJConfig) -> None:
         wrapper = _fake_wrapper()
 
-        with patch("autodj.indexer.librosa") as mock_librosa:
+        with (
+            patch("autodj.indexer.sf") as mock_sf,
+            patch("autodj.indexer.librosa") as mock_librosa,
+        ):
+            mock_sf.read.return_value = (_FAKE_AUDIO, _FAKE_SR)
             _setup_librosa_mock(mock_librosa)
             build_index(fake_config, wrapper=wrapper, limit=None, force=False)
 
-        entries, faiss_index = load_index(fake_config.index.index_dir)
+        entries, faiss_index = load_index(fake_config.index.active_dir)
         assert len(entries) == 10
         assert faiss_index.ntotal == 10
 
     def test_build_index_respects_limit(self, fake_config: AutoDJConfig) -> None:
         wrapper = _fake_wrapper()
 
-        with patch("autodj.indexer.librosa") as mock_librosa:
+        with (
+            patch("autodj.indexer.sf") as mock_sf,
+            patch("autodj.indexer.librosa") as mock_librosa,
+        ):
+            mock_sf.read.return_value = (_FAKE_AUDIO, _FAKE_SR)
             _setup_librosa_mock(mock_librosa)
             build_index(fake_config, wrapper=wrapper, limit=3, force=False)
 
-        entries, faiss_index = load_index(fake_config.index.index_dir)
+        entries, faiss_index = load_index(fake_config.index.active_dir)
         assert len(entries) == 3
         assert faiss_index.ntotal == 3
 
@@ -130,7 +150,11 @@ class TestIndexPipeline:
         """Second build run should only add new tracks, not re-embed existing ones."""
         wrapper = _fake_wrapper()
 
-        with patch("autodj.indexer.librosa") as mock_librosa:
+        with (
+            patch("autodj.indexer.sf") as mock_sf,
+            patch("autodj.indexer.librosa") as mock_librosa,
+        ):
+            mock_sf.read.return_value = (_FAKE_AUDIO, _FAKE_SR)
             _setup_librosa_mock(mock_librosa)
             # First run: index 5 tracks
             build_index(fake_config, wrapper=wrapper, limit=5, force=False)
@@ -144,18 +168,22 @@ class TestIndexPipeline:
         # Only 5 new tracks were embedded in the second run
         assert second_call_count == 10
 
-        entries, faiss_index = load_index(fake_config.index.index_dir)
+        entries, _ = load_index(fake_config.index.active_dir)
         assert len(entries) == 10
 
     def test_force_rebuild_reindexes_everything(self, fake_config: AutoDJConfig) -> None:
         wrapper = _fake_wrapper()
 
-        with patch("autodj.indexer.librosa") as mock_librosa:
+        with (
+            patch("autodj.indexer.sf") as mock_sf,
+            patch("autodj.indexer.librosa") as mock_librosa,
+        ):
+            mock_sf.read.return_value = (_FAKE_AUDIO, _FAKE_SR)
             _setup_librosa_mock(mock_librosa)
             build_index(fake_config, wrapper=wrapper, limit=5, force=False)
             build_index(fake_config, wrapper=wrapper, limit=None, force=True)
 
-        entries, _ = load_index(fake_config.index.index_dir)
+        entries, _ = load_index(fake_config.index.active_dir)
         assert len(entries) == 10
         # force=True means all 10 were re-embedded (5 + 10 = 15 total calls)
         assert wrapper.embed_array.call_count == 15
@@ -164,17 +192,20 @@ class TestIndexPipeline:
         """After indexing, querying a track should not return itself as the top result."""
         wrapper = _fake_wrapper()
 
-        with patch("autodj.indexer.librosa") as mock_librosa:
+        with (
+            patch("autodj.indexer.sf") as mock_sf,
+            patch("autodj.indexer.librosa") as mock_librosa,
+        ):
+            mock_sf.read.return_value = (_FAKE_AUDIO, _FAKE_SR)
             _setup_librosa_mock(mock_librosa)
             build_index(fake_config, wrapper=wrapper, limit=None, force=False)
 
-        entries, faiss_index = load_index(fake_config.index.index_dir)
+        _, faiss_index = load_index(fake_config.index.active_dir)
 
         # Query the index with the first entry's vector
-        import faiss as _faiss
         query = np.random.randn(1, FEATURE_DIM).astype(np.float32)
         query /= np.linalg.norm(query)
-        distances, indices = faiss_index.search(query, 2)
+        _, indices = faiss_index.search(query, 2)
 
         # Top-2 returns valid indices
         assert indices[0][0] >= 0
@@ -195,3 +226,4 @@ def _setup_librosa_mock(mock_librosa) -> None:
     mock_librosa.feature.zero_crossing_rate.return_value = np.array([[[0.05]]])
     mock_librosa.feature.chroma_stft.return_value = np.ones((12, 10))
     mock_librosa.onset.onset_strength.return_value = np.array([0.5, 0.4, 0.6])
+    mock_librosa.beat.beat_track.return_value = (120.0, np.array([10, 20, 30, 40, 50]))

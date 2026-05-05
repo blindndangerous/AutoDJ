@@ -11,7 +11,6 @@ import pytest
 
 from autodj.beets import BeetsNotFoundError, Track, get_all_tracks, search_tracks
 
-
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
 # ---------------------------------------------------------------------------
@@ -186,7 +185,7 @@ class TestGetAllTracks:
     def test_raises_if_db_not_sqlite(self, tmp_path: Path) -> None:
         bad = tmp_path / "library.db"
         bad.write_bytes(b"not a sqlite file")
-        with pytest.raises(Exception):
+        with pytest.raises(sqlite3.DatabaseError):
             get_all_tracks(bad)
 
 
@@ -226,3 +225,162 @@ class TestSearchTracks:
     def test_search_raises_if_db_missing(self, tmp_path: Path) -> None:
         with pytest.raises(BeetsNotFoundError):
             search_tracks(tmp_path / "nonexistent.db", "query")
+
+
+# ---------------------------------------------------------------------------
+# parse_initial_key
+# ---------------------------------------------------------------------------
+
+
+class TestParseInitialKey:
+    @pytest.mark.parametrize(
+        "s,expected",
+        [
+            ("C", (0, 1)),
+            ("D", (2, 1)),
+            ("D#", (3, 1)),
+            ("Eb", (3, 1)),
+            ("Bb", (10, 1)),
+            ("F#", (6, 1)),
+            ("Cm", (0, 0)),
+            ("D#m", (3, 0)),
+            ("Bbm", (10, 0)),
+            ("A minor", (9, 0)),
+            ("F# major", (6, 1)),
+            ("c major", (0, 1)),  # case insensitive
+            ("8A", (9, 0)),  # Camelot — A minor
+            ("8B", (0, 1)),  # Camelot — C major
+            ("12B", (4, 1)),
+            ("1B", (11, 1)),
+            ("1A", (8, 0)),  # Ab minor
+        ],
+    )
+    def test_parses_valid_keys(self, s, expected) -> None:
+        from autodj.beets import parse_initial_key
+
+        assert parse_initial_key(s) == expected
+
+    @pytest.mark.parametrize(
+        "s",
+        [
+            "",
+            "garbage",
+            "Z",
+            "13A",
+            "0A",
+            None,
+        ],
+    )
+    def test_unparseable_returns_none(self, s) -> None:
+        from autodj.beets import parse_initial_key
+
+        assert parse_initial_key(s) is None
+
+    def test_whitespace_stripped(self) -> None:
+        from autodj.beets import parse_initial_key
+
+        assert parse_initial_key("  C  ") == (0, 1)
+        assert parse_initial_key(" Cm ") == (0, 0)
+
+    def test_only_whitespace_returns_none(self) -> None:
+        from autodj.beets import parse_initial_key
+
+        assert parse_initial_key("    ") is None
+
+
+# ---------------------------------------------------------------------------
+# Optional plugin columns: initial_key + lyrics
+# ---------------------------------------------------------------------------
+
+
+def _make_beets_db_with_optional(path: Path) -> Path:
+    """Beets DB schema that includes the keyfinder + lyrics plugin columns."""
+    conn = sqlite3.connect(path)
+    conn.execute(
+        """
+        CREATE TABLE items (
+            id INTEGER PRIMARY KEY,
+            path BLOB,
+            title TEXT, artist TEXT, album TEXT, genre TEXT,
+            bpm REAL, year INTEGER, length REAL,
+            initial_key TEXT,
+            lyrics TEXT
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO items VALUES (1, ?, 'T', 'A', 'L', 'G', 100.0, 2020, 180.0, 'Am', 'la la la')",
+        (b"Z:/Music/song.flac",),
+    )
+    conn.execute(
+        "INSERT INTO items VALUES (2, ?, 'T2', 'A2', 'L2', 'G', 120.0, 2021, 240.0, '8B', '')",
+        (b"sub/relative.flac",),
+    )
+    conn.commit()
+    conn.close()
+    return path
+
+
+class TestOptionalColumns:
+    def test_get_all_tracks_reads_initial_key(self, tmp_path) -> None:
+        db = _make_beets_db_with_optional(tmp_path / "library.db")
+        tracks = get_all_tracks(db)
+        assert tracks[0].initial_key == "Am"
+        assert tracks[1].initial_key == "8B"
+
+    def test_get_all_tracks_reads_lyrics(self, tmp_path) -> None:
+        db = _make_beets_db_with_optional(tmp_path / "library.db")
+        tracks = get_all_tracks(db)
+        assert tracks[0].lyrics == "la la la"
+
+
+class TestGetLyricsForPath:
+    def test_returns_lyrics_for_absolute_path(self, tmp_path) -> None:
+        from autodj.beets import get_lyrics_for_path
+
+        db = _make_beets_db_with_optional(tmp_path / "library.db")
+        result = get_lyrics_for_path(db, "Z:/Music/song.flac")
+        assert result == "la la la"
+
+    def test_returns_empty_for_unknown_path(self, tmp_path) -> None:
+        from autodj.beets import get_lyrics_for_path
+
+        db = _make_beets_db_with_optional(tmp_path / "library.db")
+        assert get_lyrics_for_path(db, "Z:/Music/no_such.flac") == ""
+
+    def test_returns_empty_when_db_missing(self, tmp_path) -> None:
+        from autodj.beets import get_lyrics_for_path
+
+        assert get_lyrics_for_path(tmp_path / "missing.db", "any.flac") == ""
+
+    def test_returns_empty_when_lyrics_column_absent(self, tmp_path, beets_db) -> None:
+        from autodj.beets import get_lyrics_for_path
+
+        # beets_db fixture has no lyrics column
+        assert get_lyrics_for_path(beets_db, "Z:/Music/anything.flac") == ""
+
+    def test_returns_empty_for_corrupt_db(self, tmp_path) -> None:
+        from autodj.beets import get_lyrics_for_path
+
+        bad = tmp_path / "library.db"
+        bad.write_bytes(b"not sqlite")
+        assert get_lyrics_for_path(bad, "anything.flac") == ""
+
+    def test_falls_back_to_relative_path(self, tmp_path) -> None:
+        """Beets stored a relative path; we look up by joining music_dir."""
+        from autodj.beets import get_lyrics_for_path
+
+        db = _make_beets_db_with_optional(tmp_path / "library.db")
+        # Construct a fake music_dir that contains the relative path
+        music_dir = tmp_path / "Music"
+        music_dir.mkdir()
+        track_dir = music_dir / "sub"
+        track_dir.mkdir()
+        track_file = track_dir / "relative.flac"
+        track_file.write_bytes(b"")
+        # Track is stored as "sub/relative.flac" in the DB; runtime path
+        # is the absolute version under music_dir
+        result = get_lyrics_for_path(db, str(track_file), music_dir=music_dir)
+        # No lyrics for that row, so empty string is correct, but the
+        # query path was exercised
+        assert result == ""

@@ -4,296 +4,20 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>AutoDJ</title>
-  <style>
-    /* ----------------------------------------------------------------
-       Design tokens
-       #e0e0e0 on #1a1a2e → contrast ≈ 12.9:1  (WCAG AAA)
-       #ffffff on #2d5a87 → contrast ≈ 7.2:1   (WCAG AA)
-       #7eb3e8 thumb on #16213e → contrast ≈ 7.2:1 (non-text ≥ 3:1 ✓)
-       Focus ring: 2px solid #7eb3e8 — visible on all bg colors
-    ---------------------------------------------------------------- */
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-    :root {
-      --bg:        #1a1a2e;
-      --bg-card:   #16213e;
-      --border:    #0f3460;
-      --accent:    #7eb3e8;
-      --text:      #e0e0e0;
-      --text-dim:  #a0a0b0;
-      --btn-bg:    #2d5a87;
-      --btn-hover: #3a72a8;
-      --btn-text:  #ffffff;
-      --danger:    #c0392b;
-      --green:     #27ae60;
-      --radius:    6px;
-    }
-
-    body {
-      background: var(--bg);
-      color: var(--text);
-      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-      font-size: 1rem;
-      line-height: 1.5;
-      min-height: 100vh;
-    }
-
-    /* Skip-to-content link (WCAG 2.4.1) */
-    .skip-link {
-      position: absolute;
-      top: -999px;
-      left: 0;
-      background: var(--accent);
-      color: #000;
-      padding: 0.5rem 1rem;
-      z-index: 9999;
-      font-weight: 600;
-      border-radius: 0 0 var(--radius) 0;
-    }
-    .skip-link:focus { top: 0; }
-
-    /* Focus ring — never removed */
-    :focus-visible {
-      outline: 2px solid var(--accent);
-      outline-offset: 3px;
-    }
-
-    header {
-      background: var(--bg-card);
-      border-bottom: 1px solid var(--border);
-      padding: 1rem 1.5rem;
-      display: flex;
-      align-items: center;
-      gap: 1rem;
-    }
-    header h1 {
-      font-size: 1.5rem;
-      font-weight: 700;
-      letter-spacing: 0.05em;
-    }
-    #conn-status {
-      font-size: 0.8rem;
-      padding: 0.2rem 0.6rem;
-      border-radius: 999px;
-      background: var(--border);
-      color: var(--text-dim);
-    }
-    #conn-status.connected   { background: var(--green);  color: #fff; }
-    /* Fix 1: #e67e22 on white only reaches 2.85:1 — use dark text instead */
-    #conn-status.connecting  { background: #e67e22; color: #000; }
-    #conn-status.error       { background: var(--danger);  color: #fff; }
-
-    main {
-      max-width: 780px;
-      margin: 0 auto;
-      padding: 1.5rem 1rem 3rem;
-      display: flex;
-      flex-direction: column;
-      gap: 1.5rem;
-    }
-
-    .card {
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 1.25rem 1.5rem;
-    }
-    .card h2 {
-      font-size: 0.75rem;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.1em;
-      color: var(--text-dim);
-      margin-bottom: 0.75rem;
-    }
-
-    /* ---- Now playing ---- */
-    #now-playing-announce {
-      font-size: 1.2rem;
-      font-weight: 600;
-      line-height: 1.3;
-      margin-bottom: 0.4rem;
-    }
-    #now-playing-meta {
-      font-size: 0.875rem;
-      color: var(--text-dim);
-    }
-    #progress-bar-wrap {
-      margin-top: 0.75rem;
-    }
-    #progress-bar-label {
-      font-size: 0.8rem;
-      color: var(--text-dim);
-      margin-bottom: 0.3rem;
-    }
-    #progress-track {
-      width: 100%;
-      height: 6px;
-      background: var(--border);
-      border-radius: 3px;
-      overflow: hidden;
-    }
-    #progress-fill {
-      height: 100%;
-      background: var(--accent);
-      border-radius: 3px;
-      width: 0%;
-      transition: width 0.5s linear;
-    }
-
-    /* ---- Controls ---- */
-    .controls-row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.75rem;
-      align-items: center;
-    }
-
-    button {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.4rem;
-      padding: 0.55rem 1.1rem;
-      background: var(--btn-bg);
-      color: var(--btn-text);
-      border: none;
-      border-radius: var(--radius);
-      font-size: 0.95rem;
-      font-weight: 500;
-      cursor: pointer;
-      min-width: 44px;   /* WCAG 2.5.5 touch target */
-      min-height: 44px;
-      transition: background 0.15s;
-    }
-    button:hover  { background: var(--btn-hover); }
-    button:active { background: var(--accent); color: #000; }
-    /* Fix 1: #e67e22 on white only reaches 2.85:1 — use dark text */
-    button[aria-pressed="true"] {
-      background: #e67e22;
-      color: #000;
-    }
-    button:disabled {
-      opacity: 0.45;
-      cursor: not-allowed;
-    }
-
-    /* ---- Volume ---- */
-    .volume-row {
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-      flex-wrap: wrap;
-    }
-    #vol-label-text { font-size: 0.875rem; min-width: 3.5rem; }
-
-    input[type="range"] {
-      -webkit-appearance: none;
-      appearance: none;
-      flex: 1;
-      min-width: 120px;
-      height: 6px;
-      background: var(--border);
-      border-radius: 3px;
-      cursor: pointer;
-      accent-color: var(--accent);
-    }
-    input[type="range"]::-webkit-slider-thumb {
-      -webkit-appearance: none;
-      width: 18px;
-      height: 18px;
-      border-radius: 50%;
-      background: var(--accent);
-      border: 2px solid var(--bg);
-    }
-    input[type="range"]::-moz-range-thumb {
-      width: 18px;
-      height: 18px;
-      border-radius: 50%;
-      background: var(--accent);
-      border: 2px solid var(--bg);
-    }
-    #vol-pct { font-size: 0.875rem; min-width: 3rem; text-align: right; }
-
-    /* ---- Up next ---- */
-    #next-track-text {
-      font-size: 1rem;
-      color: var(--text-dim);
-    }
-
-    /* ---- Search ---- */
-    .search-row {
-      display: flex;
-      gap: 0.5rem;
-      flex-wrap: wrap;
-    }
-    #search-input {
-      flex: 1;
-      min-width: 180px;
-      padding: 0.55rem 0.85rem;
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      color: var(--text);
-      font-size: 0.95rem;
-    }
-    #search-input::placeholder { color: var(--text-dim); }
-    #search-input:focus-visible {
-      outline: 2px solid var(--accent);
-      outline-offset: 2px;
-    }
-
-    #search-results {
-      margin-top: 0.75rem;
-      list-style: none;
-    }
-    #search-results li {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      padding: 0.45rem 0.25rem;
-      border-bottom: 1px solid var(--border);
-      font-size: 0.9rem;
-    }
-    #search-results li:last-child { border-bottom: none; }
-    #search-results .no-results { color: var(--text-dim); font-style: italic; }
-    .result-name {
-      flex: 1;
-      min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    .result-btn {
-      flex-shrink: 0;
-      padding: 0.25rem 0.6rem;
-      font-size: 0.8rem;
-      min-height: 36px;
-      min-width: 36px;
-    }
-
-    /* ---- History ---- */
-    #history-list {
-      list-style: none;
-    }
-    #history-list li {
-      padding: 0.4rem 0.25rem;
-      border-bottom: 1px solid var(--border);
-      font-size: 0.875rem;
-      color: var(--text-dim);
-    }
-    #history-list li:last-child { border-bottom: none; }
-    #history-list .history-title { color: var(--text); font-weight: 500; }
-
-    @media (max-width: 480px) {
-      .controls-row { justify-content: center; }
-      header { padding: 0.75rem 1rem; }
-    }
-  </style>
+  <link rel="stylesheet" href="/app.css">
 </head>
 <body>
 
 <!-- Skip navigation link (WCAG 2.4.1) -->
 <a class="skip-link" href="#main-content">Skip to main content</a>
+
+<!-- Two browser-side audio decks for Web Audio crossfade.  Hidden so
+     screen readers don't see duplicate transport controls; our labelled
+     buttons drive them via JS.  Both feed into AudioContext gain nodes
+     for client-side mixing — the smooth crossfade a real DJ deck would
+     produce, not the browser's default hard cut at end-of-track. -->
+<audio id="browser-player"   preload="auto" hidden></audio>
+<audio id="browser-player-b" preload="auto" hidden></audio>
 
 <header role="banner">
   <h1>AutoDJ</h1>
@@ -301,58 +25,102 @@
   <span id="conn-status" role="status" aria-live="polite">Connecting…</span>
 </header>
 
-<main id="main-content" role="main">
+<!-- Section nav.  In-page section switcher (kept as a single SPA so the
+     audio decks + crossfade state survive every navigation).  JS toggles
+     the `hidden` attribute on each <section data-view="..."> below to
+     show only the active one.  `aria-current="true"` marks the active
+     link; `hashchange` keeps browser back/forward in sync. -->
+<nav aria-label="Sections" id="view-nav">
+  <ul role="list">
+    <li><a href="#now"      data-view="now"      aria-current="true">Now Playing</a></li>
+    <li><a href="#queue"    data-view="queue">Queue &amp; Search</a></li>
+    <li><a href="#settings" data-view="settings">Settings</a></li>
+    <li><a href="#library"  data-view="library">Library tools</a></li>
+  </ul>
+</nav>
+
+<main id="main-content" role="main" tabindex="-1">
+
+  <!-- ============================================================
+       View: Now Playing — playback transport + EQ + lyrics + why
+       ============================================================ -->
+  <section data-view="now" aria-labelledby="now-playing-heading">
 
   <!-- Now Playing -->
-  <section class="card" aria-labelledby="now-playing-heading">
-    <h2 id="now-playing-heading">Now Playing</h2>
+  <details class="card" open aria-labelledby="now-playing-heading">
+    <summary><h2 id="now-playing-heading">Now Playing</h2></summary>
 
-    <!-- aria-live region: screen reader announces track changes automatically -->
-    <div id="now-playing-announce"
-         aria-live="polite"
-         aria-atomic="true">
-      Loading…
+    <div class="now-playing-row">
+      <!-- Decorative cover art — track info already announced by aria-live below.
+           Hidden via .hidden when no embedded art (prevents broken-image icon). -->
+      <img id="cover-art" alt="" aria-hidden="true" hidden>
+
+      <div class="now-playing-text">
+        <!-- aria-live region: screen reader announces track changes automatically -->
+        <div id="now-playing-announce"
+             aria-live="polite"
+             aria-atomic="true">
+          Loading…
+        </div>
+        <div id="now-playing-meta" aria-hidden="true"></div>
+        <!-- Visual-only badge row: BPM / Camelot key / energy / beatmatch ratio.
+             aria-hidden because a separate live region announces the same
+             info on track change to avoid stepping on the title announcement. -->
+        <div id="now-playing-badges" aria-hidden="true" class="badges-row"></div>
+      </div>
     </div>
-    <div id="now-playing-meta" aria-hidden="true"></div>
+    <!-- Independent polite region for badge announcements (Camelot + BPM,
+         only on track change) so it never collides with the title above. -->
+    <div id="badges-announce" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
 
     <!-- Fix 3: removed role="img" which suppresses inner aria-live regions -->
     <div id="progress-bar-wrap">
-      <div id="progress-bar-label" aria-live="polite" aria-atomic="true">0:00 / 0:00</div>
+      <div id="progress-bar-label">0:00 / 0:00</div>
       <div id="progress-track" aria-hidden="true">
         <div id="progress-fill"></div>
       </div>
     </div>
-  </section>
+  </details>
 
   <!-- Controls -->
-  <section class="card" aria-labelledby="controls-heading">
-    <h2 id="controls-heading">Controls</h2>
+  <details class="card" open aria-labelledby="controls-heading">
+    <summary><h2 id="controls-heading">Controls</h2></summary>
 
     <!-- Fix 5: role="toolbar" instead of <nav> — nav is for navigation, not action toolbars -->
     <div role="toolbar" aria-label="Playback controls">
       <div class="controls-row">
         <!-- Fix 2: emoji wrapped in aria-hidden so screen readers don't double-announce -->
         <button id="btn-pause"
-                aria-pressed="false"
+                disabled
                 title="Pause or resume playback">
-          <span aria-hidden="true">⏸</span> Pause
+          <span aria-hidden="true">▶</span> Play
         </button>
         <button id="btn-skip"
-                title="Skip to the next track">
+                title="Skip to the next sonically similar track">
           <span aria-hidden="true">⏭</span> Skip
+        </button>
+        <button id="btn-shuffle"
+                title="Pick a fresh random track from the library (reseed the session)">
+          <span aria-hidden="true">🔀</span> Shuffle
+        </button>
+        <button id="btn-discovery"
+                aria-pressed="false"
+                title="Toggle discovery mode — periodically injects a sonically distant track"
+                style="display:none">
+          <span aria-hidden="true">◈</span> Discovery
         </button>
       </div>
     </div>
 
     <!-- Volume -->
     <div class="volume-row" style="margin-top:1rem;" role="group" aria-labelledby="vol-group-label">
-      <span id="vol-group-label" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap">Volume controls</span>
+      <span id="vol-group-label" class="visually-hidden">Volume controls</span>
       <span id="vol-label-text" aria-hidden="true">Volume</span>
       <input type="range"
              id="vol"
              min="0" max="100" value="100"
              aria-label="Volume">
-      <span id="vol-pct" aria-live="polite" aria-atomic="true">100%</span>
+      <span id="vol-pct" aria-hidden="true">100%</span>
       <!-- Fix 2: emoji wrapped in aria-hidden -->
       <button id="btn-mute"
               aria-pressed="false"
@@ -360,17 +128,359 @@
         <span aria-hidden="true">🔊</span> Mute
       </button>
     </div>
-  </section>
+  </details>
+
+  <!-- 3-band EQ -->
+  <details class="card" aria-labelledby="eq-heading">
+    <summary><h2 id="eq-heading">EQ</h2></summary>
+    <div role="group" aria-labelledby="eq-heading">
+      <div class="eq-row">
+        <label for="eq-low">Low</label>
+        <input type="range" id="eq-low"
+               min="0" max="200" value="100"
+               aria-valuetext="Unity">
+        <span class="eq-value" id="eq-low-value" aria-hidden="true">Unity</span>
+      </div>
+      <div class="eq-row">
+        <label for="eq-mid">Mid</label>
+        <input type="range" id="eq-mid"
+               min="0" max="200" value="100"
+               aria-valuetext="Unity">
+        <span class="eq-value" id="eq-mid-value" aria-hidden="true">Unity</span>
+      </div>
+      <div class="eq-row">
+        <label for="eq-high">High</label>
+        <input type="range" id="eq-high"
+               min="0" max="200" value="100"
+               aria-valuetext="Unity">
+        <span class="eq-value" id="eq-high-value" aria-hidden="true">Unity</span>
+      </div>
+      <button id="btn-eq-reset" type="button">Reset EQ</button>
+      <!-- Independent polite region for the Reset announcement so it doesn't
+           collide with the now-playing announcer on track change. -->
+      <div id="eq-announce" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
+    </div>
+  </details>
+
+  <!-- Why this track? — plain-English explanation of the picker's choice -->
+  <details class="card" aria-labelledby="why-heading">
+    <summary><h2 id="why-heading">Why this track?</h2></summary>
+    <ul id="why-list" role="list" aria-live="polite" aria-atomic="true">
+      <li class="no-results"
+          style="color:var(--text-dim);font-style:italic;list-style:none;padding-left:0">
+        No reasons yet — start playback to see why each track was picked.
+      </li>
+    </ul>
+  </details>
 
   <!-- Up Next -->
-  <section class="card" aria-labelledby="up-next-heading">
-    <h2 id="up-next-heading">Up Next</h2>
+  <details class="card" open aria-labelledby="up-next-heading">
+    <summary><h2 id="up-next-heading">Up Next</h2></summary>
     <p id="next-track-text" aria-live="polite" aria-atomic="true">—</p>
+  </details>
+
   </section>
+  <!-- ============================================================
+       View: Settings — every CLI flag mirrored as a form control
+       ============================================================ -->
+  <section data-view="settings" hidden aria-labelledby="settings-heading">
+
+  <!-- Settings — full mirror of CLI flags -->
+  <details class="card" open aria-labelledby="settings-heading">
+    <summary><h2 id="settings-heading">Settings</h2></summary>
+
+    <!-- Single shared status region for failures (success is silent — checkbox
+         state already announced by the AT). -->
+    <div id="settings-status" role="status" aria-live="polite" class="visually-hidden"></div>
+
+    <fieldset>
+      <legend>Mood</legend>
+      <div class="settings-row">
+        <label for="preset-select">Preset</label>
+        <select id="preset-select" aria-describedby="preset-desc">
+          <option value="">(none)</option>
+        </select>
+      </div>
+      <span class="setting-desc" id="preset-desc">
+        Bias the next-track picker toward a target BPM curve.  E.g. <em>wakeup</em> ramps 70 → 130 BPM, <em>chill</em> stays at 75 BPM, <em>slide</em> arches.  Built-ins plus any user presets in config.toml.
+      </span>
+      <div class="settings-row">
+        <label for="transition-select">Transition effect</label>
+        <select id="transition-select" aria-describedby="transition-desc">
+          <option value="none">none</option>
+          <option value="echo_out">echo out</option>
+          <option value="reverb_tail">reverb tail</option>
+          <option value="highpass_sweep">high-pass sweep (filter in)</option>
+          <option value="lowpass_sweep">low-pass sweep (filter out)</option>
+          <option value="tape_stop">tape stop</option>
+          <option value="gate_stutter">gate stutter</option>
+          <option value="noise_riser">noise riser</option>
+          <option value="backspin">backspin</option>
+          <option value="forward_spin">forward spin</option>
+          <option value="cross_eq_swap">cross-EQ swap</option>
+          <option value="bitcrusher">bitcrusher</option>
+          <option value="flanger">flanger</option>
+          <option value="pitch_swell">pitch swell</option>
+          <option value="telephone">telephone</option>
+          <option value="noise_drop">noise drop</option>
+          <option value="chorus">chorus</option>
+          <option value="submerge">submerge (underwater)</option>
+          <option value="vinyl_wow">vinyl wow (pitch wobble)</option>
+          <option value="freeze">freeze (granular loop)</option>
+          <option value="glitch">glitch (slice + reorder)</option>
+          <option value="scratch">scratch (turntablist sweep)</option>
+          <option value="beat_repeat">beat repeat (loop roll)</option>
+          <option value="sidechain_pump">sidechain pump</option>
+          <option value="reverse_reverb">reverse reverb (swell-in)</option>
+          <option value="air_horn">air horn (dub siren)</option>
+          <option value="random">random</option>
+          <option value="rotate">rotate</option>
+        </select>
+      </div>
+      <span class="setting-desc" id="transition-desc">
+        Audio treatment layered on every crossfade.
+        <strong>echo out</strong> tail-throws the outgoing track with feedback delay;
+        <strong>reverb tail</strong> bleeds a 4 s hall reverb past the cut;
+        <strong>high-pass sweep</strong> introduces the new track muffled then opens up;
+        <strong>low-pass sweep</strong> filters the outgoing into a build;
+        <strong>tape stop</strong> slows the outgoing to a halt over 4 s;
+        <strong>gate stutter</strong> chops the outgoing into rhythmic bursts (sample-accurate worklet);
+        <strong>noise riser</strong> layers a synthesised white-noise build (bright);
+        <strong>noise drop</strong> opposite of the riser — bright crash falling to silence;
+        <strong>backspin</strong> reverses the outgoing tail with vinyl-friction decel (2.0×→0.05×);
+        <strong>forward spin</strong> push-forward release (1.0×→3.0× accel);
+        <strong>cross-EQ swap</strong> hands bass duties from the outgoing to the incoming track;
+        <strong>bitcrusher</strong> degrades bit-depth + sample-rate (8-bit-console feel, AudioWorklet);
+        <strong>flanger</strong> adds a swirly modulated delay;
+        <strong>pitch swell</strong> sweeps pitch upward (preservesPitch off);
+        <strong>telephone</strong> 500-2800 Hz band-pass + tanh saturation (sounds like a phone call);
+        <strong>chorus</strong> three detuned voices for a thick double;
+        <strong>submerge</strong> heavy lowpass + reverb wash (underwater);
+        <strong>vinyl wow</strong> drunk-turntable pitch wobble (60 Hz polling, ±25 % depth);
+        <strong>freeze</strong> captures the last 150 ms and loops with fade-out (granular, AudioWorklet);
+        <strong>glitch</strong> random buffer slicing + reorder (ring-buffer worklet);
+        <strong>scratch</strong> turntablist 4-pass back-and-forth over a 250 ms slice;
+        <strong>beat repeat</strong> stamps a 250 ms slice 8 times across the tail (Pioneer Loop Roll);
+        <strong>sidechain pump</strong> rhythmic 4-on-the-floor amplitude duck @ 120 BPM;
+        <strong>reverse reverb</strong> reverse'd reverb tail that swells INTO the cut;
+        <strong>air horn</strong> synth dub-siren with 220-880 Hz pitch sweep, layered with the music.
+        <strong>random</strong> picks one per crossfade;
+        <strong>rotate</strong> cycles through every effect in order.
+      </span>
+    </fieldset>
+
+    <fieldset>
+      <legend>DJ-mix toggles</legend>
+      <div class="settings-row">
+        <label for="harmonic-mode">Harmonic mixing</label>
+        <select id="harmonic-mode" aria-describedby="dj-harmonic-desc">
+          <option value="off">off (no key filter)</option>
+          <option value="compatible">compatible (Camelot match, ±1, relative)</option>
+          <option value="strict">strict (same Camelot position only)</option>
+          <option value="neighbour">neighbour (same side, ±1 only)</option>
+          <option value="mood_change">mood change (relative major/minor only)</option>
+          <option value="energy_boost">energy boost (same side, +2 jump)</option>
+        </select>
+      </div>
+      <span class="setting-desc" id="dj-harmonic-desc">
+        Restrict next-track picks to harmonically related keys.
+        <strong>compatible</strong> is the classic Camelot rule (same position, ±1, or relative major/minor) — broadest pool.
+        <strong>strict</strong> only allows the exact same key.
+        <strong>neighbour</strong> walks the wheel one step at a time, no mode flips.
+        <strong>mood change</strong> swaps major↔minor only (energy stays, mood flips).
+        <strong>energy boost</strong> picks +2 around the wheel — each track is two semitones up, so the set lifts over time.  Pick <strong>off</strong> to disable the harmonic filter completely.
+      </span>
+
+      <div class="settings-check">
+        <input type="checkbox" id="dj-beatmatch" aria-describedby="dj-beatmatch-desc">
+        <label for="dj-beatmatch">Beatmatch</label>
+      </div>
+      <span class="setting-desc" id="dj-beatmatch-desc">
+        Pitch-stretch the incoming track up to ±8 % so its BPM matches the outgoing track during the crossfade — beats line up like a real DJ deck.
+      </span>
+
+      <div class="settings-check">
+        <input type="checkbox" id="dj-phrase-align" aria-describedby="dj-phrase-desc">
+        <label for="dj-phrase-align">Phrase align</label>
+      </div>
+      <span class="setting-desc" id="dj-phrase-desc">
+        Snap the crossfade start to the nearest 8-bar boundary using the cached beat grid.  Keeps transitions on musical phrase ends instead of mid-bar.
+      </span>
+
+      <div class="settings-check">
+        <input type="checkbox" id="dj-outro-intro" aria-describedby="dj-outro-desc">
+        <label for="dj-outro-intro">Outro / intro align</label>
+      </div>
+      <span class="setting-desc" id="dj-outro-desc">
+        Auto-detect each track's outro start + intro end on first play.  Crossfade lands between them so the new track's first downbeat replaces the old track's outro — no cold cuts into 4-bar intros.
+      </span>
+    </fieldset>
+
+    <fieldset>
+      <legend>Playback</legend>
+      <div class="settings-check">
+        <input type="checkbox" id="pb-eq-duck" aria-describedby="pb-eq-duck-desc">
+        <label for="pb-eq-duck">EQ-ducked crossfade</label>
+      </div>
+      <span class="setting-desc" id="pb-eq-duck-desc">
+        Bass-cut the outgoing track during the overlap so its kicks don't muddy the incoming track's bass.  The trick pro DJs use when manually mixing.
+      </span>
+
+      <div class="settings-check">
+        <input type="checkbox" id="pb-smart-shuffle" aria-describedby="pb-shuffle-desc">
+        <label for="pb-smart-shuffle">Entropy walk</label>
+      </div>
+      <span class="setting-desc" id="pb-shuffle-desc">
+        Each next pick is the most sonically <em>distant</em> track from whatever is currently playing — A → far(A) → far(far(A)) → … — so the set drifts through the library rather than clustering around the seed.  Surprise mode, not a true random shuffle.
+      </span>
+
+      <div class="settings-check">
+        <input type="checkbox" id="pb-pure-shuffle" aria-describedby="pb-pure-desc">
+        <label for="pb-pure-shuffle">Random walk</label>
+      </div>
+      <span class="setting-desc" id="pb-pure-desc">
+        Uniformly random next pick — ignores similarity, key, BPM, energy, the lot.  Bumps the recently-played window so the same track doesn't reappear too soon.  Toggle <em>off</em> mid-set and the auto-DJ resumes similarity from the song that's currently playing.
+      </span>
+
+      <div class="settings-check">
+        <input type="checkbox" id="pb-anchor-seed" aria-describedby="pb-anchor-desc">
+        <label for="pb-anchor-seed">Anchor to seed</label>
+      </div>
+      <span class="setting-desc" id="pb-anchor-desc">
+        Every next pick stays similar to the <em>seed</em> track (the song the session started from), not to whatever just played.  Prevents the long sonic drift you get from chained similarity hops, while still letting Discovery break out periodically when enabled.
+      </span>
+
+      <div class="settings-check">
+        <input type="checkbox" id="pb-show-lyrics" aria-describedby="pb-show-lyrics-desc">
+        <label for="pb-show-lyrics">Show lyrics</label>
+      </div>
+      <span class="setting-desc" id="pb-show-lyrics-desc">
+        Display timed (LRC) or plain lyrics in the Lyrics card and the CLI panel.  Toggle off if you'd rather not see them.  Default: on.
+      </span>
+
+      <div class="settings-check">
+        <input type="checkbox" id="pb-replaygain" aria-describedby="pb-rg-desc">
+        <label for="pb-replaygain">ReplayGain normalisation</label>
+      </div>
+      <span class="setting-desc" id="pb-rg-desc">
+        Apply embedded ReplayGain track-gain tags so every track plays at a consistent loudness.  Tracks without tags play unchanged.  Targets −14 dB (Spotify-ish reference) by default.
+      </span>
+
+      <div class="settings-row">
+        <label for="audio-device">Audio output device</label>
+        <select id="audio-device" aria-describedby="audio-device-desc">
+          <option value="">System default</option>
+        </select>
+        <button type="button" id="audio-device-refresh"
+                aria-describedby="audio-device-desc"
+                title="Grant the browser microphone permission so device names show up.  Permission is dropped immediately — no audio is captured.">
+          Show device names
+        </button>
+      </div>
+      <span class="setting-desc" id="audio-device-desc">
+        Pick which sound card / headphones the browser plays through.
+        Works in Chromium / Edge (full support) and Firefox 116+.  Safari has
+        <em>not</em> shipped <code>setSinkId</code> yet — it falls back to the
+        system default.  Browsers hide device <em>names</em> until you grant
+        microphone permission once: click <em>Show device names</em> to do
+        that (the permission is released immediately, no audio is captured).
+        Selection saved per browser in <code>localStorage</code>; the
+        server-side CLI player has its own <code>--device</code> flag and
+        <code>[playback] audio_device</code> config.
+      </span>
+
+      <div class="settings-check">
+        <input type="checkbox" id="pb-daypart" aria-describedby="pb-daypart-desc">
+        <label for="pb-daypart">Daypart mood</label>
+      </div>
+      <span class="setting-desc" id="pb-daypart-desc">
+        Pick BPM and energy targets from the local time of day — gentler in the morning (6-10 am, 60-90 BPM), peak in the evening (6-10 pm, 115-140 BPM), chill late at night.  Ignored when an explicit Preset is selected.
+      </span>
+
+      <div class="settings-row">
+        <label for="pb-crossfade">Crossfade seconds</label>
+        <input type="number" id="pb-crossfade" min="0" max="20" step="0.5" value="3"
+               aria-describedby="pb-crossfade-desc">
+      </div>
+      <span class="setting-desc" id="pb-crossfade-desc">
+        How long the gain ramp between tracks lasts.  2-3 s feels natural for most music; 5-8 s for ambient or testing transition effects.  0 = instant cut.
+      </span>
+    </fieldset>
+
+    <fieldset>
+      <legend>BPM range</legend>
+      <div class="settings-row">
+        <label for="bpm-lo">Minimum</label>
+        <input type="number" id="bpm-lo" min="0" max="300" step="1" aria-describedby="bpm-desc">
+      </div>
+      <div class="settings-row">
+        <label for="bpm-hi">Maximum</label>
+        <input type="number" id="bpm-hi" min="0" max="300" step="1" aria-describedby="bpm-desc">
+      </div>
+      <span class="setting-desc" id="bpm-desc">
+        Hard filter on track tempo.  Picks only fall within this range; tracks with unknown BPM always pass.  Leave blank to disable.
+      </span>
+      <button type="button" id="bpm-clear">Clear BPM filter</button>
+    </fieldset>
+
+    <fieldset>
+      <legend>Discovery</legend>
+      <div class="settings-check">
+        <input type="checkbox" id="disc-enabled" aria-describedby="disc-desc">
+        <label for="disc-enabled">Inject distant tracks</label>
+      </div>
+      <div class="settings-row">
+        <label for="disc-every">Every N tracks</label>
+        <input type="number" id="disc-every" min="1" max="500" step="1" value="20"
+               aria-disabled="true" aria-describedby="disc-desc">
+      </div>
+      <span class="setting-desc" id="disc-desc">
+        Periodically inject a sonically <em>distant</em> track to break the auto-DJ out of a similarity loop.  Picks at random from the bottom quartile of cosine similarity.  Disable to stay strictly on-vibe.
+      </span>
+    </fieldset>
+  </details>
+
+  <!-- Lyrics -->
+  <details id="lyrics-card" class="card" aria-labelledby="lyrics-heading" hidden>
+    <summary><h2 id="lyrics-heading">Lyrics</h2></summary>
+    <ol id="lyrics-list" role="list" aria-label="Lyric lines"></ol>
+    <!-- Visually hidden live region: announces only the active line, only on
+         change (not on every WS tick).  aria-atomic so the full new line reads. -->
+    <div id="lyric-announce"
+         aria-live="polite"
+         aria-atomic="true"
+         class="visually-hidden"></div>
+  </details>
+
+  </section>
+  <!-- ============================================================
+       View: Queue & Search — find tracks, manage the up-next queue,
+       review what's already played
+       ============================================================ -->
+  <section data-view="queue" hidden aria-labelledby="queue-heading">
+
+  <!-- Queue -->
+  <details class="card" open aria-labelledby="queue-heading">
+    <summary><h2 id="queue-heading">
+      Queue
+      <span id="queue-count" aria-hidden="true" style="color:var(--text-dim);font-weight:normal"></span>
+    </h2></summary>
+    <!-- Visually hidden announce region for queue mutations: "Added X", "Moved X up", "Removed X" -->
+    <div id="queue-announce"
+         aria-live="polite"
+         aria-atomic="true"
+         class="visually-hidden"></div>
+    <ol id="queue-list" role="list" aria-label="Queued tracks">
+      <li class="no-results"
+          style="color:var(--text-dim);font-style:italic;list-style:none;padding-left:0">
+        Queue is empty.  Search and use "Next" to add a track.
+      </li>
+    </ol>
+  </details>
 
   <!-- Search -->
-  <section class="card" aria-labelledby="search-heading">
-    <h2 id="search-heading">Search Library</h2>
+  <details class="card" aria-labelledby="search-heading">
+    <summary><h2 id="search-heading">Search Library</h2></summary>
     <div class="search-row">
       <!-- Fix 6: label provides accessible name; removed duplicate aria-label -->
       <label for="search-input"
@@ -388,303 +498,95 @@
     <!-- aria-atomic="false": announce count separately, not the entire list -->
     <ul id="search-results" role="list" aria-label="Search results"></ul>
     <div id="search-count" aria-live="polite" aria-atomic="true" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap"></div>
-  </section>
+  </details>
 
   <!-- History -->
-  <section class="card" aria-labelledby="history-heading">
-    <h2 id="history-heading">Recently Played</h2>
+  <details class="card" aria-labelledby="history-heading">
+    <summary><h2 id="history-heading">Recently Played</h2></summary>
     <ul id="history-list" role="list" aria-label="Recently played tracks">
       <li><span class="no-results" style="color:var(--text-dim);font-style:italic">Nothing played yet.</span></li>
     </ul>
+  </details>
+
+  </section>
+  <!-- ============================================================
+       View: Library tools — index / enrich / prune / stats from
+       the web UI.  Empty placeholder until the parity work lands.
+       ============================================================ -->
+  <section data-view="library" hidden aria-labelledby="library-heading">
+    <details class="card" open aria-labelledby="library-heading">
+      <summary><h2 id="library-heading">Library tools</h2></summary>
+
+      <p>
+        Run library-maintenance commands without dropping to a terminal.
+        One job at a time — start a second while the first is running and
+        the server returns a 409.
+      </p>
+
+      <!-- Stats card -->
+      <h3 id="library-stats-heading">Index stats</h3>
+      <dl id="library-stats" aria-labelledby="library-stats-heading">
+        <dt>Tracks indexed</dt>     <dd id="lib-stat-count">—</dd>
+        <dt>Average BPM</dt>        <dd id="lib-stat-avg-bpm">—</dd>
+        <dt>Tracks with key</dt>    <dd id="lib-stat-with-key">—</dd>
+        <dt>Tracks with genre</dt>  <dd id="lib-stat-with-genre">—</dd>
+        <dt>Tracks with energy</dt> <dd id="lib-stat-with-energy">—</dd>
+      </dl>
+      <button type="button" id="lib-stats-refresh">Refresh stats</button>
+
+      <!-- Run buttons -->
+      <h3 id="library-run-heading">Run a job</h3>
+      <div role="group" aria-labelledby="library-run-heading">
+        <div class="settings-row">
+          <label for="lib-index-limit">Index — limit (optional)</label>
+          <input type="number" id="lib-index-limit" min="0" step="1"
+                 placeholder="0 = all" aria-describedby="lib-index-desc">
+          <button type="button" id="lib-run-index">Index</button>
+        </div>
+        <p class="setting-desc" id="lib-index-desc">
+          Walk the library and embed every audio file, or limit to the
+          first N for a smoke test.  Slow on CPU — run on a GPU host.
+        </p>
+
+        <div class="settings-row">
+          <button type="button" id="lib-run-enrich">Enrich</button>
+          <button type="button" id="lib-run-prune">Prune</button>
+          <button type="button" id="lib-run-stats">Stats</button>
+          <button type="button" id="lib-run-stop">Stop running job</button>
+        </div>
+        <p class="setting-desc">
+          <strong>Enrich</strong> refreshes title/artist/genre/BPM/key from
+          beets without re-embedding.  <strong>Prune</strong> drops index
+          entries whose files were deleted.  <strong>Stats</strong> prints
+          the full library report from the indexer.  <strong>Stop</strong>
+          terminates the running subprocess.
+        </p>
+      </div>
+
+      <!-- Status badge + streamed log output -->
+      <h3 id="library-log-heading">Output</h3>
+      <p id="lib-job-status" aria-live="polite" aria-atomic="true">Idle.</p>
+      <output id="library-log"
+              role="log"
+              aria-labelledby="library-log-heading"
+              aria-live="polite"
+              aria-atomic="false"
+              tabindex="0"
+              style="display:block;background:#0f1626;color:#cce0ff;
+                     padding:0.5rem;border-radius:var(--radius);
+                     font-family:ui-monospace,Consolas,monospace;
+                     font-size:0.85rem;max-height:16rem;
+                     overflow:auto;white-space:pre-wrap;
+                     border:1px solid var(--border)">
+        <em style="color:var(--text-dim)">No job has run yet.</em>
+      </output>
+    </details>
   </section>
 
+<!-- Volume announcement region — only written on user-initiated volume changes -->
+<div id="vol-announce" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div>
 </main>
 
-<script>
-"use strict";
-
-// ----------------------------------------------------------------
-// Utilities
-// ----------------------------------------------------------------
-
-function fmtTime(sec) {
-  if (!sec || isNaN(sec)) return "0:00";
-  const m = Math.floor(sec / 60);
-  const s = Math.floor(sec % 60);
-  return `${m}:${s.toString().padStart(2, "0")}`;
-}
-
-function fmtTrack(t) {
-  if (!t) return "—";
-  if (t.artist && t.title) return `${t.artist} \u2014 ${t.title}`;
-  return t.display_name || t.title || "Unknown";
-}
-
-function escHtml(str) {
-  return String(str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-// ----------------------------------------------------------------
-// DOM refs
-// ----------------------------------------------------------------
-
-const connStatus   = document.getElementById("conn-status");
-const npAnnounce   = document.getElementById("now-playing-announce");
-const npMeta       = document.getElementById("now-playing-meta");
-const progressFill = document.getElementById("progress-fill");
-const progressLbl  = document.getElementById("progress-bar-label");
-const nextText     = document.getElementById("next-track-text");
-const btnPause     = document.getElementById("btn-pause");
-const btnSkip      = document.getElementById("btn-skip");
-const volSlider    = document.getElementById("vol");
-const volPct       = document.getElementById("vol-pct");
-const btnMute      = document.getElementById("btn-mute");
-const searchInput  = document.getElementById("search-input");
-const btnSearch    = document.getElementById("btn-search");
-const searchResults= document.getElementById("search-results");
-const searchCount  = document.getElementById("search-count");
-const historyList  = document.getElementById("history-list");
-
-// ----------------------------------------------------------------
-// State
-// ----------------------------------------------------------------
-
-let lastTrackKey = null;   // detect track changes for aria-live announce
-const historyItems = [];   // most-recent first
-
-// ----------------------------------------------------------------
-// State update — called on every WS push and on manual API calls
-// ----------------------------------------------------------------
-
-function applyState(s) {
-  // Now Playing
-  const trackKey   = s.current_track ? s.current_track.path : null;
-  const trackLabel = fmtTrack(s.current_track);
-
-  if (trackKey !== lastTrackKey) {
-    // Track changed — update aria-live region so screen readers announce it
-    npAnnounce.textContent = trackLabel;
-    lastTrackKey = trackKey;
-
-    // Push to history (skip duplicates at top)
-    if (trackKey && historyItems[0] !== trackLabel) {
-      historyItems.unshift(trackLabel);
-      if (historyItems.length > 20) historyItems.pop();
-      renderHistory();
-    }
-  }
-
-  // Meta line: album · BPM
-  const parts = [];
-  if (s.current_track) {
-    if (s.current_track.album) parts.push(s.current_track.album);
-    if (s.current_track.bpm)   parts.push(`${Math.round(s.current_track.bpm)} BPM`);
-  }
-  npMeta.textContent = parts.join(" \u00b7 ");
-
-  // Progress bar
-  const dur = s.duration || 0;
-  const pct = dur > 0 ? Math.min(100, (s.elapsed / dur) * 100) : 0;
-  progressFill.style.width = pct.toFixed(1) + "%";
-  progressLbl.textContent  = `${fmtTime(s.elapsed)} / ${fmtTime(dur)}`;
-
-  // Pause button
-  const isPaused = s.is_paused;
-  btnPause.setAttribute("aria-pressed", isPaused ? "true" : "false");
-  // Update visible label to match state
-  btnPause.innerHTML = isPaused
-    ? '<span aria-hidden="true">\u25B6</span> Resume'
-    : '<span aria-hidden="true">\u23F8</span> Pause';
-
-  // Volume — keep aria-valuenow in sync with value
-  const volInt = Math.round(s.volume * 100);
-  volSlider.value = volInt;
-  volPct.textContent = volInt + "%";
-
-  // Mute
-  const isMuted = s.is_muted;
-  btnMute.setAttribute("aria-pressed", isMuted ? "true" : "false");
-  btnMute.innerHTML = isMuted
-    ? '<span aria-hidden="true">\uD83D\uDD07</span> Unmute'
-    : '<span aria-hidden="true">\uD83D\uDD0A</span> Mute';
-
-  // Up Next
-  nextText.textContent = fmtTrack(s.next_track);
-}
-
-function renderHistory() {
-  if (historyItems.length === 0) return;
-  historyList.innerHTML = historyItems
-    .map(name => `<li><span class="history-title">${escHtml(name)}</span></li>`)
-    .join("");
-}
-
-// ----------------------------------------------------------------
-// WebSocket
-// ----------------------------------------------------------------
-
-function setConnStatus(state, label) {
-  connStatus.className  = state;
-  connStatus.textContent = label;
-}
-
-function connectWS() {
-  const proto = location.protocol === "https:" ? "wss" : "ws";
-  const ws = new WebSocket(`${proto}://${location.host}/ws`);
-
-  setConnStatus("connecting", "Connecting\u2026");
-
-  ws.onopen  = () => setConnStatus("connected", "Live");
-
-  ws.onmessage = (ev) => {
-    try { applyState(JSON.parse(ev.data)); } catch (_) {}
-  };
-
-  ws.onclose = () => {
-    setConnStatus("error", "Disconnected");
-    setTimeout(connectWS, 3000);
-  };
-
-  ws.onerror = () => setConnStatus("error", "Error");
-}
-
-connectWS();
-
-// ----------------------------------------------------------------
-// Button handlers
-// ----------------------------------------------------------------
-
-btnPause.addEventListener("click", async () => {
-  const res  = await fetch("/api/pause", { method: "POST" });
-  const data = await res.json();
-  const isPaused = data.paused;
-  btnPause.setAttribute("aria-pressed", isPaused ? "true" : "false");
-  btnPause.innerHTML = isPaused
-    ? '<span aria-hidden="true">\u25B6</span> Resume'
-    : '<span aria-hidden="true">\u23F8</span> Pause';
-});
-
-btnSkip.addEventListener("click", async () => {
-  btnSkip.disabled = true;
-  await fetch("/api/skip", { method: "POST" });
-  setTimeout(() => { btnSkip.disabled = false; }, 800);
-});
-
-btnMute.addEventListener("click", async () => {
-  const res   = await fetch("/api/mute", { method: "POST" });
-  const data  = await res.json();
-  const muted = data.muted;
-  btnMute.setAttribute("aria-pressed", muted ? "true" : "false");
-  btnMute.innerHTML = muted
-    ? '<span aria-hidden="true">\uD83D\uDD07</span> Unmute'
-    : '<span aria-hidden="true">\uD83D\uDD0A</span> Mute';
-});
-
-// Volume slider — debounced to avoid flooding the server
-let volTimer = null;
-volSlider.addEventListener("input", () => {
-  const val = parseInt(volSlider.value, 10);
-  volPct.textContent = val + "%";
-  clearTimeout(volTimer);
-  volTimer = setTimeout(() => {
-    fetch("/api/volume", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ volume: val / 100 }),
-    });
-  }, 120);
-});
-
-// ----------------------------------------------------------------
-// Search
-// ----------------------------------------------------------------
-
-async function doSearch() {
-  const q = searchInput.value.trim();
-  if (!q) {
-    searchResults.innerHTML = "";
-    searchInput.setAttribute("aria-expanded", "false");
-    searchCount.textContent = "";
-    return;
-  }
-
-  const res  = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
-  const data = await res.json();
-  const results = data.results || [];
-
-  if (results.length === 0) {
-    searchResults.innerHTML = `<li><span class="no-results">No results for \u201c${escHtml(q)}\u201d.</span></li>`;
-    searchInput.setAttribute("aria-expanded", "true");
-    searchCount.textContent = "No results found.";
-    return;
-  }
-
-  searchResults.innerHTML = results.map(t => {
-    const name = escHtml(fmtTrack(t));
-    const path = escHtml(t.path);
-    return `<li>
-      <span class="result-name" title="${name}">${name}</span>
-      <button class="result-btn"
-              aria-label="Play ${name} now"
-              data-path="${path}"
-              data-now="true"><span aria-hidden="true">&#9654;</span> Now</button>
-      <button class="result-btn"
-              aria-label="Queue ${name} as next track"
-              data-path="${path}"
-              data-now="false"><span aria-hidden="true">&#9197;</span> Next</button>
-    </li>`;
-  }).join("");
-  searchInput.setAttribute("aria-expanded", "true");
-  // Announce count separately (not the full list) per advisory
-  searchCount.textContent = `${results.length} result${results.length === 1 ? "" : "s"} found.`;
-}
-
-btnSearch.addEventListener("click", doSearch);
-searchInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") doSearch();
-});
-
-// Collapse results when input is cleared
-searchInput.addEventListener("input", () => {
-  if (!searchInput.value.trim()) {
-    searchResults.innerHTML = "";
-    searchInput.setAttribute("aria-expanded", "false");
-    searchCount.textContent = "";
-  }
-});
-
-// Play-next / play-now buttons (event delegation on the results list)
-searchResults.addEventListener("click", async (e) => {
-  const btn = e.target.closest(".result-btn");
-  if (!btn) return;
-  const path = btn.dataset.path;
-  const now  = btn.dataset.now === "true";
-  btn.disabled = true;
-  try {
-    await fetch("/api/play-next", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path, now }),
-    });
-  } finally {
-    // Re-enable and restore focus so keyboard users don't lose their place
-    btn.disabled = false;
-    btn.focus();
-  }
-});
-
-// ----------------------------------------------------------------
-// Initial state fetch
-// ----------------------------------------------------------------
-
-fetch("/api/status")
-  .then(r => r.json())
-  .then(applyState)
-  .catch(() => {});
-</script>
+<script src="/app.js" defer></script>
 </body>
 </html>

@@ -5,19 +5,16 @@ No audio playback, no model downloads — all heavy dependencies are mocked.
 Tests verify that commands complete without crashing and produce expected output.
 """
 
-import json
 import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import faiss
 import numpy as np
 import pytest
 from click.testing import CliRunner
 
 from autodj.cli import cli
 from autodj.indexer import FEATURE_DIM, IndexEntry, save_index
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -32,27 +29,8 @@ def runner() -> CliRunner:
 @pytest.fixture
 def project_dir(tmp_path: Path) -> Path:
     """A minimal project directory with config, beets DB, and pre-built index."""
-    # Config file
-    (tmp_path / "config.toml").write_text(
-        f"""
-[library]
-music_dir = "{tmp_path / "Music"}".replace("\\\\", "/")
-beets_db = "{tmp_path / "library.db"}".replace("\\\\", "/")
-supported_formats = ["flac"]
-
-[index]
-index_dir = "{tmp_path / "index"}".replace("\\\\", "/")
-model_dir = "{tmp_path / "models"}".replace("\\\\", "/")
-
-[playback]
-crossfade_seconds = 3.0
-no_repeat_window = 5
-
-[model]
-name = "m-a-p/MERT-v1-330M"
-""",
-        encoding="utf-8",
-    )
+    # Config file — use _write_config to get proper path escaping
+    _write_config(tmp_path / "config.toml", tmp_path)
 
     # Beets DB with a few tracks
     conn = sqlite3.connect(tmp_path / "library.db")
@@ -63,14 +41,25 @@ name = "m-a-p/MERT-v1-330M"
     for i in range(5):
         conn.execute(
             "INSERT INTO items VALUES (?,?,?,?,?,?,?,?,?)",
-            (i, f"Z:/Music/song_{i}.flac".encode(), f"Song {i}", "Artist", "Album", "Rock", 120.0, 2000, 180.0),
+            (
+                i,
+                f"Z:/Music/song_{i}.flac".encode(),
+                f"Song {i}",
+                "Artist",
+                "Album",
+                "Rock",
+                120.0,
+                2000,
+                180.0,
+            ),
         )
     conn.commit()
     conn.close()
 
-    # Pre-built index
-    index_dir = tmp_path / "index"
-    index_dir.mkdir()
+    # Pre-built index — files live under index/<name>/ where <name>
+    # defaults to "default" (see IndexConfig.active_dir).
+    index_dir = tmp_path / "index" / "default"
+    index_dir.mkdir(parents=True)
     entries = [
         IndexEntry(
             path=f"Z:/Music/song_{i}.flac",
@@ -81,12 +70,14 @@ name = "m-a-p/MERT-v1-330M"
             bpm=120.0,
             year=2000,
             length=180.0,
+            energy=0.05,
+            key=0,
+            mode=1,
+            tempo_confidence=0.8,
         )
         for i in range(5)
     ]
-    vectors = np.array(
-        [np.random.randn(FEATURE_DIM).astype(np.float32) for _ in range(5)]
-    )
+    vectors = np.array([np.random.randn(FEATURE_DIM).astype(np.float32) for _ in range(5)])
     norms = np.linalg.norm(vectors, axis=1, keepdims=True)
     vectors /= norms
     save_index(entries, vectors, index_dir)
@@ -104,8 +95,8 @@ def _write_config(path: Path, tmp_path: Path) -> None:
         f'[library]\nmusic_dir = "{music}"\nbeets_db = "{beets}"\n'
         f'supported_formats = ["flac"]\n'
         f'[index]\nindex_dir = "{index}"\nmodel_dir = "{models}"\n'
-        f'[playback]\ncrossfade_seconds = 3.0\nno_repeat_window = 5\n'
-        f'[model]\nname = "m-a-p/MERT-v1-330M"\n',
+        f"[playback]\ncrossfade_seconds = 3.0\nno_repeat_window = 5\n"
+        f'[model]\nname = "OpenMuQ/MuQ-large-msd-iter"\n',
         encoding="utf-8",
     )
 
@@ -133,6 +124,29 @@ class TestHelpText:
         assert "--seed" in result.output
         assert "--dry-run" in result.output
         assert "--crossfade" in result.output
+        assert "--preset" in result.output
+        assert "--bpm-range" in result.output
+        assert "--discovery-every" in result.output
+        assert "--export-m3u" in result.output
+
+    def test_serve_help(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli, ["serve", "--help"])
+        assert result.exit_code == 0
+        assert "--preset" in result.output
+        assert "--bpm-range" in result.output
+        assert "--discovery-every" in result.output
+
+    def test_playlist_help(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli, ["playlist", "--help"])
+        assert result.exit_code == 0
+        assert "--tracks" in result.output
+        assert "--preset" in result.output
+        assert "--bpm-range" in result.output
+        assert "--output" in result.output
+
+    def test_stats_help(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli, ["stats", "--help"])
+        assert result.exit_code == 0
 
 
 # ---------------------------------------------------------------------------
@@ -183,9 +197,9 @@ class TestPlayCommand:
         config_path = tmp_path / "config.toml"
         _write_config(config_path, tmp_path)
 
-        # Pre-build index
-        index_dir = tmp_path / "index"
-        index_dir.mkdir(exist_ok=True)
+        # Pre-build index under index/default/ (named-index layout)
+        index_dir = tmp_path / "index" / "default"
+        index_dir.mkdir(parents=True, exist_ok=True)
         entries = [
             IndexEntry(
                 path=f"Z:/Music/song_{i}.flac",
@@ -196,12 +210,14 @@ class TestPlayCommand:
                 bpm=120.0,
                 year=2000,
                 length=180.0,
+                energy=0.05,
+                key=0,
+                mode=1,
+                tempo_confidence=0.8,
             )
             for i in range(5)
         ]
-        vectors = np.array(
-            [np.random.randn(FEATURE_DIM).astype(np.float32) for _ in range(5)]
-        )
+        vectors = np.array([np.random.randn(FEATURE_DIM).astype(np.float32) for _ in range(5)])
         vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
         save_index(entries, vectors, index_dir)
 
@@ -231,7 +247,120 @@ class TestPlayCommand:
         assert "Index not found" in result.output or "not found" in result.output.lower()
 
     def test_play_missing_config_exits_1(self, runner: CliRunner, tmp_path: Path) -> None:
+        result = runner.invoke(cli, ["--config", str(tmp_path / "nope.toml"), "play"])
+        assert result.exit_code == 1
+
+    def test_play_invalid_bpm_range_exits_1(self, runner: CliRunner, project_dir: Path) -> None:
         result = runner.invoke(
-            cli, ["--config", str(tmp_path / "nope.toml"), "play"]
+            cli,
+            ["--config", str(project_dir / "config.toml"), "play", "--bpm-range", "bad"],
         )
+        assert result.exit_code == 1
+
+    def test_play_invalid_preset_exits_1(self, runner: CliRunner, project_dir: Path) -> None:
+        result = runner.invoke(
+            cli,
+            [
+                "--config",
+                str(project_dir / "config.toml"),
+                "play",
+                "--preset",
+                "nonexistent_preset_xyz",
+            ],
+        )
+        assert result.exit_code == 1
+
+    def test_play_with_builtin_preset_runs(self, runner: CliRunner, project_dir: Path) -> None:
+        with patch("autodj.player.Player.run", side_effect=KeyboardInterrupt):
+            result = runner.invoke(
+                cli,
+                ["--config", str(project_dir / "config.toml"), "play", "--preset", "chill"],
+            )
+        assert result.exit_code == 0
+
+    def test_play_with_bpm_range_runs(self, runner: CliRunner, project_dir: Path) -> None:
+        with patch("autodj.player.Player.run", side_effect=KeyboardInterrupt):
+            result = runner.invoke(
+                cli,
+                ["--config", str(project_dir / "config.toml"), "play", "--bpm-range", "100-140"],
+            )
+        assert result.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# playlist command
+# ---------------------------------------------------------------------------
+
+
+class TestPlaylistCommand:
+    def test_playlist_stdout(self, runner: CliRunner, project_dir: Path) -> None:
+        result = runner.invoke(
+            cli,
+            ["--config", str(project_dir / "config.toml"), "playlist", "--tracks", "3"],
+        )
+        assert result.exit_code == 0, f"Output:\n{result.output}"
+        assert "#EXTM3U" in result.output
+
+    def test_playlist_output_file(
+        self, runner: CliRunner, project_dir: Path, tmp_path: Path
+    ) -> None:
+        out_file = tmp_path / "out.m3u"
+        result = runner.invoke(
+            cli,
+            [
+                "--config",
+                str(project_dir / "config.toml"),
+                "playlist",
+                "--tracks",
+                "3",
+                "--output",
+                str(out_file),
+            ],
+        )
+        assert result.exit_code == 0, f"Output:\n{result.output}"
+        assert out_file.exists()
+        content = out_file.read_text(encoding="utf-8")
+        assert "#EXTM3U" in content
+
+    def test_playlist_with_preset(self, runner: CliRunner, project_dir: Path) -> None:
+        result = runner.invoke(
+            cli,
+            [
+                "--config",
+                str(project_dir / "config.toml"),
+                "playlist",
+                "--tracks",
+                "3",
+                "--preset",
+                "chill",
+            ],
+        )
+        assert result.exit_code == 0, f"Output:\n{result.output}"
+
+    def test_playlist_missing_index_exits_1(self, runner: CliRunner, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        _write_config(config_path, tmp_path)
+        result = runner.invoke(cli, ["--config", str(config_path), "playlist"])
+        assert result.exit_code == 1
+
+
+# ---------------------------------------------------------------------------
+# stats command
+# ---------------------------------------------------------------------------
+
+
+class TestStatsCommand:
+    def test_stats_runs_without_crash(self, runner: CliRunner, project_dir: Path) -> None:
+        result = runner.invoke(cli, ["--config", str(project_dir / "config.toml"), "stats"])
+        assert result.exit_code == 0, f"Output:\n{result.output}"
+        assert "tracks" in result.output.lower() or "Total" in result.output
+
+    def test_stats_missing_config_exits_1(self, runner: CliRunner, tmp_path: Path) -> None:
+        result = runner.invoke(cli, ["--config", str(tmp_path / "nope.toml"), "stats"])
+        assert result.exit_code == 1
+
+    def test_stats_missing_index_exits_1(self, runner: CliRunner, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        _write_config(config_path, tmp_path)
+        result = runner.invoke(cli, ["--config", str(config_path), "stats"])
         assert result.exit_code == 1

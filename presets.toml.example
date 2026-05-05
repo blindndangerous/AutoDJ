@@ -1,0 +1,57 @@
+# AutoDJ presets — copy to `presets.toml` next to your `config.toml`.
+#
+# A preset shapes the BPM curve over a session: constant, linear ramp,
+# slide between two values, or sine arch.  Use it on the CLI with
+# `--preset NAME` or pick it from the Settings dropdown in the web UI.
+#
+# Each table heading is the preset name.  Two layouts are accepted:
+#
+# 1.  Bare top-level tables (recommended for this sidecar file):
+#
+#       [wakeup]
+#       type = "ramp_up"
+#       ...
+#
+# 2.  Wrapped under [presets.*] (legacy, also works inside config.toml):
+#
+#       [presets.wakeup]
+#       type = "ramp_up"
+#       ...
+#
+# Built-in presets (`wakeup`, `chill`, `party`, `workout`, etc.) are
+# always available — define names below to OVERRIDE a built-in or add
+# new ones.
+
+# ---------------------------------------------------------------------------
+# Constant BPM target — pick anything close to 85 BPM
+# ---------------------------------------------------------------------------
+# [focus_deep]
+# bpm_target = 85
+# bpm_weight = 0.15
+# genres     = ["Electronic", "Ambient"]    # optional genre filter
+
+# ---------------------------------------------------------------------------
+# Linear ramp — start slow, finish fast over N tracks
+# ---------------------------------------------------------------------------
+# [festival]
+# bpm_start      = 90
+# bpm_end        = 145
+# horizon_tracks = 60
+# bpm_weight     = 0.35
+# discovery_every = 10                       # inject distant track every N
+
+# ---------------------------------------------------------------------------
+# Sine arch — slow → peak → slow over the session
+# ---------------------------------------------------------------------------
+# [arch]
+# bpm_start = 80
+# bpm_end   = 140
+# curve     = "slide"
+
+# ---------------------------------------------------------------------------
+# Genre-locked chill set
+# ---------------------------------------------------------------------------
+# [evening_jazz]
+# bpm_target = 90
+# bpm_weight = 0.2
+# genres     = ["Jazz", "R-n-B"]

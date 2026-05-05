@@ -24,24 +24,59 @@ Routes
 ``WS   /ws``                → push state JSON every 1 second
 """
 
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import json as _json
 import logging
 import threading
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Any
 
-# FastAPI imports at module level so that `from __future__ import annotations`
-# does not break FastAPI's annotation-based dependency injection.  When these
-# are imported inside a function, FastAPI resolves lazy string annotations
-# against the *module* globals and fails to find WebSocket / BaseModel.
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import (
+    FastAPI,
+    HTTPException,
+    Request,
+    Response,
+    WebSocket,
+    WebSocketDisconnect,
+)
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+if TYPE_CHECKING:
+    from autodj.config import AutoDJConfig
+    from autodj.indexer import IndexEntry
+    from autodj.presets import Preset
+    from autodj.similarity import SimilarityIndex
+
 logger = logging.getLogger(__name__)
+
+
+def _build_why(player: Any) -> list[str]:
+    """Build the 'why this track' sentence list for the bridge state."""
+    from autodj.explain import explain_pick
+
+    cur = getattr(player._state, "current_track", None)
+    prev = getattr(player, "_previous_track", None)
+    mode = getattr(player, "_last_pick_mode", "similarity")
+    return explain_pick(prev, cur, mode=mode)
+
+
+def _library_job_snapshot() -> dict:
+    """Return current library-job state.  Empty dict when nothing has run."""
+    from autodj.jobs import get_manager
+
+    snap = get_manager().snapshot()
+    # Only the most recent few lines fly through the WS payload — the
+    # full log is fetchable via GET /api/library/job.
+    snap = dict(snap)
+    snap["lines"] = snap["lines"][-25:]
+    return snap
 
 
 class VolumeBody(BaseModel):
@@ -55,6 +90,86 @@ class PlayNextBody(BaseModel):
 
     path: str
     now: bool = False  # if True, also skip the current track
+
+
+class QueueReorderBody(BaseModel):
+    """Request body for POST /api/queue/reorder.
+
+    Attributes:
+        paths: New ordering of the queue, expressed as a list of
+            :attr:`~autodj.indexer.IndexEntry.path` strings.  The first
+            entry plays after the current track finishes.
+    """
+
+    paths: list[str]
+
+
+class EqBody(BaseModel):
+    """Request body for POST /api/eq.
+
+    Each gain is a linear multiplier in [0.0, 2.0]; 1.0 = unity.
+    Omitted fields are left unchanged.
+    """
+
+    low: float | None = None
+    mid: float | None = None
+    high: float | None = None
+
+
+class PresetBody(BaseModel):
+    """Request body for POST /api/preset — empty / null name clears."""
+
+    name: str | None = None
+
+
+class TransitionBody(BaseModel):
+    """Request body for POST /api/transition."""
+
+    effect: str
+
+
+class DjMixBody(BaseModel):
+    """Request body for POST /api/djmix — only set fields are applied."""
+
+    harmonic_mixing: bool | None = None
+    harmonic_mode: str | None = None
+    beatmatch: bool | None = None
+    phrase_align: bool | None = None
+    outro_intro_align: bool | None = None
+    filter_sweep: bool | None = None
+
+
+class PlaybackSettingsBody(BaseModel):
+    """Request body for POST /api/playback-settings."""
+
+    crossfade_seconds: float | None = None
+    crossfade_eq_duck: bool | None = None
+    smart_shuffle: bool | None = None
+    pure_shuffle: bool | None = None
+    anchor_to_seed: bool | None = None
+    replaygain_enabled: bool | None = None
+    enable_daypart: bool | None = None
+    show_lyrics: bool | None = None
+
+
+class BpmRangeBody(BaseModel):
+    """Request body for POST /api/bpm-range — both null = clear filter."""
+
+    lo: float | None = None
+    hi: float | None = None
+
+
+class DiscoveryBody(BaseModel):
+    """Request body for POST /api/discovery — null disables."""
+
+    every: int | None = None
+
+
+class LibraryJobBody(BaseModel):
+    """Request body for POST /api/library/run — invokes a CLI subcommand."""
+
+    name: str
+    args: list[str] = []
 
 
 # ---------------------------------------------------------------------------
@@ -76,8 +191,12 @@ class PlayerBridge:
         sim: The loaded :class:`~autodj.similarity.SimilarityIndex` (for search).
     """
 
-    player: object  # autodj.player.Player — imported lazily to avoid heavy import at module load
-    sim: object     # autodj.similarity.SimilarityIndex
+    # Typed as Any so mypy doesn't complain about every duck-typed attribute
+    # access (player._state, player._eq_low, etc.).  Real type is
+    # autodj.player.Player / autodj.similarity.SimilarityIndex but we don't
+    # import them eagerly to keep the minimal-install path light.
+    player: Any
+    sim: Any
 
     # ------------------------------------------------------------------
     # Controls
@@ -85,7 +204,7 @@ class PlayerBridge:
 
     def skip(self) -> None:
         """Skip the current track immediately."""
-        self.player._skip_event.set()  # type: ignore[attr-defined]
+        self.player._skip_event.set()
 
     def pause(self) -> bool:
         """Toggle pause/resume.
@@ -93,7 +212,7 @@ class PlayerBridge:
         Returns:
             New paused state (``True`` = paused).
         """
-        state = self.player._state  # type: ignore[attr-defined]
+        state = self.player._state
         state.is_paused = not state.is_paused
         return state.is_paused
 
@@ -103,7 +222,7 @@ class PlayerBridge:
         Args:
             volume: Float in ``[0.0, 1.0]``.  Clamped automatically.
         """
-        self.player._state.volume = max(0.0, min(1.0, float(volume)))  # type: ignore[attr-defined]
+        self.player._state.volume = max(0.0, min(1.0, float(volume)))
 
     def toggle_mute(self) -> bool:
         """Toggle mute.
@@ -111,9 +230,21 @@ class PlayerBridge:
         Returns:
             New muted state (``True`` = muted).
         """
-        state = self.player._state  # type: ignore[attr-defined]
+        state = self.player._state
         state.is_muted = not state.is_muted
         return state.is_muted
+
+    def toggle_discovery(self) -> bool:
+        """Toggle discovery mode on/off.
+
+        Has no effect if the player was not started with a discovery rate.
+
+        Returns:
+            New ``discovery_enabled`` state (``True`` = enabled).
+        """
+        state = self.player._state
+        state.discovery_enabled = not state.discovery_enabled
+        return state.discovery_enabled
 
     # ------------------------------------------------------------------
     # State read
@@ -126,11 +257,13 @@ class PlayerBridge:
             Dict with keys: ``current_track``, ``next_track``, ``is_paused``,
             ``volume``, ``is_muted``, ``elapsed``, ``duration``.
         """
-        state = self.player._state  # type: ignore[attr-defined]
-        pos = self.player._playback_pos[0]  # type: ignore[attr-defined]
-        sr = self.player._current_sr  # type: ignore[attr-defined]
+        state = self.player._state
+        pos = self.player._playback_pos[0]
+        sr = self.player._current_sr
 
-        def _track_dict(entry) -> dict | None:
+        from autodj.dj_meta import camelot_label
+
+        def _track_dict(entry: IndexEntry | None) -> dict | None:
             if entry is None:
                 return None
             return {
@@ -141,51 +274,100 @@ class PlayerBridge:
                 "bpm": entry.bpm,
                 "length": entry.length,
                 "display_name": entry.display_name,
+                "key": entry.key,
+                "mode": entry.mode,
+                "camelot": camelot_label(entry.key, entry.mode),
+                "energy": round(entry.energy, 3) if entry.energy else 0.0,
             }
 
         elapsed = round(pos / max(1, sr), 1)
 
+        discovery_every = getattr(self.player, "_discovery_every", None)
+
+        # Compute the active lyric line for the current playback time
+        from autodj.audio_meta import current_lyric
+
+        lyrics = getattr(self.player, "_current_lyrics", []) or []
+        active = current_lyric(lyrics, elapsed) if lyrics else None
+        active_idx: int | None = None
+        if active is not None:
+            for i, ll in enumerate(lyrics):
+                if ll is active:
+                    active_idx = i
+                    break
+
         return {
             "current_track": _track_dict(state.current_track),
             "next_track": _track_dict(state.next_track),
+            "queue": [_track_dict(e) for e in state.queue],
             "is_paused": state.is_paused,
             "volume": round(state.volume, 2),
             "is_muted": state.is_muted,
             "elapsed": elapsed,
-            "duration": round(state.current_track.length, 1) if state.current_track and state.current_track.length else 0.0,
+            "duration": round(state.current_track.length, 1)
+            if state.current_track and state.current_track.length
+            else 0.0,
+            "discovery_enabled": state.discovery_enabled,
+            "discovery_available": discovery_every is not None,
+            "has_lyrics": bool(lyrics),
+            "lyric_index": active_idx,
+            "lyric_text": active.text if active else None,
+            "lyrics_plain": getattr(self.player, "_current_lyrics_plain", "") or "",
+            "eq": self.get_eq(),
+            "beatmatch_ratio": round(getattr(self.player, "_beatmatch_ratio", 1.0), 3),
+            "last_transition_fx": getattr(self.player, "_last_transition_fx", "none"),
+            "why_this_track": _build_why(self.player),
+            "library_job": _library_job_snapshot(),
+            # Browser-side audio drives playback only when the server is
+            # headless (dry_run / --no-playback / missing audio deps).
+            "browser_playback": bool(getattr(self.player, "_dry_run", False)),
+            "settings": self.get_settings(),
         }
 
     # ------------------------------------------------------------------
     # Search
     # ------------------------------------------------------------------
 
-    def search(self, query: str, limit: int = 20) -> list[dict]:
-        """Search indexed tracks by title or artist.
+    def search(self, query: str, limit: int = 100) -> list[dict]:
+        """Search indexed tracks by title, artist, and album.
+
+        Splits the query into whitespace-separated tokens and requires
+        every token to appear somewhere in the combined ``title +
+        artist + album`` text of a candidate.  Token matching is case-
+        insensitive and substring-based, so:
+
+        - ``"portishead mysterons"`` matches title=Mysterons artist=Portishead
+        - ``"dummy sour"`` matches album=Dummy title=Sour Times
+        - ``"thom yorke amok"`` matches Atoms For Peace album=Amok
 
         Args:
-            query: Case-insensitive search string matched against title and artist.
-            limit: Maximum number of results to return.
+            query: Multi-token search string.  Empty / whitespace-only
+                returns an empty list.
+            limit: Maximum number of results to return.  Default 100.
 
         Returns:
-            List of track dicts (same shape as the ``current_track`` dict in
-            :meth:`get_state`).
+            List of track dicts (same shape as the ``current_track``
+            dict in :meth:`get_state`).
         """
-        q = query.lower().strip()
-        if not q:
+        tokens = [t for t in query.lower().split() if t]
+        if not tokens:
             return []
 
         results = []
-        for entry in self.sim.entries:  # type: ignore[attr-defined]
-            if q in entry.title.lower() or q in entry.artist.lower():
-                results.append({
-                    "title": entry.title,
-                    "artist": entry.artist,
-                    "album": entry.album,
-                    "path": entry.path,
-                    "bpm": entry.bpm,
-                    "length": entry.length,
-                    "display_name": entry.display_name,
-                })
+        for entry in self.sim.entries:
+            haystack = (f"{entry.title} — {entry.artist} — {entry.album}").lower()
+            if all(tok in haystack for tok in tokens):
+                results.append(
+                    {
+                        "title": entry.title,
+                        "artist": entry.artist,
+                        "album": entry.album,
+                        "path": entry.path,
+                        "bpm": entry.bpm,
+                        "length": entry.length,
+                        "display_name": entry.display_name,
+                    },
+                )
                 if len(results) >= limit:
                     break
         return results
@@ -207,15 +389,357 @@ class PlayerBridge:
             ``True`` if the track was found in the index, ``False`` otherwise.
         """
         entry = next(
-            (e for e in self.sim.entries if e.path == path),  # type: ignore[attr-defined]
+            (e for e in self.sim.entries if e.path == path),
             None,
         )
         if entry is None:
             return False
-        self.player._state.queued_next = entry  # type: ignore[attr-defined]
+        self.player._state.queued_next = entry
         if now:
-            self.player._skip_event.set()  # type: ignore[attr-defined]
+            self.player._skip_event.set()
         return True
+
+    # ------------------------------------------------------------------
+    # Queue manipulation
+    # ------------------------------------------------------------------
+
+    def reseed_random(self) -> bool:
+        """Pick a fresh random track from the index and play it next.
+
+        Unlike :meth:`skip` (which advances via similarity from the
+        current track), this reseeds the auto-DJ session from a random
+        starting point — useful when the user doesn't like the seed the
+        server picked at startup or wants to jump to an unrelated genre.
+        """
+        import random as _random
+
+        entries = self.sim.entries
+        if not entries:
+            return False
+        chosen = _random.choice(entries)  # nosec B311 — non-security
+        self.player._state.queued_next = chosen
+        self.player._skip_event.set()
+        return True
+
+    def queue_add(self, path: str) -> bool:
+        """Append a track by path to the end of the user queue."""
+        entry = next(
+            (e for e in self.sim.entries if e.path == path),
+            None,
+        )
+        if entry is None:
+            return False
+        self.player._state.queue.append(entry)
+        return True
+
+    def queue_remove(self, path: str) -> bool:
+        """Remove the first matching path from the queue."""
+        q = self.player._state.queue
+        for i, e in enumerate(q):
+            if e.path == path:
+                del q[i]
+                return True
+        return False
+
+    def queue_reorder(self, paths: list[str]) -> bool:
+        """Reorder the queue to match the given list of paths.
+
+        Tracks present in the queue but missing from *paths* are dropped.
+        Paths not found in the current queue are ignored (re-add via
+        :meth:`queue_add`).
+        """
+        q = self.player._state.queue
+        by_path = {e.path: e for e in q}
+        new_q = [by_path[p] for p in paths if p in by_path]
+        # Replace contents in place so any concurrent reads see consistent state
+        q.clear()
+        q.extend(new_q)
+        return True
+
+    # ------------------------------------------------------------------
+    # Cover art and lyrics
+    # ------------------------------------------------------------------
+
+    def cover_art_for(self, path: str) -> tuple[bytes, str] | None:
+        """Return (image_bytes, mime_type) for the embedded cover art."""
+        from autodj.audio_meta import read_cover_art
+
+        art = read_cover_art(path)
+        if art is None:
+            return None
+        return art.data, art.mime_type
+
+    def current_lyrics(self) -> list[dict]:
+        """Return the currently-loaded lyrics as a list of dicts."""
+        lyrics = getattr(self.player, "_current_lyrics", []) or []
+        return [{"time_s": ll.time_s, "text": ll.text} for ll in lyrics]
+
+    # ------------------------------------------------------------------
+    # 3-band EQ
+    # ------------------------------------------------------------------
+
+    def set_eq(
+        self,
+        low: float | None = None,
+        mid: float | None = None,
+        high: float | None = None,
+    ) -> dict[str, float]:
+        """Set one or more EQ band gains.  Returns the resulting state."""
+        p = self.player
+        if low is not None:
+            p._eq_low = max(0.0, min(2.0, float(low)))
+        if mid is not None:
+            p._eq_mid = max(0.0, min(2.0, float(mid)))
+        if high is not None:
+            p._eq_high = max(0.0, min(2.0, float(high)))
+        return self.get_eq()
+
+    def get_eq(self) -> dict[str, float]:
+        """Return current EQ band gains."""
+        p = self.player
+        return {
+            "low": round(p._eq_low, 3),
+            "mid": round(p._eq_mid, 3),
+            "high": round(p._eq_high, 3),
+        }
+
+    # ------------------------------------------------------------------
+    # Settings (mirror of CLI flags) — preset, transition, djmix toggles,
+    # crossfade seconds, BPM range, discovery, smart-shuffle, ReplayGain
+    # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Persistence — settings survive serve restarts
+    # ------------------------------------------------------------------
+
+    def _state_file(self) -> Path | None:
+        cfg = getattr(self.player, "_cfg", None)
+        if cfg is None:
+            return None
+        try:
+            return Path(cfg.index.active_dir) / "web_state.json"
+        except (TypeError, AttributeError):
+            return None
+
+    def load_persistent_state(self) -> None:
+        """Restore previously-saved settings from web_state.json."""
+        from autodj.runtime_state import load_into_player
+
+        cfg = getattr(self.player, "_cfg", None)
+        load_into_player(self.player, cfg.index.active_dir if cfg else None)
+
+    def save_persistent_state(self) -> None:
+        """Write current settings to web_state.json (atomic)."""
+        from autodj.runtime_state import save_from_player
+
+        cfg = getattr(self.player, "_cfg", None)
+        save_from_player(
+            self.get_settings(),
+            cfg.index.active_dir if cfg else None,
+        )
+
+    def get_settings(self) -> dict:
+        """Return a snapshot of every adjustable setting + available presets."""
+        p = self.player
+        cfg = p._cfg
+        preset = p._preset
+        from autodj.presets import BUILTIN_PRESETS
+
+        names = sorted(set(BUILTIN_PRESETS.keys()) | set(cfg.presets.keys()))
+        bpm_range = p._bpm_range
+        return {
+            "preset": preset.name if preset else None,
+            "available_presets": names,
+            "transition": cfg.transitions.effect,
+            "djmix": {
+                "harmonic_mixing": cfg.djmix.harmonic_mixing,
+                "harmonic_mode": getattr(cfg.djmix, "harmonic_mode", "compatible"),
+                "beatmatch": cfg.djmix.beatmatch,
+                "phrase_align": cfg.djmix.phrase_align,
+                "outro_intro_align": cfg.djmix.outro_intro_align,
+                "filter_sweep": cfg.djmix.filter_sweep,
+            },
+            "playback": {
+                "crossfade_seconds": cfg.playback.crossfade_seconds,
+                "crossfade_eq_duck": cfg.playback.crossfade_eq_duck,
+                "smart_shuffle": p._smart_shuffle,
+                "pure_shuffle": getattr(p, "_pure_shuffle", False),
+                "anchor_to_seed": getattr(p, "_anchor_to_seed", False),
+                "replaygain_enabled": cfg.replaygain.enabled,
+                "enable_daypart": cfg.playback.enable_daypart,
+                "show_lyrics": getattr(cfg.playback, "show_lyrics", True),
+                "prefetch_next_track": getattr(
+                    cfg.playback,
+                    "prefetch_next_track",
+                    True,
+                ),
+                "silence_trigger_crossfade": getattr(
+                    cfg.playback,
+                    "silence_trigger_crossfade",
+                    True,
+                ),
+            },
+            "bpm_range": {
+                "lo": bpm_range[0] if bpm_range else None,
+                "hi": bpm_range[1] if bpm_range else None,
+            },
+            "discovery_every": p._discovery_every,
+        }
+
+    def set_preset(self, name: str | None) -> None:
+        """Set the active preset by name, or pass None / '' to clear."""
+        p = self.player
+        if not name:
+            p._preset = None
+            return
+        from autodj.presets import get_preset
+
+        try:
+            p._preset = get_preset(name, p._cfg.presets)
+            # Apply preset-defined discovery rate if set, only when no
+            # explicit discovery_every is currently configured.
+            if p._preset.discovery_every and p._discovery_every is None:
+                p._discovery_every = p._preset.discovery_every
+        except ValueError:
+            pass
+
+    def set_transition(self, effect: str) -> None:
+        """Set the transition effect by name."""
+        valid = {
+            "none",
+            "echo_out",
+            "reverb_tail",
+            "highpass_sweep",
+            "lowpass_sweep",
+            "tape_stop",
+            "gate_stutter",
+            "noise_riser",
+            "noise_drop",
+            "backspin",
+            "forward_spin",
+            "cross_eq_swap",
+            "bitcrusher",
+            "flanger",
+            "pitch_swell",
+            "telephone",
+            "chorus",
+            "submerge",
+            "vinyl_wow",
+            "freeze",
+            "glitch",
+            "scratch",
+            "beat_repeat",
+            "sidechain_pump",
+            "reverse_reverb",
+            "air_horn",
+            "random",
+            "rotate",
+        }
+        if effect.lower() in valid:
+            self.player._cfg.transitions.effect = effect.lower()
+
+    def set_djmix(self, **flags: bool | str | None) -> None:
+        """Set one or more DJ-mix toggle flags or harmonic_mode string."""
+        from autodj.dj_meta import HARMONIC_MODES
+
+        cfg = self.player._cfg
+        for k, v in flags.items():
+            if v is None:
+                continue
+            if k == "harmonic_mode":
+                mode = str(v).lower()
+                if mode in HARMONIC_MODES:
+                    cfg.djmix.harmonic_mode = mode
+                    # Auto-toggle harmonic_mixing on/off based on mode
+                    cfg.djmix.harmonic_mixing = mode != "off"
+                continue
+            if hasattr(cfg.djmix, k):
+                setattr(cfg.djmix, k, bool(v))
+
+    def set_playback_settings(
+        self,
+        crossfade_seconds: float | None = None,
+        crossfade_eq_duck: bool | None = None,
+        smart_shuffle: bool | None = None,
+        pure_shuffle: bool | None = None,
+        anchor_to_seed: bool | None = None,
+        replaygain_enabled: bool | None = None,
+        enable_daypart: bool | None = None,
+        show_lyrics: bool | None = None,
+    ) -> None:
+        """Apply playback-related settings; only non-null fields take effect."""
+        cfg = self.player._cfg
+        if crossfade_seconds is not None:
+            cfg.playback.crossfade_seconds = max(0.0, float(crossfade_seconds))
+        if crossfade_eq_duck is not None:
+            cfg.playback.crossfade_eq_duck = bool(crossfade_eq_duck)
+        if smart_shuffle is not None:
+            self.player._smart_shuffle = bool(smart_shuffle)
+        if pure_shuffle is not None:
+            self.player._pure_shuffle = bool(pure_shuffle)
+        if anchor_to_seed is not None:
+            self.player._anchor_to_seed = bool(anchor_to_seed)
+            # If user just enabled anchored mode and there's no seed
+            # remembered (e.g. PlayerBridge attached after run() started
+            # via a non-standard path), pin the current track as seed so
+            # the picker has something to anchor to.
+            if (
+                self.player._anchor_to_seed
+                and not getattr(self.player, "_seed_path", None)
+                and self.player._state.current_track
+            ):
+                self.player._seed_path = self.player._state.current_track.path
+        if replaygain_enabled is not None:
+            cfg.replaygain.enabled = bool(replaygain_enabled)
+        if enable_daypart is not None:
+            cfg.playback.enable_daypart = bool(enable_daypart)
+        if show_lyrics is not None:
+            cfg.playback.show_lyrics = bool(show_lyrics)
+            if not show_lyrics:
+                # Clear immediately so the web UI hides the card / CLI
+                # panel doesn't flash leftover text.  Reload happens
+                # naturally on the next track load when toggled back on.
+                self.player._current_lyrics = []
+                self.player._current_lyrics_plain = ""
+
+    def set_bpm_range(self, lo: float | None, hi: float | None) -> None:
+        """Set the hard BPM filter; pass both null to clear."""
+        if lo is None or hi is None or lo >= hi:
+            self.player._bpm_range = None
+        else:
+            self.player._bpm_range = (float(lo), float(hi))
+
+    def set_discovery_every(self, every: int | None) -> None:
+        """Set the discovery rate; null disables."""
+        if every is None or every <= 0:
+            self.player._discovery_every = None
+            self.player._state.discovery_enabled = False
+        else:
+            self.player._discovery_every = int(every)
+
+    # ------------------------------------------------------------------
+    # Hot-reload — pick up new tracks while a parallel `index` runs
+    # ------------------------------------------------------------------
+
+    def reload_index_from_disk(self) -> int:
+        """Re-read ``metadata.json`` + ``vectors.index`` into the live sim.
+
+        Used by the background watcher in :func:`create_app` so a long-
+        running ``serve`` picks up tracks that ``autodj index`` (running
+        in parallel) has freshly embedded.  No restart required — the
+        next track pick consults the new entries.
+
+        Returns:
+            New track count after reload.
+        """
+        cfg = getattr(self.player, "_cfg", None)
+        if cfg is None:
+            return self.sim.ntotal
+        return self.sim.reload_from_disk(
+            cfg.index.active_dir,
+            music_dir=cfg.library.music_dir,
+            path_remap=cfg.library.path_remap,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +747,7 @@ class PlayerBridge:
 # ---------------------------------------------------------------------------
 
 
-def create_app(bridge: PlayerBridge):
+def create_app(bridge: PlayerBridge) -> FastAPI:
     """Create and return the FastAPI application.
 
     Args:
@@ -241,10 +765,12 @@ def create_app(bridge: PlayerBridge):
     # ------------------------------------------------------------------
 
     @contextlib.asynccontextmanager
-    async def lifespan(app: FastAPI):
-        task = asyncio.create_task(_broadcast_loop())
+    async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
+        broadcast = asyncio.create_task(_broadcast_loop())
+        watcher = asyncio.create_task(_index_watcher_loop())
         yield
-        task.cancel()
+        broadcast.cancel()
+        watcher.cancel()
 
     app = FastAPI(title="AutoDJ", version="0.1.0", lifespan=lifespan)
 
@@ -252,56 +778,447 @@ def create_app(bridge: PlayerBridge):
     # Static HTML
     # ------------------------------------------------------------------
 
-    _static_html_path = Path(__file__).parent / "static" / "index.html"
+    _static_dir = Path(__file__).parent / "static"
+    _static_html_path = _static_dir / "index.html"
+
+    # Cache-busting headers so Firefox / Chrome don't keep serving
+    # stale HTML / JS / CSS across server upgrades.  In a single-user
+    # NAS deployment we don't need browser caching — every page load
+    # should pick up the latest static assets.
+    _NO_CACHE = {
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0",
+    }
 
     @app.get("/", response_class=HTMLResponse)
-    async def get_index():
-        return HTMLResponse(content=_static_html_path.read_text(encoding="utf-8"))
+    async def get_index() -> HTMLResponse:
+        return HTMLResponse(
+            content=_static_html_path.read_text(encoding="utf-8"),
+            headers=_NO_CACHE,
+        )
+
+    # Convenience aliases at the top level for `app.css` / `app.js` /
+    # the AudioWorklet — bypass StaticFiles caching defaults.
+    # Explicit routes MUST be registered before the /static mount,
+    # otherwise the mount short-circuits with default headers.
+    @app.get("/app.css")
+    async def get_css() -> FileResponse:
+        return FileResponse(_static_dir / "app.css", media_type="text/css", headers=_NO_CACHE)
+
+    @app.get("/app.js")
+    async def get_js() -> FileResponse:
+        return FileResponse(_static_dir / "app.js", media_type="text/javascript", headers=_NO_CACHE)
+
+    @app.get("/bitcrusher-worklet.js")
+    async def get_worklet() -> FileResponse:
+        return FileResponse(
+            _static_dir / "bitcrusher-worklet.js",
+            media_type="text/javascript",
+            headers=_NO_CACHE,
+        )
+
+    @app.get("/stutter-worklet.js")
+    async def get_stutter_worklet() -> FileResponse:
+        return FileResponse(
+            _static_dir / "stutter-worklet.js",
+            media_type="text/javascript",
+            headers=_NO_CACHE,
+        )
+
+    @app.get("/freeze-worklet.js")
+    async def get_freeze_worklet() -> FileResponse:
+        return FileResponse(
+            _static_dir / "freeze-worklet.js",
+            media_type="text/javascript",
+            headers=_NO_CACHE,
+        )
+
+    @app.get("/glitch-worklet.js")
+    async def get_glitch_worklet() -> FileResponse:
+        return FileResponse(
+            _static_dir / "glitch-worklet.js",
+            media_type="text/javascript",
+            headers=_NO_CACHE,
+        )
+
+    # Serve any other assets at /static/...
+    app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
 
     # ------------------------------------------------------------------
     # REST API
     # ------------------------------------------------------------------
 
     @app.get("/api/status")
-    async def api_status():
+    async def api_status() -> JSONResponse:
         return JSONResponse(bridge.get_state())
 
     @app.post("/api/skip")
-    async def api_skip():
+    async def api_skip() -> dict[str, bool]:
         bridge.skip()
         return {"ok": True}
 
     @app.post("/api/pause")
-    async def api_pause():
+    async def api_pause() -> dict[str, bool]:
         paused = bridge.pause()
         return {"paused": paused}
 
     @app.post("/api/volume")
-    async def api_volume(body: VolumeBody):
+    async def api_volume(body: VolumeBody) -> dict[str, float]:
         bridge.set_volume(body.volume)
-        return {"volume": round(bridge.player._state.volume, 2)}  # type: ignore[attr-defined]
+        return {"volume": round(bridge.player._state.volume, 2)}
 
     @app.post("/api/mute")
-    async def api_mute():
+    async def api_mute() -> dict[str, bool]:
         muted = bridge.toggle_mute()
         return {"muted": muted}
 
     @app.post("/api/play-next")
-    async def api_play_next(body: PlayNextBody):
+    async def api_play_next(body: PlayNextBody) -> dict[str, bool]:
         found = bridge.play_next(body.path, now=body.now)
         return {"ok": found}
 
     @app.get("/api/search")
-    async def api_search(q: str = ""):
-        results = bridge.search(q)
+    async def api_search(q: str = "", limit: int = 100) -> dict[str, list]:
+        results = bridge.search(q, limit=max(1, min(500, int(limit))))
         return {"results": results}
+
+    # ------------------------------------------------------------------
+    # Queue manipulation
+    # ------------------------------------------------------------------
+
+    @app.post("/api/queue/add")
+    async def api_queue_add(body: PlayNextBody) -> dict[str, bool]:
+        return {"ok": bridge.queue_add(body.path)}
+
+    @app.post("/api/queue/remove")
+    async def api_queue_remove(body: PlayNextBody) -> dict[str, bool]:
+        return {"ok": bridge.queue_remove(body.path)}
+
+    @app.post("/api/queue/reorder")
+    async def api_queue_reorder(body: QueueReorderBody) -> dict[str, bool]:
+        return {"ok": bridge.queue_reorder(body.paths)}
+
+    # ------------------------------------------------------------------
+    # Cover art and lyrics
+    # ------------------------------------------------------------------
+
+    @app.get("/api/art")
+    async def api_art(path: str) -> Response:
+        # Only serve art for tracks that exist in the index — prevents
+        # arbitrary file access through the path parameter.
+        known = any(e.path == path for e in bridge.sim.entries)
+        if not known:
+            raise HTTPException(status_code=404, detail="Track not in index")
+        result = bridge.cover_art_for(path)
+        if result is None:
+            raise HTTPException(status_code=404, detail="No embedded cover art")
+        data, mime = result
+        return Response(content=data, media_type=mime)
+
+    @app.get("/api/lyrics")
+    async def api_lyrics() -> dict[str, list]:
+        return {"lyrics": bridge.current_lyrics()}
+
+    # ------------------------------------------------------------------
+    # Browser-driven playback — stream audio bytes + advance trigger
+    # ------------------------------------------------------------------
+
+    _MIME_BY_SUFFIX = {
+        ".mp3": "audio/mpeg",
+        ".flac": "audio/flac",
+        ".m4a": "audio/mp4",
+        ".mp4": "audio/mp4",
+        ".aac": "audio/aac",
+        ".ogg": "audio/ogg",
+        ".oga": "audio/ogg",
+        ".opus": "audio/ogg",
+        ".wav": "audio/wav",
+        ".aif": "audio/aiff",
+        ".aiff": "audio/aiff",
+    }
+
+    def _audio_mime(p: Path) -> str:
+        return _MIME_BY_SUFFIX.get(p.suffix.lower(), "application/octet-stream")
+
+    def _is_alac(p: Path) -> bool:
+        """True iff *p* is an ALAC stream (Apple Lossless inside .m4a)."""
+        if p.suffix.lower() not in (".m4a", ".mp4"):
+            return False
+        try:
+            from mutagen.mp4 import MP4
+
+            info = MP4(str(p)).info
+            codec = getattr(info, "codec", None) or ""
+            return codec.lower() == "alac"
+        except (OSError, ValueError, ImportError):
+            return False
+
+    async def _transcode_alac_to_mp3(p: Path) -> AsyncGenerator[bytes]:  # pragma: no cover
+        """Yield MP3 bytes from an ALAC source via ffmpeg subprocess.
+
+        Browser ALAC support is Safari-only, so for Chrome/Firefox we
+        decode + re-encode to MP3 on the fly.  Range requests are not
+        supported on transcoded streams (ffmpeg can't seek-then-encode
+        cheaply); browser falls back to sequential playback which is
+        fine for auto-DJ use.
+
+        Excluded from coverage: requires a real ffmpeg subprocess with
+        an ALAC source — neither is available in CI.
+        """
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg",
+            "-loglevel",
+            "error",
+            "-i",
+            str(p),
+            "-c:a",
+            "libmp3lame",
+            "-b:a",
+            "192k",
+            "-f",
+            "mp3",
+            "pipe:1",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            stdout = proc.stdout
+            if stdout is None:
+                return
+            while True:
+                chunk = await stdout.read(64 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            await proc.wait()
+
+    @app.get("/api/audio")
+    async def api_audio(path: str, request: Request) -> Response:
+        """Stream the bytes of an indexed audio file with HTTP Range support.
+
+        The browser <audio> element uses this to play whatever the server
+        currently reports as ``current_track``.  Range support is required
+        for seek bar scrubbing and for browsers that probe metadata via a
+        small initial range request.
+
+        Path-traversal is prevented by allowing only paths that appear
+        verbatim in the loaded similarity index.
+        """
+        # Path validation — must be in the index
+        known = any(e.path == path for e in bridge.sim.entries)
+        if not known:
+            raise HTTPException(status_code=404, detail="Track not in index")
+        f = Path(path)
+        if not f.exists() or not f.is_file():
+            raise HTTPException(status_code=404, detail="File not found on disk")
+
+        # Transcode ALAC → MP3 on the fly so non-Safari browsers can
+        # play Apple Lossless tracks.  ffmpeg must be on PATH.
+        if _is_alac(f):  # pragma: no cover — requires ALAC source + ffmpeg
+            try:
+                return StreamingResponse(
+                    _transcode_alac_to_mp3(f),
+                    media_type="audio/mpeg",
+                    headers={"Accept-Ranges": "none"},
+                )
+            except FileNotFoundError:
+                logger.warning(
+                    "ffmpeg not on PATH; serving ALAC raw (browser may reject).",
+                )
+
+        file_size = f.stat().st_size
+        mime = _audio_mime(f)
+        range_header = request.headers.get("range") or request.headers.get("Range")
+
+        # No Range — full body
+        if not range_header:
+
+            def _full_iter() -> AsyncGenerator[bytes]:
+                async def _gen() -> AsyncGenerator[bytes]:
+                    chunk = 64 * 1024
+                    with open(f, "rb") as fh:
+                        while True:
+                            data = fh.read(chunk)
+                            if not data:
+                                break
+                            yield data
+
+                return _gen()
+
+            return StreamingResponse(
+                _full_iter(),
+                media_type=mime,
+                headers={
+                    "Accept-Ranges": "bytes",
+                    "Content-Length": str(file_size),
+                },
+            )
+
+        # Parse "bytes=START-END" — only single-range supported
+        try:
+            units, _, ranges = range_header.partition("=")
+            if units.strip().lower() != "bytes":
+                raise ValueError
+            start_s, _, end_s = ranges.partition("-")
+            start = int(start_s) if start_s else 0
+            end = int(end_s) if end_s else file_size - 1
+        except (ValueError, AttributeError):
+            raise HTTPException(status_code=416, detail="Invalid Range header") from None
+
+        if start < 0 or start >= file_size or end >= file_size or start > end:
+            raise HTTPException(
+                status_code=416,
+                detail="Requested range not satisfiable",
+                headers={"Content-Range": f"bytes */{file_size}"},
+            )
+
+        length = end - start + 1
+
+        async def _range_gen() -> AsyncGenerator[bytes]:
+            chunk = 64 * 1024
+            remaining = length
+            with open(f, "rb") as fh:
+                fh.seek(start)
+                while remaining > 0:
+                    data = fh.read(min(chunk, remaining))
+                    if not data:
+                        break
+                    remaining -= len(data)
+                    yield data
+
+        return StreamingResponse(
+            _range_gen(),
+            status_code=206,
+            media_type=mime,
+            headers={
+                "Accept-Ranges": "bytes",
+                "Content-Range": f"bytes {start}-{end}/{file_size}",
+                "Content-Length": str(length),
+            },
+        )
+
+    @app.post("/api/advance")
+    async def api_advance() -> dict[str, bool]:
+        """Browser signals end-of-track — server picks next track."""
+        bridge.skip()
+        return {"ok": True}
+
+    @app.post("/api/random-track")
+    async def api_random_track() -> dict[str, bool]:
+        """Reseed the auto-DJ from a fresh random track in the index."""
+        return {"ok": bridge.reseed_random()}
+
+    # ------------------------------------------------------------------
+    # Settings (mirror of CLI flags)
+    # ------------------------------------------------------------------
+
+    @app.get("/api/settings")
+    async def api_settings() -> dict:
+        return bridge.get_settings()
+
+    @app.post("/api/preset")
+    async def api_preset(body: PresetBody) -> dict:
+        bridge.set_preset(body.name)
+        bridge.save_persistent_state()
+        return bridge.get_settings()
+
+    @app.post("/api/transition")
+    async def api_transition(body: TransitionBody) -> dict:
+        bridge.set_transition(body.effect)
+        bridge.save_persistent_state()
+        return bridge.get_settings()
+
+    @app.post("/api/djmix")
+    async def api_djmix(body: DjMixBody) -> dict:
+        bridge.set_djmix(**body.model_dump(exclude_none=True))
+        bridge.save_persistent_state()
+        return bridge.get_settings()
+
+    @app.post("/api/playback-settings")
+    async def api_playback_settings(body: PlaybackSettingsBody) -> dict:
+        bridge.set_playback_settings(**body.model_dump(exclude_none=True))
+        bridge.save_persistent_state()
+        return bridge.get_settings()
+
+    @app.post("/api/bpm-range")
+    async def api_bpm_range(body: BpmRangeBody) -> dict:
+        bridge.set_bpm_range(body.lo, body.hi)
+        bridge.save_persistent_state()
+        return bridge.get_settings()
+
+    @app.post("/api/discovery")
+    async def api_discovery(body: DiscoveryBody) -> dict:
+        bridge.set_discovery_every(body.every)
+        bridge.save_persistent_state()
+        return bridge.get_settings()
+
+    # ------------------------------------------------------------------
+    # 3-band EQ
+    # ------------------------------------------------------------------
+
+    @app.post("/api/eq")
+    async def api_eq(body: EqBody) -> dict[str, float]:
+        return bridge.set_eq(low=body.low, mid=body.mid, high=body.high)
+
+    # ------------------------------------------------------------------
+    # Library tools — index / enrich / prune / stats from the web UI
+    # ------------------------------------------------------------------
+
+    @app.get("/api/library/job")
+    async def api_library_job_status() -> dict:
+        from autodj.jobs import get_manager
+
+        return get_manager().snapshot()
+
+    @app.post("/api/library/run")
+    async def api_library_run(body: LibraryJobBody) -> dict:
+        from autodj.jobs import get_manager
+
+        mgr = get_manager()
+        ok = mgr.start(body.name, body.args)
+        if not ok:
+            raise HTTPException(
+                status_code=409,
+                detail="Job already running, or subcommand not allowed.",
+            )
+        return mgr.snapshot()
+
+    @app.post("/api/library/stop")
+    async def api_library_stop() -> dict[str, bool]:
+        from autodj.jobs import get_manager
+
+        return {"stopped": get_manager().stop()}
+
+    @app.get("/api/library/stats")
+    async def api_library_stats() -> dict:
+        """Return summary stats about the loaded SimilarityIndex."""
+        sim = bridge.sim
+        entries = sim.entries
+        n = len(entries)
+        bpms = [e.bpm for e in entries if e.bpm > 0]
+        avg_bpm = round(sum(bpms) / len(bpms), 1) if bpms else 0.0
+        with_genre = sum(1 for e in entries if e.genre)
+        with_key = sum(1 for e in entries if e.key >= 0 and e.mode >= 0)
+        with_energy = sum(1 for e in entries if e.energy > 0)
+        return {
+            "track_count": n,
+            "tracks_with_bpm": len(bpms),
+            "average_bpm": avg_bpm,
+            "tracks_with_genre": with_genre,
+            "tracks_with_key": with_key,
+            "tracks_with_energy": with_energy,
+        }
 
     # ------------------------------------------------------------------
     # WebSocket broadcast
     # ------------------------------------------------------------------
 
     @app.websocket("/ws")
-    async def websocket_endpoint(websocket: WebSocket):
+    async def websocket_endpoint(websocket: WebSocket) -> None:
         # Parameter renamed from 'ws' to 'websocket' to avoid FastAPI
         # mistaking the path segment '/ws' for a query parameter.
         await websocket.accept()
@@ -309,15 +1226,21 @@ def create_app(bridge: PlayerBridge):
             _ws_clients.add(websocket)
         try:
             while True:
-                # Keep connection alive; data is pushed by _broadcast_loop.
-                await websocket.receive_text()
+                text = await websocket.receive_text()
+                # Handle incoming control commands from the client
+                try:
+                    msg = _json.loads(text)
+                    if isinstance(msg, dict) and msg.get("type") == "toggle_discovery":
+                        bridge.toggle_discovery()
+                except (_json.JSONDecodeError, AttributeError):
+                    pass
         except WebSocketDisconnect:
             pass
         finally:
             async with _ws_lock:
                 _ws_clients.discard(websocket)
 
-    async def _broadcast_loop():
+    async def _broadcast_loop() -> None:  # pragma: no cover — long-running task
         """Push state JSON to all connected WebSocket clients once per second."""
         while True:
             await asyncio.sleep(1)
@@ -330,12 +1253,42 @@ def create_app(bridge: PlayerBridge):
             for client in clients:
                 try:
                     await client.send_text(payload)
-                except Exception:
+                except (RuntimeError, WebSocketDisconnect, ConnectionError):
                     dead.append(client)
             if dead:
                 async with _ws_lock:
                     for client in dead:
                         _ws_clients.discard(client)
+
+    async def _index_watcher_loop() -> None:  # pragma: no cover — long-running task
+        """Reload the FAISS index when ``metadata.json`` mtime changes.
+
+        Runs every 10 seconds.  Lets a parallel ``autodj index`` add
+        tracks while a long-running ``serve`` is up — the next track
+        pick will see the new entries without restarting the server.
+        """
+        cfg = getattr(bridge.player, "_cfg", None)
+        if cfg is None:
+            return
+        meta_path = cfg.index.active_dir / "metadata.json"
+        last_mtime = meta_path.stat().st_mtime if meta_path.exists() else 0.0
+        while True:
+            await asyncio.sleep(10)
+            try:
+                if not meta_path.exists():
+                    continue
+                mtime = meta_path.stat().st_mtime
+                if mtime > last_mtime:
+                    last_mtime = mtime
+                    new_total = await asyncio.to_thread(
+                        bridge.reload_index_from_disk,
+                    )
+                    logger.info(
+                        "Index reloaded — %d tracks now available",
+                        new_total,
+                    )
+            except (OSError, ValueError) as exc:
+                logger.debug("Index watcher: %s", exc)
 
     return app
 
@@ -346,11 +1299,20 @@ def create_app(bridge: PlayerBridge):
 
 
 def serve(
-    cfg,
-    sim,
-    seed_entry,
+    cfg: AutoDJConfig,
+    sim: SimilarityIndex,
+    seed_entry: IndexEntry | None,
     host: str = "127.0.0.1",
     port: int = 8080,
+    preset: Preset | None = None,
+    export_m3u: Path | None = None,
+    history_file: Path | None = None,
+    discovery_every: int | None = None,
+    bpm_range: tuple[float, float] | None = None,
+    smart_shuffle: bool = False,
+    pure_shuffle: bool = False,
+    anchor_to_seed: bool = False,
+    no_playback: bool = False,
 ) -> None:
     """Start the Player thread and the FastAPI/uvicorn web server.
 
@@ -363,12 +1325,60 @@ def serve(
             for a random track.
         host: Interface to bind uvicorn to.
         port: Port to bind uvicorn to.
+        preset: Optional BPM-shaping preset (forwarded to Player).
+        export_m3u: Optional path for live M3U export (forwarded to Player).
+        history_file: Optional path for play history (forwarded to Player).
+        discovery_every: Discovery injection rate (forwarded to Player).
+        bpm_range: Hard BPM filter ``(lo, hi)`` (forwarded to Player).
     """
+    import importlib.util as _import_util
+
     import uvicorn
+
     from autodj.player import Player
 
-    player = Player(cfg, sim, dry_run=False)
+    # Auto-detect missing audio deps and flip to no-playback so headless
+    # hosts (NAS, server) don't spam "module not found" per track.
+    if not no_playback:
+        missing: list[str] = []
+        for name in ("soundfile", "sounddevice"):
+            try:
+                if _import_util.find_spec(name) is None:
+                    missing.append(name)
+            except (ImportError, ValueError):
+                # ValueError fires when the name is mocked / partially
+                # installed (e.g. during tests).  Treat as available.
+                pass
+        if missing:  # pragma: no cover — minimal-install branch
+            print(
+                "[AutoDJ] Headless mode — browser handles audio output. "
+                "Open the web UI from any device on your network.",
+            )
+            no_playback = True
+
+    player = Player(
+        cfg,
+        sim,
+        dry_run=no_playback,
+        preset=preset,
+        export_m3u=export_m3u,
+        history_file=history_file,
+        discovery_every=discovery_every,
+        bpm_range=bpm_range,
+        smart_shuffle=smart_shuffle,
+        pure_shuffle=pure_shuffle,
+        anchor_to_seed=anchor_to_seed,
+        # The browser is the control surface in serve mode — disable
+        # the global pynput keyboard hook so keys typed in OTHER apps
+        # / tabs / windows don't accidentally pause / skip / mute the
+        # player.
+        no_keyboard=True,
+    )
     bridge = PlayerBridge(player=player, sim=sim)
+
+    # Restore previously-saved settings (preset, transition, EQ, etc.)
+    # so the user doesn't have to re-tick everything on each `serve` restart.
+    bridge.load_persistent_state()
 
     # Start Player in a daemon thread — it blocks internally on playback
     player_thread = threading.Thread(

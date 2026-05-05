@@ -7,30 +7,49 @@
 #
 # Backslashes are escape characters in TOML strings (\U, \b, \D etc. are
 # interpreted as unicode/control sequences and will cause a parse error).
+#
+# ---------------------------------------------------------------------------
+# Per-machine overlay (config.local.toml)
+# ---------------------------------------------------------------------------
+# If a sibling file `config.local.toml` exists, its keys are deep-merged on
+# top of this file at load time. Use it to override per-machine paths
+# without forking the shared base config:
+#
+#   config.toml          ← shared (committed / on NAS)
+#   config.local.toml    ← per-machine overrides (gitignored)
+#
+# Example config.local.toml on a Windows host pointing at a NAS:
+#
+#   [library]
+#   music_dir = "Z:/Music"
+#   beets_db  = "Z:/Music/.config/beets/library.db"
 
 [library]
-# Full path to your music folder (local or mapped NAS drive)
+# Full path to your music folder (local or mapped NAS drive).
+# When using beets, this MUST match the local mount point of the beets
+# `directory` config — recent beets versions store paths relative to the
+# library root, so AutoDJ resolves those against music_dir.
 # Example: "Z:/Music" or "C:/Users/you/Music"
 music_dir = "Z:/Music"
 
-# Full path to your beets SQLite library database
+# Full path to your beets SQLite library database (optional).
 # Find it by running: beet config | grep library
-# Leave blank to skip beets integration and use filesystem scanning instead
+# Leave blank to skip beets integration and use filesystem scanning instead.
 beets_db = "C:/Users/you/.config/beets/library.db"
 
 # Audio formats to scan for
 supported_formats = ["mp3", "flac", "m4a"]
 
-# NAS path remapping — only needed if your beets database stores paths with a
-# different prefix than the drive letter your music is mounted under on Windows.
-#
-# Beets on a NAS often stores paths like:  /volume1/Mike/Beetsmusic/Artist/track.flac
-# But on Windows the same share is mapped:  Z:/Beetsmusic/Artist/track.flac
-#
-# Set beets_path_prefix to the prefix stored inside beets (the NAS side).
-# The indexer will strip that prefix and prepend music_dir automatically.
-# Leave commented out if your beets paths already match your music_dir.
-# beets_path_prefix = "/volume1/Mike/Beetsmusic"
+# Optional — cross-OS path remapping for a shared index built on another
+# machine. Each entry is a [from_prefix, to_prefix] pair applied to absolute
+# paths stored in metadata.json. Useful when the same library is mounted at
+# different locations on different hosts (e.g. Linux /mnt/music vs Windows Z:/Music).
+# Once you re-run `autodj prune` (or `autodj index`), absolute paths are
+# rewritten as relative-to-music_dir and remap is no longer needed.
+# path_remap = [
+#     ["/mnt/music/", "Z:/Music/"],
+#     ["/srv/audio/", "Z:/Music/"],
+# ]
 
 [index]
 # Directory where the FAISS index and metadata are stored.
@@ -39,7 +58,7 @@ supported_formats = ["mp3", "flac", "m4a"]
 # Example: "Z:/autodj-index"
 index_dir = "index"
 
-# Directory where the MERT model checkpoint is cached after download
+# Directory where the MuQ model checkpoint is cached after download
 model_dir = "models"
 
 [playback]
@@ -48,21 +67,157 @@ model_dir = "models"
 crossfade_seconds = 3.0
 
 # How many recently played tracks to exclude from the next-song candidates.
-# Prevents songs from repeating too soon. Higher = less repetition.
-no_repeat_window = 50
+# Prevents songs from repeating too soon.  Higher = the auto-DJ has to walk
+# more of the library before revisiting a track.  500 is comfortable for
+# libraries of a few thousand tracks; bump higher (2000+) for huge libs.
+no_repeat_window = 500
+
+# Block same artist / album / title within the last N picks.  0 = disabled.
+artist_repeat_window = 3
+
+# When true, the web UI hides the lyric card and the CLI panel skips
+# printing the per-track lyric block.  Default true (lyrics shown).
+show_lyrics = true
+
+# Web-UI gapless prefetch — as soon as the server picks the next track,
+# the browser's standby <audio> deck calls .load() so the bytes are
+# buffered before the crossfade fires.  Eliminates the dead-air pause
+# that happens when a slow disk / NAS still delivers the file.  Off
+# only if you have very tight bandwidth budgets.
+prefetch_next_track = true
+
+# Silence-detector — the web UI's Web-Audio analyser samples the active
+# deck during the second half of the track; if the RMS drops below
+# −60 dBFS for ~600 ms, it triggers the crossfade early so long fade-out
+# tails don't leave a dead-air gap before the next track starts.
+silence_trigger_crossfade = true
+
+# Optional — append a JSON Lines record for every track played.
+# history_file = "~/.autodj/history.jsonl"
+
+# Optional — inject a sonically distant ("discovery") track every N tracks.
+# Press D in the terminal or click the Discovery button in the web UI to toggle.
+# discovery_every = 20
+
+# Pro-DJ crossfade: applies a Butterworth high-pass sweep on the outgoing
+# track during the overlap so its bass doesn't clash with the incoming
+# track's bass.  Eliminates muddy "two-kicks-at-once" feel.  Tiny CPU cost.
+crossfade_eq_duck = false
+crossfade_bass_cutoff_hz = 180.0     # frequency below which outgoing track is attenuated
+
+# ---------------------------------------------------------------------------
+# ReplayGain loudness normalisation
+# ---------------------------------------------------------------------------
+[replaygain]
+# When true, AutoDJ reads embedded ReplayGain track-gain + peak tags
+# (FLAC, MP3, M4A) and applies a clip-safe linear gain so all tracks play
+# at consistent loudness.  Tracks without tags play unchanged.
+enabled = false
+
+# Output reference loudness in dB.  -18 = original ReplayGain reference
+# (quiet).  -14 ≈ Spotify / YouTube.  Higher = louder overall.
+target_db = -14.0
+
+# Hard cap on the linear gain so peaks never exceed this fraction of full-scale.
+# 1.0 = no clipping, 0.95 = small headroom.
+max_clip_safe_gain = 1.0
+
+# ---------------------------------------------------------------------------
+# Pro-DJ mixing layer (beatmatch, harmonic, phrase-align, outro/intro,
+# filter sweep).  Every option is opt-in.  Any track-specific analysis
+# (intro/outro times + beat grid) is detected lazily on first play and
+# cached in `index/dj_meta.json` — no re-indexing required.
+# ---------------------------------------------------------------------------
+[djmix]
+# Restrict next-track candidates to harmonically-compatible keys.  Tracks
+# with unknown key always pass.  Reuses key/mode already in the index.
+# `harmonic_mode` selects how strict the filter is:
+#   "compatible"   classic Camelot rule (same pos, ±1 around wheel, or
+#                  relative major/minor) — broadest pool.  Default.
+#   "strict"       only the exact same Camelot position.
+#   "neighbour"    same side of the wheel, ±1 only (no mode flips).
+#   "mood_change"  relative major/minor only (same number, opposite side).
+#   "energy_boost" same side, +2 around the wheel — set lifts over time.
+#   "off"          no harmonic filter (same as harmonic_mixing = false).
+harmonic_mixing = false
+harmonic_mode   = "compatible"
+
+# Pitch-stretch the incoming track so its BPM matches the outgoing track
+# during the crossfade.  Refuses to stretch beyond ±beatmatch_max_stretch.
+beatmatch = false
+beatmatch_max_stretch = 0.08      # ±8% — typical DJ practice
+
+# Auto-detect each track's outro start + intro end and place the
+# crossfade between them, so cold-cuts into a 4-bar intro never happen.
+outro_intro_align = false
+
+# Snap the crossfade start time to the nearest 8-bar phrase boundary
+# using the cached beat grid.  Pro-feel transitions on rhythmic music.
+phrase_align = false
+phrase_bars  = 8
+
+# Apply a low-pass sweep on the outgoing tail (cutoff slides from
+# full-range down to filter_sweep_floor_hz) — adds the classic
+# filter-out energy lift that DJs use to launch into a build.
+filter_sweep = false
+filter_sweep_floor_hz = 250.0
+
+# ---------------------------------------------------------------------------
+# Transition effects layered on every crossfade
+# ---------------------------------------------------------------------------
+# Each crossfade gets a chosen transition treatment on top of the
+# standard amplitude fade.  Options:
+#
+#   "none"            standard crossfade only (default)
+#   "echo_out"        feedback-delay echo tail on outgoing track
+#   "reverb_tail"     Schroeder reverb on outgoing
+#   "highpass_riser"  high-pass sweep DOWN on incoming (filter-in)
+#   "tape_stop"       vinyl-stop ramp-to-zero on outgoing
+#   "gate_stutter"    rhythmic amplitude gate on outgoing
+#   "noise_riser"     synthesised white-noise build layered on top
+#   "backspin"        reversed-pitch sweep on outgoing (vinyl backspin)
+#   "cross_eq_swap"   outgoing keeps highs / incoming brings bass
+#   "random"          pick uniformly at random per crossfade
+#   "rotate"          cycle through all real effects in order
+#
+# wet_mix is the outer wet/dry between dry overlap and effect-processed
+# overlap.  1.0 = full effect; 0.5 = subtle; 0.0 = effect inaudible.
+[transitions]
+effect  = "none"
+wet_mix = 1.0
 
 [model]
 # HuggingFace model ID for the music embedding model.
-# MERT-v1-330M is recommended: music-specific SSL training, 768-dim embeddings.
-# Fallback to "m-a-p/MERT-v1-95M" for a smaller (~380MB) but less capable model.
-name = "m-a-p/MERT-v1-330M"
+# MuQ-large-msd-iter: 24 kHz, 1024-dim, ~300 M params, fp32 inference.
+name = "OpenMuQ/MuQ-large-msd-iter"
 
 # Uncomment to skip auto-download and point directly to a local model directory.
-# This directory must contain the HuggingFace model files (config.json, model.safetensors, etc.)
-# manual_path = "C:/path/to/MERT-v1-330M"
+# manual_path = "models/MuQ-large-msd-iter"
 
 [huggingface]
 # Optional — but strongly recommended.
 # Without a token, downloads are rate-limited and slower.
 # Get a free token at https://huggingface.co/settings/tokens (read-only is fine)
 # token = "hf_..."
+
+# ---------------------------------------------------------------------------
+# Optional: user-defined BPM presets
+# ---------------------------------------------------------------------------
+# Add named BPM-shaping presets that bias the next-song picker toward a
+# target tempo (constant, linear ramp, or sine arch). Use with `--preset NAME`.
+#
+# [presets.focus_deep]
+# bpm_target = 85
+# bpm_weight = 0.15
+#
+# [presets.festival]
+# bpm_start = 90
+# bpm_end   = 145
+# horizon_tracks = 60
+# bpm_weight = 0.35
+# discovery_every = 10
+#
+# [presets.arch]
+# bpm_start = 80
+# bpm_end   = 140
+# curve     = "slide"

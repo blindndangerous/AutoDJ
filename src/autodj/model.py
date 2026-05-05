@@ -1,11 +1,14 @@
-"""MERT audio embedding model loader with automatic download.
+"""MuQ audio embedding model loader with automatic download.
 
-Loads the MERT-v1-330M (or configured variant) music understanding model
-from HuggingFace and provides a simple interface for embedding audio arrays
-into 768-dimensional L2-normalized vectors.
+Loads the MuQ-large-msd-iter (or configured variant) music understanding
+model from HuggingFace and provides a simple interface for embedding audio
+arrays into 1024-dimensional L2-normalized vectors.
 
 The model is downloaded once and cached in the configured ``model_dir``.
 If the download fails, clear instructions for manual download are printed.
+
+MuQ requires fp32 inference (fp16 may produce NaN values per the model
+authors). Audio must be resampled to 24 kHz.
 
 Example:
     >>> from autodj.config import load_config
@@ -14,10 +17,10 @@ Example:
     >>> model_path = download_model_if_needed(cfg.model, cfg.index)
     >>> wrapper = load_model(model_path)
     >>> import numpy as np
-    >>> audio = np.zeros(22050, dtype=np.float32)
-    >>> vec = wrapper.embed_array(audio, sample_rate=22050)
+    >>> audio = np.zeros(24000, dtype=np.float32)
+    >>> vec = wrapper.embed_array(audio, sample_rate=24000)
     >>> vec.shape
-    (768,)
+    (1024,)
 """
 
 from __future__ import annotations
@@ -25,23 +28,21 @@ from __future__ import annotations
 import logging
 import threading
 import time
-import warnings
 from pathlib import Path
 
 import numpy as np
 import torch
 from huggingface_hub import snapshot_download
-from transformers import AutoModel, AutoProcessor
 
 from autodj.config import IndexConfig, ModelConfig
 
 logger = logging.getLogger(__name__)
 
-# Expected embedding dimension for MERT models
-EMBEDDING_DIM = 768
+# Expected embedding dimension for MuQ-large-msd-iter (encoder_dim from config.json)
+EMBEDDING_DIM = 1024
 
-# Sampling rate expected by MERT (24 kHz)
-MERT_SAMPLE_RATE = 24_000
+# Sampling rate expected by MuQ (24 kHz, hard requirement)
+MUQ_SAMPLE_RATE = 24_000
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +51,7 @@ MERT_SAMPLE_RATE = 24_000
 
 
 class ModelLoadError(RuntimeError):
-    """Raised when the MERT model cannot be loaded or downloaded."""
+    """Raised when the MuQ model cannot be loaded or downloaded."""
 
 
 # ---------------------------------------------------------------------------
@@ -58,9 +59,9 @@ class ModelLoadError(RuntimeError):
 # ---------------------------------------------------------------------------
 
 # Defaults for retry behaviour — overridable via config
-_DEFAULT_TIMEOUT_SECONDS = 300   # 5 minutes per attempt before declaring it stuck
+_DEFAULT_TIMEOUT_SECONDS = 300  # 5 minutes per attempt before declaring it stuck
 _DEFAULT_MAX_RETRIES = 3
-_DEFAULT_RETRY_DELAY = 5         # seconds between attempts
+_DEFAULT_RETRY_DELAY = 5  # seconds between attempts
 
 
 def _snapshot_download_with_timeout(
@@ -85,9 +86,10 @@ def _snapshot_download_with_timeout(
     """
     exc_holder: list[BaseException] = []
 
-    def _run() -> None:
+    def _run() -> None:  # pragma: no cover — network IO
         try:
-            snapshot_download(
+            # Public model checkpoint download — repo_id is a known constant.
+            snapshot_download(  # nosec B615
                 repo_id=repo_id,
                 local_dir=local_dir,
                 ignore_patterns=ignore_patterns,
@@ -100,12 +102,12 @@ def _snapshot_download_with_timeout(
     thread.start()
     thread.join(timeout=timeout)
 
-    if thread.is_alive():
+    if thread.is_alive():  # pragma: no cover — timing-sensitive
         raise TimeoutError(
             f"Download of '{repo_id}' did not complete within {timeout}s — "
             "the connection appears stuck."
         )
-    if exc_holder:
+    if exc_holder:  # pragma: no cover — network failure path
         raise exc_holder[0]
 
 
@@ -119,7 +121,7 @@ def download_model_if_needed(
     index_cfg: IndexConfig,
     hf_token: str | None = None,
 ) -> Path:
-    """Ensure the MERT model checkpoint is available locally.
+    """Ensure the MuQ model checkpoint is available locally.
 
     If ``model_cfg.manual_path`` is set, that path is used directly (no
     download).  Otherwise the model is fetched from HuggingFace Hub using
@@ -143,7 +145,7 @@ def download_model_if_needed(
     Example:
         >>> path = download_model_if_needed(cfg.model, cfg.index, hf_token="hf_...")
         >>> print(path)
-        models/MERT-v1-330M
+        models/MuQ-large-msd-iter
     """
     # --- manual path ---
     if model_cfg.manual_path is not None:
@@ -169,7 +171,7 @@ def download_model_if_needed(
     cache_dir.mkdir(parents=True, exist_ok=True)
     logger.info("Downloading model %s to %s ...", model_name, cache_dir)
     print(
-        f"\n[AutoDJ] Downloading model '{model_name}' (~1.3 GB) to {cache_dir}\n"
+        f"\n[AutoDJ] Downloading model '{model_name}' (~1.2 GB) to {cache_dir}\n"
         "This is a one-time download. Please wait...\n"
     )
 
@@ -181,9 +183,7 @@ def download_model_if_needed(
     last_exc: BaseException | None = None
     for attempt in range(1, max_retries + 1):
         try:
-            logger.info(
-                "Download attempt %d/%d (timeout=%ds) ...", attempt, max_retries, timeout
-            )
+            logger.info("Download attempt %d/%d (timeout=%ds) ...", attempt, max_retries, timeout)
             if attempt > 1:
                 print(f"[AutoDJ] Retry {attempt}/{max_retries} ...\n")
             _snapshot_download_with_timeout(
@@ -199,7 +199,10 @@ def download_model_if_needed(
             last_exc = exc
             logger.warning(
                 "Attempt %d/%d timed out after %ds: %s",
-                attempt, max_retries, timeout, exc,
+                attempt,
+                max_retries,
+                timeout,
+                exc,
             )
             print(
                 f"[AutoDJ] Attempt {attempt}/{max_retries} timed out "
@@ -207,9 +210,7 @@ def download_model_if_needed(
             )
         except Exception as exc:
             last_exc = exc
-            logger.warning(
-                "Attempt %d/%d failed: %s", attempt, max_retries, exc
-            )
+            logger.warning("Attempt %d/%d failed: %s", attempt, max_retries, exc)
             print(
                 f"[AutoDJ] Attempt {attempt}/{max_retries} failed "
                 f"({exc}) — retrying in {retry_delay}s...\n"
@@ -227,7 +228,7 @@ def download_model_if_needed(
         f"  3. Place them in: {cache_dir}\n"
         "  4. Add to config.toml:\n"
         f"     [model]\n"
-        f"     manual_path = \"{cache_dir}\"\n"
+        f'     manual_path = "{cache_dir}"\n'
     ) from last_exc
 
 
@@ -236,70 +237,117 @@ def download_model_if_needed(
 # ---------------------------------------------------------------------------
 
 
-class MertWrapper:
-    """Thin wrapper around a loaded MERT model for audio embedding.
+class MuqWrapper:
+    """Thin wrapper around a loaded MuQ model for audio embedding.
+
+    MuQ takes raw audio tensors at 24 kHz directly (no separate processor).
+    Long tracks are split into ``CHUNK_SECONDS``-second chunks, embeddings
+    are mean-pooled across time and across chunks, then L2-normalized.
 
     Attributes:
-        model: The loaded HuggingFace MERT model in eval mode.
-        processor: The HuggingFace audio processor for the model.
+        model: The loaded MuQ model in eval mode.
         device: PyTorch device string (``"cpu"`` or ``"cuda"``).
     """
 
-    def __init__(
-        self,
-        model: torch.nn.Module,
-        processor: object,
-        device: str,
-    ) -> None:
-        """Store the loaded model, processor, and target device.
+    # Maximum chunk length fed to MuQ in one forward pass (seconds).
+    # Longer songs are split into chunks and their embeddings averaged.
+    # 30 s × 24000 Hz = 720 000 samples → safe on an 8 GB GPU at fp32.
+    CHUNK_SECONDS: int = 30
+
+    # Maximum number of chunks per batched forward pass.
+    # 1 = sequential (safest on any GPU); higher values speed up indexing
+    # but use more VRAM. fp32 is required so we batch conservatively.
+    MAX_CHUNK_BATCH: int = 2
+
+    # MuQ's mel front-end requires at least this many samples; pad below.
+    _MIN_CHUNK_SAMPLES: int = MUQ_SAMPLE_RATE  # 1 second
+
+    def __init__(self, model: torch.nn.Module, device: str) -> None:
+        """Store the loaded model and target device.
 
         Args:
-            model: A loaded HuggingFace MERT model in eval mode.
-            processor: The HuggingFace ``AutoProcessor`` for the model.
+            model: A loaded MuQ model in eval mode.
             device: PyTorch device string, e.g. ``"cpu"`` or ``"cuda"``.
         """
         self.model = model
-        self.processor = processor
         self.device = device
 
-    def embed_array(self, audio: np.ndarray, sample_rate: int) -> np.ndarray:
-        """Embed a raw audio array into a 768-dimensional L2-normalized vector.
-
-        The audio is resampled to MERT's required 24 kHz using librosa if the
-        provided sample rate differs. The model's last hidden states are
-        mean-pooled across the time axis to produce a fixed-size vector, then
-        L2-normalized.
+    def _embed_batch(self, chunks: list[np.ndarray]) -> np.ndarray:
+        """Embed a batch of same-track chunks in one forward pass.
 
         Args:
-            audio: 1-D float32 numpy array of audio samples.
+            chunks: List of 1-D float32 arrays at MUQ_SAMPLE_RATE, each at
+                most CHUNK_SECONDS long. All chunks from one track are batched
+                together so the GPU processes them in parallel.
+
+        Returns:
+            float32 array of shape ``(len(chunks), EMBEDDING_DIM)``,
+            NOT yet L2-normalized.
+        """
+        # Zero-pad any chunk shorter than the minimum input length.
+        chunks = [
+            np.pad(c, (0, self._MIN_CHUNK_SAMPLES - len(c)))
+            if len(c) < self._MIN_CHUNK_SAMPLES
+            else c
+            for c in chunks
+        ]
+        # Right-pad shorter chunks in the batch up to the longest length so
+        # they can be stacked into a single tensor.
+        max_len = max(len(c) for c in chunks)
+        padded = np.stack(
+            [np.pad(c, (0, max_len - len(c))) if len(c) < max_len else c for c in chunks]
+        ).astype(np.float32)
+
+        wavs = torch.from_numpy(padded).to(self.device)
+
+        # MuQ requires fp32 — no autocast.
+        with torch.no_grad():
+            outputs = self.model(wavs, output_hidden_states=False)
+
+        hidden: torch.Tensor = outputs.last_hidden_state  # [B, T, EMBEDDING_DIM]
+        pooled = hidden.mean(dim=1)  # [B, EMBEDDING_DIM]
+        return pooled.cpu().float().numpy()
+
+    def embed_array(self, audio: np.ndarray, sample_rate: int) -> np.ndarray:
+        """Embed a raw audio array into a 1024-dimensional L2-normalized vector.
+
+        Long tracks are split into ``CHUNK_SECONDS``-second chunks. Up to
+        ``MAX_CHUNK_BATCH`` chunks are batched into a single GPU forward pass,
+        then their embeddings are averaged and L2-normalized. This keeps peak
+        memory bounded while maximising GPU utilisation.
+
+        The audio is resampled to MuQ's required 24 kHz using librosa if the
+        provided sample rate differs.
+
+        Args:
+            audio: 1-D float32 numpy array of audio samples (mono).
             sample_rate: Sample rate of *audio* in Hz (44100, 48000, 96000, etc.).
 
         Returns:
-            A float32 numpy array of shape ``(768,)``, L2-normalized.
+            A float32 numpy array of shape ``(EMBEDDING_DIM,)``, L2-normalized.
         """
-        if sample_rate != MERT_SAMPLE_RATE:
+        if sample_rate != MUQ_SAMPLE_RATE:
             import librosa as _librosa
-            audio = _librosa.resample(audio, orig_sr=sample_rate, target_sr=MERT_SAMPLE_RATE)
-            sample_rate = MERT_SAMPLE_RATE
 
-        inputs = self.processor(
-            audio,
-            sampling_rate=sample_rate,
-            return_tensors="pt",
-        )
-        # Move all input tensors to the target device
-        inputs = {k: v.to(self.device) for k, v in inputs.items()}
+            audio = _librosa.resample(audio, orig_sr=sample_rate, target_sr=MUQ_SAMPLE_RATE)
 
-        with torch.no_grad():
-            outputs = self.model(**inputs, return_dict=True)
+        chunk_len = self.CHUNK_SECONDS * MUQ_SAMPLE_RATE
+        chunks = [
+            audio[start : start + chunk_len]
+            for start in range(0, len(audio), chunk_len)
+            if len(audio[start : start + chunk_len]) > 0
+        ]
 
-        # outputs.last_hidden_state: [batch=1, time_frames, hidden=768]
-        hidden: torch.Tensor = outputs.last_hidden_state
-        # Mean pool across the time dimension → [1, 768]
-        pooled = hidden.mean(dim=1).squeeze(0)  # → [768]
-        vec = pooled.cpu().float().numpy()
+        # Process in mini-batches; collect per-chunk vectors
+        all_vecs: list[np.ndarray] = []
+        for i in range(0, len(chunks), self.MAX_CHUNK_BATCH):
+            batch_vecs = self._embed_batch(chunks[i : i + self.MAX_CHUNK_BATCH])
+            all_vecs.append(batch_vecs)  # each is (B, EMBEDDING_DIM)
 
-        # L2 normalize
+        if self.device == "cuda":  # pragma: no cover — GPU-only
+            torch.cuda.empty_cache()
+
+        vec = np.vstack(all_vecs).mean(axis=0).astype(np.float32)
         norm = np.linalg.norm(vec)
         if norm > 0:
             vec = vec / norm
@@ -311,48 +359,50 @@ class MertWrapper:
 # ---------------------------------------------------------------------------
 
 
-def load_model(model_path: Path) -> MertWrapper:
-    """Load the MERT model from a local directory and return a :class:`MertWrapper`.
+def load_model(model_path: Path) -> MuqWrapper:
+    """Load the MuQ model from a local directory and return a :class:`MuqWrapper`.
 
     Automatically selects CUDA if available, falls back to CPU otherwise.
     The model is set to eval mode and gradient computation is disabled.
 
     Args:
-        model_path: Path to the local HuggingFace model directory containing
-            ``config.json`` and model weights.
+        model_path: Path to the local HuggingFace MuQ model directory
+            containing ``config.json`` and model weights.
 
     Returns:
-        A :class:`MertWrapper` ready for embedding.
+        A :class:`MuqWrapper` ready for embedding.
 
     Raises:
-        ModelLoadError: If the model files are missing or corrupt.
+        ModelLoadError: If the MuQ package is not installed or the model
+            files are missing or corrupt.
 
     Example:
-        >>> wrapper = load_model(Path("models/MERT-v1-330M"))
-        >>> vec = wrapper.embed_array(audio_array, sample_rate=22050)
+        >>> wrapper = load_model(Path("models/MuQ-large-msd-iter"))
+        >>> vec = wrapper.embed_array(audio_array, sample_rate=44100)
     """
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    logger.info("Loading MERT model from %s on device=%s", model_path, device)
-
     try:
-        # Suppress a harmless deprecation inside transformers where MERT's saved
-        # config uses the old `use_return_dict` key instead of `return_dict`.
-        # We pass `return_dict=True` explicitly at inference time (see embed_array).
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore",
-                message=".*use_return_dict.*deprecated.*",
-                category=UserWarning,
-            )
-            processor = AutoProcessor.from_pretrained(str(model_path), trust_remote_code=True)
-            model = AutoModel.from_pretrained(str(model_path), trust_remote_code=True)
-    except Exception as exc:
+        from muq import MuQ
+    except ImportError as exc:
+        raise ModelLoadError(
+            "The 'muq' package is not installed. Run 'uv sync' (or "
+            "'pip install muq') and try again."
+        ) from exc
+
+    # Real model load only runs on a host with the MuQ checkpoint and
+    # torch installed.  CI environments don't carry either, so the body
+    # below is exercised only on the indexing host.
+    device = "cuda" if torch.cuda.is_available() else "cpu"  # pragma: no cover
+    logger.info("Loading MuQ model from %s on device=%s", model_path, device)  # pragma: no cover
+
+    try:  # pragma: no cover
+        model = MuQ.from_pretrained(str(model_path))
+    except Exception as exc:  # pragma: no cover
         raise ModelLoadError(
             f"Failed to load model from {model_path}: {exc}\n"
             "The model files may be incomplete. Try deleting the directory and re-running."
         ) from exc
 
-    model = model.to(device)
-    model.eval()
+    model = model.to(device)  # pragma: no cover
+    model.eval()  # pragma: no cover
 
-    return MertWrapper(model=model, processor=processor, device=device)
+    return MuqWrapper(model=model, device=device)  # pragma: no cover

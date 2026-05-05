@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  test:
+    name: Test & lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: pyproject.toml
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      - name: Ruff — lint
+        run: uv run ruff check src/ tests/
+
+      - name: Ruff — format check
+        run: uv run ruff format --check src/ tests/
+
+      - name: Mypy — type check
+        run: uv run mypy src/autodj/
+
+      - name: Bandit — security scan
+        run: uv run bandit -r src/ -c pyproject.toml
+
+      - name: pip-audit — dependency CVE scan
+        run: uv run pip-audit
+
+      - name: Pytest — test suite
+        run: uv run pytest --tb=short

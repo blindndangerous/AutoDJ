@@ -1,0 +1,613 @@
+/* ----------------------------------------------------------------
+       Design tokens
+       #e0e0e0 on #1a1a2e → contrast ≈ 12.9:1  (WCAG AAA)
+       #ffffff on #2d5a87 → contrast ≈ 7.2:1   (WCAG AA)
+       #7eb3e8 thumb on #16213e → contrast ≈ 7.2:1 (non-text ≥ 3:1 ✓)
+       Focus ring: 2px solid #7eb3e8 — visible on all bg colors
+    ---------------------------------------------------------------- */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #1a1a2e;
+      --bg-card:   #16213e;
+      --border:    #0f3460;
+      --accent:    #7eb3e8;
+      --text:      #e0e0e0;
+      --text-dim:  #a0a0b0;
+      --btn-bg:    #2d5a87;
+      --btn-hover: #3a72a8;
+      --btn-text:  #ffffff;
+      --danger:    #c0392b;
+      --green:     #27ae60;
+      --radius:    6px;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      font-size: 1rem;
+      line-height: 1.5;
+      min-height: 100vh;
+    }
+
+    /* Skip-to-content link (WCAG 2.4.1) */
+    .skip-link {
+      position: absolute;
+      top: -999px;
+      left: 0;
+      background: var(--accent);
+      color: #000;
+      padding: 0.5rem 1rem;
+      z-index: 9999;
+      font-weight: 600;
+      border-radius: 0 0 var(--radius) 0;
+    }
+    .skip-link:focus { top: 0; }
+
+    /* Focus ring — never removed */
+    :focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 3px;
+    }
+
+    header {
+      background: var(--bg-card);
+      border-bottom: 1px solid var(--border);
+      padding: 1rem 1.5rem;
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+    header h1 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+    }
+    #conn-status {
+      font-size: 0.8rem;
+      padding: 0.2rem 0.6rem;
+      border-radius: 999px;
+      background: var(--border);
+      color: var(--text-dim);
+    }
+    #conn-status.connected   { background: var(--green);  color: #fff; }
+    /* Fix 1: #e67e22 on white only reaches 2.85:1 — use dark text instead */
+    #conn-status.connecting  { background: #e67e22; color: #000; }
+    #conn-status.error       { background: var(--danger);  color: #fff; }
+
+    main {
+      max-width: 780px;
+      margin: 0 auto;
+      padding: 1.5rem 1rem 3rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.25rem 1.5rem;
+    }
+    .card h2 {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--text-dim);
+      margin-bottom: 0.75rem;
+    }
+
+    /* ---- Now playing ---- */
+    #now-playing-announce {
+      font-size: 1.2rem;
+      font-weight: 600;
+      line-height: 1.3;
+      margin-bottom: 0.4rem;
+    }
+    #now-playing-meta {
+      font-size: 0.875rem;
+      color: var(--text-dim);
+    }
+    #progress-bar-wrap {
+      margin-top: 0.75rem;
+    }
+    #progress-bar-label {
+      font-size: 0.8rem;
+      color: var(--text-dim);
+      margin-bottom: 0.3rem;
+    }
+    #progress-track {
+      width: 100%;
+      height: 6px;
+      background: var(--border);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    #progress-fill {
+      height: 100%;
+      background: var(--accent);
+      border-radius: 3px;
+      width: 0%;
+      transition: width 0.5s linear;
+    }
+
+    /* ---- Controls ---- */
+    .controls-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      align-items: center;
+    }
+
+    button {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.55rem 1.1rem;
+      background: var(--btn-bg);
+      color: var(--btn-text);
+      border: none;
+      border-radius: var(--radius);
+      font-size: 0.95rem;
+      font-weight: 500;
+      cursor: pointer;
+      min-width: 44px;   /* WCAG 2.5.5 touch target */
+      min-height: 44px;
+      transition: background 0.15s;
+    }
+    button:hover  { background: var(--btn-hover); }
+    button:active { background: var(--accent); color: #000; }
+    /* Fix 1: #e67e22 on white only reaches 2.85:1 — use dark text */
+    button[aria-pressed="true"] {
+      background: #e67e22;
+      color: #000;
+    }
+    button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    /* ---- Volume ---- */
+    .volume-row {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+    }
+    #vol-label-text { font-size: 0.875rem; min-width: 3.5rem; }
+
+    input[type="range"] {
+      -webkit-appearance: none;
+      appearance: none;
+      flex: 1;
+      min-width: 120px;
+      height: 6px;
+      background: var(--border);
+      border-radius: 3px;
+      cursor: pointer;
+      accent-color: var(--accent);
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: var(--accent);
+      border: 2px solid var(--bg);
+    }
+    input[type="range"]::-moz-range-thumb {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: var(--accent);
+      border: 2px solid var(--bg);
+    }
+    #vol-pct { font-size: 0.875rem; min-width: 3rem; text-align: right; }
+
+    /* ---- Up next ---- */
+    #next-track-text {
+      font-size: 1rem;
+      color: var(--text-dim);
+    }
+
+    /* ---- Search ---- */
+    .search-row {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+    }
+    #search-input {
+      flex: 1;
+      min-width: 180px;
+      padding: 0.55rem 0.85rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-size: 0.95rem;
+    }
+    #search-input::placeholder { color: var(--text-dim); }
+    #search-input:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    #search-results {
+      margin-top: 0.75rem;
+      list-style: none;
+    }
+    #search-results li {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.45rem 0.25rem;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.9rem;
+    }
+    #search-results li:last-child { border-bottom: none; }
+    #search-results .no-results { color: var(--text-dim); font-style: italic; }
+    .result-name {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .result-btn {
+      flex-shrink: 0;
+      padding: 0.25rem 0.6rem;
+      font-size: 0.8rem;
+      min-height: 36px;
+      min-width: 36px;
+    }
+
+    /* ---- History ---- */
+    #history-list {
+      list-style: none;
+    }
+    #history-list li {
+      padding: 0.4rem 0.25rem;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.875rem;
+      color: var(--text-dim);
+    }
+    #history-list li:last-child { border-bottom: none; }
+    #history-list .history-title { color: var(--text); font-weight: 500; }
+
+    /* ---- Now playing row (cover art + text) ---- */
+    .now-playing-row {
+      display: flex;
+      gap: 1rem;
+      align-items: flex-start;
+    }
+    #cover-art {
+      width: 96px;
+      height: 96px;
+      flex-shrink: 0;
+      object-fit: cover;
+      border-radius: 6px;
+      background: var(--surface-2, #222);
+    }
+    .now-playing-text {
+      flex: 1;
+      min-width: 0;
+    }
+
+    /* ---- Lyrics ---- */
+    #lyrics-list {
+      list-style: none;
+      max-height: 14rem;
+      overflow-y: auto;
+      padding: 0.5rem 0;
+      font-size: 0.95rem;
+      line-height: 1.5;
+    }
+    #lyrics-list li {
+      padding: 0.2rem 0.5rem;
+      color: var(--text-dim);
+      border-radius: 4px;
+    }
+    #lyrics-list li.active {
+      color: var(--text);
+      background: rgba(255,255,255,0.05);
+      font-weight: 600;
+      /* High-contrast outline ensures visibility for low-vision users */
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
+    }
+
+    /* ---- Queue ---- */
+    #queue-list {
+      list-style: none;
+      padding: 0;
+    }
+    #queue-list li {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.45rem 0.25rem;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.9rem;
+    }
+    #queue-list li:last-child { border-bottom: none; }
+    .queue-name {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .queue-btn {
+      flex-shrink: 0;
+      padding: 0.25rem 0.6rem;
+      font-size: 0.8rem;
+      min-height: 36px;
+      min-width: 36px;
+    }
+    .queue-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    /* ---- Now-playing badges (BPM / key / energy / beatmatch) ---- */
+    .badges-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-top: 0.5rem;
+      font-size: 0.85rem;
+    }
+    .badge {
+      padding: 0.15rem 0.5rem;
+      background: rgba(255,255,255,0.07);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text-dim);
+    }
+    .badge.badge-key   { color: var(--accent); }
+    .badge.badge-stretch { color: #ffb86c; }
+
+    /* ---- 3-band EQ ---- */
+    .eq-row {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin: 0.5rem 0;
+    }
+    .eq-row label {
+      width: 4rem;
+      font-weight: 600;
+    }
+    .eq-row input[type="range"] {
+      flex: 1;
+    }
+    .eq-value {
+      min-width: 4rem;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      color: var(--text-dim);
+      font-size: 0.85rem;
+    }
+    #btn-eq-reset {
+      margin-top: 0.5rem;
+    }
+
+    /* ---- Settings card ---- */
+    fieldset {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      margin: 0 0 0.75rem 0;
+      padding: 0.5rem 0.75rem 0.75rem;
+    }
+    fieldset legend {
+      padding: 0 0.4rem;
+      font-weight: 600;
+    }
+    .settings-row {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin: 0.4rem 0;
+    }
+    .settings-row label {
+      min-width: 10rem;
+    }
+    .settings-row input[type="number"] {
+      width: 6rem;
+    }
+    .settings-row select {
+      flex: 1;
+      min-width: 8rem;
+    }
+    .settings-check {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin: 0.3rem 0;
+    }
+    .settings-check input[type="checkbox"] {
+      width: 1.1rem;
+      height: 1.1rem;
+    }
+    /* Inline help text — sighted readers see grey description below
+       each control; screen readers receive it via aria-describedby. */
+    .setting-desc {
+      display: block;
+      margin: 0.15rem 0 0.55rem 1.7rem;
+      font-size: 0.83rem;
+      color: #b8c5d8;             /* ≥ 4.5:1 vs --bg */
+      line-height: 1.35;
+    }
+    .settings-row + .setting-desc {
+      margin-left: 10rem;
+    }
+
+    /* ---- Collapsible cards (<details>/<summary>) ---- */
+    details.card { padding: 0; }
+    details.card > summary {
+      list-style: none;
+      cursor: pointer;
+      padding: 1rem 1.25rem;
+      user-select: none;
+      position: relative;
+    }
+    details.card > summary::-webkit-details-marker { display: none; }
+    details.card > summary > h2 {
+      display: inline;
+      margin: 0;
+      font-size: 1.1rem;
+    }
+    details.card > summary::after {
+      content: "\25B8";              /* ▸ collapsed */
+      position: absolute;
+      right: 1.25rem;
+      top: 50%;
+      transform: translateY(-50%);
+      transition: transform 0.15s ease;
+      color: var(--text-dim);
+    }
+    details.card[open] > summary::after {
+      content: "\25BE";              /* ▾ expanded */
+    }
+    /* High-contrast focus ring on the summary (3:1+ guaranteed) */
+    details.card > summary:focus-visible {
+      outline: 3px solid var(--accent);
+      outline-offset: -3px;
+    }
+    details.card > *:not(summary) {
+      padding: 0 1.25rem 1rem;
+    }
+
+    /* ---- Visually hidden utility (WCAG-compliant clip pattern) ---- */
+    .visually-hidden {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    /* ----------------------------------------------------------------
+       Mobile / narrow-screen layout (≤ 720 px) — phone & narrow tablet.
+       WCAG 2.5.5 Target Size: interactive elements ≥ 44 × 44 CSS px.
+    ---------------------------------------------------------------- */
+    @media (max-width: 720px) {
+      body { font-size: 0.95rem; }
+      header { padding: 0.5rem 0.75rem; }
+      main { padding: 0 0.75rem; }
+      .card { padding: 0.75rem; margin-bottom: 0.75rem; }
+
+      /* Stack horizontal control rows on narrow screens */
+      .controls-row {
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 0.5rem;
+      }
+
+      /* Bigger touch targets for every button + slider */
+      button,
+      .pill-btn,
+      input[type="range"]::-webkit-slider-thumb,
+      input[type="range"]::-moz-range-thumb {
+        min-height: 44px;
+      }
+      button, .pill-btn {
+        min-width: 44px;
+        padding: 0.6rem 0.9rem;
+      }
+
+      /* Settings card — collapse by default on mobile via [open] state */
+      details.settings-card > summary {
+        padding: 0.75rem;
+        font-size: 1rem;
+      }
+
+      /* Form fields full-width on phone */
+      .settings-row {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .settings-row > * {
+        width: 100%;
+      }
+      .settings-row select,
+      .settings-row input[type="number"],
+      .settings-row input[type="text"] {
+        min-height: 44px;
+        font-size: 1rem;
+      }
+
+      /* Now-playing card — cover shrinks but stays prominent */
+      #cover-art {
+        width: 96px;
+        height: 96px;
+      }
+
+      /* Queue items — taller rows for finger taps */
+      .queue-item {
+        padding: 0.5rem 0.5rem;
+      }
+      .queue-item button {
+        padding: 0.4rem 0.6rem;
+      }
+
+      /* Hide the keyboard-hint footer on phone — irrelevant */
+      .keyboard-hint { display: none; }
+    }
+
+    /* Phone-tight rules (≤ 480 px) — extra-small */
+    @media (max-width: 480px) {
+      .controls-row { justify-content: center; }
+      header { padding: 0.5rem 0.75rem; }
+      #cover-art { width: 80px; height: 80px; }
+      h1 { font-size: 1.1rem; }
+      .now-playing-title { font-size: 1rem; }
+    }
+
+    /* ----------------------------------------------------------------
+       Section nav — single-page view switcher
+       ---------------------------------------------------------------- */
+    #view-nav {
+      background: var(--bg-card);
+      border-bottom: 1px solid var(--border);
+      padding: 0.25rem 1rem;
+    }
+    #view-nav ul {
+      list-style: none;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.25rem;
+    }
+    #view-nav a {
+      display: inline-block;
+      padding: 0.5rem 0.9rem;
+      color: var(--text);
+      text-decoration: none;
+      border-radius: var(--radius);
+      font-weight: 500;
+    }
+    #view-nav a:hover,
+    #view-nav a:focus-visible {
+      background: var(--btn-bg);
+      color: var(--btn-text);
+    }
+    #view-nav a[aria-current="true"] {
+      background: var(--accent);
+      color: #000;
+    }
+    /* Section headings get tabindex -1 for focus management; suppress the
+       focus ring on programmatic focus so it doesn't look like a stale
+       artefact after switching views. */
+    section[data-view] h2:focus-visible { outline: 2px solid var(--accent); }
+
+    @media (max-width: 720px) {
+      #view-nav { padding: 0.25rem 0.5rem; }
+      #view-nav a { padding: 0.6rem 0.8rem; }
+    }

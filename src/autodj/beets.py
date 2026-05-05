@@ -20,7 +20,6 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-
 # ---------------------------------------------------------------------------
 # Exceptions
 # ---------------------------------------------------------------------------
@@ -58,6 +57,8 @@ class Track:
     bpm: float
     year: int
     length: float
+    initial_key: str = ""
+    lyrics: str = ""
 
     @property
     def display_name(self) -> str:
@@ -77,6 +78,98 @@ class Track:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Beets ``initial_key`` parsing — the keyfinder / acousticbrainz plugins
+# write a free-text key string; we parse it so the indexer can prefer it
+# over the librosa-detected key.
+# ---------------------------------------------------------------------------
+
+_NOTE_TO_KEY: dict[str, int] = {
+    "C": 0,
+    "C#": 1,
+    "Db": 1,
+    "D": 2,
+    "D#": 3,
+    "Eb": 3,
+    "E": 4,
+    "Fb": 4,
+    "F": 5,
+    "E#": 5,
+    "F#": 6,
+    "Gb": 6,
+    "G": 7,
+    "G#": 8,
+    "Ab": 8,
+    "A": 9,
+    "A#": 10,
+    "Bb": 10,
+    "B": 11,
+    "Cb": 11,
+}
+
+
+def parse_initial_key(s: str) -> tuple[int, int] | None:
+    """Parse a beets ``initial_key`` text value into ``(key 0–11, mode)``.
+
+    Accepts the common formats written by beets plugins, MP3Tag, and
+    DJ software:
+
+    - Bare note → major: ``"C"``, ``"D#"``, ``"Bb"``
+    - Trailing ``m`` → minor: ``"Cm"``, ``"D#m"``, ``"Bbm"``
+    - Spelled out: ``"C major"``, ``"A minor"`` (case-insensitive)
+    - Camelot codes: ``"8A"``, ``"8B"`` (any valid 1-12 + A/B)
+
+    Args:
+        s: Raw text value.  ``None`` and ``""`` return ``None``.
+
+    Returns:
+        ``(key, mode)`` where ``mode`` is 1 = major, 0 = minor, or
+        ``None`` if the string cannot be parsed.
+    """
+    if not s:
+        return None
+    raw = s.strip()
+    if not raw:
+        return None
+
+    # Camelot form first
+    cam = raw.upper().replace(" ", "")
+    if len(cam) >= 2 and cam[-1] in ("A", "B") and cam[:-1].isdigit():
+        num = int(cam[:-1])
+        side = cam[-1]
+        if 1 <= num <= 12:
+            from autodj.dj_meta import _CAMELOT_MAJOR, _CAMELOT_MINOR
+
+            table = _CAMELOT_MAJOR if side == "B" else _CAMELOT_MINOR
+            for chromatic, n in table.items():
+                if n == num:
+                    return (chromatic, 1 if side == "B" else 0)
+            return None
+
+    # Word form
+    lower = raw.lower()
+    mode: int
+    if "major" in lower:
+        mode = 1
+        note_part = lower.replace("major", "").strip()
+    elif "minor" in lower:
+        mode = 0
+        note_part = lower.replace("minor", "").strip()
+    elif raw.endswith("m") and len(raw) >= 2:
+        mode = 0
+        note_part = raw[:-1].strip()
+    else:
+        mode = 1
+        note_part = raw.strip()
+
+    if not note_part:
+        return None
+    note = note_part[0].upper() + note_part[1:]
+    if note in _NOTE_TO_KEY:
+        return (_NOTE_TO_KEY[note], mode)
+    return None
+
+
 def _decode_path(raw: bytes | str) -> Path:
     """Decode a beets path column value to a :class:`~pathlib.Path`.
 
@@ -94,11 +187,29 @@ def _decode_path(raw: bytes | str) -> Path:
     return Path(raw)
 
 
+def _row_get(row: sqlite3.Row, key: str, default: object = None) -> object:
+    """Safe row[key] that returns *default* when the column is absent.
+
+    sqlite3.Row raises ``IndexError`` on unknown columns, but we want a
+    graceful fallback so users without the keyfinder/lyrics/etc. plugins
+    don't blow up.
+    """
+    try:
+        return row[key]
+    except (IndexError, KeyError):
+        return default
+
+
 def _row_to_track(row: sqlite3.Row) -> Track:
     """Convert a SQLite row from the beets ``items`` table to a :class:`Track`.
 
+    Reads the eight always-present columns plus two optional plugin
+    columns (``initial_key``, ``lyrics``) when they exist.  Missing
+    optional columns are silently treated as empty strings — keeps
+    non-plugin beets installs working.
+
     Args:
-        row: A :class:`sqlite3.Row` with columns matching the beets schema.
+        row: A :class:`sqlite3.Row` with at least the core beets columns.
 
     Returns:
         A populated :class:`Track` instance.
@@ -112,6 +223,8 @@ def _row_to_track(row: sqlite3.Row) -> Track:
         bpm=float(row["bpm"] or 0.0),
         year=int(row["year"] or 0),
         length=float(row["length"] or 0.0),
+        initial_key=str(_row_get(row, "initial_key", "") or ""),
+        lyrics=str(_row_get(row, "lyrics", "") or ""),
     )
 
 
@@ -136,8 +249,12 @@ def _open_db(db_path: Path) -> sqlite3.Connection:
         )
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
-    # Trigger a real read so we fail fast if the file isn't a valid SQLite DB.
-    conn.execute("SELECT 1")
+    try:
+        # Trigger a real read so we fail fast if the file isn't a valid SQLite DB.
+        conn.execute("SELECT 1")
+    except sqlite3.DatabaseError:
+        conn.close()
+        raise
     return conn
 
 
@@ -146,8 +263,28 @@ def _open_db(db_path: Path) -> sqlite3.Connection:
 # ---------------------------------------------------------------------------
 
 
+_CORE_COLS = ("path", "title", "artist", "album", "genre", "bpm", "year", "length")
+_OPTIONAL_COLS = ("initial_key", "lyrics")
+
+
+def _items_columns(conn: sqlite3.Connection) -> set[str]:
+    """Return the set of column names present in the beets ``items`` table."""
+    return {row[1] for row in conn.execute("PRAGMA table_info(items)")}
+
+
+def _select_clause(present_cols: set[str]) -> str:
+    """Build a column list for SELECT — always cores, optionals when present."""
+    cols = list(_CORE_COLS) + [c for c in _OPTIONAL_COLS if c in present_cols]
+    return ", ".join(cols)
+
+
 def get_all_tracks(db_path: str | Path) -> list[Track]:
     """Return every track in the beets library database.
+
+    Reads the eight core fields plus two optional plugin fields
+    (``initial_key`` and ``lyrics``) if those columns exist in the
+    schema.  Older beets installs without those plugins are handled
+    transparently — the optional fields default to empty strings.
 
     Args:
         db_path: Path to the beets ``library.db`` SQLite file.
@@ -168,12 +305,88 @@ def get_all_tracks(db_path: str | Path) -> list[Track]:
     db_path = Path(db_path)
     conn = _open_db(db_path)
     try:
-        rows = conn.execute(
-            "SELECT path, title, artist, album, genre, bpm, year, length FROM items"
-        ).fetchall()
+        cols = _items_columns(conn)
+        # _select_clause returns a hardcoded internal column whitelist.
+        sql = f"SELECT {_select_clause(cols)} FROM items"  # nosec B608
+        rows = conn.execute(sql).fetchall()
         return [_row_to_track(r) for r in rows]
     finally:
         conn.close()
+
+
+def get_lyrics_for_path(
+    db_path: str | Path,
+    track_path: str,
+    music_dir: Path | None = None,
+) -> str:
+    """Return the beets-stored lyrics for a single track, or empty string.
+
+    Used by the player as a fallback when no ``.lrc`` sidecar exists.
+
+    Beets stores paths in one of two forms depending on version:
+    - **Absolute** (older beets / non-``relative_path`` setups)
+    - **Relative-to-library-directory** (modern beets default)
+
+    To handle both, the lookup first tries the absolute form, then the
+    suffix relative to *music_dir* if provided.  In practice this is one
+    extra round-trip on miss — cheap.
+
+    Args:
+        db_path: Path to the beets ``library.db`` SQLite file.
+        track_path: Absolute path of the track at runtime (whatever the
+            player resolved from the index).
+        music_dir: Beets library root, used to strip the prefix when
+            checking the relative-path form.  ``None`` skips that fallback.
+
+    Returns:
+        The lyrics string or ``""`` if not found / column absent.
+    """
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return ""
+    try:
+        conn = _open_db(db_path)
+    except (sqlite3.DatabaseError, BeetsNotFoundError):
+        return ""
+    try:
+        cols = _items_columns(conn)
+        if "lyrics" not in cols:
+            return ""
+        # Try absolute path first (beets historic / non-relative setups)
+        for candidate in _path_candidates(track_path, music_dir):
+            row = conn.execute(
+                "SELECT lyrics FROM items WHERE path = ? LIMIT 1",
+                (candidate.encode("utf-8"),),
+            ).fetchone()
+            if row and row["lyrics"]:
+                return str(row["lyrics"])
+        return ""
+    finally:
+        conn.close()
+
+
+def _path_candidates(track_path: str, music_dir: Path | None) -> list[str]:
+    """Return possible beets-stored representations of *track_path*.
+
+    Returns the absolute form first, then a relative-to-*music_dir* form
+    (forward-slashed, then back-slashed) when *track_path* is under
+    *music_dir*.  Used to look up a track by its on-disk path regardless
+    of whether the beets installation stores absolute or relative paths.
+    """
+    candidates: list[str] = [track_path]
+    if music_dir is None:
+        return candidates
+    try:
+        rel = Path(track_path).resolve().relative_to(Path(music_dir).resolve())
+    except (ValueError, OSError):
+        return candidates
+    rel_str = str(rel)
+    candidates.append(rel_str)
+    if "\\" in rel_str:
+        candidates.append(rel_str.replace("\\", "/"))
+    elif "/" in rel_str:
+        candidates.append(rel_str.replace("/", "\\"))
+    return candidates
 
 
 def search_tracks(db_path: str | Path, query: str) -> list[Track]:
@@ -203,14 +416,11 @@ def search_tracks(db_path: str | Path, query: str) -> list[Track]:
     conn = _open_db(db_path)
     pattern = f"%{query}%"
     try:
-        rows = conn.execute(
-            """
-            SELECT path, title, artist, album, genre, bpm, year, length
-            FROM items
-            WHERE title LIKE ? OR artist LIKE ? OR album LIKE ?
-            """,
-            (pattern, pattern, pattern),
-        ).fetchall()
+        cols = _items_columns(conn)
+        # _select_clause is a hardcoded column whitelist — not user input.
+        select = _select_clause(cols)
+        sql = f"SELECT {select} FROM items WHERE title LIKE ? OR artist LIKE ? OR album LIKE ?"  # nosec B608
+        rows = conn.execute(sql, (pattern, pattern, pattern)).fetchall()
         return [_row_to_track(r) for r in rows]
     finally:
         conn.close()
