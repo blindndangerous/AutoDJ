@@ -361,6 +361,11 @@ def get_lyrics_for_path(
             if row and row["lyrics"]:
                 return str(row["lyrics"])
         return ""
+    except sqlite3.DatabaseError:
+        # Corrupt / not-a-database file slips past _open_db when SQLite
+        # fails lazily on the first PRAGMA — fall back to empty so the
+        # caller's lyrics-lookup never explodes.
+        return ""
     finally:
         conn.close()
 
