@@ -34,7 +34,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: astral-sh/setup-uv@v8
+      - uses: astral-sh/setup-uv@v8.1.0
         with: { enable-cache: true }
 
       - name: Build artefacts
@@ -72,7 +72,7 @@ jobs:
       - uses: actions/download-artifact@v8
         with: { path: ./artefacts }
 
-      - uses: sigstore/cosign-installer@v4
+      - uses: sigstore/cosign-installer@v4.1.1
 
       - name: Sign artefacts (keyless OIDC)
         env:
