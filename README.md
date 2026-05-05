@@ -4,32 +4,28 @@
 [![codecov](https://codecov.io/gh/blindndangerous/AutoDJ/graph/badge.svg)](https://codecov.io/gh/blindndangerous/AutoDJ)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-An AI-powered local music continuity player. Give it your music library and it plays songs that sound like each other, forever — no cloud, no subscriptions, fully offline.
+A local auto-DJ that listens to itself. Point it at your music folder and it plays songs that sound like the one before, forever. No cloud, no Spotify, no scrobbling. Just your files and a vector index.
 
-Uses [MuQ-large-msd-iter](https://huggingface.co/OpenMuQ/MuQ-large-msd-iter) (a music-specific deep learning model trained with Mel-Residual Vector Quantization on the Million Song Dataset) and [FAISS](https://github.com/facebookresearch/faiss) nearest-neighbor search to select and queue the next most sonically similar song.
+Under the hood: [MuQ-large-msd-iter](https://huggingface.co/OpenMuQ/MuQ-large-msd-iter) (Tencent's music-specific transformer trained on the Million Song Dataset) generates a 1024-dim embedding per track. AutoDJ tacks on 16 librosa features for tempo/chroma, normalises the result, drops it in a [FAISS](https://github.com/facebookresearch/faiss) `IndexFlatIP`, and uses cosine similarity to pick whatever's nearest to whatever you're hearing.
 
-**Highlights:**
-- Pre-trained MuQ embeddings + exact FAISS cosine search — no cloud, no scrobble service required
-- BPM-shaping presets (wakeup, party, workout…) and discovery mode
-- Crossfade between tracks — optional pro-DJ EQ ducking eliminates bass-clash mush
-- ReplayGain loudness normalisation — every track plays at consistent volume
-- Web UI with album art, scrolling LRC lyrics, and a reorderable queue
-- Cross-platform index — build once on a GPU box, play on any other machine via shared NAS
+What you get:
 
----
+- Exact FAISS cosine search. No approximate-neighbour tuning to babysit; works fine to ~100k tracks.
+- BPM-shaping presets (`wakeup`, `party`, `workout`, you can write your own) plus a Discovery mode that throws in a sonically distant track every N songs so the set doesn't calcify.
+- Crossfade with an optional pro-DJ EQ duck. The duck high-passes the outgoing track during the overlap so two basslines don't fight each other into mud.
+- ReplayGain loudness normalisation if your files have the tags. Tracks without them play unchanged.
+- A web UI with album art, scrolling LRC lyrics, and a reorderable queue. Defaults to browser-driven playback so the CLI player and the web UI never share a soundcard.
+- An index that's portable. Build it on a GPU box, copy it to a NAS, play from any other machine that mounts the library at any path.
 
 ## How it works
 
-1. **Index** — AutoDJ scans your library, extracts a 1040-dimensional audio fingerprint per song (1024-dim MuQ embedding + 16 librosa spectral/chroma features), and stores them in a FAISS index. Energy, key, mode, and tempo confidence are also extracted and stored as metadata.
-2. **Play** — It picks a seed song, finds its closest sonic neighbors, and plays them back-to-back with a configurable crossfade. Recently played songs are excluded from the candidate pool.
+Indexing walks your library, extracts a 1040-dim fingerprint per file (1024 MuQ + 16 librosa), and writes everything to `index/<name>/vectors.index` plus a `metadata.json` sidecar. The metadata includes BPM, key, mode, energy, tempo confidence, and the usual tag fields so the picker can re-rank by more than raw cosine.
 
----
+Playback picks a seed (random or matching `--seed`), looks the seed's vector up in FAISS, fetches the top-N neighbours, drops anything in the recently-played window, optionally re-ranks by preset BPM target or Camelot harmonic compatibility, and starts the crossfade. On the next track it does the same thing using *that* track as the query, and so on. The recently-played window keeps it from looping back for ~500 picks by default.
 
-## Why MuQ?
+## Why MuQ over MERT?
 
-MuQ ([Tencent AI Lab, 2025](https://arxiv.org/abs/2501.01108)) is a self-supervised music representation learning model trained with Mel-Residual Vector Quantization. It outperforms MERT and MusicFM on the MARBLE music-understanding benchmark — particularly on genre classification, singer identification, instrument classification, and music-structure analysis. Its embeddings capture musical structure densely, which translates to better music-to-music similarity for next-track selection.
-
-MuQ requires 24 kHz mono audio and fp32 inference (fp16 may produce NaN values). AutoDJ handles resampling automatically.
+We used to ship MERT-v1-330M. MuQ replaced it in 2026-01 because it scores better on MARBLE (genre, singer ID, instrument, structure) and avoids MERT's heavy EnCodec tokenizer. The trade-off: MuQ wants 24 kHz mono fp32 (fp16 produces NaN). AutoDJ resamples for you so the user-facing impact is zero.
 
 ---
 
@@ -923,28 +919,15 @@ autodj/
 
 ## Credits
 
-AutoDJ was built collaboratively by humans and AI assistants.  Each
-contributor is named with the part of the work they led.
+Built by humans and AI in a paired loop. Each row says who drove what.
 
-### Human contributors
+### Humans
 
-- **[blindndangerous](https://github.com/blindndangerous)** — project
-  vision, library design, requirements, UX direction (web UI flow, mode
-  semantics, gapless feel), every accessibility decision, all real-world
-  testing on a 10k-track library, every release call.
-- **[jage9](https://github.com/jage9)** — additional contributions and
-  feedback.
+- [blindndangerous](https://github.com/blindndangerous): the project, basically. Every product call (mode semantics, gapless feel, UX flow, accessibility), every release decision, all the real-world testing on a 10k-track library that turned up the bugs nobody would have caught synthetically.
+- [jage9](https://github.com/jage9): contributions and feedback.
 
-### AI assistants
+### AI
 
-- **Claude (Anthropic)** — paired-programming partner across the whole
-  codebase: MuQ + librosa indexing pipeline, FAISS similarity engine,
-  crossfade audio math + EQ-ducking, the 25 transition effects (CLI +
-  AudioWorklet), the FastAPI + WebSocket web layer, the section-nav
-  SPA, the gapless prefetch + silence detector, the `explain.py`
-  music-genome reasoning, the harmonic Camelot rule set, the test
-  suite (914 tests, ~90% coverage).  Every line was reviewed and
-  guided by a human before it shipped.
+- Claude (Anthropic): paired-programming on most of the codebase. The MuQ + librosa indexing pipeline, the FAISS similarity engine, the crossfade math and EQ duck, the 25 transition effects (Python on the CLI side, AudioWorklets in the browser), the FastAPI + WebSocket layer, the section-nav SPA, the silence-driven gapless prefetch, `explain.py`, the Camelot rule set, the test suite. Every line reviewed by a human before it shipped, which is the only reason any of it works.
 
-If you contribute, add yourself here in the same shape as the rows
-above.
+Contributing? Add yourself here in the same shape.

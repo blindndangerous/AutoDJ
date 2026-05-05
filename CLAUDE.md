@@ -1,13 +1,12 @@
-# AutoDJ — AI-powered music continuity player
+# AutoDJ: local auto-DJ that listens to itself
 
-## Project Goal
+## What it does
 
-A local auto-DJ system that:
-1. Indexes a music library and extracts a sonic fingerprint per track
-2. Given the currently playing song, picks the next most sonically similar one
-3. Plays continuously, creating a natural-feeling listening flow
+Indexes your music. Picks whatever sounds most like the song that's
+playing. Plays it. Loops forever.
 
-Fully offline. No cloud services. No Spotify API. Runs against the user's local files (and optional beets metadata).
+Fully offline. No cloud, no Spotify API, no scrobbling. Just your files
+plus an optional beets database for richer tags.
 
 ## Approach: Pre-trained Embeddings + FAISS
 
