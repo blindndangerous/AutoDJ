@@ -668,3 +668,99 @@ class TestReadPlainLyrics:
         # Hide mutagen so the function early-exits.
         monkeypatch.setitem(sys.modules, "mutagen", None)
         assert read_plain_lyrics(tmp_path / "x.flac") == ""
+
+
+class TestLoadLrcOSError:
+    def test_oserror_returns_empty(self, tmp_path, monkeypatch) -> None:
+        from autodj.audio_meta import load_lrc_for
+
+        audio = tmp_path / "x.flac"
+        audio.touch()
+        lrc = tmp_path / "x.lrc"
+        lrc.write_text("[00:01.00]hi\n", encoding="utf-8")
+
+        # Patch read_text to raise OSError
+        import pathlib
+
+        orig = pathlib.Path.read_text
+
+        def _bad(self, *_a, **_kw):
+            raise OSError("permission denied")
+
+        monkeypatch.setattr(pathlib.Path, "read_text", _bad)
+        assert load_lrc_for(audio) == []
+        monkeypatch.setattr(pathlib.Path, "read_text", orig)
+
+
+class TestReadFileTagsNoMutagen:
+    def test_returns_empty_filetags_when_mutagen_missing(self, monkeypatch) -> None:
+        import sys
+
+        from autodj.audio_meta import read_file_tags
+
+        # Hide mutagen
+        monkeypatch.setitem(sys.modules, "mutagen", None)
+        tags = read_file_tags("anywhere.flac")
+        assert tags.title == ""
+        assert tags.artist == ""
+
+    def test_returns_empty_when_mutagen_returns_none(self, monkeypatch, tmp_path) -> None:
+        from autodj.audio_meta import read_file_tags
+
+        _patch_mutagen_file(monkeypatch, None)
+        tags = read_file_tags(tmp_path / "x.flac")
+        assert tags.title == ""
+
+    def test_year_with_garbage_value(self, monkeypatch, tmp_path) -> None:
+        from autodj.audio_meta import read_file_tags
+
+        fake = _FakeMutagenVorbis({"date": ["not a date"]})
+        fake.info = _FakeInfo(120.0)
+        _patch_mutagen_file(monkeypatch, fake)
+        tags = read_file_tags(tmp_path / "x.flac")
+        # First 4 chars "not " — int() fails, falls to except → 0
+        assert tags.year == 0
+
+    def test_bpm_garbage_value_falls_to_zero(self, monkeypatch, tmp_path) -> None:
+        from autodj.audio_meta import read_file_tags
+
+        fake = _FakeMutagenVorbis({"bpm": ["not-a-number"]})
+        fake.info = _FakeInfo(120.0)
+        _patch_mutagen_file(monkeypatch, fake)
+        tags = read_file_tags(tmp_path / "x.flac")
+        assert tags.bpm == 0.0
+
+
+class TestReplayGainErrors:
+    def test_mutagenerror_on_load_returns_none(self, monkeypatch, tmp_path) -> None:
+        import sys
+
+        from autodj.audio_meta import read_replaygain
+
+        # Build a fake mutagen module whose File raises MutagenError
+        fake_module = type(sys)("mutagen")
+
+        class _Err(Exception):
+            pass
+
+        def _raise(_p):
+            raise _Err("corrupt")
+
+        fake_module.File = _raise  # type: ignore[attr-defined]
+        fake_module.MutagenError = _Err  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "mutagen", fake_module)
+        assert read_replaygain(tmp_path / "x.flac") is None
+
+    def test_unparseable_peak_falls_back_to_one(self, monkeypatch, tmp_path) -> None:
+        from autodj.audio_meta import read_replaygain
+
+        fake = _FakeMutagenVorbis(
+            {
+                "replaygain_track_gain": ["-6.0 dB"],
+                "replaygain_track_peak": ["junk"],
+            },
+        )
+        _patch_mutagen_file(monkeypatch, fake)
+        rg = read_replaygain(tmp_path / "x.flac")
+        assert rg is not None
+        assert rg.track_peak == 1.0

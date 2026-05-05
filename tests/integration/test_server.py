@@ -1020,6 +1020,49 @@ class TestLibraryEndpoints:
         tc.post("/api/preset", json={"name": "totally_made_up_preset_xyz"})
         assert bridge.player._preset is None  # silently ignored
 
+    def test_post_preset_applies_discovery_every(self, bridge, tmp_path) -> None:
+        """Preset's discovery_every flows into player._discovery_every."""
+        from fastapi.testclient import TestClient
+
+        from autodj.presets import Preset, constant_curve
+
+        bridge.player._cfg.index.active_dir = tmp_path
+        bridge.player._discovery_every = None
+        bridge.player._cfg.presets = {
+            "test": Preset(
+                name="test",
+                bpm_weight=0.2,
+                _curve=constant_curve(120.0),
+                discovery_every=15,
+            ),
+        }
+        tc = TestClient(create_app(bridge))
+        tc.post("/api/preset", json={"name": "test"})
+        assert bridge.player._discovery_every == 15
+
+    def test_state_file_returns_none_on_typeerror(self, bridge) -> None:
+        """state_file_for swallows TypeError when active_dir isn't path-like."""
+        bridge.player._cfg.index = MagicMock()
+        # Make active_dir attribute access raise via descriptor
+        type(bridge.player._cfg.index).active_dir = property(
+            lambda _self: (_ for _ in ()).throw(TypeError("nope")),
+        )
+        assert bridge._state_file() is None
+
+    def test_current_lyrics_returns_serialised_lines(self, bridge) -> None:
+        """Bridge.current_lyrics serialises LyricLine into dicts."""
+        from autodj.audio_meta import LyricLine
+
+        bridge.player._current_lyrics = [
+            LyricLine(time_s=0.5, text="hello"),
+            LyricLine(time_s=1.0, text="world"),
+        ]
+        result = bridge.current_lyrics()
+        assert result == [
+            {"time_s": 0.5, "text": "hello"},
+            {"time_s": 1.0, "text": "world"},
+        ]
+
 
 # ---------------------------------------------------------------------------
 # EQ endpoint

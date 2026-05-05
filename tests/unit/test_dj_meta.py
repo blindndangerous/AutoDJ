@@ -275,3 +275,116 @@ class TestHarmonicCompatibleModes:
 
         for mode in ("off", "compatible", "strict", "neighbour", "mood_change", "energy_boost"):
             assert harmonic_compatible(-1, -1, 7, 1, mode=mode)
+
+
+class TestDetectIntroOutroEdges:
+    def test_silent_audio_returns_zero_duration(self) -> None:
+        from autodj.dj_meta import detect_intro_outro
+
+        audio = np.zeros(44100 * 5, dtype=np.float32)
+        intro, _outro = detect_intro_outro(audio, 44100)
+        assert intro == 0.0
+
+    def test_constant_loud_audio_falls_back(self) -> None:
+        from autodj.dj_meta import detect_intro_outro
+
+        audio = np.ones(44100 * 5, dtype=np.float32) * 0.5
+        intro, outro = detect_intro_outro(audio, 44100)
+        assert intro >= 0.0
+        assert outro >= intro
+
+    def test_empty_audio(self) -> None:
+        from autodj.dj_meta import detect_intro_outro
+
+        intro, _outro = detect_intro_outro(np.zeros(0, dtype=np.float32), 44100)
+        assert intro == 0.0
+
+
+class TestNearestPhraseBoundaryExtra:
+    def test_empty_beats(self) -> None:
+        from autodj.dj_meta import nearest_phrase_boundary
+
+        assert nearest_phrase_boundary([], 10.0) is None
+
+    def test_too_few_beats_returns_none(self) -> None:
+        from autodj.dj_meta import nearest_phrase_boundary
+
+        assert nearest_phrase_boundary([0.5, 1.0, 1.5], 10.0, bars=8) is None
+
+    def test_close_target_returns_boundary(self) -> None:
+        from autodj.dj_meta import nearest_phrase_boundary
+
+        beats = [i * 0.5 for i in range(64)]
+        result = nearest_phrase_boundary(beats, 15.5, bars=8)
+        assert result is not None
+        assert abs(result - 16.0) < 0.5
+
+    def test_target_far_from_any_boundary_returns_none(self) -> None:
+        from autodj.dj_meta import nearest_phrase_boundary
+
+        beats = [i * 0.5 for i in range(64)]
+        result = nearest_phrase_boundary(beats, 1000.0, bars=8)
+        assert result is None
+
+
+class TestCamelotPositionEdges:
+    def test_invalid_key_returns_none(self) -> None:
+        from autodj.dj_meta import camelot_position
+
+        assert camelot_position(-1, 1) is None
+        assert camelot_position(12, 1) is None
+
+    def test_invalid_mode_returns_none(self) -> None:
+        from autodj.dj_meta import camelot_position
+
+        assert camelot_position(0, -1) is None
+        assert camelot_position(0, 2) is None
+
+
+class TestDjMetaCacheExtra:
+    def test_load_skips_malformed_entries(self, tmp_path) -> None:
+        from autodj.dj_meta import DjMetaCache
+
+        path = tmp_path / "cache.json"
+        path.write_text(
+            '{"good.flac": {"intro_end_s": 1.0, "outro_start_s": 2.0, '
+            '"beats": [], "analysed": true}, '
+            '"bad.flac": {"unknown_field": "x"}}',
+            encoding="utf-8",
+        )
+        cache = DjMetaCache(path)
+        assert cache.get("good.flac").analysed is True
+        assert cache.get("bad.flac").analysed is False
+
+    def test_flush_skips_when_no_data(self, tmp_path) -> None:
+        from autodj.dj_meta import DjMetaCache
+
+        path = tmp_path / "cache.json"
+        cache = DjMetaCache(path)
+        cache.flush(force=True)
+        assert not path.exists()
+
+
+class TestGetCacheAndAnalyse:
+    def test_get_cache_initialises_once(self, tmp_path) -> None:
+        from autodj import dj_meta as _dm
+
+        _dm._CACHE = None
+        c1 = _dm.get_cache(tmp_path)
+        c2 = _dm.get_cache(tmp_path)
+        assert c1 is c2
+        assert _dm.get_cache(None) is c1
+
+    def test_get_cache_none_when_uninitialised(self) -> None:
+        from autodj import dj_meta as _dm
+
+        _dm._CACHE = None
+        assert _dm.get_cache(None) is None
+
+    def test_analyse_audio_returns_populated_djmeta(self) -> None:
+        from autodj.dj_meta import analyse_audio
+
+        rng = np.random.default_rng(0)
+        audio = rng.standard_normal(44100 * 3).astype(np.float32) * 0.1
+        meta = analyse_audio(audio, 44100)
+        assert meta.analysed is True
