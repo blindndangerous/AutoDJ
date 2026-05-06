@@ -167,9 +167,13 @@ class TestSkip:
         tc.post("/api/skip")
         bridge.player._skip_event.set.assert_called_once()
 
-    def test_skip_returns_ok(self, client) -> None:
+    def test_skip_returns_state(self, client) -> None:
+        """/api/skip echoes the fresh state synchronously so the browser
+        does not have to wait for the next WS broadcast tick.
+        """
         data = client.post("/api/skip").json()
-        assert data["ok"] is True
+        assert "current_track" in data
+        assert "next_track" in data
 
 
 # ---------------------------------------------------------------------------
@@ -1192,7 +1196,8 @@ class TestMisc:
 
         tc = TestClient(create_app(bridge))
         resp = tc.post("/api/random-track")
-        assert resp.json()["ok"] is True
+        assert resp.status_code == 200
+        assert "current_track" in resp.json()
         assert bridge.player._state.queued_next is not None
 
     def test_random_track_empty_index(self) -> None:
@@ -1203,7 +1208,134 @@ class TestMisc:
         bridge = PlayerBridge(player=player, sim=sim)
         tc = TestClient(create_app(bridge))
         resp = tc.post("/api/random-track")
-        assert resp.json()["ok"] is False
+        assert resp.status_code == 409
+
+    def test_advance_headless_does_not_set_skip_event(self, bridge) -> None:
+        """In dry_run / headless mode, advance happens synchronously in the
+        bridge -- the player's skip_event must NOT be set, since the loop
+        is parked and would not have advanced state on its own.
+        """
+        from fastapi.testclient import TestClient
+
+        bridge.player._dry_run = True
+        bridge.player._export_m3u = None
+        bridge.player._history_file = None
+        # _pick_next returns a fresh entry so next_track gets refreshed.
+        bridge.player._pick_next.return_value = _make_entry(99)
+
+        prev_next = bridge.player._state.next_track
+        tc = TestClient(create_app(bridge))
+        resp = tc.post("/api/advance")
+        assert resp.status_code == 200
+        # skip_event was NOT touched -- bridge mutated state directly.
+        bridge.player._skip_event.set.assert_not_called()
+        # current_track advanced to the previous next_track.
+        assert bridge.player._state.current_track is prev_next
+        # next_track was refreshed with a freshly-picked entry.
+        assert bridge.player._state.next_track is not None
+        # Response carries the new state so the browser doesn't have to
+        # wait for the WS broadcast tick.
+        body = resp.json()
+        assert body["current_track"] is not None
+        assert body["next_track"] is not None
+
+    def test_skip_headless_routes_through_advance_now(self, bridge) -> None:
+        """/api/skip in headless mode bypasses the player loop too."""
+        from fastapi.testclient import TestClient
+
+        bridge.player._dry_run = True
+        bridge.player._export_m3u = None
+        bridge.player._history_file = None
+        bridge.player._pick_next.return_value = _make_entry(42)
+
+        tc = TestClient(create_app(bridge))
+        resp = tc.post("/api/skip")
+        assert resp.status_code == 200
+        bridge.player._skip_event.set.assert_not_called()
+
+    def test_advance_now_uses_queued_next(self, bridge) -> None:
+        """queued_next (search -> Now / reseed_random) wins over next_track."""
+        bridge.player._dry_run = True
+        bridge.player._export_m3u = None
+        bridge.player._history_file = None
+        queued = _make_entry(123)
+        bridge.player._state.queued_next = queued
+        bridge.player._pick_next.return_value = _make_entry(7)
+
+        bridge.advance_now()
+
+        assert bridge.player._state.current_track is queued
+        assert bridge.player._state.queued_next is None
+        assert bridge.player._last_pick_mode == "queue"
+
+    def test_advance_now_pops_queue(self, bridge) -> None:
+        """User-ordered queue (drag-reorder) drains FIFO when no queued_next."""
+        bridge.player._dry_run = True
+        bridge.player._export_m3u = None
+        bridge.player._history_file = None
+        bridge.player._state.queued_next = None
+        head = _make_entry(55)
+        tail = _make_entry(56)
+        bridge.player._state.queue.extend([head, tail])
+        bridge.player._pick_next.return_value = _make_entry(99)
+
+        bridge.advance_now()
+
+        assert bridge.player._state.current_track is head
+        assert list(bridge.player._state.queue) == [tail]
+        assert bridge.player._last_pick_mode == "queue"
+
+    def test_advance_now_picks_when_no_next_track(self, bridge) -> None:
+        """No queued_next, no queue, no next_track -> falls back to _pick_next."""
+        bridge.player._dry_run = True
+        bridge.player._export_m3u = None
+        bridge.player._history_file = None
+        bridge.player._state.queued_next = None
+        bridge.player._state.next_track = None
+        # cur is set; queue empty.
+        picked = _make_entry(77)
+        bridge.player._pick_next.return_value = picked
+
+        bridge.advance_now()
+
+        assert bridge.player._state.current_track is picked
+        # _pick_next called twice: once for the advance pick, once to
+        # refresh next_track for the prefetcher.
+        assert bridge.player._pick_next.call_count == 2
+
+    def test_advance_now_no_op_when_index_empty(self, bridge) -> None:
+        """No current, no next, no queue -> early return, no state mutation."""
+        bridge.player._dry_run = True
+        bridge.player._export_m3u = None
+        bridge.player._history_file = None
+        bridge.player._state.queued_next = None
+        bridge.player._state.current_track = None
+        bridge.player._state.next_track = None
+
+        bridge.advance_now()
+
+        assert bridge.player._state.current_track is None
+        bridge.player._pick_next.assert_not_called()
+
+    def test_advance_now_writes_m3u_and_history(self, bridge, tmp_path) -> None:
+        """Side-effect parity with the Live audio loop -- per-track
+        append to the M3U export and the history file.
+        """
+        bridge.player._dry_run = True
+        m3u = tmp_path / "live.m3u"
+        history = tmp_path / "history.tsv"
+        bridge.player._export_m3u = m3u
+        bridge.player._history_file = history
+        bridge.player._pick_next.return_value = _make_entry(11)
+
+        next_entry = bridge.player._state.next_track  # what advance picks
+        bridge.advance_now()
+
+        m3u_text = m3u.read_text(encoding="utf-8")
+        hist_text = history.read_text(encoding="utf-8")
+        assert next_entry.path in m3u_text
+        # History line carries the track path + an ISO timestamp.
+        assert next_entry.path in hist_text
 
     def test_lyrics_endpoint_returns_list(self, client) -> None:
         data = client.get("/api/lyrics").json()

@@ -928,65 +928,26 @@ class Player:
         Args:
             current: Initial seed track.
         """
-        while not self._state.should_stop:
-            self._state.current_track = current
+        # One-shot init: seed current + pre-compute next so the WS push
+        # has something to show on first connect.  After this, the
+        # browser owns every state transition: it calls /api/advance
+        # (or /api/skip) which routes through PlayerBridge.advance_now()
+        # to mutate state synchronously.  This loop never advances on
+        # its own — that was the source of the "song changed while page
+        # idle" bug.
+        self._state.current_track = current
+        if self._state.next_track is None:
+            self._state.next_track = self._pick_next(current)
+        self._current_sr = _DEFAULT_SR
+        self._playback_len = int(
+            (current.length if current.length and current.length > 0 else 5.0) * _DEFAULT_SR,
+        )
+        self._playback_pos[0] = 0
+
+        # Park until shutdown.  No fallback timer, no auto-advance.
+        while not self._state.should_stop:  # pragma: no cover
+            self._skip_event.wait(timeout=1.0)
             self._skip_event.clear()
-
-            next_entry = self._pick_next(current)
-            self._state.next_track = next_entry
-
-            # Update playback position trackers so the web UI's elapsed
-            # timer reflects something sensible (browser drives the real
-            # clock; this is just a fallback for any client that's not
-            # listening to the audio element).
-            duration = current.length if current.length and current.length > 0 else 5.0
-            self._current_sr = _DEFAULT_SR
-            self._playback_len = int(duration * _DEFAULT_SR)
-            self._playback_pos[0] = 0
-
-            # Wait for the browser to signal end-of-track via /api/advance,
-            # which calls bridge.skip() → sets self._skip_event.  Honour
-            # pause state so server-side pause is reflected.
-            # Note: we deliberately do NOT tick `_playback_pos` here.  In
-            # headless mode the browser is the real audio clock and reads
-            # audioEl.currentTime for its progress bar.  Server ticking
-            # would make the UI timer creep forward before the user has
-            # even clicked Play.
-            # Time-based wait loop — exercised by the headless integration
-            # test path but not by unit tests (would block on real sleep).
-            tick = 0.5
-            elapsed = 0.0
-            while not self._skip_event.is_set() and not self._state.should_stop:  # pragma: no cover
-                time.sleep(tick)
-                if self._state.is_paused:
-                    continue
-                elapsed += tick
-                # Soft fallback: if no advance signal arrives within
-                # 2× track length (browser disconnected, never opened),
-                # auto-advance so the queue keeps moving.
-                if elapsed > duration * 2.0:
-                    break
-
-            if self._state.should_stop:  # pragma: no cover
-                break
-
-            # Honour a queued pick that arrived during the wait — covers
-            # the "search → Now" case where the user picks a track after
-            # _pick_next has already returned a similarity match.
-            if self._state.queued_next is not None:  # pragma: no cover
-                next_entry = self._state.queued_next
-                self._state.queued_next = None
-
-            self._state.record_played(next_entry)  # pragma: no cover
-            self._state.track_number += 1  # pragma: no cover
-
-            if self._export_m3u:  # pragma: no cover
-                _append_m3u_entry(self._export_m3u, next_entry)
-            if self._history_file:  # pragma: no cover
-                _append_history_entry(self._history_file, next_entry, datetime.now())
-
-            self._previous_track = current  # pragma: no cover
-            current = next_entry  # pragma: no cover
 
     def _pick_next(self, current: IndexEntry) -> IndexEntry:
         """Select the next track by looking up the current track's stored vector.

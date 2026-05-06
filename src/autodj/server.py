@@ -203,8 +203,83 @@ class PlayerBridge:
     # ------------------------------------------------------------------
 
     def skip(self) -> None:
-        """Skip the current track immediately."""
-        self.player._skip_event.set()
+        """Skip the current track immediately.
+
+        In headless / browser-driven mode (``player._dry_run``) the
+        bridge mutates state synchronously via :meth:`advance_now` so
+        callers (REST endpoints, WS clients) can read the new state
+        on the same request.  In server-audio mode the audio loop owns
+        track sequencing, so we just signal it.
+        """
+        if getattr(self.player, "_dry_run", False):
+            self.advance_now()
+        else:
+            self.player._skip_event.set()
+
+    def advance_now(self) -> None:
+        """Synchronous track advance for headless / browser-driven mode.
+
+        Browser owns the audio clock; when its ``<audio>.ended`` fires
+        (or the user hits Skip / Now / Random) it POSTs to the server
+        which calls this method.  We honour any queued pick, fall back
+        to the precomputed ``next_track``, then refresh ``next_track``
+        with a fresh similarity match so the browser has something to
+        prefetch immediately.
+
+        The ``Player`` thread parked in ``_run_headless`` is *not*
+        consulted — its sole job is to hold the seed and keep the
+        process alive.  This keeps the web player and the (potential)
+        CLI player fully decoupled.
+        """
+        p = self.player
+        state = p._state
+        cur = state.current_track
+
+        if state.queued_next is not None:
+            nxt = state.queued_next
+            state.queued_next = None
+            p._last_pick_mode = "queue"
+        elif state.queue:
+            nxt = state.queue.pop(0)
+            p._last_pick_mode = "queue"
+        elif state.next_track is not None:
+            nxt = state.next_track
+        elif cur is not None:
+            nxt = p._pick_next(cur)
+        else:
+            return
+
+        state.current_track = nxt
+        # Refresh next_track for the browser's prefetcher.
+        try:
+            state.next_track = p._pick_next(nxt)
+        except Exception:  # pragma: no cover — defensive
+            state.next_track = None
+        state.record_played(nxt)
+        state.track_number += 1
+        p._previous_track = cur
+
+        # Update timer hint (browser drives the real clock; this just
+        # keeps get_state's `duration` field correct on first WS push).
+        from autodj.player import _DEFAULT_SR  # local import — avoid cycles
+
+        p._current_sr = _DEFAULT_SR
+        p._playback_len = int(
+            (nxt.length if nxt.length and nxt.length > 0 else 5.0) * _DEFAULT_SR,
+        )
+        p._playback_pos[0] = 0
+
+        # M3U / history side effects (mirror the Live-loop behaviour).
+        if p._export_m3u:
+            from autodj.player import _append_m3u_entry
+
+            _append_m3u_entry(p._export_m3u, nxt)
+        if p._history_file:
+            from datetime import datetime as _dt
+
+            from autodj.player import _append_history_entry
+
+            _append_history_entry(p._history_file, nxt, _dt.now())
 
     def pause(self) -> bool:
         """Toggle pause/resume.
@@ -430,7 +505,7 @@ class PlayerBridge:
             return False
         self.player._state.queued_next = entry
         if now:
-            self.player._skip_event.set()
+            self.skip()
         return True
 
     # ------------------------------------------------------------------
@@ -452,7 +527,7 @@ class PlayerBridge:
             return False
         chosen = _random.choice(entries)  # nosec B311 — non-security
         self.player._state.queued_next = chosen
-        self.player._skip_event.set()
+        self.skip()
         return True
 
     def queue_add(self, path: str) -> bool:
@@ -892,9 +967,11 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
         return JSONResponse(bridge.get_state())
 
     @app.post("/api/skip")
-    async def api_skip() -> dict[str, bool]:
+    async def api_skip() -> JSONResponse:
         bridge.skip()
-        return {"ok": True}
+        # Return fresh state so the browser updates its now-playing UI
+        # without waiting up to 1 s for the next WS broadcast tick.
+        return JSONResponse(bridge.get_state())
 
     @app.post("/api/pause")
     async def api_pause() -> dict[str, bool]:
@@ -1140,15 +1217,28 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
         )
 
     @app.post("/api/advance")
-    async def api_advance() -> dict[str, bool]:
-        """Browser signals end-of-track — server picks next track."""
+    async def api_advance() -> JSONResponse:
+        """Browser signals end-of-track — server picks next track.
+
+        Returns the fresh state synchronously so the browser can update
+        ``current_track`` / ``next_track`` immediately without waiting
+        for the 1 Hz WS broadcast.  Decouples advance latency from the
+        broadcast cadence.
+        """
         bridge.skip()
-        return {"ok": True}
+        return JSONResponse(bridge.get_state())
 
     @app.post("/api/random-track")
-    async def api_random_track() -> dict[str, bool]:
-        """Reseed the auto-DJ from a fresh random track in the index."""
-        return {"ok": bridge.reseed_random()}
+    async def api_random_track() -> JSONResponse:
+        """Reseed the auto-DJ from a fresh random track in the index.
+
+        Status code distinguishes success from an empty index:
+        ``200`` when a track was picked, ``409 Conflict`` when the
+        index has nothing to reseed from.
+        """
+        if not bridge.reseed_random():
+            raise HTTPException(status_code=409, detail="Index is empty")
+        return JSONResponse(bridge.get_state())
 
     # ------------------------------------------------------------------
     # Settings (mirror of CLI flags)
