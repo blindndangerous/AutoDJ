@@ -905,15 +905,68 @@ function _restoreDirect(deck) {
   deck.source.connect(deck.gain);
 }
 
-function _makeReverbIR(durationSec, decay) {
-  const sr = _ctx.sampleRate;
-  const n = Math.max(1, Math.floor(sr * durationSec));
-  const buf = _ctx.createBuffer(2, n, sr);
-  for (let ch = 0; ch < 2; ch++) {
-    const data = buf.getChannelData(ch);
-    for (let i = 0; i < n; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / n, decay);
+// Impulse-response cache.  WeakMap keyed by AudioContext (lets the
+// buffers GC if the context ever goes away), inner Map keyed by
+// "shape:durationSec:decay" so the same reverb tail / submerge wash /
+// reverse_reverb swell built every transition reuses the same fp32
+// stereo buffer instead of re-allocating ~1.5 MB and re-running the
+// RNG fill on each crossfade.  Pattern borrowed from chat_grid's
+// client/src/audio/effects.ts (getCachedImpulseResponse).
+const _irCache = new WeakMap();
+
+function _cachedIR(key, build) {
+  let ctxCache = _irCache.get(_ctx);
+  if (!ctxCache) {
+    ctxCache = new Map();
+    _irCache.set(_ctx, ctxCache);
+  }
+  const fullKey = `${_ctx.sampleRate}:${key}`;
+  let buf = ctxCache.get(fullKey);
+  if (!buf) {
+    buf = build();
+    ctxCache.set(fullKey, buf);
   }
   return buf;
+}
+
+function _makeReverbIR(durationSec, decay) {
+  return _cachedIR(`fwd:${durationSec}:${decay}`, () => {
+    const sr = _ctx.sampleRate;
+    const n = Math.max(1, Math.floor(sr * durationSec));
+    const buf = _ctx.createBuffer(2, n, sr);
+    for (let ch = 0; ch < 2; ch++) {
+      const data = buf.getChannelData(ch);
+      for (let i = 0; i < n; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / n, decay);
+    }
+    return buf;
+  });
+}
+
+function _makeReverseReverbIR(durationSec, scale) {
+  return _cachedIR(`rev:${durationSec}:${scale}`, () => {
+    const sr = _ctx.sampleRate;
+    const n = Math.max(1, Math.floor(sr * durationSec));
+    const buf = _ctx.createBuffer(2, n, sr);
+    for (let ch = 0; ch < 2; ch++) {
+      const data = buf.getChannelData(ch);
+      for (let i = 0; i < n; i++) {
+        const env = (i / n) ** 2;
+        data[i] = (Math.random() * 2 - 1) * env * scale;
+      }
+    }
+    return buf;
+  });
+}
+
+// Best-effort disconnect helper.  Effect teardown can fire after the
+// AudioContext has already torn the graph down (e.g. on rapid skip),
+// so disconnect() can throw "node is not connected".  Swallow per node
+// instead of repeating try/catch blocks at every call site.
+function _disconnectAll(...nodes) {
+  for (const n of nodes) {
+    if (!n) continue;
+    try { n.disconnect(); } catch (_) {}
+  }
 }
 
 // Real reverse / fast-forward playback via decoded AudioBuffer.  HTML
@@ -1034,11 +1087,11 @@ function _doSpin(ctx, outDeck, t0, fadeSec, reverse, teardowns) {
     // already-finished outgoing track.
     if (bufSrc) {
       try { bufSrc.stop(); } catch (_) {}
-      try { bufSrc.disconnect(); bufGain.disconnect(); } catch (_) {}
+      _disconnectAll(bufSrc, bufGain);
     }
     if (synthNoise) {
       try { synthNoise.stop(); } catch (_) {}
-      try { synthNoise.disconnect(); synthBp.disconnect(); synthG.disconnect(); } catch (_) {}
+      _disconnectAll(synthNoise, synthBp, synthG);
     }
   });
 }
@@ -1091,7 +1144,7 @@ function _doTapeStop(ctx, outDeck, t0, fadeSec, teardowns) {
     outDeck.audio.muted = false;
     if (bufSrc) {
       try { bufSrc.stop(); } catch (_) {}
-      try { bufSrc.disconnect(); bufGain.disconnect(); } catch (_) {}
+      _disconnectAll(bufSrc, bufGain);
     }
   });
 }
@@ -1229,9 +1282,7 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
     outDeck.source.connect(delay);
     delay.connect(fb); fb.connect(delay);
     delay.connect(wet); wet.connect(ctx.destination);
-    teardowns.push(() => {
-      try { delay.disconnect(); fb.disconnect(); wet.disconnect(); } catch (_) {}
-    });
+    teardowns.push(() => _disconnectAll(delay, fb, wet));
   }
   else if (effect === "reverb_tail") {
     // Big-hall reverb that survives the crossfade.  Wet path bypasses
@@ -1248,9 +1299,7 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
     wet.gain.exponentialRampToValueAtTime(0.001, t0 + fadeSec + 1.0);
     outDeck.source.connect(send); send.connect(conv); conv.connect(wet);
     wet.connect(ctx.destination);
-    teardowns.push(() => {
-      try { conv.disconnect(); wet.disconnect(); send.disconnect(); } catch (_) {}
-    });
+    teardowns.push(() => _disconnectAll(conv, wet, send));
   }
   else if (effect === "telephone") {
     // Real telephone band-pass + saturation + heavy compression.
@@ -1272,9 +1321,7 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
     _routeThrough(outDeck, hp);
     hp.connect(lp); lp.connect(drive); drive.connect(shaper);
     shaper.connect(outDeck.gain);
-    teardowns.push(() => {
-      try { hp.disconnect(); lp.disconnect(); drive.disconnect(); shaper.disconnect(); } catch (_) {}
-    });
+    teardowns.push(() => _disconnectAll(hp, lp, drive, shaper));
   }
   else if (effect === "flanger") {
     // Classic flanger: short delay (1-10 ms) modulated by slow LFO,
@@ -1290,7 +1337,7 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
     lfo.start();
     teardowns.push(() => {
       try { lfo.stop(); } catch (_) {}
-      try { delay.disconnect(); fb.disconnect(); wet.disconnect(); lfoGain.disconnect(); } catch (_) {}
+      _disconnectAll(delay, fb, wet, lfoGain);
     });
   }
   else if (effect === "bitcrusher") {
@@ -1439,9 +1486,7 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
     lp.connect(outDeck.gain);     // dry filtered
     lp.connect(conv);              // + wet reverb
     conv.connect(wet); wet.connect(outDeck.gain);
-    teardowns.push(() => {
-      try { lp.disconnect(); conv.disconnect(); wet.disconnect(); } catch (_) {}
-    });
+    teardowns.push(() => _disconnectAll(lp, conv, wet));
   }
   // -------- vinyl_wow: pitch wobble (drunk turntable) on outgoing --------
   else if (effect === "vinyl_wow") {
@@ -1510,9 +1555,7 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
       node.connect(g); g.connect(ctx.destination);
       outDeck.gain.gain.cancelScheduledValues(t0);
       outDeck.gain.gain.setValueAtTime(0, t0);
-      teardowns.push(() => {
-        try { node.disconnect(); g.disconnect(); } catch (_) {}
-      });
+      teardowns.push(() => _disconnectAll(node, g));
     }
   }
   else if (effect === "glitch") {
@@ -1531,9 +1574,7 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
       node.connect(g); g.connect(ctx.destination);
       outDeck.gain.gain.cancelScheduledValues(t0);
       outDeck.gain.gain.setValueAtTime(0, t0);
-      teardowns.push(() => {
-        try { node.disconnect(); g.disconnect(); } catch (_) {}
-      });
+      teardowns.push(() => _disconnectAll(node, g));
     }
   }
   // -------- scratch: rapid back-and-forth sweep over short slice --------
@@ -1595,7 +1636,7 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
       outDeck.audio.muted = false;
       for (const s of sources) {
         try { s.src.stop(); } catch (_) {}
-        try { s.src.disconnect(); s.g.disconnect(); } catch (_) {}
+        _disconnectAll(s.src, s.g);
       }
     });
   }
@@ -1641,7 +1682,7 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
       outDeck.audio.muted = false;
       for (const s of sources) {
         try { s.src.stop(); } catch (_) {}
-        try { s.src.disconnect(); s.g.disconnect(); } catch (_) {}
+        _disconnectAll(s.src, s.g);
       }
     });
   }
@@ -1668,28 +1709,18 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
   }
   // -------- reverse_reverb: swelling reverb INTO the cut --------
   else if (effect === "reverse_reverb") {
-    // Build a normal IR, reverse it, convolve.  Wet path bypasses
-    // deck.gain so the swell crescendos all the way to the cut.
-    const sr = ctx.sampleRate;
-    const irLen = Math.floor(2.0 * sr);
-    const buf = ctx.createBuffer(2, irLen, sr);
-    for (let ch = 0; ch < 2; ch++) {
-      const data = buf.getChannelData(ch);
-      // Reverse-decay envelope: starts at 0, rises to 1 at the end.
-      for (let i = 0; i < irLen; i++) {
-        const env = (i / irLen) ** 2;
-        data[i] = (Math.random() * 2 - 1) * env * 0.4;
-      }
-    }
-    const conv = ctx.createConvolver(); conv.buffer = buf;
+    // Build a reverse-decay IR (envelope rises 0 → 1 over duration),
+    // convolve.  Wet path bypasses deck.gain so the swell crescendos
+    // all the way to the cut.  IR is shared across crossfades via
+    // _cachedIR — re-running the RNG fill every transition was wasteful.
+    const conv = ctx.createConvolver();
+    conv.buffer = _makeReverseReverbIR(2.0, 0.4);
     const wet = ctx.createGain();
     wet.gain.setValueAtTime(0.0, t0);
     wet.gain.linearRampToValueAtTime(_volume * 1.4, tEnd - 0.1);
     wet.gain.linearRampToValueAtTime(0.0, tEnd);
     outDeck.source.connect(conv); conv.connect(wet); wet.connect(ctx.destination);
-    teardowns.push(() => {
-      try { conv.disconnect(); wet.disconnect(); } catch (_) {}
-    });
+    teardowns.push(() => _disconnectAll(conv, wet));
   }
   // -------- air_horn: synth dub-siren riser layered with the music --------
   else if (effect === "air_horn") {
@@ -1711,7 +1742,7 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
     osc.stop(tEnd + 0.05);
     teardowns.push(() => {
       try { osc.stop(); } catch (_) {}
-      try { osc.disconnect(); lp.disconnect(); g.disconnect(); } catch (_) {}
+      _disconnectAll(osc, lp, g);
     });
   }
   else if (effect === "pitch_swell") {

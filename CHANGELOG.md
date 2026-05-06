@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.12.2] - 2026-05-05
+
+### Changed
+
+- **Reverb impulse-response cache (`app.js`).**  `_makeReverbIR` and a
+  new `_makeReverseReverbIR` now memoise their generated stereo fp32
+  buffers per `AudioContext` via a `WeakMap<AudioContext, Map<key,
+  AudioBuffer>>`.  The `reverb_tail`, `submerge`, and `reverse_reverb`
+  effects rebuild the same 2-4 s impulse on every crossfade — previously
+  ~1.5 MB allocated and re-randomised each transition, now built once
+  per (sample-rate, duration, decay) tuple and reused.  Cache pattern
+  borrowed from `chat_grid`'s `client/src/audio/effects.ts`.
+- **`_disconnectAll` helper (`app.js`).**  Replaces the dozen
+  `try { a.disconnect(); b.disconnect(); ... } catch (_) {}` blocks in
+  the transition teardown paths.  Per-node try/catch lets one
+  already-disconnected node not skip the rest, fixes a subtle bug
+  where a thrown disconnect on the first node left the others leaked
+  on rapid skip.  No effects added, removed, or changed in behaviour.
+
+---
+
 ## [0.12.1] - 2026-05-05
 
 ### Fixed
