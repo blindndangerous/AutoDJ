@@ -1,6 +1,6 @@
 [project]
 name = "autodj"
-version = "0.13.0"
+version = "0.14.0"
 description = "AI-powered local music continuity player using MuQ embeddings and FAISS similarity search"
 requires-python = ">=3.13"
 readme = "README.md"

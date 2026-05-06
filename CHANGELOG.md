@@ -6,6 +6,70 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.14.0] - 2026-05-06
+
+### Added
+
+- **Cue points (auto-detect + DJ-software import).**  New
+  `Cue` dataclass and `cues` list field on `DjMeta`.
+  `detect_cues()` runs alongside the existing intro/outro pass and
+  emits `first_downbeat`, `drop`, `breakdown`, `phrase`, and
+  `outro_downbeat` markers from raw audio with no extra dependencies.
+  New `autodj.dj_cues_import` reads cue points from external DJ
+  software libraries and merges them in: Mixxx (`mixxx.db` SQLite),
+  Rekordbox (`Library.xml` export), Traktor (`collection.nml`).  The
+  importer auto-discovers libraries in the music folder + standard
+  per-OS user-data locations on first cache use.  Conflicts inside a
+  250 ms window resolve by source priority: user > DJ-software > auto.
+  Cached in the existing `dj_meta.json` sidecar so detection runs
+  once per track.  Surfaced via `/api/status` (`cues` array per track)
+  and rendered in the web UI as a decorative cue strip overlaid on
+  the progress bar with a screen-reader summary in the existing
+  `#badges-announce` live region.
+- **Mood arc (`autodj.mood_arc`).**  Set-relative warmup → peak → cool
+  envelope.  New `MoodArc` dataclass anchored to `time.time()` at
+  enable; loops every `mood_arc_hours`.  Default shape interpolates
+  six anchors (warmup at 0, build, pre-peak, peak at 0.75, wind-down,
+  close at 1.0) onto configurable `(low_bpm, high_bpm)` and
+  `(low_energy, high_energy)` ranges.  Picker target priority is now:
+  explicit preset > mood arc > daypart.
+- **Wall-clock daypart (`autodj.daypart`) restored.**  Built-in
+  morning / midday / afternoon / evening / night profiles; previously
+  removed in 0.13 and brought back per user request.  Stacks under
+  the new mood arc — when both are enabled, the arc owns the picker
+  target while a session is in progress and daypart is the idle
+  baseline.
+- CLI flags `--daypart/--no-daypart`, `--mood-arc/--no-mood-arc`,
+  `--mood-arc-hours`, `--import-external-cues/--no-import-external-cues`
+  on both `play` and `serve`.
+- `[playback]` config keys `enable_daypart`, `enable_mood_arc`,
+  `mood_arc_hours`, `import_external_cues`.
+- Web UI Settings panel: matching toggles for all four flags above.
+
+### Changed
+
+- **Web + CLI players fully decoupled in `serve` mode.**  The
+  headless `_run_headless` loop no longer ticks an `elapsed` counter
+  or auto-advances after `duration * 2.0` — it parks on
+  `_skip_event` indefinitely.  Browser owns every state transition.
+  `PlayerBridge.advance_now()` does synchronous track picking when
+  the bridge is in `dry_run` mode, so `/api/skip`, `/api/advance`,
+  and `/api/random-track` mutate state and return the fresh
+  `current_track` / `next_track` payload in one round trip — no
+  WS-broadcast wait.
+- `/api/random-track` now returns `409 Conflict` (instead of
+  `{"ok": false}`) when the index is empty.  No back-compat field on
+  successful responses; routes return the state object directly.
+
+### Tests / coverage
+
+- 1035+ pass.  Coverage 91 %.  New unit suites: `test_dj_cues`
+  (auto-detect + Mixxx + Rekordbox + Traktor + cache round-trip),
+  `test_mood_arc`, plus bridge tests for daypart/arc/cues toggles
+  and CLI flag pass-through.
+
+---
+
 ## [0.13.0] - 2026-05-05
 
 ### Added
