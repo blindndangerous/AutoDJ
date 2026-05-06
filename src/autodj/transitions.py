@@ -59,6 +59,7 @@ class TransitionFx(StrEnum):
     BITCRUSHER = "bitcrusher"  # lo-fi bit-depth crush on outgoing
     FLANGER = "flanger"  # short LFO-modulated delay on outgoing
     PITCH_SWELL = "pitch_swell"  # pitch ramp UP on outgoing (vinyl rewind reverse)
+    PITCH_FALL = "pitch_fall"  # pitch ramp DOWN on outgoing (mirror of swell)
     TELEPHONE = "telephone"  # narrow band-pass — sounds like a phone call
     NOISE_DROP = "noise_drop"  # noise crashes from bright to dark (opposite of riser)
     CHORUS = "chorus"  # multi-voice detuned chorus
@@ -88,6 +89,7 @@ _REAL_EFFECTS: list[TransitionFx] = [
     TransitionFx.BITCRUSHER,
     TransitionFx.FLANGER,
     TransitionFx.PITCH_SWELL,
+    TransitionFx.PITCH_FALL,
     TransitionFx.TELEPHONE,
     TransitionFx.NOISE_DROP,
     TransitionFx.CHORUS,
@@ -512,6 +514,36 @@ def pitch_swell(
         return tail
     # Accelerating speed envelope: 1.0 -> 2.0
     speed = np.linspace(1.0, 2.0, n, dtype=np.float32)
+    read_pos = np.cumsum(speed)
+    if read_pos[-1] > 0:
+        read_pos = read_pos * ((n - 1) / read_pos[-1])
+    idx = read_pos.astype(np.int32)
+    np.clip(idx, 0, n - 1, out=idx)
+    return tail[idx].astype(np.float32)
+
+
+def pitch_fall(
+    tail: np.ndarray,
+    sample_rate: int,
+) -> np.ndarray:
+    """Pitch-down fall on the outgoing tail — mirror of :func:`pitch_swell`.
+
+    Speed decelerates from 1.0× to ~0.4× over the tail length (pitch
+    coupled to speed via simple resampling).  Sounds like the outgoing
+    track sagging into the cut without fully braking like tape_stop.
+
+    Args:
+        tail: Mono float32 audio.
+        sample_rate: Sample rate (unused — kept for API consistency).
+
+    Returns:
+        Pitch-fallen float32 array of the same length as *tail*.
+    """
+    n = len(tail)
+    if n < 4:
+        return tail
+    # Decelerating speed envelope: 1.0 -> 0.4
+    speed = np.linspace(1.0, 0.4, n, dtype=np.float32)
     read_pos = np.cumsum(speed)
     if read_pos[-1] > 0:
         read_pos = read_pos * ((n - 1) / read_pos[-1])
@@ -1140,6 +1172,9 @@ def apply_transition(
 
     if effect == TransitionFx.PITCH_SWELL:
         return pitch_swell(tail, sample_rate), head, empty_extra
+
+    if effect == TransitionFx.PITCH_FALL:
+        return pitch_fall(tail, sample_rate), head, empty_extra
 
     if effect == TransitionFx.TELEPHONE:
         return telephone(tail, sample_rate), head, empty_extra

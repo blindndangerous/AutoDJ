@@ -1351,6 +1351,8 @@ def serve(
     pure_shuffle: bool = False,
     anchor_to_seed: bool = False,
     no_playback: bool = False,
+    ssl_certfile: str | None = None,
+    ssl_keyfile: str | None = None,
 ) -> None:
     """Start the Player thread and the FastAPI/uvicorn web server.
 
@@ -1429,9 +1431,16 @@ def serve(
 
     app = create_app(bridge)
 
-    uvicorn.run(
-        app,
-        host=host,
-        port=port,
-        log_level="warning",
-    )
+    # ssl_certfile / ssl_keyfile flip uvicorn into HTTPS mode, which is
+    # required by browsers to expose AudioWorklet on non-localhost hosts.
+    # Without HTTPS the freeze / glitch / bitcrusher worklets fall back
+    # to BufferSource / WaveShaper approximations.
+    uvicorn_kwargs: dict = {
+        "host": host,
+        "port": port,
+        "log_level": "warning",
+    }
+    if ssl_certfile and ssl_keyfile:
+        uvicorn_kwargs["ssl_certfile"] = ssl_certfile
+        uvicorn_kwargs["ssl_keyfile"] = ssl_keyfile
+    uvicorn.run(app, **uvicorn_kwargs)

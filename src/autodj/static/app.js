@@ -288,7 +288,13 @@ function applySettingsState(st) {
   }
   presetSelect.value = st.preset || "";
 
-  transitionSelect.value = st.transition || "none";
+  if (document.activeElement !== transitionSelect) {
+    // Guard with focus check — without this, every WebSocket state echo
+    // (~1 Hz) reassigns `.value`, which closes the dropdown and shifts
+    // focus while the user is mid-selection.  Same pattern as
+    // pbTransitionMode / pbCrossfade above.
+    transitionSelect.value = st.transition || "none";
+  }
 
   // Harmonic mode dropdown reflects both flag + mode.  The "off" option
   // implies harmonic_mixing=false; any other option enables it.
@@ -1012,7 +1018,8 @@ let _rotateCursor = -1;
 function _resolveTransition(name) {
   const real = ["echo_out", "reverb_tail", "highpass_sweep", "lowpass_sweep",
     "tape_stop", "gate_stutter", "noise_riser", "noise_drop",
-    "cross_eq_swap", "bitcrusher", "flanger", "pitch_swell", "telephone",
+    "cross_eq_swap", "bitcrusher", "flanger", "pitch_swell", "pitch_fall",
+    "telephone",
     "backspin", "forward_spin", "chorus", "submerge", "vinyl_wow",
     "freeze", "glitch",
     "scratch", "beat_repeat", "sidechain_pump", "reverse_reverb", "air_horn"];
@@ -1129,7 +1136,9 @@ function _doSpin(ctx, outDeck, t0, fadeSec, reverse, teardowns) {
   //
   // Industry envelope:
   //   reverse: rate decays 2.0 → 0.05 (vinyl friction physics)
-  //   forward: rate accelerates 1.0 → 3.0 (push-forward release)
+  //   forward: rate accelerates 0.05 → 2.5 (mirror of backspin —
+  //            record starts at a near-stop, friction-released into
+  //            full forward speed at the cut)
   const path = outDeck.path;
   const currentT = outDeck.audio.currentTime;
   const spinSec = Math.max(fadeSec, 2.5);
@@ -1193,8 +1202,11 @@ function _doSpin(ctx, outDeck, t0, fadeSec, reverse, teardowns) {
       bufSrc.playbackRate.setValueAtTime(2.0, t0);
       bufSrc.playbackRate.linearRampToValueAtTime(0.05, t0 + spinSec);
     } else {
-      bufSrc.playbackRate.setValueAtTime(1.0, t0);
-      bufSrc.playbackRate.linearRampToValueAtTime(3.0, t0 + spinSec);
+      // True mirror of the backspin envelope — slow start, accelerating
+      // INTO the cut.  Without this the forward variant just sounded
+      // like a fast-forward, not a deliberate spin.
+      bufSrc.playbackRate.setValueAtTime(0.05, t0);
+      bufSrc.playbackRate.linearRampToValueAtTime(2.5, t0 + spinSec);
     }
     bufGain = ctx.createGain();
     bufGain.gain.setValueAtTime(_volume, t0);
@@ -1318,6 +1330,7 @@ const _OUTRO_FRACTION = {
   cross_eq_swap:  0.80,
   sidechain_pump: 0.70,
   pitch_swell:    0.65,
+  pitch_fall:     0.65,
   vinyl_wow:      0.60,
   flanger:        0.70,
   chorus:         0.70,
@@ -1367,21 +1380,41 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
   }
 
   if (effect === "lowpass_sweep") {
+    // Outgoing track keeps full volume while a steep low-pass closes,
+    // then drops sharply at the end.  Overriding deck.gain here is
+    // safe because applyTransitionFx now runs AFTER startCrossfade has
+    // already scheduled its baseline ramps — our writes win.
     const f = ctx.createBiquadFilter();
     f.type = "lowpass";
+    f.Q.value = 0.9;
+    const sweepEnd = t0 + Math.max(0.5, fadeSec * 0.7);
     f.frequency.setValueAtTime(ctx.sampleRate / 2, t0);
-    f.frequency.exponentialRampToValueAtTime(250, tEnd);
+    f.frequency.exponentialRampToValueAtTime(180, sweepEnd);
     _routeThrough(outDeck, f);
     f.connect(outDeck.gain);
+    // Keep outgoing loud while the filter sweeps, then a fast 200 ms
+    // drop at the very end so the cut is clean.
+    outDeck.gain.gain.cancelScheduledValues(t0);
+    outDeck.gain.gain.setValueAtTime(_volume, t0);
+    outDeck.gain.gain.setValueAtTime(_volume, Math.max(t0, tEnd - 0.2));
+    outDeck.gain.gain.linearRampToValueAtTime(0, tEnd);
     teardowns.push(() => f.disconnect());
   }
   else if (effect === "highpass_sweep") {
+    // Incoming track plays at FULL volume but heavily filtered, so the
+    // bass-bloom is unmistakable — without overriding inDeck.gain the
+    // standard 0 → _volume ramp masks the filter character (everything
+    // sounds like "muffled fade-in" instead of "filter-in").
     const f = ctx.createBiquadFilter();
     f.type = "highpass";
-    f.frequency.setValueAtTime(4000, t0);
-    f.frequency.exponentialRampToValueAtTime(60, tEnd);
+    f.Q.value = 0.9;
+    const sweepEnd = t0 + Math.max(0.5, fadeSec * 0.7);
+    f.frequency.setValueAtTime(6000, t0);
+    f.frequency.exponentialRampToValueAtTime(50, sweepEnd);
     _routeThrough(inDeck, f);
     f.connect(inDeck.gain);
+    inDeck.gain.gain.cancelScheduledValues(t0);
+    inDeck.gain.gain.setValueAtTime(_volume, t0);
     teardowns.push(() => f.disconnect());
   }
   else if (effect === "cross_eq_swap") {
@@ -1475,7 +1508,28 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
     // before it finishes (first ~50 ms of session) we just skip the
     // effect for that one crossfade — no WaveShaper fallback.
     if (!_workletReady.bitcrusher) {
-      console.warn("bitcrusher worklet not ready; skipping effect for this crossfade");
+      // WaveShaper fallback — quantises amplitude only (no rate-reduce
+      // sample-and-hold) but still produces a recognisable crunch so
+      // the effect is never silent on browsers where the worklet
+      // module fails to load.
+      console.warn("bitcrusher worklet not ready; falling back to WaveShaper.");
+      const shaper = ctx.createWaveShaper();
+      const N = 4096;
+      const curve = new Float32Array(N);
+      const levels = 4;  // 3-bit quantise
+      for (let i = 0; i < N; i++) {
+        const x = (i / (N - 1)) * 2 - 1;
+        curve[i] = Math.round(x * levels) / levels;
+      }
+      shaper.curve = curve;
+      shaper.oversample = "none";
+      _routeThrough(outDeck, shaper);
+      shaper.connect(outDeck.gain);
+      outDeck.gain.gain.cancelScheduledValues(t0);
+      outDeck.gain.gain.setValueAtTime(_volume, t0);
+      outDeck.gain.gain.setValueAtTime(_volume, Math.max(t0, tEnd - 0.3));
+      outDeck.gain.gain.linearRampToValueAtTime(0, tEnd);
+      teardowns.push(() => shaper.disconnect());
       return tearAll;
     }
     const node = new AudioWorkletNode(ctx, "bitcrusher", {
@@ -1483,18 +1537,26 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
       numberOfOutputs: 1,
       outputChannelCount: [2],
     });
+    // Outgoing stays loud through the entire effect, then drops in 300 ms
+    // at the very end — without this the deck-gain crossfade ramp masks
+    // the lo-fi character.
+    outDeck.gain.gain.cancelScheduledValues(t0);
+    outDeck.gain.gain.setValueAtTime(_volume, t0);
+    outDeck.gain.gain.setValueAtTime(_volume, Math.max(t0, tEnd - 0.3));
+    outDeck.gain.gain.linearRampToValueAtTime(0, tEnd);
     const bitsParam = node.parameters.get("bits");
     const rateParam = node.parameters.get("rateReduce");
-    // Peak crush in first 50 % of fade so the user actually hears the
-    // 8-bit-console sound while the deck is still loud.  Crossfade
-    // ramp dominates the second half regardless.
-    const peakAt = t0 + fadeSec * 0.5;
+    // Peak crush at 25 % of fade — by the halfway mark the crossfade
+    // gain ramp has already dropped the outgoing track to ~50 %, so
+    // the lo-fi character has to land EARLY to be perceived.  Bottom
+    // out at 2 bits / 24× rate-reduce for an unmistakable Atari sound.
+    const peakAt = t0 + Math.max(0.4, fadeSec * 0.25);
     bitsParam.setValueAtTime(12, t0);
-    bitsParam.linearRampToValueAtTime(3, peakAt);
-    bitsParam.setValueAtTime(3, tEnd);
+    bitsParam.linearRampToValueAtTime(2, peakAt);
+    bitsParam.setValueAtTime(2, tEnd);
     rateParam.setValueAtTime(1, t0);
-    rateParam.linearRampToValueAtTime(16, peakAt);
-    rateParam.setValueAtTime(16, tEnd);
+    rateParam.linearRampToValueAtTime(24, peakAt);
+    rateParam.setValueAtTime(24, tEnd);
     _routeThrough(outDeck, node);
     node.connect(outDeck.gain);
     teardowns.push(() => { try { node.disconnect(); } catch (_) {} });
@@ -1670,20 +1732,72 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
     // being silenced by the crossfade ramp.  Live deck source is
     // muted so the loop is the only audible signal.
     if (_workletReady.freeze) {
-      const node = new AudioWorkletNode(ctx, "freeze");
+      // Force stereo output explicitly — without outputChannelCount,
+      // some browsers default the worklet output to a single channel,
+      // which then upmixes to silence on certain destination
+      // configurations.  Routing source → passthrough gain → worklet
+      // also stabilises the input frames on Chrome where MediaElementSource
+      // → AudioWorkletNode can deliver empty input quanta during the
+      // first capture window.
+      const node = new AudioWorkletNode(ctx, "freeze", {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [2],
+      });
       node.parameters.get("grainMs").setValueAtTime(150, t0);
       node.parameters.get("fadeOutSec").setValueAtTime(fadeSec, t0);
+      const passthrough = ctx.createGain();
+      passthrough.gain.value = 1.0;
       const g = ctx.createGain();
-      g.gain.setValueAtTime(_volume, t0);
+      g.gain.setValueAtTime(_volume * 1.2, t0);
       // CRITICAL: do NOT set audio.muted=true.  MediaElementSource
       // respects the element's muted flag and feeds silence into the
       // worklet — so the freeze captures silence and loops nothing.
       // Just zero deck.gain (downstream of the source tap) instead.
-      _routeThrough(outDeck, node);
+      _routeThrough(outDeck, passthrough);
+      passthrough.connect(node);
       node.connect(g); g.connect(ctx.destination);
-      outDeck.gain.gain.cancelScheduledValues(t0);
-      outDeck.gain.gain.setValueAtTime(0, t0);
-      teardowns.push(() => _disconnectAll(node, g));
+      // Schedule deck.gain mute slightly AFTER t0 so startCrossfade's
+      // own cancelScheduledValues(t0) + ramp doesn't undo it.
+      outDeck.gain.gain.setValueAtTime(0, t0 + 0.001);
+      teardowns.push(() => _disconnectAll(node, g, passthrough));
+    } else {
+      // Worklet unavailable (non-secure context — http:// over LAN).
+      // Capture last 150 ms of decoded audio and loop it via a
+      // BufferSource so the freeze still produces sound.  Routed
+      // direct to destination so the deck-gain crossfade can mute the
+      // dry path independently.
+      console.warn("freeze worklet unavailable; using BufferSource fallback");
+      const path = outDeck.path;
+      const currentT = outDeck.audio.currentTime;
+      const grainSec = 0.15;
+      let bufSrc = null, bufGain = null;
+      let cancelled = false;
+      outDeck.gain.gain.setValueAtTime(0, t0 + 0.001);
+      _decodeFor(path).then((buf) => {
+        if (cancelled) return;
+        const sr = buf.sampleRate;
+        const grainLen = Math.floor(grainSec * sr);
+        const startSamp = Math.max(0, Math.floor(currentT * sr) - grainLen);
+        const grain = ctx.createBuffer(buf.numberOfChannels, grainLen, sr);
+        for (let ch = 0; ch < buf.numberOfChannels; ch++) {
+          grain.getChannelData(ch).set(
+            buf.getChannelData(ch).subarray(startSamp, startSamp + grainLen),
+          );
+        }
+        bufSrc = ctx.createBufferSource();
+        bufSrc.buffer = grain;
+        bufSrc.loop = true;
+        bufGain = ctx.createGain();
+        bufGain.gain.setValueAtTime(_volume * 1.2, t0);
+        bufGain.gain.linearRampToValueAtTime(0.0, tEnd);
+        bufSrc.connect(bufGain); bufGain.connect(ctx.destination);
+        bufSrc.start();
+      }).catch((err) => console.warn("freeze fallback decode failed:", err));
+      teardowns.push(() => {
+        cancelled = true;
+        if (bufSrc) { try { bufSrc.stop(); } catch (_) {} _disconnectAll(bufSrc, bufGain); }
+      });
     }
   }
   else if (effect === "glitch") {
@@ -1691,18 +1805,76 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
     // deck.gain so the chaotic stutter is audible.  Do NOT mute the
     // <audio> element — that silences the source feeding the worklet.
     if (_workletReady.glitch) {
-      const node = new AudioWorkletNode(ctx, "glitch");
+      const node = new AudioWorkletNode(ctx, "glitch", {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [2],
+      });
       node.parameters.get("sliceMs").setValueAtTime(80, t0);
       node.parameters.get("density").setValueAtTime(0.85, t0);
+      const passthrough = ctx.createGain();
+      passthrough.gain.value = 1.0;
       const g = ctx.createGain();
-      g.gain.setValueAtTime(_volume, t0);
-      g.gain.setValueAtTime(_volume, t0 + fadeSec * 0.7);
+      g.gain.setValueAtTime(_volume * 1.2, t0);
+      g.gain.setValueAtTime(_volume * 1.2, t0 + fadeSec * 0.7);
       g.gain.linearRampToValueAtTime(0, tEnd);
-      _routeThrough(outDeck, node);
+      _routeThrough(outDeck, passthrough);
+      passthrough.connect(node);
       node.connect(g); g.connect(ctx.destination);
-      outDeck.gain.gain.cancelScheduledValues(t0);
-      outDeck.gain.gain.setValueAtTime(0, t0);
-      teardowns.push(() => _disconnectAll(node, g));
+      outDeck.gain.gain.setValueAtTime(0, t0 + 0.001);
+      teardowns.push(() => _disconnectAll(node, g, passthrough));
+    } else {
+      // Non-secure-context fallback — slice the decoded buffer into
+      // 80 ms chunks and schedule them in a random order via separate
+      // BufferSources.  Each chunk has a 5 ms attack/release ramp so
+      // the seams don't click.
+      console.warn("glitch worklet unavailable; using BufferSource fallback");
+      const path = outDeck.path;
+      const currentT = outDeck.audio.currentTime;
+      const sliceSec = 0.08;
+      const totalSec = Math.max(fadeSec, 2.0);
+      let cancelled = false;
+      const sources = [];
+      outDeck.gain.gain.setValueAtTime(0, t0 + 0.001);
+      _decodeFor(path).then((buf) => {
+        if (cancelled) return;
+        const sr = buf.sampleRate;
+        const sliceLen = Math.floor(sliceSec * sr);
+        const winLen = Math.max(sliceLen * 6, Math.floor(0.5 * sr));
+        const winStart = Math.max(0, Math.floor(currentT * sr) - winLen);
+        const nSrcSlices = Math.max(1, Math.floor(winLen / sliceLen));
+        const nSlots = Math.ceil(totalSec / sliceSec);
+        const ramp = 0.005;
+        for (let i = 0; i < nSlots; i++) {
+          const idx = Math.floor(Math.random() * nSrcSlices);
+          const sStart = winStart + idx * sliceLen;
+          if (sStart + sliceLen > buf.length) continue;
+          const slice = ctx.createBuffer(buf.numberOfChannels, sliceLen, sr);
+          for (let ch = 0; ch < buf.numberOfChannels; ch++) {
+            slice.getChannelData(ch).set(
+              buf.getChannelData(ch).subarray(sStart, sStart + sliceLen),
+            );
+          }
+          const src = ctx.createBufferSource(); src.buffer = slice;
+          const g2 = ctx.createGain();
+          const tStart = t0 + i * sliceSec;
+          g2.gain.setValueAtTime(0, tStart);
+          g2.gain.linearRampToValueAtTime(_volume * 1.2, tStart + ramp);
+          g2.gain.setValueAtTime(_volume * 1.2, tStart + sliceSec - ramp);
+          g2.gain.linearRampToValueAtTime(0, tStart + sliceSec);
+          src.connect(g2); g2.connect(ctx.destination);
+          src.start(tStart);
+          src.stop(tStart + sliceSec + 0.01);
+          sources.push({ src, g: g2 });
+        }
+      }).catch((err) => console.warn("glitch fallback decode failed:", err));
+      teardowns.push(() => {
+        cancelled = true;
+        for (const s of sources) {
+          try { s.src.stop(); } catch (_) {}
+          _disconnectAll(s.src, s.g);
+        }
+      });
     }
   }
   // -------- scratch: rapid back-and-forth sweep over short slice --------
@@ -1841,14 +2013,23 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
     // convolve.  Wet path bypasses deck.gain so the swell crescendos
     // all the way to the cut.  IR is shared across crossfades via
     // _cachedIR — re-running the RNG fill every transition was wasteful.
+    // True reverse-reverb requires playing reversed audio through a
+    // forward reverb, then reversing the result.  Approximated here
+    // with: dense forward-decay IR + rising wet send.  A pre-emphasis
+    // band-pass on the wet path concentrates the swell in the
+    // 200-2000 Hz range so it cuts through over the dry signal —
+    // without this the wet was perceptually buried even at high gain.
     const conv = ctx.createConvolver();
-    conv.buffer = _makeReverseReverbIR(2.0, 0.4);
+    conv.buffer = _makeReverseReverbIR(2.5, 2.5);
+    const bp = ctx.createBiquadFilter();
+    bp.type = "bandpass"; bp.frequency.value = 700; bp.Q.value = 0.7;
     const wet = ctx.createGain();
-    wet.gain.setValueAtTime(0.0, t0);
-    wet.gain.linearRampToValueAtTime(_volume * 1.4, tEnd - 0.1);
+    wet.gain.setValueAtTime(0.001, t0);
+    wet.gain.exponentialRampToValueAtTime(Math.max(0.001, _volume * 4.0), tEnd - 0.05);
     wet.gain.linearRampToValueAtTime(0.0, tEnd);
-    outDeck.source.connect(conv); conv.connect(wet); wet.connect(ctx.destination);
-    teardowns.push(() => _disconnectAll(conv, wet));
+    outDeck.source.connect(conv); conv.connect(bp); bp.connect(wet);
+    wet.connect(ctx.destination);
+    teardowns.push(() => _disconnectAll(conv, bp, wet));
   }
   // -------- air_horn: synth dub-siren riser layered with the music --------
   else if (effect === "air_horn") {
@@ -1887,6 +2068,27 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
       const t = (performance.now() - startMs) / durMs;
       if (t >= 1) { clearInterval(iv); return; }
       try { audio.playbackRate = 1.0 + t; } catch (_) {}
+    }, 20);
+    teardowns.push(() => {
+      clearInterval(iv);
+      try { audio.playbackRate = 1.0; } catch (_) {}
+      try { audio.preservesPitch = prevPreserve; } catch (_) {}
+    });
+  }
+  else if (effect === "pitch_fall") {
+    // Mirror of pitch_swell — pitch ramps DOWN (1.0 → 0.3) into the
+    // cut, like a slowed tape but without the brake-to-zero of
+    // tape_stop.  Floors at 0.3 because some browsers get glitchy
+    // below ~0.25 playbackRate.
+    const audio = outDeck.audio;
+    const prevPreserve = audio.preservesPitch !== false;
+    try { audio.preservesPitch = false; } catch (_) {}
+    const startMs = performance.now();
+    const durMs = fadeSec * 1000;
+    const iv = setInterval(() => {
+      const t = (performance.now() - startMs) / durMs;
+      if (t >= 1) { clearInterval(iv); return; }
+      try { audio.playbackRate = Math.max(0.3, 1.0 - 0.7 * t); } catch (_) {}
     }, 20);
     teardowns.push(() => {
       clearInterval(iv);
@@ -1935,8 +2137,11 @@ function startCrossfade(nextPath, fadeSec) {
   // Resolve + apply the chosen transition effect over the fade window.
   const fxName = _resolveTransition(_lastTransitionFx);
   console.debug("autodj transition:", fxName);
-  const teardownFx = applyTransitionFx(fxName, fadeSec, active, standby);
 
+  // Schedule the baseline crossfade gain ramps FIRST so that any
+  // subsequent overrides issued by `applyTransitionFx` (e.g.
+  // deck.gain.setValueAtTime(0, t0+0.001) for freeze / glitch /
+  // bitcrusher) aren't wiped out by a later cancelScheduledValues(t0).
   active.gain.gain.cancelScheduledValues(t0);
   active.gain.gain.setValueAtTime(active.gain.gain.value, t0);
   active.gain.gain.linearRampToValueAtTime(0, t0 + fadeSec);
@@ -1944,6 +2149,8 @@ function startCrossfade(nextPath, fadeSec) {
   standby.gain.gain.cancelScheduledValues(t0);
   standby.gain.gain.setValueAtTime(0, t0);
   standby.gain.gain.linearRampToValueAtTime(_volume, t0 + fadeSec);
+
+  const teardownFx = applyTransitionFx(fxName, fadeSec, active, standby);
 
   suppressAdvance = true;
   fetch("/api/advance", { method: "POST" }).catch(() => {});
@@ -2181,18 +2388,24 @@ function applyBrowserPlaybackState(s) {
 // ----------------------------------------------------------------
 
 function loadCoverArt(trackPath) {
-  // Probe the image first; only swap into the visible <img> on success so
-  // failed loads don't display a broken-image icon.
-  const probe = new Image();
-  probe.onload = () => {
-    coverArt.src = probe.src;
+  // fetch() probe instead of <img> probe — both succeed silently on 200,
+  // but <img>.onerror logs a console error for every 404, which spams
+  // DevTools on tracks without embedded art.  fetch returns ok=false on
+  // 404 without logging.  Set <img>.src only after we know the response
+  // is a real image.
+  const url = `/api/art?path=${encodeURIComponent(trackPath)}`;
+  fetch(url, { method: "GET" }).then((res) => {
+    if (!res.ok) {
+      coverArt.hidden = true;
+      coverArt.removeAttribute("src");
+      return;
+    }
+    coverArt.src = url;
     coverArt.hidden = false;
-  };
-  probe.onerror = () => {
+  }).catch(() => {
     coverArt.hidden = true;
     coverArt.removeAttribute("src");
-  };
-  probe.src = `/api/art?path=${encodeURIComponent(trackPath)}`;
+  });
 }
 
 // ----------------------------------------------------------------

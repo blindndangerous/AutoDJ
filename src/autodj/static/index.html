@@ -238,7 +238,8 @@
           <option value="cross_eq_swap">cross-EQ swap</option>
           <option value="bitcrusher">bitcrusher</option>
           <option value="flanger">flanger</option>
-          <option value="pitch_swell">pitch swell</option>
+          <option value="pitch_swell">pitch swell (up)</option>
+          <option value="pitch_fall">pitch fall (down)</option>
           <option value="telephone">telephone</option>
           <option value="noise_drop">noise drop</option>
           <option value="chorus">chorus</option>
@@ -271,6 +272,7 @@
         <strong>bitcrusher</strong> degrades bit-depth + sample-rate (8-bit-console feel, AudioWorklet);
         <strong>flanger</strong> adds a swirly modulated delay;
         <strong>pitch swell</strong> sweeps pitch upward (preservesPitch off);
+        <strong>pitch fall</strong> sweeps pitch downward to 0.3× (mirror of swell, preservesPitch off);
         <strong>telephone</strong> 500-2800 Hz band-pass + tanh saturation (sounds like a phone call);
         <strong>chorus</strong> three detuned voices for a thick double;
         <strong>submerge</strong> heavy lowpass + reverb wash (underwater);

@@ -61,7 +61,7 @@ The PR template auto-renders this list. Tick the boxes:
 | `src/autodj/similarity.py` | FAISS query + ranking |
 | `src/autodj/explain.py` | The "why this track?" reasoner |
 | `src/autodj/jobs.py` | Background subprocess runner for the web UI |
-| `src/autodj/transitions.py` | 25 transition effects |
+| `src/autodj/transitions.py` | 26 transition effects |
 | `tests/unit/` | Pure unit tests, no audio hardware |
 | `tests/integration/` | Pipeline + server tests against mocks |
 | `tests/smoke/` | CLI end-to-end smoke tests |

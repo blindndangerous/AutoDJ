@@ -47,3 +47,9 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Playwright audit infra — devs run `npm i -D @playwright/test` themselves
+node_modules/
+package-lock.json
+# Audit reports may contain LAN paths / track metadata
+*_audit.json

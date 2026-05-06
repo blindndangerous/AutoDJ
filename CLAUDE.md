@@ -105,7 +105,12 @@ Track paths in `metadata.json` are stored RELATIVE to `music_dir` (forward-slash
 - [x] **3-band EQ in web UI** (low/mid/high real-time gain) + Reset
 - [x] **Live BPM / key / energy / beatmatch badges in now-playing card**
 - [x] **DJ-meta sidecar cache** (`index/dj_meta.json`) — lazy detect, never re-index
-- [x] **20 transition effects** (echo_out, reverb_tail, highpass_sweep, lowpass_sweep, tape_stop, gate_stutter, noise_riser, noise_drop, backspin, forward_spin, cross_eq_swap, bitcrusher, flanger, pitch_swell, telephone, distortion, chorus, submerge, vinyl_wow, freeze, glitch) + random / rotate meta-modes
+- [x] **26 transition effects** (echo_out, reverb_tail, highpass_sweep, lowpass_sweep, tape_stop, gate_stutter, noise_riser, noise_drop, backspin, forward_spin, cross_eq_swap, bitcrusher, flanger, pitch_swell, pitch_fall, telephone, chorus, submerge, vinyl_wow, freeze, glitch, scratch, beat_repeat, sidechain_pump, reverse_reverb, air_horn) + random / rotate meta-modes
+- [x] **Non-worklet fallbacks for AudioWorklet effects** — `bitcrusher` falls back to a WaveShaper amplitude quantiser, `freeze` to a BufferSource grain loop, `glitch` to a random-slice BufferSource scheduler when `AudioContext.audioWorklet` is undefined (non-secure context, e.g. LAN HTTP).  Worklet effects stay audible without TLS at the cost of sample-accurate timing
+- [x] **HTTPS support** — `autodj serve --ssl-certfile X.pem --ssl-keyfile X-key.pem` flips uvicorn into HTTPS so AudioWorklet unlocks on remote browsers.  Recommended generator: `mkcert` (installs a local CA, produces a trusted leaf cert per host)
+- [x] **Crossfade ordering fix** — `applyTransitionFx` runs after `startCrossfade` schedules the baseline gain ramps so effect overrides on `deck.gain` are no longer wiped by `cancelScheduledValues(t0)`.  Filter-sweep effects override deck.gain to keep the affected track loud while filter character remains perceptible
+- [x] **Cross-browser audit harness** — `tests/playwright/{transition_audit,health_audit}.mjs` drive Chromium / Firefox / WebKit via `@playwright/test` (Node).  `AUTODJ_URL` env var picks the target.  Reports gitignored (LAN paths)
+- [x] **Cover-art probe via fetch()** — `loadCoverArt` no longer uses `<img>.onerror` (which logs a console error on every 404).  Tracks without embedded art now hide silently
 - [x] **AudioWorklet** for sample-accurate effects: bitcrusher, gate_stutter, freeze, glitch
 - [x] **`autodj enrich`** — refresh title/artist/album/genre/bpm/year/length/key from beets without re-embedding
 - [x] **Genre normaliser** (`autodj.genres`) — preset filters now match across spelling variants (Electronic = EDM = IDM = Synthwave …)

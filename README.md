@@ -395,7 +395,38 @@ The **Search Library** panel lets you search by artist or title. Each result has
 | **▶ Now** | Queue the track and immediately skip to it |
 | **⏭ Next** | Queue the track to play after the current one finishes |
 
-> **Note:** the web server has no authentication — only bind to `0.0.0.0` on a trusted LAN.
+> **Note:** the web server has no authentication.  Only bind to `0.0.0.0` on a trusted LAN.
+
+### HTTPS / TLS (required for AudioWorklet on remote browsers)
+
+Browsers expose `AudioContext.audioWorklet` only inside a secure
+context (HTTPS, or `http://localhost`).  When you reach the web UI from
+another device over plain HTTP, the worklet-based effects (`bitcrusher`,
+`freeze`, `glitch`, `gate_stutter`) silently downgrade to non-worklet
+fallbacks (WaveShaper, BufferSource loop, BufferSource random-slice,
+scheduled gain on/off).  The fallbacks sound close but lose
+sample-accurate timing.
+
+To unlock the real worklets on a LAN, generate a trusted certificate
+with [mkcert](https://github.com/FiloSottile/mkcert) and pass it to
+`autodj serve`:
+
+```bash
+# One-time per machine:
+mkcert -install                         # adds local CA to OS + browser trust stores
+mkcert mybox.local 192.168.50.40 localhost
+# Produces mybox.local+2.pem  +  mybox.local+2-key.pem
+
+# Start with HTTPS:
+uv run autodj serve \
+  --host 0.0.0.0 --port 8443 \
+  --ssl-certfile mybox.local+2.pem \
+  --ssl-keyfile  mybox.local+2-key.pem
+```
+
+Run `mkcert -install` on every listening device too so every browser
+trusts the certificate.  After that, `https://mybox.local:8443` is a
+secure context everywhere and AudioWorklet works.
 
 ---
 
@@ -469,7 +500,7 @@ Two playback modes — same effect catalogue, different engine:
 | **CLI `autodj play`** + **server-rendered `serve`** | Python (`numpy` / `scipy` / `soundfile` / `librosa`) | Effects mutate raw audio bytes before they reach the soundcard. Full pipeline: ReplayGain → beatmatch (librosa time-stretch) → outro/intro align → phrase align → filter sweep → transition effect → EQ-ducked crossfade → 3-band EQ → sounddevice. |
 | **Browser-playback `serve --no-playback`** | Browser **Web Audio API** (`AudioContext` + `AudioBufferSourceNode`, `BiquadFilterNode`, `DelayNode`, `ConvolverNode`, `WaveShaperNode`, `OscillatorNode`) | Effects routed as live audio nodes between `MediaElementSource` and the destination.  Real-time DSP, zero server CPU during playback. |
 
-**Effect parity** — all 18 transition effects work in BOTH modes.  Some details differ by renderer:
+**Effect parity** — all 26 transition effects work in BOTH modes.  Some details differ by renderer:
 
 | Effect | CLI | Browser | Notes |
 |--------|-----|---------|-------|
@@ -483,6 +514,7 @@ Two playback modes — same effect catalogue, different engine:
 | `bitcrusher` | quantising numpy | WaveShaperNode | identical |
 | `flanger` | LFO delay (numpy) | DelayNode + LFO oscillator | identical |
 | `pitch_swell` | resampling | playbackRate 1.0→2.0 | identical |
+| `pitch_fall` | resampling 1.0→0.4 | playbackRate 1.0→0.3 | mirror of `pitch_swell` |
 | `telephone` | scipy band-pass | cascaded biquads | identical |
 | `backspin` / `forward_spin` | reversed buffer + accelerating resample | **fetch + decodeAudioData → AudioBufferSourceNode with reversed buffer** | true reverse playback in both modes |
 | `distortion` (browser-only) | n/a — use `bitcrusher` for similar grit | WaveShaperNode + drive ramp | |
@@ -513,7 +545,7 @@ ALAC files in browser-playback mode auto-skip with a "Playback error" message na
 
 ## Transition effects
 
-Each crossfade can apply one of twenty DJ-style flourishes (browser side
+Each crossfade can apply one of twenty-six DJ-style flourishes (browser side
 runs them through Web Audio + AudioWorklet for sample-accurate, click-free
 fades; CLI side does the equivalent in numpy):
 
@@ -539,7 +571,8 @@ wet_mix = 1.0
 | `cross_eq_swap` | Outgoing keeps highs / incoming brings bass |
 | `bitcrusher` | Real bit-crush + sample-rate reduction (AudioWorklet) |
 | `flanger` | LFO-modulated short delay |
-| `pitch_swell` | Slow pitch bend on outgoing |
+| `pitch_swell` | Slow pitch bend up on outgoing |
+| `pitch_fall` | Slow pitch bend down on outgoing (mirror of `pitch_swell`) |
 | `telephone` | Band-limited, compressed |
 | `distortion` | Soft-clip drive |
 | `chorus` | Three detuned voices |

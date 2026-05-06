@@ -1060,6 +1060,24 @@ def cmd_play(
         "[playback] show_lyrics in config.toml.  Default: on."
     ),
 )
+@click.option(
+    "--ssl-certfile",
+    "ssl_certfile",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False),
+    help=(
+        "Path to TLS certificate (PEM).  When combined with --ssl-keyfile, "
+        "starts uvicorn in HTTPS mode — required for AudioWorklet on "
+        "non-localhost hosts.  Generate via mkcert or any internal CA."
+    ),
+)
+@click.option(
+    "--ssl-keyfile",
+    "ssl_keyfile",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False),
+    help="Path to TLS private key (PEM).  Pair with --ssl-certfile.",
+)
 @click.pass_context
 def cmd_serve(
     ctx: click.Context,
@@ -1086,6 +1104,8 @@ def cmd_serve(
     index_name: str | None,
     no_playback: bool,
     server_audio: bool,
+    ssl_certfile: str | None,
+    ssl_keyfile: str | None,
 ) -> None:
     """Start the auto-DJ player with a browser-based control panel.
 
@@ -1190,8 +1210,19 @@ def cmd_serve(
 
     seed_entry = _resolve_seed(sim, cfg, seed, console, interactive=False)
 
-    url = f"http://{host}:{port}"
+    if (ssl_certfile and not ssl_keyfile) or (ssl_keyfile and not ssl_certfile):
+        console.print(
+            "[bold red]TLS error:[/] --ssl-certfile and --ssl-keyfile must be supplied together.",
+        )
+        sys.exit(1)
+    scheme = "https" if (ssl_certfile and ssl_keyfile) else "http"
+    url = f"{scheme}://{host}:{port}"
     console.print(f"  Web UI  : [link={url}]{url}[/link]")
+    if scheme == "https":
+        console.print(
+            "  [dim](TLS active — AudioWorklet effects work on remote hosts.  "
+            "Trust the certificate's CA on every listening device.)[/]",
+        )
     if host in ("127.0.0.1", "localhost", "::1"):
         console.print(
             "  [dim](Reachable from this machine only.  "
@@ -1235,6 +1266,8 @@ def cmd_serve(
             pure_shuffle=pure_shuffle,
             anchor_to_seed=bool(anchor_to_seed),
             no_playback=(no_playback and not server_audio),
+            ssl_certfile=ssl_certfile,
+            ssl_keyfile=ssl_keyfile,
         )
     except KeyboardInterrupt:
         console.print("\n[yellow]Stopped.[/]")
