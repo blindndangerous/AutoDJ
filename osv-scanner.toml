@@ -1,0 +1,7 @@
+# OSV-Scanner ignore list.
+# Add [[IgnoredVulns]] entries for CVEs that are not exploitable in this
+# project's runtime (e.g. dev-only transitive deps, fixes pending upstream).
+# Example:
+#   [[IgnoredVulns]]
+#   id = "GHSA-xxxx-xxxx-xxxx"
+#   reason = "dev-only; not shipped in runtime"
