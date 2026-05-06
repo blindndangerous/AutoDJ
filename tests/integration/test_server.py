@@ -82,7 +82,7 @@ def _make_player_mock(entry: IndexEntry | None = None) -> MagicMock:
     cfg.djmix.filter_sweep = False
     cfg.playback.crossfade_seconds = 3.0
     cfg.playback.crossfade_eq_duck = False
-    cfg.playback.enable_daypart = False
+    cfg.playback.transition_mode = "full_intro_outro"
     cfg.playback.show_lyrics = True
     cfg.playback.prefetch_next_track = True
     cfg.playback.silence_trigger_crossfade = True
@@ -818,14 +818,28 @@ class TestSettingsEndpoints:
         assert bridge.player._smart_shuffle is True
         assert bridge.player._cfg.replaygain.enabled is True
 
-    def test_post_playback_settings_daypart(self, bridge, tmp_path) -> None:
+    def test_post_playback_settings_transition_mode(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
         bridge.player._cfg.index.active_dir = tmp_path
-        bridge.player._cfg.playback.enable_daypart = False
+        bridge.player._cfg.playback.transition_mode = "fixed"
         tc = TestClient(create_app(bridge))
-        tc.post("/api/playback-settings", json={"enable_daypart": True})
-        assert bridge.player._cfg.playback.enable_daypart is True
+        tc.post("/api/playback-settings", json={"transition_mode": "full_intro_outro"})
+        assert bridge.player._cfg.playback.transition_mode == "full_intro_outro"
+
+    def test_post_playback_settings_transition_mode_invalid(self, bridge, tmp_path) -> None:
+        import contextlib
+
+        from fastapi.testclient import TestClient
+
+        bridge.player._cfg.index.active_dir = tmp_path
+        tc = TestClient(create_app(bridge))
+        # Invalid mode: handler raises ValueError -> 500.  We just want to
+        # confirm the config is not mutated by an unknown value.
+        prev = bridge.player._cfg.playback.transition_mode
+        with contextlib.suppress(Exception):
+            tc.post("/api/playback-settings", json={"transition_mode": "wat"})
+        assert bridge.player._cfg.playback.transition_mode == prev
 
     def test_post_playback_settings_clamps_negative(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient

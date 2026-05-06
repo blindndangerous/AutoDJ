@@ -108,7 +108,6 @@ Track paths in `metadata.json` are stored RELATIVE to `music_dir` (forward-slash
 - [x] **20 transition effects** (echo_out, reverb_tail, highpass_sweep, lowpass_sweep, tape_stop, gate_stutter, noise_riser, noise_drop, backspin, forward_spin, cross_eq_swap, bitcrusher, flanger, pitch_swell, telephone, distortion, chorus, submerge, vinyl_wow, freeze, glitch) + random / rotate meta-modes
 - [x] **AudioWorklet** for sample-accurate effects: bitcrusher, gate_stutter, freeze, glitch
 - [x] **`autodj enrich`** — refresh title/artist/album/genre/bpm/year/length/key from beets without re-embedding
-- [x] **Daypart mood profiles** (`[playback] enable_daypart`) — pick BPM/energy targets by local time of day
 - [x] **Genre normaliser** (`autodj.genres`) — preset filters now match across spelling variants (Electronic = EDM = IDM = Synthwave …)
 - [x] **Mobile-friendly web UI** — single-column layout ≤ 720 px, WCAG 2.5.5 touch targets
 - [x] **Multi-token search** across title + artist + album, default limit 100, `?limit=` clamped to 500
@@ -129,6 +128,9 @@ Track paths in `metadata.json` are stored RELATIVE to `music_dir` (forward-slash
 - [x] **Tablist section nav** — in-page section switcher converted from anchor links (which NVDA announced as "same-page link") to an ARIA tablist + tabpanels with roving tabindex, Left / Right / Up / Down / Home / End arrow navigation per APG, `aria-selected` instead of `aria-current`, and `hashchange` preserved for deep links + browser back / forward
 - [x] **Volume slider WS-echo lockout** — fader now ignores WebSocket state echoes for 600 ms after a user-initiated change and inverts the perceptual gain curve (`_gainToSlider`) before writing the slider value, so arrow-key nudges no longer snap the fader to ~0
 - [x] **Reverb IR cache + `_disconnectAll` helper** — synthetic impulse responses for `reverb_tail` / `submerge` / `reverse_reverb` are now memoised per `AudioContext` in a `WeakMap`, eliminating the ~1.5 MB stereo fp32 alloc + RNG fill on every crossfade.  Verbose multi-node `try { a.disconnect(); b.disconnect(); ... }` teardowns collapsed to per-node best-effort `_disconnectAll` so one failing disconnect cannot leak the rest.  Pattern lifted from `chat_grid`'s `client/src/audio/effects.ts`
+- [x] **Mixxx-style `transition_mode`** (`[playback] transition_mode`) — four crossfade alignment modes: `full_intro_outro` (default; aligns outgoing outro_start with incoming intro_end, fade length = `min(outro_len, intro_end)` clamped 1-12 s), `outro_fade` (begin at outro_start, length = outro_len), `fixed_skip_silence` (fixed length, skip leading silence on incoming), `fixed` (legacy).  Server surfaces `intro_end_s` + `outro_start_s` per track so the browser and CLI player share the same logic
+- [x] **Camelot wheel SVG** in now-playing card — 12-spoke / 2-ring (B outer, A inner) decorative visual aid showing the current key + harmonically compatible neighbours per the active `harmonic_mode`.  `aria-hidden` (live region already announces key); active sector marked with both fill *and* stroke width so it doesn't rely on colour alone (WCAG 1.4.1).  Honours `prefers-reduced-motion`
+
 
 ## Running
 ```bash

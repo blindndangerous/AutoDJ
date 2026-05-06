@@ -24,7 +24,7 @@ def _make_player() -> MagicMock:
     cfg.djmix.filter_sweep = False
     cfg.playback.crossfade_seconds = 3.0
     cfg.playback.crossfade_eq_duck = False
-    cfg.playback.enable_daypart = False
+    cfg.playback.transition_mode = "full_intro_outro"
     cfg.replaygain.enabled = False
     cfg.presets = {}
     p._cfg = cfg

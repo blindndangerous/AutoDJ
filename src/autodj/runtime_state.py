@@ -1,8 +1,9 @@
 """Persistent web-UI settings (``web_state.json``).
 
 Settings the user toggles in the **browser** — preset, transition
-effect, DJ-mix toggles, smart shuffle, ReplayGain, BPM range, daypart,
-discovery rate — are written to ``<index_dir>/<name>/web_state.json``
+effect, transition mode, DJ-mix toggles, smart shuffle, ReplayGain,
+BPM range, discovery rate — are written to
+``<index_dir>/<name>/web_state.json``
 so the next `autodj serve` boot restores them.
 
 This file is **owned by the web UI**.  CLI ``autodj play`` deliberately
@@ -81,8 +82,15 @@ def load_into_player(player: Any, index_dir: Path | None) -> None:
             player._smart_shuffle = bool(pb["smart_shuffle"])
         if "replaygain_enabled" in pb:
             cfg.replaygain.enabled = bool(pb["replaygain_enabled"])
-        if "enable_daypart" in pb:
-            cfg.playback.enable_daypart = bool(pb["enable_daypart"])
+        if "transition_mode" in pb:
+            from autodj.config import _validate_transition_mode
+
+            try:
+                cfg.playback.transition_mode = _validate_transition_mode(
+                    str(pb["transition_mode"]),
+                )
+            except ValueError as exc:
+                logger.warning("ignoring invalid transition_mode in web_state.json: %s", exc)
 
     bpm = data.get("bpm_range")
     if isinstance(bpm, dict):

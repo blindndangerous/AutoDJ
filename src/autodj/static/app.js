@@ -80,7 +80,7 @@ const pbPureShuffle   = document.getElementById("pb-pure-shuffle");
 const pbShowLyrics    = document.getElementById("pb-show-lyrics");
 const pbAnchorSeed    = document.getElementById("pb-anchor-seed");
 const pbReplayGain    = document.getElementById("pb-replaygain");
-const pbDaypart       = document.getElementById("pb-daypart");
+const pbTransitionMode = document.getElementById("pb-transition-mode");
 const pbCrossfade     = document.getElementById("pb-crossfade");
 const bpmLo           = document.getElementById("bpm-lo");
 const bpmHi           = document.getElementById("bpm-hi");
@@ -156,6 +156,13 @@ function applyState(s) {
 
   // Badges + announce on track change
   applyBadges(s);
+
+  // Camelot wheel — decorative only.  Pull harmonic_mode from settings
+  // so the highlighted "compatible" set matches what the picker uses.
+  const _hm = (s.settings && s.settings.djmix && s.settings.djmix.harmonic_mode)
+              || "compatible";
+  const _cell = s.current_track ? s.current_track.camelot : null;
+  applyCamelotWheel(_cell, _hm);
 
   // EQ slider state from server
   applyEqState(s.eq);
@@ -302,7 +309,9 @@ function applySettingsState(st) {
   pbShowLyrics.checked   = (st.playback && st.playback.show_lyrics !== false);
   pbAnchorSeed.checked   = !!(st.playback && st.playback.anchor_to_seed);
   pbReplayGain.checked   = !!(st.playback && st.playback.replaygain_enabled);
-  pbDaypart.checked      = !!(st.playback && st.playback.enable_daypart);
+  if (st.playback && st.playback.transition_mode && document.activeElement !== pbTransitionMode) {
+    pbTransitionMode.value = st.playback.transition_mode;
+  }
   if (st.playback && document.activeElement !== pbCrossfade) {
     pbCrossfade.value = st.playback.crossfade_seconds;
   }
@@ -376,8 +385,8 @@ pbAnchorSeed.addEventListener("change", () => {
 pbReplayGain.addEventListener("change", () => {
   postSettings("/api/playback-settings", { replaygain_enabled: pbReplayGain.checked });
 });
-pbDaypart.addEventListener("change", () => {
-  postSettings("/api/playback-settings", { enable_daypart: pbDaypart.checked });
+pbTransitionMode.addEventListener("change", () => {
+  postSettings("/api/playback-settings", { transition_mode: pbTransitionMode.value });
 });
 
 // ----------------------------------------------------------------
@@ -650,6 +659,125 @@ function applyBadges(s) {
       // Slight delay so the title aria-live region speaks first
       setTimeout(() => { badgesAnnounce.textContent = phrases.join(", "); }, 800);
     }
+  }
+}
+
+// ----------------------------------------------------------------
+// Camelot wheel — decorative visual aid for harmonic mixing.
+// AT users get key info via #badges-announce; the SVG is aria-hidden.
+//
+// Layout: 12 sectors around a circle, each sector split into outer
+// (B = major) and inner (A = minor) ring.  Numbers 1..12 run clockwise
+// starting at 12 o'clock.  Each sector path has data-cell="<n><A|B>".
+// ----------------------------------------------------------------
+
+const _camelotSectors = document.getElementById("camelot-sectors");
+const _camelotLabels = document.getElementById("camelot-labels");
+let _camelotBuilt = false;
+
+function _polar(r, angleDeg) {
+  // 0deg = 12 o'clock, clockwise
+  const a = (angleDeg - 90) * Math.PI / 180;
+  return [r * Math.cos(a), r * Math.sin(a)];
+}
+
+function _arcPath(r1, r2, a1, a2) {
+  // Annular wedge from radius r1 (inner) to r2 (outer), spanning angles a1..a2.
+  const [x1o, y1o] = _polar(r2, a1);
+  const [x2o, y2o] = _polar(r2, a2);
+  const [x1i, y1i] = _polar(r1, a2);
+  const [x2i, y2i] = _polar(r1, a1);
+  const large = Math.abs(a2 - a1) > 180 ? 1 : 0;
+  return `M ${x1o.toFixed(2)} ${y1o.toFixed(2)} `
+       + `A ${r2} ${r2} 0 ${large} 1 ${x2o.toFixed(2)} ${y2o.toFixed(2)} `
+       + `L ${x1i.toFixed(2)} ${y1i.toFixed(2)} `
+       + `A ${r1} ${r1} 0 ${large} 0 ${x2i.toFixed(2)} ${y2i.toFixed(2)} Z`;
+}
+
+function _buildCamelotWheel() {
+  if (_camelotBuilt || !_camelotSectors) return;
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  const sweep = 360 / 12;        // 30 deg per slot
+  // Two rings: B (outer, 70..100) + A (inner, 40..70)
+  const rings = [
+    { side: "B", rIn: 70, rOut: 100, labelR: 85 },
+    { side: "A", rIn: 40, rOut: 70, labelR: 55 },
+  ];
+  for (let n = 1; n <= 12; n++) {
+    const a1 = (n - 1) * sweep - sweep / 2;
+    const a2 = n * sweep - sweep / 2;
+    for (const r of rings) {
+      const path = document.createElementNS(SVG_NS, "path");
+      path.setAttribute("d", _arcPath(r.rIn, r.rOut, a1, a2));
+      path.setAttribute("class", "sector");
+      path.setAttribute("data-cell", `${n}${r.side}`);
+      _camelotSectors.appendChild(path);
+    }
+    // Number label centred between the two rings (at the inner-ring outer edge)
+    const [lx, ly] = _polar(78, (n - 0.5) * sweep);
+    const lab = document.createElementNS(SVG_NS, "text");
+    lab.setAttribute("x", lx.toFixed(2));
+    lab.setAttribute("y", ly.toFixed(2));
+    lab.setAttribute("class", "label");
+    lab.setAttribute("data-num", String(n));
+    lab.textContent = String(n);
+    _camelotLabels.appendChild(lab);
+  }
+  _camelotBuilt = true;
+}
+
+// Camelot adjacency rules — mirrors dj_meta.harmonic_compatible.  Returns
+// the set of cell labels (e.g. "8A") considered compatible with current
+// under the chosen mode.  current is "8A"|"8B" etc; mode is one of
+// off / compatible / strict / neighbour / mood_change / energy_boost.
+function _camelotCompatibleSet(current, mode) {
+  const out = new Set();
+  if (!current || current === "--") return out;
+  const m = /^(\d{1,2})([AB])$/.exec(current);
+  if (!m) return out;
+  const num = parseInt(m[1], 10);
+  const side = m[2];
+  const wrap = (k) => ((k - 1 + 12) % 12) + 1;
+  out.add(`${num}${side}`);   // self always counted as 'active' separately
+  if (mode === "off" || mode === "strict") return out;
+  if (mode === "mood_change") {
+    out.add(`${num}${side === "A" ? "B" : "A"}`);
+    return out;
+  }
+  if (mode === "neighbour") {
+    out.add(`${wrap(num - 1)}${side}`);
+    out.add(`${wrap(num + 1)}${side}`);
+    return out;
+  }
+  if (mode === "energy_boost") {
+    out.add(`${wrap(num - 2)}${side}`);
+    out.add(`${wrap(num + 2)}${side}`);
+    return out;
+  }
+  // default: "compatible" — ±1 same side, plus relative major/minor
+  out.add(`${wrap(num - 1)}${side}`);
+  out.add(`${wrap(num + 1)}${side}`);
+  out.add(`${num}${side === "A" ? "B" : "A"}`);
+  return out;
+}
+
+function applyCamelotWheel(currentCell, harmonicMode) {
+  if (!_camelotSectors) return;
+  _buildCamelotWheel();
+  const compat = _camelotCompatibleSet(currentCell, harmonicMode || "compatible");
+  for (const sec of _camelotSectors.querySelectorAll(".sector")) {
+    const cell = sec.getAttribute("data-cell");
+    const isActive = cell === currentCell;
+    sec.classList.toggle("active", isActive);
+    sec.classList.toggle("compat", !isActive && compat.has(cell));
+  }
+  // Active number label gets a contrast-flip so the digit is still legible
+  // on the bright accent fill (active sector covers both A + B for that number).
+  const activeNum = currentCell && currentCell !== "--"
+    ? currentCell.replace(/[AB]$/, "")
+    : null;
+  for (const lab of _camelotLabels.querySelectorAll(".label")) {
+    lab.classList.toggle("active", lab.getAttribute("data-num") === activeNum);
   }
 }
 
@@ -1778,6 +1906,27 @@ function startCrossfade(nextPath, fadeSec) {
   const standby = deckStandby();
   setSrcOnDeck(standby, nextPath);
   standby.gain.gain.setValueAtTime(0, _ctx.currentTime);
+  // Mixxx-style intro alignment / leading-silence skip — when the
+  // server has reported intro_end_s for the next track and the user has
+  // chosen full_intro_outro or fixed_skip_silence, seek the standby
+  // deck to that marker so the dry-quiet intro doesn't waste fade
+  // headroom.  outro_fade + fixed leave the deck at 0 (legacy behaviour).
+  const skipIntro = (_transitionMode === "full_intro_outro"
+                     || _transitionMode === "fixed_skip_silence")
+                    && typeof _nextTrackIntroEndCache === "number"
+                    && _nextTrackIntroEndCache > 0;
+  if (skipIntro) {
+    // Wait for the loaded-metadata event so currentTime can be set.
+    const seekTarget = _nextTrackIntroEndCache;
+    const seekIfReady = () => {
+      try { standby.audio.currentTime = seekTarget; } catch (_) {}
+    };
+    if (standby.audio.readyState >= 1) {
+      seekIfReady();
+    } else {
+      standby.audio.addEventListener("loadedmetadata", seekIfReady, { once: true });
+    }
+  }
   playOnDeck(standby);
 
   const active = deckActive();
@@ -1846,7 +1995,23 @@ for (const d of decks) {
     const dur = d.audio.duration;
     if (!isFinite(dur) || dur <= 0) return;
     const remaining = dur - d.audio.currentTime;
-    const fadeSec = _crossfadeSecondsCache;
+    const baseFade = _crossfadeSecondsCache;
+    const fadeSec = _resolveFadeSec(
+      _transitionMode, baseFade,
+      _currentOutroLenCache, _nextTrackIntroEndCache,
+    );
+    // For outro_fade + full_intro_outro, the fade should begin AT the
+    // outgoing outro_start (when known) rather than just "fadeSec from
+    // the end".  Triggers as soon as currentTime crosses outro_start.
+    const useMarker = (_transitionMode === "outro_fade"
+                       || _transitionMode === "full_intro_outro")
+                      && typeof _currentOutroStartCache === "number"
+                      && _currentOutroStartCache > 0
+                      && _nextTrackPathCache;
+    if (useMarker && d.audio.currentTime >= _currentOutroStartCache) {
+      startCrossfade(_nextTrackPathCache, fadeSec);
+      return;
+    }
     if (remaining > 0 && remaining < fadeSec && _nextTrackPathCache) {
       startCrossfade(_nextTrackPathCache, fadeSec);
       return;
@@ -1880,9 +2045,34 @@ for (const d of decks) {
 // Latest server hints (cached so timeupdate doesn't have to peek into state)
 let _crossfadeSecondsCache = 3.0;
 let _currentOutroLenCache = null;
+let _currentOutroStartCache = null;   // active deck's outro_start_s
+let _nextTrackIntroEndCache = null;   // incoming track's intro_end_s
 let _nextTrackPathCache = null;
+let _transitionMode = "full_intro_outro";
 let _prefetchEnabled = true;
 let _silenceTriggerEnabled = true;
+
+// Mixxx-style fade-length picker.  Mirrors AutoDJProcessor's
+// TransitionMode enum -- see CHANGELOG entry for 0.12.3.
+//
+// - full_intro_outro: align outgoing outro start with incoming intro
+//   start; fade length = min(outroLen, nextIntroEnd) clamped 1.0-12.0 s.
+// - outro_fade: fade length = outroLen (clamped); ignore nextIntroEnd.
+// - fixed_skip_silence: baseFade as-is; the leading-silence skip is
+//   applied to the standby deck in startCrossfade().
+// - fixed (and fallback): legacy fixed-length crossfade.
+function _resolveFadeSec(mode, baseFade, outroLen, nextIntroEnd) {
+  const clamp = (v) => Math.max(1.0, Math.min(12.0, v));
+  if (mode === "full_intro_outro"
+      && typeof outroLen === "number" && outroLen > 0
+      && typeof nextIntroEnd === "number" && nextIntroEnd > 0) {
+    return clamp(Math.min(outroLen, nextIntroEnd));
+  }
+  if (mode === "outro_fade" && typeof outroLen === "number" && outroLen > 0) {
+    return clamp(outroLen);
+  }
+  return baseFade;
+}
 
 // First-click unlock — used by the unified Play button (btnPause).
 async function unlockAndPlay() {
@@ -1922,11 +2112,19 @@ function applyBrowserPlaybackState(s) {
     s.settings.playback.crossfade_seconds) || 3.0;
   _nextTrackPathCache = s.next_track ? s.next_track.path : null;
   _lastTransitionFx = (s.settings && s.settings.transition) || "none";
+  _transitionMode = (s.settings && s.settings.playback &&
+    s.settings.playback.transition_mode) || "full_intro_outro";
   // Outgoing track's outro length drives the per-effect duration table
   // in `applyTransitionFx`.  Null when the track hasn't been DJ-meta
   // analysed yet — falls back to the static minimums.
   _currentOutroLenCache = (s.current_track && typeof s.current_track.outro_len === "number")
     ? s.current_track.outro_len : null;
+  _currentOutroStartCache = (s.current_track
+      && typeof s.current_track.outro_start_s === "number")
+    ? s.current_track.outro_start_s : null;
+  _nextTrackIntroEndCache = (s.next_track
+      && typeof s.next_track.intro_end_s === "number")
+    ? s.next_track.intro_end_s : null;
   // Honour user-controlled gapless flags from config.toml / web settings.
   _prefetchEnabled = !(s.settings && s.settings.playback &&
     s.settings.playback.prefetch_next_track === false);

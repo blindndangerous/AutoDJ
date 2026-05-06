@@ -148,7 +148,7 @@ class PlaybackSettingsBody(BaseModel):
     pure_shuffle: bool | None = None
     anchor_to_seed: bool | None = None
     replaygain_enabled: bool | None = None
-    enable_daypart: bool | None = None
+    transition_mode: str | None = None
     show_lyrics: bool | None = None
 
 
@@ -273,24 +273,30 @@ class PlayerBridge:
             self.player._ensure_dj_cache()
         dj_cache = getattr(self.player, "_dj_cache", None)
 
-        def _outro_len(entry: IndexEntry | None) -> float | None:
+        def _markers(entry: IndexEntry | None) -> tuple[float | None, float | None, float | None]:
+            """Return ``(intro_end_s, outro_start_s, outro_len)`` from the
+            DJ-meta sidecar, or ``(None, None, None)`` when unanalysed.
+            """
             if entry is None or dj_cache is None or not entry.length:
-                return None
+                return (None, None, None)
             try:
                 meta = dj_cache.get(entry.path)
             except Exception:
-                return None
+                return (None, None, None)
             if not getattr(meta, "analysed", False):
-                return None
-            outro_start = float(getattr(meta, "outro_start_s", 0.0) or 0.0)
-            if outro_start <= 0:
-                return None
-            return max(0.0, float(entry.length) - outro_start)
+                return (None, None, None)
+            intro_end_raw = float(getattr(meta, "intro_end_s", 0.0) or 0.0)
+            outro_start_raw = float(getattr(meta, "outro_start_s", 0.0) or 0.0)
+            intro_end = intro_end_raw if intro_end_raw > 0 else None
+            if outro_start_raw <= 0:
+                return (intro_end, None, None)
+            outro_len = max(0.0, float(entry.length) - outro_start_raw)
+            return (intro_end, outro_start_raw, outro_len)
 
         def _track_dict(entry: IndexEntry | None) -> dict | None:
             if entry is None:
                 return None
-            outro_len = _outro_len(entry)
+            intro_end, outro_start, outro_len = _markers(entry)
             return {
                 "title": entry.title,
                 "artist": entry.artist,
@@ -303,6 +309,8 @@ class PlayerBridge:
                 "mode": entry.mode,
                 "camelot": camelot_label(entry.key, entry.mode),
                 "energy": round(entry.energy, 3) if entry.energy else 0.0,
+                "intro_end_s": round(intro_end, 2) if intro_end is not None else None,
+                "outro_start_s": round(outro_start, 2) if outro_start is not None else None,
                 "outro_len": round(outro_len, 2) if outro_len is not None else None,
             }
 
@@ -592,7 +600,7 @@ class PlayerBridge:
                 "pure_shuffle": getattr(p, "_pure_shuffle", False),
                 "anchor_to_seed": getattr(p, "_anchor_to_seed", False),
                 "replaygain_enabled": cfg.replaygain.enabled,
-                "enable_daypart": cfg.playback.enable_daypart,
+                "transition_mode": cfg.playback.transition_mode,
                 "show_lyrics": getattr(cfg.playback, "show_lyrics", True),
                 "prefetch_next_track": getattr(
                     cfg.playback,
@@ -690,7 +698,7 @@ class PlayerBridge:
         pure_shuffle: bool | None = None,
         anchor_to_seed: bool | None = None,
         replaygain_enabled: bool | None = None,
-        enable_daypart: bool | None = None,
+        transition_mode: str | None = None,
         show_lyrics: bool | None = None,
     ) -> None:
         """Apply playback-related settings; only non-null fields take effect."""
@@ -717,8 +725,12 @@ class PlayerBridge:
                 self.player._seed_path = self.player._state.current_track.path
         if replaygain_enabled is not None:
             cfg.replaygain.enabled = bool(replaygain_enabled)
-        if enable_daypart is not None:
-            cfg.playback.enable_daypart = bool(enable_daypart)
+        if transition_mode is not None:
+            from autodj.config import _validate_transition_mode
+
+            cfg.playback.transition_mode = _validate_transition_mode(
+                str(transition_mode),
+            )
         if show_lyrics is not None:
             cfg.playback.show_lyrics = bool(show_lyrics)
             if not show_lyrics:

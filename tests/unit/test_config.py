@@ -376,3 +376,37 @@ class TestDjMixConfig:
         assert d.harmonic_mixing is True
         # Mode unspecified → default to compatible
         assert d.harmonic_mode == "compatible"
+
+
+# ---------------------------------------------------------------------------
+# PlaybackConfig.transition_mode (Mixxx-style crossfade alignment)
+# ---------------------------------------------------------------------------
+
+
+class TestPlaybackTransitionMode:
+    def test_default_full_intro_outro(self) -> None:
+        from autodj.config import PlaybackConfig
+
+        p = PlaybackConfig.from_dict({})
+        assert p.transition_mode == "full_intro_outro"
+
+    def test_explicit_outro_fade(self) -> None:
+        from autodj.config import PlaybackConfig
+
+        p = PlaybackConfig.from_dict({"transition_mode": "outro_fade"})
+        assert p.transition_mode == "outro_fade"
+
+    def test_unknown_raises(self) -> None:
+        import pytest
+
+        from autodj.config import PlaybackConfig
+
+        with pytest.raises(ValueError, match="transition_mode"):
+            PlaybackConfig.from_dict({"transition_mode": "wat"})
+
+    def test_all_documented_modes_load(self) -> None:
+        from autodj.config import TRANSITION_MODES, PlaybackConfig
+
+        for mode in TRANSITION_MODES:
+            p = PlaybackConfig.from_dict({"transition_mode": mode})
+            assert p.transition_mode == mode

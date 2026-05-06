@@ -70,6 +70,21 @@
              aria-hidden because a separate live region announces the same
              info on track change to avoid stepping on the title announcement. -->
         <div id="now-playing-badges" aria-hidden="true" class="badges-row"></div>
+        <!-- Camelot wheel: decorative visual aid only.  Current key + harmonic
+             compatibility are already announced via #badges-announce, so this
+             SVG is hidden from assistive tech (aria-hidden="true").  Sectors
+             distinguish active / compatible / idle by stroke width AND fill
+             so colour is not the sole indicator (WCAG 1.4.1). -->
+        <svg id="camelot-wheel"
+             viewBox="-110 -110 220 220"
+             aria-hidden="true"
+             focusable="false">
+          <g id="camelot-sectors"></g>
+          <g id="camelot-labels"
+             font-size="10"
+             text-anchor="middle"
+             dominant-baseline="middle"></g>
+        </svg>
       </div>
     </div>
     <!-- Independent polite region for badge announcements (Camelot + BPM,
@@ -392,12 +407,17 @@
         <code>[playback] audio_device</code> config.
       </span>
 
-      <div class="settings-check">
-        <input type="checkbox" id="pb-daypart" aria-describedby="pb-daypart-desc">
-        <label for="pb-daypart">Daypart mood</label>
+      <div class="settings-row">
+        <label for="pb-transition-mode">Transition mode</label>
+        <select id="pb-transition-mode" aria-describedby="pb-transition-mode-desc">
+          <option value="full_intro_outro">Full intro / outro</option>
+          <option value="outro_fade">Outro fade</option>
+          <option value="fixed_skip_silence">Fixed (skip silence)</option>
+          <option value="fixed">Fixed</option>
+        </select>
       </div>
-      <span class="setting-desc" id="pb-daypart-desc">
-        Pick BPM and energy targets from the local time of day — gentler in the morning (6-10 am, 60-90 BPM), peak in the evening (6-10 pm, 115-140 BPM), chill late at night.  Ignored when an explicit Preset is selected.
+      <span class="setting-desc" id="pb-transition-mode-desc">
+        Mirrors Mixxx's AutoDJ transition modes.  <em>Full intro/outro</em> aligns the start of the incoming intro with the start of the outgoing outro and sizes the fade to whichever marker is shorter — best when both tracks have detected intro and outro markers.  <em>Outro fade</em> begins the fade at the outgoing outro_start and uses outro length only.  <em>Fixed (skip silence)</em> uses the Crossfade-seconds value but trims leading silence on the incoming track and trailing silence on the outgoing.  <em>Fixed</em> is the legacy fixed-length behaviour.
       </span>
 
       <div class="settings-row">

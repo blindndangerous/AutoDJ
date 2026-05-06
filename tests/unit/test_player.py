@@ -1498,3 +1498,112 @@ class TestPlayWithCrossfadeFeatures:
         ):
             player._play_with_crossfade(cur, nxt)
         mock_stream.assert_called_once()
+
+
+class TestEffectiveCrossfadeSeconds:
+    """Cover Player._effective_crossfade_seconds (Mixxx-style modes)."""
+
+    def _player(self, mode: str = "full_intro_outro", base: float = 3.0):
+        """Build a Player stub with just enough config + cache for the helper."""
+        from types import SimpleNamespace
+
+        from autodj.config import PlaybackConfig
+        from autodj.player import Player
+
+        cfg = SimpleNamespace(
+            playback=PlaybackConfig.from_dict(
+                {
+                    "crossfade_seconds": base,
+                    "transition_mode": mode,
+                }
+            ),
+        )
+        # Bypass __init__ — only the config is needed for this pure helper
+        p = Player.__new__(Player)
+        p._cfg = cfg
+        return p
+
+    def test_fixed_returns_base(self) -> None:
+        from autodj.dj_meta import DjMeta
+
+        p = self._player(mode="fixed", base=2.5)
+        assert (
+            p._effective_crossfade_seconds(
+                DjMeta(intro_end_s=4.0, outro_start_s=180.0, analysed=True),
+                DjMeta(intro_end_s=4.0, outro_start_s=0.0, analysed=True),
+                outgoing_length_s=200.0,
+            )
+            == 2.5
+        )
+
+    def test_full_intro_outro_takes_min(self) -> None:
+        from autodj.dj_meta import DjMeta
+
+        p = self._player(mode="full_intro_outro", base=3.0)
+        # outro_len = 200 - 190 = 10; intro_end = 4; min = 4
+        assert (
+            p._effective_crossfade_seconds(
+                DjMeta(intro_end_s=0.0, outro_start_s=190.0, analysed=True),
+                DjMeta(intro_end_s=4.0, outro_start_s=0.0, analysed=True),
+                outgoing_length_s=200.0,
+            )
+            == 4.0
+        )
+
+    def test_full_intro_outro_clamps_high(self) -> None:
+        from autodj.dj_meta import DjMeta
+
+        p = self._player(mode="full_intro_outro", base=3.0)
+        # min(20, 30) = 20 -> clamp to 12
+        assert (
+            p._effective_crossfade_seconds(
+                DjMeta(intro_end_s=0.0, outro_start_s=180.0, analysed=True),
+                DjMeta(intro_end_s=30.0, outro_start_s=0.0, analysed=True),
+                outgoing_length_s=200.0,
+            )
+            == 12.0
+        )
+
+    def test_full_intro_outro_clamps_low(self) -> None:
+        from autodj.dj_meta import DjMeta
+
+        p = self._player(mode="full_intro_outro", base=3.0)
+        assert (
+            p._effective_crossfade_seconds(
+                DjMeta(intro_end_s=0.0, outro_start_s=199.5, analysed=True),
+                DjMeta(intro_end_s=0.3, outro_start_s=0.0, analysed=True),
+                outgoing_length_s=200.0,
+            )
+            == 1.0
+        )
+
+    def test_full_intro_outro_falls_back_when_marker_missing(self) -> None:
+        p = self._player(mode="full_intro_outro", base=2.5)
+        # No meta_b -> can't compute intro_end, falls back to base
+        assert p._effective_crossfade_seconds(None, None, 200.0) == 2.5
+
+    def test_outro_fade_uses_outro_len(self) -> None:
+        from autodj.dj_meta import DjMeta
+
+        p = self._player(mode="outro_fade", base=3.0)
+        assert (
+            p._effective_crossfade_seconds(
+                DjMeta(intro_end_s=0.0, outro_start_s=192.0, analysed=True),
+                None,
+                outgoing_length_s=200.0,
+            )
+            == 8.0
+        )
+
+    def test_fixed_skip_silence_returns_base(self) -> None:
+        from autodj.dj_meta import DjMeta
+
+        p = self._player(mode="fixed_skip_silence", base=4.0)
+        assert (
+            p._effective_crossfade_seconds(
+                DjMeta(intro_end_s=0.0, outro_start_s=180.0, analysed=True),
+                DjMeta(intro_end_s=4.0, outro_start_s=0.0, analysed=True),
+                outgoing_length_s=200.0,
+            )
+            == 4.0
+        )

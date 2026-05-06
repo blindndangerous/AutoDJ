@@ -580,16 +580,6 @@ def cmd_enrich(ctx: click.Context, index_name: str | None) -> None:
     ),
 )
 @click.option(
-    "--daypart/--no-daypart",
-    "enable_daypart",
-    default=None,
-    help=(
-        "Pick BPM/energy targets from the current local time of day "
-        "(morning/midday/afternoon/evening/night).  Only active when no "
-        "explicit --preset is set.  Overrides config [playback] enable_daypart."
-    ),
-)
-@click.option(
     "--harmonic/--no-harmonic",
     "harmonic_mixing",
     default=None,
@@ -656,6 +646,20 @@ def cmd_enrich(ctx: click.Context, index_name: str | None) -> None:
     help="Transition effect layered on every crossfade (overrides config).",
 )
 @click.option(
+    "--transition-mode",
+    "transition_mode",
+    default=None,
+    type=click.Choice(
+        ["full_intro_outro", "outro_fade", "fixed_skip_silence", "fixed"],
+        case_sensitive=False,
+    ),
+    help=(
+        "How the crossfade aligns with each track's intro/outro markers. "
+        "Mirrors Mixxx's AutoDJ TransitionMode.  Overrides [playback] "
+        "transition_mode."
+    ),
+)
+@click.option(
     "--name",
     "index_name",
     default=None,
@@ -690,13 +694,13 @@ def cmd_play(
     pure_shuffle: bool,
     anchor_to_seed: bool | None,
     show_lyrics: bool | None,
-    enable_daypart: bool | None,
     harmonic_mixing: bool | None,
     beatmatch: bool | None,
     phrase_align: bool | None,
     outro_intro_align: bool | None,
     filter_sweep: bool | None,
     transition_fx: str | None,
+    transition_mode: str | None,
     index_name: str | None,
     audio_device: str | None,
 ) -> None:
@@ -758,8 +762,14 @@ def cmd_play(
         cfg.djmix.filter_sweep = filter_sweep
     if transition_fx is not None:
         cfg.transitions.effect = transition_fx
-    if enable_daypart is not None:
-        cfg.playback.enable_daypart = enable_daypart
+    if transition_mode is not None:
+        from autodj.config import _validate_transition_mode
+
+        try:
+            cfg.playback.transition_mode = _validate_transition_mode(transition_mode)
+        except ValueError as exc:
+            console.print(f"[bold red]Invalid --transition-mode:[/] {exc}")
+            sys.exit(1)
     if show_lyrics is not None:
         cfg.playback.show_lyrics = show_lyrics
     if audio_device is not None:
@@ -920,16 +930,20 @@ def cmd_play(
     help="Pick the most sonically DISTANT next track instead of the closest.",
 )
 @click.option(
-    "--daypart/--no-daypart",
-    "enable_daypart",
-    default=None,
-    help="Pick BPM/energy targets from local time of day.",
-)
-@click.option(
     "--harmonic/--no-harmonic",
     "harmonic_mixing",
     default=None,
     help="Restrict picks to Camelot-compatible keys.",
+)
+@click.option(
+    "--transition-mode",
+    "transition_mode",
+    default=None,
+    type=click.Choice(
+        ["full_intro_outro", "outro_fade", "fixed_skip_silence", "fixed"],
+        case_sensitive=False,
+    ),
+    help="Crossfade alignment mode for the web-UI auto-DJ.",
 )
 @click.option(
     "--beatmatch/--no-beatmatch",
@@ -1062,13 +1076,13 @@ def cmd_serve(
     pure_shuffle: bool,
     anchor_to_seed: bool | None,
     show_lyrics: bool | None,
-    enable_daypart: bool | None,
     harmonic_mixing: bool | None,
     beatmatch: bool | None,
     phrase_align: bool | None,
     outro_intro_align: bool | None,
     filter_sweep: bool | None,
     transition_fx: str | None,
+    transition_mode: str | None,
     index_name: str | None,
     no_playback: bool,
     server_audio: bool,
@@ -1150,8 +1164,14 @@ def cmd_serve(
         cfg.djmix.filter_sweep = filter_sweep
     if transition_fx is not None:
         cfg.transitions.effect = transition_fx
-    if enable_daypart is not None:
-        cfg.playback.enable_daypart = enable_daypart
+    if transition_mode is not None:
+        from autodj.config import _validate_transition_mode
+
+        try:
+            cfg.playback.transition_mode = _validate_transition_mode(transition_mode)
+        except ValueError as exc:
+            console.print(f"[bold red]Invalid --transition-mode:[/] {exc}")
+            sys.exit(1)
     if show_lyrics is not None:
         cfg.playback.show_lyrics = show_lyrics
 

@@ -1060,19 +1060,7 @@ class Player:
             target_bpm = self._preset.target_bpm(tn)
             bpm_weight = self._preset.bpm_weight
 
-        # --- Daypart override (only when no explicit preset set) ---
-        # Daypart provides a wall-clock-driven baseline so unattended
-        # playback feels appropriate to time of day — gentler in the
-        # morning, peak in the evening, chill late at night.
         target_energy = self._target_energy
-        if self._preset is None and self._cfg.playback.enable_daypart:
-            from autodj.daypart import current_daypart
-
-            dp = current_daypart()
-            target_bpm = dp.target_bpm
-            bpm_weight = dp.bpm_weight
-            if target_energy is None:
-                target_energy = dp.target_energy
 
         # Wider candidate pool than vanilla nearest-neighbour avoids
         # falling into a 20-track sonic island.  50 with filter / 30
@@ -1232,11 +1220,19 @@ class Player:
             self._dj_cache = None
 
     def _outgoing_meta(self, audio_a: np.ndarray, sr_a: int, path: str) -> DjMeta | None:
-        """Get / compute DjMeta for the outgoing track when needed for alignment."""
+        """Get / compute DjMeta for the outgoing track when needed for alignment.
+
+        Returns analysed meta when any of these features needs marker
+        data: ``djmix.outro_intro_align``, ``djmix.phrase_align``, or any
+        marker-driven transition_mode (everything except ``"fixed"``).
+        """
         from autodj.dj_meta import analyse_audio
 
         cfg_dj = self._cfg.djmix
-        if self._dj_cache is None or not (cfg_dj.outro_intro_align or cfg_dj.phrase_align):
+        marker_mode = self._cfg.playback.transition_mode != "fixed"
+        if self._dj_cache is None or not (
+            cfg_dj.outro_intro_align or cfg_dj.phrase_align or marker_mode
+        ):
             return None
         meta = self._dj_cache.get(path)
         if not meta.analysed:
@@ -1244,6 +1240,59 @@ class Player:
             self._dj_cache.set(path, meta)
             self._dj_cache.flush(batch=10)
         return meta
+
+    def _peek_incoming_meta(self, next_entry: IndexEntry) -> DjMeta | None:
+        """Cache-only DjMeta peek for the incoming track (no audio decode).
+
+        Used by :meth:`_effective_crossfade_seconds` to read intro_end_s
+        before the heavy audio load.  Returns ``None`` when the sidecar
+        cache is uninitialised or the track has not been analysed yet.
+        """
+        if self._dj_cache is None:
+            return None
+        meta = self._dj_cache.get(next_entry.path)
+        return meta if meta.analysed else None
+
+    def _effective_crossfade_seconds(
+        self,
+        meta_a: DjMeta | None,
+        meta_b: DjMeta | None,
+        outgoing_length_s: float,
+    ) -> float:
+        """Resolve the active fade length for the configured transition_mode.
+
+        Mirrors the browser's ``_resolveFadeSec`` in ``static/app.js`` so
+        the CLI player and the web UI sound the same.
+
+        Args:
+            meta_a: Outgoing track's DJ-meta sidecar entry.
+            meta_b: Incoming track's DJ-meta sidecar entry (may be None).
+            outgoing_length_s: Outgoing track length in seconds (used to
+                derive ``outro_len = length - outro_start_s``).
+
+        Returns:
+            Effective fade length in seconds.  Always >= 0.
+        """
+        base = float(self._cfg.playback.crossfade_seconds)
+        mode = self._cfg.playback.transition_mode
+        if mode == "fixed":
+            return base
+        outro_len: float | None = None
+        if meta_a and meta_a.outro_start_s > 0 and outgoing_length_s > 0:
+            outro_len = max(0.0, outgoing_length_s - meta_a.outro_start_s)
+        intro_end: float | None = None
+        if meta_b and meta_b.intro_end_s > 0:
+            intro_end = float(meta_b.intro_end_s)
+
+        def _clamp(v: float) -> float:
+            return max(1.0, min(12.0, v))
+
+        if mode == "full_intro_outro" and outro_len is not None and intro_end is not None:
+            return _clamp(min(outro_len, intro_end))
+        if mode == "outro_fade" and outro_len is not None:
+            return _clamp(outro_len)
+        # fixed_skip_silence + fallback for missing markers in the other modes
+        return base
 
     def _crossfade_start_in_a(
         self,
@@ -1256,8 +1305,10 @@ class Player:
         from autodj.dj_meta import nearest_phrase_boundary
 
         cfg_dj = self._cfg.djmix
+        mode = self._cfg.playback.transition_mode
+        marker_anchor = mode in ("full_intro_outro", "outro_fade")
         start = max(0, len(audio_a) - crossfade_samples)
-        if cfg_dj.outro_intro_align and meta_a and meta_a.outro_start_s > 0:
+        if (cfg_dj.outro_intro_align or marker_anchor) and meta_a and meta_a.outro_start_s > 0:
             target = int(meta_a.outro_start_s * sr_a)
             target = min(target, len(audio_a) - crossfade_samples)
             start = max(0, target)
@@ -1317,10 +1368,16 @@ class Player:
         sr_a: int,
         next_entry: IndexEntry,
     ) -> np.ndarray:
-        """Drop the incoming track's intro so we mix into the first downbeat."""
+        """Drop the incoming track's intro so we mix into the first downbeat.
+
+        Triggered by either ``djmix.outro_intro_align`` or any marker-aware
+        transition_mode (``full_intro_outro`` / ``fixed_skip_silence``).
+        """
         from autodj.dj_meta import analyse_audio
 
-        if not (self._cfg.djmix.outro_intro_align and self._dj_cache is not None):
+        mode = self._cfg.playback.transition_mode
+        marker_skip = mode in ("full_intro_outro", "fixed_skip_silence")
+        if self._dj_cache is None or not (self._cfg.djmix.outro_intro_align or marker_skip):
             return audio_b
         meta_b = self._dj_cache.get(next_entry.path)
         if not meta_b.analysed:
@@ -1487,7 +1544,16 @@ class Player:
         self._ensure_dj_cache()
         meta_a = self._outgoing_meta(audio_a, sr_a, current.path)
 
-        crossfade_samples = int(self._cfg.playback.crossfade_seconds * sr_a)
+        # Mixxx-style transition_mode resolution.  Derives the effective
+        # crossfade length from the mode + DJ-meta markers; falls back to
+        # cfg.playback.crossfade_seconds when markers are missing.
+        meta_b = self._peek_incoming_meta(next_entry)
+        eff_crossfade_s = self._effective_crossfade_seconds(
+            meta_a,
+            meta_b,
+            current.length,
+        )
+        crossfade_samples = int(eff_crossfade_s * sr_a)
         a_crossfade_start = self._crossfade_start_in_a(
             audio_a,
             sr_a,

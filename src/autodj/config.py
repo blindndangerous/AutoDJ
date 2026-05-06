@@ -162,6 +162,33 @@ def validate_index_name(name: str) -> None:
         )
 
 
+TRANSITION_MODES: tuple[str, ...] = (
+    "full_intro_outro",
+    "outro_fade",
+    "fixed_skip_silence",
+    "fixed",
+)
+
+
+def _validate_transition_mode(value: str) -> str:
+    """Return *value* unchanged if it is a known transition mode, else raise.
+
+    Args:
+        value: Mode string from ``[playback] transition_mode``.
+
+    Returns:
+        The validated mode string.
+
+    Raises:
+        ValueError: If *value* is not in :data:`TRANSITION_MODES`.
+    """
+    if value not in TRANSITION_MODES:
+        raise ValueError(
+            f"playback.transition_mode must be one of {TRANSITION_MODES}, got {value!r}",
+        )
+    return value
+
+
 @dataclass
 class PlaybackConfig:
     """Settings for audio playback behaviour.
@@ -197,7 +224,19 @@ class PlaybackConfig:
     discovery_every: int | None = None
     crossfade_eq_duck: bool = False
     crossfade_bass_cutoff_hz: float = 180.0
-    enable_daypart: bool = False
+    # Mixxx-style transition mode.  Controls how the crossfade aligns
+    # with each track's intro_end / outro_start markers from the
+    # DJ-meta sidecar.
+    #   - "full_intro_outro" (default): start of incoming intro lines up
+    #     with start of outgoing outro; fade length = min(intro_len,
+    #     outro_len) clamped to [_MIN_FX_DURATION_S, 12 s].
+    #   - "outro_fade":  begin fade at outro_start, length = outro_len.
+    #     Ignores intro_end.
+    #   - "fixed_skip_silence": fixed crossfade_seconds, but trim
+    #     leading silence on incoming + trailing silence on outgoing.
+    #   - "fixed": legacy behaviour — fixed crossfade_seconds at the
+    #     end of the outgoing track.  No marker alignment.
+    transition_mode: str = "full_intro_outro"
     # When False, the player never loads / renders lyrics (CLI panel + web
     # UI lyric card both honour this).  Default True — opt-out, not opt-in.
     show_lyrics: bool = True
@@ -248,7 +287,9 @@ class PlaybackConfig:
             discovery_every=int(discovery_every_raw) if discovery_every_raw is not None else None,
             crossfade_eq_duck=bool(data.get("crossfade_eq_duck", False)),
             crossfade_bass_cutoff_hz=float(data.get("crossfade_bass_cutoff_hz", 180.0)),
-            enable_daypart=bool(data.get("enable_daypart", False)),
+            transition_mode=_validate_transition_mode(
+                str(data.get("transition_mode", "full_intro_outro")),
+            ),
             show_lyrics=bool(data.get("show_lyrics", True)),
             prefetch_next_track=bool(data.get("prefetch_next_track", True)),
             silence_trigger_crossfade=bool(

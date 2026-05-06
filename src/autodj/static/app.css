@@ -613,3 +613,41 @@
       #view-nav { padding: 0.25rem 0.5rem; }
       #view-nav [role="tab"] { padding: 0.6rem 0.8rem; }
     }
+
+    /* ----------------------------------------------------------------
+       Camelot wheel — decorative visual aid for harmonic mixing.
+       Hidden from AT (#badges-announce already conveys the key).
+       ---------------------------------------------------------------- */
+    #camelot-wheel {
+      display: block;
+      width: 200px;
+      height: 200px;
+      margin: 0.75rem auto 0;
+      max-width: 100%;
+    }
+    #camelot-wheel .sector {
+      fill: rgba(255, 255, 255, 0.04);
+      stroke: rgba(255, 255, 255, 0.20);
+      stroke-width: 0.6;
+      transition: fill 0.18s ease;
+    }
+    #camelot-wheel .sector.compat {
+      /* Mid-tone fill — distinguishes 'mixable' from idle (~3:1 contrast
+         vs the card background) without competing with the active cell. */
+      fill: rgba(126, 179, 232, 0.30);  /* var(--accent) at 30% */
+    }
+    #camelot-wheel .sector.active {
+      fill: var(--accent);
+      stroke: #fff;
+      stroke-width: 1.6;       /* extra stroke = colour-independent cue */
+    }
+    #camelot-wheel .label {
+      fill: var(--text);
+      pointer-events: none;
+    }
+    #camelot-wheel .label.minor { fill: var(--text-dim); }
+    #camelot-wheel .label.active { fill: #000; font-weight: 700; }
+
+    @media (prefers-reduced-motion: reduce) {
+      #camelot-wheel .sector { transition: none; }
+    }

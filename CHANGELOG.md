@@ -6,6 +6,67 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.13.0] - 2026-05-05
+
+### Added
+
+- **Mixxx-style `transition_mode`.**  New `[playback] transition_mode`
+  config knob plus matching `--transition-mode` CLI flag and web UI
+  Settings dropdown.  Four modes mirror the `TransitionMode` enum in
+  Mixxx's `AutoDJProcessor`:
+  - `full_intro_outro` (default): aligns outgoing outro_start with
+    incoming intro_end; fade length = `min(outro_len, intro_end)`
+    clamped 1.0–12.0 s.
+  - `outro_fade`: begin fade at outro_start, length = outro_len.
+  - `fixed_skip_silence`: fixed `crossfade_seconds`, but trims leading
+    silence on the incoming track (seek past `intro_end_s`) and
+    trailing silence on the outgoing.
+  - `fixed`: legacy fixed-length crossfade.
+  Browser (`static/app.js` `_resolveFadeSec`) and CLI Player
+  (`Player._effective_crossfade_seconds`) share the resolution logic so
+  both surfaces sound the same.  Server now surfaces `intro_end_s` +
+  `outro_start_s` per track in `/api/status`.
+- **Camelot wheel SVG** in the now-playing card.  12-spoke / 2-ring
+  decorative visual showing the current key plus harmonically
+  compatible neighbours per the active `harmonic_mode`.  `aria-hidden`
+  (the existing `#badges-announce` live region already announces the
+  key); active sector marked with both fill *and* stroke width so the
+  cue is not colour-only (WCAG 1.4.1).  Honours
+  `prefers-reduced-motion`.
+
+### Changed
+
+- **Intro-end now surfaced.**  `dj_meta.DjMeta.intro_end_s` was already
+  populated by `detect_intro_outro` but only consumed by the CLI's
+  `_skip_incoming_intro`.  Server's `_track_dict` now exposes it (and
+  `outro_start_s`) so the browser can run the same Mixxx-style fade
+  resolution and seek the standby deck past leading silence.
+
+### Removed
+
+- **`autodj.daypart` module** and the entire daypart feature.
+  `[playback] enable_daypart` config, `--daypart` CLI flag (play +
+  serve), web UI checkbox, the `[dayparts.<name>]` custom-window TOML
+  section, and the time-of-day BPM/energy override in
+  `Player.pick_next` are all gone.  The `transition_mode` work
+  replaces what daypart was attempting (clock-driven mood shaping
+  was untested in practice).
+- **PlaybackConfig.enable_daypart** + matching server `PlaybackSettingsBody`
+  field.  Replaced by `transition_mode` (string).
+
+### Repo hygiene
+
+- Humanizer hook (`~/.claude/hooks/humanizer-md-reminder.py`) now skips
+  a broader set of LLM-instruction surfaces and memory stores
+  (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `COPILOT.md`, `CURSOR.md`,
+  `MEMORY.md`, `INSTRUCTIONS.md`, `RULES.md`, `SKILLS.md`,
+  `*.cursorrules`, `*.windsurf`, plus directory matches for
+  `/.claude/`, `/.cursor/`, `/.continue/`, `/.codex/`, `/.aider/`,
+  `/memory/`, etc).  Prevents accidental rewrites of machine-styled
+  config.
+
+---
+
 ## [0.12.2] - 2026-05-05
 
 ### Changed

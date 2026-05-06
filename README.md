@@ -587,50 +587,33 @@ quadratic curve) — not the linear acceleration earlier versions used.
 The difference matches the actual physics of a record being pushed
 back: hand impulse spins it fast, friction slows it to a stop.
 
-### Daypart mood profiles
+### Transition modes (Mixxx-style)
 
-When you don't want to pick a preset every time you press play, the
-daypart system picks BPM + energy targets from the local clock.  Same
-idea as a radio station's clock-driven music rotation — gentler in
-the morning, peak in the evening, chill late at night.
+The crossfade engine supports four alignment modes, mirroring the
+`TransitionMode` enum in Mixxx's `AutoDJProcessor`.  Choose per session
+(`--transition-mode` CLI flag), persistently (`[playback] transition_mode`
+in `config.toml`), or live in the web UI (Settings → Transition mode).
 
-| Daypart | Hours | Target BPM | Target energy |
-|---|---|---|---|
-| morning | 06:00-10:00 | 80 | 0.04 |
-| midday | 10:00-14:00 | 105 | 0.06 |
-| afternoon | 14:00-18:00 | 115 | 0.07 |
-| evening | 18:00-22:00 | 128 | 0.10 |
-| night | 22:00-06:00 | 90 | 0.05 |
-
-Enable in any of three ways:
+| Mode | What it does |
+|---|---|
+| `full_intro_outro` (default) | Aligns outgoing outro start with incoming intro end.  Fade length = `min(outro_len, intro_end)` clamped to `[1, 12]` s.  Best when both tracks have detected markers. |
+| `outro_fade` | Begin fade at the outgoing track's outro_start.  Fade length = outro_len (clamped).  Ignores incoming intro. |
+| `fixed_skip_silence` | Use the configured `crossfade_seconds`, but trim leading silence on the incoming track (seek past `intro_end_s`) and trailing silence on the outgoing (silence detector triggers an early crossfade). |
+| `fixed` | Legacy fixed-length crossfade with no marker awareness. |
 
 ```bash
-uv run autodj play --daypart            # session override
-uv run autodj serve --daypart           # web UI session
+uv run autodj play --transition-mode outro_fade
+uv run autodj serve --transition-mode fixed_skip_silence
 ```
 
 ```toml
 [playback]
-enable_daypart = true                   # always on
+transition_mode = "full_intro_outro"
 ```
 
-```
-☑ Daypart mood                          # web UI Settings card toggle
-```
-
-Custom windows in `config.toml`:
-
-```toml
-[dayparts.warmup]
-start_hour    = 7
-end_hour      = 9
-target_bpm    = 70
-target_energy = 0.03
-bpm_weight    = 0.4
-```
-
-Daypart targets are **ignored when an explicit `--preset` is set** — a
-preset's session BPM curve takes priority over the wall-clock baseline.
+Markers live in the lazy `index/dj_meta.json` sidecar — first encounter
+of a track runs intro/outro detection (`autodj.dj_meta.detect_intro_outro`)
+and caches the result.  No re-indexing required.
 
 ### Genre normalisation
 
