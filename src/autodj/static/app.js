@@ -201,10 +201,18 @@ function applyState(s) {
       : '<span aria-hidden="true">\u23F8</span> Pause';
   }
 
-  // Volume — keep aria-valuenow in sync with value
-  const volInt = Math.round(s.volume * 100);
-  volSlider.value = volInt;
-  volPct.textContent = volInt + "%";
+  // Volume — server stores the perceptual *gain* (post-curve), so invert
+  // the fader curve before writing it back to the slider.  Without this
+  // inversion a 50 % slider sets gain ≈ 0.0316, the WS echo arrives as
+  // `volume: 0.03`, and Math.round(0.03*100)=3 — the slider snaps to ~0
+  // every time the user nudges it.  Skip the overwrite while the user
+  // is actively dragging / arrow-keying so the in-flight POST round-trip
+  // can't fight the input.
+  if (Date.now() - _lastUserVolTs > 600) {
+    const volInt = _gainToSlider(s.volume);
+    volSlider.value = volInt;
+    volPct.textContent = volInt + "%";
+  }
 
   // Mute
   const isMuted = s.is_muted;
@@ -1109,13 +1117,64 @@ const _MIN_FX_DURATION_S = {
   air_horn:       3.0,
 };
 
+// Per-effect fraction of the outgoing track's *outro* the effect should
+// occupy when an outro length is known.  Effects that need to "fill the
+// tail" (reverb, echo throws, risers) consume more of it; effects that
+// punctuate (scratch, air horn, glitch) take less.  Used by
+// `_effectDurationFor` — falls back to `_MIN_FX_DURATION_S` when no
+// outro length is available.
+const _OUTRO_FRACTION = {
+  reverb_tail:    0.85,
+  reverse_reverb: 0.80,
+  echo_out:       0.75,
+  noise_riser:    0.90,
+  noise_drop:     0.50,
+  tape_stop:      0.60,
+  freeze:         0.55,
+  submerge:       0.70,
+  lowpass_sweep:  0.80,
+  highpass_sweep: 0.80,
+  cross_eq_swap:  0.80,
+  sidechain_pump: 0.70,
+  pitch_swell:    0.65,
+  vinyl_wow:      0.60,
+  flanger:        0.70,
+  chorus:         0.70,
+  telephone:      0.70,
+  beat_repeat:    0.45,
+  gate_stutter:   0.45,
+  glitch:         0.35,
+  bitcrusher:     0.55,
+  scratch:        0.30,
+  air_horn:       0.25,
+  backspin:       0.45,
+  forward_spin:   0.45,
+};
+const _MAX_FX_DURATION_S = 12.0;
+const _ABS_MIN_FX_DURATION_S = 1.0;
+
+function _effectDurationFor(effect, fadeSec, outroLen) {
+  // Static floor (per-effect minimum) — always honoured.
+  const staticMin = _MIN_FX_DURATION_S[effect] || 0;
+  // Without a known outro, fall back to the legacy "max of fade and
+  // per-effect floor" behaviour.
+  if (outroLen == null || !(outroLen > 0)) {
+    return Math.max(fadeSec, staticMin);
+  }
+  const frac = _OUTRO_FRACTION[effect] != null ? _OUTRO_FRACTION[effect] : 0.5;
+  const target = outroLen * frac;
+  // Clamp: never below the per-effect floor (or absolute 1.0s), never
+  // above 12s — keeps musically sane boundaries even on edge tracks.
+  const lo = Math.max(_ABS_MIN_FX_DURATION_S, staticMin);
+  return Math.min(_MAX_FX_DURATION_S, Math.max(lo, target));
+}
+
 function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
   const ctx = _ctx;
   if (!ctx || effect === "none" || !effect) return () => {};
-  // Extend fadeSec to the per-effect minimum if the user's crossfade is
-  // shorter — matches the server-side runway extension.
-  const minSec = _MIN_FX_DURATION_S[effect] || 0;
-  if (minSec > fadeSec) fadeSec = minSec;
+  // Pick the per-effect duration based on the outgoing track's outro
+  // length when known, otherwise extend to the static minimum.
+  fadeSec = _effectDurationFor(effect, fadeSec, _currentOutroLenCache);
   const t0 = ctx.currentTime;
   const tEnd = t0 + fadeSec;
   const teardowns = [];
@@ -1789,6 +1848,7 @@ for (const d of decks) {
 
 // Latest server hints (cached so timeupdate doesn't have to peek into state)
 let _crossfadeSecondsCache = 3.0;
+let _currentOutroLenCache = null;
 let _nextTrackPathCache = null;
 let _prefetchEnabled = true;
 let _silenceTriggerEnabled = true;
@@ -1831,6 +1891,11 @@ function applyBrowserPlaybackState(s) {
     s.settings.playback.crossfade_seconds) || 3.0;
   _nextTrackPathCache = s.next_track ? s.next_track.path : null;
   _lastTransitionFx = (s.settings && s.settings.transition) || "none";
+  // Outgoing track's outro length drives the per-effect duration table
+  // in `applyTransitionFx`.  Null when the track hasn't been DJ-meta
+  // analysed yet — falls back to the static minimums.
+  _currentOutroLenCache = (s.current_track && typeof s.current_track.outro_len === "number")
+    ? s.current_track.outro_len : null;
   // Honour user-controlled gapless flags from config.toml / web settings.
   _prefetchEnabled = !(s.settings && s.settings.playback &&
     s.settings.playback.prefetch_next_track === false);
@@ -2258,9 +2323,25 @@ function _sliderToGain(pct) {
   return Math.pow(10, db / 20.0);
 }
 
+// Inverse of _sliderToGain — used when writing the server-broadcast
+// gain back into the slider (so the WS echo doesn't snap the fader).
+function _gainToSlider(gain) {
+  if (!gain || gain <= 0) return 0;
+  if (gain >= 1) return 100;
+  const db = 20 * Math.log10(gain);
+  const pct = (db / 30.0 + 2.0) * 50.0;
+  return Math.max(0, Math.min(100, Math.round(pct)));
+}
+
+// Last user-initiated volume change (ms epoch).  WS state echoes that
+// arrive within ~600 ms of a local change are ignored so the slider
+// can't fight the in-flight POST.
+let _lastUserVolTs = 0;
+
 volSlider.addEventListener("input", () => {
   const val = parseInt(volSlider.value, 10);
   volPct.textContent = val + "%";
+  _lastUserVolTs = Date.now();
   // Drive the Web Audio gain immediately so the change is audible
   // without waiting on the server round-trip.
   setVolume(_sliderToGain(val));
@@ -2341,6 +2422,10 @@ document.addEventListener("keydown", (e) => {
   const tag = (tgt && tgt.tagName) || "";
   if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
   if (e.ctrlKey || e.metaKey || e.altKey) return;
+  // Tablist owns its own arrow-key navigation; don't let the global
+  // shortcut handler steal Up/Down to nudge volume when focus is on
+  // a tab.
+  if (tgt && tgt.getAttribute && tgt.getAttribute("role") === "tab") return;
 
   switch (e.key) {
     case " ":
@@ -2577,18 +2662,20 @@ let _viewInitialised = false;
 function _initViewRouter() {
   for (const name of _VIEW_NAMES) {
     const sec = document.querySelector(`section[data-view="${name}"]`);
-    const lnk = document.querySelector(`#view-nav a[data-view="${name}"]`);
+    const lnk = document.querySelector(`#view-nav [role="tab"][data-view="${name}"]`);
     if (sec) _viewSections.set(name, sec);
     if (lnk) _viewLinks.set(name, lnk);
   }
   for (const lnk of _viewLinks.values()) {
-    lnk.addEventListener("click", (e) => {
-      e.preventDefault();
+    lnk.addEventListener("click", () => {
       const target = lnk.dataset.view;
-      // Setting the hash triggers hashchange below, which does the work.
       if (location.hash !== "#" + target) location.hash = target;
       else _applyView(target, /*userInitiated=*/true);
     });
+    // Tablist arrow / Home / End navigation per ARIA APG.  Activates
+    // the focused tab on move (automatic activation) — panel swap is
+    // just a `hidden` toggle, so no perf reason to use manual.
+    lnk.addEventListener("keydown", _onTabKeydown);
   }
   window.addEventListener("hashchange", () => {
     const view = (location.hash || "#now").replace(/^#/, "");
@@ -2602,20 +2689,58 @@ function _initViewRouter() {
   _viewInitialised = true;
 }
 
+function _onTabKeydown(e) {
+  const order = _VIEW_NAMES.filter(n => _viewLinks.has(n));
+  const cur = e.currentTarget.dataset.view;
+  let idx = order.indexOf(cur);
+  let nextName = null;
+  switch (e.key) {
+    case "ArrowRight":
+    case "ArrowDown":
+      nextName = order[(idx + 1) % order.length];
+      break;
+    case "ArrowLeft":
+    case "ArrowUp":
+      nextName = order[(idx - 1 + order.length) % order.length];
+      break;
+    case "Home":
+      nextName = order[0];
+      break;
+    case "End":
+      nextName = order[order.length - 1];
+      break;
+    default:
+      return;
+  }
+  e.preventDefault();
+  if (location.hash !== "#" + nextName) location.hash = nextName;
+  else _applyView(nextName, /*userInitiated=*/true);
+  const nextTab = _viewLinks.get(nextName);
+  if (nextTab) nextTab.focus();
+}
+
 function _applyView(name, userInitiated) {
   for (const [k, sec] of _viewSections) {
     if (k === name) sec.removeAttribute("hidden");
     else sec.setAttribute("hidden", "");
   }
   for (const [k, lnk] of _viewLinks) {
-    if (k === name) lnk.setAttribute("aria-current", "true");
-    else lnk.removeAttribute("aria-current");
+    const selected = k === name;
+    lnk.setAttribute("aria-selected", selected ? "true" : "false");
+    // Roving tabindex — only the active tab is in the document tab
+    // order; the others are reachable via arrow keys.
+    lnk.tabIndex = selected ? 0 : -1;
   }
   // SR re-announce: focus the heading of the freshly-revealed section
-  // so AT users hear "Now Playing, heading level 2" on every switch.
+  // so AT users hear "Now Playing, heading level 2" on every switch
+  // initiated by activation (click / Enter).  Arrow-key navigation
+  // moves focus to the new tab itself instead — handled by the caller.
   if (userInitiated) {
     const sec = _viewSections.get(name);
-    if (sec) {
+    const tab = _viewLinks.get(name);
+    // If a tab is currently focused (arrow-key nav), don't steal focus
+    // away to the heading — that would defeat roving tabindex.
+    if (sec && document.activeElement !== tab) {
       const heading = sec.querySelector("h2");
       if (heading) {
         heading.setAttribute("tabindex", "-1");

@@ -261,11 +261,36 @@ class PlayerBridge:
         pos = self.player._playback_pos[0]
         sr = self.player._current_sr
 
+        import contextlib
+
         from autodj.dj_meta import camelot_label
+
+        # Pull the DJ-meta sidecar (if any) so we can surface the
+        # outgoing track's outro length to the browser — the per-effect
+        # transition-length scaler in app.js uses it to size effects to
+        # the song's actual outro instead of a fixed crossfade window.
+        with contextlib.suppress(Exception):  # cache is best-effort
+            self.player._ensure_dj_cache()
+        dj_cache = getattr(self.player, "_dj_cache", None)
+
+        def _outro_len(entry: IndexEntry | None) -> float | None:
+            if entry is None or dj_cache is None or not entry.length:
+                return None
+            try:
+                meta = dj_cache.get(entry.path)
+            except Exception:
+                return None
+            if not getattr(meta, "analysed", False):
+                return None
+            outro_start = float(getattr(meta, "outro_start_s", 0.0) or 0.0)
+            if outro_start <= 0:
+                return None
+            return max(0.0, float(entry.length) - outro_start)
 
         def _track_dict(entry: IndexEntry | None) -> dict | None:
             if entry is None:
                 return None
+            outro_len = _outro_len(entry)
             return {
                 "title": entry.title,
                 "artist": entry.artist,
@@ -278,6 +303,7 @@ class PlayerBridge:
                 "mode": entry.mode,
                 "camelot": camelot_label(entry.key, entry.mode),
                 "energy": round(entry.energy, 3) if entry.energy else 0.0,
+                "outro_len": round(outro_len, 2) if outro_len is not None else None,
             }
 
         elapsed = round(pos / max(1, sr), 1)
