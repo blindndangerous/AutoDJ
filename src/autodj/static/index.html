@@ -25,26 +25,29 @@
   <span id="conn-status" role="status" aria-live="polite">Connecting…</span>
 </header>
 
-<!-- Section nav.  In-page section switcher (kept as a single SPA so the
-     audio decks + crossfade state survive every navigation).  JS toggles
-     the `hidden` attribute on each <section data-view="..."> below to
-     show only the active one.  `aria-current="true"` marks the active
-     link; `hashchange` keeps browser back/forward in sync. -->
-<nav aria-label="Sections" id="view-nav">
-  <ul role="list">
-    <li><a href="#now"      data-view="now"      aria-current="true">Now Playing</a></li>
-    <li><a href="#queue"    data-view="queue">Queue &amp; Search</a></li>
-    <li><a href="#settings" data-view="settings">Settings</a></li>
-    <li><a href="#library"  data-view="library">Library tools</a></li>
-  </ul>
-</nav>
+<!-- Section switcher.  Implemented as an ARIA tablist rather than
+     anchor links because the audio decks + crossfade state must survive
+     every section change — sections swap in place, no document
+     navigation.  Anchor links produced "same-page link" announcements
+     in NVDA, which misled users into thinking nothing would happen.
+     Tabs are announced as "tab" with selected state and arrow-key
+     navigation per APG.  `hashchange` is still honoured so browser
+     back/forward + deep links keep working. -->
+<div class="tablist-wrap" id="view-nav">
+  <div role="tablist" aria-label="Sections" aria-orientation="horizontal">
+    <button type="button" role="tab" id="tab-now"      data-view="now"      aria-controls="panel-now"      aria-selected="true"  tabindex="0">Now Playing</button>
+    <button type="button" role="tab" id="tab-queue"    data-view="queue"    aria-controls="panel-queue"    aria-selected="false" tabindex="-1">Queue &amp; Search</button>
+    <button type="button" role="tab" id="tab-settings" data-view="settings" aria-controls="panel-settings" aria-selected="false" tabindex="-1">Settings</button>
+    <button type="button" role="tab" id="tab-library"  data-view="library"  aria-controls="panel-library"  aria-selected="false" tabindex="-1">Library tools</button>
+  </div>
+</div>
 
 <main id="main-content" role="main" tabindex="-1">
 
   <!-- ============================================================
        View: Now Playing — playback transport + EQ + lyrics + why
        ============================================================ -->
-  <section data-view="now" aria-labelledby="now-playing-heading">
+  <section data-view="now" id="panel-now" role="tabpanel" aria-labelledby="now-playing-heading">
 
   <!-- Now Playing -->
   <details class="card" open aria-labelledby="now-playing-heading">
@@ -183,7 +186,7 @@
   <!-- ============================================================
        View: Settings — every CLI flag mirrored as a form control
        ============================================================ -->
-  <section data-view="settings" hidden aria-labelledby="settings-heading">
+  <section data-view="settings" id="panel-settings" role="tabpanel" hidden aria-labelledby="settings-heading">
 
   <!-- Settings — full mirror of CLI flags -->
   <details class="card" open aria-labelledby="settings-heading">
@@ -457,7 +460,7 @@
        View: Queue & Search — find tracks, manage the up-next queue,
        review what's already played
        ============================================================ -->
-  <section data-view="queue" hidden aria-labelledby="queue-heading">
+  <section data-view="queue" id="panel-queue" role="tabpanel" hidden aria-labelledby="queue-heading">
 
   <!-- Queue -->
   <details class="card" open aria-labelledby="queue-heading">
@@ -513,7 +516,7 @@
        View: Library tools — index / enrich / prune / stats from
        the web UI.  Empty placeholder until the parity work lands.
        ============================================================ -->
-  <section data-view="library" hidden aria-labelledby="library-heading">
+  <section data-view="library" id="panel-library" role="tabpanel" hidden aria-labelledby="library-heading">
     <details class="card" open aria-labelledby="library-heading">
       <summary><h2 id="library-heading">Library tools</h2></summary>
 

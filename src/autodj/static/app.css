@@ -572,33 +572,35 @@
     }
 
     /* ----------------------------------------------------------------
-       Section nav — single-page view switcher
+       Section switcher — ARIA tablist (replaces the old anchor nav)
        ---------------------------------------------------------------- */
     #view-nav {
       background: var(--bg-card);
       border-bottom: 1px solid var(--border);
       padding: 0.25rem 1rem;
     }
-    #view-nav ul {
-      list-style: none;
+    #view-nav [role="tablist"] {
       display: flex;
       flex-wrap: wrap;
       gap: 0.25rem;
     }
-    #view-nav a {
+    #view-nav [role="tab"] {
       display: inline-block;
       padding: 0.5rem 0.9rem;
       color: var(--text);
-      text-decoration: none;
+      background: transparent;
+      border: 1px solid transparent;
       border-radius: var(--radius);
+      font: inherit;
       font-weight: 500;
+      cursor: pointer;
     }
-    #view-nav a:hover,
-    #view-nav a:focus-visible {
+    #view-nav [role="tab"]:hover,
+    #view-nav [role="tab"]:focus-visible {
       background: var(--btn-bg);
       color: var(--btn-text);
     }
-    #view-nav a[aria-current="true"] {
+    #view-nav [role="tab"][aria-selected="true"] {
       background: var(--accent);
       color: #000;
     }
@@ -609,5 +611,5 @@
 
     @media (max-width: 720px) {
       #view-nav { padding: 0.25rem 0.5rem; }
-      #view-nav a { padding: 0.6rem 0.8rem; }
+      #view-nav [role="tab"] { padding: 0.6rem 0.8rem; }
     }
