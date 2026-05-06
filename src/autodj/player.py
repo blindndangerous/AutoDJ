@@ -859,6 +859,12 @@ class Player:
         if not self._dry_run and not self._no_keyboard:
             self._setup_keyboard()
 
+        # External-cue importer (Mixxx / Rekordbox / Traktor).  Runs
+        # synchronously on this thread so the FastAPI event loop in
+        # serve mode is never blocked by SQLite / XML I/O.
+        self._ensure_dj_cache()
+        self._ensure_external_cues()
+
         # --- M3U / history: write seed track ---
         if self._export_m3u:
             _write_m3u_header(self._export_m3u)
@@ -1201,11 +1207,10 @@ class Player:
     def _ensure_dj_cache(self) -> None:
         """Lazy-init the DJ-meta cache on first real use.
 
-        Also runs the one-shot external-cue importer (Mixxx, Rekordbox,
-        Traktor) when ``[playback] import_external_cues`` is enabled.
-        Imported cues merge into each cached DjMeta lazily — only when
-        a track is actually analysed for intro/outro detection — so the
-        importer cost is paid once and only for tracks the user plays.
+        Cheap by design: a single sidecar JSON read.  Safe to call from
+        an asyncio handler (e.g. ``PlayerBridge.get_state``) without
+        blocking the event loop.  External cue import is deliberately
+        NOT done here -- see :meth:`_ensure_external_cues`.
         """
         if self._dj_cache_initialised:
             return
@@ -1219,27 +1224,37 @@ class Player:
             logger.debug("DJ cache unavailable: %s", exc)
             self._dj_cache = None
 
-        # External cue import (Mixxx / Rekordbox / Traktor).  Cheap to
-        # discover (small set of stat() calls); reading actual cues only
-        # happens when a matching file is found.  Cached on the player
-        # instance so the importer runs once per `serve` / `play` boot.
-        self._external_cues: dict[str, list[Any]] = {}
-        if getattr(self._cfg.playback, "import_external_cues", True):
-            try:
-                from autodj.dj_cues_import import auto_import_cues
+    def _ensure_external_cues(self) -> None:
+        """One-shot import of cues from Mixxx / Rekordbox / Traktor.
 
-                self._external_cues = auto_import_cues(
-                    library_root=self._cfg.library.music_dir
-                    if isinstance(self._cfg.library.music_dir, Path)
-                    else None,
+        Runs synchronously on the *player thread* (called from
+        :meth:`run`) so the asyncio event loop in the FastAPI server is
+        never blocked by SQLite reads or XML parses.  Imported cues
+        merge into each cached :class:`~autodj.dj_meta.DjMeta` lazily
+        when a track is first analysed -- so we pay the importer cost
+        exactly once per ``serve`` / ``play`` boot.
+        """
+        if getattr(self, "_external_cues_loaded", False):
+            return
+        self._external_cues_loaded = True
+        self._external_cues: dict[str, list[Any]] = {}
+        if not getattr(self._cfg.playback, "import_external_cues", True):
+            return
+        try:
+            from autodj.dj_cues_import import auto_import_cues
+
+            self._external_cues = auto_import_cues(
+                library_root=self._cfg.library.music_dir
+                if isinstance(self._cfg.library.music_dir, Path)
+                else None,
+            )
+            if self._external_cues:
+                logger.info(
+                    "Imported cues for %d tracks from external DJ software",
+                    len(self._external_cues),
                 )
-                if self._external_cues:
-                    logger.info(
-                        "Imported cues for %d tracks from external DJ software",
-                        len(self._external_cues),
-                    )
-            except (OSError, ValueError, ImportError) as exc:
-                logger.debug("External cue import failed: %s", exc)
+        except (OSError, ValueError, ImportError) as exc:
+            logger.debug("External cue import failed: %s", exc)
 
     def _outgoing_meta(self, audio_a: np.ndarray, sr_a: int, path: str) -> DjMeta | None:
         """Get / compute DjMeta for the outgoing track when needed for alignment.

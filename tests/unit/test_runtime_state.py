@@ -97,6 +97,49 @@ class TestLoadInto:
         assert p._smart_shuffle is True
         assert p._cfg.replaygain.enabled is True
 
+    def test_loads_daypart_arc_import_cues(self, tmp_path) -> None:
+        """Regression: 0.14.0 added enable_daypart / enable_mood_arc /
+        mood_arc_hours / import_external_cues to PlaybackConfig.  Without
+        their entries in load_into_player, web-UI toggles silently
+        revert on serve restart even though save_from_player writes them.
+        """
+        (tmp_path / "web_state.json").write_text(
+            json.dumps(
+                {
+                    "playback": {
+                        "enable_daypart": True,
+                        "enable_mood_arc": True,
+                        "mood_arc_hours": 2.5,
+                        "import_external_cues": False,
+                        "pure_shuffle": True,
+                        "anchor_to_seed": True,
+                        "show_lyrics": False,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        p = _make_player()
+        # Pre-existing fields that the loader now also honours.
+        p._pure_shuffle = False
+        p._anchor_to_seed = False
+        p._cfg.playback.show_lyrics = True
+        p._cfg.playback.enable_daypart = False
+        p._cfg.playback.enable_mood_arc = False
+        p._cfg.playback.mood_arc_hours = 3.0
+        p._cfg.playback.import_external_cues = True
+        load_into_player(p, tmp_path)
+        assert p._cfg.playback.enable_daypart is True
+        assert p._cfg.playback.enable_mood_arc is True
+        assert p._cfg.playback.mood_arc_hours == 2.5
+        assert p._cfg.playback.import_external_cues is False
+        assert p._pure_shuffle is True
+        assert p._anchor_to_seed is True
+        assert p._cfg.playback.show_lyrics is False
+        # Mood arc was anchored to "now" by the loader so the user
+        # always begins with warmup -- not mid-arc.
+        assert p._mood_arc is not None
+
     def test_loads_bpm_range(self, tmp_path) -> None:
         (tmp_path / "web_state.json").write_text(
             json.dumps({"bpm_range": {"lo": 90, "hi": 140}}),

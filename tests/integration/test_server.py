@@ -1351,6 +1351,43 @@ class TestMisc:
         bridge.set_playback_settings(import_external_cues=False)
         assert bridge.player._cfg.playback.import_external_cues is False
 
+    def test_advance_now_recovers_when_next_pick_fails(self, bridge) -> None:
+        """If refreshing next_track raises (empty index, FAISS error),
+        advance_now logs and clears next_track but keeps current_track
+        usable so the browser can keep playing.
+        """
+        bridge.player._dry_run = True
+        bridge.player._export_m3u = None
+        bridge.player._history_file = None
+
+        # First pick succeeds (there's a next_track precomputed).  Second
+        # call (refreshing next) blows up.
+        bridge.player._pick_next.side_effect = RuntimeError("FAISS empty")
+
+        prev_next = bridge.player._state.next_track
+        bridge.advance_now()
+
+        assert bridge.player._state.current_track is prev_next
+        # next_track wiped but current is intact.
+        assert bridge.player._state.next_track is None
+
+    def test_advance_now_no_op_when_initial_pick_fails(self, bridge) -> None:
+        """If _pick_next(cur) itself fails (e.g. index pruned to empty
+        between calls), advance_now leaves state untouched.
+        """
+        bridge.player._dry_run = True
+        bridge.player._export_m3u = None
+        bridge.player._history_file = None
+        # No queued_next, no queue, no next_track -> falls back to picker.
+        bridge.player._state.queued_next = None
+        bridge.player._state.next_track = None
+        bridge.player._pick_next.side_effect = RuntimeError("index empty")
+
+        before_cur = bridge.player._state.current_track
+        bridge.advance_now()
+        # Current unchanged, no record_played call, no track_number bump.
+        assert bridge.player._state.current_track is before_cur
+
     def test_advance_now_writes_m3u_and_history(self, bridge, tmp_path) -> None:
         """Side-effect parity with the Live audio loop -- per-track
         append to the M3U export and the history file.

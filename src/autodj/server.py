@@ -249,15 +249,25 @@ class PlayerBridge:
         elif state.next_track is not None:
             nxt = state.next_track
         elif cur is not None:
-            nxt = p._pick_next(cur)
+            try:
+                nxt = p._pick_next(cur)
+            except Exception:
+                # Picker failed (empty index after prune, FAISS error, ...).
+                # Leave state untouched so the browser keeps playing the
+                # current track and the user can retry.
+                logger.debug("advance_now: _pick_next(cur) failed", exc_info=True)
+                return
         else:
             return
 
         state.current_track = nxt
-        # Refresh next_track for the browser's prefetcher.
+        # Refresh next_track for the browser's prefetcher.  Failure here
+        # leaves current_track set but next_track empty -- browser will
+        # show "no upcoming track" and the user can advance again.
         try:
             state.next_track = p._pick_next(nxt)
-        except Exception:  # pragma: no cover — defensive
+        except Exception:
+            logger.debug("advance_now: next-track refresh failed", exc_info=True)
             state.next_track = None
         state.record_played(nxt)
         state.track_number += 1
@@ -373,7 +383,14 @@ class PlayerBridge:
             return (intro_end, outro_start_raw, outro_len)
 
         def _cues(entry: IndexEntry | None) -> list[dict]:
-            """Cue list for the entry, or empty when uncached / unanalysed."""
+            """Cue list for the entry, or empty when uncached / unanalysed.
+
+            Phrase cues are subsampled to at most one every 64 beats so
+            the WebSocket payload doesn't balloon for long DJ-software-
+            imported tracks.  All non-phrase markers (drop, breakdown,
+            first/outro_downbeat, user) survive intact -- they're the
+            ones the cue strip + screen-reader summary care about.
+            """
             if entry is None or dj_cache is None:
                 return []
             try:
@@ -382,6 +399,17 @@ class PlayerBridge:
                 return []
             if not getattr(meta, "analysed", False):
                 return []
+
+            cues_raw = list(getattr(meta, "cues", []))
+            kept_phrase: list = []
+            other: list = []
+            for c in cues_raw:
+                (kept_phrase if c.type == "phrase" else other).append(c)
+            # Keep every other phrase marker -- 32-beat phrases become
+            # ~64-beat (every other phrase boundary).  Keeps the strip
+            # legible and halves the WS bytes for typical tracks.
+            kept_phrase = kept_phrase[::2]
+            shaped = sorted(kept_phrase + other, key=lambda c: c.time_s)
             return [
                 {
                     "time_s": round(c.time_s, 2),
@@ -390,7 +418,7 @@ class PlayerBridge:
                     "source": c.source,
                     "color": c.color,
                 }
-                for c in getattr(meta, "cues", [])
+                for c in shaped
             ]
 
         def _track_dict(entry: IndexEntry | None) -> dict | None:

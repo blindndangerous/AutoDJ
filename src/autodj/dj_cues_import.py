@@ -130,9 +130,7 @@ def import_from_mixxx(db_path: Path) -> dict[str, list[Cue]]:
         with contextlib.suppress(sqlite3.Error):
             con.close()
 
-    for path in out:
-        out[path].sort(key=lambda c: c.time_s)
-    return out
+    return _normalise_keys(out)
 
 
 # ---------------------------------------------------------------------------
@@ -211,9 +209,7 @@ def import_from_rekordbox_xml(xml_path: Path) -> dict[str, list[Cue]]:
                 ),
             )
 
-    for path in out:
-        out[path].sort(key=lambda c: c.time_s)
-    return out
+    return _normalise_keys(out)
 
 
 # ---------------------------------------------------------------------------
@@ -291,9 +287,7 @@ def import_from_traktor_nml(nml_path: Path) -> dict[str, list[Cue]]:
                 ),
             )
 
-    for path in out:
-        out[path].sort(key=lambda c: c.time_s)
-    return out
+    return _normalise_keys(out)
 
 
 # ---------------------------------------------------------------------------
@@ -402,6 +396,34 @@ def _default_search_paths(home: Path) -> list[Path]:
                 if nml.exists():
                     out.append(nml)
 
+    return out
+
+
+def _normalise_keys(by_path: dict[str, list[Cue]]) -> dict[str, list[Cue]]:
+    """Normalise importer output keys to match index path strings.
+
+    The FAISS index stores ``str(Path(absolute_path))`` -- native OS
+    separators (``\\`` on Windows, ``/`` on POSIX) -- whereas the DJ-
+    software importers emit forward-slashed paths regardless of host.
+    Without this normalisation, ``_merge_external_cues_into`` looks up
+    ``next_entry.path`` (e.g. ``C:\\music\\track.mp3``) but the dict
+    keys are ``C:/music/track.mp3`` and the lookup silently misses.
+
+    Sorts each cue list in place so the merge step gets monotonically
+    increasing time_s values (handy for debugging and bisection).
+    """
+    out: dict[str, list[Cue]] = {}
+    for raw, cues in by_path.items():
+        if not raw:
+            continue
+        try:
+            key = str(Path(raw))
+        except (OSError, ValueError):
+            key = raw
+        cues.sort(key=lambda c: c.time_s)
+        # Two importer entries pointing at the same normalised path
+        # (e.g. mixed case on Windows) get their cue lists concatenated.
+        out.setdefault(key, []).extend(cues)
     return out
 
 

@@ -281,8 +281,11 @@ class TestMixxxImporter:
         db = tmp_path / "mixxx.db"
         _build_mixxx_db(db)
         result = import_from_mixxx(db)
-        assert "/music/song.mp3" in result
-        cues = result["/music/song.mp3"]
+        # Keys are normalised via str(Path(...)) so they match the FAISS
+        # index's native-separator strings -- look up the same way.
+        key = str(Path("/music/song.mp3"))
+        assert key in result
+        cues = result[key]
         assert len(cues) == 2
         # Hot cue at 10 s
         hot = next(c for c in cues if c.label == "Hot 1")
@@ -302,7 +305,8 @@ class TestMixxxImporter:
         con.commit()
         con.close()
         result = import_from_mixxx(db)
-        types_seen = {c.type for c in result["/music/song.mp3"]}
+        key = str(Path("/music/song.mp3"))
+        types_seen = {c.type for c in result[key]}
         # type=0 is silently skipped (mapped to None in type_map)
         assert "user" in types_seen or "outro_downbeat" in types_seen
 
@@ -455,6 +459,63 @@ class TestAutoImportCues:
         result = auto_import_cues(library_root=None, extra_paths=[nml])
         all_sources = {c.source for cues in result.values() for c in cues}
         assert "traktor" in all_sources
+
+
+class TestNormaliseKeys:
+    """Internal helper covered indirectly by the importers."""
+
+    def test_empty_key_dropped(self) -> None:
+        from autodj.dj_cues_import import _normalise_keys
+
+        result = _normalise_keys({"": [Cue(time_s=1.0)], "real.mp3": [Cue(time_s=2.0)]})
+        # Empty key skipped; real one preserved.
+        assert "" not in result
+        assert any("real.mp3" in k for k in result)
+
+    def test_duplicate_normalised_keys_concatenate(self) -> None:
+        from autodj.dj_cues_import import _normalise_keys
+
+        # Two raw keys that normalise to the same Path str on this OS.
+        a, b = "/x/track.mp3", "/x/track.mp3"
+        result = _normalise_keys(
+            {a: [Cue(time_s=1.0)], b + "/": [Cue(time_s=2.0)]},
+        )
+        # Whether they collapse depends on the host (trailing slashes
+        # are kept on POSIX, stripped on some Pathlib paths) -- this test
+        # just ensures no key is lost.
+        total = sum(len(v) for v in result.values())
+        assert total == 2
+
+
+class TestKeyNormalisation:
+    """Regression: importer keys must match the FAISS index path style.
+
+    Index entries store ``str(Path(absolute_path))`` -- native separators.
+    Importers emit forward slashes regardless of host.  Without
+    normalisation, the path matching in ``_merge_external_cues_into``
+    silently misses on Windows.
+    """
+
+    def test_rekordbox_keys_match_native_path_style(self, tmp_path: Path) -> None:
+        xml = tmp_path / "Library.xml"
+        _build_rekordbox_xml(xml)
+        result = import_from_rekordbox_xml(xml)
+        for key in result:
+            assert key == str(Path(key))
+
+    def test_traktor_keys_match_native_path_style(self, tmp_path: Path) -> None:
+        nml = tmp_path / "collection.nml"
+        _build_traktor_nml(nml)
+        result = import_from_traktor_nml(nml)
+        for key in result:
+            assert key == str(Path(key))
+
+    def test_mixxx_keys_match_native_path_style(self, tmp_path: Path) -> None:
+        db = tmp_path / "mixxx.db"
+        _build_mixxx_db(db)
+        result = import_from_mixxx(db)
+        for key in result:
+            assert key == str(Path(key))
 
 
 class TestFileUrlToPath:

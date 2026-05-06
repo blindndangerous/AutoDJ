@@ -100,3 +100,34 @@ class TestMakeDefaultArc:
         arc = make_default_arc(duration_hours=0.0)
         # Floor of 0.25 h prevents divide-by-zero in the picker.
         assert arc.duration_s == pytest.approx(0.25 * 3600.0)
+
+
+class TestInterpolationEdges:
+    def test_zero_span_anchors_return_lo(self) -> None:
+        # Two anchors at the same progress -- span = 0 forces the early
+        # return at line 115 (lo.bpm_frac, lo.energy_frac).
+        arc = MoodArc(start_time_s=0.0, duration_s=100.0)
+        anchors = (
+            ArcAnchor(progress=0.0, bpm_frac=0.0, energy_frac=0.0),
+            ArcAnchor(progress=0.5, bpm_frac=0.4, energy_frac=0.4),
+            ArcAnchor(progress=0.5, bpm_frac=0.6, energy_frac=0.6),
+            ArcAnchor(progress=1.0, bpm_frac=1.0, energy_frac=1.0),
+        )
+        target = current_arc_target(arc, now_s=50.0, anchors=anchors)
+        # Interpolation between (0.0, 0.5) bracket triggers the span=0
+        # branch when progress lands exactly on 0.5, falling back to
+        # the *first* matching anchor's frac.
+        assert target.target_bpm >= arc.low_bpm
+        assert target.target_bpm <= arc.high_bpm
+
+    def test_progress_beyond_last_anchor_clamps_to_close(self) -> None:
+        # Anchors that don't reach progress=1.0; force the fall-through.
+        arc = MoodArc(start_time_s=0.0, duration_s=100.0)
+        anchors = (
+            ArcAnchor(progress=0.0, bpm_frac=0.0, energy_frac=0.0),
+            ArcAnchor(progress=0.4, bpm_frac=0.5, energy_frac=0.5),
+        )
+        # progress = 0.99 -> not bracketed by any anchor pair -> uses
+        # last anchor (line 122-123 path).
+        target = current_arc_target(arc, now_s=99.0, anchors=anchors)
+        assert target.target_bpm == pytest.approx(arc.low_bpm + 0.5 * (arc.high_bpm - arc.low_bpm))
