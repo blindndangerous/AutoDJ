@@ -580,6 +580,40 @@ def cmd_enrich(ctx: click.Context, index_name: str | None) -> None:
     ),
 )
 @click.option(
+    "--daypart/--no-daypart",
+    "enable_daypart",
+    default=None,
+    help=(
+        "Pick BPM/energy targets from the current local time of day "
+        "(morning/midday/afternoon/evening/night).  Only active when no "
+        "explicit --preset and no --mood-arc are set."
+    ),
+)
+@click.option(
+    "--mood-arc/--no-mood-arc",
+    "enable_mood_arc",
+    default=None,
+    help=(
+        "Set-relative warmup -> peak -> cool envelope.  Anchored to the "
+        "current time; loops every --mood-arc-hours."
+    ),
+)
+@click.option(
+    "--mood-arc-hours",
+    type=float,
+    default=None,
+    help="Length of the mood-arc envelope in hours.  Default 3.",
+)
+@click.option(
+    "--import-external-cues/--no-import-external-cues",
+    "import_external_cues",
+    default=None,
+    help=(
+        "Auto-import cue points from Mixxx / Rekordbox / Traktor "
+        "libraries on first cache load.  Default: on."
+    ),
+)
+@click.option(
     "--harmonic/--no-harmonic",
     "harmonic_mixing",
     default=None,
@@ -694,6 +728,10 @@ def cmd_play(
     pure_shuffle: bool,
     anchor_to_seed: bool | None,
     show_lyrics: bool | None,
+    enable_daypart: bool | None,
+    enable_mood_arc: bool | None,
+    mood_arc_hours: float | None,
+    import_external_cues: bool | None,
     harmonic_mixing: bool | None,
     beatmatch: bool | None,
     phrase_align: bool | None,
@@ -760,6 +798,14 @@ def cmd_play(
         cfg.djmix.outro_intro_align = outro_intro_align
     if filter_sweep is not None:
         cfg.djmix.filter_sweep = filter_sweep
+    if enable_daypart is not None:
+        cfg.playback.enable_daypart = enable_daypart
+    if enable_mood_arc is not None:
+        cfg.playback.enable_mood_arc = enable_mood_arc
+    if mood_arc_hours is not None:
+        cfg.playback.mood_arc_hours = max(0.25, float(mood_arc_hours))
+    if import_external_cues is not None:
+        cfg.playback.import_external_cues = import_external_cues
     if transition_fx is not None:
         cfg.transitions.effect = transition_fx
     if transition_mode is not None:
@@ -930,6 +976,30 @@ def cmd_play(
     help="Pick the most sonically DISTANT next track instead of the closest.",
 )
 @click.option(
+    "--daypart/--no-daypart",
+    "enable_daypart",
+    default=None,
+    help="Pick BPM/energy targets from local time of day.",
+)
+@click.option(
+    "--mood-arc/--no-mood-arc",
+    "enable_mood_arc",
+    default=None,
+    help="Set-relative warmup -> peak -> cool envelope.",
+)
+@click.option(
+    "--mood-arc-hours",
+    type=float,
+    default=None,
+    help="Length of the mood-arc envelope in hours.  Default 3.",
+)
+@click.option(
+    "--import-external-cues/--no-import-external-cues",
+    "import_external_cues",
+    default=None,
+    help="Auto-import cues from Mixxx / Rekordbox / Traktor libraries.",
+)
+@click.option(
     "--harmonic/--no-harmonic",
     "harmonic_mixing",
     default=None,
@@ -1094,6 +1164,10 @@ def cmd_serve(
     pure_shuffle: bool,
     anchor_to_seed: bool | None,
     show_lyrics: bool | None,
+    enable_daypart: bool | None,
+    enable_mood_arc: bool | None,
+    mood_arc_hours: float | None,
+    import_external_cues: bool | None,
     harmonic_mixing: bool | None,
     beatmatch: bool | None,
     phrase_align: bool | None,
@@ -1182,6 +1256,14 @@ def cmd_serve(
         cfg.djmix.outro_intro_align = outro_intro_align
     if filter_sweep is not None:
         cfg.djmix.filter_sweep = filter_sweep
+    if enable_daypart is not None:
+        cfg.playback.enable_daypart = enable_daypart
+    if enable_mood_arc is not None:
+        cfg.playback.enable_mood_arc = enable_mood_arc
+    if mood_arc_hours is not None:
+        cfg.playback.mood_arc_hours = max(0.25, float(mood_arc_hours))
+    if import_external_cues is not None:
+        cfg.playback.import_external_cues = import_external_cues
     if transition_fx is not None:
         cfg.transitions.effect = transition_fx
     if transition_mode is not None:

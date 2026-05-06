@@ -150,6 +150,10 @@ class PlaybackSettingsBody(BaseModel):
     replaygain_enabled: bool | None = None
     transition_mode: str | None = None
     show_lyrics: bool | None = None
+    enable_daypart: bool | None = None
+    enable_mood_arc: bool | None = None
+    mood_arc_hours: float | None = None
+    import_external_cues: bool | None = None
 
 
 class BpmRangeBody(BaseModel):
@@ -203,8 +207,93 @@ class PlayerBridge:
     # ------------------------------------------------------------------
 
     def skip(self) -> None:
-        """Skip the current track immediately."""
-        self.player._skip_event.set()
+        """Skip the current track immediately.
+
+        In headless / browser-driven mode (``player._dry_run``) the
+        bridge mutates state synchronously via :meth:`advance_now` so
+        callers (REST endpoints, WS clients) can read the new state
+        on the same request.  In server-audio mode the audio loop owns
+        track sequencing, so we just signal it.
+        """
+        if getattr(self.player, "_dry_run", False):
+            self.advance_now()
+        else:
+            self.player._skip_event.set()
+
+    def advance_now(self) -> None:
+        """Synchronous track advance for headless / browser-driven mode.
+
+        Browser owns the audio clock; when its ``<audio>.ended`` fires
+        (or the user hits Skip / Now / Random) it POSTs to the server
+        which calls this method.  We honour any queued pick, fall back
+        to the precomputed ``next_track``, then refresh ``next_track``
+        with a fresh similarity match so the browser has something to
+        prefetch immediately.
+
+        The ``Player`` thread parked in ``_run_headless`` is *not*
+        consulted — its sole job is to hold the seed and keep the
+        process alive.  This keeps the web player and the (potential)
+        CLI player fully decoupled.
+        """
+        p = self.player
+        state = p._state
+        cur = state.current_track
+
+        if state.queued_next is not None:
+            nxt = state.queued_next
+            state.queued_next = None
+            p._last_pick_mode = "queue"
+        elif state.queue:
+            nxt = state.queue.pop(0)
+            p._last_pick_mode = "queue"
+        elif state.next_track is not None:
+            nxt = state.next_track
+        elif cur is not None:
+            try:
+                nxt = p._pick_next(cur)
+            except Exception:
+                # Picker failed (empty index after prune, FAISS error, ...).
+                # Leave state untouched so the browser keeps playing the
+                # current track and the user can retry.
+                logger.debug("advance_now: _pick_next(cur) failed", exc_info=True)
+                return
+        else:
+            return
+
+        state.current_track = nxt
+        # Refresh next_track for the browser's prefetcher.  Failure here
+        # leaves current_track set but next_track empty -- browser will
+        # show "no upcoming track" and the user can advance again.
+        try:
+            state.next_track = p._pick_next(nxt)
+        except Exception:
+            logger.debug("advance_now: next-track refresh failed", exc_info=True)
+            state.next_track = None
+        state.record_played(nxt)
+        state.track_number += 1
+        p._previous_track = cur
+
+        # Update timer hint (browser drives the real clock; this just
+        # keeps get_state's `duration` field correct on first WS push).
+        from autodj.player import _DEFAULT_SR  # local import — avoid cycles
+
+        p._current_sr = _DEFAULT_SR
+        p._playback_len = int(
+            (nxt.length if nxt.length and nxt.length > 0 else 5.0) * _DEFAULT_SR,
+        )
+        p._playback_pos[0] = 0
+
+        # M3U / history side effects (mirror the Live-loop behaviour).
+        if p._export_m3u:
+            from autodj.player import _append_m3u_entry
+
+            _append_m3u_entry(p._export_m3u, nxt)
+        if p._history_file:
+            from datetime import datetime as _dt
+
+            from autodj.player import _append_history_entry
+
+            _append_history_entry(p._history_file, nxt, _dt.now())
 
     def pause(self) -> bool:
         """Toggle pause/resume.
@@ -293,6 +382,45 @@ class PlayerBridge:
             outro_len = max(0.0, float(entry.length) - outro_start_raw)
             return (intro_end, outro_start_raw, outro_len)
 
+        def _cues(entry: IndexEntry | None) -> list[dict]:
+            """Cue list for the entry, or empty when uncached / unanalysed.
+
+            Phrase cues are subsampled to at most one every 64 beats so
+            the WebSocket payload doesn't balloon for long DJ-software-
+            imported tracks.  All non-phrase markers (drop, breakdown,
+            first/outro_downbeat, user) survive intact -- they're the
+            ones the cue strip + screen-reader summary care about.
+            """
+            if entry is None or dj_cache is None:
+                return []
+            try:
+                meta = dj_cache.get(entry.path)
+            except Exception:
+                return []
+            if not getattr(meta, "analysed", False):
+                return []
+
+            cues_raw = list(getattr(meta, "cues", []))
+            kept_phrase: list = []
+            other: list = []
+            for c in cues_raw:
+                (kept_phrase if c.type == "phrase" else other).append(c)
+            # Keep every other phrase marker -- 32-beat phrases become
+            # ~64-beat (every other phrase boundary).  Keeps the strip
+            # legible and halves the WS bytes for typical tracks.
+            kept_phrase = kept_phrase[::2]
+            shaped = sorted(kept_phrase + other, key=lambda c: c.time_s)
+            return [
+                {
+                    "time_s": round(c.time_s, 2),
+                    "type": c.type,
+                    "label": c.label,
+                    "source": c.source,
+                    "color": c.color,
+                }
+                for c in shaped
+            ]
+
         def _track_dict(entry: IndexEntry | None) -> dict | None:
             if entry is None:
                 return None
@@ -312,6 +440,7 @@ class PlayerBridge:
                 "intro_end_s": round(intro_end, 2) if intro_end is not None else None,
                 "outro_start_s": round(outro_start, 2) if outro_start is not None else None,
                 "outro_len": round(outro_len, 2) if outro_len is not None else None,
+                "cues": _cues(entry),
             }
 
         elapsed = round(pos / max(1, sr), 1)
@@ -430,7 +559,7 @@ class PlayerBridge:
             return False
         self.player._state.queued_next = entry
         if now:
-            self.player._skip_event.set()
+            self.skip()
         return True
 
     # ------------------------------------------------------------------
@@ -452,7 +581,7 @@ class PlayerBridge:
             return False
         chosen = _random.choice(entries)  # nosec B311 — non-security
         self.player._state.queued_next = chosen
-        self.player._skip_event.set()
+        self.skip()
         return True
 
     def queue_add(self, path: str) -> bool:
@@ -602,6 +731,14 @@ class PlayerBridge:
                 "replaygain_enabled": cfg.replaygain.enabled,
                 "transition_mode": cfg.playback.transition_mode,
                 "show_lyrics": getattr(cfg.playback, "show_lyrics", True),
+                "enable_daypart": getattr(cfg.playback, "enable_daypart", False),
+                "enable_mood_arc": getattr(cfg.playback, "enable_mood_arc", False),
+                "mood_arc_hours": getattr(cfg.playback, "mood_arc_hours", 3.0),
+                "import_external_cues": getattr(
+                    cfg.playback,
+                    "import_external_cues",
+                    True,
+                ),
                 "prefetch_next_track": getattr(
                     cfg.playback,
                     "prefetch_next_track",
@@ -700,6 +837,10 @@ class PlayerBridge:
         replaygain_enabled: bool | None = None,
         transition_mode: str | None = None,
         show_lyrics: bool | None = None,
+        enable_daypart: bool | None = None,
+        enable_mood_arc: bool | None = None,
+        mood_arc_hours: float | None = None,
+        import_external_cues: bool | None = None,
     ) -> None:
         """Apply playback-related settings; only non-null fields take effect."""
         cfg = self.player._cfg
@@ -739,6 +880,32 @@ class PlayerBridge:
                 # naturally on the next track load when toggled back on.
                 self.player._current_lyrics = []
                 self.player._current_lyrics_plain = ""
+        if enable_daypart is not None:
+            cfg.playback.enable_daypart = bool(enable_daypart)
+        if enable_mood_arc is not None:
+            cfg.playback.enable_mood_arc = bool(enable_mood_arc)
+            # Toggling arc on (re)anchors the start time to "now" so
+            # the user always begins the envelope at warmup.
+            if enable_mood_arc:
+                from autodj.mood_arc import make_default_arc
+
+                self.player._mood_arc = make_default_arc(
+                    duration_hours=cfg.playback.mood_arc_hours,
+                )
+            else:
+                self.player._mood_arc = None
+        if mood_arc_hours is not None:
+            cfg.playback.mood_arc_hours = max(0.25, float(mood_arc_hours))
+            # Re-anchor to keep semantics consistent when the user
+            # changes duration mid-session.
+            if cfg.playback.enable_mood_arc:
+                from autodj.mood_arc import make_default_arc
+
+                self.player._mood_arc = make_default_arc(
+                    duration_hours=cfg.playback.mood_arc_hours,
+                )
+        if import_external_cues is not None:
+            cfg.playback.import_external_cues = bool(import_external_cues)
 
     def set_bpm_range(self, lo: float | None, hi: float | None) -> None:
         """Set the hard BPM filter; pass both null to clear."""
@@ -892,9 +1059,11 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
         return JSONResponse(bridge.get_state())
 
     @app.post("/api/skip")
-    async def api_skip() -> dict[str, bool]:
+    async def api_skip() -> JSONResponse:
         bridge.skip()
-        return {"ok": True}
+        # Return fresh state so the browser updates its now-playing UI
+        # without waiting up to 1 s for the next WS broadcast tick.
+        return JSONResponse(bridge.get_state())
 
     @app.post("/api/pause")
     async def api_pause() -> dict[str, bool]:
@@ -1140,15 +1309,28 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
         )
 
     @app.post("/api/advance")
-    async def api_advance() -> dict[str, bool]:
-        """Browser signals end-of-track — server picks next track."""
+    async def api_advance() -> JSONResponse:
+        """Browser signals end-of-track — server picks next track.
+
+        Returns the fresh state synchronously so the browser can update
+        ``current_track`` / ``next_track`` immediately without waiting
+        for the 1 Hz WS broadcast.  Decouples advance latency from the
+        broadcast cadence.
+        """
         bridge.skip()
-        return {"ok": True}
+        return JSONResponse(bridge.get_state())
 
     @app.post("/api/random-track")
-    async def api_random_track() -> dict[str, bool]:
-        """Reseed the auto-DJ from a fresh random track in the index."""
-        return {"ok": bridge.reseed_random()}
+    async def api_random_track() -> JSONResponse:
+        """Reseed the auto-DJ from a fresh random track in the index.
+
+        Status code distinguishes success from an empty index:
+        ``200`` when a track was picked, ``409 Conflict`` when the
+        index has nothing to reseed from.
+        """
+        if not bridge.reseed_random():
+            raise HTTPException(status_code=409, detail="Index is empty")
+        return JSONResponse(bridge.get_state())
 
     # ------------------------------------------------------------------
     # Settings (mirror of CLI flags)

@@ -728,6 +728,16 @@ class Player:
         self._eq_filters: dict[str, Any] | None = None
         # Energy ramp target for the current pick (None = disabled)
         self._target_energy: float | None = None
+        # Mood-arc state.  Lazy-init: set when the user enables the
+        # arc via config / CLI / web UI so unattended playback ramps
+        # warmup -> peak -> cool over a session-relative window.
+        self._mood_arc: Any = None
+        if getattr(cfg.playback, "enable_mood_arc", False):
+            from autodj.mood_arc import make_default_arc
+
+            self._mood_arc = make_default_arc(
+                duration_hours=getattr(cfg.playback, "mood_arc_hours", 3.0),
+            )
         # DJ meta cache — initialised lazily on first use so tests with
         # mock configs don't trip on the cache load.
         from autodj.dj_meta import DjMetaCache as _DjMetaCache
@@ -849,6 +859,12 @@ class Player:
         if not self._dry_run and not self._no_keyboard:
             self._setup_keyboard()
 
+        # External-cue importer (Mixxx / Rekordbox / Traktor).  Runs
+        # synchronously on this thread so the FastAPI event loop in
+        # serve mode is never blocked by SQLite / XML I/O.
+        self._ensure_dj_cache()
+        self._ensure_external_cues()
+
         # --- M3U / history: write seed track ---
         if self._export_m3u:
             _write_m3u_header(self._export_m3u)
@@ -928,65 +944,26 @@ class Player:
         Args:
             current: Initial seed track.
         """
-        while not self._state.should_stop:
-            self._state.current_track = current
+        # One-shot init: seed current + pre-compute next so the WS push
+        # has something to show on first connect.  After this, the
+        # browser owns every state transition: it calls /api/advance
+        # (or /api/skip) which routes through PlayerBridge.advance_now()
+        # to mutate state synchronously.  This loop never advances on
+        # its own — that was the source of the "song changed while page
+        # idle" bug.
+        self._state.current_track = current
+        if self._state.next_track is None:
+            self._state.next_track = self._pick_next(current)
+        self._current_sr = _DEFAULT_SR
+        self._playback_len = int(
+            (current.length if current.length and current.length > 0 else 5.0) * _DEFAULT_SR,
+        )
+        self._playback_pos[0] = 0
+
+        # Park until shutdown.  No fallback timer, no auto-advance.
+        while not self._state.should_stop:  # pragma: no cover
+            self._skip_event.wait(timeout=1.0)
             self._skip_event.clear()
-
-            next_entry = self._pick_next(current)
-            self._state.next_track = next_entry
-
-            # Update playback position trackers so the web UI's elapsed
-            # timer reflects something sensible (browser drives the real
-            # clock; this is just a fallback for any client that's not
-            # listening to the audio element).
-            duration = current.length if current.length and current.length > 0 else 5.0
-            self._current_sr = _DEFAULT_SR
-            self._playback_len = int(duration * _DEFAULT_SR)
-            self._playback_pos[0] = 0
-
-            # Wait for the browser to signal end-of-track via /api/advance,
-            # which calls bridge.skip() → sets self._skip_event.  Honour
-            # pause state so server-side pause is reflected.
-            # Note: we deliberately do NOT tick `_playback_pos` here.  In
-            # headless mode the browser is the real audio clock and reads
-            # audioEl.currentTime for its progress bar.  Server ticking
-            # would make the UI timer creep forward before the user has
-            # even clicked Play.
-            # Time-based wait loop — exercised by the headless integration
-            # test path but not by unit tests (would block on real sleep).
-            tick = 0.5
-            elapsed = 0.0
-            while not self._skip_event.is_set() and not self._state.should_stop:  # pragma: no cover
-                time.sleep(tick)
-                if self._state.is_paused:
-                    continue
-                elapsed += tick
-                # Soft fallback: if no advance signal arrives within
-                # 2× track length (browser disconnected, never opened),
-                # auto-advance so the queue keeps moving.
-                if elapsed > duration * 2.0:
-                    break
-
-            if self._state.should_stop:  # pragma: no cover
-                break
-
-            # Honour a queued pick that arrived during the wait — covers
-            # the "search → Now" case where the user picks a track after
-            # _pick_next has already returned a similarity match.
-            if self._state.queued_next is not None:  # pragma: no cover
-                next_entry = self._state.queued_next
-                self._state.queued_next = None
-
-            self._state.record_played(next_entry)  # pragma: no cover
-            self._state.track_number += 1  # pragma: no cover
-
-            if self._export_m3u:  # pragma: no cover
-                _append_m3u_entry(self._export_m3u, next_entry)
-            if self._history_file:  # pragma: no cover
-                _append_history_entry(self._history_file, next_entry, datetime.now())
-
-            self._previous_track = current  # pragma: no cover
-            current = next_entry  # pragma: no cover
 
     def _pick_next(self, current: IndexEntry) -> IndexEntry:
         """Select the next track by looking up the current track's stored vector.
@@ -1053,14 +1030,36 @@ class Player:
             except SimilarityError:
                 pass  # fall through to normal selection
 
-        # --- Compute BPM target from preset ---
+        # --- Compute BPM target ---
+        # Priority order:
+        #   1. Explicit user preset (set-relative ramp).
+        #   2. Mood arc (set-relative envelope, anchored to start).
+        #   3. Daypart (wall-clock, runs forever).
+        # The chosen target is fed straight into the similarity scorer
+        # alongside the existing energy/genre/key constraints.
         target_bpm: float | None = None
         bpm_weight: float = 0.2
+        target_energy = self._target_energy
+
         if self._preset is not None:
             target_bpm = self._preset.target_bpm(tn)
             bpm_weight = self._preset.bpm_weight
+        elif getattr(self._cfg.playback, "enable_mood_arc", False) and self._mood_arc:
+            from autodj.mood_arc import current_arc_target
 
-        target_energy = self._target_energy
+            target = current_arc_target(self._mood_arc)
+            target_bpm = target.target_bpm
+            bpm_weight = target.bpm_weight
+            if target_energy is None:
+                target_energy = target.target_energy
+        elif getattr(self._cfg.playback, "enable_daypart", False):
+            from autodj.daypart import current_daypart
+
+            dp = current_daypart()
+            target_bpm = dp.target_bpm
+            bpm_weight = dp.bpm_weight
+            if target_energy is None:
+                target_energy = dp.target_energy
 
         # Wider candidate pool than vanilla nearest-neighbour avoids
         # falling into a 20-track sonic island.  50 with filter / 30
@@ -1206,7 +1205,13 @@ class Player:
             )
 
     def _ensure_dj_cache(self) -> None:
-        """Lazy-init the DJ-meta cache on first real use."""
+        """Lazy-init the DJ-meta cache on first real use.
+
+        Cheap by design: a single sidecar JSON read.  Safe to call from
+        an asyncio handler (e.g. ``PlayerBridge.get_state``) without
+        blocking the event loop.  External cue import is deliberately
+        NOT done here -- see :meth:`_ensure_external_cues`.
+        """
         if self._dj_cache_initialised:
             return
         self._dj_cache_initialised = True
@@ -1218,6 +1223,38 @@ class Player:
         except (OSError, ValueError) as exc:
             logger.debug("DJ cache unavailable: %s", exc)
             self._dj_cache = None
+
+    def _ensure_external_cues(self) -> None:
+        """One-shot import of cues from Mixxx / Rekordbox / Traktor.
+
+        Runs synchronously on the *player thread* (called from
+        :meth:`run`) so the asyncio event loop in the FastAPI server is
+        never blocked by SQLite reads or XML parses.  Imported cues
+        merge into each cached :class:`~autodj.dj_meta.DjMeta` lazily
+        when a track is first analysed -- so we pay the importer cost
+        exactly once per ``serve`` / ``play`` boot.
+        """
+        if getattr(self, "_external_cues_loaded", False):
+            return
+        self._external_cues_loaded = True
+        self._external_cues: dict[str, list[Any]] = {}
+        if not getattr(self._cfg.playback, "import_external_cues", True):
+            return
+        try:
+            from autodj.dj_cues_import import auto_import_cues
+
+            self._external_cues = auto_import_cues(
+                library_root=self._cfg.library.music_dir
+                if isinstance(self._cfg.library.music_dir, Path)
+                else None,
+            )
+            if self._external_cues:
+                logger.info(
+                    "Imported cues for %d tracks from external DJ software",
+                    len(self._external_cues),
+                )
+        except (OSError, ValueError, ImportError) as exc:
+            logger.debug("External cue import failed: %s", exc)
 
     def _outgoing_meta(self, audio_a: np.ndarray, sr_a: int, path: str) -> DjMeta | None:
         """Get / compute DjMeta for the outgoing track when needed for alignment.
@@ -1237,9 +1274,25 @@ class Player:
         meta = self._dj_cache.get(path)
         if not meta.analysed:
             meta = analyse_audio(audio_a, sr_a)
+            self._merge_external_cues_into(meta, path)
             self._dj_cache.set(path, meta)
             self._dj_cache.flush(batch=10)
         return meta
+
+    def _merge_external_cues_into(self, meta: DjMeta, path: str) -> None:
+        """Merge externally-imported cues for *path* into *meta* in place.
+
+        No-op when the importer found nothing for this track.  Uses
+        :func:`autodj.dj_meta.merge_cues` so user / DJ-software cues
+        win on conflict but auto-detected cues survive when they're
+        the only source for a region of the track.
+        """
+        external = getattr(self, "_external_cues", {}).get(path)
+        if not external:
+            return
+        from autodj.dj_meta import merge_cues
+
+        meta.cues = merge_cues(meta.cues, external)
 
     def _peek_incoming_meta(self, next_entry: IndexEntry) -> DjMeta | None:
         """Cache-only DjMeta peek for the incoming track (no audio decode).
@@ -1382,6 +1435,7 @@ class Player:
         meta_b = self._dj_cache.get(next_entry.path)
         if not meta_b.analysed:
             meta_b = analyse_audio(audio_b, sr_a)
+            self._merge_external_cues_into(meta_b, next_entry.path)
             self._dj_cache.set(next_entry.path, meta_b)
             self._dj_cache.flush(batch=10)
         if meta_b.intro_end_s <= 0.5:

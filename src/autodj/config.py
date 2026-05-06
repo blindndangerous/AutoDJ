@@ -252,6 +252,23 @@ class PlaybackConfig:
     # Either an int (sounddevice.query_devices() index) or a substring of
     # the device name.  Set via [playback] audio_device or `--device` CLI.
     audio_device: str | int | None = None
+    # Wall-clock daypart targeting.  When True, the picker biases
+    # candidate ranking toward the BPM/energy of the active built-in
+    # daypart (morning/midday/afternoon/evening/night) -- only applied
+    # when no explicit preset is active.  Lets unattended playback
+    # follow time of day automatically.
+    enable_daypart: bool = False
+    # Set-relative mood arc (warmup -> peak -> cool envelope).  When
+    # both daypart and arc are enabled, arc takes priority while a
+    # session is in progress; daypart is the idle-baseline.
+    enable_mood_arc: bool = False
+    # Hours over which the mood arc spans before looping.  Default 3 h
+    # = standard club set length.
+    mood_arc_hours: float = 3.0
+    # Auto-discover cue points from external DJ software (Mixxx,
+    # Rekordbox, Traktor) and merge with auto-detected cues.  Off
+    # only when the user wants the auto-detected cues alone.
+    import_external_cues: bool = True
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> PlaybackConfig:
@@ -296,6 +313,10 @@ class PlaybackConfig:
                 data.get("silence_trigger_crossfade", True),
             ),
             audio_device=data.get("audio_device") or None,
+            enable_daypart=bool(data.get("enable_daypart", False)),
+            enable_mood_arc=bool(data.get("enable_mood_arc", False)),
+            mood_arc_hours=max(0.25, float(data.get("mood_arc_hours", 3.0))),
+            import_external_cues=bool(data.get("import_external_cues", True)),
         )
 
 

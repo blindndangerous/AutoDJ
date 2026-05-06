@@ -416,6 +416,10 @@ def _make_cfg_mock() -> MagicMock:
     cfg.playback.show_lyrics = True
     cfg.playback.prefetch_next_track = True
     cfg.playback.silence_trigger_crossfade = True
+    cfg.playback.enable_daypart = False
+    cfg.playback.enable_mood_arc = False
+    cfg.playback.mood_arc_hours = 3.0
+    cfg.playback.import_external_cues = False  # tests opt-in per-case
     cfg.replaygain.enabled = False
     cfg.replaygain.target_db = -14.0
     cfg.replaygain.max_clip_safe_gain = 1.0
@@ -514,6 +518,77 @@ class TestPlayerBuildStatus:
 # ---------------------------------------------------------------------------
 # Player._pick_next
 # ---------------------------------------------------------------------------
+
+
+class TestPlayerExternalCues:
+    """External-cue importer hooks (Mixxx / Rekordbox / Traktor)."""
+
+    def _make_player(self, **kwargs) -> Player:
+        return Player(_make_cfg_mock(), _make_sim_index(3), **kwargs)
+
+    def test_ensure_external_cues_skips_when_disabled(self) -> None:
+        player = self._make_player()
+        player._cfg.playback.import_external_cues = False
+        player._ensure_external_cues()
+        assert player._external_cues == {}
+        assert player._external_cues_loaded is True
+
+    def test_ensure_external_cues_runs_once(self) -> None:
+        player = self._make_player()
+        player._cfg.playback.import_external_cues = False
+        player._ensure_external_cues()
+        # Second call should be a no-op even if config flips on.
+        player._cfg.playback.import_external_cues = True
+        player._ensure_external_cues()
+        # No second import attempted; flag still set.
+        assert player._external_cues == {}
+
+    def test_ensure_external_cues_swallows_importer_failure(self) -> None:
+        player = self._make_player()
+        player._cfg.playback.import_external_cues = True
+        with patch("autodj.dj_cues_import.auto_import_cues", side_effect=OSError("boom")):
+            player._ensure_external_cues()
+        # Failure logs at DEBUG and leaves _external_cues empty.
+        assert player._external_cues == {}
+
+    def test_ensure_external_cues_imports_cues_into_dict(self) -> None:
+        from autodj.dj_meta import Cue
+
+        player = self._make_player()
+        player._cfg.playback.import_external_cues = True
+        fake = {"track.mp3": [Cue(time_s=10.0, type="drop", source="rekordbox")]}
+        with patch("autodj.dj_cues_import.auto_import_cues", return_value=fake):
+            player._ensure_external_cues()
+        assert player._external_cues == fake
+
+    def test_merge_external_cues_into_no_op_when_no_match(self) -> None:
+        from autodj.dj_meta import DjMeta
+
+        player = self._make_player()
+        player._external_cues = {}
+        meta = DjMeta(intro_end_s=0.0, outro_start_s=0.0, beats=[], analysed=True)
+        player._merge_external_cues_into(meta, "unknown.mp3")
+        assert meta.cues == []
+
+    def test_merge_external_cues_into_concats_external(self) -> None:
+        from autodj.dj_meta import Cue, DjMeta
+
+        player = self._make_player()
+        player._external_cues = {
+            "track.mp3": [Cue(time_s=12.0, type="user", source="mixxx", label="Hot 1")],
+        }
+        meta = DjMeta(
+            intro_end_s=0.0,
+            outro_start_s=0.0,
+            beats=[],
+            analysed=True,
+            cues=[Cue(time_s=10.0, type="drop", source="auto")],
+        )
+        player._merge_external_cues_into(meta, "track.mp3")
+        # Both cues survive (different times beyond the 250 ms collision window).
+        assert len(meta.cues) == 2
+        sources = {c.source for c in meta.cues}
+        assert "auto" in sources and "mixxx" in sources
 
 
 class TestPlayerPickNext:

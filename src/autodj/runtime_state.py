@@ -80,8 +80,30 @@ def load_into_player(player: Any, index_dir: Path | None) -> None:
             cfg.playback.crossfade_eq_duck = bool(pb["crossfade_eq_duck"])
         if "smart_shuffle" in pb:
             player._smart_shuffle = bool(pb["smart_shuffle"])
+        if "pure_shuffle" in pb:
+            player._pure_shuffle = bool(pb["pure_shuffle"])
+        if "anchor_to_seed" in pb:
+            player._anchor_to_seed = bool(pb["anchor_to_seed"])
         if "replaygain_enabled" in pb:
             cfg.replaygain.enabled = bool(pb["replaygain_enabled"])
+        if "show_lyrics" in pb:
+            cfg.playback.show_lyrics = bool(pb["show_lyrics"])
+        if "enable_daypart" in pb:
+            cfg.playback.enable_daypart = bool(pb["enable_daypart"])
+        if "enable_mood_arc" in pb:
+            cfg.playback.enable_mood_arc = bool(pb["enable_mood_arc"])
+            # Re-anchor to "now" on restore so the user gets a fresh
+            # warmup rather than picking up mid-arc from a stale start.
+            if cfg.playback.enable_mood_arc:
+                from autodj.mood_arc import make_default_arc
+
+                player._mood_arc = make_default_arc(
+                    duration_hours=getattr(cfg.playback, "mood_arc_hours", 3.0),
+                )
+        if "mood_arc_hours" in pb:
+            cfg.playback.mood_arc_hours = max(0.25, float(pb["mood_arc_hours"]))
+        if "import_external_cues" in pb:
+            cfg.playback.import_external_cues = bool(pb["import_external_cues"])
         if "transition_mode" in pb:
             from autodj.config import _validate_transition_mode
 

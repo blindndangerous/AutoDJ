@@ -352,6 +352,63 @@ User presets shadow built-ins on name collision.
 
 ---
 
+## Daypart, mood arc, and cue points (DJ autopilot)
+
+Three signals stack on top of presets so unattended playback can drift
+through a session without you babysitting it:
+
+```bash
+# Set-relative envelope (warmup, peak around 75 %, cool, then loop)
+uv run autodj serve --mood-arc --mood-arc-hours 3
+
+# Wall-clock daypart (morning chill, evening peak, late-night deep)
+uv run autodj serve --daypart
+
+# Both. Arc owns the picker target while the session is active.
+# Daypart is the idle baseline that resumes when the arc finishes.
+uv run autodj serve --mood-arc --daypart
+```
+
+Picker target priority: **explicit preset > mood arc > daypart**. The
+mood arc anchors to the moment you toggle it on, so flipping it from
+the web UI restarts at warmup. Both can also be set in `config.toml`:
+
+```toml
+[playback]
+enable_daypart    = false
+enable_mood_arc   = false
+mood_arc_hours    = 3.0
+import_external_cues = true   # auto-discover Mixxx/Rekordbox/Traktor cues
+```
+
+### Cue points
+
+AutoDJ detects cue points from raw audio at first analyse: drops,
+breakdowns, first downbeat, outro downbeat, and 32-beat phrase
+markers. No extra dependencies; the existing librosa pass does it.
+Cached in `index/<name>/dj_meta.json` so detection runs once per track.
+
+If you also use **Mixxx**, **Rekordbox**, or **Traktor**, AutoDJ
+auto-imports their cue points on first cache use:
+
+- **Mixxx**: read directly from `mixxx.db` SQLite (default user-data
+  location; no setup).
+- **Rekordbox**: read from a manually-exported `Library.xml`. The
+  live database is encrypted by Pioneer, so in Rekordbox use *File,
+  Export Collection in xml format, ~/Documents/rekordbox/Library.xml*.
+- **Traktor**: read from `collection.nml` in the Traktor user-data
+  directory.
+
+When two sources disagree about a cue at the same point, **user**
+edits beat **DJ-software** beat **auto-detected**. Cues are surfaced
+in the now-playing card as a colored strip on the progress bar (with a
+screen-reader summary), and via `/api/status` for any external client.
+
+Disable the importer with `--no-import-external-cues` or
+`import_external_cues = false`.
+
+---
+
 ## Web UI
 
 AutoDJ includes a browser-based control panel powered by FastAPI and WebSockets.
