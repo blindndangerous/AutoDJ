@@ -6,6 +6,49 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.12.1] - 2026-05-05
+
+### Fixed
+
+- **Volume slider arrow-key snap-to-0.**  The WebSocket state echo
+  broadcasts the *post-curve* perceptual gain (50 % slider ≈ 0.0316
+  gain), but the client was writing `Math.round(gain * 100)` straight
+  back into the slider.  Every Up/Down arrow press kicked off a
+  POST → WS-echo round-trip that snapped the fader to ~0.  The echo
+  is now run through `_gainToSlider` (inverse of the fader curve)
+  and ignored for 600 ms after a user-initiated change so the
+  in-flight POST cannot fight the input.
+- **NVDA "same-page link" announcement on the section nav.**  The
+  in-page section switcher used `<a href="#now">` etc., so NVDA
+  announced every tab as a same-page link even though the SPA
+  swapped panels in place.  Switcher is now an ARIA tablist
+  (`role="tablist"` + `<button role="tab">` + `role="tabpanel"`)
+  with roving tabindex and Left / Right / Up / Down / Home / End
+  navigation per the APG.  `aria-selected` replaces `aria-current`;
+  `hashchange` is preserved so deep links + browser back / forward
+  still work.  Volume Up/Down shortcut now skips when focus is on a
+  tab so the tablist owns its own arrows.
+
+### Changed
+
+- **Per-effect transition lengths driven by the outgoing track's
+  outro.**  Server surfaces `outro_len` on each track dict (track
+  length minus the DJ-meta `outro_start_s` when the sidecar has
+  analysed the track).  Browser uses a per-effect outro-fraction
+  table to size each effect to the actual outro instead of the
+  fixed crossfade window:  reverb / echo / risers fill ~80 % of the
+  outro, punctuating effects (scratch, air horn, glitch) take
+  ~25–35 %.  Result is clamped to 1.0–12.0 s and never falls below
+  the existing `_MIN_FX_DURATION_S` floor.  Falls back to the static
+  table when no outro is known (track not yet DJ-meta analysed).
+
+### Tests
+
+- 967 passing / 8 skipped after the tablist conversion + outro-len
+  surfacing.  No new failing paths.
+
+---
+
 ## [0.12.0] - 2026-05-05
 
 ### Added

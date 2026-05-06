@@ -550,7 +550,7 @@ wet_mix = 1.0
 | `random` | Pick uniformly per crossfade |
 | `rotate` | Cycle through all real effects in order |
 
-### Effect timing (industry-standard)
+### Effect timing (industry-standard, with outro-aware sizing)
 
 Each effect has a minimum duration sourced from commercial DJ-tool
 defaults (Pioneer DJM, Reloop RMX, Numark, Mixxx).  When your
@@ -558,6 +558,16 @@ configured `crossfade_seconds` is shorter than the minimum, AutoDJ
 automatically extends the outgoing-track runway so the effect doesn't
 sound rushed.  The amplitude crossfade itself still respects your
 configured length — the incoming track always lands at the same point.
+
+When the outgoing track has DJ-meta analysis (cached in
+`index/dj_meta.json` after the first play under outro-intro alignment),
+each effect is sized to a fraction of that track's outro rather than
+the fixed crossfade window.  Tail-fillers like reverb, echo throws,
+and risers consume around 80 % of the outro; punctuating effects like
+scratch, air horn, and glitch take roughly 25–35 %.  The result is
+clamped to 1.0–12.0 s and never drops below the static minimum-runway
+floor in the table below.  Tracks without analysis fall back to the
+fixed-window behaviour.
 
 | Effect | Minimum runway | Why |
 |---|---|---|

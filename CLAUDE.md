@@ -125,6 +125,9 @@ Track paths in `metadata.json` are stored RELATIVE to `music_dir` (forward-slash
 - [x] **Browser titlebar updates** with `AutoDJ - artist - title - album` on every track change (also feeds OS Media Session)
 - [x] **Audio device fix** — selection now uses `AudioContext.setSinkId` (Chromium / Edge) so Web-Audio-routed playback actually switches outputs; element-level `setSinkId` remains a Firefox fallback; permission-denied flow is recoverable (button re-enables, Permissions API auto-detects re-grants)
 - [x] **Harmonic mixing combo box** — `harmonic_mode` config / dropdown with `off`, `compatible`, `strict`, `neighbour`, `mood_change`, `energy_boost`
+- [x] **Outro-driven transition lengths** — server surfaces `outro_len` (length − `outro_start_s` from the DJ-meta sidecar) per track; browser sizes each transition effect to a per-effect fraction of that outro (reverb / echo / risers ~80 %, scratch / air horn / glitch ~25–35 %), clamped 1.0–12.0 s, with the static `_MIN_FX_DURATION_S` floor honoured.  Falls back to the legacy fixed-window behaviour when no outro is known
+- [x] **Tablist section nav** — in-page section switcher converted from anchor links (which NVDA announced as "same-page link") to an ARIA tablist + tabpanels with roving tabindex, Left / Right / Up / Down / Home / End arrow navigation per APG, `aria-selected` instead of `aria-current`, and `hashchange` preserved for deep links + browser back / forward
+- [x] **Volume slider WS-echo lockout** — fader now ignores WebSocket state echoes for 600 ms after a user-initiated change and inverts the perceptual gain curve (`_gainToSlider`) before writing the slider value, so arrow-key nudges no longer snap the fader to ~0
 
 ## Running
 ```bash
