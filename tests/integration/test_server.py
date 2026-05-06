@@ -86,6 +86,10 @@ def _make_player_mock(entry: IndexEntry | None = None) -> MagicMock:
     cfg.playback.show_lyrics = True
     cfg.playback.prefetch_next_track = True
     cfg.playback.silence_trigger_crossfade = True
+    cfg.playback.enable_daypart = False
+    cfg.playback.enable_mood_arc = False
+    cfg.playback.mood_arc_hours = 3.0
+    cfg.playback.import_external_cues = True
     cfg.replaygain.enabled = False
     cfg.presets = {}
     player._cfg = cfg
@@ -1316,6 +1320,36 @@ class TestMisc:
 
         assert bridge.player._state.current_track is None
         bridge.player._pick_next.assert_not_called()
+
+    def test_set_playback_settings_toggles_daypart(self, bridge) -> None:
+        bridge.set_playback_settings(enable_daypart=True)
+        assert bridge.player._cfg.playback.enable_daypart is True
+        bridge.set_playback_settings(enable_daypart=False)
+        assert bridge.player._cfg.playback.enable_daypart is False
+
+    def test_set_playback_settings_arms_mood_arc(self, bridge) -> None:
+        bridge.set_playback_settings(enable_mood_arc=True, mood_arc_hours=2.5)
+        assert bridge.player._cfg.playback.enable_mood_arc is True
+        assert bridge.player._cfg.playback.mood_arc_hours == 2.5
+        # Arc instance was anchored to "now".
+        assert bridge.player._mood_arc is not None
+        bridge.set_playback_settings(enable_mood_arc=False)
+        assert bridge.player._mood_arc is None
+
+    def test_set_playback_settings_re_anchors_arc_on_hours_change(
+        self,
+        bridge,
+    ) -> None:
+        bridge.set_playback_settings(enable_mood_arc=True, mood_arc_hours=1.0)
+        first_arc = bridge.player._mood_arc
+        bridge.set_playback_settings(mood_arc_hours=2.0)
+        # Re-anchored: new arc instance, new duration.
+        assert bridge.player._mood_arc is not first_arc
+        assert bridge.player._cfg.playback.mood_arc_hours == 2.0
+
+    def test_set_playback_settings_toggles_external_cues(self, bridge) -> None:
+        bridge.set_playback_settings(import_external_cues=False)
+        assert bridge.player._cfg.playback.import_external_cues is False
 
     def test_advance_now_writes_m3u_and_history(self, bridge, tmp_path) -> None:
         """Side-effect parity with the Live audio loop -- per-track

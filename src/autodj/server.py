@@ -150,6 +150,10 @@ class PlaybackSettingsBody(BaseModel):
     replaygain_enabled: bool | None = None
     transition_mode: str | None = None
     show_lyrics: bool | None = None
+    enable_daypart: bool | None = None
+    enable_mood_arc: bool | None = None
+    mood_arc_hours: float | None = None
+    import_external_cues: bool | None = None
 
 
 class BpmRangeBody(BaseModel):
@@ -368,6 +372,27 @@ class PlayerBridge:
             outro_len = max(0.0, float(entry.length) - outro_start_raw)
             return (intro_end, outro_start_raw, outro_len)
 
+        def _cues(entry: IndexEntry | None) -> list[dict]:
+            """Cue list for the entry, or empty when uncached / unanalysed."""
+            if entry is None or dj_cache is None:
+                return []
+            try:
+                meta = dj_cache.get(entry.path)
+            except Exception:
+                return []
+            if not getattr(meta, "analysed", False):
+                return []
+            return [
+                {
+                    "time_s": round(c.time_s, 2),
+                    "type": c.type,
+                    "label": c.label,
+                    "source": c.source,
+                    "color": c.color,
+                }
+                for c in getattr(meta, "cues", [])
+            ]
+
         def _track_dict(entry: IndexEntry | None) -> dict | None:
             if entry is None:
                 return None
@@ -387,6 +412,7 @@ class PlayerBridge:
                 "intro_end_s": round(intro_end, 2) if intro_end is not None else None,
                 "outro_start_s": round(outro_start, 2) if outro_start is not None else None,
                 "outro_len": round(outro_len, 2) if outro_len is not None else None,
+                "cues": _cues(entry),
             }
 
         elapsed = round(pos / max(1, sr), 1)
@@ -677,6 +703,14 @@ class PlayerBridge:
                 "replaygain_enabled": cfg.replaygain.enabled,
                 "transition_mode": cfg.playback.transition_mode,
                 "show_lyrics": getattr(cfg.playback, "show_lyrics", True),
+                "enable_daypart": getattr(cfg.playback, "enable_daypart", False),
+                "enable_mood_arc": getattr(cfg.playback, "enable_mood_arc", False),
+                "mood_arc_hours": getattr(cfg.playback, "mood_arc_hours", 3.0),
+                "import_external_cues": getattr(
+                    cfg.playback,
+                    "import_external_cues",
+                    True,
+                ),
                 "prefetch_next_track": getattr(
                     cfg.playback,
                     "prefetch_next_track",
@@ -775,6 +809,10 @@ class PlayerBridge:
         replaygain_enabled: bool | None = None,
         transition_mode: str | None = None,
         show_lyrics: bool | None = None,
+        enable_daypart: bool | None = None,
+        enable_mood_arc: bool | None = None,
+        mood_arc_hours: float | None = None,
+        import_external_cues: bool | None = None,
     ) -> None:
         """Apply playback-related settings; only non-null fields take effect."""
         cfg = self.player._cfg
@@ -814,6 +852,32 @@ class PlayerBridge:
                 # naturally on the next track load when toggled back on.
                 self.player._current_lyrics = []
                 self.player._current_lyrics_plain = ""
+        if enable_daypart is not None:
+            cfg.playback.enable_daypart = bool(enable_daypart)
+        if enable_mood_arc is not None:
+            cfg.playback.enable_mood_arc = bool(enable_mood_arc)
+            # Toggling arc on (re)anchors the start time to "now" so
+            # the user always begins the envelope at warmup.
+            if enable_mood_arc:
+                from autodj.mood_arc import make_default_arc
+
+                self.player._mood_arc = make_default_arc(
+                    duration_hours=cfg.playback.mood_arc_hours,
+                )
+            else:
+                self.player._mood_arc = None
+        if mood_arc_hours is not None:
+            cfg.playback.mood_arc_hours = max(0.25, float(mood_arc_hours))
+            # Re-anchor to keep semantics consistent when the user
+            # changes duration mid-session.
+            if cfg.playback.enable_mood_arc:
+                from autodj.mood_arc import make_default_arc
+
+                self.player._mood_arc = make_default_arc(
+                    duration_hours=cfg.playback.mood_arc_hours,
+                )
+        if import_external_cues is not None:
+            cfg.playback.import_external_cues = bool(import_external_cues)
 
     def set_bpm_range(self, lo: float | None, hi: float | None) -> None:
         """Set the hard BPM filter; pass both null to clear."""

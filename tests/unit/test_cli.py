@@ -983,6 +983,43 @@ class TestCmdPlayOverrides:
             CliRunner().invoke(cli, ["play", "--no-show-lyrics"])
         assert cfg_mock.playback.show_lyrics is False
 
+    def test_play_daypart_flag(self) -> None:
+        cfg_mock = _make_cfg()
+        sim_mock = _make_sim()
+        with (
+            patch("autodj.config.load_config", return_value=cfg_mock),
+            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
+            patch("autodj.player.Player.run"),
+        ):
+            CliRunner().invoke(cli, ["play", "--daypart"])
+        assert cfg_mock.playback.enable_daypart is True
+
+    def test_play_mood_arc_flag_with_hours(self) -> None:
+        cfg_mock = _make_cfg()
+        sim_mock = _make_sim()
+        with (
+            patch("autodj.config.load_config", return_value=cfg_mock),
+            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
+            patch("autodj.player.Player.run"),
+        ):
+            CliRunner().invoke(
+                cli,
+                ["play", "--mood-arc", "--mood-arc-hours", "1.5"],
+            )
+        assert cfg_mock.playback.enable_mood_arc is True
+        assert cfg_mock.playback.mood_arc_hours == 1.5
+
+    def test_play_no_import_external_cues_flag(self) -> None:
+        cfg_mock = _make_cfg()
+        sim_mock = _make_sim()
+        with (
+            patch("autodj.config.load_config", return_value=cfg_mock),
+            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
+            patch("autodj.player.Player.run"),
+        ):
+            CliRunner().invoke(cli, ["play", "--no-import-external-cues"])
+        assert cfg_mock.playback.import_external_cues is False
+
 
 # ---------------------------------------------------------------------------
 # cmd_serve — DJ-mix overrides

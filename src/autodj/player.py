@@ -728,6 +728,16 @@ class Player:
         self._eq_filters: dict[str, Any] | None = None
         # Energy ramp target for the current pick (None = disabled)
         self._target_energy: float | None = None
+        # Mood-arc state.  Lazy-init: set when the user enables the
+        # arc via config / CLI / web UI so unattended playback ramps
+        # warmup -> peak -> cool over a session-relative window.
+        self._mood_arc: Any = None
+        if getattr(cfg.playback, "enable_mood_arc", False):
+            from autodj.mood_arc import make_default_arc
+
+            self._mood_arc = make_default_arc(
+                duration_hours=getattr(cfg.playback, "mood_arc_hours", 3.0),
+            )
         # DJ meta cache — initialised lazily on first use so tests with
         # mock configs don't trip on the cache load.
         from autodj.dj_meta import DjMetaCache as _DjMetaCache
@@ -1014,14 +1024,36 @@ class Player:
             except SimilarityError:
                 pass  # fall through to normal selection
 
-        # --- Compute BPM target from preset ---
+        # --- Compute BPM target ---
+        # Priority order:
+        #   1. Explicit user preset (set-relative ramp).
+        #   2. Mood arc (set-relative envelope, anchored to start).
+        #   3. Daypart (wall-clock, runs forever).
+        # The chosen target is fed straight into the similarity scorer
+        # alongside the existing energy/genre/key constraints.
         target_bpm: float | None = None
         bpm_weight: float = 0.2
+        target_energy = self._target_energy
+
         if self._preset is not None:
             target_bpm = self._preset.target_bpm(tn)
             bpm_weight = self._preset.bpm_weight
+        elif getattr(self._cfg.playback, "enable_mood_arc", False) and self._mood_arc:
+            from autodj.mood_arc import current_arc_target
 
-        target_energy = self._target_energy
+            target = current_arc_target(self._mood_arc)
+            target_bpm = target.target_bpm
+            bpm_weight = target.bpm_weight
+            if target_energy is None:
+                target_energy = target.target_energy
+        elif getattr(self._cfg.playback, "enable_daypart", False):
+            from autodj.daypart import current_daypart
+
+            dp = current_daypart()
+            target_bpm = dp.target_bpm
+            bpm_weight = dp.bpm_weight
+            if target_energy is None:
+                target_energy = dp.target_energy
 
         # Wider candidate pool than vanilla nearest-neighbour avoids
         # falling into a 20-track sonic island.  50 with filter / 30
@@ -1167,7 +1199,14 @@ class Player:
             )
 
     def _ensure_dj_cache(self) -> None:
-        """Lazy-init the DJ-meta cache on first real use."""
+        """Lazy-init the DJ-meta cache on first real use.
+
+        Also runs the one-shot external-cue importer (Mixxx, Rekordbox,
+        Traktor) when ``[playback] import_external_cues`` is enabled.
+        Imported cues merge into each cached DjMeta lazily — only when
+        a track is actually analysed for intro/outro detection — so the
+        importer cost is paid once and only for tracks the user plays.
+        """
         if self._dj_cache_initialised:
             return
         self._dj_cache_initialised = True
@@ -1179,6 +1218,28 @@ class Player:
         except (OSError, ValueError) as exc:
             logger.debug("DJ cache unavailable: %s", exc)
             self._dj_cache = None
+
+        # External cue import (Mixxx / Rekordbox / Traktor).  Cheap to
+        # discover (small set of stat() calls); reading actual cues only
+        # happens when a matching file is found.  Cached on the player
+        # instance so the importer runs once per `serve` / `play` boot.
+        self._external_cues: dict[str, list[Any]] = {}
+        if getattr(self._cfg.playback, "import_external_cues", True):
+            try:
+                from autodj.dj_cues_import import auto_import_cues
+
+                self._external_cues = auto_import_cues(
+                    library_root=self._cfg.library.music_dir
+                    if isinstance(self._cfg.library.music_dir, Path)
+                    else None,
+                )
+                if self._external_cues:
+                    logger.info(
+                        "Imported cues for %d tracks from external DJ software",
+                        len(self._external_cues),
+                    )
+            except (OSError, ValueError, ImportError) as exc:
+                logger.debug("External cue import failed: %s", exc)
 
     def _outgoing_meta(self, audio_a: np.ndarray, sr_a: int, path: str) -> DjMeta | None:
         """Get / compute DjMeta for the outgoing track when needed for alignment.
@@ -1198,9 +1259,25 @@ class Player:
         meta = self._dj_cache.get(path)
         if not meta.analysed:
             meta = analyse_audio(audio_a, sr_a)
+            self._merge_external_cues_into(meta, path)
             self._dj_cache.set(path, meta)
             self._dj_cache.flush(batch=10)
         return meta
+
+    def _merge_external_cues_into(self, meta: DjMeta, path: str) -> None:
+        """Merge externally-imported cues for *path* into *meta* in place.
+
+        No-op when the importer found nothing for this track.  Uses
+        :func:`autodj.dj_meta.merge_cues` so user / DJ-software cues
+        win on conflict but auto-detected cues survive when they're
+        the only source for a region of the track.
+        """
+        external = getattr(self, "_external_cues", {}).get(path)
+        if not external:
+            return
+        from autodj.dj_meta import merge_cues
+
+        meta.cues = merge_cues(meta.cues, external)
 
     def _peek_incoming_meta(self, next_entry: IndexEntry) -> DjMeta | None:
         """Cache-only DjMeta peek for the incoming track (no audio decode).
@@ -1343,6 +1420,7 @@ class Player:
         meta_b = self._dj_cache.get(next_entry.path)
         if not meta_b.analysed:
             meta_b = analyse_audio(audio_b, sr_a)
+            self._merge_external_cues_into(meta_b, next_entry.path)
             self._dj_cache.set(next_entry.path, meta_b)
             self._dj_cache.flush(batch=10)
         if meta_b.intro_end_s <= 0.5:
