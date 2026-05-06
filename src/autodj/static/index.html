@@ -96,6 +96,10 @@
       <div id="progress-bar-label">0:00 / 0:00</div>
       <div id="progress-track" aria-hidden="true">
         <div id="progress-fill"></div>
+        <!-- Cue markers overlay decoratively on the progress bar.
+             Type + time is announced via #badges-announce below so this
+             div stays decoration-only. -->
+        <div id="cue-strip" role="presentation" aria-hidden="true"></div>
       </div>
     </div>
   </details>
@@ -384,6 +388,39 @@
       </div>
       <span class="setting-desc" id="pb-rg-desc">
         Apply embedded ReplayGain track-gain tags so every track plays at a consistent loudness.  Tracks without tags play unchanged.  Targets −14 dB (Spotify-ish reference) by default.
+      </span>
+
+      <div class="settings-check">
+        <input type="checkbox" id="pb-daypart" aria-describedby="pb-daypart-desc">
+        <label for="pb-daypart">Wall-clock daypart</label>
+      </div>
+      <span class="setting-desc" id="pb-daypart-desc">
+        Bias next-track picks toward the BPM and energy of the active built-in daypart (morning / midday / afternoon / evening / night).  Time-of-day driven; runs forever.  Ignored when an explicit preset or mood arc is active.
+      </span>
+
+      <div class="settings-check">
+        <input type="checkbox" id="pb-mood-arc" aria-describedby="pb-mood-arc-desc">
+        <label for="pb-mood-arc">Mood arc (warmup<span aria-hidden="true"> → </span><span class="visually-hidden"> to </span>peak<span aria-hidden="true"> → </span><span class="visually-hidden"> to </span>cool)</label>
+      </div>
+      <span class="setting-desc" id="pb-mood-arc-desc">
+        Set-relative envelope: warmup, build to peak around 75 % of the arc, cool down, then loop.  Anchored to the moment you toggle this on.  Stacks above daypart — when both are on, arc wins while a session is in progress.
+      </span>
+
+      <div class="settings-row">
+        <label for="pb-mood-arc-hours">Mood arc length (hours)</label>
+        <input type="number" id="pb-mood-arc-hours" min="0.25" max="24" step="0.25" value="3"
+               inputmode="decimal" aria-describedby="pb-mood-arc-hours-desc">
+      </div>
+      <span class="setting-desc" id="pb-mood-arc-hours-desc">
+        How long one full warmup-peak-cool cycle takes before the arc loops.  3 h matches a standard club set; 1 h works well for short sessions; 6+ h gives a slow festival-style ramp.  Changing this re-anchors the arc to "now".
+      </span>
+
+      <div class="settings-check">
+        <input type="checkbox" id="pb-import-cues" aria-describedby="pb-import-cues-desc">
+        <label for="pb-import-cues">Auto-import DJ-software cues</label>
+      </div>
+      <span class="setting-desc" id="pb-import-cues-desc">
+        On the first cache load, scan for Mixxx (mixxx.db), Rekordbox (Library.xml export), and Traktor (collection.nml) libraries in your music folder and the standard per-OS user-data locations, then merge any cues found into AutoDJ's auto-detected ones.  User / DJ-software cues win on conflict.
       </span>
 
       <div class="settings-row">

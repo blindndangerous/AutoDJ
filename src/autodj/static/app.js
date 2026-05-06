@@ -80,6 +80,10 @@ const pbPureShuffle   = document.getElementById("pb-pure-shuffle");
 const pbShowLyrics    = document.getElementById("pb-show-lyrics");
 const pbAnchorSeed    = document.getElementById("pb-anchor-seed");
 const pbReplayGain    = document.getElementById("pb-replaygain");
+const pbDaypart       = document.getElementById("pb-daypart");
+const pbMoodArc       = document.getElementById("pb-mood-arc");
+const pbMoodArcHours  = document.getElementById("pb-mood-arc-hours");
+const pbImportCues    = document.getElementById("pb-import-cues");
 const pbTransitionMode = document.getElementById("pb-transition-mode");
 const pbCrossfade     = document.getElementById("pb-crossfade");
 const bpmLo           = document.getElementById("bpm-lo");
@@ -315,6 +319,18 @@ function applySettingsState(st) {
   pbShowLyrics.checked   = (st.playback && st.playback.show_lyrics !== false);
   pbAnchorSeed.checked   = !!(st.playback && st.playback.anchor_to_seed);
   pbReplayGain.checked   = !!(st.playback && st.playback.replaygain_enabled);
+  if (pbDaypart) {
+    pbDaypart.checked = !!(st.playback && st.playback.enable_daypart);
+  }
+  if (pbMoodArc) {
+    pbMoodArc.checked = !!(st.playback && st.playback.enable_mood_arc);
+  }
+  if (pbMoodArcHours && st.playback && typeof st.playback.mood_arc_hours === "number") {
+    pbMoodArcHours.value = st.playback.mood_arc_hours;
+  }
+  if (pbImportCues) {
+    pbImportCues.checked = !!(st.playback && st.playback.import_external_cues);
+  }
   if (st.playback && st.playback.transition_mode && document.activeElement !== pbTransitionMode) {
     pbTransitionMode.value = st.playback.transition_mode;
   }
@@ -388,6 +404,31 @@ pbShowLyrics.addEventListener("change", () => {
 pbAnchorSeed.addEventListener("change", () => {
   postSettings("/api/playback-settings", { anchor_to_seed: pbAnchorSeed.checked });
 });
+if (pbDaypart) {
+  pbDaypart.addEventListener("change", () => {
+    postSettings("/api/playback-settings", { enable_daypart: pbDaypart.checked });
+  });
+}
+if (pbMoodArc) {
+  pbMoodArc.addEventListener("change", () => {
+    postSettings("/api/playback-settings", { enable_mood_arc: pbMoodArc.checked });
+  });
+}
+if (pbMoodArcHours) {
+  pbMoodArcHours.addEventListener("change", () => {
+    const hrs = parseFloat(pbMoodArcHours.value);
+    if (isFinite(hrs) && hrs > 0) {
+      postSettings("/api/playback-settings", { mood_arc_hours: hrs });
+    }
+  });
+}
+if (pbImportCues) {
+  pbImportCues.addEventListener("change", () => {
+    postSettings("/api/playback-settings", {
+      import_external_cues: pbImportCues.checked,
+    });
+  });
+}
 pbReplayGain.addEventListener("change", () => {
   postSettings("/api/playback-settings", { replaygain_enabled: pbReplayGain.checked });
 });
@@ -661,11 +702,76 @@ function applyBadges(s) {
     if (s.beatmatch_ratio && Math.abs(s.beatmatch_ratio - 1.0) > 0.005) {
       phrases.push(`beatmatched ${s.beatmatch_ratio.toFixed(2)} times`);
     }
+    if (Array.isArray(t.cues) && t.cues.length > 0) {
+      phrases.push(_summariseCues(t.cues));
+    }
     if (phrases.length) {
       // Slight delay so the title aria-live region speaks first
       setTimeout(() => { badgesAnnounce.textContent = phrases.join(", "); }, 800);
     }
   }
+  renderCueStrip(t);
+}
+
+// ----------------------------------------------------------------
+// Cue strip — decorative markers on the progress bar.
+// Sighted users see colored ticks; AT users get the summary above.
+// ----------------------------------------------------------------
+
+const _cueStrip = document.getElementById("cue-strip");
+let _lastCueKey = "";
+
+const _CUE_COLORS = {
+  drop:            "#ff5470",
+  breakdown:       "#5a7bff",
+  first_downbeat:  "#69d0ff",
+  outro_downbeat:  "#ffb454",
+  phrase:          "rgba(255,255,255,0.45)",
+  user:            "#a4ff7a",
+};
+
+function renderCueStrip(track) {
+  if (!_cueStrip) return;
+  const cues = (track && Array.isArray(track.cues)) ? track.cues : [];
+  const dur = track && track.length ? track.length : 0;
+  // Cheap dedupe: same path + cue-count = no rebuild.
+  const key = `${track ? track.path : ""}#${cues.length}`;
+  if (key === _lastCueKey) return;
+  _lastCueKey = key;
+  if (!cues.length || dur <= 0) {
+    _cueStrip.innerHTML = "";
+    return;
+  }
+  const html = cues
+    .filter(c => c.time_s >= 0 && c.time_s <= dur)
+    .map(c => {
+      const pct = (c.time_s / dur) * 100;
+      const color = c.color || _CUE_COLORS[c.type] || _CUE_COLORS.user;
+      // Inline-styled span — color encodes type (also conveyed in the
+      // textual announcement so this is not a color-only signal).
+      return `<span class="cue-mark" style="left:${pct.toFixed(2)}%;background:${color};"
+              title="${escHtml(c.type)}${c.label ? ': ' + escHtml(c.label) : ''}"></span>`;
+    })
+    .join("");
+  _cueStrip.innerHTML = html;
+}
+
+function _summariseCues(cues) {
+  // Compact, screen-reader-friendly summary: count + up to first 3 markers
+  // formatted as "drop at 1 minute 23, breakdown at 2 minutes 10".
+  const fmt = (sec) => {
+    const m = Math.floor(sec / 60);
+    const s = Math.round(sec - m * 60);
+    if (m <= 0) return `${s} seconds`;
+    return `${m} minute${m === 1 ? "" : "s"} ${s}`;
+  };
+  const headline = `${cues.length} cue ${cues.length === 1 ? "point" : "points"}`;
+  const interesting = cues
+    .filter(c => c.type !== "phrase")
+    .slice(0, 3);
+  if (!interesting.length) return headline;
+  const phrases = interesting.map(c => `${c.type.replace(/_/g, " ")} at ${fmt(c.time_s)}`);
+  return `${headline}: ${phrases.join(", ")}`;
 }
 
 // ----------------------------------------------------------------
