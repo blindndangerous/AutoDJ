@@ -1145,7 +1145,8 @@ function _resolveTransition(name) {
     "backspin", "forward_spin", "chorus", "submerge", "vinyl_wow",
     "freeze", "glitch",
     "scratch", "beat_repeat", "sidechain_pump", "reverse_reverb", "air_horn",
-    "vinyl_rewind", "transformer", "dub_siren", "stutter_build", "wow_flutter"];
+    "vinyl_rewind", "transformer", "dub_siren", "stutter_build", "wow_flutter",
+    "phaser", "ring_modulator", "dub_delay", "halftime"];
   if (name === "random") return real[Math.floor(Math.random() * real.length)];
   if (name === "rotate") {
     _rotateCursor = (_rotateCursor + 1) % real.length;
@@ -1440,6 +1441,10 @@ const _MIN_FX_DURATION_S = {
   dub_siren:      3.0,
   stutter_build:  3.0,
   wow_flutter:    2.5,
+  phaser:         3.0,
+  ring_modulator: 2.5,
+  dub_delay:      4.0,
+  halftime:       3.0,
 };
 
 // Per-effect fraction of the outgoing track's *outro* the effect should
@@ -1480,6 +1485,10 @@ const _OUTRO_FRACTION = {
   dub_siren:      0.30,
   stutter_build:  0.50,
   wow_flutter:    0.65,
+  phaser:         0.70,
+  ring_modulator: 0.55,
+  dub_delay:      0.80,
+  halftime:       0.55,
 };
 const _MAX_FX_DURATION_S = 12.0;
 const _ABS_MIN_FX_DURATION_S = 1.0;
@@ -2321,6 +2330,144 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
     teardowns.push(() => {
       try { wrapper.disconnect(); } catch (_) {}
       _restoreDirect(outDeck);
+    });
+  }
+  // -------- phaser: 4-stage allpass cascade (sweepy notch sound) --------
+  else if (effect === "phaser") {
+    // Web Audio doesn't ship a phaser primitive; cascade four BiquadFilter
+    // allpass stages with a single LFO modulating each frequency.  4 stages
+    // gives the classic "sweepy" 4-notch sound (vs 2-stage = subtle, 6-stage
+    // = guitar-pedal-warble).  Different from flanger (DelayNode + LFO =
+    // metallic comb teeth).
+    const stages = [];
+    for (let i = 0; i < 4; i++) {
+      const ap = ctx.createBiquadFilter();
+      ap.type = "allpass";
+      ap.frequency.value = 400 + i * 200;  // staggered base frequencies
+      ap.Q.value = 0.7;
+      stages.push(ap);
+    }
+    const lfo = ctx.createOscillator();
+    lfo.type = "sine";
+    lfo.frequency.value = 0.5;
+    const lfoGain = ctx.createGain();
+    lfoGain.gain.value = 600;  // ±600 Hz sweep
+    lfo.connect(lfoGain);
+    stages.forEach(ap => lfoGain.connect(ap.frequency));
+    // Chain stages: out → ap1 → ap2 → ap3 → ap4 → wet
+    const wet = ctx.createGain();
+    wet.gain.value = 0.5;
+    const dry = ctx.createGain();
+    dry.gain.value = 0.5;
+    _routeThrough(outDeck, dry);
+    dry.connect(outDeck.gain);
+    // Parallel wet path
+    const wetIn = ctx.createGain();
+    outDeck.source.connect(wetIn);
+    wetIn.connect(stages[0]);
+    for (let i = 0; i < stages.length - 1; i++) stages[i].connect(stages[i + 1]);
+    stages[stages.length - 1].connect(wet);
+    wet.connect(outDeck.gain);
+    lfo.start(t0);
+    lfo.stop(tEnd + 0.05);
+    teardowns.push(() => {
+      try { lfo.stop(); } catch (_) {}
+      _disconnectAll(...stages, lfo, lfoGain, wet, dry, wetIn);
+      _restoreDirect(outDeck);
+    });
+  }
+  // -------- ring_modulator: signal × sine carrier (clangy bell tone) --------
+  else if (effect === "ring_modulator") {
+    // True ring-mod = signal × sine.  Web Audio has no multiplier node, but
+    // a GainNode whose .gain is driven by a LFO source achieves the same
+    // result: gain oscillates between -1 and +1, multiplying the audio by
+    // the LFO sample-by-sample.
+    const wet = ctx.createGain();
+    wet.gain.value = 0;  // baseline 0; LFO modulates around 0
+    const carrier = ctx.createOscillator();
+    carrier.type = "sine";
+    carrier.frequency.value = 173;  // F3-ish — produces musical sidebands
+    const carrierGain = ctx.createGain();
+    carrierGain.gain.value = 1.0;
+    carrier.connect(carrierGain);
+    carrierGain.connect(wet.gain);
+    // Mix 50/50 dry + wet so the original beat is still audible
+    const dry = ctx.createGain();
+    dry.gain.value = 0.5;
+    const wetMix = ctx.createGain();
+    wetMix.gain.value = 0.5;
+    _routeThrough(outDeck, dry);
+    dry.connect(outDeck.gain);
+    outDeck.source.connect(wet);
+    wet.connect(wetMix);
+    wetMix.connect(outDeck.gain);
+    carrier.start(t0);
+    carrier.stop(tEnd + 0.05);
+    teardowns.push(() => {
+      try { carrier.stop(); } catch (_) {}
+      _disconnectAll(carrier, carrierGain, wet, wetMix, dry);
+      _restoreDirect(outDeck);
+    });
+  }
+  // -------- dub_delay: long 1 s lowpass-feedback delay (vs short echo_out) --------
+  else if (effect === "dub_delay") {
+    // Distinct from echo_out (375 ms 1/4-note feedback, full-spectrum).
+    // Dub delay = 1 s delay with lowpass on the feedback path so each
+    // repeat darkens.  Long feedback bleeds into incoming track tastefully.
+    const delayNode = ctx.createDelay(2.0);
+    delayNode.delayTime.value = 1.0;
+    const fb = ctx.createGain();
+    fb.gain.value = 0.55;
+    const fbLp = ctx.createBiquadFilter();
+    fbLp.type = "lowpass";
+    fbLp.frequency.value = 1500;
+    fbLp.Q.value = 0.7;
+    const wet = ctx.createGain();
+    wet.gain.value = 0.55;
+    const dry = ctx.createGain();
+    dry.gain.value = 0.6;
+    _routeThrough(outDeck, dry);
+    dry.connect(outDeck.gain);
+    // Wet path: source → delay → fbLp → fb → delay (loop) AND → wet → out
+    outDeck.source.connect(delayNode);
+    delayNode.connect(fbLp);
+    fbLp.connect(fb);
+    fb.connect(delayNode);  // feedback loop
+    fbLp.connect(wet);
+    wet.connect(outDeck.gain);
+    teardowns.push(() => {
+      _disconnectAll(delayNode, fbLp, fb, wet, dry);
+      _restoreDirect(outDeck);
+    });
+  }
+  // -------- halftime: tempo to 50 % with pitch preserved --------
+  else if (effect === "halftime") {
+    // Distinct from pitch_fall (pitch + tempo down) and tape_stop (slow
+    // to zero).  Halftime keeps musical pitch — kicks half as often,
+    // melodies recognisable.  Classic trap pre-drop technique.  Browser
+    // implementation: HTMLMediaElement.preservesPitch=true (default) +
+    // playbackRate=0.5.  Cleanest way without granular DSP.
+    const audio = outDeck.audio;
+    const prevPreserve = audio.preservesPitch !== false;
+    const prevRate = audio.playbackRate;
+    try { audio.preservesPitch = true; } catch (_) {}
+    // Smooth ramp from 1.0 → 0.5 over half the fade so the halftime drop
+    // feels intentional, not a glitch
+    const startMs = performance.now();
+    const durMs = (fadeSec * 0.5) * 1000;
+    const iv = setInterval(() => {
+      const t = (performance.now() - startMs) / durMs;
+      if (t >= 1) {
+        clearInterval(iv);
+        try { audio.playbackRate = 0.5; } catch (_) {}
+        return;
+      }
+      try { audio.playbackRate = 1.0 - 0.5 * t; } catch (_) {}
+    }, 20);
+    teardowns.push(() => {
+      clearInterval(iv);
+      try { audio.playbackRate = prevRate; } catch (_) {}
+      try { audio.preservesPitch = prevPreserve; } catch (_) {}
     });
   }
   // -------- wow_flutter: pitch wobble + amplitude tremolo --------

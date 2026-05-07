@@ -77,6 +77,10 @@ class TransitionFx(StrEnum):
     DUB_SIREN = "dub_siren"  # sine-wave reggae siren (smoother than air_horn)
     STUTTER_BUILD = "stutter_build"  # accelerating gate frequency 4 Hz → 32 Hz
     WOW_FLUTTER = "wow_flutter"  # combined pitch wobble + amplitude tremolo
+    PHASER = "phaser"  # 4-stage allpass cascade (sweepy notch w/o flanger comb)
+    RING_MODULATOR = "ring_modulator"  # signal × sine carrier (clangy bell tone)
+    DUB_DELAY = "dub_delay"  # long lowpass-feedback delay (vs short echo_out 1/4)
+    HALFTIME = "halftime"  # tempo halve, pitch preserved (vs pitch_fall pitch-down)
     RANDOM = "random"  # pick uniformly at random per crossfade
     ROTATE = "rotate"  # cycle through the catalogue in order
 
@@ -113,6 +117,10 @@ _REAL_EFFECTS: list[TransitionFx] = [
     TransitionFx.DUB_SIREN,
     TransitionFx.STUTTER_BUILD,
     TransitionFx.WOW_FLUTTER,
+    TransitionFx.PHASER,
+    TransitionFx.RING_MODULATOR,
+    TransitionFx.DUB_DELAY,
+    TransitionFx.HALFTIME,
 ]
 
 
@@ -1337,6 +1345,207 @@ def wow_flutter(
     return out
 
 
+def phaser(
+    tail: np.ndarray,
+    sample_rate: int,
+    n_stages: int = 4,
+    lfo_hz: float = 0.5,
+    depth: float = 0.7,
+    feedback: float = 0.4,
+) -> np.ndarray:
+    """4-stage allpass-cascade phaser (sweepy notch, no comb-filter character).
+
+    Distinct from :func:`flanger` (short LFO-modulated delay = comb filter
+    with metallic teeth) and :func:`chorus` (multi-voice detune).  Phaser
+    cascades 4 first-order allpass filters whose break frequency is
+    LFO-modulated, producing 4 moving notches in the spectrum.  Sounds
+    "sweepy" / "swirly" like a guitar phaser pedal.
+
+    Args:
+        tail: Mono float32 audio.
+        sample_rate: Sample rate in Hz.
+        n_stages: Number of allpass stages (4 = classic 4-stage).
+        lfo_hz: LFO sweep rate.
+        depth: 0-1 fractional sweep depth.
+        feedback: Self-feedback for resonance.
+
+    Returns:
+        Float32 array of the same length as *tail*.
+    """
+    n = len(tail)
+    if n == 0:
+        return tail
+    # LFO sweeps allpass break frequency between min_hz and max_hz
+    min_hz, max_hz = 200.0, 1600.0
+    t = np.arange(n, dtype=np.float32) / sample_rate
+    lfo = 0.5 * (1.0 + depth * np.sin(2 * np.pi * lfo_hz * t))
+    break_hz = min_hz + (max_hz - min_hz) * lfo
+    # Allpass coefficient per sample: a = (1 - tan(πf/sr)) / (1 + tan(πf/sr))
+    tan_arg = np.tan(np.pi * break_hz / sample_rate).astype(np.float32)
+    a = ((1.0 - tan_arg) / (1.0 + tan_arg)).astype(np.float32)
+    # Cascade n_stages allpass filters; running fb sample-by-sample
+    out = tail.astype(np.float32, copy=True)
+    fb = np.float32(0.0)
+    states = [np.float32(0.0) for _ in range(n_stages)]
+    for i in range(n):
+        x = out[i] + feedback * fb
+        for s in range(n_stages):
+            y = -a[i] * x + states[s]
+            states[s] = x + a[i] * y
+            x = y
+        fb = x
+        out[i] = 0.5 * tail[i] + 0.5 * x  # 50/50 mix
+    np.clip(out, -1.0, 1.0, out=out)
+    return out
+
+
+def ring_modulator(
+    tail: np.ndarray,
+    sample_rate: int,
+    carrier_hz: float = 173.0,
+) -> np.ndarray:
+    """Multiply *tail* by a sine carrier — produces sum + difference tones.
+
+    Distinct from any existing modulation in the catalogue.  Output spectrum
+    is the input spectrum shifted by ±carrier_hz, creating clangy bell-like
+    sidebands.  Classic Daleks / sci-fi voice / industrial-music sound.
+
+    Carrier 173 Hz (≈F3) chosen because it produces musical sidebands in
+    most pop/rock content; the effect remains pitched rather than just
+    noise.
+
+    Args:
+        tail: Mono float32 audio.
+        sample_rate: Sample rate in Hz.
+        carrier_hz: Carrier sine frequency.
+
+    Returns:
+        Float32 array of the same length as *tail*.
+    """
+    n = len(tail)
+    if n == 0:
+        return tail
+    t = np.arange(n, dtype=np.float32) / sample_rate
+    carrier = np.sin(2 * np.pi * carrier_hz * t).astype(np.float32)
+    # 50/50 dry/wet so the original beat stays audible under the metallic ring
+    wet = (tail * carrier).astype(np.float32)
+    out = (0.5 * tail + 0.5 * wet).astype(np.float32)
+    np.clip(out, -1.0, 1.0, out=out)
+    return out
+
+
+def dub_delay(
+    tail: np.ndarray,
+    sample_rate: int,
+    delay_ms: float = 1000.0,
+    feedback: float = 0.55,
+    feedback_lp_hz: float = 1500.0,
+    wet: float = 0.55,
+) -> np.ndarray:
+    """Long lowpass-filtered feedback delay (dub-style, vs :func:`echo_out`).
+
+    Distinct from :func:`echo_out` (375 ms 1/4-note feedback, full-spectrum).
+    Dub delay uses ~1 s delay with a one-pole lowpass on the feedback
+    path so each repeat gets darker — characteristic Lee Perry / dub-reggae
+    sound.  Long feedback also bleeds into the incoming track tastefully.
+
+    Args:
+        tail: Mono float32 audio.
+        sample_rate: Sample rate in Hz.
+        delay_ms: Delay length (1000 ms ≈ slow).
+        feedback: Feedback gain (0.0 = single repeat, 0.95 = endless).
+        feedback_lp_hz: Lowpass cutoff applied to feedback path.
+        wet: Wet/dry mix.
+
+    Returns:
+        Float32 array of the same length as *tail*, hard-clipped ±1.0.
+    """
+    n = len(tail)
+    if n == 0:
+        return tail
+    delay = max(1, int((delay_ms / 1000.0) * sample_rate))
+    # One-pole lowpass coefficient
+    rc = 1.0 / (2 * np.pi * feedback_lp_hz)
+    dt = 1.0 / sample_rate
+    alpha = np.float32(dt / (rc + dt))
+    out = tail.astype(np.float32, copy=True)
+    wet_buf = np.zeros_like(out)
+    lp_state = np.float32(0.0)
+    for i in range(n):
+        if i >= delay:
+            # Filter the previous wet sample at delay tap before feeding back
+            lp_state = lp_state + alpha * (wet_buf[i - delay] - lp_state)
+            wet_buf[i] = out[i] + feedback * lp_state
+        else:
+            wet_buf[i] = out[i]
+    mixed = (1.0 - wet) * out + wet * wet_buf
+    np.clip(mixed, -1.0, 1.0, out=mixed)
+    return mixed.astype(np.float32)
+
+
+def halftime(
+    tail: np.ndarray,
+    sample_rate: int,
+) -> np.ndarray:
+    """Slow tempo to 50 % while preserving pitch (granular time-stretch).
+
+    Distinct from :func:`pitch_fall` (pitch + tempo down to 0.3×) and
+    :func:`tape_stop` (pitch + tempo to zero).  Halftime keeps musical
+    pitch intact — kicks half as often, snares half as often, but
+    everything is recognisable.  Classic trap / bass-music pre-drop
+    technique.
+
+    Granular implementation: read tail in overlapping windows, output
+    twice the source duration's worth of windows (we drop every other
+    one to fit back into the original buffer length).  Equivalent
+    perceptual effect: half-speed playback minus the pitch drop.
+
+    Args:
+        tail: Mono float32 audio.
+        sample_rate: Sample rate in Hz.
+
+    Returns:
+        Float32 array of the same length as *tail*.
+    """
+    n = len(tail)
+    if n < 4:
+        return tail
+    # Granular windows: 50 ms grains, 50 % overlap.
+    grain_n = max(1, int(0.05 * sample_rate))
+    hop_in = max(1, grain_n // 2)
+    # Read each grain TWICE (so output expands 2×) then truncate to n.
+    # Hann window for smooth crossfade between grains.
+    if grain_n >= 2:
+        w = np.hanning(grain_n).astype(np.float32)
+    else:
+        w = np.ones(grain_n, dtype=np.float32)
+    out = np.zeros(n * 2 + grain_n, dtype=np.float32)
+    win_sum = np.zeros_like(out)
+    out_pos = 0
+    for read_pos in range(0, n - grain_n, hop_in):
+        grain = tail[read_pos : read_pos + grain_n] * w
+        # Output grain TWICE — once at out_pos, once at out_pos + hop_in.
+        # That spreads each input grain across twice the output time.
+        for repeat in range(2):
+            target = out_pos + repeat * hop_in
+            if target + grain_n > len(out):
+                break
+            out[target : target + grain_n] += grain
+            win_sum[target : target + grain_n] += w
+        out_pos += 2 * hop_in
+    # Normalise overlapping windows (avoid amplitude bumps at overlap)
+    safe = win_sum > 1e-6
+    out[safe] /= win_sum[safe]
+    # Truncate / pad to original length
+    if len(out) >= n:
+        result = out[:n].astype(np.float32)
+    else:
+        result = np.zeros(n, dtype=np.float32)
+        result[: len(out)] = out
+    np.clip(result, -1.0, 1.0, out=result)
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
@@ -1446,6 +1655,18 @@ def apply_transition(
 
     if effect == TransitionFx.WOW_FLUTTER:
         return wow_flutter(tail, sample_rate), head, empty_extra
+
+    if effect == TransitionFx.PHASER:
+        return phaser(tail, sample_rate), head, empty_extra
+
+    if effect == TransitionFx.RING_MODULATOR:
+        return ring_modulator(tail, sample_rate), head, empty_extra
+
+    if effect == TransitionFx.DUB_DELAY:
+        return dub_delay(tail, sample_rate), head, empty_extra
+
+    if effect == TransitionFx.HALFTIME:
+        return halftime(tail, sample_rate), head, empty_extra
 
     if effect == TransitionFx.NOISE_DROP:
         # Synthesised noise that crests at the start and falls/dimms.
