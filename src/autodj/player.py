@@ -1370,12 +1370,28 @@ class Player:
                 if self._dj_cache is not None:
                     self._dj_cache.set(path, meta)
                     self._dj_cache.flush(force=True)
+                # BPM + Camelot key live on the IndexEntry, not on
+                # DjMeta -- look them up so the log line carries the
+                # full picture (cues + intro/outro + tempo + key).
+                from autodj.dj_meta import camelot_label
+
+                idx = getattr(self._sim, "_path_to_idx", {}).get(path)
+                bpm_str = "BPM ?"
+                cam = "--"
+                if idx is not None:
+                    e = self._sim.entries[idx]
+                    if e.bpm:
+                        bpm_str = f"{e.bpm:.0f} BPM"
+                    cam = camelot_label(e.key, e.mode)
                 logger.info(
-                    "Background analysis done: %s -> %d cues, intro_end=%.1fs, outro_start=%.1fs",
+                    "Background analysis done: %s -> %d cues, "
+                    "intro_end=%.1fs, outro_start=%.1fs, %s, %s",
                     Path(path).name,
                     len(meta.cues),
                     meta.intro_end_s or 0.0,
                     meta.outro_start_s or 0.0,
+                    bpm_str,
+                    cam,
                 )
             except (OSError, ValueError, RuntimeError) as exc:
                 logger.warning("Background analysis failed for %s: %s", path, exc)

@@ -404,8 +404,9 @@ class PlayerBridge:
             except Exception:
                 # Picker failed (empty index after prune, FAISS error, ...).
                 # Leave state untouched so the browser keeps playing the
-                # current track and the user can retry.
-                logger.debug("advance_now: _pick_next(cur) failed", exc_info=True)
+                # current track and the user can retry.  Warning so the
+                # default INFO floor surfaces it without -v.
+                logger.warning("advance_now: _pick_next(cur) failed", exc_info=True)
                 return
         else:
             return
@@ -436,7 +437,10 @@ class PlayerBridge:
         try:
             state.next_track = p._pick_next(nxt)
         except Exception:
-            logger.debug("advance_now: next-track refresh failed", exc_info=True)
+            # Browser will see "no upcoming track" until the next advance
+            # rebuilds it.  Warning so the default INFO floor surfaces
+            # the picker failure without -v.
+            logger.warning("advance_now: next-track refresh failed", exc_info=True)
             state.next_track = None
         # Pre-warm the DJ-meta cache for the upcoming track too so its
         # intro_end_s / outro_start_s / cues are ready by the time the
@@ -452,6 +456,29 @@ class PlayerBridge:
         state.record_played(nxt)
         state.track_number += 1
         p._previous_track = cur
+
+        # Single-line advance banner (INFO).  Shows outgoing -> incoming
+        # with BPM + Camelot key + pick mode so a user tailing the log
+        # can see exactly what the browser just crossfaded into.  Cur
+        # is None on the very first seed advance; format conditionally.
+        try:
+            from autodj.dj_meta import camelot_label  # local — avoid cycles
+
+            def _fmt(t: Any) -> str:
+                if t is None:
+                    return "(none)"
+                bpm = f"{t.bpm:.0f} BPM" if getattr(t, "bpm", 0) else "BPM ?"
+                cam = camelot_label(getattr(t, "key", -1), getattr(t, "mode", -1))
+                return f"{t.display_name} ({bpm}, {cam})"
+
+            logger.info(
+                "Advance: %s -> %s, mode=%s",
+                _fmt(cur),
+                _fmt(nxt),
+                p._last_pick_mode,
+            )
+        except Exception:
+            logger.debug("advance_now: log banner failed", exc_info=True)
 
         # Update timer hint (browser drives the real clock; this just
         # keeps get_state's `duration` field correct on first WS push).
@@ -1270,9 +1297,37 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         broadcast = asyncio.create_task(_broadcast_loop())
         watcher = asyncio.create_task(_index_watcher_loop())
-        yield
-        broadcast.cancel()
-        watcher.cancel()
+        try:
+            yield
+        finally:
+            # Graceful teardown.  Order matters:
+            #   1. Tell the Player thread to leave its wait-loop.  It is
+            #      a daemon thread so the process can exit either way,
+            #      but a clean stop lets pynput / sounddevice release
+            #      OS handles instead of being torn down mid-call.
+            #   2. Flush the DJ-meta sidecar so any cues / beat grids
+            #      computed in background threads land on disk.
+            #   3. Cancel the broadcast + watcher tasks last and await
+            #      them with CancelledError suppressed so asyncio does
+            #      not log "Task was destroyed but it is pending" on
+            #      Ctrl+C exit.
+            logger.info("Shutting down...")
+            try:
+                bridge.player._state.should_stop = True
+                bridge.player._skip_event.set()
+            except Exception:
+                logger.debug("shutdown: player stop signal failed", exc_info=True)
+            try:
+                cache = getattr(bridge.player, "_dj_cache", None)
+                if cache is not None:
+                    cache.flush(force=True)
+            except Exception:
+                logger.debug("shutdown: dj-meta flush failed", exc_info=True)
+            for task in (broadcast, watcher):
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
+            logger.info("Server stopped cleanly.")
 
     app = FastAPI(title="AutoDJ", version="0.1.0", lifespan=lifespan)
 
@@ -2248,4 +2303,10 @@ def serve(
     if ssl_certfile and ssl_keyfile:
         uvicorn_kwargs["ssl_certfile"] = ssl_certfile
         uvicorn_kwargs["ssl_keyfile"] = ssl_keyfile
-    uvicorn.run(app, **uvicorn_kwargs)
+    # uvicorn normally swallows SIGINT and exits cleanly via the
+    # FastAPI lifespan, but a second Ctrl+C (or a SIGINT received
+    # mid-asyncio-teardown on Windows) can re-raise.  Suppress so the
+    # CLI sees a clean return; the lifespan already logged
+    # "Server stopped cleanly."
+    with contextlib.suppress(KeyboardInterrupt):
+        uvicorn.run(app, **uvicorn_kwargs)
