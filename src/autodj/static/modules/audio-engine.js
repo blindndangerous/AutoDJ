@@ -10,8 +10,8 @@
 // module; resetTrackCaches() handles the WebSocket-reconnect reset
 // that previously inlined three direct assignments.
 
-import { dbg as _dbg } from "./dom-helpers.js";
-import { clearLiveRegionLater as _clearLiveRegionLater } from "./live-region.js";
+import { dbg } from "./dom-helpers.js";
+import { clearLiveRegionLater } from "./live-region.js";
 
 // DOM refs are looked up here so app.js doesn't have to inject them.
 const eqLow      = document.getElementById("eq-low");
@@ -92,7 +92,7 @@ btnEqReset.addEventListener("click", () => {
   }
   postEq();
   eqAnnounce.textContent = "EQ reset to unity.";
-  _clearLiveRegionLater(eqAnnounce);
+  clearLiveRegionLater(eqAnnounce);
   // Per a11y review, focus stays on Reset button.
 });
 
@@ -1841,7 +1841,7 @@ export function startCrossfade(nextPath, fadeSec, serverLed = false) {
   if (!_ctx || crossfading) return;
   if (!nextPath) return;
   crossfading = true;
-  _dbg("crossfade ->", nextPath, "| fade=", fadeSec.toFixed(2), "s",
+  dbg("crossfade ->", nextPath, "| fade=", fadeSec.toFixed(2), "s",
     "| serverLed=", serverLed);
 
   const standby = deckStandby();
@@ -2099,7 +2099,7 @@ function _resolveFadeSec(mode, baseFade, outroLen, nextIntroEnd) {
 }
 
 // First-click unlock — used by the unified Play button (btnPause).
-async function unlockAndPlay() {
+export async function unlockAndPlay() {
   ensureAudioGraph();
   if (_ctx && _ctx.state === "suspended") await _ctx.resume();
   // Start a silent play() on the active deck to satisfy iOS gesture rule.
@@ -2290,4 +2290,11 @@ export function resetTrackCaches() {
   _currentOutroLenCache    = null;
   _currentOutroStartCache  = null;
   _nextTrackIntroEndCache  = null;
+}
+
+// Setter for `_lastBrowserPlayback` so app.js (which mirrors this from
+// the WS state push) can update the binding without violating the ES
+// module import-reassignment rule.
+export function setLastBrowserPlayback(v) {
+  _lastBrowserPlayback = !!v;
 }

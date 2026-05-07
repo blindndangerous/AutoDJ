@@ -9,19 +9,34 @@
 // easy to filter in DevTools.
 // ----------------------------------------------------------------
 
-export const DEBUG = (() => {
+// Lazy-evaluated so module import does not touch `localStorage`.
+// Node's native webstorage runtime (used under jsdom and accessed by
+// vitest's environment shim) emits a noisy
+// "--localstorage-file was provided without a valid path" warning the
+// first time anything reads localStorage, regardless of try/catch.
+// Module init now stays clean; the cost is one extra function call
+// per debug-checked code path (negligible).
+let _debugCached = null;
+export function isDebug() {
+  if (_debugCached !== null) return _debugCached;
   try {
     const params = new URLSearchParams(location.search);
-    if (params.get("debug") === "1") return true;
+    if (params.get("debug") === "1") { _debugCached = true; return true; }
   } catch (_) {}
   try {
-    if (localStorage.getItem("autodjDebug") === "1") return true;
+    if (typeof globalThis !== "undefined" &&
+        globalThis.localStorage &&
+        globalThis.localStorage.getItem("autodjDebug") === "1") {
+      _debugCached = true;
+      return true;
+    }
   } catch (_) {}
+  _debugCached = false;
   return false;
-})();
+}
 
 export function dbg(...args) {
-  if (!DEBUG) return;
+  if (!isDebug()) return;
   console.log("[autodj]", ...args);
 }
 

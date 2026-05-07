@@ -2,15 +2,15 @@
 // the historical underscore-prefixed names so the rest of this file
 // keeps working without a sweep.
 import {
-  DEBUG as _DEBUG,
-  dbg as _dbg,
+  isDebug,
+  dbg,
   fmtTime,
   fmtTrack,
   escHtml,
-  isTypingTarget as _isTypingTarget,
+  isTypingTarget,
 } from "./modules/dom-helpers.js";
 
-if (_DEBUG) {
+if (isDebug()) {
   console.log("[autodj] debug logging ENABLED " +
     "(disable with localStorage.removeItem('autodjDebug') " +
     "or remove ?debug=1 from URL).");
@@ -107,7 +107,7 @@ function applyState(s) {
   // voice liner block at the bottom of this file).  Safe to call here
   // because module-init runs top-to-bottom and the helper is defined
   // before WS messages start arriving.
-  if (typeof _bumpLinerTrackCount === "function") _bumpLinerTrackCount(s);
+  if (typeof _bumpLinerTrackCount === "function") bumpLinerTrackCount(s);
 
   // Now Playing
   const trackKey   = s.current_track ? s.current_track.path : null;
@@ -133,7 +133,7 @@ function applyState(s) {
     // Refresh cover art and full lyric list for the new track
     if (trackKey) {
       loadCoverArt(trackKey);
-      loadLyrics();
+      loadLyrics(_lyricEls);
     } else {
       coverArt.hidden = true;
       coverArt.src = "";
@@ -155,8 +155,9 @@ function applyState(s) {
   }
   npMeta.textContent = parts.join(" \u00b7 ");
 
-  // Badges + announce on track change
-  applyBadges(s);
+  // Badges + announce on track change.  Module needs the els bag and
+  // a couple of dispatcher-owned values (lastTrackKey, renderCueStrip).
+  applyBadges(s, { badgesRow, badgesAnnounce }, { lastTrackKey, renderCueStrip });
 
   // Camelot wheel — decorative only.  Pull harmonic_mode from settings
   // so the highlighted "compatible" set matches what the picker uses.
@@ -207,7 +208,7 @@ function applyState(s) {
   }
 
   // Snapshot for first-click unlock branch in btnPause handler
-  _lastBrowserPlayback = !!s.browser_playback;
+  setLastBrowserPlayback(s.browser_playback);
 
   // Unified Play / Pause / Resume button.  Three states:
   //   1. No track yet \u2192 "Play", disabled
@@ -275,16 +276,16 @@ function applyState(s) {
   }
 
   // Lyrics \u2014 visible list highlight + announce only on line change
-  applyLyricsState(s);
+  applyLyricsState(s, _lyricEls);
 
   // Why this track? \u2014 refresh only on track change to avoid pointless WS churn
   applyWhyState(s);
 
   // Library job log + status
-  applyLibraryJobState(s);
+  applyLibraryJobState(s, _libEls);
 
   // Queue \u2014 render if changed
-  applyQueueState(s.queue || []);
+  applyQueueState(s.queue || [], _queueEls);
 
   // Browser-side audio (when server runs headless / no_playback)
   applyBrowserPlaybackState(s);
@@ -302,8 +303,8 @@ function applyState(s) {
 
 // Settings panel sync moved to ./modules/settings-panel.js.
 import {
-  applySettingsState as _applySettingsStateImpl,
-  postSettings as _postSettingsImpl,
+  applySettingsState,
+  postSettings as _postSettingsModule,
 } from "./modules/settings-panel.js";
 
 const _settingsEls = () => ({
@@ -318,9 +319,8 @@ const _settingsEls = () => ({
   discEnabled, discEvery,
 });
 
-function applySettingsState(st) { _applySettingsStateImpl(st, _settingsEls()); }
 function postSettings(url, body) {
-  return _postSettingsImpl(url, body, { settingsStatus });
+  return _postSettingsModule(url, body, { settingsStatus });
 }
 
 presetSelect.addEventListener("change", () => {
@@ -647,51 +647,8 @@ discEvery.addEventListener("change", () => {
   if (discEnabled.checked) postDiscovery();
 });
 
-// ----------------------------------------------------------------
-// Badges (BPM / Camelot key / energy / beatmatch ratio)
-// ----------------------------------------------------------------
-
-function applyBadges(s) {
-  const t = s.current_track;
-  if (!t) {
-    badgesRow.innerHTML = "";
-    return;
-  }
-  const out = [];
-  if (t.bpm)            out.push(`<span class="badge">${Math.round(t.bpm)} BPM</span>`);
-  if (t.camelot && t.camelot !== "--")
-                        out.push(`<span class="badge badge-key">Key ${escHtml(t.camelot)}</span>`);
-  if (t.energy && t.energy > 0)
-                        out.push(`<span class="badge">Energy ${(t.energy).toFixed(2)}</span>`);
-  if (s.beatmatch_ratio && Math.abs(s.beatmatch_ratio - 1.0) > 0.005)
-                        out.push(`<span class="badge badge-stretch">Beatmatch ${s.beatmatch_ratio.toFixed(3)}x</span>`);
-  badgesRow.innerHTML = out.join("");
-
-  // Announce key + BPM only on track change (not on every WS tick).
-  // Same trigger as the title aria-live: track-id change has already updated
-  // lastTrackKey above, so only fire here when WE see a fresh track AND
-  // we have a key/BPM to read.  Spell "times" for beatmatch (per a11y review).
-  if (s.current_track.path === lastTrackKey && lastBadgeKey !== s.current_track.path) {
-    lastBadgeKey = s.current_track.path;
-    const phrases = [];
-    if (t.camelot && t.camelot !== "--") phrases.push(`Key ${t.camelot}`);
-    if (t.bpm) phrases.push(`BPM ${Math.round(t.bpm)}`);
-    if (s.beatmatch_ratio && Math.abs(s.beatmatch_ratio - 1.0) > 0.005) {
-      phrases.push(`beatmatched ${s.beatmatch_ratio.toFixed(2)} times`);
-    }
-    // Cue-point summary intentionally NOT announced -- key + BPM is
-    // what users want on track change.  Cue strip on the progress bar
-    // still conveys the markers visually for sighted users.
-    if (phrases.length) {
-      // Slight delay so the title aria-live region speaks first
-      setTimeout(() => {
-        badgesAnnounce.textContent = phrases.join(", ");
-        _clearLiveRegionLater(badgesAnnounce);
-      }, 800);
-    }
-  }
-  renderCueStrip(t);
-}
+// Badges moved to ./modules/badges.js.
+import { applyBadges } from "./modules/badges.js";
 
 // ----------------------------------------------------------------
 // Cue strip — decorative markers on the progress bar.
@@ -700,80 +657,53 @@ function applyBadges(s) {
 
 // Cue strip rendering moved to ./modules/cues.js.
 import {
-  renderCueStrip as _renderCueStripImpl,
-  summariseCues as _summariseCues,
+  renderCueStrip as _renderCueStripModule,
+  summariseCues,
 } from "./modules/cues.js";
 
 const _cueStrip = document.getElementById("cue-strip");
-function renderCueStrip(track) { _renderCueStripImpl(_cueStrip, track); }
+function renderCueStrip(track) { _renderCueStripModule(_cueStrip, track); }
 
 // Camelot wheel rendering moved to ./modules/camelot-wheel.js.
-import { applyCamelotWheel as _applyCamelotWheelImpl } from "./modules/camelot-wheel.js";
+import { applyCamelotWheel as _applyCamelotWheelModule } from "./modules/camelot-wheel.js";
 
 const _camelotSectors = document.getElementById("camelot-sectors");
 const _camelotLabels  = document.getElementById("camelot-labels");
 
 function applyCamelotWheel(currentCell, harmonicMode) {
-  _applyCamelotWheelImpl(currentCell, harmonicMode, {
+  _applyCamelotWheelModule(currentCell, harmonicMode, {
     sectorsEl: _camelotSectors,
     labelsEl:  _camelotLabels,
   });
 }
 
-// Audio engine extracted to ./modules/audio-engine.js.  See module
-// header for the full export list; we re-import everything app.js
-// touches below as a namespace import for clarity.
-import * as _audio from "./modules/audio-engine.js";
-const {
-  setVolume,
-  applyBrowserPlaybackState,
-  startCrossfade,
-  stopAllDecks,
-  applyEqState,
-  loadCoverArt,
-  applyTransitionFx,
-  resetTrackCaches,
-  ensureAudioGraph,
-  unlockAndPlay,
+// Audio engine extracted to ./modules/audio-engine.js.  Named imports
+// for the bindings (`_ctx`, `decks`, ...) keep ES module live-binding
+// semantics so closures inside this file see updates without explicit
+// accessors.
+import {
+  setVolume, applyBrowserPlaybackState, startCrossfade, stopAllDecks,
+  applyEqState, loadCoverArt, applyTransitionFx, resetTrackCaches,
+  ensureAudioGraph, unlockAndPlay,
   deckActive, deckStandby, setSrcOnDeck, playOnDeck,
   postEq, eqValueLabel,
-} = _audio;
-// Live-binding accessors -- ES module bindings stay reactive when read
-// but cannot be reassigned from the importer.  We use these inside
-// closures (transport buttons, liners playLiner deps, hotkeys volume
-// nudge) so the latest value is always observed.
-function _getCtx()                  { return _audio._ctx; }
-function _getDecks()                { return _audio.decks; }
-function _getActiveIdx()            { return _audio.activeIdx; }
-function _getVolume()               { return _audio._volume; }
-function _getLastBrowserPlayback()  { return _audio._lastBrowserPlayback; }
-function _getPlaybackEnabled()      { return _audio.playbackEnabled; }
-function _getOutBpm()               { return _audio._outBpmCache; }
-function _getInBpm()                { return _audio._inBpmCache; }
-function _getCrossfadeSeconds()     { return _audio._crossfadeSecondsCache; }
-function _getNextTrackPath()        { return _audio._nextTrackPathCache; }
-function _getBeatmatchOnSkip()      { return _audio._beatmatchOnSkip; }
-function _getCrossfading()          { return _audio.crossfading; }
+  _ctx, decks, activeIdx, _volume, _lastBrowserPlayback, playbackEnabled,
+  _outBpmCache, _inBpmCache,
+  _crossfadeSecondsCache, _nextTrackPathCache,
+  _beatmatchOnSkip, crossfading,
+  setLastBrowserPlayback,
+} from "./modules/audio-engine.js";
 
 
 
 // Lyrics rendering moved to ./modules/lyrics.js.
 import {
-  loadLyrics as _loadLyricsImpl,
-  applyLyricsState as _applyLyricsStateImpl,
-  renderLyricsList as _renderLyricsListImpl,
+  loadLyrics, applyLyricsState, renderLyricsList,
   resetLyricState,
   getCachedLyrics,
 } from "./modules/lyrics.js";
 
-const _lyricEls = () => ({
-  lyricsCard,
-  lyricsList,
-  lyricAnnounce,
-});
-
-async function loadLyrics() { return _loadLyricsImpl(_lyricEls()); }
-function renderLyricsList() { _renderLyricsListImpl(_lyricEls()); }
+const _lyricEls = { lyricsCard, lyricsList, lyricAnnounce };
 
 // ----------------------------------------------------------------
 // Why this track? — plain-English explanation of the pick
@@ -801,18 +731,15 @@ function applyWhyState(s) {
 }
 
 
-function applyLyricsState(s) { _applyLyricsStateImpl(s, _lyricEls()); }
+
 
 // Queue (render + Up/Down/Remove buttons) moved to ./modules/queue.js.
 import {
-  applyQueueState as _applyQueueStateImpl,
-  installQueueButtons,
-  renderQueue as _renderQueueImpl,
+  applyQueueState, installQueueButtons,
 } from "./modules/queue.js";
 
 const _queueEls = { queueList, queueCount, queueAnnounce };
 installQueueButtons(_queueEls);
-function applyQueueState(queue) { _applyQueueStateImpl(queue, _queueEls); }
 
 function renderHistory() {
   if (historyItems.length === 0) return;
@@ -851,7 +778,7 @@ function connectWS() {
   ws.onclose = () => {
     _ws = null;
     setConnStatus("error", "Disconnected");
-    // Server gone — stop both _getDecks() immediately so audio doesn't keep
+    // Server gone — stop both decks immediately so audio doesn't keep
     // playing from the buffered <audio> elements after Ctrl+C on serve.
     stopAllDecks();
     // Clear stale intro / outro markers so the next reconnect doesn't
@@ -879,7 +806,7 @@ connectWS();
 btnPause.addEventListener("click", async () => {
   // First-click unlock path \u2014 synchronous play() inside the click
   // handler is required for iOS autoplay grants.
-  if (!_getPlaybackEnabled() && _getLastBrowserPlayback()) {
+  if (!playbackEnabled && _lastBrowserPlayback) {
     try {
       await unlockAndPlay();
     } catch (_) { /* unlockAndPlay already announced the error */ }
@@ -899,7 +826,7 @@ btnPause.addEventListener("click", async () => {
   } catch (_) { /* ignore \u2014 next WS state push will reconcile */ }
 });
 
-// (`_getLastBrowserPlayback()` is declared up in the audio playback module so
+// (`_lastBrowserPlayback` is declared up in the audio playback module so
 // the click handler can safely reference it before the first WS push.)
 
 btnSkip.addEventListener("click", async () => {
@@ -907,31 +834,31 @@ btnSkip.addEventListener("click", async () => {
   // In browser-playback mode, run a client-side crossfade with the
   // current transition effect.  Falls back to plain server skip if the
   // audio context isn't running yet (user hasn't clicked Play).
-  if (_getLastBrowserPlayback() && _getPlaybackEnabled() && _getCtx() && _getNextTrackPath() && !_getCrossfading()) {
+  if (_lastBrowserPlayback && playbackEnabled && _ctx && _nextTrackPathCache && !crossfading) {
     // Beatmatch-on-skip: when the user opted in AND both BPMs are
     // known, pitch-shift the standby deck so the new track joins the
     // existing groove instead of cold-cutting.  preservesPitch=true
     // gives a tempo-only stretch (proper beatmatch).  Reverted at
     // crossfade teardown by the timeout below.
     let bmRevert = null;
-    if (_getBeatmatchOnSkip() && _getOutBpm() > 0 && _getInBpm() > 0) {
-      const ratio = _getOutBpm() / _getInBpm();
+    if (_beatmatchOnSkip && _outBpmCache > 0 && _inBpmCache > 0) {
+      const ratio = _outBpmCache / _inBpmCache;
       // Clamp ±15% so wildly mismatched tempos don't sound silly.
       const clamped = Math.max(0.85, Math.min(1.15, ratio));
-      const standby = _getDecks()[_getActiveIdx() ^ 1];
+      const standby = decks[activeIdx ^ 1];
       const audio = standby.audio;
       const prevPitch = audio.preservesPitch;
       const prevRate = audio.playbackRate;
       try { audio.preservesPitch = true; } catch (_) {}
       try { audio.playbackRate = clamped; } catch (_) {}
-      _dbg("beatmatch-on-skip: ratio=", clamped.toFixed(3),
-        "(", _getOutBpm().toFixed(1), "/", _getInBpm().toFixed(1), ")");
+      dbg("beatmatch-on-skip: ratio=", clamped.toFixed(3),
+        "(", _outBpmCache.toFixed(1), "/", _inBpmCache.toFixed(1), ")");
       bmRevert = setTimeout(() => {
         try { audio.playbackRate = prevRate; } catch (_) {}
         try { audio.preservesPitch = prevPitch; } catch (_) {}
-      }, _getCrossfadeSeconds() * 1000 + 200);
+      }, _crossfadeSecondsCache * 1000 + 200);
     }
-    startCrossfade(_getNextTrackPath(), _getCrossfadeSeconds());
+    startCrossfade(_nextTrackPathCache, _crossfadeSecondsCache);
   } else {
     await fetch("/api/skip", { method: "POST" });
   }
@@ -953,9 +880,9 @@ function _seekTrackDuration() {
   // Active deck's duration when known (browser-playback mode); falls
   // back to the cached duration computed in renderState.  Both are
   // expressed in seconds.
-  if (_getLastBrowserPlayback()) {
+  if (_lastBrowserPlayback) {
     try {
-      const d = _getDecks()[_getActiveIdx()].audio.duration;
+      const d = decks[activeIdx].audio.duration;
       if (isFinite(d) && d > 0) return d;
     } catch (_) {}
   }
@@ -965,15 +892,15 @@ function _seekTrackDuration() {
 function _seekToFrac(frac, opts) {
   const dur = _seekTrackDuration();
   if (!(dur > 0)) return;
-  _dbg("seek ->", (frac * 100).toFixed(1) + "%", "of", dur.toFixed(1), "s");
+  dbg("seek ->", (frac * 100).toFixed(1) + "%", "of", dur.toFixed(1), "s");
   const f = Math.max(0, Math.min(1, frac));
   const seconds = f * dur;
   // Local audio jump in browser-playback mode so the user hears the
   // change immediately; server is informed in parallel for state sync
   // (CLI listeners + reconnect-time replay).
-  if (_getLastBrowserPlayback()) {
+  if (_lastBrowserPlayback) {
     try {
-      _getDecks()[_getActiveIdx()].audio.currentTime = Math.max(0, Math.min(dur - 0.1, seconds));
+      decks[activeIdx].audio.currentTime = Math.max(0, Math.min(dur - 0.1, seconds));
     } catch (_) {}
   }
   // Throttle aria updates while dragging to avoid flooding NVDA.
@@ -1065,7 +992,7 @@ btnMute.addEventListener("click", async () => {
 const btnShortcuts = document.getElementById("btn-shortcuts");
 const btnShortcutsClose = document.getElementById("btn-shortcuts-close");
 if (btnShortcuts) {
-  btnShortcuts.addEventListener("click", () => _toggleShortcutsModal());
+  btnShortcuts.addEventListener("click", () => toggleShortcutsModal());
 }
 if (btnShortcutsClose) {
   btnShortcutsClose.addEventListener("click", () => {
@@ -1090,7 +1017,7 @@ let volAnnounceTimer = null;
 // Live-region clear helper extracted to ./modules/live-region.js.
 // Re-bound under the legacy underscore name so existing call sites
 // keep working without a sweep.
-import { clearLiveRegionLater as _clearLiveRegionLater } from "./modules/live-region.js";
+import { clearLiveRegionLater } from "./modules/live-region.js";
 // Logarithmic (perceptual) volume curve — humans hear loudness as
 // log of amplitude, so a linear slider feels backwards: 0-50 % barely
 // changes, 80-100 % feels too loud.  Map slider 0-100 → gain via
@@ -1144,7 +1071,7 @@ volSlider.addEventListener("input", () => {
   volAnnounceTimer = setTimeout(() => {
     if (volAnnounce) {
       volAnnounce.textContent = `Volume ${val}%.`;
-      _clearLiveRegionLater(volAnnounce);
+      clearLiveRegionLater(volAnnounce);
     }
   }, 250);
 });
@@ -1154,7 +1081,7 @@ volSlider.addEventListener("input", () => {
 // after the relevant DOM refs are populated -- see _hotkeysReady().
 import {
   installHotkeys,
-  toggleShortcutsModal as _toggleShortcutsModal,
+  toggleShortcutsModal,
 } from "./modules/hotkeys.js";
 
 function _wireHotkeysWhenReady() {
@@ -1180,7 +1107,7 @@ import {
 
 installMediaActionHandlers({
   onPlay: () => {
-    if (!_getPlaybackEnabled() && _getLastBrowserPlayback()) unlockAndPlay().catch(() => {});
+    if (!playbackEnabled && _lastBrowserPlayback) unlockAndPlay().catch(() => {});
     else fetch("/api/pause", { method: "POST" });
   },
 });
@@ -1205,7 +1132,7 @@ installSearch({
 // Library tools panel moved to ./modules/library-jobs.js.
 import {
   installLibraryJobs,
-  applyLibraryJobState as _applyLibraryJobStateImpl,
+  applyLibraryJobState,
 } from "./modules/library-jobs.js";
 
 const _libEls = {
@@ -1225,15 +1152,14 @@ const _libEls = {
   statWithEnergy:  document.getElementById("lib-stat-with-energy"),
 };
 installLibraryJobs(_libEls);
-function applyLibraryJobState(s) { _applyLibraryJobStateImpl(s, _libEls); }
 
 // Tab router moved to ./modules/tabs.js.
-import { initViewRouter as _initViewRouter } from "./modules/tabs.js";
+import { initViewRouter } from "./modules/tabs.js";
 
 if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", _initViewRouter, { once: true });
+  document.addEventListener("DOMContentLoaded", initViewRouter, { once: true });
 } else {
-  _initViewRouter();
+  initViewRouter();
 }
 
 // ----------------------------------------------------------------
@@ -1253,16 +1179,16 @@ fetch("/api/status")
 
 // data-show-when mechanism moved to ./modules/show-when.js.
 import {
-  applyShowWhen as _applyShowWhen,
+  applyShowWhen,
   installShowWhenListener,
 } from "./modules/show-when.js";
 installShowWhenListener();
 // Apply once at load + after every state push (server may flip a
 // checkbox via WS without the user touching it).
-_applyShowWhen();
+applyShowWhen();
 
 // Voice liners moved to ./modules/liners.js.
-import { installLiners, bumpLinerTrackCount as _bumpLinerTrackCount } from "./modules/liners.js";
+import { installLiners, bumpLinerTrackCount } from "./modules/liners.js";
 
 const _linerEls = {
   lnEnabled:       document.getElementById("ln-enabled"),
@@ -1285,25 +1211,25 @@ const _linerEls = {
 // values at call time so the module never holds a stale ref.
 installLiners(_linerEls, {
   postSettings: (url, body) => postSettings(url, body),
-  canPlay:      () => !!_getCtx() && !!_getLastBrowserPlayback(),
+  canPlay:      () => !!_ctx && !!_lastBrowserPlayback,
   playLiner: async (arrayBuf, duckDb) => {
-    if (!_getCtx()) return false;
-    const audioBuf = await _getCtx().decodeAudioData(arrayBuf);
-    const src  = _getCtx().createBufferSource();
+    if (!_ctx) return false;
+    const audioBuf = await _ctx.decodeAudioData(arrayBuf);
+    const src  = _ctx.createBufferSource();
     src.buffer = audioBuf;
-    const gain = _getCtx().createGain();
+    const gain = _ctx.createGain();
     gain.gain.value = 1.0;
     src.connect(gain);
-    gain.connect(_getCtx().destination);
+    gain.connect(_ctx.destination);
     const duckLin = Math.pow(10, duckDb / 20);
     const dur = audioBuf.duration;
-    const t0 = _getCtx().currentTime;
-    const active = _getDecks()[_getActiveIdx()];
+    const t0 = _ctx.currentTime;
+    const active = decks[activeIdx];
     active.gain.gain.cancelScheduledValues(t0);
     active.gain.gain.setValueAtTime(active.gain.gain.value, t0);
-    active.gain.gain.linearRampToValueAtTime(_getVolume() * duckLin, t0 + 0.2);
-    active.gain.gain.setValueAtTime(_getVolume() * duckLin, t0 + dur - 0.2);
-    active.gain.gain.linearRampToValueAtTime(_getVolume(), t0 + dur + 0.2);
+    active.gain.gain.linearRampToValueAtTime(_volume * duckLin, t0 + 0.2);
+    active.gain.gain.setValueAtTime(_volume * duckLin, t0 + dur - 0.2);
+    active.gain.gain.linearRampToValueAtTime(_volume, t0 + dur + 0.2);
     src.start(t0);
     return true;
   },
