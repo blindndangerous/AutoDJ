@@ -243,6 +243,21 @@
     <p id="next-track-text" aria-live="polite" aria-atomic="true">—</p>
   </details>
 
+  <!-- Lyrics — collapsed by default; expands when the current track has
+       LRC / beets / embedded lyrics.  Active-line auto-read uses the
+       polite #lyric-announce region below; pattern verified by
+       accessibility-lead. -->
+  <details id="lyrics-card" class="card" aria-labelledby="lyrics-heading" hidden>
+    <summary><h2 id="lyrics-heading">Lyrics</h2></summary>
+    <ol id="lyrics-list" role="list" aria-label="Lyric lines"></ol>
+    <!-- Visually hidden live region: announces only the active line, only on
+         change (not on every WS tick).  aria-atomic so the full new line reads. -->
+    <div id="lyric-announce"
+         aria-live="polite"
+         aria-atomic="true"
+         class="visually-hidden"></div>
+  </details>
+
   </section>
   <!-- ============================================================
        View: Settings — every CLI flag mirrored as a form control
@@ -652,18 +667,6 @@
       <h3>Files</h3>
       <ul id="ln-file-list" aria-label="Voice liner files"></ul>
     </fieldset>
-  </details>
-
-  <!-- Lyrics -->
-  <details id="lyrics-card" class="card" aria-labelledby="lyrics-heading" hidden>
-    <summary><h2 id="lyrics-heading">Lyrics</h2></summary>
-    <ol id="lyrics-list" role="list" aria-label="Lyric lines"></ol>
-    <!-- Visually hidden live region: announces only the active line, only on
-         change (not on every WS tick).  aria-atomic so the full new line reads. -->
-    <div id="lyric-announce"
-         aria-live="polite"
-         aria-atomic="true"
-         class="visually-hidden"></div>
   </details>
 
   </section>

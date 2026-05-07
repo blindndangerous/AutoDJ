@@ -10,6 +10,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed (post-feature batch)
 
+- **librosa promoted to a base dependency.**  Previously declared only
+  under the `index` and `play` optional extras.  Browser-driven serve
+  loads it lazily for cue / beat detection in the new background
+  analysis path; without it, `analyse_audio` returned an empty meta
+  and the failure was silently caught at the `except ImportError`
+  boundary.  `uv add librosa` made it a base requirement and the
+  ImportError path now emits a `WARNING` with the install command so
+  the next user does not have to reverse-engineer the silence.
+- **Default log level raised from WARNING to INFO.**  Server boot,
+  WebSocket connect / disconnect (with client host + active count),
+  external-cue import results, background analysis success / failure,
+  and similar status messages now print without `-v`.  `-v` /
+  `--verbose` still drops to DEBUG.  `serve` now prints a friendly
+  ready banner with scheme, host, port, audio mode, indexed-track
+  count, seed track, and a tip on enabling debug logs (CLI `-v` or
+  browser `?debug=1` / `localStorage.autodjDebug='1'`).
+- **Lyrics card lived in the Settings tab.**  Moved into the Now
+  Playing tab where the active-line aria-live announcer can pair
+  with the rest of the now-playing region.  No ID changes; behaviour
+  identical -- the card stays `hidden` until `applyLyricsState` flips
+  it visible.
+- **Live-region messages no longer linger.**  Volume, EQ, badges,
+  queue, search-count, and liner-status announcements (each living in
+  visually-hidden polite aria-live regions) used to stay parked in
+  the DOM forever after the announcer spoke them.  Users running with
+  a Speech Viewer, or any stylesheet override that reveals
+  `.visually-hidden`, would see a growing pile at the page bottom.
+  New `_clearLiveRegionLater(el, dwellMs=3000)` helper wipes
+  `textContent` a few seconds after each announce, so each region is
+  empty between events.  Settings-status long-form errors and the
+  library-job status (which carries persistent run state) keep their
+  existing dwell behaviour.
+- **Cue summary dropped from the track-change announcement.**  Key +
+  BPM read on every track change.  Cue strip on the progress bar
+  still conveys markers visually for sighted users; the listbox
+  removal in the previous commit removed the redundant text path.
+
 - **Cue list always empty in browser-driven serve.**  `analyse_audio`
   (which calls `detect_cues` to emit `first_downbeat`, `drop`,
   `breakdown`, `phrase`, `outro_downbeat` markers) was wired only into

@@ -25,6 +25,7 @@ dependencies = [
     "click>=8.1.0",              # CLI framework
     "rich>=13.0.0",              # terminal UI (panels, tables)
     "python-multipart>=0.0.27",
+    "librosa>=0.11.0",
 ]
 
 [project.optional-dependencies]

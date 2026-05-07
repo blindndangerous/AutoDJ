@@ -818,12 +818,15 @@ function applyBadges(s) {
     if (s.beatmatch_ratio && Math.abs(s.beatmatch_ratio - 1.0) > 0.005) {
       phrases.push(`beatmatched ${s.beatmatch_ratio.toFixed(2)} times`);
     }
-    if (Array.isArray(t.cues) && t.cues.length > 0) {
-      phrases.push(_summariseCues(t.cues));
-    }
+    // Cue-point summary intentionally NOT announced -- key + BPM is
+    // what users want on track change.  Cue strip on the progress bar
+    // still conveys the markers visually for sighted users.
     if (phrases.length) {
       // Slight delay so the title aria-live region speaks first
-      setTimeout(() => { badgesAnnounce.textContent = phrases.join(", "); }, 800);
+      setTimeout(() => {
+        badgesAnnounce.textContent = phrases.join(", ");
+        _clearLiveRegionLater(badgesAnnounce);
+      }, 800);
     }
   }
   renderCueStrip(t);
@@ -1078,6 +1081,7 @@ btnEqReset.addEventListener("click", () => {
   }
   postEq();
   eqAnnounce.textContent = "EQ reset to unity.";
+  _clearLiveRegionLater(eqAnnounce);
   // Per a11y review, focus stays on Reset button.
 });
 
@@ -3478,6 +3482,7 @@ queueList.addEventListener("click", async (e) => {
   }
 
   queueAnnounce.textContent = announceMsg;
+  _clearLiveRegionLater(queueAnnounce);
 
   if (focusPath) {
     const target = queueList.querySelector(
@@ -3761,6 +3766,29 @@ btnDiscovery.addEventListener("click", () => {
 // doesn't re-announce every second).
 let volTimer = null;
 let volAnnounceTimer = null;
+
+// ----------------------------------------------------------------
+// Transient live-region helper.  Many polite aria-live regions on
+// the page (vol-announce, eq-announce, settings-status, ln-status,
+// search-count, badges-announce) are visually-hidden so sighted
+// users never see them — but AT users running a Speech Viewer, or
+// any user with a stylesheet override that reveals .visually-hidden,
+// would otherwise see a growing pile of stale messages parked at
+// the bottom of the page ("Volume 100%.  Volume 95%.  Volume 90%.").
+// Clear the textContent a few seconds after each announce so the
+// region is empty between events.
+// ----------------------------------------------------------------
+const _liveRegionClearTimers = new WeakMap();
+function _clearLiveRegionLater(el, dwellMs = 3000) {
+  if (!el) return;
+  const prev = _liveRegionClearTimers.get(el);
+  if (prev) clearTimeout(prev);
+  const t = setTimeout(() => {
+    if (el && el.textContent) el.textContent = "";
+    _liveRegionClearTimers.delete(el);
+  }, dwellMs);
+  _liveRegionClearTimers.set(el, t);
+}
 // Logarithmic (perceptual) volume curve — humans hear loudness as
 // log of amplitude, so a linear slider feels backwards: 0-50 % barely
 // changes, 80-100 % feels too loud.  Map slider 0-100 → gain via
@@ -3806,9 +3834,16 @@ volSlider.addEventListener("input", () => {
   }, 120);
   // Polite announce, debounced — fires only after user stops moving
   // the slider so screen readers don't read every intermediate step.
+  // Cleared 3 s after the announcement so AT users running with a
+  // Speech Viewer (or sighted users with a CSS override that reveals
+  // visually-hidden regions) don't see a stale "Volume 90%" parked at
+  // the bottom of the page after the announcer has already spoken it.
   clearTimeout(volAnnounceTimer);
   volAnnounceTimer = setTimeout(() => {
-    if (volAnnounce) volAnnounce.textContent = `Volume ${val}%.`;
+    if (volAnnounce) {
+      volAnnounce.textContent = `Volume ${val}%.`;
+      _clearLiveRegionLater(volAnnounce);
+    }
   }, 250);
 });
 
@@ -4052,6 +4087,7 @@ async function doSearch() {
     searchResults.innerHTML = `<li><span class="no-results">No results for \u201c${escHtml(q)}\u201d.</span></li>`;
     searchInput.setAttribute("aria-expanded", "true");
     searchCount.textContent = "No results found.";
+    _clearLiveRegionLater(searchCount);
     return;
   }
 
@@ -4073,6 +4109,7 @@ async function doSearch() {
   searchInput.setAttribute("aria-expanded", "true");
   // Announce count separately (not the full list) per advisory
   searchCount.textContent = `${results.length} result${results.length === 1 ? "" : "s"} found.`;
+  _clearLiveRegionLater(searchCount);
 }
 
 btnSearch.addEventListener("click", doSearch);
@@ -4107,6 +4144,7 @@ searchResults.addEventListener("click", async (e) => {
         body: JSON.stringify({ path, now: true }),
       });
       queueAnnounce.textContent = `Playing ${name} now.`;
+      _clearLiveRegionLater(queueAnnounce);
     } else {
       await fetch("/api/queue/add", {
         method: "POST",
@@ -4114,6 +4152,7 @@ searchResults.addEventListener("click", async (e) => {
         body: JSON.stringify({ path }),
       });
       queueAnnounce.textContent = `Added ${name} to queue.`;
+      _clearLiveRegionLater(queueAnnounce);
     }
   } finally {
     btn.disabled = false;
@@ -4406,6 +4445,7 @@ function _setLinerStatus(msg) {
   if (lnStatus) {
     lnStatus.classList.remove("visually-hidden");
     lnStatus.textContent = msg;
+    _clearLiveRegionLater(lnStatus, 4000);
   }
 }
 

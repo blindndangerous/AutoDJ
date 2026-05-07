@@ -143,6 +143,10 @@ def detect_beat_grid(audio: np.ndarray, sr: int) -> list[float]:
     try:
         import librosa
     except ImportError:  # pragma: no cover — librosa required by full install
+        logger.warning(
+            "librosa is not installed; beat / cue detection skipped.  "
+            "Install with: uv add librosa  (or: uv sync --extra all).",
+        )
         return []
 
     try:  # pragma: no cover — librosa internals

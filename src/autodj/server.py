@@ -1937,8 +1937,16 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
         # Parameter renamed from 'ws' to 'websocket' to avoid FastAPI
         # mistaking the path segment '/ws' for a query parameter.
         await websocket.accept()
+        client_host = getattr(getattr(websocket, "client", None), "host", "unknown")
         async with _ws_lock:
             _ws_clients.add(websocket)
+            client_count = len(_ws_clients)
+        logger.info(
+            "WebSocket connected: %s (%d active client%s)",
+            client_host,
+            client_count,
+            "" if client_count == 1 else "s",
+        )
         try:
             while True:
                 text = await websocket.receive_text()
@@ -1954,6 +1962,13 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
         finally:
             async with _ws_lock:
                 _ws_clients.discard(websocket)
+                remaining = len(_ws_clients)
+            logger.info(
+                "WebSocket disconnected: %s (%d active client%s remain)",
+                client_host,
+                remaining,
+                "" if remaining == 1 else "s",
+            )
 
     async def _broadcast_loop() -> None:  # pragma: no cover — long-running task
         """Push state JSON to all connected WebSocket clients once per second."""
@@ -2107,6 +2122,28 @@ def serve(
     player_thread.start()
 
     app = create_app(bridge)
+
+    scheme = "https" if (ssl_certfile and ssl_keyfile) else "http"
+    pretty_host = (
+        "localhost"
+        if host in ("0.0.0.0", "127.0.0.1", "::")  # nosec B104 — display only
+        else host
+    )
+    audio_mode = "server-audio" if not no_playback else "browser-driven"
+    logger.info(
+        "AutoDJ server ready: %s://%s:%d  (%s, %d indexed tracks, seed=%s)",
+        scheme,
+        pretty_host,
+        port,
+        audio_mode,
+        len(getattr(sim, "entries", []) or []),
+        getattr(seed_entry, "display_name", "random"),
+    )
+    logger.info(
+        "Tip: pass `-v` (autodj -v serve) for debug logs.  "
+        "Browser-side debug: append ?debug=1 to the URL or set "
+        "localStorage.autodjDebug='1'.",
+    )
 
     # ssl_certfile / ssl_keyfile flip uvicorn into HTTPS mode, which is
     # required by browsers to expose AudioWorklet on non-localhost hosts.

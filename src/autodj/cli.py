@@ -160,7 +160,7 @@ def _resolve_seed(
     "-v",
     is_flag=True,
     default=False,
-    help="Enable debug logging.",
+    help="Enable debug logging (otherwise info / warning / error are shown).",
 )
 @click.pass_context
 def cli(ctx: click.Context, config_path: str, verbose: bool) -> None:
@@ -172,7 +172,10 @@ def cli(ctx: click.Context, config_path: str, verbose: bool) -> None:
     ctx.ensure_object(dict)
     ctx.obj["config_path"] = config_path
 
-    level = logging.DEBUG if verbose else logging.WARNING
+    # Default level INFO so users see boot banners, WS connect /
+    # disconnect, background analysis progress, and external-cue import
+    # results without having to opt into -v.  -v drops to DEBUG.
+    level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
         format="%(levelname)s %(name)s: %(message)s",
         level=level,
