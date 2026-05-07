@@ -2514,7 +2514,13 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
   return tearAll;
 }
 
-function startCrossfade(nextPath, fadeSec) {
+// `serverLed` = the server already advanced (shuffle, queued "Now",
+// media-session next, CLI-side advance arriving via WS).  Browser is
+// only playing catch-up to render the visual / audible crossfade; it
+// MUST NOT POST /api/advance again or the server steps forward a
+// second time and a fresh state push triggers another catch-up
+// crossfade -- cascading "shuffles every few seconds" bug.
+function startCrossfade(nextPath, fadeSec, serverLed = false) {
   if (!_ctx || crossfading) return;
   if (!nextPath) return;
   crossfading = true;
@@ -2586,7 +2592,9 @@ function startCrossfade(nextPath, fadeSec) {
   const teardownFx = applyTransitionFx(fxName, effectDur, active, standby);
 
   suppressAdvance = true;
-  fetch("/api/advance", { method: "POST" }).catch(() => {});
+  if (!serverLed) {
+    fetch("/api/advance", { method: "POST" }).catch(() => {});
+  }
 
   setTimeout(() => {
     teardownFx();
@@ -2813,17 +2821,25 @@ function applyBrowserPlaybackState(s) {
     const active = deckActive();
     const path = s.current_track ? s.current_track.path : null;
     if (path && active.path !== path && !crossfading) {
-      // Three cases:
-      //   1. Initial load — active.path is null, just set + play.
-      //   2. Mid-playback w/ AudioContext — server changed current_track
+      // Four cases:
+      //   1. Paused — keep pause frozen.  Hard-cut to new track at
+      //      currentTime=0 with the deck still paused so the user
+      //      stays in control of when audio resumes (Shuffle while
+      //      paused must NOT auto-resume playback).
+      //   2. Initial load — active.path is null, just set + play.
+      //   3. Mid-playback w/ AudioContext — server changed current_track
       //      unexpectedly (Shuffle button, media-session next, Up Next
       //      "Now", server-side CLI advance).  Without a crossfade the
       //      live track would HARD-CUT to the new one — jarring.  Run
       //      the same client-side crossfade the regular skip path uses.
-      //   3. Mid-playback w/o AudioContext — first-click unlock hasn't
+      //   4. Mid-playback w/o AudioContext — first-click unlock hasn't
       //      happened yet; can't crossfade, just set + play.
-      if (active.path && _ctx) {
-        startCrossfade(path, _crossfadeSecondsCache);
+      if (s.is_paused) {
+        setSrcOnDeck(active, path);
+        try { active.audio.pause(); } catch (_) {}
+        try { active.audio.currentTime = 0; } catch (_) {}
+      } else if (active.path && _ctx) {
+        startCrossfade(path, _crossfadeSecondsCache, /* serverLed = */ true);
       } else {
         setSrcOnDeck(active, path);
         playOnDeck(active);

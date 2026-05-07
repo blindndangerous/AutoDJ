@@ -1204,6 +1204,36 @@ class TestMisc:
         assert "current_track" in resp.json()
         assert bridge.player._state.queued_next is not None
 
+    def test_random_track_preserves_pause_state(self, bridge) -> None:
+        """Shuffle (reseed) while paused must not auto-resume playback.
+
+        Regression: cascading-shuffle bug -- the browser-side fix relies on
+        `is_paused` surviving the reseed so the catch-up code path takes
+        the hard-cut branch instead of the crossfade branch.  This test
+        pins the server contract: `/api/random-track` is a state mutation
+        only -- it never flips `is_paused`.
+        """
+        from fastapi.testclient import TestClient
+
+        bridge.player._dry_run = True
+        bridge.player._export_m3u = None
+        bridge.player._history_file = None
+        # next_track refresh after advance returns a real entry (not a
+        # MagicMock) so _track_dict can serialise the response.
+        bridge.player._pick_next.return_value = _make_entry(99)
+        bridge.player._state.is_paused = True
+        prev_current = bridge.player._state.current_track
+
+        tc = TestClient(create_app(bridge))
+        resp = tc.post("/api/random-track")
+        assert resp.status_code == 200
+        # Pause survives the reseed.
+        assert bridge.player._state.is_paused is True
+        assert resp.json()["is_paused"] is True
+        # Current track actually changed (advance_now consumed queued_next).
+        assert bridge.player._state.current_track is not None
+        assert bridge.player._state.current_track is not prev_current
+
     def test_random_track_empty_index(self) -> None:
         from fastapi.testclient import TestClient
 
