@@ -1301,6 +1301,30 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
             headers=_NO_CACHE,
         )
 
+    # ES module imports.  index.html loads /app.js as a module; that
+    # script's `import "./modules/foo.js"` resolves against the script
+    # URL, so the browser fetches /modules/foo.js -- which previously
+    # had no route and 404'd in dev mode (no `npm run build`).
+    # Production (static_dist/) does not need this because vite bundles
+    # everything into a single /app.js, but the route is harmless when
+    # the directory is empty.  Path is sanitised to prevent traversal.
+    @app.get("/modules/{name}")
+    async def get_module(name: str) -> FileResponse:
+        # Reject anything outside the modules/ directory.
+        target = (_static_dir / "modules" / name).resolve()
+        modules_root = (_static_dir / "modules").resolve()
+        try:
+            target.relative_to(modules_root)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail="Not found") from exc
+        if not target.is_file():
+            raise HTTPException(status_code=404, detail="Not found")
+        return FileResponse(
+            target,
+            media_type="text/javascript",
+            headers=_NO_CACHE,
+        )
+
     # Serve any other assets at /static/...
     app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
 
