@@ -359,6 +359,14 @@ class PlayerBridge:
             return
 
         state.current_track = nxt
+        # Browser-driven mode skips _play_track, so without an explicit
+        # call here the lyric panel would stay frozen on the previous
+        # track's words.  Resolution order inside _load_lyrics is
+        # LRC sidecar -> beets -> embedded ID3/Vorbis/MP4 tags.
+        try:
+            p._load_lyrics(nxt.path)
+        except Exception:
+            logger.debug("advance_now: lyric load failed", exc_info=True)
         # Refresh next_track for the browser's prefetcher.  Failure here
         # leaves current_track set but next_track empty -- browser will
         # show "no upcoming track" and the user can advance again.

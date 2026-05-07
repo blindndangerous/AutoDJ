@@ -594,29 +594,29 @@
 
     <div id="ln-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
 
-    <fieldset>
-      <legend>Trigger</legend>
-      <div class="settings-check">
-        <input type="checkbox" id="ln-enabled">
-        <label for="ln-enabled">Enable voice liners</label>
-      </div>
-      <span class="setting-desc" id="ln-enabled-desc">
-        Master toggle.  When off, no liners fire even if individual triggers are configured.
-      </span>
+    <div class="settings-check">
+      <input type="checkbox" id="ln-enabled" aria-describedby="ln-enabled-desc">
+      <label for="ln-enabled">Enable voice liners</label>
+    </div>
+    <span class="setting-desc" id="ln-enabled-desc">
+      Master toggle.  When off, no liners fire and all liner options are hidden.
+    </span>
 
-      <div class="settings-row" data-show-when="ln-enabled">
+    <fieldset data-show-when="ln-enabled">
+      <legend>Trigger</legend>
+      <div class="settings-row">
         <label for="ln-every-n">Every N tracks</label>
         <input type="number" id="ln-every-n" min="0" max="500" step="1" inputmode="numeric">
       </div>
-      <div class="settings-row" data-show-when="ln-enabled">
+      <div class="settings-row">
         <label for="ln-every-min">Every N minutes</label>
         <input type="number" id="ln-every-min" min="0" max="240" step="1" inputmode="decimal">
       </div>
-      <div class="settings-row" data-show-when="ln-enabled">
+      <div class="settings-row">
         <label for="ln-rand-min">Random window minimum (minutes)</label>
         <input type="number" id="ln-rand-min" min="0" max="240" step="1" inputmode="decimal">
       </div>
-      <div class="settings-row" data-show-when="ln-enabled">
+      <div class="settings-row">
         <label for="ln-rand-max">Random window maximum (minutes)</label>
         <input type="number" id="ln-rand-max" min="0" max="240" step="1" inputmode="decimal">
       </div>

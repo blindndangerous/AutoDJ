@@ -977,6 +977,11 @@ class Player:
         self._state.current_track = current
         if self._state.next_track is None:
             self._state.next_track = self._pick_next(current)
+        # Browser-driven mode never enters _play_track, so lyrics would
+        # otherwise stay empty for the seed track and the web UI would
+        # hide its card even when beets/ID3 carry full lyrics.  Load
+        # them here so the first /api/status push has lyrics_plain set.
+        self._load_lyrics(current.path)
         self._current_sr = _DEFAULT_SR
         self._playback_len = int(
             (current.length if current.length and current.length > 0 else 5.0) * _DEFAULT_SR,

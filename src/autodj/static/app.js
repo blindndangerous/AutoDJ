@@ -3914,6 +3914,14 @@ window.addEventListener("keydown", (e) => {
   _pressedHotkeys.add(e.key);
   // Don't hijack keys when the user is typing in a form field.
   if (_isTypingTarget(e.target)) return;
+  // Scope transport hotkeys to the Now Playing tab.  On Settings / Queue /
+  // Library tabs the page is full of selects, sliders, and other widgets
+  // whose own arrow-key / space behaviour must not be hijacked by the
+  // volume / play-pause shortcuts.  Shortcuts dialog ("?") is allowed
+  // anywhere so users can discover the rule.
+  const _nowPanel = document.getElementById("panel-now");
+  const _nowVisible = _nowPanel && !_nowPanel.hasAttribute("hidden");
+  if (!_nowVisible && e.key !== "?" && e.key !== "/") return;
   // Don't hijack keys inside the shortcuts dialog itself — Tab/Space
   // there should be handled by the dialog (focus trap, button activation).
   const modal = document.getElementById("hotkey-help-modal");

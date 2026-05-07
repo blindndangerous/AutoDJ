@@ -1816,6 +1816,42 @@ class TestMisc:
         # History line carries the track path + an ISO timestamp.
         assert next_entry.path in hist_text
 
+    def test_advance_now_loads_lyrics_for_new_track(self, bridge) -> None:
+        """Browser-driven mode skips _play_track, so advance_now must
+        call _load_lyrics itself or the lyric panel stays frozen on the
+        previous track's words.  Resolution order inside _load_lyrics is
+        LRC sidecar -> beets -> embedded ID3/Vorbis/MP4 tags.
+        """
+        bridge.player._dry_run = True
+        bridge.player._export_m3u = None
+        bridge.player._history_file = None
+        bridge.player._state.queued_next = None
+        picked = _make_entry(404)
+        bridge.player._state.next_track = picked
+        bridge.player._pick_next.return_value = _make_entry(405)
+
+        bridge.advance_now()
+
+        bridge.player._load_lyrics.assert_called_once_with(picked.path)
+
+    def test_advance_now_swallows_lyric_load_error(self, bridge) -> None:
+        """A broken sibling .lrc / corrupt tag must not abort the advance
+        — log + continue, leaving lyrics empty rather than crashing the
+        entire track-change path.
+        """
+        bridge.player._dry_run = True
+        bridge.player._export_m3u = None
+        bridge.player._history_file = None
+        bridge.player._state.queued_next = None
+        picked = _make_entry(406)
+        bridge.player._state.next_track = picked
+        bridge.player._pick_next.return_value = _make_entry(407)
+        bridge.player._load_lyrics.side_effect = OSError("disk gone")
+
+        bridge.advance_now()
+
+        assert bridge.player._state.current_track is picked
+
     def test_lyrics_endpoint_returns_list(self, client) -> None:
         data = client.get("/api/lyrics").json()
         assert "lyrics" in data
