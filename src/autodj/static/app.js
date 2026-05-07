@@ -154,13 +154,17 @@ function applyState(s) {
     }
   }
 
-  // Meta line: album · Key · BPM
+  // Meta line: album · Key · BPM.  Key + BPM render unconditionally
+  // (with "unknown" placeholder when the track has no detected value)
+  // so the line is never empty and users always know where to look
+  // for those fields.  Album is omitted entirely when absent because
+  // an "album: unknown" placeholder is noisier than useful.
   const parts = [];
   if (s.current_track) {
     const t = s.current_track;
     if (t.album) parts.push(t.album);
-    if (t.camelot && t.camelot !== "--") parts.push(`Key ${t.camelot}`);
-    if (t.bpm) parts.push(`${Math.round(t.bpm)} BPM`);
+    parts.push(`Key ${t.camelot && t.camelot !== "--" ? t.camelot : "unknown"}`);
+    parts.push(t.bpm ? `${Math.round(t.bpm)} BPM` : "BPM unknown");
   }
   // npMeta is the screen-reader-reachable static text for the
   // now-playing card -- the visual badges row is aria-hidden, and the
