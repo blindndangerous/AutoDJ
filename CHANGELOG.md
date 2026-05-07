@@ -8,6 +8,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.15.0] - 2026-05-07
 
+### Fixed (post-feature batch)
+
+- **Hotkeys hijacked combo boxes.**  Global `keydown` handler treated
+  arrow keys as volume up / down even when focus sat on a Settings
+  panel `<select>` (harmonic mode, audio device, transition mode,
+  liner pick mode, preset, transition).  Handler now early-returns
+  when `#panel-now` is hidden, so other tabs run native combobox
+  navigation.  `?` / `/` (open shortcuts dialog) still fire from any
+  tab so the rule remains discoverable.  Modal copy updated.
+- **Voice-liner option panel left an orphan legend.**  Master
+  "Enable voice liners" checkbox lived inside the Trigger fieldset;
+  individual rows hid via `data-show-when` but the Trigger legend
+  itself stayed visible with no controls underneath.  Master toggle
+  lifted out, gains `aria-describedby="ln-enabled-desc"`, and the
+  Trigger / Mix / Library fieldsets now sit behind a single
+  `data-show-when="ln-enabled"` so the entire option set collapses
+  as one group when disabled.
+- **Lyrics card hidden in browser-driven `serve`.**  `_run_headless`
+  parks the player thread without ever entering `_play_track`, so
+  `_load_lyrics` was never called and `has_lyrics` / `lyrics_plain`
+  stayed empty even when beets / ID3 carried full lyrics.  Wired
+  `_load_lyrics` into both the seed branch of `_run_headless` and
+  every browser-led `PlayerBridge.advance_now` call.  Resolution
+  order remains LRC sidecar → beets `lyrics` field → embedded ID3
+  USLT / Vorbis LYRICS / MP4 ©lyr.  Lyric load errors logged at
+  debug and swallowed so a corrupt sidecar cannot abort the advance.
+
 ### Added (post-2026-05-06 batch)
 
 - **Web seek slider** (`#9`).  `#progress-track` upgraded from
