@@ -95,7 +95,6 @@ const volAnnounce     = document.getElementById("vol-announce");
 let lastTrackKey = null;   // detect track changes for aria-live announce
 const historyItems = [];   // most-recent first
 // lastLyricIndex + cachedLyrics moved into ./modules/lyrics.js.
-let lastQueueKey = "";     // skip queue re-render when unchanged
 let lastBadgeKey = null;   // suppress repeated badge announcements within one track
 let lastNextKey  = null;   // suppress aria-live re-announce of unchanged next track
 
@@ -301,121 +300,27 @@ function applyState(s) {
 // Settings card — mirror of CLI flags
 // ----------------------------------------------------------------
 
-let lastPresetOptionsKey = "";
+// Settings panel sync moved to ./modules/settings-panel.js.
+import {
+  applySettingsState as _applySettingsStateImpl,
+  postSettings as _postSettingsImpl,
+} from "./modules/settings-panel.js";
 
-function applySettingsState(st) {
-  // Populate preset dropdown only when the option list changes
-  const optsKey = (st.available_presets || []).join("|");
-  if (optsKey !== lastPresetOptionsKey) {
-    lastPresetOptionsKey = optsKey;
-    presetSelect.innerHTML = '<option value="">(none)</option>' +
-      (st.available_presets || []).map(n =>
-        `<option value="${escHtml(n)}">${escHtml(n)}</option>`
-      ).join("");
-  }
-  presetSelect.value = st.preset || "";
+const _settingsEls = () => ({
+  presetSelect, transitionSelect, harmonicMode,
+  djBeatmatch, djPhraseAlign, djOutroIntro,
+  pbEqDuck, pbSmartShuffle, pbPureShuffle, pbShowLyrics, pbAnchorSeed,
+  pbReplayGain,
+  pbDaypart, pbMoodArc, pbMoodArcHours, pbImportCues,
+  pbBeatSyncFx, pbKeySyncFx, pbBeatmatchSkip,
+  pbTransitionMode, pbCrossfade,
+  bpmLo, bpmHi,
+  discEnabled, discEvery,
+});
 
-  if (document.activeElement !== transitionSelect) {
-    // Guard with focus check — without this, every WebSocket state echo
-    // (~1 Hz) reassigns `.value`, which closes the dropdown and shifts
-    // focus while the user is mid-selection.  Same pattern as
-    // pbTransitionMode / pbCrossfade above.
-    transitionSelect.value = st.transition || "none";
-  }
-
-  // Harmonic mode dropdown reflects both flag + mode.  The "off" option
-  // implies harmonic_mixing=false; any other option enables it.
-  if (st.djmix) {
-    const mode = st.djmix.harmonic_mixing
-      ? (st.djmix.harmonic_mode || "compatible")
-      : "off";
-    if (harmonicMode.value !== mode) harmonicMode.value = mode;
-  }
-  djBeatmatch.checked   = !!(st.djmix && st.djmix.beatmatch);
-  djPhraseAlign.checked = !!(st.djmix && st.djmix.phrase_align);
-  djOutroIntro.checked  = !!(st.djmix && st.djmix.outro_intro_align);
-
-  pbEqDuck.checked       = !!(st.playback && st.playback.crossfade_eq_duck);
-  pbSmartShuffle.checked = !!(st.playback && st.playback.smart_shuffle);
-  pbPureShuffle.checked  = !!(st.playback && st.playback.pure_shuffle);
-  // show_lyrics defaults to true on legacy state payloads.
-  pbShowLyrics.checked   = (st.playback && st.playback.show_lyrics !== false);
-  pbAnchorSeed.checked   = !!(st.playback && st.playback.anchor_to_seed);
-  pbReplayGain.checked   = !!(st.playback && st.playback.replaygain_enabled);
-  if (pbDaypart) {
-    pbDaypart.checked = !!(st.playback && st.playback.enable_daypart);
-  }
-  if (pbMoodArc) {
-    pbMoodArc.checked = !!(st.playback && st.playback.enable_mood_arc);
-  }
-  if (pbMoodArcHours && st.playback && typeof st.playback.mood_arc_hours === "number") {
-    pbMoodArcHours.value = st.playback.mood_arc_hours;
-  }
-  if (pbImportCues) {
-    pbImportCues.checked = !!(st.playback && st.playback.import_external_cues);
-  }
-  if (pbBeatSyncFx) {
-    // Default ON when server hasn't sent the field yet (older deploy).
-    pbBeatSyncFx.checked = !(st.playback && st.playback.beat_sync_fx === false);
-  }
-  // One-shot library-size sanity check — warn the user when the
-  // configured no_repeat_window exceeds the library size, since that
-  // forces repeats sooner than the config implies.  Logs once per
-  // session so chatty WS pushes don't spam.
-  if (!_libraryWarned && st.playback &&
-      typeof st.playback.no_repeat_window === "number" &&
-      typeof st.playback.library_size === "number" &&
-      st.playback.library_size > 0) {
-    _libraryWarned = true;
-    _dbg("library_size =", st.playback.library_size,
-      "| no_repeat_window =", st.playback.no_repeat_window);
-    if (st.playback.library_size <= st.playback.no_repeat_window) {
-      console.warn("[autodj] Library has", st.playback.library_size,
-        "tracks but no_repeat_window is", st.playback.no_repeat_window,
-        "-- repeats will start once you reach the library size. " +
-        "Lower playback.no_repeat_window in config.toml to silence.");
-    }
-  }
-  if (pbKeySyncFx) {
-    pbKeySyncFx.checked = !(st.playback && st.playback.key_sync_fx === false);
-  }
-  if (pbBeatmatchSkip) {
-    pbBeatmatchSkip.checked = !!(st.playback && st.playback.beatmatch_on_skip === true);
-  }
-  if (st.playback && st.playback.transition_mode && document.activeElement !== pbTransitionMode) {
-    pbTransitionMode.value = st.playback.transition_mode;
-  }
-  if (st.playback && document.activeElement !== pbCrossfade) {
-    pbCrossfade.value = st.playback.crossfade_seconds;
-  }
-
-  if (st.bpm_range && document.activeElement !== bpmLo) {
-    bpmLo.value = st.bpm_range.lo != null ? st.bpm_range.lo : "";
-  }
-  if (st.bpm_range && document.activeElement !== bpmHi) {
-    bpmHi.value = st.bpm_range.hi != null ? st.bpm_range.hi : "";
-  }
-
-  const discOn = st.discovery_every != null;
-  discEnabled.checked = discOn;
-  if (document.activeElement !== discEvery && discOn) {
-    discEvery.value = st.discovery_every;
-  }
-  discEvery.setAttribute("aria-disabled", discOn ? "false" : "true");
-}
-
-async function postSettings(url, body) {
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  } catch (err) {
-    settingsStatus.textContent = `Could not save: ${err.message}`;
-    setTimeout(() => { settingsStatus.textContent = ""; }, 4000);
-  }
+function applySettingsState(st) { _applySettingsStateImpl(st, _settingsEls()); }
+function postSettings(url, body) {
+  return _postSettingsImpl(url, body, { settingsStatus });
 }
 
 presetSelect.addEventListener("change", () => {
@@ -2862,9 +2767,7 @@ let _inDownbeatsCache = [];
 let _outKeyHzCache = null;
 let _inKeyHzCache = null;
 
-// One-shot guard so the small-library repeat warning only logs once
-// per session even though /api/state pushes every second.
-let _libraryWarned = false;
+// _libraryWarned moved into ./modules/settings-panel.js.
 
 // Mixxx-style fade-length picker.  Mirrors AutoDJProcessor's
 // TransitionMode enum -- see CHANGELOG entry for 0.12.3.
@@ -3117,133 +3020,16 @@ function applyWhyState(s) {
 
 function applyLyricsState(s) { _applyLyricsStateImpl(s, _lyricEls()); }
 
-// ----------------------------------------------------------------
-// Queue
-// ----------------------------------------------------------------
+// Queue (render + Up/Down/Remove buttons) moved to ./modules/queue.js.
+import {
+  applyQueueState as _applyQueueStateImpl,
+  installQueueButtons,
+  renderQueue as _renderQueueImpl,
+} from "./modules/queue.js";
 
-function queueKey(queue) {
-  return queue.map(t => t.path).join("|");
-}
-
-function applyQueueState(queue) {
-  const key = queueKey(queue);
-  if (key === lastQueueKey) return;
-  lastQueueKey = key;
-  renderQueue(queue);
-}
-
-function renderQueue(queue) {
-  queueCount.textContent = queue.length ? `(${queue.length})` : "";
-  if (queue.length === 0) {
-    queueList.innerHTML = `
-      <li class="no-results"
-          style="color:var(--text-dim);font-style:italic;list-style:none;padding-left:0">
-        Queue is empty.  Search and use "Next" to add a track.
-      </li>`;
-    return;
-  }
-  queueList.innerHTML = queue.map((t, i) => {
-    const name = escHtml(fmtTrack(t));
-    const path = escHtml(t.path);
-    const isFirst = i === 0;
-    const isLast  = i === queue.length - 1;
-    return `<li data-path="${path}">
-      <span class="queue-name" title="${name}">${i + 1}. ${name}</span>
-      <button class="queue-btn" data-action="up"     data-path="${path}"
-              aria-label="Move ${name} up in queue"     ${isFirst ? "disabled" : ""}>
-        <span aria-hidden="true">\u25b2</span> Up
-      </button>
-      <button class="queue-btn" data-action="down"   data-path="${path}"
-              aria-label="Move ${name} down in queue"   ${isLast  ? "disabled" : ""}>
-        <span aria-hidden="true">\u25bc</span> Down
-      </button>
-      <button class="queue-btn" data-action="remove" data-path="${path}"
-              aria-label="Remove ${name} from queue">
-        <span aria-hidden="true">\u2715</span> Remove
-      </button>
-    </li>`;
-  }).join("");
-}
-
-// Event delegation for queue buttons.  Captures focus target before mutation
-// so we can restore focus to the equivalent button after re-render.
-queueList.addEventListener("click", async (e) => {
-  const btn = e.target.closest(".queue-btn");
-  if (!btn || btn.disabled) return;
-  const action = btn.dataset.action;
-  const path   = btn.dataset.path;
-
-  const items = Array.from(queueList.querySelectorAll("li[data-path]"));
-  const paths = items.map(li => li.dataset.path);
-  const idx   = paths.indexOf(path);
-  if (idx < 0) return;
-
-  let newPaths = paths.slice();
-  let focusAction = action;
-  let focusPath = path;
-  let announceMsg = "";
-
-  const niceName = items[idx]
-    ? items[idx].querySelector(".queue-name").textContent.replace(/^\d+\.\s*/, "")
-    : path;
-
-  if (action === "up" && idx > 0) {
-    [newPaths[idx - 1], newPaths[idx]] = [newPaths[idx], newPaths[idx - 1]];
-    announceMsg = `Moved ${niceName} up.`;
-    if (idx - 1 === 0) focusAction = "down";
-  } else if (action === "down" && idx < newPaths.length - 1) {
-    [newPaths[idx + 1], newPaths[idx]] = [newPaths[idx], newPaths[idx + 1]];
-    announceMsg = `Moved ${niceName} down.`;
-    if (idx + 1 === newPaths.length - 1) focusAction = "up";
-  } else if (action === "remove") {
-    newPaths.splice(idx, 1);
-    announceMsg = `Removed ${niceName} from queue.`;
-    if (newPaths.length === 0) {
-      focusPath = null;
-    } else {
-      focusPath = newPaths[Math.min(idx, newPaths.length - 1)];
-      focusAction = "remove";
-    }
-  } else {
-    return;
-  }
-
-  // Optimistic local render so user sees instant feedback
-  renderQueue(newPaths.map(p => {
-    const li = items.find(i => i.dataset.path === p);
-    return {
-      path: p,
-      display_name: li
-        ? li.querySelector(".queue-name").textContent.replace(/^\d+\.\s*/, "")
-        : p,
-    };
-  }));
-  lastQueueKey = queueKey(newPaths.map(p => ({ path: p })));
-
-  if (action === "remove") {
-    await fetch("/api/queue/remove", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path }),
-    });
-  } else {
-    await fetch("/api/queue/reorder", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ paths: newPaths }),
-    });
-  }
-
-  queueAnnounce.textContent = announceMsg;
-  _clearLiveRegionLater(queueAnnounce);
-
-  if (focusPath) {
-    const target = queueList.querySelector(
-      `li[data-path="${CSS.escape(focusPath)}"] .queue-btn[data-action="${focusAction}"]`
-    );
-    if (target && !target.disabled) target.focus();
-  }
-});
+const _queueEls = { queueList, queueCount, queueAnnounce };
+installQueueButtons(_queueEls);
+function applyQueueState(queue) { _applyQueueStateImpl(queue, _queueEls); }
 
 function renderHistory() {
   if (historyItems.length === 0) return;
@@ -3583,155 +3369,27 @@ volSlider.addEventListener("input", () => {
 });
 
 // ----------------------------------------------------------------
-// Keyboard shortcuts — YouTube-style transport control.
-// Active when focus is on the page chrome (NVDA focus mode passes
-// keys through to the browser, so these work alongside screen-reader
-// users).  Skipped when typing in inputs / contenteditable.
-// ----------------------------------------------------------------
+// Keyboard shortcuts moved to ./modules/hotkeys.js.  Wired below
+// after the relevant DOM refs are populated -- see _hotkeysReady().
+import {
+  installHotkeys,
+  toggleShortcutsModal as _toggleShortcutsModal,
+} from "./modules/hotkeys.js";
 
-// _isTypingTarget moved to ./modules/dom-helpers.js (imported above).
-
-function _toggleShortcutsModal() {
-  const modal = document.getElementById("hotkey-help-modal");
-  if (!modal) return false;
-  if (modal.open) {
-    modal.close();
-  } else {
-    if (typeof modal.showModal === "function") {
-      modal.showModal();
-    } else {
-      // Older browsers: fall back to the open attribute (no focus trap).
-      modal.setAttribute("open", "");
-    }
-    // Focus the Close button explicitly — browsers vary on default focus.
-    const closeBtn = document.getElementById("btn-shortcuts-close");
-    if (closeBtn) {
-      try { closeBtn.focus(); } catch (_) {}
-    }
-  }
-  return true;
+function _wireHotkeysWhenReady() {
+  // btnShuffle is declared further down the file; defer wiring to the
+  // next tick so its const initialiser has run.
+  setTimeout(() => {
+    installHotkeys({
+      btnPause:   typeof btnPause   !== "undefined" ? btnPause   : null,
+      btnSkip:    typeof btnSkip    !== "undefined" ? btnSkip    : null,
+      btnShuffle: typeof btnShuffle !== "undefined" ? btnShuffle : null,
+      btnMute:    typeof btnMute    !== "undefined" ? btnMute    : null,
+      volSlider:  typeof volSlider  !== "undefined" ? volSlider  : null,
+    });
+  }, 0);
 }
-
-// Use window + capture-phase so hotkeys fire even when a focused element
-// (button, slider, custom widget) would otherwise consume / stop the
-// keydown event.  YouTube uses the same pattern.
-//
-// Key-held latch: NVDA (and some IMEs) forward auto-repeat keydowns
-// without setting KeyboardEvent.repeat, so the e.repeat guard alone
-// missed bursts.  Track every physical keydown until its keyup; second
-// keydown for the same key is suppressed regardless of repeat flag.
-const _pressedHotkeys = new Set();
-window.addEventListener("keyup", (e) => {
-  _pressedHotkeys.delete(e.key);
-  // Modifier-aware aliases — e.g. Shift held on "?" produces "?", but
-  // releasing the letter without releasing Shift drops the lower-case
-  // sibling too.  Cheap to clear both.
-  if (e.key && e.key.length === 1) {
-    _pressedHotkeys.delete(e.key.toLowerCase());
-    _pressedHotkeys.delete(e.key.toUpperCase());
-  }
-}, true);
-// Window blur clears the latch — otherwise alt-tabbing while a key is
-// held would leave it permanently flagged as pressed.
-window.addEventListener("blur", () => _pressedHotkeys.clear());
-
-window.addEventListener("keydown", (e) => {
-  // Auto-repeat (key held) flooded shuffle/skip/mute clicks.  Two
-  // belt-and-braces guards because some screen readers / IMEs forward
-  // repeats without setting e.repeat:
-  //   1. Native repeat flag.
-  //   2. Press-latch -- second keydown w/o intervening keyup is dropped.
-  if (e.repeat) return;
-  if (_pressedHotkeys.has(e.key)) return;
-  _pressedHotkeys.add(e.key);
-  // Don't hijack keys when the user is typing in a form field.
-  if (_isTypingTarget(e.target)) return;
-  // Scope transport hotkeys to the Now Playing tab.  On Settings / Queue /
-  // Library tabs the page is full of selects, sliders, and other widgets
-  // whose own arrow-key / space behaviour must not be hijacked by the
-  // volume / play-pause shortcuts.  Shortcuts dialog ("?") is allowed
-  // anywhere so users can discover the rule.
-  const _nowPanel = document.getElementById("panel-now");
-  const _nowVisible = _nowPanel && !_nowPanel.hasAttribute("hidden");
-  if (!_nowVisible && e.key !== "?" && e.key !== "/") return;
-  // Don't hijack keys inside the shortcuts dialog itself — Tab/Space
-  // there should be handled by the dialog (focus trap, button activation).
-  const modal = document.getElementById("hotkey-help-modal");
-  if (modal && modal.open && modal.contains(e.target)) {
-    // Still allow "?" / Esc to close the modal from inside.
-    if (e.key === "?" || e.key === "/") {
-      e.preventDefault();
-      _toggleShortcutsModal();
-    }
-    return;
-  }
-  // Modifiers are usually the user invoking browser / NVDA shortcuts.
-  if (e.ctrlKey || e.metaKey || e.altKey) return;
-  // Tablist owns its own arrow-key navigation (APG roving tabindex).
-  // Don't steal Up/Down when focus is on a tab.
-  const targetIsTab = e.target && e.target.getAttribute
-                      && e.target.getAttribute("role") === "tab";
-
-  const key = e.key;
-  let bumpVol = 0;
-
-  switch (key) {
-    case " ":          // Space (YouTube default)
-    case "Spacebar":
-    case "k":
-    case "K":
-      btnPause.click();
-      break;
-    case "n":
-    case "N":
-      btnSkip.click();
-      break;
-    case "s":
-    case "S":
-      // btnShuffle ref defined later in this file; guard with typeof.
-      if (typeof btnShuffle !== "undefined" && btnShuffle) btnShuffle.click();
-      break;
-    case "m":
-    case "M":
-      btnMute.click();
-      break;
-    case "ArrowUp":
-      if (targetIsTab) return;
-      bumpVol = +5;
-      break;
-    case "ArrowDown":
-      if (targetIsTab) return;
-      bumpVol = -5;
-      break;
-    case "?":
-    case "/":
-      // "/" passes through both NVDA browse + focus modes; "?" is Shift+/.
-      if (!_toggleShortcutsModal()) return;
-      break;
-    default:
-      return;  // not a hotkey, let the browser handle it
-  }
-
-  if (bumpVol !== 0) {
-    const cur = parseInt(volSlider.value, 10);
-    const next = Math.max(0, Math.min(100, cur + bumpVol));
-    if (next !== cur) {
-      volSlider.value = String(next);
-      // Synthesize an input event so the existing listener does the
-      // gain ramp + server POST + announce in one place.
-      volSlider.dispatchEvent(new Event("input"));
-    }
-  }
-
-  // Always swallow the key when we matched one — prevents the page
-  // from scrolling on Space, etc.
-  e.preventDefault();
-});
-
-// ----------------------------------------------------------------
-// Media Session API — wires up OS media keys, lock-screen art,
-// and notification-shade transport on Chromium / WebKit / Firefox.
-// ----------------------------------------------------------------
+_wireHotkeysWhenReady();
 
 // Media Session API moved to ./modules/media-session.js.
 import {
@@ -3752,98 +3410,14 @@ installMediaActionHandlers({
 //  suppression on every INPUT killed Space/M when focus was on the
 //  volume slider.)
 
-// ----------------------------------------------------------------
-// Search
-// ----------------------------------------------------------------
-
-async function doSearch() {
-  const q = searchInput.value.trim();
-  if (!q) {
-    searchResults.innerHTML = "";
-    searchInput.setAttribute("aria-expanded", "false");
-    searchCount.textContent = "";
-    return;
-  }
-
-  const res  = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
-  const data = await res.json();
-  const results = data.results || [];
-
-  if (results.length === 0) {
-    searchResults.innerHTML = `<li><span class="no-results">No results for \u201c${escHtml(q)}\u201d.</span></li>`;
-    searchInput.setAttribute("aria-expanded", "true");
-    searchCount.textContent = "No results found.";
-    _clearLiveRegionLater(searchCount);
-    return;
-  }
-
-  searchResults.innerHTML = results.map(t => {
-    const name = escHtml(fmtTrack(t));
-    const path = escHtml(t.path);
-    return `<li>
-      <span class="result-name" title="${name}">${name}</span>
-      <button class="result-btn"
-              aria-label="Play ${name} now"
-              data-path="${path}"
-              data-now="true"><span aria-hidden="true">&#9654;</span> Now</button>
-      <button class="result-btn"
-              aria-label="Queue ${name} as next track"
-              data-path="${path}"
-              data-now="false"><span aria-hidden="true">&#9197;</span> Next</button>
-    </li>`;
-  }).join("");
-  searchInput.setAttribute("aria-expanded", "true");
-  // Announce count separately (not the full list) per advisory
-  searchCount.textContent = `${results.length} result${results.length === 1 ? "" : "s"} found.`;
-  _clearLiveRegionLater(searchCount);
-}
-
-btnSearch.addEventListener("click", doSearch);
-searchInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") doSearch();
-});
-
-// Collapse results when input is cleared
-searchInput.addEventListener("input", () => {
-  if (!searchInput.value.trim()) {
-    searchResults.innerHTML = "";
-    searchInput.setAttribute("aria-expanded", "false");
-    searchCount.textContent = "";
-  }
-});
-
-// Play-now / queue-add buttons (event delegation on the results list).
-// "Now" interrupts current track; "Next" appends to the user-managed queue
-// (which is rendered in the Queue section with reorder controls).
-searchResults.addEventListener("click", async (e) => {
-  const btn = e.target.closest(".result-btn");
-  if (!btn) return;
-  const path = btn.dataset.path;
-  const now  = btn.dataset.now === "true";
-  const name = btn.closest("li").querySelector(".result-name").textContent;
-  btn.disabled = true;
-  try {
-    if (now) {
-      await fetch("/api/play-next", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path, now: true }),
-      });
-      queueAnnounce.textContent = `Playing ${name} now.`;
-      _clearLiveRegionLater(queueAnnounce);
-    } else {
-      await fetch("/api/queue/add", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path }),
-      });
-      queueAnnounce.textContent = `Added ${name} to queue.`;
-      _clearLiveRegionLater(queueAnnounce);
-    }
-  } finally {
-    btn.disabled = false;
-    btn.focus();
-  }
+// Search moved to ./modules/search.js.
+import { installSearch } from "./modules/search.js";
+installSearch({
+  searchInput,
+  btnSearch,
+  searchResults,
+  searchCount,
+  queueAnnounce,
 });
 
 // ----------------------------------------------------------------
@@ -3906,184 +3480,40 @@ installShowWhenListener();
 // checkbox via WS without the user touching it).
 _applyShowWhen();
 
-// ----------------------------------------------------------------
-// Voice liners — Settings panel, file list, upload/delete, test.
-// ----------------------------------------------------------------
+// Voice liners moved to ./modules/liners.js.
+import { installLiners, bumpLinerTrackCount as _bumpLinerTrackCount } from "./modules/liners.js";
 
-const lnEnabled       = document.getElementById("ln-enabled");
-const lnEveryN        = document.getElementById("ln-every-n");
-const lnEveryMin      = document.getElementById("ln-every-min");
-const lnRandMin       = document.getElementById("ln-rand-min");
-const lnRandMax       = document.getElementById("ln-rand-max");
-const lnPickMode      = document.getElementById("ln-pick-mode");
-const lnDuckDb        = document.getElementById("ln-duck-db");
-const lnTestBtn       = document.getElementById("ln-test");
-const lnFolderDisplay = document.getElementById("ln-folder-display");
-const lnFileList      = document.getElementById("ln-file-list");
-const lnUpload        = document.getElementById("ln-upload");
-const lnUploadSubmit  = document.getElementById("ln-upload-submit");
-const lnStatus        = document.getElementById("ln-status");
+const _linerEls = {
+  lnEnabled:       document.getElementById("ln-enabled"),
+  lnEveryN:        document.getElementById("ln-every-n"),
+  lnEveryMin:      document.getElementById("ln-every-min"),
+  lnRandMin:       document.getElementById("ln-rand-min"),
+  lnRandMax:       document.getElementById("ln-rand-max"),
+  lnPickMode:      document.getElementById("ln-pick-mode"),
+  lnDuckDb:        document.getElementById("ln-duck-db"),
+  lnTestBtn:       document.getElementById("ln-test"),
+  lnFolderDisplay: document.getElementById("ln-folder-display"),
+  lnFileList:      document.getElementById("ln-file-list"),
+  lnUpload:        document.getElementById("ln-upload"),
+  lnUploadSubmit:  document.getElementById("ln-upload-submit"),
+  lnStatus:        document.getElementById("ln-status"),
+};
 
-let _linerLib = { folder: "", files: [], config: {} };
-let _linerLastFireAt = performance.now();
-let _linerTrackCount = 0;
-let _linerRandomTarget = null;
-
-function _setLinerStatus(msg) {
-  if (lnStatus) {
-    lnStatus.classList.remove("visually-hidden");
-    lnStatus.textContent = msg;
-    _clearLiveRegionLater(lnStatus, 4000);
-  }
-}
-
-async function _refreshLinerLibrary() {
-  try {
-    const resp = await fetch("/api/liners");
-    if (!resp.ok) return;
-    const body = await resp.json();
-    _linerLib = body;
-    if (lnFolderDisplay) {
-      lnFolderDisplay.textContent = "Folder: " + (body.folder || "—");
-    }
-    if (lnFileList) {
-      lnFileList.innerHTML = "";
-      for (const name of body.files || []) {
-        const li = document.createElement("li");
-        const text = document.createElement("span");
-        text.textContent = name;
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.innerHTML = '<span aria-hidden="true">Delete</span>' +
-          `<span class="visually-hidden"> ${escHtml(name)}</span>`;
-        btn.addEventListener("click", () => _deleteLiner(name));
-        li.appendChild(text);
-        li.appendChild(document.createTextNode(" "));
-        li.appendChild(btn);
-        lnFileList.appendChild(li);
-      }
-    }
-    // Sync config inputs from server payload (don't trample user-edited fields).
-    const c = body.config || {};
-    if (lnEnabled && document.activeElement !== lnEnabled) {
-      lnEnabled.checked = !!c.enabled;
-    }
-    if (lnEveryN && document.activeElement !== lnEveryN) {
-      lnEveryN.value = c.every_n_songs != null ? c.every_n_songs : "";
-    }
-    if (lnEveryMin && document.activeElement !== lnEveryMin) {
-      lnEveryMin.value = c.every_minutes != null ? c.every_minutes : "";
-    }
-    if (lnRandMin && document.activeElement !== lnRandMin) {
-      lnRandMin.value = c.random_min_minutes != null ? c.random_min_minutes : "";
-    }
-    if (lnRandMax && document.activeElement !== lnRandMax) {
-      lnRandMax.value = c.random_max_minutes != null ? c.random_max_minutes : "";
-    }
-    if (lnPickMode && document.activeElement !== lnPickMode) {
-      lnPickMode.value = c.pick_mode || "random";
-    }
-    if (lnDuckDb && document.activeElement !== lnDuckDb) {
-      lnDuckDb.value = c.duck_db != null ? c.duck_db : -12;
-    }
-    _applyShowWhen();
-  } catch (err) {
-    _dbg("liner refresh failed:", err);
-  }
-}
-
-async function _deleteLiner(name) {
-  if (!confirm(`Delete liner "${name}"?`)) return;
-  try {
-    const resp = await fetch(
-      `/api/liners/file/${encodeURIComponent(name)}`,
-      { method: "DELETE" },
-    );
-    if (!resp.ok) {
-      _setLinerStatus(`Delete failed: HTTP ${resp.status}`);
-      return;
-    }
-    _setLinerStatus(`Deleted ${name}`);
-    await _refreshLinerLibrary();
-  } catch (err) {
-    _setLinerStatus(`Delete failed: ${err.message}`);
-  }
-}
-
-if (lnUploadSubmit) {
-  lnUploadSubmit.addEventListener("click", async () => {
-    if (!lnUpload || !lnUpload.files || lnUpload.files.length === 0) {
-      _setLinerStatus("Pick a file first.");
-      return;
-    }
-    const f = lnUpload.files[0];
-    const fd = new FormData();
-    fd.append("file", f, f.name);
-    _setLinerStatus(`Uploading ${f.name}...`);
-    try {
-      const resp = await fetch("/api/liners/upload", { method: "POST", body: fd });
-      if (!resp.ok) {
-        const detail = await resp.text();
-        _setLinerStatus(`Upload failed: ${detail}`);
-        return;
-      }
-      _setLinerStatus(`Uploaded ${f.name}`);
-      lnUpload.value = "";
-      await _refreshLinerLibrary();
-    } catch (err) {
-      _setLinerStatus(`Upload failed: ${err.message}`);
-    }
-  });
-}
-
-function _postLinerConfig() {
-  const body = {
-    liners_enabled: !!(lnEnabled && lnEnabled.checked),
-    liners_every_n_songs: _intOrNull(lnEveryN),
-    liners_every_minutes: _floatOrNull(lnEveryMin),
-    liners_random_min_minutes: _floatOrNull(lnRandMin),
-    liners_random_max_minutes: _floatOrNull(lnRandMax),
-    liners_pick_mode: lnPickMode ? lnPickMode.value : "random",
-    liners_duck_db: _floatOrNull(lnDuckDb),
-  };
-  postSettings("/api/playback-settings", body);
-}
-function _intOrNull(el) {
-  if (!el || el.value === "" || el.value == null) return null;
-  const n = parseInt(el.value, 10);
-  return isNaN(n) ? null : n;
-}
-function _floatOrNull(el) {
-  if (!el || el.value === "" || el.value == null) return null;
-  const n = parseFloat(el.value);
-  return isNaN(n) ? null : n;
-}
-
-for (const el of [
-  lnEnabled, lnEveryN, lnEveryMin, lnRandMin, lnRandMax, lnPickMode, lnDuckDb,
-]) {
-  if (!el) continue;
-  el.addEventListener("change", _postLinerConfig);
-}
-
-async function _playLinerByName(name) {
-  if (!_ctx) return;
-  try {
-    const resp = await fetch(`/api/liners/file/${encodeURIComponent(name)}`);
-    if (!resp.ok) {
-      _setLinerStatus(`Liner fetch failed: HTTP ${resp.status}`);
-      return;
-    }
-    const buf = await resp.arrayBuffer();
-    const audioBuf = await _ctx.decodeAudioData(buf);
-    const src = _ctx.createBufferSource();
+// Audio dependencies are still owned by the unmigrated audio engine
+// further down this file -- inject closures that capture the current
+// values at call time so the module never holds a stale ref.
+installLiners(_linerEls, {
+  postSettings: (url, body) => postSettings(url, body),
+  canPlay:      () => !!_ctx && !!_lastBrowserPlayback,
+  playLiner: async (arrayBuf, duckDb) => {
+    if (!_ctx) return false;
+    const audioBuf = await _ctx.decodeAudioData(arrayBuf);
+    const src  = _ctx.createBufferSource();
     src.buffer = audioBuf;
     const gain = _ctx.createGain();
     gain.gain.value = 1.0;
     src.connect(gain);
     gain.connect(_ctx.destination);
-    // Duck the active deck for the duration of the liner + 200 ms tail.
-    const duckDb = (_linerLib.config && _linerLib.config.duck_db) || -12;
     const duckLin = Math.pow(10, duckDb / 20);
     const dur = audioBuf.duration;
     const t0 = _ctx.currentTime;
@@ -4094,77 +3524,6 @@ async function _playLinerByName(name) {
     active.gain.gain.setValueAtTime(_volume * duckLin, t0 + dur - 0.2);
     active.gain.gain.linearRampToValueAtTime(_volume, t0 + dur + 0.2);
     src.start(t0);
-    _linerLastFireAt = performance.now();
-    _linerTrackCount = 0;
-    _linerRandomTarget = _rollLinerRandomTarget();
-    _setLinerStatus(`Liner playing: ${name}`);
-  } catch (err) {
-    _setLinerStatus(`Liner playback failed: ${err.message}`);
-  }
-}
-
-function _pickLiner() {
-  if (!_linerLib.files || _linerLib.files.length === 0) return null;
-  const mode = (_linerLib.config && _linerLib.config.pick_mode) || "random";
-  if (mode === "sequential") {
-    const i = (_linerSeqCursor++) % _linerLib.files.length;
-    return _linerLib.files[i];
-  }
-  // weighted falls back to random in the browser since weights aren't
-  // persisted yet; matches LinerLibrary.pick fallback behaviour.
-  const i = Math.floor(Math.random() * _linerLib.files.length);
-  return _linerLib.files[i];
-}
-let _linerSeqCursor = 0;
-
-function _rollLinerRandomTarget() {
-  const c = _linerLib.config || {};
-  const lo = c.random_min_minutes;
-  const hi = c.random_max_minutes;
-  if (lo == null || hi == null || lo > hi || hi <= 0) return null;
-  return lo + Math.random() * (hi - lo);
-}
-
-if (lnTestBtn) {
-  lnTestBtn.addEventListener("click", async () => {
-    const name = _pickLiner();
-    if (!name) {
-      _setLinerStatus("No liner files in folder.");
-      return;
-    }
-    await _playLinerByName(name);
-  });
-}
-
-// Periodic liner trigger evaluation -- once per second.  When enabled
-// and any trigger condition is met, fire a clip.
-setInterval(() => {
-  if (!_linerLib.config || !_linerLib.config.enabled) return;
-  if (!_ctx || !_lastBrowserPlayback) return;
-  const c = _linerLib.config;
-  const minsSince = (performance.now() - _linerLastFireAt) / 60000;
-  let fire = false;
-  if (c.every_n_songs && _linerTrackCount >= c.every_n_songs) fire = true;
-  if (c.every_minutes && minsSince >= c.every_minutes) fire = true;
-  if (_linerRandomTarget != null && minsSince >= _linerRandomTarget) fire = true;
-  if (fire) {
-    const name = _pickLiner();
-    if (name) _playLinerByName(name);
-  }
-}, 1000);
-
-// Track-advance counter for the every_n_songs trigger.  Bumps every
-// time the WS state push surfaces a new current_track path -- one
-// hook covers every advance route (natural end, skip, queue Now,
-// shuffle, server-led random, CLI advance).
-let _lastLinerSeenPath = null;
-function _bumpLinerTrackCount(s) {
-  const cur = (s && s.current_track && s.current_track.path) || null;
-  if (cur && cur !== _lastLinerSeenPath) {
-    if (_lastLinerSeenPath !== null) _linerTrackCount += 1;
-    _lastLinerSeenPath = cur;
-  }
-}
-
-// Initial fetch + reapply hidden state on load.
-_refreshLinerLibrary();
+    return true;
+  },
+});

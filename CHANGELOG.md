@@ -10,6 +10,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added (post-feature batch)
 
+- **app.js modularised (phase 1).**  Extracted 14 concerns from the
+  4682-line app.js into ES modules under `src/autodj/static/modules/`:
+  `live-region`, `dom-helpers`, `cues`, `lyrics`, `tabs`, `show-when`,
+  `media-session`, `camelot-wheel`, `library-jobs`, `liners`,
+  `search`, `queue`, `settings-panel`, `hotkeys`.  app.js shrunk to
+  3529 lines (~25% reduction) and now imports each extracted symbol
+  back under its historical underscore-prefixed name so the
+  unmigrated audio-engine code keeps working without a sweep.  Vite
+  output flipped from IIFE to ESM; HTML script tag now
+  `type="module"`.  Dev mode (raw modules served from
+  `src/autodj/static/`) and prod mode (vite-bundled single ESM at
+  `src/autodj/static_dist/`) both render the same UI.  Phase 2 --
+  audio engine, transition-fx, beat-sync, transport, eq-volume,
+  websocket-state -- deferred to a follow-up because those modules
+  share `_ctx` / `decks` / `_outBpmCache` and need a single
+  coordinated move.
+
 - **Vite build pipeline** for the web UI.  `package.json` +
   `vite.config.js` at the repo root.  `npm run build` produces a
   minified IIFE-wrapped `app.js`, minified `app.css`, copies
