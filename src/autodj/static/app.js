@@ -1512,9 +1512,13 @@ function _effectDurationFor(effect, fadeSec, outroLen) {
 function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
   const ctx = _ctx;
   if (!ctx || effect === "none" || !effect) return () => {};
-  // Pick the per-effect duration based on the outgoing track's outro
-  // length when known, otherwise extend to the static minimum.
-  fadeSec = _effectDurationFor(effect, fadeSec, _currentOutroLenCache);
+  // Caller (startCrossfade) now resolves the effect-preferred duration
+  // and passes it in so the gain ramp and the effect scheduling share
+  // one timeline.  Direct callers (none currently, but defensive) get
+  // legacy behaviour via the floor when no outro length is known.
+  if (fadeSec == null || !(fadeSec > 0)) {
+    fadeSec = _effectDurationFor(effect, 3.0, _currentOutroLenCache);
+  }
   const t0 = ctx.currentTime;
   const tEnd = t0 + fadeSec;
   const teardowns = [];
@@ -2546,7 +2550,14 @@ function startCrossfade(nextPath, fadeSec) {
 
   // Resolve + apply the chosen transition effect over the fade window.
   const fxName = _resolveTransition(_lastTransitionFx);
-  console.debug("autodj transition:", fxName);
+  // Resolve effect-preferred duration UP FRONT so the gain ramp, the
+  // effect scheduling, and the cleanup setTimeout all use the SAME
+  // timeline.  Earlier code resolved this inside applyTransitionFx
+  // which left the gain ramp ending before / after the effect tail and
+  // caused audible cuts (effect-shorter-than-fade) or trailing silence
+  // (effect-longer-than-fade).
+  const effectDur = _effectDurationFor(fxName, fadeSec, _currentOutroLenCache);
+  console.debug("autodj transition:", fxName, "duration:", effectDur.toFixed(2), "s");
 
   // Schedule the baseline crossfade gain ramps FIRST so that any
   // subsequent overrides issued by `applyTransitionFx` (e.g.
@@ -2554,13 +2565,15 @@ function startCrossfade(nextPath, fadeSec) {
   // bitcrusher) aren't wiped out by a later cancelScheduledValues(t0).
   active.gain.gain.cancelScheduledValues(t0);
   active.gain.gain.setValueAtTime(active.gain.gain.value, t0);
-  active.gain.gain.linearRampToValueAtTime(0, t0 + fadeSec);
+  active.gain.gain.linearRampToValueAtTime(0, t0 + effectDur);
 
   standby.gain.gain.cancelScheduledValues(t0);
   standby.gain.gain.setValueAtTime(0, t0);
-  standby.gain.gain.linearRampToValueAtTime(_volume, t0 + fadeSec);
+  standby.gain.gain.linearRampToValueAtTime(_volume, t0 + effectDur);
 
-  const teardownFx = applyTransitionFx(fxName, fadeSec, active, standby);
+  // Pass the resolved duration so applyTransitionFx no longer recomputes
+  // it -- prevents the duration drift that caused cuts.
+  const teardownFx = applyTransitionFx(fxName, effectDur, active, standby);
 
   suppressAdvance = true;
   fetch("/api/advance", { method: "POST" }).catch(() => {});
@@ -2574,7 +2587,7 @@ function startCrossfade(nextPath, fadeSec) {
     active.audio.removeAttribute("src");
     active.path = null;
     active.audio.load();
-  }, fadeSec * 1000 + 100);
+  }, effectDur * 1000 + 100);
 }
 
 // "ended" on either deck = unconditional advance to next track when not

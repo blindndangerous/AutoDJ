@@ -53,3 +53,4 @@ node_modules/
 package-lock.json
 # Audit reports may contain LAN paths / track metadata
 *_audit.json
+.playwright-mcp/
