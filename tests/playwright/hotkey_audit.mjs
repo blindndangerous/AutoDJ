@@ -176,8 +176,11 @@ async function audit(name, launcher) {
     pBtn.click = origP;
 
     // ----- _effectDurationFor unified -----
+    // Inside page.evaluate -- _effectDurationFor is a page global from
+    // app.js; ESLint's static analysis can't see across the boundary.
     out.effectDurationUnified =
       typeof _effectDurationFor === "function" &&
+      // eslint-disable-next-line no-undef
       _effectDurationFor("reverb_tail", 2.0, null) ===
         Math.max(2.0, 4.0); // staticMin reverb_tail = 4
 

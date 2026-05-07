@@ -159,6 +159,39 @@ no_implicit_optional = true
 # ---------------------------------------------------------------------------
 # Bandit — security linter
 # ---------------------------------------------------------------------------
+[tool.deptry]
+# Treat the package itself as a first-party import so DEP003 doesn't
+# fire on every ``from autodj.x import y`` statement inside the source
+# tree.  All third-party deps are pinned in [project.dependencies] +
+# [project.optional-dependencies].
+known_first_party = ["autodj"]
+extend_exclude = ["tests", "tmp"]
+
+[tool.deptry.per_rule_ignores]
+# DEP002 -- declared but never imported by name.  python-multipart is
+# a transitive runtime dep that FastAPI uses for form uploads.  pytest
+# / pytest-cov / pytest-mock / pytest-asyncio / hypothesis are test
+# tools loaded by pytest itself, not imported in src/.
+DEP002 = [
+    "python-multipart",
+    "pytest",
+    "pytest-cov",
+    "pytest-mock",
+    "pytest-asyncio",
+    "hypothesis",
+]
+# DEP003 -- imported but only declared as a transitive dep.  pydantic
+# ships with fastapi but is imported directly by server.py for the
+# Body models -- should stay declared.  Suppressing here until we
+# choose to add it as an explicit dep.
+DEP003 = ["pydantic"]
+
+[tool.vulture]
+paths = ["src/autodj"]
+min_confidence = 80
+exclude = ["tests/", "tmp/"]
+ignore_decorators = ["@app.route", "@app.get", "@app.post", "@app.websocket", "@pytest.fixture"]
+
 [tool.bandit]
 targets = ["src/autodj"]
 exclude_dirs = ["tests", "tmp"]
@@ -177,4 +210,5 @@ dev = [
     "pytest-cov>=7.1.0",
     "ruff>=0.15.10",
     "vulture>=2.16",  # dead-code detector — `uv run vulture src/autodj`
+    "deptry>=0.20",   # dep declaration auditor — `uv run deptry src/autodj`
 ]

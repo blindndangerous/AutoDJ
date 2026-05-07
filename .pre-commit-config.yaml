@@ -62,3 +62,38 @@ repos:
           - numpy
           - types-requests
           - types-tqdm
+
+  # Dead-code scan -- catches unused module-level functions, classes,
+  # imports, and variables that ruff F401/F841 do not flag.
+  - repo: https://github.com/jendrikseipp/vulture
+    rev: v2.16
+    hooks:
+      - id: vulture
+        files: ^src/
+
+  # Dependency declaration auditor -- ensures imports match
+  # [project.dependencies] / [project.optional-dependencies].  Catches
+  # missing declarations (DEP001), unused declarations (DEP002), and
+  # transitive-dep imports that should be made explicit (DEP003).
+  # Run via local hook so deptry resolves against the project's own
+  # uv env (where pyproject.toml + the dep tree live); the published
+  # repo hook does not bundle the project deps for resolution.
+  - repo: local
+    hooks:
+      - id: deptry
+        name: deptry
+        entry: uv run deptry src/autodj
+        language: system
+        pass_filenames: false
+        files: ^(src/|pyproject\.toml$)
+
+      # JS lint -- vanilla ESLint flat config covering the in-browser
+      # ESM modules + the Node-side test / build scripts.  Local hook
+      # so it uses the project's pinned eslint from devDependencies.
+      - id: eslint
+        name: eslint
+        entry: npx --no -- eslint
+        language: system
+        pass_filenames: false
+        args: ["src/autodj/static", "tests/jsmodules", "tests/playwright", "vite.config.js", "eslint.config.js"]
+        files: \.(js|mjs)$

@@ -46,7 +46,7 @@ The PR template auto-renders this list. Tick the boxes:
 
 - Tests added or updated for the new behaviour.
 - `CHANGELOG.md` updated under `[Unreleased]`.
-- `ruff`, `mypy`, `bandit`, `pytest` all clean locally.
+- `ruff`, `mypy`, `bandit`, `vulture`, `deptry`, `eslint`, `pytest` all clean locally (or run `uv run pre-commit run --all-files`).
 - Any web UI change has had a manual accessibility pass (keyboard,
   screen reader if you have one handy).
 

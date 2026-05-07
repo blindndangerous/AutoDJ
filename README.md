@@ -185,25 +185,28 @@ tests/
 If you plan to change the code:
 
 ```bash
-# Python tests + linting + type checking.
+# Python tests + linting + type checking + dead-code + dep audit.
 uv sync --extra all --extra dev
 uv run pytest
 uv run ruff check
 uv run mypy src
+uv run vulture src/autodj   # dead-code scan
+uv run deptry src/autodj    # dep-declaration audit
 
 # Web UI build (optional -- the server falls back to unbundled source
 # when the build output is missing).
 npm install
 npm run build           # writes src/autodj/static_dist/
 
-# JS module unit tests.
+# JS lint + module unit tests.
+npm run lint
 npm test
 
 # Cross-browser audit against a running server.
 AUTODJ_URL=http://192.168.50.40:8080 npm run audit:regression
 ```
 
-The Python side uses `uv`, `pytest`, `ruff`, `mypy`, and `bandit`.  The web side uses `vite` for bundling, `vitest` for unit tests, and `@playwright/test` for cross-browser audits.
+The Python side uses `uv`, `pytest`, `ruff`, `mypy`, `bandit`, `vulture` (dead-code), and `deptry` (dependency declarations).  The web side uses `vite` for bundling, `vitest` for unit tests, `eslint` for JS lint, and `@playwright/test` for cross-browser audits.  All of these run as `pre-commit` hooks; install once with `uv run pre-commit install`.
 
 ## Credits and licensing
 

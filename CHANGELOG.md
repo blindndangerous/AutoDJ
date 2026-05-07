@@ -41,6 +41,7 @@ The "make it feel like a real radio station" release.
 - **Settings descriptions trimmed.**  Removed the "Default: on / off" trailers from checkbox descriptions — the checkbox itself is the state, the tail of the sentence was noise.  Discovery checkbox now mentions that the Now Playing tab's <em>Discovery</em> button mirrors it.
 - **Dropped the <em>Clear BPM filter</em> button.**  Empty Min and Max fields now clear the filter on their own; no extra button needed.
 - **Internal: integration test split.**  `tests/integration/test_server.py` crossed the 2000-line working budget.  Recent additions (version stamp, advance log banner, key notation, repick failure paths, bridge re-export) extracted into `test_server_recent.py`.  Shared mock-builders and the `client` / `bridge` fixtures live in `_helpers.py` + `conftest.py` so neither file duplicates setup.
+- **Internal: dead-code + dep-audit + JS lint hooks.**  Added `vulture` (Python dead-code), `deptry` (Python dep-declaration audit), and `eslint` (JS lint) to the pre-commit suite.  All three are wired into `[dependency-groups.dev]` / `package.json` and run on every commit alongside `ruff` / `mypy` / `bandit`.  Run individually with `uv run vulture src/autodj`, `uv run deptry src/autodj`, `npm run lint`.
 
 ### Fixed
 
