@@ -6,6 +6,69 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.15.0] - 2026-05-06
+
+### Added
+
+- **Beat-synced transition FX.**  New `autodj.beat_sync` module with
+  pure-math helpers (`extract_downbeats`, `synthesize_downbeats`,
+  `next_downbeat_at`, `bar_seconds`, `lerp_bpm`, `key_to_hz`,
+  `lerp_hz`, plus the `FX_BAR_TABLE` mapping every transition effect
+  to its preferred bar count + downbeat-snap flag).  The server now
+  emits `downbeats_outro` / `downbeats_intro` windows and `key_hz`
+  per track in the `/api/status` payload, alongside the existing
+  `bpm` / `intro_end_s` / `outro_start_s` fields.  Beat detection
+  uses the cached dense beat grid in the DJ-meta sidecar; when a
+  track has no detected grid (silent intro / odd-time / detection
+  failure) the grid is synthesised from BPM + `outro_start_s`.
+  Browser-side `_BS` (BeatSync) helper resolves these into per-frame
+  `beatSec(t)` / `barSec(t)` / `nextDownbeat(t)` / `rootHzAt(t)`
+  accessors that lerp from the outgoing tempo + key to the incoming
+  tempo + key across the crossfade window in log-space.  Rhythmic
+  FX (`echo_out`, `dub_delay`, `beat_repeat`, `gate_stutter`,
+  `stutter_build`, `sidechain_pump`, `transformer`, `scratch`) now
+  schedule their internal events on the grid: echo / delay times
+  collapse to BPM-derived 1/8- and 1/4-note subdivisions, gate
+  rates accelerate from 1/4 -> 1/32 notes, sidechain pumps land on
+  beats, beat-repeat slices retrigger every 1/8 note from the next
+  downbeat.  Pure-envelope FX (sweeps, risers, drops, reverb_tail,
+  bitcrusher) bar-round their fade duration so they fit an integer
+  number of bars at the outgoing tempo, snapped to the FX_BAR_TABLE
+  default with halve / double fallbacks when the bar count would
+  exceed the 12-second crossfade ceiling or undercut the per-effect
+  `_MIN_FX_DURATION_S` floor.
+- **Key-synced pitched FX.**  Oscillator-based effects (`air_horn`,
+  `dub_siren`, `ring_modulator`) tune their carrier / sweep
+  frequencies to the song's root note via the new `key_hz` payload
+  field, lerping outgoing -> incoming root in log space across the
+  fade.  When a track has no detected key (`key == -1`) the effect
+  falls back to its hardcoded reference frequency.  `pitch_swell`
+  and `pitch_fall` use HTMLMediaElement `playbackRate` not
+  oscillators so they stay tempo-relative.
+- CLI flags `--beat-sync-fx/--no-beat-sync-fx` and
+  `--key-sync-fx/--no-key-sync-fx` on both `play` and `serve`.
+- `[playback]` config keys `beat_sync_fx` (default `true`) and
+  `key_sync_fx` (default `true`).
+- `/api/playback-settings` accepts `beat_sync_fx` and `key_sync_fx`.
+- Per-track `/api/status` payload extended with `downbeats_outro`,
+  `downbeats_intro`, and `key_hz` arrays / scalar.
+
+### Tests / coverage
+
+- 1212 pass, 8 skipped (was 1035 in 0.14.0).  Coverage 92.0 %.  New
+  unit suite `test_beat_sync` covers downbeat extraction,
+  phase-anchored grid synthesis, BPM blend / key-Hz table /
+  log-space pitch lerp, and `FX_BAR_TABLE` shape.
+
+### Notes
+
+- Beat-sync FX scheduling is browser-side only.  The CLI
+  `--server-audio` path uses plain numpy crossfades and has no FX
+  engine; the `beat_sync_fx` config flag is loaded so config files
+  stay portable but is a no-op there.
+
+---
+
 ## [0.14.0] - 2026-05-06
 
 ### Added

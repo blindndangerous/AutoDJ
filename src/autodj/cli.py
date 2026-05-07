@@ -614,6 +614,27 @@ def cmd_enrich(ctx: click.Context, index_name: str | None) -> None:
     ),
 )
 @click.option(
+    "--beat-sync-fx/--no-beat-sync-fx",
+    "beat_sync_fx",
+    default=None,
+    help=(
+        "Snap rhythmic transition FX (echo, stutter, beat_repeat, "
+        "sidechain_pump, halftime, scratch, ...) to the beat grid + "
+        "size to whole bars at a blended outgoing->incoming tempo.  "
+        "Default: on."
+    ),
+)
+@click.option(
+    "--key-sync-fx/--no-key-sync-fx",
+    "key_sync_fx",
+    default=None,
+    help=(
+        "Tune oscillator-based FX (pitch_swell, pitch_fall, dub_siren, "
+        "ring_modulator, air_horn) to the song's root note, lerping "
+        "outgoing -> incoming across the fade.  Default: on."
+    ),
+)
+@click.option(
     "--harmonic/--no-harmonic",
     "harmonic_mixing",
     default=None,
@@ -732,6 +753,8 @@ def cmd_play(
     enable_mood_arc: bool | None,
     mood_arc_hours: float | None,
     import_external_cues: bool | None,
+    beat_sync_fx: bool | None,
+    key_sync_fx: bool | None,
     harmonic_mixing: bool | None,
     beatmatch: bool | None,
     phrase_align: bool | None,
@@ -806,6 +829,10 @@ def cmd_play(
         cfg.playback.mood_arc_hours = max(0.25, float(mood_arc_hours))
     if import_external_cues is not None:
         cfg.playback.import_external_cues = import_external_cues
+    if beat_sync_fx is not None:
+        cfg.playback.beat_sync_fx = beat_sync_fx
+    if key_sync_fx is not None:
+        cfg.playback.key_sync_fx = key_sync_fx
     if transition_fx is not None:
         cfg.transitions.effect = transition_fx
     if transition_mode is not None:
@@ -1000,6 +1027,18 @@ def cmd_play(
     help="Auto-import cues from Mixxx / Rekordbox / Traktor libraries.",
 )
 @click.option(
+    "--beat-sync-fx/--no-beat-sync-fx",
+    "beat_sync_fx",
+    default=None,
+    help="Snap rhythmic transition FX to the beat grid + size to whole bars.",
+)
+@click.option(
+    "--key-sync-fx/--no-key-sync-fx",
+    "key_sync_fx",
+    default=None,
+    help="Tune oscillator FX (pitch_swell, dub_siren, ...) to song root note.",
+)
+@click.option(
     "--harmonic/--no-harmonic",
     "harmonic_mixing",
     default=None,
@@ -1168,6 +1207,8 @@ def cmd_serve(
     enable_mood_arc: bool | None,
     mood_arc_hours: float | None,
     import_external_cues: bool | None,
+    beat_sync_fx: bool | None,
+    key_sync_fx: bool | None,
     harmonic_mixing: bool | None,
     beatmatch: bool | None,
     phrase_align: bool | None,
@@ -1264,6 +1305,10 @@ def cmd_serve(
         cfg.playback.mood_arc_hours = max(0.25, float(mood_arc_hours))
     if import_external_cues is not None:
         cfg.playback.import_external_cues = import_external_cues
+    if beat_sync_fx is not None:
+        cfg.playback.beat_sync_fx = beat_sync_fx
+    if key_sync_fx is not None:
+        cfg.playback.key_sync_fx = key_sync_fx
     if transition_fx is not None:
         cfg.transitions.effect = transition_fx
     if transition_mode is not None:

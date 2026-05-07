@@ -269,6 +269,20 @@ class PlaybackConfig:
     # Rekordbox, Traktor) and merge with auto-detected cues.  Off
     # only when the user wants the auto-detected cues alone.
     import_external_cues: bool = True
+    # Beat-sync transition FX: rhythmic effects (beat_repeat,
+    # gate_stutter, echo_out, dub_delay, sidechain_pump, halftime,
+    # stutter_build, scratch) snap their start to the next outgoing
+    # downbeat and size their internal events to whole bars at a BPM
+    # blended from outgoing -> incoming track tempo.  Envelope FX
+    # (sweeps, risers) bar-round their length but don't snap start.
+    # Falls back to seconds-based legacy timing when no beat grid /
+    # tempo is known.  Default ON.
+    beat_sync_fx: bool = True
+    # Key-sync pitched FX: oscillator-based effects (pitch_swell,
+    # pitch_fall, dub_siren, ring_modulator, air_horn) tune their
+    # carrier frequency to the song's root note.  Lerps in log space
+    # from outgoing root -> incoming root across the fade.  Default ON.
+    key_sync_fx: bool = True
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> PlaybackConfig:
@@ -317,6 +331,8 @@ class PlaybackConfig:
             enable_mood_arc=bool(data.get("enable_mood_arc", False)),
             mood_arc_hours=max(0.25, float(data.get("mood_arc_hours", 3.0))),
             import_external_cues=bool(data.get("import_external_cues", True)),
+            beat_sync_fx=bool(data.get("beat_sync_fx", True)),
+            key_sync_fx=bool(data.get("key_sync_fx", True)),
         )
 
 

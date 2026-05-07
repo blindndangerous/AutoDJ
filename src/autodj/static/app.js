@@ -1493,6 +1493,138 @@ const _OUTRO_FRACTION = {
 const _MAX_FX_DURATION_S = 12.0;
 const _ABS_MIN_FX_DURATION_S = 1.0;
 
+// --- FX bar-length table (mirrors autodj.beat_sync.FX_BAR_TABLE in Python) ---
+//
+// Each entry is [bars, snapToDownbeat]:
+//   bars              integer bar count used by _effectDurationFor when
+//                     beat-sync is enabled.  fadeSec rounds to N bars at
+//                     the blended outgoing->incoming tempo.
+//   snapToDownbeat    when true, the effect's first scheduled event lands
+//                     on the next outgoing downbeat (≤ 1 bar of latency).
+//                     Pure ambient envelope FX get false.
+const _FX_BAR_TABLE = {
+  beat_repeat:    [4, true],
+  gate_stutter:   [4, true],
+  stutter_build:  [4, true],
+  sidechain_pump: [8, true],
+  halftime:       [4, true],
+  transformer:    [2, true],
+  echo_out:       [4, true],
+  dub_delay:      [8, true],
+  scratch:        [2, true],
+  noise_riser:    [4, true],
+  noise_drop:     [4, true],
+  reverse_reverb: [4, true],
+  air_horn:       [2, true],
+  dub_siren:      [4, true],
+  highpass_sweep: [4, false],
+  lowpass_sweep:  [4, false],
+  cross_eq_swap:  [4, false],
+  submerge:       [4, false],
+  telephone:      [4, false],
+  chorus:         [4, false],
+  phaser:         [4, false],
+  flanger:        [4, false],
+  wow_flutter:    [4, false],
+  vinyl_wow:      [4, false],
+  ring_modulator: [4, false],
+  bitcrusher:     [4, false],
+  pitch_swell:    [2, true],
+  pitch_fall:     [2, true],
+  tape_stop:      [2, true],
+  backspin:       [2, true],
+  forward_spin:   [2, true],
+  vinyl_rewind:   [4, true],
+  freeze:         [2, true],
+  glitch:         [4, true],
+  reverb_tail:    [4, false],
+};
+
+// --- _BS: BeatSync helper.  Refreshed at the start of every crossfade
+// from the server-emitted track payload (downbeats_outro / downbeats_intro
+// / key_hz) plus the cached BPMs.  All accessors take an AudioContext
+// time so the math stays sample-accurate. ---
+const _BS = {
+  enabled: false,
+  keyEnabled: false,
+  outBpm: 0,
+  inBpm: 0,
+  fxStartCtx: 0,
+  fxDurCtx: 0,
+  // Mapping audio.currentTime <-> ctx.currentTime captured at refresh.
+  audioToCtxOffset: 0,    // ctx_t = audio_t + offset
+  outDownbeatsCtx: [],    // outgoing downbeats already in ctx-time
+  outKeyHz: null,
+  inKeyHz: null,
+
+  refresh(outDeck, fxStartCtx, fxDurCtx) {
+    this.enabled = !!_beatSyncEnabled;
+    this.keyEnabled = !!_keySyncEnabled;
+    this.outBpm = _outBpmCache || 0;
+    this.inBpm = _inBpmCache || 0;
+    this.fxStartCtx = fxStartCtx;
+    this.fxDurCtx = Math.max(0.001, fxDurCtx);
+    this.outKeyHz = _outKeyHzCache;
+    this.inKeyHz = _inKeyHzCache;
+
+    // Build the audio<->ctx offset from the active deck's currentTime now.
+    let audioT = 0;
+    try { audioT = outDeck.audio.currentTime || 0; } catch (_) { audioT = 0; }
+    this.audioToCtxOffset = fxStartCtx - audioT;
+
+    // Translate outgoing downbeats (audio time) into ctx time + drop those
+    // strictly in the past so callers iterate forward only.
+    const tCtxNow = fxStartCtx;
+    const list = (_outDownbeatsCache || [])
+      .map((d) => d + this.audioToCtxOffset)
+      .filter((t) => t >= tCtxNow - 0.05);
+    this.outDownbeatsCtx = list;
+  },
+
+  // Linear blend across the fade; clamps frac.
+  bpmAt(tCtx) {
+    const f = Math.max(0, Math.min(1, (tCtx - this.fxStartCtx) / this.fxDurCtx));
+    if (this.outBpm > 0 && this.inBpm > 0) {
+      return this.outBpm * (1 - f) + this.inBpm * f;
+    }
+    return this.outBpm > 0 ? this.outBpm : (this.inBpm > 0 ? this.inBpm : 120);
+  },
+
+  // Seconds per beat at the blended tempo (1/4 note).
+  beatSec(tCtx) { return 60 / Math.max(1, this.bpmAt(tCtx)); },
+
+  // Seconds per bar at the blended tempo (4/4).
+  barSec(tCtx) { return this.beatSec(tCtx) * 4; },
+
+  // First downbeat (in ctx time) >= tCtx.  Returns tCtx itself when no
+  // grid is available so callers can use the result unconditionally.
+  nextDownbeat(tCtx) {
+    if (!this.enabled) return tCtx;
+    for (const d of this.outDownbeatsCtx) {
+      if (d >= tCtx - 0.005) return d;
+    }
+    // Synthesize from blended BPM when grid is exhausted (fallback grid
+    // anchored at fxStart).
+    const bs = this.barSec(tCtx);
+    if (bs <= 0) return tCtx;
+    const phase = ((tCtx - this.fxStartCtx) % bs + bs) % bs;
+    return tCtx + (phase < 0.005 ? 0 : (bs - phase));
+  },
+
+  // Log-space lerp from outgoing root -> incoming root.  Returns null
+  // when neither side has a known key (caller falls back to its hardcoded
+  // frequency) or when key-sync is disabled.
+  rootHzAt(tCtx) {
+    if (!this.keyEnabled) return null;
+    const out = this.outKeyHz, inn = this.inKeyHz;
+    if (!out && !inn) return null;
+    if (out && !inn) return out;
+    if (!out && inn) return inn;
+    const f = Math.max(0, Math.min(1, (tCtx - this.fxStartCtx) / this.fxDurCtx));
+    return Math.exp(Math.log(out) * (1 - f) + Math.log(inn) * f);
+  },
+};
+
 function _effectDurationFor(effect, fadeSec, outroLen) {
   // Static floor (per-effect minimum) — always honoured.
   const staticMin = _MIN_FX_DURATION_S[effect] || 0;
@@ -1502,11 +1634,37 @@ function _effectDurationFor(effect, fadeSec, outroLen) {
     return Math.max(fadeSec, staticMin);
   }
   const frac = _OUTRO_FRACTION[effect] != null ? _OUTRO_FRACTION[effect] : 0.5;
-  const target = outroLen * frac;
+  let target = outroLen * frac;
   // Clamp: never below the per-effect floor (or absolute 1.0s), never
   // above 12s — keeps musically sane boundaries even on edge tracks.
   const lo = Math.max(_ABS_MIN_FX_DURATION_S, staticMin);
-  return Math.min(_MAX_FX_DURATION_S, Math.max(lo, target));
+  let dur = Math.min(_MAX_FX_DURATION_S, Math.max(lo, target));
+
+  // Beat-sync rounding: when enabled and the outgoing track has a known
+  // BPM, round the target up to the nearest whole bar count from the
+  // FX_BAR_TABLE so rhythmic effects fit an integer number of bars.
+  if (_beatSyncEnabled && _outBpmCache > 0 && _FX_BAR_TABLE[effect]) {
+    const bars = _FX_BAR_TABLE[effect][0];
+    const barSec = 60 * 4 / _outBpmCache;     // outgoing-track bar length
+    // Pick the bar count whose total duration is closest to `dur` while
+    // staying inside the [lo, _MAX_FX_DURATION_S] envelope.  Snapping to
+    // the FX_BAR_TABLE default first, then halving / doubling if it
+    // falls outside the clamp window.
+    let candidate = bars * barSec;
+    if (candidate > _MAX_FX_DURATION_S) {
+      // Halve until it fits (covers very slow tempos: 60 BPM x 8 bars = 32 s).
+      while (candidate > _MAX_FX_DURATION_S && candidate > lo) {
+        candidate = candidate / 2;
+      }
+    } else if (candidate < lo) {
+      // Double until it clears the floor (very fast tempos: 180 BPM x 2 bars = 2.7 s).
+      while (candidate < lo && candidate < _MAX_FX_DURATION_S) {
+        candidate = candidate * 2;
+      }
+    }
+    dur = Math.min(_MAX_FX_DURATION_S, Math.max(lo, candidate));
+  }
+  return dur;
 }
 
 function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
@@ -1580,11 +1738,14 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
     teardowns.push(() => fIn.disconnect());
   }
   else if (effect === "echo_out") {
-    // Route the wet (delay) path DIRECT to destination so the echo
-    // tail survives after deck.gain has ramped to silence — that's
-    // what makes it sound like a tape echo throw rather than a
-    // muted dry signal.
-    const delay = ctx.createDelay(2.0); delay.delayTime.value = 0.375;
+    // Tempo-synced eighth-note echo throw.  delayTime = beatSec / 2
+    // (1/8 note) so the tail subdivides the outgoing groove instead of
+    // sitting at the legacy 375 ms.  Route the wet path DIRECT to
+    // destination so the echo tail survives after deck.gain has ramped
+    // to silence.
+    const delay = ctx.createDelay(2.0);
+    const eighth = _BS.beatSec(t0) / 2;
+    delay.delayTime.value = Math.max(0.05, Math.min(1.5, eighth));
     const fb = ctx.createGain(); fb.gain.value = 0.6;
     const wet = ctx.createGain();
     wet.gain.setValueAtTime(_volume * 0.85, t0);
@@ -1720,9 +1881,14 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
       const node = new AudioWorkletNode(ctx, "stutter");
       const rateParam = node.parameters.get("rate");
       const dutyParam = node.parameters.get("duty");
-      // Accelerate gate rate from 8 → 16 Hz over the fade for a build-up feel
-      rateParam.setValueAtTime(8, t0);
-      rateParam.linearRampToValueAtTime(16, tEnd);
+      // Tempo-synced gate: 1/8-note triplet accelerating to 1/16 over
+      // the fade.  Hz = bpm/60 * subdivision.  Falls back to 8->16 Hz
+      // when BPM is unknown (matches legacy behaviour).
+      const beatHz = (_BS.outBpm > 0 ? _BS.outBpm : 120) / 60;
+      const startHz = beatHz * 2;       // 1/8 notes
+      const endHz = beatHz * 4;         // 1/16 notes
+      rateParam.setValueAtTime(startHz, t0);
+      rateParam.linearRampToValueAtTime(endHz, tEnd);
       dutyParam.setValueAtTime(0.25, t0);
       _routeThrough(outDeck, node);
       node.connect(outDeck.gain);
@@ -1730,14 +1896,16 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
     } else {
       const wrapper = ctx.createGain();
       wrapper.gain.setValueAtTime(1, t0);
-      let t = t0;
-      let rate = 8;
+      const beatHz = (_BS.outBpm > 0 ? _BS.outBpm : 120) / 60;
+      let t = _BS.nextDownbeat(t0);
+      let rate = beatHz * 2;            // 1/8 notes
+      const maxRate = beatHz * 4;       // 1/16 notes
       while (t < tEnd) {
         const cycle = 1 / rate;
         wrapper.gain.setValueAtTime(1, t);
         wrapper.gain.setValueAtTime(0, t + cycle * 0.25);
         t += cycle;
-        rate = Math.min(16, rate * 1.05);
+        rate = Math.min(maxRate, rate * 1.05);
       }
       _routeThrough(outDeck, wrapper); wrapper.connect(outDeck.gain);
       teardowns.push(() => wrapper.disconnect());
@@ -2031,9 +2199,12 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
   else if (effect === "scratch") {
     const path = outDeck.path;
     const currentT = outDeck.audio.currentTime;
-    const sliceSec = 0.25;       // 250 ms — classic scratch slice
+    // 1/4-note slice, scratched over a bar (4 passes ⇒ one bar of
+    // forward / reverse / forward / reverse).  Aligns with the groove
+    // instead of the legacy 250 ms fixed slice.
+    const sliceSec = _BS.beatSec(t0);
     const totalSec = Math.max(fadeSec, 2.0);
-    const nPasses = 4;           // forward, reverse, forward, reverse
+    const nPasses = 4;
     outDeck.audio.muted = true;
     outDeck.gain.gain.cancelScheduledValues(t0);
     outDeck.gain.gain.setValueAtTime(0, t0);
@@ -2051,6 +2222,7 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
         );
       }
       const passLen = totalSec / nPasses;
+      const tScratchStart = _BS.nextDownbeat(t0);
       for (let p = 0; p < nPasses; p++) {
         const reverse = (p % 2 === 1);
         const passBuf = ctx.createBuffer(slice.numberOfChannels, sliceLen, sr);
@@ -2065,7 +2237,7 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
         }
         const src = ctx.createBufferSource(); src.buffer = passBuf;
         // Sine-shaped rate envelope — accelerate then decelerate per pass
-        const t1 = t0 + p * passLen;
+        const t1 = tScratchStart + p * passLen;
         const t2 = t1 + passLen;
         src.playbackRate.setValueAtTime(0.4, t1);
         src.playbackRate.linearRampToValueAtTime(2.0, t1 + passLen * 0.5);
@@ -2094,9 +2266,12 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
   else if (effect === "beat_repeat") {
     const path = outDeck.path;
     const currentT = outDeck.audio.currentTime;
-    const sliceSec = 0.25;
-    const nRepeats = 8;
+    // Tempo-synced 1/8-note slice retriggered every 1/8 note.  Slice
+    // size + stride both come from the blended BPM so the repeats land
+    // on the grid; first hit lands on the next downbeat.
+    const sliceSec = _BS.beatSec(t0) / 2;
     const totalSec = Math.max(fadeSec, 3.0);
+    const nRepeats = Math.max(4, Math.floor(totalSec / sliceSec));
     outDeck.audio.muted = true;
     outDeck.gain.gain.cancelScheduledValues(t0);
     outDeck.gain.gain.setValueAtTime(0, t0);
@@ -2113,11 +2288,13 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
           buf.getChannelData(ch).subarray(startSamp, startSamp + sliceLen),
         );
       }
-      const stride = totalSec / nRepeats;
+      const stride = sliceSec;
+      const tStart = _BS.nextDownbeat(t0);
       for (let i = 0; i < nRepeats; i++) {
+        const t1 = tStart + i * stride;
+        if (t1 >= tEnd) break;
         const src = ctx.createBufferSource(); src.buffer = slice;
         const g = ctx.createGain();
-        const t1 = t0 + i * stride;
         // Retrigger envelope — sharp attack + decay so each hit punches
         g.gain.setValueAtTime(_volume, t1);
         g.gain.linearRampToValueAtTime(0, t1 + sliceSec);
@@ -2138,17 +2315,16 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
   }
   // -------- sidechain_pump: rhythmic 4-on-the-floor amplitude duck --------
   else if (effect === "sidechain_pump") {
-    // Apply a periodic gain envelope between deck.source and deck.gain.
-    // Pump rate = 120 BPM → 0.5 s period.  Full duck on the beat,
-    // exponential recovery between beats.
+    // Periodic 4-on-floor gain duck synced to the OUTGOING track's tempo
+    // and aligned to its next downbeat.  Each duck lands on a beat and
+    // recovers across the beat; period = beatSec at the blended BPM.
     const pump = ctx.createGain();
     pump.gain.value = 1.0;
-    const period = 60 / 120;     // 120 BPM
     const depth = 0.7;
-    let t = t0;
+    const tStart = _BS.nextDownbeat(t0);
+    let t = tStart;
     while (t < tEnd) {
-      // Beat onset: drop to 1-depth instantly, then ramp back to 1 over
-      // the period.
+      const period = _BS.beatSec(t);
       pump.gain.setValueAtTime(1 - depth, t);
       pump.gain.exponentialRampToValueAtTime(1.0, t + period * 0.95);
       t += period;
@@ -2185,9 +2361,16 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
   else if (effect === "air_horn") {
     const osc = ctx.createOscillator();
     osc.type = "square";
-    // 220 Hz → 880 Hz pitch sweep
-    osc.frequency.setValueAtTime(220, t0);
-    osc.frequency.exponentialRampToValueAtTime(880, tEnd - 0.1);
+    // Pitch sweep tuned to song key when key-sync enabled.  Anchor at
+    // the outgoing root one octave below middle (e.g. A2≈110), sweep
+    // up two octaves toward the incoming root.  Falls back to the
+    // legacy 220→880 Hz sweep when neither key is known.
+    const outRoot = _BS.rootHzAt(t0);
+    const inRoot = _BS.rootHzAt(tEnd);
+    const startHz = outRoot ? outRoot * 0.5 : 220;
+    const endHz = inRoot ? inRoot * 2.0 : 880;
+    osc.frequency.setValueAtTime(startHz, t0);
+    osc.frequency.exponentialRampToValueAtTime(Math.max(50, endHz), tEnd - 0.1);
     // Soft filter so it isn't pure square harshness
     const lp = ctx.createBiquadFilter();
     lp.type = "lowpass"; lp.frequency.value = 3500; lp.Q.value = 1.5;
@@ -2255,16 +2438,16 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
   }
   // -------- transformer: rapid tempo-cut DJ fader pattern --------
   else if (effect === "transformer") {
-    // Syncopated [open, cut, open, cut, cut, open, cut, open] pattern at
-    // ~16 cps (16th notes @ 120 BPM).  Differs from gate_stutter (uniform
-    // duty cycle) — feels like a DJ throwing the crossfader.
+    // Syncopated [open, cut, open, cut, cut, open, cut, open] pattern
+    // at 1/16-note resolution.  cps = bpm/60 * 4.  Aligned to next
+    // downbeat so the syncopation lands on-grid instead of arbitrary.
     const wrapper = ctx.createGain();
     wrapper.gain.setValueAtTime(1, t0);
     const pattern = [1, 0, 1, 0, 0, 1, 0, 1];
-    const cps = 16;
+    const cps = (_BS.outBpm > 0 ? _BS.outBpm : 120) / 60 * 4;
     const cycle = 1 / cps;
     let i = 0;
-    for (let t = t0; t < tEnd; t += cycle) {
+    for (let t = _BS.nextDownbeat(t0); t < tEnd; t += cycle) {
       const open = pattern[i % pattern.length];
       // Tiny ramps avoid clicks on the gate edges.
       wrapper.gain.setValueAtTime(open ? 1 : 0, t);
@@ -2286,8 +2469,15 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
     // BEHIND the music rather than crashing on top.
     const osc = ctx.createOscillator();
     osc.type = "sine";
-    osc.frequency.setValueAtTime(440, t0);
-    osc.frequency.exponentialRampToValueAtTime(1760, tEnd);
+    // Tune sweep to song key when known: outgoing root -> incoming root
+    // two octaves up (perceived siren rise).  Legacy 440->1760 Hz
+    // (A4 -> A6) when neither side has a key.
+    const outRoot = _BS.rootHzAt(t0);
+    const inRoot = _BS.rootHzAt(tEnd);
+    const startHz = outRoot || 440;
+    const endHz = (inRoot || 440) * 4.0;
+    osc.frequency.setValueAtTime(startHz, t0);
+    osc.frequency.exponentialRampToValueAtTime(Math.max(80, endHz), tEnd);
     // Vibrato: second oscillator modulates frequency
     const vibLfo = ctx.createOscillator();
     vibLfo.type = "sine";
@@ -2308,19 +2498,21 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
       _disconnectAll(osc, vibLfo, vibGain, g);
     });
   }
-  // -------- stutter_build: accelerating gate freq 4 Hz → 32 Hz --------
+  // -------- stutter_build: accelerating gate freq quarter -> 32nd notes --------
   else if (effect === "stutter_build") {
-    // Differs from gate_stutter (8 → 16 Hz) and transformer (fixed 16 cps
-    // syncopated).  Rate ramps from 4 Hz at fade start to 32 Hz at the
-    // cut — classic build-up tension.
+    // Tempo-synced build: starts at 1/4-note gate, accelerates to
+    // 1/32-note gate at the cut.  At 120 BPM that's 2 Hz -> 16 Hz; at
+    // 140 BPM 2.33 -> 18.7 Hz.  Aligned to next downbeat.
     const wrapper = ctx.createGain();
     wrapper.gain.setValueAtTime(1, t0);
-    let t = t0;
+    const beatHz = (_BS.outBpm > 0 ? _BS.outBpm : 120) / 60;
+    const startRate = beatHz;            // 1/4 notes
+    const endRate = beatHz * 8;          // 1/32 notes
+    let t = _BS.nextDownbeat(t0);
     let elapsed = 0;
     while (t < tEnd) {
-      // Linear interpolation of rate across the fade
       const frac = elapsed / Math.max(0.001, fadeSec);
-      const rate = 4 + (32 - 4) * Math.min(1, frac);
+      const rate = startRate + (endRate - startRate) * Math.min(1, frac);
       const cycle = 1 / rate;
       // 50% duty: half open, half closed.  Tiny ramp to avoid clicks.
       wrapper.gain.setValueAtTime(1, t);
@@ -2390,7 +2582,11 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
     wet.gain.value = 0;  // baseline 0; LFO modulates around 0
     const carrier = ctx.createOscillator();
     carrier.type = "sine";
-    carrier.frequency.value = 173;  // F3-ish — produces musical sidebands
+    // Carrier tuned to the song's root note (one octave down from C4
+    // reference) so the resulting clangy sidebands sit IN-key with the
+    // track instead of producing the legacy 173 Hz F3-ish dissonance.
+    const carrierRoot = _BS.rootHzAt(t0);
+    carrier.frequency.value = carrierRoot ? carrierRoot * 0.5 : 173;
     const carrierGain = ctx.createGain();
     carrierGain.gain.value = 1.0;
     carrier.connect(carrierGain);
@@ -2413,13 +2609,15 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
       _restoreDirect(outDeck);
     });
   }
-  // -------- dub_delay: long 1 s lowpass-feedback delay (vs short echo_out) --------
+  // -------- dub_delay: long quarter-note lowpass-feedback delay --------
   else if (effect === "dub_delay") {
-    // Distinct from echo_out (375 ms 1/4-note feedback, full-spectrum).
-    // Dub delay = 1 s delay with lowpass on the feedback path so each
-    // repeat darkens.  Long feedback bleeds into incoming track tastefully.
+    // Distinct from echo_out (1/8 note feedback, full-spectrum).
+    // Dub delay = full-beat (1/4 note) delay with lowpass on the
+    // feedback path so each repeat darkens.  Quarter note keeps the
+    // groove audible inside the feedback even at slow tempos.
     const delayNode = ctx.createDelay(2.0);
-    delayNode.delayTime.value = 1.0;
+    const quarter = _BS.beatSec(t0);
+    delayNode.delayTime.value = Math.max(0.2, Math.min(1.8, quarter));
     const fb = ctx.createGain();
     fb.gain.value = 0.55;
     const fbLp = ctx.createBiquadFilter();
@@ -2573,7 +2771,12 @@ function startCrossfade(nextPath, fadeSec, serverLed = false) {
   // caused audible cuts (effect-shorter-than-fade) or trailing silence
   // (effect-longer-than-fade).
   const effectDur = _effectDurationFor(fxName, fadeSec, _currentOutroLenCache);
-  console.debug("autodj transition:", fxName, "duration:", effectDur.toFixed(2), "s");
+  // Refresh the beat-sync cache up front so applyTransitionFx can read
+  // _BS.beatSec / barSec / nextDownbeat / rootHzAt while scheduling.
+  _BS.refresh(active, t0, effectDur);
+  console.debug("autodj transition:", fxName, "duration:", effectDur.toFixed(2),
+    "s | bpm:", _BS.outBpm.toFixed(1), "->", _BS.inBpm.toFixed(1),
+    "| keyHz:", _BS.outKeyHz, "->", _BS.inKeyHz);
 
   // Schedule the baseline crossfade gain ramps FIRST so that any
   // subsequent overrides issued by `applyTransitionFx` (e.g.
@@ -2736,6 +2939,19 @@ let _transitionMode = "full_intro_outro";
 let _prefetchEnabled = true;
 let _silenceTriggerEnabled = true;
 
+// --- Beat- + key-sync transition FX caches.  Populated from
+// applyBrowserPlaybackState whenever a state push lands; consumed by
+// _BS.refresh() at the start of every crossfade so per-effect timing
+// can snap to downbeats and oscillator-FX can tune to root notes. ---
+let _beatSyncEnabled = true;
+let _keySyncEnabled = true;
+let _outBpmCache = 0;
+let _inBpmCache = 0;
+let _outDownbeatsCache = [];
+let _inDownbeatsCache = [];
+let _outKeyHzCache = null;
+let _inKeyHzCache = null;
+
 // Mixxx-style fade-length picker.  Mirrors AutoDJProcessor's
 // TransitionMode enum -- see CHANGELOG entry for 0.12.3.
 //
@@ -2809,6 +3025,26 @@ function applyBrowserPlaybackState(s) {
   _nextTrackIntroEndCache = (s.next_track
       && typeof s.next_track.intro_end_s === "number")
     ? s.next_track.intro_end_s : null;
+  // Beat- and key-sync metadata for transition FX scheduling.  Server
+  // emits per-track downbeat windows + key_hz; we cache them here so
+  // _BS.refresh() (called in startCrossfade) has fresh data without
+  // having to re-walk the WS payload.
+  _beatSyncEnabled = !(s.settings && s.settings.playback &&
+    s.settings.playback.beat_sync_fx === false);
+  _keySyncEnabled = !(s.settings && s.settings.playback &&
+    s.settings.playback.key_sync_fx === false);
+  _outBpmCache = (s.current_track && typeof s.current_track.bpm === "number")
+    ? s.current_track.bpm : 0;
+  _inBpmCache = (s.next_track && typeof s.next_track.bpm === "number")
+    ? s.next_track.bpm : 0;
+  _outDownbeatsCache = (s.current_track && Array.isArray(s.current_track.downbeats_outro))
+    ? s.current_track.downbeats_outro : [];
+  _inDownbeatsCache = (s.next_track && Array.isArray(s.next_track.downbeats_intro))
+    ? s.next_track.downbeats_intro : [];
+  _outKeyHzCache = (s.current_track && typeof s.current_track.key_hz === "number")
+    ? s.current_track.key_hz : null;
+  _inKeyHzCache = (s.next_track && typeof s.next_track.key_hz === "number")
+    ? s.next_track.key_hz : null;
   // Honour user-controlled gapless flags from config.toml / web settings.
   _prefetchEnabled = !(s.settings && s.settings.playback &&
     s.settings.playback.prefetch_next_track === false);

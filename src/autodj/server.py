@@ -154,6 +154,8 @@ class PlaybackSettingsBody(BaseModel):
     enable_mood_arc: bool | None = None
     mood_arc_hours: float | None = None
     import_external_cues: bool | None = None
+    beat_sync_fx: bool | None = None
+    key_sync_fx: bool | None = None
 
 
 class BpmRangeBody(BaseModel):
@@ -384,6 +386,11 @@ class PlayerBridge:
 
         import contextlib
 
+        from autodj.beat_sync import (
+            extract_downbeats,
+            key_to_hz,
+            synthesize_downbeats,
+        )
         from autodj.dj_meta import camelot_label
 
         # Pull the DJ-meta sidecar (if any) so we can surface the
@@ -453,10 +460,65 @@ class PlayerBridge:
                 for c in shaped
             ]
 
+        def _downbeats(
+            entry: IndexEntry | None,
+            outro_start: float | None,
+            intro_end: float | None,
+        ) -> tuple[list[float], list[float]]:
+            """Return ``(downbeats_outro, downbeats_intro)`` rounded to 3 dp.
+
+            Outro window: last 32 bars before ``length`` (or whole grid if
+            shorter).  Intro window: first 32 bars from ``intro_end`` (or
+            from 0 when intro_end is unknown).  When the cached beat grid
+            is empty / too short, synthesise a downbeat grid from
+            ``entry.bpm`` + ``outro_start`` so beat-sync FX still have
+            something to align to on tracks where librosa beat detection
+            failed.
+            """
+            if entry is None or not entry.length:
+                return ([], [])
+            beats: list[float] = []
+            if dj_cache is not None:
+                try:
+                    meta = dj_cache.get(entry.path)
+                except Exception:
+                    meta = None
+                if meta is not None and getattr(meta, "analysed", False):
+                    beats = list(getattr(meta, "beats", []))
+
+            downbeats = extract_downbeats(beats)
+            # Synthesize when beat grid missing OR too sparse to cover the
+            # last 64 s at 120 BPM (~32 bars).
+            if len(downbeats) < 8 and entry.bpm and entry.bpm > 0:
+                anchor = float(outro_start) if outro_start is not None else 0.0
+                downbeats = synthesize_downbeats(
+                    float(entry.bpm),
+                    float(entry.length),
+                    anchor_s=anchor,
+                )
+
+            if not downbeats:
+                return ([], [])
+
+            # Outro window: 32 bars before length.  At 120 BPM 4/4 ~64 s.
+            # Use bar_seconds derived from the bpm if known so the window
+            # tracks the actual tempo.
+            from autodj.beat_sync import bar_seconds
+
+            bar_s = bar_seconds(entry.bpm) if entry.bpm and entry.bpm > 0 else 2.0
+            outro_lo = max(0.0, float(entry.length) - 32 * bar_s)
+            d_out = [round(d, 3) for d in downbeats if d >= outro_lo]
+            intro_anchor = float(intro_end) if intro_end is not None else 0.0
+            intro_hi = intro_anchor + 32 * bar_s
+            d_in = [round(d, 3) for d in downbeats if intro_anchor - bar_s <= d <= intro_hi]
+            return (d_out, d_in)
+
         def _track_dict(entry: IndexEntry | None) -> dict | None:
             if entry is None:
                 return None
             intro_end, outro_start, outro_len = _markers(entry)
+            d_out, d_in = _downbeats(entry, outro_start, intro_end)
+            key_hz = key_to_hz(entry.key) if entry.key is not None else None
             return {
                 "title": entry.title,
                 "artist": entry.artist,
@@ -473,6 +535,9 @@ class PlayerBridge:
                 "outro_start_s": round(outro_start, 2) if outro_start is not None else None,
                 "outro_len": round(outro_len, 2) if outro_len is not None else None,
                 "cues": _cues(entry),
+                "downbeats_outro": d_out,
+                "downbeats_intro": d_in,
+                "key_hz": round(key_hz, 3) if key_hz is not None else None,
             }
 
         elapsed = round(pos / max(1, sr), 1)
@@ -771,6 +836,12 @@ class PlayerBridge:
                     "import_external_cues",
                     True,
                 ),
+                "beat_sync_fx": bool(
+                    getattr(cfg.playback, "beat_sync_fx", True),
+                ),
+                "key_sync_fx": bool(
+                    getattr(cfg.playback, "key_sync_fx", True),
+                ),
                 "prefetch_next_track": getattr(
                     cfg.playback,
                     "prefetch_next_track",
@@ -873,6 +944,8 @@ class PlayerBridge:
         enable_mood_arc: bool | None = None,
         mood_arc_hours: float | None = None,
         import_external_cues: bool | None = None,
+        beat_sync_fx: bool | None = None,
+        key_sync_fx: bool | None = None,
     ) -> None:
         """Apply playback-related settings; only non-null fields take effect."""
         cfg = self.player._cfg
@@ -938,6 +1011,10 @@ class PlayerBridge:
                 )
         if import_external_cues is not None:
             cfg.playback.import_external_cues = bool(import_external_cues)
+        if beat_sync_fx is not None:
+            cfg.playback.beat_sync_fx = bool(beat_sync_fx)
+        if key_sync_fx is not None:
+            cfg.playback.key_sync_fx = bool(key_sync_fx)
 
     def set_bpm_range(self, lo: float | None, hi: float | None) -> None:
         """Set the hard BPM filter; pass both null to clear."""
