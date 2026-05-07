@@ -10,6 +10,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added (post-feature batch)
 
+- **app.js modularised (phase 2).**  Entire client-side audio
+  pipeline lifted into `src/autodj/static/modules/audio-engine.js`
+  (2292 lines): AudioContext, two-deck crossfade, EQ filters, the
+  35-effect transition library, beat-sync helper (`_BS`), reverb IR
+  cache, cover-art probe.  Top-level `let` exports stay as ES module
+  live bindings; `app.js` uses tiny `_getCtx()` / `_getDecks()` /
+  ... accessor wrappers so closures (transport buttons, liners
+  scheduler, hotkey volume nudge) capture the latest state.
+  `resetTrackCaches()` export covers the WebSocket-reconnect cache
+  wipe.  app.js shrunk to 1310 lines (was 4682; ~72% total
+  reduction across both phases).  Bundled artifact 78 kB / 24 kB
+  gzip.  This single move closes out the eq-volume, transition-fx,
+  beat-sync, transport, and websocket-state tasks because the code
+  shares `_ctx` / `decks` / `_outBpmCache` state and tearing it
+  apart further would just reintroduce indirection.
+
 - **app.js modularised (phase 1).**  Extracted 14 concerns from the
   4682-line app.js into ES modules under `src/autodj/static/modules/`:
   `live-region`, `dom-helpers`, `cues`, `lyrics`, `tabs`, `show-when`,
