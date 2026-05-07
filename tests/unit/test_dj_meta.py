@@ -14,6 +14,8 @@ from autodj.dj_meta import (
     camelot_position,
     detect_intro_outro,
     harmonic_compatible,
+    key_label,
+    musical_label,
     nearest_phrase_boundary,
 )
 
@@ -45,6 +47,59 @@ class TestCamelotLabel:
 
     def test_unknown_returns_dashes(self) -> None:
         assert camelot_label(-1, 1) == "--"
+
+
+class TestMusicalLabel:
+    def test_majors_use_letter_only(self) -> None:
+        assert musical_label(0, 1) == "C"
+        assert musical_label(7, 1) == "G"
+        assert musical_label(11, 1) == "B"
+
+    def test_minors_get_m_suffix(self) -> None:
+        assert musical_label(9, 0) == "Am"
+        assert musical_label(0, 0) == "Cm"
+
+    def test_default_uses_sharps(self) -> None:
+        # Pitch class 1 = C# / Db.  Default sharps.
+        assert musical_label(1, 1) == "C#"
+        assert musical_label(6, 1) == "F#"
+        assert musical_label(10, 0) == "A#m"
+
+    def test_prefer_flats_uses_flats(self) -> None:
+        assert musical_label(1, 1, prefer_flats=True) == "Db"
+        assert musical_label(6, 1, prefer_flats=True) == "Gb"
+        assert musical_label(10, 0, prefer_flats=True) == "Bbm"
+
+    def test_naturals_unchanged_by_flats_flag(self) -> None:
+        # C / D / E / F / G / A / B have no enharmonic flat spelling.
+        assert musical_label(0, 1, prefer_flats=True) == "C"
+        assert musical_label(11, 1, prefer_flats=True) == "B"
+
+    def test_unknown_returns_dashes(self) -> None:
+        assert musical_label(-1, 1) == "--"
+        assert musical_label(0, -1) == "--"
+        assert musical_label(12, 1) == "--"
+
+
+class TestKeyLabelDispatcher:
+    def test_camelot_default(self) -> None:
+        assert key_label(9, 0) == "8A"
+
+    def test_camelot_explicit(self) -> None:
+        assert key_label(9, 0, "camelot") == "8A"
+
+    def test_musical(self) -> None:
+        assert key_label(9, 0, "musical") == "Am"
+
+    def test_musical_with_flats(self) -> None:
+        assert key_label(1, 1, "musical", prefer_flats=True) == "Db"
+
+    def test_unknown_notation_falls_back_to_camelot(self) -> None:
+        assert key_label(9, 0, "bogus") == "8A"
+
+    def test_unknown_input_returns_dashes(self) -> None:
+        assert key_label(-1, 1, "musical") == "--"
+        assert key_label(-1, 1, "camelot") == "--"
 
 
 class TestHarmonicCompatible:

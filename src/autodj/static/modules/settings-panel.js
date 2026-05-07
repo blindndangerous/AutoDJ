@@ -32,11 +32,12 @@ export function applySettingsState(st, els) {
     presetSelect, transitionSelect,
     harmonicMode,
     djBeatmatch, djPhraseAlign, djOutroIntro,
-    pbEqDuck, pbSmartShuffle, pbPureShuffle, pbShowLyrics, pbAnchorSeed,
+    pbEqDuck, pbPickMode, pbShowLyrics, pbAnchorSeed,
     pbReplayGain,
     pbDaypart, pbMoodArc, pbMoodArcHours, pbImportCues,
     pbBeatSyncFx, pbKeySyncFx, pbBeatmatchSkip,
     pbTransitionMode, pbCrossfade,
+    keyNotation, keyPreferFlats,
     bpmLo, bpmHi,
     discEnabled, discEvery,
   } = els;
@@ -70,8 +71,16 @@ export function applySettingsState(st, els) {
   djOutroIntro.checked  = !!(st.djmix && st.djmix.outro_intro_align);
 
   pbEqDuck.checked       = !!(st.playback && st.playback.crossfade_eq_duck);
-  pbSmartShuffle.checked = !!(st.playback && st.playback.smart_shuffle);
-  pbPureShuffle.checked  = !!(st.playback && st.playback.pure_shuffle);
+  if (pbPickMode && document.activeElement !== pbPickMode) {
+    // Project the two server-side flags back to the three-way select.
+    // pure_shuffle wins over smart_shuffle when both are somehow set
+    // (defensive — bridge clears the other on switch, but old saved
+    // state might carry both true).
+    let mode = "similarity";
+    if (st.playback && st.playback.pure_shuffle) mode = "pure";
+    else if (st.playback && st.playback.smart_shuffle) mode = "smart";
+    pbPickMode.value = mode;
+  }
   pbShowLyrics.checked   = (st.playback && st.playback.show_lyrics !== false);
   pbAnchorSeed.checked   = !!(st.playback && st.playback.anchor_to_seed);
   pbReplayGain.checked   = !!(st.playback && st.playback.replaygain_enabled);
@@ -118,6 +127,13 @@ export function applySettingsState(st, els) {
   }
   if (st.playback && document.activeElement !== pbCrossfade) {
     pbCrossfade.value = st.playback.crossfade_seconds;
+  }
+  if (keyNotation && st.playback && st.playback.key_notation &&
+      document.activeElement !== keyNotation) {
+    keyNotation.value = st.playback.key_notation;
+  }
+  if (keyPreferFlats && st.playback) {
+    keyPreferFlats.checked = !!st.playback.key_prefer_flats;
   }
   if (st.bpm_range && document.activeElement !== bpmLo) {
     bpmLo.value = st.bpm_range.lo != null ? st.bpm_range.lo : "";

@@ -1835,7 +1835,7 @@ class Player:
 
         finished = threading.Event()
 
-        def callback(outdata, frames, time_info, status) -> None:  # type: ignore[no-untyped-def]
+        def callback(outdata, frames, _time_info, status) -> None:  # type: ignore[no-untyped-def]
             if self._state.is_paused or self._skip_event.is_set() or self._state.should_stop:
                 outdata[:] = 0
                 if self._skip_event.is_set() or self._state.should_stop:

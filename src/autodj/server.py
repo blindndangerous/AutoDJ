@@ -227,6 +227,8 @@ class PlaybackSettingsBody(BaseModel):
     anchor_to_seed: bool | None = None
     replaygain_enabled: bool | None = None
     transition_mode: str | None = None
+    key_notation: str | None = None
+    key_prefer_flats: bool | None = None
     show_lyrics: bool | None = None
     enable_daypart: bool | None = None
     enable_mood_arc: bool | None = None

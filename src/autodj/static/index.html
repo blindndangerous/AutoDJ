@@ -425,20 +425,16 @@
         Bass-cut the outgoing track during the overlap so its kicks don't muddy the incoming track's bass.  The trick pro DJs use when manually mixing.
       </span>
 
-      <div class="settings-check">
-        <input type="checkbox" id="pb-smart-shuffle">
-        <label for="pb-smart-shuffle">Entropy walk</label>
+      <div class="settings-row">
+        <label for="pb-pick-mode">Pick mode</label>
+        <select id="pb-pick-mode" aria-describedby="pb-pick-mode-desc">
+          <option value="similarity">Similarity (default)</option>
+          <option value="smart">Entropy walk (anti-similarity)</option>
+          <option value="pure">Random walk (uniform random)</option>
+        </select>
       </div>
-      <span class="setting-desc" id="pb-shuffle-desc">
-        Each next pick is the most sonically <em>distant</em> track from whatever is currently playing — A → far(A) → far(far(A)) → … — so the set drifts through the library rather than clustering around the seed.  Surprise mode, not a true random shuffle.
-      </span>
-
-      <div class="settings-check">
-        <input type="checkbox" id="pb-pure-shuffle">
-        <label for="pb-pure-shuffle">Random walk</label>
-      </div>
-      <span class="setting-desc" id="pb-pure-desc">
-        Uniformly random next pick — ignores similarity, key, BPM, energy, the lot.  Bumps the recently-played window so the same track doesn't reappear too soon.  Toggle <em>off</em> mid-set and the auto-DJ resumes similarity from the song that's currently playing.
+      <span class="setting-desc" id="pb-pick-mode-desc">
+        How AutoDJ picks the next track.  <em>Similarity</em> picks the closest sonic neighbour to whatever just played.  <em>Entropy walk</em> picks the most sonically distant track instead — A → far(A) → far(far(A)) → … — so the set drifts through the library rather than clustering around the seed.  <em>Random walk</em> picks uniformly at random and ignores similarity, key, BPM, and energy entirely.  Switch back to <em>Similarity</em> mid-set and AutoDJ resumes from the song currently playing.
       </span>
 
       <div class="settings-check">
@@ -454,7 +450,7 @@
         <label for="pb-show-lyrics">Show lyrics</label>
       </div>
       <span class="setting-desc" id="pb-show-lyrics-desc">
-        Display timed (LRC) or plain lyrics in the Lyrics card and the CLI panel.  Toggle off if you'd rather not see them.  Default: on.
+        Display timed (LRC) or plain lyrics in the Lyrics card and the CLI panel.
       </span>
 
       <div class="settings-check">
@@ -503,7 +499,7 @@
         <label for="pb-beat-sync-fx">Beat-sync transition FX</label>
       </div>
       <span class="setting-desc" id="pb-beat-sync-fx-desc">
-        Snap rhythmic transition effects (echo, dub delay, beat repeat, gate stutter, stutter build, sidechain pump, transformer, scratch) to the beat grid + size their internal events to whole bars at a tempo blended from the outgoing track to the incoming track.  Envelope effects (sweeps, risers, drops, reverbs) bar-round their fade duration.  Falls back to seconds-based timing when no beat grid or BPM is known.  Default: on.
+        Snap rhythmic transition effects (echo, dub delay, beat repeat, gate stutter, stutter build, sidechain pump, transformer, scratch) to the beat grid + size their internal events to whole bars at a tempo blended from the outgoing track to the incoming track.  Envelope effects (sweeps, risers, drops, reverbs) bar-round their fade duration.  Falls back to seconds-based timing when no beat grid or BPM is known.
       </span>
 
       <div class="settings-check">
@@ -511,7 +507,7 @@
         <label for="pb-key-sync-fx">Key-sync pitched FX</label>
       </div>
       <span class="setting-desc" id="pb-key-sync-fx-desc">
-        Tune oscillator-based effects (air horn, dub siren, ring modulator) to the song's root note, lerping outgoing-to-incoming root in log space across the fade.  Effects on tracks with no detected key fall back to their hardcoded reference frequency.  Default: on.
+        Tune oscillator-based effects (air horn, dub siren, ring modulator) to the song's root note, lerping outgoing-to-incoming root in log space across the fade.  Effects on tracks with no detected key fall back to their hardcoded reference frequency.
       </span>
 
       <div class="settings-check">
@@ -519,7 +515,7 @@
         <label for="pb-beatmatch-on-skip">Beatmatch on skip</label>
       </div>
       <span class="setting-desc" id="pb-beatmatch-on-skip-desc">
-        When you press Skip, pitch-stretch the incoming track so its tempo matches the outgoing one (preserves musical pitch).  Without this, skipping mid-track cold-cuts to the new tempo.  Capped at +-15% so wildly mismatched tracks don't sound silly.  Browser-only — CLI server-audio mode can't pitch-stretch on the fly.  Default: off.
+        When you press Skip, pitch-stretch the incoming track so its tempo matches the outgoing one (preserves musical pitch).  Without this, skipping mid-track cold-cuts to the new tempo.  Capped at +-15% so wildly mismatched tracks don't sound silly.  Browser-only — CLI server-audio mode can't pitch-stretch on the fly.
       </span>
 
       <div class="settings-row">
@@ -558,6 +554,24 @@
       </span>
 
       <div class="settings-row">
+        <label for="key-notation">Key notation</label>
+        <select id="key-notation" aria-describedby="key-notation-desc">
+          <option value="camelot">Camelot (8A / 8B)</option>
+          <option value="musical">Musical (C, Am, F#m)</option>
+        </select>
+      </div>
+      <span class="setting-desc" id="key-notation-desc">
+        How the current track's key is shown in the now-playing badge and the advance log.  <em>Camelot</em> is the Mixed In Key wheel notation used by most DJ software.  <em>Musical</em> uses letter names (C, A minor, F sharp minor).  The wheel SVG below the now-playing card always renders Camelot positions because the wheel itself is Camelot-shaped.
+      </span>
+      <div class="settings-row">
+        <label for="key-prefer-flats">Use flats (musical mode)</label>
+        <input type="checkbox" id="key-prefer-flats" aria-describedby="key-prefer-flats-desc">
+      </div>
+      <span class="setting-desc" id="key-prefer-flats-desc">
+        Only used when key notation is set to <em>Musical</em>.  When checked, accidentals render as <em>Db, Eb, Gb, Ab, Bb</em>.  When unchecked, they render as <em>C#, D#, F#, G#, A#</em> — which matches the spelling most DJ tag editors emit.
+      </span>
+
+      <div class="settings-row">
         <label for="pb-crossfade">Crossfade seconds</label>
         <input type="number" id="pb-crossfade" min="0" max="20" step="0.5" value="3">
       </div>
@@ -579,7 +593,6 @@
       <span class="setting-desc" id="bpm-desc">
         Hard filter on track tempo.  Picks only fall within this range; tracks with unknown BPM always pass.  Leave blank to disable.
       </span>
-      <button type="button" id="bpm-clear">Clear BPM filter</button>
     </fieldset>
 
     <fieldset>
@@ -594,7 +607,7 @@
                aria-disabled="true">
       </div>
       <span class="setting-desc" id="disc-desc">
-        Periodically inject a sonically <em>distant</em> track to break the auto-DJ out of a similarity loop.  Picks at random from the bottom quartile of cosine similarity.  Disable to stay strictly on-vibe.
+        Same on/off state as the <em>Discovery</em> button on the Now Playing tab — toggling either mirrors the other.  Periodically injects a sonically <em>distant</em> track to break the auto-DJ out of a similarity loop, picking at random from the bottom quartile of cosine similarity.
       </span>
     </fieldset>
   </details>

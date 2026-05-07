@@ -27,6 +27,7 @@ The "make it feel like a real radio station" release.
 - **`/api/version` endpoint.**  Same three values as the footer, in JSON.  Tail the log or hit `curl /api/version` to verify the running build.
 - **Advance log banner.**  Every track change prints one line: outgoing track, incoming track, BPM and Camelot key for both, and which picker mode was used (similarity / queue / shuffle / discovery).  Closes the gap where cue points were logged but tempo and key on track change were not.
 - **BPM and key in the background-analysis log.**  When AutoDJ analyses a track in the background, the resulting log line now includes its BPM and Camelot key alongside the cues and intro / outro markers.
+- **Key-notation picker.**  Settings tab now carries a <em>Key notation</em> combo box.  Pick <em>Camelot</em> (8A / 8B, the DJ-software default) or <em>Musical</em> (C, Am, F#m).  When Musical is on, a sibling <em>Use flats</em> checkbox switches accidentals between sharps (C#) and flats (Db).  The Camelot wheel SVG below the now-playing card always renders in Camelot positions because the wheel is Camelot-shaped — only the badge text + advance log line follow your choice.
 
 ### Changed
 
@@ -36,6 +37,10 @@ The "make it feel like a real radio station" release.
 - **Library tools panel.**  Run index / enrich / prune / stats jobs from the web UI without leaving the page.
 - **Clean Ctrl+C shutdown.**  `autodj serve` prints a single "Shutting down... / Server stopped cleanly." pair on exit and no longer leaves stack traces from the asyncio teardown on the screen.
 - **Internal: `server.py` split.**  `PlayerBridge` moved into a private `autodj._bridge` module to keep both files under the 2000-line working budget.  Public API unchanged.
+- **Pick mode.**  The <em>Entropy walk</em> + <em>Random walk</em> checkboxes in Settings collapsed into a single <em>Pick mode</em> combo box (Similarity / Entropy walk / Random walk).  Same picker behaviour, fewer ways to get into a contradictory state.
+- **Settings descriptions trimmed.**  Removed the "Default: on / off" trailers from checkbox descriptions — the checkbox itself is the state, the tail of the sentence was noise.  Discovery checkbox now mentions that the Now Playing tab's <em>Discovery</em> button mirrors it.
+- **Dropped the <em>Clear BPM filter</em> button.**  Empty Min and Max fields now clear the filter on their own; no extra button needed.
+- **Internal: integration test split.**  `tests/integration/test_server.py` crossed the 2000-line working budget.  Recent additions (version stamp, advance log banner, key notation, repick failure paths, bridge re-export) extracted into `test_server_recent.py`.  Shared mock-builders and the `client` / `bridge` fixtures live in `_helpers.py` + `conftest.py` so neither file duplicates setup.
 
 ### Fixed
 

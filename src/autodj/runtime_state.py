@@ -113,6 +113,17 @@ def load_into_player(player: Any, index_dir: Path | None) -> None:
                 )
             except ValueError as exc:
                 logger.warning("ignoring invalid transition_mode in web_state.json: %s", exc)
+        if "key_notation" in pb:
+            from autodj.config import _validate_key_notation
+
+            try:
+                cfg.playback.key_notation = _validate_key_notation(
+                    str(pb["key_notation"]),
+                )
+            except ValueError as exc:
+                logger.warning("ignoring invalid key_notation in web_state.json: %s", exc)
+        if "key_prefer_flats" in pb:
+            cfg.playback.key_prefer_flats = bool(pb["key_prefer_flats"])
 
     bpm = data.get("bpm_range")
     if isinstance(bpm, dict):

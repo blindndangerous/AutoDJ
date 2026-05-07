@@ -235,6 +235,23 @@ class TestPlaybackConfig:
         with pytest.raises(ValueError):
             PlaybackConfig.from_dict({"no_repeat_window": -5})
 
+    def test_key_notation_default(self) -> None:
+        pb = PlaybackConfig.from_dict({})
+        assert pb.key_notation == "camelot"
+        assert pb.key_prefer_flats is False
+
+    def test_key_notation_musical(self) -> None:
+        pb = PlaybackConfig.from_dict({"key_notation": "musical"})
+        assert pb.key_notation == "musical"
+
+    def test_key_notation_invalid_raises(self) -> None:
+        with pytest.raises(ValueError):
+            PlaybackConfig.from_dict({"key_notation": "bogus"})
+
+    def test_key_prefer_flats_round_trip(self) -> None:
+        pb = PlaybackConfig.from_dict({"key_prefer_flats": True})
+        assert pb.key_prefer_flats is True
+
 
 # ---------------------------------------------------------------------------
 # ModelConfig

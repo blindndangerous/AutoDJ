@@ -66,8 +66,7 @@ const djPhraseAlign   = document.getElementById("dj-phrase-align");
 const djOutroIntro    = document.getElementById("dj-outro-intro");
 const djFilterSweep   = null;  // moved into Transition effect dropdown
 const pbEqDuck        = document.getElementById("pb-eq-duck");
-const pbSmartShuffle  = document.getElementById("pb-smart-shuffle");
-const pbPureShuffle   = document.getElementById("pb-pure-shuffle");
+const pbPickMode      = document.getElementById("pb-pick-mode");
 const pbShowLyrics    = document.getElementById("pb-show-lyrics");
 const pbAnchorSeed    = document.getElementById("pb-anchor-seed");
 const pbReplayGain    = document.getElementById("pb-replaygain");
@@ -80,9 +79,10 @@ const pbKeySyncFx     = document.getElementById("pb-key-sync-fx");
 const pbBeatmatchSkip = document.getElementById("pb-beatmatch-on-skip");
 const pbTransitionMode = document.getElementById("pb-transition-mode");
 const pbCrossfade     = document.getElementById("pb-crossfade");
+const keyNotation     = document.getElementById("key-notation");
+const keyPreferFlats  = document.getElementById("key-prefer-flats");
 const bpmLo           = document.getElementById("bpm-lo");
 const bpmHi           = document.getElementById("bpm-hi");
-const bpmClear        = document.getElementById("bpm-clear");
 const discEnabled     = document.getElementById("disc-enabled");
 const discEvery       = document.getElementById("disc-every");
 const settingsStatus  = document.getElementById("settings-status");
@@ -163,7 +163,10 @@ function applyState(s) {
   if (s.current_track) {
     const t = s.current_track;
     if (t.album) parts.push(t.album);
-    parts.push(`Key ${t.camelot && t.camelot !== "--" ? t.camelot : "unknown"}`);
+    // Prefer the notation-aware label from the server.  Falls back to
+    // the legacy ``camelot`` field for back-compat with older payloads.
+    const _kl = t.key_label || t.camelot;
+    parts.push(`Key ${_kl && _kl !== "--" ? _kl : "unknown"}`);
     parts.push(t.bpm ? `${Math.round(t.bpm)} BPM` : "BPM unknown");
   }
   // npMeta is the screen-reader-reachable static text for the
@@ -328,11 +331,12 @@ import {
 const _settingsEls = () => ({
   presetSelect, transitionSelect, harmonicMode,
   djBeatmatch, djPhraseAlign, djOutroIntro,
-  pbEqDuck, pbSmartShuffle, pbPureShuffle, pbShowLyrics, pbAnchorSeed,
+  pbEqDuck, pbPickMode, pbShowLyrics, pbAnchorSeed,
   pbReplayGain,
   pbDaypart, pbMoodArc, pbMoodArcHours, pbImportCues,
   pbBeatSyncFx, pbKeySyncFx, pbBeatmatchSkip,
   pbTransitionMode, pbCrossfade,
+  keyNotation, keyPreferFlats,
   bpmLo, bpmHi,
   discEnabled, discEvery,
 });
@@ -366,11 +370,15 @@ harmonicMode.addEventListener("change", () => {
 pbEqDuck.addEventListener("change", () => {
   postSettings("/api/playback-settings", { crossfade_eq_duck: pbEqDuck.checked });
 });
-pbSmartShuffle.addEventListener("change", () => {
-  postSettings("/api/playback-settings", { smart_shuffle: pbSmartShuffle.checked });
-});
-pbPureShuffle.addEventListener("change", () => {
-  postSettings("/api/playback-settings", { pure_shuffle: pbPureShuffle.checked });
+pbPickMode.addEventListener("change", () => {
+  // Three-way select projects to the server's two-flag shape.  Sending
+  // both flags every time keeps state consistent regardless of which
+  // option is chosen (no stale flag survives the switch).
+  const v = pbPickMode.value;
+  postSettings("/api/playback-settings", {
+    smart_shuffle: v === "smart",
+    pure_shuffle: v === "pure",
+  });
 });
 pbShowLyrics.addEventListener("change", () => {
   postSettings("/api/playback-settings", { show_lyrics: pbShowLyrics.checked });
@@ -429,6 +437,27 @@ pbReplayGain.addEventListener("change", () => {
 });
 pbTransitionMode.addEventListener("change", () => {
   postSettings("/api/playback-settings", { transition_mode: pbTransitionMode.value });
+});
+keyNotation.addEventListener("change", () => {
+  postSettings("/api/playback-settings", { key_notation: keyNotation.value });
+  // Polite live-region announce so screen-reader users hear the
+  // change without having to navigate back to the now-playing card.
+  // Reuses #badges-announce -- already polite + already owns key /
+  // BPM / energy announcements per accessibility-lead guidance.
+  const announce = document.getElementById("badges-announce");
+  if (announce) {
+    const labelMap = { camelot: "Camelot", musical: "Musical letter names" };
+    announce.textContent = `Key notation: ${labelMap[keyNotation.value] || keyNotation.value}.`;
+  }
+});
+keyPreferFlats.addEventListener("change", () => {
+  postSettings("/api/playback-settings", { key_prefer_flats: keyPreferFlats.checked });
+  const announce = document.getElementById("badges-announce");
+  if (announce) {
+    announce.textContent = keyPreferFlats.checked
+      ? "Musical key spelling: flats."
+      : "Musical key spelling: sharps.";
+  }
 });
 
 // ----------------------------------------------------------------
@@ -646,11 +675,6 @@ function postBpmRange() {
 }
 bpmLo.addEventListener("change", postBpmRange);
 bpmHi.addEventListener("change", postBpmRange);
-bpmClear.addEventListener("click", () => {
-  bpmLo.value = "";
-  bpmHi.value = "";
-  postSettings("/api/bpm-range", { lo: null, hi: null });
-});
 
 function postDiscovery() {
   const on = discEnabled.checked;

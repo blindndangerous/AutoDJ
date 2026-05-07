@@ -169,6 +169,24 @@ TRANSITION_MODES: tuple[str, ...] = (
     "fixed",
 )
 
+KEY_NOTATIONS: tuple[str, ...] = (
+    "camelot",
+    "musical",
+)
+
+
+def _validate_key_notation(value: str) -> str:
+    """Return *value* unchanged if it is a known key notation, else raise.
+
+    Raises:
+        ValueError: If *value* is not in :data:`KEY_NOTATIONS`.
+    """
+    if value not in KEY_NOTATIONS:
+        raise ValueError(
+            f"playback.key_notation must be one of {KEY_NOTATIONS}, got {value!r}",
+        )
+    return value
+
 
 def _validate_transition_mode(value: str) -> str:
     """Return *value* unchanged if it is a known transition mode, else raise.
@@ -237,6 +255,18 @@ class PlaybackConfig:
     #   - "fixed": legacy behaviour — fixed crossfade_seconds at the
     #     end of the outgoing track.  No marker alignment.
     transition_mode: str = "full_intro_outro"
+    # Display notation for the current track's key in the now-playing
+    # badge + advance log.  Either "camelot" (Mixed In Key wheel labels
+    # like 8A / 8B) or "musical" (letter names: C, Am, F#m).  Camelot
+    # is the default because the in-page wheel SVG is Camelot-shaped.
+    # Internal logic (harmonic mode, picker math) keeps using
+    # chromatic key + mode ints regardless of display.
+    key_notation: str = "camelot"
+    # Only meaningful when key_notation == "musical": render accidentals
+    # as flats (Db, Eb, Gb, Ab, Bb) instead of sharps (C#, D#, F#, G#,
+    # A#).  Default False = sharps, which matches the spelling most DJ
+    # tag editors emit.
+    key_prefer_flats: bool = False
     # When False, the player never loads / renders lyrics (CLI panel + web
     # UI lyric card both honour this).  Default True — opt-out, not opt-in.
     show_lyrics: bool = True
@@ -349,6 +379,10 @@ class PlaybackConfig:
             transition_mode=_validate_transition_mode(
                 str(data.get("transition_mode", "full_intro_outro")),
             ),
+            key_notation=_validate_key_notation(
+                str(data.get("key_notation", "camelot")),
+            ),
+            key_prefer_flats=bool(data.get("key_prefer_flats", False)),
             show_lyrics=bool(data.get("show_lyrics", True)),
             prefetch_next_track=bool(data.get("prefetch_next_track", True)),
             silence_trigger_crossfade=bool(

@@ -18,8 +18,10 @@ export function applyBadges(s, els, { lastTrackKey, renderCueStrip }) {
   }
   const out = [];
   if (t.bpm) out.push(`<span class="badge">${Math.round(t.bpm)} BPM</span>`);
-  if (t.camelot && t.camelot !== "--") {
-    out.push(`<span class="badge badge-key">Key ${escHtml(t.camelot)}</span>`);
+  // Prefer notation-aware label; fall back to camelot for old payloads.
+  const _kl = t.key_label || t.camelot;
+  if (_kl && _kl !== "--") {
+    out.push(`<span class="badge badge-key">Key ${escHtml(_kl)}</span>`);
   }
   if (t.energy && t.energy > 0) {
     out.push(`<span class="badge">Energy ${t.energy.toFixed(2)}</span>`);
@@ -39,7 +41,8 @@ export function applyBadges(s, els, { lastTrackKey, renderCueStrip }) {
       _lastBadgeKey !== s.current_track.path) {
     _lastBadgeKey = s.current_track.path;
     const phrases = [];
-    if (t.camelot && t.camelot !== "--") phrases.push(`Key ${t.camelot}`);
+    const _klAnn = t.key_label || t.camelot;
+    if (_klAnn && _klAnn !== "--") phrases.push(`Key ${_klAnn}`);
     if (t.bpm) phrases.push(`BPM ${Math.round(t.bpm)}`);
     if (s.beatmatch_ratio && Math.abs(s.beatmatch_ratio - 1.0) > 0.005) {
       phrases.push(`beatmatched ${s.beatmatch_ratio.toFixed(2)} times`);

@@ -219,18 +219,30 @@ class PlayerBridge:
         p._previous_track = cur
 
         # Single-line advance banner (INFO).  Shows outgoing -> incoming
-        # with BPM + Camelot key + pick mode so a user tailing the log
-        # can see exactly what the browser just crossfaded into.  Cur
-        # is None on the very first seed advance; format conditionally.
+        # with BPM + key + pick mode so a user tailing the log can see
+        # exactly what the browser just crossfaded into.  Key is
+        # rendered in the user's selected notation (camelot or musical
+        # letter names; flats / sharps preference honoured for musical
+        # mode).  Cur is None on the very first seed advance; format
+        # conditionally.
         try:
-            from autodj.dj_meta import camelot_label  # local — avoid cycles
+            from autodj.dj_meta import key_label  # local — avoid cycles
+
+            cfg_pb = getattr(p._cfg, "playback", None)
+            notation = getattr(cfg_pb, "key_notation", "camelot") if cfg_pb else "camelot"
+            prefer_flats = bool(getattr(cfg_pb, "key_prefer_flats", False)) if cfg_pb else False
 
             def _fmt(t: Any) -> str:
                 if t is None:
                     return "(none)"
                 bpm = f"{t.bpm:.0f} BPM" if getattr(t, "bpm", 0) else "BPM ?"
-                cam = camelot_label(getattr(t, "key", -1), getattr(t, "mode", -1))
-                return f"{t.display_name} ({bpm}, {cam})"
+                lbl = key_label(
+                    getattr(t, "key", -1),
+                    getattr(t, "mode", -1),
+                    notation,
+                    prefer_flats=prefer_flats,
+                )
+                return f"{t.display_name} ({bpm}, {lbl})"
 
             logger.info(
                 "Advance: %s -> %s, mode=%s",
@@ -325,7 +337,16 @@ class PlayerBridge:
             key_to_hz,
             synthesize_downbeats,
         )
-        from autodj.dj_meta import camelot_label
+        from autodj.dj_meta import camelot_label, key_label
+
+        # Display notation -- camelot (default) or musical letter
+        # names; flats / sharps preference honoured for musical mode.
+        # camelot_label() result still flows through the legacy
+        # ``camelot`` field for back-compat with existing browser
+        # clients; ``key_label`` is the new notation-aware string.
+        cfg_pb = getattr(self.player._cfg, "playback", None)
+        _key_notation = getattr(cfg_pb, "key_notation", "camelot") if cfg_pb else "camelot"
+        _key_prefer_flats = bool(getattr(cfg_pb, "key_prefer_flats", False)) if cfg_pb else False
 
         # Pull the DJ-meta sidecar (if any) so we can surface the
         # outgoing track's outro length to the browser — the per-effect
@@ -464,6 +485,12 @@ class PlayerBridge:
                 "key": entry.key,
                 "mode": entry.mode,
                 "camelot": camelot_label(entry.key, entry.mode),
+                "key_label": key_label(
+                    entry.key,
+                    entry.mode,
+                    _key_notation,
+                    prefer_flats=_key_prefer_flats,
+                ),
                 "energy": round(entry.energy, 3) if entry.energy else 0.0,
                 "intro_end_s": round(intro_end, 2) if intro_end is not None else None,
                 "outro_start_s": round(outro_start, 2) if outro_start is not None else None,
@@ -761,6 +788,10 @@ class PlayerBridge:
                 "anchor_to_seed": getattr(p, "_anchor_to_seed", False),
                 "replaygain_enabled": cfg.replaygain.enabled,
                 "transition_mode": cfg.playback.transition_mode,
+                "key_notation": getattr(cfg.playback, "key_notation", "camelot"),
+                "key_prefer_flats": bool(
+                    getattr(cfg.playback, "key_prefer_flats", False),
+                ),
                 "show_lyrics": getattr(cfg.playback, "show_lyrics", True),
                 "enable_daypart": getattr(cfg.playback, "enable_daypart", False),
                 "enable_mood_arc": getattr(cfg.playback, "enable_mood_arc", False),
@@ -878,6 +909,8 @@ class PlayerBridge:
         anchor_to_seed: bool | None = None,
         replaygain_enabled: bool | None = None,
         transition_mode: str | None = None,
+        key_notation: str | None = None,
+        key_prefer_flats: bool | None = None,
         show_lyrics: bool | None = None,
         enable_daypart: bool | None = None,
         enable_mood_arc: bool | None = None,
@@ -925,6 +958,12 @@ class PlayerBridge:
             cfg.playback.transition_mode = _validate_transition_mode(
                 str(transition_mode),
             )
+        if key_notation is not None:
+            from autodj.config import _validate_key_notation
+
+            cfg.playback.key_notation = _validate_key_notation(str(key_notation))
+        if key_prefer_flats is not None:
+            cfg.playback.key_prefer_flats = bool(key_prefer_flats)
         if show_lyrics is not None:
             cfg.playback.show_lyrics = bool(show_lyrics)
             if not show_lyrics:

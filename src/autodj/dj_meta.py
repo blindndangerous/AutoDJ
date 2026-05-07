@@ -366,6 +366,54 @@ def camelot_label(key: int, mode: int) -> str:
     return f"{pos[0]}{pos[1]}"
 
 
+# Letter-name musical notation (the most universal display).  Two
+# enharmonic spellings supported -- sharps match how most DJ catalogues
+# store tags; flats match traditional music-theory teaching.  Picked
+# via the ``prefer_flats`` argument (default False = sharps).
+_MUSICAL_NAMES_SHARP = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
+_MUSICAL_NAMES_FLAT = ("C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B")
+
+
+def musical_label(key: int, mode: int, *, prefer_flats: bool = False) -> str:
+    """Return a letter-name label like ``"C"`` (major) or ``"Am"`` (minor).
+
+    Args:
+        key: Chromatic key 0-11.
+        mode: ``1`` = major, ``0`` = minor.
+        prefer_flats: When ``True``, render accidentals as flats
+            (``Db`` instead of ``C#``).  Default ``False`` = sharps,
+            which matches the spelling most DJ tag editors emit.
+
+    Returns:
+        Letter name + ``"m"`` suffix for minor, or ``"--"`` for unknown
+        / out-of-range input.
+    """
+    if not (0 <= key <= 11) or mode not in (0, 1):
+        return "--"
+    table = _MUSICAL_NAMES_FLAT if prefer_flats else _MUSICAL_NAMES_SHARP
+    name = table[key]
+    return f"{name}m" if mode == 0 else name
+
+
+def key_label(key: int, mode: int, notation: str = "camelot", *, prefer_flats: bool = False) -> str:
+    """Return the active-notation label for ``(key, mode)``.
+
+    Args:
+        key: Chromatic key 0-11.  ``-1`` = unknown.
+        mode: ``1`` = major, ``0`` = minor.  ``-1`` = unknown.
+        notation: ``"camelot"`` (default) or ``"musical"``.  Unknown
+            values fall back to Camelot.
+        prefer_flats: Only meaningful when ``notation == "musical"``;
+            picks flat accidentals (``Db``) over sharps (``C#``).
+
+    Returns:
+        Notation-appropriate label, or ``"--"`` for unknown input.
+    """
+    if notation == "musical":
+        return musical_label(key, mode, prefer_flats=prefer_flats)
+    return camelot_label(key, mode)
+
+
 # ---------------------------------------------------------------------------
 # Cache (JSON sidecar) — keyed by track path
 # ---------------------------------------------------------------------------
