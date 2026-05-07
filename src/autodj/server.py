@@ -1228,7 +1228,16 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
     # Static HTML
     # ------------------------------------------------------------------
 
-    _static_dir = Path(__file__).parent / "static"
+    # Prefer the bundled / minified output from `npm run build` when it
+    # exists; fall back to the raw sources for dev (no Node toolchain
+    # required).  Both directories share filenames so the FastAPI
+    # routes below resolve transparently regardless of which the user
+    # has on disk.  See vite.config.js for the build pipeline.
+    _static_src = Path(__file__).parent / "static"
+    _static_built = Path(__file__).parent / "static_dist"
+    _static_dir = _static_built if (_static_built / "index.html").exists() else _static_src
+    if _static_dir is _static_built:
+        logger.info("Serving built static assets from %s", _static_dir)
     _static_html_path = _static_dir / "index.html"
 
     # Cache-busting headers so Firefox / Chrome don't keep serving

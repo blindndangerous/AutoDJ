@@ -757,6 +757,85 @@ class TestLoadLyricsToggle:
         assert player._current_lyrics_plain == ""
 
 
+class TestAnalyseTrackInBackground:
+    """Player.analyse_track_in_background -- browser-driven cue analysis."""
+
+    def _make(self):
+        return Player(_make_cfg_mock(), _make_sim_index(2))
+
+    def test_no_path_no_op(self) -> None:
+        """Empty path is a defensive guard; spawn nothing."""
+        player = self._make()
+        player._dj_cache = MagicMock()
+        player._dj_cache_initialised = True
+        player._dj_cache.get.return_value = MagicMock(analysed=False)
+        player.analyse_track_in_background("")
+        # No path was added to the in-flight set.
+        assert "" not in player._bg_analysis_inflight
+
+    def test_already_analysed_short_circuits(self) -> None:
+        """Cache hit with analysed=True must not spawn a worker thread."""
+        from unittest.mock import patch
+
+        player = self._make()
+        player._dj_cache = MagicMock()
+        player._dj_cache_initialised = True
+        player._dj_cache.get.return_value = MagicMock(analysed=True)
+        with patch("autodj.player.threading.Thread") as thread:
+            player.analyse_track_in_background("/track.flac")
+            thread.assert_not_called()
+        assert "/track.flac" not in player._bg_analysis_inflight
+
+    def test_inflight_dedupes_concurrent_calls(self) -> None:
+        """Second call for the same path while the first is still running
+        must not spawn a duplicate worker."""
+        from unittest.mock import patch
+
+        player = self._make()
+        player._dj_cache = MagicMock()
+        player._dj_cache_initialised = True
+        player._dj_cache.get.return_value = MagicMock(analysed=False)
+        with patch("autodj.player.threading.Thread") as thread:
+            player.analyse_track_in_background("/track.flac")
+            assert "/track.flac" in player._bg_analysis_inflight
+            # Second call: in-flight, must NOT add another thread.
+            player.analyse_track_in_background("/track.flac")
+            assert thread.call_count == 1
+
+    def test_cache_uninitialised_no_op(self) -> None:
+        """No DJ-meta cache available -> nothing to write to, skip."""
+        from unittest.mock import patch
+
+        player = self._make()
+        player._dj_cache = None
+        player._dj_cache_initialised = True
+        with patch("autodj.player.threading.Thread") as thread:
+            player.analyse_track_in_background("/track.flac")
+            thread.assert_not_called()
+
+
+class TestRunHeadlessSeedHooks:
+    """_run_headless seeds lyrics + background cue analysis up-front so the
+    web UI's first state push has data even though browser-driven mode
+    never enters _play_track.
+    """
+
+    def test_run_headless_loads_lyrics_and_spawns_analysis(self) -> None:
+        from unittest.mock import patch
+
+        player = Player(_make_cfg_mock(), _make_sim_index(3), dry_run=True)
+        # Park the wait loop on the first iteration.
+        player._state.should_stop = True
+        seed = player._sim.entries[0]
+        with (
+            patch.object(player, "_load_lyrics") as load_lyr,
+            patch.object(player, "analyse_track_in_background") as bg,
+        ):
+            player._run_headless(seed)
+        load_lyr.assert_called_once_with(seed.path)
+        bg.assert_called_once_with(seed.path)
+
+
 # ---------------------------------------------------------------------------
 # _stream_audio
 # ---------------------------------------------------------------------------

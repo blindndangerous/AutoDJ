@@ -1222,3 +1222,40 @@ class TestRealLibraryDb:
         results = search_tracks(LIBRARY_DB, "Portishead")
         assert len(results) > 0
         assert all("Portishead" in t.artist for t in results)
+
+
+# ---------------------------------------------------------------------------
+# Logging level defaults
+# ---------------------------------------------------------------------------
+
+
+class TestLoggingDefaults:
+    """`autodj` defaults to INFO; `autodj -v` drops to DEBUG."""
+
+    def test_default_level_is_info(self) -> None:
+        """Without -v the root logger sits at INFO so users see the boot
+        banner, WS connect / disconnect, and external-cue import lines.
+        Regression test for the WARNING-default behaviour that swallowed
+        every status message until the user passed -v.
+        """
+        import logging
+
+        original = logging.getLogger().level
+        try:
+            # Use a subcommand so the cli body runs.  --help short-
+            # circuits before our level setter.  Missing config exits
+            # cleanly; the level was already set by then.
+            CliRunner().invoke(cli, ["--config", "/no/such/file", "index"])
+            assert logging.getLogger().level == logging.INFO
+        finally:
+            logging.getLogger().setLevel(original)
+
+    def test_verbose_flag_drops_to_debug(self) -> None:
+        import logging
+
+        original = logging.getLogger().level
+        try:
+            CliRunner().invoke(cli, ["-v", "--config", "/no/such/file", "index"])
+            assert logging.getLogger().level == logging.DEBUG
+        finally:
+            logging.getLogger().setLevel(original)

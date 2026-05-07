@@ -180,7 +180,13 @@ def cli(ctx: click.Context, config_path: str, verbose: bool) -> None:
         format="%(levelname)s %(name)s: %(message)s",
         level=level,
         stream=sys.stderr,
+        force=True,
     )
+    # basicConfig honours `force=True` to wipe any pre-existing handlers
+    # (pytest, jupyter, etc.) but the root logger may still carry an old
+    # level from a prior import.  Set it explicitly so the configured
+    # level takes effect regardless of import order.
+    logging.getLogger().setLevel(level)
 
 
 # ---------------------------------------------------------------------------

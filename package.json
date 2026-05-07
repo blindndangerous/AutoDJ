@@ -1,13 +1,20 @@
 {
-  "name": "autodj-playwright",
+  "name": "autodj-frontend",
   "private": true,
-  "description": "Playwright audit harness for the AutoDJ web UI (transition effects + cross-browser health).",
+  "version": "0.15.0",
+  "type": "module",
+  "description": "Build pipeline + Playwright audits for the AutoDJ web UI.  `npm run build` minifies app.js + app.css and copies worklets / HTML into src/autodj/static_dist/; the Python server prefers static_dist when present so a built deployment serves smaller assets.  Audit scripts drive Chromium / Firefox / WebKit against a running AutoDJ server.",
   "scripts": {
+    "build": "vite build",
+    "dev": "vite",
+    "preview": "vite preview",
     "audit:transitions": "node tests/playwright/transition_audit.mjs",
     "audit:health": "node tests/playwright/health_audit.mjs",
-    "audit:hotkeys": "node tests/playwright/hotkey_audit.mjs"
+    "audit:hotkeys": "node tests/playwright/hotkey_audit.mjs",
+    "audit:regression": "node tests/playwright/regression_audit.mjs"
   },
   "devDependencies": {
-    "@playwright/test": "^1.59.1"
+    "@playwright/test": "^1.59.1",
+    "vite": "^7.0.0"
   }
 }

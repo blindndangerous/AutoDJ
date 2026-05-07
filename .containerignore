@@ -17,6 +17,9 @@ docs/
 tests/
 .github/
 node_modules/
+# Vite output is regenerated inside the frontend build stage; never
+# include the host's local copy in the build context.
+src/autodj/static_dist/
 *.log
 *.tmp
 *.swp

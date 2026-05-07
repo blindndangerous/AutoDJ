@@ -39,8 +39,24 @@ WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --frozen --no-dev --no-install-project
 
+# Build the web UI bundle in a separate stage so the runtime image
+# does not carry Node.  Output (src/autodj/static_dist/) is copied
+# into the runtime layer below.
+FROM node:22-slim AS frontend
+WORKDIR /build
+COPY package.json vite.config.js ./
+COPY src/autodj/static ./src/autodj/static
+RUN npm install --no-audit --no-fund \
+    && npm run build
+
+# Back to the runtime image.
+FROM base
+WORKDIR /app
+COPY --from=frontend /build/src/autodj/static_dist ./src/autodj/static_dist
+
 # Now copy the source.  Static assets ride along as a Python package
-# resource so `autodj serve` finds them.
+# resource so `autodj serve` finds them; the prior stage's bundled
+# assets sit alongside in static_dist/ and the server prefers them.
 COPY src ./src
 RUN uv sync --frozen --no-dev
 

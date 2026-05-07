@@ -8,6 +8,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.15.0] - 2026-05-07
 
+### Added (post-feature batch)
+
+- **Vite build pipeline** for the web UI.  `package.json` +
+  `vite.config.js` at the repo root.  `npm run build` produces a
+  minified IIFE-wrapped `app.js`, minified `app.css`, copies
+  `index.html` and the four AudioWorklet files into
+  `src/autodj/static_dist/`, and emits source maps.  FastAPI server
+  prefers `static_dist/` when present and falls back to
+  `src/autodj/static/` so a fresh clone keeps working without Node.
+  Container image builds the bundle in a separate `node:22-slim`
+  stage; the runtime image carries no Node.
+
+### Tests / coverage (post-feature batch)
+
+- 1296 pass (8 new).  New: `Player.analyse_track_in_background`
+  unit tests covering the empty-path guard, cache-hit short-circuit,
+  in-flight dedupe, and uninitialised-cache no-op.  New:
+  `_run_headless` seed test asserting both `_load_lyrics` and
+  `analyse_track_in_background` fire for the seed track.  New:
+  `advance_now` test asserting background analysis is queued for
+  both the new current track AND the freshly-picked next track.
+  New: WebSocket connect / disconnect log assertions.  New: CLI
+  log-level default tests (INFO without `-v`, DEBUG with `-v`).
+  New: `tests/playwright/regression_audit.mjs` Playwright harness
+  covering hotkey-tab gate, lyrics card location, cue-list-summary
+  removal, cue-summary phrase drop from `#badges-announce`, and
+  `_clearLiveRegionLater` wipe behaviour across Chromium / Firefox
+  / WebKit.
+
 ### Fixed (post-feature batch)
 
 - **librosa promoted to a base dependency.**  Previously declared only

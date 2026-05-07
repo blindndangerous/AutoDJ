@@ -1816,6 +1816,27 @@ class TestMisc:
         # History line carries the track path + an ISO timestamp.
         assert next_entry.path in hist_text
 
+    def test_websocket_connect_and_disconnect_log_at_info(self, caplog) -> None:
+        """Server logs every WS connect / disconnect at INFO with the
+        client host + active count.  Regression test for the silent
+        baseline that left users unable to confirm a working connection.
+        """
+        import logging
+
+        from fastapi.testclient import TestClient
+
+        bridge = PlayerBridge(player=_make_player_mock(), sim=_make_sim_mock())
+        client = TestClient(create_app(bridge))
+        with (
+            caplog.at_level(logging.INFO, logger="autodj.server"),
+            client.websocket_connect("/ws"),
+        ):
+            pass
+
+        msgs = [r.message for r in caplog.records]
+        assert any("WebSocket connected" in m for m in msgs), msgs
+        assert any("WebSocket disconnected" in m for m in msgs), msgs
+
     def test_advance_now_loads_lyrics_for_new_track(self, bridge) -> None:
         """Browser-driven mode skips _play_track, so advance_now must
         call _load_lyrics itself or the lyric panel stays frozen on the

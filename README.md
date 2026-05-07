@@ -143,6 +143,19 @@ uv pip install --index-url https://download.pytorch.org/whl/cpu \
 
 CPU indexing is fine for **small batches** (`uv run autodj index --limit 50`).  A full 10k-track library on CPU takes hours; run that on a GPU host overnight.
 
+### Web UI build (optional)
+
+The web UI ships unbundled in `src/autodj/static/` and runs as-is.  No Node toolchain required for development.  For distribution, build the minified bundle:
+
+```bash
+npm install
+npm run build
+```
+
+This writes `src/autodj/static_dist/` (gitignored).  The FastAPI server prefers `static_dist/` when present and falls back to `static/` when missing, so a local clone keeps working without ever running `npm`.  See `vite.config.js` for the pipeline.
+
+The container image builds the bundle in a separate Node stage; the runtime image carries no Node.
+
 ### Minimal installs (per role)
 
 The deps split into optional groups so a NAS or headless host doesn't need to pull torch / librosa / audio libs just to run `enrich` / `prune` / `stats` against a shared index:
