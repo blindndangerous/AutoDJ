@@ -305,6 +305,12 @@ class PlaybackConfig:
     liners_random_max_minutes: float | None = None
     liners_pick_mode: str = "random"
     liners_duck_db: float = -12.0
+    # Per-file daypart directory.  When set, load one TOML per file
+    # under this folder (each file is one daypart) instead of the
+    # built-in profiles.  Each file may declare ``indexes = [...]``
+    # to scope the daypart to specific index names.  Empty / missing
+    # folder falls back to the built-in DAYPARTS list.
+    dayparts_dir: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> PlaybackConfig:
@@ -380,6 +386,7 @@ class PlaybackConfig:
             ),
             liners_pick_mode=str(data.get("liners_pick_mode", "random")),
             liners_duck_db=float(data.get("liners_duck_db", -12.0)),
+            dayparts_dir=(data.get("dayparts_dir") or None),
         )
 
 

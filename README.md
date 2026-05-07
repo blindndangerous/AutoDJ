@@ -17,6 +17,78 @@ What you get:
 - A web UI with album art, scrolling LRC lyrics, and a reorderable queue. Defaults to browser-driven playback so the CLI player and the web UI never share a soundcard.
 - An index that's portable. Build it on a GPU box, copy it to a NAS, play from any other machine that mounts the library at any path.
 
+## What's new in 0.15
+
+- **Beat- and key-synced transition FX.**  Rhythmic effects (echo,
+  dub delay, beat repeat, gate stutter, stutter build, sidechain pump,
+  scratch, transformer) snap to the beat grid and size to whole bars
+  at a tempo blended outgoing-to-incoming.  Oscillator FX (air horn,
+  dub siren, ring modulator) tune to the song's root note.  Settings
+  panel toggles default to ON.
+- **Web seek bar.**  Click, drag, or arrow-key the progress bar to
+  scrub.  Left/Right ±5 s, Shift+Arrow / PageUp+Down ±15 s, Home/End.
+  CLI player has had Left/Right seek hotkeys since day one.
+- **Voice liners.**  Drop spoken-clip audio files into the configured
+  folder; trigger every N tracks, every X minutes, or in a random
+  window.  Random / sequential / weighted rotation.  Ducks the active
+  deck during the overlay.  Upload + delete from the web UI.
+- **Profile bundles.**  Save the entire current session config (BPM
+  range, preset, harmonic mode, transition mode, sync flags, liner
+  trigger, more) under a name; load it back with one click or
+  `POST /api/profiles/<name>/apply`.  This is *not* the same as
+  `--name`, which scopes a separate **library**.  See [Index naming,
+  profiles, cue points](#index-naming-profiles-cue-points).
+- **Per-file dayparts.**  Drop one TOML per daypart in
+  `dayparts_dir/`; each file can declare `indexes = [...]` so a
+  workout daypart only fires when the workout index is active.
+- **Podman / Docker quickstart.**  `Containerfile` + `compose.yaml`
+  in the repo root.  `podman compose up` after `git clone` boots the
+  web UI.  See [Containers](#containers) below.
+- **Repeat-on-small-library fix.**  When `no_repeat_window` exceeds
+  the library size the player now clamps the deque automatically
+  (with a warning) so the picker always has candidates.
+- **Beatmatch on skip.**  Optional toggle.  When you press Skip mid
+  track, the incoming deck pitch-stretches to match the outgoing
+  tempo (preserves musical pitch, capped ±15 %).
+- **Combobox a11y sweep.**  Stripped verbose `aria-describedby`
+  paragraphs from every Settings control so screen readers announce
+  just the label, not a wall of help text.
+
+## Containers
+
+`Containerfile` and `compose.yaml` ship in the repo root.  Quickstart
+after a fresh clone:
+
+```bash
+podman compose up        # build + run; web UI at http://localhost:8080
+podman compose down
+```
+
+`compose.yaml` mounts `./music` read-only at `/music` and `./index`
+read-write at `/index`.  Indexing remains a host job (it benefits
+from a GPU and the slim CPU image stays small).  Run on the host:
+
+```bash
+uv run autodj index
+```
+
+then start the container.  Docker users: same files work via
+`docker compose up`.
+
+## Index naming, profiles, cue points
+
+Three concepts that get confused.  They are different things:
+
+| Concept | Scope | Lives in | Example |
+|---|---|---|---|
+| **Index name** (`autodj index --name X`) | A whole separate library + FAISS index | `index/<name>/vectors.index` + `metadata.json` | `--name workout` for a 200-track gym-only library |
+| **Profile** (`POST /api/profiles`) | A saved bundle of session config (preset, BPM range, harmonic mode, transition mode, sync flags, liner trigger) | `profiles/<name>.json` | "Late night" profile pins ambient preset + 70-110 BPM + key sync ON |
+| **Cue point** | A within-track marker (drop, breakdown, phrase, outro_downbeat) | inside `dj_meta.json` per track path | first downbeat at 4.2 s, outro at 187.0 s |
+
+A profile *can* reference an index name (so "Workout" profile pins
+the workout index) but does not have to.  Cue points are tied to
+individual files; indexes and profiles are not.
+
 ## How it works
 
 Indexing walks your library, extracts a 1040-dim fingerprint per file (1024 MuQ + 16 librosa), and writes everything to `index/<name>/vectors.index` plus a `metadata.json` sidecar. The metadata includes BPM, key, mode, energy, tempo confidence, and the usual tag fields so the picker can re-rank by more than raw cosine.

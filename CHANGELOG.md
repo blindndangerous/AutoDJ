@@ -6,7 +6,87 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [0.15.0] - 2026-05-06
+## [0.15.0] - 2026-05-07
+
+### Added (post-2026-05-06 batch)
+
+- **Web seek slider** (`#9`).  `#progress-track` upgraded from
+  `role=progressbar` to `role=slider` with full pointer drag/click
+  and keyboard support (Left/Right ±5s, Shift+Arrow / PageUp+Down
+  ±15s, Home/End).  POST `/api/seek` (`SeekBody{seconds|delta}`)
+  drives `Player.seek_to / seek_relative` with buffer-end clamping.
+- **Cue list a11y** (`#10`).  Decorative cue ticks made
+  `aria-hidden`; added an sr-only `<ul id="cue-list-summary">` so
+  AT users can navigate the cue list on demand without re-hearing
+  it on every `aria-valuenow` update.
+- **Combobox aria-describedby strip** (`#11`).  Removed the verbose
+  help-paragraph linkage from every Settings-panel `<select>` /
+  checkbox / number input where the linked `.setting-desc` was
+  20+ words.  Visible help still renders for sighted users.
+- **Repeat-on-small-library clamp** (`#12`).  `Player.__init__` now
+  clamps `no_repeat_window` to roughly the library size so the
+  picker's deque can never starve.  Logs a warning when the clamp
+  fires.  `/api/state` exposes `library_size` + `no_repeat_window`;
+  the browser logs a one-shot `console.warn` when the configured
+  window exceeds library size.
+- **Browser debug logs** (`#12`).  `?debug=1` URL flag (or
+  `localStorage.autodjDebug='1'`) enables `_dbg()` breadcrumbs at
+  crossfade trigger, seek, library-size sanity check.
+- **Beatmatch-on-skip** (`#14`).  `cfg.playback.beatmatch_on_skip`
+  (default false).  When true, the browser's Skip-led crossfade
+  pitch-stretches the standby deck so the new track joins the
+  groove instead of cold-cutting at its native tempo.  Capped
+  ±15%.  Settings panel checkbox.
+- **Voice liners** (`#13`).  New `autodj.liners` module
+  (`LinerTrigger` for every-N-songs / every-minutes / random-window
+  triggers; `LinerLibrary` for random / sequential / weighted
+  rotation).  Endpoints: GET `/api/liners`, GET + DELETE
+  `/api/liners/file/{name}` (path-traversal guarded), POST
+  `/api/liners/upload` (multipart, extension whitelist).  Web UI
+  card with trigger inputs, file list with per-item Delete
+  (native confirm), upload form, "Test now" button, polite
+  `#ln-status` live region per a11y review.  Browser-side 1Hz
+  scheduler ducks the active deck by `liners_duck_db` dB and plays
+  the chosen clip via Web Audio.  `python-multipart` added as a
+  server dep for the upload endpoint.
+- **Hide-unchecked mechanism** (`#13b`).  Generic
+  `[data-show-when="checkboxId"]` toggles the `hidden` attribute on
+  the wrapper element.  Single delegated change listener.  Mood-arc
+  hours, all four liner trigger inputs, and the Mix + Library
+  fieldsets hide until their enabling checkbox is on.
+- **Profile bundles** (`#17`).  New `autodj.profiles` module with
+  `ProfileSnapshot` + `ProfileStore` and four endpoints (GET / POST
+  / DELETE `/api/profiles`, POST `/api/profiles/<name>/apply`).
+  Saves bundle of preset + BPM range + harmonic mode + transition
+  mode + sync flags + liner config under a name; loads back in one
+  request.  *Distinct from* `--name` (library scope) and from cue
+  points (per-track markers).
+- **Per-file dayparts** (`#18`).  New `Daypart.indexes` field +
+  `Daypart.applies_to_index()` + `load_dayparts_from_dir()`.  Drop
+  one `*.toml` per daypart in `[playback] dayparts_dir`; each file
+  may declare `indexes = ["main", "workout"]` so the daypart only
+  applies to those libraries.  Falls back to built-in `DAYPARTS`
+  when the folder is missing or empty.
+- **Container quickstart** (`#19`).  `Containerfile`,
+  `compose.yaml`, and `.containerignore` in the repo root.
+  `podman compose up` after a fresh clone boots the web UI.
+  Volume mounts: `./music` read-only at `/music`, `./index` r/w
+  at `/index`.  Indexing stays a host task (GPU-friendly).
+
+### Tests / coverage
+
+- 1285 pass, 8 skip.  Coverage 92.0%.  New / extended suites:
+  `test_beat_sync` (already in 0.15 base), `test_liners` (24 cases),
+  `test_profiles` (17 cases), expanded `test_daypart`
+  (`applies_to_index` + `load_dayparts_from_dir`),
+  `test_player::TestPlayerConstruction` (small-library clamp repro
+  / non-repro).  Server integration tests cover seek, liner
+  endpoints (upload / delete / traversal-block / settings round-
+  trip / pick-mode validation), and profile endpoints.
+
+---
+
+## [0.15.0-base] - 2026-05-06
 
 ### Added
 

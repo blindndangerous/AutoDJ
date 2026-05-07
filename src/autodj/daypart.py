@@ -36,9 +36,13 @@ config, or ``--daypart`` on the CLI, or the toggle in the web UI.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -54,6 +58,9 @@ class Daypart:
         target_energy: Centre of the energy Gaussian (0.0-1.0).
         bpm_weight: How heavily BPM affects the score (0.0-1.0).  Higher
             = stronger pull toward target_bpm.  Default 0.25.
+        indexes: Optional tuple of index names this daypart applies to.
+            Empty tuple = "any index".  Used by per-file dayparts so a
+            workout daypart can be limited to the workout-only library.
     """
 
     name: str
@@ -62,6 +69,7 @@ class Daypart:
     target_bpm: float
     target_energy: float
     bpm_weight: float = 0.25
+    indexes: tuple[str, ...] = ()
 
     def covers(self, hour: int) -> bool:
         """Return True iff *hour* (0-23) falls inside this daypart's window."""
@@ -69,6 +77,17 @@ class Daypart:
             return self.start_hour <= hour < self.end_hour
         # Wraps past midnight (e.g. 22 → 06)
         return hour >= self.start_hour or hour < self.end_hour
+
+    def applies_to_index(self, index_name: str | None) -> bool:
+        """Return True when this daypart should be considered for *index_name*.
+
+        Empty ``indexes`` tuple means the daypart applies everywhere.
+        """
+        if not self.indexes:
+            return True
+        if index_name is None:
+            return False
+        return index_name in self.indexes
 
 
 # Built-in daypart definitions — exposed via DAYPARTS for tests + introspection.
@@ -207,6 +226,7 @@ def from_config_dict(data: dict[str, Any]) -> list[Daypart]:
             raise ValueError(
                 f"daypart '{name}' hours must be 0-23, got start={start} end={end}",
             )
+        indexes = tuple(str(x) for x in fields.get("indexes", ()))
         out.append(
             Daypart(
                 name=str(name),
@@ -215,6 +235,73 @@ def from_config_dict(data: dict[str, Any]) -> list[Daypart]:
                 target_bpm=bpm,
                 target_energy=energy,
                 bpm_weight=weight,
+                indexes=indexes,
             )
         )
     return out
+
+
+def load_dayparts_from_dir(folder: Path) -> list[Daypart]:
+    """Load one daypart per ``*.toml`` file under *folder*.
+
+    Each TOML file is a flat table of fields (no nested ``[name]``
+    section needed; the filename stem becomes the daypart name).
+
+    Example file ``dayparts/morning.toml``::
+
+        start_hour = 6
+        end_hour = 10
+        target_bpm = 80
+        target_energy = 0.04
+        bpm_weight = 0.3
+        indexes = ["main", "workout"]
+
+    Returns the built-in :data:`DAYPARTS` when the folder is missing
+    or empty so existing setups keep working.
+
+    Raises:
+        ValueError: When a file is malformed.  Other files in the
+            folder still load — the bad one is logged and skipped.
+    """
+    if not folder.exists() or not folder.is_dir():
+        return DAYPARTS
+
+    import tomllib
+
+    out: list[Daypart] = []
+    for tf in sorted(folder.glob("*.toml")):
+        try:
+            data = tomllib.loads(tf.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("Skipping malformed daypart file %s: %s", tf, exc)
+            continue
+        try:
+            start = int(data["start_hour"])
+            end = int(data["end_hour"])
+            bpm = float(data["target_bpm"])
+            energy = float(data["target_energy"])
+        except (KeyError, ValueError) as exc:
+            logger.warning("Daypart %s missing required field: %s", tf.name, exc)
+            continue
+        weight = float(data.get("bpm_weight", 0.25))
+        indexes = tuple(str(x) for x in data.get("indexes", ()))
+        if not 0 <= start <= 23 or not 0 <= end <= 23:
+            logger.warning(
+                "Daypart %s hours out of range: start=%s end=%s",
+                tf.name,
+                start,
+                end,
+            )
+            continue
+        out.append(
+            Daypart(
+                name=tf.stem,
+                start_hour=start,
+                end_hour=end,
+                target_bpm=bpm,
+                target_energy=energy,
+                bpm_weight=weight,
+                indexes=indexes,
+            ),
+        )
+    return out or DAYPARTS

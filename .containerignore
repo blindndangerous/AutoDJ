@@ -1,0 +1,31 @@
+# Mirror of .dockerignore for Podman — keep build context small.
+.git/
+.venv/
+.venvs/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+*.egg-info/
+build/
+dist/
+docs/
+tests/
+.github/
+node_modules/
+*.log
+*.tmp
+*.swp
+.DS_Store
+README.md.bak
+CHANGELOG.md
+# Local data must never end up in the image — mount it in compose.
+music/
+index/
+liners/
+profiles/
+dayparts/

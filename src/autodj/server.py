@@ -87,6 +87,34 @@ class VolumeBody(BaseModel):
     volume: float
 
 
+class ProfileSaveBody(BaseModel):
+    """Request body for POST /api/profiles.
+
+    All snapshot fields are optional except ``name``; missing fields
+    mean "do not override" when the profile is later applied.
+    """
+
+    name: str
+    index_name: str | None = None
+    preset: str | None = None
+    bpm_lo: float | None = None
+    bpm_hi: float | None = None
+    harmonic_mode: str | None = None
+    transition_mode: str | None = None
+    beat_sync_fx: bool | None = None
+    key_sync_fx: bool | None = None
+    beatmatch_on_skip: bool | None = None
+    crossfade_seconds: float | None = None
+    smart_shuffle: bool | None = None
+    pure_shuffle: bool | None = None
+    anchor_to_seed: bool | None = None
+    enable_daypart: bool | None = None
+    enable_mood_arc: bool | None = None
+    mood_arc_hours: float | None = None
+    liners_enabled: bool | None = None
+    liners_pick_mode: str | None = None
+
+
 class SeekBody(BaseModel):
     """Request body for POST /api/seek.
 
@@ -1256,6 +1284,114 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
     async def api_seek(body: SeekBody) -> dict[str, float]:
         new_pos = bridge.seek(seconds=body.seconds, delta=body.delta)
         return {"elapsed": round(new_pos, 2)}
+
+    def _profile_store() -> Any:
+        from pathlib import Path as _P
+
+        from autodj.profiles import ProfileStore
+
+        cfg = bridge.player._cfg
+        # Default location: <index_dir>/../profiles to keep host config
+        # local but adjacent to indexes.
+        root = _P(cfg.index.active_dir).parent / "profiles"
+        return ProfileStore(root)
+
+    @app.get("/api/profiles")
+    async def api_profiles() -> dict:
+        store = _profile_store()
+        return {"profiles": store.list_names(), "root": str(store.root)}
+
+    @app.get("/api/profiles/{name}")
+    async def api_profile_get(name: str) -> dict:
+        from autodj.profiles import validate_name
+
+        try:
+            validate_name(name)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            snap = _profile_store().load(name)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return snap.to_dict()
+
+    @app.post("/api/profiles")
+    async def api_profile_save(body: ProfileSaveBody) -> dict:
+        from autodj.profiles import ProfileSnapshot, validate_name
+
+        try:
+            validate_name(body.name)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        snap = ProfileSnapshot(**body.model_dump())
+        target = _profile_store().save(snap)
+        return {"saved": snap.name, "path": str(target)}
+
+    @app.delete("/api/profiles/{name}")
+    async def api_profile_delete(name: str) -> dict:
+        from autodj.profiles import validate_name
+
+        try:
+            validate_name(name)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        ok = _profile_store().delete(name)
+        if not ok:
+            raise HTTPException(status_code=404, detail="Profile not found")
+        return {"deleted": name}
+
+    @app.post("/api/profiles/{name}/apply")
+    async def api_profile_apply(name: str) -> dict:
+        """Load a saved profile and push every set field through the bridge."""
+        from autodj.profiles import validate_name
+
+        try:
+            validate_name(name)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            snap = _profile_store().load(name)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        applied: list[str] = []
+        # Playback flags
+        kw: dict = {}
+        for fld in (
+            "transition_mode",
+            "beat_sync_fx",
+            "key_sync_fx",
+            "beatmatch_on_skip",
+            "crossfade_seconds",
+            "smart_shuffle",
+            "pure_shuffle",
+            "anchor_to_seed",
+            "enable_daypart",
+            "enable_mood_arc",
+            "mood_arc_hours",
+            "liners_enabled",
+            "liners_pick_mode",
+        ):
+            v = getattr(snap, fld, None)
+            if v is not None:
+                kw[fld] = v
+                applied.append(fld)
+        if kw:
+            bridge.set_playback_settings(**kw)
+        # BPM range
+        if snap.bpm_lo is not None and snap.bpm_hi is not None:
+            bridge.set_bpm_range(snap.bpm_lo, snap.bpm_hi)
+            applied.append("bpm_range")
+        # DJ-mix harmonic mode
+        if snap.harmonic_mode is not None:
+            bridge.set_djmix(harmonic_mode=snap.harmonic_mode)
+            applied.append("harmonic_mode")
+        # Preset
+        if snap.preset is not None:
+            with contextlib.suppress(Exception):
+                bridge.set_preset(snap.preset)
+                applied.append("preset")
+        return {"applied": applied, "name": name}
 
     @app.get("/api/liners")
     async def api_liners() -> dict:

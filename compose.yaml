@@ -1,0 +1,45 @@
+# Podman / Docker compose for AutoDJ.
+#
+# Quickstart:
+#   podman compose up        # build + run
+#   podman compose down      # stop
+#
+# Volumes:
+#   ./music   -> /music (read-only) — your library lives here.  Mount
+#                read-only so the container cannot mutate source files.
+#   ./index   -> /index — FAISS index + dj_meta.json + liners + profiles
+#                + dayparts.  Generate with `autodj index` on the host
+#                first; the container only needs read-write so the user
+#                can upload liners and save profiles.
+#
+# This compose file does NOT run `autodj index`.  Indexing benefits
+# from a GPU and python-multipart-loaded librosa / muq, neither of
+# which fits cleanly in a slim CPU container.  Run on the host:
+#   uv run autodj index
+# then start the container.
+
+services:
+  autodj:
+    build:
+      context: .
+      dockerfile: Containerfile
+    image: autodj:latest
+    container_name: autodj
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./music:/music:ro
+      - ./index:/index
+    environment:
+      AUTODJ_HOST: 0.0.0.0
+      AUTODJ_PORT: 8080
+      # Override the [library] music_dir + [index] dir at runtime so a
+      # cloned config.toml doesn't need editing.
+      AUTODJ_LIBRARY_MUSIC_DIR: /music
+      AUTODJ_INDEX_DIR: /index
+    # Don't expose privileged ports / drop unneeded capabilities.
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true

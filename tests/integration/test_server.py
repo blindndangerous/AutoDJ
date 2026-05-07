@@ -466,6 +466,103 @@ class TestLiners:
 
 
 # ---------------------------------------------------------------------------
+# Profile bundle endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestProfiles:
+    def test_profiles_empty(self, client) -> None:
+        resp = client.get("/api/profiles")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "profiles" in body
+        assert body["profiles"] == []
+
+    def test_profile_save_and_list(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        # Re-anchor profile root to tmp_path so the test is hermetic.
+        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
+        (tmp_path / "idx").mkdir()
+
+        tc = TestClient(create_app(bridge))
+        resp = tc.post(
+            "/api/profiles",
+            json={"name": "Wakeup", "bpm_lo": 70, "bpm_hi": 110},
+        )
+        assert resp.status_code == 200
+        body = tc.get("/api/profiles").json()
+        assert "Wakeup" in body["profiles"]
+
+    def test_profile_get_round_trip(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
+        (tmp_path / "idx").mkdir()
+
+        tc = TestClient(create_app(bridge))
+        tc.post(
+            "/api/profiles",
+            json={
+                "name": "Workout",
+                "bpm_lo": 120,
+                "bpm_hi": 140,
+                "beat_sync_fx": True,
+            },
+        )
+        body = tc.get("/api/profiles/Workout").json()
+        assert body["name"] == "Workout"
+        assert body["bpm_lo"] == 120
+        assert body["bpm_hi"] == 140
+        assert body["beat_sync_fx"] is True
+
+    def test_profile_invalid_name_rejected(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
+        (tmp_path / "idx").mkdir()
+        tc = TestClient(create_app(bridge))
+        resp = tc.post("/api/profiles", json={"name": "../escape"})
+        assert resp.status_code == 400
+
+    def test_profile_delete(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
+        (tmp_path / "idx").mkdir()
+        tc = TestClient(create_app(bridge))
+        tc.post("/api/profiles", json={"name": "Tmp"})
+        resp = tc.delete("/api/profiles/Tmp")
+        assert resp.status_code == 200
+        body = tc.get("/api/profiles").json()
+        assert "Tmp" not in body["profiles"]
+
+    def test_profile_apply_pushes_settings(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
+        (tmp_path / "idx").mkdir()
+        tc = TestClient(create_app(bridge))
+        tc.post(
+            "/api/profiles",
+            json={
+                "name": "Quiet",
+                "beat_sync_fx": False,
+                "key_sync_fx": False,
+                "crossfade_seconds": 5.0,
+            },
+        )
+        resp = tc.post("/api/profiles/Quiet/apply")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "beat_sync_fx" in body["applied"]
+        # Bridge set_playback_settings invoked on the mock cfg.
+        assert bridge.player._cfg.playback.beat_sync_fx is False
+        assert bridge.player._cfg.playback.key_sync_fx is False
+        assert bridge.player._cfg.playback.crossfade_seconds == pytest.approx(5.0)
+
+
+# ---------------------------------------------------------------------------
 # POST /api/mute
 # ---------------------------------------------------------------------------
 
