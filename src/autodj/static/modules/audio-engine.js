@@ -127,6 +127,7 @@ if (isIOS) {
   if (volRow) volRow.style.display = "none";
 }
 
+const audioEl  = document.getElementById("browser-player");
 const audioElB = document.getElementById("browser-player-b");
 
 // Web Audio graph — built lazily on first user gesture (browsers
