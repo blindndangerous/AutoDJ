@@ -188,6 +188,15 @@ function applyState(s) {
     }
   }
   const pct = dur > 0 ? Math.min(100, (elapsed / dur) * 100) : 0;
+  // Cache for the seek slider — its keyboard / pointer handlers need
+  // the current duration in seconds even when no deck is unlocked yet
+  // (server-audio mode, pre-Play state).  Set before the early-return
+  // path so a paused / not-yet-started session can still seek.
+  _lastDuration = dur;
+  // Suppress live progress updates while the user is actively
+  // dragging the seek slider so the UI doesn't yo-yo between the
+  // drag position and a stale server-broadcast position.
+  if (_seekDragging) return;
   progressFill.style.width = pct.toFixed(1) + "%";
   const timeText = `${fmtTime(elapsed)} / ${fmtTime(dur)}`;
   progressLbl.textContent  = timeText;
@@ -777,6 +786,29 @@ function renderCueStrip(track) {
   const key = `${track ? track.path : ""}#${cues.length}`;
   if (key === _lastCueKey) return;
   _lastCueKey = key;
+  // Sr-only navigable cue list, separate from the seek slider so it
+  // doesn't re-announce on every value change.  AT users navigate
+  // into it on demand via element / list navigation; sighted users
+  // never see it.
+  const cueList = document.getElementById("cue-list-summary");
+  if (cueList) {
+    if (!cues.length || dur <= 0) {
+      cueList.innerHTML = "";
+    } else {
+      const fmt = (sec) => {
+        const m = Math.floor(sec / 60);
+        const s = Math.round(sec - m * 60);
+        return m > 0
+          ? `${m} minute${m === 1 ? "" : "s"} ${s} seconds`
+          : `${s} seconds`;
+      };
+      cueList.innerHTML = cues
+        .filter(c => c.time_s >= 0 && c.time_s <= dur)
+        .map(c => `<li>${escHtml(c.type.replace(/_/g, " "))} at ${fmt(c.time_s)}${
+          c.label ? ", " + escHtml(c.label) : ""}</li>`)
+        .join("");
+    }
+  }
   if (!cues.length || dur <= 0) {
     _cueStrip.innerHTML = "";
     return;
@@ -3500,6 +3532,109 @@ btnSkip.addEventListener("click", async () => {
   }
   setTimeout(() => { btnSkip.disabled = false; }, 800);
 });
+
+// ----------------------------------------------------------------
+// Seek slider — drag/click + keyboard.  Updates server position via
+// /api/seek, and (in browser-playback mode) jumps the active deck's
+// HTMLMediaElement currentTime so the audio actually skips.
+// ----------------------------------------------------------------
+
+const _seekTrack = document.getElementById("progress-track");
+let _seekDragging = false;
+let _seekLastAriaUpdate = 0;
+let _lastDuration = 0;
+
+function _seekTrackDuration() {
+  // Active deck's duration when known (browser-playback mode); falls
+  // back to the cached duration computed in renderState.  Both are
+  // expressed in seconds.
+  if (_lastBrowserPlayback) {
+    try {
+      const d = decks[activeIdx].audio.duration;
+      if (isFinite(d) && d > 0) return d;
+    } catch (_) {}
+  }
+  return _lastDuration;
+}
+
+function _seekToFrac(frac, opts) {
+  const dur = _seekTrackDuration();
+  if (!(dur > 0)) return;
+  const f = Math.max(0, Math.min(1, frac));
+  const seconds = f * dur;
+  // Local audio jump in browser-playback mode so the user hears the
+  // change immediately; server is informed in parallel for state sync
+  // (CLI listeners + reconnect-time replay).
+  if (_lastBrowserPlayback) {
+    try {
+      decks[activeIdx].audio.currentTime = Math.max(0, Math.min(dur - 0.1, seconds));
+    } catch (_) {}
+  }
+  // Throttle aria updates while dragging to avoid flooding NVDA.
+  const now = performance.now();
+  const force = !!(opts && opts.force);
+  if (force || now - _seekLastAriaUpdate > 150) {
+    _seekLastAriaUpdate = now;
+    if (_seekTrack) {
+      const pct = (f * 100).toFixed(0);
+      _seekTrack.setAttribute("aria-valuenow", pct);
+      _seekTrack.setAttribute("aria-valuetext",
+        `${fmtTime(seconds)} of ${fmtTime(dur)}`);
+    }
+    if (progressFill) progressFill.style.width = (f * 100).toFixed(1) + "%";
+    if (progressLbl) progressLbl.textContent = `${fmtTime(seconds)} / ${fmtTime(dur)}`;
+  }
+  // Always inform the server, even mid-drag.  The endpoint is cheap
+  // and idempotent; final position wins.
+  fetch("/api/seek", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ seconds }),
+  }).catch(() => {});
+}
+
+if (_seekTrack) {
+  _seekTrack.addEventListener("pointerdown", (e) => {
+    if (e.button !== undefined && e.button !== 0) return;
+    _seekDragging = true;
+    try { _seekTrack.setPointerCapture(e.pointerId); } catch (_) {}
+    const rect = _seekTrack.getBoundingClientRect();
+    _seekToFrac((e.clientX - rect.left) / rect.width, { force: true });
+    e.preventDefault();
+  });
+  _seekTrack.addEventListener("pointermove", (e) => {
+    if (!_seekDragging) return;
+    const rect = _seekTrack.getBoundingClientRect();
+    _seekToFrac((e.clientX - rect.left) / rect.width);
+  });
+  _seekTrack.addEventListener("pointerup", (e) => {
+    if (!_seekDragging) return;
+    _seekDragging = false;
+    try { _seekTrack.releasePointerCapture(e.pointerId); } catch (_) {}
+    const rect = _seekTrack.getBoundingClientRect();
+    _seekToFrac((e.clientX - rect.left) / rect.width, { force: true });
+  });
+  _seekTrack.addEventListener("keydown", (e) => {
+    const dur = _seekTrackDuration();
+    if (!(dur > 0)) return;
+    const cur = (parseFloat(_seekTrack.getAttribute("aria-valuenow")) || 0) / 100 * dur;
+    let next = cur;
+    let handled = true;
+    switch (e.key) {
+      case "ArrowLeft":  next = cur - (e.shiftKey ? 15 : 5); break;
+      case "ArrowRight": next = cur + (e.shiftKey ? 15 : 5); break;
+      case "PageDown":   next = cur - 15; break;
+      case "PageUp":     next = cur + 15; break;
+      case "Home":       next = 0; break;
+      case "End":        next = Math.max(0, dur - 1); break;
+      default: handled = false;
+    }
+    if (handled) {
+      e.preventDefault();
+      _seekToFrac(Math.max(0, Math.min(dur, next)) / dur, { force: true });
+    }
+  });
+}
 
 const btnShuffle = document.getElementById("btn-shuffle");
 if (btnShuffle) {

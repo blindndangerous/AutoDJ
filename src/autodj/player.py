@@ -1395,6 +1395,32 @@ class Player:
             logger.warning("Cannot pre-load next track (%s): %s", next_entry.path, exc)
             return np.zeros(crossfade_samples, dtype=np.float32)
 
+    def seek_to(self, seconds: float) -> float:
+        """Seek the active track to *seconds* (absolute, from track start).
+
+        Clamps to ``[0, length - 0.1 s]`` so the seek can never overshoot
+        the buffer and trigger an end-of-track event.  Returns the
+        actual clamped position in seconds so the caller can report it.
+        Safe to call from any thread — only mutates ``_playback_pos[0]``
+        which the audio callback reads atomically each frame.
+        """
+        sr = max(1, self._current_sr)
+        max_samples = max(0, self._playback_len - int(0.1 * sr))
+        target_samples = int(max(0.0, seconds) * sr)
+        target_samples = min(target_samples, max_samples)
+        self._playback_pos[0] = target_samples
+        return target_samples / sr
+
+    def seek_relative(self, delta_seconds: float) -> float:
+        """Seek by ``delta_seconds`` from the current playback position.
+
+        Convenience wrapper around :meth:`seek_to`.  Returns the new
+        absolute position in seconds.
+        """
+        sr = max(1, self._current_sr)
+        current = self._playback_pos[0] / sr
+        return self.seek_to(current + delta_seconds)
+
     def _maybe_beatmatch(
         self,
         audio_b: np.ndarray,

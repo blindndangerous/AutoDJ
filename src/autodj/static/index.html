@@ -98,18 +98,22 @@
     <div id="progress-bar-wrap">
       <div id="progress-bar-label" aria-hidden="true">0:00 / 0:00</div>
       <div id="progress-track"
-           role="progressbar"
-           aria-label="Track position"
+           role="slider"
+           tabindex="0"
+           aria-label="Seek"
            aria-valuemin="0"
            aria-valuemax="100"
            aria-valuenow="0"
            aria-valuetext="0:00 of 0:00">
         <div id="progress-fill" aria-hidden="true"></div>
-        <!-- Cue markers overlay decoratively on the progress bar.
-             Type + time is announced via #badges-announce below so this
-             div stays decoration-only. -->
-        <div id="cue-strip" role="presentation" aria-hidden="true"></div>
+        <!-- Decorative cue tick marks — accessible cue list lives in
+             #cue-list-summary below, owned by the seek slider via
+             screen-reader navigation rather than aria-describedby
+             (avoids re-announcement on every value change). -->
+        <div id="cue-strip" aria-hidden="true"></div>
       </div>
+      <ul id="cue-list-summary" class="visually-hidden"
+          aria-label="Cue points on the current track"></ul>
     </div>
   </details>
 
@@ -258,7 +262,7 @@
       <legend>Mood</legend>
       <div class="settings-row">
         <label for="preset-select">Preset</label>
-        <select id="preset-select" aria-describedby="preset-desc">
+        <select id="preset-select">
           <option value="">(none)</option>
         </select>
       </div>
@@ -267,7 +271,7 @@
       </span>
       <div class="settings-row">
         <label for="transition-select">Transition effect</label>
-        <select id="transition-select" aria-describedby="transition-desc">
+        <select id="transition-select">
           <option value="none">none</option>
           <option value="echo_out">echo out</option>
           <option value="reverb_tail">reverb tail</option>
@@ -354,7 +358,7 @@
       <legend>DJ-mix toggles</legend>
       <div class="settings-row">
         <label for="harmonic-mode">Harmonic mixing</label>
-        <select id="harmonic-mode" aria-describedby="dj-harmonic-desc">
+        <select id="harmonic-mode">
           <option value="off">off (no key filter)</option>
           <option value="compatible">compatible (Camelot match, ±1, relative)</option>
           <option value="strict">strict (same Camelot position only)</option>
@@ -373,7 +377,7 @@
       </span>
 
       <div class="settings-check">
-        <input type="checkbox" id="dj-beatmatch" aria-describedby="dj-beatmatch-desc">
+        <input type="checkbox" id="dj-beatmatch">
         <label for="dj-beatmatch">Beatmatch</label>
       </div>
       <span class="setting-desc" id="dj-beatmatch-desc">
@@ -381,7 +385,7 @@
       </span>
 
       <div class="settings-check">
-        <input type="checkbox" id="dj-phrase-align" aria-describedby="dj-phrase-desc">
+        <input type="checkbox" id="dj-phrase-align">
         <label for="dj-phrase-align">Phrase align</label>
       </div>
       <span class="setting-desc" id="dj-phrase-desc">
@@ -389,7 +393,7 @@
       </span>
 
       <div class="settings-check">
-        <input type="checkbox" id="dj-outro-intro" aria-describedby="dj-outro-desc">
+        <input type="checkbox" id="dj-outro-intro">
         <label for="dj-outro-intro">Outro / intro align</label>
       </div>
       <span class="setting-desc" id="dj-outro-desc">
@@ -400,7 +404,7 @@
     <fieldset>
       <legend>Playback</legend>
       <div class="settings-check">
-        <input type="checkbox" id="pb-eq-duck" aria-describedby="pb-eq-duck-desc">
+        <input type="checkbox" id="pb-eq-duck">
         <label for="pb-eq-duck">EQ-ducked crossfade</label>
       </div>
       <span class="setting-desc" id="pb-eq-duck-desc">
@@ -408,7 +412,7 @@
       </span>
 
       <div class="settings-check">
-        <input type="checkbox" id="pb-smart-shuffle" aria-describedby="pb-shuffle-desc">
+        <input type="checkbox" id="pb-smart-shuffle">
         <label for="pb-smart-shuffle">Entropy walk</label>
       </div>
       <span class="setting-desc" id="pb-shuffle-desc">
@@ -416,7 +420,7 @@
       </span>
 
       <div class="settings-check">
-        <input type="checkbox" id="pb-pure-shuffle" aria-describedby="pb-pure-desc">
+        <input type="checkbox" id="pb-pure-shuffle">
         <label for="pb-pure-shuffle">Random walk</label>
       </div>
       <span class="setting-desc" id="pb-pure-desc">
@@ -424,7 +428,7 @@
       </span>
 
       <div class="settings-check">
-        <input type="checkbox" id="pb-anchor-seed" aria-describedby="pb-anchor-desc">
+        <input type="checkbox" id="pb-anchor-seed">
         <label for="pb-anchor-seed">Anchor to seed</label>
       </div>
       <span class="setting-desc" id="pb-anchor-desc">
@@ -432,7 +436,7 @@
       </span>
 
       <div class="settings-check">
-        <input type="checkbox" id="pb-show-lyrics" aria-describedby="pb-show-lyrics-desc">
+        <input type="checkbox" id="pb-show-lyrics">
         <label for="pb-show-lyrics">Show lyrics</label>
       </div>
       <span class="setting-desc" id="pb-show-lyrics-desc">
@@ -440,7 +444,7 @@
       </span>
 
       <div class="settings-check">
-        <input type="checkbox" id="pb-replaygain" aria-describedby="pb-rg-desc">
+        <input type="checkbox" id="pb-replaygain">
         <label for="pb-replaygain">ReplayGain normalisation</label>
       </div>
       <span class="setting-desc" id="pb-rg-desc">
@@ -448,7 +452,7 @@
       </span>
 
       <div class="settings-check">
-        <input type="checkbox" id="pb-daypart" aria-describedby="pb-daypart-desc">
+        <input type="checkbox" id="pb-daypart">
         <label for="pb-daypart">Wall-clock daypart</label>
       </div>
       <span class="setting-desc" id="pb-daypart-desc">
@@ -456,7 +460,7 @@
       </span>
 
       <div class="settings-check">
-        <input type="checkbox" id="pb-mood-arc" aria-describedby="pb-mood-arc-desc">
+        <input type="checkbox" id="pb-mood-arc">
         <label for="pb-mood-arc">Mood arc (warmup<span aria-hidden="true"> → </span><span class="visually-hidden"> to </span>peak<span aria-hidden="true"> → </span><span class="visually-hidden"> to </span>cool)</label>
       </div>
       <span class="setting-desc" id="pb-mood-arc-desc">
@@ -466,14 +470,14 @@
       <div class="settings-row">
         <label for="pb-mood-arc-hours">Mood arc length (hours)</label>
         <input type="number" id="pb-mood-arc-hours" min="0.25" max="24" step="0.25" value="3"
-               inputmode="decimal" aria-describedby="pb-mood-arc-hours-desc">
+               inputmode="decimal">
       </div>
       <span class="setting-desc" id="pb-mood-arc-hours-desc">
         How long one full warmup-peak-cool cycle takes before the arc loops.  3 h matches a standard club set; 1 h works well for short sessions; 6+ h gives a slow festival-style ramp.  Changing this re-anchors the arc to "now".
       </span>
 
       <div class="settings-check">
-        <input type="checkbox" id="pb-import-cues" aria-describedby="pb-import-cues-desc">
+        <input type="checkbox" id="pb-import-cues">
         <label for="pb-import-cues">Auto-import DJ-software cues</label>
       </div>
       <span class="setting-desc" id="pb-import-cues-desc">
@@ -481,7 +485,7 @@
       </span>
 
       <div class="settings-check">
-        <input type="checkbox" id="pb-beat-sync-fx" aria-describedby="pb-beat-sync-fx-desc">
+        <input type="checkbox" id="pb-beat-sync-fx">
         <label for="pb-beat-sync-fx">Beat-sync transition FX</label>
       </div>
       <span class="setting-desc" id="pb-beat-sync-fx-desc">
@@ -489,7 +493,7 @@
       </span>
 
       <div class="settings-check">
-        <input type="checkbox" id="pb-key-sync-fx" aria-describedby="pb-key-sync-fx-desc">
+        <input type="checkbox" id="pb-key-sync-fx">
         <label for="pb-key-sync-fx">Key-sync pitched FX</label>
       </div>
       <span class="setting-desc" id="pb-key-sync-fx-desc">
@@ -498,11 +502,10 @@
 
       <div class="settings-row">
         <label for="audio-device">Audio output device</label>
-        <select id="audio-device" aria-describedby="audio-device-desc">
+        <select id="audio-device">
           <option value="">System default</option>
         </select>
         <button type="button" id="audio-device-refresh"
-                aria-describedby="audio-device-desc"
                 title="Grant the browser microphone permission so device names show up.  Permission is dropped immediately — no audio is captured.">
           Show device names
         </button>
@@ -521,7 +524,7 @@
 
       <div class="settings-row">
         <label for="pb-transition-mode">Transition mode</label>
-        <select id="pb-transition-mode" aria-describedby="pb-transition-mode-desc">
+        <select id="pb-transition-mode">
           <option value="full_intro_outro">Full intro / outro</option>
           <option value="outro_fade">Outro fade</option>
           <option value="fixed_skip_silence">Fixed (skip silence)</option>
@@ -534,8 +537,7 @@
 
       <div class="settings-row">
         <label for="pb-crossfade">Crossfade seconds</label>
-        <input type="number" id="pb-crossfade" min="0" max="20" step="0.5" value="3"
-               aria-describedby="pb-crossfade-desc">
+        <input type="number" id="pb-crossfade" min="0" max="20" step="0.5" value="3">
       </div>
       <span class="setting-desc" id="pb-crossfade-desc">
         How long the gain ramp between tracks lasts.  2-3 s feels natural for most music; 5-8 s for ambient or testing transition effects.  0 = instant cut.
@@ -546,11 +548,11 @@
       <legend>BPM range</legend>
       <div class="settings-row">
         <label for="bpm-lo">Minimum</label>
-        <input type="number" id="bpm-lo" min="0" max="300" step="1" aria-describedby="bpm-desc">
+        <input type="number" id="bpm-lo" min="0" max="300" step="1">
       </div>
       <div class="settings-row">
         <label for="bpm-hi">Maximum</label>
-        <input type="number" id="bpm-hi" min="0" max="300" step="1" aria-describedby="bpm-desc">
+        <input type="number" id="bpm-hi" min="0" max="300" step="1">
       </div>
       <span class="setting-desc" id="bpm-desc">
         Hard filter on track tempo.  Picks only fall within this range; tracks with unknown BPM always pass.  Leave blank to disable.
@@ -561,13 +563,13 @@
     <fieldset>
       <legend>Discovery</legend>
       <div class="settings-check">
-        <input type="checkbox" id="disc-enabled" aria-describedby="disc-desc">
+        <input type="checkbox" id="disc-enabled">
         <label for="disc-enabled">Inject distant tracks</label>
       </div>
       <div class="settings-row">
         <label for="disc-every">Every N tracks</label>
         <input type="number" id="disc-every" min="1" max="500" step="1" value="20"
-               aria-disabled="true" aria-describedby="disc-desc">
+               aria-disabled="true">
       </div>
       <span class="setting-desc" id="disc-desc">
         Periodically inject a sonically <em>distant</em> track to break the auto-DJ out of a similarity loop.  Picks at random from the bottom quartile of cosine similarity.  Disable to stay strictly on-vibe.
@@ -675,7 +677,7 @@
         <div class="settings-row">
           <label for="lib-index-limit">Index — limit (optional)</label>
           <input type="number" id="lib-index-limit" min="0" step="1"
-                 placeholder="0 = all" aria-describedby="lib-index-desc">
+                 placeholder="0 = all">
           <button type="button" id="lib-run-index">Index</button>
         </div>
         <p class="setting-desc" id="lib-index-desc">

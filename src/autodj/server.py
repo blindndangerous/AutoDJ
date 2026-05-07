@@ -85,6 +85,17 @@ class VolumeBody(BaseModel):
     volume: float
 
 
+class SeekBody(BaseModel):
+    """Request body for POST /api/seek.
+
+    Either ``seconds`` (absolute) or ``delta`` (relative) is set.  When
+    both are provided, ``seconds`` wins.
+    """
+
+    seconds: float | None = None
+    delta: float | None = None
+
+
 class PlayNextBody(BaseModel):
     """Request body for POST /api/play-next."""
 
@@ -207,6 +218,20 @@ class PlayerBridge:
     # ------------------------------------------------------------------
     # Controls
     # ------------------------------------------------------------------
+
+    def seek(self, seconds: float | None = None, delta: float | None = None) -> float:
+        """Seek the active track and return the resulting position in seconds.
+
+        ``seconds`` is absolute (from track start); ``delta`` is relative
+        to the current playback position.  When both are provided
+        ``seconds`` wins.  Clamps inside :meth:`Player.seek_to` so callers
+        never overshoot the buffer.
+        """
+        if seconds is not None:
+            return float(self.player.seek_to(float(seconds)))
+        if delta is not None:
+            return float(self.player.seek_relative(float(delta)))
+        return float(self.player._playback_pos[0]) / max(1, self.player._current_sr)
 
     def skip(self) -> None:
         """Skip the current track immediately.
@@ -1173,6 +1198,11 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
         # Return fresh state so the browser updates its now-playing UI
         # without waiting up to 1 s for the next WS broadcast tick.
         return JSONResponse(bridge.get_state())
+
+    @app.post("/api/seek")
+    async def api_seek(body: SeekBody) -> dict[str, float]:
+        new_pos = bridge.seek(seconds=body.seconds, delta=body.delta)
+        return {"elapsed": round(new_pos, 2)}
 
     @app.post("/api/pause")
     async def api_pause() -> dict[str, bool]:

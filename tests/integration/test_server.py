@@ -90,6 +90,8 @@ def _make_player_mock(entry: IndexEntry | None = None) -> MagicMock:
     cfg.playback.enable_mood_arc = False
     cfg.playback.mood_arc_hours = 3.0
     cfg.playback.import_external_cues = True
+    cfg.playback.beat_sync_fx = True
+    cfg.playback.key_sync_fx = True
     cfg.replaygain.enabled = False
     cfg.presets = {}
     player._cfg = cfg
@@ -241,6 +243,73 @@ class TestVolume:
         tc = TestClient(create_app(bridge))
         data = tc.post("/api/volume", json={"volume": 0.5}).json()
         assert data["volume"] == pytest.approx(0.5)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/seek
+# ---------------------------------------------------------------------------
+
+
+class TestSeek:
+    """Endpoint and PlayerBridge.seek() behaviour."""
+
+    def test_seek_absolute(self, client) -> None:
+        # Mock player has length 180 s, sr=44100; seek to 60 s -> sample
+        # index 60*44100 = 2_646_000.  bridge.seek invokes player.seek_to
+        # which mutates _playback_pos[0] in real Player; on the mock we
+        # only verify the call goes through and returns a number.
+        resp = client.post("/api/seek", json={"seconds": 30.0})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "elapsed" in body
+        assert isinstance(body["elapsed"], int | float)
+
+    def test_seek_relative(self, client) -> None:
+        resp = client.post("/api/seek", json={"delta": -5.0})
+        assert resp.status_code == 200
+        assert "elapsed" in resp.json()
+
+    def test_seek_no_args_is_query(self, client) -> None:
+        # Empty body -> just reports current position (used by the web UI
+        # to read back state without changing anything).
+        resp = client.post("/api/seek", json={})
+        assert resp.status_code == 200
+
+    def test_player_seek_to_clamps_to_buffer_end(self) -> None:
+        # Direct unit test on the real Player.seek_to logic — the mock
+        # player in the bridge fixture doesn't implement clamping.
+        from autodj.player import Player
+
+        p = Player.__new__(Player)
+        p._current_sr = 1000
+        p._playback_len = 60_000  # 60 s
+        p._playback_pos = [0]
+        # Overshoot clamps to 59.9 s (length - 0.1 s).
+        result = p.seek_to(120.0)
+        assert result == pytest.approx(59.9, abs=0.05)
+        assert p._playback_pos[0] == int(59.9 * 1000)
+
+    def test_player_seek_to_clamps_to_zero(self) -> None:
+        from autodj.player import Player
+
+        p = Player.__new__(Player)
+        p._current_sr = 1000
+        p._playback_len = 60_000
+        p._playback_pos = [5_000]
+        result = p.seek_to(-10.0)
+        assert result == 0.0
+        assert p._playback_pos[0] == 0
+
+    def test_player_seek_relative(self) -> None:
+        from autodj.player import Player
+
+        p = Player.__new__(Player)
+        p._current_sr = 1000
+        p._playback_len = 60_000
+        p._playback_pos = [10_000]  # 10 s
+        result = p.seek_relative(5.0)
+        assert result == pytest.approx(15.0, abs=0.01)
+        assert p._playback_pos[0] == 15_000
 
 
 # ---------------------------------------------------------------------------
