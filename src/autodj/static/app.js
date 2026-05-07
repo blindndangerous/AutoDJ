@@ -84,6 +84,8 @@ const pbDaypart       = document.getElementById("pb-daypart");
 const pbMoodArc       = document.getElementById("pb-mood-arc");
 const pbMoodArcHours  = document.getElementById("pb-mood-arc-hours");
 const pbImportCues    = document.getElementById("pb-import-cues");
+const pbBeatSyncFx    = document.getElementById("pb-beat-sync-fx");
+const pbKeySyncFx     = document.getElementById("pb-key-sync-fx");
 const pbTransitionMode = document.getElementById("pb-transition-mode");
 const pbCrossfade     = document.getElementById("pb-crossfade");
 const bpmLo           = document.getElementById("bpm-lo");
@@ -347,6 +349,13 @@ function applySettingsState(st) {
   if (pbImportCues) {
     pbImportCues.checked = !!(st.playback && st.playback.import_external_cues);
   }
+  if (pbBeatSyncFx) {
+    // Default ON when server hasn't sent the field yet (older deploy).
+    pbBeatSyncFx.checked = !(st.playback && st.playback.beat_sync_fx === false);
+  }
+  if (pbKeySyncFx) {
+    pbKeySyncFx.checked = !(st.playback && st.playback.key_sync_fx === false);
+  }
   if (st.playback && st.playback.transition_mode && document.activeElement !== pbTransitionMode) {
     pbTransitionMode.value = st.playback.transition_mode;
   }
@@ -442,6 +451,20 @@ if (pbImportCues) {
   pbImportCues.addEventListener("change", () => {
     postSettings("/api/playback-settings", {
       import_external_cues: pbImportCues.checked,
+    });
+  });
+}
+if (pbBeatSyncFx) {
+  pbBeatSyncFx.addEventListener("change", () => {
+    postSettings("/api/playback-settings", {
+      beat_sync_fx: pbBeatSyncFx.checked,
+    });
+  });
+}
+if (pbKeySyncFx) {
+  pbKeySyncFx.addEventListener("change", () => {
+    postSettings("/api/playback-settings", {
+      key_sync_fx: pbKeySyncFx.checked,
     });
   });
 }

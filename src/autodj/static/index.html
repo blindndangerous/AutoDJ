@@ -480,6 +480,22 @@
         On the first cache load, scan for Mixxx (mixxx.db), Rekordbox (Library.xml export), and Traktor (collection.nml) libraries in your music folder and the standard per-OS user-data locations, then merge any cues found into AutoDJ's auto-detected ones.  User / DJ-software cues win on conflict.
       </span>
 
+      <div class="settings-check">
+        <input type="checkbox" id="pb-beat-sync-fx" aria-describedby="pb-beat-sync-fx-desc">
+        <label for="pb-beat-sync-fx">Beat-sync transition FX</label>
+      </div>
+      <span class="setting-desc" id="pb-beat-sync-fx-desc">
+        Snap rhythmic transition effects (echo, dub delay, beat repeat, gate stutter, stutter build, sidechain pump, transformer, scratch) to the beat grid + size their internal events to whole bars at a tempo blended from the outgoing track to the incoming track.  Envelope effects (sweeps, risers, drops, reverbs) bar-round their fade duration.  Falls back to seconds-based timing when no beat grid or BPM is known.  Default: on.
+      </span>
+
+      <div class="settings-check">
+        <input type="checkbox" id="pb-key-sync-fx" aria-describedby="pb-key-sync-fx-desc">
+        <label for="pb-key-sync-fx">Key-sync pitched FX</label>
+      </div>
+      <span class="setting-desc" id="pb-key-sync-fx-desc">
+        Tune oscillator-based effects (air horn, dub siren, ring modulator) to the song's root note, lerping outgoing-to-incoming root in log space across the fade.  Effects on tracks with no detected key fall back to their hardcoded reference frequency.  Default: on.
+      </span>
+
       <div class="settings-row">
         <label for="audio-device">Audio output device</label>
         <select id="audio-device" aria-describedby="audio-device-desc">
