@@ -17,14 +17,15 @@ import { clearLiveRegionLater } from "./live-region.js";
 const eqLow      = document.getElementById("eq-low");
 const eqMid      = document.getElementById("eq-mid");
 const eqHigh     = document.getElementById("eq-high");
-const eqLowVal   = document.getElementById("eq-low-val");
-const eqMidVal   = document.getElementById("eq-mid-val");
-const eqHighVal  = document.getElementById("eq-high-val");
+const eqLowVal   = document.getElementById("eq-low-value");
+const eqMidVal   = document.getElementById("eq-mid-value");
+const eqHighVal  = document.getElementById("eq-high-value");
 const eqAnnounce = document.getElementById("eq-announce");
 const btnEqReset = document.getElementById("btn-eq-reset");
 const volSlider  = document.getElementById("vol");
 const btnPause   = document.getElementById("btn-pause");
 const coverArt   = document.getElementById("cover-art");
+const npAnnounce = document.getElementById("now-playing-announce");
 
 // ----------------------------------------------------------------
 // 3-band EQ

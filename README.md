@@ -215,3 +215,18 @@ The Python side uses `uv`, `pytest`, `ruff`, `mypy`, and `bandit`.  The web side
 - Cue-point importers read [Mixxx](https://mixxx.org/), [Rekordbox](https://rekordbox.com/), and [Traktor](https://www.native-instruments.com/en/products/traktor/) library files.
 
 If AutoDJ is useful to you, a star on GitHub is appreciated.  Issues and pull requests welcome.
+
+## Contributors
+
+AutoDJ was built collaboratively by humans and AI assistants.  Each contributor is named with the part of the work they led.
+
+### Human contributors
+
+- **[blindndangerous](https://github.com/blindndangerous)**: project vision, library design, requirements, UX direction (web UI flow, mode semantics, gapless feel), every accessibility decision, all real-world testing on a 10k-track library, every release call.
+- **[jage9](https://github.com/jage9)**: additional contributions and feedback.
+
+### AI assistants
+
+- **Claude (Anthropic)**: paired-programming partner across the whole codebase.  Worked on the MuQ + librosa indexing pipeline, the FAISS similarity engine, crossfade audio math with EQ-ducking, the transition effects (CLI + AudioWorklet), the FastAPI + WebSocket web layer, the section-nav SPA, the gapless prefetch + silence detector, the harmonic Camelot rule set, and the test suite.  Every line was reviewed and guided by a human before it shipped.
+
+If you contribute, add yourself here in the same shape as the rows above.
