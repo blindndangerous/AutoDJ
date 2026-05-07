@@ -106,14 +106,13 @@
            aria-valuenow="0"
            aria-valuetext="0:00 of 0:00">
         <div id="progress-fill" aria-hidden="true"></div>
-        <!-- Decorative cue tick marks — accessible cue list lives in
-             #cue-list-summary below, owned by the seek slider via
-             screen-reader navigation rather than aria-describedby
-             (avoids re-announcement on every value change). -->
+        <!-- Decorative cue tick marks.  Screen-reader users hear cue
+             counts + the first few markers via the polite live region
+             #badges-announce on track change (see _summariseCues in
+             app.js); the persistent navigable list was removed at the
+             user's request. -->
         <div id="cue-strip" aria-hidden="true"></div>
       </div>
-      <ul id="cue-list-summary" class="visually-hidden"
-          aria-label="Cue points on the current track"></ul>
     </div>
   </details>
 

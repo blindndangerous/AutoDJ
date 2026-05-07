@@ -854,29 +854,9 @@ function renderCueStrip(track) {
   const key = `${track ? track.path : ""}#${cues.length}`;
   if (key === _lastCueKey) return;
   _lastCueKey = key;
-  // Sr-only navigable cue list, separate from the seek slider so it
-  // doesn't re-announce on every value change.  AT users navigate
-  // into it on demand via element / list navigation; sighted users
-  // never see it.
-  const cueList = document.getElementById("cue-list-summary");
-  if (cueList) {
-    if (!cues.length || dur <= 0) {
-      cueList.innerHTML = "";
-    } else {
-      const fmt = (sec) => {
-        const m = Math.floor(sec / 60);
-        const s = Math.round(sec - m * 60);
-        return m > 0
-          ? `${m} minute${m === 1 ? "" : "s"} ${s} seconds`
-          : `${s} seconds`;
-      };
-      cueList.innerHTML = cues
-        .filter(c => c.time_s >= 0 && c.time_s <= dur)
-        .map(c => `<li>${escHtml(c.type.replace(/_/g, " "))} at ${fmt(c.time_s)}${
-          c.label ? ", " + escHtml(c.label) : ""}</li>`)
-        .join("");
-    }
-  }
+  // The persistent sr-only navigable list (#cue-list-summary) was
+  // removed at user request.  AT users still get a polite live-region
+  // summary on every track change via _summariseCues() -> #badges-announce.
   if (!cues.length || dur <= 0) {
     _cueStrip.innerHTML = "";
     return;

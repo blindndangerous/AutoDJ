@@ -744,6 +744,14 @@ class Player:
 
         self._dj_cache: _DjMetaCache | None = None
         self._dj_cache_initialised = False
+        # Browser-driven mode never enters _play_track, so the only path
+        # that ever called analyse_audio (and therefore detect_cues) was
+        # dead code in serve mode.  Track in-flight background analyses
+        # by path so a flurry of advances does not spawn duplicate
+        # workers for the same track.  Lock guards the set; the heavy
+        # I/O happens off-lock.
+        self._bg_analysis_inflight: set[str] = set()
+        self._bg_analysis_lock = threading.Lock()
         # Current track's beatmatch ratio (1.0 = no stretch) — exposed via state
         self._beatmatch_ratio: float = 1.0
         # Last transition effect applied (string name) — exposed via state
@@ -977,11 +985,15 @@ class Player:
         self._state.current_track = current
         if self._state.next_track is None:
             self._state.next_track = self._pick_next(current)
-        # Browser-driven mode never enters _play_track, so lyrics would
-        # otherwise stay empty for the seed track and the web UI would
-        # hide its card even when beets/ID3 carry full lyrics.  Load
-        # them here so the first /api/status push has lyrics_plain set.
+        # Browser-driven mode never enters _play_track, so lyrics and
+        # DJ meta (cue points, intro_end_s, outro_start_s, beat grid)
+        # would otherwise stay empty for the seed track and the web UI
+        # would hide its lyrics card / show an empty cue list even when
+        # the data was easy to derive.  Load lyrics inline (cheap text
+        # I/O) and kick off audio analysis on a background thread so
+        # the heavy decode + librosa pass does not block the seed.
         self._load_lyrics(current.path)
+        self.analyse_track_in_background(current.path)
         self._current_sr = _DEFAULT_SR
         self._playback_len = int(
             (current.length if current.length and current.length > 0 else 5.0) * _DEFAULT_SR,
@@ -1281,6 +1293,11 @@ class Player:
                     "Imported cues for %d tracks from external DJ software",
                     len(self._external_cues),
                 )
+            else:
+                logger.info(
+                    "No external DJ-software libraries found (Mixxx / Rekordbox / "
+                    "Traktor); cues will be auto-detected from raw audio instead.",
+                )
         except (OSError, ValueError, ImportError) as exc:
             logger.debug("External cue import failed: %s", exc)
 
@@ -1306,6 +1323,71 @@ class Player:
             self._dj_cache.set(path, meta)
             self._dj_cache.flush(batch=10)
         return meta
+
+    def analyse_track_in_background(self, path: str) -> None:
+        """Run analyse_audio + detect_cues for *path* on a background thread.
+
+        Browser-driven mode (``serve --no-playback``, the default) never
+        enters :meth:`_play_track`, so without this hook the DJ-meta
+        cache for the playing track stays at ``analysed=False`` and the
+        web UI's cue strip + screen-reader cue summary stay empty.
+
+        The worker:
+
+        1. No-ops when the cache already has analysed meta for *path*
+           (sidecar hit, or a previous background pass populated it).
+        2. No-ops when the path is already in flight on another thread.
+        3. Loads the audio file, runs :func:`analyse_audio` (which calls
+           :func:`detect_cues` internally), merges any external Mixxx /
+           Rekordbox / Traktor cues, then writes the result back to
+           ``self._dj_cache`` and forces a flush so the sidecar JSON
+           grows incrementally on each track.
+
+        Errors at any stage (file gone, decode error, librosa failure)
+        are logged at debug and swallowed -- the cue panel just stays
+        empty for that track instead of crashing the advance.
+        """
+        if not path:
+            return
+        self._ensure_dj_cache()
+        if self._dj_cache is None:
+            return
+        existing = self._dj_cache.get(path)
+        if existing.analysed:
+            return
+        with self._bg_analysis_lock:
+            if path in self._bg_analysis_inflight:
+                return
+            self._bg_analysis_inflight.add(path)
+
+        def _worker() -> None:
+            try:
+                from autodj.dj_meta import analyse_audio
+
+                audio, sr = load_audio(path)
+                meta = analyse_audio(audio, sr)
+                self._merge_external_cues_into(meta, path)
+                if self._dj_cache is not None:
+                    self._dj_cache.set(path, meta)
+                    self._dj_cache.flush(force=True)
+                logger.info(
+                    "Background analysis done: %s -> %d cues, intro_end=%.1fs, outro_start=%.1fs",
+                    Path(path).name,
+                    len(meta.cues),
+                    meta.intro_end_s or 0.0,
+                    meta.outro_start_s or 0.0,
+                )
+            except (OSError, ValueError, RuntimeError) as exc:
+                logger.warning("Background analysis failed for %s: %s", path, exc)
+            finally:
+                with self._bg_analysis_lock:
+                    self._bg_analysis_inflight.discard(path)
+
+        threading.Thread(
+            target=_worker,
+            name=f"autodj-analyse-{Path(path).name}",
+            daemon=True,
+        ).start()
 
     def _merge_external_cues_into(self, meta: DjMeta, path: str) -> None:
         """Merge externally-imported cues for *path* into *meta* in place.

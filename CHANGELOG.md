@@ -10,6 +10,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed (post-feature batch)
 
+- **Cue list always empty in browser-driven serve.**  `analyse_audio`
+  (which calls `detect_cues` to emit `first_downbeat`, `drop`,
+  `breakdown`, `phrase`, `outro_downbeat` markers) was wired only into
+  `_play_track`, the server-audio path that the default
+  `serve --no-playback` mode never enters.  Cue strip + screen-reader
+  cue summary therefore stayed empty for every track no matter how
+  many tracks the user played.  New `Player.analyse_track_in_background`
+  spawns a daemon thread per track that loads the audio, runs
+  `analyse_audio`, merges any external Mixxx / Rekordbox / Traktor
+  cues, and writes the result back to the DJ-meta sidecar.  Hooked
+  into `_run_headless` (seed track) and `PlayerBridge.advance_now`
+  (current + prefetched next) so cues populate within seconds of
+  every track change.  In-flight set + cache-hit guard prevent
+  duplicate workers.  Background success / failure now log at
+  info / warning so users running with `-v` can confirm cues landed.
+- **Persistent cue list removed.**  The visually-hidden
+  `#cue-list-summary` `<ul>` was redundant: `_summariseCues`
+  already announces cue counts + the first three markers via the
+  polite `#badges-announce` live region on track change, and the
+  decorative cue strip on the progress bar conveys the same data
+  to sighted users.  Removed the listbox + its population code.
+
+
+
 - **Hotkeys hijacked combo boxes.**  Global `keydown` handler treated
   arrow keys as volume up / down even when focus sat on a Settings
   panel `<select>` (harmonic mode, audio device, transition mode,

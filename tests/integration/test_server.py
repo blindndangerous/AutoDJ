@@ -1852,6 +1852,31 @@ class TestMisc:
 
         assert bridge.player._state.current_track is picked
 
+    def test_advance_now_spawns_background_analysis(self, bridge) -> None:
+        """Browser-driven mode skips _play_track, so advance_now must
+        kick off audio analysis on a background thread to populate the
+        DJ-meta cache (cue points, intro/outro markers, beat grid).
+        Without this, the web UI's cue list stays empty for every track
+        even though detect_cues works fine from raw audio.
+        """
+        bridge.player._dry_run = True
+        bridge.player._export_m3u = None
+        bridge.player._history_file = None
+        bridge.player._state.queued_next = None
+        picked = _make_entry(501)
+        nxt2 = _make_entry(502)
+        bridge.player._state.next_track = picked
+        bridge.player._pick_next.return_value = nxt2
+
+        bridge.advance_now()
+
+        # Both the new current track AND the freshly-picked next track
+        # should be queued for analysis so the cue strip is ready by
+        # the time the browser crossfades.
+        calls = [c.args[0] for c in bridge.player.analyse_track_in_background.call_args_list]
+        assert picked.path in calls
+        assert nxt2.path in calls
+
     def test_lyrics_endpoint_returns_list(self, client) -> None:
         data = client.get("/api/lyrics").json()
         assert "lyrics" in data

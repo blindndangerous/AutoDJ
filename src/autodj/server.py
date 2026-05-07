@@ -367,6 +367,17 @@ class PlayerBridge:
             p._load_lyrics(nxt.path)
         except Exception:
             logger.debug("advance_now: lyric load failed", exc_info=True)
+        # Spawn a background thread to populate the DJ-meta cache (cue
+        # points, intro_end_s, outro_start_s, beat grid) for the new
+        # track.  Browser-driven mode skips _play_track entirely, so
+        # without this hook the cue strip / cue list stay empty and the
+        # full intro/outro markers Mixxx-style transition modes rely on
+        # never get computed.  No-op when the cache already has the
+        # track (sidecar hit) or another worker is already analysing.
+        try:
+            p.analyse_track_in_background(nxt.path)
+        except Exception:
+            logger.debug("advance_now: background analysis spawn failed", exc_info=True)
         # Refresh next_track for the browser's prefetcher.  Failure here
         # leaves current_track set but next_track empty -- browser will
         # show "no upcoming track" and the user can advance again.
@@ -375,6 +386,17 @@ class PlayerBridge:
         except Exception:
             logger.debug("advance_now: next-track refresh failed", exc_info=True)
             state.next_track = None
+        # Pre-warm the DJ-meta cache for the upcoming track too so its
+        # intro_end_s / outro_start_s / cues are ready by the time the
+        # browser crossfades into it.  Same no-op guards as above.
+        if state.next_track is not None:
+            try:
+                p.analyse_track_in_background(state.next_track.path)
+            except Exception:
+                logger.debug(
+                    "advance_now: next-track analysis spawn failed",
+                    exc_info=True,
+                )
         state.record_played(nxt)
         state.track_number += 1
         p._previous_track = cur
