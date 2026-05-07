@@ -3224,6 +3224,19 @@ btnMute.addEventListener("click", async () => {
     : '<span aria-hidden="true">\uD83D\uDD0A</span> Mute';
 });
 
+// Shortcuts modal: toolbar button + Close button inside the modal.
+const btnShortcuts = document.getElementById("btn-shortcuts");
+const btnShortcutsClose = document.getElementById("btn-shortcuts-close");
+if (btnShortcuts) {
+  btnShortcuts.addEventListener("click", () => _toggleShortcutsModal());
+}
+if (btnShortcutsClose) {
+  btnShortcutsClose.addEventListener("click", () => {
+    const modal = document.getElementById("hotkey-help-modal");
+    if (modal && modal.open) modal.close();
+  });
+}
+
 // Discovery toggle — sent via WebSocket so the server can push updated state
 btnDiscovery.addEventListener("click", () => {
   if (_ws && _ws.readyState === WebSocket.OPEN) {
@@ -3295,24 +3308,79 @@ volSlider.addEventListener("input", () => {
 // ----------------------------------------------------------------
 
 function _isTypingTarget(el) {
+  // Suppress hotkeys ONLY when focus is on a text-entry control.  Earlier
+  // blanket-suppression on every INPUT/SELECT killed hotkeys whenever the
+  // user landed on the volume / EQ slider, the preset dropdown, etc. —
+  // visible-button hotkeys (Space, M, N, S, ?) should fire from those.
   if (!el) return false;
-  const tag = el.tagName;
-  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
   if (el.isContentEditable) return true;
+  const tag = el.tagName;
+  if (tag === "TEXTAREA") return true;
+  if (tag === "INPUT") {
+    const t = (el.type || "text").toLowerCase();
+    // Text-ish input types only.  range / checkbox / radio / button bubble
+    // letter keys cleanly to the document handler.
+    return ["text", "search", "email", "url", "password", "number",
+            "tel", "date", "datetime-local", "month", "time", "week"]
+           .includes(t);
+  }
   return false;
 }
 
-document.addEventListener("keydown", (e) => {
+function _toggleShortcutsModal() {
+  const modal = document.getElementById("hotkey-help-modal");
+  if (!modal) return false;
+  if (modal.open) {
+    modal.close();
+  } else {
+    if (typeof modal.showModal === "function") {
+      modal.showModal();
+    } else {
+      // Older browsers: fall back to the open attribute (no focus trap).
+      modal.setAttribute("open", "");
+    }
+    // Focus the Close button explicitly — browsers vary on default focus.
+    const closeBtn = document.getElementById("btn-shortcuts-close");
+    if (closeBtn) {
+      try { closeBtn.focus(); } catch (_) {}
+    }
+  }
+  return true;
+}
+
+// Use window + capture-phase so hotkeys fire even when a focused element
+// (button, slider, custom widget) would otherwise consume / stop the
+// keydown event.  YouTube uses the same pattern.
+window.addEventListener("keydown", (e) => {
+  // Auto-repeat (key held) flooded shuffle/skip/mute clicks.  Single fire
+  // per physical keypress only.
+  if (e.repeat) return;
   // Don't hijack keys when the user is typing in a form field.
   if (_isTypingTarget(e.target)) return;
+  // Don't hijack keys inside the shortcuts dialog itself — Tab/Space
+  // there should be handled by the dialog (focus trap, button activation).
+  const modal = document.getElementById("hotkey-help-modal");
+  if (modal && modal.open && modal.contains(e.target)) {
+    // Still allow "?" / Esc to close the modal from inside.
+    if (e.key === "?" || e.key === "/") {
+      e.preventDefault();
+      _toggleShortcutsModal();
+    }
+    return;
+  }
   // Modifiers are usually the user invoking browser / NVDA shortcuts.
   if (e.ctrlKey || e.metaKey || e.altKey) return;
+  // Tablist owns its own arrow-key navigation (APG roving tabindex).
+  // Don't steal Up/Down when focus is on a tab.
+  const targetIsTab = e.target && e.target.getAttribute
+                      && e.target.getAttribute("role") === "tab";
 
   const key = e.key;
   let bumpVol = 0;
 
   switch (key) {
     case " ":          // Space (YouTube default)
+    case "Spacebar":
     case "k":
     case "K":
       btnPause.click();
@@ -3331,23 +3399,17 @@ document.addEventListener("keydown", (e) => {
       btnMute.click();
       break;
     case "ArrowUp":
+      if (targetIsTab) return;
       bumpVol = +5;
       break;
     case "ArrowDown":
+      if (targetIsTab) return;
       bumpVol = -5;
       break;
     case "?":
     case "/":
-      // Toggle the hotkey-help card (NVDA browse / focus modes both
-      // pass "/" through; "?" is Shift+/).  Falls back silently if the
-      // card isn't on the page.
-      const help = document.getElementById("hotkey-help-card");
-      if (help) {
-        help.open = !help.open;
-        try { help.scrollIntoView({ block: "nearest" }); } catch (_) {}
-      } else {
-        return;  // not our key
-      }
+      // "/" passes through both NVDA browse + focus modes; "?" is Shift+/.
+      if (!_toggleShortcutsModal()) return;
       break;
     default:
       return;  // not a hotkey, let the browser handle it
@@ -3418,49 +3480,11 @@ if ("mediaSession" in navigator) {
   navigator.mediaSession.setActionHandler("previoustrack", null);
 }
 
-// ----------------------------------------------------------------
-// Keyboard shortcuts (only fire when no input/select/textarea focused
-// so the Settings card and Search bar remain typeable).
-// ----------------------------------------------------------------
-
-document.addEventListener("keydown", (e) => {
-  const tgt = e.target;
-  const tag = (tgt && tgt.tagName) || "";
-  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-  if (e.ctrlKey || e.metaKey || e.altKey) return;
-  // Tablist owns its own arrow-key navigation; don't let the global
-  // shortcut handler steal Up/Down to nudge volume when focus is on
-  // a tab.
-  if (tgt && tgt.getAttribute && tgt.getAttribute("role") === "tab") return;
-
-  switch (e.key) {
-    case " ":
-    case "Spacebar":
-      e.preventDefault();
-      btnPause.click();
-      break;
-    case "n":
-    case "N":
-      e.preventDefault();
-      btnSkip.click();
-      break;
-    case "m":
-    case "M":
-      e.preventDefault();
-      btnMute.click();
-      break;
-    case "ArrowUp":
-      e.preventDefault();
-      volSlider.value = Math.min(100, parseInt(volSlider.value, 10) + 5);
-      volSlider.dispatchEvent(new Event("input"));
-      break;
-    case "ArrowDown":
-      e.preventDefault();
-      volSlider.value = Math.max(0, parseInt(volSlider.value, 10) - 5);
-      volSlider.dispatchEvent(new Event("input"));
-      break;
-  }
-});
+// (Legacy duplicate keydown handler removed -- the canonical hotkey
+//  handler is the window-capture-phase listener defined earlier.  Two
+//  handlers fired every key twice + the legacy version's blanket
+//  suppression on every INPUT killed Space/M when focus was on the
+//  volume slider.)
 
 // ----------------------------------------------------------------
 // Search

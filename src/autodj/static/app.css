@@ -665,3 +665,34 @@
     @media (prefers-reduced-motion: reduce) {
       #camelot-wheel .sector { transition: none; }
     }
+
+/* Hotkey help modal -------------------------------------------------- */
+
+#hotkey-help-modal {
+  background: var(--bg-card);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.25rem 1.5rem;
+  max-width: 32rem;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+#hotkey-help-modal::backdrop {
+  background: rgba(0, 0, 0, 0.55);
+}
+#hotkey-help-modal kbd {
+  /* Dark theme: light surface + dark text, ~10:1 contrast against the
+     #16213e card background (WCAG AA passes for both kbd-text-on-kbd-bg
+     and kbd-on-card surface). */
+  background: #f4f6fb;
+  color: #0f1626;
+  border: 1px solid #c0c8d4;
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  padding: 0.05em 0.4em;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.85em;
+  white-space: nowrap;
+}
+#hotkey-help-modal dt { font-weight: 600; }
+#hotkey-help-modal dd { margin: 0; }
