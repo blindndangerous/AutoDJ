@@ -1682,3 +1682,60 @@ class TestEffectiveCrossfadeSeconds:
             )
             == 4.0
         )
+
+
+class TestMinFxDurationCoverage:
+    """Every TransitionFx in the catalogue must have a min-duration entry,
+    OR be intentionally excluded (NONE / RANDOM / ROTATE meta-modes) plus
+    the legacy filter-only effects that don't need a min (highpass_sweep,
+    lowpass_sweep, cross_eq_swap, bitcrusher, flanger, pitch_swell,
+    pitch_fall, telephone, chorus, submerge, vinyl_wow, gate_stutter).
+    Catches drift between the Python CLI player + the JS browser player
+    when new effects ship.
+    """
+
+    # These either have meta semantics or apply over the standard fade
+    # window with no extension required.
+    _NO_MIN_NEEDED = frozenset(
+        {
+            "none",
+            "random",
+            "rotate",
+            "highpass_sweep",
+            "lowpass_sweep",
+            "cross_eq_swap",
+            "bitcrusher",
+            "flanger",
+            "pitch_swell",
+            "pitch_fall",
+            "telephone",
+            "chorus",
+            "submerge",
+            "vinyl_wow",
+            "gate_stutter",
+        }
+    )
+
+    def test_all_effects_have_min_or_are_excluded(self) -> None:
+        from autodj.player import Player
+        from autodj.transitions import TransitionFx
+
+        min_table = Player._MIN_FX_DURATION_S
+        missing = []
+        for fx in TransitionFx:
+            if fx.value in self._NO_MIN_NEEDED:
+                continue
+            if fx.value not in min_table:
+                missing.append(fx.value)
+        assert missing == [], (
+            f"_MIN_FX_DURATION_S missing entries for: {missing}.  Add them or "
+            f"document them in TestMinFxDurationCoverage._NO_MIN_NEEDED."
+        )
+
+    def test_min_durations_are_in_sane_range(self) -> None:
+        from autodj.player import Player
+
+        for name, secs in Player._MIN_FX_DURATION_S.items():
+            assert 0.5 <= secs <= 12.0, (
+                f"{name} min duration {secs}s outside sane DJ range [0.5, 12]"
+            )

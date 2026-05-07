@@ -3351,10 +3351,35 @@ function _toggleShortcutsModal() {
 // Use window + capture-phase so hotkeys fire even when a focused element
 // (button, slider, custom widget) would otherwise consume / stop the
 // keydown event.  YouTube uses the same pattern.
+//
+// Key-held latch: NVDA (and some IMEs) forward auto-repeat keydowns
+// without setting KeyboardEvent.repeat, so the e.repeat guard alone
+// missed bursts.  Track every physical keydown until its keyup; second
+// keydown for the same key is suppressed regardless of repeat flag.
+const _pressedHotkeys = new Set();
+window.addEventListener("keyup", (e) => {
+  _pressedHotkeys.delete(e.key);
+  // Modifier-aware aliases — e.g. Shift held on "?" produces "?", but
+  // releasing the letter without releasing Shift drops the lower-case
+  // sibling too.  Cheap to clear both.
+  if (e.key && e.key.length === 1) {
+    _pressedHotkeys.delete(e.key.toLowerCase());
+    _pressedHotkeys.delete(e.key.toUpperCase());
+  }
+}, true);
+// Window blur clears the latch — otherwise alt-tabbing while a key is
+// held would leave it permanently flagged as pressed.
+window.addEventListener("blur", () => _pressedHotkeys.clear());
+
 window.addEventListener("keydown", (e) => {
-  // Auto-repeat (key held) flooded shuffle/skip/mute clicks.  Single fire
-  // per physical keypress only.
+  // Auto-repeat (key held) flooded shuffle/skip/mute clicks.  Two
+  // belt-and-braces guards because some screen readers / IMEs forward
+  // repeats without setting e.repeat:
+  //   1. Native repeat flag.
+  //   2. Press-latch -- second keydown w/o intervening keyup is dropped.
   if (e.repeat) return;
+  if (_pressedHotkeys.has(e.key)) return;
+  _pressedHotkeys.add(e.key);
   // Don't hijack keys when the user is typing in a form field.
   if (_isTypingTarget(e.target)) return;
   // Don't hijack keys inside the shortcuts dialog itself — Tab/Space

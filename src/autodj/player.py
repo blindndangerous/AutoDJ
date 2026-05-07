@@ -1484,6 +1484,18 @@ class Player:
         "sidechain_pump": 4.0,  # 8 beats of pump @ 120 BPM
         "reverse_reverb": 3.0,  # swell-in needs time to build
         "air_horn": 3.0,  # full pitch sweep
+        # New effects shipped in feat/transitions + transitions-v2.
+        # Values mirror the JS table in app.js so CLI + browser feel
+        # identical (verified by tests/unit/test_player.py).
+        "vinyl_rewind": 3.5,  # slow musical reverse + pitch drop
+        "transformer": 2.5,  # syncopated 16-cps fader cuts
+        "dub_siren": 3.0,  # smooth sine riser w/ vibrato
+        "stutter_build": 3.0,  # accelerating gate 4 → 32 Hz
+        "wow_flutter": 2.5,  # pitch wobble + amplitude tremolo
+        "phaser": 3.0,  # 4-stage allpass cascade
+        "ring_modulator": 2.5,  # signal x 173 Hz sine carrier
+        "dub_delay": 4.0,  # long lowpass-feedback delay
+        "halftime": 3.0,  # tempo halve, pitch preserved
     }
 
     def _apply_transition_effect(
