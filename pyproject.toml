@@ -70,6 +70,7 @@ dev = [
     "pytest-mock>=3.14.0",
     "hypothesis>=6.100.0",    # property-based testing for vector math
     "pytest-asyncio>=1.0.0",  # async test support for FastAPI broadcast loop
+    "pytest-timeout>=2.3.0",  # default timeout so audio / playwright tests can't hang CI
 ]
 
 [project.scripts]
@@ -84,7 +85,7 @@ packages = ["src/autodj"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=autodj --cov-report=term-missing --basetemp=tmp"
+addopts = "--cov=autodj --cov-report=term-missing --basetemp=tmp --timeout=60"
 asyncio_mode = "auto"
 filterwarnings = [
     # Suppress DeprecationWarnings from FAISS SWIG bindings (third-party, not fixable)
@@ -178,6 +179,7 @@ DEP002 = [
     "pytest-cov",
     "pytest-mock",
     "pytest-asyncio",
+    "pytest-timeout",
     "hypothesis",
 ]
 # DEP003 -- imported but only declared as a transitive dep.  pydantic
@@ -211,4 +213,5 @@ dev = [
     "ruff>=0.15.10",
     "vulture>=2.16",  # dead-code detector — `uv run vulture src/autodj`
     "deptry>=0.20",   # dep declaration auditor — `uv run deptry src/autodj`
+    "xenon>=0.9",     # cyclomatic complexity gate — `uv run xenon src/autodj`
 ]
