@@ -114,8 +114,15 @@ function applyState(s) {
   const trackLabel = fmtTrack(s.current_track);
 
   if (trackKey !== lastTrackKey) {
-    // Track changed — update aria-live region so screen readers announce it
-    npAnnounce.textContent = trackLabel;
+    // Track changed -- update aria-live region so screen readers
+    // announce it.  Include BPM in the same announcement as the title
+    // so NVDA reads "<artist> -- <title>, 128 BPM" in one breath.  Key
+    // is already announced via #badges-announce 800 ms later
+    // (badges.js); doing both here would double-speak it.
+    const _bpmTail = s.current_track && s.current_track.bpm
+      ? `, ${Math.round(s.current_track.bpm)} BPM`
+      : "";
+    npAnnounce.textContent = trackLabel + _bpmTail;
     lastTrackKey = trackKey;
     // Update browser titlebar: "AutoDJ - Artist - Title - Album"
     const t = s.current_track;
