@@ -199,6 +199,67 @@ class TestCliConfigNotFound:
         result = CliRunner().invoke(cli, ["--config", self._missing(tmp_path), "index"])
         assert "Config not found" in result.output or "config" in result.output.lower()
 
+    def test_prune_exits_on_missing_config(self, tmp_path: Path) -> None:
+        result = CliRunner().invoke(cli, ["--config", self._missing(tmp_path), "prune"])
+        assert result.exit_code == 1
+
+    def test_enrich_exits_on_missing_config(self, tmp_path: Path) -> None:
+        result = CliRunner().invoke(cli, ["--config", self._missing(tmp_path), "enrich"])
+        assert result.exit_code == 1
+
+    def test_list_indexes_exits_on_missing_config(self, tmp_path: Path) -> None:
+        result = CliRunner().invoke(
+            cli,
+            ["--config", self._missing(tmp_path), "list-indexes"],
+        )
+        assert result.exit_code == 1
+
+    def test_prune_invalid_index_name_exits(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "c.toml"
+        cfg.write_text(
+            '[library]\nmusic_dir = "Z:/Music"\n'
+            '[index]\nindex_dir = "Z:/idx"\nmodel_dir = "models"\n'
+            "[playback]\ncrossfade_seconds = 3.0\nno_repeat_window = 50\n"
+            '[model]\nname = "OpenMuQ/MuQ-large-msd-iter"\n',
+            encoding="utf-8",
+        )
+        # Names with path separators / special chars are rejected.
+        result = CliRunner().invoke(
+            cli,
+            ["--config", str(cfg), "prune", "--name", "../bad"],
+        )
+        assert result.exit_code == 1
+        assert "Invalid" in result.output or "name" in result.output.lower()
+
+    def test_enrich_invalid_index_name_exits(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "c.toml"
+        cfg.write_text(
+            '[library]\nmusic_dir = "Z:/Music"\n'
+            '[index]\nindex_dir = "Z:/idx"\nmodel_dir = "models"\n'
+            "[playback]\ncrossfade_seconds = 3.0\nno_repeat_window = 50\n"
+            '[model]\nname = "OpenMuQ/MuQ-large-msd-iter"\n',
+            encoding="utf-8",
+        )
+        result = CliRunner().invoke(
+            cli,
+            ["--config", str(cfg), "enrich", "--name", "../escape"],
+        )
+        assert result.exit_code == 1
+
+    def test_enrich_no_beets_db_exits(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "c.toml"
+        # Note: no beets_db key in [library] section.
+        cfg.write_text(
+            '[library]\nmusic_dir = "Z:/Music"\n'
+            '[index]\nindex_dir = "Z:/idx"\nmodel_dir = "models"\n'
+            "[playback]\ncrossfade_seconds = 3.0\nno_repeat_window = 50\n"
+            '[model]\nname = "OpenMuQ/MuQ-large-msd-iter"\n',
+            encoding="utf-8",
+        )
+        result = CliRunner().invoke(cli, ["--config", str(cfg), "enrich"])
+        assert result.exit_code == 1
+        assert "beets" in result.output.lower()
+
 
 # ---------------------------------------------------------------------------
 # CLI commands — index-not-found exits with code 1

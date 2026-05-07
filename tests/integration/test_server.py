@@ -1257,6 +1257,65 @@ class TestMisc:
         assert resp.status_code == 200
         bridge.player._skip_event.set.assert_not_called()
 
+    def test_repick_next_replaces_next_without_advancing(self, bridge) -> None:
+        """Standby-deck error path: refresh next_track, leave current alone."""
+        from fastapi.testclient import TestClient
+
+        bridge.player._dry_run = True
+        prev_current = bridge.player._state.current_track
+        replacement = _make_entry(77)
+        bridge.player._pick_next.return_value = replacement
+
+        tc = TestClient(create_app(bridge))
+        resp = tc.post(
+            "/api/repick-next",
+            json={"blacklist": "/library/bad.flac"},
+        )
+        assert resp.status_code == 200
+        # Current track UNCHANGED -- this is the bug we fixed.
+        assert bridge.player._state.current_track is prev_current
+        # Next track REPLACED with the freshly-picked entry.
+        assert bridge.player._state.next_track is replacement
+        # Skip event NOT touched.
+        bridge.player._skip_event.set.assert_not_called()
+
+    def test_repick_next_no_body_works(self, bridge) -> None:
+        """Endpoint accepts empty / missing body without crashing."""
+        from fastapi.testclient import TestClient
+
+        bridge.player._dry_run = True
+        bridge.player._pick_next.return_value = _make_entry(7)
+
+        tc = TestClient(create_app(bridge))
+        resp = tc.post("/api/repick-next")
+        assert resp.status_code == 200
+
+    def test_repick_next_with_no_current_is_noop(self, bridge) -> None:
+        """No current track -> nothing to base similarity off, leave state."""
+        from fastapi.testclient import TestClient
+
+        bridge.player._dry_run = True
+        bridge.player._state.current_track = None
+        prev_next = bridge.player._state.next_track
+
+        tc = TestClient(create_app(bridge))
+        resp = tc.post("/api/repick-next")
+        assert resp.status_code == 200
+        assert bridge.player._state.next_track is prev_next
+        bridge.player._pick_next.assert_not_called()
+
+    def test_repick_next_pick_failure_clears_next(self, bridge) -> None:
+        """When _pick_next raises, next_track becomes None (graceful)."""
+        from fastapi.testclient import TestClient
+
+        bridge.player._dry_run = True
+        bridge.player._pick_next.side_effect = RuntimeError("FAISS empty")
+
+        tc = TestClient(create_app(bridge))
+        resp = tc.post("/api/repick-next", json={"blacklist": "/x.flac"})
+        assert resp.status_code == 200
+        assert bridge.player._state.next_track is None
+
     def test_advance_now_uses_queued_next(self, bridge) -> None:
         """queued_next (search -> Now / reseed_random) wins over next_track."""
         bridge.player._dry_run = True

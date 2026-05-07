@@ -220,6 +220,38 @@ class PlayerBridge:
         else:
             self.player._skip_event.set()
 
+    def repick_next(self, blacklist_path: str | None = None) -> None:
+        """Replace state.next_track without advancing current.
+
+        Used when the browser's standby deck fails to load the prefetched
+        next-track (bad codec, missing file, network drop).  Picking a
+        different next track lets the live track keep playing instead of
+        cascade-skipping the current one too.
+
+        Args:
+            blacklist_path: Path of the failed track — temporarily added
+                to recently-played so similarity won't immediately re-pick
+                it.  Pass None to just refresh from current.
+        """
+        p = self.player
+        state = p._state
+        cur = state.current_track
+        if cur is None:
+            return
+        # Best-effort blacklist: stuff the bad path into recently-played
+        # so the similarity engine skips it on the next pick.  Falls back
+        # silently if the helper isn't available on this player build.
+        if blacklist_path:
+            try:
+                state.recently_played.append(blacklist_path)
+            except Exception:
+                logger.debug("repick_next: blacklist append failed", exc_info=True)
+        try:
+            state.next_track = p._pick_next(cur)
+        except Exception:
+            logger.debug("repick_next: _pick_next failed", exc_info=True)
+            state.next_track = None
+
     def advance_now(self) -> None:
         """Synchronous track advance for headless / browser-driven mode.
 
@@ -1318,6 +1350,29 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
         broadcast cadence.
         """
         bridge.skip()
+        return JSONResponse(bridge.get_state())
+
+    @app.post("/api/repick-next")
+    async def api_repick_next(request: Request) -> JSONResponse:
+        """Replace next_track without advancing current.
+
+        Browser POSTs this when its standby deck fails to load the
+        prefetched next-track (bad codec, codec not supported on this
+        client, network drop).  Server picks a different next-track so
+        the currently-playing track keeps playing instead of being
+        cascade-skipped along with the unplayable upcoming.
+
+        Optional JSON body: ``{"blacklist": "path/that/failed.flac"}``
+        adds the failed path to recently-played so similarity skips it.
+        """
+        blacklist = None
+        try:
+            body = await request.json()
+            blacklist = body.get("blacklist") if isinstance(body, dict) else None
+        except (ValueError, TypeError):
+            # No JSON body or malformed payload — endpoint accepts either.
+            logger.debug("repick_next: no JSON body, blacklist not set")
+        bridge.repick_next(blacklist_path=blacklist)
         return JSONResponse(bridge.get_state())
 
     @app.post("/api/random-track")

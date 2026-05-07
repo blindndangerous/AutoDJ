@@ -2595,13 +2595,40 @@ for (const d of decks) {
     const path = d.path || "";
     const name = path.split(/[\\/]/).pop();
     if (name) msg += ` (${name})`;
-    // Auto-skip on ANY error — bad codec, missing file, network drop.
     // Aborted (code 1) is usually triggered by us tearing down a deck, so
-    // skip only when the affected deck is the active one.
+    // ignore those entirely — they don't represent a real playback failure.
+    if (e && e.code === 1) {
+      npAnnounce.textContent = msg;
+      return;
+    }
     const isActive = d === deckActive();
-    if ((!e || e.code !== 1) || isActive) {
+    if (isActive) {
+      // Active deck failed mid-playback — auto-advance.
       msg += " — auto-skipping.";
       fetch("/api/advance", { method: "POST" }).catch(() => {});
+    } else {
+      // Standby deck (the prefetched next track) failed to load.  Don't
+      // advance the live track — just ask the server for a different next
+      // track and let the live one keep playing.  Blacklist the bad path
+      // so similarity won't immediately re-pick it.
+      msg += " — picking a different next track.";
+      const body = path ? JSON.stringify({ blacklist: path }) : "{}";
+      fetch("/api/repick-next", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      }).then(r => r.ok ? r.json() : null).then(state => {
+        if (state) applyState(state);
+      }).catch(() => {});
+      // Clear cached prefetch path so timeupdate doesn't try to crossfade
+      // into the broken file again before the next WS state push.
+      _nextTrackPathCache = null;
+      // Clear the failing standby deck's source so it stops retrying.
+      try {
+        d.audio.removeAttribute("src");
+        d.audio.load();
+      } catch (_) {}
+      d.path = null;
     }
     npAnnounce.textContent = msg;
   });
@@ -2634,12 +2661,16 @@ for (const d of decks) {
       return;
     }
     // Silence detector — fire the crossfade EARLY when the active deck
-    // has gone quiet past the halfway mark.  Eliminates the long dead
-    // air at the end of fade-out tracks (or the silent run-in at the
-    // start of the next track, since prefetch loaded it already).
+    // has gone quiet at the very end of a fade-out tail.  Eliminates the
+    // long dead air at the end of some tracks.
+    //
+    // Tuned conservative (95 % of duration + 2 s continuous silence) to
+    // avoid cutting tracks short on intentional mid-song breakdowns or
+    // sparse passages.  Earlier 50 % + 0.6 s caused atmospheric / minimal
+    // tracks with quiet middles to crossfade prematurely.
     if (_silenceTriggerEnabled
         && d.analyser && _nextTrackPathCache
-        && d.audio.currentTime > dur * 0.5) {
+        && d.audio.currentTime > dur * 0.95) {
       const buf = new Float32Array(d.analyser.fftSize);
       d.analyser.getFloatTimeDomainData(buf);
       let sumSq = 0;
@@ -2648,7 +2679,7 @@ for (const d of decks) {
       // RMS threshold ≈ −60 dBFS — anything quieter is functionally silence.
       if (rms < 0.001) {
         d._silenceMs += 250;   // timeupdate fires ~4 Hz
-        if (d._silenceMs >= 600) {
+        if (d._silenceMs >= 2000) {
           d._silenceMs = 0;
           startCrossfade(_nextTrackPathCache, fadeSec);
         }
@@ -2754,8 +2785,21 @@ function applyBrowserPlaybackState(s) {
     const active = deckActive();
     const path = s.current_track ? s.current_track.path : null;
     if (path && active.path !== path && !crossfading) {
-      setSrcOnDeck(active, path);
-      playOnDeck(active);
+      // Three cases:
+      //   1. Initial load — active.path is null, just set + play.
+      //   2. Mid-playback w/ AudioContext — server changed current_track
+      //      unexpectedly (Shuffle button, media-session next, Up Next
+      //      "Now", server-side CLI advance).  Without a crossfade the
+      //      live track would HARD-CUT to the new one — jarring.  Run
+      //      the same client-side crossfade the regular skip path uses.
+      //   3. Mid-playback w/o AudioContext — first-click unlock hasn't
+      //      happened yet; can't crossfade, just set + play.
+      if (active.path && _ctx) {
+        startCrossfade(path, _crossfadeSecondsCache);
+      } else {
+        setSrcOnDeck(active, path);
+        playOnDeck(active);
+      }
     }
     // Gapless: pre-load next track on the standby deck as soon as the
     // server picks it.  By the time the crossfade fires, the browser
@@ -2782,11 +2826,24 @@ function applyBrowserPlaybackState(s) {
       if (!crossfading) deckActive().gain.gain.value = 0;
       if (s.is_paused) {
         suppressAdvance = true;
-        deckActive().audio.pause();
+        // Pause BOTH decks during a crossfade — pausing only the active
+        // (outgoing) deck would leave the incoming standby deck audible
+        // and the user's pause click would feel like a duck rather than
+        // a stop.  Off-crossfade, only the active deck is playing.
+        for (const d of decks) {
+          try { d.audio.pause(); } catch (_) {}
+        }
       }
     } else {
+      // Resume.  Active deck must always start playing again; standby is
+      // a no-op resume when not crossfading (paused but with no src in
+      // the steady state).  During a crossfade, both decks were paused
+      // so both must be unpaused or the incoming track stays silent.
       if (deckActive().audio.paused && playbackEnabled) {
         playOnDeck(deckActive());
+      }
+      if (crossfading && deckStandby().audio.paused && playbackEnabled) {
+        playOnDeck(deckStandby());
       }
       if (!crossfading) deckActive().gain.gain.value = _volume;
     }
@@ -3215,6 +3272,88 @@ volSlider.addEventListener("input", () => {
   volAnnounceTimer = setTimeout(() => {
     if (volAnnounce) volAnnounce.textContent = `Volume ${val}%.`;
   }, 250);
+});
+
+// ----------------------------------------------------------------
+// Keyboard shortcuts — YouTube-style transport control.
+// Active when focus is on the page chrome (NVDA focus mode passes
+// keys through to the browser, so these work alongside screen-reader
+// users).  Skipped when typing in inputs / contenteditable.
+// ----------------------------------------------------------------
+
+function _isTypingTarget(el) {
+  if (!el) return false;
+  const tag = el.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+  if (el.isContentEditable) return true;
+  return false;
+}
+
+document.addEventListener("keydown", (e) => {
+  // Don't hijack keys when the user is typing in a form field.
+  if (_isTypingTarget(e.target)) return;
+  // Modifiers are usually the user invoking browser / NVDA shortcuts.
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+  const key = e.key;
+  let bumpVol = 0;
+
+  switch (key) {
+    case " ":          // Space (YouTube default)
+    case "k":
+    case "K":
+      btnPause.click();
+      break;
+    case "n":
+    case "N":
+      btnSkip.click();
+      break;
+    case "s":
+    case "S":
+      // btnShuffle ref defined later in this file; guard with typeof.
+      if (typeof btnShuffle !== "undefined" && btnShuffle) btnShuffle.click();
+      break;
+    case "m":
+    case "M":
+      btnMute.click();
+      break;
+    case "ArrowUp":
+      bumpVol = +5;
+      break;
+    case "ArrowDown":
+      bumpVol = -5;
+      break;
+    case "?":
+    case "/":
+      // Toggle the hotkey-help card (NVDA browse / focus modes both
+      // pass "/" through; "?" is Shift+/).  Falls back silently if the
+      // card isn't on the page.
+      const help = document.getElementById("hotkey-help-card");
+      if (help) {
+        help.open = !help.open;
+        try { help.scrollIntoView({ block: "nearest" }); } catch (_) {}
+      } else {
+        return;  // not our key
+      }
+      break;
+    default:
+      return;  // not a hotkey, let the browser handle it
+  }
+
+  if (bumpVol !== 0) {
+    const cur = parseInt(volSlider.value, 10);
+    const next = Math.max(0, Math.min(100, cur + bumpVol));
+    if (next !== cur) {
+      volSlider.value = String(next);
+      // Synthesize an input event so the existing listener does the
+      // gain ramp + server POST + announce in one place.
+      volSlider.dispatchEvent(new Event("input"));
+    }
+  }
+
+  // Always swallow the key when we matched one — prevents the page
+  // from scrolling on Space, etc.
+  e.preventDefault();
 });
 
 // ----------------------------------------------------------------
