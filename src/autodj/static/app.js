@@ -2532,10 +2532,20 @@ function startCrossfade(nextPath, fadeSec) {
                     && typeof _nextTrackIntroEndCache === "number"
                     && _nextTrackIntroEndCache > 0;
   if (skipIntro) {
-    // Wait for the loaded-metadata event so currentTime can be set.
+    // Wait for the loaded-metadata event so currentTime can be set.  Clamp
+    // the seek target against the actual duration once metadata is known
+    // — server-side intro_end_s can outrun the real track length when the
+    // FAISS index has stale or wrong-length entries, and an out-of-range
+    // assignment seeks to the end + decode tail (silent crossfade).
     const seekTarget = _nextTrackIntroEndCache;
     const seekIfReady = () => {
-      try { standby.audio.currentTime = seekTarget; } catch (_) {}
+      try {
+        const dur = standby.audio.duration;
+        const safe = isFinite(dur) && dur > 1.0
+          ? Math.min(seekTarget, Math.max(0, dur - 1.0))
+          : seekTarget;
+        standby.audio.currentTime = safe;
+      } catch (_) {}
     };
     if (standby.audio.readyState >= 1) {
       seekIfReady();
@@ -2660,10 +2670,15 @@ for (const d of decks) {
     // For outro_fade + full_intro_outro, the fade should begin AT the
     // outgoing outro_start (when known) rather than just "fadeSec from
     // the end".  Triggers as soon as currentTime crosses outro_start.
+    // Outro_start_s > duration would never trigger and the fade-by-
+    // remaining-time fallback below catches it; reject obviously broken
+    // markers (negative / past-end) so we don't fall through to bad math.
+    const outroValid = typeof _currentOutroStartCache === "number"
+                       && _currentOutroStartCache > 0
+                       && _currentOutroStartCache < dur;
     const useMarker = (_transitionMode === "outro_fade"
                        || _transitionMode === "full_intro_outro")
-                      && typeof _currentOutroStartCache === "number"
-                      && _currentOutroStartCache > 0
+                      && outroValid
                       && _nextTrackPathCache;
     if (useMarker && d.audio.currentTime >= _currentOutroStartCache) {
       startCrossfade(_nextTrackPathCache, fadeSec);
@@ -3148,6 +3163,12 @@ function connectWS() {
     // Server gone — stop both decks immediately so audio doesn't keep
     // playing from the buffered <audio> elements after Ctrl+C on serve.
     stopAllDecks();
+    // Clear stale intro / outro markers so the next reconnect doesn't
+    // trigger a crossfade on a marker that no longer matches the
+    // currently-loaded track (race window during reconnect).
+    _currentOutroLenCache = null;
+    _currentOutroStartCache = null;
+    _nextTrackIntroEndCache = null;
     setTimeout(connectWS, 3000);
   };
 

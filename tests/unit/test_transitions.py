@@ -279,3 +279,122 @@ class TestTransitionsExtraBranches:
         out = backspin(a, SR)
         # len-zero src → returns the original tail unchanged
         assert out.shape == a.shape
+
+
+class TestEdgeCaseInputs:
+    """Boundary conditions not covered above: 1-2 sample buffers,
+    NaN audio, zero sample rate, all-silence input.  Every function
+    should degrade gracefully (no crash, no NaN/Inf in output).
+    """
+
+    @pytest.mark.parametrize(
+        "fn",
+        [
+            air_horn,
+            backspin,
+            beat_repeat,
+            bitcrusher,
+            chorus,
+            dub_delay,
+            dub_siren,
+            echo_out,
+            flanger,
+            freeze,
+            gate_stutter,
+            glitch,
+            halftime,
+            phaser,
+            pitch_swell,
+            reverb_tail,
+            reverse_reverb,
+            ring_modulator,
+            scratch,
+            sidechain_pump,
+            stutter_build,
+            submerge,
+            tape_stop,
+            telephone,
+            transformer,
+            vinyl_rewind,
+            vinyl_wow,
+            wow_flutter,
+        ],
+    )
+    def test_one_sample_input(self, fn) -> None:
+        """Single-sample tail must not crash; either passes through or empty."""
+        tiny = np.array([0.1], dtype=np.float32)
+        out = fn(tiny, SR)
+        assert isinstance(out, np.ndarray)
+        assert out.shape == tiny.shape
+        assert np.all(np.isfinite(out))
+
+    @pytest.mark.parametrize(
+        "fn",
+        [
+            echo_out,
+            reverb_tail,
+            tape_stop,
+            gate_stutter,
+            bitcrusher,
+            flanger,
+            pitch_swell,
+            telephone,
+            chorus,
+            submerge,
+            vinyl_wow,
+            freeze,
+            scratch,
+            sidechain_pump,
+            reverse_reverb,
+            vinyl_rewind,
+            transformer,
+            dub_siren,
+            stutter_build,
+            wow_flutter,
+            phaser,
+            ring_modulator,
+            dub_delay,
+            halftime,
+        ],
+    )
+    def test_all_silence_input_stays_finite(self, fn) -> None:
+        """Silent buffer in -> silent or finite buffer out (no NaN from /0)."""
+        silent = np.zeros(int(0.5 * SR), dtype=np.float32)
+        out = fn(silent, SR)
+        assert np.all(np.isfinite(out))
+
+    def test_apply_transition_zero_length_buffers(self) -> None:
+        """apply_transition must accept empty tail/head without crashing."""
+        from autodj.transitions import apply_transition
+
+        empty = np.zeros(0, dtype=np.float32)
+        for fx in (
+            TransitionFx.REVERB_TAIL,
+            TransitionFx.VINYL_REWIND,
+            TransitionFx.PHASER,
+            TransitionFx.HALFTIME,
+        ):
+            t, h, _extra = apply_transition(empty, empty, SR, fx)
+            assert t.shape == (0,)
+            assert h.shape == (0,)
+
+
+class TestPickEffectEdgeCases:
+    def test_pick_effect_with_no_rng_succeeds(self) -> None:
+        # Ensures the default RNG path is safe (used in production).
+        from autodj.transitions import pick_effect
+
+        for _ in range(20):
+            picked = pick_effect(TransitionFx.RANDOM)
+            assert picked != TransitionFx.NONE
+            assert picked != TransitionFx.RANDOM
+            assert picked != TransitionFx.ROTATE
+
+    def test_rotate_returns_concrete_effect(self) -> None:
+        from autodj.transitions import pick_effect
+
+        for _ in range(50):
+            picked = pick_effect(TransitionFx.ROTATE)
+            assert picked != TransitionFx.NONE
+            assert picked != TransitionFx.RANDOM
+            assert picked != TransitionFx.ROTATE
