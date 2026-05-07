@@ -12,6 +12,7 @@ from autodj.transitions import (
     bitcrusher,
     chorus,
     cross_eq_swap,
+    dub_siren,
     echo_out,
     flanger,
     freeze,
@@ -26,10 +27,14 @@ from autodj.transitions import (
     reverse_reverb,
     scratch,
     sidechain_pump,
+    stutter_build,
     submerge,
     tape_stop,
     telephone,
+    transformer,
+    vinyl_rewind,
     vinyl_wow,
+    wow_flutter,
 )
 
 SR = 22050
@@ -75,6 +80,11 @@ class TestPerEffectSanity:
             sidechain_pump,
             reverse_reverb,
             air_horn,
+            vinyl_rewind,
+            transformer,
+            dub_siren,
+            stutter_build,
+            wow_flutter,
         ],
     )
     def test_outgoing_tail_effect(self, fn) -> None:

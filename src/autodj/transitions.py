@@ -72,6 +72,11 @@ class TransitionFx(StrEnum):
     SIDECHAIN_PUMP = "sidechain_pump"  # rhythmic 4-on-the-floor amplitude pump
     REVERSE_REVERB = "reverse_reverb"  # reverse'd reverb tail swelling INTO the cut
     AIR_HORN = "air_horn"  # synth dub-siren riser layered with the music
+    VINYL_REWIND = "vinyl_rewind"  # slow musical reverse + pitch drop (vs harsh backspin)
+    TRANSFORMER = "transformer"  # tempo-cut DJ-fader transformer pattern
+    DUB_SIREN = "dub_siren"  # sine-wave reggae siren (smoother than air_horn)
+    STUTTER_BUILD = "stutter_build"  # accelerating gate frequency 4 Hz → 32 Hz
+    WOW_FLUTTER = "wow_flutter"  # combined pitch wobble + amplitude tremolo
     RANDOM = "random"  # pick uniformly at random per crossfade
     ROTATE = "rotate"  # cycle through the catalogue in order
 
@@ -103,6 +108,11 @@ _REAL_EFFECTS: list[TransitionFx] = [
     TransitionFx.SIDECHAIN_PUMP,
     TransitionFx.REVERSE_REVERB,
     TransitionFx.AIR_HORN,
+    TransitionFx.VINYL_REWIND,
+    TransitionFx.TRANSFORMER,
+    TransitionFx.DUB_SIREN,
+    TransitionFx.STUTTER_BUILD,
+    TransitionFx.WOW_FLUTTER,
 ]
 
 
@@ -1114,6 +1124,219 @@ def air_horn(
     return out
 
 
+def vinyl_rewind(
+    tail: np.ndarray,
+    sample_rate: int,
+) -> np.ndarray:
+    """Slow musical reverse + gradual pitch drop on the entire *tail*.
+
+    Distinct from :func:`backspin` (fast 2.0× reverse with friction decel)
+    and :func:`tape_stop` (forward slow-to-zero).  Vinyl rewind is the
+    musical sister: a smooth reverse from start, with the pitch sliding
+    down ~1 octave over the buffer length — sounds like rewinding a tape
+    on a Walkman to find the previous track, not a turntablist trick.
+
+    Args:
+        tail: Mono float32 audio.
+        sample_rate: Sample rate in Hz (unused — kept for API consistency).
+
+    Returns:
+        Float32 array of the same length as *tail*.
+    """
+    n = len(tail)
+    if n < 2:
+        return tail
+    # Reverse the buffer, then resample with a rate sliding 1.0 → 0.5
+    # (pitch drops one octave).  The resampling shortens output if rate < 1
+    # so we read the end twice if needed.
+    rev = tail[::-1]
+    t = np.linspace(0.0, 1.0, n, dtype=np.float32)
+    rate = (1.0 - 0.5 * t).astype(np.float32)
+    pos = np.cumsum(rate)
+    if pos[-1] > 0:
+        pos = pos * ((n - 1) / pos[-1])
+    idx = pos.astype(np.int32)
+    np.clip(idx, 0, n - 1, out=idx)
+    out = rev[idx].astype(np.float32)
+    # Gentle fade-out over last 0.1 s so the rewind doesn't end abruptly
+    fade_n = min(int(0.1 * sample_rate), n // 8)
+    if fade_n > 0:
+        out[-fade_n:] *= np.linspace(1.0, 0.0, fade_n, dtype=np.float32)
+    return out
+
+
+def transformer(
+    tail: np.ndarray,
+    sample_rate: int,
+    cuts_per_second: float = 16.0,
+) -> np.ndarray:
+    """Rapid amplitude cuts mimicking the DJ "transformer" fader technique.
+
+    Differs from :func:`gate_stutter` (uniform duty cycle) — transformer
+    uses musical subdivisions: pattern of [open, cut, open, cut-cut,
+    open, cut] across 8 subdivisions so the rhythm syncopates instead of
+    droning.  16 cps ≈ 16th notes at 120 BPM.
+
+    Args:
+        tail: Mono float32 audio.
+        sample_rate: Sample rate in Hz.
+        cuts_per_second: Subdivision rate.
+
+    Returns:
+        Float32 array of the same length as *tail*.
+    """
+    n = len(tail)
+    if n == 0 or cuts_per_second <= 0:
+        return tail
+    cycle = max(2, int(sample_rate / cuts_per_second))
+    # Pattern: 1 = open, 0 = cut.  Length 8 — syncopated.
+    pattern = np.array([1, 0, 1, 0, 0, 1, 0, 1], dtype=np.float32)
+    out = np.zeros_like(tail, dtype=np.float32)
+    pat_len = len(pattern)
+    for i, start in enumerate(range(0, n, cycle)):
+        end = min(n, start + cycle)
+        gain = pattern[i % pat_len]
+        if gain > 0:
+            out[start:end] = tail[start:end]
+    # 32-sample fade on each open block to avoid clicks
+    fade = min(32, cycle // 4)
+    if fade > 0:
+        env = np.linspace(0.0, 1.0, fade, dtype=np.float32)
+        for i, start in enumerate(range(0, n, cycle)):
+            if pattern[i % pat_len] <= 0:
+                continue
+            end = min(n, start + fade)
+            if end > start:
+                out[start:end] *= env[: end - start]
+    return out
+
+
+def dub_siren(
+    tail: np.ndarray,
+    sample_rate: int,
+) -> np.ndarray:
+    """Reggae-style sine siren riser (smoother than :func:`air_horn`).
+
+    Air-horn uses a tanh-of-sine square-ish horn at 220-880 Hz with a hard
+    fade-out.  Dub siren is a pure sine with vibrato (5 Hz, ±15 cents)
+    sweeping 440 → 1760 Hz with a slow fade-in and no abrupt cut — sits
+    behind the music rather than crashing on top.
+
+    Args:
+        tail: Mono float32 audio.
+        sample_rate: Sample rate in Hz.
+
+    Returns:
+        Float32 array of the same length as *tail*.
+    """
+    n = len(tail)
+    if n == 0:
+        return tail
+    pos = np.arange(n, dtype=np.float32) / max(1, n - 1)
+    # Pitch sweep with vibrato
+    base_freq = 440.0 * (4.0**pos)  # exponential 440 → 1760 Hz
+    vibrato = 0.0087 * np.sin(2 * np.pi * 5.0 * np.arange(n) / sample_rate)
+    freq = base_freq * (1.0 + vibrato.astype(np.float32))
+    phase = np.cumsum(2 * np.pi * freq / sample_rate)
+    siren = np.sin(phase).astype(np.float32)
+    # Slow fade-in over first half, hold; tail untouched at end
+    env = np.minimum(1.0, 2.0 * pos).astype(np.float32)
+    siren *= env * 0.25  # peak ~0.25 — sits behind music
+    out = (tail + siren).astype(np.float32)
+    np.clip(out, -1.0, 1.0, out=out)
+    return out
+
+
+def stutter_build(
+    tail: np.ndarray,
+    sample_rate: int,
+    start_hz: float = 4.0,
+    end_hz: float = 32.0,
+) -> np.ndarray:
+    """Accelerating amplitude gate — frequency rises across the buffer.
+
+    :func:`gate_stutter` runs at fixed Hz.  Stutter-build accelerates from
+    *start_hz* to *end_hz* (e.g. 4 → 32 Hz) so the chops get faster and
+    faster as the transition approaches — classic build-up tension.
+
+    Args:
+        tail: Mono float32 audio.
+        sample_rate: Sample rate in Hz.
+        start_hz: Initial gate rate.
+        end_hz: Final gate rate.
+
+    Returns:
+        Float32 array of the same length as *tail*.
+    """
+    n = len(tail)
+    if n == 0 or start_hz <= 0 or end_hz <= 0:
+        return tail
+    # Instantaneous gate frequency rising linearly
+    t = np.arange(n, dtype=np.float32) / sample_rate
+    freq = start_hz + (end_hz - start_hz) * (np.arange(n) / max(1, n - 1))
+    # Phase = integral of frequency.  When phase wraps past 1.0 we toggle
+    # the gate state — alternating open / closed cells of varying width.
+    phase = np.cumsum(freq / sample_rate)
+    # Keep the open half of each cycle (50 % duty)
+    cell = (phase * 2).astype(np.int32)
+    open_mask = (cell % 2 == 0).astype(np.float32)
+    # 32-sample crossfades between cells to avoid clicks: smooth the mask
+    if n > 64:
+        kernel = np.ones(32, dtype=np.float32) / 32.0
+        open_mask = np.convolve(open_mask, kernel, mode="same").astype(np.float32)
+    out = (tail * open_mask).astype(np.float32)
+    del t  # silence unused-var lint
+    return out
+
+
+def wow_flutter(
+    tail: np.ndarray,
+    sample_rate: int,
+    wow_hz: float = 1.5,
+    flutter_hz: float = 8.0,
+    pitch_depth: float = 0.04,
+    amp_depth: float = 0.15,
+) -> np.ndarray:
+    """Combined pitch wobble + amplitude tremolo (worn-out cassette feel).
+
+    :func:`vinyl_wow` modulates pitch only (drunk turntable).  Wow-flutter
+    layers two LFOs:
+
+    * Wow (slow, 1.5 Hz, ±4 % pitch) — turntable speed irregularity.
+    * Flutter (fast, 8 Hz, 15 % amplitude tremolo) — tape-head head-gap noise.
+
+    Together they sound like a tape that's been left in a hot car.
+
+    Args:
+        tail: Mono float32 audio.
+        sample_rate: Sample rate in Hz.
+        wow_hz: Pitch-LFO frequency.
+        flutter_hz: Amplitude-LFO frequency.
+        pitch_depth: Maximum pitch deviation (fractional).
+        amp_depth: Tremolo depth (0 = none, 1 = full silence on troughs).
+
+    Returns:
+        Float32 array of the same length as *tail*.
+    """
+    n = len(tail)
+    if n == 0:
+        return tail
+    t = np.arange(n, dtype=np.float32) / sample_rate
+    # Variable-rate read for pitch wobble
+    rate = 1.0 + pitch_depth * np.sin(2 * np.pi * wow_hz * t)
+    pos = np.cumsum(rate.astype(np.float32))
+    if pos[-1] > 0:
+        pos = pos * ((n - 1) / pos[-1])
+    idx = pos.astype(np.int32)
+    np.clip(idx, 0, n - 1, out=idx)
+    pitched = tail[idx].astype(np.float32)
+    # Amplitude tremolo
+    tremolo = (1.0 - amp_depth) + amp_depth * np.sin(2 * np.pi * flutter_hz * t).astype(np.float32)
+    out = (pitched * tremolo).astype(np.float32)
+    np.clip(out, -1.0, 1.0, out=out)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
@@ -1208,6 +1431,21 @@ def apply_transition(
 
     if effect == TransitionFx.AIR_HORN:
         return air_horn(tail, sample_rate), head, empty_extra
+
+    if effect == TransitionFx.VINYL_REWIND:
+        return vinyl_rewind(tail, sample_rate), head, empty_extra
+
+    if effect == TransitionFx.TRANSFORMER:
+        return transformer(tail, sample_rate), head, empty_extra
+
+    if effect == TransitionFx.DUB_SIREN:
+        return dub_siren(tail, sample_rate), head, empty_extra
+
+    if effect == TransitionFx.STUTTER_BUILD:
+        return stutter_build(tail, sample_rate), head, empty_extra
+
+    if effect == TransitionFx.WOW_FLUTTER:
+        return wow_flutter(tail, sample_rate), head, empty_extra
 
     if effect == TransitionFx.NOISE_DROP:
         # Synthesised noise that crests at the start and falls/dimms.

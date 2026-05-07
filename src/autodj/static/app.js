@@ -187,7 +187,18 @@ function applyState(s) {
   }
   const pct = dur > 0 ? Math.min(100, (elapsed / dur) * 100) : 0;
   progressFill.style.width = pct.toFixed(1) + "%";
-  progressLbl.textContent  = `${fmtTime(elapsed)} / ${fmtTime(dur)}`;
+  const timeText = `${fmtTime(elapsed)} / ${fmtTime(dur)}`;
+  progressLbl.textContent  = timeText;
+  // A11y C1: expose progressbar value + valuetext so NVDA users can query
+  // track position (insert+T / NVDA+Tab).  pct is 0–100 — matches valuemax=100.
+  const progressTrack = document.getElementById("progress-track");
+  if (progressTrack) {
+    progressTrack.setAttribute("aria-valuenow", pct.toFixed(0));
+    progressTrack.setAttribute(
+      "aria-valuetext",
+      `${fmtTime(elapsed)} of ${fmtTime(dur)}`
+    );
+  }
 
   // Snapshot for first-click unlock branch in btnPause handler
   _lastBrowserPlayback = !!s.browser_playback;
@@ -197,19 +208,24 @@ function applyState(s) {
   //   2. Browser-playback mode, audio not yet unlocked \u2192 "Play", enabled
   //      (clicking unlocks AudioContext + starts deck)
   //   3. Playing or paused \u2192 "Pause" / "Resume" toggle
-  // No aria-pressed \u2014 the visible label is the state.
+  // A11y C2 (v5.4.0 audit): aria-pressed updates atomically with the
+  // glyph + label so NVDA never reads stale state when one of the three
+  // attributes lags.  pressed=true means "currently playing".
   const hasTrack = s.current_track != null;
   if (!hasTrack) {
     btnPause.disabled = true;
     btnPause.innerHTML = '<span aria-hidden="true">\u25B6</span> Play';
+    btnPause.setAttribute("aria-pressed", "false");
   } else if (s.browser_playback && !playbackEnabled) {
     btnPause.disabled = false;
     btnPause.innerHTML = '<span aria-hidden="true">\u25B6</span> Play';
+    btnPause.setAttribute("aria-pressed", "false");
   } else {
     btnPause.disabled = false;
     btnPause.innerHTML = s.is_paused
       ? '<span aria-hidden="true">\u25B6</span> Resume'
       : '<span aria-hidden="true">\u23F8</span> Pause';
+    btnPause.setAttribute("aria-pressed", s.is_paused ? "false" : "true");
   }
 
   // Volume — server stores the perceptual *gain* (post-curve), so invert
@@ -1128,7 +1144,8 @@ function _resolveTransition(name) {
     "telephone",
     "backspin", "forward_spin", "chorus", "submerge", "vinyl_wow",
     "freeze", "glitch",
-    "scratch", "beat_repeat", "sidechain_pump", "reverse_reverb", "air_horn"];
+    "scratch", "beat_repeat", "sidechain_pump", "reverse_reverb", "air_horn",
+    "vinyl_rewind", "transformer", "dub_siren", "stutter_build", "wow_flutter"];
   if (name === "random") return real[Math.floor(Math.random() * real.length)];
   if (name === "rotate") {
     _rotateCursor = (_rotateCursor + 1) % real.length;
@@ -1233,7 +1250,7 @@ async function _decodeFor(path) {
   return buf;
 }
 
-function _doSpin(ctx, outDeck, t0, fadeSec, reverse, teardowns) {
+function _doSpin(ctx, outDeck, t0, fadeSec, reverse, teardowns, slow = false) {
   // Real reverse / push-forward via decoded AudioBuffer + AudioBufferSource.
   // Critical detail: the buffer source routes DIRECT to ctx.destination,
   // bypassing deck.gain — otherwise the crossfade ramp silences the spin
@@ -1304,7 +1321,11 @@ function _doSpin(ctx, outDeck, t0, fadeSec, reverse, teardowns) {
     }
     bufSrc = ctx.createBufferSource();
     bufSrc.buffer = chunk;
-    if (reverse) {
+    if (reverse && slow) {
+      // vinyl_rewind: slow musical reverse 1.0 → 0.5 (one-octave drop)
+      bufSrc.playbackRate.setValueAtTime(1.0, t0);
+      bufSrc.playbackRate.linearRampToValueAtTime(0.5, t0 + spinSec);
+    } else if (reverse) {
       bufSrc.playbackRate.setValueAtTime(2.0, t0);
       bufSrc.playbackRate.linearRampToValueAtTime(0.05, t0 + spinSec);
     } else {
@@ -1414,6 +1435,11 @@ const _MIN_FX_DURATION_S = {
   sidechain_pump: 4.0,
   reverse_reverb: 3.0,
   air_horn:       3.0,
+  vinyl_rewind:   3.5,
+  transformer:    2.5,
+  dub_siren:      3.0,
+  stutter_build:  3.0,
+  wow_flutter:    2.5,
 };
 
 // Per-effect fraction of the outgoing track's *outro* the effect should
@@ -1449,6 +1475,11 @@ const _OUTRO_FRACTION = {
   air_horn:       0.25,
   backspin:       0.45,
   forward_spin:   0.45,
+  vinyl_rewind:   0.55,
+  transformer:    0.45,
+  dub_siren:      0.30,
+  stutter_build:  0.50,
+  wow_flutter:    0.65,
 };
 const _MAX_FX_DURATION_S = 12.0;
 const _ABS_MIN_FX_DURATION_S = 1.0;
@@ -2202,6 +2233,132 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
       try { audio.preservesPitch = prevPreserve; } catch (_) {}
     });
   }
+  // -------- vinyl_rewind: slow musical reverse + pitch drop --------
+  else if (effect === "vinyl_rewind") {
+    // Distinct from backspin (fast 2.0×→0.05× friction).  Vinyl-rewind is
+    // a smooth 1.0×→0.5× reverse — sounds like rewinding a Walkman tape
+    // to find the previous track, not a turntablist trick.
+    _doSpin(ctx, outDeck, t0, fadeSec, /*reverse=*/true, teardowns, /*slow=*/true);
+  }
+  // -------- transformer: rapid tempo-cut DJ fader pattern --------
+  else if (effect === "transformer") {
+    // Syncopated [open, cut, open, cut, cut, open, cut, open] pattern at
+    // ~16 cps (16th notes @ 120 BPM).  Differs from gate_stutter (uniform
+    // duty cycle) — feels like a DJ throwing the crossfader.
+    const wrapper = ctx.createGain();
+    wrapper.gain.setValueAtTime(1, t0);
+    const pattern = [1, 0, 1, 0, 0, 1, 0, 1];
+    const cps = 16;
+    const cycle = 1 / cps;
+    let i = 0;
+    for (let t = t0; t < tEnd; t += cycle) {
+      const open = pattern[i % pattern.length];
+      // Tiny ramps avoid clicks on the gate edges.
+      wrapper.gain.setValueAtTime(open ? 1 : 0, t);
+      wrapper.gain.linearRampToValueAtTime(open ? 1 : 0, t + Math.min(0.005, cycle * 0.1));
+      i++;
+    }
+    wrapper.gain.setValueAtTime(1, tEnd);
+    _routeThrough(outDeck, wrapper);
+    wrapper.connect(outDeck.gain);
+    teardowns.push(() => {
+      try { wrapper.disconnect(); } catch (_) {}
+      _restoreDirect(outDeck);
+    });
+  }
+  // -------- dub_siren: smooth sine siren with vibrato --------
+  else if (effect === "dub_siren") {
+    // Distinct from air_horn (square-ish 220→880 Hz fast horn).  Dub siren
+    // is a sine 440 → 1760 Hz with 5 Hz vibrato and slow fade-in — sits
+    // BEHIND the music rather than crashing on top.
+    const osc = ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(440, t0);
+    osc.frequency.exponentialRampToValueAtTime(1760, tEnd);
+    // Vibrato: second oscillator modulates frequency
+    const vibLfo = ctx.createOscillator();
+    vibLfo.type = "sine";
+    vibLfo.frequency.value = 5;
+    const vibGain = ctx.createGain();
+    vibGain.gain.value = 8;  // ~15 cents at 1 kHz
+    vibLfo.connect(vibGain); vibGain.connect(osc.frequency);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0, t0);
+    g.gain.linearRampToValueAtTime(_volume * 0.25, t0 + fadeSec * 0.5);
+    g.gain.setValueAtTime(_volume * 0.25, tEnd - 0.2);
+    g.gain.linearRampToValueAtTime(0, tEnd);
+    osc.connect(g); g.connect(ctx.destination);
+    osc.start(t0); vibLfo.start(t0);
+    osc.stop(tEnd + 0.05); vibLfo.stop(tEnd + 0.05);
+    teardowns.push(() => {
+      try { osc.stop(); vibLfo.stop(); } catch (_) {}
+      _disconnectAll(osc, vibLfo, vibGain, g);
+    });
+  }
+  // -------- stutter_build: accelerating gate freq 4 Hz → 32 Hz --------
+  else if (effect === "stutter_build") {
+    // Differs from gate_stutter (8 → 16 Hz) and transformer (fixed 16 cps
+    // syncopated).  Rate ramps from 4 Hz at fade start to 32 Hz at the
+    // cut — classic build-up tension.
+    const wrapper = ctx.createGain();
+    wrapper.gain.setValueAtTime(1, t0);
+    let t = t0;
+    let elapsed = 0;
+    while (t < tEnd) {
+      // Linear interpolation of rate across the fade
+      const frac = elapsed / Math.max(0.001, fadeSec);
+      const rate = 4 + (32 - 4) * Math.min(1, frac);
+      const cycle = 1 / rate;
+      // 50% duty: half open, half closed.  Tiny ramp to avoid clicks.
+      wrapper.gain.setValueAtTime(1, t);
+      wrapper.gain.setValueAtTime(0, t + cycle * 0.5);
+      t += cycle;
+      elapsed += cycle;
+    }
+    wrapper.gain.setValueAtTime(1, tEnd);
+    _routeThrough(outDeck, wrapper);
+    wrapper.connect(outDeck.gain);
+    teardowns.push(() => {
+      try { wrapper.disconnect(); } catch (_) {}
+      _restoreDirect(outDeck);
+    });
+  }
+  // -------- wow_flutter: pitch wobble + amplitude tremolo --------
+  else if (effect === "wow_flutter") {
+    // vinyl_wow modulates pitch only.  wow_flutter adds amplitude tremolo
+    // for a worn-cassette feel: slow 1.5 Hz wow + fast 8 Hz flutter trem.
+    const audio = outDeck.audio;
+    const prevPreserve = audio.preservesPitch !== false;
+    try { audio.preservesPitch = false; } catch (_) {}
+    // Amplitude tremolo via gain node in the audio path.
+    const trem = ctx.createGain();
+    trem.gain.setValueAtTime(1, t0);
+    const tremLfo = ctx.createOscillator();
+    tremLfo.type = "sine";
+    tremLfo.frequency.value = 8;
+    const tremDepth = ctx.createGain();
+    tremDepth.gain.value = 0.15;  // ±15 % amplitude
+    tremLfo.connect(tremDepth); tremDepth.connect(trem.gain);
+    _routeThrough(outDeck, trem); trem.connect(outDeck.gain);
+    tremLfo.start(t0); tremLfo.stop(tEnd + 0.05);
+    // Pitch wobble via setInterval (matches vinyl_wow pattern).
+    const startMs = performance.now();
+    const durMs = fadeSec * 1000;
+    const iv = setInterval(() => {
+      const t = (performance.now() - startMs) / durMs;
+      if (t >= 1) { clearInterval(iv); try { audio.playbackRate = 1.0; } catch (_) {} return; }
+      const phase = Math.sin(2 * Math.PI * 1.5 * t * fadeSec);
+      try { audio.playbackRate = 1.0 + 0.04 * phase; } catch (_) {}
+    }, 16);
+    teardowns.push(() => {
+      clearInterval(iv);
+      try { audio.playbackRate = 1.0; } catch (_) {}
+      try { audio.preservesPitch = prevPreserve; } catch (_) {}
+      try { tremLfo.stop(); } catch (_) {}
+      _disconnectAll(trem, tremLfo, tremDepth);
+      _restoreDirect(outDeck);
+    });
+  }
 
   return tearAll;
 }
@@ -2807,9 +2964,11 @@ btnPause.addEventListener("click", async () => {
     const res  = await fetch("/api/pause", { method: "POST" });
     const data = await res.json();
     const isPaused = data.paused;
+    // A11y C2: glyph + label + aria-pressed updated together.
     btnPause.innerHTML = isPaused
       ? '<span aria-hidden="true">\u25B6</span> Resume'
       : '<span aria-hidden="true">\u23F8</span> Pause';
+    btnPause.setAttribute("aria-pressed", isPaused ? "false" : "true");
   } catch (_) { /* ignore \u2014 next WS state push will reconcile */ }
 });
 

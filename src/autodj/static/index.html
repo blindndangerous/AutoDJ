@@ -92,10 +92,19 @@
     <div id="badges-announce" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
 
     <!-- Fix 3: removed role="img" which suppresses inner aria-live regions -->
+    <!-- A11y C1 (v5.4.0 audit): progress bar exposes valuenow/valuetext
+         so NVDA users can query track position with NVDA+Tab/insert-T.
+         Sighted progress-fill div remains decorative. -->
     <div id="progress-bar-wrap">
-      <div id="progress-bar-label">0:00 / 0:00</div>
-      <div id="progress-track" aria-hidden="true">
-        <div id="progress-fill"></div>
+      <div id="progress-bar-label" aria-hidden="true">0:00 / 0:00</div>
+      <div id="progress-track"
+           role="progressbar"
+           aria-label="Track position"
+           aria-valuemin="0"
+           aria-valuemax="100"
+           aria-valuenow="0"
+           aria-valuetext="0:00 of 0:00">
+        <div id="progress-fill" aria-hidden="true"></div>
         <!-- Cue markers overlay decoratively on the progress bar.
              Type + time is announced via #badges-announce below so this
              div stays decoration-only. -->
@@ -112,7 +121,10 @@
     <div role="toolbar" aria-label="Playback controls">
       <div class="controls-row">
         <!-- Fix 2: emoji wrapped in aria-hidden so screen readers don't double-announce -->
+        <!-- A11y C2 (v5.4.0 audit): aria-pressed exposes toggle state.
+             JS must update aria-pressed atomically with glyph + label. -->
         <button id="btn-pause"
+                aria-pressed="false"
                 disabled
                 title="Pause or resume playback">
           <span aria-hidden="true">▶</span> Play
@@ -256,6 +268,11 @@
           <option value="sidechain_pump">sidechain pump</option>
           <option value="reverse_reverb">reverse reverb (swell-in)</option>
           <option value="air_horn">air horn (dub siren)</option>
+          <option value="vinyl_rewind">vinyl rewind (slow musical reverse)</option>
+          <option value="transformer">transformer (DJ-fader cut pattern)</option>
+          <option value="dub_siren">dub siren (smooth sine riser)</option>
+          <option value="stutter_build">stutter build (accelerating gate)</option>
+          <option value="wow_flutter">wow + flutter (worn-cassette feel)</option>
           <option value="random">random</option>
           <option value="rotate">rotate</option>
         </select>
@@ -288,6 +305,11 @@
         <strong>sidechain pump</strong> rhythmic 4-on-the-floor amplitude duck @ 120 BPM;
         <strong>reverse reverb</strong> reverse'd reverb tail that swells INTO the cut;
         <strong>air horn</strong> synth dub-siren with 220-880 Hz pitch sweep, layered with the music.
+        <strong>vinyl rewind</strong> slow musical reverse with one-octave pitch drop (smoother than backspin);
+        <strong>transformer</strong> rapid 16-cps DJ-fader cut pattern with syncopated rhythm;
+        <strong>dub siren</strong> sine 440-1760 Hz riser with 5 Hz vibrato (sits behind the music vs air horn's crash);
+        <strong>stutter build</strong> gate frequency accelerates 4 Hz → 32 Hz across the fade for tension;
+        <strong>wow + flutter</strong> 1.5 Hz pitch wobble + 8 Hz tremolo (worn-cassette feel, distinct from vinyl wow's pitch-only).
         <strong>random</strong> picks one per crossfade;
         <strong>rotate</strong> cycles through every effect in order.
       </span>
@@ -626,13 +648,17 @@
       </div>
 
       <!-- Status badge + streamed log output -->
+      <!-- A11y C3 (v5.4.0 audit): #library-log streams every line of a
+           long-running subprocess (indexer, prune, etc).  role=log +
+           aria-live=polite would fire continuous NVDA announcements
+           drowning out now-playing/queue/lyrics regions.  Removed the
+           live-region hooks — #lib-job-status above announces start /
+           progress / finish in throttled summary form, log content stays
+           visually scrollable + tab-focusable but silent for AT. -->
       <h3 id="library-log-heading">Output</h3>
       <p id="lib-job-status" aria-live="polite" aria-atomic="true">Idle.</p>
       <output id="library-log"
-              role="log"
               aria-labelledby="library-log-heading"
-              aria-live="polite"
-              aria-atomic="false"
               tabindex="0"
               style="display:block;background:#0f1626;color:#cce0ff;
                      padding:0.5rem;border-radius:var(--radius);
