@@ -119,6 +119,15 @@ btnEqReset.addEventListener("click", () => {
 export let playbackEnabled = false;
 export let suppressAdvance = false;   // gate spurious advance posts during programmatic actions
 export let _lastBrowserPlayback = false;  // mirror of state.browser_playback for click handlers
+
+// Dependency-injected state applier.  app.js defines applyState (it
+// orchestrates badges / lyrics / queue / settings panels which live in
+// app.js's closure) and registers it via setApplyState() at startup.
+// Audio engine never imports app.js (would be a circular import) and
+// never references the bare identifier (would be a ReferenceError on
+// the /api/repick-next + unlockAndPlay paths).
+let _applyState = null;
+export function setApplyState(fn) { _applyState = fn; }
 const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent || "");
 
 if (isIOS) {
@@ -1974,7 +1983,7 @@ for (const d of decks) {
         headers: { "Content-Type": "application/json" },
         body,
       }).then(r => r.ok ? r.json() : null).then(state => {
-        if (state) applyState(state);
+        if (state && _applyState) _applyState(state);
       }).catch(() => {});
       // Clear cached prefetch path so timeupdate doesn't try to crossfade
       // into the broken file again before the next WS state push.
@@ -2125,7 +2134,7 @@ export async function unlockAndPlay() {
   await playOnDeck(deckActive());
   playbackEnabled = true;
   setVolume(_volume);   // apply current slider value
-  applyState(state);    // refresh UI from /api/status
+  if (_applyState) _applyState(state);    // refresh UI from /api/status
 }
 
 export function applyBrowserPlaybackState(s) {

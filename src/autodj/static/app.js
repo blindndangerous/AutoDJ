@@ -692,7 +692,14 @@ import {
   _crossfadeSecondsCache, _nextTrackPathCache,
   _beatmatchOnSkip, crossfading,
   setLastBrowserPlayback,
+  setApplyState,
 } from "./modules/audio-engine.js";
+
+// Register applyState with the audio engine so /api/repick-next +
+// unlockAndPlay can refresh the UI without the engine reaching back
+// into app.js's scope.  Module-top so it lands before any user gesture
+// can invoke unlockAndPlay.
+setApplyState(applyState);
 
 
 
