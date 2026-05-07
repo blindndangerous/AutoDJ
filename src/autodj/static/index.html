@@ -808,6 +808,33 @@
 <div id="vol-announce" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div>
 </main>
 
+<!--
+  Footer build stamp -- so a user can verify which commit + bundle the
+  server is actually serving (browser cache vs. fresh build).  Bare
+  <footer> as a direct child of <body> implicitly maps to the
+  contentinfo landmark; no role attribute needed.
+
+  Separators are aria-hidden middle-dots in their own spans, per
+  accessibility-lead guidance: NVDA reads "middle dot" by default and
+  JAWS varies, so the visible glyph is decorative-only and the words
+  "build" + the <time> element provide screen-reader context.
+
+  Placeholder text renders before /api/version resolves so a SR user
+  landing here mid-fetch hears something coherent and there is no
+  layout shift on populate.
+-->
+<footer id="page-footer">
+  <p id="version-stamp">
+    AutoDJ
+    <span id="ver-version">loading…</span>
+    <span class="ver-sep" aria-hidden="true">·</span>
+    build
+    <span id="ver-commit">…</span>
+    <span class="ver-sep" aria-hidden="true">·</span>
+    <time id="ver-built" datetime="">…</time>
+  </p>
+</footer>
+
 <script type="module" src="/app.js"></script>
 </body>
 </html>

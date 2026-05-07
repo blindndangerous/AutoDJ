@@ -134,6 +134,30 @@ def bridge():
 
 
 # ---------------------------------------------------------------------------
+# GET /api/version
+# ---------------------------------------------------------------------------
+
+
+class TestVersion:
+    def test_version_returns_200(self, client) -> None:
+        assert client.get("/api/version").status_code == 200
+
+    def test_version_payload_shape(self, client) -> None:
+        data = client.get("/api/version").json()
+        assert set(data.keys()) == {"version", "commit", "built_at"}
+        assert data["version"]
+        assert data["commit"]
+        assert data["built_at"]
+
+    def test_version_built_at_is_iso(self, client) -> None:
+        import datetime as dt
+
+        data = client.get("/api/version").json()
+        # Round-trip parse; raises ValueError on malformed input.
+        dt.datetime.fromisoformat(data["built_at"])
+
+
+# ---------------------------------------------------------------------------
 # GET /api/status
 # ---------------------------------------------------------------------------
 

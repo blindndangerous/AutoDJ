@@ -15,6 +15,7 @@ Routes
 ------
 ``GET  /``                  → index.html
 ``GET  /api/status``        → JSON state snapshot
+``GET  /api/version``       → {version, commit, built_at} for footer build stamp
 ``POST /api/skip``          → skip to next track
 ``POST /api/pause``         → toggle pause / resume
 ``POST /api/volume``        → set volume (body: ``{"volume": 0.75}``)
@@ -28,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json as _json
 import logging
 import threading
@@ -57,6 +59,56 @@ if TYPE_CHECKING:
     from autodj.similarity import SimilarityIndex
 
 logger = logging.getLogger(__name__)
+
+
+@functools.cache
+def _version_info() -> dict[str, str]:
+    """Return {version, commit, built_at} for the running build.
+
+    Cached on first call so the timestamp reflects when the currently
+    installed bundle was produced (preferring static_dist/app.js mtime,
+    falling back to the source tree, then to process start time).
+    Commit is the short SHA from `git rev-parse` when the source tree
+    is a git checkout, else "unknown".
+    """
+    import datetime as _dt
+    import importlib.metadata as _md
+    import subprocess as _sp  # nosec B404 - trusted invocation (git, fixed argv)
+
+    here = Path(__file__).parent
+    try:
+        version = _md.version("autodj")
+    except _md.PackageNotFoundError:
+        version = "0.0.0"
+
+    commit = "unknown"
+    try:
+        # Static argv, no shell, no untrusted input.  git on PATH is a
+        # build-environment expectation; absence falls through to the
+        # "unknown" placeholder.
+        out = _sp.check_output(  # nosec B603 B607
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=here,
+            stderr=_sp.DEVNULL,
+            text=True,
+            timeout=2,
+        ).strip()
+        if out:
+            commit = out
+    except (OSError, _sp.SubprocessError):
+        pass
+
+    built_at: str | None = None
+    for candidate in (here / "static_dist" / "app.js", here / "static" / "app.js"):
+        if candidate.exists():
+            built_at = _dt.datetime.fromtimestamp(candidate.stat().st_mtime, _dt.UTC).isoformat(
+                timespec="seconds"
+            )
+            break
+    if built_at is None:
+        built_at = _dt.datetime.now(_dt.UTC).isoformat(timespec="seconds")
+
+    return {"version": version, "commit": commit, "built_at": built_at}
 
 
 def _build_why(player: Any) -> list[str]:
@@ -1335,6 +1387,12 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
     @app.get("/api/status")
     async def api_status() -> JSONResponse:
         return JSONResponse(bridge.get_state())
+
+    @app.get("/api/version")
+    async def api_version() -> JSONResponse:
+        # Footer build stamp.  Lets the user verify which commit + bundle
+        # the server is actually serving (browser cache vs. fresh build).
+        return JSONResponse(_version_info())
 
     @app.post("/api/skip")
     async def api_skip() -> JSONResponse:

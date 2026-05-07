@@ -696,3 +696,26 @@
 }
 #hotkey-help-modal dt { font-weight: 600; }
 #hotkey-help-modal dd { margin: 0; }
+
+/* Build-stamp footer.  Dim text on dark theme; --text-dim (#a0a0b0)
+   on --bg (#1a1a2e) clears WCAG AA 4.5:1 (1.4.3).  Decorative
+   middle-dots are aria-hidden in markup; styled here to keep visual
+   spacing consistent regardless of font metrics. */
+#page-footer {
+  margin-top: 1.5rem;
+  padding: 0.75rem 1rem;
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+}
+#page-footer p {
+  margin: 0;
+}
+#page-footer .ver-sep {
+  margin: 0 0.4em;
+  opacity: 0.7;
+}
+#page-footer code,
+#page-footer #ver-commit {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}

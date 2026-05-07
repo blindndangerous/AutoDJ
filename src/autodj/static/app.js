@@ -1259,3 +1259,27 @@ installLiners(_linerEls, {
     return true;
   },
 });
+
+// Footer build stamp.  Static populate-once -- no live region, no WS
+// subscription; the stamp is reference data, not a status update.
+// Failure is silent: footer keeps its placeholder so the page never
+// looks broken when /api/version is unreachable (offline cache, etc.).
+fetch("/api/version", { cache: "no-cache" })
+  .then((r) => (r.ok ? r.json() : null))
+  .then((d) => {
+    if (!d) return;
+    const setText = (id, value) => {
+      const el = document.getElementById(id);
+      if (el && value) el.textContent = value;
+    };
+    setText("ver-version", d.version);
+    setText("ver-commit",  d.commit);
+    const t = document.getElementById("ver-built");
+    if (t && d.built_at) {
+      // <time datetime="…"> -- machine-readable per HTML spec.  Visible
+      // text stays the ISO string so users can correlate with git log.
+      t.setAttribute("datetime", d.built_at);
+      t.textContent = d.built_at;
+    }
+  })
+  .catch(() => {});
