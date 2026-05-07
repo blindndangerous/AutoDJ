@@ -66,7 +66,7 @@ async function audit(name, launcher) {
     await new Promise((r) => setTimeout(r, 50));
 
     // Arrow Up while on a Settings select must NOT change volume.
-    const beforeVol = document.getElementById("volume").value;
+    const beforeVol = document.getElementById("vol").value;
     const sel = document.getElementById("transition-select");
     if (sel) {
       sel.focus();
@@ -76,7 +76,7 @@ async function audit(name, launcher) {
       await new Promise((r) => setTimeout(r, 100));
     }
     out.volUnchangedOnSettingsTab =
-      document.getElementById("volume").value === beforeVol;
+      document.getElementById("vol").value === beforeVol;
 
     // ? still works from Settings tab to open the dialog.
     const modal = document.getElementById("hotkey-help-modal");
@@ -92,12 +92,12 @@ async function audit(name, launcher) {
     if (nowTab) nowTab.click();
     await new Promise((r) => setTimeout(r, 50));
     document.body.focus();
-    const v0 = parseInt(document.getElementById("volume").value, 10);
+    const v0 = parseInt(document.getElementById("vol").value, 10);
     window.dispatchEvent(new KeyboardEvent("keydown", {
       key: "ArrowDown", bubbles: true, cancelable: true,
     }));
     await new Promise((r) => setTimeout(r, 150));
-    const v1 = parseInt(document.getElementById("volume").value, 10);
+    const v1 = parseInt(document.getElementById("vol").value, 10);
     out.volChangedOnNowTab = v1 !== v0;
     return out;
   });
@@ -109,7 +109,7 @@ async function audit(name, launcher) {
     const vol = document.getElementById("vol-announce");
     if (!vol) return { error: "vol-announce missing" };
     // Trigger an announce by changing the slider.
-    const slider = document.getElementById("volume");
+    const slider = document.getElementById("vol");
     slider.value = "70";
     slider.dispatchEvent(new Event("input"));
     // The announcer fires after a 250ms debounce.
