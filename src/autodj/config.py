@@ -292,6 +292,19 @@ class PlaybackConfig:
     # CLI server-audio skip path cannot pitch-stretch on the fly so
     # it cold-cuts regardless of this flag.
     beatmatch_on_skip: bool = False
+    # Voice liners — DJ-style spoken drops layered over the live mix.
+    # ``liners_folder`` is the source directory (default
+    # ``<index_dir>/liners`` resolved at server startup).  Trigger
+    # parameters are evaluated client-side in the browser; the server
+    # exposes the file list + raw bytes via ``/api/liner/...``.
+    liners_enabled: bool = False
+    liners_folder: str | None = None
+    liners_every_n_songs: int | None = None
+    liners_every_minutes: float | None = None
+    liners_random_min_minutes: float | None = None
+    liners_random_max_minutes: float | None = None
+    liners_pick_mode: str = "random"
+    liners_duck_db: float = -12.0
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> PlaybackConfig:
@@ -343,6 +356,30 @@ class PlaybackConfig:
             beat_sync_fx=bool(data.get("beat_sync_fx", True)),
             key_sync_fx=bool(data.get("key_sync_fx", True)),
             beatmatch_on_skip=bool(data.get("beatmatch_on_skip", False)),
+            liners_enabled=bool(data.get("liners_enabled", False)),
+            liners_folder=(data.get("liners_folder") or None),
+            liners_every_n_songs=(
+                int(data["liners_every_n_songs"])
+                if data.get("liners_every_n_songs") is not None
+                else None
+            ),
+            liners_every_minutes=(
+                float(data["liners_every_minutes"])
+                if data.get("liners_every_minutes") is not None
+                else None
+            ),
+            liners_random_min_minutes=(
+                float(data["liners_random_min_minutes"])
+                if data.get("liners_random_min_minutes") is not None
+                else None
+            ),
+            liners_random_max_minutes=(
+                float(data["liners_random_max_minutes"])
+                if data.get("liners_random_max_minutes") is not None
+                else None
+            ),
+            liners_pick_mode=str(data.get("liners_pick_mode", "random")),
+            liners_duck_db=float(data.get("liners_duck_db", -12.0)),
         )
 
 

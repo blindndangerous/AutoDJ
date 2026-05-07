@@ -92,6 +92,16 @@ def _make_player_mock(entry: IndexEntry | None = None) -> MagicMock:
     cfg.playback.import_external_cues = True
     cfg.playback.beat_sync_fx = True
     cfg.playback.key_sync_fx = True
+    cfg.playback.beatmatch_on_skip = False
+    cfg.playback.liners_enabled = False
+    cfg.playback.liners_folder = None
+    cfg.playback.liners_every_n_songs = None
+    cfg.playback.liners_every_minutes = None
+    cfg.playback.liners_random_min_minutes = None
+    cfg.playback.liners_random_max_minutes = None
+    cfg.playback.liners_pick_mode = "random"
+    cfg.playback.liners_duck_db = -12.0
+    cfg.index.active_dir = "/tmp/_autodj_no_index"
     cfg.replaygain.enabled = False
     cfg.presets = {}
     player._cfg = cfg
@@ -310,6 +320,149 @@ class TestSeek:
         result = p.seek_relative(5.0)
         assert result == pytest.approx(15.0, abs=0.01)
         assert p._playback_pos[0] == 15_000
+
+
+# ---------------------------------------------------------------------------
+# GET /api/liners + /api/liners/file/<name>
+# ---------------------------------------------------------------------------
+
+
+class TestLiners:
+    def test_liners_empty_folder(self, client) -> None:
+        resp = client.get("/api/liners")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["count"] == 0
+        assert body["files"] == []
+        assert "config" in body
+        assert body["config"]["enabled"] is False
+
+    def test_liners_lists_files(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        folder = tmp_path / "liners"
+        folder.mkdir()
+        (folder / "intro.mp3").write_bytes(b"\x00")
+        (folder / "outro.wav").write_bytes(b"\x00")
+        bridge.player._cfg.playback.liners_folder = str(folder)
+
+        tc = TestClient(create_app(bridge))
+        body = tc.get("/api/liners").json()
+        assert body["count"] == 2
+        assert sorted(body["files"]) == ["intro.mp3", "outro.wav"]
+
+    def test_liner_file_endpoint(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        folder = tmp_path / "liners"
+        folder.mkdir()
+        (folder / "test.mp3").write_bytes(b"raw-mp3-bytes")
+        bridge.player._cfg.playback.liners_folder = str(folder)
+
+        tc = TestClient(create_app(bridge))
+        resp = tc.get("/api/liners/file/test.mp3")
+        assert resp.status_code == 200
+        assert resp.content == b"raw-mp3-bytes"
+
+    def test_liner_file_path_traversal_blocked(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        folder = tmp_path / "liners"
+        folder.mkdir()
+        (tmp_path / "secret.txt").write_bytes(b"do-not-read")
+        bridge.player._cfg.playback.liners_folder = str(folder)
+
+        tc = TestClient(create_app(bridge))
+        resp = tc.get("/api/liners/file/..%2Fsecret.txt")
+        assert resp.status_code == 404
+
+    def test_liner_settings_round_trip(self, bridge) -> None:
+        from fastapi.testclient import TestClient
+
+        tc = TestClient(create_app(bridge))
+        resp = tc.post(
+            "/api/playback-settings",
+            json={
+                "liners_enabled": True,
+                "liners_every_n_songs": 5,
+                "liners_pick_mode": "sequential",
+                "liners_duck_db": -8.0,
+            },
+        )
+        assert resp.status_code == 200
+        cfg = bridge.player._cfg.playback
+        assert cfg.liners_enabled is True
+        assert cfg.liners_every_n_songs == 5
+        assert cfg.liners_pick_mode == "sequential"
+        assert cfg.liners_duck_db == pytest.approx(-8.0)
+
+    def test_liner_pick_mode_validates(self, bridge) -> None:
+        from fastapi.testclient import TestClient
+
+        bridge.player._cfg.playback.liners_pick_mode = "random"
+        tc = TestClient(create_app(bridge))
+        tc.post("/api/playback-settings", json={"liners_pick_mode": "BOGUS"})
+        assert bridge.player._cfg.playback.liners_pick_mode == "random"
+
+    def test_liner_upload_and_list(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        folder = tmp_path / "liners"
+        folder.mkdir()
+        bridge.player._cfg.playback.liners_folder = str(folder)
+
+        tc = TestClient(create_app(bridge))
+        files = {"file": ("hello.mp3", b"audio-bytes", "audio/mpeg")}
+        resp = tc.post("/api/liners/upload", files=files)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["filename"] == "hello.mp3"
+        assert (folder / "hello.mp3").read_bytes() == b"audio-bytes"
+
+        body = tc.get("/api/liners").json()
+        assert "hello.mp3" in body["files"]
+
+    def test_liner_upload_rejects_unknown_extension(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        folder = tmp_path / "liners"
+        folder.mkdir()
+        bridge.player._cfg.playback.liners_folder = str(folder)
+
+        tc = TestClient(create_app(bridge))
+        resp = tc.post(
+            "/api/liners/upload",
+            files={"file": ("evil.exe", b"bad", "application/octet-stream")},
+        )
+        assert resp.status_code == 400
+
+    def test_liner_delete(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        folder = tmp_path / "liners"
+        folder.mkdir()
+        target = folder / "remove_me.wav"
+        target.write_bytes(b"x")
+        bridge.player._cfg.playback.liners_folder = str(folder)
+
+        tc = TestClient(create_app(bridge))
+        resp = tc.delete("/api/liners/file/remove_me.wav")
+        assert resp.status_code == 200
+        assert not target.exists()
+
+    def test_liner_delete_path_traversal_blocked(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        folder = tmp_path / "liners"
+        folder.mkdir()
+        outside = tmp_path / "secret.txt"
+        outside.write_bytes(b"safe")
+        bridge.player._cfg.playback.liners_folder = str(folder)
+
+        tc = TestClient(create_app(bridge))
+        resp = tc.delete("/api/liners/file/..%2Fsecret.txt")
+        assert resp.status_code == 404
+        assert outside.exists()
 
 
 # ---------------------------------------------------------------------------

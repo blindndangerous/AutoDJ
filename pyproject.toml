@@ -24,6 +24,7 @@ dependencies = [
     "numpy>=1.26.0",             # vector math
     "click>=8.1.0",              # CLI framework
     "rich>=13.0.0",              # terminal UI (panels, tables)
+    "python-multipart>=0.0.27",
 ]
 
 [project.optional-dependencies]

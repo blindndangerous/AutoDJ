@@ -119,6 +119,7 @@ const pbMoodArcHours  = document.getElementById("pb-mood-arc-hours");
 const pbImportCues    = document.getElementById("pb-import-cues");
 const pbBeatSyncFx    = document.getElementById("pb-beat-sync-fx");
 const pbKeySyncFx     = document.getElementById("pb-key-sync-fx");
+const pbBeatmatchSkip = document.getElementById("pb-beatmatch-on-skip");
 const pbTransitionMode = document.getElementById("pb-transition-mode");
 const pbCrossfade     = document.getElementById("pb-crossfade");
 const bpmLo           = document.getElementById("bpm-lo");
@@ -146,6 +147,12 @@ let lastNextKey  = null;   // suppress aria-live re-announce of unchanged next t
 // ----------------------------------------------------------------
 
 function applyState(s) {
+  // Voice liner track-count bump (forward declaration of helper -- see
+  // voice liner block at the bottom of this file).  Safe to call here
+  // because module-init runs top-to-bottom and the helper is defined
+  // before WS messages start arriving.
+  if (typeof _bumpLinerTrackCount === "function") _bumpLinerTrackCount(s);
+
   // Now Playing
   const trackKey   = s.current_track ? s.current_track.path : null;
   const trackLabel = fmtTrack(s.current_track);
@@ -416,6 +423,9 @@ function applySettingsState(st) {
   if (pbKeySyncFx) {
     pbKeySyncFx.checked = !(st.playback && st.playback.key_sync_fx === false);
   }
+  if (pbBeatmatchSkip) {
+    pbBeatmatchSkip.checked = !!(st.playback && st.playback.beatmatch_on_skip === true);
+  }
   if (st.playback && st.playback.transition_mode && document.activeElement !== pbTransitionMode) {
     pbTransitionMode.value = st.playback.transition_mode;
   }
@@ -525,6 +535,13 @@ if (pbKeySyncFx) {
   pbKeySyncFx.addEventListener("change", () => {
     postSettings("/api/playback-settings", {
       key_sync_fx: pbKeySyncFx.checked,
+    });
+  });
+}
+if (pbBeatmatchSkip) {
+  pbBeatmatchSkip.addEventListener("change", () => {
+    postSettings("/api/playback-settings", {
+      beatmatch_on_skip: pbBeatmatchSkip.checked,
     });
   });
 }
@@ -4340,3 +4357,298 @@ fetch("/api/status")
     setConnStatus("error", `Cannot reach server: ${err.message}`);
     npAnnounce.textContent = `Cannot reach server: ${err.message}`;
   });
+
+// ----------------------------------------------------------------
+// Hide-unchecked-children mechanism.  Any element with
+// `data-show-when="checkboxId"` is shown/hidden based on the
+// referenced checkbox's checked state.  Toggles the `hidden`
+// attribute on the wrapper element so the label, input, and
+// description all collapse together (per a11y review: setting hidden
+// on the wrapper avoids the orphaned-label / orphaned-desc state SR
+// users would otherwise hit).
+// ----------------------------------------------------------------
+
+function _applyShowWhen() {
+  const wrappers = document.querySelectorAll("[data-show-when]");
+  for (const w of wrappers) {
+    const id = w.getAttribute("data-show-when");
+    const cb = id ? document.getElementById(id) : null;
+    const visible = !!(cb && cb.checked);
+    if (visible) w.removeAttribute("hidden");
+    else w.setAttribute("hidden", "");
+  }
+}
+
+// Re-apply on every checkbox change (delegated listener -- single
+// handler, picks up any number of [data-show-when] sources).
+document.addEventListener("change", (e) => {
+  if (e.target && e.target.matches && e.target.matches("input[type=checkbox]")) {
+    _applyShowWhen();
+  }
+});
+
+// Apply once at load + after every state push (server may flip a
+// checkbox via WS without the user touching it).
+_applyShowWhen();
+
+// ----------------------------------------------------------------
+// Voice liners — Settings panel, file list, upload/delete, test.
+// ----------------------------------------------------------------
+
+const lnEnabled       = document.getElementById("ln-enabled");
+const lnEveryN        = document.getElementById("ln-every-n");
+const lnEveryMin      = document.getElementById("ln-every-min");
+const lnRandMin       = document.getElementById("ln-rand-min");
+const lnRandMax       = document.getElementById("ln-rand-max");
+const lnPickMode      = document.getElementById("ln-pick-mode");
+const lnDuckDb        = document.getElementById("ln-duck-db");
+const lnTestBtn       = document.getElementById("ln-test");
+const lnFolderDisplay = document.getElementById("ln-folder-display");
+const lnFileList      = document.getElementById("ln-file-list");
+const lnUpload        = document.getElementById("ln-upload");
+const lnUploadSubmit  = document.getElementById("ln-upload-submit");
+const lnStatus        = document.getElementById("ln-status");
+
+let _linerLib = { folder: "", files: [], config: {} };
+let _linerLastFireAt = performance.now();
+let _linerTrackCount = 0;
+let _linerRandomTarget = null;
+
+function _setLinerStatus(msg) {
+  if (lnStatus) {
+    lnStatus.classList.remove("visually-hidden");
+    lnStatus.textContent = msg;
+  }
+}
+
+async function _refreshLinerLibrary() {
+  try {
+    const resp = await fetch("/api/liners");
+    if (!resp.ok) return;
+    const body = await resp.json();
+    _linerLib = body;
+    if (lnFolderDisplay) {
+      lnFolderDisplay.textContent = "Folder: " + (body.folder || "—");
+    }
+    if (lnFileList) {
+      lnFileList.innerHTML = "";
+      for (const name of body.files || []) {
+        const li = document.createElement("li");
+        const text = document.createElement("span");
+        text.textContent = name;
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.innerHTML = '<span aria-hidden="true">Delete</span>' +
+          `<span class="visually-hidden"> ${escHtml(name)}</span>`;
+        btn.addEventListener("click", () => _deleteLiner(name));
+        li.appendChild(text);
+        li.appendChild(document.createTextNode(" "));
+        li.appendChild(btn);
+        lnFileList.appendChild(li);
+      }
+    }
+    // Sync config inputs from server payload (don't trample user-edited fields).
+    const c = body.config || {};
+    if (lnEnabled && document.activeElement !== lnEnabled) {
+      lnEnabled.checked = !!c.enabled;
+    }
+    if (lnEveryN && document.activeElement !== lnEveryN) {
+      lnEveryN.value = c.every_n_songs != null ? c.every_n_songs : "";
+    }
+    if (lnEveryMin && document.activeElement !== lnEveryMin) {
+      lnEveryMin.value = c.every_minutes != null ? c.every_minutes : "";
+    }
+    if (lnRandMin && document.activeElement !== lnRandMin) {
+      lnRandMin.value = c.random_min_minutes != null ? c.random_min_minutes : "";
+    }
+    if (lnRandMax && document.activeElement !== lnRandMax) {
+      lnRandMax.value = c.random_max_minutes != null ? c.random_max_minutes : "";
+    }
+    if (lnPickMode && document.activeElement !== lnPickMode) {
+      lnPickMode.value = c.pick_mode || "random";
+    }
+    if (lnDuckDb && document.activeElement !== lnDuckDb) {
+      lnDuckDb.value = c.duck_db != null ? c.duck_db : -12;
+    }
+    _applyShowWhen();
+  } catch (err) {
+    _dbg("liner refresh failed:", err);
+  }
+}
+
+async function _deleteLiner(name) {
+  if (!confirm(`Delete liner "${name}"?`)) return;
+  try {
+    const resp = await fetch(
+      `/api/liners/file/${encodeURIComponent(name)}`,
+      { method: "DELETE" },
+    );
+    if (!resp.ok) {
+      _setLinerStatus(`Delete failed: HTTP ${resp.status}`);
+      return;
+    }
+    _setLinerStatus(`Deleted ${name}`);
+    await _refreshLinerLibrary();
+  } catch (err) {
+    _setLinerStatus(`Delete failed: ${err.message}`);
+  }
+}
+
+if (lnUploadSubmit) {
+  lnUploadSubmit.addEventListener("click", async () => {
+    if (!lnUpload || !lnUpload.files || lnUpload.files.length === 0) {
+      _setLinerStatus("Pick a file first.");
+      return;
+    }
+    const f = lnUpload.files[0];
+    const fd = new FormData();
+    fd.append("file", f, f.name);
+    _setLinerStatus(`Uploading ${f.name}...`);
+    try {
+      const resp = await fetch("/api/liners/upload", { method: "POST", body: fd });
+      if (!resp.ok) {
+        const detail = await resp.text();
+        _setLinerStatus(`Upload failed: ${detail}`);
+        return;
+      }
+      _setLinerStatus(`Uploaded ${f.name}`);
+      lnUpload.value = "";
+      await _refreshLinerLibrary();
+    } catch (err) {
+      _setLinerStatus(`Upload failed: ${err.message}`);
+    }
+  });
+}
+
+function _postLinerConfig() {
+  const body = {
+    liners_enabled: !!(lnEnabled && lnEnabled.checked),
+    liners_every_n_songs: _intOrNull(lnEveryN),
+    liners_every_minutes: _floatOrNull(lnEveryMin),
+    liners_random_min_minutes: _floatOrNull(lnRandMin),
+    liners_random_max_minutes: _floatOrNull(lnRandMax),
+    liners_pick_mode: lnPickMode ? lnPickMode.value : "random",
+    liners_duck_db: _floatOrNull(lnDuckDb),
+  };
+  postSettings("/api/playback-settings", body);
+}
+function _intOrNull(el) {
+  if (!el || el.value === "" || el.value == null) return null;
+  const n = parseInt(el.value, 10);
+  return isNaN(n) ? null : n;
+}
+function _floatOrNull(el) {
+  if (!el || el.value === "" || el.value == null) return null;
+  const n = parseFloat(el.value);
+  return isNaN(n) ? null : n;
+}
+
+for (const el of [
+  lnEnabled, lnEveryN, lnEveryMin, lnRandMin, lnRandMax, lnPickMode, lnDuckDb,
+]) {
+  if (!el) continue;
+  el.addEventListener("change", _postLinerConfig);
+}
+
+async function _playLinerByName(name) {
+  if (!_ctx) return;
+  try {
+    const resp = await fetch(`/api/liners/file/${encodeURIComponent(name)}`);
+    if (!resp.ok) {
+      _setLinerStatus(`Liner fetch failed: HTTP ${resp.status}`);
+      return;
+    }
+    const buf = await resp.arrayBuffer();
+    const audioBuf = await _ctx.decodeAudioData(buf);
+    const src = _ctx.createBufferSource();
+    src.buffer = audioBuf;
+    const gain = _ctx.createGain();
+    gain.gain.value = 1.0;
+    src.connect(gain);
+    gain.connect(_ctx.destination);
+    // Duck the active deck for the duration of the liner + 200 ms tail.
+    const duckDb = (_linerLib.config && _linerLib.config.duck_db) || -12;
+    const duckLin = Math.pow(10, duckDb / 20);
+    const dur = audioBuf.duration;
+    const t0 = _ctx.currentTime;
+    const active = decks[activeIdx];
+    active.gain.gain.cancelScheduledValues(t0);
+    active.gain.gain.setValueAtTime(active.gain.gain.value, t0);
+    active.gain.gain.linearRampToValueAtTime(_volume * duckLin, t0 + 0.2);
+    active.gain.gain.setValueAtTime(_volume * duckLin, t0 + dur - 0.2);
+    active.gain.gain.linearRampToValueAtTime(_volume, t0 + dur + 0.2);
+    src.start(t0);
+    _linerLastFireAt = performance.now();
+    _linerTrackCount = 0;
+    _linerRandomTarget = _rollLinerRandomTarget();
+    _setLinerStatus(`Liner playing: ${name}`);
+  } catch (err) {
+    _setLinerStatus(`Liner playback failed: ${err.message}`);
+  }
+}
+
+function _pickLiner() {
+  if (!_linerLib.files || _linerLib.files.length === 0) return null;
+  const mode = (_linerLib.config && _linerLib.config.pick_mode) || "random";
+  if (mode === "sequential") {
+    const i = (_linerSeqCursor++) % _linerLib.files.length;
+    return _linerLib.files[i];
+  }
+  // weighted falls back to random in the browser since weights aren't
+  // persisted yet; matches LinerLibrary.pick fallback behaviour.
+  const i = Math.floor(Math.random() * _linerLib.files.length);
+  return _linerLib.files[i];
+}
+let _linerSeqCursor = 0;
+
+function _rollLinerRandomTarget() {
+  const c = _linerLib.config || {};
+  const lo = c.random_min_minutes;
+  const hi = c.random_max_minutes;
+  if (lo == null || hi == null || lo > hi || hi <= 0) return null;
+  return lo + Math.random() * (hi - lo);
+}
+
+if (lnTestBtn) {
+  lnTestBtn.addEventListener("click", async () => {
+    const name = _pickLiner();
+    if (!name) {
+      _setLinerStatus("No liner files in folder.");
+      return;
+    }
+    await _playLinerByName(name);
+  });
+}
+
+// Periodic liner trigger evaluation -- once per second.  When enabled
+// and any trigger condition is met, fire a clip.
+setInterval(() => {
+  if (!_linerLib.config || !_linerLib.config.enabled) return;
+  if (!_ctx || !_lastBrowserPlayback) return;
+  const c = _linerLib.config;
+  const minsSince = (performance.now() - _linerLastFireAt) / 60000;
+  let fire = false;
+  if (c.every_n_songs && _linerTrackCount >= c.every_n_songs) fire = true;
+  if (c.every_minutes && minsSince >= c.every_minutes) fire = true;
+  if (_linerRandomTarget != null && minsSince >= _linerRandomTarget) fire = true;
+  if (fire) {
+    const name = _pickLiner();
+    if (name) _playLinerByName(name);
+  }
+}, 1000);
+
+// Track-advance counter for the every_n_songs trigger.  Bumps every
+// time the WS state push surfaces a new current_track path -- one
+// hook covers every advance route (natural end, skip, queue Now,
+// shuffle, server-led random, CLI advance).
+let _lastLinerSeenPath = null;
+function _bumpLinerTrackCount(s) {
+  const cur = (s && s.current_track && s.current_track.path) || null;
+  if (cur && cur !== _lastLinerSeenPath) {
+    if (_lastLinerSeenPath !== null) _linerTrackCount += 1;
+    _lastLinerSeenPath = cur;
+  }
+}
+
+// Initial fetch + reapply hidden state on load.
+_refreshLinerLibrary();

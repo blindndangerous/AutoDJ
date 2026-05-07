@@ -38,9 +38,11 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import (
     FastAPI,
+    File,
     HTTPException,
     Request,
     Response,
+    UploadFile,
     WebSocket,
     WebSocketDisconnect,
 )
@@ -168,6 +170,14 @@ class PlaybackSettingsBody(BaseModel):
     beat_sync_fx: bool | None = None
     key_sync_fx: bool | None = None
     beatmatch_on_skip: bool | None = None
+    liners_enabled: bool | None = None
+    liners_folder: str | None = None
+    liners_every_n_songs: int | None = None
+    liners_every_minutes: float | None = None
+    liners_random_min_minutes: float | None = None
+    liners_random_max_minutes: float | None = None
+    liners_pick_mode: str | None = None
+    liners_duck_db: float | None = None
 
 
 class BpmRangeBody(BaseModel):
@@ -978,6 +988,14 @@ class PlayerBridge:
         beat_sync_fx: bool | None = None,
         key_sync_fx: bool | None = None,
         beatmatch_on_skip: bool | None = None,
+        liners_enabled: bool | None = None,
+        liners_folder: str | None = None,
+        liners_every_n_songs: int | None = None,
+        liners_every_minutes: float | None = None,
+        liners_random_min_minutes: float | None = None,
+        liners_random_max_minutes: float | None = None,
+        liners_pick_mode: str | None = None,
+        liners_duck_db: float | None = None,
     ) -> None:
         """Apply playback-related settings; only non-null fields take effect."""
         cfg = self.player._cfg
@@ -1049,6 +1067,32 @@ class PlayerBridge:
             cfg.playback.key_sync_fx = bool(key_sync_fx)
         if beatmatch_on_skip is not None:
             cfg.playback.beatmatch_on_skip = bool(beatmatch_on_skip)
+        if liners_enabled is not None:
+            cfg.playback.liners_enabled = bool(liners_enabled)
+        if liners_folder is not None:
+            cfg.playback.liners_folder = str(liners_folder) or None
+        if liners_every_n_songs is not None:
+            cfg.playback.liners_every_n_songs = (
+                int(liners_every_n_songs) if liners_every_n_songs > 0 else None
+            )
+        if liners_every_minutes is not None:
+            cfg.playback.liners_every_minutes = (
+                float(liners_every_minutes) if liners_every_minutes > 0 else None
+            )
+        if liners_random_min_minutes is not None:
+            cfg.playback.liners_random_min_minutes = (
+                float(liners_random_min_minutes) if liners_random_min_minutes > 0 else None
+            )
+        if liners_random_max_minutes is not None:
+            cfg.playback.liners_random_max_minutes = (
+                float(liners_random_max_minutes) if liners_random_max_minutes > 0 else None
+            )
+        if liners_pick_mode is not None:
+            mode = str(liners_pick_mode)
+            if mode in {"random", "sequential", "weighted"}:
+                cfg.playback.liners_pick_mode = mode
+        if liners_duck_db is not None:
+            cfg.playback.liners_duck_db = float(liners_duck_db)
 
     def set_bpm_range(self, lo: float | None, hi: float | None) -> None:
         """Set the hard BPM filter; pass both null to clear."""
@@ -1212,6 +1256,120 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
     async def api_seek(body: SeekBody) -> dict[str, float]:
         new_pos = bridge.seek(seconds=body.seconds, delta=body.delta)
         return {"elapsed": round(new_pos, 2)}
+
+    @app.get("/api/liners")
+    async def api_liners() -> dict:
+        """List discovered voice liners + current trigger config.
+
+        The browser uses this to populate the Settings panel listing
+        and to fetch raw liner bytes for ducking-overlay playback.
+        """
+        from autodj.liners import LinerLibrary
+
+        cfg = bridge.player._cfg
+        folder_str = cfg.playback.liners_folder
+        if not folder_str:
+            from pathlib import Path as _P
+
+            folder_str = str(_P(cfg.index.active_dir) / "liners")
+        from pathlib import Path as _P
+
+        lib = LinerLibrary.from_folder(_P(folder_str))
+        return {
+            "folder": str(folder_str),
+            "files": [f.name for f in lib.files],
+            "count": len(lib.files),
+            "config": {
+                "enabled": bool(cfg.playback.liners_enabled),
+                "every_n_songs": cfg.playback.liners_every_n_songs,
+                "every_minutes": cfg.playback.liners_every_minutes,
+                "random_min_minutes": cfg.playback.liners_random_min_minutes,
+                "random_max_minutes": cfg.playback.liners_random_max_minutes,
+                "pick_mode": cfg.playback.liners_pick_mode,
+                "duck_db": cfg.playback.liners_duck_db,
+            },
+        }
+
+    def _resolve_liner_folder() -> Path:
+        """Return the configured liner folder, defaulting under index_dir."""
+        from pathlib import Path as _P
+
+        cfg = bridge.player._cfg
+        folder_str = cfg.playback.liners_folder
+        if not folder_str:
+            folder_str = str(_P(cfg.index.active_dir) / "liners")
+        return _P(folder_str)
+
+    @app.post("/api/liners/upload")
+    async def api_liner_upload(file: UploadFile = File(...)) -> dict:
+        """Upload a new liner clip into the configured folder.
+
+        Rejects files whose extension isn't in :data:`LINER_EXTS` so
+        users can't drop arbitrary binaries into the served folder.
+        Creates the folder when missing.
+        """
+        from autodj.liners import LINER_EXTS
+
+        name = file.filename or ""
+        ext = ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
+        if ext not in LINER_EXTS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported extension {ext!r}; allowed: {', '.join(LINER_EXTS)}",
+            )
+        # Strip path components from the filename so the upload always
+        # lands directly in the liner folder regardless of what the
+        # browser sent.
+        from pathlib import PurePosixPath
+
+        safe_name = PurePosixPath(name).name
+        folder = _resolve_liner_folder()
+        folder.mkdir(parents=True, exist_ok=True)
+        target = (folder / safe_name).resolve()
+        if not str(target).startswith(str(folder.resolve())):
+            raise HTTPException(status_code=400, detail="Invalid filename")
+        contents = await file.read()
+        target.write_bytes(contents)
+        return {"filename": safe_name, "size": len(contents)}
+
+    @app.delete("/api/liners/file/{name}")
+    async def api_liner_delete(name: str) -> dict:
+        """Remove a liner clip identified by filename.
+
+        Same path-traversal guard as the GET endpoint.
+        """
+        from pathlib import Path as _P
+
+        folder = _resolve_liner_folder().resolve()
+        target = (folder / name).resolve()
+        if not str(target).startswith(str(folder)) or not target.is_file():
+            raise HTTPException(status_code=404, detail="Liner not found")
+        try:
+            _P(target).unlink()
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        return {"deleted": target.name}
+
+    @app.get("/api/liners/file/{name}")
+    async def api_liner_file(name: str) -> FileResponse:
+        """Stream the raw bytes of a liner clip identified by filename.
+
+        Resolves *name* against the liners folder; rejects path
+        traversal by ensuring the resolved file is inside that folder.
+        """
+        import mimetypes
+        from pathlib import Path as _P
+
+        cfg = bridge.player._cfg
+        folder_str = cfg.playback.liners_folder
+        if not folder_str:
+            folder_str = str(_P(cfg.index.active_dir) / "liners")
+        folder = _P(folder_str).resolve()
+        target = (folder / name).resolve()
+        if not str(target).startswith(str(folder)) or not target.is_file():
+            raise HTTPException(status_code=404, detail="Liner not found")
+        mime, _ = mimetypes.guess_type(str(target))
+        return FileResponse(target, media_type=mime or "application/octet-stream")
 
     @app.post("/api/pause")
     async def api_pause() -> dict[str, bool]:

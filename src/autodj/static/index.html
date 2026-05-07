@@ -467,7 +467,7 @@
         Set-relative envelope: warmup, build to peak around 75 % of the arc, cool down, then loop.  Anchored to the moment you toggle this on.  Stacks above daypart — when both are on, arc wins while a session is in progress.
       </span>
 
-      <div class="settings-row">
+      <div class="settings-row" data-show-when="pb-mood-arc">
         <label for="pb-mood-arc-hours">Mood arc length (hours)</label>
         <input type="number" id="pb-mood-arc-hours" min="0.25" max="24" step="0.25" value="3"
                inputmode="decimal">
@@ -498,6 +498,14 @@
       </div>
       <span class="setting-desc" id="pb-key-sync-fx-desc">
         Tune oscillator-based effects (air horn, dub siren, ring modulator) to the song's root note, lerping outgoing-to-incoming root in log space across the fade.  Effects on tracks with no detected key fall back to their hardcoded reference frequency.  Default: on.
+      </span>
+
+      <div class="settings-check">
+        <input type="checkbox" id="pb-beatmatch-on-skip">
+        <label for="pb-beatmatch-on-skip">Beatmatch on skip</label>
+      </div>
+      <span class="setting-desc" id="pb-beatmatch-on-skip-desc">
+        When you press Skip, pitch-stretch the incoming track so its tempo matches the outgoing one (preserves musical pitch).  Without this, skipping mid-track cold-cuts to the new tempo.  Capped at +-15% so wildly mismatched tracks don't sound silly.  Browser-only — CLI server-audio mode can't pitch-stretch on the fly.  Default: off.
       </span>
 
       <div class="settings-row">
@@ -574,6 +582,76 @@
       <span class="setting-desc" id="disc-desc">
         Periodically inject a sonically <em>distant</em> track to break the auto-DJ out of a similarity loop.  Picks at random from the bottom quartile of cosine similarity.  Disable to stay strictly on-vibe.
       </span>
+    </fieldset>
+  </details>
+
+  <!-- Voice liners -->
+  <details class="card" aria-labelledby="liners-heading">
+    <summary><h2 id="liners-heading">Voice liners</h2></summary>
+    <p class="card-desc">
+      Drop-in spoken clips that play over the live mix every so often, like a real station ID.  Drop audio files (mp3, wav, ogg, m4a, flac, aac) into the configured folder, then set how often to fire and which rotation to use.
+    </p>
+
+    <div id="ln-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+
+    <fieldset>
+      <legend>Trigger</legend>
+      <div class="settings-check">
+        <input type="checkbox" id="ln-enabled">
+        <label for="ln-enabled">Enable voice liners</label>
+      </div>
+      <span class="setting-desc" id="ln-enabled-desc">
+        Master toggle.  When off, no liners fire even if individual triggers are configured.
+      </span>
+
+      <div class="settings-row" data-show-when="ln-enabled">
+        <label for="ln-every-n">Every N tracks</label>
+        <input type="number" id="ln-every-n" min="0" max="500" step="1" inputmode="numeric">
+      </div>
+      <div class="settings-row" data-show-when="ln-enabled">
+        <label for="ln-every-min">Every N minutes</label>
+        <input type="number" id="ln-every-min" min="0" max="240" step="1" inputmode="decimal">
+      </div>
+      <div class="settings-row" data-show-when="ln-enabled">
+        <label for="ln-rand-min">Random window minimum (minutes)</label>
+        <input type="number" id="ln-rand-min" min="0" max="240" step="1" inputmode="decimal">
+      </div>
+      <div class="settings-row" data-show-when="ln-enabled">
+        <label for="ln-rand-max">Random window maximum (minutes)</label>
+        <input type="number" id="ln-rand-max" min="0" max="240" step="1" inputmode="decimal">
+      </div>
+    </fieldset>
+
+    <fieldset data-show-when="ln-enabled">
+      <legend>Mix</legend>
+      <div class="settings-row">
+        <label for="ln-pick-mode">Rotation mode</label>
+        <select id="ln-pick-mode">
+          <option value="random">Random</option>
+          <option value="sequential">Sequential</option>
+          <option value="weighted">Weighted</option>
+        </select>
+      </div>
+      <div class="settings-row">
+        <label for="ln-duck-db">Duck depth (dB)</label>
+        <input type="number" id="ln-duck-db" min="-30" max="0" step="1" value="-12" inputmode="decimal">
+      </div>
+      <button type="button" id="ln-test">Test now</button>
+    </fieldset>
+
+    <fieldset data-show-when="ln-enabled">
+      <legend>Library</legend>
+      <p>
+        <span id="ln-folder-display"></span>
+      </p>
+      <div class="settings-row">
+        <label for="ln-upload">Choose liner file</label>
+        <input type="file" id="ln-upload"
+               accept=".mp3,.wav,.ogg,.m4a,.flac,.aac,audio/*">
+        <button type="button" id="ln-upload-submit">Upload</button>
+      </div>
+      <h3>Files</h3>
+      <ul id="ln-file-list" aria-label="Voice liner files"></ul>
     </fieldset>
   </details>
 
