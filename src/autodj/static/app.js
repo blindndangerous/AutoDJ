@@ -163,9 +163,9 @@ function applyState(s) {
   if (s.current_track) {
     const t = s.current_track;
     if (t.album) parts.push(t.album);
-    // Prefer the notation-aware label from the server.  Falls back to
-    // the legacy ``camelot`` field for back-compat with older payloads.
-    const _kl = t.key_label || t.camelot;
+    // Notation-aware display label (Camelot or letter-name per
+    // [playback] key_notation; sharps or flats per key_prefer_flats).
+    const _kl = t.key_label;
     parts.push(`Key ${_kl && _kl !== "--" ? _kl : "unknown"}`);
     parts.push(t.bpm ? `${Math.round(t.bpm)} BPM` : "BPM unknown");
   }
@@ -184,7 +184,9 @@ function applyState(s) {
   // so the highlighted "compatible" set matches what the picker uses.
   const _hm = (s.settings && s.settings.djmix && s.settings.djmix.harmonic_mode)
               || "compatible";
-  const _cell = s.current_track ? s.current_track.camelot : null;
+  // Wheel is Camelot-shaped regardless of display notation, so it
+  // always reads the dedicated camelot_cell field, never key_label.
+  const _cell = s.current_track ? s.current_track.camelot_cell : null;
   applyCamelotWheel(_cell, _hm);
 
   // EQ slider state from server

@@ -339,11 +339,14 @@ class PlayerBridge:
         )
         from autodj.dj_meta import camelot_label, key_label
 
-        # Display notation -- camelot (default) or musical letter
-        # names; flats / sharps preference honoured for musical mode.
-        # camelot_label() result still flows through the legacy
-        # ``camelot`` field for back-compat with existing browser
-        # clients; ``key_label`` is the new notation-aware string.
+        # Two key fields per track:
+        #   ``key_label``  -- notation-aware display string (Camelot or
+        #                     letter-name, sharps or flats per settings).
+        #                     Drives the now-playing badge + log lines.
+        #   ``camelot_cell`` -- always-Camelot cell address (8A / 8B)
+        #                     used by the Camelot wheel SVG, since the
+        #                     wheel is Camelot-shaped regardless of
+        #                     which display notation the user picked.
         cfg_pb = getattr(self.player._cfg, "playback", None)
         _key_notation = getattr(cfg_pb, "key_notation", "camelot") if cfg_pb else "camelot"
         _key_prefer_flats = bool(getattr(cfg_pb, "key_prefer_flats", False)) if cfg_pb else False
@@ -484,7 +487,7 @@ class PlayerBridge:
                 "display_name": entry.display_name,
                 "key": entry.key,
                 "mode": entry.mode,
-                "camelot": camelot_label(entry.key, entry.mode),
+                "camelot_cell": camelot_label(entry.key, entry.mode),
                 "key_label": key_label(
                     entry.key,
                     entry.mode,

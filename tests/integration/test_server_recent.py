@@ -239,19 +239,21 @@ class TestRepickNextErrorPaths:
 
 
 class TestKeyNotation:
-    """Status payload exposes a notation-aware ``key_label`` and the
-    POST /api/playback-settings round-trip flips it without restart."""
+    """Status payload exposes a notation-aware ``key_label`` for
+    display + a separate always-Camelot ``camelot_cell`` for the
+    Camelot wheel SVG (which is Camelot-shaped regardless of which
+    notation the user picks)."""
 
     def test_status_includes_key_label_camelot_default(self, client) -> None:
         data = client.get("/api/status").json()
         ct = data["current_track"]
         # Fixture entry has key=0, mode=1 -> Camelot 8B (= C major).
-        assert ct["camelot"] == "8B"  # back-compat field
+        assert ct["camelot_cell"] == "8B"
         assert ct["key_label"] == "8B"
 
     def test_post_settings_switches_to_musical(self, client) -> None:
         # Flip to musical notation, then re-fetch status; key_label
-        # follows.  camelot field stays unchanged for back-compat.
+        # follows.  camelot_cell stays put -- it drives the wheel SVG.
         resp = client.post(
             "/api/playback-settings",
             json={"key_notation": "musical"},
@@ -259,7 +261,7 @@ class TestKeyNotation:
         assert resp.status_code == 200
         data = client.get("/api/status").json()
         assert data["current_track"]["key_label"] == "C"
-        assert data["current_track"]["camelot"] == "8B"
+        assert data["current_track"]["camelot_cell"] == "8B"
 
     def test_post_settings_musical_with_flats(self, bridge) -> None:
         """Switching to musical + flats renders accidentals as flats."""
@@ -286,9 +288,8 @@ class TestKeyNotation:
         tc = TestClient(create_app(bridge))
         ct = tc.get("/api/status").json()["current_track"]
         assert ct["key_label"] == "Db"
-        # Camelot field stays untouched -- back-compat for existing
-        # browsers / clients that still read .camelot directly.
-        assert ct["camelot"] == "3B"
+        # Wheel SVG cell address is independent of display notation.
+        assert ct["camelot_cell"] == "3B"
 
 
 class TestBridgeReExport:
