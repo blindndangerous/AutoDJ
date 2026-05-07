@@ -4,1098 +4,214 @@
 [![codecov](https://codecov.io/gh/blindndangerous/AutoDJ/graph/badge.svg)](https://codecov.io/gh/blindndangerous/AutoDJ)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A local auto-DJ that listens to itself. Point it at your music folder and it plays songs that sound like the one before, forever. No cloud, no Spotify, no scrobbling. Just your files and a vector index.
+An auto-DJ that picks the next song based on what is playing now.  Point it at the folder where your music lives and it will play forever, picking each next track because it actually sounds like what you just heard.  Everything runs on your own computer.  Nothing is sent to any cloud service.
 
-Under the hood: [MuQ-large-msd-iter](https://huggingface.co/OpenMuQ/MuQ-large-msd-iter) (Tencent's music-specific transformer trained on the Million Song Dataset) generates a 1024-dim embedding per track. AutoDJ tacks on 16 librosa features for tempo/chroma, normalises the result, drops it in a [FAISS](https://github.com/facebookresearch/faiss) `IndexFlatIP`, and uses cosine similarity to pick whatever's nearest to whatever you're hearing.
+## What you get
 
-What you get:
+- **A non-stop set, picked for you.**  Each next track is the one that sounds closest to whatever is playing.  The result feels like a long mix where every change of song still makes sense.
+- **Smooth crossfades, not hard cuts.**  Two tracks overlap for a few seconds at every change, with optional EQ ducking so the basslines do not fight each other.
+- **A web page to control it.**  Open `http://localhost:8080` in any browser.  See what is playing, the album art, the lyrics, the queue.  Change the volume.  Skip a song.  Search and add tracks.
+- **Mood presets.**  Pick from built-in profiles (Wakeup, Chill, Workout, Party, etc.) or write your own.  Each preset shapes the BPM curve so a Wakeup set starts slow and ramps up while a Party set stays fast.
+- **Voice liners.**  Drop spoken clips ("You're listening to AutoDJ FM") into a folder and AutoDJ will play one over the music every few tracks, just like a real radio station.
+- **A queue.**  Search the library, click "Now" to interrupt, click "Next" to add to the line.  Reorder with Up / Down.  Remove with one click.
+- **Lyrics that scroll.**  If a song has an LRC file or lyrics in its tags, the web page shows them and highlights the current line.
+- **Works offline.**  Once installed there is no network requirement.  Use it on a NAS, on a laptop in airplane mode, on a Raspberry Pi.
+- **Built for screen readers.**  AutoDJ was written by a blind developer.  Every control is keyboard-accessible and announced clearly to NVDA / JAWS / VoiceOver.
 
-- Exact FAISS cosine search. No approximate-neighbour tuning to babysit; works fine to ~100k tracks.
-- BPM-shaping presets (`wakeup`, `party`, `workout`, you can write your own) plus a Discovery mode that throws in a sonically distant track every N songs so the set doesn't calcify.
-- Crossfade with an optional pro-DJ EQ duck. The duck high-passes the outgoing track during the overlap so two basslines don't fight each other into mud.
-- ReplayGain loudness normalisation if your files have the tags. Tracks without them play unchanged.
-- A web UI with album art, scrolling LRC lyrics, and a reorderable queue. Defaults to browser-driven playback so the CLI player and the web UI never share a soundcard.
-- An index that's portable. Build it on a GPU box, copy it to a NAS, play from any other machine that mounts the library at any path.
-
-## What's new in 0.15
-
-- **Beat- and key-synced transition FX.**  Rhythmic effects (echo,
-  dub delay, beat repeat, gate stutter, stutter build, sidechain pump,
-  scratch, transformer) snap to the beat grid and size to whole bars
-  at a tempo blended outgoing-to-incoming.  Oscillator FX (air horn,
-  dub siren, ring modulator) tune to the song's root note.  Settings
-  panel toggles default to ON.
-- **Web seek bar.**  Click, drag, or arrow-key the progress bar to
-  scrub.  Left/Right ±5 s, Shift+Arrow / PageUp+Down ±15 s, Home/End.
-  CLI player has had Left/Right seek hotkeys since day one.
-- **Voice liners.**  Drop spoken-clip audio files into the configured
-  folder; trigger every N tracks, every X minutes, or in a random
-  window.  Random / sequential / weighted rotation.  Ducks the active
-  deck during the overlay.  Upload + delete from the web UI.
-- **Profile bundles.**  Save the entire current session config (BPM
-  range, preset, harmonic mode, transition mode, sync flags, liner
-  trigger, more) under a name; load it back with one click or
-  `POST /api/profiles/<name>/apply`.  This is *not* the same as
-  `--name`, which scopes a separate **library**.  See [Index naming,
-  profiles, cue points](#index-naming-profiles-cue-points).
-- **Per-file dayparts.**  Drop one TOML per daypart in
-  `dayparts_dir/`; each file can declare `indexes = [...]` so a
-  workout daypart only fires when the workout index is active.
-- **Podman / Docker quickstart.**  `Containerfile` + `compose.yaml`
-  in the repo root.  `podman compose up` after `git clone` boots the
-  web UI.  See [Containers](#containers) below.
-- **Repeat-on-small-library fix.**  When `no_repeat_window` exceeds
-  the library size the player now clamps the deque automatically
-  (with a warning) so the picker always has candidates.
-- **Beatmatch on skip.**  Optional toggle.  When you press Skip mid
-  track, the incoming deck pitch-stretches to match the outgoing
-  tempo (preserves musical pitch, capped ±15 %).
-- **Combobox a11y sweep.**  Stripped verbose `aria-describedby`
-  paragraphs from every Settings control so screen readers announce
-  just the label, not a wall of help text.
-
-## Containers
-
-`Containerfile` and `compose.yaml` ship in the repo root.  Quickstart
-after a fresh clone:
+## Quick start (the short version)
 
 ```bash
-podman compose up        # build + run; web UI at http://localhost:8080
-podman compose down
-```
+git clone https://github.com/blindndangerous/AutoDJ
+cd AutoDJ
 
-`compose.yaml` mounts `./music` read-only at `/music` and `./index`
-read-write at `/index`.  Indexing remains a host job (it benefits
-from a GPU and the slim CPU image stays small).  Run on the host:
-
-```bash
-uv run autodj index
-```
-
-then start the container.  Docker users: same files work via
-`docker compose up`.
-
-## Index naming, profiles, cue points
-
-Three concepts that get confused.  They are different things:
-
-| Concept | Scope | Lives in | Example |
-|---|---|---|---|
-| **Index name** (`autodj index --name X`) | A whole separate library + FAISS index | `index/<name>/vectors.index` + `metadata.json` | `--name workout` for a 200-track gym-only library |
-| **Profile** (`POST /api/profiles`) | A saved bundle of session config (preset, BPM range, harmonic mode, transition mode, sync flags, liner trigger) | `profiles/<name>.json` | "Late night" profile pins ambient preset + 70-110 BPM + key sync ON |
-| **Cue point** | A within-track marker (drop, breakdown, phrase, outro_downbeat) | inside `dj_meta.json` per track path | first downbeat at 4.2 s, outro at 187.0 s |
-
-A profile *can* reference an index name (so "Workout" profile pins
-the workout index) but does not have to.  Cue points are tied to
-individual files; indexes and profiles are not.
-
-## How it works
-
-Indexing walks your library, extracts a 1040-dim fingerprint per file (1024 MuQ + 16 librosa), and writes everything to `index/<name>/vectors.index` plus a `metadata.json` sidecar. The metadata includes BPM, key, mode, energy, tempo confidence, and the usual tag fields so the picker can re-rank by more than raw cosine.
-
-Playback picks a seed (random or matching `--seed`), looks the seed's vector up in FAISS, fetches the top-N neighbours, drops anything in the recently-played window, optionally re-ranks by preset BPM target or Camelot harmonic compatibility, and starts the crossfade. On the next track it does the same thing using *that* track as the query, and so on. The recently-played window keeps it from looping back for ~500 picks by default.
-
-## Why MuQ over MERT?
-
-We used to ship MERT-v1-330M. MuQ replaced it in 2026-01 because it scores better on MARBLE (genre, singer ID, instrument, structure) and avoids MERT's heavy EnCodec tokenizer. The trade-off: MuQ wants 24 kHz mono fp32 (fp16 produces NaN). AutoDJ resamples for you so the user-facing impact is zero.
-
----
-
-## Prerequisites
-
-- **Python 3.13+** — [Download here](https://www.python.org/downloads/)
-- **[uv](https://docs.astral.sh/uv/getting-started/installation/)** — Fast Python package manager
-  ```bash
-  # Windows (PowerShell)
-  powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-  ```
-- **~1.5 GB disk space** for the MuQ model (downloaded automatically on first run)
-- A music library in **MP3, FLAC, or M4A** format
-
-**Optional but recommended:**
-- [beets](https://beets.io/) — if you use beets, AutoDJ reads your `library.db` for rich metadata (artist, title, genre, BPM, year) without re-scanning files.
-
----
-
-## Installation
-
-```bash
-# 1. Clone the repository
-git clone https://github.com/blindndangerous/autodj
-cd autodj
-
-# 2. Install everything (typical full install — index + play + web)
+# Install Python dependencies (uv handles the heavy lifting).
 uv sync --extra all
 
-# 3. (Optional) Install dev/test dependencies
-uv sync --extra all --extra dev
+# Point AutoDJ at your music folder once and let it learn the library.
+# This pass is the slow one -- it listens to every track and writes
+# what it learned to disk.  Use --limit 50 first to test on a small
+# batch before running the full library.
+uv run autodj index --limit 50
+uv run autodj index               # full library, can take hours
+
+# Start the web UI.
+uv run autodj serve
+
+# Open http://localhost:8080 in your browser.
 ```
 
-### CPU-only torch (e.g. on a NAS)
+That is the whole flow.  Index once, serve forever.  Future runs of `autodj index` only look at new files.
 
-Indexing automatically uses CUDA when available, CPU otherwise.  To install a smaller CPU-only torch wheel (~200 MB instead of ~2 GB) on a host without an NVIDIA GPU:
+## Containers (no Python install needed)
+
+If you have Podman or Docker installed:
 
 ```bash
-# Linux / NAS
-uv pip install --index-url https://download.pytorch.org/whl/cpu \
-  torch muq huggingface_hub librosa soundfile tqdm
+git clone https://github.com/blindndangerous/AutoDJ
+cd AutoDJ
+podman compose up        # or: docker compose up
 ```
 
-CPU indexing is fine for **small batches** (`uv run autodj index --limit 50`).  A full 10k-track library on CPU takes hours; run that on a GPU host overnight.
+Open `http://localhost:8080`.  Music goes in `./music`; the index lives in `./index`.
 
-### Web UI build (optional)
+The container does not run the indexing step (it goes faster on a machine with a GPU, which a container does not always have).  Run `uv run autodj index` on the host first, then start the container.
 
-The web UI ships unbundled in `src/autodj/static/` and runs as-is.  No Node toolchain required for development.  For distribution, build the minified bundle:
+## How to use the web UI
 
-```bash
-npm install
-npm run build
-```
+After `autodj serve`, point a browser at `http://localhost:8080`.  Four tabs:
 
-This writes `src/autodj/static_dist/` (gitignored).  The FastAPI server prefers `static_dist/` when present and falls back to `static/` when missing, so a local clone keeps working without ever running `npm`.  See `vite.config.js` for the pipeline.
+- **Now Playing.**  What is playing, the next track, album art, lyrics, the cue strip on the progress bar.
+- **Queue & Search.**  Find any track in your library and play it now or queue it up.  Reorder the queue.
+- **Settings.**  Pick a preset, change the crossfade length, switch transition effects, set a BPM range, toggle voice liners, choose an audio output device.
+- **Library tools.**  Run index / enrich / prune / stats jobs without leaving the page.
 
-The container image builds the bundle in a separate Node stage; the runtime image carries no Node.
+### Keyboard shortcuts (Now Playing tab)
 
-### Minimal installs (per role)
+| Key | What it does |
+|---|---|
+| Space | Play / pause |
+| N | Skip to the next track |
+| S | Shuffle (jump to a random track) |
+| M | Mute / unmute |
+| Up / Down | Volume up / down (5%) |
+| ? | Open the shortcut list |
 
-The deps split into optional groups so a NAS or headless host doesn't need to pull torch / librosa / audio libs just to run `enrich` / `prune` / `stats` against a shared index:
+The shortcuts are scoped to the Now Playing tab on purpose.  When you switch to Settings or the Library tab, arrow keys go back to navigating dropdowns and the shortcut keys do not interfere with typing in the search box.
 
-| Role | Install | Pulls in |
-|------|---------|----------|
-| **Maintenance only** (NAS) — `enrich`, `prune`, `stats`, `playlist` | `uv sync` | core only: faiss, numpy, click, rich (~tiny) |
-| **Indexer** (GPU box) | `uv sync --extra index` | + muq, torch, librosa, soundfile, tqdm |
-| **Player** (listening machine) | `uv sync --extra play` | + librosa, soundfile, sounddevice, pynput, mutagen, scipy |
-| **Web UI** (also needs `play`) | `uv sync --extra play --extra web` | + fastapi, uvicorn |
-| **Everything** | `uv sync --extra all` | full kit |
+### Music players already configured: just press play
 
-Trying to run `index` / `play` / `serve` after a minimal install raises a clear ImportError naming the missing dep — fix with the matching `--extra`.
+The default `serve` mode is browser-driven: the server picks tracks; the browser plays them.  This means the volume in the browser is independent of any CLI volume, and switching audio output devices in the browser only affects the browser.
 
----
+If you want server-side audio output instead (for example to send sound to a Bluetooth speaker through ALSA on Linux), pass `--server-audio`.
+
+## Voice liners
+
+Drop short spoken clips into a folder.  AutoDJ will fade the music down for a couple of seconds and play one of them now and then.
+
+1. Open the **Settings** tab.
+2. Tick **Enable voice liners**.
+3. The Trigger / Mix / Library boxes appear.
+4. Click the **Choose liner file** button to upload an MP3 / WAV / OGG / M4A / FLAC / AAC.
+5. Set how often you want them to play.
+
+You can pick three trigger styles, in any combination:
+
+- **Every N tracks** -- after every 5 (or whatever) songs.
+- **Every N minutes** -- on a wall-clock timer.
+- **Random window** -- pick a random delay between two values.
+
+Rotation modes: random, sequential, weighted (server stores weights but the browser falls back to uniform random for now).
+
+## How well does this work?
+
+It works well when your library has the genre clustering you expect.  Pop tracks pick more pop, jazz picks more jazz, an acoustic intro picks acoustic, a heavy drop picks something else heavy.
+
+It does not work well when:
+
+- The library is tiny (under ~50 tracks) -- there is not enough variety for the picker to behave like a DJ.  AutoDJ warns when the no-repeat window is bigger than the library.
+- All your files are tagged "Unknown Artist" -- the picker still works on sound alone, but the web UI looks bare.
+- Your tracks are very compressed (96 kbps MP3) -- the audio analysis still works but is less accurate.
 
 ## Configuration
 
-Edit `config.toml` to point to your music library. Every key has an inline comment explaining its purpose.
+A config file is optional.  Without one, AutoDJ uses sensible defaults: index lives in `./index`, music is read from `./music`, the web UI listens on `localhost:8080`.
+
+Drop a `config.toml` in the repo root (or pass `--config /path/to/config.toml` on every command) to change anything.  The shipped `config.toml.example` is annotated.
+
+Common things to set:
 
 ```toml
 [library]
-# Path to your music folder — local drive or NAS mapped drive letter.
-# When using beets, this MUST match the local mount point of the beets
-# `directory` setting so relative paths resolve correctly.
-music_dir = "Z:/Music"
-
-# Path to your beets SQLite library database (optional but recommended)
-beets_db = "C:/Users/you/.config/beets/library.db"
+music_dir = "/mnt/nas/music"
+beets_db  = "/home/me/.config/beets/library.db"   # optional
 
 [playback]
-crossfade_seconds = 3.0   # Crossfade duration between tracks (0 = instant cut)
-no_repeat_window  = 50    # Don't replay any of the last N tracks
-# history_file    = "~/.autodj/history.jsonl"   # Optional play history log
-# discovery_every = 20                          # Inject a sonically distant track every N tracks
-
-[model]
-name = "OpenMuQ/MuQ-large-msd-iter"   # Model used for audio embeddings
+crossfade_seconds       = 5
+crossfade_eq_duck       = true
+discovery_every         = 8        # pick a sonically distant track once per 8 songs
+no_repeat_window        = 500
+show_lyrics             = true
+beat_sync_fx            = true
+key_sync_fx             = true
+transition_mode         = "full_intro_outro"
 ```
 
-See `config.toml.example` for all options with full inline documentation.
+### Multi-machine / NAS setups
 
-### Beets paths
+The index is portable.  Build it on a fast machine (one with a GPU is best), then copy `index/` to another machine that mounts the music library at any path.  AutoDJ stores the music files relative to a configurable root, so the same index works on Windows, Linux, and macOS as long as `music_dir` points at the right place on each machine.
 
-Recent beets versions store track paths *relative* to the library root (the `directory` config option) via the `relative_path` migration. AutoDJ resolves these against `music_dir`, so all you need is for `music_dir` to point to the local mount point of your beets `directory`.
-
-Example: beets stores `10 Years/2001 - Into the Half Moon/01 Fallaway.flac` and your NAS music library is mounted at `Z:/Music`. Set:
-```toml
-[library]
-music_dir = "Z:/Music"
-beets_db  = "C:/Users/you/.config/beets/library.db"
-```
-
-Absolute paths in the database (rare — typically tracks living outside the main library tree) are used as-is.
-
----
-
-## Building the index
-
-Before playing music, AutoDJ must index your library. This is a **one-time operation** — subsequent runs are incremental (only new files are processed).
-
-### Step 1: Test with a small batch first
-
-```bash
-uv run autodj index --limit 50
-```
-
-This indexes 50 tracks and takes a few minutes on CPU. Confirm the output looks right before committing to the full library.
-
-### Step 2: Index your full library
-
-```bash
-uv run autodj index
-```
-
-On a CPU-only machine with 10,000+ tracks this may take several hours. **Run it overnight**, or see below for GPU acceleration.
-
-### Rebuilding from scratch
-
-```bash
-uv run autodj index --force
-```
-
-### Pruning deleted tracks
-
-If you delete, move, or rename files in your library, `metadata.json` will list paths that no longer exist.  Run:
-
-```bash
-uv run autodj prune
-```
-
-to drop those entries.  An auto-prune also runs at the start of every `autodj index`, so most of the time you don't need this manually.
-
-**Safety net:** if more than 20 % of the index would be removed in one pass (almost always a sign of a misconfigured `music_dir` rather than a real library cleanup), the prune is refused and exits with `PruneSafetyError`.  Use `autodj prune --force` to override.
-
-### Indexing on a GPU machine
-
-If you have another machine on your local network with an NVIDIA GPU and access to the same NAS:
-
-1. **Install AutoDJ on the GPU machine** the same way (`uv sync`).
-2. **Set a shared index location** in `config.toml` on both machines:
-   ```toml
-   [index]
-   index_dir = "Z:/autodj-index"   # NAS path both machines can reach
-   ```
-3. **Run the indexer on the GPU machine** — CUDA is detected automatically:
-   ```bash
-   uv run autodj index
-   ```
-4. **Play on your listening machine** — it reads the same index from the NAS:
-   ```bash
-   uv run autodj play
-   ```
-
-### Sharing one index across Windows + Linux machines
-
-Track paths in `metadata.json` are stored RELATIVE to `[library] music_dir`, so the same index file works on every machine that mounts the library — even if the absolute mount path differs (`/mnt/music` on Linux, `Z:/Music` on Windows).
-
-Two pieces are needed:
-
-1. **Per-machine `music_dir`.**  Keep a shared `config.toml` (no host paths) and use a gitignored **`config.local.toml`** sibling to override only the local paths.  The repo ships two ready-to-copy templates:
-
-   ```bash
-   # Linux host
-   cp config.local.toml.linux.example   config.local.toml
-   $EDITOR config.local.toml             # adjust music_dir / beets_db
-
-   # Windows host
-   cp config.local.toml.windows.example config.local.toml
-   notepad config.local.toml
-   ```
-
-   Keys in `config.local.toml` are deep-merged on top of `config.toml` at load time.  Each host keeps its own; the file never leaves the machine.
-
-2. **Per-machine venv** (.venv binary wheels are not portable between OSes).  Set the `UV_PROJECT_ENVIRONMENT` environment variable per machine to a path on its own local disk:
-
-   ```powershell
-   # Windows — make permanent for the user
-   [Environment]::SetEnvironmentVariable("UV_PROJECT_ENVIRONMENT", "C:\Users\you\.venvs\autodj-win", "User")
-   ```
-   ```bash
-   # Linux — append to ~/.bashrc
-   export UV_PROJECT_ENVIRONMENT="$HOME/.venvs/autodj-linux"
-   ```
-
-   Then run `uv sync` once on each machine — the venv lands on local disk, the project tree on the NAS stays clean.
-
-**Path remap (legacy bridge).**  An index built before the relative-paths migration may still contain absolute paths from the original host.  Add `path_remap` to convert them on the fly:
-
-```toml
-[library]
-path_remap = [
-  ["/mnt/music/", "Z:/Music/"],
-]
-```
-
-Once you re-run `autodj prune` (or `autodj index`) the absolute paths are rewritten as relative and `path_remap` is no longer needed.
-
----
-
-## Playing music
-
-```bash
-# Start from a random seed song
-uv run autodj play
-
-# Start from a specific song or artist (fuzzy search)
-uv run autodj play --seed "Portishead"
-
-# Use a BPM-shaping preset
-uv run autodj play --preset wakeup
-
-# Hard BPM filter — only pick tracks in the 90–130 BPM range
-uv run autodj play --bpm-range 90-130
-
-# Inject a sonically distant track every 15 tracks (press D to toggle on/off)
-uv run autodj play --discovery-every 15
-
-# Save a live M3U playlist of everything played this session
-uv run autodj play --export-m3u ~/session.m3u
-
-# Log every played track to a JSON Lines file
-uv run autodj play --history-file ~/.autodj/history.jsonl
-
-# Override crossfade duration for this session
-uv run autodj play --crossfade 5
-
-# Dry run — print track picks without playing audio (good for testing)
-uv run autodj play --dry-run
-
-# Smart shuffle — pick the most sonically DISTANT next track
-uv run autodj play --smart-shuffle
-
-# Pure shuffle — random next track, ignores similarity entirely.
-# Toggle off mid-set and similarity resumes from whatever's playing —
-# use it to wander into a song you like, then "lock in" by switching
-# shuffle off so the auto-DJ keeps that track as its new seed.
-uv run autodj play --pure-shuffle
-
-# Hide lyrics in the CLI panel and web UI (default: on)
-uv run autodj play --no-show-lyrics
-```
-
-### Keyboard controls during playback
-
-| Key       | Action                                      |
-|-----------|---------------------------------------------|
-| `Space`   | Pause / Resume                              |
-| `N`       | Skip to next track                          |
-| `D`       | Toggle discovery mode on/off                |
-| `Q`       | Quit                                        |
-| `←` / `→` | Seek −10 s / +10 s                          |
-| `↑` / `↓` | Volume up / down (5% per step)              |
-| `M`       | Mute / Unmute                               |
-
-`D` only works when `--discovery-every` is set (or `discovery_every` is in `config.toml`).
-
-### Status bar
-
-While playing, a persistent status panel is pinned to the bottom of the terminal:
-
-```
-  Now playing : Portishead — Glory Box                    [playing]  1:23 / 4:50
-  Up next     : Massive Attack — Teardrop    ◈ Discovery  Vol: ████████░░  80%
-  Controls: Space=Pause/Resume  N=Skip  D=Discovery  Q=Quit  ←/→=Seek±10s  ↑/↓=Vol  M=Mute
-```
-
-The `◈ Discovery` indicator appears in cyan when discovery is enabled, dimmed when disabled.
-
----
-
-## Presets
-
-Presets shape the BPM arc of a session — they bias the similarity engine toward tracks at a target tempo, which changes over time.
-
-### Built-in presets
-
-| Preset     | Description                                  |
-|------------|----------------------------------------------|
-| `wakeup`   | Linear ramp 70 → 130 BPM over 30 tracks     |
-| `winddown` | Linear ramp 130 → 70 BPM over 30 tracks     |
-| `sleep`    | Linear ramp 85 → 55 BPM over 40 tracks      |
-| `morning`  | Gentle rise 60 → 95 BPM over 30 tracks      |
-| `slide`    | Sine arch 80 → 135 → 80 BPM over 40 tracks  |
-| `party`    | Constant 128 BPM                             |
-| `workout`  | Constant 145 BPM                             |
-| `chill`    | Constant 75 BPM                              |
-| `focus`    | Constant 85 BPM                              |
-| `driving`  | Constant 112 BPM                             |
-
-```bash
-uv run autodj play --preset wakeup
-uv run autodj serve --preset party --discovery-every 10
-```
-
-### User-defined presets
-
-Add your own presets to `config.toml`:
-
-```toml
-[presets.focus_deep]
-bpm_target = 85
-bpm_weight = 0.15        # how strongly BPM shapes picks (0–1, default 0.25)
-
-[presets.festival]
-bpm_start = 90
-bpm_end   = 145          # linear ramp
-horizon_tracks = 60      # reach bpm_end by track 60, then hold
-bpm_weight = 0.35
-discovery_every = 10     # preset ships with discovery rate built in
-
-[presets.arch]
-bpm_start = 80
-bpm_end   = 140
-curve = "slide"          # sine arch: low → peak → low
-```
-
-User presets shadow built-ins on name collision.
-
----
-
-## Daypart, mood arc, and cue points (DJ autopilot)
-
-Three signals stack on top of presets so unattended playback can drift
-through a session without you babysitting it:
-
-```bash
-# Set-relative envelope (warmup, peak around 75 %, cool, then loop)
-uv run autodj serve --mood-arc --mood-arc-hours 3
-
-# Wall-clock daypart (morning chill, evening peak, late-night deep)
-uv run autodj serve --daypart
-
-# Both. Arc owns the picker target while the session is active.
-# Daypart is the idle baseline that resumes when the arc finishes.
-uv run autodj serve --mood-arc --daypart
-```
-
-Picker target priority: **explicit preset > mood arc > daypart**. The
-mood arc anchors to the moment you toggle it on, so flipping it from
-the web UI restarts at warmup. Both can also be set in `config.toml`:
-
-```toml
-[playback]
-enable_daypart    = false
-enable_mood_arc   = false
-mood_arc_hours    = 3.0
-import_external_cues = true   # auto-discover Mixxx/Rekordbox/Traktor cues
-```
-
-### Cue points
-
-AutoDJ detects cue points from raw audio at first analyse: drops,
-breakdowns, first downbeat, outro downbeat, and 32-beat phrase
-markers. No extra dependencies; the existing librosa pass does it.
-Cached in `index/<name>/dj_meta.json` so detection runs once per track.
-
-If you also use **Mixxx**, **Rekordbox**, or **Traktor**, AutoDJ
-auto-imports their cue points on first cache use:
-
-- **Mixxx**: read directly from `mixxx.db` SQLite (default user-data
-  location; no setup).
-- **Rekordbox**: read from a manually-exported `Library.xml`. The
-  live database is encrypted by Pioneer, so in Rekordbox use *File,
-  Export Collection in xml format, ~/Documents/rekordbox/Library.xml*.
-- **Traktor**: read from `collection.nml` in the Traktor user-data
-  directory.
-
-When two sources disagree about a cue at the same point, **user**
-edits beat **DJ-software** beat **auto-detected**. Cues are surfaced
-in the now-playing card as a colored strip on the progress bar (with a
-screen-reader summary), and via `/api/status` for any external client.
-
-Disable the importer with `--no-import-external-cues` or
-`import_external_cues = false`.
-
----
-
-## Web UI
-
-AutoDJ includes a browser-based control panel powered by FastAPI and WebSockets.
-
-```bash
-# Start the web UI (defaults: http://127.0.0.1:8080)
-uv run autodj serve
-
-# Choose a seed track, custom port, open browser automatically
-uv run autodj serve --seed "Portishead" --port 8080 --open
-
-# Bind to all interfaces (LAN access)
-uv run autodj serve --host 0.0.0.0 --port 8080
-
-# With preset and discovery
-uv run autodj serve --preset wakeup --discovery-every 15
-
-# Server-side audio output (legacy mode — default is browser-driven so
-# the CLI player and the web UI never share an audio stream)
-uv run autodj serve --server-audio
-```
-
-The web UI displays the currently playing track, the up-next track, playback state, and volume. All playback controls (pause/resume, skip, volume, mute) are available from the browser — keyboard controls continue to work in the terminal at the same time.
-
-By default, **`autodj serve` is browser-driven**: the server picks tracks
-and the browser's Web Audio graph plays them.  Skipping, volume, EQ, and
-audio-device changes only touch the local browser.  Pass `--server-audio`
-to fall back to the legacy mode where the server process streams audio
-to its own soundcard (kept for headed hosts that want both).
-
-The **◈ Discovery** button toggles discovery mode on/off from the browser (visible only when a discovery rate is configured).
-
-Live state is pushed to the browser via a WebSocket connection every second — no polling, no page refreshes.
-
-### Search and queue from the browser
-
-The **Search Library** panel lets you search by artist or title. Each result has two buttons:
-
-| Button | Action |
-|--------|--------|
-| **▶ Now** | Queue the track and immediately skip to it |
-| **⏭ Next** | Queue the track to play after the current one finishes |
-
-> **Note:** the web server has no authentication.  Only bind to `0.0.0.0` on a trusted LAN.
-
-### HTTPS / TLS (required for AudioWorklet on remote browsers)
-
-Browsers expose `AudioContext.audioWorklet` only inside a secure
-context (HTTPS, or `http://localhost`).  When you reach the web UI from
-another device over plain HTTP, the worklet-based effects (`bitcrusher`,
-`freeze`, `glitch`, `gate_stutter`) silently downgrade to non-worklet
-fallbacks (WaveShaper, BufferSource loop, BufferSource random-slice,
-scheduled gain on/off).  The fallbacks sound close but lose
-sample-accurate timing.
-
-To unlock the real worklets on a LAN, generate a trusted certificate
-with [mkcert](https://github.com/FiloSottile/mkcert) and pass it to
-`autodj serve`:
-
-```bash
-# One-time per machine:
-mkcert -install                         # adds local CA to OS + browser trust stores
-mkcert mybox.local 192.168.50.40 localhost
-# Produces mybox.local+2.pem  +  mybox.local+2-key.pem
-
-# Start with HTTPS:
-uv run autodj serve \
-  --host 0.0.0.0 --port 8443 \
-  --ssl-certfile mybox.local+2.pem \
-  --ssl-keyfile  mybox.local+2-key.pem
-```
-
-Run `mkcert -install` on every listening device too so every browser
-trusts the certificate.  After that, `https://mybox.local:8443` is a
-secure context everywhere and AudioWorklet works.
-
----
-
-## Loudness normalisation (ReplayGain)
-
-If your library is tagged with ReplayGain (most modern taggers — beets, MP3Tag, Mp3Gain, foobar2000 — write it), enable it in `config.toml`:
-
-```toml
-[replaygain]
-enabled            = true       # default false (opt-in)
-target_db          = -14.0      # output reference: -14 ≈ Spotify, -18 = original RG reference
-max_clip_safe_gain = 1.0        # peaks never exceed this fraction of full scale
-```
-
-AutoDJ reads the embedded `replaygain_track_gain` + `replaygain_track_peak` tags and applies a clip-safe linear gain so every track plays at consistent loudness.  Tracks without tags play unchanged.
-
-If your library is not tagged, generate tags once with:
-
-```bash
-# beets users
-beet replaygain
-
-# generic
-loudgain -a -k -s e *.flac      # https://github.com/Moonbase59/loudgain
-```
-
----
-
-## Pro-DJ mixing layer (Deejay-style automix)
-
-Five opt-in features that turn AutoDJ into a Deejay-grade automix:
-
-```toml
-[djmix]
-harmonic_mixing      = true   # only mix into Camelot-compatible keys
-beatmatch            = true   # pitch-stretch incoming track to match outgoing BPM (±8%)
-beatmatch_max_stretch = 0.08
-outro_intro_align    = true   # crossfade between detected outro of A and intro of B
-phrase_align         = true   # snap crossfade start to nearest 8-bar phrase
-phrase_bars          = 8
-filter_sweep         = true   # low-pass sweep on outgoing tail during crossfade
-filter_sweep_floor_hz = 250.0
-```
-
-Or override per-session from the CLI:
-
-```bash
-uv run autodj play --harmonic --beatmatch --align-outro --phrase-align --filter-sweep
-```
-
-**How it works:**
-
-- **Harmonic mixing** uses the Camelot wheel.  Tracks already have their key + mode stored in the index, so this needs no re-analysis.  Same position, ±1 around the wheel, or relative major/minor pass.
-- **Beatmatch** uses `librosa.effects.time_stretch` to pitch-preserve-stretch the incoming track to the outgoing BPM.  Refuses adjustments beyond the configured max stretch (default ±8 %, typical DJ practice).
-- **Outro / intro alignment** auto-detects each track's intro end and outro start using a smoothed RMS envelope.  First time a track plays under this mode, detection runs and the result is cached in `index/dj_meta.json` (sidecar — never touches the main metadata file).  Subsequent plays are instant.
-- **Phrase alignment** also runs on first play, extracting the beat grid via `librosa.beat.beat_track` and snapping the crossfade start time to the nearest 8-bar phrase boundary.
-- **Filter sweep** rides a Butterworth low-pass on the outgoing tail (cutoff sliding from full-range down to the floor in 32 steps), giving the classic "filter-out" energy lift.
-
-**3-band EQ** (low / mid / high) sliders in the web UI let you tweak the live mix in real time — Butterworth crossover at 250 Hz / 4 kHz, applied per audio output chunk via `sosfilt`.  Reset button restores unity.
-
-The web UI also displays live **BPM**, **Camelot key**, **energy**, and the **current beatmatch stretch ratio** as badges in the now-playing card.  A polite live region announces "Key 8A, BPM 124, beatmatched 1.07 times" on every track change (separate from the title announcement to avoid clobbering).
-
----
-
-## Where transitions are rendered
-
-Two playback modes — same effect catalogue, different engine:
-
-| Mode | Renderer | What's happening |
-|------|----------|------------------|
-| **CLI `autodj play`** + **server-rendered `serve`** | Python (`numpy` / `scipy` / `soundfile` / `librosa`) | Effects mutate raw audio bytes before they reach the soundcard. Full pipeline: ReplayGain → beatmatch (librosa time-stretch) → outro/intro align → phrase align → filter sweep → transition effect → EQ-ducked crossfade → 3-band EQ → sounddevice. |
-| **Browser-playback `serve --no-playback`** | Browser **Web Audio API** (`AudioContext` + `AudioBufferSourceNode`, `BiquadFilterNode`, `DelayNode`, `ConvolverNode`, `WaveShaperNode`, `OscillatorNode`) | Effects routed as live audio nodes between `MediaElementSource` and the destination.  Real-time DSP, zero server CPU during playback. |
-
-**Effect parity** — all 26 transition effects work in BOTH modes.  Some details differ by renderer:
-
-| Effect | CLI | Browser | Notes |
-|--------|-----|---------|-------|
-| `echo_out` | numpy feedback delay | DelayNode + feedback gain | identical |
-| `reverb_tail` | Schroeder reverb (numpy) | ConvolverNode + synth IR | browser is smoother |
-| `highpass_sweep` / `lowpass_sweep` | scipy butter sweep | BiquadFilterNode + freq ramp | identical |
-| `cross_eq_swap` | scipy butter pair | two biquads | identical |
-| `tape_stop` | progressive resampling | playbackRate ramp 1.0→0.2 | browser floored at 0.2× to avoid HTMLMediaElement stutter |
-| `gate_stutter` | numpy hard gate | scheduled gain on/off | identical |
-| `noise_riser` / `noise_drop` | scipy filter sweep on synth noise | BufferSource + biquad sweep | identical |
-| `bitcrusher` | quantising numpy | WaveShaperNode | identical |
-| `flanger` | LFO delay (numpy) | DelayNode + LFO oscillator | identical |
-| `pitch_swell` | resampling | playbackRate 1.0→2.0 | identical |
-| `pitch_fall` | resampling 1.0→0.4 | playbackRate 1.0→0.3 | mirror of `pitch_swell` |
-| `telephone` | scipy band-pass | cascaded biquads | identical |
-| `backspin` / `forward_spin` | reversed buffer + accelerating resample | **fetch + decodeAudioData → AudioBufferSourceNode with reversed buffer** | true reverse playback in both modes |
-| `distortion` (browser-only) | n/a — use `bitcrusher` for similar grit | WaveShaperNode + drive ramp | |
-| `chorus` (browser-only) | n/a | 3 detuned LFO delays | |
-| `submerge` (browser-only) | n/a | lowpass sweep + reverb | |
-| `vinyl_wow` (browser-only) | n/a — server uses real time-stretch | playbackRate LFO modulation | |
-
-> **Note:** `distortion`, `chorus`, `submerge`, `vinyl_wow` are browser-only at present.  CLI play falls back to `none` if these are configured.  Future: port to numpy/scipy on the CLI side.
-
-> **Modern Web Audio (2026):** AutoDJ uses browser-native `AudioBufferSourceNode` (real reverse via decoded buffer + manual reverse copy — equivalent to the spec's negative `playbackRate`) plus standard `BiquadFilterNode` / `DelayNode` / `ConvolverNode` / `WaveShaperNode` / `OscillatorNode` graphs.  No third-party library (Tone.js, WAM, Howler) — adds runtime weight without enabling anything we need.  AudioWorklet is the path forward if we need custom DSP (e.g. stereo bitcrusher or a true-stereo backspin); not yet needed.
-
----
-
-## Audio format support
-
-| Format | CLI / server playback | Browser playback |
-|--------|------------------------|------------------|
-| MP3    | ✓ | ✓ all browsers |
-| AAC (M4A) | ✓ | ✓ all browsers |
-| FLAC   | ✓ | ✓ Chrome 56+, Firefox 51+, Safari 11+ |
-| ALAC (M4A) | ✓ | **Safari only** — Chrome / Firefox cannot decode |
-| OGG / Opus | ✓ | ✓ Chrome / Firefox; ✗ Safari |
-| WAV    | ✓ | ✓ all browsers |
-
-ALAC files in browser-playback mode auto-skip with a "Playback error" message naming the file.  Workarounds: re-encode to FLAC (`beet convert -f flac`) or use Safari.
-
----
-
-## Transition effects
-
-Each crossfade can apply one of twenty-six DJ-style flourishes (browser side
-runs them through Web Audio + AudioWorklet for sample-accurate, click-free
-fades; CLI side does the equivalent in numpy):
-
-```toml
-[transitions]
-effect  = "rotate"   # cycle through all real effects
-wet_mix = 1.0
-```
-
-| Effect | Sound |
-|--------|-------|
-| `none` | Standard crossfade only |
-| `echo_out` | Feedback echo throw on outgoing |
-| `reverb_tail` | Schroeder reverb on outgoing |
-| `highpass_sweep` | Sweeps the highs out of the outgoing tail |
-| `lowpass_sweep` | Sweeps the lows out of the outgoing tail |
-| `tape_stop` | Vinyl stop on outgoing — true silence at the end |
-| `gate_stutter` | Sample-accurate rhythmic chop with raised-cosine edges (AudioWorklet) |
-| `noise_riser` | Synthesised white-noise build between tracks |
-| `noise_drop` | Opposite of riser — descending sweep |
-| `backspin` | True reverse playback of the outgoing tail |
-| `forward_spin` | Pitched-up forward acceleration into the cut |
-| `cross_eq_swap` | Outgoing keeps highs / incoming brings bass |
-| `bitcrusher` | Real bit-crush + sample-rate reduction (AudioWorklet) |
-| `flanger` | LFO-modulated short delay |
-| `pitch_swell` | Slow pitch bend up on outgoing |
-| `pitch_fall` | Slow pitch bend down on outgoing (mirror of `pitch_swell`) |
-| `telephone` | Band-limited, compressed |
-| `distortion` | Soft-clip drive |
-| `chorus` | Three detuned voices |
-| `submerge` | Underwater-style cutoff dive |
-| `vinyl_wow` | Pitch wow + flutter |
-| `freeze` | Granular looper — captures the last 100 ms and loops with fade-out (AudioWorklet) |
-| `glitch` | Random buffer slicing + reorder (AudioWorklet) |
-| `random` | Pick uniformly per crossfade |
-| `rotate` | Cycle through all real effects in order |
-
-### Effect timing (industry-standard, with outro-aware sizing)
-
-Each effect has a minimum duration sourced from commercial DJ-tool
-defaults (Pioneer DJM, Reloop RMX, Numark, Mixxx).  When your
-configured `crossfade_seconds` is shorter than the minimum, AutoDJ
-automatically extends the outgoing-track runway so the effect doesn't
-sound rushed.  The amplitude crossfade itself still respects your
-configured length — the incoming track always lands at the same point.
-
-When the outgoing track has DJ-meta analysis (cached in
-`index/dj_meta.json` after the first play under outro-intro alignment),
-each effect is sized to a fraction of that track's outro rather than
-the fixed crossfade window.  Tail-fillers like reverb, echo throws,
-and risers consume around 80 % of the outro; punctuating effects like
-scratch, air horn, and glitch take roughly 25–35 %.  The result is
-clamped to 1.0–12.0 s and never drops below the static minimum-runway
-floor in the table below.  Tracks without analysis fall back to the
-fixed-window behaviour.
-
-| Effect | Minimum runway | Why |
-|---|---|---|
-| `tape_stop` | 4.0 s | Reloop default ~50% rate over 4 s |
-| `backspin` | 2.5 s | Pioneer Backspin / Numark Reverse Roll |
-| `forward_spin` | 2.5 s | Mirror of backspin |
-| `reverb_tail` | 4.0 s | Mid-size hall decay |
-| `noise_riser` | 4.0 s | 2-bar build at 120 BPM |
-| `noise_drop` | 3.0 s | Drops feel snappier than risers |
-| `freeze` | 4.0 s | Granular hold needs space |
-| `glitch` | 3.0 s | Chaotic effects get tedious longer |
-| `echo_out` | 3.0 s | 1/4-note feedback over 8 bars |
-| (others) | = crossfade | Filter sweeps, EQ swap, distortion etc. follow user setting |
-
-Real vinyl backspin uses a decelerating-rate envelope (`2.0× → 0.05×`,
-quadratic curve) — not the linear acceleration earlier versions used.
-The difference matches the actual physics of a record being pushed
-back: hand impulse spins it fast, friction slows it to a stop.
-
-### Transition modes (Mixxx-style)
-
-The crossfade engine supports four alignment modes, mirroring the
-`TransitionMode` enum in Mixxx's `AutoDJProcessor`.  Choose per session
-(`--transition-mode` CLI flag), persistently (`[playback] transition_mode`
-in `config.toml`), or live in the web UI (Settings → Transition mode).
-
-| Mode | What it does |
-|---|---|
-| `full_intro_outro` (default) | Aligns outgoing outro start with incoming intro end.  Fade length = `min(outro_len, intro_end)` clamped to `[1, 12]` s.  Best when both tracks have detected markers. |
-| `outro_fade` | Begin fade at the outgoing track's outro_start.  Fade length = outro_len (clamped).  Ignores incoming intro. |
-| `fixed_skip_silence` | Use the configured `crossfade_seconds`, but trim leading silence on the incoming track (seek past `intro_end_s`) and trailing silence on the outgoing (silence detector triggers an early crossfade). |
-| `fixed` | Legacy fixed-length crossfade with no marker awareness. |
-
-```bash
-uv run autodj play --transition-mode outro_fade
-uv run autodj serve --transition-mode fixed_skip_silence
-```
-
-```toml
-[playback]
-transition_mode = "full_intro_outro"
-```
-
-Markers live in the lazy `index/dj_meta.json` sidecar — first encounter
-of a track runs intro/outro detection (`autodj.dj_meta.detect_intro_outro`)
-and caches the result.  No re-indexing required.
-
-### Genre normalisation
-
-Music libraries spell genres a hundred ways: "Electronic / EDM / IDM",
-"Hip-Hop", "Hip Hop", "Rap", "Trip-Hop", "TripHop", "Indie Rock", "Alt
-Rock"…  Preset `genres = [...]` filters now match against a canonical
-form, so:
-
-- `genres = ["Electronic"]` matches *Electronic, EDM, IDM, Synthwave,
-  Trance, Chillwave, Ambient, Downtempo, Dubstep…*
-- `genres = ["Rock"]` matches *Indie Rock, Alt Rock, Alternative,
-  Post-Rock, Prog Rock, Garage Rock, Psychedelic Rock…*
-- `genres = ["Hip-Hop"]` matches *Hip-Hop, Hip Hop, Rap, Trap*
-
-Mapping table is in `src/autodj/genres.py` — adding a new alias is one
-line.  Library tags don't have to be rewritten.
-
-### Audio output device selection
-
-Web UI Settings card has an **Audio output device** dropdown.
-
-| Browser | Status |
-|---|---|
-| Chromium / Edge | Full support |
-| Firefox 116+ | Full support |
-| Firefox < 116 | Stuck on system default — `setSinkId` not exposed |
-| Safari | Stuck on system default — Apple has not shipped `setSinkId` as of 2026-05 |
-
-Browsers hide device **names** until you grant microphone permission once.
-The Settings card shows a **Show device names** button when labels are
-blank — clicking it triggers a brief microphone request, the stream is
-released immediately (no audio captured), then the device list refreshes
-with real names.  Generic `Output 1`, `Output 2` labels are shown without
-permission.
-
-Selection persists per-browser in `localStorage`.  Server-side CLI
-playback has its own `--device` flag (see [Sound card selection — CLI](#sound-card-selection-cli)).
-
-### Sound card selection — CLI
-
-```bash
-uv run autodj list-devices               # enumerate outputs with index + name
-uv run autodj play --device 4            # by sounddevice index
-uv run autodj play --device "USB Headphones"   # or by substring
-```
-
-Or set permanently:
-
-```toml
-[playback]
-audio_device = "USB Headphones"          # int or substring
-```
-
-### Mobile-friendly web UI
-
-Layout collapses to a single column on screens ≤ 720 px.  Touch
-targets meet **WCAG 2.5.5** (≥ 44 × 44 CSS px) — every button, slider
-thumb, and form field is finger-friendly.  Settings card stays
-collapsed by default on phone, footer keyboard hint is hidden (no
-keyboard).  Cover art shrinks to 96 × 96 (≤ 720 px) / 80 × 80
-(≤ 480 px) but stays prominent.
-
-### AudioWorklet effects
-
-`bitcrusher`, `gate_stutter`, `freeze`, and `glitch` run in dedicated
-AudioWorklet processors when played through the web UI.  This gives them:
-
-- **Sample-accurate timing** — no 128-sample block-quantisation drift
-- **Click-free seams** — raised-cosine fades on every gate / loop edge
-- **Real audio-thread DSP** — operations like sample-and-hold rate
-  reduction, granular loop-and-fade, and ring-buffer random reads that
-  no built-in Web Audio node can produce.
-
-Falls back to GainNode / WaveShaperNode equivalents when a worklet
-fails to load (very old browsers).  CLI playback uses NumPy/SciPy
-implementations of every effect.
-
-Override per-session: `uv run autodj play --transition tape_stop`.
-
-`wet_mix` controls how much of the effect is heard vs the dry crossfade (1.0 = full effect, 0.0 = inaudible).
-
----
-
-## Pro-DJ crossfade (EQ ducking)
-
-Two tracks playing simultaneously through a normal crossfade often sound muddy because their sub-200 Hz bass content sums.  Pro DJs solve this by manually cutting the bass on the outgoing track during the overlap.  AutoDJ does it automatically:
-
-```toml
-[playback]
-crossfade_eq_duck         = true     # default false (opt-in)
-crossfade_bass_cutoff_hz  = 180.0    # frequency below which outgoing track is progressively attenuated
-```
-
-Implementation: 4th-order Butterworth high-pass on the outgoing tail, mixed in with a quarter-sine envelope.  Tiny CPU cost, big perceived quality boost.  Falls back to plain linear crossfade if scipy is unavailable.
-
----
-
-## Lyrics (LRC sidecars)
-
-If a `<basename>.lrc` file exists next to an audio file, the web UI shows the full lyric list with the active line highlighted and announced via `aria-live` for screen-reader users.
-
-LRC format example (`song.lrc`):
-
-```
-[ar:Portishead]
-[ti:Glory Box]
-[00:12.30]I'm so tired of playing
-[00:18.55]Playing with this bow and arrow
-[00:24.10]Gonna give my heart away
-```
-
-Tools that auto-fetch LRC files: `lrc-get`, `lyrics-finder`, `auddio`, or any beets plugin that fetches lyrics.
-
----
-
-## Genre-aware presets
-
-User presets accept an optional `genres` filter — only tracks whose genre matches (substring, case-insensitive) are eligible:
-
-```toml
-[presets.electronic_workout]
-bpm_target = 145
-bpm_weight = 0.4
-genres     = ["electronic", "house", "techno"]
-```
-
-Combine with the existing BPM curves for tightly scoped sessions.
-
----
-
-## Web UI features (recap)
-
-In addition to the search + transport controls already documented, the web UI provides:
-
-- **Album art** — embedded cover art (FLAC pictures, MP3 APIC, MP4 covr) shown on the now-playing card
-- **Scrolling lyrics** — auto-scrolled, active-line highlighted, screen-reader-announced
-- **Reorderable queue** — search → "Next" appends to a real queue; per-item Up / Down / Remove buttons (no drag-and-drop, deliberately, so it works for keyboard and screen-reader users)
-
-All new features stream through the same WebSocket as the existing state push.
-
----
-
-## Offline playlist generation
-
-Generate an M3U playlist without playing anything:
-
-```bash
-# 20-track playlist to stdout
-uv run autodj playlist
-
-# 40-track playlist starting from a seed, saved to a file
-uv run autodj playlist --seed "Portishead" --tracks 40 --output portishead.m3u
-
-# BPM-shaped playlist
-uv run autodj playlist --preset wakeup --tracks 30 --output wakeup.m3u
-
-# Hard BPM filter
-uv run autodj playlist --bpm-range 90-130 --tracks 20 --output house.m3u
-```
-
----
-
-## Library stats
-
-```bash
-uv run autodj stats
-```
-
-Displays a Rich overview of your indexed library: BPM distribution, top genres, decade breakdown, track lengths, top artists, key distribution (C–B), major/minor split, and energy histogram.
-
----
-
-## Running tests
-
-```bash
-# Fast unit tests only (no model downloads, no audio hardware needed)
-uv run pytest tests/unit/
-
-# Integration tests (real FAISS, mocked model)
-uv run pytest tests/integration/
-
-# Smoke tests (CLI end-to-end, all heavy parts mocked)
-uv run pytest tests/smoke/
-
-# Full suite with coverage + property tests + lint
-uv run pytest                # pytest + coverage + hypothesis
-uv run ruff check .          # style + import + simplify lints
-uv run mypy src/             # static type check
-uv run bandit -r src/        # security scan (low-noise mode)
-```
-
-The full suite completes in about a minute. **~90 % line coverage** on
-the default run; the threshold in `pyproject.toml` is `fail_under = 90`.
-Uncovered code is exclusively the hardware-dependent paths that can't
-be exercised without real devices:
-
-- MuQ model load + GPU inference (requires the 1.5 GB checkpoint)
-- `sounddevice.OutputStream` audio-out blocking loop
-- ffmpeg ALAC transcode subprocess
-- `librosa.beat.beat_track` + librosa internals
-- WebSocket 1 Hz broadcast loop
-
-These are marked `# pragma: no cover` with a one-line justification at
-the call site so excluded code is auditable.
-
-`sounddevice` is mocked globally in `tests/conftest.py` so all tests
-pass on headless CI. `mutagen` tag readers are mocked at the module
-level so audio file fixtures aren't needed. If you have a real beets
-`library.db` at the project root, the integration tests will use it;
-otherwise that test is automatically skipped.
-
----
-
-## Manual model download
-
-If the automatic model download fails (e.g. no internet access on the listening machine), download manually:
-
-1. Visit [OpenMuQ/MuQ-large-msd-iter on HuggingFace](https://huggingface.co/OpenMuQ/MuQ-large-msd-iter)
-2. Click **"Files and versions"** and download all files (~1.3 GB total)
-3. Place them in `models/MuQ-large-msd-iter/` inside the AutoDJ project directory
-4. Add to `config.toml`:
-   ```toml
-   [model]
-   manual_path = "models/MuQ-large-msd-iter"
-   ```
-
----
-
-## Project structure
-
-```
-autodj/
-├── config.toml          ← Edit this to set your music path and preferences
-├── pyproject.toml       ← Dependencies and project metadata
-├── src/autodj/
-│   ├── cli.py           ← CLI entry point (index / play / serve / playlist / stats)
-│   ├── config.py        ← Config loading from config.toml
-│   ├── model.py         ← MuQ model loader + auto-download
-│   ├── beets.py         ← Beets library.db reader
-│   ├── indexer.py       ← Index builder: MuQ + librosa → FAISS
-│   ├── similarity.py    ← FAISS query + next-song selection + discovery
-│   ├── player.py        ← Crossfade playback + keyboard controls + M3U/history
-│   ├── presets.py       ← BPM-shaping presets (built-in + user-defined)
-│   ├── stats.py         ← Rich library statistics display
-│   ├── server.py        ← FastAPI app + PlayerBridge + WebSocket broadcast
-│   └── static/
-│       └── index.html   ← Self-contained web UI (WCAG 2.2 AA)
-├── tests/
-│   ├── unit/            ← Fast, fully mocked tests per module
-│   ├── integration/     ← Pipeline round-trip tests (real FAISS, mock model)
-│   └── smoke/           ← CLI end-to-end tests
-├── index/               ← Generated by `autodj index` (gitignored)
-└── models/              ← MuQ checkpoint cache (gitignored)
-```
-
----
+Per-machine overrides go in `config.local.toml` next to `config.toml`.  AutoDJ reads it last, so anything in there wins.
 
 ## Troubleshooting
 
-**`Index not found` when running `autodj play`**
-→ Run `autodj index --limit 50` first.
+**The first index run is taking forever.**  This is the slow pass.  AutoDJ has to listen to every file and remember what it sounds like.  On a CPU it can take many hours for a 10000-track library.  On a machine with an NVIDIA GPU it is much faster.  Run with `--limit 50` first to confirm it works, then leave the full run going overnight.
 
-**`Beets library not found`**
-→ Set `beets_db` in `config.toml`, or leave it blank — AutoDJ will scan the filesystem instead.
+**Browser says "loading module ... was blocked".**  You probably ran `npm run build` once and then deleted `node_modules`.  Either delete `src/autodj/static_dist` (the server falls back to the unbundled source) or re-run `npm install && npm run build`.
 
-**Model download fails**
-→ See [Manual model download](#manual-model-download) above.
+**No sound from the web UI.**  Click the **Play** button once -- browsers require a user gesture before they will play audio.  After the first click, AutoDJ unlocks its audio context and plays normally for the rest of the session.
 
-**Audio playback issues on Windows**
-→ Ensure your default audio device is set in Windows Sound settings. AutoDJ uses `sounddevice`, which follows the system default.
+**Voice liner upload button is missing.**  The whole "Library" panel hides until you tick the **Enable voice liners** checkbox.  Tick it first, then the upload form appears.
 
-**Very slow indexing on CPU**
-→ Use `--limit N` to index in smaller batches, or index on the GPU machine (see [Indexing on a GPU machine](#indexing-on-a-gpu-machine)).
+**Cue point list is empty.**  AutoDJ analyses each track in the background after it starts playing.  Wait a few seconds; the cue strip on the progress bar should fill in.  Pass `autodj -v serve` to see "Background analysis done: ... -> 5 cues" log lines as they finish.
 
-**Indexer skips all tracks / `0 new entries` when using beets**
-→ `[library] music_dir` in `config.toml` does not match the local mount point of your beets library `directory`. Beets stores paths relative to that directory, so AutoDJ can't find the files. Set `music_dir` to the correct local path and try again.
+**Lyrics card never appears.**  AutoDJ checks three places, in order: an LRC file next to the audio file (timestamped, scrolls), the `lyrics` field in the beets database, the embedded ID3 / Vorbis / MP4 lyric tag.  If none of those is present, the lyrics card stays hidden.
 
-**`NaN` or zero embeddings during indexing**
-→ MuQ requires fp32 inference (this is the default). If you've modified `model.py` to use fp16, switch back to fp32.
+**Hotkeys do nothing on the Settings tab.**  This is on purpose.  Hotkeys only fire when the Now Playing tab is visible so they do not fight with the dropdowns and sliders on Settings.  The `?` shortcut still works from any tab.
 
----
+## Project layout
 
-## License
+```
+src/autodj/
+    cli.py              # the autodj command
+    server.py           # FastAPI web server + WebSocket
+    player.py           # crossfade + audio output
+    indexer.py          # builds the FAISS index
+    similarity.py       # picks the next track
+    static/             # web UI source files
+        app.js              # 1300-line bootstrap
+        modules/            # 16 ES modules (lyrics, queue, hotkeys, ...)
+        index.html
+        app.css
+    static_dist/        # built output (gitignored; produced by `npm run build`)
+tests/
+    unit/               # pytest unit tests
+    integration/        # pytest integration tests with FastAPI TestClient
+    jsmodules/          # vitest unit tests for the JS modules
+    playwright/         # cross-browser audits against a running server
+```
 
-[MIT](LICENSE) — see the LICENSE file at the repo root.
+## Development
 
-## Project files
+If you plan to change the code:
 
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) — how to set up the dev env,
-  run tests, and submit a PR.
-- [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) — Contributor Covenant 2.1.
-- [`SECURITY.md`](SECURITY.md) — how to report a vulnerability privately.
-- [`CHANGELOG.md`](CHANGELOG.md) — release history.
+```bash
+# Python tests + linting + type checking.
+uv sync --extra all --extra dev
+uv run pytest
+uv run ruff check
+uv run mypy src
 
----
+# Web UI build (optional -- the server falls back to unbundled source
+# when the build output is missing).
+npm install
+npm run build           # writes src/autodj/static_dist/
 
-## Credits
+# JS module unit tests.
+npm test
 
-Built by humans and AI in a paired loop. Each row says who drove what.
+# Cross-browser audit against a running server.
+AUTODJ_URL=http://192.168.50.40:8080 npm run audit:regression
+```
 
-### Humans
+The Python side uses `uv`, `pytest`, `ruff`, `mypy`, and `bandit`.  The web side uses `vite` for bundling, `vitest` for unit tests, and `@playwright/test` for cross-browser audits.
 
-- [blindndangerous](https://github.com/blindndangerous): the project, basically. Every product call (mode semantics, gapless feel, UX flow, accessibility), every release decision, all the real-world testing on a 10k-track library that turned up the bugs nobody would have caught synthetically.
-- [jage9](https://github.com/jage9): contributions and feedback.
+## Credits and licensing
 
-### AI
+- AutoDJ is MIT licensed.
+- The default music model is [MuQ-large-msd-iter](https://huggingface.co/OpenMuQ/MuQ-large-msd-iter) by Tencent.
+- Audio analysis uses [librosa](https://librosa.org/).
+- Vector search uses [FAISS](https://github.com/facebookresearch/faiss).
+- The web UI uses [FastAPI](https://fastapi.tiangolo.com/) and a hand-written ES module front end (no React, no Vue, no framework).
+- Cue-point importers read [Mixxx](https://mixxx.org/), [Rekordbox](https://rekordbox.com/), and [Traktor](https://www.native-instruments.com/en/products/traktor/) library files.
 
-- Claude (Anthropic): paired-programming on most of the codebase. The MuQ + librosa indexing pipeline, the FAISS similarity engine, the crossfade math and EQ duck, the 25 transition effects (Python on the CLI side, AudioWorklets in the browser), the FastAPI + WebSocket layer, the section-nav SPA, the silence-driven gapless prefetch, `explain.py`, the Camelot rule set, the test suite. Every line reviewed by a human before it shipped, which is the only reason any of it works.
-
-Contributing? Add yourself here in the same shape.
+If AutoDJ is useful to you, a star on GitHub is appreciated.  Issues and pull requests welcome.
