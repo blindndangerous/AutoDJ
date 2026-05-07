@@ -462,6 +462,29 @@ class TestPlayerConstruction:
         player = Player(_make_cfg_mock(), _make_sim_index(), dry_run=True)
         assert player._dry_run is True
 
+    def test_no_repeat_window_clamped_to_library_size(self) -> None:
+        """Library smaller than configured window must clamp.
+
+        Default _make_cfg_mock puts no_repeat_window=500.  A library
+        of 10 tracks should clamp to <=9 so the picker always has at
+        least one candidate to choose from.  Reproduces the "200-track
+        library repeats at 50 plays" bug report.
+        """
+        cfg = _make_cfg_mock()
+        cfg.playback.no_repeat_window = 500
+        sim = _make_sim_index(n=10)
+        player = Player(cfg, sim)
+        assert player._state.no_repeat_window < 10
+        assert player._state.no_repeat_window >= 1
+
+    def test_no_repeat_window_unclamped_when_library_large(self) -> None:
+        cfg = _make_cfg_mock()
+        cfg.playback.no_repeat_window = 5
+        sim = _make_sim_index(n=100)
+        player = Player(cfg, sim)
+        # 5 is well below library size; no clamp.
+        assert player._state.no_repeat_window == 5
+
     def test_discovery_every_from_arg(self) -> None:
         player = Player(_make_cfg_mock(), _make_sim_index(), discovery_every=5)
         assert player._discovery_every == 5

@@ -283,6 +283,15 @@ class PlaybackConfig:
     # carrier frequency to the song's root note.  Lerps in log space
     # from outgoing root -> incoming root across the fade.  Default ON.
     key_sync_fx: bool = True
+    # Beatmatch on skip: when the user presses Skip / N hotkey mid-track,
+    # the browser-side crossfade applies playbackRate = outgoing_bpm /
+    # incoming_bpm to the standby deck (preservesPitch=true) so the new
+    # track joins the existing groove instead of cold-cutting at its
+    # native tempo.  Reverts at fade-out.  Off by default — keeps the
+    # legacy "skip = clean break" behaviour for users who want it.
+    # CLI server-audio skip path cannot pitch-stretch on the fly so
+    # it cold-cuts regardless of this flag.
+    beatmatch_on_skip: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> PlaybackConfig:
@@ -333,6 +342,7 @@ class PlaybackConfig:
             import_external_cues=bool(data.get("import_external_cues", True)),
             beat_sync_fx=bool(data.get("beat_sync_fx", True)),
             key_sync_fx=bool(data.get("key_sync_fx", True)),
+            beatmatch_on_skip=bool(data.get("beatmatch_on_skip", False)),
         )
 
 

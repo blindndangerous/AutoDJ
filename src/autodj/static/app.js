@@ -1,6 +1,39 @@
 "use strict";
 
 // ----------------------------------------------------------------
+// Debug logging — opt-in via `?debug=1` URL param OR
+// localStorage.autodjDebug = "1".  Off by default; calls become no-ops.
+// Use _dbg("message", payload) for breadcrumbs at key state
+// transitions (crossfade, advance, skip, prefetch, seek, repeat-window
+// alerts).  Goes through console.log with a [autodj] prefix so it's
+// easy to filter in DevTools.
+// ----------------------------------------------------------------
+
+const _DEBUG = (() => {
+  try {
+    const params = new URLSearchParams(location.search);
+    if (params.get("debug") === "1") return true;
+  } catch (_) {}
+  try {
+    if (localStorage.getItem("autodjDebug") === "1") return true;
+  } catch (_) {}
+  return false;
+})();
+
+function _dbg(...args) {
+  if (!_DEBUG) return;
+  // Always print so debug mode makes the breadcrumbs visible regardless
+  // of the DevTools log-level filter.
+  console.log("[autodj]", ...args);
+}
+
+if (_DEBUG) {
+  console.log("[autodj] debug logging ENABLED " +
+    "(disable with localStorage.removeItem('autodjDebug') " +
+    "or remove ?debug=1 from URL).");
+}
+
+// ----------------------------------------------------------------
 // Utilities
 // ----------------------------------------------------------------
 
@@ -361,6 +394,24 @@ function applySettingsState(st) {
   if (pbBeatSyncFx) {
     // Default ON when server hasn't sent the field yet (older deploy).
     pbBeatSyncFx.checked = !(st.playback && st.playback.beat_sync_fx === false);
+  }
+  // One-shot library-size sanity check — warn the user when the
+  // configured no_repeat_window exceeds the library size, since that
+  // forces repeats sooner than the config implies.  Logs once per
+  // session so chatty WS pushes don't spam.
+  if (!_libraryWarned && st.playback &&
+      typeof st.playback.no_repeat_window === "number" &&
+      typeof st.playback.library_size === "number" &&
+      st.playback.library_size > 0) {
+    _libraryWarned = true;
+    _dbg("library_size =", st.playback.library_size,
+      "| no_repeat_window =", st.playback.no_repeat_window);
+    if (st.playback.library_size <= st.playback.no_repeat_window) {
+      console.warn("[autodj] Library has", st.playback.library_size,
+        "tracks but no_repeat_window is", st.playback.no_repeat_window,
+        "-- repeats will start once you reach the library size. " +
+        "Lower playback.no_repeat_window in config.toml to silence.");
+    }
   }
   if (pbKeySyncFx) {
     pbKeySyncFx.checked = !(st.playback && st.playback.key_sync_fx === false);
@@ -2777,6 +2828,8 @@ function startCrossfade(nextPath, fadeSec, serverLed = false) {
   if (!_ctx || crossfading) return;
   if (!nextPath) return;
   crossfading = true;
+  _dbg("crossfade ->", nextPath, "| fade=", fadeSec.toFixed(2), "s",
+    "| serverLed=", serverLed);
 
   const standby = deckStandby();
   setSrcOnDeck(standby, nextPath);
@@ -3000,12 +3053,17 @@ let _silenceTriggerEnabled = true;
 // can snap to downbeats and oscillator-FX can tune to root notes. ---
 let _beatSyncEnabled = true;
 let _keySyncEnabled = true;
+let _beatmatchOnSkip = false;
 let _outBpmCache = 0;
 let _inBpmCache = 0;
 let _outDownbeatsCache = [];
 let _inDownbeatsCache = [];
 let _outKeyHzCache = null;
 let _inKeyHzCache = null;
+
+// One-shot guard so the small-library repeat warning only logs once
+// per session even though /api/state pushes every second.
+let _libraryWarned = false;
 
 // Mixxx-style fade-length picker.  Mirrors AutoDJProcessor's
 // TransitionMode enum -- see CHANGELOG entry for 0.12.3.
@@ -3088,6 +3146,8 @@ function applyBrowserPlaybackState(s) {
     s.settings.playback.beat_sync_fx === false);
   _keySyncEnabled = !(s.settings && s.settings.playback &&
     s.settings.playback.key_sync_fx === false);
+  _beatmatchOnSkip = !!(s.settings && s.settings.playback &&
+    s.settings.playback.beatmatch_on_skip === true);
   _outBpmCache = (s.current_track && typeof s.current_track.bpm === "number")
     ? s.current_track.bpm : 0;
   _inBpmCache = (s.next_track && typeof s.next_track.bpm === "number")
@@ -3526,6 +3586,29 @@ btnSkip.addEventListener("click", async () => {
   // current transition effect.  Falls back to plain server skip if the
   // audio context isn't running yet (user hasn't clicked Play).
   if (_lastBrowserPlayback && playbackEnabled && _ctx && _nextTrackPathCache && !crossfading) {
+    // Beatmatch-on-skip: when the user opted in AND both BPMs are
+    // known, pitch-shift the standby deck so the new track joins the
+    // existing groove instead of cold-cutting.  preservesPitch=true
+    // gives a tempo-only stretch (proper beatmatch).  Reverted at
+    // crossfade teardown by the timeout below.
+    let bmRevert = null;
+    if (_beatmatchOnSkip && _outBpmCache > 0 && _inBpmCache > 0) {
+      const ratio = _outBpmCache / _inBpmCache;
+      // Clamp ±15% so wildly mismatched tempos don't sound silly.
+      const clamped = Math.max(0.85, Math.min(1.15, ratio));
+      const standby = decks[activeIdx ^ 1];
+      const audio = standby.audio;
+      const prevPitch = audio.preservesPitch;
+      const prevRate = audio.playbackRate;
+      try { audio.preservesPitch = true; } catch (_) {}
+      try { audio.playbackRate = clamped; } catch (_) {}
+      _dbg("beatmatch-on-skip: ratio=", clamped.toFixed(3),
+        "(", _outBpmCache.toFixed(1), "/", _inBpmCache.toFixed(1), ")");
+      bmRevert = setTimeout(() => {
+        try { audio.playbackRate = prevRate; } catch (_) {}
+        try { audio.preservesPitch = prevPitch; } catch (_) {}
+      }, _crossfadeSecondsCache * 1000 + 200);
+    }
     startCrossfade(_nextTrackPathCache, _crossfadeSecondsCache);
   } else {
     await fetch("/api/skip", { method: "POST" });
@@ -3560,6 +3643,7 @@ function _seekTrackDuration() {
 function _seekToFrac(frac, opts) {
   const dur = _seekTrackDuration();
   if (!(dur > 0)) return;
+  _dbg("seek ->", (frac * 100).toFixed(1) + "%", "of", dur.toFixed(1), "s");
   const f = Math.max(0, Math.min(1, frac));
   const seconds = f * dur;
   // Local audio jump in browser-playback mode so the user hears the

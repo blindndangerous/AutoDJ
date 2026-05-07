@@ -761,8 +761,31 @@ class Player:
             if discovery_every is not None
             else (preset.discovery_every if preset and preset.discovery_every else None)
         )
+        # Clamp no_repeat_window to the library size so the picker never
+        # has zero candidates available.  Without this, a library of 200
+        # tracks with the default window of 500 would refuse to repeat
+        # ANY track even after every track had been played, then
+        # silently fall through filter-relaxation paths and either
+        # raise SimilarityError or return the same neighbour every
+        # advance — the "repeats too soon" symptom users hit on small
+        # libraries.  Reserve at least 4 unplayed candidates so the
+        # picker still has variety.
+        library_size = len(getattr(sim_index, "entries", []) or [])
+        configured = int(cfg.playback.no_repeat_window)
+        effective = configured
+        if library_size > 0 and configured >= library_size:
+            effective = max(1, library_size - max(4, library_size // 10))
+            logger.warning(
+                "playback.no_repeat_window=%d but library has only %d "
+                "tracks; clamping to %d so the picker always has "
+                "candidates.  Bump the library size or lower the "
+                "config value to silence this.",
+                configured,
+                library_size,
+                effective,
+            )
         self._state = PlayerState(
-            no_repeat_window=cfg.playback.no_repeat_window,
+            no_repeat_window=effective,
             artist_repeat_window=cfg.playback.artist_repeat_window,
         )
         self._crossfade_samples: dict[int, int] = {}  # populated per-track based on SR

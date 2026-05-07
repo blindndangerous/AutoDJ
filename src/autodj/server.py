@@ -167,6 +167,7 @@ class PlaybackSettingsBody(BaseModel):
     import_external_cues: bool | None = None
     beat_sync_fx: bool | None = None
     key_sync_fx: bool | None = None
+    beatmatch_on_skip: bool | None = None
 
 
 class BpmRangeBody(BaseModel):
@@ -864,8 +865,13 @@ class PlayerBridge:
                 "beat_sync_fx": bool(
                     getattr(cfg.playback, "beat_sync_fx", True),
                 ),
+                "no_repeat_window": int(p._state.no_repeat_window),
+                "library_size": int(len(p._sim.entries) if p._sim else 0),
                 "key_sync_fx": bool(
                     getattr(cfg.playback, "key_sync_fx", True),
+                ),
+                "beatmatch_on_skip": bool(
+                    getattr(cfg.playback, "beatmatch_on_skip", False),
                 ),
                 "prefetch_next_track": getattr(
                     cfg.playback,
@@ -971,6 +977,7 @@ class PlayerBridge:
         import_external_cues: bool | None = None,
         beat_sync_fx: bool | None = None,
         key_sync_fx: bool | None = None,
+        beatmatch_on_skip: bool | None = None,
     ) -> None:
         """Apply playback-related settings; only non-null fields take effect."""
         cfg = self.player._cfg
@@ -1040,6 +1047,8 @@ class PlayerBridge:
             cfg.playback.beat_sync_fx = bool(beat_sync_fx)
         if key_sync_fx is not None:
             cfg.playback.key_sync_fx = bool(key_sync_fx)
+        if beatmatch_on_skip is not None:
+            cfg.playback.beatmatch_on_skip = bool(beatmatch_on_skip)
 
     def set_bpm_range(self, lo: float | None, hi: float | None) -> None:
         """Set the hard BPM filter; pass both null to clear."""
