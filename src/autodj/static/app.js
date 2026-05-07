@@ -1,61 +1,19 @@
-"use strict";
-
-// ----------------------------------------------------------------
-// Debug logging — opt-in via `?debug=1` URL param OR
-// localStorage.autodjDebug = "1".  Off by default; calls become no-ops.
-// Use _dbg("message", payload) for breadcrumbs at key state
-// transitions (crossfade, advance, skip, prefetch, seek, repeat-window
-// alerts).  Goes through console.log with a [autodj] prefix so it's
-// easy to filter in DevTools.
-// ----------------------------------------------------------------
-
-const _DEBUG = (() => {
-  try {
-    const params = new URLSearchParams(location.search);
-    if (params.get("debug") === "1") return true;
-  } catch (_) {}
-  try {
-    if (localStorage.getItem("autodjDebug") === "1") return true;
-  } catch (_) {}
-  return false;
-})();
-
-function _dbg(...args) {
-  if (!_DEBUG) return;
-  // Always print so debug mode makes the breadcrumbs visible regardless
-  // of the DevTools log-level filter.
-  console.log("[autodj]", ...args);
-}
+// Pure helpers extracted to ./modules/dom-helpers.js.  Aliased back to
+// the historical underscore-prefixed names so the rest of this file
+// keeps working without a sweep.
+import {
+  DEBUG as _DEBUG,
+  dbg as _dbg,
+  fmtTime,
+  fmtTrack,
+  escHtml,
+  isTypingTarget as _isTypingTarget,
+} from "./modules/dom-helpers.js";
 
 if (_DEBUG) {
   console.log("[autodj] debug logging ENABLED " +
     "(disable with localStorage.removeItem('autodjDebug') " +
     "or remove ?debug=1 from URL).");
-}
-
-// ----------------------------------------------------------------
-// Utilities
-// ----------------------------------------------------------------
-
-function fmtTime(sec) {
-  if (!sec || isNaN(sec)) return "0:00";
-  const m = Math.floor(sec / 60);
-  const s = Math.floor(sec % 60);
-  return `${m}:${s.toString().padStart(2, "0")}`;
-}
-
-function fmtTrack(t) {
-  if (!t) return "—";
-  if (t.artist && t.title) return `${t.artist} \u2014 ${t.title}`;
-  return t.display_name || t.title || "Unknown";
-}
-
-function escHtml(str) {
-  return String(str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
 }
 
 // ----------------------------------------------------------------
@@ -136,9 +94,8 @@ const volAnnounce     = document.getElementById("vol-announce");
 
 let lastTrackKey = null;   // detect track changes for aria-live announce
 const historyItems = [];   // most-recent first
-let lastLyricIndex = null; // suppress repeated lyric announcements
+// lastLyricIndex + cachedLyrics moved into ./modules/lyrics.js.
 let lastQueueKey = "";     // skip queue re-render when unchanged
-let cachedLyrics = [];     // full lyric list for the current track (for visible scroll)
 let lastBadgeKey = null;   // suppress repeated badge announcements within one track
 let lastNextKey  = null;   // suppress aria-live re-announce of unchanged next track
 
@@ -173,8 +130,7 @@ function applyState(s) {
       document.title = "AutoDJ";
     }
     // Reset lyric tracking — new track may have different lyrics
-    lastLyricIndex = null;
-    cachedLyrics = [];
+    resetLyricState();
     // Refresh cover art and full lyric list for the new track
     if (trackKey) {
       loadCoverArt(trackKey);
@@ -837,182 +793,26 @@ function applyBadges(s) {
 // Sighted users see colored ticks; AT users get the summary above.
 // ----------------------------------------------------------------
 
+// Cue strip rendering moved to ./modules/cues.js.
+import {
+  renderCueStrip as _renderCueStripImpl,
+  summariseCues as _summariseCues,
+} from "./modules/cues.js";
+
 const _cueStrip = document.getElementById("cue-strip");
-let _lastCueKey = "";
+function renderCueStrip(track) { _renderCueStripImpl(_cueStrip, track); }
 
-const _CUE_COLORS = {
-  drop:            "#ff5470",
-  breakdown:       "#5a7bff",
-  first_downbeat:  "#69d0ff",
-  outro_downbeat:  "#ffb454",
-  phrase:          "rgba(255,255,255,0.45)",
-  user:            "#a4ff7a",
-};
-
-function renderCueStrip(track) {
-  if (!_cueStrip) return;
-  const cues = (track && Array.isArray(track.cues)) ? track.cues : [];
-  const dur = track && track.length ? track.length : 0;
-  // Cheap dedupe: same path + cue-count = no rebuild.
-  const key = `${track ? track.path : ""}#${cues.length}`;
-  if (key === _lastCueKey) return;
-  _lastCueKey = key;
-  // The persistent sr-only navigable list (#cue-list-summary) was
-  // removed at user request.  AT users still get a polite live-region
-  // summary on every track change via _summariseCues() -> #badges-announce.
-  if (!cues.length || dur <= 0) {
-    _cueStrip.innerHTML = "";
-    return;
-  }
-  const html = cues
-    .filter(c => c.time_s >= 0 && c.time_s <= dur)
-    .map(c => {
-      const pct = (c.time_s / dur) * 100;
-      const color = c.color || _CUE_COLORS[c.type] || _CUE_COLORS.user;
-      // Inline-styled span — color encodes type (also conveyed in the
-      // textual announcement so this is not a color-only signal).
-      return `<span class="cue-mark" style="left:${pct.toFixed(2)}%;background:${color};"
-              title="${escHtml(c.type)}${c.label ? ': ' + escHtml(c.label) : ''}"></span>`;
-    })
-    .join("");
-  _cueStrip.innerHTML = html;
-}
-
-function _summariseCues(cues) {
-  // Compact, screen-reader-friendly summary: count + up to first 3 markers
-  // formatted as "drop at 1 minute 23, breakdown at 2 minutes 10".
-  const fmt = (sec) => {
-    const m = Math.floor(sec / 60);
-    const s = Math.round(sec - m * 60);
-    if (m <= 0) return `${s} seconds`;
-    return `${m} minute${m === 1 ? "" : "s"} ${s}`;
-  };
-  const headline = `${cues.length} cue ${cues.length === 1 ? "point" : "points"}`;
-  const interesting = cues
-    .filter(c => c.type !== "phrase")
-    .slice(0, 3);
-  if (!interesting.length) return headline;
-  const phrases = interesting.map(c => `${c.type.replace(/_/g, " ")} at ${fmt(c.time_s)}`);
-  return `${headline}: ${phrases.join(", ")}`;
-}
-
-// ----------------------------------------------------------------
-// Camelot wheel — decorative visual aid for harmonic mixing.
-// AT users get key info via #badges-announce; the SVG is aria-hidden.
-//
-// Layout: 12 sectors around a circle, each sector split into outer
-// (B = major) and inner (A = minor) ring.  Numbers 1..12 run clockwise
-// starting at 12 o'clock.  Each sector path has data-cell="<n><A|B>".
-// ----------------------------------------------------------------
+// Camelot wheel rendering moved to ./modules/camelot-wheel.js.
+import { applyCamelotWheel as _applyCamelotWheelImpl } from "./modules/camelot-wheel.js";
 
 const _camelotSectors = document.getElementById("camelot-sectors");
-const _camelotLabels = document.getElementById("camelot-labels");
-let _camelotBuilt = false;
-
-function _polar(r, angleDeg) {
-  // 0deg = 12 o'clock, clockwise
-  const a = (angleDeg - 90) * Math.PI / 180;
-  return [r * Math.cos(a), r * Math.sin(a)];
-}
-
-function _arcPath(r1, r2, a1, a2) {
-  // Annular wedge from radius r1 (inner) to r2 (outer), spanning angles a1..a2.
-  const [x1o, y1o] = _polar(r2, a1);
-  const [x2o, y2o] = _polar(r2, a2);
-  const [x1i, y1i] = _polar(r1, a2);
-  const [x2i, y2i] = _polar(r1, a1);
-  const large = Math.abs(a2 - a1) > 180 ? 1 : 0;
-  return `M ${x1o.toFixed(2)} ${y1o.toFixed(2)} `
-       + `A ${r2} ${r2} 0 ${large} 1 ${x2o.toFixed(2)} ${y2o.toFixed(2)} `
-       + `L ${x1i.toFixed(2)} ${y1i.toFixed(2)} `
-       + `A ${r1} ${r1} 0 ${large} 0 ${x2i.toFixed(2)} ${y2i.toFixed(2)} Z`;
-}
-
-function _buildCamelotWheel() {
-  if (_camelotBuilt || !_camelotSectors) return;
-  const SVG_NS = "http://www.w3.org/2000/svg";
-  const sweep = 360 / 12;        // 30 deg per slot
-  // Two rings: B (outer, 70..100) + A (inner, 40..70)
-  const rings = [
-    { side: "B", rIn: 70, rOut: 100, labelR: 85 },
-    { side: "A", rIn: 40, rOut: 70, labelR: 55 },
-  ];
-  for (let n = 1; n <= 12; n++) {
-    const a1 = (n - 1) * sweep - sweep / 2;
-    const a2 = n * sweep - sweep / 2;
-    for (const r of rings) {
-      const path = document.createElementNS(SVG_NS, "path");
-      path.setAttribute("d", _arcPath(r.rIn, r.rOut, a1, a2));
-      path.setAttribute("class", "sector");
-      path.setAttribute("data-cell", `${n}${r.side}`);
-      _camelotSectors.appendChild(path);
-    }
-    // Number label centred between the two rings (at the inner-ring outer edge)
-    const [lx, ly] = _polar(78, (n - 0.5) * sweep);
-    const lab = document.createElementNS(SVG_NS, "text");
-    lab.setAttribute("x", lx.toFixed(2));
-    lab.setAttribute("y", ly.toFixed(2));
-    lab.setAttribute("class", "label");
-    lab.setAttribute("data-num", String(n));
-    lab.textContent = String(n);
-    _camelotLabels.appendChild(lab);
-  }
-  _camelotBuilt = true;
-}
-
-// Camelot adjacency rules — mirrors dj_meta.harmonic_compatible.  Returns
-// the set of cell labels (e.g. "8A") considered compatible with current
-// under the chosen mode.  current is "8A"|"8B" etc; mode is one of
-// off / compatible / strict / neighbour / mood_change / energy_boost.
-function _camelotCompatibleSet(current, mode) {
-  const out = new Set();
-  if (!current || current === "--") return out;
-  const m = /^(\d{1,2})([AB])$/.exec(current);
-  if (!m) return out;
-  const num = parseInt(m[1], 10);
-  const side = m[2];
-  const wrap = (k) => ((k - 1 + 12) % 12) + 1;
-  out.add(`${num}${side}`);   // self always counted as 'active' separately
-  if (mode === "off" || mode === "strict") return out;
-  if (mode === "mood_change") {
-    out.add(`${num}${side === "A" ? "B" : "A"}`);
-    return out;
-  }
-  if (mode === "neighbour") {
-    out.add(`${wrap(num - 1)}${side}`);
-    out.add(`${wrap(num + 1)}${side}`);
-    return out;
-  }
-  if (mode === "energy_boost") {
-    out.add(`${wrap(num - 2)}${side}`);
-    out.add(`${wrap(num + 2)}${side}`);
-    return out;
-  }
-  // default: "compatible" — ±1 same side, plus relative major/minor
-  out.add(`${wrap(num - 1)}${side}`);
-  out.add(`${wrap(num + 1)}${side}`);
-  out.add(`${num}${side === "A" ? "B" : "A"}`);
-  return out;
-}
+const _camelotLabels  = document.getElementById("camelot-labels");
 
 function applyCamelotWheel(currentCell, harmonicMode) {
-  if (!_camelotSectors) return;
-  _buildCamelotWheel();
-  const compat = _camelotCompatibleSet(currentCell, harmonicMode || "compatible");
-  for (const sec of _camelotSectors.querySelectorAll(".sector")) {
-    const cell = sec.getAttribute("data-cell");
-    const isActive = cell === currentCell;
-    sec.classList.toggle("active", isActive);
-    sec.classList.toggle("compat", !isActive && compat.has(cell));
-  }
-  // Active number label gets a contrast-flip so the digit is still legible
-  // on the bright accent fill (active sector covers both A + B for that number).
-  const activeNum = currentCell && currentCell !== "--"
-    ? currentCell.replace(/[AB]$/, "")
-    : null;
-  for (const lab of _camelotLabels.querySelectorAll(".label")) {
-    lab.classList.toggle("active", lab.getAttribute("data-num") === activeNum);
-  }
+  _applyCamelotWheelImpl(currentCell, harmonicMode, {
+    sectorsEl: _camelotSectors,
+    labelsEl:  _camelotLabels,
+  });
 }
 
 // ----------------------------------------------------------------
@@ -3271,32 +3071,23 @@ function loadCoverArt(trackPath) {
   });
 }
 
-// ----------------------------------------------------------------
-// Lyrics
-// ----------------------------------------------------------------
+// Lyrics rendering moved to ./modules/lyrics.js.
+import {
+  loadLyrics as _loadLyricsImpl,
+  applyLyricsState as _applyLyricsStateImpl,
+  renderLyricsList as _renderLyricsListImpl,
+  resetLyricState,
+  getCachedLyrics,
+} from "./modules/lyrics.js";
 
-async function loadLyrics() {
-  try {
-    const res = await fetch("/api/lyrics");
-    const data = await res.json();
-    cachedLyrics = data.lyrics || [];
-  } catch (_) {
-    cachedLyrics = [];
-  }
-  renderLyricsList();
-}
+const _lyricEls = () => ({
+  lyricsCard,
+  lyricsList,
+  lyricAnnounce,
+});
 
-function renderLyricsList() {
-  if (cachedLyrics.length === 0) {
-    lyricsCard.hidden = true;
-    lyricsList.innerHTML = "";
-    return;
-  }
-  lyricsCard.hidden = false;
-  lyricsList.innerHTML = cachedLyrics
-    .map((ll, i) => `<li data-i="${i}">${escHtml(ll.text || "\u266b")}</li>`)
-    .join("");
-}
+async function loadLyrics() { return _loadLyricsImpl(_lyricEls()); }
+function renderLyricsList() { _renderLyricsListImpl(_lyricEls()); }
 
 // ----------------------------------------------------------------
 // Why this track? — plain-English explanation of the pick
@@ -3324,45 +3115,7 @@ function applyWhyState(s) {
 }
 
 
-function applyLyricsState(s) {
-  // Plain (unsynced) beets lyrics fallback — show as a single block when
-  // we have no timestamped .lrc list.  Updated on every track change.
-  if (!s.has_lyrics && s.lyrics_plain) {
-    if (cachedLyrics.length || lyricsList.querySelector(".plain-lyrics") === null) {
-      cachedLyrics = [];
-      lyricsCard.hidden = false;
-      lyricsList.innerHTML = `<li class="plain-lyrics" style="white-space:pre-wrap;list-style:none;padding-left:0">${escHtml(s.lyrics_plain)}</li>`;
-    }
-    lastLyricIndex = null;
-    return;
-  }
-  if (!s.has_lyrics) {
-    if (cachedLyrics.length || lyricsList.children.length) {
-      cachedLyrics = [];
-      renderLyricsList();
-    }
-    lastLyricIndex = null;
-    return;
-  }
-  const idx = s.lyric_index;
-  if (idx === lastLyricIndex) return;
-  lastLyricIndex = idx;
-
-  const items = lyricsList.querySelectorAll("li");
-  items.forEach((li) => {
-    li.classList.remove("active");
-    li.removeAttribute("aria-current");
-  });
-  if (idx !== null && idx >= 0 && idx < items.length) {
-    const li = items[idx];
-    li.classList.add("active");
-    li.setAttribute("aria-current", "true");
-    li.scrollIntoView({ behavior: "smooth", block: "center" });
-    if (s.lyric_text) {
-      lyricAnnounce.textContent = s.lyric_text;
-    }
-  }
-}
+function applyLyricsState(s) { _applyLyricsStateImpl(s, _lyricEls()); }
 
 // ----------------------------------------------------------------
 // Queue
@@ -3767,28 +3520,10 @@ btnDiscovery.addEventListener("click", () => {
 let volTimer = null;
 let volAnnounceTimer = null;
 
-// ----------------------------------------------------------------
-// Transient live-region helper.  Many polite aria-live regions on
-// the page (vol-announce, eq-announce, settings-status, ln-status,
-// search-count, badges-announce) are visually-hidden so sighted
-// users never see them — but AT users running a Speech Viewer, or
-// any user with a stylesheet override that reveals .visually-hidden,
-// would otherwise see a growing pile of stale messages parked at
-// the bottom of the page ("Volume 100%.  Volume 95%.  Volume 90%.").
-// Clear the textContent a few seconds after each announce so the
-// region is empty between events.
-// ----------------------------------------------------------------
-const _liveRegionClearTimers = new WeakMap();
-function _clearLiveRegionLater(el, dwellMs = 3000) {
-  if (!el) return;
-  const prev = _liveRegionClearTimers.get(el);
-  if (prev) clearTimeout(prev);
-  const t = setTimeout(() => {
-    if (el && el.textContent) el.textContent = "";
-    _liveRegionClearTimers.delete(el);
-  }, dwellMs);
-  _liveRegionClearTimers.set(el, t);
-}
+// Live-region clear helper extracted to ./modules/live-region.js.
+// Re-bound under the legacy underscore name so existing call sites
+// keep working without a sweep.
+import { clearLiveRegionLater as _clearLiveRegionLater } from "./modules/live-region.js";
 // Logarithmic (perceptual) volume curve — humans hear loudness as
 // log of amplitude, so a linear slider feels backwards: 0-50 % barely
 // changes, 80-100 % feels too loud.  Map slider 0-100 → gain via
@@ -3854,25 +3589,7 @@ volSlider.addEventListener("input", () => {
 // users).  Skipped when typing in inputs / contenteditable.
 // ----------------------------------------------------------------
 
-function _isTypingTarget(el) {
-  // Suppress hotkeys ONLY when focus is on a text-entry control.  Earlier
-  // blanket-suppression on every INPUT/SELECT killed hotkeys whenever the
-  // user landed on the volume / EQ slider, the preset dropdown, etc. —
-  // visible-button hotkeys (Space, M, N, S, ?) should fire from those.
-  if (!el) return false;
-  if (el.isContentEditable) return true;
-  const tag = el.tagName;
-  if (tag === "TEXTAREA") return true;
-  if (tag === "INPUT") {
-    const t = (el.type || "text").toLowerCase();
-    // Text-ish input types only.  range / checkbox / radio / button bubble
-    // letter keys cleanly to the document handler.
-    return ["text", "search", "email", "url", "password", "number",
-            "tel", "date", "datetime-local", "month", "time", "week"]
-           .includes(t);
-  }
-  return false;
-}
+// _isTypingTarget moved to ./modules/dom-helpers.js (imported above).
 
 function _toggleShortcutsModal() {
   const modal = document.getElementById("hotkey-help-modal");
@@ -4016,49 +3733,18 @@ window.addEventListener("keydown", (e) => {
 // and notification-shade transport on Chromium / WebKit / Firefox.
 // ----------------------------------------------------------------
 
-function updateMediaSession(s) {
-  if (!("mediaSession" in navigator)) return;
-  const t = s.current_track;
-  if (!t) {
-    navigator.mediaSession.metadata = null;
-    navigator.mediaSession.playbackState = "none";
-    return;
-  }
-  navigator.mediaSession.metadata = new MediaMetadata({
-    title:  t.title || "",
-    artist: t.artist || "",
-    album:  t.album || "",
-    artwork: [{
-      src: "/api/art?path=" + encodeURIComponent(t.path),
-      sizes: "512x512",
-      type: "image/jpeg",
-    }],
-  });
-  navigator.mediaSession.playbackState = s.is_paused ? "paused" : "playing";
-  if (s.duration && s.elapsed != null) {
-    try {
-      navigator.mediaSession.setPositionState({
-        duration: s.duration,
-        position: Math.min(s.elapsed, s.duration),
-        playbackRate: 1.0,
-      });
-    } catch (_) { /* not supported on every browser */ }
-  }
-}
+// Media Session API moved to ./modules/media-session.js.
+import {
+  updateMediaSession,
+  installMediaActionHandlers,
+} from "./modules/media-session.js";
 
-if ("mediaSession" in navigator) {
-  navigator.mediaSession.setActionHandler("play", () => {
-    if (!playbackEnabled && _lastBrowserPlayback) unlockAndPlay().catch(()=>{});
+installMediaActionHandlers({
+  onPlay: () => {
+    if (!playbackEnabled && _lastBrowserPlayback) unlockAndPlay().catch(() => {});
     else fetch("/api/pause", { method: "POST" });
-  });
-  navigator.mediaSession.setActionHandler("pause", () => {
-    fetch("/api/pause", { method: "POST" });
-  });
-  navigator.mediaSession.setActionHandler("nexttrack", () => {
-    fetch("/api/skip", { method: "POST" });
-  });
-  navigator.mediaSession.setActionHandler("previoustrack", null);
-}
+  },
+});
 
 // (Legacy duplicate keydown handler removed -- the canonical hotkey
 //  handler is the window-capture-phase listener defined earlier.  Two
@@ -4161,208 +3847,33 @@ searchResults.addEventListener("click", async (e) => {
 });
 
 // ----------------------------------------------------------------
-// Library tools — index / enrich / prune / stats from the web UI.
-// All controls are no-ops on pages that don't include the library
-// section markup, so this code is safe to run unconditionally.
-// ----------------------------------------------------------------
+// Library tools panel moved to ./modules/library-jobs.js.
+import {
+  installLibraryJobs,
+  applyLibraryJobState as _applyLibraryJobStateImpl,
+} from "./modules/library-jobs.js";
 
-const _libRunIndex   = document.getElementById("lib-run-index");
-const _libRunEnrich  = document.getElementById("lib-run-enrich");
-const _libRunPrune   = document.getElementById("lib-run-prune");
-const _libRunStats   = document.getElementById("lib-run-stats");
-const _libRunStop    = document.getElementById("lib-run-stop");
-const _libIndexLimit = document.getElementById("lib-index-limit");
-const _libStatsRefresh = document.getElementById("lib-stats-refresh");
-const _libLog        = document.getElementById("library-log");
-const _libJobStatus  = document.getElementById("lib-job-status");
-const _libStatCount     = document.getElementById("lib-stat-count");
-const _libStatAvgBpm    = document.getElementById("lib-stat-avg-bpm");
-const _libStatWithKey   = document.getElementById("lib-stat-with-key");
-const _libStatWithGenre = document.getElementById("lib-stat-with-genre");
-const _libStatWithEnergy= document.getElementById("lib-stat-with-energy");
+const _libEls = {
+  runIndex:        document.getElementById("lib-run-index"),
+  runEnrich:       document.getElementById("lib-run-enrich"),
+  runPrune:        document.getElementById("lib-run-prune"),
+  runStats:        document.getElementById("lib-run-stats"),
+  runStop:         document.getElementById("lib-run-stop"),
+  indexLimit:      document.getElementById("lib-index-limit"),
+  statsRefresh:    document.getElementById("lib-stats-refresh"),
+  libLog:          document.getElementById("library-log"),
+  jobStatus:       document.getElementById("lib-job-status"),
+  statCount:       document.getElementById("lib-stat-count"),
+  statAvgBpm:      document.getElementById("lib-stat-avg-bpm"),
+  statWithKey:     document.getElementById("lib-stat-with-key"),
+  statWithGenre:   document.getElementById("lib-stat-with-genre"),
+  statWithEnergy:  document.getElementById("lib-stat-with-energy"),
+};
+installLibraryJobs(_libEls);
+function applyLibraryJobState(s) { _applyLibraryJobStateImpl(s, _libEls); }
 
-let _lastLibLogKey = "";
-
-async function _libRun(name, args = []) {
-  try {
-    const r = await fetch("/api/library/run", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, args }),
-    });
-    if (!r.ok) {
-      const txt = await r.text();
-      _libJobStatus.textContent = `Could not start ${name}: ${txt}`;
-      return;
-    }
-    _libJobStatus.textContent = `${name} started…`;
-  } catch (err) {
-    _libJobStatus.textContent = `Error starting ${name}: ${err.message || err}`;
-  }
-}
-
-if (_libRunIndex) {
-  _libRunIndex.addEventListener("click", () => {
-    const limit = parseInt(_libIndexLimit.value, 10);
-    const args = !isNaN(limit) && limit > 0 ? ["--limit", String(limit)] : [];
-    _libRun("index", args);
-  });
-}
-if (_libRunEnrich) _libRunEnrich.addEventListener("click", () => _libRun("enrich"));
-if (_libRunPrune)  _libRunPrune.addEventListener("click", () => _libRun("prune"));
-if (_libRunStats)  _libRunStats.addEventListener("click", () => _libRun("stats"));
-if (_libRunStop)   _libRunStop.addEventListener("click", async () => {
-  try { await fetch("/api/library/stop", { method: "POST" }); } catch (_) {}
-});
-
-async function _refreshLibStats() {
-  if (!_libStatCount) return;
-  try {
-    const r = await fetch("/api/library/stats");
-    if (!r.ok) return;
-    const s = await r.json();
-    _libStatCount.textContent     = s.track_count;
-    _libStatAvgBpm.textContent    = s.average_bpm
-      ? `${s.average_bpm} (${s.tracks_with_bpm} tracks)` : "—";
-    _libStatWithKey.textContent    = s.tracks_with_key;
-    _libStatWithGenre.textContent  = s.tracks_with_genre;
-    _libStatWithEnergy.textContent = s.tracks_with_energy;
-  } catch (_) {}
-}
-if (_libStatsRefresh) _libStatsRefresh.addEventListener("click", _refreshLibStats);
-if (_libStatCount) _refreshLibStats();
-
-function applyLibraryJobState(s) {
-  const job = s && s.library_job;
-  if (!job || !_libLog) return;
-  // Status line
-  if (_libJobStatus) {
-    if (job.running) {
-      _libJobStatus.textContent =
-        `${job.name} running for ${job.elapsed_seconds}s…`;
-    } else if (job.exit_code != null) {
-      const ok = job.exit_code === 0;
-      _libJobStatus.textContent = ok
-        ? `${job.name} finished cleanly in ${job.elapsed_seconds}s.`
-        : `${job.name} exited with code ${job.exit_code} after ${job.elapsed_seconds}s.`;
-    } else if (!job.name) {
-      _libJobStatus.textContent = "Idle.";
-    }
-  }
-  // Append-only log render — only re-render when payload changed.
-  const lines = job.lines || [];
-  const key = lines.length + "@" + (lines[lines.length - 1] || "");
-  if (key === _lastLibLogKey) return;
-  _lastLibLogKey = key;
-  if (lines.length === 0) {
-    _libLog.innerHTML = '<em style="color:var(--text-dim)">No job has run yet.</em>';
-  } else {
-    _libLog.textContent = lines.join("\n");
-    _libLog.scrollTop = _libLog.scrollHeight;
-  }
-}
-
-// ----------------------------------------------------------------
-// Section router — single-page nav across the four views.  Audio
-// graph + crossfade state survive every navigation because we never
-// reload the document; only `hidden` toggles on each <section>.
-// ----------------------------------------------------------------
-
-const _VIEW_NAMES = ["now", "queue", "settings", "library"];
-const _viewSections = new Map();
-const _viewLinks = new Map();
-let _viewInitialised = false;
-
-function _initViewRouter() {
-  for (const name of _VIEW_NAMES) {
-    const sec = document.querySelector(`section[data-view="${name}"]`);
-    const lnk = document.querySelector(`#view-nav [role="tab"][data-view="${name}"]`);
-    if (sec) _viewSections.set(name, sec);
-    if (lnk) _viewLinks.set(name, lnk);
-  }
-  for (const lnk of _viewLinks.values()) {
-    lnk.addEventListener("click", () => {
-      const target = lnk.dataset.view;
-      if (location.hash !== "#" + target) location.hash = target;
-      else _applyView(target, /*userInitiated=*/true);
-    });
-    // Tablist arrow / Home / End navigation per ARIA APG.  Activates
-    // the focused tab on move (automatic activation) — panel swap is
-    // just a `hidden` toggle, so no perf reason to use manual.
-    lnk.addEventListener("keydown", _onTabKeydown);
-  }
-  window.addEventListener("hashchange", () => {
-    const view = (location.hash || "#now").replace(/^#/, "");
-    _applyView(_VIEW_NAMES.includes(view) ? view : "now",
-               /*userInitiated=*/true);
-  });
-  // Initial paint — no focus stealing on first load.
-  const initial = (location.hash || "#now").replace(/^#/, "");
-  _applyView(_VIEW_NAMES.includes(initial) ? initial : "now",
-             /*userInitiated=*/false);
-  _viewInitialised = true;
-}
-
-function _onTabKeydown(e) {
-  const order = _VIEW_NAMES.filter(n => _viewLinks.has(n));
-  const cur = e.currentTarget.dataset.view;
-  let idx = order.indexOf(cur);
-  let nextName = null;
-  switch (e.key) {
-    case "ArrowRight":
-    case "ArrowDown":
-      nextName = order[(idx + 1) % order.length];
-      break;
-    case "ArrowLeft":
-    case "ArrowUp":
-      nextName = order[(idx - 1 + order.length) % order.length];
-      break;
-    case "Home":
-      nextName = order[0];
-      break;
-    case "End":
-      nextName = order[order.length - 1];
-      break;
-    default:
-      return;
-  }
-  e.preventDefault();
-  if (location.hash !== "#" + nextName) location.hash = nextName;
-  else _applyView(nextName, /*userInitiated=*/true);
-  const nextTab = _viewLinks.get(nextName);
-  if (nextTab) nextTab.focus();
-}
-
-function _applyView(name, userInitiated) {
-  for (const [k, sec] of _viewSections) {
-    if (k === name) sec.removeAttribute("hidden");
-    else sec.setAttribute("hidden", "");
-  }
-  for (const [k, lnk] of _viewLinks) {
-    const selected = k === name;
-    lnk.setAttribute("aria-selected", selected ? "true" : "false");
-    // Roving tabindex — only the active tab is in the document tab
-    // order; the others are reachable via arrow keys.
-    lnk.tabIndex = selected ? 0 : -1;
-  }
-  // SR re-announce: focus the heading of the freshly-revealed section
-  // so AT users hear "Now Playing, heading level 2" on every switch
-  // initiated by activation (click / Enter).  Arrow-key navigation
-  // moves focus to the new tab itself instead — handled by the caller.
-  if (userInitiated) {
-    const sec = _viewSections.get(name);
-    const tab = _viewLinks.get(name);
-    // If a tab is currently focused (arrow-key nav), don't steal focus
-    // away to the heading — that would defeat roving tabindex.
-    if (sec && document.activeElement !== tab) {
-      const heading = sec.querySelector("h2");
-      if (heading) {
-        heading.setAttribute("tabindex", "-1");
-        heading.focus({ preventScroll: false });
-      }
-    }
-  }
-}
+// Tab router moved to ./modules/tabs.js.
+import { initViewRouter as _initViewRouter } from "./modules/tabs.js";
 
 if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", _initViewRouter, { once: true });
@@ -4385,35 +3896,12 @@ fetch("/api/status")
     npAnnounce.textContent = `Cannot reach server: ${err.message}`;
   });
 
-// ----------------------------------------------------------------
-// Hide-unchecked-children mechanism.  Any element with
-// `data-show-when="checkboxId"` is shown/hidden based on the
-// referenced checkbox's checked state.  Toggles the `hidden`
-// attribute on the wrapper element so the label, input, and
-// description all collapse together (per a11y review: setting hidden
-// on the wrapper avoids the orphaned-label / orphaned-desc state SR
-// users would otherwise hit).
-// ----------------------------------------------------------------
-
-function _applyShowWhen() {
-  const wrappers = document.querySelectorAll("[data-show-when]");
-  for (const w of wrappers) {
-    const id = w.getAttribute("data-show-when");
-    const cb = id ? document.getElementById(id) : null;
-    const visible = !!(cb && cb.checked);
-    if (visible) w.removeAttribute("hidden");
-    else w.setAttribute("hidden", "");
-  }
-}
-
-// Re-apply on every checkbox change (delegated listener -- single
-// handler, picks up any number of [data-show-when] sources).
-document.addEventListener("change", (e) => {
-  if (e.target && e.target.matches && e.target.matches("input[type=checkbox]")) {
-    _applyShowWhen();
-  }
-});
-
+// data-show-when mechanism moved to ./modules/show-when.js.
+import {
+  applyShowWhen as _applyShowWhen,
+  installShowWhenListener,
+} from "./modules/show-when.js";
+installShowWhenListener();
 // Apply once at load + after every state push (server may flip a
 // checkbox via WS without the user touching it).
 _applyShowWhen();

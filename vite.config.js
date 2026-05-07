@@ -56,10 +56,13 @@ export default defineConfig({
         // resolves without HTML rewriting.  Cache-busting handled by
         // FastAPI's _NO_CACHE headers, not by file hashing.
         entryFileNames: "app.js",
-        format: "iife",
-        // Keep top-level identifiers unmangled so any inline
-        // <script> in index.html that calls into them keeps working.
-        // (Today there is none, but cheap insurance.)
+        // ES module output: the HTML loads app.js with type="module",
+        // which means dev mode (no build, source modules served as-is)
+        // and prod mode (vite-bundled single file) both work.  An IIFE
+        // wrapper would clash with type="module" because the script
+        // tag would still be expected to satisfy ES module semantics.
+        format: "es",
+        inlineDynamicImports: true,
       },
     },
   },
