@@ -147,12 +147,19 @@ function applyState(s) {
     }
   }
 
-  // Meta line: album · BPM
+  // Meta line: album · Key · BPM
   const parts = [];
   if (s.current_track) {
-    if (s.current_track.album) parts.push(s.current_track.album);
-    if (s.current_track.bpm)   parts.push(`${Math.round(s.current_track.bpm)} BPM`);
+    const t = s.current_track;
+    if (t.album) parts.push(t.album);
+    if (t.camelot && t.camelot !== "--") parts.push(`Key ${t.camelot}`);
+    if (t.bpm) parts.push(`${Math.round(t.bpm)} BPM`);
   }
+  // npMeta is the screen-reader-reachable static text for the
+  // now-playing card -- the visual badges row is aria-hidden, and the
+  // live-region announce only fires on track change.  Including key +
+  // BPM here lets NVDA users query the current values by re-reading
+  // the section any time, not only when the track flips.
   npMeta.textContent = parts.join(" \u00b7 ");
 
   // Badges + announce on track change.  Module needs the els bag and
