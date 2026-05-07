@@ -294,7 +294,7 @@ function applyState(s) {
   updateMediaSession(s);
 
   // Mirror settings to the form.
-  if (s.settings) applySettingsState(s.settings);
+  if (s.settings) applySettingsState(s.settings, _settingsEls());
 }
 
 // ----------------------------------------------------------------
