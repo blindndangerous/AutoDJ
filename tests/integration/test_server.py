@@ -1980,6 +1980,7 @@ class TestReloadIndexFromDisk:
 class TestHistoryEndpoint:
     def _client_with_history(self, entries):
         from fastapi.testclient import TestClient
+
         from autodj.server import PlayerBridge, create_app
         from tests.integration._helpers import _make_player_mock, _make_sim_mock
 

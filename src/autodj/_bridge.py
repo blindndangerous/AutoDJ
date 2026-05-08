@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -52,7 +52,7 @@ def _history_entry(entry: Any) -> dict:
         "title": getattr(entry, "title", "") or "",
         "artist": getattr(entry, "artist", "") or "",
         "duration": float(getattr(entry, "length", 0.0) or 0.0),
-        "played_at": datetime.now(timezone.utc).isoformat(),
+        "played_at": datetime.now(UTC).isoformat(),
     }
 
 
