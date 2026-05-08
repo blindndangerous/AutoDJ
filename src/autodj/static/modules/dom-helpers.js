@@ -73,6 +73,27 @@ export function escHtml(str) {
 // should still fire from those non-text controls.
 // ----------------------------------------------------------------
 
+// ----------------------------------------------------------------
+// Screen-reader announcements via ARIA live region #sr-status.
+// Clear-then-set pattern lets the same message be re-announced on
+// repeated key press.  300 ms window is long enough for polite
+// announcement to fire; short enough that a second keypress clears
+// and re-sets the text.
+// ----------------------------------------------------------------
+
+let _srTimer = null;
+
+export function srSpeak(msg) {
+  const el = document.getElementById("sr-status");
+  if (!el) return;
+  clearTimeout(_srTimer);
+  el.textContent = "";
+  setTimeout(() => {
+    el.textContent = msg;
+    _srTimer = setTimeout(() => { el.textContent = ""; }, 300);
+  }, 0);
+}
+
 export function isTypingTarget(el) {
   if (!el) return false;
   if (el.isContentEditable) return true;

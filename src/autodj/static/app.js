@@ -1164,13 +1164,20 @@ function _wireHotkeysWhenReady() {
   // next tick so its const initialiser has run.
   setTimeout(() => {
     installHotkeys({
-      btnPause:   typeof btnPause   !== "undefined" ? btnPause   : null,
-      btnSkip:    typeof btnSkip    !== "undefined" ? btnSkip    : null,
-      btnShuffle: typeof btnShuffle !== "undefined" ? btnShuffle : null,
-      btnMute:    typeof btnMute    !== "undefined" ? btnMute    : null,
-      volSlider:  typeof volSlider  !== "undefined" ? volSlider  : null,
-      seekDelta:  _seekByDelta,
-      getBpm:     () => _outBpmCache,
+      btnPause:    typeof btnPause   !== "undefined" ? btnPause   : null,
+      btnSkip:     typeof btnSkip    !== "undefined" ? btnSkip    : null,
+      btnShuffle:  typeof btnShuffle !== "undefined" ? btnShuffle : null,
+      btnMute:     typeof btnMute    !== "undefined" ? btnMute    : null,
+      volSlider:   typeof volSlider  !== "undefined" ? volSlider  : null,
+      seekDelta:   _seekByDelta,
+      getBpm:      () => _outBpmCache,
+      getTrack:    () => _lastBrowserPlayback && _lastBrowserPlayback.current_track,
+      getNextTrack:() => _lastBrowserPlayback && _lastBrowserPlayback.next_track,
+      getRemaining:() => {
+        const dur = _seekTrackDuration();
+        if (!dur) return null;
+        try { return Math.max(0, dur - decks[activeIdx].audio.currentTime); } catch (_) { return null; }
+      },
     });
   }, 0);
 }

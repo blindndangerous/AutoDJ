@@ -209,16 +209,21 @@
        focus-restore on close.  No role=dialog needed (native).  -->
   <dialog id="hotkey-help-modal" aria-labelledby="hotkey-help-title">
     <h2 id="hotkey-help-title" style="margin-top:0">Keyboard shortcuts</h2>
-    <p>Press these keys while on the Now Playing tab (and not typing in a search box).  The <kbd>?</kbd> shortcut to open this dialog works from any tab.</p>
+    <p>Transport keys work on the Now Playing tab (not while typing).  Status keys (Shift+letter) and <kbd>?</kbd> work from any tab.</p>
     <dl style="display:grid;grid-template-columns:max-content 1fr;column-gap:1rem;row-gap:0.25rem;margin:0">
-      <dt><kbd>Space</kbd> / <kbd>K</kbd></dt><dd>Play / Pause / Resume</dd>
-      <dt><kbd>N</kbd></dt><dd>Skip to next track</dd>
+      <dt><kbd>Space</kbd> / <kbd>k</kbd></dt><dd>Play / Pause / Resume</dd>
+      <dt><kbd>n</kbd></dt><dd>Skip to next track</dd>
       <dt><kbd>S</kbd></dt><dd>Shuffle (fresh random track)</dd>
       <dt><kbd>M</kbd></dt><dd>Mute / unmute</dd>
       <dt><kbd>↑</kbd> / <kbd>↓</kbd></dt><dd>Volume up / down (5%)</dd>
       <dt><kbd>,</kbd> / <kbd>.</kbd></dt><dd>Seek back / forward 1 measure (BPM-derived; falls back to 5 s)</dd>
       <dt><kbd>?</kbd></dt><dd>Open / close this dialog</dd>
       <dt><kbd>Esc</kbd></dt><dd>Close this dialog</dd>
+      <dt style="margin-top:0.5rem"><kbd>Shift+T</kbd></dt><dd style="margin-top:0.5rem">Speak current track (artist – title)</dd>
+      <dt><kbd>Shift+N</kbd></dt><dd>Speak next track (artist, title, BPM)</dd>
+      <dt><kbd>Shift+R</kbd></dt><dd>Speak time remaining</dd>
+      <dt><kbd>Shift+B</kbd></dt><dd>Speak current BPM</dd>
+      <dt><kbd>Shift+K</kbd></dt><dd>Speak current key</dd>
     </dl>
     <p style="margin-top:1rem;color:var(--text-dim);font-size:0.9em">
       NVDA users: shortcuts work in focus mode (NVDA+Space to toggle).  In browse mode, NVDA intercepts the letter keys; switch to focus mode first.
@@ -886,5 +891,7 @@
 </footer>
 
 <script type="module" src="/app.js"></script>
+<!-- Screen-reader live region for status announcements (Shift+T/N/R/B/K) -->
+<div id="sr-status" role="status" aria-live="polite" aria-atomic="true" class="sr-only"></div>
 </body>
 </html>
