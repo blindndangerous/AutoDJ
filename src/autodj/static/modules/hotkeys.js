@@ -43,7 +43,7 @@ export function toggleShortcutsModal() {
 
 const _pressed = new Set();
 
-export function installHotkeys({ btnPause, btnSkip, btnShuffle, btnMute, volSlider }) {
+export function installHotkeys({ btnPause, btnSkip, btnShuffle, btnMute, volSlider, seekDelta, getBpm }) {
   window.addEventListener("keyup", (e) => {
     _pressed.delete(e.key);
     // Modifier-aware aliases -- e.g. Shift held on "?" produces "?",
@@ -112,6 +112,14 @@ export function installHotkeys({ btnPause, btnSkip, btnShuffle, btnMute, volSlid
         if (targetIsTab) return;
         bumpVol = -5;
         break;
+      case "ArrowLeft":
+      case "ArrowRight": {
+        if (!e.shiftKey || !seekDelta) return;
+        const bpm = getBpm ? getBpm() : 0;
+        const measureSec = bpm > 0 ? (4 * 60) / bpm : 5.0;
+        seekDelta(key === "ArrowLeft" ? -measureSec : measureSec);
+        break;
+      }
       case "?":
       case "/":
         if (!toggleShortcutsModal()) return;
