@@ -99,6 +99,7 @@ class ProfileSnapshot:
     key_sync_fx: bool | None = None
     beatmatch_on_skip: bool | None = None
     crossfade_seconds: float | None = None
+    fade_in_seconds: float | None = None
     smart_shuffle: bool | None = None
     pure_shuffle: bool | None = None
     anchor_to_seed: bool | None = None

@@ -79,6 +79,7 @@ const pbKeySyncFx     = document.getElementById("pb-key-sync-fx");
 const pbBeatmatchSkip = document.getElementById("pb-beatmatch-on-skip");
 const pbTransitionMode = document.getElementById("pb-transition-mode");
 const pbCrossfade     = document.getElementById("pb-crossfade");
+const pbFadeIn        = document.getElementById("pb-fade-in");
 const keyNotation     = document.getElementById("key-notation");
 const keyPreferFlats  = document.getElementById("key-prefer-flats");
 const bpmLo           = document.getElementById("bpm-lo");
@@ -337,7 +338,7 @@ const _settingsEls = () => ({
   pbReplayGain,
   pbDaypart, pbMoodArc, pbMoodArcHours, pbImportCues,
   pbBeatSyncFx, pbKeySyncFx, pbBeatmatchSkip,
-  pbTransitionMode, pbCrossfade,
+  pbTransitionMode, pbCrossfade, pbFadeIn,
   keyNotation, keyPreferFlats,
   bpmLo, bpmHi,
   discEnabled, discEvery,
@@ -665,6 +666,10 @@ if (audioDeviceSelect) {
 pbCrossfade.addEventListener("change", () => {
   const v = parseFloat(pbCrossfade.value);
   if (!isNaN(v) && v >= 0) postSettings("/api/playback-settings", { crossfade_seconds: v });
+});
+pbFadeIn.addEventListener("change", () => {
+  const v = parseFloat(pbFadeIn.value);
+  if (!isNaN(v) && v >= 0) postSettings("/api/playback-settings", { fade_in_seconds: v });
 });
 
 function postBpmRange() {
