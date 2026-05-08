@@ -12,9 +12,9 @@
 // second keydown for the same key is suppressed regardless of the
 // repeat flag.
 //
-// Scope: transport hotkeys (Space/k/n/S/M/Arrow/,/.) only fire when
-// the Now Playing tab is visible.  Status hotkeys (Shift+T/N/R/B/K)
-// and ? fire from any tab so they remain discoverable.
+// Scope: all hotkeys (transport + status speak) only fire when the
+// Now Playing tab is visible.  ? (open shortcuts dialog) fires from
+// any tab.
 //
 // Key conflicts: lowercase k = pause, uppercase K (Shift+K) = speak key.
 // Lowercase n = skip, uppercase N (Shift+N) = speak next track.
@@ -30,9 +30,6 @@ function _fmtRemaining(sec) {
   if (secs === 0) return minStr;
   return `${minStr} ${secs} second${secs === 1 ? "" : "s"}`;
 }
-
-// Status keys use uppercase (= Shift+letter) and fire from any tab.
-const _STATUS_KEYS = new Set(["T", "N", "R", "B", "K"]);
 
 export function toggleShortcutsModal() {
   const modal = document.getElementById("hotkey-help-modal");
@@ -85,7 +82,7 @@ export function installHotkeys({
 
     const nowPanel = document.getElementById("panel-now");
     const nowVisible = nowPanel && !nowPanel.hasAttribute("hidden");
-    if (!nowVisible && e.key !== "?" && !_STATUS_KEYS.has(e.key)) return;
+    if (!nowVisible && e.key !== "?") return;
 
     const modal = document.getElementById("hotkey-help-modal");
     if (modal && modal.open && modal.contains(e.target)) {
@@ -142,7 +139,7 @@ export function installHotkeys({
         seekDelta(measureSec2);
         break;
       }
-      // Status keys -- Shift+letter, fire from any tab, speak via aria live region.
+      // Status keys -- Shift+letter, speak via aria live region.
       case "T": {
         const t = getTrack && getTrack();
         srSpeak(t ? `${t.artist || ""} - ${t.title || ""}`.trim() : "Nothing playing");
