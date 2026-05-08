@@ -82,6 +82,11 @@ class PlayerBridge:
     # Controls
     # ------------------------------------------------------------------
 
+    def record_seed(self, entry: Any) -> None:
+        """Append the seed track to history before the first advance fires."""
+        if entry is not None and not self._play_history:
+            self._play_history.append(_history_entry(entry))
+
     def seek(self, seconds: float | None = None, delta: float | None = None) -> float:
         """Seek the active track and return the resulting position in seconds.
 

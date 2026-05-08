@@ -1276,6 +1276,7 @@ def serve(
         daemon=True,
     )
     player_thread.start()
+    bridge.record_seed(seed_entry)
 
     app = create_app(bridge)
 
