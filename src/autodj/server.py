@@ -452,12 +452,14 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
         pages = max(1, (total + per_page - 1) // per_page)
         page = max(1, min(page, pages))
         start = (page - 1) * per_page
-        return JSONResponse({
-            "items": items[start : start + per_page],
-            "total": total,
-            "page": page,
-            "pages": pages,
-        })
+        return JSONResponse(
+            {
+                "items": items[start : start + per_page],
+                "total": total,
+                "page": page,
+                "pages": pages,
+            }
+        )
 
     @app.post("/api/skip")
     async def api_skip() -> JSONResponse:

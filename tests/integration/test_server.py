@@ -1997,8 +1997,18 @@ class TestHistoryEndpoint:
 
     def test_populated_history_most_recent_first(self) -> None:
         entries = [
-            {"title": "A", "artist": "X", "duration": 180.0, "played_at": "2026-01-01T00:00:00+00:00"},
-            {"title": "B", "artist": "Y", "duration": 200.0, "played_at": "2026-01-01T00:01:00+00:00"},
+            {
+                "title": "A",
+                "artist": "X",
+                "duration": 180.0,
+                "played_at": "2026-01-01T00:00:00+00:00",
+            },
+            {
+                "title": "B",
+                "artist": "Y",
+                "duration": 200.0,
+                "played_at": "2026-01-01T00:01:00+00:00",
+            },
         ]
         c = self._client_with_history(entries)
         data = c.get("/api/history").json()
@@ -2007,7 +2017,9 @@ class TestHistoryEndpoint:
         assert data["items"][1]["title"] == "A"
 
     def test_pagination_page_count(self) -> None:
-        entries = [{"title": str(i), "artist": "", "duration": 0.0, "played_at": ""} for i in range(110)]
+        entries = [
+            {"title": str(i), "artist": "", "duration": 0.0, "played_at": ""} for i in range(110)
+        ]
         c = self._client_with_history(entries)
         data = c.get("/api/history?page=1&per_page=50").json()
         assert data["total"] == 110
@@ -2015,7 +2027,9 @@ class TestHistoryEndpoint:
         assert len(data["items"]) == 50
 
     def test_pagination_last_page(self) -> None:
-        entries = [{"title": str(i), "artist": "", "duration": 0.0, "played_at": ""} for i in range(110)]
+        entries = [
+            {"title": str(i), "artist": "", "duration": 0.0, "played_at": ""} for i in range(110)
+        ]
         c = self._client_with_history(entries)
         data = c.get("/api/history?page=3&per_page=50").json()
         assert len(data["items"]) == 10
