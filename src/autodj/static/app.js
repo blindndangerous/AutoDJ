@@ -127,10 +127,11 @@ function applyState(s) {
     // Update browser titlebar: "AutoDJ - Artist - Title - Album"
     const t = s.current_track;
     if (t) {
-      const segs = ["AutoDJ"];
+      const segs = [];
       if (t.artist) segs.push(t.artist);
       if (t.title)  segs.push(t.title);
       if (t.album)  segs.push(t.album);
+      segs.push("AutoDJ");
       document.title = segs.join(" - ");
     } else {
       document.title = "AutoDJ";

@@ -15,7 +15,7 @@
 // repeat flag.
 //
 // Scope: transport hotkeys (Space/K/N/S/M/Arrow keys) only fire when
-// the Now Playing tab is visible.  ?/ (open shortcuts dialog) fire
+// the Now Playing tab is visible.  ? (open shortcuts dialog) fires
 // from any tab so the rule remains discoverable.
 
 import { isTypingTarget } from "./dom-helpers.js";
@@ -67,11 +67,11 @@ export function installHotkeys({ btnPause, btnSkip, btnShuffle, btnMute, volSlid
 
     const nowPanel = document.getElementById("panel-now");
     const nowVisible = nowPanel && !nowPanel.hasAttribute("hidden");
-    if (!nowVisible && e.key !== "?" && e.key !== "/") return;
+    if (!nowVisible && e.key !== "?") return;
 
     const modal = document.getElementById("hotkey-help-modal");
     if (modal && modal.open && modal.contains(e.target)) {
-      if (e.key === "?" || e.key === "/") {
+      if (e.key === "?") {
         e.preventDefault();
         toggleShortcutsModal();
       }
@@ -112,16 +112,21 @@ export function installHotkeys({ btnPause, btnSkip, btnShuffle, btnMute, volSlid
         if (targetIsTab) return;
         bumpVol = -5;
         break;
-      case "ArrowLeft":
-      case "ArrowRight": {
-        if (!e.shiftKey || !seekDelta) return;
+      case ",": {
+        if (!seekDelta) return;
         const bpm = getBpm ? getBpm() : 0;
         const measureSec = bpm > 0 ? (4 * 60) / bpm : 5.0;
-        seekDelta(key === "ArrowLeft" ? -measureSec : measureSec);
+        seekDelta(-measureSec);
+        break;
+      }
+      case ".": {
+        if (!seekDelta) return;
+        const bpm2 = getBpm ? getBpm() : 0;
+        const measureSec2 = bpm2 > 0 ? (4 * 60) / bpm2 : 5.0;
+        seekDelta(measureSec2);
         break;
       }
       case "?":
-      case "/":
         if (!toggleShortcutsModal()) return;
         break;
       default:
