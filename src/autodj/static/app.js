@@ -1225,6 +1225,79 @@ const _libEls = {
 };
 installLibraryJobs(_libEls);
 
+// ----------------------------------------------------------------
+// History tab
+// ----------------------------------------------------------------
+
+let _histPage = 1;
+
+function _fmtDuration(sec) {
+  const s = Math.round(sec || 0);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+function _fmtTime(iso) {
+  try {
+    return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  } catch (_) { return iso; }
+}
+
+async function fetchHistory(page) {
+  _histPage = page;
+  try {
+    const r = await fetch(`/api/history?page=${page}&per_page=50`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    const tbody = document.getElementById("history-tbody");
+    const table = document.getElementById("history-table");
+    const empty = document.getElementById("history-empty");
+    const pag   = document.getElementById("history-pagination");
+    const info  = document.getElementById("hist-page-info");
+    const goto  = document.getElementById("hist-goto");
+    if (!data.total) {
+      table.setAttribute("hidden", "");
+      pag.setAttribute("hidden", "");
+      empty.removeAttribute("hidden");
+      return;
+    }
+    empty.setAttribute("hidden", "");
+    table.removeAttribute("hidden");
+    tbody.innerHTML = data.items.map(it => `<tr>
+      <td>${_fmtTime(it.played_at)}</td>
+      <td>${escHtml(it.title)}</td>
+      <td>${escHtml(it.artist)}</td>
+      <td>${_fmtDuration(it.duration)}</td>
+    </tr>`).join("");
+    info.textContent = `Page ${data.page} of ${data.pages}`;
+    if (goto) goto.value = data.page;
+    document.getElementById("hist-prev").disabled = data.page <= 1;
+    document.getElementById("hist-next").disabled = data.page >= data.pages;
+    pag.removeAttribute("hidden");
+  } catch (err) {
+    const empty = document.getElementById("history-empty");
+    if (empty) empty.textContent = `Could not load history: ${err.message}`;
+  }
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  document.getElementById("hist-prev").addEventListener("click", () => fetchHistory(_histPage - 1));
+  document.getElementById("hist-next").addEventListener("click", () => fetchHistory(_histPage + 1));
+  document.getElementById("hist-go").addEventListener("click", () => {
+    const v = parseInt(document.getElementById("hist-goto").value, 10);
+    if (v > 0) fetchHistory(v);
+  });
+  document.getElementById("hist-goto").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      const v = parseInt(e.target.value, 10);
+      if (v > 0) fetchHistory(v);
+    }
+  });
+});
+
+window.addEventListener("hashchange", () => {
+  if ((location.hash || "").replace(/^#/, "") === "history") fetchHistory(1);
+});
+
 // Tab router moved to ./modules/tabs.js.
 import { initViewRouter } from "./modules/tabs.js";
 

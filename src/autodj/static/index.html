@@ -37,6 +37,7 @@
   <div role="tablist" aria-label="Sections" aria-orientation="horizontal">
     <button type="button" role="tab" id="tab-now"      data-view="now"      aria-controls="panel-now"      aria-selected="true"  tabindex="0">Now Playing</button>
     <button type="button" role="tab" id="tab-queue"    data-view="queue"    aria-controls="panel-queue"    aria-selected="false" tabindex="-1">Queue &amp; Search</button>
+    <button type="button" role="tab" id="tab-history"  data-view="history"  aria-controls="panel-history"  aria-selected="false" tabindex="-1">History</button>
     <button type="button" role="tab" id="tab-settings" data-view="settings" aria-controls="panel-settings" aria-selected="false" tabindex="-1">Settings</button>
     <button type="button" role="tab" id="tab-library"  data-view="library"  aria-controls="panel-library"  aria-selected="false" tabindex="-1">Library tools</button>
   </div>
@@ -260,6 +261,33 @@
   </details>
 
   </section>
+  <!-- ============================================================
+       View: History — session play log, most-recent first
+       ============================================================ -->
+  <section data-view="history" id="panel-history" role="tabpanel" hidden aria-labelledby="tab-history">
+    <h2>History</h2>
+    <p id="history-empty">No tracks played yet this session.</p>
+    <table id="history-table" aria-label="Recently played tracks" hidden>
+      <thead>
+        <tr>
+          <th scope="col">Time</th>
+          <th scope="col">Title</th>
+          <th scope="col">Artist</th>
+          <th scope="col">Duration</th>
+        </tr>
+      </thead>
+      <tbody id="history-tbody"></tbody>
+    </table>
+    <nav id="history-pagination" aria-label="History pagination" hidden>
+      <button type="button" id="hist-prev">Prev</button>
+      <span id="hist-page-info">Page 1 of 1</span>
+      <button type="button" id="hist-next">Next</button>
+      <label for="hist-goto" class="sr-only">Page number</label>
+      <input type="number" id="hist-goto" min="1" value="1" style="width:4em">
+      <button type="button" id="hist-go">Go</button>
+    </nav>
+  </section>
+
   <!-- ============================================================
        View: Settings — every CLI flag mirrored as a form control
        ============================================================ -->

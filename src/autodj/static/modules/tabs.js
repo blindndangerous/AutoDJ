@@ -4,7 +4,7 @@
 // each <section>.  Tablist arrow / Home / End navigation follows
 // the ARIA APG roving-tabindex pattern.
 
-export const VIEW_NAMES = ["now", "queue", "settings", "library"];
+export const VIEW_NAMES = ["now", "queue", "history", "settings", "library"];
 
 const _viewSections = new Map();
 const _viewLinks = new Map();

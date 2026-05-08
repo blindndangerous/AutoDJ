@@ -445,6 +445,20 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
         # the server is actually serving (browser cache vs. fresh build).
         return JSONResponse(_version_info())
 
+    @app.get("/api/history")
+    async def api_history(page: int = 1, per_page: int = 50) -> JSONResponse:
+        items = list(reversed(bridge._play_history))
+        total = len(items)
+        pages = max(1, (total + per_page - 1) // per_page)
+        page = max(1, min(page, pages))
+        start = (page - 1) * per_page
+        return JSONResponse({
+            "items": items[start : start + per_page],
+            "total": total,
+            "page": page,
+            "pages": pages,
+        })
+
     @app.post("/api/skip")
     async def api_skip() -> JSONResponse:
         bridge.skip()

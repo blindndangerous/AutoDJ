@@ -14,7 +14,8 @@ server stack.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -46,6 +47,15 @@ def _library_job_snapshot() -> dict:
     return snap
 
 
+def _history_entry(entry: Any) -> dict:
+    return {
+        "title": getattr(entry, "title", "") or "",
+        "artist": getattr(entry, "artist", "") or "",
+        "duration": float(getattr(entry, "length", 0.0) or 0.0),
+        "played_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 @dataclass
 class PlayerBridge:
     """Thread-safe adapter between :class:`~autodj.player.Player` and FastAPI.
@@ -66,6 +76,7 @@ class PlayerBridge:
     # import them eagerly to keep the minimal-install path light.
     player: Any
     sim: Any
+    _play_history: list = field(default_factory=list, init=False)
 
     # ------------------------------------------------------------------
     # Controls
@@ -173,6 +184,10 @@ class PlayerBridge:
             return
 
         state.current_track = nxt
+        # Lazy-capture seed on first advance (seed never goes through advance_now as nxt).
+        if not self._play_history and cur is not None:
+            self._play_history.append(_history_entry(cur))
+        self._play_history.append(_history_entry(nxt))
         # Browser-driven mode skips _play_track, so without an explicit
         # call here the lyric panel would stay frozen on the previous
         # track's words.  Resolution order inside _load_lyrics is
