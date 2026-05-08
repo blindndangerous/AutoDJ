@@ -103,7 +103,10 @@ let lastNextKey  = null;   // suppress aria-live re-announce of unchanged next t
 // State update — called on every WS push and on manual API calls
 // ----------------------------------------------------------------
 
+let _lastState = null;
+
 function applyState(s) {
+  _lastState = s;
   // Voice liner track-count bump (forward declaration of helper -- see
   // voice liner block at the bottom of this file).  Safe to call here
   // because module-init runs top-to-bottom and the helper is defined
@@ -1171,8 +1174,8 @@ function _wireHotkeysWhenReady() {
       volSlider:   typeof volSlider  !== "undefined" ? volSlider  : null,
       seekDelta:   _seekByDelta,
       getBpm:      () => _outBpmCache,
-      getTrack:    () => _lastBrowserPlayback && _lastBrowserPlayback.current_track,
-      getNextTrack:() => _lastBrowserPlayback && _lastBrowserPlayback.next_track,
+      getTrack:    () => _lastState && _lastState.current_track,
+      getNextTrack:() => _lastState && _lastState.next_track,
       getRemaining:() => {
         const dur = _seekTrackDuration();
         if (!dur) return null;
