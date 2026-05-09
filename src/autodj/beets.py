@@ -108,60 +108,47 @@ _NOTE_TO_KEY: dict[str, int] = {
 }
 
 
+def _parse_camelot_key(raw: str) -> tuple[int, int] | None:
+    """Parse a Camelot-format key (e.g. ``"8A"`` / ``"8B"``); return ``None`` when not Camelot."""
+    cam = raw.upper().replace(" ", "")
+    if not (len(cam) >= 2 and cam[-1] in ("A", "B") and cam[:-1].isdigit()):
+        return None
+    num = int(cam[:-1])
+    side = cam[-1]
+    if not (1 <= num <= 12):
+        return None
+    from autodj.dj_meta import _CAMELOT_MAJOR, _CAMELOT_MINOR
+
+    table = _CAMELOT_MAJOR if side == "B" else _CAMELOT_MINOR
+    for chromatic, n in table.items():
+        if n == num:
+            return (chromatic, 1 if side == "B" else 0)
+    return None
+
+
+def _split_note_and_mode(raw: str) -> tuple[str, int]:
+    """Split a textual key into ``(note, mode)`` where mode is 1=major / 0=minor."""
+    lower = raw.lower()
+    if "major" in lower:
+        return lower.replace("major", "").strip(), 1
+    if "minor" in lower:
+        return lower.replace("minor", "").strip(), 0
+    if raw.endswith("m") and len(raw) >= 2:
+        return raw[:-1].strip(), 0
+    return raw.strip(), 1
+
+
 def parse_initial_key(s: str) -> tuple[int, int] | None:
-    """Parse a beets ``initial_key`` text value into ``(key 0–11, mode)``.
-
-    Accepts the common formats written by beets plugins, MP3Tag, and
-    DJ software:
-
-    - Bare note → major: ``"C"``, ``"D#"``, ``"Bb"``
-    - Trailing ``m`` → minor: ``"Cm"``, ``"D#m"``, ``"Bbm"``
-    - Spelled out: ``"C major"``, ``"A minor"`` (case-insensitive)
-    - Camelot codes: ``"8A"``, ``"8B"`` (any valid 1-12 + A/B)
-
-    Args:
-        s: Raw text value.  ``None`` and ``""`` return ``None``.
-
-    Returns:
-        ``(key, mode)`` where ``mode`` is 1 = major, 0 = minor, or
-        ``None`` if the string cannot be parsed.
-    """
+    """Parse a beets ``initial_key`` text value into ``(key 0–11, mode)``."""
     if not s:
         return None
     raw = s.strip()
     if not raw:
         return None
-
-    # Camelot form first
-    cam = raw.upper().replace(" ", "")
-    if len(cam) >= 2 and cam[-1] in ("A", "B") and cam[:-1].isdigit():
-        num = int(cam[:-1])
-        side = cam[-1]
-        if 1 <= num <= 12:
-            from autodj.dj_meta import _CAMELOT_MAJOR, _CAMELOT_MINOR
-
-            table = _CAMELOT_MAJOR if side == "B" else _CAMELOT_MINOR
-            for chromatic, n in table.items():
-                if n == num:
-                    return (chromatic, 1 if side == "B" else 0)
-            return None
-
-    # Word form
-    lower = raw.lower()
-    mode: int
-    if "major" in lower:
-        mode = 1
-        note_part = lower.replace("major", "").strip()
-    elif "minor" in lower:
-        mode = 0
-        note_part = lower.replace("minor", "").strip()
-    elif raw.endswith("m") and len(raw) >= 2:
-        mode = 0
-        note_part = raw[:-1].strip()
-    else:
-        mode = 1
-        note_part = raw.strip()
-
+    cam = _parse_camelot_key(raw)
+    if cam is not None:
+        return cam
+    note_part, mode = _split_note_and_mode(raw)
     if not note_part:
         return None
     note = note_part[0].upper() + note_part[1:]

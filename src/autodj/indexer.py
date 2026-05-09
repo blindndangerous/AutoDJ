@@ -794,6 +794,56 @@ def enrich_from_beets(
     return (updated, len(entries))
 
 
+def _is_relative_storage(raw: list[dict]) -> bool:
+    """True when every stored path string is already in relative form."""
+    return all(
+        not (
+            r["path"].startswith("/")
+            or (len(r["path"]) >= 2 and r["path"][1] == ":")
+            or "\\" in r["path"]
+        )
+        for r in raw
+    )
+
+
+def _check_prune_safety(removed: int, total: int, allow_mass_prune: bool) -> None:
+    """Raise PruneSafetyError when the prune ratio would cross the threshold."""
+    if allow_mass_prune or total == 0 or removed / total <= PRUNE_SAFETY_THRESHOLD:
+        return
+    raise PruneSafetyError(
+        f"Refusing to prune {removed}/{total} tracks "
+        f"({removed / total:.0%} > {PRUNE_SAFETY_THRESHOLD:.0%} threshold).\n"
+        "This usually means [library] music_dir or path_remap in your "
+        "config does not match where the indexed files actually live.\n"
+        "Fix the config first, then re-run.  If you really did delete "
+        "this many tracks, pass allow_mass_prune=True (or "
+        "`autodj prune --force` from the CLI)."
+    )
+
+
+def _delete_index_files(metadata_file: Path, faiss_file: Path) -> None:
+    """Remove the index files (called when prune empties the library)."""
+    metadata_file.unlink()
+    faiss_file.unlink()
+
+
+def _maybe_migrate_paths(
+    loaded: faiss.IndexFlatIP,
+    entries: list[IndexEntry],
+    index_dir: Path,
+    music_dir: Path | None,
+    already_relative: bool,
+) -> None:
+    """Re-save metadata in relative form when storage is still absolute."""
+    if music_dir is None or already_relative:
+        return
+    all_vectors = np.array(
+        [loaded.reconstruct(i) for i in range(len(entries))],
+        dtype=np.float32,
+    )
+    save_index(entries, all_vectors, index_dir, music_dir=music_dir)
+
+
 def prune_index(
     index_dir: Path,
     music_dir: Path | None = None,
@@ -837,56 +887,23 @@ def prune_index(
 
     raw = json.loads(metadata_file.read_text(encoding="utf-8"))
     entries = [IndexEntry(**r) for r in raw]
-    # Detect whether the on-disk storage already uses the target format
-    # (relative when music_dir is given, otherwise absolute) — used below
-    # to skip a needless rewrite when nothing would change.
-    already_relative = music_dir is not None and all(
-        not (
-            r["path"].startswith("/")
-            or (len(r["path"]) >= 2 and r["path"][1] == ":")
-            or "\\" in r["path"]
-        )
-        for r in raw
-    )
-    # Resolve to absolute runtime paths in-place
+    already_relative = music_dir is not None and _is_relative_storage(raw)
     for e in entries:
         e.path = _resolve_for_runtime(e.path, music_dir, path_remap)
     loaded = faiss.read_index(str(faiss_file))
 
     keep_mask = [Path(e.path).exists() for e in entries]
     removed = sum(1 for k in keep_mask if not k)
-
-    # --- safety check ---
-    total = len(entries)
-    if not allow_mass_prune and total > 0 and removed / total > PRUNE_SAFETY_THRESHOLD:
-        raise PruneSafetyError(
-            f"Refusing to prune {removed}/{total} tracks "
-            f"({removed / total:.0%} > {PRUNE_SAFETY_THRESHOLD:.0%} threshold).\n"
-            "This usually means [library] music_dir or path_remap in your "
-            "config does not match where the indexed files actually live.\n"
-            "Fix the config first, then re-run.  If you really did delete "
-            "this many tracks, pass allow_mass_prune=True (or "
-            "`autodj prune --force` from the CLI)."
-        )
+    _check_prune_safety(removed, len(entries), allow_mass_prune)
 
     surviving_entries = [e for e, k in zip(entries, keep_mask, strict=False) if k]
-
     if not surviving_entries and removed:
-        metadata_file.unlink()
-        faiss_file.unlink()
+        _delete_index_files(metadata_file, faiss_file)
         logger.info("Pruned all %d entries — index is now empty", removed)
         return (removed, 0)
 
     if removed == 0:
-        # No drops. Skip the migration rewrite when storage is already
-        # in the target relative form — avoids needlessly re-writing a
-        # large FAISS file every run (slow and risky on network mounts).
-        if music_dir is not None and not already_relative:
-            all_vectors = np.array(
-                [loaded.reconstruct(i) for i in range(len(entries))],
-                dtype=np.float32,
-            )
-            save_index(entries, all_vectors, index_dir, music_dir=music_dir)
+        _maybe_migrate_paths(loaded, entries, index_dir, music_dir, already_relative)
         return (0, len(entries))
 
     surviving_vectors = np.array(

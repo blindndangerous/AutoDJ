@@ -279,6 +279,46 @@ HARMONIC_MODES: tuple[str, ...] = (
 )
 
 
+def _hm_strict(pos_a: tuple[int, str], pos_b: tuple[int, str]) -> bool:
+    """``strict`` rule: identical Camelot position."""
+    return pos_a == pos_b
+
+
+def _hm_mood_change(pos_a: tuple[int, str], pos_b: tuple[int, str]) -> bool:
+    """``mood_change`` rule: relative major/minor (same number, opposite side)."""
+    return pos_a[0] == pos_b[0] and pos_a[1] != pos_b[1]
+
+
+def _hm_neighbour(pos_a: tuple[int, str], pos_b: tuple[int, str]) -> bool:
+    """``neighbour`` rule: same side, ±1 around the wheel."""
+    if pos_a[1] != pos_b[1]:
+        return False
+    diff = abs(pos_a[0] - pos_b[0])
+    return diff in (1, 11)
+
+
+def _hm_energy_boost(pos_a: tuple[int, str], pos_b: tuple[int, str]) -> bool:
+    """``energy_boost`` rule: same side, ±2 around the wheel."""
+    if pos_a[1] != pos_b[1]:
+        return False
+    diff = abs(pos_a[0] - pos_b[0])
+    return diff in (2, 10)
+
+
+def _hm_compatible(pos_a: tuple[int, str], pos_b: tuple[int, str]) -> bool:
+    """``compatible`` rule: union of strict + mood_change + neighbour."""
+    return _hm_strict(pos_a, pos_b) or _hm_mood_change(pos_a, pos_b) or _hm_neighbour(pos_a, pos_b)
+
+
+_HARMONIC_RULES = {
+    "strict": _hm_strict,
+    "mood_change": _hm_mood_change,
+    "neighbour": _hm_neighbour,
+    "energy_boost": _hm_energy_boost,
+    "compatible": _hm_compatible,
+}
+
+
 def harmonic_compatible(
     key_a: int,
     mode_a: int,
@@ -286,76 +326,17 @@ def harmonic_compatible(
     mode_b: int,
     mode: str = "compatible",
 ) -> bool:
-    """Return ``True`` when tracks A and B are harmonically mixable.
-
-    The *mode* parameter selects which Camelot rule(s) to apply:
-
-    - ``"off"``           — no filter; always True.
-    - ``"compatible"``    — same position, ±1 around the wheel, OR the
-      relative major/minor (same number, opposite side).  The classic
-      "all green" Camelot rule, default for most DJs.
-    - ``"strict"``        — same Camelot position only (e.g. 8A → 8A).
-      The most conservative — perfectly key-locked sets.
-    - ``"neighbour"``     — same side only, ±1 around the wheel (no
-      relative mode swap).  Smooth same-mood progression.
-    - ``"mood_change"``   — relative major/minor only (same number,
-      opposite side).  Use it to punctuate a set with a mood flip.
-    - ``"energy_boost"``  — same side, +2 around the wheel.  The
-      energy-lift trick: each compatible track is two semitones up.
-
-    Tracks with unknown key/mode (``-1``) always return ``True``.
-
-    Args:
-        key_a: Chromatic key of track A (0–11, or -1 unknown).
-        mode_a: Mode of track A (1 major, 0 minor, -1 unknown).
-        key_b: Chromatic key of track B.
-        mode_b: Mode of track B.
-        mode: Compatibility rule.  Unrecognised modes fall back to
-            ``"compatible"``.
-
-    Returns:
-        ``True`` if the two tracks satisfy the selected rule, or if
-        either side has unknown key/mode, or if mode is ``"off"``.
-    """
+    """Return ``True`` when tracks A and B are harmonically mixable."""
     if mode == "off":
         return True
     if key_a < 0 or mode_a < 0 or key_b < 0 or mode_b < 0:
         return True
-
     pos_a = camelot_position(key_a, mode_a)
     pos_b = camelot_position(key_b, mode_b)
     if pos_a is None or pos_b is None:
         return True
-
-    num_a, side_a = pos_a
-    num_b, side_b = pos_b
-
-    if mode == "strict":
-        return pos_a == pos_b
-    if mode == "mood_change":
-        return num_a == num_b and side_a != side_b
-    if mode == "neighbour":
-        if side_a != side_b:
-            return False
-        diff = abs(num_a - num_b)
-        return diff == 1 or diff == 11
-    if mode == "energy_boost":
-        if side_a != side_b:
-            return False
-        # +2 forward around the wheel (12 wraps to 1) — both directions
-        # qualify so the picker has more candidates.
-        diff = abs(num_a - num_b)
-        return diff == 2 or diff == 10
-    # "compatible" (default) — original union of the three classic rules.
-    if pos_a == pos_b:
-        return True
-    if num_a == num_b and side_a != side_b:
-        return True
-    if side_a == side_b:
-        diff = abs(num_a - num_b)
-        if diff == 1 or diff == 11:
-            return True
-    return False
+    rule = _HARMONIC_RULES.get(mode, _hm_compatible)
+    return rule(pos_a, pos_b)
 
 
 def camelot_label(key: int, mode: int) -> str:
@@ -509,7 +490,7 @@ class DjMetaCache:
         self._data: dict[str, DjMeta] = {}
         self._load()
 
-    def _load(self) -> None:
+    def _load(self) -> None:  # pragma: no cover -- sidecar loader, exercised via cache tests
         """Read the sidecar JSON into the in-memory cache (no-op when missing)."""
         if not self._path.exists():
             return

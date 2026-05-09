@@ -37,6 +37,7 @@ import sqlite3
 # install separately for a feature with no real attack surface.
 import xml.etree.ElementTree as ET  # nosec B405
 from pathlib import Path
+from typing import Any
 
 from autodj.dj_meta import Cue
 
@@ -97,33 +98,18 @@ def import_from_mixxx(db_path: Path) -> dict[str, list[Cue]]:
 
     try:
         cur = con.cursor()
-        # Mixxx stores absolute track paths in track_locations.location.
         cur.execute(
             "SELECT track_locations.location, cues.position, cues.type, cues.label "
             "FROM cues "
             "JOIN library ON library.id = cues.track_id "
             "JOIN track_locations ON track_locations.id = library.location",
         )
-        for location, position, ctype, label in cur.fetchall():
-            if not location or position is None:
+        for row in cur.fetchall():
+            entry = _mixxx_row_to_cue(row, type_map)
+            if entry is None:
                 continue
-            mapped = type_map.get(int(ctype) if ctype is not None else 0)
-            if mapped is None:
-                continue
-            # Mixxx stores cue position in samples assuming 44100 Hz
-            # stereo (so 2 samples per frame).  Documented in Mixxx
-            # sources: PlayerInfo / CuePosition uses sample frames.
-            time_s = float(position) / (44100.0 * 2.0)
-            if time_s < 0:
-                continue
-            out.setdefault(location, []).append(
-                Cue(
-                    time_s=time_s,
-                    type=mapped,
-                    label=str(label or ""),
-                    source="mixxx",
-                ),
-            )
+            location, cue = entry
+            out.setdefault(location, []).append(cue)
     except sqlite3.DatabaseError as exc:
         logger.debug("Mixxx db read failed: %s", exc)
     finally:
@@ -131,6 +117,27 @@ def import_from_mixxx(db_path: Path) -> dict[str, list[Cue]]:
             con.close()
 
     return _normalise_keys(out)
+
+
+def _mixxx_row_to_cue(
+    row: tuple[Any, ...],
+    type_map: dict[int, str],
+) -> tuple[str, Cue] | None:
+    """Convert one Mixxx ``cues`` row into ``(track_path, Cue)`` or None."""
+    location, position, ctype, label = row
+    if not location or position is None:
+        return None
+    mapped = type_map.get(int(ctype) if ctype is not None else 0)
+    if mapped is None:
+        return None
+    # Mixxx stores cue position in samples (44100 Hz stereo => 2 samples/frame).
+    time_s = float(position) / (44100.0 * 2.0)
+    if time_s < 0:
+        return None
+    return (
+        location,
+        Cue(time_s=time_s, type=mapped, label=str(label or ""), source="mixxx"),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -183,33 +190,31 @@ def import_from_rekordbox_xml(xml_path: Path) -> dict[str, list[Cue]]:
         location = track.get("Location") or ""
         if not location:
             continue
-        # location is a file:// URL; convert to native path.
         path = _file_url_to_path(location)
         if not path:
             continue
         for mark in track.iter("POSITION_MARK"):
-            try:
-                start = float(mark.get("Start") or 0.0)
-            except (TypeError, ValueError):
-                continue
-            mapped = rb_type_map.get(str(mark.get("Type") or "0"), "user")
-            label = mark.get("Name") or ""
-            color = ""
-            r, g, b = mark.get("Red"), mark.get("Green"), mark.get("Blue")
-            if r is not None and g is not None and b is not None:
-                with contextlib.suppress(ValueError):
-                    color = f"#{int(r):02x}{int(g):02x}{int(b):02x}"
-            out.setdefault(path, []).append(
-                Cue(
-                    time_s=start,
-                    type=mapped,
-                    label=label,
-                    source="rekordbox",
-                    color=color,
-                ),
-            )
+            cue = _rekordbox_mark_to_cue(mark, rb_type_map)
+            if cue is not None:
+                out.setdefault(path, []).append(cue)
 
     return _normalise_keys(out)
+
+
+def _rekordbox_mark_to_cue(mark: ET.Element, rb_type_map: dict[str, str]) -> Cue | None:
+    """Convert one Rekordbox ``POSITION_MARK`` element into a Cue."""
+    try:
+        start = float(mark.get("Start") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    mapped = rb_type_map.get(str(mark.get("Type") or "0"), "user")
+    label = mark.get("Name") or ""
+    color = ""
+    r, g, b = mark.get("Red"), mark.get("Green"), mark.get("Blue")
+    if r is not None and g is not None and b is not None:
+        with contextlib.suppress(ValueError):
+            color = f"#{int(r):02x}{int(g):02x}{int(b):02x}"
+    return Cue(time_s=start, type=mapped, label=label, source="rekordbox", color=color)
 
 
 # ---------------------------------------------------------------------------
@@ -256,38 +261,48 @@ def import_from_traktor_nml(nml_path: Path) -> dict[str, list[Cue]]:
     }
 
     for entry in tree.iter("ENTRY"):
-        loc = entry.find("LOCATION")
-        if loc is None:
+        full = _traktor_entry_to_path(entry)
+        if full is None:
             continue
-        volume = loc.get("VOLUME") or ""
-        directory = (loc.get("DIR") or "").replace("/:", "/").lstrip("/")
-        filename = loc.get("FILE") or ""
-        if not filename:
-            continue
-        # Traktor encodes paths with colon separators after each
-        # directory, prefixed by the volume.  Re-assemble into a native
-        # path.  On Windows VOLUME is "C:" or similar.
-        if volume and ":" in volume:
-            full = f"{volume}/{directory}{filename}"
-        else:
-            full = f"/{directory}{filename}"
-        full = full.replace("//", "/")
         for cue in entry.iter("CUE_V2"):
-            try:
-                start_ms = float(cue.get("START") or 0.0)
-            except (TypeError, ValueError):
-                continue
-            mapped = nml_type_map.get(str(cue.get("TYPE") or "0"), "user")
-            out.setdefault(full, []).append(
-                Cue(
-                    time_s=start_ms / 1000.0,
-                    type=mapped,
-                    label=cue.get("NAME") or "",
-                    source="traktor",
-                ),
-            )
+            parsed = _traktor_cue_to_cue(cue, nml_type_map)
+            if parsed is not None:
+                out.setdefault(full, []).append(parsed)
 
     return _normalise_keys(out)
+
+
+def _traktor_entry_to_path(entry: ET.Element) -> str | None:
+    """Build the absolute file path from a Traktor ``<ENTRY><LOCATION>`` element."""
+    loc = entry.find("LOCATION")
+    if loc is None:
+        return None
+    volume = loc.get("VOLUME") or ""
+    directory = (loc.get("DIR") or "").replace("/:", "/").lstrip("/")
+    filename = loc.get("FILE") or ""
+    if not filename:
+        return None
+    # Traktor encodes paths with colon separators after each directory,
+    # prefixed by the volume.  Windows VOLUME is e.g. "C:".
+    full = (
+        f"{volume}/{directory}{filename}" if volume and ":" in volume else f"/{directory}{filename}"
+    )
+    return full.replace("//", "/")
+
+
+def _traktor_cue_to_cue(cue: ET.Element, nml_type_map: dict[str, str]) -> Cue | None:
+    """Convert one Traktor ``<CUE_V2>`` element into a Cue."""
+    try:
+        start_ms = float(cue.get("START") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    mapped = nml_type_map.get(str(cue.get("TYPE") or "0"), "user")
+    return Cue(
+        time_s=start_ms / 1000.0,
+        type=mapped,
+        label=cue.get("NAME") or "",
+        source="traktor",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -332,34 +347,42 @@ def auto_import_cues(
         multiple sources, all cues are concatenated; deduplication by
         timestamp is left to :func:`autodj.dj_meta.merge_cues`.
     """
-    candidates: list[Path] = list(extra_paths or [])
+    candidates = _gather_candidate_paths(extra_paths, library_root)
+    merged: dict[str, list[Cue]] = {}
+    for path in candidates:
+        if not path.exists():
+            continue
+        for track_path, cues in _import_one(path).items():
+            merged.setdefault(track_path, []).extend(cues)
+    return merged
 
+
+def _gather_candidate_paths(
+    extra_paths: list[Path] | None,
+    library_root: Path | None,
+) -> list[Path]:
+    """Build the search-order list of cue-source candidate paths."""
+    candidates: list[Path] = list(extra_paths or [])
     if library_root is not None and library_root.is_dir():
         for name in ("mixxx.db", "mixxxdb.sqlite", "Library.xml", "collection.nml"):
             p = library_root / name
             if p.exists():
                 candidates.append(p)
+    candidates.extend(_default_search_paths(Path.home()))
+    return candidates
 
-    home = Path.home()
-    candidates.extend(_default_search_paths(home))
 
-    merged: dict[str, list[Cue]] = {}
-    for path in candidates:
-        if not path.exists():
-            continue
-        sub: dict[str, list[Cue]] = {}
-        suffix = path.suffix.lower()
-        name = path.name.lower()
-        if suffix in (".db", ".sqlite") or "mixxx" in name:
-            sub = import_from_mixxx(path)
-        elif suffix == ".xml":
-            sub = import_from_rekordbox_xml(path)
-        elif suffix == ".nml":
-            sub = import_from_traktor_nml(path)
-        for track_path, cues in sub.items():
-            merged.setdefault(track_path, []).extend(cues)
-
-    return merged
+def _import_one(path: Path) -> dict[str, list[Cue]]:
+    """Dispatch to the correct importer based on file suffix / name."""
+    suffix = path.suffix.lower()
+    name = path.name.lower()
+    if suffix in (".db", ".sqlite") or "mixxx" in name:
+        return import_from_mixxx(path)
+    if suffix == ".xml":
+        return import_from_rekordbox_xml(path)
+    if suffix == ".nml":
+        return import_from_traktor_nml(path)
+    return {}
 
 
 def _default_search_paths(home: Path) -> list[Path]:
