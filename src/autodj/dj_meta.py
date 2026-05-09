@@ -594,6 +594,123 @@ def get_cache(index_dir: Path | None = None) -> DjMetaCache | None:
         return _CACHE
 
 
+_CUE_BLOCK_S = 0.5
+
+
+def _block_rms(audio: np.ndarray, sr: int) -> tuple[np.ndarray, np.ndarray]:
+    """Return ``(rms, rolling_mean)`` for 0.5 s blocks of *audio*."""
+    win = max(1, int(_CUE_BLOCK_S * sr))
+    n_blocks = max(1, len(audio) // win)
+    blocks = audio[: n_blocks * win].reshape(n_blocks, win)
+    rms = np.sqrt(np.mean(blocks**2, axis=1) + 1e-12)
+    window_blocks = max(1, int(2.0 / _CUE_BLOCK_S))
+    kernel = np.ones(window_blocks) / window_blocks
+    return rms, np.convolve(rms, kernel, mode="same")
+
+
+def _detect_first_downbeat(beats: list[float], intro_end_s: float) -> Cue | None:
+    """Return the first downbeat-aligned beat at or after *intro_end_s*."""
+    for i, t in enumerate(beats):
+        if i % 4 == 0 and t >= intro_end_s:
+            return Cue(time_s=float(t), type="first_downbeat", source="auto")
+    return None
+
+
+def _detect_drop(
+    rms: np.ndarray,
+    rolling: np.ndarray,
+    beats: list[float],
+    intro_end_s: float,
+    outro_start_s: float,
+) -> Cue | None:
+    """Return the loudest RMS spike (>=1.6× baseline) inside the body window."""
+    intro_idx = int(intro_end_s / _CUE_BLOCK_S)
+    outro_idx = int(outro_start_s / _CUE_BLOCK_S) if outro_start_s > 0 else len(rms)
+    search_lo = max(intro_idx, 0)
+    search_hi = min(outro_idx, len(rms))
+    if search_hi - search_lo < 4:
+        return None
+    window = rms[search_lo:search_hi]
+    roll_window = rolling[search_lo:search_hi]
+    ratio = window / np.maximum(roll_window, 1e-6)
+    peak_local = int(np.argmax(ratio))
+    if ratio[peak_local] < 1.6:
+        return None
+    drop_t = (search_lo + peak_local) * _CUE_BLOCK_S
+    if beats:
+        drop_t = min(beats, key=lambda b: abs(b - drop_t))
+    return Cue(time_s=float(drop_t), type="drop", source="auto")
+
+
+def _longest_run(below: np.ndarray) -> tuple[int, int]:
+    """Return the longest consecutive ``(start, end)`` of True values in *below*."""
+    best_run = (0, 0)
+    run_start = -1
+    for i, b in enumerate(below):
+        if b and run_start < 0:
+            run_start = i
+        elif not b and run_start >= 0:
+            if i - run_start > best_run[1] - best_run[0]:
+                best_run = (run_start, i)
+            run_start = -1
+    if run_start >= 0 and len(below) - run_start > best_run[1] - best_run[0]:
+        best_run = (run_start, len(below))
+    return best_run
+
+
+def _detect_breakdown(rms: np.ndarray, intro_end_s: float, outro_start_s: float) -> Cue | None:
+    """Return the deepest sustained dip in the middle third of the track."""
+    third_lo = len(rms) // 3
+    third_hi = 2 * len(rms) // 3
+    body_lo = max(int(intro_end_s / _CUE_BLOCK_S), 0)
+    body_hi = min(int(outro_start_s / _CUE_BLOCK_S), len(rms)) if outro_start_s > 0 else len(rms)
+    body = rms[body_lo:body_hi] if body_hi > body_lo else rms
+    body_median = float(np.median(body)) if len(body) > 0 else float(np.median(rms))
+    if third_hi - third_lo < int(4.0 / _CUE_BLOCK_S):
+        return None
+    window = rms[third_lo:third_hi]
+    below = window < (0.5 * body_median)
+    best_run = _longest_run(below)
+    if best_run[1] - best_run[0] < int(4.0 / _CUE_BLOCK_S):
+        return None
+    mid = (best_run[0] + best_run[1]) // 2
+    return Cue(time_s=float((third_lo + mid) * _CUE_BLOCK_S), type="breakdown", source="auto")
+
+
+def _detect_phrases(
+    beats: list[float],
+    intro_end_s: float,
+    outro_start_s: float,
+    duration: float,
+) -> list[Cue]:
+    """Return one cue per 32-beat phrase boundary inside the body window."""
+    if len(beats) < 32:
+        return []
+    horizon = outro_start_s if outro_start_s > 0 else duration
+    return [
+        Cue(time_s=float(beats[i]), type="phrase", source="auto")
+        for i in range(0, len(beats), 32)
+        if intro_end_s <= beats[i] <= horizon
+    ]
+
+
+def _detect_outro_downbeat(
+    beats: list[float],
+    intro_end_s: float,
+    outro_start_s: float,
+) -> Cue | None:
+    """Return the last downbeat-aligned beat before *outro_start_s*."""
+    if not beats or outro_start_s <= 0:
+        return None
+    last_db = None
+    for i, t in enumerate(beats):
+        if i % 4 == 0 and t <= outro_start_s:
+            last_db = t
+    if last_db is None or last_db <= intro_end_s:
+        return None
+    return Cue(time_s=float(last_db), type="outro_downbeat", source="auto")
+
+
 def detect_cues(
     audio: np.ndarray,
     sr: int,
@@ -601,143 +718,24 @@ def detect_cues(
     outro_start_s: float,
     beats: list[float],
 ) -> list[Cue]:
-    """Auto-detect cue points from a mono audio array.
-
-    Emits up to five categories of cue, all derived without any external
-    DJ-software metadata:
-
-    - ``first_downbeat`` — first downbeat-like beat after the intro ends.
-        Useful when the picker wants to jump past the silent run-in on
-        the incoming track.
-    - ``drop`` — the largest energy spike beyond ``intro_end_s`` (and at
-        least 2× the rolling-mean RMS).  ``None`` when no spike of that
-        size exists.
-    - ``breakdown`` — the deepest sustained energy dip in the middle
-        third of the track (RMS below 0.5× rolling mean for ≥ 4 s).
-    - ``phrase`` — every 32-beat phrase boundary inside the
-        ``[intro_end_s, outro_start_s]`` window.  Browser uses these as
-        snap points for manual mix overrides.
-    - ``outro_downbeat`` — last detected downbeat-like beat before
-        ``outro_start_s``.  Pairs with the outgoing track's first
-        downbeat for outro→intro alignment.
-
-    The algorithm is intentionally simple and dependency-free beyond
-    numpy: a 0.5 s block-RMS envelope smoothed with a 2 s rolling mean,
-    plus the existing beat grid for downbeat snapping.  Beats are
-    treated as downbeats every 4 entries (≈ 4/4 time signature, the
-    overwhelming majority of pop / dance music — close enough for the
-    snap-to-bar use case).
-
-    Args:
-        audio: Mono float32 audio array.
-        sr: Sample rate in Hz.
-        intro_end_s: Output of :func:`detect_intro_outro`.
-        outro_start_s: Output of :func:`detect_intro_outro`.
-        beats: Output of :func:`detect_beat_grid`.
-
-    Returns:
-        List of :class:`Cue` instances sorted by ``time_s`` ascending.
-        Empty list when the track is too short to analyse meaningfully.
-    """
-    if len(audio) < sr * 4:  # less than 4 s of audio — not worth analysing
+    """Auto-detect cue points from a mono audio array."""
+    if len(audio) < sr * 4:
         return []
-
     duration = len(audio) / max(1, sr)
-
-    # Block-RMS envelope, 0.5 s blocks
-    block_s = 0.5
-    win = max(1, int(block_s * sr))
-    n_blocks = max(1, len(audio) // win)
-    blocks = audio[: n_blocks * win].reshape(n_blocks, win)
-    rms = np.sqrt(np.mean(blocks**2, axis=1) + 1e-12)
+    rms, rolling = _block_rms(audio, sr)
     if rms.max() <= 1e-6:
         return []
 
-    # 2 s rolling mean for trend
-    window_blocks = max(1, int(2.0 / block_s))
-    kernel = np.ones(window_blocks) / window_blocks
-    rolling = np.convolve(rms, kernel, mode="same")
-
     cues: list[Cue] = []
-
-    # --- first_downbeat: first beat at index % 4 == 0 after intro_end ---
-    if beats:
-        # The beat grid does not tell us which beat is the downbeat.
-        # Heuristic: assume beat[0] is on a downbeat (most pop/dance
-        # tracks start on bar 1).  Pick the first downbeat after the
-        # intro ends.
-        for i, t in enumerate(beats):
-            if i % 4 == 0 and t >= intro_end_s:
-                cues.append(Cue(time_s=float(t), type="first_downbeat", source="auto"))
-                break
-
-    # --- drop: largest RMS peak past intro_end_s, beyond 2× rolling mean ---
-    intro_idx = int(intro_end_s / block_s)
-    outro_idx = int(outro_start_s / block_s) if outro_start_s > 0 else len(rms)
-    search_lo = max(intro_idx, 0)
-    search_hi = min(outro_idx, len(rms))
-    if search_hi - search_lo >= 4:
-        window = rms[search_lo:search_hi]
-        roll_window = rolling[search_lo:search_hi]
-        # Peak relative to rolling mean — biggest "spike above baseline"
-        ratio = window / np.maximum(roll_window, 1e-6)
-        peak_local = int(np.argmax(ratio))
-        if ratio[peak_local] >= 1.6:  # at least 60 % above baseline
-            drop_t = (search_lo + peak_local) * block_s
-            # Snap to nearest beat for cleaner cueing
-            if beats:
-                drop_t = min(beats, key=lambda b: abs(b - drop_t))
-            cues.append(Cue(time_s=float(drop_t), type="drop", source="auto"))
-
-    # --- breakdown: sustained dip in middle third ---
-    # Compare against the body-wide median (intro/outro excluded), not
-    # the local rolling mean -- otherwise the rolling baseline tracks
-    # the breakdown itself and the dip never crosses the threshold.
-    third_lo = len(rms) // 3
-    third_hi = 2 * len(rms) // 3
-    body_lo = max(int(intro_end_s / block_s), 0)
-    body_hi = min(int(outro_start_s / block_s), len(rms)) if outro_start_s > 0 else len(rms)
-    body = rms[body_lo:body_hi] if body_hi > body_lo else rms
-    body_median = float(np.median(body)) if len(body) > 0 else float(np.median(rms))
-    if third_hi - third_lo >= int(4.0 / block_s):
-        window = rms[third_lo:third_hi]
-        below = window < (0.5 * body_median)
-        best_run = (0, 0)
-        run_start = -1
-        for i, b in enumerate(below):
-            if b and run_start < 0:
-                run_start = i
-            elif not b and run_start >= 0:
-                length = i - run_start
-                if length > best_run[1] - best_run[0]:
-                    best_run = (run_start, i)
-                run_start = -1
-        if run_start >= 0:
-            length = len(below) - run_start
-            if length > best_run[1] - best_run[0]:
-                best_run = (run_start, len(below))
-        run_len_blocks = best_run[1] - best_run[0]
-        if run_len_blocks >= int(4.0 / block_s):  # at least 4 s sustained
-            mid = (best_run[0] + best_run[1]) // 2
-            bd_t = (third_lo + mid) * block_s
-            cues.append(Cue(time_s=float(bd_t), type="breakdown", source="auto"))
-
-    # --- phrase boundaries: every 32 beats inside the body of the track ---
-    if len(beats) >= 32:
-        for i in range(0, len(beats), 32):
-            t = beats[i]
-            if intro_end_s <= t <= (outro_start_s if outro_start_s > 0 else duration):
-                cues.append(Cue(time_s=float(t), type="phrase", source="auto"))
-
-    # --- outro_downbeat: last downbeat-aligned beat before outro_start ---
-    if beats and outro_start_s > 0:
-        last_db = None
-        for i, t in enumerate(beats):
-            if i % 4 == 0 and t <= outro_start_s:
-                last_db = t
-        if last_db is not None and last_db > intro_end_s:
-            cues.append(Cue(time_s=float(last_db), type="outro_downbeat", source="auto"))
-
+    if (cue := _detect_first_downbeat(beats, intro_end_s)) is not None:
+        cues.append(cue)
+    if (cue := _detect_drop(rms, rolling, beats, intro_end_s, outro_start_s)) is not None:
+        cues.append(cue)
+    if (cue := _detect_breakdown(rms, intro_end_s, outro_start_s)) is not None:
+        cues.append(cue)
+    cues.extend(_detect_phrases(beats, intro_end_s, outro_start_s, duration))
+    if (cue := _detect_outro_downbeat(beats, intro_end_s, outro_start_s)) is not None:
+        cues.append(cue)
     cues.sort(key=lambda c: c.time_s)
     return cues
 

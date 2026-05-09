@@ -32,6 +32,7 @@ import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -70,106 +71,107 @@ def _parse_gain_string(s: str) -> float | None:
         return None
 
 
-def read_replaygain(audio_path: str | Path) -> ReplayGain | None:
-    """Read embedded ReplayGain track-gain + peak tags from an audio file.
-
-    Supports FLAC (Vorbis comments), MP3 (ID3v2 TXXX frames), and M4A
-    (MP4 atoms via mutagen).  Returns ``None`` when no usable tag is
-    found or when the file cannot be parsed.
-
-    Args:
-        audio_path: Path to the audio file.
-
-    Returns:
-        A :class:`ReplayGain` instance or ``None``.
-    """
+def _open_mutagen(audio_path: str | Path) -> Any:
+    """Return a mutagen File object, or ``None`` on any failure."""
     try:
         import mutagen
         from mutagen import File as MutagenFile
     except ImportError:
         return None
-
     try:
-        m = MutagenFile(str(audio_path))
+        return MutagenFile(str(audio_path))
     except (OSError, ValueError, TypeError, mutagen.MutagenError):
         return None
-    if m is None:
-        return None
 
-    gain_str: str | None = None
-    peak_str: str | None = None
 
-    # Vorbis (FLAC, OGG) and APEv2 store as plain tag keys
+def _rg_from_vorbis(m: Any) -> tuple[str | None, str | None]:
+    """Read ReplayGain from Vorbis / APEv2 plain tags."""
     for key_gain, key_peak in (
         ("replaygain_track_gain", "replaygain_track_peak"),
         ("REPLAYGAIN_TRACK_GAIN", "REPLAYGAIN_TRACK_PEAK"),
     ):
         if hasattr(m, "get") and m.get(key_gain):
             try:
-                gain_str = str(m.get(key_gain)[0])
-                peak_str = str(m.get(key_peak)[0]) if m.get(key_peak) else None
+                gain = str(m.get(key_gain)[0])
+                peak = str(m.get(key_peak)[0]) if m.get(key_peak) else None
+                return gain, peak
             except (IndexError, TypeError):
-                pass
-            break
+                return None, None
+    return None, None
 
-    # ID3v2 (MP3) stores as TXXX:replaygain_track_gain frames
-    if gain_str is None and hasattr(m, "tags") and m.tags is not None:
-        for frame_key in (
-            "TXXX:replaygain_track_gain",
-            "TXXX:REPLAYGAIN_TRACK_GAIN",
-        ):
-            try:
-                frame = m.tags.get(frame_key)
-                if frame and frame.text:
-                    gain_str = str(frame.text[0])
-                    # Only swap the trailing "_gain" → "_peak" — naive
-                    # str.replace would also rewrite "replaygain" itself
-                    # and miss the actual peak frame.
-                    if frame_key.endswith("_gain"):
-                        peak_key = frame_key[:-5] + "_peak"
-                    elif frame_key.endswith("_GAIN"):
-                        peak_key = frame_key[:-5] + "_PEAK"
-                    else:
-                        peak_key = frame_key
-                    peak_frame = m.tags.get(peak_key)
-                    if peak_frame and peak_frame.text:
-                        peak_str = str(peak_frame.text[0])
-                    break
-            except (AttributeError, IndexError, TypeError):
+
+def _rg_from_id3(m: Any) -> tuple[str | None, str | None]:
+    """Read ReplayGain from ID3v2 TXXX frames."""
+    if not (hasattr(m, "tags") and m.tags is not None):
+        return None, None
+    for frame_key in ("TXXX:replaygain_track_gain", "TXXX:REPLAYGAIN_TRACK_GAIN"):
+        try:
+            frame = m.tags.get(frame_key)
+            if not (frame and frame.text):
                 continue
+            gain = str(frame.text[0])
+            peak_key = (
+                frame_key[:-5] + "_peak"
+                if frame_key.endswith("_gain")
+                else frame_key[:-5] + "_PEAK"
+            )
+            peak_frame = m.tags.get(peak_key)
+            peak = str(peak_frame.text[0]) if peak_frame and peak_frame.text else None
+            return gain, peak
+        except (AttributeError, IndexError, TypeError):
+            continue
+    return None, None
 
-    # MP4 atoms (M4A) — keys look like "----:com.apple.iTunes:replaygain_track_gain"
-    if gain_str is None and hasattr(m, "tags") and m.tags is not None:
-        for k in list(m.tags.keys()):
-            kl = k.lower()
+
+def _decode_mp4_atom(value: Any) -> str:
+    """Decode an MP4 atom value (bytes or scalar) into a string."""
+    return value.decode("utf-8") if isinstance(value, bytes) else str(value)
+
+
+def _rg_from_mp4(m: Any) -> tuple[str | None, str | None]:
+    """Read ReplayGain from MP4 ``----:com.apple.iTunes:replaygain_*`` atoms."""
+    if not (hasattr(m, "tags") and m.tags is not None):
+        return None, None
+    gain_str: str | None = None
+    peak_str: str | None = None
+    for k in list(m.tags.keys()):
+        kl = k.lower()
+        try:
             if "replaygain_track_gain" in kl:
-                try:
-                    raw = m.tags[k][0]
-                    gain_str = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
-                except (IndexError, AttributeError, UnicodeDecodeError):
-                    pass
+                gain_str = _decode_mp4_atom(m.tags[k][0])
             elif "replaygain_track_peak" in kl:
-                try:
-                    raw = m.tags[k][0]
-                    peak_str = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
-                except (IndexError, AttributeError, UnicodeDecodeError):
-                    pass
+                peak_str = _decode_mp4_atom(m.tags[k][0])
+        except (IndexError, AttributeError, UnicodeDecodeError):
+            continue
+    return gain_str, peak_str
 
+
+def _coerce_peak(peak_str: str | None) -> float:
+    """Parse a ReplayGain peak string; default 1.0 on parse error."""
+    if peak_str is None:
+        return 1.0
+    try:
+        return float(_GAIN_RE.search(peak_str).group(1))  # type: ignore[union-attr]
+    except (AttributeError, ValueError):
+        return 1.0
+
+
+def read_replaygain(audio_path: str | Path) -> ReplayGain | None:
+    """Read embedded ReplayGain track-gain + peak tags from an audio file."""
+    m = _open_mutagen(audio_path)
+    if m is None:
+        return None
+    gain_str, peak_str = _rg_from_vorbis(m)
+    if gain_str is None:
+        gain_str, peak_str = _rg_from_id3(m)
+    if gain_str is None:
+        gain_str, peak_str = _rg_from_mp4(m)
     if gain_str is None:
         return None
-
     gain_db = _parse_gain_string(gain_str)
     if gain_db is None:
         return None
-
-    peak = 1.0
-    if peak_str is not None:
-        try:
-            peak = float(_GAIN_RE.search(peak_str).group(1))  # type: ignore[union-attr]
-        except (AttributeError, ValueError):
-            peak = 1.0
-
-    return ReplayGain(track_gain_db=gain_db, track_peak=peak)
+    return ReplayGain(track_gain_db=gain_db, track_peak=_coerce_peak(peak_str))
 
 
 def replaygain_multiplier(
@@ -226,44 +228,17 @@ class CoverArt:
     mime_type: str
 
 
-def read_cover_art(audio_path: str | Path) -> CoverArt | None:
-    """Return the embedded cover image bytes from an audio file, if any.
-
-    Supports:
-    - FLAC ``METADATA_BLOCK_PICTURE`` blocks
-    - MP3 ID3v2 ``APIC`` frames
-    - MP4 ``covr`` atoms (M4A)
-
-    Args:
-        audio_path: Path to the audio file.
-
-    Returns:
-        :class:`CoverArt` or ``None`` if no embedded image is present.
-    """
-    try:
-        import mutagen
-        from mutagen import File as MutagenFile
-    except ImportError:
-        return None
-
-    try:
-        m = MutagenFile(str(audio_path))
-    except (OSError, ValueError, TypeError, mutagen.MutagenError):
-        return None
-    if m is None:
-        return None
-
-    # FLAC pictures
+def _cover_from_flac(m: Any) -> CoverArt | None:
+    """Return cover art from a FLAC METADATA_BLOCK_PICTURE list."""
     pictures = getattr(m, "pictures", None)
-    if pictures:
-        pic = pictures[0]
-        return CoverArt(data=bytes(pic.data), mime_type=str(pic.mime or "image/jpeg"))
-
-    tags = getattr(m, "tags", None)
-    if tags is None:
+    if not pictures:
         return None
+    pic = pictures[0]
+    return CoverArt(data=bytes(pic.data), mime_type=str(pic.mime or "image/jpeg"))
 
-    # ID3 APIC (MP3)
+
+def _cover_from_apic(tags: Any) -> CoverArt | None:
+    """Return cover art from an ID3v2 APIC frame."""
     for key in list(tags.keys()) if hasattr(tags, "keys") else []:
         if isinstance(key, str) and key.startswith("APIC"):
             frame = tags[key]
@@ -274,17 +249,33 @@ def read_cover_art(audio_path: str | Path) -> CoverArt | None:
                 )
             except AttributeError:
                 continue
-
-    # MP4 covr (M4A)
-    if "covr" in tags:
-        try:
-            cover = tags["covr"][0]
-            mime = "image/png" if getattr(cover, "imageformat", 13) == 14 else "image/jpeg"
-            return CoverArt(data=bytes(cover), mime_type=mime)
-        except (IndexError, AttributeError, TypeError):
-            return None
-
     return None
+
+
+def _cover_from_mp4(tags: Any) -> CoverArt | None:
+    """Return cover art from an MP4 ``covr`` atom."""
+    if "covr" not in tags:
+        return None
+    try:
+        cover = tags["covr"][0]
+        mime = "image/png" if getattr(cover, "imageformat", 13) == 14 else "image/jpeg"
+        return CoverArt(data=bytes(cover), mime_type=mime)
+    except (IndexError, AttributeError, TypeError):
+        return None
+
+
+def read_cover_art(audio_path: str | Path) -> CoverArt | None:
+    """Return the embedded cover image bytes from an audio file, if any."""
+    m = _open_mutagen(audio_path)
+    if m is None:
+        return None
+    flac = _cover_from_flac(m)
+    if flac is not None:
+        return flac
+    tags = getattr(m, "tags", None)
+    if tags is None:
+        return None
+    return _cover_from_apic(tags) or _cover_from_mp4(tags)
 
 
 # ---------------------------------------------------------------------------
@@ -460,115 +451,102 @@ def read_file_tags(audio_path: str | Path) -> FileTags:
     )
 
 
+def _vorbis_get(m: Any, key: str) -> str | None:
+    """Read *key* from Vorbis / dict-like tag access; ``None`` when absent."""
+    getter = getattr(m, "get", None)
+    if not callable(getter):
+        return None
+    try:
+        v = getter(key)
+    except (TypeError, AttributeError):
+        return None
+    if not v:
+        return None
+    val = v[0] if isinstance(v, list) else v
+    return str(val)
+
+
+def _frame_text(frame: Any) -> str | None:
+    """Extract a printable string from an ID3 frame or MP4 atom value."""
+    text = getattr(frame, "text", None)
+    if text is not None:
+        try:
+            return str(text[0])
+        except (IndexError, TypeError):
+            return None
+    try:
+        first = frame[0] if isinstance(frame, (list, tuple)) else frame
+    except (IndexError, TypeError):
+        return None
+    if isinstance(first, bytes):
+        try:
+            return first.decode("utf-8", errors="replace")
+        except (TypeError, UnicodeDecodeError):
+            return None
+    return str(first)
+
+
+def _id3_get(m: Any, key: str) -> str | None:
+    """Read *key* from ID3 / MP4 tag indexing; ``None`` when absent."""
+    tags = getattr(m, "tags", None)
+    if tags is None:
+        return None
+    try:
+        v = tags[key]
+    except (KeyError, TypeError):
+        return None
+    if v is None:
+        return None
+    return _frame_text(v)
+
+
 def _first_tag(m: object, *keys: str) -> str:
     """Return the first matching tag value from a mutagen file, as a string."""
     for k in keys:
-        # Vorbis / dict-like
-        try:
-            getter = getattr(m, "get", None)
-            if callable(getter):
-                v = getter(k)
-                if v:
-                    val = v[0] if isinstance(v, list) else v
-                    return str(val)
-        except (TypeError, AttributeError):
-            pass
-        # ID3 / MP4 — m.tags[key]
-        tags = getattr(m, "tags", None)
-        if tags is None:
-            continue
-        try:
-            v = tags[k]
-        except (KeyError, TypeError):
-            continue
-        if v is None:
-            continue
-        # ID3 frames have .text, MP4 atoms are list[str|bytes|tuple]
-        text = getattr(v, "text", None)
-        if text is not None:
-            try:
-                return str(text[0])
-            except (IndexError, TypeError):
-                continue
-        try:
-            first = v[0] if isinstance(v, (list, tuple)) else v
-        except (IndexError, TypeError):
-            continue
-        if isinstance(first, bytes):
-            try:
-                return first.decode("utf-8", errors="replace")
-            except (TypeError, UnicodeDecodeError):
-                continue
-        # MP4 tmpo can be int
-        return str(first)
+        result = _vorbis_get(m, k) or _id3_get(m, k)
+        if result is not None:
+            return result
     return ""
 
 
-def read_plain_lyrics(audio_path: str | Path) -> str:
-    """Read embedded plain (unsynced) lyrics from an audio file's tags.
-
-    Used as a fallback when no LRC sidecar exists and no beets database
-    is configured.  Supports:
-
-    - ID3 ``USLT`` (Unsynchronised Lyrics) frames (MP3, sometimes WAV)
-    - ID3 ``SYLT`` text rendered without timestamps
-    - Vorbis ``LYRICS`` / ``UNSYNCEDLYRICS`` tags (FLAC, OGG)
-    - MP4 ``\xa9lyr`` atoms (M4A, MP4)
-    - APE ``Lyrics`` tags
-
-    Args:
-        audio_path: Path to the audio file.
-
-    Returns:
-        Plain-text lyrics, or empty string when none are embedded /
-        unreadable.
-    """
-    try:
-        import mutagen
-        from mutagen import File as MutagenFile
-    except ImportError:
-        return ""
-
-    try:
-        m = MutagenFile(str(audio_path))
-    except (OSError, ValueError, TypeError, mutagen.MutagenError):
-        return ""
-    if m is None:
-        return ""
-
-    # Vorbis / FLAC / APE
+def _lyrics_from_vorbis(m: Any) -> str:
+    """Return embedded lyrics from Vorbis / FLAC / APE-style flat tags."""
     for k in ("lyrics", "LYRICS", "unsyncedlyrics", "UNSYNCEDLYRICS", "Lyrics"):
         getter = getattr(m, "get", None)
-        if callable(getter):
-            v = getter(k)
-            if v:
-                try:
-                    val = v[0] if isinstance(v, list) else v
-                    if val:
-                        return str(val).strip()
-                except (IndexError, TypeError):
-                    pass
+        if not callable(getter):
+            continue
+        v = getter(k)
+        if not v:
+            continue
+        try:
+            val = v[0] if isinstance(v, list) else v
+            if val:
+                return str(val).strip()
+        except (IndexError, TypeError):
+            continue
+    return ""
 
-    tags = getattr(m, "tags", None)
-    if tags is None:
-        return ""
 
-    # ID3 USLT — keys look like "USLT::eng" or just "USLT"
+def _lyrics_from_uslt(tags: Any) -> str:
+    """Return embedded lyrics from an ID3v2 USLT frame."""
     try:
         keys = list(tags.keys()) if hasattr(tags, "keys") else []
     except (AttributeError, TypeError):
         keys = []
     for k in keys:
-        if isinstance(k, str) and k.upper().startswith("USLT"):
-            try:
-                frame = tags[k]
-                text = getattr(frame, "text", None)
-                if text:
-                    return str(text).strip()
-            except (AttributeError, KeyError, TypeError):
-                continue
+        if not (isinstance(k, str) and k.upper().startswith("USLT")):
+            continue
+        try:
+            text = getattr(tags[k], "text", None)
+            if text:
+                return str(text).strip()
+        except (AttributeError, KeyError, TypeError):
+            continue
+    return ""
 
-    # MP4 ©lyr atom
+
+def _lyrics_from_mp4(tags: Any) -> str:
+    """Return embedded lyrics from an MP4 ``©lyr`` / iTunes LYRICS atom."""
     for k in ("\xa9lyr", "----:com.apple.iTunes:LYRICS"):
         try:
             v = tags[k]
@@ -584,8 +562,21 @@ def read_plain_lyrics(audio_path: str | Path) -> str:
             except (TypeError, UnicodeDecodeError):
                 continue
         return str(first).strip()
-
     return ""
+
+
+def read_plain_lyrics(audio_path: str | Path) -> str:
+    """Read embedded plain (unsynced) lyrics from an audio file's tags."""
+    m = _open_mutagen(audio_path)
+    if m is None:
+        return ""
+    found = _lyrics_from_vorbis(m)
+    if found:
+        return found
+    tags = getattr(m, "tags", None)
+    if tags is None:
+        return ""
+    return _lyrics_from_uslt(tags) or _lyrics_from_mp4(tags)
 
 
 def current_lyric(lyrics: list[LyricLine], elapsed_s: float) -> LyricLine | None:

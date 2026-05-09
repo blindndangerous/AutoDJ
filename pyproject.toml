@@ -238,7 +238,7 @@ ignore_decorators = ["@app.route", "@app.get", "@app.post", "@app.websocket", "@
 # `set_playback_settings` collects all of its keyword params into a
 # locals()-derived dict and dispatches via per-helper readers, so the
 # raw parameter name is never referenced directly by vulture's heuristic.
-ignore_names = ["replaygain_enabled"]
+ignore_names = ["replaygain_enabled", "transition_fx"]
 
 [tool.interrogate]
 fail-under = 95
