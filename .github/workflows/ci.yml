@@ -64,7 +64,10 @@ jobs:
         run: uv run bandit -r src/ -c pyproject.toml
 
       - name: pip-audit — dependency CVE scan
-        run: uv run pip-audit
+        # PYSEC-2022-42969: `py` 1.11.0 ReDoS in error reporting code.  No fix
+        # version upstream; pulled in transitively via xenon -> radon.  Not
+        # exposed at runtime (test-tool only), so suppressed.
+        run: uv run pip-audit --ignore-vuln PYSEC-2022-42969
 
       - name: Semgrep — multi-rule SAST
         continue-on-error: true     # advisory; bandit is the hard gate
