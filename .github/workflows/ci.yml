@@ -80,15 +80,6 @@ jobs:
       - name: pip-licenses — license inventory
         run: uv run pip-licenses --format=markdown --order=license
 
-      - name: Trivy — license + CVE scan
-        continue-on-error: true     # advisory; pip-audit + bandit are the hard gates
-        uses: aquasecurity/trivy-action@v0.28.0
-        with:
-          scan-type: fs
-          scanners: license,vuln
-          severity: HIGH,CRITICAL
-          exit-code: '1'
-
       - name: Syft — generate SBOM
         uses: anchore/sbom-action@v0
         with:
