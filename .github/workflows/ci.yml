@@ -82,7 +82,7 @@ jobs:
 
       - name: Trivy — license + CVE scan
         continue-on-error: true     # advisory; pip-audit + bandit are the hard gates
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.28.0
         with:
           scan-type: fs
           scanners: license,vuln
