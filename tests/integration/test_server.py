@@ -1501,6 +1501,33 @@ class TestPostQueueSeed:
         with pytest.raises(ValueError):
             bridge.set_playback_settings(post_queue_seed="garbage")
 
+    def test_pre_queue_capture_does_not_overwrite_existing(self, bridge) -> None:
+        bridge.player._cfg.playback.post_queue_seed = "pre_queue"
+        original = bridge.player._state.current_track
+        bridge.queue_add(bridge.sim.entries[2].path)
+        assert bridge.player._state.pre_queue_seed is original
+        # Subsequent queue_add must NOT replace the captured seed.
+        bridge.queue_add(bridge.sim.entries[3].path)
+        assert bridge.player._state.pre_queue_seed is original
+
+    def test_pre_queue_capture_skipped_when_mode_off(self, bridge) -> None:
+        bridge.player._cfg.playback.post_queue_seed = "last_queued"
+        bridge.queue_add(bridge.sim.entries[2].path)
+        assert bridge.player._state.pre_queue_seed is None
+
+    def test_sync_next_for_prefetch_clears_when_no_current(self, bridge) -> None:
+        bridge.player._state.current_track = None
+        bridge.player._state.next_track = bridge.sim.entries[0]
+        bridge._sync_next_for_prefetch()
+        assert bridge.player._state.next_track is None
+
+    def test_sync_next_for_prefetch_swallows_pick_failure(self, bridge) -> None:
+        bridge.player._pick_next.side_effect = RuntimeError("boom")
+        bridge.player._state.queue.clear()
+        bridge.player._state.queued_next = None
+        # Should not raise; logger.debug catches it.
+        bridge._sync_next_for_prefetch()
+
 
 # ---------------------------------------------------------------------------
 # Reseed random + advance + lyrics
