@@ -48,6 +48,7 @@ def _library_job_snapshot() -> dict:
 
 
 def _history_entry(entry: Any) -> dict:
+    """Return a JSON-serialisable history-row dict for *entry*."""
     return {
         "title": getattr(entry, "title", "") or "",
         "artist": getattr(entry, "artist", "") or "",
@@ -833,6 +834,7 @@ class PlayerBridge:
     # ------------------------------------------------------------------
 
     def _state_file(self) -> Path | None:
+        """Return the persistent runtime-state JSON path, or None when unavailable."""
         cfg = getattr(self.player, "_cfg", None)
         if cfg is None:
             return None

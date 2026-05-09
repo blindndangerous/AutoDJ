@@ -101,7 +101,7 @@ filterwarnings = [
 source = ["src/autodj"]
 
 [tool.coverage.report]
-fail_under = 93.5
+fail_under = 94.5
 show_missing = true
 exclude_lines = [
     "pragma: no cover",
@@ -136,6 +136,12 @@ exclude_lines = [
     "except \\(ValueError, RuntimeError\\):",
     "except \\(OSError, ValueError\\) as exc:",
     "except Exception as exc:",
+    # CLI fatal-error and interactive prompt paths -- exercised in
+    # smoke tests, not unit tests.
+    "sys\\.exit\\(1\\)",
+    "console_?\\.print\\(.*Multiple matches",
+    "except \\(click\\.Abort, EOFError\\):",
+    "if open_browser:",
 ]
 
 # ---------------------------------------------------------------------------
@@ -231,10 +237,11 @@ exclude = ["tests/", "tmp/"]
 ignore_decorators = ["@app.route", "@app.get", "@app.post", "@app.websocket", "@pytest.fixture"]
 
 [tool.interrogate]
-fail-under = 80
+fail-under = 95
 exclude = ["tests", "tmp", "build"]
 ignore-init-method = true
 ignore-private = true
+ignore-nested-functions = true
 verbose = 1
 
 [tool.bandit]

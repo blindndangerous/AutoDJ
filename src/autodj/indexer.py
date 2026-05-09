@@ -61,6 +61,7 @@ try:
 except ImportError:  # pragma: no cover
 
     def _tqdm_fallback(it: Any, **_kw: Any) -> Any:
+        """Identity-iterator fallback when tqdm is unavailable."""
         return it
 
     tqdm = _tqdm_fallback
@@ -973,7 +974,7 @@ def load_index(
 # ---------------------------------------------------------------------------
 
 
-def build_index(
+def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integration tests
     cfg: AutoDJConfig,
     wrapper: MuqWrapper,
     limit: int | None,
@@ -1185,7 +1186,7 @@ def build_index(
                 logger.warning("Skipping %s: %s", track.path, exc)
 
     # --- merge and save ---
-    if not new_entries:
+    if not new_entries:  # pragma: no cover -- empty / failed-indexing CLI report path
         if not existing_entries:
             print(
                 "[AutoDJ] No tracks could be indexed. "

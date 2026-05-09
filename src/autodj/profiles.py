@@ -149,10 +149,11 @@ class ProfileStore:
     root: Path
 
     def __post_init__(self) -> None:
-        # Coerce strings to Path so callers can pass either.
+        """Coerce string roots to Path so callers can pass either."""
         self.root = Path(self.root)
 
     def _path_for(self, name: str) -> Path:
+        """Return the on-disk JSON path for the profile *name*."""
         validate_name(name)
         return self.root / f"{name}.json"
 

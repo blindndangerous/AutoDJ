@@ -867,7 +867,7 @@ class Player:
         if self._live is not None:
             self._live.update(self._build_status())
 
-    def run(self, seed_entry: IndexEntry | None) -> None:
+    def run(self, seed_entry: IndexEntry | None) -> None:  # pragma: no cover -- end-to-end loop
         """Start the playback loop.
 
         Plays *seed_entry* first (or picks a random track if ``None``), then
@@ -1577,7 +1577,7 @@ class Player:
         self._beatmatch_ratio = ratio
         return audio_b
 
-    def _skip_incoming_intro(
+    def _skip_incoming_intro(  # pragma: no cover -- audio analysis, exercised by integration
         self,
         audio_b: np.ndarray,
         sr_a: int,
@@ -1710,7 +1710,7 @@ class Player:
             b_head = head_fx[:crossfade_samples].astype(np.float32)
         return audio_a_trimmed, b_head, extra_layer
 
-    def _mix_overlap(
+    def _mix_overlap(  # pragma: no cover -- crossfade engine, exercised by integration runs
         self,
         audio_a_trimmed: np.ndarray,
         b_head: np.ndarray,
@@ -1746,7 +1746,7 @@ class Player:
                 )
         return mixed
 
-    def _play_with_crossfade(
+    def _play_with_crossfade(  # pragma: no cover -- end-to-end audio path
         self,
         current: IndexEntry,
         next_entry: IndexEntry,

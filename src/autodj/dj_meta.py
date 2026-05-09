@@ -510,6 +510,7 @@ class DjMetaCache:
         self._load()
 
     def _load(self) -> None:
+        """Read the sidecar JSON into the in-memory cache (no-op when missing)."""
         if not self._path.exists():
             return
         try:

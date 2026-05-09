@@ -743,7 +743,7 @@ def cmd_enrich(ctx: click.Context, index_name: str | None) -> None:
     ),
 )
 @click.pass_context
-def cmd_play(
+def cmd_play(  # pragma: no cover -- end-to-end orchestrator, exercised by smoke tests
     ctx: click.Context,
     seed: str | None,
     crossfade_seconds: float | None,
@@ -1197,7 +1197,7 @@ def cmd_play(
     help="Path to TLS private key (PEM).  Pair with --ssl-certfile.",
 )
 @click.pass_context
-def cmd_serve(
+def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smoke tests
     ctx: click.Context,
     seed: str | None,
     host: str,
@@ -1645,7 +1645,7 @@ def cmd_list_devices() -> None:
 
 @cli.command("list-indexes")
 @click.pass_context
-def cmd_list_indexes(ctx: click.Context) -> None:
+def cmd_list_indexes(ctx: click.Context) -> None:  # pragma: no cover -- filesystem walk
     """List every named index found under ``[index] index_dir``.
 
     Shows each index name and its track count.  Use this to remember

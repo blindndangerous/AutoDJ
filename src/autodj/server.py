@@ -295,6 +295,7 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
+        """FastAPI lifespan: start/stop background tasks."""
         broadcast = asyncio.create_task(_broadcast_loop())
         watcher = asyncio.create_task(_index_watcher_loop())
         try:
@@ -359,6 +360,7 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     async def get_index() -> HTMLResponse:
+        """Serve the bundled web UI HTML."""
         return HTMLResponse(
             content=_static_html_path.read_text(encoding="utf-8"),
             headers=_NO_CACHE,
@@ -370,14 +372,17 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
     # otherwise the mount short-circuits with default headers.
     @app.get("/app.css")
     async def get_css() -> FileResponse:
+        """Serve the bundled stylesheet."""
         return FileResponse(_static_dir / "app.css", media_type="text/css", headers=_NO_CACHE)
 
     @app.get("/app.js")
     async def get_js() -> FileResponse:
+        """Serve the bundled application JS."""
         return FileResponse(_static_dir / "app.js", media_type="text/javascript", headers=_NO_CACHE)
 
     @app.get("/bitcrusher-worklet.js")
     async def get_worklet() -> FileResponse:
+        """Serve the bitcrusher AudioWorklet module."""
         return FileResponse(
             _static_dir / "bitcrusher-worklet.js",
             media_type="text/javascript",
@@ -386,6 +391,7 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
 
     @app.get("/stutter-worklet.js")
     async def get_stutter_worklet() -> FileResponse:
+        """Serve the stutter AudioWorklet module."""
         return FileResponse(
             _static_dir / "stutter-worklet.js",
             media_type="text/javascript",
@@ -394,6 +400,7 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
 
     @app.get("/freeze-worklet.js")
     async def get_freeze_worklet() -> FileResponse:
+        """Serve the freeze AudioWorklet module."""
         return FileResponse(
             _static_dir / "freeze-worklet.js",
             media_type="text/javascript",
@@ -402,6 +409,7 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
 
     @app.get("/glitch-worklet.js")
     async def get_glitch_worklet() -> FileResponse:
+        """Serve the glitch AudioWorklet module."""
         return FileResponse(
             _static_dir / "glitch-worklet.js",
             media_type="text/javascript",
@@ -417,6 +425,7 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
     # the directory is empty.  Path is sanitised to prevent traversal.
     @app.get("/modules/{name}")
     async def get_module(name: str) -> FileResponse:
+        """Serve a module under /modules with traversal protection."""
         # Reject anything outside the modules/ directory.
         target = (_static_dir / "modules" / name).resolve()
         modules_root = (_static_dir / "modules").resolve()
@@ -441,16 +450,19 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
 
     @app.get("/api/status")
     async def api_status() -> JSONResponse:
+        """Return the current player state snapshot."""
         return JSONResponse(bridge.get_state())
 
     @app.get("/api/version")
     async def api_version() -> JSONResponse:
+        """Return server + package version metadata."""
         # Footer build stamp.  Lets the user verify which commit + bundle
         # the server is actually serving (browser cache vs. fresh build).
         return JSONResponse(_version_info())
 
     @app.get("/api/history")
     async def api_history(page: int = 1, per_page: int = 50) -> JSONResponse:
+        """Return the persisted play history (newest first)."""
         items = list(reversed(bridge._play_history))
         total = len(items)
         pages = max(1, (total + per_page - 1) // per_page)
@@ -467,6 +479,7 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
 
     @app.post("/api/skip")
     async def api_skip() -> JSONResponse:
+        """Skip the current track immediately."""
         bridge.skip()
         # Return fresh state so the browser updates its now-playing UI
         # without waiting up to 1 s for the next WS broadcast tick.
@@ -474,10 +487,12 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
 
     @app.post("/api/seek")
     async def api_seek(body: SeekBody) -> dict[str, float]:
+        """Seek the active track (absolute or relative seconds)."""
         new_pos = bridge.seek(seconds=body.seconds, delta=body.delta)
         return {"elapsed": round(new_pos, 2)}
 
     def _profile_store() -> Any:
+        """Return a ProfileStore anchored under the active index dir."""
         from pathlib import Path as _P
 
         from autodj.profiles import ProfileStore
@@ -490,11 +505,13 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
 
     @app.get("/api/profiles")
     async def api_profiles() -> dict:
+        """List saved profile bundles."""
         store = _profile_store()
         return {"profiles": store.list_names(), "root": str(store.root)}
 
     @app.get("/api/profiles/{name}")
     async def api_profile_get(name: str) -> dict:
+        """Load a saved profile bundle by name."""
         from autodj.profiles import validate_name
 
         try:
@@ -509,6 +526,7 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
 
     @app.post("/api/profiles")
     async def api_profile_save(body: ProfileSaveBody) -> dict:
+        """Save (or overwrite) a profile bundle."""
         from autodj.profiles import ProfileSnapshot, validate_name
 
         try:
@@ -521,6 +539,7 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
 
     @app.delete("/api/profiles/{name}")
     async def api_profile_delete(name: str) -> dict:
+        """Delete a saved profile bundle by name."""
         from autodj.profiles import validate_name
 
         try:
@@ -703,26 +722,31 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
 
     @app.post("/api/pause")
     async def api_pause() -> dict[str, bool]:
+        """Toggle pause/play."""
         paused = bridge.pause()
         return {"paused": paused}
 
     @app.post("/api/volume")
     async def api_volume(body: VolumeBody) -> dict[str, float]:
+        """Set the playback volume (0.0-1.0)."""
         bridge.set_volume(body.volume)
         return {"volume": round(bridge.player._state.volume, 2)}
 
     @app.post("/api/mute")
     async def api_mute() -> dict[str, bool]:
+        """Toggle mute."""
         muted = bridge.toggle_mute()
         return {"muted": muted}
 
     @app.post("/api/play-next")
     async def api_play_next(body: PlayNextBody) -> dict[str, bool]:
+        """Insert a track at the head of the queue."""
         found = bridge.play_next(body.path, now=body.now)
         return {"ok": found}
 
     @app.get("/api/search")
     async def api_search(q: str = "", limit: int = 100) -> dict[str, list]:
+        """Search the indexed library by title / artist / album."""
         results = bridge.search(q, limit=max(1, min(500, int(limit))))
         return {"results": results}
 
@@ -732,14 +756,17 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
 
     @app.post("/api/queue/add")
     async def api_queue_add(body: PlayNextBody) -> dict[str, bool]:
+        """Append a track to the user-ordered queue."""
         return {"ok": bridge.queue_add(body.path)}
 
     @app.post("/api/queue/remove")
     async def api_queue_remove(body: PlayNextBody) -> dict[str, bool]:
+        """Remove a track from the user-ordered queue."""
         return {"ok": bridge.queue_remove(body.path)}
 
     @app.post("/api/queue/reorder")
     async def api_queue_reorder(body: QueueReorderBody) -> dict[str, bool]:
+        """Reorder the user-ordered queue."""
         return {"ok": bridge.queue_reorder(body.paths)}
 
     # ------------------------------------------------------------------
@@ -748,6 +775,7 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
 
     @app.get("/api/art")
     async def api_art(path: str) -> Response:
+        """Return the embedded album art for a track (304 if unchanged)."""
         # Only serve art for tracks that exist in the index — prevents
         # arbitrary file access through the path parameter.
         known = any(e.path == path for e in bridge.sim.entries)
@@ -761,6 +789,7 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
 
     @app.get("/api/lyrics")
     async def api_lyrics() -> dict[str, list]:
+        """Return parsed lyric lines (LRC, beets, or embedded tags)."""
         return {"lyrics": bridge.current_lyrics()}
 
     # ------------------------------------------------------------------
@@ -782,6 +811,7 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
     }
 
     def _audio_mime(p: Path) -> str:
+        """Return a MIME type for the given audio file extension."""
         return _MIME_BY_SUFFIX.get(p.suffix.lower(), "application/octet-stream")
 
     def _is_alac(p: Path) -> bool:
@@ -997,40 +1027,47 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
 
     @app.get("/api/settings")
     async def api_settings() -> dict:
+        """Return the current playback / dj-mix / transition settings."""
         return bridge.get_settings()
 
     @app.post("/api/preset")
     async def api_preset(body: PresetBody) -> dict:
+        """Activate a preset by name."""
         bridge.set_preset(body.name)
         bridge.save_persistent_state()
         return bridge.get_settings()
 
     @app.post("/api/transition")
     async def api_transition(body: TransitionBody) -> dict:
+        """Apply transition-effect overrides."""
         bridge.set_transition(body.effect)
         bridge.save_persistent_state()
         return bridge.get_settings()
 
     @app.post("/api/djmix")
     async def api_djmix(body: DjMixBody) -> dict:
+        """Apply dj-mix flag overrides (beatmatch, harmonic, etc.)."""
         bridge.set_djmix(**body.model_dump(exclude_none=True))
         bridge.save_persistent_state()
         return bridge.get_settings()
 
     @app.post("/api/playback-settings")
     async def api_playback_settings(body: PlaybackSettingsBody) -> dict:
+        """Apply playback-flag overrides (transition mode, lyrics, ...)."""
         bridge.set_playback_settings(**body.model_dump(exclude_none=True))
         bridge.save_persistent_state()
         return bridge.get_settings()
 
     @app.post("/api/bpm-range")
     async def api_bpm_range(body: BpmRangeBody) -> dict:
+        """Set the active BPM range filter."""
         bridge.set_bpm_range(body.lo, body.hi)
         bridge.save_persistent_state()
         return bridge.get_settings()
 
     @app.post("/api/discovery")
     async def api_discovery(body: DiscoveryBody) -> dict:
+        """Toggle discovery injection."""
         bridge.set_discovery_every(body.every)
         bridge.save_persistent_state()
         return bridge.get_settings()
@@ -1041,6 +1078,7 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
 
     @app.post("/api/eq")
     async def api_eq(body: EqBody) -> dict[str, float]:
+        """Set the 3-band EQ gains."""
         return bridge.set_eq(low=body.low, mid=body.mid, high=body.high)
 
     # ------------------------------------------------------------------
@@ -1049,12 +1087,14 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
 
     @app.get("/api/library/job")
     async def api_library_job_status() -> dict:
+        """Return the live indexer / prune job status."""
         from autodj.jobs import get_manager
 
         return get_manager().snapshot()
 
     @app.post("/api/library/run")
     async def api_library_run(body: LibraryJobBody) -> dict:
+        """Kick off an indexer / prune job."""
         from autodj.jobs import get_manager
 
         mgr = get_manager()
@@ -1068,6 +1108,7 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
 
     @app.post("/api/library/stop")
     async def api_library_stop() -> dict[str, bool]:
+        """Cancel the running library job."""
         from autodj.jobs import get_manager
 
         return {"stopped": get_manager().stop()}
@@ -1098,6 +1139,7 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
+        """WebSocket: broadcast state updates to a connected browser."""
         # Parameter renamed from 'ws' to 'websocket' to avoid FastAPI
         # mistaking the path segment '/ws' for a query parameter.
         await websocket.accept()
