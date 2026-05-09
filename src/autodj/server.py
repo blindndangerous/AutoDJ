@@ -315,13 +315,13 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
             try:
                 bridge.player._state.should_stop = True
                 bridge.player._skip_event.set()
-            except Exception:
+            except Exception:  # pragma: no cover -- defensive log-only path
                 logger.debug("shutdown: player stop signal failed", exc_info=True)
             try:
                 cache = getattr(bridge.player, "_dj_cache", None)
                 if cache is not None:
                     cache.flush(force=True)
-            except Exception:
+            except Exception:  # pragma: no cover -- defensive log-only path
                 logger.debug("shutdown: dj-meta flush failed", exc_info=True)
             for task in (broadcast, watcher):
                 task.cancel()

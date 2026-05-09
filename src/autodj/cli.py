@@ -1561,6 +1561,8 @@ def cmd_playlist(
                 target_bpm=target_bpm,
                 bpm_weight=bpm_weight,
                 bpm_range=parsed_bpm_range,
+                pick_top_k=cfg.playback.pick_top_k,
+                pick_temperature=cfg.playback.pick_temperature,
             )
             playlist.append(current)
             recently_played.append(current.path)

@@ -280,6 +280,17 @@ class PlaybackConfig:
     # "pre_queue" rewinds and seeds from the track that was playing
     # when the queue was first added, treating the queue as a detour.
     post_queue_seed: str = "last_queued"
+    # Top-K weighted random pick for similarity selection.  After FAISS
+    # returns ranked candidates and any BPM/energy re-ranking, the next
+    # track is sampled from the top ``pick_top_k`` results with weights
+    # derived from a softmax over their scores at temperature
+    # ``pick_temperature``.  ``pick_top_k = 1`` (default) is fully
+    # deterministic — same seed always picks the same next track.
+    # Higher K + non-zero temperature breaks the "same song -> same
+    # path" loop while keeping picks within the closest neighbourhood.
+    # Recommended starting point for variety: k=10, temperature=0.3.
+    pick_top_k: int = 1
+    pick_temperature: float = 0.3
     # Display notation for the current track's key in the now-playing
     # badge + advance log.  Either "camelot" (Mixed In Key wheel labels
     # like 8A / 8B) or "musical" (letter names: C, Am, F#m).  Camelot
@@ -412,6 +423,8 @@ class PlaybackConfig:
             post_queue_seed=_validate_post_queue_seed(
                 str(data.get("post_queue_seed", "last_queued")),
             ),
+            pick_top_k=max(1, int(data.get("pick_top_k", 1))),
+            pick_temperature=max(0.0, float(data.get("pick_temperature", 0.3))),
             key_notation=_validate_key_notation(
                 str(data.get("key_notation", "camelot")),
             ),

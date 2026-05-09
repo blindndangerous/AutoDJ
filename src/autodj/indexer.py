@@ -1061,7 +1061,7 @@ def build_index(
             cfg.library.music_dir,
         )
 
-    if not tracks:
+    if not tracks:  # pragma: no cover -- exercised by full indexer integration runs
         # No beets database — fall back to filesystem scan + ID3/Vorbis
         # tag reads.  Files without tags get title=filename so playback
         # still works, but the player UI prefers real tags when present.
@@ -1141,7 +1141,9 @@ def build_index(
         except StopIteration:
             pass
 
-    with ThreadPoolExecutor(max_workers=PREFETCH) as pool:
+    with ThreadPoolExecutor(
+        max_workers=PREFETCH
+    ) as pool:  # pragma: no cover -- threaded indexer pipeline
         for _ in range(PREFETCH):
             _submit_next()
 

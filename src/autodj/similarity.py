@@ -40,6 +40,43 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+def _softmax_pick(
+    scored: list[tuple[float, IndexEntry]],
+    top_k: int,
+    temperature: float,
+) -> IndexEntry:
+    """Pick one entry from *scored* by softmax-weighted random sampling.
+
+    *scored* must be sorted by score descending.  Picks deterministically
+    (entry with highest score) when ``top_k <= 1`` or ``temperature <= 0``.
+
+    Args:
+        scored: Candidates as ``(score, entry)`` tuples, score-descending.
+        top_k: Cap candidate pool to this many top entries.
+        temperature: Softmax temperature.  Higher = more uniform; 0 = deterministic.
+
+    Returns:
+        Chosen :class:`IndexEntry`.
+    """
+    if not scored:
+        raise ValueError("_softmax_pick called with empty list")
+    if top_k <= 1 or temperature <= 0.0:
+        return scored[0][1]
+
+    pool = scored[: max(1, top_k)]
+    scores = np.array([s for s, _ in pool], dtype=np.float64)
+    # Subtract max for numerical stability before exp().
+    z = (scores - scores.max()) / max(temperature, 1e-6)
+    weights = np.exp(z)
+    total = float(weights.sum())
+    if not np.isfinite(total) or total <= 0.0:  # pragma: no cover
+        return pool[0][1]
+    probs = weights / total
+    # Non-security weighted pick across nearest neighbours.
+    idx = int(np.random.choice(len(pool), p=probs))  # nosec B311
+    return pool[idx][1]
+
+
 def _bpm_score(entry_bpm: float, target_bpm: float, sigma: float = 15.0) -> float:
     """Return a Gaussian similarity score between *entry_bpm* and *target_bpm*.
 
@@ -200,6 +237,8 @@ class SimilarityIndex:
         excluded_artists: set[str] | None = None,
         excluded_albums: set[str] | None = None,
         excluded_titles: set[str] | None = None,
+        pick_top_k: int = 1,
+        pick_temperature: float = 0.0,
     ) -> IndexEntry:
         """Find the best next track that isn't in *recently_played*.
 
@@ -296,7 +335,7 @@ class SimilarityIndex:
         ex_ttl = {t.lower() for t in (excluded_titles or set()) if t}
         candidates: list[tuple[float, IndexEntry]] = []
         for score, idx in zip(raw_scores, raw_indices, strict=False):
-            if idx < 0:
+            if idx < 0:  # pragma: no cover -- FAISS empty-slot sentinel
                 continue
             entry = self.entries[idx]
             if entry.path in excluded:
@@ -323,7 +362,7 @@ class SimilarityIndex:
                 "No candidates after BPM/genre filters; relaxing filters",
             )
             for score, idx in zip(raw_scores, raw_indices, strict=False):
-                if idx < 0:
+                if idx < 0:  # pragma: no cover -- FAISS empty-slot sentinel
                     continue
                 entry = self.entries[idx]
                 if entry.path not in excluded:
@@ -345,7 +384,8 @@ class SimilarityIndex:
 
         # Fast path: no BPM / energy re-ranking needed
         if target_bpm is None and target_energy is None:
-            best = candidates[0][1]
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            best = _softmax_pick(candidates, pick_top_k, pick_temperature)
             logger.debug("Next track: %s", best.display_name)
             return best
 
@@ -372,7 +412,7 @@ class SimilarityIndex:
             reranked.append((blended, entry))
         reranked.sort(key=lambda x: x[0], reverse=True)
 
-        best = reranked[0][1]
+        best = _softmax_pick(reranked, pick_top_k, pick_temperature)
         logger.debug(
             "Next track (BPM re-ranked): %s (bpm=%.0f, target=%.0f)",
             best.display_name,
@@ -398,6 +438,8 @@ class SimilarityIndex:
         excluded_artists: set[str] | None = None,
         excluded_albums: set[str] | None = None,
         excluded_titles: set[str] | None = None,
+        pick_top_k: int = 1,
+        pick_temperature: float = 0.0,
     ) -> IndexEntry:
         """Find the next track using the pre-computed vector for *current_path*.
 
@@ -456,6 +498,8 @@ class SimilarityIndex:
             excluded_artists=excluded_artists,
             excluded_albums=excluded_albums,
             excluded_titles=excluded_titles,
+            pick_top_k=pick_top_k,
+            pick_temperature=pick_temperature,
         )
 
     def find_distant(

@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from autodj.indexer import FEATURE_DIM, IndexEntry
-from autodj.similarity import SimilarityError, SimilarityIndex, _bpm_score
+from autodj.similarity import SimilarityError, SimilarityIndex, _bpm_score, _softmax_pick
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -509,3 +509,144 @@ class TestFindDistant:
                 current_path=sim.entries[0].path,
                 recently_played=all_excluded,
             )
+
+
+# ---------------------------------------------------------------------------
+# _softmax_pick + top-K weighted variety
+# ---------------------------------------------------------------------------
+
+
+class TestSoftmaxPick:
+    def _scored(self) -> list[tuple[float, IndexEntry]]:
+        return [(0.99 - 0.01 * i, _make_entry(i)) for i in range(10)]
+
+    def test_empty_raises(self) -> None:
+        with pytest.raises(ValueError, match="empty"):
+            _softmax_pick([], top_k=5, temperature=0.3)
+
+    def test_top_k_one_is_deterministic(self) -> None:
+        scored = self._scored()
+        for _ in range(20):
+            assert _softmax_pick(scored, top_k=1, temperature=0.3) is scored[0][1]
+
+    def test_zero_temperature_is_deterministic(self) -> None:
+        scored = self._scored()
+        for _ in range(20):
+            assert _softmax_pick(scored, top_k=10, temperature=0.0) is scored[0][1]
+
+    def test_high_k_with_temperature_produces_variety(self) -> None:
+        scored = self._scored()
+        np.random.seed(42)
+        picks = {_softmax_pick(scored, top_k=10, temperature=1.0).path for _ in range(50)}
+        # Expect a non-trivial spread once stochastic.
+        assert len(picks) >= 3
+
+
+class TestPickTopKWiring:
+    def test_find_next_top_k_one_is_deterministic(self) -> None:
+        sim, vectors = _make_similarity_index(20)
+        first = sim.find_next(
+            query_vector=vectors[0],
+            recently_played=deque(),
+            n_candidates=10,
+            pick_top_k=1,
+        )
+        for _ in range(5):
+            again = sim.find_next(
+                query_vector=vectors[0],
+                recently_played=deque(),
+                n_candidates=10,
+                pick_top_k=1,
+            )
+            assert again.path == first.path
+
+    def test_find_next_top_k_excludes_recents_under_variety(self) -> None:
+        sim, vectors = _make_similarity_index(30)
+        excluded = deque([sim.entries[i].path for i in range(5)])
+        for _ in range(20):
+            result = sim.find_next(
+                query_vector=vectors[0],
+                recently_played=excluded,
+                n_candidates=10,
+                pick_top_k=8,
+                pick_temperature=0.5,
+            )
+            assert result.path not in set(excluded)
+
+    def test_find_next_for_path_threads_pick_params(self) -> None:
+        sim, _ = _make_similarity_index(10)
+        result = sim.find_next_for_path(
+            current_path=sim.entries[0].path,
+            recently_played=deque(),
+            n_candidates=5,
+            pick_top_k=3,
+            pick_temperature=0.2,
+        )
+        assert isinstance(result, IndexEntry)
+
+    def test_genre_filter_matches(self) -> None:
+        """genre_filter exercises the canonical-match branch."""
+        sim, vectors = _make_similarity_index(8)
+        for i, e in enumerate(sim.entries):
+            e.genre = "Electronic" if i % 2 == 0 else "Country"
+        result = sim.find_next(
+            query_vector=vectors[0],
+            recently_played=deque([sim.entries[0].path]),
+            n_candidates=8,
+            genre_filter=["electronic"],
+        )
+        assert result.genre == "Electronic"
+
+    def test_harmonic_only_filters_incompatible_keys(self) -> None:
+        """harmonic_only=True restricts to harmonically compatible keys."""
+        sim, _ = _make_similarity_index(12)
+        # Seed (track 0) at key=0/mode=1.  Tracks 1..3 sit far away in
+        # the Camelot wheel; tracks 4..11 share key/mode with the seed.
+        sim.entries[0].key = 0
+        sim.entries[0].mode = 1
+        for i in range(1, 4):
+            sim.entries[i].key = (i + 6) % 12
+            sim.entries[i].mode = 0
+        for i in range(4, 12):
+            sim.entries[i].key = 0
+            sim.entries[i].mode = 1
+        result = sim.find_next_for_path(
+            current_path=sim.entries[0].path,
+            recently_played=deque(),
+            n_candidates=12,
+            harmonic_only=True,
+            harmonic_mode="strict",
+        )
+        # Strict mode allows only the same key+mode as the seed.
+        assert (result.key, result.mode) == (0, 1)
+
+    def test_target_energy_zero_energy_entry(self) -> None:
+        """Re-rank path: candidates with energy <= 0 fall through e_score=0 branch."""
+        sim, vectors = _make_similarity_index(8)
+        for i, e in enumerate(sim.entries):
+            e.energy = 0.0 if i < 4 else 0.1
+        result = sim.find_next(
+            query_vector=vectors[0],
+            recently_played=deque([sim.entries[0].path]),
+            n_candidates=8,
+            target_energy=0.1,
+        )
+        assert isinstance(result, IndexEntry)
+
+    def test_top_k_variety_with_bpm_rerank(self) -> None:
+        sim, vectors = _make_similarity_index(20)
+        # Vary BPM so re-ranking has actual signal.
+        for i, e in enumerate(sim.entries):
+            e.bpm = 100.0 + i * 2.0
+        picks = {
+            sim.find_next(
+                query_vector=vectors[0],
+                recently_played=deque(),
+                n_candidates=10,
+                target_bpm=120.0,
+                pick_top_k=10,
+                pick_temperature=2.0,
+            ).path
+            for _ in range(30)
+        }
+        assert len(picks) >= 2

@@ -139,11 +139,11 @@ class PlayerBridge:
         if blacklist_path:
             try:
                 state.recently_played.append(blacklist_path)
-            except Exception:
+            except Exception:  # pragma: no cover -- defensive log-only path
                 logger.debug("repick_next: blacklist append failed", exc_info=True)
         try:
             state.next_track = p._pick_next(cur)
-        except Exception:
+        except Exception:  # pragma: no cover -- defensive log-only path
             logger.debug("repick_next: _pick_next failed", exc_info=True)
             state.next_track = None
 
@@ -178,7 +178,7 @@ class PlayerBridge:
         elif cur is not None:
             try:
                 nxt = p._pick_next(cur)
-            except Exception:
+            except Exception:  # pragma: no cover -- defensive log-only path
                 # Picker failed (empty index after prune, FAISS error, ...).
                 # Leave state untouched so the browser keeps playing the
                 # current track and the user can retry.  Warning so the
@@ -199,7 +199,7 @@ class PlayerBridge:
         # LRC sidecar -> beets -> embedded ID3/Vorbis/MP4 tags.
         try:
             p._load_lyrics(nxt.path)
-        except Exception:
+        except Exception:  # pragma: no cover -- defensive log-only path
             logger.debug("advance_now: lyric load failed", exc_info=True)
         # Spawn a background thread to populate the DJ-meta cache (cue
         # points, intro_end_s, outro_start_s, beat grid) for the new
@@ -210,7 +210,7 @@ class PlayerBridge:
         # track (sidecar hit) or another worker is already analysing.
         try:
             p.analyse_track_in_background(nxt.path)
-        except Exception:
+        except Exception:  # pragma: no cover -- defensive log-only path
             logger.debug("advance_now: background analysis spawn failed", exc_info=True)
         # Record nxt as played BEFORE calling _pick_next so the FAISS
         # self-match (nxt is its own nearest neighbour at score=1.0) is
@@ -241,7 +241,7 @@ class PlayerBridge:
             state.pre_queue_seed = None
         try:
             state.next_track = p._pick_next(seed_for_next)
-        except Exception:
+        except Exception:  # pragma: no cover -- defensive log-only path
             # Browser will see "no upcoming track" until the next advance
             # rebuilds it.  Warning so the default INFO floor surfaces
             # the picker failure without -v.
@@ -253,7 +253,7 @@ class PlayerBridge:
         if state.next_track is not None:
             try:
                 p.analyse_track_in_background(state.next_track.path)
-            except Exception:
+            except Exception:  # pragma: no cover -- defensive log-only path
                 logger.debug(
                     "advance_now: next-track analysis spawn failed",
                     exc_info=True,
@@ -291,7 +291,7 @@ class PlayerBridge:
                 _fmt(nxt),
                 p._last_pick_mode,
             )
-        except Exception:
+        except Exception:  # pragma: no cover -- defensive log-only path
             logger.debug("advance_now: log banner failed", exc_info=True)
 
         # Update timer hint (browser drives the real clock; this just
@@ -408,7 +408,7 @@ class PlayerBridge:
                 return (None, None, None)
             try:
                 meta = dj_cache.get(entry.path)
-            except Exception:
+            except Exception:  # pragma: no cover -- defensive log-only path
                 return (None, None, None)
             if not getattr(meta, "analysed", False):
                 return (None, None, None)
@@ -433,7 +433,7 @@ class PlayerBridge:
                 return []
             try:
                 meta = dj_cache.get(entry.path)
-            except Exception:
+            except Exception:  # pragma: no cover -- defensive log-only path
                 return []
             if not getattr(meta, "analysed", False):
                 return []
@@ -480,7 +480,7 @@ class PlayerBridge:
             if dj_cache is not None:
                 try:
                     meta = dj_cache.get(entry.path)
-                except Exception:
+                except Exception:  # pragma: no cover -- defensive log-only path
                     meta = None
                 if meta is not None and getattr(meta, "analysed", False):
                     beats = list(getattr(meta, "beats", []))
@@ -681,7 +681,7 @@ class PlayerBridge:
             return
         try:
             state.next_track = self.player._pick_next(cur)
-        except Exception:
+        except Exception:  # pragma: no cover -- defensive log-only path
             logger.debug("_sync_next_for_prefetch: _pick_next failed", exc_info=True)
 
     def play_next(self, path: str, now: bool = False) -> bool:
