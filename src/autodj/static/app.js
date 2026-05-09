@@ -103,7 +103,10 @@ let lastNextKey  = null;   // suppress aria-live re-announce of unchanged next t
 // State update — called on every WS push and on manual API calls
 // ----------------------------------------------------------------
 
+let _lastState = null;
+
 function applyState(s) {
+  _lastState = s;
   // Voice liner track-count bump (forward declaration of helper -- see
   // voice liner block at the bottom of this file).  Safe to call here
   // because module-init runs top-to-bottom and the helper is defined
@@ -1164,13 +1167,20 @@ function _wireHotkeysWhenReady() {
   // next tick so its const initialiser has run.
   setTimeout(() => {
     installHotkeys({
-      btnPause:   typeof btnPause   !== "undefined" ? btnPause   : null,
-      btnSkip:    typeof btnSkip    !== "undefined" ? btnSkip    : null,
-      btnShuffle: typeof btnShuffle !== "undefined" ? btnShuffle : null,
-      btnMute:    typeof btnMute    !== "undefined" ? btnMute    : null,
-      volSlider:  typeof volSlider  !== "undefined" ? volSlider  : null,
-      seekDelta:  _seekByDelta,
-      getBpm:     () => _outBpmCache,
+      btnPause:    typeof btnPause   !== "undefined" ? btnPause   : null,
+      btnSkip:     typeof btnSkip    !== "undefined" ? btnSkip    : null,
+      btnShuffle:  typeof btnShuffle !== "undefined" ? btnShuffle : null,
+      btnMute:     typeof btnMute    !== "undefined" ? btnMute    : null,
+      volSlider:   typeof volSlider  !== "undefined" ? volSlider  : null,
+      seekDelta:   _seekByDelta,
+      getBpm:      () => _outBpmCache,
+      getTrack:    () => _lastState && _lastState.current_track,
+      getNextTrack:() => _lastState && _lastState.next_track,
+      getRemaining:() => {
+        const dur = _seekTrackDuration();
+        if (!dur) return null;
+        try { return Math.max(0, dur - decks[activeIdx].audio.currentTime); } catch (_) { return null; }
+      },
     });
   }, 0);
 }
