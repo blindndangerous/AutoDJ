@@ -227,6 +227,18 @@ class TestPlaybackConfig:
         with pytest.raises(ValueError):
             PlaybackConfig.from_dict({"crossfade_seconds": -1.0})
 
+    def test_fade_in_seconds_default(self) -> None:
+        pb = PlaybackConfig.from_dict({})
+        assert pb.fade_in_seconds == 3.0
+
+    def test_fade_in_seconds_zero_allowed(self) -> None:
+        pb = PlaybackConfig.from_dict({"fade_in_seconds": 0.0})
+        assert pb.fade_in_seconds == 0.0
+
+    def test_fade_in_seconds_negative_raises(self) -> None:
+        with pytest.raises(ValueError):
+            PlaybackConfig.from_dict({"fade_in_seconds": -1.0})
+
     def test_no_repeat_window_zero_allowed(self) -> None:
         pb = PlaybackConfig.from_dict({"no_repeat_window": 0})
         assert pb.no_repeat_window == 0

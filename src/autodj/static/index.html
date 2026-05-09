@@ -579,6 +579,14 @@
       <span class="setting-desc" id="pb-crossfade-desc">
         How long the gain ramp between tracks lasts.  2-3 s feels natural for most music; 5-8 s for ambient or testing transition effects.  0 = instant cut.
       </span>
+
+      <div class="settings-row">
+        <label for="pb-fade-in">Fade-in seconds</label>
+        <input type="number" id="pb-fade-in" min="0" max="20" step="0.5" value="3">
+      </div>
+      <span class="setting-desc" id="pb-fade-in-desc">
+        How long the incoming track takes to reach full volume.  0 = incoming track starts at full volume immediately when the crossfade begins (no ramp-up).  Capped at crossfade length.
+      </span>
     </fieldset>
 
     <fieldset>
