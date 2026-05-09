@@ -45,7 +45,7 @@ async function audit(name, launcher) {
       // The legacy "document.addEventListener('keydown'" handler is gone.
       (source.match(/addEventListener\("keydown"/g) || []).length <= 2,
     windowCapturePhase: /window\.addEventListener\("keydown"/.test(source),
-    pressLatch: /_pressedHotkeys/.test(source),
+    pressLatch: /const _pressed = new Set\(\)/.test(source),
     eRepeatGuard: /if \(e\.repeat\) return;/.test(source),
     isTypingTargetNarrowed: /\["text", "search", "email"/.test(source),
     modalShowModal: /modal\.showModal\(\)/.test(source),

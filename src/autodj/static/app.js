@@ -128,10 +128,11 @@ function applyState(s) {
     // Update browser titlebar: "AutoDJ - Artist - Title - Album"
     const t = s.current_track;
     if (t) {
-      const segs = ["AutoDJ"];
+      const segs = [];
       if (t.artist) segs.push(t.artist);
       if (t.title)  segs.push(t.title);
       if (t.album)  segs.push(t.album);
+      segs.push("AutoDJ");
       document.title = segs.join(" - ");
     } else {
       document.title = "AutoDJ";
@@ -945,6 +946,24 @@ function _seekTrackDuration() {
   return _lastDuration;
 }
 
+function _seekByDelta(deltaSec) {
+  const dur = _seekTrackDuration();
+  if (_lastBrowserPlayback && dur > 0) {
+    try {
+      const deck = decks[activeIdx];
+      deck.audio.currentTime = Math.max(
+        0,
+        Math.min(dur - 0.1, deck.audio.currentTime + deltaSec),
+      );
+    } catch (_) {}
+  }
+  fetch("/api/seek", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ delta: deltaSec }),
+  }).catch(() => {});
+}
+
 function _seekToFrac(frac, opts) {
   const dur = _seekTrackDuration();
   if (!(dur > 0)) return;
@@ -1150,6 +1169,8 @@ function _wireHotkeysWhenReady() {
       btnShuffle: typeof btnShuffle !== "undefined" ? btnShuffle : null,
       btnMute:    typeof btnMute    !== "undefined" ? btnMute    : null,
       volSlider:  typeof volSlider  !== "undefined" ? volSlider  : null,
+      seekDelta:  _seekByDelta,
+      getBpm:     () => _outBpmCache,
     });
   }, 0);
 }
