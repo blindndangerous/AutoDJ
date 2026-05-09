@@ -82,6 +82,7 @@ def _make_player_mock(entry: IndexEntry | None = None) -> MagicMock:
     cfg.djmix.outro_intro_align = False
     cfg.djmix.filter_sweep = False
     cfg.playback.crossfade_seconds = 3.0
+    cfg.playback.fade_in_seconds = 3.0
     cfg.playback.crossfade_eq_duck = False
     cfg.playback.transition_mode = "full_intro_outro"
     cfg.playback.key_notation = "camelot"

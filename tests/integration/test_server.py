@@ -1061,6 +1061,16 @@ class TestSettingsEndpoints:
         tc.post("/api/playback-settings", json={"crossfade_seconds": -3.0})
         assert bridge.player._cfg.playback.crossfade_seconds == 0.0
 
+    def test_post_playback_settings_fade_in(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        bridge.player._cfg.index.active_dir = tmp_path
+        tc = TestClient(create_app(bridge))
+        tc.post("/api/playback-settings", json={"fade_in_seconds": 1.5})
+        assert bridge.player._cfg.playback.fade_in_seconds == pytest.approx(1.5)
+        tc.post("/api/playback-settings", json={"fade_in_seconds": -1.0})
+        assert bridge.player._cfg.playback.fade_in_seconds == 0.0
+
     def test_post_playback_pure_shuffle(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
