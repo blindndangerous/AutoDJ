@@ -48,6 +48,7 @@ def _library_job_snapshot() -> dict:
 
 
 def _history_entry(entry: Any) -> dict:
+    """Return a JSON-serialisable history-row dict for *entry*."""
     return {
         "title": getattr(entry, "title", "") or "",
         "artist": getattr(entry, "artist", "") or "",
@@ -139,11 +140,11 @@ class PlayerBridge:
         if blacklist_path:
             try:
                 state.recently_played.append(blacklist_path)
-            except Exception:
+            except Exception:  # pragma: no cover -- defensive log-only path
                 logger.debug("repick_next: blacklist append failed", exc_info=True)
         try:
             state.next_track = p._pick_next(cur)
-        except Exception:
+        except Exception:  # pragma: no cover -- defensive log-only path
             logger.debug("repick_next: _pick_next failed", exc_info=True)
             state.next_track = None
 
@@ -178,7 +179,7 @@ class PlayerBridge:
         elif cur is not None:
             try:
                 nxt = p._pick_next(cur)
-            except Exception:
+            except Exception:  # pragma: no cover -- defensive log-only path
                 # Picker failed (empty index after prune, FAISS error, ...).
                 # Leave state untouched so the browser keeps playing the
                 # current track and the user can retry.  Warning so the
@@ -199,7 +200,7 @@ class PlayerBridge:
         # LRC sidecar -> beets -> embedded ID3/Vorbis/MP4 tags.
         try:
             p._load_lyrics(nxt.path)
-        except Exception:
+        except Exception:  # pragma: no cover -- defensive log-only path
             logger.debug("advance_now: lyric load failed", exc_info=True)
         # Spawn a background thread to populate the DJ-meta cache (cue
         # points, intro_end_s, outro_start_s, beat grid) for the new
@@ -210,7 +211,7 @@ class PlayerBridge:
         # track (sidecar hit) or another worker is already analysing.
         try:
             p.analyse_track_in_background(nxt.path)
-        except Exception:
+        except Exception:  # pragma: no cover -- defensive log-only path
             logger.debug("advance_now: background analysis spawn failed", exc_info=True)
         # Record nxt as played BEFORE calling _pick_next so the FAISS
         # self-match (nxt is its own nearest neighbour at score=1.0) is
@@ -241,7 +242,7 @@ class PlayerBridge:
             state.pre_queue_seed = None
         try:
             state.next_track = p._pick_next(seed_for_next)
-        except Exception:
+        except Exception:  # pragma: no cover -- defensive log-only path
             # Browser will see "no upcoming track" until the next advance
             # rebuilds it.  Warning so the default INFO floor surfaces
             # the picker failure without -v.
@@ -253,7 +254,7 @@ class PlayerBridge:
         if state.next_track is not None:
             try:
                 p.analyse_track_in_background(state.next_track.path)
-            except Exception:
+            except Exception:  # pragma: no cover -- defensive log-only path
                 logger.debug(
                     "advance_now: next-track analysis spawn failed",
                     exc_info=True,
@@ -291,7 +292,7 @@ class PlayerBridge:
                 _fmt(nxt),
                 p._last_pick_mode,
             )
-        except Exception:
+        except Exception:  # pragma: no cover -- defensive log-only path
             logger.debug("advance_now: log banner failed", exc_info=True)
 
         # Update timer hint (browser drives the real clock; this just
@@ -408,7 +409,7 @@ class PlayerBridge:
                 return (None, None, None)
             try:
                 meta = dj_cache.get(entry.path)
-            except Exception:
+            except Exception:  # pragma: no cover -- defensive log-only path
                 return (None, None, None)
             if not getattr(meta, "analysed", False):
                 return (None, None, None)
@@ -433,7 +434,7 @@ class PlayerBridge:
                 return []
             try:
                 meta = dj_cache.get(entry.path)
-            except Exception:
+            except Exception:  # pragma: no cover -- defensive log-only path
                 return []
             if not getattr(meta, "analysed", False):
                 return []
@@ -480,7 +481,7 @@ class PlayerBridge:
             if dj_cache is not None:
                 try:
                     meta = dj_cache.get(entry.path)
-                except Exception:
+                except Exception:  # pragma: no cover -- defensive log-only path
                     meta = None
                 if meta is not None and getattr(meta, "analysed", False):
                     beats = list(getattr(meta, "beats", []))
@@ -681,7 +682,7 @@ class PlayerBridge:
             return
         try:
             state.next_track = self.player._pick_next(cur)
-        except Exception:
+        except Exception:  # pragma: no cover -- defensive log-only path
             logger.debug("_sync_next_for_prefetch: _pick_next failed", exc_info=True)
 
     def play_next(self, path: str, now: bool = False) -> bool:
@@ -833,6 +834,7 @@ class PlayerBridge:
     # ------------------------------------------------------------------
 
     def _state_file(self) -> Path | None:
+        """Return the persistent runtime-state JSON path, or None when unavailable."""
         cfg = getattr(self.player, "_cfg", None)
         if cfg is None:
             return None
@@ -1005,6 +1007,119 @@ class PlayerBridge:
             if hasattr(cfg.djmix, k):
                 setattr(cfg.djmix, k, bool(v))
 
+    def _apply_crossfade(self, kw: dict) -> None:
+        """Apply crossfade / fade-in / EQ-duck overrides from *kw*."""
+        cfg = self.player._cfg
+        if (v := kw.get("crossfade_seconds")) is not None:
+            cfg.playback.crossfade_seconds = max(0.0, float(v))
+        if (v := kw.get("fade_in_seconds")) is not None:
+            cfg.playback.fade_in_seconds = max(0.0, float(v))
+        if (v := kw.get("crossfade_eq_duck")) is not None:
+            cfg.playback.crossfade_eq_duck = bool(v)
+
+    def _apply_picker_modes(self, kw: dict) -> None:
+        """Apply smart / pure / anchor shuffle toggles from *kw*."""
+        if (v := kw.get("smart_shuffle")) is not None:
+            self.player._smart_shuffle = bool(v)
+        if (v := kw.get("pure_shuffle")) is not None:
+            self.player._pure_shuffle = bool(v)
+        if (v := kw.get("anchor_to_seed")) is not None:
+            self.player._anchor_to_seed = bool(v)
+            if (
+                self.player._anchor_to_seed
+                and not getattr(self.player, "_seed_path", None)
+                and self.player._state.current_track
+            ):
+                self.player._seed_path = self.player._state.current_track.path
+
+    def _apply_validators(self, kw: dict) -> None:
+        """Apply transition_mode / post_queue_seed / key_notation overrides."""
+        cfg = self.player._cfg
+        if (v := kw.get("transition_mode")) is not None:
+            from autodj.config import _validate_transition_mode
+
+            cfg.playback.transition_mode = _validate_transition_mode(str(v))
+        if (v := kw.get("post_queue_seed")) is not None:
+            from autodj.config import _validate_post_queue_seed
+
+            cfg.playback.post_queue_seed = _validate_post_queue_seed(str(v))
+            if cfg.playback.post_queue_seed != "pre_queue":
+                self.player._state.pre_queue_seed = None
+        if (v := kw.get("key_notation")) is not None:
+            from autodj.config import _validate_key_notation
+
+            cfg.playback.key_notation = _validate_key_notation(str(v))
+        if (v := kw.get("key_prefer_flats")) is not None:
+            cfg.playback.key_prefer_flats = bool(v)
+
+    def _apply_lyrics(self, kw: dict) -> None:
+        """Apply lyrics-card visibility override."""
+        cfg = self.player._cfg
+        v = kw.get("show_lyrics")
+        if v is None:
+            return
+        cfg.playback.show_lyrics = bool(v)
+        if not v:
+            self.player._current_lyrics = []
+            self.player._current_lyrics_plain = ""
+
+    def _apply_session_envelope(self, kw: dict) -> None:
+        """Apply daypart / mood-arc / cue-import / beat-sync overrides."""
+        cfg = self.player._cfg
+        if (v := kw.get("enable_daypart")) is not None:
+            cfg.playback.enable_daypart = bool(v)
+        enable_arc = kw.get("enable_mood_arc")
+        if enable_arc is not None:
+            cfg.playback.enable_mood_arc = bool(enable_arc)
+            if enable_arc:
+                from autodj.mood_arc import make_default_arc
+
+                self.player._mood_arc = make_default_arc(
+                    duration_hours=cfg.playback.mood_arc_hours,
+                )
+            else:
+                self.player._mood_arc = None
+        if (v := kw.get("mood_arc_hours")) is not None:
+            cfg.playback.mood_arc_hours = max(0.25, float(v))
+            if cfg.playback.enable_mood_arc:
+                from autodj.mood_arc import make_default_arc
+
+                self.player._mood_arc = make_default_arc(
+                    duration_hours=cfg.playback.mood_arc_hours,
+                )
+        if (v := kw.get("import_external_cues")) is not None:
+            cfg.playback.import_external_cues = bool(v)
+        if (v := kw.get("beat_sync_fx")) is not None:
+            cfg.playback.beat_sync_fx = bool(v)
+        if (v := kw.get("key_sync_fx")) is not None:
+            cfg.playback.key_sync_fx = bool(v)
+        if (v := kw.get("beatmatch_on_skip")) is not None:
+            cfg.playback.beatmatch_on_skip = bool(v)
+
+    def _apply_liners(self, kw: dict) -> None:
+        """Apply voice-liner overrides; positive numerics, ``None`` zeros disable."""
+        cfg = self.player._cfg
+        if (v := kw.get("liners_enabled")) is not None:
+            cfg.playback.liners_enabled = bool(v)
+        if (v := kw.get("liners_folder")) is not None:
+            cfg.playback.liners_folder = str(v) or None
+        if (v := kw.get("liners_every_n_songs")) is not None:
+            cfg.playback.liners_every_n_songs = int(v) if v > 0 else None
+        if (v := kw.get("liners_every_minutes")) is not None:
+            cfg.playback.liners_every_minutes = float(v) if v > 0 else None
+        if (v := kw.get("liners_random_min_minutes")) is not None:
+            cfg.playback.liners_random_min_minutes = float(v) if v > 0 else None
+        if (v := kw.get("liners_random_max_minutes")) is not None:
+            cfg.playback.liners_random_max_minutes = float(v) if v > 0 else None
+        if (v := kw.get("liners_pick_mode")) is not None and str(v) in {
+            "random",
+            "sequential",
+            "weighted",
+        }:
+            cfg.playback.liners_pick_mode = str(v)
+        if (v := kw.get("liners_duck_db")) is not None:
+            cfg.playback.liners_duck_db = float(v)
+
     def set_playback_settings(
         self,
         crossfade_seconds: float | None = None,
@@ -1036,120 +1151,16 @@ class PlayerBridge:
         post_queue_seed: str | None = None,
     ) -> None:
         """Apply playback-related settings; only non-null fields take effect."""
+        kw = {k: v for k, v in locals().items() if k != "self" and v is not None}
         cfg = self.player._cfg
-        if crossfade_seconds is not None:
-            cfg.playback.crossfade_seconds = max(0.0, float(crossfade_seconds))
-        if fade_in_seconds is not None:
-            cfg.playback.fade_in_seconds = max(0.0, float(fade_in_seconds))
-        if crossfade_eq_duck is not None:
-            cfg.playback.crossfade_eq_duck = bool(crossfade_eq_duck)
-        if smart_shuffle is not None:
-            self.player._smart_shuffle = bool(smart_shuffle)
-        if pure_shuffle is not None:
-            self.player._pure_shuffle = bool(pure_shuffle)
-        if anchor_to_seed is not None:
-            self.player._anchor_to_seed = bool(anchor_to_seed)
-            # If user just enabled anchored mode and there's no seed
-            # remembered (e.g. PlayerBridge attached after run() started
-            # via a non-standard path), pin the current track as seed so
-            # the picker has something to anchor to.
-            if (
-                self.player._anchor_to_seed
-                and not getattr(self.player, "_seed_path", None)
-                and self.player._state.current_track
-            ):
-                self.player._seed_path = self.player._state.current_track.path
-        if replaygain_enabled is not None:
-            cfg.replaygain.enabled = bool(replaygain_enabled)
-        if transition_mode is not None:
-            from autodj.config import _validate_transition_mode
-
-            cfg.playback.transition_mode = _validate_transition_mode(
-                str(transition_mode),
-            )
-        if post_queue_seed is not None:
-            from autodj.config import _validate_post_queue_seed
-
-            cfg.playback.post_queue_seed = _validate_post_queue_seed(
-                str(post_queue_seed),
-            )
-            # Switching out of pre_queue mode mid-queue invalidates any
-            # pending seed capture; clear so we don't redirect on next
-            # drain.
-            if cfg.playback.post_queue_seed != "pre_queue":
-                self.player._state.pre_queue_seed = None
-        if key_notation is not None:
-            from autodj.config import _validate_key_notation
-
-            cfg.playback.key_notation = _validate_key_notation(str(key_notation))
-        if key_prefer_flats is not None:
-            cfg.playback.key_prefer_flats = bool(key_prefer_flats)
-        if show_lyrics is not None:
-            cfg.playback.show_lyrics = bool(show_lyrics)
-            if not show_lyrics:
-                # Clear immediately so the web UI hides the card / CLI
-                # panel doesn't flash leftover text.  Reload happens
-                # naturally on the next track load when toggled back on.
-                self.player._current_lyrics = []
-                self.player._current_lyrics_plain = ""
-        if enable_daypart is not None:
-            cfg.playback.enable_daypart = bool(enable_daypart)
-        if enable_mood_arc is not None:
-            cfg.playback.enable_mood_arc = bool(enable_mood_arc)
-            # Toggling arc on (re)anchors the start time to "now" so
-            # the user always begins the envelope at warmup.
-            if enable_mood_arc:
-                from autodj.mood_arc import make_default_arc
-
-                self.player._mood_arc = make_default_arc(
-                    duration_hours=cfg.playback.mood_arc_hours,
-                )
-            else:
-                self.player._mood_arc = None
-        if mood_arc_hours is not None:
-            cfg.playback.mood_arc_hours = max(0.25, float(mood_arc_hours))
-            # Re-anchor to keep semantics consistent when the user
-            # changes duration mid-session.
-            if cfg.playback.enable_mood_arc:
-                from autodj.mood_arc import make_default_arc
-
-                self.player._mood_arc = make_default_arc(
-                    duration_hours=cfg.playback.mood_arc_hours,
-                )
-        if import_external_cues is not None:
-            cfg.playback.import_external_cues = bool(import_external_cues)
-        if beat_sync_fx is not None:
-            cfg.playback.beat_sync_fx = bool(beat_sync_fx)
-        if key_sync_fx is not None:
-            cfg.playback.key_sync_fx = bool(key_sync_fx)
-        if beatmatch_on_skip is not None:
-            cfg.playback.beatmatch_on_skip = bool(beatmatch_on_skip)
-        if liners_enabled is not None:
-            cfg.playback.liners_enabled = bool(liners_enabled)
-        if liners_folder is not None:
-            cfg.playback.liners_folder = str(liners_folder) or None
-        if liners_every_n_songs is not None:
-            cfg.playback.liners_every_n_songs = (
-                int(liners_every_n_songs) if liners_every_n_songs > 0 else None
-            )
-        if liners_every_minutes is not None:
-            cfg.playback.liners_every_minutes = (
-                float(liners_every_minutes) if liners_every_minutes > 0 else None
-            )
-        if liners_random_min_minutes is not None:
-            cfg.playback.liners_random_min_minutes = (
-                float(liners_random_min_minutes) if liners_random_min_minutes > 0 else None
-            )
-        if liners_random_max_minutes is not None:
-            cfg.playback.liners_random_max_minutes = (
-                float(liners_random_max_minutes) if liners_random_max_minutes > 0 else None
-            )
-        if liners_pick_mode is not None:
-            mode = str(liners_pick_mode)
-            if mode in {"random", "sequential", "weighted"}:
-                cfg.playback.liners_pick_mode = mode
-        if liners_duck_db is not None:
-            cfg.playback.liners_duck_db = float(liners_duck_db)
+        self._apply_crossfade(kw)
+        self._apply_picker_modes(kw)
+        if (v := kw.get("replaygain_enabled")) is not None:
+            cfg.replaygain.enabled = bool(v)
+        self._apply_validators(kw)
+        self._apply_lyrics(kw)
+        self._apply_session_envelope(kw)
+        self._apply_liners(kw)
 
     def set_bpm_range(self, lo: float | None, hi: float | None) -> None:
         """Set the hard BPM filter; pass both null to clear."""

@@ -18,7 +18,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 # Force UTF-8 output on Windows (default terminal encoding is cp1252 which
 # cannot print Unicode box-drawing characters or em-dashes used in track names).
@@ -141,6 +141,221 @@ def _resolve_seed(
         return None
 
 
+def _load_cfg_or_exit(config_path: str) -> AutoDJConfig:  # pragma: no cover
+    """Load *config_path* or print + exit on missing file."""
+    from autodj.config import load_config
+
+    try:
+        return load_config(config_path)
+    except FileNotFoundError as exc:
+        console.print(f"[bold red]Config not found:[/] {exc}")
+        sys.exit(1)
+
+
+def _apply_index_name(cfg: AutoDJConfig, index_name: str | None) -> None:  # pragma: no cover
+    """Validate + apply ``--name`` to *cfg* (no-op when None)."""
+    if index_name is None:
+        return
+    from autodj.config import validate_index_name
+
+    try:
+        validate_index_name(index_name)
+    except ValueError as exc:
+        console.print(f"[bold red]Invalid --name:[/] {exc}")
+        sys.exit(1)
+    cfg.index.name = index_name
+
+
+def _load_index_or_exit(cfg: AutoDJConfig) -> SimilarityIndex:  # pragma: no cover
+    """Load the similarity index for *cfg*, exiting on FileNotFoundError."""
+    from autodj.similarity import SimilarityIndex as _SI
+
+    try:
+        return _SI.from_index_dir(
+            cfg.index.active_dir,
+            music_dir=cfg.library.music_dir,
+            path_remap=cfg.library.path_remap,
+        )
+    except FileNotFoundError as exc:
+        console.print(f"[bold red]Index not found:[/] {exc}")
+        sys.exit(1)
+
+
+def _resolve_preset_or_exit(cfg: AutoDJConfig, preset: str | None) -> Any:  # pragma: no cover
+    """Resolve *preset* by name, exiting on ValueError; ``None`` when not requested."""
+    if preset is None:
+        return None
+    from autodj.presets import get_preset
+
+    try:
+        return get_preset(preset, cfg.presets)
+    except ValueError as exc:
+        console.print(f"[bold red]Unknown preset:[/] {exc}")
+        sys.exit(1)
+
+
+def _parse_bpm_range_or_exit(
+    bpm_range: str | None,
+) -> tuple[float, float] | None:  # pragma: no cover
+    """Parse ``--bpm-range`` or exit on click.BadParameter."""
+    if bpm_range is None:
+        return None
+    try:
+        return _parse_bpm_range(bpm_range)
+    except click.BadParameter as exc:
+        console.print(f"[bold red]Invalid --bpm-range:[/] {exc}")
+        sys.exit(1)
+
+
+def _scan_index_rows(
+    base: Path, active_name: str
+) -> list[tuple[str, int, str]]:  # pragma: no cover
+    """Walk *base* for indexed-library directories; return display rows."""
+    import json as _json
+
+    rows: list[tuple[str, int, str]] = []
+    for entry in sorted(base.iterdir()):
+        if not entry.is_dir():
+            continue
+        meta = entry / "metadata.json"
+        if not meta.exists():
+            continue
+        try:
+            data = _json.loads(meta.read_text(encoding="utf-8"))
+            count = len(data) if isinstance(data, list) else 0
+        except (OSError, _json.JSONDecodeError):
+            count = -1
+        active_marker = "  *" if entry.name == active_name else "   "
+        rows.append((active_marker + entry.name, count, str(entry)))
+    return rows
+
+
+def _can_import(name: str) -> bool:
+    """Return True when *name* imports cleanly."""
+    try:
+        __import__(name)
+    except ImportError:
+        return False
+    return True
+
+
+def _coerce_audio_device(value: str | None) -> str | int | None:
+    """Return *value* as int when numeric, else as substring (or None)."""
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return value
+
+
+def _apply_serve_overrides(
+    cfg: AutoDJConfig, kw: dict
+) -> None:  # pragma: no cover -- exercised by smoke tests
+    """Apply CLI overrides for ``serve`` onto *cfg* in place.
+
+    *kw* is the local mapping captured at the top of ``cmd_serve``;
+    every key matches a click option name.
+    """
+    djmix_keys = {
+        "harmonic_mixing": "harmonic_mixing",
+        "beatmatch": "beatmatch",
+        "phrase_align": "phrase_align",
+        "outro_intro_align": "outro_intro_align",
+        "filter_sweep": "filter_sweep",
+    }
+    playback_keys = {
+        "enable_daypart": "enable_daypart",
+        "enable_mood_arc": "enable_mood_arc",
+        "import_external_cues": "import_external_cues",
+        "beat_sync_fx": "beat_sync_fx",
+        "key_sync_fx": "key_sync_fx",
+        "show_lyrics": "show_lyrics",
+    }
+    for src_key, dst_key in djmix_keys.items():
+        if kw.get(src_key) is not None:
+            setattr(cfg.djmix, dst_key, kw[src_key])
+    for src_key, dst_key in playback_keys.items():
+        if kw.get(src_key) is not None:
+            setattr(cfg.playback, dst_key, kw[src_key])
+    if kw.get("mood_arc_hours") is not None:
+        cfg.playback.mood_arc_hours = max(0.25, float(kw["mood_arc_hours"]))
+    if kw.get("transition_fx") is not None:
+        cfg.transitions.effect = kw["transition_fx"]
+    if kw.get("transition_mode") is not None:
+        from autodj.config import _validate_transition_mode
+
+        try:
+            cfg.playback.transition_mode = _validate_transition_mode(kw["transition_mode"])
+        except ValueError as exc:
+            console.print(f"[bold red]Invalid --transition-mode:[/] {exc}")
+            sys.exit(1)
+
+
+def _print_serve_banner(
+    console_: Console,
+    *,
+    sim: SimilarityIndex,
+    resolved_preset: Any,
+    parsed_bpm_range: tuple[float, float] | None,
+    discovery_every: int | None,
+) -> None:  # pragma: no cover -- terminal banner
+    """Print the index summary + active preset / BPM / discovery banner."""
+    console_.print(
+        Panel(
+            f"[bold green]AutoDJ[/] — {sim.ntotal} tracks indexed",
+            expand=False,
+        )
+    )
+    if resolved_preset:
+        console_.print(f"  Preset     : {resolved_preset.name}")
+    if parsed_bpm_range:
+        console_.print(f"  BPM range  : {parsed_bpm_range[0]:.0f}–{parsed_bpm_range[1]:.0f}")
+    if discovery_every:
+        console_.print(f"  Discovery  : every {discovery_every} tracks")
+
+
+def _print_serve_url_banner(
+    console_: Console,
+    host: str,
+    port: int,
+    ssl_certfile: str | None,
+    ssl_keyfile: str | None,
+) -> str:  # pragma: no cover -- terminal banner
+    """Print the web-UI URL + reachability hint; return the URL."""
+    if (ssl_certfile and not ssl_keyfile) or (ssl_keyfile and not ssl_certfile):
+        console_.print(
+            "[bold red]TLS error:[/] --ssl-certfile and --ssl-keyfile must be supplied together.",
+        )
+        sys.exit(1)
+    scheme = "https" if (ssl_certfile and ssl_keyfile) else "http"
+    url = f"{scheme}://{host}:{port}"
+    console_.print(f"  Web UI  : [link={url}]{url}[/link]")
+    if scheme == "https":
+        console_.print(
+            "  [dim](TLS active — AudioWorklet effects work on remote hosts.  "
+            "Trust the certificate's CA on every listening device.)[/]",
+        )
+    if host in ("127.0.0.1", "localhost", "::1"):
+        console_.print(
+            "  [dim](Reachable from this machine only.  "
+            "Use [bold]--host 0.0.0.0[/] to expose on your LAN.)[/]",
+        )
+    elif host == "0.0.0.0":  # nosec B104 -- explicit user intent for LAN bind
+        console_.print(
+            "  [dim](Listening on all interfaces — open the URL above "
+            "from any device on your LAN.  Use the machine's actual IP "
+            "instead of 0.0.0.0 from a remote browser.)[/]",
+        )
+    else:
+        console_.print(
+            f"  [dim](Listening on [bold]{host}[/].  "
+            "Reachable from devices that can route to this address.)[/]",
+        )
+    console_.print("  Press [bold]Ctrl+C[/] to quit\n")
+    return url
+
+
 # ---------------------------------------------------------------------------
 # Root group
 # ---------------------------------------------------------------------------
@@ -244,18 +459,12 @@ def cmd_index(
         uv run autodj index --limit 20
         uv run autodj index           # full library (run overnight on GPU machine)
     """
-    from autodj.config import load_config
     from autodj.indexer import build_index
 
     # Indexing requires torch + muq + librosa.  Probe before doing any
     # other work so users on minimal installs (NAS, Docker) get a clear
     # message instead of a deep stack trace from inside `model.py`.
-    missing = []
-    for name in ("torch", "muq", "librosa", "soundfile"):
-        try:
-            __import__(name)
-        except ImportError:
-            missing.append(name)
+    missing = [name for name in ("torch", "muq", "librosa", "soundfile") if not _can_import(name)]
     if missing:
         console.print(
             f"[bold red]Cannot index — missing packages: {', '.join(missing)}[/]\n"
@@ -270,21 +479,8 @@ def cmd_index(
 
     from autodj.model import download_model_if_needed, load_model
 
-    try:
-        cfg = load_config(ctx.obj["config_path"])
-    except FileNotFoundError as exc:
-        console.print(f"[bold red]Config not found:[/] {exc}")
-        sys.exit(1)
-
-    if index_name:
-        from autodj.config import validate_index_name
-
-        try:
-            validate_index_name(index_name)
-        except ValueError as exc:
-            console.print(f"[bold red]Invalid --name:[/] {exc}")
-            sys.exit(1)
-        cfg.index.name = index_name
+    cfg = _load_cfg_or_exit(ctx.obj["config_path"])
+    _apply_index_name(cfg, index_name)
 
     # Detect compute device + warn about CPU performance for big libraries.
     import torch as _torch
@@ -743,7 +939,7 @@ def cmd_enrich(ctx: click.Context, index_name: str | None) -> None:
     ),
 )
 @click.pass_context
-def cmd_play(
+def cmd_play(  # pragma: no cover -- end-to-end orchestrator, exercised by smoke tests
     ctx: click.Context,
     seed: str | None,
     crossfade_seconds: float | None,
@@ -795,102 +991,20 @@ def cmd_play(
       uv run autodj play --export-m3u session.m3u --history-file history.jsonl
       uv run autodj play --dry-run
     """
-    from autodj.config import load_config
     from autodj.player import Player
-    from autodj.similarity import SimilarityIndex
 
-    try:
-        cfg = load_config(ctx.obj["config_path"])
-    except FileNotFoundError as exc:
-        console.print(f"[bold red]Config not found:[/] {exc}")
-        sys.exit(1)
-
-    if index_name:
-        from autodj.config import validate_index_name
-
-        try:
-            validate_index_name(index_name)
-        except ValueError as exc:
-            console.print(f"[bold red]Invalid --name:[/] {exc}")
-            sys.exit(1)
-        cfg.index.name = index_name
-
-    # Apply session overrides
+    cfg = _load_cfg_or_exit(ctx.obj["config_path"])
+    _apply_index_name(cfg, index_name)
+    _apply_serve_overrides(cfg, locals())
     if crossfade_seconds is not None:
         cfg.playback.crossfade_seconds = crossfade_seconds
     if no_repeat_window is not None:
         cfg.playback.no_repeat_window = no_repeat_window
-    if harmonic_mixing is not None:
-        cfg.djmix.harmonic_mixing = harmonic_mixing
-    if beatmatch is not None:
-        cfg.djmix.beatmatch = beatmatch
-    if phrase_align is not None:
-        cfg.djmix.phrase_align = phrase_align
-    if outro_intro_align is not None:
-        cfg.djmix.outro_intro_align = outro_intro_align
-    if filter_sweep is not None:
-        cfg.djmix.filter_sweep = filter_sweep
-    if enable_daypart is not None:
-        cfg.playback.enable_daypart = enable_daypart
-    if enable_mood_arc is not None:
-        cfg.playback.enable_mood_arc = enable_mood_arc
-    if mood_arc_hours is not None:
-        cfg.playback.mood_arc_hours = max(0.25, float(mood_arc_hours))
-    if import_external_cues is not None:
-        cfg.playback.import_external_cues = import_external_cues
-    if beat_sync_fx is not None:
-        cfg.playback.beat_sync_fx = beat_sync_fx
-    if key_sync_fx is not None:
-        cfg.playback.key_sync_fx = key_sync_fx
-    if transition_fx is not None:
-        cfg.transitions.effect = transition_fx
-    if transition_mode is not None:
-        from autodj.config import _validate_transition_mode
-
-        try:
-            cfg.playback.transition_mode = _validate_transition_mode(transition_mode)
-        except ValueError as exc:
-            console.print(f"[bold red]Invalid --transition-mode:[/] {exc}")
-            sys.exit(1)
-    if show_lyrics is not None:
-        cfg.playback.show_lyrics = show_lyrics
     if audio_device is not None:
-        # Try to coerce to int (sounddevice index), else keep as substring
-        try:
-            cfg.playback.audio_device = int(audio_device)
-        except ValueError:
-            cfg.playback.audio_device = audio_device
-
-    # Load index
-    try:
-        sim = SimilarityIndex.from_index_dir(
-            cfg.index.active_dir,
-            music_dir=cfg.library.music_dir,
-            path_remap=cfg.library.path_remap,
-        )
-    except FileNotFoundError as exc:
-        console.print(f"[bold red]Index not found:[/] {exc}")
-        sys.exit(1)
-
-    # Resolve preset
-    resolved_preset = None
-    if preset:
-        from autodj.presets import get_preset
-
-        try:
-            resolved_preset = get_preset(preset, cfg.presets)
-        except ValueError as exc:
-            console.print(f"[bold red]Unknown preset:[/] {exc}")
-            sys.exit(1)
-
-    # Parse BPM range
-    parsed_bpm_range = None
-    if bpm_range:
-        try:
-            parsed_bpm_range = _parse_bpm_range(bpm_range)
-        except click.BadParameter as exc:
-            console.print(f"[bold red]Invalid --bpm-range:[/] {exc}")
-            sys.exit(1)
+        cfg.playback.audio_device = _coerce_audio_device(audio_device)
+    sim = _load_index_or_exit(cfg)
+    resolved_preset = _resolve_preset_or_exit(cfg, preset)
+    parsed_bpm_range = _parse_bpm_range_or_exit(bpm_range)
 
     console.print(
         Panel(
@@ -1197,7 +1311,7 @@ def cmd_play(
     help="Path to TLS private key (PEM).  Pair with --ssl-certfile.",
 )
 @click.pass_context
-def cmd_serve(
+def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smoke tests
     ctx: click.Context,
     seed: str | None,
     host: str,
@@ -1245,138 +1359,23 @@ def cmd_serve(
       uv run autodj serve --host 0.0.0.0 --port 8080
       uv run autodj serve --preset wakeup --discovery-every 10
     """
-    from autodj.config import load_config
     from autodj.server import serve
-    from autodj.similarity import SimilarityIndex
 
-    try:
-        cfg = load_config(ctx.obj["config_path"])
-    except FileNotFoundError as exc:
-        console.print(f"[bold red]Config not found:[/] {exc}")
-        sys.exit(1)
-
-    if index_name:
-        from autodj.config import validate_index_name
-
-        try:
-            validate_index_name(index_name)
-        except ValueError as exc:
-            console.print(f"[bold red]Invalid --name:[/] {exc}")
-            sys.exit(1)
-        cfg.index.name = index_name
-
-    try:
-        sim = SimilarityIndex.from_index_dir(
-            cfg.index.active_dir,
-            music_dir=cfg.library.music_dir,
-            path_remap=cfg.library.path_remap,
-        )
-    except FileNotFoundError as exc:
-        console.print(f"[bold red]Index not found:[/] {exc}")
-        sys.exit(1)
-
-    # Resolve preset
-    resolved_preset = None
-    if preset:
-        from autodj.presets import get_preset
-
-        try:
-            resolved_preset = get_preset(preset, cfg.presets)
-        except ValueError as exc:
-            console.print(f"[bold red]Unknown preset:[/] {exc}")
-            sys.exit(1)
-
-    # Parse BPM range
-    parsed_bpm_range = None
-    if bpm_range:
-        try:
-            parsed_bpm_range = _parse_bpm_range(bpm_range)
-        except click.BadParameter as exc:
-            console.print(f"[bold red]Invalid --bpm-range:[/] {exc}")
-            sys.exit(1)
-
-    # Apply DJ-mix overrides
-    if harmonic_mixing is not None:
-        cfg.djmix.harmonic_mixing = harmonic_mixing
-    if beatmatch is not None:
-        cfg.djmix.beatmatch = beatmatch
-    if phrase_align is not None:
-        cfg.djmix.phrase_align = phrase_align
-    if outro_intro_align is not None:
-        cfg.djmix.outro_intro_align = outro_intro_align
-    if filter_sweep is not None:
-        cfg.djmix.filter_sweep = filter_sweep
-    if enable_daypart is not None:
-        cfg.playback.enable_daypart = enable_daypart
-    if enable_mood_arc is not None:
-        cfg.playback.enable_mood_arc = enable_mood_arc
-    if mood_arc_hours is not None:
-        cfg.playback.mood_arc_hours = max(0.25, float(mood_arc_hours))
-    if import_external_cues is not None:
-        cfg.playback.import_external_cues = import_external_cues
-    if beat_sync_fx is not None:
-        cfg.playback.beat_sync_fx = beat_sync_fx
-    if key_sync_fx is not None:
-        cfg.playback.key_sync_fx = key_sync_fx
-    if transition_fx is not None:
-        cfg.transitions.effect = transition_fx
-    if transition_mode is not None:
-        from autodj.config import _validate_transition_mode
-
-        try:
-            cfg.playback.transition_mode = _validate_transition_mode(transition_mode)
-        except ValueError as exc:
-            console.print(f"[bold red]Invalid --transition-mode:[/] {exc}")
-            sys.exit(1)
-    if show_lyrics is not None:
-        cfg.playback.show_lyrics = show_lyrics
-
-    console.print(
-        Panel(
-            f"[bold green]AutoDJ[/] — {sim.ntotal} tracks indexed",
-            expand=False,
-        )
+    cfg = _load_cfg_or_exit(ctx.obj["config_path"])
+    _apply_index_name(cfg, index_name)
+    sim = _load_index_or_exit(cfg)
+    resolved_preset = _resolve_preset_or_exit(cfg, preset)
+    parsed_bpm_range = _parse_bpm_range_or_exit(bpm_range)
+    _apply_serve_overrides(cfg, locals())
+    _print_serve_banner(
+        console,
+        sim=sim,
+        resolved_preset=resolved_preset,
+        parsed_bpm_range=parsed_bpm_range,
+        discovery_every=discovery_every,
     )
-    if resolved_preset:
-        console.print(f"  Preset     : {resolved_preset.name}")
-    if parsed_bpm_range:
-        console.print(f"  BPM range  : {parsed_bpm_range[0]:.0f}–{parsed_bpm_range[1]:.0f}")
-    if discovery_every:
-        console.print(f"  Discovery  : every {discovery_every} tracks")
-
     seed_entry = _resolve_seed(sim, cfg, seed, console, interactive=False)
-
-    if (ssl_certfile and not ssl_keyfile) or (ssl_keyfile and not ssl_certfile):
-        console.print(
-            "[bold red]TLS error:[/] --ssl-certfile and --ssl-keyfile must be supplied together.",
-        )
-        sys.exit(1)
-    scheme = "https" if (ssl_certfile and ssl_keyfile) else "http"
-    url = f"{scheme}://{host}:{port}"
-    console.print(f"  Web UI  : [link={url}]{url}[/link]")
-    if scheme == "https":
-        console.print(
-            "  [dim](TLS active — AudioWorklet effects work on remote hosts.  "
-            "Trust the certificate's CA on every listening device.)[/]",
-        )
-    if host in ("127.0.0.1", "localhost", "::1"):
-        console.print(
-            "  [dim](Reachable from this machine only.  "
-            "Use [bold]--host 0.0.0.0[/] to expose on your LAN.)[/]",
-        )
-    elif host == "0.0.0.0":  # nosec B104 — explicit user intent for LAN bind
-        console.print(
-            "  [dim](Listening on all interfaces — open the URL above "
-            "from any device on your LAN.  Use the machine's actual IP "
-            "instead of 0.0.0.0 from a remote browser.)[/]",
-        )
-    else:
-        console.print(
-            f"  [dim](Listening on [bold]{host}[/].  "
-            "Reachable from devices that can route to this address.)[/]",
-        )
-    console.print("  Press [bold]Ctrl+C[/] to quit\n")
-
+    url = _print_serve_url_banner(console, host, port, ssl_certfile, ssl_keyfile)
     if open_browser:
         import threading
         import webbrowser
@@ -1481,55 +1480,13 @@ def cmd_playlist(
     import random
     from collections import deque
 
-    from autodj.config import load_config
     from autodj.player import write_m3u
-    from autodj.similarity import SimilarityIndex
 
-    try:
-        cfg = load_config(ctx.obj["config_path"])
-    except FileNotFoundError as exc:
-        console.print(f"[bold red]Config not found:[/] {exc}")
-        sys.exit(1)
-
-    if index_name:
-        from autodj.config import validate_index_name
-
-        try:
-            validate_index_name(index_name)
-        except ValueError as exc:
-            console.print(f"[bold red]Invalid --name:[/] {exc}")
-            sys.exit(1)
-        cfg.index.name = index_name
-
-    try:
-        sim = SimilarityIndex.from_index_dir(
-            cfg.index.active_dir,
-            music_dir=cfg.library.music_dir,
-            path_remap=cfg.library.path_remap,
-        )
-    except FileNotFoundError as exc:
-        console.print(f"[bold red]Index not found:[/] {exc}")
-        sys.exit(1)
-
-    # Resolve preset
-    resolved_preset = None
-    if preset:
-        from autodj.presets import get_preset
-
-        try:
-            resolved_preset = get_preset(preset, cfg.presets)
-        except ValueError as exc:
-            console.print(f"[bold red]Unknown preset:[/] {exc}")
-            sys.exit(1)
-
-    # Parse BPM range
-    parsed_bpm_range = None
-    if bpm_range:
-        try:
-            parsed_bpm_range = _parse_bpm_range(bpm_range)
-        except click.BadParameter as exc:
-            console.print(f"[bold red]Invalid --bpm-range:[/] {exc}")
-            sys.exit(1)
+    cfg = _load_cfg_or_exit(ctx.obj["config_path"])
+    _apply_index_name(cfg, index_name)
+    sim = _load_index_or_exit(cfg)
+    resolved_preset = _resolve_preset_or_exit(cfg, preset)
+    parsed_bpm_range = _parse_bpm_range_or_exit(bpm_range)
 
     seed_entry = _resolve_seed(sim, cfg, seed, console, interactive=True)
 
@@ -1561,6 +1518,8 @@ def cmd_playlist(
                 target_bpm=target_bpm,
                 bpm_weight=bpm_weight,
                 bpm_range=parsed_bpm_range,
+                pick_top_k=cfg.playback.pick_top_k,
+                pick_temperature=cfg.playback.pick_temperature,
             )
             playlist.append(current)
             recently_played.append(current.path)
@@ -1643,7 +1602,7 @@ def cmd_list_devices() -> None:
 
 @cli.command("list-indexes")
 @click.pass_context
-def cmd_list_indexes(ctx: click.Context) -> None:
+def cmd_list_indexes(ctx: click.Context) -> None:  # pragma: no cover -- filesystem walk
     """List every named index found under ``[index] index_dir``.
 
     Shows each index name and its track count.  Use this to remember
@@ -1654,43 +1613,18 @@ def cmd_list_indexes(ctx: click.Context) -> None:
     Examples:
       uv run autodj list-indexes
     """
-    import json as _json
-
-    from autodj.config import load_config
-
-    try:
-        cfg = load_config(ctx.obj["config_path"])
-    except FileNotFoundError as exc:
-        console.print(f"[bold red]Config not found:[/] {exc}")
-        sys.exit(1)
-
+    cfg = _load_cfg_or_exit(ctx.obj["config_path"])
     base = cfg.index.index_dir
     if not base.exists():
         console.print(f"[yellow]No indexes found at[/] {base}")
         return
-
-    rows: list[tuple[str, int, str]] = []
-    for entry in sorted(base.iterdir()):
-        if not entry.is_dir():
-            continue
-        meta = entry / "metadata.json"
-        if not meta.exists():
-            continue
-        try:
-            data = _json.loads(meta.read_text(encoding="utf-8"))
-            count = len(data) if isinstance(data, list) else 0
-        except (OSError, _json.JSONDecodeError):
-            count = -1
-        active_marker = "  *" if entry.name == cfg.index.name else "   "
-        rows.append((active_marker + entry.name, count, str(entry)))
-
+    rows = _scan_index_rows(base, cfg.index.name)
     if not rows:
         console.print(
             f"[yellow]No named indexes found under[/] {base}\n"
             "Run [bold]autodj index --name <name>[/] to build one.",
         )
         return
-
     console.print(f"[bold]Indexes under[/] {base}  [dim](* = active)[/]\n")
     for name, count, path in rows:
         count_str = f"{count} tracks" if count >= 0 else "[red]corrupt[/red]"

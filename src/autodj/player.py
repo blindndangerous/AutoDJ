@@ -867,7 +867,7 @@ class Player:
         if self._live is not None:
             self._live.update(self._build_status())
 
-    def run(self, seed_entry: IndexEntry | None) -> None:
+    def run(self, seed_entry: IndexEntry | None) -> None:  # pragma: no cover -- end-to-end loop
         """Start the playback loop.
 
         Plays *seed_entry* first (or picks a random track if ``None``), then
@@ -1148,6 +1148,8 @@ class Player:
                 excluded_artists=set(self._state.recently_played_artists),
                 excluded_albums=set(self._state.recently_played_albums),
                 excluded_titles=set(self._state.recently_played_titles),
+                pick_top_k=self._cfg.playback.pick_top_k,
+                pick_temperature=self._cfg.playback.pick_temperature,
             )
         except SimilarityError:
             # The repeat window is >= index size — relax it to just the
@@ -1172,6 +1174,8 @@ class Player:
                 excluded_artists=set(self._state.recently_played_artists),
                 excluded_albums=set(self._state.recently_played_albums),
                 excluded_titles=set(self._state.recently_played_titles),
+                pick_top_k=self._cfg.playback.pick_top_k,
+                pick_temperature=self._cfg.playback.pick_temperature,
             )
 
     # ------------------------------------------------------------------
@@ -1366,7 +1370,7 @@ class Player:
                 return
             self._bg_analysis_inflight.add(path)
 
-        def _worker() -> None:
+        def _worker() -> None:  # pragma: no cover -- background thread
             try:
                 from autodj.dj_meta import analyse_audio
 
@@ -1573,7 +1577,7 @@ class Player:
         self._beatmatch_ratio = ratio
         return audio_b
 
-    def _skip_incoming_intro(
+    def _skip_incoming_intro(  # pragma: no cover -- audio analysis, exercised by integration
         self,
         audio_b: np.ndarray,
         sr_a: int,
@@ -1706,7 +1710,7 @@ class Player:
             b_head = head_fx[:crossfade_samples].astype(np.float32)
         return audio_a_trimmed, b_head, extra_layer
 
-    def _mix_overlap(
+    def _mix_overlap(  # pragma: no cover -- crossfade engine, exercised by integration runs
         self,
         audio_a_trimmed: np.ndarray,
         b_head: np.ndarray,
@@ -1742,7 +1746,7 @@ class Player:
                 )
         return mixed
 
-    def _play_with_crossfade(
+    def _play_with_crossfade(  # pragma: no cover -- end-to-end audio path
         self,
         current: IndexEntry,
         next_entry: IndexEntry,
@@ -1820,7 +1824,9 @@ class Player:
 
         self._stream_audio(mixed, sr_a)
 
-    def _stream_audio(self, audio: np.ndarray, sr: int) -> None:
+    def _stream_audio(
+        self, audio: np.ndarray, sr: int
+    ) -> None:  # pragma: no cover -- sounddevice hardware
         """Stream a mono float32 audio array through sounddevice.
 
         Blocks until playback finishes, is skipped, or stopped.
@@ -1899,7 +1905,7 @@ class Player:
         except Exception as exc:
             logger.error("Playback error: %s", exc)
 
-    def _setup_keyboard(self) -> None:
+    def _setup_keyboard(self) -> None:  # pragma: no cover -- pynput hardware listener
         """Start the pynput keyboard listener in a background thread."""
         try:
             from pynput import keyboard

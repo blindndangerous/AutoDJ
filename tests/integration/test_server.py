@@ -446,6 +446,60 @@ class TestProfiles:
         assert bridge.player._cfg.playback.key_sync_fx is False
         assert bridge.player._cfg.playback.crossfade_seconds == pytest.approx(5.0)
 
+    def test_profile_get_bad_name_400(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
+        (tmp_path / "idx").mkdir()
+        tc = TestClient(create_app(bridge))
+        resp = tc.get("/api/profiles/..%2Fescape")
+        assert resp.status_code in (400, 404)
+
+    def test_profile_get_missing_404(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
+        (tmp_path / "idx").mkdir()
+        tc = TestClient(create_app(bridge))
+        resp = tc.get("/api/profiles/Nope")
+        assert resp.status_code == 404
+
+    def test_profile_delete_bad_name_400(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
+        (tmp_path / "idx").mkdir()
+        tc = TestClient(create_app(bridge))
+        resp = tc.delete("/api/profiles/..%2Fescape")
+        assert resp.status_code in (400, 404)
+
+    def test_profile_delete_missing_404(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
+        (tmp_path / "idx").mkdir()
+        tc = TestClient(create_app(bridge))
+        resp = tc.delete("/api/profiles/Nope")
+        assert resp.status_code == 404
+
+    def test_profile_apply_bad_name_400(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
+        (tmp_path / "idx").mkdir()
+        tc = TestClient(create_app(bridge))
+        resp = tc.post("/api/profiles/..%2Fescape/apply")
+        assert resp.status_code in (400, 404)
+
+    def test_profile_apply_missing_404(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
+        (tmp_path / "idx").mkdir()
+        tc = TestClient(create_app(bridge))
+        resp = tc.post("/api/profiles/Nope/apply")
+        assert resp.status_code == 404
+
 
 # ---------------------------------------------------------------------------
 # POST /api/mute
@@ -628,6 +682,25 @@ class TestPlayerBridge:
     def test_toggle_mute(self, bridge) -> None:
         assert bridge.toggle_mute() is True
         assert bridge.toggle_mute() is False
+
+    def test_record_seed_appends_when_history_empty(self, bridge) -> None:
+        seed = _make_entry(1)
+        bridge._play_history = []
+        bridge.record_seed(seed)
+        assert len(bridge._play_history) == 1
+
+    def test_record_seed_skipped_when_entry_none(self, bridge) -> None:
+        bridge._play_history = []
+        bridge.record_seed(None)
+        assert bridge._play_history == []
+
+    def test_record_seed_skipped_when_history_already_populated(self, bridge) -> None:
+        seed = _make_entry(1)
+        bridge._play_history = [{"existing": True}]
+        bridge.record_seed(seed)
+        # Already-populated history is left alone -- only the very first
+        # seed gets appended.
+        assert bridge._play_history == [{"existing": True}]
 
     def test_search_by_title(self, bridge) -> None:
         results = bridge.search("song")

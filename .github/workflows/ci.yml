@@ -44,14 +44,53 @@ jobs:
       - name: Mypy — type check
         run: uv run mypy src/autodj/
 
+      - name: Pyright — cross-check type checker
+        continue-on-error: true     # informational; mypy is the gate
+        run: uv run pyright src/autodj/
+
+      - name: Vulture — dead code
+        run: uv run vulture
+
+      - name: Deptry — unused / missing deps
+        run: uv run deptry src/
+
+      - name: Interrogate — docstring coverage
+        run: uv run interrogate -c pyproject.toml
+
+      - name: Xenon — complexity gate
+        run: uv run xenon --max-absolute E --max-modules C --max-average B src/
+
       - name: Bandit — security scan
         run: uv run bandit -r src/ -c pyproject.toml
 
       - name: pip-audit — dependency CVE scan
-        run: uv run pip-audit
+        # PYSEC-2022-42969: `py` 1.11.0 ReDoS in error reporting code.  No fix
+        # version upstream; pulled in transitively via xenon -> radon.  Not
+        # exposed at runtime (test-tool only), so suppressed.
+        run: uv run pip-audit --ignore-vuln PYSEC-2022-42969
+
+      - name: Semgrep — multi-rule SAST
+        continue-on-error: true     # advisory; bandit is the hard gate
+        run: uvx semgrep --error --config p/python --config p/owasp-top-ten src/
+
+      - name: Gitleaks — secret scan
+        # Direct CLI install: gitleaks-action v2 needs GITLEAKS_LICENSE
+        # for private repos; the binary is free under MIT.
+        run: |
+          curl -fsSL https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz | tar -xz
+          ./gitleaks detect --source . --no-banner --redact --exit-code 1
+
+      - name: pip-licenses — license inventory
+        run: uv run pip-licenses --format=markdown --order=license
+
+      - name: Syft — generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          format: cyclonedx-json
+          output-file: sbom.json
 
       - name: Pytest — test suite
-        run: uv run pytest --tb=short --cov --cov-report=xml --cov-report=term
+        run: uv run pytest --tb=short --cov --cov-report=xml --cov-report=term -n auto
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v6

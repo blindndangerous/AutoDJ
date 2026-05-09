@@ -24,6 +24,7 @@ import logging
 import math
 import random
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,6 +39,43 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # BPM scoring helper
 # ---------------------------------------------------------------------------
+
+
+def _softmax_pick(
+    scored: list[tuple[float, IndexEntry]],
+    top_k: int,
+    temperature: float,
+) -> IndexEntry:
+    """Pick one entry from *scored* by softmax-weighted random sampling.
+
+    *scored* must be sorted by score descending.  Picks deterministically
+    (entry with highest score) when ``top_k <= 1`` or ``temperature <= 0``.
+
+    Args:
+        scored: Candidates as ``(score, entry)`` tuples, score-descending.
+        top_k: Cap candidate pool to this many top entries.
+        temperature: Softmax temperature.  Higher = more uniform; 0 = deterministic.
+
+    Returns:
+        Chosen :class:`IndexEntry`.
+    """
+    if not scored:
+        raise ValueError("_softmax_pick called with empty list")
+    if top_k <= 1 or temperature <= 0.0:
+        return scored[0][1]
+
+    pool = scored[: max(1, top_k)]
+    scores = np.array([s for s, _ in pool], dtype=np.float64)
+    # Subtract max for numerical stability before exp().
+    z = (scores - scores.max()) / max(temperature, 1e-6)
+    weights = np.exp(z)
+    total = float(weights.sum())
+    if not np.isfinite(total) or total <= 0.0:  # pragma: no cover
+        return pool[0][1]
+    probs = weights / total
+    # Non-security weighted pick across nearest neighbours.
+    idx = int(np.random.choice(len(pool), p=probs))  # nosec B311
+    return pool[idx][1]
 
 
 def _bpm_score(entry_bpm: float, target_bpm: float, sigma: float = 15.0) -> float:
@@ -183,6 +221,134 @@ class SimilarityIndex:
     # Core query
     # ------------------------------------------------------------------
 
+    def _fetch_size(
+        self,
+        n_candidates: int,
+        invert: bool,
+        target_bpm: float | None,
+        bpm_range: tuple[float, float] | None,
+    ) -> int:
+        """Return the FAISS over-fetch size for the requested mode."""
+        if invert:
+            return max(200, n_candidates)
+        if target_bpm is not None or bpm_range is not None:
+            return max(25, n_candidates)
+        return n_candidates
+
+    def _build_predicate(
+        self,
+        excluded: set[str],
+        bpm_range: tuple[float, float] | None,
+        genre_filter: list[str] | None,
+        harmonic_from: tuple[int, int] | None,
+        harmonic_mode: str,
+        excluded_artists: set[str] | None,
+        excluded_albums: set[str] | None,
+        excluded_titles: set[str] | None,
+    ) -> Callable[[IndexEntry], bool]:
+        """Compose a single ``entry -> bool`` predicate from every active filter."""
+        from autodj.genres import canonicalise_list
+        from autodj.genres import matches as _genre_matches
+
+        canonical_filter = canonicalise_list(genre_filter)
+        ex_art = {a.lower() for a in (excluded_artists or set()) if a}
+        ex_alb = {a.lower() for a in (excluded_albums or set()) if a}
+        ex_ttl = {t.lower() for t in (excluded_titles or set()) if t}
+
+        def _ok(entry: IndexEntry) -> bool:
+            if entry.path in excluded:
+                return False
+            if bpm_range is not None and entry.bpm > 0:
+                lo, hi = bpm_range
+                if not (lo <= entry.bpm <= hi):
+                    return False
+            if canonical_filter and not _genre_matches(entry.genre, canonical_filter):
+                return False
+            if harmonic_from is not None:
+                from autodj.dj_meta import harmonic_compatible
+
+                if not harmonic_compatible(
+                    harmonic_from[0],
+                    harmonic_from[1],
+                    entry.key,
+                    entry.mode,
+                    mode=harmonic_mode,
+                ):
+                    return False
+            if ex_art and entry.artist and entry.artist.lower() in ex_art:
+                return False
+            if ex_alb and entry.album and entry.album.lower() in ex_alb:
+                return False
+            return not (ex_ttl and entry.title and entry.title.lower() in ex_ttl)
+
+        return _ok
+
+    def _filter_candidates(
+        self,
+        raw_scores: np.ndarray,
+        raw_indices: np.ndarray,
+        predicate: Callable[[IndexEntry], bool],
+    ) -> list[tuple[float, IndexEntry]]:
+        """Apply *predicate* to each FAISS hit, returning ``(score, entry)`` survivors."""
+        out: list[tuple[float, IndexEntry]] = []
+        for score, idx in zip(raw_scores, raw_indices, strict=False):
+            if idx < 0:  # pragma: no cover -- FAISS empty-slot sentinel
+                continue
+            entry = self.entries[idx]
+            if predicate(entry):
+                out.append((float(score), entry))
+        return out
+
+    def _relax_filters(
+        self,
+        raw_scores: np.ndarray,
+        raw_indices: np.ndarray,
+        excluded: set[str],
+    ) -> list[tuple[float, IndexEntry]]:
+        """Fallback: keep only the recently-played exclusion when other filters wipe everything."""
+        out: list[tuple[float, IndexEntry]] = []
+        for score, idx in zip(raw_scores, raw_indices, strict=False):
+            if idx < 0:  # pragma: no cover -- FAISS empty-slot sentinel
+                continue
+            entry = self.entries[idx]
+            if entry.path not in excluded:
+                out.append((float(score), entry))
+        return out
+
+    @staticmethod
+    def _energy_score(entry: IndexEntry, target_energy: float) -> float:
+        """Gaussian energy similarity (sigma=0.15); 0.0 when entry energy unknown."""
+        if entry.energy <= 0:
+            return 0.0
+        diff = abs(entry.energy - target_energy) / 0.15
+        return float(np.exp(-0.5 * diff * diff))
+
+    def _rerank(
+        self,
+        candidates: list[tuple[float, IndexEntry]],
+        target_bpm: float | None,
+        bpm_weight: float,
+        target_energy: float | None,
+        energy_weight: float,
+    ) -> list[tuple[float, IndexEntry]]:
+        """Blend cosine + BPM + energy scores; return the rescored list, score-descending."""
+        cosine_w = max(
+            0.0,
+            1.0
+            - (bpm_weight if target_bpm is not None else 0.0)
+            - (energy_weight if target_energy is not None else 0.0),
+        )
+        out: list[tuple[float, IndexEntry]] = []
+        for cosine_score, entry in candidates:
+            blended = cosine_score * cosine_w
+            if target_bpm is not None:
+                blended += _bpm_score(entry.bpm, target_bpm) * bpm_weight
+            if target_energy is not None:
+                blended += self._energy_score(entry, target_energy) * energy_weight
+            out.append((blended, entry))
+        out.sort(key=lambda x: x[0], reverse=True)
+        return out
+
     def find_next(
         self,
         query_vector: np.ndarray,
@@ -200,6 +366,8 @@ class SimilarityIndex:
         excluded_artists: set[str] | None = None,
         excluded_albums: set[str] | None = None,
         excluded_titles: set[str] | None = None,
+        pick_top_k: int = 1,
+        pick_temperature: float = 0.0,
     ) -> IndexEntry:
         """Find the best next track that isn't in *recently_played*.
 
@@ -208,126 +376,44 @@ class SimilarityIndex:
         whose path appears in *recently_played*, and returns the highest-ranked
         remaining candidate.
 
-        When *target_bpm* or *bpm_range* is provided, the candidate pool is
-        expanded to at least 25 results and candidates are optionally re-ranked
-        or filtered by BPM.
-
         Args:
             query_vector: L2-normalized float32 array of shape
                 ``(FEATURE_DIM,)`` representing the current track.
-            recently_played: Deque of file path strings (as stored in
-                :attr:`IndexEntry.path`) to exclude from results.
-            n_candidates: Minimum number of candidate neighbors to retrieve
-                before filtering.  Automatic increased to 25 when BPM features
-                are active.
-            target_bpm: Desired BPM for re-ranking.  ``None`` skips BPM
-                scoring entirely (fast path — no behaviour change).
-            bpm_weight: Weight for BPM score vs cosine score when
-                *target_bpm* is set.  ``final = cosine*(1-w) + bpm_score*w``.
-            bpm_range: Hard ``(lo, hi)`` BPM filter.  Tracks with known BPM
-                outside this range are excluded.  Tracks with unknown BPM
-                (``bpm == 0.0``) always pass.  If filtering leaves nothing,
-                the filter is relaxed with a warning.
+            recently_played: Deque of file path strings to exclude.
+            n_candidates: Minimum neighbour pool size before filtering.
+            target_bpm: Desired BPM for re-ranking.
+            bpm_weight: BPM-vs-cosine blend weight.
+            bpm_range: Hard ``(lo, hi)`` BPM filter.
 
         Returns:
             The :class:`IndexEntry` for the recommended next track.
 
         Raises:
-            SimilarityError: If all retrieved candidates were excluded by
-                *recently_played* (library too small or window too large).
-
-        Example:
-            >>> next_track = sim.find_next(vec, recently_played=deque(["Z:/Music/a.flac"]))
-            >>> print(next_track.title)
-            Sour Times
+            SimilarityError: If all retrieved candidates were excluded.
         """
         excluded = set(recently_played)
-
-        # Smart-shuffle (invert) needs the *opposite* end of the distance
-        # spectrum, so fetch many more candidates and pick from the bottom.
-        if invert:
-            n_fetch = max(200, n_candidates)
-        else:
-            n_fetch = (
-                max(25, n_candidates)
-                if (target_bpm is not None or bpm_range is not None)
-                else n_candidates
-            )
-
-        # Over-fetch so we have candidates left after filtering
+        n_fetch = self._fetch_size(n_candidates, invert, target_bpm, bpm_range)
         k = min(n_fetch + len(excluded) + 1, self.ntotal)
 
         query = query_vector.reshape(1, -1).astype(np.float32)
         scores_2d, indices_2d = self.faiss_index.search(query, k)
-        raw_scores = scores_2d[0]
-        raw_indices = indices_2d[0]
+        raw_scores, raw_indices = scores_2d[0], indices_2d[0]
 
-        # Canonicalise the user-supplied filter once, then match against
-        # the canonical form of every candidate's free-text genre.  This
-        # lets `genres = ["Electronic"]` match "Electronic / Trance",
-        # "Synthwave", "EDM", "IDM", etc. — see autodj.genres.
-        from autodj.genres import canonicalise_list, matches
+        predicate = self._build_predicate(
+            excluded,
+            bpm_range,
+            genre_filter,
+            harmonic_from,
+            harmonic_mode,
+            excluded_artists,
+            excluded_albums,
+            excluded_titles,
+        )
+        candidates = self._filter_candidates(raw_scores, raw_indices, predicate)
 
-        canonical_filter = canonicalise_list(genre_filter)
-
-        def _genre_ok(entry: IndexEntry) -> bool:
-            if not canonical_filter:
-                return True
-            return matches(entry.genre, canonical_filter)
-
-        def _harmonic_ok(entry: IndexEntry) -> bool:
-            if harmonic_from is None:
-                return True
-            from autodj.dj_meta import harmonic_compatible
-
-            return harmonic_compatible(
-                harmonic_from[0],
-                harmonic_from[1],
-                entry.key,
-                entry.mode,
-                mode=harmonic_mode,
-            )
-
-        # Build candidate list with optional BPM range + genre + harmonic
-        # + recent-artist / album / title filtering.  Lower-cased sets so
-        # "MGMT" and "mgmt" don't sneak past each other.
-        ex_art = {a.lower() for a in (excluded_artists or set()) if a}
-        ex_alb = {a.lower() for a in (excluded_albums or set()) if a}
-        ex_ttl = {t.lower() for t in (excluded_titles or set()) if t}
-        candidates: list[tuple[float, IndexEntry]] = []
-        for score, idx in zip(raw_scores, raw_indices, strict=False):
-            if idx < 0:
-                continue
-            entry = self.entries[idx]
-            if entry.path in excluded:
-                continue
-            if bpm_range is not None:
-                lo, hi = bpm_range
-                if entry.bpm > 0 and not (lo <= entry.bpm <= hi):
-                    continue
-            if not _genre_ok(entry):
-                continue
-            if not _harmonic_ok(entry):
-                continue
-            if ex_art and entry.artist and entry.artist.lower() in ex_art:
-                continue
-            if ex_alb and entry.album and entry.album.lower() in ex_alb:
-                continue
-            if ex_ttl and entry.title and entry.title.lower() in ex_ttl:
-                continue
-            candidates.append((float(score), entry))
-
-        # Fallback if filters left nothing — relax progressively
         if not candidates:
-            logger.warning(
-                "No candidates after BPM/genre filters; relaxing filters",
-            )
-            for score, idx in zip(raw_scores, raw_indices, strict=False):
-                if idx < 0:
-                    continue
-                entry = self.entries[idx]
-                if entry.path not in excluded:
-                    candidates.append((float(score), entry))
+            logger.warning("No candidates after BPM/genre filters; relaxing filters")
+            candidates = self._relax_filters(raw_scores, raw_indices, excluded)
 
         if not candidates:
             raise SimilarityError(
@@ -335,44 +421,26 @@ class SimilarityIndex:
                 f"Try reducing [playback] no_repeat_window in config.toml."
             )
 
-        # Smart-shuffle: invert the score so least-similar wins.  No BPM
-        # re-ranking applies (entropy mode is intentionally far from current).
         if invert:
-            candidates.sort(key=lambda x: x[0])  # ascending = least similar first
+            candidates.sort(key=lambda x: x[0])
             best = candidates[0][1]
             logger.debug("Smart-shuffle next: %s", best.display_name)
             return best
 
-        # Fast path: no BPM / energy re-ranking needed
         if target_bpm is None and target_energy is None:
-            best = candidates[0][1]
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            best = _softmax_pick(candidates, pick_top_k, pick_temperature)
             logger.debug("Next track: %s", best.display_name)
             return best
 
-        # Re-rank with optional BPM + energy components blended into cosine
-        reranked: list[tuple[float, IndexEntry]] = []
-        cosine_w = (
-            1.0
-            - (bpm_weight if target_bpm is not None else 0.0)
-            - (energy_weight if target_energy is not None else 0.0)
+        reranked = self._rerank(
+            candidates,
+            target_bpm,
+            bpm_weight,
+            target_energy,
+            energy_weight,
         )
-        cosine_w = max(0.0, cosine_w)
-        for cosine_score, entry in candidates:
-            blended = cosine_score * cosine_w
-            if target_bpm is not None:
-                blended += _bpm_score(entry.bpm, target_bpm) * bpm_weight
-            if target_energy is not None:
-                # Gaussian distance in normalised energy units (energy is RMS, ~0–1)
-                if entry.energy > 0:
-                    diff = abs(entry.energy - target_energy) / 0.15  # sigma=0.15
-                    e_score = float(np.exp(-0.5 * diff * diff))
-                else:
-                    e_score = 0.0
-                blended += e_score * energy_weight
-            reranked.append((blended, entry))
-        reranked.sort(key=lambda x: x[0], reverse=True)
-
-        best = reranked[0][1]
+        best = _softmax_pick(reranked, pick_top_k, pick_temperature)
         logger.debug(
             "Next track (BPM re-ranked): %s (bpm=%.0f, target=%.0f)",
             best.display_name,
@@ -398,6 +466,8 @@ class SimilarityIndex:
         excluded_artists: set[str] | None = None,
         excluded_albums: set[str] | None = None,
         excluded_titles: set[str] | None = None,
+        pick_top_k: int = 1,
+        pick_temperature: float = 0.0,
     ) -> IndexEntry:
         """Find the next track using the pre-computed vector for *current_path*.
 
@@ -456,6 +526,8 @@ class SimilarityIndex:
             excluded_artists=excluded_artists,
             excluded_albums=excluded_albums,
             excluded_titles=excluded_titles,
+            pick_top_k=pick_top_k,
+            pick_temperature=pick_temperature,
         )
 
     def find_distant(

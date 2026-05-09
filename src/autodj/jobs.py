@@ -170,6 +170,7 @@ class JobManager:
     # ------------------------------------------------------------------
 
     def _elapsed(self) -> float:
+        """Return seconds since the job started (or 0 when not started)."""
         if self._started_at is None:
             return 0.0
         end = self._finished_at if self._finished_at else time.time()
@@ -177,6 +178,7 @@ class JobManager:
 
     @property
     def running(self) -> bool:
+        """True when a job subprocess is alive."""
         return self._proc is not None and self._proc.poll() is None
 
     def snapshot(self) -> dict:

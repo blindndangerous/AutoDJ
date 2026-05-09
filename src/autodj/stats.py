@@ -58,32 +58,56 @@ def _fmt_duration(total_seconds: float) -> str:
 # ---------------------------------------------------------------------------
 
 
-def print_stats(entries: list[IndexEntry], console: Console) -> None:
-    """Print a Rich library overview to *console*.
+def _make_table(title: str, label_col: str, min_width: int = 0) -> Table:
+    """Build a 3-column histogram table (label, bar, count)."""
+    tbl = Table(title=title, show_header=False, box=None, padding=(0, 1))
+    if min_width:
+        tbl.add_column(label_col, style="dim", min_width=min_width)
+    else:
+        tbl.add_column(label_col, style="dim")
+    tbl.add_column("Bar")
+    tbl.add_column("Count", justify="right", style="cyan")
+    return tbl
 
-    Sections displayed:
-    - Summary: track count, total play time
-    - BPM distribution histogram
-    - Top 10 genres
-    - Decade breakdown
-    - Track-length buckets
-    - Top 10 artists
-    - Key distribution
-    - Major/minor split
-    - Energy histogram
 
-    Args:
-        entries: List of :class:`~autodj.indexer.IndexEntry` objects from
-            the index.
-        console: Rich :class:`~rich.console.Console` to write to.
-    """
-    if not entries:
-        console.print("[yellow]No tracks in index.[/yellow]")
-        return
+def _bpm_bucket(bpm: float) -> str:
+    """Return the histogram-bucket label for *bpm*."""
+    if bpm <= 0:
+        return "Unknown"
+    if bpm >= 180:
+        return "180+"
+    lo = max(60, min(int(bpm // 10) * 10, 180))
+    return f"{lo}–{lo + 9}"
 
+
+def _length_bucket(seconds: float) -> str:
+    """Return the track-length bucket label for *seconds*."""
+    if seconds < 120:
+        return "< 2 min"
+    if seconds < 300:
+        return "2–5 min"
+    if seconds < 600:
+        return "5–10 min"
+    return "> 10 min"
+
+
+def _energy_bucket(energy: float) -> str:
+    """Return the energy bucket label for *energy*."""
+    if energy < 0.05:
+        return "0.00–0.05 (silence)"
+    if energy < 0.15:
+        return "0.05–0.15 (quiet)"
+    if energy < 0.30:
+        return "0.15–0.30 (medium)"
+    if energy < 0.50:
+        return "0.30–0.50 (loud)"
+    return "0.50+ (very loud)"
+
+
+def _print_summary(entries: list[IndexEntry], console: Console) -> None:
+    """Render the top summary panel (track count + total play time)."""
     n = len(entries)
     total_secs = sum(e.length for e in entries)
-
     console.print(
         Panel(
             f"[bold green]{n:,}[/bold green] tracks  ·  "
@@ -93,161 +117,119 @@ def print_stats(entries: list[IndexEntry], console: Console) -> None:
         )
     )
 
-    # ----------------------------------------------------------------
-    # BPM distribution
-    # ----------------------------------------------------------------
-    bpm_buckets: dict[str, int] = {}
-    for lo in range(60, 190, 10):
-        bpm_buckets[f"{lo}–{lo + 9}"] = 0
-    bpm_buckets["180+"] = 0
-    bpm_buckets["Unknown"] = 0
 
+def _print_bpm(entries: list[IndexEntry], console: Console) -> None:
+    """Render the BPM-distribution histogram."""
+    buckets: dict[str, int] = {f"{lo}–{lo + 9}": 0 for lo in range(60, 190, 10)}
+    buckets["180+"] = 0
+    buckets["Unknown"] = 0
     for e in entries:
-        b = e.bpm
-        if b <= 0:
-            bpm_buckets["Unknown"] += 1
-        elif b >= 180:
-            bpm_buckets["180+"] += 1
-        else:
-            lo = int(b // 10) * 10
-            lo = max(60, min(lo, 180))
-            key = f"{lo}–{lo + 9}"
-            if key in bpm_buckets:
-                bpm_buckets[key] += 1
-            else:
-                bpm_buckets["Unknown"] += 1
-
-    max_bpm = max(bpm_buckets.values(), default=1)
-    tbl = Table(title="BPM Distribution", show_header=False, box=None, padding=(0, 1))
-    tbl.add_column("Range", style="dim", min_width=8)
-    tbl.add_column("Bar")
-    tbl.add_column("Count", justify="right", style="cyan")
-    for label, count in bpm_buckets.items():
-        if count or label not in ("Unknown",):
+        key = _bpm_bucket(e.bpm)
+        buckets[key] = buckets.get(key, 0) + 1
+    max_bpm = max(buckets.values(), default=1)
+    tbl = _make_table("BPM Distribution", "Range", min_width=8)
+    for label, count in buckets.items():
+        if count or label != "Unknown":
             tbl.add_row(label, _bar(count, max_bpm), str(count))
     console.print(tbl)
 
-    # ----------------------------------------------------------------
-    # Top genres
-    # ----------------------------------------------------------------
-    genre_counts: Counter[str] = Counter(
-        e.genre.strip() for e in entries if e.genre and e.genre.strip()
-    )
-    if genre_counts:
-        tbl = Table(title="Top Genres", show_header=False, box=None, padding=(0, 1))
-        tbl.add_column("Genre", style="dim")
-        tbl.add_column("Bar")
-        tbl.add_column("Count", justify="right", style="cyan")
-        top_count = genre_counts.most_common(1)[0][1]
-        for genre, count in genre_counts.most_common(10):
-            tbl.add_row(genre, _bar(count, top_count), str(count))
-        console.print(tbl)
 
-    # ----------------------------------------------------------------
-    # Decade breakdown
-    # ----------------------------------------------------------------
-    decade_counts: dict[str, int] = {}
-    unknown_decade = 0
+def _print_genres(entries: list[IndexEntry], console: Console) -> None:
+    """Render the top-10 genre histogram (skipped when no genre tags)."""
+    counts: Counter[str] = Counter(e.genre.strip() for e in entries if e.genre and e.genre.strip())
+    if not counts:
+        return
+    tbl = _make_table("Top Genres", "Genre")
+    top = counts.most_common(1)[0][1]
+    for genre, count in counts.most_common(10):
+        tbl.add_row(genre, _bar(count, top), str(count))
+    console.print(tbl)
+
+
+def _print_decades(entries: list[IndexEntry], console: Console) -> None:
+    """Render the by-decade histogram (skipped when no year tags)."""
+    counts: dict[str, int] = {}
+    unknown = 0
     for e in entries:
-        y = e.year
-        if not y or y < 1900:
-            unknown_decade += 1
+        if not e.year or e.year < 1900:
+            unknown += 1
         else:
-            dec = (y // 10) * 10
-            label = f"{dec}s"
-            decade_counts[label] = decade_counts.get(label, 0) + 1
-    if unknown_decade:
-        decade_counts["Unknown"] = unknown_decade
+            label = f"{(e.year // 10) * 10}s"
+            counts[label] = counts.get(label, 0) + 1
+    if unknown:
+        counts["Unknown"] = unknown
+    if not counts:
+        return
+    max_dec = max(counts.values(), default=1)
+    tbl = _make_table("By Decade", "Decade", min_width=8)
+    ordered = sorted(k for k in counts if k != "Unknown")
+    if "Unknown" in counts:
+        ordered.append("Unknown")
+    for label in ordered:
+        tbl.add_row(label, _bar(counts[label], max_dec), str(counts[label]))
+    console.print(tbl)
 
-    if decade_counts:
-        max_dec = max(decade_counts.values(), default=1)
-        tbl = Table(title="By Decade", show_header=False, box=None, padding=(0, 1))
-        tbl.add_column("Decade", style="dim", min_width=8)
-        tbl.add_column("Bar")
-        tbl.add_column("Count", justify="right", style="cyan")
-        for label in sorted(k for k in decade_counts if k != "Unknown") + (
-            ["Unknown"] if "Unknown" in decade_counts else []
-        ):
-            tbl.add_row(label, _bar(decade_counts[label], max_dec), str(decade_counts[label]))
-        console.print(tbl)
 
-    # ----------------------------------------------------------------
-    # Track length buckets
-    # ----------------------------------------------------------------
-    length_buckets = {"< 2 min": 0, "2–5 min": 0, "5–10 min": 0, "> 10 min": 0}
+def _print_lengths(entries: list[IndexEntry], console: Console) -> None:
+    """Render the track-length-bucket histogram."""
+    buckets = {"< 2 min": 0, "2–5 min": 0, "5–10 min": 0, "> 10 min": 0}
     for e in entries:
-        s = e.length
-        if s < 120:
-            length_buckets["< 2 min"] += 1
-        elif s < 300:
-            length_buckets["2–5 min"] += 1
-        elif s < 600:
-            length_buckets["5–10 min"] += 1
-        else:
-            length_buckets["> 10 min"] += 1
-
-    max_len = max(length_buckets.values(), default=1)
-    tbl = Table(title="Track Lengths", show_header=False, box=None, padding=(0, 1))
-    tbl.add_column("Bucket", style="dim")
-    tbl.add_column("Bar")
-    tbl.add_column("Count", justify="right", style="cyan")
-    for label, count in length_buckets.items():
+        buckets[_length_bucket(e.length)] += 1
+    max_len = max(buckets.values(), default=1)
+    tbl = _make_table("Track Lengths", "Bucket")
+    for label, count in buckets.items():
         tbl.add_row(label, _bar(count, max_len), str(count))
     console.print(tbl)
 
-    # ----------------------------------------------------------------
-    # Top artists
-    # ----------------------------------------------------------------
-    artist_counts: Counter[str] = Counter(
+
+def _print_artists(entries: list[IndexEntry], console: Console) -> None:
+    """Render the top-10 artists histogram (skipped when no artist tags)."""
+    counts: Counter[str] = Counter(
         e.artist.strip() for e in entries if e.artist and e.artist.strip()
     )
-    if artist_counts:
-        tbl = Table(title="Top Artists", show_header=False, box=None, padding=(0, 1))
-        tbl.add_column("Artist", style="dim")
-        tbl.add_column("Bar")
-        tbl.add_column("Count", justify="right", style="cyan")
-        top_artist = artist_counts.most_common(1)[0][1]
-        for artist, count in artist_counts.most_common(10):
-            tbl.add_row(artist, _bar(count, top_artist), str(count))
-        console.print(tbl)
+    if not counts:
+        return
+    tbl = _make_table("Top Artists", "Artist")
+    top = counts.most_common(1)[0][1]
+    for artist, count in counts.most_common(10):
+        tbl.add_row(artist, _bar(count, top), str(count))
+    console.print(tbl)
 
-    # ----------------------------------------------------------------
-    # Key distribution
-    # ----------------------------------------------------------------
-    key_counts: dict[int, int] = {}
+
+def _print_keys(entries: list[IndexEntry], console: Console) -> None:
+    """Render the chromatic-key histogram (skipped when no detected keys)."""
+    counts: dict[int, int] = {}
     for e in entries:
-        k = e.key
-        if k >= 0:
-            key_counts[k] = key_counts.get(k, 0) + 1
+        if e.key >= 0:
+            counts[e.key] = counts.get(e.key, 0) + 1
+    if not counts:
+        return
+    max_key = max(counts.values(), default=1)
+    tbl = _make_table("Key Distribution", "Key", min_width=3)
+    for k in range(12):
+        count = counts.get(k, 0)
+        tbl.add_row(_KEY_NAMES[k], _bar(count, max_key), str(count))
+    console.print(tbl)
 
-    if key_counts:
-        max_key = max(key_counts.values(), default=1)
-        tbl = Table(title="Key Distribution", show_header=False, box=None, padding=(0, 1))
-        tbl.add_column("Key", style="dim", min_width=3)
-        tbl.add_column("Bar")
-        tbl.add_column("Count", justify="right", style="cyan")
-        for k in range(12):
-            count = key_counts.get(k, 0)
-            tbl.add_row(_KEY_NAMES[k], _bar(count, max_key), str(count))
-        console.print(tbl)
 
-    # Major / minor split
+def _print_modes(entries: list[IndexEntry], console: Console) -> None:
+    """Render the major/minor split (skipped when no mode tags)."""
     major = sum(1 for e in entries if e.mode == 1)
     minor = sum(1 for e in entries if e.mode == 0)
-    mode_total = major + minor
-    if mode_total:
-        major_pct = round(major * 100 / mode_total)
-        minor_pct = 100 - major_pct
-        tbl = Table(title="Mode Split", show_header=False, box=None, padding=(0, 1))
-        tbl.add_column("Mode", style="dim")
-        tbl.add_column("Bar")
-        tbl.add_column("Count", justify="right", style="cyan")
-        tbl.add_row(f"Major ({major_pct}%)", _bar(major, mode_total), str(major))
-        tbl.add_row(f"Minor ({minor_pct}%)", _bar(minor, mode_total), str(minor))
-        console.print(tbl)
+    total = major + minor
+    if not total:
+        return
+    major_pct = round(major * 100 / total)
+    minor_pct = 100 - major_pct
+    tbl = _make_table("Mode Split", "Mode")
+    tbl.add_row(f"Major ({major_pct}%)", _bar(major, total), str(major))
+    tbl.add_row(f"Minor ({minor_pct}%)", _bar(minor, total), str(minor))
+    console.print(tbl)
 
-    # Energy histogram
-    energy_buckets = {
+
+def _print_energy(entries: list[IndexEntry], console: Console) -> None:
+    """Render the energy-bucket histogram."""
+    buckets = {
         "0.00–0.05 (silence)": 0,
         "0.05–0.15 (quiet)": 0,
         "0.15–0.30 (medium)": 0,
@@ -255,23 +237,25 @@ def print_stats(entries: list[IndexEntry], console: Console) -> None:
         "0.50+ (very loud)": 0,
     }
     for e in entries:
-        eng = e.energy
-        if eng < 0.05:
-            energy_buckets["0.00–0.05 (silence)"] += 1
-        elif eng < 0.15:
-            energy_buckets["0.05–0.15 (quiet)"] += 1
-        elif eng < 0.30:
-            energy_buckets["0.15–0.30 (medium)"] += 1
-        elif eng < 0.50:
-            energy_buckets["0.30–0.50 (loud)"] += 1
-        else:
-            energy_buckets["0.50+ (very loud)"] += 1
-
-    max_eng = max(energy_buckets.values(), default=1)
-    tbl = Table(title="Energy Distribution", show_header=False, box=None, padding=(0, 1))
-    tbl.add_column("Range", style="dim")
-    tbl.add_column("Bar")
-    tbl.add_column("Count", justify="right", style="cyan")
-    for label, count in energy_buckets.items():
+        buckets[_energy_bucket(e.energy)] += 1
+    max_eng = max(buckets.values(), default=1)
+    tbl = _make_table("Energy Distribution", "Range")
+    for label, count in buckets.items():
         tbl.add_row(label, _bar(count, max_eng), str(count))
     console.print(tbl)
+
+
+def print_stats(entries: list[IndexEntry], console: Console) -> None:
+    """Print a Rich library overview to *console*."""
+    if not entries:
+        console.print("[yellow]No tracks in index.[/yellow]")
+        return
+    _print_summary(entries, console)
+    _print_bpm(entries, console)
+    _print_genres(entries, console)
+    _print_decades(entries, console)
+    _print_lengths(entries, console)
+    _print_artists(entries, console)
+    _print_keys(entries, console)
+    _print_modes(entries, console)
+    _print_energy(entries, console)

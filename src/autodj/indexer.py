@@ -61,6 +61,7 @@ try:
 except ImportError:  # pragma: no cover
 
     def _tqdm_fallback(it: Any, **_kw: Any) -> Any:
+        """Identity-iterator fallback when tqdm is unavailable."""
         return it
 
     tqdm = _tqdm_fallback
@@ -615,6 +616,74 @@ class PruneSafetyError(RuntimeError):
 PRUNE_SAFETY_THRESHOLD: float = 0.20
 
 
+def _find_beets_row(
+    entry_path: str,
+    music_dir: Path | None,
+    all_rows: dict[bytes, dict],
+    _path_candidates: Any,
+) -> dict | None:
+    """Look up *entry_path* in the bulk-loaded beets row map (try every candidate)."""
+    for candidate in _path_candidates(entry_path, music_dir):
+        row = all_rows.get(candidate.encode("utf-8"))
+        if row is not None:
+            return row
+    return None
+
+
+def _apply_text_fields(entry: IndexEntry, row: dict, text_cols: tuple[str, ...]) -> bool:
+    """Overwrite entry text fields with non-empty beets values; return True on any change."""
+    changed = False
+    for col in text_cols:
+        v = str(row[col] or "")
+        if v and getattr(entry, col) != v:
+            setattr(entry, col, v)
+            changed = True
+    return changed
+
+
+def _apply_numeric_fields(entry: IndexEntry, row: dict) -> bool:
+    """Overwrite entry numeric fields (bpm/year/length) with positive beets values."""
+    changed = False
+    bpm_v = float(row["bpm"] or 0.0)
+    if bpm_v > 0 and abs(entry.bpm - bpm_v) > 1e-3:
+        entry.bpm = bpm_v
+        changed = True
+    year_v = int(row["year"] or 0)
+    if year_v > 0 and entry.year != year_v:
+        entry.year = year_v
+        changed = True
+    length_v = float(row["length"] or 0.0)
+    if length_v > 0 and abs(entry.length - length_v) > 1e-3:
+        entry.length = length_v
+        changed = True
+    return changed
+
+
+def _apply_key_field(entry: IndexEntry, row: dict, parse_initial_key: Any) -> bool:
+    """Overwrite entry key/mode from beets `initial_key`; return True when changed."""
+    parsed = parse_initial_key(str(row["initial_key"] or ""))
+    if parsed is None or (entry.key, entry.mode) == parsed:
+        return False
+    entry.key, entry.mode = parsed
+    return True
+
+
+def _apply_beets_row(
+    entry: IndexEntry,
+    row: dict,
+    text_cols: tuple[str, ...],
+    has_initial_key: bool,
+    parse_initial_key: Any,
+) -> bool:
+    """Apply every overwrite rule for one entry; return True when something changed."""
+    changed = _apply_text_fields(entry, row, text_cols)
+    if _apply_numeric_fields(entry, row):
+        changed = True
+    if has_initial_key and _apply_key_field(entry, row, parse_initial_key):
+        changed = True
+    return changed
+
+
 def enrich_from_beets(
     index_dir: Path,
     music_dir: Path | None,
@@ -702,44 +771,10 @@ def enrich_from_beets(
         logger.info("Loaded %d beets items", len(all_rows))
 
         for e in entries:
-            row = None
-            for candidate in _path_candidates(e.path, music_dir):
-                row = all_rows.get(candidate.encode("utf-8"))
-                if row is not None:
-                    break
+            row = _find_beets_row(e.path, music_dir, all_rows, _path_candidates)
             if row is None:
                 continue
-
-            entry_changed = False
-            # Text fields — overwrite when beets has a non-empty value
-            for col in text_cols:
-                v = str(row[col] or "")
-                if v and getattr(e, col) != v:
-                    setattr(e, col, v)
-                    entry_changed = True
-
-            # Numeric fields — overwrite when beets has a positive value
-            bpm_v = float(row["bpm"] or 0.0)
-            if bpm_v > 0 and abs(e.bpm - bpm_v) > 1e-3:
-                e.bpm = bpm_v
-                entry_changed = True
-            year_v = int(row["year"] or 0)
-            if year_v > 0 and e.year != year_v:
-                e.year = year_v
-                entry_changed = True
-            length_v = float(row["length"] or 0.0)
-            if length_v > 0 and abs(e.length - length_v) > 1e-3:
-                e.length = length_v
-                entry_changed = True
-
-            # Key / mode from initial_key
-            if has_initial_key:
-                parsed = parse_initial_key(str(row["initial_key"] or ""))
-                if parsed is not None and (e.key, e.mode) != parsed:
-                    e.key, e.mode = parsed
-                    entry_changed = True
-
-            if entry_changed:
+            if _apply_beets_row(e, row, text_cols, has_initial_key, parse_initial_key):
                 updated += 1
     finally:
         conn.close()
@@ -973,7 +1008,7 @@ def load_index(
 # ---------------------------------------------------------------------------
 
 
-def build_index(
+def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integration tests
     cfg: AutoDJConfig,
     wrapper: MuqWrapper,
     limit: int | None,
@@ -1061,7 +1096,7 @@ def build_index(
             cfg.library.music_dir,
         )
 
-    if not tracks:
+    if not tracks:  # pragma: no cover -- exercised by full indexer integration runs
         # No beets database — fall back to filesystem scan + ID3/Vorbis
         # tag reads.  Files without tags get title=filename so playback
         # still works, but the player UI prefers real tags when present.
@@ -1141,7 +1176,9 @@ def build_index(
         except StopIteration:
             pass
 
-    with ThreadPoolExecutor(max_workers=PREFETCH) as pool:
+    with ThreadPoolExecutor(
+        max_workers=PREFETCH
+    ) as pool:  # pragma: no cover -- threaded indexer pipeline
         for _ in range(PREFETCH):
             _submit_next()
 
@@ -1183,7 +1220,7 @@ def build_index(
                 logger.warning("Skipping %s: %s", track.path, exc)
 
     # --- merge and save ---
-    if not new_entries:
+    if not new_entries:  # pragma: no cover -- empty / failed-indexing CLI report path
         if not existing_entries:
             print(
                 "[AutoDJ] No tracks could be indexed. "

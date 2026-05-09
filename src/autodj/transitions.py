@@ -30,6 +30,7 @@ input unchanged).  None raise on short / silent buffers.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from enum import StrEnum
 
 import numpy as np
@@ -1551,166 +1552,97 @@ def halftime(
 # ---------------------------------------------------------------------------
 
 
+def _noise_drop_extra(tail: np.ndarray, sample_rate: int) -> np.ndarray:
+    """Build the synthesised noise layer for ``NOISE_DROP``."""
+    if len(tail) == 0:
+        return np.zeros(0, dtype=np.float32)
+    rng = np.random.default_rng()
+    noise = rng.standard_normal(len(tail)).astype(np.float32) * 0.5
+    from autodj.player import apply_filter_sweep
+
+    swept = apply_filter_sweep(
+        noise, sample_rate, start_hz=16000, end_hz=150, filter_type="lowpass"
+    )
+    env = np.linspace(0.4, 0.0, len(tail), dtype=np.float32)
+    return (swept * env).astype(np.float32)
+
+
+def _forward_spin_tail(tail: np.ndarray) -> np.ndarray:
+    """Cubic-ease-in resample of *tail* (mirror of backspin)."""
+    n = len(tail)
+    if n < 4:
+        return tail
+    t = np.linspace(0.0, 1.0, n, dtype=np.float32)
+    rate = (1.0 + (t**3) * 1.5).astype(np.float32)
+    pos = np.cumsum(rate)
+    if pos[-1] > 0:
+        pos = pos * ((n - 1) / pos[-1])
+    idx = pos.astype(np.int32)
+    np.clip(idx, 0, n - 1, out=idx)
+    return tail[idx].astype(np.float32)
+
+
+# Effects whose only side effect is to transform the OUTGOING tail.
+_TAIL_EFFECTS: dict[TransitionFx, Callable[[np.ndarray, int], np.ndarray]] = {
+    TransitionFx.ECHO_OUT: echo_out,
+    TransitionFx.REVERB_TAIL: reverb_tail,
+    TransitionFx.LOWPASS_SWEEP: lowpass_sweep,
+    TransitionFx.TAPE_STOP: tape_stop,
+    TransitionFx.BITCRUSHER: bitcrusher,
+    TransitionFx.FLANGER: flanger,
+    TransitionFx.PITCH_SWELL: pitch_swell,
+    TransitionFx.PITCH_FALL: pitch_fall,
+    TransitionFx.TELEPHONE: telephone,
+    TransitionFx.CHORUS: chorus,
+    TransitionFx.SUBMERGE: submerge,
+    TransitionFx.VINYL_WOW: vinyl_wow,
+    TransitionFx.FREEZE: freeze,
+    TransitionFx.GLITCH: glitch,
+    TransitionFx.SCRATCH: scratch,
+    TransitionFx.BEAT_REPEAT: beat_repeat,
+    TransitionFx.SIDECHAIN_PUMP: sidechain_pump,
+    TransitionFx.REVERSE_REVERB: reverse_reverb,
+    TransitionFx.AIR_HORN: air_horn,
+    TransitionFx.VINYL_REWIND: vinyl_rewind,
+    TransitionFx.TRANSFORMER: transformer,
+    TransitionFx.DUB_SIREN: dub_siren,
+    TransitionFx.STUTTER_BUILD: stutter_build,
+    TransitionFx.WOW_FLUTTER: wow_flutter,
+    TransitionFx.PHASER: phaser,
+    TransitionFx.RING_MODULATOR: ring_modulator,
+    TransitionFx.DUB_DELAY: dub_delay,
+    TransitionFx.HALFTIME: halftime,
+    TransitionFx.GATE_STUTTER: gate_stutter,
+    TransitionFx.BACKSPIN: backspin,
+}
+
+
 def apply_transition(
     tail: np.ndarray,
     head: np.ndarray,
     sample_rate: int,
     effect: TransitionFx,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Apply *effect* to the (tail, head) overlap and return processed buffers.
-
-    Returns a tuple ``(tail_out, head_out, extra_layer)`` where
-    *extra_layer* is summed on top of the crossfade output (used by
-    :func:`noise_riser`; zero-length array for every other effect).
-
-    Unknown / NONE effect = passthrough.
-
-    Args:
-        tail: Outgoing-track overlap (last *N* samples of audio_a).
-        head: Incoming-track overlap (first *N* samples of audio_b).
-        sample_rate: Sample rate in Hz.
-        effect: Which transition to apply.
-
-    Returns:
-        ``(tail_out, head_out, extra_layer)`` ready to feed into the
-        amplitude crossfade.
-    """
-    n = len(tail)
+    """Apply *effect* to the (tail, head) overlap and return processed buffers."""
     empty_extra = np.zeros(0, dtype=np.float32)
-
     if effect == TransitionFx.NONE:
         return tail, head, empty_extra
 
-    if effect == TransitionFx.ECHO_OUT:
-        return echo_out(tail, sample_rate), head, empty_extra
-
-    if effect == TransitionFx.REVERB_TAIL:
-        return reverb_tail(tail, sample_rate), head, empty_extra
+    fn = _TAIL_EFFECTS.get(effect)
+    if fn is not None:
+        return fn(tail, sample_rate), head, empty_extra
 
     if effect == TransitionFx.HIGHPASS_SWEEP:
         return tail, highpass_sweep(head, sample_rate), empty_extra
-
-    if effect == TransitionFx.LOWPASS_SWEEP:
-        return lowpass_sweep(tail, sample_rate), head, empty_extra
-
-    if effect == TransitionFx.TAPE_STOP:
-        return tape_stop(tail, sample_rate), head, empty_extra
-
-    if effect == TransitionFx.BITCRUSHER:
-        return bitcrusher(tail, sample_rate), head, empty_extra
-
-    if effect == TransitionFx.FLANGER:
-        return flanger(tail, sample_rate), head, empty_extra
-
-    if effect == TransitionFx.PITCH_SWELL:
-        return pitch_swell(tail, sample_rate), head, empty_extra
-
-    if effect == TransitionFx.PITCH_FALL:
-        return pitch_fall(tail, sample_rate), head, empty_extra
-
-    if effect == TransitionFx.TELEPHONE:
-        return telephone(tail, sample_rate), head, empty_extra
-
-    if effect == TransitionFx.CHORUS:
-        return chorus(tail, sample_rate), head, empty_extra
-
-    if effect == TransitionFx.SUBMERGE:
-        return submerge(tail, sample_rate), head, empty_extra
-
-    if effect == TransitionFx.VINYL_WOW:
-        return vinyl_wow(tail, sample_rate), head, empty_extra
-
-    if effect == TransitionFx.FREEZE:
-        return freeze(tail, sample_rate), head, empty_extra
-
-    if effect == TransitionFx.GLITCH:
-        return glitch(tail, sample_rate), head, empty_extra
-
-    if effect == TransitionFx.SCRATCH:
-        return scratch(tail, sample_rate), head, empty_extra
-
-    if effect == TransitionFx.BEAT_REPEAT:
-        return beat_repeat(tail, sample_rate), head, empty_extra
-
-    if effect == TransitionFx.SIDECHAIN_PUMP:
-        return sidechain_pump(tail, sample_rate), head, empty_extra
-
-    if effect == TransitionFx.REVERSE_REVERB:
-        return reverse_reverb(tail, sample_rate), head, empty_extra
-
-    if effect == TransitionFx.AIR_HORN:
-        return air_horn(tail, sample_rate), head, empty_extra
-
-    if effect == TransitionFx.VINYL_REWIND:
-        return vinyl_rewind(tail, sample_rate), head, empty_extra
-
-    if effect == TransitionFx.TRANSFORMER:
-        return transformer(tail, sample_rate), head, empty_extra
-
-    if effect == TransitionFx.DUB_SIREN:
-        return dub_siren(tail, sample_rate), head, empty_extra
-
-    if effect == TransitionFx.STUTTER_BUILD:
-        return stutter_build(tail, sample_rate), head, empty_extra
-
-    if effect == TransitionFx.WOW_FLUTTER:
-        return wow_flutter(tail, sample_rate), head, empty_extra
-
-    if effect == TransitionFx.PHASER:
-        return phaser(tail, sample_rate), head, empty_extra
-
-    if effect == TransitionFx.RING_MODULATOR:
-        return ring_modulator(tail, sample_rate), head, empty_extra
-
-    if effect == TransitionFx.DUB_DELAY:
-        return dub_delay(tail, sample_rate), head, empty_extra
-
-    if effect == TransitionFx.HALFTIME:
-        return halftime(tail, sample_rate), head, empty_extra
-
     if effect == TransitionFx.NOISE_DROP:
-        # Synthesised noise that crests at the start and falls/dimms.
-        if len(tail) == 0:
-            return tail, head, empty_extra
-        rng = np.random.default_rng()
-        noise = rng.standard_normal(len(tail)).astype(np.float32) * 0.5
-        from autodj.player import apply_filter_sweep
-
-        swept = apply_filter_sweep(
-            noise, sample_rate, start_hz=16000, end_hz=150, filter_type="lowpass"
-        )
-        env = np.linspace(0.4, 0.0, len(tail), dtype=np.float32)
-        return tail, head, (swept * env).astype(np.float32)
-
+        return tail, head, _noise_drop_extra(tail, sample_rate)
     if effect == TransitionFx.FORWARD_SPIN:
-        # Forward-spin = accelerating playback into the cut.  Mirror of
-        # backspin (which uses reversed read).  Simple resampling with
-        # cubic-ease-in rate from 1.0 → 2.5.
-        n = len(tail)
-        if n < 4:
-            return tail, head, empty_extra
-        t = np.linspace(0.0, 1.0, n, dtype=np.float32)
-        rate = (1.0 + (t**3) * 1.5).astype(np.float32)
-        pos = np.cumsum(rate)
-        if pos[-1] > 0:
-            pos = pos * ((n - 1) / pos[-1])
-        idx = pos.astype(np.int32)
-        np.clip(idx, 0, n - 1, out=idx)
-        return tail[idx].astype(np.float32), head, empty_extra
-
-    if effect == TransitionFx.GATE_STUTTER:
-        return gate_stutter(tail, sample_rate), head, empty_extra
-
-    if effect == TransitionFx.BACKSPIN:
-        return backspin(tail, sample_rate), head, empty_extra
-
+        return _forward_spin_tail(tail), head, empty_extra
     if effect == TransitionFx.NOISE_RISER:
-        return tail, head, noise_riser(n, sample_rate)
-
+        return tail, head, noise_riser(len(tail), sample_rate)
     if effect == TransitionFx.CROSS_EQ_SWAP:
         t, h = cross_eq_swap(tail, head, sample_rate)
         return t, h, empty_extra
-
     return tail, head, empty_extra
 
 
