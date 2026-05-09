@@ -493,6 +493,12 @@ class PlayerState:
     next_track: IndexEntry | None = None
     queued_next: IndexEntry | None = None  # set by web UI "play next/now"
     queue: list[IndexEntry] = field(default_factory=list)  # web UI ordered queue
+    # Track that was playing when the user first added to the queue.
+    # Used only when [playback] post_queue_seed = "pre_queue" to seed
+    # similarity after the queue drains.  Cleared when the queue
+    # empties through advance or when manually emptied via remove /
+    # reorder.
+    pre_queue_seed: IndexEntry | None = None
     is_paused: bool = False
     should_stop: bool = False
     no_repeat_window: int = 500

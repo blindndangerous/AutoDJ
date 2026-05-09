@@ -85,6 +85,7 @@ def _make_player_mock(entry: IndexEntry | None = None) -> MagicMock:
     cfg.playback.fade_in_seconds = 3.0
     cfg.playback.crossfade_eq_duck = False
     cfg.playback.transition_mode = "full_intro_outro"
+    cfg.playback.post_queue_seed = "last_queued"
     cfg.playback.key_notation = "camelot"
     cfg.playback.key_prefer_flats = False
     cfg.playback.show_lyrics = True

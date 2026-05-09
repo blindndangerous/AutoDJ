@@ -36,7 +36,7 @@ export function applySettingsState(st, els) {
     pbReplayGain,
     pbDaypart, pbMoodArc, pbMoodArcHours, pbImportCues,
     pbBeatSyncFx, pbKeySyncFx, pbBeatmatchSkip,
-    pbTransitionMode, pbCrossfade, pbFadeIn,
+    pbTransitionMode, pbPostQueueSeed, pbCrossfade, pbFadeIn,
     keyNotation, keyPreferFlats,
     bpmLo, bpmHi,
     discEnabled, discEvery,
@@ -124,6 +124,10 @@ export function applySettingsState(st, els) {
   if (st.playback && st.playback.transition_mode &&
       document.activeElement !== pbTransitionMode) {
     pbTransitionMode.value = st.playback.transition_mode;
+  }
+  if (pbPostQueueSeed && st.playback && st.playback.post_queue_seed &&
+      document.activeElement !== pbPostQueueSeed) {
+    pbPostQueueSeed.value = st.playback.post_queue_seed;
   }
   if (st.playback && document.activeElement !== pbCrossfade) {
     pbCrossfade.value = st.playback.crossfade_seconds;

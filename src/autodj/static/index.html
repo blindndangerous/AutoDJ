@@ -588,6 +588,17 @@
       </span>
 
       <div class="settings-row">
+        <label for="pb-post-queue-seed">After queue empties, seed from</label>
+        <select id="pb-post-queue-seed" aria-describedby="pb-post-queue-seed-desc">
+          <option value="last_queued">Last queued track</option>
+          <option value="pre_queue">Track playing before queue</option>
+        </select>
+      </div>
+      <span class="setting-desc" id="pb-post-queue-seed-desc">
+        When a manual queue plays out, where similarity picks resume.  <em>Last queued track</em> (default) treats your queue as steering: the auto-DJ continues in the new direction.  <em>Track playing before queue</em> rewinds and seeds from whatever was playing when you first added to the queue, so the queue acts as a detour.
+      </span>
+
+      <div class="settings-row">
         <label for="key-notation">Key notation</label>
         <select id="key-notation" aria-describedby="key-notation-desc">
           <option value="camelot">Camelot (8A / 8B)</option>
