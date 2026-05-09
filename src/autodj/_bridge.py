@@ -223,8 +223,24 @@ class PlayerBridge:
         # Refresh next_track for the browser's prefetcher.  Failure here
         # leaves current_track set but next_track empty -- browser will
         # show "no upcoming track" and the user can advance again.
+        # Post-queue seed selection: when the user-built queue just
+        # emptied AND post_queue_seed = "pre_queue", seed similarity
+        # from the track that was playing before the queue took over so
+        # the auto-DJ rejoins the original direction.  Otherwise we use
+        # the just-played track as the seed (= "last_queued" mode), the
+        # default.
+        seed_for_next = nxt
+        cfg_pb = getattr(p._cfg, "playback", None)
+        seed_mode = getattr(cfg_pb, "post_queue_seed", "last_queued") if cfg_pb else "last_queued"
+        queue_just_emptied = (
+            not state.queue and state.queued_next is None and state.pre_queue_seed is not None
+        )
+        if queue_just_emptied:
+            if seed_mode == "pre_queue":
+                seed_for_next = state.pre_queue_seed
+            state.pre_queue_seed = None
         try:
-            state.next_track = p._pick_next(nxt)
+            state.next_track = p._pick_next(seed_for_next)
         except Exception:
             # Browser will see "no upcoming track" until the next advance
             # rebuilds it.  Warning so the default INFO floor surfaces
@@ -625,6 +641,49 @@ class PlayerBridge:
     # Queue control
     # ------------------------------------------------------------------
 
+    def _capture_pre_queue_seed(self) -> None:
+        """Capture the currently playing track as the pre-queue seed.
+
+        Only fires when post_queue_seed mode is ``pre_queue`` and the
+        queue is otherwise empty -- callers should invoke this BEFORE
+        adding the new item so we record the song the user diverted
+        from, not the queued track itself.
+        """
+        cfg_pb = getattr(self.player._cfg, "playback", None)
+        mode = getattr(cfg_pb, "post_queue_seed", "last_queued") if cfg_pb else "last_queued"
+        if mode != "pre_queue":
+            return
+        state = self.player._state
+        if state.pre_queue_seed is not None:
+            return  # already captured; don't overwrite
+        if state.queue or state.queued_next is not None:
+            return  # mid-queue mutation; the original capture still applies
+        if state.current_track is not None:
+            state.pre_queue_seed = state.current_track
+
+    def _sync_next_for_prefetch(self) -> None:
+        """Make ``state.next_track`` reflect what advance_now will pick.
+
+        Without this, queue mutations leave the browser prefetching the
+        pre-queue similarity pick (computed when the previous track
+        started) so the crossfade lands on the wrong audio.
+        """
+        state = self.player._state
+        if state.queued_next is not None:
+            state.next_track = state.queued_next
+            return
+        if state.queue:
+            state.next_track = state.queue[0]
+            return
+        cur = state.current_track
+        if cur is None:
+            state.next_track = None
+            return
+        try:
+            state.next_track = self.player._pick_next(cur)
+        except Exception:
+            logger.debug("_sync_next_for_prefetch: _pick_next failed", exc_info=True)
+
     def play_next(self, path: str, now: bool = False) -> bool:
         """Queue a track by path to play after the current one.
 
@@ -643,7 +702,9 @@ class PlayerBridge:
         )
         if entry is None:
             return False
+        self._capture_pre_queue_seed()
         self.player._state.queued_next = entry
+        self._sync_next_for_prefetch()
         if now:
             self.skip()
         return True
@@ -678,15 +739,21 @@ class PlayerBridge:
         )
         if entry is None:
             return False
+        self._capture_pre_queue_seed()
         self.player._state.queue.append(entry)
+        self._sync_next_for_prefetch()
         return True
 
     def queue_remove(self, path: str) -> bool:
         """Remove the first matching path from the queue."""
-        q = self.player._state.queue
+        state = self.player._state
+        q = state.queue
         for i, e in enumerate(q):
             if e.path == path:
                 del q[i]
+                if not q and state.queued_next is None:
+                    state.pre_queue_seed = None
+                self._sync_next_for_prefetch()
                 return True
         return False
 
@@ -697,12 +764,16 @@ class PlayerBridge:
         Paths not found in the current queue are ignored (re-add via
         :meth:`queue_add`).
         """
-        q = self.player._state.queue
+        state = self.player._state
+        q = state.queue
         by_path = {e.path: e for e in q}
         new_q = [by_path[p] for p in paths if p in by_path]
         # Replace contents in place so any concurrent reads see consistent state
         q.clear()
         q.extend(new_q)
+        if not q and state.queued_next is None:
+            state.pre_queue_seed = None
+        self._sync_next_for_prefetch()
         return True
 
     # ------------------------------------------------------------------
@@ -817,6 +888,11 @@ class PlayerBridge:
                 "anchor_to_seed": getattr(p, "_anchor_to_seed", False),
                 "replaygain_enabled": cfg.replaygain.enabled,
                 "transition_mode": cfg.playback.transition_mode,
+                "post_queue_seed": getattr(
+                    cfg.playback,
+                    "post_queue_seed",
+                    "last_queued",
+                ),
                 "key_notation": getattr(cfg.playback, "key_notation", "camelot"),
                 "key_prefer_flats": bool(
                     getattr(cfg.playback, "key_prefer_flats", False),
@@ -957,6 +1033,7 @@ class PlayerBridge:
         liners_random_max_minutes: float | None = None,
         liners_pick_mode: str | None = None,
         liners_duck_db: float | None = None,
+        post_queue_seed: str | None = None,
     ) -> None:
         """Apply playback-related settings; only non-null fields take effect."""
         cfg = self.player._cfg
@@ -990,6 +1067,17 @@ class PlayerBridge:
             cfg.playback.transition_mode = _validate_transition_mode(
                 str(transition_mode),
             )
+        if post_queue_seed is not None:
+            from autodj.config import _validate_post_queue_seed
+
+            cfg.playback.post_queue_seed = _validate_post_queue_seed(
+                str(post_queue_seed),
+            )
+            # Switching out of pre_queue mode mid-queue invalidates any
+            # pending seed capture; clear so we don't redirect on next
+            # drain.
+            if cfg.playback.post_queue_seed != "pre_queue":
+                self.player._state.pre_queue_seed = None
         if key_notation is not None:
             from autodj.config import _validate_key_notation
 

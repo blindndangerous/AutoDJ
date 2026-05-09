@@ -1396,6 +1396,112 @@ class TestQueueEndpoints:
         assert bridge.player._state.queue[0].path == e1.path
 
 
+class TestQueueSyncsPrefetch:
+    """Queue mutations must update state.next_track so the browser
+    prefetcher loads the queued audio rather than the stale similarity
+    pick computed when the previous track started."""
+
+    def test_queue_add_overrides_next_track(self, bridge) -> None:
+        from fastapi.testclient import TestClient
+
+        prev_next = _make_entry(900)
+        bridge.player._state.next_track = prev_next
+        bridge.player._pick_next.return_value = _make_entry(901)
+        target = bridge.sim.entries[2]
+        tc = TestClient(create_app(bridge))
+        tc.post("/api/queue/add", json={"path": target.path})
+        assert bridge.player._state.next_track.path == target.path
+
+    def test_play_next_overrides_next_track(self, bridge) -> None:
+        from fastapi.testclient import TestClient
+
+        prev_next = _make_entry(800)
+        bridge.player._state.next_track = prev_next
+        target = bridge.sim.entries[1]
+        tc = TestClient(create_app(bridge))
+        tc.post("/api/play-next", json={"path": target.path, "now": False})
+        assert bridge.player._state.next_track.path == target.path
+
+    def test_queue_remove_resyncs_next_track(self, bridge) -> None:
+        from fastapi.testclient import TestClient
+
+        e0, e1 = bridge.sim.entries[:2]
+        bridge.player._state.queue.extend([e0, e1])
+        bridge.player._state.next_track = e0
+        bridge.player._pick_next.return_value = _make_entry(7)
+        tc = TestClient(create_app(bridge))
+        tc.post("/api/queue/remove", json={"path": e0.path})
+        # Head of queue is now e1 -> prefetch should follow.
+        assert bridge.player._state.next_track.path == e1.path
+
+    def test_queue_reorder_resyncs_next_track(self, bridge) -> None:
+        from fastapi.testclient import TestClient
+
+        e0, e1, e2 = bridge.sim.entries[:3]
+        bridge.player._state.queue.extend([e0, e1, e2])
+        bridge.player._state.next_track = e0
+        tc = TestClient(create_app(bridge))
+        tc.post("/api/queue/reorder", json={"paths": [e2.path, e1.path]})
+        assert bridge.player._state.next_track.path == e2.path
+
+
+class TestPostQueueSeed:
+    """post_queue_seed config controls what `_pick_next` seeds from
+    after a user-built queue empties."""
+
+    def test_default_last_queued_uses_just_played(self, bridge) -> None:
+        bridge.player._dry_run = True
+        bridge.player._export_m3u = None
+        bridge.player._history_file = None
+        bridge.player._cfg.playback.post_queue_seed = "last_queued"
+        last_queued = _make_entry(50)
+        bridge.player._state.queue.append(last_queued)
+        bridge.player._pick_next.return_value = _make_entry(99)
+        bridge.advance_now()
+        # _pick_next called for prefetch refresh after pop -> seed = nxt
+        # (the just-played queued track), not pre_queue_seed (which is
+        # None in last_queued mode).
+        bridge.player._pick_next.assert_called_with(last_queued)
+
+    def test_pre_queue_mode_rewinds_to_pre_queue_track(self, bridge) -> None:
+        bridge.player._dry_run = True
+        bridge.player._export_m3u = None
+        bridge.player._history_file = None
+        bridge.player._cfg.playback.post_queue_seed = "pre_queue"
+        # Simulate the user adding a track while track A is playing.
+        pre_queue = bridge.player._state.current_track
+        target = bridge.sim.entries[2]
+        bridge.queue_add(target.path)
+        assert bridge.player._state.pre_queue_seed is pre_queue
+        bridge.player._pick_next.return_value = _make_entry(99)
+        bridge.advance_now()
+        # Queue drained -> _pick_next seed should be pre_queue, not target.
+        bridge.player._pick_next.assert_called_with(pre_queue)
+        assert bridge.player._state.pre_queue_seed is None
+
+    def test_pre_queue_seed_cleared_when_queue_manually_emptied(self, bridge) -> None:
+        bridge.player._cfg.playback.post_queue_seed = "pre_queue"
+        target = bridge.sim.entries[2]
+        bridge.queue_add(target.path)
+        assert bridge.player._state.pre_queue_seed is not None
+        bridge.queue_remove(target.path)
+        assert bridge.player._state.pre_queue_seed is None
+
+    def test_switching_out_of_pre_queue_clears_capture(self, bridge) -> None:
+        bridge.player._cfg.playback.post_queue_seed = "pre_queue"
+        target = bridge.sim.entries[2]
+        bridge.queue_add(target.path)
+        assert bridge.player._state.pre_queue_seed is not None
+        bridge.set_playback_settings(post_queue_seed="last_queued")
+        assert bridge.player._state.pre_queue_seed is None
+
+    def test_set_playback_settings_validates_post_queue_seed(self, bridge) -> None:
+        import pytest
+
+        with pytest.raises(ValueError):
+            bridge.set_playback_settings(post_queue_seed="garbage")
+
+
 # ---------------------------------------------------------------------------
 # Reseed random + advance + lyrics
 # ---------------------------------------------------------------------------

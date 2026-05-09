@@ -188,6 +188,24 @@ def _validate_key_notation(value: str) -> str:
     return value
 
 
+POST_QUEUE_SEED_MODES = ("last_queued", "pre_queue")
+
+
+def _validate_post_queue_seed(value: str) -> str:
+    """Return *value* unchanged if known, else raise.
+
+    ``last_queued`` (default) seeds similarity from the final queued
+    track once the queue empties.  ``pre_queue`` rewinds and seeds
+    from the track that was playing when the queue was first added,
+    so the queue acts as a detour.
+    """
+    if value not in POST_QUEUE_SEED_MODES:
+        raise ValueError(
+            f"playback.post_queue_seed must be one of {POST_QUEUE_SEED_MODES}, got {value!r}",
+        )
+    return value
+
+
 def _validate_transition_mode(value: str) -> str:
     """Return *value* unchanged if it is a known transition mode, else raise.
 
@@ -256,6 +274,12 @@ class PlaybackConfig:
     #   - "fixed": legacy behaviour — fixed crossfade_seconds at the
     #     end of the outgoing track.  No marker alignment.
     transition_mode: str = "full_intro_outro"
+    # Where the similarity engine seeds from after a user-built queue
+    # empties.  "last_queued" (default) continues from the final queued
+    # track -- the user steered the set, the auto-DJ follows.
+    # "pre_queue" rewinds and seeds from the track that was playing
+    # when the queue was first added, treating the queue as a detour.
+    post_queue_seed: str = "last_queued"
     # Display notation for the current track's key in the now-playing
     # badge + advance log.  Either "camelot" (Mixed In Key wheel labels
     # like 8A / 8B) or "musical" (letter names: C, Am, F#m).  Camelot
@@ -384,6 +408,9 @@ class PlaybackConfig:
             crossfade_bass_cutoff_hz=float(data.get("crossfade_bass_cutoff_hz", 180.0)),
             transition_mode=_validate_transition_mode(
                 str(data.get("transition_mode", "full_intro_outro")),
+            ),
+            post_queue_seed=_validate_post_queue_seed(
+                str(data.get("post_queue_seed", "last_queued")),
             ),
             key_notation=_validate_key_notation(
                 str(data.get("key_notation", "camelot")),

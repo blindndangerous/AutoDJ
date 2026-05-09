@@ -95,6 +95,7 @@ class ProfileSnapshot:
     bpm_hi: float | None = None
     harmonic_mode: str | None = None
     transition_mode: str | None = None
+    post_queue_seed: str | None = None
     beat_sync_fx: bool | None = None
     key_sync_fx: bool | None = None
     beatmatch_on_skip: bool | None = None

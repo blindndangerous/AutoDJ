@@ -138,6 +138,7 @@ class ProfileSaveBody(BaseModel):
     bpm_hi: float | None = None
     harmonic_mode: str | None = None
     transition_mode: str | None = None
+    post_queue_seed: str | None = None
     beat_sync_fx: bool | None = None
     key_sync_fx: bool | None = None
     beatmatch_on_skip: bool | None = None
@@ -229,6 +230,7 @@ class PlaybackSettingsBody(BaseModel):
     anchor_to_seed: bool | None = None
     replaygain_enabled: bool | None = None
     transition_mode: str | None = None
+    post_queue_seed: str | None = None
     key_notation: str | None = None
     key_prefer_flats: bool | None = None
     show_lyrics: bool | None = None
@@ -549,6 +551,7 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
         kw: dict = {}
         for fld in (
             "transition_mode",
+            "post_queue_seed",
             "beat_sync_fx",
             "key_sync_fx",
             "beatmatch_on_skip",

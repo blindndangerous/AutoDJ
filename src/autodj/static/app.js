@@ -78,6 +78,7 @@ const pbBeatSyncFx    = document.getElementById("pb-beat-sync-fx");
 const pbKeySyncFx     = document.getElementById("pb-key-sync-fx");
 const pbBeatmatchSkip = document.getElementById("pb-beatmatch-on-skip");
 const pbTransitionMode = document.getElementById("pb-transition-mode");
+const pbPostQueueSeed  = document.getElementById("pb-post-queue-seed");
 const pbCrossfade     = document.getElementById("pb-crossfade");
 const pbFadeIn        = document.getElementById("pb-fade-in");
 const keyNotation     = document.getElementById("key-notation");
@@ -154,7 +155,7 @@ function applyState(s) {
     // Push to history (skip duplicates at top)
     if (trackKey && historyItems[0] !== trackLabel) {
       historyItems.unshift(trackLabel);
-      if (historyItems.length > 20) historyItems.pop();
+      if (historyItems.length > 5) historyItems.pop();
       renderHistory();
     }
   }
@@ -342,7 +343,7 @@ const _settingsEls = () => ({
   pbReplayGain,
   pbDaypart, pbMoodArc, pbMoodArcHours, pbImportCues,
   pbBeatSyncFx, pbKeySyncFx, pbBeatmatchSkip,
-  pbTransitionMode, pbCrossfade, pbFadeIn,
+  pbTransitionMode, pbPostQueueSeed, pbCrossfade, pbFadeIn,
   keyNotation, keyPreferFlats,
   bpmLo, bpmHi,
   discEnabled, discEvery,
@@ -445,6 +446,11 @@ pbReplayGain.addEventListener("change", () => {
 pbTransitionMode.addEventListener("change", () => {
   postSettings("/api/playback-settings", { transition_mode: pbTransitionMode.value });
 });
+if (pbPostQueueSeed) {
+  pbPostQueueSeed.addEventListener("change", () => {
+    postSettings("/api/playback-settings", { post_queue_seed: pbPostQueueSeed.value });
+  });
+}
 keyNotation.addEventListener("change", () => {
   postSettings("/api/playback-settings", { key_notation: keyNotation.value });
   // Polite live-region announce so screen-reader users hear the
