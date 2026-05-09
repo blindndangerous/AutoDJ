@@ -5,3 +5,7 @@
 #   [[IgnoredVulns]]
 #   id = "GHSA-xxxx-xxxx-xxxx"
 #   reason = "dev-only; not shipped in runtime"
+
+[[IgnoredVulns]]
+id = "PYSEC-2022-42969"
+reason = "py 1.11.0 ReDoS in error reporting; transitive via xenon -> radon, test-tool only, no fix upstream"
