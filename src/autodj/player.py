@@ -1011,6 +1011,89 @@ class Player:
             self._skip_event.wait(timeout=1.0)
             self._skip_event.clear()
 
+    def _pop_user_queue(self) -> IndexEntry | None:
+        """Pop a queued / drag-reorder track from state, or return None."""
+        if self._state.queued_next is not None:
+            entry = self._state.queued_next
+            self._state.queued_next = None
+            self._last_pick_mode = "queue"
+            logger.info("Playing queued track: %s", entry.display_name)
+            return entry
+        if self._state.queue:
+            entry = self._state.queue.pop(0)
+            self._last_pick_mode = "queue"
+            logger.info("Playing from queue: %s", entry.display_name)
+            return entry
+        return None
+
+    def _pick_pure_shuffle(self) -> IndexEntry:
+        """Random pick from the non-recent pool (or full library on collapse)."""
+        import random as _rnd
+
+        excluded = set(self._state.recently_played)
+        pool = [e for e in self._sim.entries if e.path not in excluded]
+        if not pool:
+            pool = list(self._sim.entries)
+        self._last_pick_mode = "pure_shuffle"
+        return _rnd.choice(pool)  # nosec B311 -- non-security
+
+    def _try_discovery(self, current: IndexEntry) -> IndexEntry | None:
+        """Discovery injection when rate is set, toggle ON, and tn aligns."""
+        from autodj.similarity import SimilarityError
+
+        tn = self._state.track_number
+        if not (
+            self._discovery_every is not None
+            and self._state.discovery_enabled
+            and tn > 0
+            and tn % self._discovery_every == 0
+        ):
+            return None
+        try:
+            entry = self._sim.find_distant(current.path, self._state.recently_played)
+            _CONSOLE.print("  [bold cyan]◈ Discovery track[/bold cyan]")
+            self._last_pick_mode = "discovery"
+            return entry
+        except SimilarityError:
+            return None
+
+    def _resolve_bpm_target(self) -> tuple[float | None, float, float | None]:
+        """Pick the active BPM/energy target (preset > mood arc > daypart)."""
+        target_energy = self._target_energy
+        if self._preset is not None:
+            return (
+                self._preset.target_bpm(self._state.track_number),
+                self._preset.bpm_weight,
+                target_energy,
+            )
+        if getattr(self._cfg.playback, "enable_mood_arc", False) and self._mood_arc:
+            from autodj.mood_arc import current_arc_target
+
+            target = current_arc_target(self._mood_arc)
+            return (
+                target.target_bpm,
+                target.bpm_weight,
+                target.target_energy if target_energy is None else target_energy,
+            )
+        if getattr(self._cfg.playback, "enable_daypart", False):
+            from autodj.daypart import current_daypart
+
+            dp = current_daypart()
+            return (
+                dp.target_bpm,
+                dp.bpm_weight,
+                dp.target_energy if target_energy is None else target_energy,
+            )
+        return (None, 0.2, target_energy)
+
+    def _resolve_query_path(self, current_path: str) -> str:
+        """Choose query path + record pick mode (anchor / smart-shuffle / similarity)."""
+        if self._anchor_to_seed and self._seed_path:
+            self._last_pick_mode = "anchored"
+            return self._seed_path
+        self._last_pick_mode = "smart_shuffle" if self._smart_shuffle else "similarity"
+        return current_path
+
     def _pick_next(self, current: IndexEntry) -> IndexEntry:
         """Select the next track by looking up the current track's stored vector.
 
@@ -1030,106 +1113,25 @@ class Player:
         Returns:
             The recommended next :class:`~autodj.indexer.IndexEntry`.
         """
-        if self._state.queued_next is not None:
-            entry = self._state.queued_next
-            self._state.queued_next = None
-            self._last_pick_mode = "queue"
-            logger.info("Playing queued track: %s", entry.display_name)
-            return entry
+        queued = self._pop_user_queue()
+        if queued is not None:
+            return queued
 
-        # Pop the front of the user-ordered queue (web UI drag-reorder)
-        if self._state.queue:
-            entry = self._state.queue.pop(0)
-            self._last_pick_mode = "queue"
-            logger.info("Playing from queue: %s", entry.display_name)
-            return entry
-
-        # Pure shuffle: random pick, ignore similarity entirely.  Avoid
-        # the recently-played window so we don't repeat ourselves.
         if self._pure_shuffle:
-            import random as _rnd
-
-            excluded = set(self._state.recently_played)
-            pool = [e for e in self._sim.entries if e.path not in excluded]
-            if not pool:
-                pool = list(self._sim.entries)
-            self._last_pick_mode = "pure_shuffle"
-            return _rnd.choice(pool)  # nosec B311 — non-security
+            return self._pick_pure_shuffle()
 
         from autodj.similarity import SimilarityError
 
-        tn = self._state.track_number
+        discovery = self._try_discovery(current)
+        if discovery is not None:
+            return discovery
 
-        # --- Discovery injection ---
-        # Fires when: rate is configured AND runtime toggle is ON AND not track 0
-        if (
-            self._discovery_every is not None
-            and self._state.discovery_enabled
-            and tn > 0
-            and tn % self._discovery_every == 0
-        ):
-            try:
-                entry = self._sim.find_distant(current.path, self._state.recently_played)
-                _CONSOLE.print("  [bold cyan]\u25c8 Discovery track[/bold cyan]")
-                self._last_pick_mode = "discovery"
-                return entry
-            except SimilarityError:
-                pass  # fall through to normal selection
-
-        # --- Compute BPM target ---
-        # Priority order:
-        #   1. Explicit user preset (set-relative ramp).
-        #   2. Mood arc (set-relative envelope, anchored to start).
-        #   3. Daypart (wall-clock, runs forever).
-        # The chosen target is fed straight into the similarity scorer
-        # alongside the existing energy/genre/key constraints.
-        target_bpm: float | None = None
-        bpm_weight: float = 0.2
-        target_energy = self._target_energy
-
-        if self._preset is not None:
-            target_bpm = self._preset.target_bpm(tn)
-            bpm_weight = self._preset.bpm_weight
-        elif getattr(self._cfg.playback, "enable_mood_arc", False) and self._mood_arc:
-            from autodj.mood_arc import current_arc_target
-
-            target = current_arc_target(self._mood_arc)
-            target_bpm = target.target_bpm
-            bpm_weight = target.bpm_weight
-            if target_energy is None:
-                target_energy = target.target_energy
-        elif getattr(self._cfg.playback, "enable_daypart", False):
-            from autodj.daypart import current_daypart
-
-            dp = current_daypart()
-            target_bpm = dp.target_bpm
-            bpm_weight = dp.bpm_weight
-            if target_energy is None:
-                target_energy = dp.target_energy
-
-        # Wider candidate pool than vanilla nearest-neighbour avoids
-        # falling into a 20-track sonic island.  50 with filter / 30
-        # without strikes a balance between cohesion and variety.
+        target_bpm, bpm_weight, target_energy = self._resolve_bpm_target()
         n_candidates = 50 if (target_bpm is not None or self._bpm_range is not None) else 30
-
-        # Genre filter from preset (None / [] = no filter)
         genre_filter = self._preset.genres if self._preset and self._preset.genres else None
         harmonic_only = self._cfg.djmix.harmonic_mixing
         harmonic_mode = getattr(self._cfg.djmix, "harmonic_mode", "compatible")
-
-        # Anchored mode: query similarity from the SEED, not the current
-        # track.  Lets the user lock in to a sonic neighbourhood — every
-        # next pick stays near the seed rather than drifting through
-        # repeated similarity hops.  Discovery still injects distant
-        # tracks when enabled.
-        query_path = current.path
-        if self._anchor_to_seed and self._seed_path:
-            query_path = self._seed_path
-            self._last_pick_mode = "anchored"
-        elif self._smart_shuffle:
-            self._last_pick_mode = "smart_shuffle"
-        else:
-            self._last_pick_mode = "similarity"
+        query_path = self._resolve_query_path(current.path)
 
         # --- Normal similarity search ---
         try:

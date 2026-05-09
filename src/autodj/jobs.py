@@ -75,28 +75,45 @@ class JobManager:
     # Control
     # ------------------------------------------------------------------
 
-    def start(self, name: str, args: list[str] | None = None) -> bool:
-        """Spawn ``autodj <name> [args]`` as a subprocess.
-
-        Args:
-            name: Subcommand name.  Must be in :attr:`_ALLOWED`.
-            args: Extra CLI arguments (already split into tokens).
-                Must NOT contain shell metacharacters — passed positionally.
-
-        Returns:
-            ``True`` if the job was started.  ``False`` when another job
-            is already running, when *name* is not allowed, or when args
-            contain a forbidden character.
-        """
+    def _validate_request(self, name: str, args: list[str] | None) -> bool:
+        """Reject disallowed subcommand names and shell-metachar arguments."""
         if name not in self._ALLOWED:
             logger.warning("Refused job: subcommand %r not allowed", name)
             return False
-        # Reject anything looking like shell metacharacters in the args —
-        # we use shell=False but defence-in-depth.
+        forbidden = {"&", "|", ";", "`", "\n", "\r"}
         for a in args or []:
-            if any(c in a for c in ("&", "|", ";", "`", "\n", "\r")):
+            if any(c in a for c in forbidden):
                 logger.warning("Refused job: forbidden char in arg %r", a)
                 return False
+        return True
+
+    def _spawn_proc(self, name: str, args: list[str]) -> bool:
+        """Start the subprocess; populate `_proc` or return False on failure."""
+        cmd = [sys.executable, "-m", "autodj", name, *args]
+        self._lines.append(f"[autodj-jobs] $ {' '.join(shlex.quote(c) for c in cmd)}")
+        try:
+            # nosec B603 -- `cmd` is built from a hard-coded subcommand
+            # allowlist + arg tokens already screened for shell metacharacters.
+            # shell=False so no shell parsing happens regardless.
+            self._proc = subprocess.Popen(  # nosec B603
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+        except (OSError, FileNotFoundError) as exc:
+            self._lines.append(f"[autodj-jobs] failed to spawn: {exc}")
+            self._exit_code = -1
+            self._finished_at = time.time()
+            self._proc = None
+            return False
+        return True
+
+    def start(self, name: str, args: list[str] | None = None) -> bool:
+        """Spawn ``autodj <name> [args]`` as a subprocess."""
+        if not self._validate_request(name, args):
+            return False
         with self._lock:
             if self._proc and self._proc.poll() is None:
                 return False
@@ -106,29 +123,8 @@ class JobManager:
             self._exit_code = None
             self._started_at = time.time()
             self._finished_at = None
-
-            cmd = [sys.executable, "-m", "autodj", name, *self._args]
-            self._lines.append(f"[autodj-jobs] $ {' '.join(shlex.quote(c) for c in cmd)}")
-            try:
-                # nosec B603 — `cmd` is fully constructed from a hard-coded
-                # subcommand allowlist plus arg tokens that have already
-                # been screened for shell metacharacters above.  shell=False
-                # so no shell parsing happens regardless.
-                self._proc = subprocess.Popen(  # nosec B603 — see comment above
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    bufsize=1,
-                )
-            except (OSError, FileNotFoundError) as exc:
-                self._lines.append(f"[autodj-jobs] failed to spawn: {exc}")
-                self._exit_code = -1
-                self._finished_at = time.time()
-                self._proc = None
+            if not self._spawn_proc(name, self._args):
                 return False
-
-        # Reader thread captures stdout lines into the ring buffer.
         self._thread = threading.Thread(
             target=self._read_loop,
             name=f"autodj-job-{name}",
