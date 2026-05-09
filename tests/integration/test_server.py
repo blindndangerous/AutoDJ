@@ -1983,6 +1983,75 @@ class TestReloadIndexFromDisk:
 
 
 # ---------------------------------------------------------------------------
+# /api/history
+# ---------------------------------------------------------------------------
+
+
+class TestHistoryEndpoint:
+    def _client_with_history(self, entries):
+        from fastapi.testclient import TestClient
+
+        from autodj.server import PlayerBridge, create_app
+        from tests.integration._helpers import _make_player_mock, _make_sim_mock
+
+        bridge = PlayerBridge(player=_make_player_mock(), sim=_make_sim_mock())
+        bridge._play_history = entries
+        return TestClient(create_app(bridge))
+
+    def test_empty_history(self, client) -> None:
+        data = client.get("/api/history").json()
+        assert data["total"] == 0
+        assert data["items"] == []
+        assert data["page"] == 1
+        assert data["pages"] == 1
+
+    def test_populated_history_most_recent_first(self) -> None:
+        entries = [
+            {
+                "title": "A",
+                "artist": "X",
+                "duration": 180.0,
+                "played_at": "2026-01-01T00:00:00+00:00",
+            },
+            {
+                "title": "B",
+                "artist": "Y",
+                "duration": 200.0,
+                "played_at": "2026-01-01T00:01:00+00:00",
+            },
+        ]
+        c = self._client_with_history(entries)
+        data = c.get("/api/history").json()
+        assert data["total"] == 2
+        assert data["items"][0]["title"] == "B"
+        assert data["items"][1]["title"] == "A"
+
+    def test_pagination_page_count(self) -> None:
+        entries = [
+            {"title": str(i), "artist": "", "duration": 0.0, "played_at": ""} for i in range(110)
+        ]
+        c = self._client_with_history(entries)
+        data = c.get("/api/history?page=1&per_page=50").json()
+        assert data["total"] == 110
+        assert data["pages"] == 3
+        assert len(data["items"]) == 50
+
+    def test_pagination_last_page(self) -> None:
+        entries = [
+            {"title": str(i), "artist": "", "duration": 0.0, "played_at": ""} for i in range(110)
+        ]
+        c = self._client_with_history(entries)
+        data = c.get("/api/history?page=3&per_page=50").json()
+        assert len(data["items"]) == 10
+
+    def test_page_clamps_to_valid_range(self) -> None:
+        entries = [{"title": "X", "artist": "", "duration": 0.0, "played_at": ""}]
+        c = self._client_with_history(entries)
+        data = c.get("/api/history?page=999").json()
+        assert data["page"] == 1
+
+
+# ---------------------------------------------------------------------------
 # Recently-added paths -- INFO advance banner, warning escalations, version
 # helper edge cases, PlayerBridge re-export sanity.  Kept in their own class
 # so the fixture seam is obvious.
