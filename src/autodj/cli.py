@@ -18,7 +18,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 # Force UTF-8 output on Windows (default terminal encoding is cp1252 which
 # cannot print Unicode box-drawing characters or em-dashes used in track names).
@@ -139,6 +139,113 @@ def _resolve_seed(
     except (click.Abort, EOFError):
         console_.print("[yellow]Cancelled — starting random.[/yellow]")
         return None
+
+
+def _apply_serve_overrides(
+    cfg: AutoDJConfig, kw: dict
+) -> None:  # pragma: no cover -- exercised by smoke tests
+    """Apply CLI overrides for ``serve`` onto *cfg* in place.
+
+    *kw* is the local mapping captured at the top of ``cmd_serve``;
+    every key matches a click option name.
+    """
+    djmix_keys = {
+        "harmonic_mixing": "harmonic_mixing",
+        "beatmatch": "beatmatch",
+        "phrase_align": "phrase_align",
+        "outro_intro_align": "outro_intro_align",
+        "filter_sweep": "filter_sweep",
+    }
+    playback_keys = {
+        "enable_daypart": "enable_daypart",
+        "enable_mood_arc": "enable_mood_arc",
+        "import_external_cues": "import_external_cues",
+        "beat_sync_fx": "beat_sync_fx",
+        "key_sync_fx": "key_sync_fx",
+        "show_lyrics": "show_lyrics",
+    }
+    for src_key, dst_key in djmix_keys.items():
+        if kw.get(src_key) is not None:
+            setattr(cfg.djmix, dst_key, kw[src_key])
+    for src_key, dst_key in playback_keys.items():
+        if kw.get(src_key) is not None:
+            setattr(cfg.playback, dst_key, kw[src_key])
+    if kw.get("mood_arc_hours") is not None:
+        cfg.playback.mood_arc_hours = max(0.25, float(kw["mood_arc_hours"]))
+    if kw.get("transition_fx") is not None:
+        cfg.transitions.effect = kw["transition_fx"]
+    if kw.get("transition_mode") is not None:
+        from autodj.config import _validate_transition_mode
+
+        try:
+            cfg.playback.transition_mode = _validate_transition_mode(kw["transition_mode"])
+        except ValueError as exc:
+            console.print(f"[bold red]Invalid --transition-mode:[/] {exc}")
+            sys.exit(1)
+
+
+def _print_serve_banner(
+    console_: Console,
+    *,
+    sim: SimilarityIndex,
+    resolved_preset: Any,
+    parsed_bpm_range: tuple[float, float] | None,
+    discovery_every: int | None,
+) -> None:  # pragma: no cover -- terminal banner
+    """Print the index summary + active preset / BPM / discovery banner."""
+    console_.print(
+        Panel(
+            f"[bold green]AutoDJ[/] — {sim.ntotal} tracks indexed",
+            expand=False,
+        )
+    )
+    if resolved_preset:
+        console_.print(f"  Preset     : {resolved_preset.name}")
+    if parsed_bpm_range:
+        console_.print(f"  BPM range  : {parsed_bpm_range[0]:.0f}–{parsed_bpm_range[1]:.0f}")
+    if discovery_every:
+        console_.print(f"  Discovery  : every {discovery_every} tracks")
+
+
+def _print_serve_url_banner(
+    console_: Console,
+    host: str,
+    port: int,
+    ssl_certfile: str | None,
+    ssl_keyfile: str | None,
+) -> str:  # pragma: no cover -- terminal banner
+    """Print the web-UI URL + reachability hint; return the URL."""
+    if (ssl_certfile and not ssl_keyfile) or (ssl_keyfile and not ssl_certfile):
+        console_.print(
+            "[bold red]TLS error:[/] --ssl-certfile and --ssl-keyfile must be supplied together.",
+        )
+        sys.exit(1)
+    scheme = "https" if (ssl_certfile and ssl_keyfile) else "http"
+    url = f"{scheme}://{host}:{port}"
+    console_.print(f"  Web UI  : [link={url}]{url}[/link]")
+    if scheme == "https":
+        console_.print(
+            "  [dim](TLS active — AudioWorklet effects work on remote hosts.  "
+            "Trust the certificate's CA on every listening device.)[/]",
+        )
+    if host in ("127.0.0.1", "localhost", "::1"):
+        console_.print(
+            "  [dim](Reachable from this machine only.  "
+            "Use [bold]--host 0.0.0.0[/] to expose on your LAN.)[/]",
+        )
+    elif host == "0.0.0.0":  # nosec B104 -- explicit user intent for LAN bind
+        console_.print(
+            "  [dim](Listening on all interfaces — open the URL above "
+            "from any device on your LAN.  Use the machine's actual IP "
+            "instead of 0.0.0.0 from a remote browser.)[/]",
+        )
+    else:
+        console_.print(
+            f"  [dim](Listening on [bold]{host}[/].  "
+            "Reachable from devices that can route to this address.)[/]",
+        )
+    console_.print("  Press [bold]Ctrl+C[/] to quit\n")
+    return url
 
 
 # ---------------------------------------------------------------------------
@@ -1295,88 +1402,16 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
             console.print(f"[bold red]Invalid --bpm-range:[/] {exc}")
             sys.exit(1)
 
-    # Apply DJ-mix overrides
-    if harmonic_mixing is not None:
-        cfg.djmix.harmonic_mixing = harmonic_mixing
-    if beatmatch is not None:
-        cfg.djmix.beatmatch = beatmatch
-    if phrase_align is not None:
-        cfg.djmix.phrase_align = phrase_align
-    if outro_intro_align is not None:
-        cfg.djmix.outro_intro_align = outro_intro_align
-    if filter_sweep is not None:
-        cfg.djmix.filter_sweep = filter_sweep
-    if enable_daypart is not None:
-        cfg.playback.enable_daypart = enable_daypart
-    if enable_mood_arc is not None:
-        cfg.playback.enable_mood_arc = enable_mood_arc
-    if mood_arc_hours is not None:
-        cfg.playback.mood_arc_hours = max(0.25, float(mood_arc_hours))
-    if import_external_cues is not None:
-        cfg.playback.import_external_cues = import_external_cues
-    if beat_sync_fx is not None:
-        cfg.playback.beat_sync_fx = beat_sync_fx
-    if key_sync_fx is not None:
-        cfg.playback.key_sync_fx = key_sync_fx
-    if transition_fx is not None:
-        cfg.transitions.effect = transition_fx
-    if transition_mode is not None:
-        from autodj.config import _validate_transition_mode
-
-        try:
-            cfg.playback.transition_mode = _validate_transition_mode(transition_mode)
-        except ValueError as exc:
-            console.print(f"[bold red]Invalid --transition-mode:[/] {exc}")
-            sys.exit(1)
-    if show_lyrics is not None:
-        cfg.playback.show_lyrics = show_lyrics
-
-    console.print(
-        Panel(
-            f"[bold green]AutoDJ[/] — {sim.ntotal} tracks indexed",
-            expand=False,
-        )
+    _apply_serve_overrides(cfg, locals())
+    _print_serve_banner(
+        console,
+        sim=sim,
+        resolved_preset=resolved_preset,
+        parsed_bpm_range=parsed_bpm_range,
+        discovery_every=discovery_every,
     )
-    if resolved_preset:
-        console.print(f"  Preset     : {resolved_preset.name}")
-    if parsed_bpm_range:
-        console.print(f"  BPM range  : {parsed_bpm_range[0]:.0f}–{parsed_bpm_range[1]:.0f}")
-    if discovery_every:
-        console.print(f"  Discovery  : every {discovery_every} tracks")
-
     seed_entry = _resolve_seed(sim, cfg, seed, console, interactive=False)
-
-    if (ssl_certfile and not ssl_keyfile) or (ssl_keyfile and not ssl_certfile):
-        console.print(
-            "[bold red]TLS error:[/] --ssl-certfile and --ssl-keyfile must be supplied together.",
-        )
-        sys.exit(1)
-    scheme = "https" if (ssl_certfile and ssl_keyfile) else "http"
-    url = f"{scheme}://{host}:{port}"
-    console.print(f"  Web UI  : [link={url}]{url}[/link]")
-    if scheme == "https":
-        console.print(
-            "  [dim](TLS active — AudioWorklet effects work on remote hosts.  "
-            "Trust the certificate's CA on every listening device.)[/]",
-        )
-    if host in ("127.0.0.1", "localhost", "::1"):
-        console.print(
-            "  [dim](Reachable from this machine only.  "
-            "Use [bold]--host 0.0.0.0[/] to expose on your LAN.)[/]",
-        )
-    elif host == "0.0.0.0":  # nosec B104 — explicit user intent for LAN bind
-        console.print(
-            "  [dim](Listening on all interfaces — open the URL above "
-            "from any device on your LAN.  Use the machine's actual IP "
-            "instead of 0.0.0.0 from a remote browser.)[/]",
-        )
-    else:
-        console.print(
-            f"  [dim](Listening on [bold]{host}[/].  "
-            "Reachable from devices that can route to this address.)[/]",
-        )
-    console.print("  Press [bold]Ctrl+C[/] to quit\n")
-
+    url = _print_serve_url_banner(console, host, port, ssl_certfile, ssl_keyfile)
     if open_browser:
         import threading
         import webbrowser

@@ -58,7 +58,7 @@ jobs:
         run: uv run interrogate -c pyproject.toml
 
       - name: Xenon — complexity gate
-        run: uv run xenon --max-absolute F --max-modules C --max-average B src/
+        run: uv run xenon --max-absolute E --max-modules C --max-average B src/
 
       - name: Bandit — security scan
         run: uv run bandit -r src/ -c pyproject.toml
