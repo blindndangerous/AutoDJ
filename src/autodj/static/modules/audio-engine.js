@@ -1919,7 +1919,12 @@ export function startCrossfade(nextPath, fadeSec, serverLed = false) {
 
   standby.gain.gain.cancelScheduledValues(t0);
   standby.gain.gain.setValueAtTime(0, t0);
-  standby.gain.gain.linearRampToValueAtTime(_volume, t0 + effectDur);
+  if (_fadeInSecondsCache <= 0) {
+    standby.gain.gain.setValueAtTime(_volume, t0);
+  } else {
+    const fadeInDur = Math.min(_fadeInSecondsCache, effectDur);
+    standby.gain.gain.linearRampToValueAtTime(_volume, t0 + fadeInDur);
+  }
 
   // Pass the resolved duration so applyTransitionFx no longer recomputes
   // it -- prevents the duration drift that caused cuts.
@@ -2062,6 +2067,7 @@ for (const d of decks) {
 
 // Latest server hints (cached so timeupdate doesn't have to peek into state)
 export let _crossfadeSecondsCache = 3.0;
+export let _fadeInSecondsCache = 3.0;
 export let _currentOutroLenCache = null;
 export let _currentOutroStartCache = null;   // active deck's outro_start_s
 export let _nextTrackIntroEndCache = null;   // incoming track's intro_end_s
@@ -2144,6 +2150,9 @@ export function applyBrowserPlaybackState(s) {
 
   _crossfadeSecondsCache = (s.settings && s.settings.playback &&
     s.settings.playback.crossfade_seconds) || 3.0;
+  _fadeInSecondsCache = (s.settings && s.settings.playback &&
+    typeof s.settings.playback.fade_in_seconds === "number")
+    ? s.settings.playback.fade_in_seconds : 3.0;
   _nextTrackPathCache = s.next_track ? s.next_track.path : null;
   _lastTransitionFx = (s.settings && s.settings.transition) || "none";
   _transitionMode = (s.settings && s.settings.playback &&

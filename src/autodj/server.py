@@ -142,6 +142,7 @@ class ProfileSaveBody(BaseModel):
     key_sync_fx: bool | None = None
     beatmatch_on_skip: bool | None = None
     crossfade_seconds: float | None = None
+    fade_in_seconds: float | None = None
     smart_shuffle: bool | None = None
     pure_shuffle: bool | None = None
     anchor_to_seed: bool | None = None
@@ -221,6 +222,7 @@ class PlaybackSettingsBody(BaseModel):
     """Request body for POST /api/playback-settings."""
 
     crossfade_seconds: float | None = None
+    fade_in_seconds: float | None = None
     crossfade_eq_duck: bool | None = None
     smart_shuffle: bool | None = None
     pure_shuffle: bool | None = None
@@ -535,6 +537,7 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
             "key_sync_fx",
             "beatmatch_on_skip",
             "crossfade_seconds",
+            "fade_in_seconds",
             "smart_shuffle",
             "pure_shuffle",
             "anchor_to_seed",

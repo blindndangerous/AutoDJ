@@ -232,6 +232,7 @@ class PlaybackConfig:
     """
 
     crossfade_seconds: float = 3.0
+    fade_in_seconds: float = 3.0
     # Memory of recently-played tracks excluded from candidate pool.  Larger
     # numbers = the auto-DJ has to traverse more of the library before
     # revisiting any track.  Default 500 — comfortable for libraries of a
@@ -368,8 +369,13 @@ class PlaybackConfig:
         history_raw = data.get("history_file")
         discovery_every_raw = data.get("discovery_every")
 
+        fade_in = float(data.get("fade_in_seconds", 3.0))
+        if fade_in < 0:
+            raise ValueError(f"playback.fade_in_seconds must be >= 0, got {fade_in}")
+
         return cls(
             crossfade_seconds=crossfade,
+            fade_in_seconds=fade_in,
             no_repeat_window=no_repeat,
             artist_repeat_window=max(0, artist_repeat),
             history_file=Path(history_raw).expanduser() if history_raw else None,

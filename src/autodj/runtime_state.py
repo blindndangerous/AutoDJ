@@ -76,6 +76,8 @@ def load_into_player(player: Any, index_dir: Path | None) -> None:
     if isinstance(pb, dict):
         if "crossfade_seconds" in pb:
             cfg.playback.crossfade_seconds = max(0.0, float(pb["crossfade_seconds"]))
+        if "fade_in_seconds" in pb:
+            cfg.playback.fade_in_seconds = max(0.0, float(pb["fade_in_seconds"]))
         if "crossfade_eq_duck" in pb:
             cfg.playback.crossfade_eq_duck = bool(pb["crossfade_eq_duck"])
         if "smart_shuffle" in pb:

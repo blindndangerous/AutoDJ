@@ -192,6 +192,14 @@ class PlayerBridge:
             p.analyse_track_in_background(nxt.path)
         except Exception:
             logger.debug("advance_now: background analysis spawn failed", exc_info=True)
+        # Record nxt as played BEFORE calling _pick_next so the FAISS
+        # self-match (nxt is its own nearest neighbour at score=1.0) is
+        # excluded from the next pick.  Without this, every song after
+        # the seed played twice: nxt was not yet in recently_played when
+        # _pick_next(nxt) ran, so nxt was returned as next_track again.
+        state.record_played(nxt)
+        state.track_number += 1
+        p._previous_track = cur
         # Refresh next_track for the browser's prefetcher.  Failure here
         # leaves current_track set but next_track empty -- browser will
         # show "no upcoming track" and the user can advance again.
@@ -214,9 +222,6 @@ class PlayerBridge:
                     "advance_now: next-track analysis spawn failed",
                     exc_info=True,
                 )
-        state.record_played(nxt)
-        state.track_number += 1
-        p._previous_track = cur
 
         # Single-line advance banner (INFO).  Shows outgoing -> incoming
         # with BPM + key + pick mode so a user tailing the log can see
@@ -785,6 +790,7 @@ class PlayerBridge:
             },
             "playback": {
                 "crossfade_seconds": cfg.playback.crossfade_seconds,
+                "fade_in_seconds": getattr(cfg.playback, "fade_in_seconds", 3.0),
                 "crossfade_eq_duck": cfg.playback.crossfade_eq_duck,
                 "smart_shuffle": p._smart_shuffle,
                 "pure_shuffle": getattr(p, "_pure_shuffle", False),
@@ -906,6 +912,7 @@ class PlayerBridge:
     def set_playback_settings(
         self,
         crossfade_seconds: float | None = None,
+        fade_in_seconds: float | None = None,
         crossfade_eq_duck: bool | None = None,
         smart_shuffle: bool | None = None,
         pure_shuffle: bool | None = None,
@@ -935,6 +942,8 @@ class PlayerBridge:
         cfg = self.player._cfg
         if crossfade_seconds is not None:
             cfg.playback.crossfade_seconds = max(0.0, float(crossfade_seconds))
+        if fade_in_seconds is not None:
+            cfg.playback.fade_in_seconds = max(0.0, float(fade_in_seconds))
         if crossfade_eq_duck is not None:
             cfg.playback.crossfade_eq_duck = bool(crossfade_eq_duck)
         if smart_shuffle is not None:

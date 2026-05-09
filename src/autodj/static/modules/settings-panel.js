@@ -36,7 +36,7 @@ export function applySettingsState(st, els) {
     pbReplayGain,
     pbDaypart, pbMoodArc, pbMoodArcHours, pbImportCues,
     pbBeatSyncFx, pbKeySyncFx, pbBeatmatchSkip,
-    pbTransitionMode, pbCrossfade,
+    pbTransitionMode, pbCrossfade, pbFadeIn,
     keyNotation, keyPreferFlats,
     bpmLo, bpmHi,
     discEnabled, discEvery,
@@ -127,6 +127,10 @@ export function applySettingsState(st, els) {
   }
   if (st.playback && document.activeElement !== pbCrossfade) {
     pbCrossfade.value = st.playback.crossfade_seconds;
+  }
+  if (pbFadeIn && st.playback && document.activeElement !== pbFadeIn) {
+    pbFadeIn.value = typeof st.playback.fade_in_seconds === "number"
+      ? st.playback.fade_in_seconds : 3;
   }
   if (keyNotation && st.playback && st.playback.key_notation &&
       document.activeElement !== keyNotation) {
