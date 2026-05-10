@@ -150,7 +150,7 @@ def _gpu_onset_envelope(audio: np.ndarray, sr: int) -> tuple[np.ndarray, int] | 
             sample_rate=sr,
             n_fft=n_fft,
             hop_length=hop,
-            n_mels=128,
+            n_mels=80,
             power=1.0,
         ).to("cuda")
         with torch.no_grad():
