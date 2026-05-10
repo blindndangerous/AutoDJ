@@ -439,12 +439,53 @@ def cli(ctx: click.Context, config_path: str, verbose: bool) -> None:
         "Default: 'default' (or [index] name in config.toml)."
     ),
 )
+@click.option(
+    "-j",
+    "--workers",
+    "workers",
+    default=None,
+    type=int,
+    help=(
+        "Audio-loader prefetch threads for the embed pass "
+        "(default: min(8, cpu_count())).  Pass 1 for serial.  Passed "
+        "through to the analyse phase too when --analyse is set."
+    ),
+)
+@click.option(
+    "-a",
+    "--analyse",
+    "do_analyse",
+    is_flag=True,
+    default=False,
+    help=(
+        "After the embed pass, also run DJ-meta backfill (intro/outro, "
+        "beat grid, cue points) -- same as running `autodj analyse` "
+        "afterwards.  Convenient when the indexing host has CPU "
+        "headroom; otherwise run `autodj analyse` separately on the "
+        "NAS / listening host (no GPU needed for that step)."
+    ),
+)
+@click.option(
+    "-e",
+    "--enrich",
+    "do_enrich",
+    is_flag=True,
+    default=False,
+    help=(
+        "After the embed pass, also pull beets ``initial_key`` data "
+        "into every entry -- same as running `autodj enrich` "
+        "afterwards.  Requires [library] beets_db."
+    ),
+)
 @click.pass_context
 def cmd_index(
     ctx: click.Context,
     limit: int | None,
     force: bool,
     index_name: str | None,
+    workers: int | None,
+    do_analyse: bool,
+    do_enrich: bool,
 ) -> None:
     """Build or update the FAISS index for the music library.
 
@@ -503,15 +544,54 @@ def cmd_index(
         console.print(f"  Limit      : {limit} tracks (test mode)")
     if force:
         console.print("  Mode       : [yellow]FORCE REBUILD[/]")
+    if do_analyse:
+        console.print("  Post-pass  : [green]+ analyse[/] (intro/outro/beat/cues)")
+    if do_enrich:
+        console.print("  Post-pass  : [green]+ enrich[/] (beets key/mode)")
     console.print()
 
     try:
         model_path = download_model_if_needed(cfg.model, cfg.index, hf_token=cfg.huggingface.token)
         wrapper = load_model(model_path)
-        build_index(cfg, wrapper=wrapper, limit=limit, force=force)
+        build_index(cfg, wrapper=wrapper, limit=limit, force=force, workers=workers)
     except Exception as exc:
         console.print(f"[bold red]Indexing failed:[/] {exc}")
         sys.exit(1)
+
+    if do_enrich:
+        if not cfg.library.beets_db:
+            console.print("[yellow]--enrich skipped: no [library] beets_db configured.[/]")
+        else:
+            from autodj.indexer import enrich_from_beets
+
+            try:
+                updated, total = enrich_from_beets(
+                    cfg.index.active_dir,
+                    music_dir=cfg.library.music_dir,
+                    beets_db=cfg.library.beets_db,
+                    path_remap=cfg.library.path_remap,
+                )
+                console.print(f"[green]Enrich:[/] {updated} of {total} tracks updated.")
+            except Exception as exc:
+                console.print(f"[bold red]Enrich failed:[/] {exc}")
+
+    if do_analyse:
+        import json as _json
+
+        from autodj.indexer import IndexEntry, _backfill_dj_meta, _resolve_for_runtime
+
+        metadata_file = cfg.index.active_dir / "metadata.json"
+        if not metadata_file.exists():
+            console.print("[yellow]--analyse skipped: no index found.[/]")
+        else:
+            raw = _json.loads(metadata_file.read_text(encoding="utf-8"))
+            entries = [IndexEntry(**r) for r in raw]
+            for e in entries:
+                e.path = _resolve_for_runtime(e.path, cfg.library.music_dir, cfg.library.path_remap)
+            try:
+                _backfill_dj_meta(entries, cfg.index.active_dir, workers=workers)
+            except Exception as exc:
+                console.print(f"[bold red]Analyse failed:[/] {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -665,6 +745,124 @@ def cmd_enrich(ctx: click.Context, index_name: str | None) -> None:
         )
     else:
         console.print(f"[green]Updated key/mode on {updated} of {total} tracks[/] from beets.")
+
+
+# ---------------------------------------------------------------------------
+# analyse subcommand
+# ---------------------------------------------------------------------------
+
+
+@cli.command("analyse")
+@click.option(
+    "--name",
+    "index_name",
+    default=None,
+    type=str,
+    help="Named index to operate on (default: 'default').",
+)
+@click.option(
+    "--limit",
+    default=None,
+    type=int,
+    help="Stop after this many tracks (test mode).",
+)
+@click.option(
+    "-j",
+    "--workers",
+    default=None,
+    type=int,
+    help=(
+        "Parallel worker threads (default: min(8, cpu_count)).  Pass 1 "
+        "to force serial.  librosa + soundfile release the GIL during "
+        "BLAS / decoder calls so threads scale near-linearly until the "
+        "NAS I/O ceiling kicks in."
+    ),
+)
+@click.pass_context
+def cmd_analyse(
+    ctx: click.Context,
+    index_name: str | None,
+    limit: int | None,
+    workers: int | None,
+) -> None:
+    """Backfill DJ-meta (intro/outro/beat grid/cues) for indexed tracks.
+
+    Walks the existing FAISS index and, for every entry whose
+    ``dj_meta.json`` cache is missing or has ``analysed=False``, decodes
+    the audio, runs :func:`autodj.dj_meta.analyse_audio`, and writes the
+    result.  Skips entries already analysed so repeated runs are cheap.
+
+    No GPU and no MuQ model required -- pure CPU work via librosa +
+    numpy.  Run this on the NAS / listening host after a GPU host has
+    finished the embedding pass; transition fades will then use the
+    real per-track outro_start_s / intro_end_s instead of falling back
+    to the bar-rounded defaults.
+
+    \b
+    Examples:
+      uv run autodj analyse
+      uv run autodj analyse --name workout
+      uv run autodj analyse --limit 100   # smoke-test on a small batch
+    """
+    from autodj.config import load_config
+
+    missing = []
+    for name in ("librosa", "soundfile"):
+        try:
+            __import__(name)
+        except ImportError:
+            missing.append(name)
+    if missing:
+        console.print(
+            f"[bold red]Cannot analyse — missing packages: {', '.join(missing)}[/]\n"
+            "Install with:  [bold]uv sync --extra index[/]  (or --extra all)."
+        )
+        sys.exit(1)
+
+    try:
+        cfg = load_config(ctx.obj["config_path"])
+    except FileNotFoundError as exc:
+        console.print(f"[bold red]Config not found:[/] {exc}")
+        sys.exit(1)
+
+    if index_name:
+        from autodj.config import validate_index_name
+
+        try:
+            validate_index_name(index_name)
+        except ValueError as exc:
+            console.print(f"[bold red]Invalid --name:[/] {exc}")
+            sys.exit(1)
+        cfg.index.name = index_name
+
+    import json as _json
+
+    from autodj.indexer import IndexEntry, _backfill_dj_meta, _resolve_for_runtime
+
+    metadata_file = cfg.index.active_dir / "metadata.json"
+    if not metadata_file.exists():
+        console.print(
+            f"[bold red]No index at {cfg.index.active_dir}.[/]  Run `autodj index` first."
+        )
+        sys.exit(1)
+
+    raw = _json.loads(metadata_file.read_text(encoding="utf-8"))
+    entries = [IndexEntry(**r) for r in raw]
+    for e in entries:
+        e.path = _resolve_for_runtime(e.path, cfg.library.music_dir, cfg.library.path_remap)
+    if limit is not None:
+        entries = entries[:limit]
+
+    console.print(Panel("[bold green]AutoDJ DJ-meta backfill[/]", expand=False))
+    console.print(f"  Index dir : {cfg.index.active_dir}")
+    console.print(f"  Tracks    : {len(entries)}")
+    console.print()
+
+    try:
+        _backfill_dj_meta(entries, cfg.index.active_dir, workers=workers)
+    except Exception as exc:
+        console.print(f"[bold red]Analyse failed:[/] {exc}")
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
