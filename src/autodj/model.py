@@ -391,7 +391,9 @@ def load_model(model_path: Path) -> MuqWrapper:
     # Real model load only runs on a host with the MuQ checkpoint and
     # torch installed.  CI environments don't carry either, so the body
     # below is exercised only on the indexing host.
-    device = "cuda" if torch.cuda.is_available() else "cpu"  # pragma: no cover
+    from autodj.compute import device_string  # pragma: no cover
+
+    device = device_string()  # pragma: no cover
     logger.info("Loading MuQ model from %s on device=%s", model_path, device)  # pragma: no cover
 
     try:  # pragma: no cover

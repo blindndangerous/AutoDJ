@@ -122,37 +122,26 @@ def detect_intro_outro(
 # ---------------------------------------------------------------------------
 
 
-_GPU_BEAT_PROBE: bool | None = None
-
-
 def _gpu_onset_envelope(audio: np.ndarray, sr: int) -> tuple[np.ndarray, int] | None:
     """Compute a log-mel onset envelope on GPU via torchaudio.
 
     Returns ``(envelope, hop_length)`` so the caller can hand it to
     librosa's CPU-side beat tracker (the DP step is cheap; the mel
     spectrogram is the bulk of the cost).  Returns ``None`` when CUDA
-    or torchaudio is unavailable, or the user has disabled GPU
-    analysis via ``AUTODJ_DJMETA_GPU=0``.
-
-    Honours the env var on every call (cheap probe) so the toggle
-    works without restart.  Module-level cache short-circuits the
-    torch import after the first failure on CPU-only hosts.
+    or torchaudio is unavailable, or the user has disabled GPU work
+    (``AUTODJ_GPU=0`` global, ``AUTODJ_DJMETA_GPU=0`` per-step).
     """
-    global _GPU_BEAT_PROBE
+    from autodj.compute import gpu_available
+
     if os.environ.get("AUTODJ_DJMETA_GPU", "1") == "0":
         return None
-    if _GPU_BEAT_PROBE is False:
+    if not gpu_available():
         return None
     try:
         import torch
         import torchaudio
     except ImportError:
-        _GPU_BEAT_PROBE = False
         return None
-    if not torch.cuda.is_available():
-        _GPU_BEAT_PROBE = False
-        return None
-    _GPU_BEAT_PROBE = True
 
     hop = 512
     n_fft = 2048
