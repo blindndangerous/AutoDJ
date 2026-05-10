@@ -116,25 +116,18 @@ def _relativize_for_storage(abs_path: str, music_dir: Path | None) -> str:
     Returns:
         A forward-slashed path string suitable for JSON storage.
     """
+    # Pure string-prefix match — never call Path.resolve() here.  resolve()
+    # stat()s the file (and follows symlinks); for libraries on NFS/SMB this
+    # turns the per-checkpoint loop over 70k+ entries into ~150 s of stat()
+    # RPCs and dominates total indexing time.  Paths reaching this function
+    # are already absolute (set by _resolve_for_runtime at startup) so the
+    # only job left is to lop off the music_dir prefix.
     p = Path(abs_path)
     if music_dir is not None:
-        try:
-            md_resolved = music_dir.resolve()
-            rel = p.resolve().relative_to(md_resolved)
-            return rel.as_posix()
-        except (ValueError, OSError):
-            # Not under music_dir, or resolve() failed (e.g. file gone)
-            pass
-        try:
-            # Fallback string-prefix match — handles cases where resolve()
-            # cannot reach the file (offline NAS, missing track) but the
-            # absolute path is clearly under music_dir.
-            md_str = music_dir.as_posix().rstrip("/") + "/"
-            p_str = p.as_posix()
-            if p_str.startswith(md_str):
-                return p_str[len(md_str) :]
-        except Exception:  # nosec B110 — best-effort fallback
-            pass
+        md_str = music_dir.as_posix().rstrip("/") + "/"
+        p_str = p.as_posix()
+        if p_str.startswith(md_str):
+            return p_str[len(md_str) :]
     return p.as_posix()
 
 

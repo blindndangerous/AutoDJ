@@ -714,6 +714,39 @@ class TestFlatIndexMigration:
         assert not target.exists()
 
 
+class TestRelativizeForStorage:
+    def test_strips_music_dir_prefix(self, tmp_path: Path) -> None:
+        from autodj.indexer import _relativize_for_storage
+
+        md = tmp_path / "Music"
+        md.mkdir()
+        assert _relativize_for_storage(str(md / "Artist" / "song.flac"), md) == "Artist/song.flac"
+
+    def test_returns_posix_absolute_when_outside_music_dir(self, tmp_path: Path) -> None:
+        from autodj.indexer import _relativize_for_storage
+
+        md = tmp_path / "Music"
+        md.mkdir()
+        outside = tmp_path / "elsewhere" / "song.flac"
+        result = _relativize_for_storage(str(outside), md)
+        assert result == outside.as_posix()
+
+    def test_does_not_stat_filesystem(self, tmp_path: Path) -> None:
+        # Resolve() / is_relative_to() on real Paths used to dominate save_index
+        # for libraries on NFS — see indexer.py _relativize_for_storage docstring.
+        # Must work on paths that don't exist.
+        from autodj.indexer import _relativize_for_storage
+
+        md = tmp_path / "Music"  # never created
+        fake = md / "Artist" / "song.flac"
+        assert _relativize_for_storage(str(fake), md) == "Artist/song.flac"
+
+    def test_no_music_dir_returns_posix(self) -> None:
+        from autodj.indexer import _relativize_for_storage
+
+        assert _relativize_for_storage("/abs/path/song.flac", None) == "/abs/path/song.flac"
+
+
 class TestPathPortability:
     def test_save_strips_music_dir_prefix(self, tmp_path: Path) -> None:
         from autodj.indexer import load_index, save_index
