@@ -420,6 +420,16 @@ class TestPruneIndex:
         assert removed == 0
         assert kept == 5
 
+    def test_prints_phase_banner(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        # Banner makes the silent NFS stat() loop visible — see indexer.py prune_index.
+        from autodj.indexer import prune_index
+
+        idx = self._save_with_files(tmp_path, n_present=3, n_missing=0)
+        prune_index(idx)
+        out = capsys.readouterr().out
+        assert "Phase: Pruning" in out
+        assert "checking 3 indexed files" in out
+
     def test_safety_threshold_blocks_mass_prune(self, tmp_path: Path) -> None:
         from autodj.indexer import PruneSafetyError, prune_index
 

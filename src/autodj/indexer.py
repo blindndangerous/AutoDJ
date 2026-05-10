@@ -920,7 +920,15 @@ def prune_index(
         e.path = _resolve_for_runtime(e.path, music_dir, path_remap)
     loaded = faiss.read_index(str(faiss_file))
 
-    keep_mask = [Path(e.path).exists() for e in entries]
+    # Existence check is RTT-bound on NFS/SMB libraries — at 70k+ tracks the
+    # serial loop dominates the whole `index` command.  Fan out across a
+    # thread pool so the kernel can pipeline stat() RPCs.
+    print(
+        f"[AutoDJ] Phase: Pruning — checking {len(entries)} indexed files on disk.",
+        flush=True,
+    )
+    with ThreadPoolExecutor(max_workers=32) as pool:
+        keep_mask = list(pool.map(lambda e: Path(e.path).exists(), entries))
     removed = sum(1 for k in keep_mask if not k)
     _check_prune_safety(removed, len(entries), allow_mass_prune)
 
