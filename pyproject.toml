@@ -34,6 +34,7 @@ dependencies = [
 index = [
     "muq>=0.1.0",                # MuQ embedding model (24 kHz, 1024-dim)
     "torch>=2.2.0",              # MuQ inference (CPU or CUDA)
+    "torchaudio>=2.2.0",         # GPU mel-spec for beat-grid (optional fast path)
     "huggingface_hub>=0.23.0",   # model checkpoint download
     "librosa>=0.10.0",           # spectral / chroma feature extraction
     "soundfile>=0.12.0",         # audio file decoding
@@ -59,7 +60,7 @@ web = [
 
 # Convenience meta-group — install everything (Linux GPU box, full Windows install)
 all = [
-    "muq>=0.1.0", "torch>=2.2.0", "huggingface_hub>=0.23.0",
+    "muq>=0.1.0", "torch>=2.2.0", "torchaudio>=2.2.0", "huggingface_hub>=0.23.0",
     "librosa>=0.10.0", "soundfile>=0.12.0", "tqdm>=4.66.0",
     "sounddevice>=0.4.6", "pynput>=1.7.6", "mutagen>=1.47.0", "scipy>=1.13.0",
     "fastapi>=0.111.0", "uvicorn[standard]>=0.29.0", "pydantic>=2.0.0",

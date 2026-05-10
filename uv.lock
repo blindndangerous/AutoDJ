@@ -180,6 +180,7 @@ all = [
     { name = "sounddevice" },
     { name = "soundfile" },
     { name = "torch" },
+    { name = "torchaudio" },
     { name = "tqdm" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -197,6 +198,7 @@ index = [
     { name = "muq" },
     { name = "soundfile" },
     { name = "torch" },
+    { name = "torchaudio" },
     { name = "tqdm" },
 ]
 play = [
@@ -271,6 +273,8 @@ requires-dist = [
     { name = "soundfile", marker = "extra == 'play'", specifier = ">=0.12.0" },
     { name = "torch", marker = "extra == 'all'", specifier = ">=2.2.0" },
     { name = "torch", marker = "extra == 'index'", specifier = ">=2.2.0" },
+    { name = "torchaudio", marker = "extra == 'all'", specifier = ">=2.2.0" },
+    { name = "torchaudio", marker = "extra == 'index'", specifier = ">=2.2.0" },
     { name = "tqdm", specifier = ">=4.67.3" },
     { name = "tqdm", marker = "extra == 'all'", specifier = ">=4.66.0" },
     { name = "tqdm", marker = "extra == 'index'", specifier = ">=4.66.0" },
