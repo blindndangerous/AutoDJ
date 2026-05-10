@@ -28,6 +28,7 @@ import json
 import logging
 import warnings
 from collections import deque
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -1273,6 +1274,189 @@ def _detect_stale_entries(
     return stale, migrated
 
 
+def _load_existing_index(  # pragma: no cover -- exercised via build_index integration runs
+    index_dir: Path,
+    music_dir: Path,
+    path_remap: list[tuple[str, str]] | None,
+    force: bool,
+    reindex_modified_since: float | None,
+) -> tuple[list[IndexEntry], list[np.ndarray], set[str]]:
+    """Load existing entries + vectors, drop entries with replaced files."""
+    if force:
+        return [], [], set()
+
+    try:
+        removed, kept = prune_index(index_dir, music_dir=music_dir, path_remap=path_remap)
+        if removed:
+            print(f"[AutoDJ] Pruned {removed} missing tracks ({kept} remain).")
+    except PruneSafetyError as exc:
+        print(f"[AutoDJ] Skipping auto-prune (safety check): {exc}")
+
+    metadata_file = index_dir / "metadata.json"
+    if not metadata_file.exists():
+        return [], [], set()
+
+    raw = json.loads(metadata_file.read_text(encoding="utf-8"))
+    existing_entries: list[IndexEntry] = [IndexEntry(**r) for r in raw]
+    for e in existing_entries:
+        e.path = _resolve_for_runtime(e.path, music_dir, path_remap)
+
+    existing_vectors: list[np.ndarray] = []
+    faiss_file = index_dir / "vectors.index"
+    if faiss_file.exists() and existing_entries:
+        loaded = faiss.read_index(str(faiss_file))
+        existing_vectors = [loaded.reconstruct(i) for i in range(loaded.ntotal)]
+        logger.info("Incremental mode: %d tracks already indexed", len(existing_entries))
+
+    print(
+        f"[AutoDJ] Phase: Stale-check — comparing mtimes for {len(existing_entries)} entries.",
+        flush=True,
+    )
+    stale, migrated = _detect_stale_entries(
+        existing_entries, reindex_modified_since=reindex_modified_since
+    )
+    if migrated:
+        logger.info("Snapshotted embedded_at for %d legacy entries", migrated)
+    if stale:
+        print(
+            f"[AutoDJ] Phase: Stale-check — dropping {len(stale)} replaced "
+            "tracks; they will be re-embedded.",
+            flush=True,
+        )
+        kept_pairs = [
+            (e, v)
+            for e, v in zip(existing_entries, existing_vectors, strict=False)
+            if e.path not in stale
+        ]
+        existing_entries = [e for e, _ in kept_pairs]
+        existing_vectors = [v for _, v in kept_pairs]
+
+    return existing_entries, existing_vectors, {e.path for e in existing_entries}
+
+
+def _collect_tracks_to_index(  # pragma: no cover -- exercised via build_index integration runs
+    cfg: AutoDJConfig,
+) -> list[Track]:
+    """Read track list from beets if available, else filesystem scan."""
+    tracks: list[Track] = []
+    if cfg.library.beets_db and cfg.library.beets_db.exists():
+        try:
+            tracks = get_all_tracks(cfg.library.beets_db)
+            logger.info("Loaded %d tracks from beets library", len(tracks))
+        except BeetsNotFoundError:
+            logger.warning("Beets DB not found, falling back to filesystem scan")
+
+    if tracks:
+        tracks = [
+            Track(
+                path=_resolve_beets_path(t.path, cfg.library.music_dir),
+                title=t.title,
+                artist=t.artist,
+                album=t.album,
+                genre=t.genre,
+                bpm=t.bpm,
+                year=t.year,
+                length=t.length,
+            )
+            for t in tracks
+        ]
+        logger.info("Resolved beets paths against music_dir '%s'", cfg.library.music_dir)
+        return tracks
+
+    # No beets database — fall back to filesystem scan + ID3/Vorbis tag reads.
+    from autodj.audio_meta import read_file_tags
+
+    paths = walk_music_dir(cfg.library.music_dir, cfg.library.supported_formats)
+    for p in paths:
+        tags = read_file_tags(p)
+        tracks.append(
+            Track(
+                path=p,
+                title=tags.title or p.stem,
+                artist=tags.artist,
+                album=tags.album,
+                genre=tags.genre,
+                bpm=tags.bpm,
+                year=tags.year,
+                length=tags.length,
+            )
+        )
+    logger.info("Filesystem scan + ID3 read found %d tracks", len(tracks))
+    return tracks
+
+
+def _embed_new_tracks(  # pragma: no cover -- threaded indexer pipeline
+    new_tracks: list[Track],
+    wrapper: MuqWrapper,
+    workers: int | None,
+    checkpoint: Callable[[list[IndexEntry], list[np.ndarray]], None],
+) -> tuple[list[IndexEntry], list[np.ndarray]]:
+    """Run the producer/consumer embedding loop with prefetch threadpool."""
+    new_entries: list[IndexEntry] = []
+    new_vectors: list[np.ndarray] = []
+
+    import os as _os
+
+    if workers is None:
+        workers = min(8, max(1, (_os.cpu_count() or 2)))
+    PREFETCH = max(1, workers)
+    track_iter = iter(new_tracks)
+    pending: deque[tuple[Track, Future]] = deque()
+
+    with ThreadPoolExecutor(max_workers=PREFETCH) as pool:
+
+        def _submit_next() -> None:
+            try:
+                t = next(track_iter)
+                pending.append((t, pool.submit(_extract_librosa_features, t.path)))
+            except StopIteration:
+                pass
+
+        for _ in range(PREFETCH):
+            _submit_next()
+
+        for _ in tqdm(
+            range(len(new_tracks)),
+            total=len(new_tracks),
+            desc="Indexing",
+            unit="track",
+            disable=False,
+            dynamic_ncols=True,
+        ):
+            if not pending:
+                break
+            track, future = pending.popleft()
+            _submit_next()
+
+            try:
+                librosa_vec, audio, sr, extra_meta = future.result()
+                embedding_vec = wrapper.embed_array(audio, sample_rate=sr)
+                combined = _combine_features(embedding_vec, librosa_vec)
+                if not np.isfinite(combined).all():
+                    raise ValueError(
+                        "embedding contains NaN or Inf — track may be silent or corrupted"
+                    )
+                entry = IndexEntry.from_track(track)
+                entry.energy = extra_meta["energy"]
+                entry.key = extra_meta["key"]
+                entry.mode = extra_meta["mode"]
+                entry.tempo_confidence = extra_meta["tempo_confidence"]
+
+                from autodj.beets import parse_initial_key as _parse_key
+
+                if getattr(track, "initial_key", ""):
+                    parsed = _parse_key(track.initial_key)
+                    if parsed is not None:
+                        entry.key, entry.mode = parsed
+                new_entries.append(entry)
+                new_vectors.append(combined)
+                checkpoint(new_entries, new_vectors)
+            except Exception as exc:
+                logger.warning("Skipping %s: %s", track.path, exc)
+
+    return new_entries, new_vectors
+
+
 def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integration tests
     cfg: AutoDJConfig,
     wrapper: MuqWrapper,
@@ -1307,117 +1491,12 @@ def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integr
     music_dir = cfg.library.music_dir
     path_remap = cfg.library.path_remap
 
-    # --- auto-prune: drop entries whose audio files no longer exist ---
-    if not force:
-        try:
-            removed, kept = prune_index(index_dir, music_dir=music_dir, path_remap=path_remap)
-            if removed:
-                print(f"[AutoDJ] Pruned {removed} missing tracks ({kept} remain).")
-        except PruneSafetyError as exc:
-            print(f"[AutoDJ] Skipping auto-prune (safety check): {exc}")
+    existing_entries, existing_vectors, existing_paths = _load_existing_index(
+        index_dir, music_dir, path_remap, force, reindex_modified_since
+    )
 
-    # --- load existing index (incremental mode) ---
-    existing_entries: list[IndexEntry] = []
-    existing_vectors: list[np.ndarray] = []
-    existing_paths: set[str] = set()
+    tracks = _collect_tracks_to_index(cfg)
 
-    if not force:
-        metadata_file = index_dir / "metadata.json"
-        if metadata_file.exists():
-            raw = json.loads(metadata_file.read_text(encoding="utf-8"))
-            existing_entries = [IndexEntry(**r) for r in raw]
-            # Resolve stored paths to absolute runtime paths
-            for e in existing_entries:
-                e.path = _resolve_for_runtime(e.path, music_dir, path_remap)
-
-            faiss_file = index_dir / "vectors.index"
-            if faiss_file.exists() and existing_entries:
-                loaded = faiss.read_index(str(faiss_file))
-                existing_vectors = [loaded.reconstruct(i) for i in range(loaded.ntotal)]
-                logger.info("Incremental mode: %d tracks already indexed", len(existing_entries))
-
-            # --- detect replaced files (mtime > embedded_at) ---
-            print(
-                f"[AutoDJ] Phase: Stale-check — comparing mtimes for {len(existing_entries)} entries.",
-                flush=True,
-            )
-            stale, migrated = _detect_stale_entries(
-                existing_entries, reindex_modified_since=reindex_modified_since
-            )
-            if migrated:
-                logger.info("Snapshotted embedded_at for %d legacy entries", migrated)
-            if stale:
-                print(
-                    f"[AutoDJ] Phase: Stale-check — dropping {len(stale)} replaced "
-                    "tracks; they will be re-embedded.",
-                    flush=True,
-                )
-                kept_pairs = [
-                    (e, v)
-                    for e, v in zip(existing_entries, existing_vectors, strict=False)
-                    if e.path not in stale
-                ]
-                existing_entries = [e for e, _ in kept_pairs]
-                existing_vectors = [v for _, v in kept_pairs]
-
-            existing_paths = {e.path for e in existing_entries}
-
-    # --- collect tracks to process ---
-    tracks: list[Track] = []
-    if cfg.library.beets_db and cfg.library.beets_db.exists():
-        try:
-            tracks = get_all_tracks(cfg.library.beets_db)
-            logger.info("Loaded %d tracks from beets library", len(tracks))
-        except BeetsNotFoundError:
-            logger.warning("Beets DB not found, falling back to filesystem scan")
-
-    # Resolve beets-stored paths to absolute local paths.
-    # Recent beets versions store paths relative to the library `directory`,
-    # so we prepend music_dir for relative paths. Absolute paths pass through.
-    if tracks:
-        tracks = [
-            Track(
-                path=_resolve_beets_path(t.path, cfg.library.music_dir),
-                title=t.title,
-                artist=t.artist,
-                album=t.album,
-                genre=t.genre,
-                bpm=t.bpm,
-                year=t.year,
-                length=t.length,
-            )
-            for t in tracks
-        ]
-        logger.info(
-            "Resolved beets paths against music_dir '%s'",
-            cfg.library.music_dir,
-        )
-
-    if not tracks:  # pragma: no cover -- exercised by full indexer integration runs
-        # No beets database — fall back to filesystem scan + ID3/Vorbis
-        # tag reads.  Files without tags get title=filename so playback
-        # still works, but the player UI prefers real tags when present.
-        from autodj.audio_meta import read_file_tags
-
-        paths = walk_music_dir(cfg.library.music_dir, cfg.library.supported_formats)
-        tracks = []
-        for p in paths:
-            tags = read_file_tags(p)
-            tracks.append(
-                Track(
-                    path=p,
-                    title=tags.title or p.stem,
-                    artist=tags.artist,
-                    album=tags.album,
-                    genre=tags.genre,
-                    bpm=tags.bpm,  # 0.0 if not in tags — librosa fills later
-                    year=tags.year,
-                    length=tags.length,  # mutagen reads from audio header
-                )
-            )
-        logger.info("Filesystem scan + ID3 read found %d tracks", len(tracks))
-
-    # Filter to unindexed tracks
     new_tracks = [t for t in tracks if str(t.path) not in existing_paths]
     if limit is not None:
         new_tracks = new_tracks[:limit]
@@ -1437,18 +1516,10 @@ def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integr
         flush=True,
     )
 
-    # --- embed new tracks ---
-    new_entries: list[IndexEntry] = []
-    new_vectors: list[np.ndarray] = []
-
-    # Save a checkpoint after every successfully embedded track so a
-    # Ctrl+C never loses progress AND a parallel `serve` process can
-    # pick up newly-indexed tracks the moment they land.  The save is
-    # atomic (tmp + os.replace) so concurrent readers always see a
-    # complete index.
-    CHECKPOINT_EVERY = 1
-
-    def _checkpoint() -> None:
+    # Save after every successfully embedded track so Ctrl+C never loses
+    # progress and a parallel `serve` process can pick up newly-indexed
+    # tracks immediately.  Atomic via tmp + os.replace.
+    def _checkpoint(new_entries: list[IndexEntry], new_vectors: list[np.ndarray]) -> None:
         if not new_entries:
             return
         all_e = existing_entries + new_entries
@@ -1465,72 +1536,7 @@ def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integr
         save_index(all_e, all_v, index_dir, music_dir=music_dir)
         logger.info("Checkpoint: %d new tracks saved (%d total)", len(new_entries), len(all_e))
 
-    # Pipeline: load the next track's audio on a background thread while the
-    # GPU embeds the current one.
-    import os as _os
-
-    if workers is None:
-        workers = min(8, max(1, (_os.cpu_count() or 2)))
-    PREFETCH = max(1, workers)
-    track_iter = iter(new_tracks)
-    pending: deque[tuple[Track, Future]] = deque()
-
-    def _submit_next() -> None:
-        try:
-            t = next(track_iter)
-            pending.append((t, pool.submit(_extract_librosa_features, t.path)))
-        except StopIteration:
-            pass
-
-    with ThreadPoolExecutor(
-        max_workers=PREFETCH
-    ) as pool:  # pragma: no cover -- threaded indexer pipeline
-        for _ in range(PREFETCH):
-            _submit_next()
-
-        for _ in tqdm(
-            range(len(new_tracks)),
-            total=len(new_tracks),
-            desc="Indexing",
-            unit="track",
-            disable=False,
-            dynamic_ncols=True,
-        ):
-            if not pending:
-                break
-            track, future = pending.popleft()
-            _submit_next()  # keep the prefetch window full
-
-            try:
-                librosa_vec, audio, sr, extra_meta = future.result()
-                embedding_vec = wrapper.embed_array(audio, sample_rate=sr)
-                combined = _combine_features(embedding_vec, librosa_vec)
-                if not np.isfinite(combined).all():
-                    raise ValueError(
-                        "embedding contains NaN or Inf — track may be silent or corrupted"
-                    )
-                entry = IndexEntry.from_track(track)
-                entry.energy = extra_meta["energy"]
-                entry.key = extra_meta["key"]
-                entry.mode = extra_meta["mode"]
-                entry.tempo_confidence = extra_meta["tempo_confidence"]
-
-                # Prefer beets `initial_key` (from keyfinder / DJ tagger
-                # plugins) over the librosa template-matched key — beets
-                # values come from dedicated key-detection algorithms and
-                # are typically more accurate.
-                from autodj.beets import parse_initial_key as _parse_key
-
-                if getattr(track, "initial_key", ""):
-                    parsed = _parse_key(track.initial_key)
-                    if parsed is not None:
-                        entry.key, entry.mode = parsed
-                new_entries.append(entry)
-                new_vectors.append(combined)
-                if len(new_entries) % CHECKPOINT_EVERY == 0:
-                    _checkpoint()
-            except Exception as exc:
-                logger.warning("Skipping %s: %s", track.path, exc)
+    new_entries, new_vectors = _embed_new_tracks(new_tracks, wrapper, workers, _checkpoint)
 
     # --- merge and save ---
     if not new_entries:  # pragma: no cover -- empty / failed-indexing CLI report path
