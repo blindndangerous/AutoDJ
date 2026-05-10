@@ -719,3 +719,162 @@ class TestPathPortability:
         # Round-trip resolves back to absolute
         loaded, _ = load_index(idx, music_dir=music_dir)
         assert Path(loaded[0].path).resolve() == (music_dir / "a.flac").resolve()
+
+
+# ---------------------------------------------------------------------------
+# _backfill_dj_meta + _analyse_one_track
+# ---------------------------------------------------------------------------
+
+
+def _entry(path: str) -> IndexEntry:
+    return IndexEntry(
+        path=path,
+        title="t",
+        artist="a",
+        album="al",
+        genre="g",
+        bpm=120,
+        year=2020,
+        length=180,
+        energy=0.05,
+        key=0,
+        mode=1,
+        tempo_confidence=0.5,
+    )
+
+
+class TestAnalyseOneTrack:
+    def test_empty_audio_returns_none_meta(self, tmp_path: Path) -> None:
+        from autodj.indexer import _analyse_one_track
+
+        with patch(
+            "autodj.indexer._load_audio", return_value=(np.zeros(0, dtype=np.float32), 24000)
+        ):
+            _path, meta, err = _analyse_one_track(str(tmp_path / "x.flac"))
+        assert meta is None and err is None
+
+    def test_load_failure_returns_error_string(self, tmp_path: Path) -> None:
+        from autodj.indexer import _analyse_one_track
+
+        with patch("autodj.indexer._load_audio", side_effect=OSError("nope")):
+            _path, meta, err = _analyse_one_track(str(tmp_path / "x.flac"))
+        assert meta is None
+        assert err is not None and "OSError" in err
+
+    def test_success_returns_meta(self, tmp_path: Path) -> None:
+        from autodj.dj_meta import DjMeta
+        from autodj.indexer import _analyse_one_track
+
+        fake_audio = np.zeros(2400, dtype=np.float32)
+        fake_meta = DjMeta(analysed=True)
+        with (
+            patch("autodj.indexer._load_audio", return_value=(fake_audio, 24000)),
+            patch("autodj.dj_meta.analyse_audio", return_value=fake_meta),
+        ):
+            _p, meta, err = _analyse_one_track(str(tmp_path / "x.flac"))
+        assert meta is fake_meta and err is None
+
+
+class TestBackfillDjMeta:
+    def test_no_cache_short_circuits(self, tmp_path: Path) -> None:
+        from autodj.indexer import _backfill_dj_meta
+
+        with patch("autodj.dj_meta.get_cache", return_value=None):
+            _backfill_dj_meta([_entry("a.flac")], tmp_path, workers=1)
+
+    def test_all_already_analysed_short_circuits(self, tmp_path: Path, capsys) -> None:
+        from autodj.dj_meta import DjMeta
+        from autodj.indexer import _backfill_dj_meta
+
+        cache = type("C", (), {})()
+        cache.get = lambda _p: DjMeta(analysed=True)
+        cache.set = lambda *_a, **_kw: None
+        cache.flush = lambda *_a, **_kw: None
+        with patch("autodj.dj_meta.get_cache", return_value=cache):
+            _backfill_dj_meta([_entry("a.flac")], tmp_path, workers=1)
+        out = capsys.readouterr().out
+        assert "already covers" in out
+
+    def test_serial_path_records_results(self, tmp_path: Path) -> None:
+        from autodj.dj_meta import DjMeta
+        from autodj.indexer import _backfill_dj_meta
+
+        stored: dict[str, DjMeta] = {}
+        flushes: list[bool] = []
+
+        class _Cache:
+            def get(self, _p: str) -> DjMeta:
+                return DjMeta(analysed=False)
+
+            def set(self, p: str, m: DjMeta) -> None:
+                stored[p] = m
+
+            def flush(self, *_a, **_kw) -> None:
+                flushes.append(True)
+
+        meta_ok = DjMeta(analysed=True, intro_end_s=1.0)
+        with (
+            patch("autodj.dj_meta.get_cache", return_value=_Cache()),
+            patch(
+                "autodj.indexer._analyse_one_track",
+                side_effect=[
+                    ("a.flac", meta_ok, None),
+                    ("b.flac", None, "RuntimeError: bad"),
+                ],
+            ),
+        ):
+            _backfill_dj_meta([_entry("a.flac"), _entry("b.flac")], tmp_path, workers=1)
+        assert "a.flac" in stored
+        assert "b.flac" not in stored  # error path skips set
+        assert flushes  # final force-flush
+
+    def test_workers_default_threadpool_path(self, tmp_path: Path) -> None:
+        from autodj.dj_meta import DjMeta
+        from autodj.indexer import _backfill_dj_meta
+
+        stored: dict[str, DjMeta] = {}
+
+        class _Cache:
+            def get(self, _p: str) -> DjMeta:
+                return DjMeta(analysed=False)
+
+            def set(self, p: str, m: DjMeta) -> None:
+                stored[p] = m
+
+            def flush(self, *_a, **_kw) -> None:
+                pass
+
+        meta_ok = DjMeta(analysed=True)
+        entries = [_entry(f"t{i}.flac") for i in range(4)]
+        with (
+            patch("autodj.dj_meta.get_cache", return_value=_Cache()),
+            patch(
+                "autodj.indexer._analyse_one_track",
+                side_effect=lambda p: (p, meta_ok, None),
+            ),
+        ):
+            _backfill_dj_meta(entries, tmp_path, workers=2)
+        assert len(stored) == 4
+
+    def test_workers_default_none_uses_cpu_count(self, tmp_path: Path) -> None:
+        from autodj.dj_meta import DjMeta
+        from autodj.indexer import _backfill_dj_meta
+
+        class _Cache:
+            def get(self, _p: str) -> DjMeta:
+                return DjMeta(analysed=False)
+
+            def set(self, *_a, **_kw) -> None:
+                pass
+
+            def flush(self, *_a, **_kw) -> None:
+                pass
+
+        with (
+            patch("autodj.dj_meta.get_cache", return_value=_Cache()),
+            patch(
+                "autodj.indexer._analyse_one_track",
+                side_effect=lambda p: (p, DjMeta(analysed=True), None),
+            ),
+        ):
+            _backfill_dj_meta([_entry("a.flac")], tmp_path, workers=None)

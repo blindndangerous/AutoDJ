@@ -1259,3 +1259,114 @@ class TestLoggingDefaults:
             assert logging.getLogger().level == logging.DEBUG
         finally:
             logging.getLogger().setLevel(original)
+
+
+# ---------------------------------------------------------------------------
+# cmd_analyse
+# ---------------------------------------------------------------------------
+
+
+class TestCmdAnalyse:
+    def _cfg_with_index(self, tmp_path: Path, entries: int = 1) -> MagicMock:
+        import json as _json
+
+        idx_dir = tmp_path / "idx"
+        idx_dir.mkdir()
+        rows = [
+            {
+                "path": f"x{i}.flac",
+                "title": "t",
+                "artist": "a",
+                "album": "al",
+                "genre": "g",
+                "bpm": 120.0,
+                "year": 2020,
+                "length": 180.0,
+                "energy": 0.05,
+                "key": 0,
+                "mode": 1,
+                "tempo_confidence": 0.5,
+            }
+            for i in range(entries)
+        ]
+        (idx_dir / "metadata.json").write_text(_json.dumps(rows), encoding="utf-8")
+        cfg = _make_cfg()
+        cfg.index.active_dir = idx_dir
+        cfg.index.name = "default"
+        cfg.library.music_dir = tmp_path
+        cfg.library.path_remap = []
+        return cfg
+
+    def test_config_missing(self) -> None:
+        with patch("autodj.config.load_config", side_effect=FileNotFoundError("nope")):
+            result = CliRunner().invoke(cli, ["analyse"])
+        assert result.exit_code == 1
+        assert "Config not found" in result.output
+
+    def test_no_index(self, tmp_path: Path) -> None:
+        cfg = _make_cfg()
+        cfg.index.active_dir = tmp_path / "missing"
+        with patch("autodj.config.load_config", return_value=cfg):
+            result = CliRunner().invoke(cli, ["analyse"])
+        assert result.exit_code == 1
+        assert "No index" in result.output
+
+    def test_invalid_name_exits(self, tmp_path: Path) -> None:
+        cfg = self._cfg_with_index(tmp_path)
+        with patch("autodj.config.load_config", return_value=cfg):
+            result = CliRunner().invoke(cli, ["analyse", "--name", "../bad"])
+        assert result.exit_code == 1
+        assert "Invalid --name" in result.output
+
+    def test_success_invokes_backfill(self, tmp_path: Path) -> None:
+        cfg = self._cfg_with_index(tmp_path, entries=3)
+        captured = {}
+
+        def fake_backfill(entries, index_dir, workers=None):
+            captured["entries"] = list(entries)
+            captured["workers"] = workers
+
+        with (
+            patch("autodj.config.load_config", return_value=cfg),
+            patch("autodj.indexer._backfill_dj_meta", fake_backfill),
+        ):
+            result = CliRunner().invoke(cli, ["analyse", "--limit", "2", "-j", "1"])
+        assert result.exit_code == 0
+        assert len(captured["entries"]) == 2
+        assert captured["workers"] == 1
+
+    def test_backfill_exception_exits_one(self, tmp_path: Path) -> None:
+        cfg = self._cfg_with_index(tmp_path)
+        with (
+            patch("autodj.config.load_config", return_value=cfg),
+            patch("autodj.indexer._backfill_dj_meta", side_effect=RuntimeError("boom")),
+        ):
+            result = CliRunner().invoke(cli, ["analyse"])
+        assert result.exit_code == 1
+        assert "Analyse failed" in result.output
+
+    def test_named_index_override(self, tmp_path: Path) -> None:
+        cfg = self._cfg_with_index(tmp_path)
+        with (
+            patch("autodj.config.load_config", return_value=cfg),
+            patch("autodj.indexer._backfill_dj_meta") as bf,
+        ):
+            result = CliRunner().invoke(cli, ["analyse", "--name", "workout"])
+        assert result.exit_code == 0
+        assert cfg.index.name == "workout"
+        bf.assert_called_once()
+
+    def test_missing_packages_exits(self, tmp_path: Path) -> None:
+        import builtins
+
+        real_import = builtins.__import__
+
+        def fake_import(name, *a, **kw):
+            if name in ("librosa", "soundfile"):
+                raise ImportError("missing")
+            return real_import(name, *a, **kw)
+
+        with patch("builtins.__import__", side_effect=fake_import):
+            result = CliRunner().invoke(cli, ["analyse"])
+        assert result.exit_code == 1
+        assert "missing packages" in result.output
