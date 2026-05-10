@@ -714,6 +714,108 @@ class TestFlatIndexMigration:
         assert not target.exists()
 
 
+class TestDetectStaleEntries:
+    def _entry(self, path: str, embedded_at: float = 0.0) -> IndexEntry:
+        return IndexEntry(
+            path=path,
+            title="t",
+            artist="a",
+            album="al",
+            genre="g",
+            bpm=120.0,
+            year=2020,
+            length=180.0,
+            energy=0.0,
+            key=-1,
+            mode=-1,
+            tempo_confidence=0.0,
+            embedded_at=embedded_at,
+        )
+
+    def test_detects_replaced_file(self, tmp_path: Path) -> None:
+        import os
+
+        from autodj.indexer import _detect_stale_entries
+
+        f = tmp_path / "song.flac"
+        f.write_bytes(b"original")
+        original_mtime = f.stat().st_mtime
+        # Embedded an hour ago, then file replaced now
+        e = self._entry(str(f), embedded_at=original_mtime - 3600)
+        os.utime(f, (original_mtime, original_mtime))
+        stale, migrated = _detect_stale_entries([e])
+        assert e.path in stale
+        assert migrated == 0
+
+    def test_legacy_entry_snapshots_mtime(self, tmp_path: Path) -> None:
+        from autodj.indexer import _detect_stale_entries
+
+        f = tmp_path / "song.flac"
+        f.write_bytes(b"x")
+        mt = f.stat().st_mtime
+        e = self._entry(str(f), embedded_at=0.0)
+        stale, migrated = _detect_stale_entries([e])
+        assert e.path not in stale
+        assert migrated == 1
+        assert e.embedded_at == pytest.approx(mt)
+
+    def test_unchanged_file_not_stale(self, tmp_path: Path) -> None:
+        from autodj.indexer import _detect_stale_entries
+
+        f = tmp_path / "song.flac"
+        f.write_bytes(b"x")
+        # Embedded just after file creation
+        e = self._entry(str(f), embedded_at=f.stat().st_mtime + 60)
+        stale, _ = _detect_stale_entries([e])
+        assert e.path not in stale
+
+    def test_missing_file_skipped(self, tmp_path: Path) -> None:
+        # prune handles missing files; stale detection ignores them
+        from autodj.indexer import _detect_stale_entries
+
+        e = self._entry(str(tmp_path / "gone.flac"), embedded_at=1.0)
+        stale, migrated = _detect_stale_entries([e])
+        assert stale == set()
+        assert migrated == 0
+
+    def test_reindex_modified_since_overrides_legacy(self, tmp_path: Path) -> None:
+        # The one-shot --reindex-modified-since flag should still flag
+        # legacy entries (embedded_at == 0) when their file mtime is newer
+        # than the cutoff.
+        import os
+
+        from autodj.indexer import _detect_stale_entries
+
+        f = tmp_path / "replaced.flac"
+        f.write_bytes(b"x")
+        mt = f.stat().st_mtime
+        os.utime(f, (mt, mt))
+        e = self._entry(str(f), embedded_at=0.0)
+        # Cutoff one hour BEFORE mtime → file is newer, must be flagged
+        stale, _ = _detect_stale_entries([e], reindex_modified_since=mt - 3600)
+        assert e.path in stale
+
+    def test_from_track_stamps_embedded_at(self) -> None:
+        import time
+
+        from autodj.beets import Track
+
+        t = Track(
+            path=Path("/tmp/x.flac"),
+            title="t",
+            artist="a",
+            album="al",
+            genre="g",
+            bpm=120.0,
+            year=2020,
+            length=180.0,
+        )
+        before = time.time()
+        e = IndexEntry.from_track(t)
+        after = time.time()
+        assert before <= e.embedded_at <= after
+
+
 class TestRelativizeForStorage:
     def test_strips_music_dir_prefix(self, tmp_path: Path) -> None:
         from autodj.indexer import _relativize_for_storage

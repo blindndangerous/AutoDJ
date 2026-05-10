@@ -477,6 +477,19 @@ def cli(ctx: click.Context, config_path: str, verbose: bool) -> None:
         "afterwards.  Requires [library] beets_db."
     ),
 )
+@click.option(
+    "--reindex-modified-since",
+    "reindex_modified_since_str",
+    default=None,
+    type=str,
+    help=(
+        "One-shot stale backfill: drop and re-embed any indexed entry whose "
+        "audio file has an mtime newer than this timestamp.  Useful when you "
+        "replaced files BEFORE the indexer started tracking embedded_at "
+        "(otherwise the per-entry mtime check covers replacements automatically). "
+        "Format: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS (local time)."
+    ),
+)
 @click.pass_context
 def cmd_index(
     ctx: click.Context,
@@ -486,6 +499,7 @@ def cmd_index(
     workers: int | None,
     do_analyse: bool,
     do_enrich: bool,
+    reindex_modified_since_str: str | None,
 ) -> None:
     """Build or update the FAISS index for the music library.
 
@@ -550,10 +564,34 @@ def cmd_index(
         console.print("  Post-pass  : [green]+ enrich[/] (beets key/mode)")
     console.print()
 
+    reindex_modified_since: float | None = None
+    if reindex_modified_since_str:
+        from datetime import datetime as _dt
+
+        try:
+            parsed = _dt.fromisoformat(reindex_modified_since_str)
+            reindex_modified_since = parsed.timestamp()
+            console.print(
+                f"  Reindex if mtime > [cyan]{parsed.isoformat()}[/] (one-shot stale backfill)"
+            )
+        except ValueError:
+            console.print(
+                f"[bold red]Bad --reindex-modified-since: {reindex_modified_since_str!r}[/]\n"
+                "Use YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS."
+            )
+            sys.exit(1)
+
     try:
         model_path = download_model_if_needed(cfg.model, cfg.index, hf_token=cfg.huggingface.token)
         wrapper = load_model(model_path)
-        build_index(cfg, wrapper=wrapper, limit=limit, force=force, workers=workers)
+        build_index(
+            cfg,
+            wrapper=wrapper,
+            limit=limit,
+            force=force,
+            workers=workers,
+            reindex_modified_since=reindex_modified_since,
+        )
     except Exception as exc:
         console.print(f"[bold red]Indexing failed:[/] {exc}")
         sys.exit(1)

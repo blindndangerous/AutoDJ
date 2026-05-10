@@ -223,6 +223,12 @@ class IndexEntry:
         mode: 1 = major, 0 = minor, -1 = unknown / not yet enriched.
         tempo_confidence: Librosa beat-tracking confidence 0.0–1.0,
             0.0 = unknown / not yet enriched.
+        embedded_at: Unix timestamp when this entry was embedded.  Used to
+            detect replaced files: if ``file.mtime > embedded_at`` on the
+            next ``index`` run the entry is dropped and re-embedded.
+            ``0.0`` = legacy entry written before this field existed; on
+            first encounter the indexer snapshots it to the file's current
+            mtime so future replacements are detectable.
     """
 
     path: str
@@ -237,6 +243,7 @@ class IndexEntry:
     key: int
     mode: int
     tempo_confidence: float
+    embedded_at: float = 0.0
 
     @classmethod
     def from_track(cls, track: Track) -> IndexEntry:
@@ -246,8 +253,12 @@ class IndexEntry:
             track: A track loaded from the beets library.
 
         Returns:
-            An :class:`IndexEntry` with the same metadata.
+            An :class:`IndexEntry` with the same metadata.  ``embedded_at``
+            is stamped to the current wall-clock time so future replacements
+            can be detected by mtime comparison.
         """
+        import time as _time
+
         return cls(
             path=str(track.path),
             title=track.title,
@@ -261,6 +272,7 @@ class IndexEntry:
             key=-1,
             mode=-1,
             tempo_confidence=0.0,
+            embedded_at=_time.time(),
         )
 
     @property
@@ -1201,12 +1213,73 @@ def _backfill_dj_meta(
     print(f"[AutoDJ] DJ-meta backfill done: {done}/{total} tracks analysed.", flush=True)
 
 
+def _detect_stale_entries(
+    entries: list[IndexEntry],
+    reindex_modified_since: float | None = None,
+) -> tuple[set[str], int]:
+    """Find indexed entries whose audio file has been replaced on disk.
+
+    For every entry whose file still exists, compare its mtime against the
+    stored ``embedded_at``.  An entry is considered stale (the user replaced
+    the file with a different version since indexing) when:
+
+    * ``embedded_at > 0`` and ``file_mtime > embedded_at + 1.0`` (1 s margin
+      absorbs filesystem timestamp granularity), OR
+    * ``reindex_modified_since`` is set and ``file_mtime > that timestamp``.
+
+    Legacy entries (``embedded_at == 0`` from before the field existed) are
+    snapshotted IN PLACE to their current file mtime so future replacements
+    are detectable, but are not themselves marked stale (we cannot know
+    when they were originally embedded).
+
+    Stat() calls are fanned out across a 32-thread pool because the typical
+    case is an NFS/SMB-mounted library where each call costs an RTT.
+
+    Args:
+        entries: Existing index entries (with absolute paths already
+            resolved by the caller).  Mutated in place: legacy entries get
+            their ``embedded_at`` set to the file's current mtime.
+        reindex_modified_since: Optional one-shot epoch timestamp.  Any
+            entry whose file mtime exceeds this is marked stale regardless
+            of ``embedded_at`` — useful as a backfill mechanism for files
+            replaced before ``embedded_at`` was being tracked.
+
+    Returns:
+        ``(stale_paths, migrated)`` — set of entry paths to drop and the
+        number of legacy entries that received a fresh snapshot.
+    """
+
+    def _mtime(p: str) -> float | None:
+        try:
+            return Path(p).stat().st_mtime
+        except OSError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=32) as pool:
+        mtimes = list(pool.map(_mtime, [e.path for e in entries]))
+
+    stale: set[str] = set()
+    migrated = 0
+    for e, mt in zip(entries, mtimes, strict=False):
+        if mt is None:
+            continue  # missing file — prune handles it
+        if e.embedded_at == 0.0:
+            e.embedded_at = mt
+            migrated += 1
+        elif mt > e.embedded_at + 1.0:
+            stale.add(e.path)
+        if reindex_modified_since is not None and mt > reindex_modified_since:
+            stale.add(e.path)
+    return stale, migrated
+
+
 def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integration tests
     cfg: AutoDJConfig,
     wrapper: MuqWrapper,
     limit: int | None,
     force: bool,
     workers: int | None = None,
+    reindex_modified_since: float | None = None,
 ) -> None:
     """Build or incrementally update the FAISS index for the music library.
 
@@ -1256,13 +1329,38 @@ def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integr
             # Resolve stored paths to absolute runtime paths
             for e in existing_entries:
                 e.path = _resolve_for_runtime(e.path, music_dir, path_remap)
-            existing_paths = {e.path for e in existing_entries}
 
             faiss_file = index_dir / "vectors.index"
             if faiss_file.exists() and existing_entries:
                 loaded = faiss.read_index(str(faiss_file))
                 existing_vectors = [loaded.reconstruct(i) for i in range(loaded.ntotal)]
                 logger.info("Incremental mode: %d tracks already indexed", len(existing_entries))
+
+            # --- detect replaced files (mtime > embedded_at) ---
+            print(
+                f"[AutoDJ] Phase: Stale-check — comparing mtimes for {len(existing_entries)} entries.",
+                flush=True,
+            )
+            stale, migrated = _detect_stale_entries(
+                existing_entries, reindex_modified_since=reindex_modified_since
+            )
+            if migrated:
+                logger.info("Snapshotted embedded_at for %d legacy entries", migrated)
+            if stale:
+                print(
+                    f"[AutoDJ] Phase: Stale-check — dropping {len(stale)} replaced "
+                    "tracks; they will be re-embedded.",
+                    flush=True,
+                )
+                kept_pairs = [
+                    (e, v)
+                    for e, v in zip(existing_entries, existing_vectors, strict=False)
+                    if e.path not in stale
+                ]
+                existing_entries = [e for e, _ in kept_pairs]
+                existing_vectors = [v for _, v in kept_pairs]
+
+            existing_paths = {e.path for e in existing_entries}
 
     # --- collect tracks to process ---
     tracks: list[Track] = []
