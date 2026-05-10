@@ -20,12 +20,13 @@ classifiers = [
 # headless host run `autodj enrich` against a shared index without
 # installing torch, librosa, or audio libs.
 dependencies = [
-    "faiss-cpu>=1.8.0",          # nearest-neighbor vector search
-    "numpy>=1.26.0",             # vector math
-    "click>=8.1.0",              # CLI framework
-    "rich>=13.0.0",              # terminal UI (panels, tables)
+    "faiss-cpu>=1.8.0", # nearest-neighbor vector search
+    "numpy>=1.26.0", # vector math
+    "click>=8.1.0", # CLI framework
+    "rich>=13.0.0", # terminal UI (panels, tables)
     "python-multipart>=0.0.27",
     "librosa>=0.11.0",
+    "tqdm>=4.67.3",
 ]
 
 [project.optional-dependencies]

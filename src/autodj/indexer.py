@@ -60,11 +60,28 @@ try:
     tqdm: Any = _tqdm_real
 except ImportError:  # pragma: no cover
 
-    def _tqdm_fallback(it: Any, **_kw: Any) -> Any:
-        """Identity-iterator fallback when tqdm is unavailable."""
-        return it
+    class _TqdmFallback:
+        """No-op stand-in for tqdm when the package is missing."""
 
-    tqdm = _tqdm_fallback
+        def __init__(self, it: Any = None, **_kw: Any) -> None:
+            self._it = it
+
+        def __iter__(self) -> Any:
+            return iter(self._it) if self._it is not None else iter(())
+
+        def update(self, _n: int = 1) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+        def __enter__(self) -> _TqdmFallback:
+            return self
+
+        def __exit__(self, *_a: Any) -> None:
+            return None
+
+    tqdm = _TqdmFallback
 
 
 if TYPE_CHECKING:
@@ -770,7 +787,18 @@ def enrich_from_beets(
             all_rows[bytes(row["path"])] = {col: row[col] for col in select_cols}
         logger.info("Loaded %d beets items", len(all_rows))
 
-        for e in entries:
+        print(
+            f"[AutoDJ] Phase: Enriching — scanning {len(entries)} tracks against beets.",
+            flush=True,
+        )
+        for e in tqdm(
+            entries,
+            total=len(entries),
+            desc="Enriching",
+            unit="track",
+            disable=False,
+            dynamic_ncols=True,
+        ):
             row = _find_beets_row(e.path, music_dir, all_rows, _path_candidates)
             if row is None:
                 continue
@@ -1025,11 +1053,153 @@ def load_index(
 # ---------------------------------------------------------------------------
 
 
+def _analyse_one_track(path_str: str) -> tuple[str, Any | None, str | None]:
+    """Worker: decode audio, run :func:`analyse_audio`, return ``(path, meta, err)``.
+
+    Top-level (picklable) so a thread / process pool can dispatch it.
+    Returns the resolved :class:`autodj.dj_meta.DjMeta` on success, or an
+    error string on failure -- never raises.  Empty / unreadable files
+    return ``(path, None, None)`` so the caller can skip silently.
+    """
+    from autodj.dj_meta import analyse_audio
+
+    try:
+        audio, sr = _load_audio(Path(path_str))
+        if len(audio) == 0:
+            return (path_str, None, None)
+        return (path_str, analyse_audio(audio, sr), None)
+    except Exception as exc:
+        return (path_str, None, f"{type(exc).__name__}: {exc}")
+
+
+def _backfill_dj_meta(
+    entries: list[IndexEntry],
+    index_dir: Path,
+    workers: int | None = None,
+) -> None:
+    """Fill in DJ-meta for already-indexed tracks that have no sidecar entry.
+
+    Decodes every track whose cache entry is missing or has
+    ``analysed=False``, runs :func:`autodj.dj_meta.analyse_audio` in a
+    worker pool, and writes the result.  librosa + soundfile release the
+    GIL during their BLAS / decoder calls so a thread pool gets near-
+    linear speedup on multi-core hosts.  Flushes every 25 results
+    (atomic temp+rename) so a Ctrl+C never loses more than the current
+    batch.
+
+    Args:
+        entries: Indexed track entries (with absolute paths already
+            resolved by the caller).
+        index_dir: Active index directory — receives ``dj_meta.json``.
+        workers: Thread-pool size.  ``None`` = ``os.cpu_count()`` capped
+            at 8 (more workers thrash NAS I/O without speeding the BLAS
+            stages).  Pass ``1`` to force serial execution.
+    """
+    import os
+    from concurrent.futures import ThreadPoolExecutor
+
+    from autodj.dj_meta import get_cache
+
+    cache = get_cache(index_dir)
+    if cache is None:
+        return
+    pending = [e for e in entries if not cache.get(e.path).analysed]
+    if not pending:
+        print("[AutoDJ] DJ-meta cache already covers every indexed track.")
+        return
+    if workers is None:
+        workers = min(8, max(1, (os.cpu_count() or 2)))
+    total = len(pending)
+    print(
+        f"[AutoDJ] Phase: Analysing — DJ-meta backfill for {total} tracks ({workers} workers).",
+        flush=True,
+    )
+    done = 0
+
+    bar = tqdm(
+        total=total,
+        desc="Analysing",
+        unit="track",
+        disable=False,
+        dynamic_ncols=True,
+    )
+
+    def _record(path_str: str, meta: Any | None, err: str | None) -> None:
+        nonlocal done
+        if err:
+            logger.warning("DJ-meta backfill failed for %s: %s", path_str, err)
+        elif meta is not None:
+            cache.set(path_str, meta)
+            done += 1
+            if done % 25 == 0:
+                cache.flush()
+        with contextlib.suppress(Exception):
+            bar.update(1)
+
+    try:
+        if workers == 1:
+            for entry in pending:
+                _, meta, err = _analyse_one_track(entry.path)
+                _record(entry.path, meta, err)
+        else:
+            # Sliding-window submission — keeps at most ``workers * 2``
+            # futures in flight so a Ctrl+C can drain quickly instead of
+            # waiting for the executor to shut down 70 000 queued tasks.
+            from collections import deque
+
+            inflight: deque = deque()
+            it = iter(pending)
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                try:
+                    for _ in range(workers * 2):
+                        try:
+                            entry = next(it)
+                        except StopIteration:
+                            break
+                        inflight.append(pool.submit(_analyse_one_track, entry.path))
+
+                    while inflight:
+                        fut = inflight.popleft()
+                        path_str, meta, err = fut.result()
+                        _record(path_str, meta, err)
+                        try:
+                            entry = next(it)
+                            inflight.append(pool.submit(_analyse_one_track, entry.path))
+                        except StopIteration:
+                            pass
+                except KeyboardInterrupt:
+                    with contextlib.suppress(Exception):
+                        bar.close()
+                    print(
+                        "\n[AutoDJ] Ctrl+C — cancelling pending workers, flushing cache...",
+                        flush=True,
+                    )
+                    for f in inflight:
+                        f.cancel()
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    cache.flush(force=True)
+                    raise
+    except KeyboardInterrupt:
+        print(
+            f"[AutoDJ] DJ-meta interrupted: {done}/{total} analysed.  "
+            "Re-run `autodj analyse` to resume.",
+            flush=True,
+        )
+        return
+    finally:
+        with contextlib.suppress(Exception):
+            bar.close()
+
+    cache.flush(force=True)
+    print(f"[AutoDJ] DJ-meta backfill done: {done}/{total} tracks analysed.", flush=True)
+
+
 def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integration tests
     cfg: AutoDJConfig,
     wrapper: MuqWrapper,
     limit: int | None,
     force: bool,
+    workers: int | None = None,
 ) -> None:
     """Build or incrementally update the FAISS index for the music library.
 
@@ -1042,6 +1212,11 @@ def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integr
         wrapper: A loaded :class:`~autodj.model.MuqWrapper` for embedding.
         limit: Maximum number of *new* tracks to embed. ``None`` means no limit.
         force: If ``True``, ignore any existing index and re-embed everything.
+        workers: Audio-loader prefetch pool size.  ``None`` =
+            ``min(8, cpu_count())``.  Pass ``1`` to force serial loading.
+            More workers hide audio-decode latency behind GPU embed work
+            on the indexing host; pin lower on slow NAS-mounted libraries
+            to avoid thrashing the SMB pipe.
 
     Raises:
         FileNotFoundError: If the music directory does not exist and no beets
@@ -1152,6 +1327,11 @@ def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integr
         print("[AutoDJ] Index is up to date — nothing to do.")
         return
 
+    print(
+        f"[AutoDJ] Phase: Indexing — {len(new_tracks)} new tracks to embed.",
+        flush=True,
+    )
+
     # --- embed new tracks ---
     new_entries: list[IndexEntry] = []
     new_vectors: list[np.ndarray] = []
@@ -1182,7 +1362,11 @@ def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integr
 
     # Pipeline: load the next track's audio on a background thread while the
     # GPU embeds the current one.
-    PREFETCH = 4
+    import os as _os
+
+    if workers is None:
+        workers = min(8, max(1, (_os.cpu_count() or 2)))
+    PREFETCH = max(1, workers)
     track_iter = iter(new_tracks)
     pending: deque[tuple[Track, Future]] = deque()
 
@@ -1199,7 +1383,14 @@ def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integr
         for _ in range(PREFETCH):
             _submit_next()
 
-        for _ in tqdm(range(len(new_tracks)), desc="Indexing", unit="track"):
+        for _ in tqdm(
+            range(len(new_tracks)),
+            total=len(new_tracks),
+            desc="Indexing",
+            unit="track",
+            disable=False,
+            dynamic_ncols=True,
+        ):
             if not pending:
                 break
             track, future = pending.popleft()
