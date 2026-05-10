@@ -420,6 +420,27 @@ class TestPruneIndex:
         assert removed == 0
         assert kept == 5
 
+    def test_load_audio_falls_back_to_librosa_when_soundfile_errors(self, tmp_path: Path) -> None:
+        # Some FLACs over NFS make libsndfile raise "flac decoder lost sync"
+        # mid-stream — librosa's audioread/ffmpeg path decodes them fine and
+        # must be tried before giving up.  See indexer.py _load_audio.
+        import soundfile as sf
+
+        from autodj.indexer import _load_audio
+
+        flac = tmp_path / "broken.flac"
+        flac.write_bytes(b"not really flac")
+        fake_audio = np.zeros(48000, dtype=np.float32)
+
+        with (
+            patch.object(sf, "read", side_effect=sf.LibsndfileError("flac decoder lost sync")),
+            patch("librosa.load", return_value=(fake_audio, 48000)) as mock_librosa,
+        ):
+            audio, sr = _load_audio(flac)
+        assert mock_librosa.called
+        assert sr == 48000
+        assert len(audio) == 48000
+
     def test_prints_phase_banner(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         # Banner makes the silent NFS stat() loop visible — see indexer.py prune_index.
         from autodj.indexer import prune_index

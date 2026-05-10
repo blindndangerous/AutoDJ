@@ -335,11 +335,17 @@ def _load_audio(path: Path) -> tuple[np.ndarray, int]:
         ``(audio, sample_rate)`` where *audio* is a 1-D float32 mono array.
     """
     if path.suffix.lower() in _SOUNDFILE_FORMATS:
-        audio, sr = sf.read(str(path), dtype="float32", always_2d=False)
-        if audio.ndim == 2:
-            audio = audio.mean(axis=1)  # stereo → mono
-        return audio, sr
-    # Fallback: librosa handles MP3, M4A, and other formats.
+        try:
+            audio, sr = sf.read(str(path), dtype="float32", always_2d=False)
+            if audio.ndim == 2:
+                audio = audio.mean(axis=1)  # stereo → mono
+            return audio, sr
+        except sf.LibsndfileError as exc:
+            # libsndfile chokes on some valid FLACs over NFS ("flac decoder lost
+            # sync") and on streams it can't seek through cleanly.  librosa's
+            # audioread/ffmpeg path decodes them fine — fall through.
+            logger.debug("soundfile failed on %s, falling back to librosa: %s", path, exc)
+    # Fallback: librosa handles MP3, M4A, and FLACs that libsndfile rejected.
     # Suppress the noisy "PySoundFile failed. Trying audioread instead." warning
     # that fires for every MP3/M4A — it's expected and harmless.
     with warnings.catch_warnings():
