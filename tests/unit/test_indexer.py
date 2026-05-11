@@ -1044,3 +1044,57 @@ class TestBackfillDjMeta:
             ),
         ):
             _backfill_dj_meta([_entry("a.flac")], tmp_path, workers=None)
+
+    def test_throttle_ms_sleeps_serial_path(self, tmp_path: Path) -> None:
+        from autodj.dj_meta import DjMeta
+        from autodj.indexer import _backfill_dj_meta
+
+        class _Cache:
+            def get(self, _p: str) -> DjMeta:
+                return DjMeta(analysed=False)
+
+            def set(self, *_a, **_kw) -> None:
+                pass
+
+            def flush(self, *_a, **_kw) -> None:
+                pass
+
+        sleeps: list[float] = []
+        entries = [_entry(f"t{i}.flac") for i in range(3)]
+        with (
+            patch("autodj.dj_meta.get_cache", return_value=_Cache()),
+            patch(
+                "autodj.indexer._analyse_one_track",
+                side_effect=lambda p: (p, DjMeta(analysed=True), None),
+            ),
+            patch("time.sleep", side_effect=sleeps.append),
+        ):
+            _backfill_dj_meta(entries, tmp_path, workers=1, throttle_ms=250.0)
+        # one sleep per entry, each 0.25 s
+        assert sleeps == [0.25, 0.25, 0.25]
+
+    def test_throttle_ms_zero_no_sleep(self, tmp_path: Path) -> None:
+        from autodj.dj_meta import DjMeta
+        from autodj.indexer import _backfill_dj_meta
+
+        class _Cache:
+            def get(self, _p: str) -> DjMeta:
+                return DjMeta(analysed=False)
+
+            def set(self, *_a, **_kw) -> None:
+                pass
+
+            def flush(self, *_a, **_kw) -> None:
+                pass
+
+        sleeps: list[float] = []
+        with (
+            patch("autodj.dj_meta.get_cache", return_value=_Cache()),
+            patch(
+                "autodj.indexer._analyse_one_track",
+                side_effect=lambda p: (p, DjMeta(analysed=True), None),
+            ),
+            patch("time.sleep", side_effect=sleeps.append),
+        ):
+            _backfill_dj_meta([_entry("a.flac")], tmp_path, workers=1, throttle_ms=0.0)
+        assert sleeps == []

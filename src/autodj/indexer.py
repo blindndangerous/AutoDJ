@@ -889,6 +889,8 @@ def prune_index(
     music_dir: Path | None = None,
     path_remap: list[tuple[str, str]] | None = None,
     allow_mass_prune: bool = False,
+    throttle_ms: float = 0.0,
+    stat_workers: int = 8,
 ) -> tuple[int, int]:
     """Remove index entries whose audio files no longer exist on disk.
 
@@ -939,8 +941,18 @@ def prune_index(
         f"[AutoDJ] Phase: Pruning — checking {len(entries)} indexed files on disk.",
         flush=True,
     )
-    with ThreadPoolExecutor(max_workers=32) as pool:
-        keep_mask = list(pool.map(lambda e: Path(e.path).exists(), entries))
+    import time as _time
+
+    throttle_s = max(0.0, throttle_ms) / 1000.0
+    pool_size = max(1, stat_workers)
+
+    def _exists_throttled(e: IndexEntry) -> bool:
+        if throttle_s:
+            _time.sleep(throttle_s)
+        return Path(e.path).exists()
+
+    with ThreadPoolExecutor(max_workers=pool_size) as pool:
+        keep_mask = list(pool.map(_exists_throttled, entries))
     removed = sum(1 for k in keep_mask if not k)
     _check_prune_safety(removed, len(entries), allow_mass_prune)
 
@@ -1096,6 +1108,7 @@ def _backfill_dj_meta(
     entries: list[IndexEntry],
     index_dir: Path,
     workers: int | None = None,
+    throttle_ms: float = 0.0,
 ) -> None:
     """Fill in DJ-meta for already-indexed tracks that have no sidecar entry.
 
@@ -1114,8 +1127,15 @@ def _backfill_dj_meta(
         workers: Thread-pool size.  ``None`` = ``os.cpu_count()`` capped
             at 8 (more workers thrash NAS I/O without speeding the BLAS
             stages).  Pass ``1`` to force serial execution.
+        throttle_ms: Optional idle gap (milliseconds) inserted before each
+            new task submission / serial step.  ``0`` = no throttle.
+            Use to give NAS spindles cool-down breathing room on long
+            sustained passes — e.g. ``500`` cuts effective duty cycle
+            sharply with little wall-clock cost when paired with a low
+            worker count.
     """
     import os
+    import time as _time
     from concurrent.futures import ThreadPoolExecutor
 
     from autodj.dj_meta import get_cache
@@ -1128,7 +1148,11 @@ def _backfill_dj_meta(
         print("[AutoDJ] DJ-meta cache already covers every indexed track.")
         return
     if workers is None:
-        workers = min(8, max(1, (os.cpu_count() or 2)))
+        # NAS-friendly default: two concurrent decoders keep one librosa
+        # thread busy in BLAS while the other waits on the next read.
+        # Eight workers (the earlier default) saturated NAS spindles and
+        # caused drive thermal shutdowns on long sustained passes.
+        workers = min(2, max(1, (os.cpu_count() or 2)))
     total = len(pending)
     print(
         f"[AutoDJ] Phase: Analysing — DJ-meta backfill for {total} tracks ({workers} workers).",
@@ -1156,9 +1180,13 @@ def _backfill_dj_meta(
         with contextlib.suppress(Exception):
             bar.update(1)
 
+    throttle_s = max(0.0, throttle_ms) / 1000.0
+
     try:
         if workers == 1:
             for entry in pending:
+                if throttle_s:
+                    _time.sleep(throttle_s)
                 _, meta, err = _analyse_one_track(entry.path)
                 _record(entry.path, meta, err)
         else:
@@ -1176,6 +1204,8 @@ def _backfill_dj_meta(
                             entry = next(it)
                         except StopIteration:
                             break
+                        if throttle_s:
+                            _time.sleep(throttle_s)
                         inflight.append(pool.submit(_analyse_one_track, entry.path))
 
                     while inflight:
@@ -1184,6 +1214,8 @@ def _backfill_dj_meta(
                         _record(path_str, meta, err)
                         try:
                             entry = next(it)
+                            if throttle_s:
+                                _time.sleep(throttle_s)
                             inflight.append(pool.submit(_analyse_one_track, entry.path))
                         except StopIteration:
                             pass
@@ -1217,6 +1249,8 @@ def _backfill_dj_meta(
 def _detect_stale_entries(
     entries: list[IndexEntry],
     reindex_modified_since: float | None = None,
+    throttle_ms: float = 0.0,
+    stat_workers: int = 8,
 ) -> tuple[set[str], int]:
     """Find indexed entries whose audio file has been replaced on disk.
 
@@ -1250,13 +1284,20 @@ def _detect_stale_entries(
         number of legacy entries that received a fresh snapshot.
     """
 
+    import time as _time
+
+    throttle_s = max(0.0, throttle_ms) / 1000.0
+    pool_size = max(1, stat_workers)
+
     def _mtime(p: str) -> float | None:
+        if throttle_s:
+            _time.sleep(throttle_s)
         try:
             return Path(p).stat().st_mtime
         except OSError:
             return None
 
-    with ThreadPoolExecutor(max_workers=32) as pool:
+    with ThreadPoolExecutor(max_workers=pool_size) as pool:
         mtimes = list(pool.map(_mtime, [e.path for e in entries]))
 
     stale: set[str] = set()
@@ -1280,13 +1321,21 @@ def _load_existing_index(  # pragma: no cover -- exercised via build_index integ
     path_remap: list[tuple[str, str]] | None,
     force: bool,
     reindex_modified_since: float | None,
+    throttle_ms: float = 0.0,
+    stat_workers: int = 8,
 ) -> tuple[list[IndexEntry], list[np.ndarray], set[str]]:
     """Load existing entries + vectors, drop entries with replaced files."""
     if force:
         return [], [], set()
 
     try:
-        removed, kept = prune_index(index_dir, music_dir=music_dir, path_remap=path_remap)
+        removed, kept = prune_index(
+            index_dir,
+            music_dir=music_dir,
+            path_remap=path_remap,
+            throttle_ms=throttle_ms,
+            stat_workers=stat_workers,
+        )
         if removed:
             print(f"[AutoDJ] Pruned {removed} missing tracks ({kept} remain).")
     except PruneSafetyError as exc:
@@ -1313,7 +1362,10 @@ def _load_existing_index(  # pragma: no cover -- exercised via build_index integ
         flush=True,
     )
     stale, migrated = _detect_stale_entries(
-        existing_entries, reindex_modified_since=reindex_modified_since
+        existing_entries,
+        reindex_modified_since=reindex_modified_since,
+        throttle_ms=throttle_ms,
+        stat_workers=stat_workers,
     )
     if migrated:
         logger.info("Snapshotted embedded_at for %d legacy entries", migrated)
@@ -1390,16 +1442,19 @@ def _embed_new_tracks(  # pragma: no cover -- threaded indexer pipeline
     wrapper: MuqWrapper,
     workers: int | None,
     checkpoint: Callable[[list[IndexEntry], list[np.ndarray]], None],
+    throttle_ms: float = 0.0,
 ) -> tuple[list[IndexEntry], list[np.ndarray]]:
     """Run the producer/consumer embedding loop with prefetch threadpool."""
     new_entries: list[IndexEntry] = []
     new_vectors: list[np.ndarray] = []
 
     import os as _os
+    import time as _time
 
     if workers is None:
         workers = min(8, max(1, (_os.cpu_count() or 2)))
     PREFETCH = max(1, workers)
+    throttle_s = max(0.0, throttle_ms) / 1000.0
     track_iter = iter(new_tracks)
     pending: deque[tuple[Track, Future]] = deque()
 
@@ -1408,6 +1463,8 @@ def _embed_new_tracks(  # pragma: no cover -- threaded indexer pipeline
         def _submit_next() -> None:
             try:
                 t = next(track_iter)
+                if throttle_s:
+                    _time.sleep(throttle_s)
                 pending.append((t, pool.submit(_extract_librosa_features, t.path)))
             except StopIteration:
                 pass
@@ -1464,6 +1521,8 @@ def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integr
     force: bool,
     workers: int | None = None,
     reindex_modified_since: float | None = None,
+    throttle_ms: float = 0.0,
+    stat_workers: int = 8,
 ) -> None:
     """Build or incrementally update the FAISS index for the music library.
 
@@ -1492,7 +1551,13 @@ def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integr
     path_remap = cfg.library.path_remap
 
     existing_entries, existing_vectors, existing_paths = _load_existing_index(
-        index_dir, music_dir, path_remap, force, reindex_modified_since
+        index_dir,
+        music_dir,
+        path_remap,
+        force,
+        reindex_modified_since,
+        throttle_ms=throttle_ms,
+        stat_workers=stat_workers,
     )
 
     tracks = _collect_tracks_to_index(cfg)
@@ -1536,7 +1601,9 @@ def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integr
         save_index(all_e, all_v, index_dir, music_dir=music_dir)
         logger.info("Checkpoint: %d new tracks saved (%d total)", len(new_entries), len(all_e))
 
-    new_entries, new_vectors = _embed_new_tracks(new_tracks, wrapper, workers, _checkpoint)
+    new_entries, new_vectors = _embed_new_tracks(
+        new_tracks, wrapper, workers, _checkpoint, throttle_ms=throttle_ms
+    )
 
     # --- merge and save ---
     if not new_entries:  # pragma: no cover -- empty / failed-indexing CLI report path

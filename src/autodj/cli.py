@@ -657,7 +657,11 @@ def cmd_index(
     help="Named index to operate on (default: 'default').",
 )
 @click.pass_context
-def cmd_prune(ctx: click.Context, force: bool, index_name: str | None) -> None:
+def cmd_prune(
+    ctx: click.Context,
+    force: bool,
+    index_name: str | None,
+) -> None:
     """Remove indexed entries whose audio files no longer exist on disk.
 
     Useful after deleting, moving, or renaming files in your music library.
