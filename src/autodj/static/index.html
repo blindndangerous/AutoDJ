@@ -654,13 +654,13 @@
         <input type="checkbox" id="disc-enabled" aria-describedby="disc-desc">
         <label for="disc-enabled">Inject distant tracks</label>
       </div>
-      <div class="settings-row">
+      <div class="settings-row" data-show-when="disc-enabled">
         <label for="disc-every">Every N tracks</label>
         <input type="number" id="disc-every" min="1" max="500" step="1" value="20"
                disabled aria-describedby="disc-desc">
       </div>
       <span class="setting-desc" id="disc-desc">
-        Same on/off state as the <em>Discovery</em> button on the Now Playing tab — toggling either mirrors the other.  Periodically injects a sonically <em>distant</em> track to break the auto-DJ out of a similarity loop, picking at random from the bottom quartile of cosine similarity.
+        Periodically injects a sonically <em>distant</em> track to break the auto-DJ out of a similarity loop, picking at random from the bottom quartile of cosine similarity.
       </span>
     </fieldset>
   </details>
