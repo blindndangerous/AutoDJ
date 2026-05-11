@@ -38,8 +38,9 @@ library/
                             ──► concat + L2-normalize ──► 1040-dim FAISS vector
 
 index/
-    vectors.index   (FAISS IndexFlatIP)
-    metadata.json   (per-track: path, title, artist, bpm, key, mode, energy, tempo_confidence, ...)
+    vectors.index   (FAISS IndexFlatIP, binary)
+    tracks.db       (SQLite — one row per track: path, title, artist, bpm, key, mode, energy, tempo_confidence, embedded_at)
+    dj_meta.db      (SQLite — intro/outro, beat grid (JSON blob), cues (JSON blob))
 
 src/autodj/
     cli.py          CLI entry point (index / prune / play / serve / playlist / stats)
@@ -63,11 +64,25 @@ src/autodj/
 2. **Query** (instant): look up the current track's stored vector in FAISS → top-N nearest neighbors → filter recently-played → optionally re-rank by preset BPM target → pick next.
 3. **Playback loop**: play song → on finish (or hotkey skip) → query → crossfade into next.
 
+## Storage (SQLite, as of v0.10)
+Both per-track metadata (`tracks.db`) and DJ-meta sidecar (`dj_meta.db`) are SQLite (WAL mode).  The previous JSON sidecars (`metadata.json`, `dj_meta.json`) were rewritten in full on every per-track checkpoint — at 70 k tracks that produced ~2.4 TB of writes over a full reindex and saturated NAS spindles to the point of thermal shutdown.  SQLite WAL writes only the dirty pages.
+
+**Migration** is fully automatic and one-shot.  The first time any code path opens the index (load_index, prune, enrich, analyse, list-indexes, server boot), `_maybe_import_legacy_metadata_json` parses the legacy JSON, bulk-inserts every well-formed row into `tracks.db` inside a single transaction, then **deletes** the legacy JSON — SQLite is the sole source of truth from then on.  `DjMetaCache` does the same for `dj_meta.json` → `dj_meta.db`.  Source files that are unparseable or contain only malformed rows are kept in place with a warning so the user can inspect them.
+
+Vectors stay in FAISS-native `vectors.index` (already a binary store; nothing to migrate).
+
+## NAS-friendly indexing defaults
+- `_backfill_dj_meta` default workers: **2** (was 8).  Eight saturated NAS drives during the analyse pass on a 70 k library and triggered a thermal shutdown.  Two keeps one librosa thread in BLAS while the other waits on the next read — drives still get idle gaps for cooling.
+- `prune_index` / `_detect_stale_entries` stat workers: **8** (was 32).  Eight still pipelines stat() RPCs adequately on healthy NAS without burst-loading the array.
+- Per-track checkpoint writes only the dirty rows of `tracks.db`, not the whole file.
+- `enrich_from_beets` and `_maybe_migrate_paths` no longer reconstruct every vector when only path/text fields change — they UPSERT directly into `tracks.db` and skip the FAISS file entirely.
+- An internal `throttle_ms` knob exists on every NAS-touching helper but is not exposed via CLI; the defaults above are enough.  Edit the source if your drives need more breathing room.
+
 ## Beets path handling
 Recent beets versions store track paths *relative* to the library `directory` setting (the `relative_path` migration). AutoDJ resolves them by prepending `[library] music_dir` for relative paths; absolute paths are used as-is. There is no NAS prefix-stripping config — `music_dir` must simply match the local mount point of the beets library root.
 
 ## Index portability (cross-machine)
-Track paths in `metadata.json` are stored RELATIVE to `music_dir` (forward-slashed) so a single index built on one host runs on any other machine that mounts the library at a different absolute path. Per-machine overrides go in a sibling `config.local.toml` (gitignored). Legacy absolute paths can be remapped on the fly via `[library] path_remap`. Per-machine venv via `UV_PROJECT_ENVIRONMENT` keeps OS-specific binary wheels off the shared NAS tree.
+Track paths in `tracks.db` are stored RELATIVE to `music_dir` (forward-slashed) so a single index built on one host runs on any other machine that mounts the library at a different absolute path. Per-machine overrides go in a sibling `config.local.toml` (gitignored). Legacy absolute paths can be remapped on the fly via `[library] path_remap`. Per-machine venv via `UV_PROJECT_ENVIRONMENT` keeps OS-specific binary wheels off the shared NAS tree.
 
 ## Safety
 - `save_index` writes to `*.tmp` then `os.replace()` — partial writes (common on SMB / NFS) leave the existing on-disk index intact.
@@ -104,7 +119,9 @@ Track paths in `metadata.json` are stored RELATIVE to `music_dir` (forward-slash
 - [x] **Pro-DJ mixing layer**: harmonic (Camelot), beatmatch, outro/intro align, phrase align, filter sweep
 - [x] **3-band EQ in web UI** (low/mid/high real-time gain) + Reset
 - [x] **Live BPM / key / energy / beatmatch badges in now-playing card**
-- [x] **DJ-meta sidecar cache** (`index/dj_meta.json`) — lazy detect, never re-index
+- [x] **DJ-meta SQLite cache** (`index/dj_meta.db`) — lazy detect, never re-index.  Legacy `dj_meta.json` sidecars auto-migrated on first init then deleted
+- [x] **SQLite tracks metadata** (`index/tracks.db`) — replaces `metadata.json`.  Legacy JSON auto-migrated then deleted.  Per-track checkpoints touch only dirty rows (was: whole-file rewrite, ~2.4 TB of writes over a 70 k reindex on NAS)
+- [x] **NAS-friendly defaults** — `analyse` workers default 2 (was 8) so sustained drive read duty stays below thermal limit on passively-cooled NAS; stat-pool workers default 8 (was 32) for prune + stale-check phases
 - [x] **35 transition effects** (echo_out, reverb_tail, highpass_sweep, lowpass_sweep, tape_stop, gate_stutter, noise_riser, noise_drop, backspin, forward_spin, cross_eq_swap, bitcrusher, flanger, pitch_swell, pitch_fall, telephone, chorus, submerge, vinyl_wow, freeze, glitch, scratch, beat_repeat, sidechain_pump, reverse_reverb, air_horn, vinyl_rewind, transformer, dub_siren, stutter_build, wow_flutter, phaser, ring_modulator, dub_delay, halftime) + random / rotate meta-modes
 - [x] **Non-worklet fallbacks for AudioWorklet effects** — `bitcrusher` falls back to a WaveShaper amplitude quantiser, `freeze` to a BufferSource grain loop, `glitch` to a random-slice BufferSource scheduler when `AudioContext.audioWorklet` is undefined (non-secure context, e.g. LAN HTTP).  Worklet effects stay audible without TLS at the cost of sample-accurate timing
 - [x] **HTTPS support** — `autodj serve --ssl-certfile X.pem --ssl-keyfile X-key.pem` flips uvicorn into HTTPS so AudioWorklet unlocks on remote browsers.  Recommended generator: `mkcert` (installs a local CA, produces a trusted leaf cert per host)
