@@ -1186,10 +1186,12 @@ def prune_index(
         _maybe_migrate_paths(loaded, entries, index_dir, music_dir, already_relative)
         return (0, len(entries))
 
-    surviving_vectors = np.array(
-        [loaded.reconstruct(i) for i, k in enumerate(keep_mask) if k],
-        dtype=np.float32,
-    )
+    # Batch reconstruct: one FAISS call returns the whole (N, dim) array,
+    # then we slice with a numpy mask.  ~70 000 per-entry reconstruct()
+    # calls were the dominant cost of prune on large libraries.
+    all_vectors = loaded.reconstruct_n(0, loaded.ntotal)
+    mask = np.fromiter(keep_mask, dtype=bool, count=len(keep_mask))
+    surviving_vectors = np.asarray(all_vectors[mask], dtype=np.float32)
     save_index(surviving_entries, surviving_vectors, index_dir, music_dir=music_dir)
     logger.info("Pruned %d missing tracks (%d remain)", removed, len(surviving_entries))
     return (removed, len(surviving_entries))
@@ -1596,7 +1598,10 @@ def _load_existing_index(  # pragma: no cover -- exercised via build_index integ
     faiss_file = index_dir / "vectors.index"
     if faiss_file.exists() and existing_entries:
         loaded = faiss.read_index(str(faiss_file))
-        existing_vectors = [loaded.reconstruct(i) for i in range(loaded.ntotal)]
+        # Batch reconstruct in one FAISS call — per-entry reconstruct()
+        # at 70k tracks dominated incremental-index startup time.
+        all_vectors = loaded.reconstruct_n(0, loaded.ntotal)
+        existing_vectors = [np.asarray(row, dtype=np.float32) for row in all_vectors]
         logger.info("Incremental mode: %d tracks already indexed", len(existing_entries))
 
     print(

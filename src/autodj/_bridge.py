@@ -14,6 +14,7 @@ server stack.
 from __future__ import annotations
 
 import logging
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -77,7 +78,13 @@ class PlayerBridge:
     # import them eagerly to keep the minimal-install path light.
     player: Any
     sim: Any
-    _play_history: list = field(default_factory=list, init=False)
+    # Cap session history.  500 ≈ 25 hours at 3 min/track, far longer
+    # than any real listening session, but bounded so /api/history can
+    # never grow into a memory hazard on a long-running ``serve``.
+    _play_history: deque = field(
+        default_factory=lambda: deque(maxlen=500),
+        init=False,
+    )
 
     # ------------------------------------------------------------------
     # Controls

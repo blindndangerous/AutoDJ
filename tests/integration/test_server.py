@@ -2256,6 +2256,45 @@ class TestHistoryEndpoint:
         data = c.get("/api/history?page=999").json()
         assert data["page"] == 1
 
+    def test_play_history_default_is_bounded_deque(self) -> None:
+        """New PlayerBridge instances start with a bounded deque (cap 500)."""
+        from collections import deque
+
+        from autodj.server import PlayerBridge
+        from tests.integration._helpers import _make_player_mock, _make_sim_mock
+
+        bridge = PlayerBridge(player=_make_player_mock(), sim=_make_sim_mock())
+        assert isinstance(bridge._play_history, deque)
+        assert bridge._play_history.maxlen == 500
+
+    def test_pagination_with_deque_backing(self) -> None:
+        """Ensure /api/history slicing works when history is a real deque
+        (the production type, not a list as the older tests assume)."""
+        from collections import deque
+
+        from fastapi.testclient import TestClient
+
+        from autodj.server import PlayerBridge, create_app
+        from tests.integration._helpers import _make_player_mock, _make_sim_mock
+
+        bridge = PlayerBridge(player=_make_player_mock(), sim=_make_sim_mock())
+        # Use the actual deque type for this test.
+        bridge._play_history = deque(
+            ({"title": str(i), "artist": "", "duration": 0.0, "played_at": ""} for i in range(110)),
+            maxlen=500,
+        )
+        c = TestClient(create_app(bridge))
+        page1 = c.get("/api/history?page=1&per_page=50").json()
+        assert page1["total"] == 110
+        # Newest-first: item 109 first, item 60 last on page 1.
+        assert page1["items"][0]["title"] == "109"
+        assert page1["items"][-1]["title"] == "60"
+        page3 = c.get("/api/history?page=3&per_page=50").json()
+        assert len(page3["items"]) == 10
+        # Last page holds the oldest 10 records (0..9), still newest-first.
+        assert page3["items"][0]["title"] == "9"
+        assert page3["items"][-1]["title"] == "0"
+
 
 # ---------------------------------------------------------------------------
 # Recently-added paths -- INFO advance banner, warning escalations, version

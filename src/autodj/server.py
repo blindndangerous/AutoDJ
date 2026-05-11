@@ -347,6 +347,18 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
     if _static_dir is _static_built:
         logger.info("Serving built static assets from %s", _static_dir)
     _static_html_path = _static_dir / "index.html"
+    # Read the bundled HTML once at startup so the GET / handler never
+    # blocks the asyncio event loop on a disk read — important when the
+    # static dir lives on a NAS mount and the file is ~80 KB.
+    try:
+        _index_html_cache = _static_html_path.read_text(encoding="utf-8")
+    except OSError as exc:  # pragma: no cover -- only when the bundle is corrupt
+        logger.error("Could not read %s at startup: %s", _static_html_path, exc)
+        _index_html_cache = (
+            "<!doctype html><meta charset=utf-8>"
+            "<title>AutoDJ unavailable</title>"
+            "<p>Static bundle missing — see server log.</p>"
+        )
 
     # Cache-busting headers so Firefox / Chrome don't keep serving
     # stale HTML / JS / CSS across server upgrades.  In a single-user
@@ -360,11 +372,8 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     async def get_index() -> HTMLResponse:
-        """Serve the bundled web UI HTML."""
-        return HTMLResponse(
-            content=_static_html_path.read_text(encoding="utf-8"),
-            headers=_NO_CACHE,
-        )
+        """Serve the bundled web UI HTML from the in-memory cache."""
+        return HTMLResponse(content=_index_html_cache, headers=_NO_CACHE)
 
     # Convenience aliases at the top level for `app.css` / `app.js` /
     # the AudioWorklet — bypass StaticFiles caching defaults.
@@ -462,20 +471,30 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
 
     @app.get("/api/history")
     async def api_history(page: int = 1, per_page: int = 50) -> JSONResponse:
-        """Return the persisted play history (newest first)."""
-        items = list(reversed(bridge._play_history))
-        total = len(items)
+        """Return the persisted play history (newest first).
+
+        History is a bounded ``deque`` (cap 500 — see PlayerBridge) so
+        this endpoint cannot grow unbounded across a long-running
+        ``serve``.  We compute the slice indices directly against the
+        deque rather than copying the whole thing to a reversed list on
+        every request.
+        """
+        hist = bridge._play_history
+        total = len(hist)
         pages = max(1, (total + per_page - 1) // per_page)
         page = max(1, min(page, pages))
         start = (page - 1) * per_page
-        return JSONResponse(
-            {
-                "items": items[start : start + per_page],
-                "total": total,
-                "page": page,
-                "pages": pages,
-            }
-        )
+        end = start + per_page
+        # Slice from the "newest-first" perspective: index ``start`` from
+        # the end of the deque becomes ``total - 1 - start`` walking back.
+        if total == 0:
+            items: list = []
+        else:
+            hi = total - start
+            lo = max(0, total - end)
+            # Reverse-slice without copying the whole deque to a list.
+            items = list(reversed([hist[i] for i in range(lo, hi)]))
+        return JSONResponse({"items": items, "total": total, "page": page, "pages": pages})
 
     @app.post("/api/skip")
     async def api_skip() -> JSONResponse:
@@ -1115,18 +1134,32 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
 
     @app.get("/api/library/stats")
     async def api_library_stats() -> dict:
-        """Return summary stats about the loaded SimilarityIndex."""
-        sim = bridge.sim
-        entries = sim.entries
+        """Return summary stats about the loaded SimilarityIndex.
+
+        Single pass over ``entries`` so the cost stays O(N) instead of
+        4×O(N).  Negligible at 1 k tracks; measurable at 70 k.
+        """
+        entries = bridge.sim.entries
         n = len(entries)
-        bpms = [e.bpm for e in entries if e.bpm > 0]
-        avg_bpm = round(sum(bpms) / len(bpms), 1) if bpms else 0.0
-        with_genre = sum(1 for e in entries if e.genre)
-        with_key = sum(1 for e in entries if e.key >= 0 and e.mode >= 0)
-        with_energy = sum(1 for e in entries if e.energy > 0)
+        bpm_count = 0
+        bpm_sum = 0.0
+        with_genre = 0
+        with_key = 0
+        with_energy = 0
+        for e in entries:
+            if e.bpm > 0:
+                bpm_count += 1
+                bpm_sum += e.bpm
+            if e.genre:
+                with_genre += 1
+            if e.key >= 0 and e.mode >= 0:
+                with_key += 1
+            if e.energy > 0:
+                with_energy += 1
+        avg_bpm = round(bpm_sum / bpm_count, 1) if bpm_count else 0.0
         return {
             "track_count": n,
-            "tracks_with_bpm": len(bpms),
+            "tracks_with_bpm": bpm_count,
             "average_bpm": avg_bpm,
             "tracks_with_genre": with_genre,
             "tracks_with_key": with_key,
