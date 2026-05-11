@@ -721,14 +721,22 @@ class TestCmdListIndexes:
         assert "No indexes found" in result.output
 
     def test_lists_named_indexes(self, tmp_path: Path) -> None:
-        # Build two named index dirs with metadata.json each
+        # Build two named index dirs with tracks.db each
+        import sqlite3 as _sql
+
+        from autodj.indexer import _TRACKS_SCHEMA
+
         for n, count in (("default", 5), ("workout", 12)):
             d = tmp_path / "idx" / n
             d.mkdir(parents=True)
-            (d / "metadata.json").write_text(
-                "[" + ",".join(['{"path":"x"}'] * count) + "]",
-                encoding="utf-8",
+            conn = _sql.connect(d / "tracks.db")
+            conn.executescript(_TRACKS_SCHEMA)
+            conn.executemany(
+                "INSERT INTO tracks (path) VALUES (?)",
+                [(f"x{i}",) for i in range(count)],
             )
+            conn.commit()
+            conn.close()
         cfg_mock = _make_cfg()
         cfg_mock.index.index_dir = tmp_path / "idx"
         cfg_mock.index.name = "workout"
@@ -752,7 +760,8 @@ class TestCmdListIndexes:
     def test_corrupt_metadata_marked(self, tmp_path: Path) -> None:
         d = tmp_path / "idx" / "broken"
         d.mkdir(parents=True)
-        (d / "metadata.json").write_text("not valid json {{", encoding="utf-8")
+        # Garbage bytes that sqlite3 will refuse to open as a database.
+        (d / "tracks.db").write_bytes(b"not a sqlite db")
         cfg_mock = _make_cfg()
         cfg_mock.index.index_dir = tmp_path / "idx"
         with patch("autodj.config.load_config", return_value=cfg_mock):
@@ -775,7 +784,7 @@ class TestNameValidation:
             patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
             patch("autodj.player.Player.run"),
         ):
-            result = CliRunner().invoke(cli, ["play", "--name", "index/metadata.json"])
+            result = CliRunner().invoke(cli, ["play", "--name", "index/tracks.db"])
         assert result.exit_code == 1
         assert "path separators" in result.output.lower() or "Invalid" in result.output
 
@@ -1268,28 +1277,32 @@ class TestLoggingDefaults:
 
 class TestCmdAnalyse:
     def _cfg_with_index(self, tmp_path: Path, entries: int = 1) -> MagicMock:
-        import json as _json
+        from autodj.indexer import IndexEntry, _open_tracks_db, _replace_tracks_rows
 
         idx_dir = tmp_path / "idx"
         idx_dir.mkdir()
         rows = [
-            {
-                "path": f"x{i}.flac",
-                "title": "t",
-                "artist": "a",
-                "album": "al",
-                "genre": "g",
-                "bpm": 120.0,
-                "year": 2020,
-                "length": 180.0,
-                "energy": 0.05,
-                "key": 0,
-                "mode": 1,
-                "tempo_confidence": 0.5,
-            }
+            IndexEntry(
+                path=f"x{i}.flac",
+                title="t",
+                artist="a",
+                album="al",
+                genre="g",
+                bpm=120.0,
+                year=2020,
+                length=180.0,
+                energy=0.05,
+                key=0,
+                mode=1,
+                tempo_confidence=0.5,
+            )
             for i in range(entries)
         ]
-        (idx_dir / "metadata.json").write_text(_json.dumps(rows), encoding="utf-8")
+        conn = _open_tracks_db(idx_dir)
+        try:
+            _replace_tracks_rows(conn, rows, music_dir=None)
+        finally:
+            conn.close()
         cfg = _make_cfg()
         cfg.index.active_dir = idx_dir
         cfg.index.name = "default"

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-
 import numpy as np
 import pytest
 
@@ -244,38 +242,6 @@ class TestDjMetaCache:
         cache2 = DjMetaCache(path)
         assert cache2.get("foo.flac").analysed is False
 
-    def test_legacy_json_migrates_on_open(self, tmp_path) -> None:
-        legacy = tmp_path / "cache.json"
-        legacy.write_text(
-            json.dumps(
-                {
-                    "foo.flac": {
-                        "intro_end_s": 3.0,
-                        "outro_start_s": 150.0,
-                        "beats": [0.4, 0.8],
-                        "analysed": True,
-                    }
-                }
-            ),
-            encoding="utf-8",
-        )
-        # Passing the .json path triggers the auto-resolve-to-.db + migration.
-        cache = DjMetaCache(legacy)
-        meta = cache.get("foo.flac")
-        assert meta.intro_end_s == 3.0
-        assert meta.outro_start_s == 150.0
-        assert meta.beats == [0.4, 0.8]
-        # Legacy file is deleted, db is now authoritative.
-        assert not legacy.exists()
-        assert not (tmp_path / "cache.json.legacy.bak").exists()
-        assert (tmp_path / "cache.db").exists()
-
-    def test_corrupt_legacy_json_starts_empty(self, tmp_path) -> None:
-        legacy = tmp_path / "cache.json"
-        legacy.write_text("not json {{{{", encoding="utf-8")
-        cache = DjMetaCache(legacy)  # should not raise
-        assert cache.get("foo.flac").analysed is False
-
 
 # ---------------------------------------------------------------------------
 # harmonic_compatible — extended modes (added with the harmonic combo box)
@@ -400,26 +366,6 @@ class TestCamelotPositionEdges:
 
 
 class TestDjMetaCacheExtra:
-    def test_migration_skips_malformed_legacy_entries(self, tmp_path) -> None:
-        from autodj.dj_meta import DjMetaCache
-
-        legacy = tmp_path / "cache.json"
-        # Second entry is missing the required field shape so the migrator
-        # falls back to defaults for it (no crash on partial data).
-        legacy.write_text(
-            '{"good.flac": {"intro_end_s": 1.0, "outro_start_s": 2.0, '
-            '"beats": [], "analysed": true}, '
-            '"weird.flac": {"unknown_field": "x"}, '
-            '"not_a_dict.flac": "garbage"}',
-            encoding="utf-8",
-        )
-        cache = DjMetaCache(legacy)
-        assert cache.get("good.flac").analysed is True
-        # "weird" landed with all-default fields (analysed=False).
-        assert cache.get("weird.flac").analysed is False
-        # The non-dict value was skipped entirely.
-        assert cache.get("not_a_dict.flac").analysed is False
-
     def test_flush_force_with_no_pending_writes_is_noop(self, tmp_path) -> None:
         from autodj.dj_meta import DjMetaCache
 
@@ -432,45 +378,6 @@ class TestDjMetaCacheExtra:
         cache.close()
         cache2 = DjMetaCache(path)
         assert cache2.get("a.flac").analysed is True
-
-    def test_legacy_non_dict_top_level_kept(self, tmp_path) -> None:
-        from autodj.dj_meta import DjMetaCache
-
-        legacy = tmp_path / "cache.json"
-        legacy.write_text("[1, 2, 3]", encoding="utf-8")
-        cache = DjMetaCache(legacy)
-        # Non-dict top level can't migrate; user can inspect it.
-        assert legacy.exists()
-        assert cache.get("anything").analysed is False
-        cache.close()
-
-    def test_legacy_only_malformed_entries_kept(self, tmp_path) -> None:
-        from autodj.dj_meta import DjMetaCache
-
-        legacy = tmp_path / "cache.json"
-        # Top-level dict, but every value is a non-dict — nothing importable.
-        legacy.write_text('{"a.flac": 42, "b.flac": "string"}', encoding="utf-8")
-        cache = DjMetaCache(legacy)
-        # Legacy kept, db has no row for a.flac/b.flac.
-        assert legacy.exists()
-        assert cache.get("a.flac").analysed is False
-        cache.close()
-
-    def test_legacy_non_list_cues_falls_back_to_empty(self, tmp_path) -> None:
-        from autodj.dj_meta import DjMetaCache
-
-        legacy = tmp_path / "cache.json"
-        # ``cues`` is the wrong shape — migrator should default to [].
-        legacy.write_text(
-            '{"track.flac": {"intro_end_s": 1.0, "outro_start_s": 2.0, '
-            '"beats": [], "analysed": true, "cues": "not_a_list"}}',
-            encoding="utf-8",
-        )
-        cache = DjMetaCache(legacy)
-        loaded = cache.get("track.flac")
-        assert loaded.analysed
-        assert loaded.cues == []
-        cache.close()
 
     def test_get_uses_mem_cache_on_second_call(self, tmp_path) -> None:
         from autodj.dj_meta import DjMetaCache

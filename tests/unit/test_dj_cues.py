@@ -194,8 +194,8 @@ class TestMergeCues:
 
 
 class TestDjMetaCacheCues:
-    def test_cues_roundtrip_through_sidecar(self, tmp_path: Path) -> None:
-        sidecar = tmp_path / "dj_meta.json"
+    def test_cues_roundtrip_through_sqlite(self, tmp_path: Path) -> None:
+        sidecar = tmp_path / "dj_meta.db"
         cache = DjMetaCache(sidecar)
         meta = DjMeta(
             intro_end_s=5.0,
@@ -209,6 +209,7 @@ class TestDjMetaCacheCues:
         )
         cache.set("track.mp3", meta)
         cache.flush(force=True)
+        cache.close()
 
         # Reload from disk in a fresh cache.
         cache2 = DjMetaCache(sidecar)
@@ -217,30 +218,24 @@ class TestDjMetaCacheCues:
         assert len(loaded.cues) == 2
         assert loaded.cues[0].type == "drop"
         assert loaded.cues[1].label == "Hot 1"
+        cache2.close()
 
-    def test_legacy_sidecar_without_cues_loads(self, tmp_path: Path) -> None:
-        # A pre-cues sidecar -- the cache should default cues to [].
-        sidecar = tmp_path / "dj_meta.json"
-        sidecar.write_text(
-            '{"track.mp3": {"intro_end_s": 5.0, "outro_start_s": 180.0, '
-            '"beats": [], "analysed": true}}',
-            encoding="utf-8",
-        )
+    def test_row_without_cues_loads_empty_list(self, tmp_path: Path) -> None:
+        # A track stored before any cues were detected: cues column NULL.
+        sidecar = tmp_path / "dj_meta.db"
         cache = DjMetaCache(sidecar)
-        loaded = cache.get("track.mp3")
+        cache.set(
+            "track.mp3",
+            DjMeta(intro_end_s=5.0, outro_start_s=180.0, beats=[], analysed=True, cues=[]),
+        )
+        cache.flush(force=True)
+        cache.close()
+
+        cache2 = DjMetaCache(sidecar)
+        loaded = cache2.get("track.mp3")
         assert loaded.analysed
         assert loaded.cues == []
-
-    def test_forward_compatible_sidecar_with_unknown_field(self, tmp_path: Path) -> None:
-        sidecar = tmp_path / "dj_meta.json"
-        sidecar.write_text(
-            '{"track.mp3": {"intro_end_s": 5.0, "outro_start_s": 180.0, '
-            '"beats": [], "analysed": true, "future_field": "ignored"}}',
-            encoding="utf-8",
-        )
-        cache = DjMetaCache(sidecar)
-        loaded = cache.get("track.mp3")
-        assert loaded.analysed
+        cache2.close()
 
 
 # ---------------------------------------------------------------------------

@@ -11,7 +11,6 @@ similarity engine:
   filter candidates to harmonically-compatible keys.
 - :class:`DjMetaCache` — SQLite-backed cache (``index/dj_meta.db``) so
   the heavy librosa analysis only runs once per track, then is reused.
-  Legacy ``dj_meta.json`` sidecars are auto-migrated on first init.
 
 All detection is opt-in (the player invokes it lazily when a feature that
 needs it is enabled).  The standard FAISS index is unchanged — adding DJ
@@ -525,11 +524,10 @@ class DjMeta:
 class DjMetaCache:
     """SQLite-backed cache for :class:`DjMeta` keyed by track path.
 
-    Stored at ``index/dj_meta.db`` next to the FAISS index.  Replaces the
-    older ``dj_meta.json`` sidecar — that scheme rewrote the whole file
-    (potentially hundreds of MB at 70k+ tracks) every 25 entries, which
-    saturated NAS write bandwidth and produced multi-second pauses
-    mid-analyse.  SQLite per-row UPSERTs touch only the affected rows.
+    Stored at ``index/dj_meta.db`` next to the FAISS index.  Per-row
+    UPSERTs on ``flush()`` touch only the dirty pages, so per-track
+    checkpoints during a long ``analyse`` run stay cheap even on NAS
+    mounts.
 
     A single process-wide instance is shared via :func:`get_cache`.  All
     operations are thread-safe (the player loads tracks on a background
@@ -549,13 +547,6 @@ class DjMetaCache:
     Beats + cues stay JSON-encoded inside a single row because they are
     small per track (typically <8 KB combined) and queries never project
     them individually.
-
-    Migration: if the constructed DB path does not exist but a sibling
-    ``dj_meta.json`` legacy sidecar does, the JSON is imported in a single
-    transaction on first init and the JSON file deleted (SQLite is the
-    authoritative store from then on).  If the source had rows but the
-    migration imported zero, the JSON is kept instead so the user can
-    inspect it.
 
     Example:
         >>> cache = DjMetaCache(Path("index/dj_meta.db"))
@@ -580,18 +571,9 @@ class DjMetaCache:
         """Initialise the cache, opening or creating the SQLite store.
 
         Args:
-            sidecar_path: Path to the SQLite database.  Accepts a legacy
-                ``*.json`` path for backwards compatibility — that path
-                is silently mapped to the sibling ``*.db`` location and a
-                JSON migration is triggered on first init.
+            sidecar_path: Path to the SQLite database (``*.db``).
         """
-        if sidecar_path.suffix == ".json":
-            self._path = sidecar_path.with_suffix(".db")
-            self._legacy_json = sidecar_path
-        else:
-            self._path = sidecar_path
-            self._legacy_json = sidecar_path.with_suffix(".json")
-
+        self._path = sidecar_path
         self._lock = threading.Lock()
         self._dirty = 0
         # Pending writes — flushed in a single transaction by `flush()`.
@@ -603,7 +585,7 @@ class DjMetaCache:
         self._open()
 
     def _open(self) -> None:
-        """Open the SQLite connection and run the schema + migration."""
+        """Open the SQLite connection and run the schema."""
         self._path.parent.mkdir(parents=True, exist_ok=True)
         first_init = not self._path.exists()
         # ``check_same_thread=False`` is safe because every read/write is
@@ -619,79 +601,10 @@ class DjMetaCache:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA synchronous=NORMAL")
 
-        if first_init and self._legacy_json.exists():
-            self._migrate_legacy_json()
-        if first_init:
+        if not first_init:
             count = self._conn.execute("SELECT COUNT(*) FROM dj_meta").fetchone()[0]
             if count:
                 logger.info("Loaded DJ meta cache: %d entries", count)
-
-    def _migrate_legacy_json(self) -> None:
-        """One-shot import of the old ``dj_meta.json`` into SQLite.
-
-        Reads the JSON sidecar, batch-inserts every well-formed row in a
-        single transaction, and deletes the legacy file.  Malformed rows
-        are skipped with a warning; a totally unreadable file or a file
-        whose rows all failed to import is left alone so the user can
-        inspect it.
-        """
-        assert self._conn is not None
-        try:
-            raw = json.loads(self._legacy_json.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            logger.warning("Legacy dj_meta.json unreadable, starting fresh: %s", exc)
-            return
-        if not isinstance(raw, dict):
-            logger.warning("Legacy dj_meta.json is not a dict, starting fresh.")
-            return
-
-        rows: list[tuple[str, float, float, int, str, str]] = []
-        for k, v in raw.items():
-            if not isinstance(v, dict):
-                continue
-            try:
-                cue_dicts = v.get("cues", [])
-                if not isinstance(cue_dicts, list):
-                    cue_dicts = []
-                rows.append(
-                    (
-                        str(k),
-                        float(v.get("intro_end_s", 0.0)),
-                        float(v.get("outro_start_s", 0.0)),
-                        1 if v.get("analysed") else 0,
-                        json.dumps(list(v.get("beats", []) or [])),
-                        json.dumps([c for c in cue_dicts if isinstance(c, dict)]),
-                    )
-                )
-            except (TypeError, ValueError):
-                continue
-
-        if rows:
-            with self._conn:
-                self._conn.executemany(
-                    "INSERT OR REPLACE INTO dj_meta "
-                    "(path, intro_end_s, outro_start_s, analysed, beats, cues) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    rows,
-                )
-        elif raw:
-            # Source had entries but none were importable -- keep the
-            # JSON so the user can inspect it instead of silently losing it.
-            logger.warning(
-                "Legacy %s had %d entries but none were importable; "
-                "keeping the JSON in place for inspection.",
-                self._legacy_json.name,
-                len(raw),
-            )
-            return
-
-        with contextlib.suppress(OSError):
-            self._legacy_json.unlink()
-        logger.info(
-            "Migrated %d entries from %s to SQLite (legacy file deleted)",
-            len(rows),
-            self._legacy_json.name,
-        )
 
     def _row_to_meta(self, row: tuple) -> DjMeta:
         intro, outro, analysed, beats_json, cues_json = row

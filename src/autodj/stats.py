@@ -4,7 +4,7 @@ Reads the index metadata and renders a Rich overview of the library:
 BPM distribution, top genres, decade breakdown, track-length histogram,
 top artists, key distribution, major/minor split, and energy histogram.
 
-No FAISS index or MuQ model is needed — only ``metadata.json`` is read.
+No FAISS index or MuQ model is needed — only ``tracks.db`` is read.
 
 Example:
     >>> from autodj.stats import print_stats

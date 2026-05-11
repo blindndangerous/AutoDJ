@@ -137,7 +137,7 @@ def validate_index_name(name: str) -> None:
     """Reject names that aren't safe single-segment directory names.
 
     Use this on every CLI ``--name`` flag and on the ``[index] name``
-    config value before storing.  A *bad* name like ``index/metadata.json``
+    config value before storing.  A *bad* name like ``index/tracks.db``
     would silently produce the wrong on-disk path; failing fast with a
     clear error is better.
 

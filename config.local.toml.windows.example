@@ -6,7 +6,7 @@
 # gitignored.  Each host keeps its own.
 
 [library]
-# Where the beets-relative paths in metadata.json are anchored.
+# Where the beets-relative paths in tracks.db are anchored.
 # On Windows, ALWAYS use forward slashes — TOML treats backslashes as
 # escape sequences and "C:\Users" will fail to parse.
 music_dir = "Z:/Beetsmusic"

@@ -64,12 +64,12 @@ src/autodj/
 2. **Query** (instant): look up the current track's stored vector in FAISS → top-N nearest neighbors → filter recently-played → optionally re-rank by preset BPM target → pick next.
 3. **Playback loop**: play song → on finish (or hotkey skip) → query → crossfade into next.
 
-## Storage (SQLite, as of v0.10)
-Both per-track metadata (`tracks.db`) and DJ-meta sidecar (`dj_meta.db`) are SQLite (WAL mode).  The previous JSON sidecars (`metadata.json`, `dj_meta.json`) were rewritten in full on every per-track checkpoint — at 70 k tracks that produced ~2.4 TB of writes over a full reindex and saturated NAS spindles to the point of thermal shutdown.  SQLite WAL writes only the dirty pages.
+## Storage (SQLite)
+Both per-track metadata (`tracks.db`) and the DJ-meta sidecar (`dj_meta.db`) are SQLite (WAL mode).  Per-row UPSERTs on flush only touch the dirty pages, so per-track checkpoints during a long ``index`` or ``analyse`` run stay cheap even on NAS mounts.
 
-**Migration** is fully automatic and one-shot.  The first time any code path opens the index (load_index, prune, enrich, analyse, list-indexes, server boot), `_maybe_import_legacy_metadata_json` parses the legacy JSON, bulk-inserts every well-formed row into `tracks.db` inside a single transaction, then **deletes** the legacy JSON — SQLite is the sole source of truth from then on.  `DjMetaCache` does the same for `dj_meta.json` → `dj_meta.db`.  Source files that are unparseable or contain only malformed rows are kept in place with a warning so the user can inspect them.
+Vectors live in FAISS-native `vectors.index` (binary).
 
-Vectors stay in FAISS-native `vectors.index` (already a binary store; nothing to migrate).
+There is no legacy-JSON migration code in tree — pre-v0.10 indexes were migrated on first run of the v0.10 release.  Any user still on a JSON sidecar must build a fresh index.
 
 ## NAS-friendly indexing defaults
 - `_backfill_dj_meta` default workers: **2** (was 8).  Eight saturated NAS drives during the analyse pass on a 70 k library and triggered a thermal shutdown.  Two keeps one librosa thread in BLAS while the other waits on the next read — drives still get idle gaps for cooling.
@@ -120,8 +120,8 @@ Track paths in `tracks.db` are stored RELATIVE to `music_dir` (forward-slashed) 
 - [x] **Pro-DJ mixing layer**: harmonic (Camelot), beatmatch, outro/intro align, phrase align, filter sweep
 - [x] **3-band EQ in web UI** (low/mid/high real-time gain) + Reset
 - [x] **Live BPM / key / energy / beatmatch badges in now-playing card**
-- [x] **DJ-meta SQLite cache** (`index/dj_meta.db`) — lazy detect, never re-index.  Legacy `dj_meta.json` sidecars auto-migrated on first init then deleted
-- [x] **SQLite tracks metadata** (`index/tracks.db`) — replaces `metadata.json`.  Legacy JSON auto-migrated then deleted.  Per-track checkpoints touch only dirty rows (was: whole-file rewrite, ~2.4 TB of writes over a 70 k reindex on NAS)
+- [x] **DJ-meta SQLite cache** (`index/dj_meta.db`) — lazy detect, never re-index
+- [x] **SQLite tracks metadata** (`index/tracks.db`) — per-track checkpoints touch only dirty rows
 - [x] **NAS-friendly defaults** — `analyse` workers default 2 (was 8) so sustained drive read duty stays below thermal limit on passively-cooled NAS; stat-pool workers default 8 (was 32) for prune + stale-check phases
 - [x] **Throttled FAISS checkpoint** (`FAISS_CHECKPOINT_EVERY = 100`) — `tracks.db` UPSERT every track (cheap, durable) but the 290 MB `vectors.index` only rewrites every 100 tracks during a long indexing run.  Crash recovery: `_load_existing_index` trims any unmatched metadata tail on next startup, those tracks re-embed
 - [x] **35 transition effects** (echo_out, reverb_tail, highpass_sweep, lowpass_sweep, tape_stop, gate_stutter, noise_riser, noise_drop, backspin, forward_spin, cross_eq_swap, bitcrusher, flanger, pitch_swell, pitch_fall, telephone, chorus, submerge, vinyl_wow, freeze, glitch, scratch, beat_repeat, sidechain_pump, reverse_reverb, air_horn, vinyl_rewind, transformer, dub_siren, stutter_build, wow_flutter, phaser, ring_modulator, dub_delay, halftime) + random / rotate meta-modes

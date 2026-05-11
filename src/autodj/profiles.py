@@ -11,7 +11,7 @@ This is distinct from:
   library + FAISS index*.  Lets you keep e.g. an Ambient-only library
   alongside a main one.
 - **Cue points**: per-track markers (drop, breakdown, phrase, outro
-  downbeat) cached inside ``dj_meta.json``.
+  downbeat) cached inside ``dj_meta.db``.
 
 Profiles are pure config.  They reference an index name (so a profile
 can pin "use the workout index") but don't store track data

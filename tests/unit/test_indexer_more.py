@@ -370,7 +370,6 @@ class TestCheckPruneSafety:
 class TestDeleteIndexFiles:
     def test_unlinks_all_known_index_files(self, tmp_path: Path) -> None:
         for name in (
-            "metadata.json",
             "vectors.index",
             "tracks.db",
             "tracks.db-wal",
@@ -379,7 +378,6 @@ class TestDeleteIndexFiles:
             (tmp_path / name).write_bytes(b"x")
         _delete_index_files(tmp_path)
         for name in (
-            "metadata.json",
             "vectors.index",
             "tracks.db",
             "tracks.db-wal",
@@ -476,9 +474,16 @@ class TestSaveIndexErrorPaths:
             save_index(entries, vectors, idx)
         # FAISS index landed (it writes first)...
         assert (idx / "vectors.index").exists()
-        # ... but metadata tmp was rolled back.
-        assert not (idx / "metadata.json.tmp").exists()
-        assert not (idx / "metadata.json").exists()
+        # ... and tracks.db was created (sqlite3.connect makes the file),
+        # but the failed transaction left zero rows.
+        import sqlite3 as _sql
+
+        conn = _sql.connect(idx / "tracks.db")
+        try:
+            count = conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
+        finally:
+            conn.close()
+        assert count == 0
 
 
 # ---------------------------------------------------------------------------
@@ -490,7 +495,7 @@ class TestLoadIndexMissingFiles:
     def test_dir_exists_but_files_missing_raises(self, tmp_path: Path) -> None:
         idx = tmp_path / "idx"
         idx.mkdir()
-        # No metadata.json or vectors.index
+        # No tracks.db or vectors.index
         with pytest.raises(FileNotFoundError):
             load_index(idx)
 
@@ -508,10 +513,10 @@ class TestMigrateFlatIndexFailure:
     def test_migration_oserror_swallowed_logged(self, tmp_path: Path, caplog) -> None:
         from autodj.indexer import _migrate_flat_index_if_needed
 
-        # Old layout: parent has metadata.json + vectors.index
+        # Old layout: parent has tracks.db + vectors.index
         parent = tmp_path
         target = parent / "default"
-        (parent / "metadata.json").write_text("[]", encoding="utf-8")
+        (parent / "tracks.db").write_bytes(b"")
         (parent / "vectors.index").write_bytes(b"")
         # Force replace to fail
         with (

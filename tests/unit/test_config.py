@@ -176,7 +176,7 @@ class TestValidateIndexName:
         from autodj.config import validate_index_name
 
         with pytest.raises(ValueError, match="path separators"):
-            validate_index_name("index/metadata.json")
+            validate_index_name("index/tracks.db")
         with pytest.raises(ValueError, match="path separators"):
             validate_index_name("a\\b")
 

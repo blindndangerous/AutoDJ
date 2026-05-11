@@ -164,7 +164,7 @@ class SimilarityIndex:
 
         Args:
             index_dir: Directory containing ``vectors.index`` and
-                ``metadata.json``.
+                ``tracks.db``.
             music_dir: Library root for resolving relative paths.
             path_remap: Cross-OS prefix swaps for legacy absolute paths.
 
@@ -192,14 +192,14 @@ class SimilarityIndex:
         """Load a :class:`SimilarityIndex` from the index directory on disk.
 
         When *music_dir* is provided, relative paths stored in
-        ``metadata.json`` are resolved against it; *path_remap* applies
+        ``tracks.db`` are resolved against it; *path_remap* applies
         cross-OS prefix swaps to absolute paths.  This makes a single
         index portable across machines that mount the library at
         different absolute locations.
 
         Args:
             index_dir: Directory containing ``vectors.index`` and
-                ``metadata.json`` as written by
+                ``tracks.db`` as written by
                 :func:`autodj.indexer.save_index`.
             music_dir: Library root for resolving relative paths.
             path_remap: Optional ``(from_prefix, to_prefix)`` swaps for

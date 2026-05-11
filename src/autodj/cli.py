@@ -211,7 +211,6 @@ def _scan_index_rows(
     base: Path, active_name: str
 ) -> list[tuple[str, int, str]]:  # pragma: no cover
     """Walk *base* for indexed-library directories; return display rows."""
-    import json as _json
     import sqlite3 as _sql
 
     rows: list[tuple[str, int, str]] = []
@@ -219,24 +218,16 @@ def _scan_index_rows(
         if not entry.is_dir():
             continue
         db_path = entry / "tracks.db"
-        legacy_meta = entry / "metadata.json"
-        if db_path.exists():
-            try:
-                conn = _sql.connect(db_path)
-                try:
-                    count = int(conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0])
-                finally:
-                    conn.close()
-            except _sql.DatabaseError:
-                count = -1
-        elif legacy_meta.exists():
-            try:
-                data = _json.loads(legacy_meta.read_text(encoding="utf-8"))
-                count = len(data) if isinstance(data, list) else 0
-            except (OSError, _json.JSONDecodeError):
-                count = -1
-        else:
+        if not db_path.exists():
             continue
+        try:
+            conn = _sql.connect(db_path)
+            try:
+                count = int(conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0])
+            finally:
+                conn.close()
+        except _sql.DatabaseError:
+            count = -1
         active_marker = "  *" if entry.name == active_name else "   "
         rows.append((active_marker + entry.name, count, str(entry)))
     return rows
@@ -629,13 +620,11 @@ def cmd_index(
         from autodj.indexer import (
             _backfill_dj_meta,
             _load_tracks_rows,
-            _maybe_import_legacy_metadata_json,
             _open_tracks_db,
             _resolve_for_runtime,
             _tracks_db_path,
         )
 
-        _maybe_import_legacy_metadata_json(cfg.index.active_dir)
         if not _tracks_db_path(cfg.index.active_dir).exists():
             console.print("[yellow]--analyse skipped: no index found.[/]")
         else:
@@ -850,7 +839,7 @@ def cmd_analyse(
     """Backfill DJ-meta (intro/outro/beat grid/cues) for indexed tracks.
 
     Walks the existing FAISS index and, for every entry whose
-    ``dj_meta.json`` cache is missing or has ``analysed=False``, decodes
+    ``dj_meta.db`` cache is missing or has ``analysed=False``, decodes
     the audio, runs :func:`autodj.dj_meta.analyse_audio`, and writes the
     result.  Skips entries already analysed so repeated runs are cheap.
 
@@ -900,13 +889,11 @@ def cmd_analyse(
     from autodj.indexer import (
         _backfill_dj_meta,
         _load_tracks_rows,
-        _maybe_import_legacy_metadata_json,
         _open_tracks_db,
         _resolve_for_runtime,
         _tracks_db_path,
     )
 
-    _maybe_import_legacy_metadata_json(cfg.index.active_dir)
     if not _tracks_db_path(cfg.index.active_dir).exists():
         console.print(
             f"[bold red]No index at {cfg.index.active_dir}.[/]  Run `autodj index` first."

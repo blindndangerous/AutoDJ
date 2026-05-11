@@ -6,10 +6,10 @@ L2-normalized vector, and stores the result in a FAISS nearest-neighbor index.
 
 Index files written to ``index_dir``:
 - ``vectors.index``  — FAISS binary index (``IndexFlatIP``, cosine similarity)
-- ``metadata.json``  — list of :class:`IndexEntry` dicts, one per track
+- ``tracks.db``      — SQLite metadata, one row per indexed track
 
 Subsequent runs are **incremental**: tracks already present in
-``metadata.json`` are skipped.  Pass ``force=True`` to rebuild from scratch.
+``tracks.db`` are skipped.  Pass ``force=True`` to rebuild from scratch.
 
 Example:
     >>> from autodj.config import load_config
@@ -24,7 +24,6 @@ Example:
 from __future__ import annotations
 
 import contextlib
-import json
 import logging
 import os
 import sqlite3
@@ -118,12 +117,9 @@ FAISS_CHECKPOINT_EVERY: int = 100
 # Tracks SQLite store
 # ---------------------------------------------------------------------------
 #
-# As of v0.10 the indexed track metadata lives in ``index/tracks.db`` (a
-# SQLite database) instead of ``index/metadata.json``.  The JSON sidecar
-# rewrote the entire file on every per-track checkpoint -- at 70k tracks
-# that is ~35 MB written per track, ~2.4 TB of writes over a full reindex.
-# Same NAS thermal class of issue as the dj_meta sidecar.  SQLite WAL
-# only touches the dirty pages.
+# Indexed track metadata lives in ``index/tracks.db`` (SQLite WAL mode).
+# Per-track UPSERTs touch only the dirty pages, so a per-track checkpoint
+# during a long reindex run no longer pummels the spindle.
 #
 # Schema mirrors :class:`IndexEntry` one-to-one.  The implicit ``rowid``
 # preserves insertion order so ``load_index`` returns entries in the same
@@ -254,79 +250,8 @@ def _load_tracks_rows(conn: sqlite3.Connection) -> list[IndexEntry]:
     return [_row_to_entry(r) for r in cur.fetchall()]
 
 
-def _maybe_import_legacy_metadata_json(index_dir: Path) -> None:
-    """One-shot import of legacy ``metadata.json`` into ``tracks.db``.
-
-    Triggered the first time anything tries to open the tracks DB.  After
-    a successful import the JSON file is deleted -- SQLite is the
-    authoritative store from this point on.  If the source had rows but
-    the migration imported zero (e.g. all rows malformed), the JSON is
-    kept and a warning is logged so the user can inspect it.
-    """
-    db_path = _tracks_db_path(index_dir)
-    legacy = index_dir / "metadata.json"
-    if db_path.exists() or not legacy.exists():
-        return
-    try:
-        raw = json.loads(legacy.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        logger.warning("Legacy metadata.json unreadable, skipping migration: %s", exc)
-        return
-    if not isinstance(raw, list):
-        logger.warning("Legacy metadata.json is not a list, skipping migration.")
-        return
-
-    conn = _open_tracks_db(index_dir)
-    try:
-        rows: list[dict] = []
-        for r in raw:
-            if not isinstance(r, dict) or "path" not in r:
-                continue
-            rows.append(
-                {
-                    "path": str(r.get("path", "")),
-                    "title": str(r.get("title", "") or ""),
-                    "artist": str(r.get("artist", "") or ""),
-                    "album": str(r.get("album", "") or ""),
-                    "genre": str(r.get("genre", "") or ""),
-                    "bpm": float(r.get("bpm", 0) or 0),
-                    "year": int(r.get("year", 0) or 0),
-                    "length": float(r.get("length", 0) or 0),
-                    "energy": float(r.get("energy", 0) or 0),
-                    "key": int(r.get("key", -1) if r.get("key") is not None else -1),
-                    "mode": int(r.get("mode", -1) if r.get("mode") is not None else -1),
-                    "tempo_confidence": float(r.get("tempo_confidence", 0) or 0),
-                    "embedded_at": float(r.get("embedded_at", 0) or 0),
-                }
-            )
-        with conn:
-            conn.execute("DELETE FROM tracks")
-            if rows:
-                conn.executemany(_TRACKS_INSERT_SQL, rows)
-    finally:
-        conn.close()
-
-    if not rows and isinstance(raw, list) and raw:
-        # Source had data but none of it was importable -- keep the JSON
-        # so the user can inspect it instead of deleting silently.
-        logger.warning(
-            "Legacy metadata.json had %d rows but none were importable; "
-            "keeping the JSON in place for inspection.",
-            len(raw),
-        )
-        return
-
-    with contextlib.suppress(OSError):
-        legacy.unlink()
-    logger.info(
-        "Migrated %d tracks from metadata.json to %s (legacy JSON deleted).",
-        len(rows),
-        db_path.name,
-    )
-
-
 def _relativize_for_storage(abs_path: str, music_dir: Path | None) -> str:
-    """Convert an absolute path to a forward-slashed string for ``metadata.json``.
+    """Convert an absolute path to a forward-slashed string for ``tracks.db``.
 
     If *abs_path* lives under *music_dir*, the returned string is RELATIVE
     to *music_dir* — making the index portable across machines that mount
@@ -338,7 +263,7 @@ def _relativize_for_storage(abs_path: str, music_dir: Path | None) -> str:
         music_dir: Library root.  ``None`` disables relativization.
 
     Returns:
-        A forward-slashed path string suitable for JSON storage.
+        A forward-slashed path string suitable for SQLite storage.
     """
     # Pure string-prefix match — never call Path.resolve() here.  resolve()
     # stat()s the file (and follows symlinks); for libraries on NFS/SMB this
@@ -368,7 +293,7 @@ def _resolve_for_runtime(
     3. If *stored* is relative, join with *music_dir*.
 
     Args:
-        stored: Path string as written in ``metadata.json`` (relative,
+        stored: Path string as written in ``tracks.db`` (relative,
             absolute POSIX, or absolute Windows).
         music_dir: Library root for resolving relative paths.
         path_remap: Optional ``(from_prefix, to_prefix)`` swaps for absolute
@@ -944,15 +869,14 @@ def enrich_from_beets(
 ) -> tuple[int, int]:
     """Refresh existing index entries with whatever beets has on each track.
 
-    Walks ``metadata.json``, looks up each track in *beets_db* by path,
-    and overwrites a curated set of fields when beets has values for
-    them.  This is the upgrade path for users who indexed without beets
-    and later add a ``library.db`` — they get title / artist / album /
+    Walks ``tracks.db``, looks up each track in *beets_db* by path, and
+    overwrites a curated set of fields when beets has values for them.
+    This is the upgrade path for users who indexed without beets and
+    later add a ``library.db`` — they get title / artist / album /
     genre / bpm / year / length backfill plus key/mode from
     ``initial_key`` if the keyfinder plugin ran.
 
-    No re-embedding — only metadata.  Vectors are reloaded and saved
-    unchanged via the atomic :func:`save_index`.
+    No re-embedding — only metadata.  Vectors are not touched.
 
     Field-level rules:
 
@@ -967,7 +891,7 @@ def enrich_from_beets(
     left untouched.
 
     Args:
-        index_dir: Directory containing ``vectors.index`` + ``metadata.json``.
+        index_dir: Directory containing ``vectors.index`` + ``tracks.db``.
         music_dir: Library root (used to resolve relative stored paths).
         beets_db: Path to the beets ``library.db``.
         path_remap: Optional cross-OS prefix swaps for legacy absolute paths.
@@ -983,8 +907,6 @@ def enrich_from_beets(
         _path_candidates,
         parse_initial_key,
     )
-
-    _maybe_import_legacy_metadata_json(index_dir)
 
     db_path = _tracks_db_path(index_dir)
     faiss_file = index_dir / "vectors.index"
@@ -1088,16 +1010,14 @@ def _check_prune_safety(removed: int, total: int, allow_mass_prune: bool) -> Non
 def _delete_index_files(index_dir: Path) -> None:
     """Remove the index files (called when prune empties the library).
 
-    Cleans up ``vectors.index``, ``tracks.db``, plus the SQLite WAL / SHM
-    sidecars and any leftover legacy ``metadata.json`` so the next index
-    run starts from a clean slate.
+    Cleans up ``vectors.index``, ``tracks.db``, and the SQLite WAL / SHM
+    sidecars so the next index run starts from a clean slate.
     """
     for name in (
         "vectors.index",
         "tracks.db",
         "tracks.db-wal",
         "tracks.db-shm",
-        "metadata.json",
     ):
         with contextlib.suppress(FileNotFoundError, OSError):
             (index_dir / name).unlink()
@@ -1136,12 +1056,12 @@ def prune_index(
 ) -> tuple[int, int]:
     """Remove index entries whose audio files no longer exist on disk.
 
-    Loads ``metadata.json`` and ``vectors.index``, resolves each stored
+    Loads ``tracks.db`` and ``vectors.index``, resolves each stored
     path against *music_dir* + *path_remap*, drops every row whose audio
     file is missing, and rewrites both files via :func:`save_index`.  If
     every track is gone, the index files are deleted instead.
 
-    Always rewrites ``metadata.json`` if any rows were stored as absolute
+    Always rewrites ``tracks.db`` if any rows were stored as absolute
     paths under *music_dir* — converting them to portable relative paths.
     No-op when no index exists or no rewrite is needed.
 
@@ -1151,7 +1071,7 @@ def prune_index(
     confirming you really did delete most of your library).
 
     Args:
-        index_dir: Directory containing ``vectors.index`` and ``metadata.json``.
+        index_dir: Directory containing ``vectors.index`` and ``tracks.db``.
         music_dir: Library root for resolving relative paths.
         path_remap: Optional cross-OS prefix swaps for legacy absolute paths.
         allow_mass_prune: If ``True``, skip the safety check and prune
@@ -1164,11 +1084,6 @@ def prune_index(
         PruneSafetyError: If the prune would exceed the safety threshold
             and ``allow_mass_prune`` is not set.
     """
-    # Migrate any legacy metadata.json sitting next to the index BEFORE
-    # we check for tracks.db.  The migration is idempotent and silent
-    # when there is nothing to do.
-    _maybe_import_legacy_metadata_json(index_dir)
-
     db_path = _tracks_db_path(index_dir)
     faiss_file = index_dir / "vectors.index"
     if not db_path.exists() or not faiss_file.exists():
@@ -1231,7 +1146,7 @@ def _migrate_flat_index_if_needed(target_dir: Path) -> None:
     """Auto-migrate a pre-0.9 flat index into the named-index layout.
 
     Pre-0.9 builds wrote ``<index_dir>/vectors.index`` and
-    ``<index_dir>/metadata.json`` directly.  Post-0.9 expects
+    ``<index_dir>/tracks.db`` directly.  Post-0.9 expects
     ``<index_dir>/<name>/...`` instead.  If *target_dir* doesn't have
     the new files but its parent has the old ones, move them across
     in-place so the user doesn't have to re-index after upgrading.
@@ -1243,25 +1158,19 @@ def _migrate_flat_index_if_needed(target_dir: Path) -> None:
     """
     target_vec = target_dir / "vectors.index"
     target_db = target_dir / "tracks.db"
-    target_meta_json = target_dir / "metadata.json"
-    if target_vec.exists() and (target_db.exists() or target_meta_json.exists()):
+    if target_vec.exists() and target_db.exists():
         return  # Already migrated or fresh build — nothing to do
     parent = target_dir.parent
     src_vec = parent / "vectors.index"
     src_db = parent / "tracks.db"
-    src_meta_json = parent / "metadata.json"
-    if not src_vec.exists() or not (src_db.exists() or src_meta_json.exists()):
+    if not src_vec.exists() or not src_db.exists():
         return  # Nothing to migrate
     target_dir.mkdir(parents=True, exist_ok=True)
     try:
         src_vec.replace(target_vec)
-        if src_db.exists():
-            src_db.replace(target_db)
-        if src_meta_json.exists():
-            src_meta_json.replace(target_meta_json)
+        src_db.replace(target_db)
         # Move sidecars too if present
         for sidecar in (
-            "dj_meta.json",
             "dj_meta.db",
             "tracks.db-wal",
             "tracks.db-shm",
@@ -1277,7 +1186,7 @@ def _migrate_flat_index_if_needed(target_dir: Path) -> None:
         )
     except OSError as exc:
         logger.warning(
-            "Auto-migration failed (%s); move manually:\n  mv %s %s\n  (and metadata.json / tracks.db alongside)",
+            "Auto-migration failed (%s); move manually:\n  mv %s %s\n  (and tracks.db alongside)",
             exc,
             src_vec,
             target_vec,
@@ -1296,7 +1205,7 @@ def load_index(
     so ``entry.path`` is always an absolute runtime path on return.
 
     Args:
-        index_dir: Directory containing ``vectors.index`` and ``metadata.json``.
+        index_dir: Directory containing ``vectors.index`` and ``tracks.db``.
         music_dir: Library root for resolving relative paths.
         path_remap: Optional cross-OS prefix swaps for legacy absolute paths.
 
@@ -1313,8 +1222,6 @@ def load_index(
     # the old files are sitting at the parent dir AND the new dir is
     # empty, slide them across so the user doesn't have to re-index.
     _migrate_flat_index_if_needed(index_dir)
-    # Auto-migrate legacy metadata.json → tracks.db on first read.
-    _maybe_import_legacy_metadata_json(index_dir)
 
     index_file = index_dir / "vectors.index"
     db_path = _tracks_db_path(index_dir)
@@ -1329,12 +1236,10 @@ def load_index(
         raise FileNotFoundError(
             f"Index files missing in {index_dir}.\n"
             f"Expected: {db_path} + {index_file}.\n"
-            "Note: as of v0.9 each named index lives in its own sub-directory "
-            "(<index_dir>/<name>/...).  As of v0.10 track metadata lives in "
-            "tracks.db (a SQLite store) instead of metadata.json -- legacy "
-            "JSON sidecars are auto-migrated on first read.  Run "
-            "'autodj list-indexes' to see what's available, or 'autodj index' "
-            "to build a fresh one.",
+            "Note: each named index lives in its own sub-directory "
+            "(<index_dir>/<name>/...).  Track metadata lives in tracks.db "
+            "(SQLite).  Run 'autodj list-indexes' to see what's available, "
+            "or 'autodj index' to build a fresh one.",
         )
 
     faiss_index = faiss.read_index(str(index_file))
@@ -1393,7 +1298,7 @@ def _backfill_dj_meta(
     Args:
         entries: Indexed track entries (with absolute paths already
             resolved by the caller).
-        index_dir: Active index directory — receives ``dj_meta.json``.
+        index_dir: Active index directory — receives ``dj_meta.db``.
         workers: Thread-pool size.  ``None`` = ``os.cpu_count()`` capped
             at 8 (more workers thrash NAS I/O without speeding the BLAS
             stages).  Pass ``1`` to force serial execution.
@@ -1611,7 +1516,6 @@ def _load_existing_index(  # pragma: no cover -- exercised via build_index integ
     except PruneSafetyError as exc:
         print(f"[AutoDJ] Skipping auto-prune (safety check): {exc}")
 
-    _maybe_import_legacy_metadata_json(index_dir)
     db_path = _tracks_db_path(index_dir)
     if not db_path.exists():
         return [], [], set()

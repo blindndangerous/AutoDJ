@@ -1236,10 +1236,8 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
         tracks while a long-running ``serve`` is up — the next track
         pick will see the new entries without restarting the server.
 
-        Watches the SQLite tracks DB (or legacy ``metadata.json``
-        sidecar, when the index has not yet been migrated).  Stat calls
-        are dispatched to a thread so the asyncio event loop is never
-        blocked on a slow NAS round-trip.
+        Stat calls are dispatched to a thread so the asyncio event loop
+        is never blocked on a slow NAS round-trip.
         """
         cfg = getattr(bridge.player, "_cfg", None)
         if cfg is None:
@@ -1247,13 +1245,10 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
         index_dir = cfg.index.active_dir
 
         def _probe_mtime() -> float:
-            for name in ("tracks.db", "metadata.json"):
-                p = index_dir / name
-                try:
-                    return p.stat().st_mtime
-                except OSError:
-                    continue
-            return 0.0
+            try:
+                return (index_dir / "tracks.db").stat().st_mtime
+            except OSError:
+                return 0.0
 
         last_mtime = await asyncio.to_thread(_probe_mtime)
         while True:

@@ -246,16 +246,17 @@ class TestIndexCommand:
     def test_index_analyse_runs_backfill(self, tmp_path: Path) -> None:
         cfg = _write_min_cfg(tmp_path)
         cfg_mock = _cfg()
-        # Build a real metadata.json so the analyse branch runs
+        # Build a real tracks.db so the analyse branch runs
         active = tmp_path / "idx"
         active.mkdir()
         cfg_mock.index.active_dir = active
-        from dataclasses import asdict
+        from autodj.indexer import _open_tracks_db, _replace_tracks_rows
 
-        meta_payload = [asdict(_entry(0))]
-        import json as _json
-
-        (active / "metadata.json").write_text(_json.dumps(meta_payload), encoding="utf-8")
+        conn = _open_tracks_db(active)
+        try:
+            _replace_tracks_rows(conn, [_entry(0)], music_dir=None)
+        finally:
+            conn.close()
 
         with (
             patch("autodj.cli._can_import", return_value=True),
@@ -275,12 +276,13 @@ class TestIndexCommand:
         active = tmp_path / "idx"
         active.mkdir()
         cfg_mock.index.active_dir = active
-        from dataclasses import asdict
+        from autodj.indexer import _open_tracks_db, _replace_tracks_rows
 
-        meta_payload = [asdict(_entry(0))]
-        import json as _json
-
-        (active / "metadata.json").write_text(_json.dumps(meta_payload), encoding="utf-8")
+        conn = _open_tracks_db(active)
+        try:
+            _replace_tracks_rows(conn, [_entry(0)], music_dir=None)
+        finally:
+            conn.close()
         with (
             patch("autodj.cli._can_import", return_value=True),
             patch("autodj.cli._load_cfg_or_exit", return_value=cfg_mock),

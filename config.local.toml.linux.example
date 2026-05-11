@@ -6,7 +6,7 @@
 # gitignored.  Each host keeps its own.
 
 [library]
-# Where the beets-relative paths in metadata.json are anchored.
+# Where the beets-relative paths in tracks.db are anchored.
 # Example values:
 #   "/home/you/Music"                 local copy
 #   "/mnt/nas/music"                  generic NAS mount

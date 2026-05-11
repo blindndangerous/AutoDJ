@@ -42,7 +42,7 @@ supported_formats = ["mp3", "flac", "m4a"]
 
 # Optional — cross-OS path remapping for a shared index built on another
 # machine. Each entry is a [from_prefix, to_prefix] pair applied to absolute
-# paths stored in metadata.json. Useful when the same library is mounted at
+# paths stored in tracks.db. Useful when the same library is mounted at
 # different locations on different hosts (e.g. Linux /mnt/music vs Windows Z:/Music).
 # Once you re-run `autodj prune` (or `autodj index`), absolute paths are
 # rewritten as relative-to-music_dir and remap is no longer needed.
@@ -126,7 +126,7 @@ max_clip_safe_gain = 1.0
 # Pro-DJ mixing layer (beatmatch, harmonic, phrase-align, outro/intro,
 # filter sweep).  Every option is opt-in.  Any track-specific analysis
 # (intro/outro times + beat grid) is detected lazily on first play and
-# cached in `index/dj_meta.json` — no re-indexing required.
+# cached in `index/dj_meta.db` — no re-indexing required.
 # ---------------------------------------------------------------------------
 [djmix]
 # Restrict next-track candidates to harmonically-compatible keys.  Tracks

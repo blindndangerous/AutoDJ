@@ -7,7 +7,7 @@
 # Volumes:
 #   ./music   -> /music (read-only) — your library lives here.  Mount
 #                read-only so the container cannot mutate source files.
-#   ./index   -> /index — FAISS index + dj_meta.json + liners + profiles
+#   ./index   -> /index — FAISS index + tracks.db + dj_meta.db + liners + profiles
 #                + dayparts.  Generate with `autodj index` on the host
 #                first; the container only needs read-write so the user
 #                can upload liners and save profiles.

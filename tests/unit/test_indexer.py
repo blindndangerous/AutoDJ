@@ -4,7 +4,6 @@ The MuQ model and librosa are mocked so tests run without audio files or
 model downloads. Vector math and FAISS operations use real numpy/faiss.
 """
 
-import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -480,7 +479,7 @@ class TestPruneIndex:
         assert removed == 3
         assert kept == 0
         assert not (idx / "vectors.index").exists()
-        assert not (idx / "metadata.json").exists()
+        assert not (idx / "tracks.db").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -1087,6 +1086,37 @@ class TestBackfillDjMeta:
         # one sleep per entry, each 0.25 s
         assert sleeps == [0.25, 0.25, 0.25]
 
+    def test_throttle_ms_sleeps_parallel_path(self, tmp_path: Path) -> None:
+        """Parallel worker pool branch should sleep on each submit when
+        throttle_ms > 0 (covers _backfill_dj_meta line 1392-1394)."""
+        from autodj.dj_meta import DjMeta
+        from autodj.indexer import _backfill_dj_meta
+
+        class _Cache:
+            def get(self, _p: str) -> DjMeta:
+                return DjMeta(analysed=False)
+
+            def set(self, *_a, **_kw) -> None:
+                pass
+
+            def flush(self, *_a, **_kw) -> None:
+                pass
+
+        sleeps: list[float] = []
+        entries = [_entry(f"t{i}.flac") for i in range(5)]
+        with (
+            patch("autodj.dj_meta.get_cache", return_value=_Cache()),
+            patch(
+                "autodj.indexer._analyse_one_track",
+                side_effect=lambda p: (p, DjMeta(analysed=True), None),
+            ),
+            patch("time.sleep", side_effect=sleeps.append),
+        ):
+            _backfill_dj_meta(entries, tmp_path, workers=2, throttle_ms=125.0)
+        # One sleep per submit -- 5 entries = 5 submissions = 5 sleeps.
+        assert len(sleeps) == 5
+        assert all(abs(s - 0.125) < 1e-9 for s in sleeps)
+
     def test_throttle_ms_zero_no_sleep(self, tmp_path: Path) -> None:
         from autodj.dj_meta import DjMeta
         from autodj.indexer import _backfill_dj_meta
@@ -1112,135 +1142,6 @@ class TestBackfillDjMeta:
         ):
             _backfill_dj_meta([_entry("a.flac")], tmp_path, workers=1, throttle_ms=0.0)
         assert sleeps == []
-
-
-# ---------------------------------------------------------------------------
-# Legacy metadata.json -> tracks.db migration
-# ---------------------------------------------------------------------------
-
-
-class TestLegacyMetadataMigration:
-    """Auto-migration of pre-v0.10 ``metadata.json`` sidecars into SQLite."""
-
-    @staticmethod
-    def _legacy_payload(path: str = "Artist/song.flac") -> list[dict]:
-        return [
-            {
-                "path": path,
-                "title": "Title",
-                "artist": "Artist",
-                "album": "Album",
-                "genre": "Rock",
-                "bpm": 128.0,
-                "year": 2020,
-                "length": 200.0,
-                "energy": 0.07,
-                "key": 5,
-                "mode": 1,
-                "tempo_confidence": 0.42,
-                "embedded_at": 1_700_000_000.0,
-            },
-        ]
-
-    def test_metadata_json_imported_into_tracks_db(self, tmp_path: Path) -> None:
-        from autodj.indexer import (
-            _load_tracks_rows,
-            _maybe_import_legacy_metadata_json,
-            _open_tracks_db,
-        )
-
-        legacy = tmp_path / "metadata.json"
-        legacy.write_text(json.dumps(self._legacy_payload()), encoding="utf-8")
-
-        _maybe_import_legacy_metadata_json(tmp_path)
-
-        # JSON file is deleted now that SQLite is authoritative.
-        assert not legacy.exists()
-        assert (tmp_path / "tracks.db").exists()
-
-        conn = _open_tracks_db(tmp_path)
-        try:
-            rows = _load_tracks_rows(conn)
-        finally:
-            conn.close()
-        assert len(rows) == 1
-        assert rows[0].title == "Title"
-        assert rows[0].bpm == 128.0
-        assert rows[0].embedded_at == 1_700_000_000.0
-
-    def test_migration_idempotent(self, tmp_path: Path) -> None:
-        from autodj.indexer import _maybe_import_legacy_metadata_json
-
-        legacy = tmp_path / "metadata.json"
-        legacy.write_text(json.dumps(self._legacy_payload()), encoding="utf-8")
-        _maybe_import_legacy_metadata_json(tmp_path)
-        # Re-run is a no-op (JSON file is already gone).
-        _maybe_import_legacy_metadata_json(tmp_path)
-        assert (tmp_path / "tracks.db").exists()
-
-    def test_corrupt_metadata_json_kept_for_inspection(self, tmp_path: Path) -> None:
-        from autodj.indexer import _maybe_import_legacy_metadata_json
-
-        legacy = tmp_path / "metadata.json"
-        legacy.write_text("{{not json", encoding="utf-8")
-
-        _maybe_import_legacy_metadata_json(tmp_path)
-
-        # Corrupt JSON should NOT be deleted — user needs to inspect it.
-        assert legacy.exists()
-        # No tracks.db was created either (nothing successfully migrated).
-        # Note: _open_tracks_db isn't called in the unreadable-JSON branch.
-        assert not (tmp_path / "tracks.db").exists()
-
-    def test_skipped_when_tracks_db_already_exists(self, tmp_path: Path) -> None:
-        from autodj.indexer import (
-            _maybe_import_legacy_metadata_json,
-            _open_tracks_db,
-        )
-
-        # Pre-create an empty tracks.db.
-        conn = _open_tracks_db(tmp_path)
-        conn.close()
-        legacy = tmp_path / "metadata.json"
-        legacy.write_text(json.dumps(self._legacy_payload()), encoding="utf-8")
-
-        _maybe_import_legacy_metadata_json(tmp_path)
-        # JSON untouched: db already exists so we never migrate over it.
-        assert legacy.exists()
-
-    def test_non_list_json_skipped(self, tmp_path: Path) -> None:
-        from autodj.indexer import _maybe_import_legacy_metadata_json
-
-        legacy = tmp_path / "metadata.json"
-        # A dict at the top level is the wrong shape for the legacy format.
-        legacy.write_text(json.dumps({"foo": "bar"}), encoding="utf-8")
-        _maybe_import_legacy_metadata_json(tmp_path)
-        # Source kept for inspection, no db created.
-        assert legacy.exists()
-        assert not (tmp_path / "tracks.db").exists()
-
-    def test_all_rows_malformed_keeps_json(self, tmp_path: Path) -> None:
-        from autodj.indexer import _maybe_import_legacy_metadata_json
-
-        legacy = tmp_path / "metadata.json"
-        # Three entries that all fail the dict + path checks.
-        legacy.write_text(
-            json.dumps(["a string", 42, {"no_path_field": 1}]),
-            encoding="utf-8",
-        )
-        _maybe_import_legacy_metadata_json(tmp_path)
-        # No row imported, JSON kept around for inspection.
-        assert legacy.exists()
-
-    def test_empty_list_json_deletes_legacy(self, tmp_path: Path) -> None:
-        from autodj.indexer import _maybe_import_legacy_metadata_json
-
-        legacy = tmp_path / "metadata.json"
-        legacy.write_text("[]", encoding="utf-8")
-        _maybe_import_legacy_metadata_json(tmp_path)
-        # Empty legacy successfully "migrated" -> deleted (no rows to keep).
-        assert not legacy.exists()
-        assert (tmp_path / "tracks.db").exists()
 
 
 # ---------------------------------------------------------------------------

@@ -1189,7 +1189,7 @@ class PlayerBridge:
     # ------------------------------------------------------------------
 
     def reload_index_from_disk(self) -> int:
-        """Re-read ``metadata.json`` + ``vectors.index`` into the live sim.
+        """Re-read ``tracks.db`` + ``vectors.index`` into the live sim.
 
         Used by the background watcher in :func:`create_app` so a long-
         running ``serve`` picks up tracks that ``autodj index`` (running
