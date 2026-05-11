@@ -608,12 +608,12 @@
       <span class="setting-desc" id="key-notation-desc">
         How the current track's key is shown in the now-playing badge and the advance log.  <em>Camelot</em> is the Mixed In Key wheel notation used by most DJ software.  <em>Musical</em> uses letter names (C, A minor, F sharp minor).  The wheel SVG below the now-playing card always renders Camelot positions because the wheel itself is Camelot-shaped.
       </span>
-      <div class="settings-row">
-        <label for="key-prefer-flats">Use flats (musical mode)</label>
+      <div class="settings-row" data-show-when="key-notation=musical">
+        <label for="key-prefer-flats">Use flats</label>
         <input type="checkbox" id="key-prefer-flats" aria-describedby="key-prefer-flats-desc">
       </div>
-      <span class="setting-desc" id="key-prefer-flats-desc">
-        Only used when key notation is set to <em>Musical</em>.  When checked, accidentals render as <em>Db, Eb, Gb, Ab, Bb</em>.  When unchecked, they render as <em>C#, D#, F#, G#, A#</em> — which matches the spelling most DJ tag editors emit.
+      <span class="setting-desc" id="key-prefer-flats-desc" data-show-when="key-notation=musical">
+        When checked, accidentals render as <em>Db, Eb, Gb, Ab, Bb</em>.  When unchecked, they render as <em>C#, D#, F#, G#, A#</em> — which matches the spelling most DJ tag editors emit.
       </span>
 
       <div class="settings-row">

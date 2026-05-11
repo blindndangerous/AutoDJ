@@ -7,22 +7,34 @@
 // setting `hidden` on the wrapper avoids the orphaned-label /
 // orphaned-desc state SR users would otherwise hit).
 
+// Resolve a data-show-when value to a boolean.
+// Supports two forms:
+//   "checkboxId"        — true when that checkbox is checked
+//   "selectId=value"    — true when that select's value matches
+function _isVisible(spec) {
+  const eq = spec.indexOf("=");
+  if (eq === -1) {
+    const cb = document.getElementById(spec);
+    return !!(cb && cb.checked);
+  }
+  const el = document.getElementById(spec.slice(0, eq));
+  return !!(el && el.value === spec.slice(eq + 1));
+}
+
 export function applyShowWhen() {
   const wrappers = document.querySelectorAll("[data-show-when]");
   for (const w of wrappers) {
-    const id = w.getAttribute("data-show-when");
-    const cb = id ? document.getElementById(id) : null;
-    const visible = !!(cb && cb.checked);
-    if (visible) w.removeAttribute("hidden");
+    const spec = w.getAttribute("data-show-when");
+    if (_isVisible(spec)) w.removeAttribute("hidden");
     else w.setAttribute("hidden", "");
   }
 }
 
 export function installShowWhenListener() {
-  // Single delegated listener picks up any number of [data-show-when]
-  // sources without re-binding when checkboxes are added later.
+  // Single delegated listener covers checkboxes and selects.
   document.addEventListener("change", (e) => {
-    if (e.target && e.target.matches && e.target.matches("input[type=checkbox]")) {
+    if (e.target && e.target.matches &&
+        e.target.matches("input[type=checkbox], select")) {
       applyShowWhen();
     }
   });
