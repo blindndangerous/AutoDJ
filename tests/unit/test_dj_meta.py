@@ -200,13 +200,13 @@ class TestNearestPhraseBoundary:
 
 class TestDjMetaCache:
     def test_get_returns_empty_for_unknown(self, tmp_path) -> None:
-        cache = DjMetaCache(tmp_path / "cache.json")
+        cache = DjMetaCache(tmp_path / "cache.db")
         meta = cache.get("unknown.flac")
         assert meta.analysed is False
         assert meta.beats == []
 
     def test_set_then_get_round_trip(self, tmp_path) -> None:
-        cache = DjMetaCache(tmp_path / "cache.json")
+        cache = DjMetaCache(tmp_path / "cache.db")
         cache.set(
             "foo.flac",
             DjMeta(
@@ -222,26 +222,31 @@ class TestDjMetaCache:
         assert meta.beats == [0.5, 1.0, 1.5]
         assert meta.analysed is True
 
-    def test_flush_writes_file(self, tmp_path) -> None:
-        path = tmp_path / "cache.json"
+    def test_flush_persists_to_db(self, tmp_path) -> None:
+        path = tmp_path / "cache.db"
         cache = DjMetaCache(path)
         cache.set("foo.flac", DjMeta(intro_end_s=1.0, analysed=True))
         cache.flush(force=True)
-        assert path.exists()
-        data = json.loads(path.read_text(encoding="utf-8"))
-        assert "foo.flac" in data
-        assert data["foo.flac"]["intro_end_s"] == 1.0
+        cache.close()
+        # Reopen and confirm the row survives a fresh connection.
+        cache2 = DjMetaCache(path)
+        meta = cache2.get("foo.flac")
+        assert meta.intro_end_s == 1.0
+        assert meta.analysed is True
 
     def test_flush_skips_when_not_dirty_enough(self, tmp_path) -> None:
-        path = tmp_path / "cache.json"
+        path = tmp_path / "cache.db"
         cache = DjMetaCache(path)
         cache.set("foo.flac", DjMeta(analysed=True))
         cache.flush(force=False, batch=10)  # only 1 dirty, batch=10
-        assert not path.exists()
+        # DB file exists (opened on init) but contains no row yet.
+        cache.close()
+        cache2 = DjMetaCache(path)
+        assert cache2.get("foo.flac").analysed is False
 
-    def test_load_existing_file(self, tmp_path) -> None:
-        path = tmp_path / "cache.json"
-        path.write_text(
+    def test_legacy_json_migrates_on_open(self, tmp_path) -> None:
+        legacy = tmp_path / "cache.json"
+        legacy.write_text(
             json.dumps(
                 {
                     "foo.flac": {
@@ -254,24 +259,22 @@ class TestDjMetaCache:
             ),
             encoding="utf-8",
         )
-        cache = DjMetaCache(path)
+        # Passing the .json path triggers the auto-resolve-to-.db + migration.
+        cache = DjMetaCache(legacy)
         meta = cache.get("foo.flac")
         assert meta.intro_end_s == 3.0
         assert meta.outro_start_s == 150.0
         assert meta.beats == [0.4, 0.8]
+        # Legacy file is renamed, db is now authoritative.
+        assert not legacy.exists()
+        assert (tmp_path / "cache.json.legacy.bak").exists()
+        assert (tmp_path / "cache.db").exists()
 
-    def test_corrupt_file_starts_empty(self, tmp_path) -> None:
-        path = tmp_path / "cache.json"
-        path.write_text("not json {{{{", encoding="utf-8")
-        cache = DjMetaCache(path)  # should not raise
+    def test_corrupt_legacy_json_starts_empty(self, tmp_path) -> None:
+        legacy = tmp_path / "cache.json"
+        legacy.write_text("not json {{{{", encoding="utf-8")
+        cache = DjMetaCache(legacy)  # should not raise
         assert cache.get("foo.flac").analysed is False
-
-    def test_atomic_write_no_lingering_tmp(self, tmp_path) -> None:
-        path = tmp_path / "cache.json"
-        cache = DjMetaCache(path)
-        cache.set("foo.flac", DjMeta(analysed=True))
-        cache.flush(force=True)
-        assert not (tmp_path / "cache.json.tmp").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -397,27 +400,38 @@ class TestCamelotPositionEdges:
 
 
 class TestDjMetaCacheExtra:
-    def test_load_skips_malformed_entries(self, tmp_path) -> None:
+    def test_migration_skips_malformed_legacy_entries(self, tmp_path) -> None:
         from autodj.dj_meta import DjMetaCache
 
-        path = tmp_path / "cache.json"
-        path.write_text(
+        legacy = tmp_path / "cache.json"
+        # Second entry is missing the required field shape so the migrator
+        # falls back to defaults for it (no crash on partial data).
+        legacy.write_text(
             '{"good.flac": {"intro_end_s": 1.0, "outro_start_s": 2.0, '
             '"beats": [], "analysed": true}, '
-            '"bad.flac": {"unknown_field": "x"}}',
+            '"weird.flac": {"unknown_field": "x"}, '
+            '"not_a_dict.flac": "garbage"}',
             encoding="utf-8",
         )
-        cache = DjMetaCache(path)
+        cache = DjMetaCache(legacy)
         assert cache.get("good.flac").analysed is True
-        assert cache.get("bad.flac").analysed is False
+        # "weird" landed with all-default fields (analysed=False).
+        assert cache.get("weird.flac").analysed is False
+        # The non-dict value was skipped entirely.
+        assert cache.get("not_a_dict.flac").analysed is False
 
-    def test_flush_skips_when_no_data(self, tmp_path) -> None:
+    def test_flush_force_with_no_pending_writes_is_noop(self, tmp_path) -> None:
         from autodj.dj_meta import DjMetaCache
 
-        path = tmp_path / "cache.json"
+        path = tmp_path / "cache.db"
         cache = DjMetaCache(path)
+        cache.flush(force=True)  # no writes pending; must not raise
+        # Round-trip survives the no-op flush.
+        cache.set("a.flac", DjMeta(analysed=True))
         cache.flush(force=True)
-        assert not path.exists()
+        cache.close()
+        cache2 = DjMetaCache(path)
+        assert cache2.get("a.flac").analysed is True
 
 
 class TestGetCacheAndAnalyse:

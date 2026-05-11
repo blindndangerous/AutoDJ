@@ -1003,7 +1003,13 @@ def _migrate_flat_index_if_needed(target_dir: Path) -> None:
         src_meta.replace(target_meta)
         src_vec.replace(target_vec)
         # Move sidecars too if present
-        for sidecar in ("dj_meta.json", "web_state.json", "runtime_state.json"):
+        for sidecar in (
+            "dj_meta.json",
+            "dj_meta.db",
+            "dj_meta.json.legacy.bak",
+            "web_state.json",
+            "runtime_state.json",
+        ):
             old = parent / sidecar
             if old.exists() and not (target_dir / sidecar).exists():
                 old.replace(target_dir / sidecar)

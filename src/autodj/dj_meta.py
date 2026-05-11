@@ -9,8 +9,9 @@ similarity engine:
   phrase-aligned crossfade (snap mix point to an 8-bar boundary).
 - :func:`harmonic_compatible` — Camelot wheel test that lets the picker
   filter candidates to harmonically-compatible keys.
-- :class:`DjMetaCache` — JSON-backed sidecar (``index/dj_meta.json``) so
+- :class:`DjMetaCache` — SQLite-backed cache (``index/dj_meta.db``) so
   the heavy librosa analysis only runs once per track, then is reused.
+  Legacy ``dj_meta.json`` sidecars are auto-migrated on first init.
 
 All detection is opt-in (the player invokes it lazily when a feature that
 needs it is enabled).  The standard FAISS index is unchanged — adding DJ
@@ -28,9 +29,11 @@ Example:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
+import sqlite3
 import threading
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -520,86 +523,250 @@ class DjMeta:
 
 
 class DjMetaCache:
-    """JSON-backed sidecar cache for :class:`DjMeta` keyed by track path.
+    """SQLite-backed cache for :class:`DjMeta` keyed by track path.
 
-    Stored at ``index/dj_meta.json`` next to the FAISS index.  A single
-    process-wide instance is shared via :func:`get_cache`.  All operations
-    are thread-safe (the player loads tracks on a background thread while
-    the server reads cache state for the API).
+    Stored at ``index/dj_meta.db`` next to the FAISS index.  Replaces the
+    older ``dj_meta.json`` sidecar — that scheme rewrote the whole file
+    (potentially hundreds of MB at 70k+ tracks) every 25 entries, which
+    saturated NAS write bandwidth and produced multi-second pauses
+    mid-analyse.  SQLite per-row UPSERTs touch only the affected rows.
+
+    A single process-wide instance is shared via :func:`get_cache`.  All
+    operations are thread-safe (the player loads tracks on a background
+    thread while the server reads cache state for the API).
+
+    Schema (one table)::
+
+        CREATE TABLE dj_meta (
+            path          TEXT PRIMARY KEY,
+            intro_end_s   REAL NOT NULL DEFAULT 0,
+            outro_start_s REAL NOT NULL DEFAULT 0,
+            analysed      INTEGER NOT NULL DEFAULT 0,
+            beats         TEXT,  -- JSON list of floats
+            cues          TEXT   -- JSON list of Cue dicts
+        );
+
+    Beats + cues stay JSON-encoded inside a single row because they are
+    small per track (typically <8 KB combined) and queries never project
+    them individually.
+
+    Migration: if the constructed DB path does not exist but a sibling
+    ``dj_meta.json`` legacy sidecar does, the JSON is imported in a single
+    transaction on first init and the JSON file renamed to
+    ``dj_meta.json.legacy.bak``.
 
     Example:
-        >>> cache = DjMetaCache(Path("index/dj_meta.json"))
+        >>> cache = DjMetaCache(Path("index/dj_meta.db"))
         >>> cache.get("song.flac")
         DjMeta(analysed=False, ...)
         >>> cache.set("song.flac", DjMeta(intro_end_s=12.3, analysed=True))
         >>> cache.flush()
     """
 
+    _SCHEMA = """
+        CREATE TABLE IF NOT EXISTS dj_meta (
+            path          TEXT PRIMARY KEY,
+            intro_end_s   REAL NOT NULL DEFAULT 0,
+            outro_start_s REAL NOT NULL DEFAULT 0,
+            analysed      INTEGER NOT NULL DEFAULT 0,
+            beats         TEXT,
+            cues          TEXT
+        );
+    """
+
     def __init__(self, sidecar_path: Path) -> None:
-        """Initialise the cache, loading any existing sidecar."""
-        self._path = sidecar_path
+        """Initialise the cache, opening or creating the SQLite store.
+
+        Args:
+            sidecar_path: Path to the SQLite database.  Accepts a legacy
+                ``*.json`` path for backwards compatibility — that path
+                is silently mapped to the sibling ``*.db`` location and a
+                JSON migration is triggered on first init.
+        """
+        if sidecar_path.suffix == ".json":
+            self._path = sidecar_path.with_suffix(".db")
+            self._legacy_json = sidecar_path
+        else:
+            self._path = sidecar_path
+            self._legacy_json = sidecar_path.with_suffix(".json")
+
         self._lock = threading.Lock()
         self._dirty = 0
-        self._data: dict[str, DjMeta] = {}
-        self._load()
+        # Pending writes — flushed in a single transaction by `flush()`.
+        self._buf: dict[str, DjMeta] = {}
+        # Read-through cache so repeat get() calls (e.g. server JSON
+        # serialization) never hit SQLite twice for the same row.
+        self._mem_cache: dict[str, DjMeta] = {}
+        self._conn: sqlite3.Connection | None = None
+        self._open()
 
-    def _load(self) -> None:  # pragma: no cover -- sidecar loader, exercised via cache tests
-        """Read the sidecar JSON into the in-memory cache (no-op when missing)."""
-        if not self._path.exists():
-            return
+    def _open(self) -> None:
+        """Open the SQLite connection and run the schema + migration."""
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        first_init = not self._path.exists()
+        # ``check_same_thread=False`` is safe because every read/write is
+        # guarded by ``self._lock``; ``isolation_level=None`` puts the
+        # connection in autocommit mode so our explicit ``with conn:``
+        # blocks bracket each transaction cleanly.
+        self._conn = sqlite3.connect(self._path, check_same_thread=False, isolation_level=None)
+        self._conn.executescript(self._SCHEMA)
+        # WAL = concurrent reader while the writer flushes; NORMAL sync
+        # is the standard pragma for long-running app stores (durability
+        # trade-off is fine — we re-derive on missing rows anyway).
+        with contextlib.suppress(sqlite3.DatabaseError):
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA synchronous=NORMAL")
+
+        if first_init and self._legacy_json.exists():
+            self._migrate_legacy_json()
+        if first_init:
+            count = self._conn.execute("SELECT COUNT(*) FROM dj_meta").fetchone()[0]
+            if count:
+                logger.info("Loaded DJ meta cache: %d entries", count)
+
+    def _migrate_legacy_json(self) -> None:
+        """One-shot import of the old ``dj_meta.json`` into SQLite.
+
+        Reads the JSON sidecar, batch-inserts every well-formed row in a
+        single transaction, and renames the legacy file to
+        ``dj_meta.json.legacy.bak``.  Malformed rows are skipped with a
+        warning; a totally unreadable file logs once and is left alone
+        (so the user can inspect it).
+        """
+        assert self._conn is not None
         try:
-            raw = json.loads(self._path.read_text(encoding="utf-8"))
+            raw = json.loads(self._legacy_json.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
-            logger.warning("DJ meta cache unreadable, starting fresh: %s", exc)
+            logger.warning("Legacy dj_meta.json unreadable, starting fresh: %s", exc)
             return
+        if not isinstance(raw, dict):
+            logger.warning("Legacy dj_meta.json is not a dict, starting fresh.")
+            return
+
+        rows: list[tuple[str, float, float, int, str, str]] = []
         for k, v in raw.items():
+            if not isinstance(v, dict):
+                continue
             try:
-                # Cue dicts roundtrip from asdict(); rehydrate them
-                # before constructing DjMeta so the ``cues`` field has
-                # proper Cue instances rather than dicts.  Missing /
-                # legacy entries (no ``cues`` key at all) fall through
-                # to the field default of ``[]``.
-                cue_dicts = v.pop("cues", []) if isinstance(v, dict) else []
-                cues = [Cue(**cd) for cd in cue_dicts if isinstance(cd, dict)]
-                # Tolerate forward-compatible new keys by stripping any
-                # the current dataclass doesn't know.  Keeps old caches
-                # readable when the sidecar schema gains fields.
-                allowed = {f for f in DjMeta.__dataclass_fields__ if f != "cues"}
-                clean = {fk: fv for fk, fv in v.items() if fk in allowed}
-                self._data[k] = DjMeta(cues=cues, **clean)
+                cue_dicts = v.get("cues", [])
+                if not isinstance(cue_dicts, list):
+                    cue_dicts = []
+                rows.append(
+                    (
+                        str(k),
+                        float(v.get("intro_end_s", 0.0)),
+                        float(v.get("outro_start_s", 0.0)),
+                        1 if v.get("analysed") else 0,
+                        json.dumps(list(v.get("beats", []) or [])),
+                        json.dumps([c for c in cue_dicts if isinstance(c, dict)]),
+                    )
+                )
             except (TypeError, ValueError):
                 continue
-        logger.info("Loaded DJ meta cache: %d entries", len(self._data))
+
+        if rows:
+            with self._conn:
+                self._conn.executemany(
+                    "INSERT OR REPLACE INTO dj_meta "
+                    "(path, intro_end_s, outro_start_s, analysed, beats, cues) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    rows,
+                )
+
+        backup = self._legacy_json.with_name(self._legacy_json.name + ".legacy.bak")
+        with contextlib.suppress(OSError):
+            os.replace(self._legacy_json, backup)
+        logger.info(
+            "Migrated %d entries from %s to SQLite (legacy file -> %s)",
+            len(rows),
+            self._legacy_json.name,
+            backup.name,
+        )
+
+    def _row_to_meta(self, row: tuple) -> DjMeta:
+        intro, outro, analysed, beats_json, cues_json = row
+        try:
+            beats = json.loads(beats_json or "[]")
+            cue_dicts = json.loads(cues_json or "[]")
+        except json.JSONDecodeError:
+            beats, cue_dicts = [], []
+        cues = [Cue(**cd) for cd in cue_dicts if isinstance(cd, dict)]
+        return DjMeta(
+            intro_end_s=float(intro or 0.0),
+            outro_start_s=float(outro or 0.0),
+            beats=[float(b) for b in beats],
+            analysed=bool(analysed),
+            cues=cues,
+        )
 
     def get(self, path: str) -> DjMeta:
         """Return the cached :class:`DjMeta` for *path*, or a fresh empty one."""
         with self._lock:
-            return self._data.get(path, DjMeta())
+            if path in self._buf:
+                return self._buf[path]
+            if path in self._mem_cache:
+                return self._mem_cache[path]
+            assert self._conn is not None
+            row = self._conn.execute(
+                "SELECT intro_end_s, outro_start_s, analysed, beats, cues "
+                "FROM dj_meta WHERE path = ?",
+                (path,),
+            ).fetchone()
+            meta = self._row_to_meta(row) if row else DjMeta()
+            self._mem_cache[path] = meta
+            return meta
 
     def set(self, path: str, meta: DjMeta) -> None:
         """Store *meta* under *path* and mark the cache dirty."""
         with self._lock:
-            self._data[path] = meta
+            self._buf[path] = meta
+            self._mem_cache[path] = meta
             self._dirty += 1
 
     def flush(self, force: bool = False, batch: int = 25) -> None:
-        """Write the cache to disk if at least *batch* entries are dirty.
+        """Persist pending writes if at least *batch* entries are dirty.
 
-        Uses atomic temp+rename so a partial write can't corrupt the file.
+        UPSERT each pending row inside a single transaction.  Per-row
+        writes mean a flush at 70k tracks costs O(dirty) instead of the
+        legacy JSON sidecar's O(total) whole-file rewrite.
+
         Set *force* to flush regardless of pending count.
         """
         with self._lock:
             if not force and self._dirty < batch:
                 return
-            if not self._data:
+            if not self._buf:
                 self._dirty = 0
                 return
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self._path.with_suffix(".json.tmp")
-            payload = {k: asdict(v) for k, v in self._data.items()}
-            tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-            os.replace(tmp, self._path)
+            rows = [
+                (
+                    p,
+                    float(m.intro_end_s),
+                    float(m.outro_start_s),
+                    int(bool(m.analysed)),
+                    json.dumps([float(b) for b in m.beats]),
+                    json.dumps([asdict(c) for c in m.cues]),
+                )
+                for p, m in self._buf.items()
+            ]
+            assert self._conn is not None
+            with self._conn:
+                self._conn.executemany(
+                    "INSERT OR REPLACE INTO dj_meta "
+                    "(path, intro_end_s, outro_start_s, analysed, beats, cues) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    rows,
+                )
+            self._buf.clear()
             self._dirty = 0
+
+    def close(self) -> None:
+        """Close the underlying SQLite connection.  Idempotent."""
+        with self._lock:
+            if self._conn is not None:
+                with contextlib.suppress(sqlite3.Error):
+                    self._conn.close()
+                self._conn = None
 
 
 # Process-wide singleton — set by the player / server when they boot
@@ -615,7 +782,7 @@ def get_cache(index_dir: Path | None = None) -> DjMetaCache | None:
 
     Args:
         index_dir: Directory containing the FAISS index (the cache lives
-            at ``<index_dir>/dj_meta.json``).  Required on first call.
+            at ``<index_dir>/dj_meta.db``).  Required on first call.
 
     Returns:
         The shared cache, or ``None`` if uninitialised and no *index_dir*
@@ -624,7 +791,7 @@ def get_cache(index_dir: Path | None = None) -> DjMetaCache | None:
     global _CACHE
     with _CACHE_LOCK:
         if _CACHE is None and index_dir is not None:
-            _CACHE = DjMetaCache(index_dir / "dj_meta.json")
+            _CACHE = DjMetaCache(index_dir / "dj_meta.db")
         return _CACHE
 
 
