@@ -103,7 +103,7 @@ filterwarnings = [
 source = ["src/autodj"]
 
 [tool.coverage.report]
-fail_under = 96
+fail_under = 96.10
 show_missing = true
 exclude_lines = [
     "pragma: no cover",

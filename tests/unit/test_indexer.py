@@ -1241,3 +1241,141 @@ class TestLegacyMetadataMigration:
         # Empty legacy successfully "migrated" -> deleted (no rows to keep).
         assert not legacy.exists()
         assert (tmp_path / "tracks.db").exists()
+
+
+# ---------------------------------------------------------------------------
+# Throttled FAISS checkpoint + crash-recovery reconciliation
+# ---------------------------------------------------------------------------
+
+
+class TestThrottledFaissCheckpoint:
+    """Per-track tracks.db UPSERT + every-N FAISS rewrite + reload recovery."""
+
+    @staticmethod
+    def _make_entries(n: int) -> tuple[list[IndexEntry], np.ndarray]:
+        entries = [
+            IndexEntry(
+                path=f"Z:/Music/song_{i}.flac",
+                title=f"Song {i}",
+                artist="Artist",
+                album="Album",
+                genre="Rock",
+                bpm=120.0,
+                year=2000,
+                length=180.0,
+                energy=0.05,
+                key=0,
+                mode=1,
+                tempo_confidence=0.8,
+            )
+            for i in range(n)
+        ]
+        vectors = np.random.randn(n, FEATURE_DIM).astype(np.float32)
+        vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
+        return entries, vectors
+
+    def test_save_vectors_writes_faiss_only(self, tmp_path: Path) -> None:
+        from autodj.indexer import _save_vectors
+
+        _, vectors = self._make_entries(3)
+        _save_vectors(vectors, tmp_path)
+
+        assert (tmp_path / "vectors.index").exists()
+        # tracks.db not touched -- _save_vectors must not create it.
+        assert not (tmp_path / "tracks.db").exists()
+
+    def test_save_tracks_metadata_writes_db_only(self, tmp_path: Path) -> None:
+        from autodj.indexer import _save_tracks_metadata
+
+        entries, _ = self._make_entries(3)
+        _save_tracks_metadata(entries, tmp_path, music_dir=None)
+
+        assert (tmp_path / "tracks.db").exists()
+        # FAISS file not touched.
+        assert not (tmp_path / "vectors.index").exists()
+
+        import sqlite3 as _sql
+
+        conn = _sql.connect(tmp_path / "tracks.db")
+        try:
+            count = conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
+        finally:
+            conn.close()
+        assert count == 3
+
+    def test_load_existing_index_trims_unmatched_db_tail(self, tmp_path: Path) -> None:
+        """Crash between metadata flush and FAISS flush leaves tracks.db
+        with extra rows.  _load_existing_index must drop the tail."""
+        from autodj.indexer import _load_existing_index, save_index
+
+        entries, vectors = self._make_entries(5)
+        index_dir = tmp_path / "idx"
+        index_dir.mkdir()
+
+        # Healthy save first (3 entries + 3 vectors).
+        save_index(entries[:3], vectors[:3], index_dir)
+
+        # Simulate crash recovery: metadata wrote 5 rows but FAISS only
+        # got 3 vectors.
+        from autodj.indexer import _save_tracks_metadata
+
+        _save_tracks_metadata(entries, index_dir, music_dir=None)
+
+        existing_e, existing_v, paths = _load_existing_index(
+            index_dir,
+            music_dir=tmp_path,
+            path_remap=None,
+            force=False,
+            reindex_modified_since=None,
+        )
+        # Trimmed back to 3 (matching FAISS).
+        assert len(existing_e) == 3
+        assert len(existing_v) == 3
+        assert len(paths) == 3
+        # tracks.db rewritten to match.
+        import sqlite3 as _sql
+
+        conn = _sql.connect(index_dir / "tracks.db")
+        try:
+            db_count = conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
+        finally:
+            conn.close()
+        assert db_count == 3
+
+    def test_load_existing_index_trims_unmatched_faiss_tail(self, tmp_path: Path) -> None:
+        """Defensive: if FAISS somehow has more vectors than tracks.db
+        (shouldn't happen given metadata-first ordering), the load path
+        must still return aligned lists."""
+        from autodj.indexer import (
+            _load_existing_index,
+            _save_tracks_metadata,
+            save_index,
+        )
+
+        entries, vectors = self._make_entries(5)
+        index_dir = tmp_path / "idx"
+        index_dir.mkdir()
+        save_index(entries, vectors, index_dir)
+        # Shrink tracks.db without rewriting FAISS.
+        _save_tracks_metadata(entries[:2], index_dir, music_dir=None)
+
+        existing_e, existing_v, _ = _load_existing_index(
+            index_dir,
+            music_dir=tmp_path,
+            path_remap=None,
+            force=False,
+            reindex_modified_since=None,
+        )
+        # Both lists clamped to the smaller (metadata) length.
+        assert len(existing_e) == 2
+        assert len(existing_v) == 2
+
+    def test_save_index_still_writes_both_files(self, tmp_path: Path) -> None:
+        """Public save_index() API kept its both-files contract; the
+        split into _save_vectors / _save_tracks_metadata is internal."""
+        from autodj.indexer import save_index
+
+        entries, vectors = self._make_entries(2)
+        save_index(entries, vectors, tmp_path)
+        assert (tmp_path / "vectors.index").exists()
+        assert (tmp_path / "tracks.db").exists()

@@ -103,6 +103,17 @@ _LIBROSA_DIM = 16
 # Combined feature vector dimension: 1024 (MuQ) + 16 (librosa)
 FEATURE_DIM = EMBEDDING_DIM + _LIBROSA_DIM
 
+# How often the embed loop rewrites the monolithic FAISS file during a
+# long ``autodj index`` run.  The whole file (~290 MB at 70k tracks) is
+# rebuilt and rewritten on every flush, so per-track rewrites pummel NAS
+# spindles -- ~2.4 TB of writes over a full reindex.  tracks.db still
+# flushes every track (cheap UPSERT), so a crash never loses metadata.
+# On startup, ``_load_existing_index`` reconciles by trimming any
+# metadata rows that lack a matching FAISS vector (max
+# FAISS_CHECKPOINT_EVERY-1 trailing rows) -- those tracks simply get
+# re-embedded on the next run.
+FAISS_CHECKPOINT_EVERY: int = 100
+
 # ---------------------------------------------------------------------------
 # Tracks SQLite store
 # ---------------------------------------------------------------------------
@@ -765,6 +776,45 @@ def _write_faiss_chunked(index: faiss.Index, path: Path, chunk_size: int = 1 << 
             pass
 
 
+def _save_vectors(vectors: np.ndarray, index_dir: Path) -> None:
+    """Write only ``vectors.index`` atomically (tmp+rename).
+
+    Used by the per-checkpoint pipeline so we can flush the SQLite tracks
+    table on every track (cheap) but only rebuild + rewrite the FAISS
+    file every ``checkpoint_every_faiss`` tracks (expensive).
+    """
+    index_dir.mkdir(parents=True, exist_ok=True)
+    vectors_final = index_dir / "vectors.index"
+    vectors_tmp = index_dir / "vectors.index.tmp"
+    try:
+        faiss_index = build_faiss_index(vectors)
+        _write_faiss_chunked(faiss_index, vectors_tmp)
+        os.replace(vectors_tmp, vectors_final)
+    except Exception:
+        if vectors_tmp.exists():
+            with contextlib.suppress(OSError):
+                vectors_tmp.unlink()
+        raise
+
+
+def _save_tracks_metadata(
+    entries: list[IndexEntry],
+    index_dir: Path,
+    music_dir: Path | None,
+) -> None:
+    """Replace the ``tracks.db`` rows in one transaction.
+
+    Per-checkpoint cost stays O(rows) (cheap UPSERT) instead of paying
+    the FAISS whole-file rewrite on every track.
+    """
+    index_dir.mkdir(parents=True, exist_ok=True)
+    conn = _open_tracks_db(index_dir)
+    try:
+        _replace_tracks_rows(conn, entries, music_dir)
+    finally:
+        conn.close()
+
+
 def save_index(
     entries: list[IndexEntry],
     vectors: np.ndarray,
@@ -799,28 +849,8 @@ def save_index(
         index_dir: Directory to write files into (must already exist).
         music_dir: Library root — when set, paths are relativized for storage.
     """
-    index_dir.mkdir(parents=True, exist_ok=True)
-    vectors_final = index_dir / "vectors.index"
-    vectors_tmp = index_dir / "vectors.index.tmp"
-
-    # --- write FAISS to temp, then rename ---
-    try:
-        faiss_index = build_faiss_index(vectors)
-        _write_faiss_chunked(faiss_index, vectors_tmp)
-        os.replace(vectors_tmp, vectors_final)
-    except Exception:
-        if vectors_tmp.exists():
-            with contextlib.suppress(OSError):
-                vectors_tmp.unlink()
-        raise
-
-    # --- replace tracks table contents inside a single transaction ---
-    conn = _open_tracks_db(index_dir)
-    try:
-        _replace_tracks_rows(conn, entries, music_dir)
-    finally:
-        conn.close()
-
+    _save_vectors(vectors, index_dir)
+    _save_tracks_metadata(entries, index_dir, music_dir)
     logger.info("Saved index with %d tracks to %s", len(entries), index_dir)
 
 
@@ -1598,9 +1628,37 @@ def _load_existing_index(  # pragma: no cover -- exercised via build_index integ
     faiss_file = index_dir / "vectors.index"
     if faiss_file.exists() and existing_entries:
         loaded = faiss.read_index(str(faiss_file))
+        # Reconcile: tracks.db UPSERTs every track but FAISS only flushes
+        # every FAISS_CHECKPOINT_EVERY tracks (perf optimisation), so a
+        # crash between the two writes leaves metadata rows without
+        # matching FAISS vectors.  Drop the unmatched tail so those
+        # tracks get re-embedded on this run.
+        if loaded.ntotal < len(existing_entries):
+            drop = len(existing_entries) - loaded.ntotal
+            logger.warning(
+                "Recovered from partial checkpoint: tracks.db had %d rows "
+                "but vectors.index has %d -- dropping last %d entries so "
+                "they get re-embedded.",
+                len(existing_entries),
+                loaded.ntotal,
+                drop,
+            )
+            existing_entries = existing_entries[: loaded.ntotal]
+            _save_tracks_metadata(existing_entries, index_dir, music_dir)
         # Batch reconstruct in one FAISS call — per-entry reconstruct()
         # at 70k tracks dominated incremental-index startup time.
         all_vectors = loaded.reconstruct_n(0, loaded.ntotal)
+        # If FAISS has more vectors than tracks.db (shouldn't happen
+        # given metadata-first ordering, but defend anyway), keep only
+        # the prefix that lines up with metadata.
+        if loaded.ntotal > len(existing_entries):
+            logger.warning(
+                "vectors.index has %d rows but tracks.db has only %d -- "
+                "truncating FAISS to match metadata.",
+                loaded.ntotal,
+                len(existing_entries),
+            )
+            all_vectors = all_vectors[: len(existing_entries)]
         existing_vectors = [np.asarray(row, dtype=np.float32) for row in all_vectors]
         logger.info("Incremental mode: %d tracks already indexed", len(existing_entries))
 
@@ -1828,25 +1886,43 @@ def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integr
         flush=True,
     )
 
-    # Save after every successfully embedded track so Ctrl+C never loses
-    # progress and a parallel `serve` process can pick up newly-indexed
-    # tracks immediately.  Atomic via tmp + os.replace.
+    # Per-track checkpoint policy:
+    #   * tracks.db UPSERT every track -- cheap, durable, lets a parallel
+    #     ``serve`` see new entries immediately.
+    #   * FAISS file rewrite every FAISS_CHECKPOINT_EVERY tracks (or at
+    #     loop end via the final save_index call) -- the monolithic file
+    #     is expensive to rewrite, so we lump those writes together.
+    # Order: metadata first, then FAISS.  A crash between the two leaves
+    # tracks.db ahead of vectors.index; _load_existing_index trims the
+    # mismatched tail on next startup so those tracks get re-embedded.
+    cp_counter = [0]
+
     def _checkpoint(new_entries: list[IndexEntry], new_vectors: list[np.ndarray]) -> None:
         if not new_entries:
             return
+        cp_counter[0] += 1
         all_e = existing_entries + new_entries
-        all_v = (
-            np.vstack(
-                [
-                    np.array(existing_vectors, dtype=np.float32),
-                    np.array(new_vectors, dtype=np.float32),
-                ]
+        # Metadata always: O(rows) UPSERT, no whole-file rewrite.
+        _save_tracks_metadata(all_e, index_dir, music_dir)
+        # FAISS only every N tracks (or at the very last entry of the run).
+        last_track = cp_counter[0] == len(new_tracks)
+        if last_track or cp_counter[0] % FAISS_CHECKPOINT_EVERY == 0:
+            all_v = (
+                np.vstack(
+                    [
+                        np.array(existing_vectors, dtype=np.float32),
+                        np.array(new_vectors, dtype=np.float32),
+                    ]
+                )
+                if existing_vectors
+                else np.array(new_vectors, dtype=np.float32)
             )
-            if existing_vectors
-            else np.array(new_vectors, dtype=np.float32)
-        )
-        save_index(all_e, all_v, index_dir, music_dir=music_dir)
-        logger.info("Checkpoint: %d new tracks saved (%d total)", len(new_entries), len(all_e))
+            _save_vectors(all_v, index_dir)
+            logger.info(
+                "Checkpoint: %d new tracks saved (%d total) -- FAISS flushed",
+                len(new_entries),
+                len(all_e),
+            )
 
     new_entries, new_vectors = _embed_new_tracks(
         new_tracks, wrapper, workers, _checkpoint, throttle_ms=throttle_ms
