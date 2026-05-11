@@ -212,19 +212,31 @@ def _scan_index_rows(
 ) -> list[tuple[str, int, str]]:  # pragma: no cover
     """Walk *base* for indexed-library directories; return display rows."""
     import json as _json
+    import sqlite3 as _sql
 
     rows: list[tuple[str, int, str]] = []
     for entry in sorted(base.iterdir()):
         if not entry.is_dir():
             continue
-        meta = entry / "metadata.json"
-        if not meta.exists():
+        db_path = entry / "tracks.db"
+        legacy_meta = entry / "metadata.json"
+        if db_path.exists():
+            try:
+                conn = _sql.connect(db_path)
+                try:
+                    count = int(conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0])
+                finally:
+                    conn.close()
+            except _sql.DatabaseError:
+                count = -1
+        elif legacy_meta.exists():
+            try:
+                data = _json.loads(legacy_meta.read_text(encoding="utf-8"))
+                count = len(data) if isinstance(data, list) else 0
+            except (OSError, _json.JSONDecodeError):
+                count = -1
+        else:
             continue
-        try:
-            data = _json.loads(meta.read_text(encoding="utf-8"))
-            count = len(data) if isinstance(data, list) else 0
-        except (OSError, _json.JSONDecodeError):
-            count = -1
         active_marker = "  *" if entry.name == active_name else "   "
         rows.append((active_marker + entry.name, count, str(entry)))
     return rows
@@ -614,16 +626,24 @@ def cmd_index(
                 console.print(f"[bold red]Enrich failed:[/] {exc}")
 
     if do_analyse:
-        import json as _json
+        from autodj.indexer import (
+            _backfill_dj_meta,
+            _load_tracks_rows,
+            _maybe_import_legacy_metadata_json,
+            _open_tracks_db,
+            _resolve_for_runtime,
+            _tracks_db_path,
+        )
 
-        from autodj.indexer import IndexEntry, _backfill_dj_meta, _resolve_for_runtime
-
-        metadata_file = cfg.index.active_dir / "metadata.json"
-        if not metadata_file.exists():
+        _maybe_import_legacy_metadata_json(cfg.index.active_dir)
+        if not _tracks_db_path(cfg.index.active_dir).exists():
             console.print("[yellow]--analyse skipped: no index found.[/]")
         else:
-            raw = _json.loads(metadata_file.read_text(encoding="utf-8"))
-            entries = [IndexEntry(**r) for r in raw]
+            conn = _open_tracks_db(cfg.index.active_dir)
+            try:
+                entries = _load_tracks_rows(conn)
+            finally:
+                conn.close()
             for e in entries:
                 e.path = _resolve_for_runtime(e.path, cfg.library.music_dir, cfg.library.path_remap)
             try:
@@ -877,19 +897,27 @@ def cmd_analyse(
             sys.exit(1)
         cfg.index.name = index_name
 
-    import json as _json
+    from autodj.indexer import (
+        _backfill_dj_meta,
+        _load_tracks_rows,
+        _maybe_import_legacy_metadata_json,
+        _open_tracks_db,
+        _resolve_for_runtime,
+        _tracks_db_path,
+    )
 
-    from autodj.indexer import IndexEntry, _backfill_dj_meta, _resolve_for_runtime
-
-    metadata_file = cfg.index.active_dir / "metadata.json"
-    if not metadata_file.exists():
+    _maybe_import_legacy_metadata_json(cfg.index.active_dir)
+    if not _tracks_db_path(cfg.index.active_dir).exists():
         console.print(
             f"[bold red]No index at {cfg.index.active_dir}.[/]  Run `autodj index` first."
         )
         sys.exit(1)
 
-    raw = _json.loads(metadata_file.read_text(encoding="utf-8"))
-    entries = [IndexEntry(**r) for r in raw]
+    conn = _open_tracks_db(cfg.index.active_dir)
+    try:
+        entries = _load_tracks_rows(conn)
+    finally:
+        conn.close()
     for e in entries:
         e.path = _resolve_for_runtime(e.path, cfg.library.music_dir, cfg.library.path_remap)
     if limit is not None:

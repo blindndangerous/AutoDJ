@@ -265,9 +265,9 @@ class TestDjMetaCache:
         assert meta.intro_end_s == 3.0
         assert meta.outro_start_s == 150.0
         assert meta.beats == [0.4, 0.8]
-        # Legacy file is renamed, db is now authoritative.
+        # Legacy file is deleted, db is now authoritative.
         assert not legacy.exists()
-        assert (tmp_path / "cache.json.legacy.bak").exists()
+        assert not (tmp_path / "cache.json.legacy.bak").exists()
         assert (tmp_path / "cache.db").exists()
 
     def test_corrupt_legacy_json_starts_empty(self, tmp_path) -> None:
@@ -432,6 +432,81 @@ class TestDjMetaCacheExtra:
         cache.close()
         cache2 = DjMetaCache(path)
         assert cache2.get("a.flac").analysed is True
+
+    def test_legacy_non_dict_top_level_kept(self, tmp_path) -> None:
+        from autodj.dj_meta import DjMetaCache
+
+        legacy = tmp_path / "cache.json"
+        legacy.write_text("[1, 2, 3]", encoding="utf-8")
+        cache = DjMetaCache(legacy)
+        # Non-dict top level can't migrate; user can inspect it.
+        assert legacy.exists()
+        assert cache.get("anything").analysed is False
+        cache.close()
+
+    def test_legacy_only_malformed_entries_kept(self, tmp_path) -> None:
+        from autodj.dj_meta import DjMetaCache
+
+        legacy = tmp_path / "cache.json"
+        # Top-level dict, but every value is a non-dict — nothing importable.
+        legacy.write_text('{"a.flac": 42, "b.flac": "string"}', encoding="utf-8")
+        cache = DjMetaCache(legacy)
+        # Legacy kept, db has no row for a.flac/b.flac.
+        assert legacy.exists()
+        assert cache.get("a.flac").analysed is False
+        cache.close()
+
+    def test_legacy_non_list_cues_falls_back_to_empty(self, tmp_path) -> None:
+        from autodj.dj_meta import DjMetaCache
+
+        legacy = tmp_path / "cache.json"
+        # ``cues`` is the wrong shape — migrator should default to [].
+        legacy.write_text(
+            '{"track.flac": {"intro_end_s": 1.0, "outro_start_s": 2.0, '
+            '"beats": [], "analysed": true, "cues": "not_a_list"}}',
+            encoding="utf-8",
+        )
+        cache = DjMetaCache(legacy)
+        loaded = cache.get("track.flac")
+        assert loaded.analysed
+        assert loaded.cues == []
+        cache.close()
+
+    def test_get_uses_mem_cache_on_second_call(self, tmp_path) -> None:
+        from autodj.dj_meta import DjMetaCache
+
+        path = tmp_path / "cache.db"
+        cache = DjMetaCache(path)
+        # First call: miss, returns empty DjMeta and caches it.
+        first = cache.get("unknown.flac")
+        # Second call: hits self._mem_cache (different code path).
+        second = cache.get("unknown.flac")
+        assert first is second
+        cache.close()
+
+    def test_row_to_meta_handles_corrupt_blob(self, tmp_path) -> None:
+        import sqlite3 as _sql
+
+        from autodj.dj_meta import DjMetaCache
+
+        path = tmp_path / "cache.db"
+        # Pre-seed a row whose beats/cues columns hold invalid JSON.
+        conn = _sql.connect(path)
+        conn.execute(DjMetaCache._SCHEMA)
+        conn.execute(
+            "INSERT INTO dj_meta (path, intro_end_s, outro_start_s, analysed, "
+            "beats, cues) VALUES (?, ?, ?, ?, ?, ?)",
+            ("x.flac", 0.0, 0.0, 1, "{not json", "also {bad}"),
+        )
+        conn.commit()
+        conn.close()
+
+        cache = DjMetaCache(path)
+        meta = cache.get("x.flac")
+        # Corrupt JSON falls back to empty lists rather than blowing up.
+        assert meta.beats == []
+        assert meta.cues == []
+        cache.close()
 
 
 class TestGetCacheAndAnalyse:

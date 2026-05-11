@@ -249,18 +249,24 @@ class TestSaveLoadIndex:
         assert len(loaded_entries) == 5
         assert loaded_index.ntotal == 5
 
-    def test_metadata_json_written(self, tmp_path: Path) -> None:
+    def test_tracks_db_written(self, tmp_path: Path) -> None:
         entries, vectors = self._make_entries(3)
         index_dir = tmp_path / "index"
         index_dir.mkdir()
 
         save_index(entries, vectors, index_dir)
 
-        metadata_path = index_dir / "metadata.json"
-        assert metadata_path.exists()
-        data = json.loads(metadata_path.read_text())
-        assert len(data) == 3
-        assert data[0]["path"] == "Z:/Music/song_0.flac"
+        db_path = index_dir / "tracks.db"
+        assert db_path.exists()
+        import sqlite3 as _sql
+
+        conn = _sql.connect(db_path)
+        try:
+            rows = conn.execute("SELECT path FROM tracks ORDER BY id ASC").fetchall()
+        finally:
+            conn.close()
+        assert len(rows) == 3
+        assert rows[0][0] == "Z:/Music/song_0.flac"
 
     def test_faiss_index_file_written(self, tmp_path: Path) -> None:
         entries, vectors = self._make_entries(3)
@@ -654,7 +660,7 @@ class TestFlatIndexMigration:
         v = np.random.randn(1, FEATURE_DIM).astype(np.float32)
         v /= np.linalg.norm(v, axis=1, keepdims=True)
         save_index(e, v, parent)
-        return parent / "metadata.json", parent / "vectors.index"
+        return parent / "tracks.db", parent / "vectors.index"
 
     def test_load_index_auto_migrates(self, tmp_path: Path) -> None:
         from autodj.indexer import load_index
@@ -669,7 +675,7 @@ class TestFlatIndexMigration:
         entries, _faiss = load_index(target)
 
         assert len(entries) == 1
-        assert (target / "metadata.json").exists()
+        assert (target / "tracks.db").exists()
         assert (target / "vectors.index").exists()
         # Sidecar moved
         assert (target / "web_state.json").exists()
@@ -703,7 +709,7 @@ class TestFlatIndexMigration:
         save_index(e, v, target)
         # No-op when target is already populated
         _migrate_flat_index_if_needed(target)
-        assert (target / "metadata.json").exists()
+        assert (target / "tracks.db").exists()
 
     def test_no_migration_when_no_source(self, tmp_path: Path) -> None:
         from autodj.indexer import _migrate_flat_index_if_needed
@@ -878,10 +884,18 @@ class TestPathPortability:
         idx = tmp_path / "idx"
         idx.mkdir()
         save_index(entries, v, idx, music_dir=music_dir)
-        # Inspect raw metadata
-        raw = json.loads((idx / "metadata.json").read_text(encoding="utf-8"))
+        # Inspect raw metadata in the SQLite store.
+        import sqlite3 as _sql
+
+        conn = _sql.connect(idx / "tracks.db")
+        try:
+            stored_path = conn.execute(
+                "SELECT path FROM tracks ORDER BY id ASC LIMIT 1"
+            ).fetchone()[0]
+        finally:
+            conn.close()
         # Should be stored as relative
-        assert raw[0]["path"] == "a.flac" or raw[0]["path"].endswith("a.flac")
+        assert stored_path == "a.flac" or stored_path.endswith("a.flac")
         # Round-trip resolves back to absolute
         loaded, _ = load_index(idx, music_dir=music_dir)
         assert Path(loaded[0].path).resolve() == (music_dir / "a.flac").resolve()
@@ -1098,3 +1112,132 @@ class TestBackfillDjMeta:
         ):
             _backfill_dj_meta([_entry("a.flac")], tmp_path, workers=1, throttle_ms=0.0)
         assert sleeps == []
+
+
+# ---------------------------------------------------------------------------
+# Legacy metadata.json -> tracks.db migration
+# ---------------------------------------------------------------------------
+
+
+class TestLegacyMetadataMigration:
+    """Auto-migration of pre-v0.10 ``metadata.json`` sidecars into SQLite."""
+
+    @staticmethod
+    def _legacy_payload(path: str = "Artist/song.flac") -> list[dict]:
+        return [
+            {
+                "path": path,
+                "title": "Title",
+                "artist": "Artist",
+                "album": "Album",
+                "genre": "Rock",
+                "bpm": 128.0,
+                "year": 2020,
+                "length": 200.0,
+                "energy": 0.07,
+                "key": 5,
+                "mode": 1,
+                "tempo_confidence": 0.42,
+                "embedded_at": 1_700_000_000.0,
+            },
+        ]
+
+    def test_metadata_json_imported_into_tracks_db(self, tmp_path: Path) -> None:
+        from autodj.indexer import (
+            _load_tracks_rows,
+            _maybe_import_legacy_metadata_json,
+            _open_tracks_db,
+        )
+
+        legacy = tmp_path / "metadata.json"
+        legacy.write_text(json.dumps(self._legacy_payload()), encoding="utf-8")
+
+        _maybe_import_legacy_metadata_json(tmp_path)
+
+        # JSON file is deleted now that SQLite is authoritative.
+        assert not legacy.exists()
+        assert (tmp_path / "tracks.db").exists()
+
+        conn = _open_tracks_db(tmp_path)
+        try:
+            rows = _load_tracks_rows(conn)
+        finally:
+            conn.close()
+        assert len(rows) == 1
+        assert rows[0].title == "Title"
+        assert rows[0].bpm == 128.0
+        assert rows[0].embedded_at == 1_700_000_000.0
+
+    def test_migration_idempotent(self, tmp_path: Path) -> None:
+        from autodj.indexer import _maybe_import_legacy_metadata_json
+
+        legacy = tmp_path / "metadata.json"
+        legacy.write_text(json.dumps(self._legacy_payload()), encoding="utf-8")
+        _maybe_import_legacy_metadata_json(tmp_path)
+        # Re-run is a no-op (JSON file is already gone).
+        _maybe_import_legacy_metadata_json(tmp_path)
+        assert (tmp_path / "tracks.db").exists()
+
+    def test_corrupt_metadata_json_kept_for_inspection(self, tmp_path: Path) -> None:
+        from autodj.indexer import _maybe_import_legacy_metadata_json
+
+        legacy = tmp_path / "metadata.json"
+        legacy.write_text("{{not json", encoding="utf-8")
+
+        _maybe_import_legacy_metadata_json(tmp_path)
+
+        # Corrupt JSON should NOT be deleted — user needs to inspect it.
+        assert legacy.exists()
+        # No tracks.db was created either (nothing successfully migrated).
+        # Note: _open_tracks_db isn't called in the unreadable-JSON branch.
+        assert not (tmp_path / "tracks.db").exists()
+
+    def test_skipped_when_tracks_db_already_exists(self, tmp_path: Path) -> None:
+        from autodj.indexer import (
+            _maybe_import_legacy_metadata_json,
+            _open_tracks_db,
+        )
+
+        # Pre-create an empty tracks.db.
+        conn = _open_tracks_db(tmp_path)
+        conn.close()
+        legacy = tmp_path / "metadata.json"
+        legacy.write_text(json.dumps(self._legacy_payload()), encoding="utf-8")
+
+        _maybe_import_legacy_metadata_json(tmp_path)
+        # JSON untouched: db already exists so we never migrate over it.
+        assert legacy.exists()
+
+    def test_non_list_json_skipped(self, tmp_path: Path) -> None:
+        from autodj.indexer import _maybe_import_legacy_metadata_json
+
+        legacy = tmp_path / "metadata.json"
+        # A dict at the top level is the wrong shape for the legacy format.
+        legacy.write_text(json.dumps({"foo": "bar"}), encoding="utf-8")
+        _maybe_import_legacy_metadata_json(tmp_path)
+        # Source kept for inspection, no db created.
+        assert legacy.exists()
+        assert not (tmp_path / "tracks.db").exists()
+
+    def test_all_rows_malformed_keeps_json(self, tmp_path: Path) -> None:
+        from autodj.indexer import _maybe_import_legacy_metadata_json
+
+        legacy = tmp_path / "metadata.json"
+        # Three entries that all fail the dict + path checks.
+        legacy.write_text(
+            json.dumps(["a string", 42, {"no_path_field": 1}]),
+            encoding="utf-8",
+        )
+        _maybe_import_legacy_metadata_json(tmp_path)
+        # No row imported, JSON kept around for inspection.
+        assert legacy.exists()
+
+    def test_empty_list_json_deletes_legacy(self, tmp_path: Path) -> None:
+        from autodj.indexer import _maybe_import_legacy_metadata_json
+
+        legacy = tmp_path / "metadata.json"
+        legacy.write_text("[]", encoding="utf-8")
+        _maybe_import_legacy_metadata_json(tmp_path)
+        # Empty legacy successfully "migrated" -> deleted (no rows to keep).
+        assert not legacy.exists()
+        assert (tmp_path / "tracks.db").exists()

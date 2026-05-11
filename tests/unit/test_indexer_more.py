@@ -8,7 +8,6 @@ paths) and on the error-rollback paths in ``save_index``.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -327,16 +326,16 @@ class TestResolveForRuntimeRemap:
 
 class TestIsRelativeStorage:
     def test_all_relative(self) -> None:
-        assert _is_relative_storage([{"path": "a/b.flac"}, {"path": "c.flac"}])
+        assert _is_relative_storage(["a/b.flac", "c.flac"])
 
     def test_one_absolute_posix(self) -> None:
-        assert not _is_relative_storage([{"path": "a/b.flac"}, {"path": "/c.flac"}])
+        assert not _is_relative_storage(["a/b.flac", "/c.flac"])
 
     def test_one_absolute_windows_drive(self) -> None:
-        assert not _is_relative_storage([{"path": "Z:/a/b.flac"}])
+        assert not _is_relative_storage(["Z:/a/b.flac"])
 
     def test_one_with_backslash(self) -> None:
-        assert not _is_relative_storage([{"path": "a\\b.flac"}])
+        assert not _is_relative_storage(["a\\b.flac"])
 
     def test_empty_list_is_relative(self) -> None:
         # all([]) is True
@@ -369,14 +368,28 @@ class TestCheckPruneSafety:
 
 
 class TestDeleteIndexFiles:
-    def test_unlinks_both_files(self, tmp_path: Path) -> None:
-        a = tmp_path / "metadata.json"
-        b = tmp_path / "vectors.index"
-        a.write_text("{}", encoding="utf-8")
-        b.write_bytes(b"x")
-        _delete_index_files(a, b)
-        assert not a.exists()
-        assert not b.exists()
+    def test_unlinks_all_known_index_files(self, tmp_path: Path) -> None:
+        for name in (
+            "metadata.json",
+            "vectors.index",
+            "tracks.db",
+            "tracks.db-wal",
+            "tracks.db-shm",
+        ):
+            (tmp_path / name).write_bytes(b"x")
+        _delete_index_files(tmp_path)
+        for name in (
+            "metadata.json",
+            "vectors.index",
+            "tracks.db",
+            "tracks.db-wal",
+            "tracks.db-shm",
+        ):
+            assert not (tmp_path / name).exists()
+
+    def test_missing_files_is_noop(self, tmp_path: Path) -> None:
+        # Idempotent — no error when nothing is there.
+        _delete_index_files(tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -386,17 +399,17 @@ class TestDeleteIndexFiles:
 
 class TestMaybeMigratePaths:
     def test_skip_when_music_dir_none(self) -> None:
-        # Should not call save_index
-        with patch("autodj.indexer.save_index") as sv:
+        # Should not touch the tracks DB
+        with patch("autodj.indexer._replace_tracks_rows") as rep:
             _maybe_migrate_paths(MagicMock(), [], Path("/idx"), None, already_relative=False)
-        sv.assert_not_called()
+        rep.assert_not_called()
 
     def test_skip_when_already_relative(self) -> None:
-        with patch("autodj.indexer.save_index") as sv:
+        with patch("autodj.indexer._replace_tracks_rows") as rep:
             _maybe_migrate_paths(MagicMock(), [], Path("/idx"), Path("/m"), already_relative=True)
-        sv.assert_not_called()
+        rep.assert_not_called()
 
-    def test_calls_save_index_when_migration_needed(self, tmp_path: Path) -> None:
+    def test_relativises_tracks_db_when_migration_needed(self, tmp_path: Path) -> None:
         # Build a real save_index round-trip with absolute paths and trigger migration
         entries = [_entry(path=str(tmp_path / "song0.flac"))]
         vectors = np.random.randn(1, FEATURE_DIM).astype(np.float32)
@@ -406,15 +419,17 @@ class TestMaybeMigratePaths:
         # Save without music_dir so paths stay absolute
         save_index(entries, vectors, index_dir)
 
-        # Now load FAISS and trigger migration
-        import faiss
+        # No FAISS read needed any more; pass a placeholder.
+        _maybe_migrate_paths(MagicMock(), entries, index_dir, tmp_path, already_relative=False)
 
-        loaded = faiss.read_index(str(index_dir / "vectors.index"))
-        _maybe_migrate_paths(loaded, entries, index_dir, tmp_path, already_relative=False)
+        import sqlite3 as _sql
 
-        raw = json.loads((index_dir / "metadata.json").read_text(encoding="utf-8"))
+        conn = _sql.connect(index_dir / "tracks.db")
+        try:
+            p = conn.execute("SELECT path FROM tracks ORDER BY id ASC LIMIT 1").fetchone()[0]
+        finally:
+            conn.close()
         # After migration, path should be relative (no drive, no leading slash)
-        p = raw[0]["path"]
         assert not (p.startswith("/") or (len(p) >= 2 and p[1] == ":"))
 
 
@@ -445,18 +460,21 @@ class TestSaveIndexErrorPaths:
         assert not (idx / "vectors.index.tmp").exists()
         assert not (idx / "vectors.index").exists()
 
-    def test_rolls_back_metadata_tmp_on_failure(self, tmp_path: Path) -> None:
+    def test_rolls_back_when_tracks_db_write_fails(self, tmp_path: Path) -> None:
         entries, vectors = self._entries_vectors()
         idx = tmp_path / "idx"
         idx.mkdir()
 
-        # Allow vectors to write fine, but make the metadata json.dumps fail.
-        with patch("autodj.indexer.json.dumps", side_effect=RuntimeError("boom")):
-            # Pre-touch tmp so the cleanup unlink path runs
-            (idx / "metadata.json.tmp").write_bytes(b"partial")
-            with pytest.raises(RuntimeError):
-                save_index(entries, vectors, idx)
-        # vectors did get written successfully...
+        # Allow vectors to write fine, but make the SQLite replacement fail.
+        with (
+            patch(
+                "autodj.indexer._replace_tracks_rows",
+                side_effect=RuntimeError("boom"),
+            ),
+            pytest.raises(RuntimeError),
+        ):
+            save_index(entries, vectors, idx)
+        # FAISS index landed (it writes first)...
         assert (idx / "vectors.index").exists()
         # ... but metadata tmp was rolled back.
         assert not (idx / "metadata.json.tmp").exists()

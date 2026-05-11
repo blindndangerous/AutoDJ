@@ -1197,23 +1197,36 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
                         _ws_clients.discard(client)
 
     async def _index_watcher_loop() -> None:  # pragma: no cover — long-running task
-        """Reload the FAISS index when ``metadata.json`` mtime changes.
+        """Reload the FAISS index when ``tracks.db`` mtime changes.
 
         Runs every 10 seconds.  Lets a parallel ``autodj index`` add
         tracks while a long-running ``serve`` is up — the next track
         pick will see the new entries without restarting the server.
+
+        Watches the SQLite tracks DB (or legacy ``metadata.json``
+        sidecar, when the index has not yet been migrated).  Stat calls
+        are dispatched to a thread so the asyncio event loop is never
+        blocked on a slow NAS round-trip.
         """
         cfg = getattr(bridge.player, "_cfg", None)
         if cfg is None:
             return
-        meta_path = cfg.index.active_dir / "metadata.json"
-        last_mtime = meta_path.stat().st_mtime if meta_path.exists() else 0.0
+        index_dir = cfg.index.active_dir
+
+        def _probe_mtime() -> float:
+            for name in ("tracks.db", "metadata.json"):
+                p = index_dir / name
+                try:
+                    return p.stat().st_mtime
+                except OSError:
+                    continue
+            return 0.0
+
+        last_mtime = await asyncio.to_thread(_probe_mtime)
         while True:
             await asyncio.sleep(10)
             try:
-                if not meta_path.exists():
-                    continue
-                mtime = meta_path.stat().st_mtime
+                mtime = await asyncio.to_thread(_probe_mtime)
                 if mtime > last_mtime:
                     last_mtime = mtime
                     new_total = await asyncio.to_thread(

@@ -26,11 +26,13 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import os
+import sqlite3
 import warnings
 from collections import deque
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -100,6 +102,216 @@ _LIBROSA_DIM = 16
 
 # Combined feature vector dimension: 1024 (MuQ) + 16 (librosa)
 FEATURE_DIM = EMBEDDING_DIM + _LIBROSA_DIM
+
+# ---------------------------------------------------------------------------
+# Tracks SQLite store
+# ---------------------------------------------------------------------------
+#
+# As of v0.10 the indexed track metadata lives in ``index/tracks.db`` (a
+# SQLite database) instead of ``index/metadata.json``.  The JSON sidecar
+# rewrote the entire file on every per-track checkpoint -- at 70k tracks
+# that is ~35 MB written per track, ~2.4 TB of writes over a full reindex.
+# Same NAS thermal class of issue as the dj_meta sidecar.  SQLite WAL
+# only touches the dirty pages.
+#
+# Schema mirrors :class:`IndexEntry` one-to-one.  The implicit ``rowid``
+# preserves insertion order so ``load_index`` returns entries in the same
+# row order as the FAISS index without needing an explicit ``vec_row``
+# column (we always replace the full table when vectors change).
+
+_TRACKS_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS tracks (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        path             TEXT NOT NULL UNIQUE,
+        title            TEXT NOT NULL DEFAULT '',
+        artist           TEXT NOT NULL DEFAULT '',
+        album            TEXT NOT NULL DEFAULT '',
+        genre            TEXT NOT NULL DEFAULT '',
+        bpm              REAL NOT NULL DEFAULT 0,
+        year             INTEGER NOT NULL DEFAULT 0,
+        length           REAL NOT NULL DEFAULT 0,
+        energy           REAL NOT NULL DEFAULT 0,
+        key              INTEGER NOT NULL DEFAULT -1,
+        mode             INTEGER NOT NULL DEFAULT -1,
+        tempo_confidence REAL NOT NULL DEFAULT 0,
+        embedded_at      REAL NOT NULL DEFAULT 0
+    );
+"""
+
+_TRACKS_INSERT_SQL = (
+    "INSERT INTO tracks "
+    "(path, title, artist, album, genre, bpm, year, length, energy, "
+    "key, mode, tempo_confidence, embedded_at) "
+    "VALUES (:path, :title, :artist, :album, :genre, :bpm, :year, "
+    ":length, :energy, :key, :mode, :tempo_confidence, :embedded_at)"
+)
+
+_TRACKS_SELECT_SQL = (
+    "SELECT path, title, artist, album, genre, bpm, year, length, energy, "
+    "key, mode, tempo_confidence, embedded_at FROM tracks ORDER BY id ASC"
+)
+
+
+def _tracks_db_path(index_dir: Path) -> Path:
+    """Return the SQLite tracks-db path for *index_dir*."""
+    return index_dir / "tracks.db"
+
+
+def _open_tracks_db(index_dir: Path) -> sqlite3.Connection:
+    """Open (creating if needed) the tracks SQLite store for *index_dir*.
+
+    Uses WAL journal mode + NORMAL sync — same trade-off as DjMetaCache:
+    the index is re-derivable from the library if a crash corrupts an
+    uncommitted write, so we prefer the throughput.
+    """
+    index_dir.mkdir(parents=True, exist_ok=True)
+    db_path = _tracks_db_path(index_dir)
+    conn = sqlite3.connect(db_path, isolation_level=None, check_same_thread=False)
+    conn.executescript(_TRACKS_SCHEMA)
+    with contextlib.suppress(sqlite3.DatabaseError):
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+    return conn
+
+
+def _entry_to_row(entry: IndexEntry, music_dir: Path | None) -> dict:
+    """Convert an :class:`IndexEntry` to a SQLite-bound row dict.
+
+    Stored ``path`` is relativised against *music_dir* the same way the
+    legacy JSON sidecar did so that an index built on one host stays
+    portable to any other host that mounts the library at a different
+    absolute path.
+    """
+    return {
+        "path": _relativize_for_storage(entry.path, music_dir),
+        "title": entry.title,
+        "artist": entry.artist,
+        "album": entry.album,
+        "genre": entry.genre,
+        "bpm": float(entry.bpm),
+        "year": int(entry.year),
+        "length": float(entry.length),
+        "energy": float(entry.energy),
+        "key": int(entry.key),
+        "mode": int(entry.mode),
+        "tempo_confidence": float(entry.tempo_confidence),
+        "embedded_at": float(entry.embedded_at),
+    }
+
+
+def _row_to_entry(row: tuple) -> IndexEntry:
+    """Build an :class:`IndexEntry` from a SELECT row tuple."""
+    return IndexEntry(
+        path=row[0],
+        title=row[1] or "",
+        artist=row[2] or "",
+        album=row[3] or "",
+        genre=row[4] or "",
+        bpm=float(row[5] or 0.0),
+        year=int(row[6] or 0),
+        length=float(row[7] or 0.0),
+        energy=float(row[8] or 0.0),
+        key=int(row[9] if row[9] is not None else -1),
+        mode=int(row[10] if row[10] is not None else -1),
+        tempo_confidence=float(row[11] or 0.0),
+        embedded_at=float(row[12] or 0.0),
+    )
+
+
+def _replace_tracks_rows(
+    conn: sqlite3.Connection,
+    entries: list[IndexEntry],
+    music_dir: Path | None,
+) -> None:
+    """Atomically replace the entire ``tracks`` table contents.
+
+    save_index always receives the full entries list, so we DELETE then
+    INSERT inside a single transaction.  At 70k tracks this still writes
+    less than the legacy whole-file JSON rewrite because SQLite WAL pages
+    are smaller and rows that did not change get the same on-disk page.
+    """
+    rows = [_entry_to_row(e, music_dir) for e in entries]
+    with conn:
+        conn.execute("DELETE FROM tracks")
+        if rows:
+            conn.executemany(_TRACKS_INSERT_SQL, rows)
+
+
+def _load_tracks_rows(conn: sqlite3.Connection) -> list[IndexEntry]:
+    """SELECT every row from ``tracks`` in insertion order."""
+    cur = conn.execute(_TRACKS_SELECT_SQL)
+    return [_row_to_entry(r) for r in cur.fetchall()]
+
+
+def _maybe_import_legacy_metadata_json(index_dir: Path) -> None:
+    """One-shot import of legacy ``metadata.json`` into ``tracks.db``.
+
+    Triggered the first time anything tries to open the tracks DB.  After
+    a successful import the JSON file is deleted -- SQLite is the
+    authoritative store from this point on.  If the source had rows but
+    the migration imported zero (e.g. all rows malformed), the JSON is
+    kept and a warning is logged so the user can inspect it.
+    """
+    db_path = _tracks_db_path(index_dir)
+    legacy = index_dir / "metadata.json"
+    if db_path.exists() or not legacy.exists():
+        return
+    try:
+        raw = json.loads(legacy.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("Legacy metadata.json unreadable, skipping migration: %s", exc)
+        return
+    if not isinstance(raw, list):
+        logger.warning("Legacy metadata.json is not a list, skipping migration.")
+        return
+
+    conn = _open_tracks_db(index_dir)
+    try:
+        rows: list[dict] = []
+        for r in raw:
+            if not isinstance(r, dict) or "path" not in r:
+                continue
+            rows.append(
+                {
+                    "path": str(r.get("path", "")),
+                    "title": str(r.get("title", "") or ""),
+                    "artist": str(r.get("artist", "") or ""),
+                    "album": str(r.get("album", "") or ""),
+                    "genre": str(r.get("genre", "") or ""),
+                    "bpm": float(r.get("bpm", 0) or 0),
+                    "year": int(r.get("year", 0) or 0),
+                    "length": float(r.get("length", 0) or 0),
+                    "energy": float(r.get("energy", 0) or 0),
+                    "key": int(r.get("key", -1) if r.get("key") is not None else -1),
+                    "mode": int(r.get("mode", -1) if r.get("mode") is not None else -1),
+                    "tempo_confidence": float(r.get("tempo_confidence", 0) or 0),
+                    "embedded_at": float(r.get("embedded_at", 0) or 0),
+                }
+            )
+        with conn:
+            conn.execute("DELETE FROM tracks")
+            if rows:
+                conn.executemany(_TRACKS_INSERT_SQL, rows)
+    finally:
+        conn.close()
+
+    if not rows and isinstance(raw, list) and raw:
+        # Source had data but none of it was importable -- keep the JSON
+        # so the user can inspect it instead of deleting silently.
+        logger.warning(
+            "Legacy metadata.json had %d rows but none were importable; "
+            "keeping the JSON in place for inspection.",
+            len(raw),
+        )
+        return
+
+    with contextlib.suppress(OSError):
+        legacy.unlink()
+    logger.info(
+        "Migrated %d tracks from metadata.json to %s (legacy JSON deleted).",
+        len(rows),
+        db_path.name,
+    )
 
 
 def _relativize_for_storage(abs_path: str, music_dir: Path | None) -> str:
@@ -559,17 +771,19 @@ def save_index(
     index_dir: Path,
     music_dir: Path | None = None,
 ) -> None:
-    """Write the FAISS index and metadata to *index_dir* atomically.
+    """Write the FAISS index and tracks DB to *index_dir* atomically.
 
     Files written:
     - ``vectors.index``  — FAISS binary file
-    - ``metadata.json``  — JSON array of :class:`IndexEntry` dicts
+    - ``tracks.db``      — SQLite metadata (one row per track, in row order
+      matching the FAISS index)
 
-    Both files are written to ``*.tmp`` siblings first and then renamed
-    over the originals.  A failed write therefore leaves the existing
-    on-disk index intact instead of corrupting it — important for
-    network filesystems (SMB/NFS) where a partial write can occur
-    on transient I/O errors.
+    The FAISS file is written to a ``*.tmp`` sibling and renamed over the
+    original.  The tracks DB is updated inside a single SQLite transaction
+    (``DELETE FROM tracks`` then bulk ``INSERT``), so a crash mid-write
+    leaves the existing on-disk DB intact instead of corrupting it.  Same
+    crash-safety guarantee as the older JSON sidecar, with no whole-file
+    rewrite.
 
     When *music_dir* is provided, paths under it are stored RELATIVE to
     *music_dir* (forward-slashed) — making the index portable across
@@ -585,12 +799,9 @@ def save_index(
         index_dir: Directory to write files into (must already exist).
         music_dir: Library root — when set, paths are relativized for storage.
     """
-    import os
-
+    index_dir.mkdir(parents=True, exist_ok=True)
     vectors_final = index_dir / "vectors.index"
-    metadata_final = index_dir / "metadata.json"
     vectors_tmp = index_dir / "vectors.index.tmp"
-    metadata_tmp = index_dir / "metadata.json.tmp"
 
     # --- write FAISS to temp, then rename ---
     try:
@@ -603,30 +814,12 @@ def save_index(
                 vectors_tmp.unlink()
         raise
 
-    # --- write metadata to temp, then rename ---
-    metadata = []
-    for e in entries:
-        row = asdict(e)
-        row["path"] = _relativize_for_storage(e.path, music_dir)
-        metadata.append(row)
+    # --- replace tracks table contents inside a single transaction ---
+    conn = _open_tracks_db(index_dir)
     try:
-        payload = json.dumps(metadata, indent=2, ensure_ascii=False)
-        # Chunked write — same SMB resilience reason as _write_faiss_chunked.
-        # Encode once so we can slice bytes (avoids re-encoding per chunk).
-        data = payload.encode("utf-8")
-        chunk = 1 << 20  # 1 MB
-        with open(metadata_tmp, "wb") as fh:
-            for i in range(0, len(data), chunk):
-                fh.write(data[i : i + chunk])
-            fh.flush()
-            with contextlib.suppress(OSError):
-                os.fsync(fh.fileno())
-        os.replace(metadata_tmp, metadata_final)
-    except Exception:
-        if metadata_tmp.exists():
-            with contextlib.suppress(OSError):
-                metadata_tmp.unlink()
-        raise
+        _replace_tracks_rows(conn, entries, music_dir)
+    finally:
+        conn.close()
 
     logger.info("Saved index with %d tracks to %s", len(entries), index_dir)
 
@@ -761,13 +954,18 @@ def enrich_from_beets(
         parse_initial_key,
     )
 
-    metadata_file = index_dir / "metadata.json"
+    _maybe_import_legacy_metadata_json(index_dir)
+
+    db_path = _tracks_db_path(index_dir)
     faiss_file = index_dir / "vectors.index"
-    if not metadata_file.exists() or not faiss_file.exists():
+    if not db_path.exists() or not faiss_file.exists():
         return (0, 0)
 
-    raw = json.loads(metadata_file.read_text(encoding="utf-8"))
-    entries = [IndexEntry(**r) for r in raw]
+    conn_db = _open_tracks_db(index_dir)
+    try:
+        entries = _load_tracks_rows(conn_db)
+    finally:
+        conn_db.close()
     for e in entries:
         e.path = _resolve_for_runtime(e.path, music_dir, path_remap)
 
@@ -823,27 +1021,23 @@ def enrich_from_beets(
         logger.info("Enrich: no changes from beets")
         return (0, len(entries))
 
-    # Re-save with the same vectors (load + re-write metadata only)
-    loaded = faiss.read_index(str(faiss_file))
-    all_vectors = np.array(
-        [loaded.reconstruct(i) for i in range(len(entries))],
-        dtype=np.float32,
-    )
-    save_index(entries, all_vectors, index_dir, music_dir=music_dir)
+    # Metadata-only update — no FAISS rewrite needed (vectors unchanged).
+    # SQLite UPSERT per affected row inside a single transaction is far
+    # cheaper than the legacy "reconstruct every vector + full save_index"
+    # round-trip, which paid O(N) vector reconstruct cost just to re-emit
+    # JSON.  Bonus: enrich no longer needs vectors.index on disk.
+    conn_db = _open_tracks_db(index_dir)
+    try:
+        _replace_tracks_rows(conn_db, entries, music_dir)
+    finally:
+        conn_db.close()
     logger.info("Enrich: updated %d/%d tracks", updated, len(entries))
     return (updated, len(entries))
 
 
-def _is_relative_storage(raw: list[dict]) -> bool:
+def _is_relative_storage(paths: list[str]) -> bool:
     """True when every stored path string is already in relative form."""
-    return all(
-        not (
-            r["path"].startswith("/")
-            or (len(r["path"]) >= 2 and r["path"][1] == ":")
-            or "\\" in r["path"]
-        )
-        for r in raw
-    )
+    return all(not (p.startswith("/") or (len(p) >= 2 and p[1] == ":") or "\\" in p) for p in paths)
 
 
 def _check_prune_safety(removed: int, total: int, allow_mass_prune: bool) -> None:
@@ -861,10 +1055,22 @@ def _check_prune_safety(removed: int, total: int, allow_mass_prune: bool) -> Non
     )
 
 
-def _delete_index_files(metadata_file: Path, faiss_file: Path) -> None:
-    """Remove the index files (called when prune empties the library)."""
-    metadata_file.unlink()
-    faiss_file.unlink()
+def _delete_index_files(index_dir: Path) -> None:
+    """Remove the index files (called when prune empties the library).
+
+    Cleans up ``vectors.index``, ``tracks.db``, plus the SQLite WAL / SHM
+    sidecars and any leftover legacy ``metadata.json`` so the next index
+    run starts from a clean slate.
+    """
+    for name in (
+        "vectors.index",
+        "tracks.db",
+        "tracks.db-wal",
+        "tracks.db-shm",
+        "metadata.json",
+    ):
+        with contextlib.suppress(FileNotFoundError, OSError):
+            (index_dir / name).unlink()
 
 
 def _maybe_migrate_paths(
@@ -874,14 +1080,20 @@ def _maybe_migrate_paths(
     music_dir: Path | None,
     already_relative: bool,
 ) -> None:
-    """Re-save metadata in relative form when storage is still absolute."""
+    """Re-save tracks DB in relative path form when storage is still absolute.
+
+    With the SQLite tracks store we can rewrite just the rows we care
+    about; no need to reconstruct vectors or touch the FAISS file.  The
+    legacy code path used save_index() here, which required a full
+    O(N) vector reconstruct just to flip path strings — wasted work.
+    """
     if music_dir is None or already_relative:
         return
-    all_vectors = np.array(
-        [loaded.reconstruct(i) for i in range(len(entries))],
-        dtype=np.float32,
-    )
-    save_index(entries, all_vectors, index_dir, music_dir=music_dir)
+    conn = _open_tracks_db(index_dir)
+    try:
+        _replace_tracks_rows(conn, entries, music_dir)
+    finally:
+        conn.close()
 
 
 def prune_index(
@@ -922,14 +1134,22 @@ def prune_index(
         PruneSafetyError: If the prune would exceed the safety threshold
             and ``allow_mass_prune`` is not set.
     """
-    metadata_file = index_dir / "metadata.json"
+    # Migrate any legacy metadata.json sitting next to the index BEFORE
+    # we check for tracks.db.  The migration is idempotent and silent
+    # when there is nothing to do.
+    _maybe_import_legacy_metadata_json(index_dir)
+
+    db_path = _tracks_db_path(index_dir)
     faiss_file = index_dir / "vectors.index"
-    if not metadata_file.exists() or not faiss_file.exists():
+    if not db_path.exists() or not faiss_file.exists():
         return (0, 0)
 
-    raw = json.loads(metadata_file.read_text(encoding="utf-8"))
-    entries = [IndexEntry(**r) for r in raw]
-    already_relative = music_dir is not None and _is_relative_storage(raw)
+    conn = _open_tracks_db(index_dir)
+    try:
+        entries = _load_tracks_rows(conn)
+    finally:
+        conn.close()
+    already_relative = music_dir is not None and _is_relative_storage([e.path for e in entries])
     for e in entries:
         e.path = _resolve_for_runtime(e.path, music_dir, path_remap)
     loaded = faiss.read_index(str(faiss_file))
@@ -958,7 +1178,7 @@ def prune_index(
 
     surviving_entries = [e for e, k in zip(entries, keep_mask, strict=False) if k]
     if not surviving_entries and removed:
-        _delete_index_files(metadata_file, faiss_file)
+        _delete_index_files(index_dir)
         logger.info("Pruned all %d entries — index is now empty", removed)
         return (removed, 0)
 
@@ -989,24 +1209,30 @@ def _migrate_flat_index_if_needed(target_dir: Path) -> None:
     Args:
         target_dir: The named-index sub-directory (e.g. ``index/default``).
     """
-    target_meta = target_dir / "metadata.json"
     target_vec = target_dir / "vectors.index"
-    if target_meta.exists() and target_vec.exists():
+    target_db = target_dir / "tracks.db"
+    target_meta_json = target_dir / "metadata.json"
+    if target_vec.exists() and (target_db.exists() or target_meta_json.exists()):
         return  # Already migrated or fresh build — nothing to do
     parent = target_dir.parent
-    src_meta = parent / "metadata.json"
     src_vec = parent / "vectors.index"
-    if not (src_meta.exists() and src_vec.exists()):
+    src_db = parent / "tracks.db"
+    src_meta_json = parent / "metadata.json"
+    if not src_vec.exists() or not (src_db.exists() or src_meta_json.exists()):
         return  # Nothing to migrate
     target_dir.mkdir(parents=True, exist_ok=True)
     try:
-        src_meta.replace(target_meta)
         src_vec.replace(target_vec)
+        if src_db.exists():
+            src_db.replace(target_db)
+        if src_meta_json.exists():
+            src_meta_json.replace(target_meta_json)
         # Move sidecars too if present
         for sidecar in (
             "dj_meta.json",
             "dj_meta.db",
-            "dj_meta.json.legacy.bak",
+            "tracks.db-wal",
+            "tracks.db-shm",
             "web_state.json",
             "runtime_state.json",
         ):
@@ -1019,10 +1245,8 @@ def _migrate_flat_index_if_needed(target_dir: Path) -> None:
         )
     except OSError as exc:
         logger.warning(
-            "Auto-migration failed (%s); move manually:\n  mv %s %s\n  mv %s %s",
+            "Auto-migration failed (%s); move manually:\n  mv %s %s\n  (and metadata.json / tracks.db alongside)",
             exc,
-            src_meta,
-            target_meta,
             src_vec,
             target_vec,
         )
@@ -1057,28 +1281,36 @@ def load_index(
     # the old files are sitting at the parent dir AND the new dir is
     # empty, slide them across so the user doesn't have to re-index.
     _migrate_flat_index_if_needed(index_dir)
+    # Auto-migrate legacy metadata.json → tracks.db on first read.
+    _maybe_import_legacy_metadata_json(index_dir)
 
     index_file = index_dir / "vectors.index"
-    metadata_file = index_dir / "metadata.json"
+    db_path = _tracks_db_path(index_dir)
 
     if not index_dir.exists():
         raise FileNotFoundError(
             f"Index directory not found: {index_dir}\n"
-            f"Expected layout: {index_dir}/vectors.index + {index_dir}/metadata.json.\n"
+            f"Expected layout: {index_dir}/vectors.index + {index_dir}/tracks.db.\n"
             "Run 'autodj index' to build the library index first.",
         )
-    if not index_file.exists() or not metadata_file.exists():
+    if not index_file.exists() or not db_path.exists():
         raise FileNotFoundError(
             f"Index files missing in {index_dir}.\n"
-            f"Expected: {metadata_file} + {index_file}.\n"
+            f"Expected: {db_path} + {index_file}.\n"
             "Note: as of v0.9 each named index lives in its own sub-directory "
-            "(<index_dir>/<name>/...).  Run 'autodj list-indexes' to see what's "
-            "available, or 'autodj index' to build a fresh one.",
+            "(<index_dir>/<name>/...).  As of v0.10 track metadata lives in "
+            "tracks.db (a SQLite store) instead of metadata.json -- legacy "
+            "JSON sidecars are auto-migrated on first read.  Run "
+            "'autodj list-indexes' to see what's available, or 'autodj index' "
+            "to build a fresh one.",
         )
 
     faiss_index = faiss.read_index(str(index_file))
-    raw = json.loads(metadata_file.read_text(encoding="utf-8"))
-    entries = [IndexEntry(**row) for row in raw]
+    conn = _open_tracks_db(index_dir)
+    try:
+        entries = _load_tracks_rows(conn)
+    finally:
+        conn.close()
     if music_dir is not None or path_remap:
         for e in entries:
             e.path = _resolve_for_runtime(e.path, music_dir, path_remap)
@@ -1347,12 +1579,16 @@ def _load_existing_index(  # pragma: no cover -- exercised via build_index integ
     except PruneSafetyError as exc:
         print(f"[AutoDJ] Skipping auto-prune (safety check): {exc}")
 
-    metadata_file = index_dir / "metadata.json"
-    if not metadata_file.exists():
+    _maybe_import_legacy_metadata_json(index_dir)
+    db_path = _tracks_db_path(index_dir)
+    if not db_path.exists():
         return [], [], set()
 
-    raw = json.loads(metadata_file.read_text(encoding="utf-8"))
-    existing_entries: list[IndexEntry] = [IndexEntry(**r) for r in raw]
+    conn = _open_tracks_db(index_dir)
+    try:
+        existing_entries: list[IndexEntry] = _load_tracks_rows(conn)
+    finally:
+        conn.close()
     for e in existing_entries:
         e.path = _resolve_for_runtime(e.path, music_dir, path_remap)
 

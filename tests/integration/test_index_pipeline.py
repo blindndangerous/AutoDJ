@@ -114,7 +114,7 @@ class TestIndexPipeline:
             build_index(fake_config, wrapper=wrapper, limit=None, force=False)
 
         assert (fake_config.index.active_dir / "vectors.index").exists()
-        assert (fake_config.index.active_dir / "metadata.json").exists()
+        assert (fake_config.index.active_dir / "tracks.db").exists()
 
     def test_build_index_indexes_all_tracks(self, fake_config: AutoDJConfig) -> None:
         wrapper = _fake_wrapper()

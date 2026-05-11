@@ -552,8 +552,10 @@ class DjMetaCache:
 
     Migration: if the constructed DB path does not exist but a sibling
     ``dj_meta.json`` legacy sidecar does, the JSON is imported in a single
-    transaction on first init and the JSON file renamed to
-    ``dj_meta.json.legacy.bak``.
+    transaction on first init and the JSON file deleted (SQLite is the
+    authoritative store from then on).  If the source had rows but the
+    migration imported zero, the JSON is kept instead so the user can
+    inspect it.
 
     Example:
         >>> cache = DjMetaCache(Path("index/dj_meta.db"))
@@ -628,10 +630,10 @@ class DjMetaCache:
         """One-shot import of the old ``dj_meta.json`` into SQLite.
 
         Reads the JSON sidecar, batch-inserts every well-formed row in a
-        single transaction, and renames the legacy file to
-        ``dj_meta.json.legacy.bak``.  Malformed rows are skipped with a
-        warning; a totally unreadable file logs once and is left alone
-        (so the user can inspect it).
+        single transaction, and deletes the legacy file.  Malformed rows
+        are skipped with a warning; a totally unreadable file or a file
+        whose rows all failed to import is left alone so the user can
+        inspect it.
         """
         assert self._conn is not None
         try:
@@ -672,15 +674,23 @@ class DjMetaCache:
                     "VALUES (?, ?, ?, ?, ?, ?)",
                     rows,
                 )
+        elif raw:
+            # Source had entries but none were importable -- keep the
+            # JSON so the user can inspect it instead of silently losing it.
+            logger.warning(
+                "Legacy %s had %d entries but none were importable; "
+                "keeping the JSON in place for inspection.",
+                self._legacy_json.name,
+                len(raw),
+            )
+            return
 
-        backup = self._legacy_json.with_name(self._legacy_json.name + ".legacy.bak")
         with contextlib.suppress(OSError):
-            os.replace(self._legacy_json, backup)
+            self._legacy_json.unlink()
         logger.info(
-            "Migrated %d entries from %s to SQLite (legacy file -> %s)",
+            "Migrated %d entries from %s to SQLite (legacy file deleted)",
             len(rows),
             self._legacy_json.name,
-            backup.name,
         )
 
     def _row_to_meta(self, row: tuple) -> DjMeta:
