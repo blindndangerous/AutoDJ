@@ -20,6 +20,7 @@
       --danger:    #c0392b;
       --green:     #27ae60;
       --radius:    6px;
+      --badge-border: #4d7eb5;   /* 3.76:1 on --bg-card; meets 1.4.11 3:1 minimum */
     }
 
     body {
@@ -121,18 +122,37 @@
     }
     #progress-track {
       width: 100%;
-      height: 6px;
-      background: var(--border);
+      height: 24px;           /* 2.5.8: min 24 px interactive target */
+      background: transparent;
       border-radius: 3px;
       overflow: visible;
       position: relative;
+      cursor: pointer;
+    }
+    /* Visual 6 px bar centred inside the 24 px hit zone */
+    #progress-track::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 50%;
+      height: 6px;
+      transform: translateY(-50%);
+      background: var(--border);
+      border-radius: 3px;
+      pointer-events: none;
     }
     #progress-fill {
-      height: 100%;
+      position: absolute;
+      left: 0;
+      top: 50%;
+      transform: translateY(-50%);
+      height: 6px;
       background: var(--accent);
       border-radius: 3px;
       width: 0%;
       transition: width 0.5s linear;
+      pointer-events: none;
     }
     #cue-strip {
       position: absolute;
@@ -141,7 +161,8 @@
     }
     #cue-strip .cue-mark {
       position: absolute;
-      top: -2px;
+      top: 50%;
+      transform: translateY(-50%);
       width: 2px;
       height: 10px;
       border-radius: 1px;
@@ -206,15 +227,15 @@
     }
     input[type="range"]::-webkit-slider-thumb {
       -webkit-appearance: none;
-      width: 18px;
-      height: 18px;
+      width: 24px;            /* 2.5.8: min 24 px touch target */
+      height: 24px;
       border-radius: 50%;
       background: var(--accent);
       border: 2px solid var(--bg);
     }
     input[type="range"]::-moz-range-thumb {
-      width: 18px;
-      height: 18px;
+      width: 24px;            /* 2.5.8: min 24 px touch target */
+      height: 24px;
       border-radius: 50%;
       background: var(--accent);
       border: 2px solid var(--bg);
@@ -377,7 +398,7 @@
     .badge {
       padding: 0.15rem 0.5rem;
       background: rgba(255,255,255,0.07);
-      border: 1px solid var(--border);
+      border: 1px solid var(--badge-border);   /* 1.4.11: 3.76:1 on --bg-card */
       border-radius: 4px;
       color: var(--text-dim);
     }
@@ -467,15 +488,17 @@
       padding: 1rem 1.25rem;
       user-select: none;
       position: relative;
+      /* Heading appearance — replaces the removed <h2> inside <summary>.
+         Prevents double-announcement (button + heading) in NVDA/VoiceOver. */
+      font-size: 1.1rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--text-dim);
     }
     details.card > summary::-webkit-details-marker { display: none; }
-    details.card > summary > h2 {
-      display: inline;
-      margin: 0;
-      font-size: 1.1rem;
-    }
     details.card > summary::after {
-      content: "\25B8";              /* ▸ collapsed */
+      content: "\25B8" / "";   /* ▸ collapsed — alt "" hides from AT (CSS gen-content spec) */
       position: absolute;
       right: 1.25rem;
       top: 50%;
@@ -484,7 +507,7 @@
       color: var(--text-dim);
     }
     details.card[open] > summary::after {
-      content: "\25BE";              /* ▾ expanded */
+      content: "\25BE" / "";   /* ▾ expanded */
     }
     /* High-contrast focus ring on the summary (3:1+ guaranteed) */
     details.card > summary:focus-visible {
@@ -721,15 +744,3 @@
 }
 
 
-/* Visually hidden but readable by screen readers */
-.sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0,0,0,0);
-  white-space: nowrap;
-  border: 0;
-}

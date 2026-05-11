@@ -43,16 +43,16 @@
   </div>
 </div>
 
-<main id="main-content" role="main" tabindex="-1">
+<main id="main-content" tabindex="-1">
 
   <!-- ============================================================
        View: Now Playing — playback transport + EQ + lyrics + why
        ============================================================ -->
-  <section data-view="now" id="panel-now" role="tabpanel" aria-labelledby="now-playing-heading">
+  <section data-view="now" id="panel-now" role="tabpanel" aria-labelledby="tab-now">
 
   <!-- Now Playing -->
-  <details class="card" open aria-labelledby="now-playing-heading">
-    <summary><h2 id="now-playing-heading">Now Playing</h2></summary>
+  <details class="card" open>
+    <summary>Now Playing</summary>
 
     <div class="now-playing-row">
       <!-- Decorative cover art — track info already announced by aria-live below.
@@ -118,8 +118,8 @@
   </details>
 
   <!-- Controls -->
-  <details class="card" open aria-labelledby="controls-heading">
-    <summary><h2 id="controls-heading">Controls</h2></summary>
+  <details class="card" open>
+    <summary>Controls</summary>
 
     <!-- Fix 5: role="toolbar" instead of <nav> — nav is for navigation, not action toolbars -->
     <div role="toolbar" aria-label="Playback controls">
@@ -173,8 +173,8 @@
   </details>
 
   <!-- 3-band EQ -->
-  <details class="card" aria-labelledby="eq-heading">
-    <summary><h2 id="eq-heading">EQ</h2></summary>
+  <details class="card">
+    <summary id="eq-heading">EQ</summary>
     <div role="group" aria-labelledby="eq-heading">
       <div class="eq-row">
         <label for="eq-low">Low</label>
@@ -234,8 +234,8 @@
   </dialog>
 
   <!-- Why this track? — plain-English explanation of the picker's choice -->
-  <details class="card" aria-labelledby="why-heading">
-    <summary><h2 id="why-heading">Why this track?</h2></summary>
+  <details class="card">
+    <summary>Why this track?</summary>
     <ul id="why-list" role="list" aria-live="polite" aria-atomic="true">
       <li class="no-results"
           style="color:var(--text-dim);font-style:italic;list-style:none;padding-left:0">
@@ -245,8 +245,8 @@
   </details>
 
   <!-- Up Next -->
-  <details class="card" open aria-labelledby="up-next-heading">
-    <summary><h2 id="up-next-heading">Up Next</h2></summary>
+  <details class="card" open>
+    <summary>Up Next</summary>
     <p id="next-track-text" aria-live="polite" aria-atomic="true">—</p>
   </details>
 
@@ -254,8 +254,8 @@
        LRC / beets / embedded lyrics.  Active-line auto-read uses the
        polite #lyric-announce region below; pattern verified by
        accessibility-lead. -->
-  <details id="lyrics-card" class="card" aria-labelledby="lyrics-heading" hidden>
-    <summary><h2 id="lyrics-heading">Lyrics</h2></summary>
+  <details id="lyrics-card" class="card" hidden>
+    <summary>Lyrics</summary>
     <ol id="lyrics-list" role="list" aria-label="Lyric lines"></ol>
     <!-- Visually hidden live region: announces only the active line, only on
          change (not on every WS tick).  aria-atomic so the full new line reads. -->
@@ -287,7 +287,7 @@
       <button type="button" id="hist-prev">Prev</button>
       <span id="hist-page-info">Page 1 of 1</span>
       <button type="button" id="hist-next">Next</button>
-      <label for="hist-goto" class="sr-only">Page number</label>
+      <label for="hist-goto" class="visually-hidden">Page number</label>
       <input type="number" id="hist-goto" min="1" value="1" style="width:4em">
       <button type="button" id="hist-go">Go</button>
     </nav>
@@ -296,11 +296,11 @@
   <!-- ============================================================
        View: Settings — every CLI flag mirrored as a form control
        ============================================================ -->
-  <section data-view="settings" id="panel-settings" role="tabpanel" hidden aria-labelledby="settings-heading">
+  <section data-view="settings" id="panel-settings" role="tabpanel" hidden aria-labelledby="tab-settings">
 
   <!-- Settings — full mirror of CLI flags -->
-  <details class="card" open aria-labelledby="settings-heading">
-    <summary><h2 id="settings-heading">Settings</h2></summary>
+  <details class="card" open>
+    <summary>Settings</summary>
 
     <!-- Single shared status region for failures (success is silent — checkbox
          state already announced by the AT). -->
@@ -310,7 +310,7 @@
       <legend>Mood</legend>
       <div class="settings-row">
         <label for="preset-select">Preset</label>
-        <select id="preset-select">
+        <select id="preset-select" aria-describedby="preset-desc">
           <option value="">(none)</option>
         </select>
       </div>
@@ -319,7 +319,7 @@
       </span>
       <div class="settings-row">
         <label for="transition-select">Transition effect</label>
-        <select id="transition-select">
+        <select id="transition-select" aria-describedby="transition-desc">
           <option value="none">none</option>
           <option value="echo_out">echo out</option>
           <option value="reverb_tail">reverb tail</option>
@@ -406,7 +406,7 @@
       <legend>DJ-mix toggles</legend>
       <div class="settings-row">
         <label for="harmonic-mode">Harmonic mixing</label>
-        <select id="harmonic-mode">
+        <select id="harmonic-mode" aria-describedby="dj-harmonic-desc">
           <option value="off">off (no key filter)</option>
           <option value="compatible">compatible (Camelot match, ±1, relative)</option>
           <option value="strict">strict (same Camelot position only)</option>
@@ -425,7 +425,7 @@
       </span>
 
       <div class="settings-check">
-        <input type="checkbox" id="dj-beatmatch">
+        <input type="checkbox" id="dj-beatmatch" aria-describedby="dj-beatmatch-desc">
         <label for="dj-beatmatch">Beatmatch</label>
       </div>
       <span class="setting-desc" id="dj-beatmatch-desc">
@@ -433,7 +433,7 @@
       </span>
 
       <div class="settings-check">
-        <input type="checkbox" id="dj-phrase-align">
+        <input type="checkbox" id="dj-phrase-align" aria-describedby="dj-phrase-desc">
         <label for="dj-phrase-align">Phrase align</label>
       </div>
       <span class="setting-desc" id="dj-phrase-desc">
@@ -441,7 +441,7 @@
       </span>
 
       <div class="settings-check">
-        <input type="checkbox" id="dj-outro-intro">
+        <input type="checkbox" id="dj-outro-intro" aria-describedby="dj-outro-desc">
         <label for="dj-outro-intro">Outro / intro align</label>
       </div>
       <span class="setting-desc" id="dj-outro-desc">
@@ -452,7 +452,7 @@
     <fieldset>
       <legend>Playback</legend>
       <div class="settings-check">
-        <input type="checkbox" id="pb-eq-duck">
+        <input type="checkbox" id="pb-eq-duck" aria-describedby="pb-eq-duck-desc">
         <label for="pb-eq-duck">EQ-ducked crossfade</label>
       </div>
       <span class="setting-desc" id="pb-eq-duck-desc">
@@ -472,7 +472,7 @@
       </span>
 
       <div class="settings-check">
-        <input type="checkbox" id="pb-anchor-seed">
+        <input type="checkbox" id="pb-anchor-seed" aria-describedby="pb-anchor-desc">
         <label for="pb-anchor-seed">Anchor to seed</label>
       </div>
       <span class="setting-desc" id="pb-anchor-desc">
@@ -480,7 +480,7 @@
       </span>
 
       <div class="settings-check">
-        <input type="checkbox" id="pb-show-lyrics">
+        <input type="checkbox" id="pb-show-lyrics" aria-describedby="pb-show-lyrics-desc">
         <label for="pb-show-lyrics">Show lyrics</label>
       </div>
       <span class="setting-desc" id="pb-show-lyrics-desc">
@@ -488,7 +488,7 @@
       </span>
 
       <div class="settings-check">
-        <input type="checkbox" id="pb-replaygain">
+        <input type="checkbox" id="pb-replaygain" aria-describedby="pb-rg-desc">
         <label for="pb-replaygain">ReplayGain normalisation</label>
       </div>
       <span class="setting-desc" id="pb-rg-desc">
@@ -496,7 +496,7 @@
       </span>
 
       <div class="settings-check">
-        <input type="checkbox" id="pb-daypart">
+        <input type="checkbox" id="pb-daypart" aria-describedby="pb-daypart-desc">
         <label for="pb-daypart">Wall-clock daypart</label>
       </div>
       <span class="setting-desc" id="pb-daypart-desc">
@@ -504,7 +504,7 @@
       </span>
 
       <div class="settings-check">
-        <input type="checkbox" id="pb-mood-arc">
+        <input type="checkbox" id="pb-mood-arc" aria-describedby="pb-mood-arc-desc">
         <label for="pb-mood-arc">Mood arc (warmup<span aria-hidden="true"> → </span><span class="visually-hidden"> to </span>peak<span aria-hidden="true"> → </span><span class="visually-hidden"> to </span>cool)</label>
       </div>
       <span class="setting-desc" id="pb-mood-arc-desc">
@@ -514,14 +514,14 @@
       <div class="settings-row" data-show-when="pb-mood-arc">
         <label for="pb-mood-arc-hours">Mood arc length (hours)</label>
         <input type="number" id="pb-mood-arc-hours" min="0.25" max="24" step="0.25" value="3"
-               inputmode="decimal">
+               inputmode="decimal" aria-describedby="pb-mood-arc-hours-desc">
       </div>
       <span class="setting-desc" id="pb-mood-arc-hours-desc">
         How long one full warmup-peak-cool cycle takes before the arc loops.  3 h matches a standard club set; 1 h works well for short sessions; 6+ h gives a slow festival-style ramp.  Changing this re-anchors the arc to "now".
       </span>
 
       <div class="settings-check">
-        <input type="checkbox" id="pb-import-cues">
+        <input type="checkbox" id="pb-import-cues" aria-describedby="pb-import-cues-desc">
         <label for="pb-import-cues">Auto-import DJ-software cues</label>
       </div>
       <span class="setting-desc" id="pb-import-cues-desc">
@@ -529,7 +529,7 @@
       </span>
 
       <div class="settings-check">
-        <input type="checkbox" id="pb-beat-sync-fx">
+        <input type="checkbox" id="pb-beat-sync-fx" aria-describedby="pb-beat-sync-fx-desc">
         <label for="pb-beat-sync-fx">Beat-sync transition FX</label>
       </div>
       <span class="setting-desc" id="pb-beat-sync-fx-desc">
@@ -537,7 +537,7 @@
       </span>
 
       <div class="settings-check">
-        <input type="checkbox" id="pb-key-sync-fx">
+        <input type="checkbox" id="pb-key-sync-fx" aria-describedby="pb-key-sync-fx-desc">
         <label for="pb-key-sync-fx">Key-sync pitched FX</label>
       </div>
       <span class="setting-desc" id="pb-key-sync-fx-desc">
@@ -545,7 +545,7 @@
       </span>
 
       <div class="settings-check">
-        <input type="checkbox" id="pb-beatmatch-on-skip">
+        <input type="checkbox" id="pb-beatmatch-on-skip" aria-describedby="pb-beatmatch-on-skip-desc">
         <label for="pb-beatmatch-on-skip">Beatmatch on skip</label>
       </div>
       <span class="setting-desc" id="pb-beatmatch-on-skip-desc">
@@ -554,7 +554,7 @@
 
       <div class="settings-row">
         <label for="audio-device">Audio output device</label>
-        <select id="audio-device">
+        <select id="audio-device" aria-describedby="audio-device-desc">
           <option value="">System default</option>
         </select>
         <button type="button" id="audio-device-refresh"
@@ -576,7 +576,7 @@
 
       <div class="settings-row">
         <label for="pb-transition-mode">Transition mode</label>
-        <select id="pb-transition-mode">
+        <select id="pb-transition-mode" aria-describedby="pb-transition-mode-desc">
           <option value="full_intro_outro">Full intro / outro</option>
           <option value="outro_fade">Outro fade</option>
           <option value="fixed_skip_silence">Fixed (skip silence)</option>
@@ -618,7 +618,7 @@
 
       <div class="settings-row">
         <label for="pb-crossfade">Crossfade seconds</label>
-        <input type="number" id="pb-crossfade" min="0" max="20" step="0.5" value="3">
+        <input type="number" id="pb-crossfade" min="0" max="20" step="0.5" value="3" aria-describedby="pb-crossfade-desc">
       </div>
       <span class="setting-desc" id="pb-crossfade-desc">
         How long the gain ramp between tracks lasts.  2-3 s feels natural for most music; 5-8 s for ambient or testing transition effects.  0 = instant cut.
@@ -626,7 +626,7 @@
 
       <div class="settings-row">
         <label for="pb-fade-in">Fade-in seconds</label>
-        <input type="number" id="pb-fade-in" min="0" max="20" step="0.5" value="3">
+        <input type="number" id="pb-fade-in" min="0" max="20" step="0.5" value="3" aria-describedby="pb-fade-in-desc">
       </div>
       <span class="setting-desc" id="pb-fade-in-desc">
         How long the incoming track takes to reach full volume.  0 = incoming track starts at full volume immediately when the crossfade begins (no ramp-up).  Capped at crossfade length.
@@ -637,11 +637,11 @@
       <legend>BPM range</legend>
       <div class="settings-row">
         <label for="bpm-lo">Minimum</label>
-        <input type="number" id="bpm-lo" min="0" max="300" step="1">
+        <input type="number" id="bpm-lo" min="0" max="300" step="1" aria-describedby="bpm-desc">
       </div>
       <div class="settings-row">
         <label for="bpm-hi">Maximum</label>
-        <input type="number" id="bpm-hi" min="0" max="300" step="1">
+        <input type="number" id="bpm-hi" min="0" max="300" step="1" aria-describedby="bpm-desc">
       </div>
       <span class="setting-desc" id="bpm-desc">
         Hard filter on track tempo.  Picks only fall within this range; tracks with unknown BPM always pass.  Leave blank to disable.
@@ -651,13 +651,13 @@
     <fieldset>
       <legend>Discovery</legend>
       <div class="settings-check">
-        <input type="checkbox" id="disc-enabled">
+        <input type="checkbox" id="disc-enabled" aria-describedby="disc-desc">
         <label for="disc-enabled">Inject distant tracks</label>
       </div>
       <div class="settings-row">
         <label for="disc-every">Every N tracks</label>
         <input type="number" id="disc-every" min="1" max="500" step="1" value="20"
-               aria-disabled="true">
+               disabled aria-describedby="disc-desc">
       </div>
       <span class="setting-desc" id="disc-desc">
         Same on/off state as the <em>Discovery</em> button on the Now Playing tab — toggling either mirrors the other.  Periodically injects a sonically <em>distant</em> track to break the auto-DJ out of a similarity loop, picking at random from the bottom quartile of cosine similarity.
@@ -666,8 +666,8 @@
   </details>
 
   <!-- Voice liners -->
-  <details class="card" aria-labelledby="liners-heading">
-    <summary><h2 id="liners-heading">Voice liners</h2></summary>
+  <details class="card">
+    <summary>Voice liners</summary>
     <p class="card-desc">
       Drop-in spoken clips that play over the live mix every so often, like a real station ID.  Drop audio files (mp3, wav, ogg, m4a, flac, aac) into the configured folder, then set how often to fire and which rotation to use.
     </p>
@@ -740,14 +740,14 @@
        View: Queue & Search — find tracks, manage the up-next queue,
        review what's already played
        ============================================================ -->
-  <section data-view="queue" id="panel-queue" role="tabpanel" hidden aria-labelledby="queue-heading">
+  <section data-view="queue" id="panel-queue" role="tabpanel" hidden aria-labelledby="tab-queue">
 
   <!-- Queue -->
-  <details class="card" open aria-labelledby="queue-heading">
-    <summary><h2 id="queue-heading">
+  <details class="card" open>
+    <summary>
       Queue
       <span id="queue-count" aria-hidden="true" style="color:var(--text-dim);font-weight:normal"></span>
-    </h2></summary>
+    </summary>
     <!-- Visually hidden announce region for queue mutations: "Added X", "Moved X up", "Removed X" -->
     <div id="queue-announce"
          aria-live="polite"
@@ -762,8 +762,8 @@
   </details>
 
   <!-- Search -->
-  <details class="card" aria-labelledby="search-heading">
-    <summary><h2 id="search-heading">Search Library</h2></summary>
+  <details class="card">
+    <summary>Search Library</summary>
     <div class="search-row">
       <!-- Fix 6: label provides accessible name; removed duplicate aria-label -->
       <label for="search-input"
@@ -784,8 +784,8 @@
   </details>
 
   <!-- History -->
-  <details class="card" aria-labelledby="history-heading">
-    <summary><h2 id="history-heading">Recently Played</h2></summary>
+  <details class="card">
+    <summary>Recently Played</summary>
     <ul id="history-list" role="list" aria-label="Recently played tracks">
       <li><span class="no-results" style="color:var(--text-dim);font-style:italic">Nothing played yet.</span></li>
     </ul>
@@ -796,9 +796,9 @@
        View: Library tools — index / enrich / prune / stats from
        the web UI.  Empty placeholder until the parity work lands.
        ============================================================ -->
-  <section data-view="library" id="panel-library" role="tabpanel" hidden aria-labelledby="library-heading">
-    <details class="card" open aria-labelledby="library-heading">
-      <summary><h2 id="library-heading">Library tools</h2></summary>
+  <section data-view="library" id="panel-library" role="tabpanel" hidden aria-labelledby="tab-library">
+    <details class="card" open>
+      <summary>Library tools</summary>
 
       <p>
         Run library-maintenance commands without dropping to a terminal.
@@ -903,6 +903,6 @@
 
 <script type="module" src="/app.js"></script>
 <!-- Screen-reader live region for status announcements (Shift+T/N/R/B/K) -->
-<div id="sr-status" role="status" aria-live="polite" aria-atomic="true" class="sr-only"></div>
+<div id="sr-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
 </body>
 </html>

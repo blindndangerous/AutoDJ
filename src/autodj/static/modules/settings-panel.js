@@ -154,5 +154,5 @@ export function applySettingsState(st, els) {
   if (document.activeElement !== discEvery && discOn) {
     discEvery.value = st.discovery_every;
   }
-  discEvery.setAttribute("aria-disabled", discOn ? "false" : "true");
+  discEvery.disabled = !discOn;
 }
