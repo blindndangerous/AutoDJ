@@ -441,6 +441,13 @@
       padding: 0 0.4rem;
       font-weight: 600;
     }
+    /* `hidden` attribute must win over author display rules
+       (settings-row uses flex, setting-desc uses block; both beat the
+       UA [hidden] {display:none} on specificity).  Enforce spec
+       behaviour so data-show-when actually hides its targets. */
+    [hidden] {
+      display: none !important;
+    }
     .settings-row {
       display: flex;
       align-items: center;

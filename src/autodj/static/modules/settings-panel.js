@@ -7,6 +7,7 @@
 // total surface area.
 
 import { escHtml, dbg } from "./dom-helpers.js";
+import { applyShowWhen } from "./show-when.js";
 
 let _lastPresetOptionsKey = "";
 let _libraryWarned = false;
@@ -155,4 +156,5 @@ export function applySettingsState(st, els) {
     discEvery.value = st.discovery_every;
   }
   discEvery.disabled = !discOn;
+  applyShowWhen();
 }
