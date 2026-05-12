@@ -699,7 +699,7 @@ function postDiscovery() {
   postSettings("/api/discovery", { every: on && !isNaN(v) && v > 0 ? v : null });
 }
 discEnabled.addEventListener("change", () => {
-  discEvery.setAttribute("aria-disabled", discEnabled.checked ? "false" : "true");
+  discEvery.disabled = !discEnabled.checked;
   postDiscovery();
 });
 discEvery.addEventListener("change", () => {

@@ -90,6 +90,9 @@ export function applyView(name, userInitiated) {
       if (heading) {
         heading.setAttribute("tabindex", "-1");
         heading.focus({ preventScroll: false });
+      } else {
+        const firstSummary = sec.querySelector("summary");
+        if (firstSummary) firstSummary.focus({ preventScroll: false });
       }
     }
   }
