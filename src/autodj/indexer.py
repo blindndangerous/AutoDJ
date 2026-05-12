@@ -1343,6 +1343,59 @@ def _backfill_dj_meta(
         dynamic_ncols=True,
     )
 
+    # Adaptive throttle state.  We track the wall time between successive
+    # task completions over a 20-sample rolling window.  The first 10
+    # samples establish a baseline (per-completion cadence under healthy
+    # I/O).  After that, if the rolling median grows past 2x baseline we
+    # interpret it as drives thermally throttling or otherwise saturated,
+    # and insert a proportional cool-down sleep before each new submission.
+    # The throttle relaxes automatically when cadence recovers.  Manual
+    # ``throttle_ms`` (if any) is treated as a floor.
+    import statistics as _stats
+
+    _intervals: deque[float] = deque(maxlen=20)
+    _baseline: list[float | None] = [None]  # nonlocal-via-list trick
+    _adaptive_s: list[float] = [0.0]
+    _last_completion: list[float] = [0.0]
+    _last_log_done: list[int] = [0]
+
+    def _update_throttle() -> None:
+        now = _time.monotonic()
+        if _last_completion[0] > 0:
+            _intervals.append(now - _last_completion[0])
+        _last_completion[0] = now
+        if _baseline[0] is None:
+            if len(_intervals) >= 10:
+                _baseline[0] = _stats.median(_intervals)
+            return
+        if len(_intervals) < 5:
+            return
+        current = _stats.median(_intervals)
+        baseline = _baseline[0]
+        if baseline <= 0:
+            return
+        ratio = current / baseline
+        prev = _adaptive_s[0]
+        if ratio > 2.0:
+            # Proportional cool-down: aim to give drives roughly the
+            # extra-latency budget back as idle time.  Capped at 5 s so
+            # one transient stall can't park the whole run.
+            target = min(5.0, (ratio - 1.5) * baseline)
+            _adaptive_s[0] = max(prev, target)
+        elif ratio < 1.3 and prev > 0:
+            _adaptive_s[0] = prev * 0.5 if prev > 0.05 else 0.0
+        # Log throttle transitions sparsely so the user can see what the
+        # adaptive controller is doing without spam.
+        if abs(_adaptive_s[0] - prev) > 0.05 and (done - _last_log_done[0]) >= 25:
+            _last_log_done[0] = done
+            logger.info(
+                "Adaptive throttle: median %.2fs/track (baseline %.2fs, ratio %.2f) -> sleep %.2fs",
+                current,
+                baseline,
+                ratio,
+                _adaptive_s[0],
+            )
+
     def _record(path_str: str, meta: Any | None, err: str | None) -> None:
         nonlocal done
         if err:
@@ -1354,22 +1407,25 @@ def _backfill_dj_meta(
                 cache.flush()
         with contextlib.suppress(Exception):
             bar.update(1)
+        _update_throttle()
 
-    throttle_s = max(0.0, throttle_ms) / 1000.0
+    manual_throttle_s = max(0.0, throttle_ms) / 1000.0
+
+    def _sleep_before_submit() -> None:
+        gap = max(manual_throttle_s, _adaptive_s[0])
+        if gap > 0:
+            _time.sleep(gap)
 
     try:
         if workers == 1:
             for entry in pending:
-                if throttle_s:
-                    _time.sleep(throttle_s)
+                _sleep_before_submit()
                 _, meta, err = _analyse_one_track(entry.path)
                 _record(entry.path, meta, err)
         else:
             # Sliding-window submission — keeps at most ``workers * 2``
             # futures in flight so a Ctrl+C can drain quickly instead of
             # waiting for the executor to shut down 70 000 queued tasks.
-            from collections import deque
-
             inflight: deque = deque()
             it = iter(pending)
             with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -1379,8 +1435,7 @@ def _backfill_dj_meta(
                             entry = next(it)
                         except StopIteration:
                             break
-                        if throttle_s:
-                            _time.sleep(throttle_s)
+                        _sleep_before_submit()
                         inflight.append(pool.submit(_analyse_one_track, entry.path))
 
                     while inflight:
@@ -1389,8 +1444,7 @@ def _backfill_dj_meta(
                         _record(path_str, meta, err)
                         try:
                             entry = next(it)
-                            if throttle_s:
-                                _time.sleep(throttle_s)
+                            _sleep_before_submit()
                             inflight.append(pool.submit(_analyse_one_track, entry.path))
                         except StopIteration:
                             pass
