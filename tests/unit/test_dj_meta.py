@@ -612,3 +612,28 @@ class TestDjMetaInternalHelpers:
         b = [Cue(time_s=20.0, type="drop", source="auto")]
         merged = merge_cues(a, b)
         assert len(merged) == 2
+
+
+# ---------------------------------------------------------------------------
+# autodj.dj_meta — _hm_energy_boost harmonic mode branches
+# ---------------------------------------------------------------------------
+
+
+class TestDjMetaHarmonic:
+    def test_energy_boost_different_sides_returns_false(self) -> None:
+        from autodj.dj_meta import _hm_energy_boost
+
+        # pos_a side 'A', pos_b side 'B' — must short-circuit to False
+        assert _hm_energy_boost((1, "A"), (1, "B")) is False
+
+    def test_energy_boost_same_side_within_range(self) -> None:
+        from autodj.dj_meta import _hm_energy_boost
+
+        assert _hm_energy_boost((1, "A"), (3, "A")) is True
+        # diff == 10 wraps
+        assert _hm_energy_boost((1, "A"), (11, "A")) is True
+
+    def test_energy_boost_same_side_too_far(self) -> None:
+        from autodj.dj_meta import _hm_energy_boost
+
+        assert _hm_energy_boost((1, "A"), (5, "A")) is False

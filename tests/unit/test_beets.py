@@ -384,3 +384,41 @@ class TestGetLyricsForPath:
         # No lyrics for that row, so empty string is correct, but the
         # query path was exercised
         assert result == ""
+
+
+# ---------------------------------------------------------------------------
+# autodj.beets  (parser + path-decode branch coverage)
+# ---------------------------------------------------------------------------
+
+
+class TestBeetsHelpers:
+    def test_camelot_key_with_invalid_number_returns_none(self) -> None:
+        from autodj.beets import _parse_camelot_key
+
+        # Out-of-range numbers
+        assert _parse_camelot_key("0A") is None
+        assert _parse_camelot_key("13B") is None
+
+    def test_split_note_and_mode_empty_after_strip(self) -> None:
+        from autodj.beets import parse_initial_key
+
+        # 'major' alone becomes empty note_part — should return None
+        assert parse_initial_key("major") is None
+        assert parse_initial_key("minor") is None
+
+    def test_decode_path_from_str(self) -> None:
+        from pathlib import Path
+
+        from autodj.beets import _decode_path
+
+        result = _decode_path("/some/path/track.mp3")
+        assert isinstance(result, Path)
+        assert str(result).replace("\\", "/") == "/some/path/track.mp3"
+
+    def test_decode_path_from_bytes(self) -> None:
+        from pathlib import Path
+
+        from autodj.beets import _decode_path
+
+        result = _decode_path(b"/some/path/track.mp3")
+        assert isinstance(result, Path)

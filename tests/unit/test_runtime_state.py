@@ -273,3 +273,37 @@ class TestRoundTrip:
         assert p2._smart_shuffle is True
         assert p2._bpm_range == (100.0, 130.0)
         assert p2._discovery_every == 12
+
+
+# ---------------------------------------------------------------------------
+# autodj.runtime_state — _restore_validated_strings invalid branches
+# ---------------------------------------------------------------------------
+
+
+class TestRuntimeStateValidation:
+    def test_invalid_transition_mode_logged_not_raised(self, caplog) -> None:
+        from autodj.runtime_state import _restore_validated_strings
+
+        cfg = MagicMock()
+        cfg.playback.transition_mode = "full_intro_outro"
+        with caplog.at_level("WARNING"):
+            _restore_validated_strings(cfg, {"transition_mode": "garbage-mode"})
+        assert any("transition_mode" in r.message for r in caplog.records)
+        # Unchanged
+        assert cfg.playback.transition_mode == "full_intro_outro"
+
+    def test_invalid_key_notation_logged_not_raised(self, caplog) -> None:
+        from autodj.runtime_state import _restore_validated_strings
+
+        cfg = MagicMock()
+        cfg.playback.key_notation = "camelot"
+        with caplog.at_level("WARNING"):
+            _restore_validated_strings(cfg, {"key_notation": "alien"})
+        assert any("key_notation" in r.message for r in caplog.records)
+
+    def test_valid_transition_mode_applied(self) -> None:
+        from autodj.runtime_state import _restore_validated_strings
+
+        cfg = MagicMock()
+        _restore_validated_strings(cfg, {"transition_mode": "fixed"})
+        assert cfg.playback.transition_mode == "fixed"

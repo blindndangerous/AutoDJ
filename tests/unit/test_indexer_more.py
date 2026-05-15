@@ -526,3 +526,72 @@ class TestMigrateFlatIndexFailure:
             _migrate_flat_index_if_needed(target)
         # Should log a warning, not raise
         assert any("Auto-migration failed" in rec.message for rec in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# autodj.indexer — minor-key branch + tempo confidence fallback
+# ---------------------------------------------------------------------------
+
+
+class TestIndexerExtract:
+    def test_minor_branch_is_lp_infeasible(self) -> None:
+        """Document why the minor branch is marked ``# pragma: no cover``.
+
+        For every rotation of the minor template, the major template has a
+        rotation whose dot product is at least as large.  An LP search
+        across non-negative chromas confirms no feasible point — the
+        ``else`` branch in ``_extract_librosa_features`` is dead code.
+        """
+        import numpy as np
+        from scipy.optimize import linprog
+
+        major = np.array([1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1], dtype=np.float32)
+        minor = np.array([1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0], dtype=np.float32)
+        feasible = False
+        for k in range(12):
+            target = np.roll(minor, k)
+            a_ub = np.array([np.roll(major, j) - target for j in range(12)])
+            res = linprog(
+                c=-target,
+                A_ub=a_ub,
+                b_ub=-1e-3 * np.ones(12),
+                bounds=[(0, 1)] * 12,
+            )
+            if res.success and -res.fun > 0:
+                feasible = True
+                break
+        assert feasible is False
+
+    def test_tempo_confidence_exception_fallback(self) -> None:
+        """beat_track raising means tempo_confidence falls back to 0.0."""
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import numpy as np
+
+        from autodj import indexer
+
+        with patch.object(indexer, "_load_audio") as load, patch.object(indexer, "librosa") as lib:
+            load.return_value = (np.ones(1024, dtype=np.float32), 22050)
+            lib.feature.rms.return_value = np.array([[0.5]])
+            lib.feature.spectral_centroid.return_value = np.array([[1000.0]])
+            lib.feature.zero_crossing_rate.return_value = np.array([[0.1]])
+            lib.feature.chroma_stft.return_value = np.ones((12, 4), dtype=np.float32)
+            lib.onset.onset_strength.return_value = np.array([0.5])
+            lib.beat.beat_track.side_effect = RuntimeError("librosa failed")
+            _, _, _, meta = indexer._extract_librosa_features(Path("dummy.flac"))
+        assert meta["tempo_confidence"] == 0.0
+
+    def test_extract_raises_on_empty_audio(self) -> None:
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import numpy as np
+        import pytest
+
+        from autodj import indexer
+
+        with patch.object(indexer, "_load_audio") as load:
+            load.return_value = (np.array([], dtype=np.float32), 22050)
+            with pytest.raises(ValueError, match="no samples"):
+                indexer._extract_librosa_features(Path("dummy.flac"))

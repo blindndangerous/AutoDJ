@@ -230,3 +230,36 @@ class TestParseLrcMalformed:
         # 01:1.2.3 -> float("1.2.3") raises ValueError -> skipped
         # only the second line should be present
         assert any(line.text == "world" for line in result)
+
+
+# ---------------------------------------------------------------------------
+# autodj.audio_meta  (_id3_get defensive branches)
+# ---------------------------------------------------------------------------
+
+
+class TestAudioMetaDefensive:
+    def test_id3_get_returns_none_when_tags_missing(self) -> None:
+        from autodj.audio_meta import _id3_get
+
+        m = SimpleNamespace(tags=None)
+        assert _id3_get(m, "TIT2") is None
+
+    def test_id3_get_returns_none_when_value_is_none(self) -> None:
+        from autodj.audio_meta import _id3_get
+
+        class _Tags:
+            def __getitem__(self, key: str) -> None:
+                return None
+
+        m = SimpleNamespace(tags=_Tags())
+        assert _id3_get(m, "TIT2") is None
+
+    def test_id3_get_returns_none_on_keyerror(self) -> None:
+        from autodj.audio_meta import _id3_get
+
+        class _Tags:
+            def __getitem__(self, key: str) -> str:
+                raise KeyError(key)
+
+        m = SimpleNamespace(tags=_Tags())
+        assert _id3_get(m, "TIT2") is None
