@@ -1359,7 +1359,9 @@ def _backfill_dj_meta(
     _last_completion: list[float] = [0.0]
     _last_log_done: list[int] = [0]
 
-    def _update_throttle() -> None:
+    def _update_throttle() -> (
+        None
+    ):  # pragma: no cover - NAS thermal-throttle controller, exercised on real hardware only
         now = _time.monotonic()
         if _last_completion[0] > 0:
             _intervals.append(now - _last_completion[0])
@@ -1448,7 +1450,7 @@ def _backfill_dj_meta(
                             inflight.append(pool.submit(_analyse_one_track, entry.path))
                         except StopIteration:
                             pass
-                except KeyboardInterrupt:
+                except KeyboardInterrupt:  # pragma: no cover - Ctrl+C drain path
                     with contextlib.suppress(Exception):
                         bar.close()
                     print(
@@ -1460,7 +1462,7 @@ def _backfill_dj_meta(
                     pool.shutdown(wait=False, cancel_futures=True)
                     cache.flush(force=True)
                     raise
-    except KeyboardInterrupt:
+    except KeyboardInterrupt:  # pragma: no cover - Ctrl+C drain path
         print(
             f"[AutoDJ] DJ-meta interrupted: {done}/{total} analysed.  "
             "Re-run `autodj analyse` to resume.",
