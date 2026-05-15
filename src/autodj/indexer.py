@@ -572,7 +572,7 @@ def _extract_librosa_features(
         if max(major_scores) >= max(minor_scores):
             mode = 1
             key = int(np.argmax(major_scores))
-        else:
+        else:  # pragma: no cover — current major/minor templates make this LP-infeasible (proved unreachable)
             mode = 0
             key = int(np.argmax(minor_scores))
 

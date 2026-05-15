@@ -539,6 +539,21 @@ class TestPlayerBuildStatus:
         panel = player._build_status()
         assert panel is not None
 
+    def test_discovery_indicator_dim_when_toggle_off(self) -> None:
+        # discovery_every set but toggle OFF -> dim indicator (line 848)
+        player = Player(_make_cfg_mock(), _make_sim_index(), discovery_every=5)
+        player._state.discovery_enabled = False
+        panel = player._build_status()
+        assert panel is not None
+
+    def test_refresh_status_with_live_calls_update(self) -> None:
+        # _refresh_status only updates when _live is set (line 868)
+        player = Player(_make_cfg_mock(), _make_sim_index())
+        live = MagicMock()
+        player._live = live
+        player._refresh_status()
+        live.update.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # Player._pick_next
@@ -574,6 +589,14 @@ class TestPlayerExternalCues:
         with patch("autodj.dj_cues_import.auto_import_cues", side_effect=OSError("boom")):
             player._ensure_external_cues()
         # Failure logs at DEBUG and leaves _external_cues empty.
+        assert player._external_cues == {}
+
+    def test_ensure_external_cues_logs_when_no_libraries_found(self) -> None:
+        """auto_import_cues returns {} -> hit the 'no libraries found' log (line 1309)."""
+        player = self._make_player()
+        player._cfg.playback.import_external_cues = True
+        with patch("autodj.dj_cues_import.auto_import_cues", return_value={}):
+            player._ensure_external_cues()
         assert player._external_cues == {}
 
     def test_ensure_external_cues_imports_cues_into_dict(self) -> None:
@@ -1865,3 +1888,272 @@ class TestMinFxDurationCoverage:
             assert 0.5 <= secs <= 12.0, (
                 f"{name} min duration {secs}s outside sane DJ range [0.5, 12]"
             )
+
+
+class TestPickNextBranches:
+    """Cover the queue-pop fall-through + pure-shuffle pool-empty fallback."""
+
+    def _make_player(self, n: int = 6):
+        return Player(_make_cfg_mock(), _make_sim_index(n))
+
+    def test_queue_pop_when_queue_nonempty(self) -> None:
+        player = self._make_player()
+        current = player._sim.entries[0]
+        player._state.current_track = current
+        # No queued_next, but queue has entries -> pop from queue
+        player._state.queue.append(player._sim.entries[3])
+        result = player._pick_next(current)
+        assert result.path == player._sim.entries[3].path
+        # Queue drained
+        assert player._state.queue == []
+        assert player._last_pick_mode == "queue"
+
+    def test_pure_shuffle_pool_empty_fallback(self) -> None:
+        from collections import deque
+
+        player = self._make_player(n=3)
+        player._pure_shuffle = True
+        # Force recently_played to cover every entry path so the filter
+        # leaves an empty pool and triggers the full-library fallback.
+        all_paths = [e.path for e in player._sim.entries]
+        player._state.recently_played = deque(all_paths, maxlen=len(all_paths))
+        current = player._sim.entries[0]
+        result = player._pick_next(current)
+        assert isinstance(result, IndexEntry)
+        assert player._last_pick_mode == "pure_shuffle"
+
+
+class TestReplayGainGainOne:
+    """``_apply_replaygain`` returns audio unchanged when gain == 1.0."""
+
+    def test_gain_one_returns_audio_unchanged(self, monkeypatch) -> None:
+        player = Player(_make_cfg_mock(), _make_sim_index(2))
+        player._cfg.replaygain.enabled = True
+        audio = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+        monkeypatch.setattr("autodj.audio_meta.read_replaygain", lambda p: None)
+        monkeypatch.setattr(
+            "autodj.audio_meta.replaygain_multiplier",
+            lambda *a, **kw: 1.0,
+        )
+        out = player._apply_replaygain(audio, "any.flac")
+        assert out is audio
+
+
+class TestLoadLyricsBeetsBranch:
+    """Cover the beets-db lyrics fall-through path (lines 1226-1229)."""
+
+    def test_beets_db_lookup_invoked(self, tmp_path, monkeypatch) -> None:
+        player = Player(_make_cfg_mock(), _make_sim_index(2))
+        player._cfg.playback.show_lyrics = True
+        player._cfg.library.beets_db = str(tmp_path / "library.db")
+        captured: dict = {}
+
+        def _fake_get_lyrics_for_path(db, path, music_dir=None):
+            captured["db"] = db
+            captured["path"] = path
+            return "verse one\nverse two"
+
+        monkeypatch.setattr(
+            "autodj.beets.get_lyrics_for_path",
+            _fake_get_lyrics_for_path,
+        )
+        player._load_lyrics(str(tmp_path / "song.flac"))
+        assert captured["path"].endswith("song.flac")
+        assert player._current_lyrics_plain == "verse one\nverse two"
+
+    def test_lrc_present_short_circuits_beets(self, tmp_path, monkeypatch) -> None:
+        from autodj.audio_meta import LyricLine
+
+        player = Player(_make_cfg_mock(), _make_sim_index(2))
+        player._cfg.playback.show_lyrics = True
+        player._cfg.library.beets_db = str(tmp_path / "library.db")
+        # LRC sidecar succeeds → beets path is skipped (line 1223 return).
+        monkeypatch.setattr(
+            "autodj.audio_meta.load_lrc_for",
+            lambda p: [LyricLine(0.0, "from-lrc")],
+        )
+        called = {"beets": 0}
+
+        def _shouldnt_run(*a, **kw):
+            called["beets"] += 1
+            return ""
+
+        monkeypatch.setattr("autodj.beets.get_lyrics_for_path", _shouldnt_run)
+        player._load_lyrics(str(tmp_path / "song.flac"))
+        assert player._current_lyrics
+        assert called["beets"] == 0
+
+    def test_beets_db_oserror_swallowed(self, tmp_path, monkeypatch) -> None:
+        player = Player(_make_cfg_mock(), _make_sim_index(2))
+        player._cfg.playback.show_lyrics = True
+        player._cfg.library.beets_db = str(tmp_path / "library.db")
+
+        def _raise(*a, **kw):
+            raise OSError("db locked")
+
+        monkeypatch.setattr("autodj.beets.get_lyrics_for_path", _raise)
+        player._load_lyrics(str(tmp_path / "song.flac"))
+        assert player._current_lyrics_plain == ""
+
+
+class TestEnsureDjCache:
+    """Cover ``_ensure_dj_cache`` happy-path that initialises the cache."""
+
+    def test_cache_initialised_from_active_dir(self, tmp_path) -> None:
+        player = Player(_make_cfg_mock(), _make_sim_index(2))
+        player._cfg.index.active_dir = tmp_path
+        player._dj_cache = None
+        from autodj import dj_meta as _dm
+
+        _dm._CACHE = None  # reset module-level cache
+        player._ensure_dj_cache()
+        # Idempotent re-run.
+        player._ensure_dj_cache()
+
+
+class TestNextEntryMeta:
+    """Cover ``_next_entry_meta`` — cache present + analysed branch."""
+
+    def test_returns_meta_when_analysed(self) -> None:
+        from autodj.dj_meta import DjMeta
+
+        player = Player(_make_cfg_mock(), _make_sim_index(2))
+        next_entry = player._sim.entries[1]
+        fake_cache = MagicMock()
+        fake_cache.get.return_value = DjMeta(analysed=True, intro_end_s=3.0)
+        player._dj_cache = fake_cache
+        meta = player._peek_incoming_meta(next_entry)
+        assert meta is not None
+        assert meta.intro_end_s == 3.0
+
+    def test_returns_none_when_unanalysed(self) -> None:
+        from autodj.dj_meta import DjMeta
+
+        player = Player(_make_cfg_mock(), _make_sim_index(2))
+        next_entry = player._sim.entries[1]
+        fake_cache = MagicMock()
+        fake_cache.get.return_value = DjMeta(analysed=False)
+        player._dj_cache = fake_cache
+        assert player._peek_incoming_meta(next_entry) is None
+
+
+class TestOutgoingMetaCached:
+    """``_outgoing_meta`` returns cached analysed meta without re-analysing."""
+
+    def test_runs_analyse_when_cache_miss(self, monkeypatch) -> None:
+        from autodj.dj_meta import DjMeta
+
+        player = Player(_make_cfg_mock(), _make_sim_index(2))
+        player._cfg.djmix.outro_intro_align = True
+        player._cfg.playback.transition_mode = "fixed"
+        unanalysed = DjMeta(analysed=False)
+        fake_cache = MagicMock()
+        fake_cache.get.return_value = unanalysed
+        player._dj_cache = fake_cache
+
+        def _fake_analyse(audio, sr):
+            return DjMeta(analysed=True, intro_end_s=1.0, outro_start_s=10.0)
+
+        monkeypatch.setattr("autodj.dj_meta.analyse_audio", _fake_analyse)
+        audio = np.zeros(44100, dtype=np.float32)
+        meta = player._outgoing_meta(audio, 44100, "any.flac")
+        assert meta is not None
+        assert meta.analysed is True
+        fake_cache.set.assert_called_once()
+        fake_cache.flush.assert_called_once()
+
+    def test_uses_cached_when_already_analysed(self) -> None:
+        from autodj.dj_meta import DjMeta
+
+        player = Player(_make_cfg_mock(), _make_sim_index(2))
+        player._cfg.djmix.outro_intro_align = True
+        player._cfg.playback.transition_mode = "fixed"
+        analysed_meta = DjMeta(analysed=True, intro_end_s=2.0, outro_start_s=120.0)
+        fake_cache = MagicMock()
+        fake_cache.get.return_value = analysed_meta
+        player._dj_cache = fake_cache
+        audio = np.zeros(44100, dtype=np.float32)
+        got = player._outgoing_meta(audio, 44100, "any.flac")
+        assert got is analysed_meta
+        fake_cache.set.assert_not_called()
+
+
+class TestComputeCrossfadeStart:
+    """Cover phrase-align + outro-intro alignment in _compute_crossfade_start."""
+
+    def test_outro_intro_align_uses_outro_start(self) -> None:
+        from autodj.dj_meta import DjMeta
+
+        player = Player(_make_cfg_mock(), _make_sim_index(2))
+        player._cfg.djmix.outro_intro_align = True
+        player._cfg.playback.transition_mode = "fixed"
+        sr = 44100
+        audio = np.zeros(sr * 30, dtype=np.float32)
+        meta_a = DjMeta(analysed=True, outro_start_s=20.0, beats=[])
+        start = player._crossfade_start_in_a(audio, sr, meta_a, crossfade_samples=44100)
+        assert start == int(20.0 * sr)
+
+    def test_phrase_align_snaps_to_beat_grid(self) -> None:
+        from autodj.dj_meta import DjMeta
+
+        player = Player(_make_cfg_mock(), _make_sim_index(2))
+        player._cfg.djmix.phrase_align = True
+        player._cfg.djmix.phrase_bars = 8
+        player._cfg.playback.transition_mode = "fixed"
+        sr = 44100
+        # Audio of 19 s, crossfade 2 s → naive start = 17 s, within 8 s of 16 s
+        # phrase boundary; snap fires.  Phrase length = 8 bars × 4 beats × 0.5 s
+        # = 16 s, half-phrase tolerance = 8 s.
+        audio = np.zeros(sr * 19, dtype=np.float32)
+        beats = [i * 0.5 for i in range(64)]
+        meta_a = DjMeta(analysed=True, outro_start_s=0.0, beats=beats)
+        start = player._crossfade_start_in_a(audio, sr, meta_a, crossfade_samples=sr * 2)
+        # Naive start = (19-2)*sr = 17*sr; nearest phrase boundary is 16 s.
+        assert start == int(16.0 * sr)
+
+
+class TestApplyTransitionEffectWetMix:
+    """Cover the wet < 1.0 path in ``_apply_transition_effect``."""
+
+    def test_wet_mix_blends_dry_and_wet(self) -> None:
+        # echo_out has a min_seconds entry in _MIN_FX_DURATION_S, so the
+        # `effect_samples = max(crossfade_samples, ...)` branch (line 1691)
+        # is also exercised here with a tiny crossfade window.
+        player = Player(_make_cfg_mock(), _make_sim_index(2))
+        player._cfg.transitions.effect = "echo_out"
+        player._cfg.transitions.wet_mix = 0.5
+        sr = 22050
+        audio_a = np.ones(sr * 8, dtype=np.float32) * 0.3
+        audio_b = np.ones(sr * 8, dtype=np.float32) * 0.4
+        # Small crossfade so min_seconds path dominates.
+        crossfade = sr // 2
+        b_head = audio_b[:crossfade].copy()
+        result_a, result_head, _extra = player._apply_transition_effect(
+            audio_a_trimmed=audio_a,
+            audio_b=audio_b,
+            b_head=b_head,
+            crossfade_samples=crossfade,
+            sr_a=sr,
+        )
+        assert result_a.shape == audio_a.shape
+        assert result_head.shape == b_head.shape
+        assert np.all(np.isfinite(result_a))
+        assert np.all(np.isfinite(result_head))
+
+    def test_effect_without_min_seconds_uses_crossfade_window(self) -> None:
+        # bitcrusher has no entry in _MIN_FX_DURATION_S → else branch (line 1691).
+        player = Player(_make_cfg_mock(), _make_sim_index(2))
+        player._cfg.transitions.effect = "bitcrusher"
+        player._cfg.transitions.wet_mix = 1.0
+        sr = 22050
+        audio_a = np.zeros(sr * 4, dtype=np.float32)
+        audio_b = np.zeros(sr * 4, dtype=np.float32)
+        b_head = audio_b[: sr * 2].copy()
+        result_a, _result_head, _extra = player._apply_transition_effect(
+            audio_a_trimmed=audio_a,
+            audio_b=audio_b,
+            b_head=b_head,
+            crossfade_samples=sr * 2,
+            sr_a=sr,
+        )
+        assert result_a.shape == audio_a.shape

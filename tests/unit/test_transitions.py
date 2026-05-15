@@ -379,6 +379,91 @@ class TestEdgeCaseInputs:
             assert h.shape == (0,)
 
 
+class TestEffectsEmptyBuffer:
+    """Cover the early-return ``if len(tail) == 0: return tail`` branches
+    for every per-effect helper.  These are testable defensively.
+    """
+
+    @pytest.mark.parametrize(
+        "fn",
+        [
+            echo_out,
+            reverb_tail,
+            tape_stop,
+            gate_stutter,
+            highpass_sweep,
+            lowpass_sweep,
+            bitcrusher,
+            flanger,
+            pitch_swell,
+            telephone,
+            chorus,
+            submerge,
+            vinyl_wow,
+            freeze,
+            scratch,
+            beat_repeat,
+            sidechain_pump,
+            reverse_reverb,
+            air_horn,
+            vinyl_rewind,
+            transformer,
+            dub_siren,
+            stutter_build,
+            wow_flutter,
+            phaser,
+            ring_modulator,
+            dub_delay,
+        ],
+    )
+    def test_empty_tail_returns_empty(self, fn) -> None:
+        empty = np.zeros(0, dtype=np.float32)
+        out = fn(empty, SR)
+        assert isinstance(out, np.ndarray)
+        assert out.shape == (0,)
+
+
+class TestHalftimeShortGrain:
+    def test_low_sample_rate_uses_ones_window(self) -> None:
+        """With SR < 40, grain_n falls below 2 → np.ones path (line 1522)."""
+        from autodj.transitions import halftime
+
+        # Need n >= 4 (passes guard) but grain_n = int(0.05*SR).  SR=20 → 1.
+        audio = np.array([0.1, 0.2, 0.3, 0.4, 0.5], dtype=np.float32)
+        out = halftime(audio, sample_rate=20)
+        assert out.shape == audio.shape
+        assert np.all(np.isfinite(out))
+
+
+class TestPitchFallShortInput:
+    def test_short_input_returns_unchanged(self) -> None:
+        from autodj.transitions import pitch_fall
+
+        audio = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+        out = pitch_fall(audio, SR)
+        assert np.array_equal(out, audio)
+
+
+class TestForwardSpinShortInput:
+    def test_short_input_returns_unchanged(self) -> None:
+        """``_forward_spin_tail`` early-returns when n<4 (line 1574)."""
+        from autodj.transitions import _forward_spin_tail
+
+        audio = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+        out = _forward_spin_tail(audio)
+        assert np.array_equal(out, audio)
+
+
+class TestNoiseDropExtraEmpty:
+    def test_empty_tail_returns_empty(self) -> None:
+        """``_noise_drop_extra`` early-returns when tail is empty (line 1558)."""
+        from autodj.transitions import _noise_drop_extra
+
+        empty = np.zeros(0, dtype=np.float32)
+        out = _noise_drop_extra(empty, SR)
+        assert out.shape == (0,)
+
+
 class TestPickEffectEdgeCases:
     def test_pick_effect_with_no_rng_succeeds(self) -> None:
         # Ensures the default RNG path is safe (used in production).

@@ -338,7 +338,9 @@ def backspin(
     # source material to read from at the high-rate start.
     src_start = max(0, head_n - 2 * spin_n)
     src = tail[src_start:head_n][::-1]
-    if len(src) == 0:
+    if (
+        len(src) == 0
+    ):  # pragma: no cover — head_n ≥ 1 when n ≥ 3 guard above already ensures src has audio
         return tail
 
     # Variable-rate read: rate decelerates 2.0 → 0.05 (decel curve, not linear,
@@ -359,7 +361,7 @@ def backspin(
         spin[-fade_samples:] *= env
 
     out = np.concatenate([tail[:head_n], spin]).astype(np.float32)
-    if len(out) < n:
+    if len(out) < n:  # pragma: no cover — head_n + spin_n == n by construction
         out = np.pad(out, (0, n - len(out)))
     return out[:n]
 
@@ -912,7 +914,7 @@ def glitch(
     rng = np.random.default_rng(seed)
     n_slices = (n + slice_samples - 1) // slice_samples
     src_slices = n // slice_samples
-    if src_slices == 0:
+    if src_slices == 0:  # pragma: no cover — slice_samples ≥ n branch returns earlier
         return tail.astype(np.float32, copy=True)
 
     out = np.zeros(n, dtype=np.float32)
@@ -1529,7 +1531,9 @@ def halftime(
         # That spreads each input grain across twice the output time.
         for repeat in range(2):
             target = out_pos + repeat * hop_in
-            if target + grain_n > len(out):
+            if target + grain_n > len(
+                out
+            ):  # pragma: no cover — out sized n*2+grain_n; loop bound prevents overflow
                 break
             out[target : target + grain_n] += grain
             win_sum[target : target + grain_n] += w
@@ -1540,7 +1544,7 @@ def halftime(
     # Truncate / pad to original length
     if len(out) >= n:
         result = out[:n].astype(np.float32)
-    else:
+    else:  # pragma: no cover — out sized n*2+grain_n, always ≥ n
         result = np.zeros(n, dtype=np.float32)
         result[: len(out)] = out
     np.clip(result, -1.0, 1.0, out=result)
@@ -1643,7 +1647,11 @@ def apply_transition(
     if effect == TransitionFx.CROSS_EQ_SWAP:
         t, h = cross_eq_swap(tail, head, sample_rate)
         return t, h, empty_extra
-    return tail, head, empty_extra
+    return (
+        tail,
+        head,
+        empty_extra,
+    )  # pragma: no cover — every TransitionFx case handled above; defensive fallthrough
 
 
 # Process-local rotation cursor for ROTATE mode

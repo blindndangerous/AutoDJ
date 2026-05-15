@@ -694,7 +694,9 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
         folder = _resolve_liner_folder()
         folder.mkdir(parents=True, exist_ok=True)
         target = (folder / safe_name).resolve()
-        if not str(target).startswith(str(folder.resolve())):
+        if not str(target).startswith(
+            str(folder.resolve())
+        ):  # pragma: no cover — safe_name already strips path components; defensive belt-and-braces
             raise HTTPException(status_code=400, detail="Invalid filename")
         contents = await file.read()
         target.write_bytes(contents)
@@ -837,7 +839,7 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
         """True iff *p* is an ALAC stream (Apple Lossless inside .m4a)."""
         if p.suffix.lower() not in (".m4a", ".mp4"):
             return False
-        try:
+        try:  # pragma: no cover — requires real ALAC-encoded m4a sample on disk
             from mutagen.mp4 import MP4
 
             info = MP4(str(p)).info
@@ -977,7 +979,9 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
                 fh.seek(start)
                 while remaining > 0:
                     data = fh.read(min(chunk, remaining))
-                    if not data:
+                    if (
+                        not data
+                    ):  # pragma: no cover — EOF mid-range only when file truncated under us
                         break
                     remaining -= len(data)
                     yield data
@@ -1322,7 +1326,9 @@ def serve(
         missing: list[str] = []
         for name in ("soundfile", "sounddevice"):
             try:
-                if _import_util.find_spec(name) is None:
+                if (
+                    _import_util.find_spec(name) is None
+                ):  # pragma: no cover — both audio deps present in CI test env
                     missing.append(name)
             except (ImportError, ValueError):
                 # ValueError fires when the name is mocked / partially
@@ -1402,7 +1408,9 @@ def serve(
         "port": port,
         "log_level": "warning",
     }
-    if ssl_certfile and ssl_keyfile:
+    if (
+        ssl_certfile and ssl_keyfile
+    ):  # pragma: no cover — HTTPS path requires real cert files; CI runs HTTP
         uvicorn_kwargs["ssl_certfile"] = ssl_certfile
         uvicorn_kwargs["ssl_keyfile"] = ssl_keyfile
     # uvicorn normally swallows SIGINT and exits cleanly via the

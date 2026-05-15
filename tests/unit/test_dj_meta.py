@@ -439,3 +439,176 @@ class TestGetCacheAndAnalyse:
         audio = rng.standard_normal(44100 * 3).astype(np.float32) * 0.1
         meta = analyse_audio(audio, 44100)
         assert meta.analysed is True
+
+
+class TestDjMetaInternalHelpers:
+    """Cover the small private helpers in dj_meta that detect cues."""
+
+    def test_detect_beat_grid_returns_empty_for_short_audio(self) -> None:
+        from autodj.dj_meta import detect_beat_grid
+
+        # < 1 second → early-return empty list (line 190)
+        audio = np.zeros(100, dtype=np.float32)
+        assert detect_beat_grid(audio, 44100) == []
+
+    def test_gpu_onset_envelope_disabled_via_env(self, monkeypatch) -> None:
+        from autodj.dj_meta import _gpu_onset_envelope
+
+        monkeypatch.setenv("AUTODJ_DJMETA_GPU", "0")
+        audio = np.zeros(1024, dtype=np.float32)
+        assert _gpu_onset_envelope(audio, 22050) is None
+
+    def test_gpu_onset_envelope_returns_none_when_gpu_unavailable(self, monkeypatch) -> None:
+        from autodj import dj_meta as _dm
+
+        monkeypatch.setenv("AUTODJ_DJMETA_GPU", "1")
+        monkeypatch.setattr(_dm, "logger", _dm.logger)
+        # Force gpu_available() to return False
+        import autodj.compute as _compute
+
+        monkeypatch.setattr(_compute, "gpu_available", lambda: False)
+        audio = np.zeros(1024, dtype=np.float32)
+        assert _dm._gpu_onset_envelope(audio, 22050) is None
+
+    def test_detect_first_downbeat_no_match_returns_none(self) -> None:
+        from autodj.dj_meta import _detect_first_downbeat
+
+        # All beats below intro_end → no downbeat ≥ intro_end
+        beats = [0.0, 0.5, 1.0, 1.5, 2.0]
+        assert _detect_first_downbeat(beats, intro_end_s=10.0) is None
+
+    def test_detect_first_downbeat_finds_first_aligned(self) -> None:
+        from autodj.dj_meta import _detect_first_downbeat
+
+        beats = [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5]
+        cue = _detect_first_downbeat(beats, intro_end_s=1.0)
+        assert cue is not None
+        # Index 4 (2.0s) is the first index%4==0 that is ≥ 1.0
+        assert cue.time_s == 2.0
+        assert cue.type == "first_downbeat"
+
+    def test_detect_drop_too_short_window_returns_none(self) -> None:
+        from autodj.dj_meta import _detect_drop
+
+        rms = np.array([0.1, 0.2, 0.1], dtype=np.float32)
+        rolling = np.array([0.1, 0.1, 0.1], dtype=np.float32)
+        # search window 0..3 = 3, less than 4 → None (line 756)
+        assert _detect_drop(rms, rolling, [], 0.0, 1.5) is None
+
+    def test_detect_drop_finds_spike(self) -> None:
+        from autodj.dj_meta import _detect_drop
+
+        # 10 blocks, with a spike at index 5 that is 2x baseline
+        rms = np.array([0.1, 0.1, 0.1, 0.1, 0.1, 0.3, 0.1, 0.1, 0.1, 0.1], dtype=np.float32)
+        rolling = np.full(10, 0.1, dtype=np.float32)
+        cue = _detect_drop(rms, rolling, [], 0.0, 0.0)
+        assert cue is not None
+        assert cue.type == "drop"
+
+    def test_longest_run_open_at_end(self) -> None:
+        from autodj.dj_meta import _longest_run
+
+        # Run continues to the end of the array (line 781)
+        below = np.array([False, False, True, True, True], dtype=bool)
+        start, end = _longest_run(below)
+        assert start == 2
+        assert end == 5
+
+    def test_longest_run_no_true(self) -> None:
+        from autodj.dj_meta import _longest_run
+
+        below = np.array([False, False, False], dtype=bool)
+        assert _longest_run(below) == (0, 0)
+
+    def test_detect_breakdown_too_short(self) -> None:
+        from autodj.dj_meta import _detect_breakdown
+
+        # Less than 4s body window → None (line 794)
+        rms = np.array([0.5] * 6, dtype=np.float32)
+        assert _detect_breakdown(rms, 0.0, 0.0) is None
+
+    def test_detect_breakdown_finds_dip(self) -> None:
+        from autodj.dj_meta import _detect_breakdown
+
+        # 60 blocks (30 s).  Middle third (20..40) has a deep sustained dip.
+        rms = np.full(60, 0.5, dtype=np.float32)
+        rms[25:35] = 0.05  # sustained quiet patch, well below half of median
+        cue = _detect_breakdown(rms, 0.0, 0.0)
+        assert cue is not None
+        assert cue.type == "breakdown"
+
+    def test_detect_phrases_too_few_beats(self) -> None:
+        from autodj.dj_meta import _detect_phrases
+
+        # Fewer than 32 beats → returns [] (line 812)
+        assert _detect_phrases([0.0, 0.5, 1.0], 0.0, 0.0, 10.0) == []
+
+    def test_detect_phrases_emits_per_32_beats(self) -> None:
+        from autodj.dj_meta import _detect_phrases
+
+        beats = [i * 0.5 for i in range(96)]  # 48 seconds of half-second beats
+        cues = _detect_phrases(beats, intro_end_s=0.0, outro_start_s=40.0, duration=48.0)
+        # indices 0, 32, 64 → 0.0, 16.0, 32.0 (32.0 still ≤ horizon 40.0)
+        times = [c.time_s for c in cues]
+        assert 0.0 in times
+        assert 16.0 in times
+        # 32.0 should be in (≤ horizon=40)
+        assert 32.0 in times
+
+    def test_detect_outro_downbeat_no_beats_returns_none(self) -> None:
+        from autodj.dj_meta import _detect_outro_downbeat
+
+        assert _detect_outro_downbeat([], 0.0, 10.0) is None
+
+    def test_detect_outro_downbeat_outro_zero_returns_none(self) -> None:
+        from autodj.dj_meta import _detect_outro_downbeat
+
+        assert _detect_outro_downbeat([0.0, 0.5, 1.0], 0.0, 0.0) is None
+
+    def test_detect_outro_downbeat_when_last_in_intro_returns_none(self) -> None:
+        from autodj.dj_meta import _detect_outro_downbeat
+
+        # All downbeats are ≤ intro_end_s → last_db <= intro_end → None (line 834)
+        beats = [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5]
+        # downbeat indices 0,4 → times 0.0, 2.0.  intro_end_s = 5.0, outro = 6.0
+        assert _detect_outro_downbeat(beats, intro_end_s=5.0, outro_start_s=6.0) is None
+
+    def test_detect_outro_downbeat_finds_last_before_outro(self) -> None:
+        from autodj.dj_meta import _detect_outro_downbeat
+
+        beats = [i * 0.5 for i in range(20)]
+        # downbeats at 0, 2, 4, ... outro at 7 → last_db = 6.0
+        cue = _detect_outro_downbeat(beats, intro_end_s=1.0, outro_start_s=7.0)
+        assert cue is not None
+        assert cue.time_s == 6.0
+        assert cue.type == "outro_downbeat"
+
+    def test_detect_cues_short_audio_returns_empty(self) -> None:
+        from autodj.dj_meta import detect_cues
+
+        audio = np.zeros(100, dtype=np.float32)
+        assert detect_cues(audio, 44100, 0.0, 0.0, []) == []
+
+    def test_detect_cues_silent_audio_returns_empty(self) -> None:
+        from autodj.dj_meta import detect_cues
+
+        audio = np.zeros(44100 * 5, dtype=np.float32)
+        assert detect_cues(audio, 44100, 0.0, 0.0, []) == []
+
+    def test_merge_cues_priority_overrides_auto(self) -> None:
+        from autodj.dj_meta import Cue, merge_cues
+
+        auto = [Cue(time_s=10.0, type="drop", source="auto")]
+        user = [Cue(time_s=10.05, type="drop", source="user")]
+        merged = merge_cues(auto, user)
+        # The two cues are within 250 ms; user beats auto.
+        assert len(merged) == 1
+        assert merged[0].source == "user"
+
+    def test_merge_cues_keeps_separate_cues(self) -> None:
+        from autodj.dj_meta import Cue, merge_cues
+
+        a = [Cue(time_s=10.0, type="drop", source="auto")]
+        b = [Cue(time_s=20.0, type="drop", source="auto")]
+        merged = merge_cues(a, b)
+        assert len(merged) == 2
