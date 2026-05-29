@@ -33,7 +33,7 @@ from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import faiss
 import numpy as np
@@ -1097,7 +1097,9 @@ def prune_index(
     already_relative = music_dir is not None and _is_relative_storage([e.path for e in entries])
     for e in entries:
         e.path = _resolve_for_runtime(e.path, music_dir, path_remap)
-    loaded = faiss.read_index(str(faiss_file))
+    # faiss-cpu >=1.14 stubs type read_index as the base Index; we only ever
+    # persist an IndexFlatIP, so narrow back for the typed signatures below.
+    loaded = cast("faiss.IndexFlatIP", faiss.read_index(str(faiss_file)))
 
     # Existence check is RTT-bound on NFS/SMB libraries — at 70k+ tracks the
     # serial loop dominates the whole `index` command.  Fan out across a
@@ -1242,7 +1244,7 @@ def load_index(
             "or 'autodj index' to build a fresh one.",
         )
 
-    faiss_index = faiss.read_index(str(index_file))
+    faiss_index = cast("faiss.IndexFlatIP", faiss.read_index(str(index_file)))
     conn = _open_tracks_db(index_dir)
     try:
         entries = _load_tracks_rows(conn)
@@ -1587,7 +1589,9 @@ def _load_existing_index(  # pragma: no cover -- exercised via build_index integ
     existing_vectors: list[np.ndarray] = []
     faiss_file = index_dir / "vectors.index"
     if faiss_file.exists() and existing_entries:
-        loaded = faiss.read_index(str(faiss_file))
+        # faiss-cpu >=1.14 stubs type read_index as the base Index; we only ever
+        # persist an IndexFlatIP, so narrow back for the typed signatures below.
+        loaded = cast("faiss.IndexFlatIP", faiss.read_index(str(faiss_file)))
         # Reconcile: tracks.db UPSERTs every track but FAISS only flushes
         # every FAISS_CHECKPOINT_EVERY tracks (perf optimisation), so a
         # crash between the two writes leaves metadata rows without

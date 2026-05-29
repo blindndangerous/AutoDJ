@@ -74,6 +74,7 @@ dev = [
     "hypothesis>=6.100.0",    # property-based testing for vector math
     "pytest-asyncio>=1.0.0",  # async test support for FastAPI broadcast loop
     "pytest-timeout>=2.3.0",  # default timeout so audio / playwright tests can't hang CI
+    "httpx2>=2.0.0",          # starlette TestClient backend + direct ASGI client in server tests
 ]
 
 [project.scripts]
@@ -221,7 +222,8 @@ extend_exclude = ["tests", "tmp"]
 # DEP002 -- declared but never imported by name.  python-multipart is
 # a transitive runtime dep that FastAPI uses for form uploads.  pytest
 # / pytest-cov / pytest-mock / pytest-asyncio / hypothesis are test
-# tools loaded by pytest itself, not imported in src/.
+# tools loaded by pytest itself, not imported in src/.  httpx2 is the
+# starlette TestClient backend + direct ASGI client, used only in tests.
 DEP002 = [
     "python-multipart",
     "pytest",
@@ -230,6 +232,7 @@ DEP002 = [
     "pytest-asyncio",
     "pytest-timeout",
     "hypothesis",
+    "httpx2",
 ]
 
 [tool.vulture]

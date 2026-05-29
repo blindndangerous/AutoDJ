@@ -27,9 +27,11 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 import faiss
 import numpy as np
+import numpy.typing as npt
 
 from autodj.indexer import IndexEntry, load_index
 
@@ -504,7 +506,9 @@ class SimilarityIndex:
             raise SimilarityError(
                 f"Track not in index: {current_path}\nRun 'autodj index' to add it, then retry."
             )
-        query_vector = self.faiss_index.reconstruct(idx)
+        # faiss-cpu >=1.14 stubs pick the torch.Tensor reconstruct() overload;
+        # the C++ impl returns a float32 ndarray, so narrow back for find_next.
+        query_vector = cast(npt.NDArray[np.float32], self.faiss_index.reconstruct(idx))
         # Resolve harmonic_from from the current entry's key/mode if requested
         harmonic_from: tuple[int, int] | None = None
         if harmonic_only:
@@ -559,7 +563,11 @@ class SimilarityIndex:
         if idx is None:
             raise SimilarityError(f"Track not in index: {current_path}")
 
-        query_vector = self.faiss_index.reconstruct(idx).reshape(1, -1).astype(np.float32)
+        query_vector = (
+            cast(npt.NDArray[np.float32], self.faiss_index.reconstruct(idx))
+            .reshape(1, -1)
+            .astype(np.float32)
+        )
         scores_2d, indices_2d = self.faiss_index.search(query_vector, self.ntotal)
         raw_scores = scores_2d[0]
         raw_indices = indices_2d[0]

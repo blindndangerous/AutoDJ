@@ -810,7 +810,7 @@ async def test_broadcast_loop_sends_to_websocket_clients() -> None:
     import asyncio
     from unittest.mock import patch as _patch
 
-    from httpx import ASGITransport, AsyncClient
+    from httpx2 import ASGITransport, AsyncClient
 
     player = _make_player_mock()
     sim = _make_sim_mock()
@@ -857,7 +857,7 @@ async def test_broadcast_loop_removes_dead_clients() -> None:
 
 async def test_http_api_accessible_via_async_client() -> None:
     """Verify all REST endpoints respond correctly using the async ASGI transport."""
-    from httpx import ASGITransport, AsyncClient
+    from httpx2 import ASGITransport, AsyncClient
 
     player = _make_player_mock()
     sim = _make_sim_mock()
