@@ -1487,11 +1487,51 @@ def _backfill_dj_meta(
     print(f"[AutoDJ] DJ-meta backfill done: {done}/{total} tracks analysed.", flush=True)
 
 
+def _stat_mtimes(
+    entries: list[IndexEntry],
+    *,
+    throttle_ms: float = 0.0,
+    stat_workers: int = 8,
+    desc: str = "Stat",
+) -> list[float | None]:
+    """Fan out stat() across *entries*, return mtime-or-None per entry.
+
+    None means the file is missing (OSError on stat).  One network RTT per
+    file on NAS; the thread pool pipelines them.  Used by both the
+    standalone prune path and the fused prune+stale-check in
+    ``_load_existing_index``.
+    """
+    import time as _time
+
+    throttle_s = max(0.0, throttle_ms) / 1000.0
+    pool_size = max(1, stat_workers)
+
+    def _mtime(p: str) -> float | None:
+        if throttle_s:
+            _time.sleep(throttle_s)
+        try:
+            return Path(p).stat().st_mtime
+        except OSError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=pool_size) as pool:
+        return list(
+            tqdm(
+                pool.map(_mtime, [e.path for e in entries]),
+                total=len(entries),
+                desc=desc,
+                unit="file",
+                dynamic_ncols=True,
+            )
+        )
+
+
 def _detect_stale_entries(
     entries: list[IndexEntry],
     reindex_modified_since: float | None = None,
     throttle_ms: float = 0.0,
     stat_workers: int = 8,
+    mtimes: list[float | None] | None = None,
 ) -> tuple[set[str], int]:
     """Find indexed entries whose audio file has been replaced on disk.
 
@@ -1525,28 +1565,12 @@ def _detect_stale_entries(
         number of legacy entries that received a fresh snapshot.
     """
 
-    import time as _time
-
-    throttle_s = max(0.0, throttle_ms) / 1000.0
-    pool_size = max(1, stat_workers)
-
-    def _mtime(p: str) -> float | None:
-        if throttle_s:
-            _time.sleep(throttle_s)
-        try:
-            return Path(p).stat().st_mtime
-        except OSError:
-            return None
-
-    with ThreadPoolExecutor(max_workers=pool_size) as pool:
-        mtimes = list(
-            tqdm(
-                pool.map(_mtime, [e.path for e in entries]),
-                total=len(entries),
-                desc="Stale-check",
-                unit="file",
-                dynamic_ncols=True,
-            )
+    if mtimes is None:
+        mtimes = _stat_mtimes(
+            entries,
+            throttle_ms=throttle_ms,
+            stat_workers=stat_workers,
+            desc="Stale-check",
         )
 
     stale: set[str] = set()
@@ -1573,22 +1597,15 @@ def _load_existing_index(  # pragma: no cover -- exercised via build_index integ
     throttle_ms: float = 0.0,
     stat_workers: int = 8,
 ) -> tuple[list[IndexEntry], list[np.ndarray], set[str]]:
-    """Load existing entries + vectors, drop entries with replaced files."""
+    """Load existing entries + vectors, drop missing and replaced files.
+
+    Fused single-pass: one stat() per entry returns both existence (None
+    means missing -> prune) and mtime (compared against ``embedded_at``
+    -> stale).  Halves NAS RTT vs. the legacy two-pass design that ran
+    ``prune_index`` then ``_detect_stale_entries`` back-to-back.
+    """
     if force:
         return [], [], set()
-
-    try:
-        removed, kept = prune_index(
-            index_dir,
-            music_dir=music_dir,
-            path_remap=path_remap,
-            throttle_ms=throttle_ms,
-            stat_workers=stat_workers,
-        )
-        if removed:
-            print(f"[AutoDJ] Pruned {removed} missing tracks ({kept} remain).")
-    except PruneSafetyError as exc:
-        print(f"[AutoDJ] Skipping auto-prune (safety check): {exc}")
 
     db_path = _tracks_db_path(index_dir)
     if not db_path.exists():
@@ -1599,6 +1616,7 @@ def _load_existing_index(  # pragma: no cover -- exercised via build_index integ
         existing_entries: list[IndexEntry] = _load_tracks_rows(conn)
     finally:
         conn.close()
+    already_relative = _is_relative_storage([e.path for e in existing_entries])
     for e in existing_entries:
         e.path = _resolve_for_runtime(e.path, music_dir, path_remap)
 
@@ -1643,30 +1661,65 @@ def _load_existing_index(  # pragma: no cover -- exercised via build_index integ
         logger.info("Incremental mode: %d tracks already indexed", len(existing_entries))
 
     print(
-        f"[AutoDJ] Phase: Stale-check — comparing mtimes for {len(existing_entries)} entries.",
+        f"[AutoDJ] Phase: Prune + stale-check — stat'ing {len(existing_entries)} files.",
         flush=True,
     )
+    mtimes = _stat_mtimes(
+        existing_entries,
+        throttle_ms=throttle_ms,
+        stat_workers=stat_workers,
+        desc="Prune+stale",
+    )
+    missing_paths = {e.path for e, mt in zip(existing_entries, mtimes, strict=False) if mt is None}
+    try:
+        _check_prune_safety(len(missing_paths), len(existing_entries), allow_mass_prune=False)
+    except PruneSafetyError as exc:
+        print(f"[AutoDJ] Skipping auto-prune (safety check): {exc}")
+        missing_paths = set()  # keep everything; safety failure means user config is wrong
+
     stale, migrated = _detect_stale_entries(
         existing_entries,
         reindex_modified_since=reindex_modified_since,
-        throttle_ms=throttle_ms,
-        stat_workers=stat_workers,
+        mtimes=mtimes,
     )
     if migrated:
         logger.info("Snapshotted embedded_at for %d legacy entries", migrated)
-    if stale:
-        print(
-            f"[AutoDJ] Phase: Stale-check — dropping {len(stale)} replaced "
-            "tracks; they will be re-embedded.",
-            flush=True,
-        )
+
+    drop_paths = missing_paths | stale
+    if drop_paths:
+        if missing_paths:
+            print(
+                f"[AutoDJ] Pruned {len(missing_paths)} missing tracks "
+                f"({len(existing_entries) - len(missing_paths)} remain).",
+                flush=True,
+            )
+        if stale:
+            print(
+                f"[AutoDJ] Stale-check — dropping {len(stale)} replaced "
+                "tracks; they will be re-embedded.",
+                flush=True,
+            )
         kept_pairs = [
             (e, v)
             for e, v in zip(existing_entries, existing_vectors, strict=False)
-            if e.path not in stale
+            if e.path not in drop_paths
         ]
         existing_entries = [e for e, _ in kept_pairs]
         existing_vectors = [v for _, v in kept_pairs]
+        if missing_paths:
+            # Persist the prune (mirrors what standalone prune_index does).
+            # Stale-only drops don't need this -- those entries will get
+            # re-embedded and the indexer's normal checkpoint flow rewrites
+            # the files.
+            if not existing_entries:
+                _delete_index_files(index_dir)
+            else:
+                vectors_arr = np.asarray(np.stack(existing_vectors), dtype=np.float32)
+                save_index(existing_entries, vectors_arr, index_dir, music_dir=music_dir)
+    elif not already_relative and existing_entries:
+        # Legacy absolute-path storage detected; rewrite tracks.db in
+        # portable relative form without touching FAISS.
+        _save_tracks_metadata(existing_entries, index_dir, music_dir)
 
     return existing_entries, existing_vectors, {e.path for e in existing_entries}
 
