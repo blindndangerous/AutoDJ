@@ -458,7 +458,7 @@ def _vorbis_get(m: Any, key: str) -> str | None:
         return None
     try:
         v = getter(key)
-    except (TypeError, AttributeError):
+    except (TypeError, AttributeError, ValueError):
         return None
     if not v:
         return None
@@ -493,7 +493,7 @@ def _id3_get(m: Any, key: str) -> str | None:
         return None
     try:
         v = tags[key]
-    except (KeyError, TypeError):
+    except (KeyError, TypeError, ValueError):
         return None
     if v is None:
         return None
