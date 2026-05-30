@@ -1119,7 +1119,15 @@ def prune_index(
         return Path(e.path).exists()
 
     with ThreadPoolExecutor(max_workers=pool_size) as pool:
-        keep_mask = list(pool.map(_exists_throttled, entries))
+        keep_mask = list(
+            tqdm(
+                pool.map(_exists_throttled, entries),
+                total=len(entries),
+                desc="Pruning",
+                unit="file",
+                dynamic_ncols=True,
+            )
+        )
     removed = sum(1 for k in keep_mask if not k)
     _check_prune_safety(removed, len(entries), allow_mass_prune)
 
@@ -1531,7 +1539,15 @@ def _detect_stale_entries(
             return None
 
     with ThreadPoolExecutor(max_workers=pool_size) as pool:
-        mtimes = list(pool.map(_mtime, [e.path for e in entries]))
+        mtimes = list(
+            tqdm(
+                pool.map(_mtime, [e.path for e in entries]),
+                total=len(entries),
+                desc="Stale-check",
+                unit="file",
+                dynamic_ncols=True,
+            )
+        )
 
     stale: set[str] = set()
     migrated = 0
