@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import platform
 import subprocess
 import sys
@@ -44,7 +45,17 @@ def _check_coverage() -> int:
 
 
 def main() -> int:
-    workers = "0" if platform.system() == "Darwin" else "auto"
+    env = os.environ.copy()
+    env.setdefault("OMP_NUM_THREADS", "1")
+    env.setdefault("MKL_NUM_THREADS", "1")
+    env.setdefault("OPENBLAS_NUM_THREADS", "1")
+    env.setdefault("VECLIB_MAXIMUM_THREADS", "1")
+    env.setdefault("NUMEXPR_NUM_THREADS", "1")
+    if platform.system() == "Darwin":
+        env.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
+    default_workers = "auto" if platform.system() == "Windows" else "0"
+    workers = os.environ.get("AUTODJ_PYTEST_WORKERS", default_workers)
     result = subprocess.call(
         [
             sys.executable,
@@ -60,7 +71,8 @@ def main() -> int:
             "-n",
             workers,
             *sys.argv[1:],
-        ]
+        ],
+        env=env,
     )
     if result != 0:
         return result
