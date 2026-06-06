@@ -188,6 +188,32 @@ class TestGetAllTracks:
         with pytest.raises(sqlite3.DatabaseError):
             get_all_tracks(bad)
 
+    def test_open_db_closes_connection_when_validation_read_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from autodj import beets
+
+        db = tmp_path / "library.db"
+        db.write_bytes(b"placeholder")
+        closed = False
+
+        class BrokenConnection:
+            row_factory = None
+
+            def execute(self, _sql: str) -> None:
+                raise sqlite3.DatabaseError("bad read")
+
+            def close(self) -> None:
+                nonlocal closed
+                closed = True
+
+        monkeypatch.setattr(sqlite3, "connect", lambda *args, **kwargs: BrokenConnection())
+
+        with pytest.raises(sqlite3.DatabaseError):
+            beets._open_db(db)
+
+        assert closed is True
+
 
 # ---------------------------------------------------------------------------
 # search_tracks
@@ -366,6 +392,19 @@ class TestGetLyricsForPath:
         bad.write_bytes(b"not sqlite")
         assert get_lyrics_for_path(bad, "anything.flac") == ""
 
+    def test_returns_empty_when_open_db_raises_database_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from autodj import beets
+
+        db = tmp_path / "library.db"
+        db.write_bytes(b"placeholder")
+        monkeypatch.setattr(
+            beets, "_open_db", lambda _path: (_ for _ in ()).throw(sqlite3.DatabaseError("bad"))
+        )
+
+        assert beets.get_lyrics_for_path(db, "anything.flac") == ""
+
     def test_falls_back_to_relative_path(self, tmp_path) -> None:
         """Beets stored a relative path; we look up by joining music_dir."""
         from autodj.beets import get_lyrics_for_path
@@ -422,3 +461,29 @@ class TestBeetsHelpers:
 
         result = _decode_path(b"/some/path/track.mp3")
         assert isinstance(result, Path)
+
+    def test_path_candidates_returns_absolute_when_not_under_music_dir(
+        self, tmp_path: Path
+    ) -> None:
+        from autodj.beets import _path_candidates
+
+        track = tmp_path / "other" / "track.flac"
+        music_dir = tmp_path / "Music"
+
+        assert _path_candidates(str(track), music_dir) == [str(track)]
+
+    def test_path_candidates_adds_forward_slash_variant_for_backslash_names(
+        self, tmp_path: Path
+    ) -> None:
+        from autodj.beets import _path_candidates
+
+        music_dir = tmp_path / "Music"
+        music_dir.mkdir()
+        track = music_dir / "sub\\track.flac"
+        track.parent.mkdir(exist_ok=True)
+        track.write_bytes(b"")
+
+        candidates = _path_candidates(str(track), music_dir)
+
+        assert "sub\\track.flac" in candidates
+        assert "sub/track.flac" in candidates
