@@ -87,6 +87,55 @@ repos:
         pass_filenames: false
         files: ^(src/|pyproject\.toml$)
 
+      - id: interrogate
+        name: interrogate
+        entry: uv run interrogate -c pyproject.toml src/autodj
+        language: system
+        pass_filenames: false
+        files: ^(src/|pyproject\.toml$)
+
+      - id: xenon
+        name: xenon
+        entry: uv run xenon --max-absolute E --max-modules B --max-average B src/
+        language: system
+        pass_filenames: false
+        files: ^src/
+
+      - id: pip-audit
+        name: pip-audit
+        entry: uv run pip-audit --ignore-vuln PYSEC-2022-42969
+        language: system
+        pass_filenames: false
+        files: ^(uv\.lock|pyproject\.toml)$
+
+      - id: pip-licenses
+        name: pip-licenses
+        entry: uv run pip-licenses --format=markdown --order=license
+        language: system
+        pass_filenames: false
+        files: ^(uv\.lock|pyproject\.toml)$
+
+      - id: osv-scanner
+        name: OSV-Scanner
+        entry: osv-scanner --recursive --config=osv-scanner.toml ./
+        language: system
+        pass_filenames: false
+        files: ^(uv\.lock|osv-scanner\.toml)$
+
+      - id: trivy-fs
+        name: Trivy filesystem scan
+        entry: trivy fs --format table --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 .
+        language: system
+        pass_filenames: false
+        files: ^(uv\.lock|pyproject\.toml|src/|tests/)
+
+      - id: pytest
+        name: pytest
+        entry: uv run python scripts/ci_pytest.py
+        language: system
+        pass_filenames: false
+        files: ^(src/|tests/|scripts/ci_pytest\.py|pyproject\.toml|uv\.lock)
+
       # JS lint -- vanilla ESLint flat config covering the in-browser
       # ESM modules + the Node-side test / build scripts.  Local hook
       # so it uses the project's pinned eslint from devDependencies.

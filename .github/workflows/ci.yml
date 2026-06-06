@@ -15,8 +15,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: Test & lint
+  quality:
+    name: Quality & security
     runs-on: ubuntu-latest
 
     steps:
@@ -55,7 +55,7 @@ jobs:
         run: uv run deptry src/
 
       - name: Interrogate — docstring coverage
-        run: uv run interrogate -c pyproject.toml
+        run: uv run interrogate -c pyproject.toml src/autodj
 
       - name: Xenon — complexity gate
         run: uv run xenon --max-absolute E --max-modules B --max-average B src/
@@ -89,8 +89,32 @@ jobs:
           format: cyclonedx-json
           output-file: sbom.json
 
+  test:
+    name: Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version-file: pyproject.toml
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+
       - name: Pytest — test suite
-        run: uv run pytest --tb=short --cov --cov-report=xml --cov-report=term -n auto
+        run: uv run python scripts/ci_pytest.py
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v6
