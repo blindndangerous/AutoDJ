@@ -2,7 +2,7 @@
 name = "autodj"
 version = "0.14.0"
 description = "AI-powered local music continuity player using MuQ embeddings and FAISS similarity search"
-requires-python = ">=3.13"
+requires-python = ">=3.14,<3.15"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [
@@ -10,7 +10,7 @@ authors = [
 ]
 classifiers = [
     "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Operating System :: OS Independent",
     "Topic :: Multimedia :: Sound/Audio :: Players",
 ]
@@ -148,10 +148,16 @@ exclude_lines = [
     "if open_browser:",
 ]
 
+[tool.autodj.coverage]
+line_fail_under = 99.1
+branch_fail_under = 94.7
+
 # ---------------------------------------------------------------------------
 # Ruff — linter + formatter
 # ---------------------------------------------------------------------------
 [tool.ruff]
+# Keep formatter output parseable by mypy/vulture until they support
+# Python 3.14's bare tuple exception handlers.
 target-version = "py313"
 line-length = 100
 
@@ -171,6 +177,7 @@ ignore = [
     "E501",   # line too long — handled by formatter, not linter
     "SIM108", # ternary operator — sometimes less readable
     "B008",   # function calls in default args — FastAPI uses this pattern
+    "UP034",  # Python 3.14 exception tuple syntax is not parsed by mypy/vulture yet
     "RUF001", # en-dash in strings — intentional display characters throughout
     "RUF002", # en-dash in docstrings — intentional (documenting accepted separators)
     "RUF003", # en-dash / × in comments — intentional (display labels, math notation)
@@ -187,7 +194,7 @@ indent-style = "space"
 # Mypy — static type checker
 # ---------------------------------------------------------------------------
 [tool.mypy]
-python_version = "3.13"
+python_version = "3.14"
 files = ["src/autodj"]
 strict = false
 ignore_missing_imports = true   # many deps lack stubs (torch, faiss, librosa…)
@@ -203,7 +210,7 @@ no_implicit_optional = true
 # ---------------------------------------------------------------------------
 [tool.pyright]
 include = ["src/autodj"]
-pythonVersion = "3.13"
+pythonVersion = "3.14"
 typeCheckingMode = "basic"
 reportMissingImports = "warning"
 reportMissingTypeStubs = false
