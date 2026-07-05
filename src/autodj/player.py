@@ -758,6 +758,8 @@ class Player:
         # I/O happens off-lock.
         self._bg_analysis_inflight: set[str] = set()
         self._bg_analysis_lock = threading.Lock()
+        self._bg_lyrics_inflight: set[str] = set()
+        self._bg_lyrics_lock = threading.Lock()
         # Current track's beatmatch ratio (1.0 = no stretch) — exposed via state
         self._beatmatch_ratio: float = 1.0
         # Last transition effect applied (string name) — exposed via state
@@ -995,10 +997,9 @@ class Player:
         # DJ meta (cue points, intro_end_s, outro_start_s, beat grid)
         # would otherwise stay empty for the seed track and the web UI
         # would hide its lyrics card / show an empty cue list even when
-        # the data was easy to derive.  Load lyrics inline (cheap text
-        # I/O) and kick off audio analysis on a background thread so
-        # the heavy decode + librosa pass does not block the seed.
-        self._load_lyrics(current.path)
+        # the data was easy to derive.  Both can touch slow NAS/local
+        # audio files, so keep them off the control path.
+        self.load_lyrics_in_background(current.path)
         self.analyse_track_in_background(current.path)
         self._current_sr = _DEFAULT_SR
         self._playback_len = int(
@@ -1201,6 +1202,42 @@ class Player:
             return audio
         return (audio * gain).astype(np.float32)
 
+    def _read_lyrics_for_path(self, path: str) -> tuple[list, str]:
+        """Return timestamped/plain lyrics for *path* without mutating state."""
+        from autodj.audio_meta import load_lrc_for, read_plain_lyrics
+
+        # Respect the lyric-display toggle — when off we skip ALL lyric
+        # work so the CLI panel stays compact and the web UI hides its card.
+        if not getattr(self._cfg.playback, "show_lyrics", True):
+            return [], ""
+
+        lyrics = load_lrc_for(path)
+        if lyrics:
+            return lyrics, ""
+
+        plain = ""
+        if self._cfg.library.beets_db:
+            from autodj.beets import get_lyrics_for_path
+
+            try:
+                plain = get_lyrics_for_path(
+                    self._cfg.library.beets_db,
+                    path,
+                    music_dir=self._cfg.library.music_dir,
+                )
+            except (OSError, ValueError) as exc:
+                logger.debug("Beets lyrics lookup failed: %s", exc)
+                plain = ""
+
+        # Fall back to embedded tag lyrics when beets has none / no beets at all.
+        if not plain:
+            try:
+                plain = read_plain_lyrics(path)
+            except (OSError, ValueError) as exc:
+                logger.debug("Embedded lyric tag read failed: %s", exc)
+                plain = ""
+        return [], plain
+
     def _load_lyrics(self, path: str) -> None:
         """Populate ``_current_lyrics`` + ``_current_lyrics_plain`` for *path*.
 
@@ -1209,39 +1246,7 @@ class Player:
         2. Beets DB ``lyrics`` field (plain text).
         3. Embedded ID3/Vorbis/MP4 lyric tags (USLT, LYRICS, ©lyr).
         """
-        from autodj.audio_meta import load_lrc_for, read_plain_lyrics
-
-        self._current_lyrics = []
-        self._current_lyrics_plain = ""
-        # Respect the lyric-display toggle — when off we skip ALL lyric
-        # work so the CLI panel stays compact and the web UI hides its card.
-        if not getattr(self._cfg.playback, "show_lyrics", True):
-            return
-
-        self._current_lyrics = load_lrc_for(path)
-        if self._current_lyrics:
-            return
-
-        if self._cfg.library.beets_db:
-            from autodj.beets import get_lyrics_for_path
-
-            try:
-                self._current_lyrics_plain = get_lyrics_for_path(
-                    self._cfg.library.beets_db,
-                    path,
-                    music_dir=self._cfg.library.music_dir,
-                )
-            except (OSError, ValueError) as exc:
-                logger.debug("Beets lyrics lookup failed: %s", exc)
-                self._current_lyrics_plain = ""
-
-        # Fall back to embedded tag lyrics when beets has none / no beets at all.
-        if not self._current_lyrics_plain:
-            try:
-                self._current_lyrics_plain = read_plain_lyrics(path)
-            except (OSError, ValueError) as exc:
-                logger.debug("Embedded lyric tag read failed: %s", exc)
-                self._current_lyrics_plain = ""
+        self._current_lyrics, self._current_lyrics_plain = self._read_lyrics_for_path(path)
 
         # CLI: print plain lyrics block once per track so the user can see
         # them in the terminal too (web UI already renders them below the
@@ -1255,6 +1260,44 @@ class Player:
                     padding=(0, 1),
                 ),
             )
+
+    def load_lyrics_in_background(self, path: str) -> None:
+        """Load lyrics for *path* on a daemon thread.
+
+        Browser-driven controls must return immediately; embedded tag reads
+        can block for tens of seconds on some local/NAS files.  The worker
+        publishes results only if the track is still current.
+        """
+        if not path:
+            return
+        self._current_lyrics = []
+        self._current_lyrics_plain = ""
+        if not getattr(self._cfg.playback, "show_lyrics", True):
+            return
+        with self._bg_lyrics_lock:
+            if path in self._bg_lyrics_inflight:
+                return
+            self._bg_lyrics_inflight.add(path)
+
+        def _worker() -> None:
+            try:
+                lyrics, plain = self._read_lyrics_for_path(path)
+                current = self._state.current_track
+                if current is not None and current.path == path:
+                    self._current_lyrics = lyrics
+                    self._current_lyrics_plain = plain
+            except Exception as exc:  # pragma: no cover -- defensive thread guard
+                logger.debug("Background lyric load failed for %s: %s", path, exc)
+            finally:
+                with self._bg_lyrics_lock:
+                    self._bg_lyrics_inflight.discard(path)
+
+        thread = threading.Thread(
+            target=_worker,
+            name="autodj-lyrics",
+            daemon=True,
+        )
+        thread.start()
 
     def _ensure_dj_cache(self) -> None:
         """Lazy-init the DJ-meta cache on first real use.

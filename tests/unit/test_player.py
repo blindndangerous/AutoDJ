@@ -803,6 +803,70 @@ class TestLoadLyricsToggle:
         assert player._current_lyrics == []
         assert player._current_lyrics_plain == ""
 
+    def test_background_loader_publishes_for_current_track(self) -> None:
+        import threading
+
+        player = self._make()
+        current = player._sim.entries[0]
+        player._state.current_track = current
+        done = threading.Event()
+
+        def _fake_read(path: str):
+            done.set()
+            return [], f"lyrics for {path}"
+
+        with patch.object(player, "_read_lyrics_for_path", side_effect=_fake_read):
+            player.load_lyrics_in_background(current.path)
+
+        assert done.wait(1.0)
+        assert player._current_lyrics_plain == f"lyrics for {current.path}"
+
+    def test_background_loader_ignores_stale_track(self) -> None:
+        import threading
+
+        player = self._make()
+        old = player._sim.entries[0]
+        new = player._sim.entries[1]
+        player._state.current_track = new
+        done = threading.Event()
+
+        def _fake_read(_path: str):
+            done.set()
+            return [], "old lyrics"
+
+        with patch.object(player, "_read_lyrics_for_path", side_effect=_fake_read):
+            player.load_lyrics_in_background(old.path)
+
+        assert done.wait(1.0)
+        assert player._current_lyrics_plain == ""
+
+    def test_background_loader_empty_path_no_op(self) -> None:
+        player = self._make()
+        with patch("threading.Thread") as thread:
+            player.load_lyrics_in_background("")
+        thread.assert_not_called()
+
+    def test_background_loader_show_lyrics_off_clears_without_thread(self) -> None:
+        from autodj.audio_meta import LyricLine
+
+        player = self._make()
+        player._cfg.playback.show_lyrics = False
+        player._current_lyrics = [LyricLine(0.0, "x")]
+        player._current_lyrics_plain = "old"
+        with patch("threading.Thread") as thread:
+            player.load_lyrics_in_background(player._sim.entries[0].path)
+        assert player._current_lyrics == []
+        assert player._current_lyrics_plain == ""
+        thread.assert_not_called()
+
+    def test_background_loader_duplicate_inflight_no_op(self) -> None:
+        player = self._make()
+        path = player._sim.entries[0].path
+        player._bg_lyrics_inflight.add(path)
+        with patch("threading.Thread") as thread:
+            player.load_lyrics_in_background(path)
+        thread.assert_not_called()
+
 
 class TestAnalyseTrackInBackground:
     """Player.analyse_track_in_background -- browser-driven cue analysis."""
@@ -867,7 +931,7 @@ class TestRunHeadlessSeedHooks:
     never enters _play_track.
     """
 
-    def test_run_headless_loads_lyrics_and_spawns_analysis(self) -> None:
+    def test_run_headless_spawns_lyrics_and_analysis(self) -> None:
         from unittest.mock import patch
 
         player = Player(_make_cfg_mock(), _make_sim_index(3), dry_run=True)
@@ -875,12 +939,27 @@ class TestRunHeadlessSeedHooks:
         player._state.should_stop = True
         seed = player._sim.entries[0]
         with (
-            patch.object(player, "_load_lyrics") as load_lyr,
+            patch.object(player, "load_lyrics_in_background") as load_lyr,
             patch.object(player, "analyse_track_in_background") as bg,
         ):
             player._run_headless(seed)
         load_lyr.assert_called_once_with(seed.path)
         bg.assert_called_once_with(seed.path)
+
+    def test_run_headless_keeps_existing_next_track(self) -> None:
+        player = Player(_make_cfg_mock(), _make_sim_index(3), dry_run=True)
+        player._state.should_stop = True
+        seed = player._sim.entries[0]
+        existing_next = player._sim.entries[2]
+        player._state.next_track = existing_next
+        with (
+            patch.object(player, "_pick_next") as pick_next,
+            patch.object(player, "load_lyrics_in_background"),
+            patch.object(player, "analyse_track_in_background"),
+        ):
+            player._run_headless(seed)
+        assert player._state.next_track is existing_next
+        pick_next.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

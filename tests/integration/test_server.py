@@ -1938,11 +1938,10 @@ class TestMisc:
         assert any("WebSocket connected" in m for m in msgs), msgs
         assert any("WebSocket disconnected" in m for m in msgs), msgs
 
-    def test_advance_now_loads_lyrics_for_new_track(self, bridge) -> None:
+    def test_advance_now_spawns_lyrics_for_new_track(self, bridge) -> None:
         """Browser-driven mode skips _play_track, so advance_now must
-        call _load_lyrics itself or the lyric panel stays frozen on the
-        previous track's words.  Resolution order inside _load_lyrics is
-        LRC sidecar -> beets -> embedded ID3/Vorbis/MP4 tags.
+        spawn lyric loading itself or the lyric panel stays frozen on the
+        previous track's words.
         """
         bridge.player._dry_run = True
         bridge.player._export_m3u = None
@@ -1954,9 +1953,9 @@ class TestMisc:
 
         bridge.advance_now()
 
-        bridge.player._load_lyrics.assert_called_once_with(picked.path)
+        bridge.player.load_lyrics_in_background.assert_called_once_with(picked.path)
 
-    def test_advance_now_swallows_lyric_load_error(self, bridge) -> None:
+    def test_advance_now_swallows_lyric_spawn_error(self, bridge) -> None:
         """A broken sibling .lrc / corrupt tag must not abort the advance
         — log + continue, leaving lyrics empty rather than crashing the
         entire track-change path.
@@ -1968,7 +1967,7 @@ class TestMisc:
         picked = _make_entry(406)
         bridge.player._state.next_track = picked
         bridge.player._pick_next.return_value = _make_entry(407)
-        bridge.player._load_lyrics.side_effect = OSError("disk gone")
+        bridge.player.load_lyrics_in_background.side_effect = OSError("disk gone")
 
         bridge.advance_now()
 

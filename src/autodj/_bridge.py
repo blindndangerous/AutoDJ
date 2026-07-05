@@ -203,12 +203,12 @@ class PlayerBridge:
         self._play_history.append(_history_entry(nxt))
         # Browser-driven mode skips _play_track, so without an explicit
         # call here the lyric panel would stay frozen on the previous
-        # track's words.  Resolution order inside _load_lyrics is
-        # LRC sidecar -> beets -> embedded ID3/Vorbis/MP4 tags.
+        # track's words.  Lyric lookup can touch slow audio/tag storage,
+        # so run it off the request thread.
         try:
-            p._load_lyrics(nxt.path)
+            p.load_lyrics_in_background(nxt.path)
         except Exception:  # pragma: no cover -- defensive log-only path
-            logger.debug("advance_now: lyric load failed", exc_info=True)
+            logger.debug("advance_now: background lyric load spawn failed", exc_info=True)
         # Spawn a background thread to populate the DJ-meta cache (cue
         # points, intro_end_s, outro_start_s, beat grid) for the new
         # track.  Browser-driven mode skips _play_track entirely, so
