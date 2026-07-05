@@ -29,9 +29,10 @@ uv sync --extra all
 
 # Point AutoDJ at your music folder once and let it learn the library.
 # This pass is the slow one -- it listens to every track and writes
-# what it learned to disk.  Use --limit 50 first to test on a small
-# batch before running the full library.
-uv run autodj index --limit 50
+# what it learned to disk, enriches beets metadata, and backfills DJ
+# intro/outro/cue analysis.  For a quick embed-only smoke test, skip
+# the post-passes.
+uv run autodj index --limit 50 --no-enrich --no-analyse
 uv run autodj index               # full library, can take hours
 
 # Start the web UI.
@@ -40,7 +41,7 @@ uv run autodj serve
 # Open http://localhost:8080 in your browser.
 ```
 
-That is the whole flow.  Index once, serve forever.  Future runs of `autodj index` only look at new files.
+That is the whole flow.  Index once, serve forever.  Future runs of `autodj index` only embed new files and refresh the post-processing cache.
 
 ## Containers (no Python install needed)
 

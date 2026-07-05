@@ -1328,6 +1328,11 @@ def _backfill_dj_meta(
     cache = get_cache(index_dir)
     if cache is None:
         return
+    prune_to_paths = getattr(cache, "prune_to_paths", None)
+    if callable(prune_to_paths):
+        removed_stale = prune_to_paths({e.path for e in entries})
+        if removed_stale:
+            print(f"[AutoDJ] DJ-meta cache pruned {removed_stale} stale entries.", flush=True)
     pending = [e for e in entries if not cache.get(e.path).analysed]
     if not pending:
         print("[AutoDJ] DJ-meta cache already covers every indexed track.")

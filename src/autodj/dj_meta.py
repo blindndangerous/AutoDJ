@@ -34,6 +34,7 @@ import logging
 import os
 import sqlite3
 import threading
+from collections.abc import Set as AbstractSet
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -688,6 +689,46 @@ class DjMetaCache:
                 )
             self._buf.clear()
             self._dirty = 0
+
+    def prune_to_paths(self, valid_paths: AbstractSet[str]) -> int:
+        """Delete cache rows whose paths are not in *valid_paths*.
+
+        Returns:
+            Number of stale rows removed.
+        """
+        with self._lock:
+            assert self._conn is not None
+            if self._buf:
+                rows = [
+                    (
+                        p,
+                        float(m.intro_end_s),
+                        float(m.outro_start_s),
+                        int(bool(m.analysed)),
+                        json.dumps([float(b) for b in m.beats]),
+                        json.dumps([asdict(c) for c in m.cues]),
+                    )
+                    for p, m in self._buf.items()
+                ]
+                with self._conn:
+                    self._conn.executemany(
+                        "INSERT OR REPLACE INTO dj_meta "
+                        "(path, intro_end_s, outro_start_s, analysed, beats, cues) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        rows,
+                    )
+                self._buf.clear()
+                self._dirty = 0
+
+            existing = [row[0] for row in self._conn.execute("SELECT path FROM dj_meta")]
+            stale = [p for p in existing if p not in valid_paths]
+            if not stale:
+                return 0
+            with self._conn:
+                self._conn.executemany("DELETE FROM dj_meta WHERE path = ?", [(p,) for p in stale])
+            for path in stale:
+                self._mem_cache.pop(path, None)
+            return len(stale)
 
     def close(self) -> None:
         """Close the underlying SQLite connection.  Idempotent."""

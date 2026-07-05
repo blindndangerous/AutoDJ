@@ -451,34 +451,52 @@ def cli(ctx: click.Context, config_path: str, verbose: bool) -> None:
     help=(
         "Audio-loader prefetch threads for the embed pass "
         "(default: min(8, cpu_count())).  Pass 1 for serial.  Passed "
-        "through to the analyse phase too when --analyse is set."
+        "through to the analyse phase too."
     ),
 )
 @click.option(
     "-a",
+    "do_analyse",
+    flag_value=True,
+    help="Alias for --analyse.",
+)
+@click.option(
     "--analyse",
     "do_analyse",
-    is_flag=True,
-    default=False,
+    flag_value=True,
+    default=True,
     help=(
-        "After the embed pass, also run DJ-meta backfill (intro/outro, "
-        "beat grid, cue points) -- same as running `autodj analyse` "
-        "afterwards.  Convenient when the indexing host has CPU "
-        "headroom; otherwise run `autodj analyse` separately on the "
-        "NAS / listening host (no GPU needed for that step)."
+        "Run DJ-meta backfill after the embed pass. This is the default; "
+        "kept as an explicit flag for scripts."
     ),
 )
 @click.option(
+    "--no-analyse",
+    "do_analyse",
+    flag_value=False,
+    help="Skip DJ-meta backfill after indexing.",
+)
+@click.option(
     "-e",
+    "do_enrich",
+    flag_value=True,
+    help="Alias for --enrich.",
+)
+@click.option(
     "--enrich",
     "do_enrich",
-    is_flag=True,
-    default=False,
+    flag_value=True,
+    default=True,
     help=(
-        "After the embed pass, also pull beets ``initial_key`` data "
-        "into every entry -- same as running `autodj enrich` "
-        "afterwards.  Requires [library] beets_db."
+        "Refresh beets ``initial_key`` data after indexing. This is the "
+        "default when [library] beets_db is configured."
     ),
+)
+@click.option(
+    "--no-enrich",
+    "do_enrich",
+    flag_value=False,
+    help="Skip beets metadata enrichment after indexing.",
 )
 @click.option(
     "--reindex-modified-since",
@@ -510,11 +528,13 @@ def cmd_index(
     the filesystem.  Tracks already in the index are skipped unless --force
     is passed.
 
-    Run with --limit 20 first to confirm the pipeline works before indexing
-    your full library:
+    ``index`` runs the full maintenance pipeline by default: embed new
+    tracks, enrich from beets when configured, prune stale DJ-meta rows,
+    and analyse missing intro/outro/cue metadata.  For a quick embed-only
+    smoke test, skip the post-passes:
 
     \b
-        uv run autodj index --limit 20
+        uv run autodj index --limit 20 --no-enrich --no-analyse
         uv run autodj index           # full library (run overnight on GPU machine)
     """
     from autodj.indexer import build_index
@@ -561,10 +581,15 @@ def cmd_index(
         console.print(f"  Limit      : {limit} tracks (test mode)")
     if force:
         console.print("  Mode       : [yellow]FORCE REBUILD[/]")
-    if do_analyse:
-        console.print("  Post-pass  : [green]+ analyse[/] (intro/outro/beat/cues)")
+    post_passes: list[str] = []
     if do_enrich:
-        console.print("  Post-pass  : [green]+ enrich[/] (beets key/mode)")
+        post_passes.append("[green]+ enrich[/] (beets key/mode)")
+    if do_analyse:
+        post_passes.append("[green]+ analyse[/] (intro/outro/beat/cues)")
+    if post_passes:
+        console.print(f"  Post-pass  : {'; '.join(post_passes)}")
+    else:
+        console.print("  Post-pass  : [yellow]skipped[/]")
     console.print()
 
     reindex_modified_since: float | None = None
@@ -625,20 +650,22 @@ def cmd_index(
             _tracks_db_path,
         )
 
-        if not _tracks_db_path(cfg.index.active_dir).exists():
-            console.print("[yellow]--analyse skipped: no index found.[/]")
-        else:
-            conn = _open_tracks_db(cfg.index.active_dir)
-            try:
-                entries = _load_tracks_rows(conn)
-            finally:
-                conn.close()
-            for e in entries:
-                e.path = _resolve_for_runtime(e.path, cfg.library.music_dir, cfg.library.path_remap)
-            try:
+        try:
+            if not _tracks_db_path(cfg.index.active_dir).exists():
+                console.print("[yellow]--analyse skipped: no index found.[/]")
+            else:
+                conn = _open_tracks_db(cfg.index.active_dir)
+                try:
+                    entries = _load_tracks_rows(conn)
+                finally:
+                    conn.close()
+                for e in entries:
+                    e.path = _resolve_for_runtime(
+                        e.path, cfg.library.music_dir, cfg.library.path_remap
+                    )
                 _backfill_dj_meta(entries, cfg.index.active_dir, workers=workers)
-            except Exception as exc:
-                console.print(f"[bold red]Analyse failed:[/] {exc}")
+        except Exception as exc:
+            console.print(f"[bold red]Analyse failed:[/] {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -746,9 +773,9 @@ def cmd_enrich(ctx: click.Context, index_name: str | None) -> None:
     beets value when one is present.  No re-embedding required —
     completes in seconds even for huge libraries.
 
-    Useful when you've used keyfinder / DJ taggers AFTER your first
-    ``autodj index`` run and want the harmonic-mixing engine to use
-    those higher-quality keys.
+    ``autodj index`` already runs this by default.  Use this standalone
+    command when you want to refresh beets metadata without embedding or
+    DJ-meta analysis.
 
     \b
     Examples:

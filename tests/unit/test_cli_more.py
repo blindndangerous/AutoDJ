@@ -228,6 +228,36 @@ class TestIndexCommand:
         assert result.exit_code == 0
         assert "Enrich failed" in result.output
 
+    def test_index_runs_post_passes_by_default(self, tmp_path: Path) -> None:
+        cfg = _write_min_cfg(tmp_path)
+        cfg_mock = _cfg()
+        cfg_mock.library.beets_db = tmp_path / "library.db"
+        active = tmp_path / "idx"
+        active.mkdir()
+        cfg_mock.index.active_dir = active
+        from autodj.indexer import _open_tracks_db, _replace_tracks_rows
+
+        conn = _open_tracks_db(active)
+        try:
+            _replace_tracks_rows(conn, [_entry(0)], music_dir=None)
+        finally:
+            conn.close()
+
+        with (
+            patch("autodj.cli._can_import", return_value=True),
+            patch("autodj.cli._load_cfg_or_exit", return_value=cfg_mock),
+            patch("autodj.model.download_model_if_needed", return_value=tmp_path / "m"),
+            patch("autodj.model.load_model", return_value=MagicMock()),
+            patch("autodj.indexer.build_index"),
+            patch("autodj.indexer.enrich_from_beets", return_value=(1, 1)) as enrich,
+            patch("autodj.indexer._backfill_dj_meta") as backfill,
+        ):
+            result = CliRunner().invoke(cli, ["--config", str(cfg), "index"])
+
+        assert result.exit_code == 0
+        enrich.assert_called_once()
+        backfill.assert_called_once()
+
     def test_index_analyse_no_metadata_skipped(self, tmp_path: Path) -> None:
         cfg = _write_min_cfg(tmp_path)
         cfg_mock = _cfg()

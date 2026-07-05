@@ -242,6 +242,24 @@ class TestDjMetaCache:
         cache2 = DjMetaCache(path)
         assert cache2.get("foo.flac").analysed is False
 
+    def test_prune_to_paths_removes_stale_rows(self, tmp_path) -> None:
+        path = tmp_path / "cache.db"
+        cache = DjMetaCache(path)
+        cache.set("keep.flac", DjMeta(analysed=True))
+        cache.set("stale.flac", DjMeta(analysed=True))
+
+        removed = cache.prune_to_paths({"keep.flac"})
+
+        assert removed == 1
+        assert cache.get("keep.flac").analysed is True
+        assert cache.get("stale.flac").analysed is False
+        cache.close()
+
+        cache2 = DjMetaCache(path)
+        assert cache2.get("keep.flac").analysed is True
+        assert cache2.get("stale.flac").analysed is False
+        cache2.close()
+
 
 # ---------------------------------------------------------------------------
 # harmonic_compatible — extended modes (added with the harmonic combo box)
