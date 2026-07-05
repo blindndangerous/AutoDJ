@@ -107,6 +107,33 @@ class TestArt:
             assert resp.content == b"PNG-bytes"
             assert resp.headers["content-type"] == "image/png"
 
+    def test_cover_art_lookup_runs_off_event_loop(self, monkeypatch) -> None:
+        from fastapi.testclient import TestClient
+
+        from autodj.server import PlayerBridge, create_app
+
+        from ._helpers import _make_player_mock, _make_sim_mock
+
+        bridge = PlayerBridge(player=_make_player_mock(), sim=_make_sim_mock())
+        called: list[str] = []
+
+        def _cover(path: str):
+            called.append(path)
+            return (b"JPEG-bytes", "image/jpeg")
+
+        async def _fake_to_thread(fn, *args, **kwargs):
+            called.append("to_thread")
+            return fn(*args, **kwargs)
+
+        bridge.cover_art_for = _cover  # type: ignore[assignment]
+        monkeypatch.setattr("autodj.server.asyncio.to_thread", _fake_to_thread)
+
+        with TestClient(create_app(bridge)) as tc:
+            resp = tc.get("/api/art", params={"path": "Z:/Music/song_0.flac"})
+
+        assert resp.status_code == 200
+        assert called[-2:] == ["to_thread", "Z:/Music/song_0.flac"]
+
 
 # ---------------------------------------------------------------------------
 # Profile save round-trip

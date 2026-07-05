@@ -802,7 +802,7 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
         known = any(e.path == path for e in bridge.sim.entries)
         if not known:
             raise HTTPException(status_code=404, detail="Track not in index")
-        result = bridge.cover_art_for(path)
+        result = await asyncio.to_thread(bridge.cover_art_for, path)
         if result is None:
             raise HTTPException(status_code=404, detail="No embedded cover art")
         data, mime = result
