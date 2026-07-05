@@ -966,6 +966,7 @@ class TestBackfillDjMeta:
         from autodj.indexer import _backfill_dj_meta
 
         cache = type("C", (), {})()
+        cache.prune_to_paths = lambda _paths: 0
         cache.get = lambda _p: DjMeta(analysed=True)
         cache.set = lambda *_a, **_kw: None
         cache.flush = lambda *_a, **_kw: None
@@ -973,6 +974,34 @@ class TestBackfillDjMeta:
             _backfill_dj_meta([_entry("a.flac")], tmp_path, workers=1)
         out = capsys.readouterr().out
         assert "already covers" in out
+
+    def test_prunes_stale_cache_rows_when_supported(self, tmp_path: Path, capsys) -> None:
+        from autodj.dj_meta import DjMeta
+        from autodj.indexer import _backfill_dj_meta
+
+        seen: list[set[str]] = []
+
+        class _Cache:
+            def prune_to_paths(self, paths: set[str]) -> int:
+                seen.append(paths)
+                return 2
+
+            def get(self, _p: str) -> DjMeta:
+                return DjMeta(analysed=True)
+
+            def set(self, *_a, **_kw) -> None:
+                pass
+
+            def flush(self, *_a, **_kw) -> None:
+                pass
+
+        entries = [_entry("a.flac"), _entry("b.flac")]
+        with patch("autodj.dj_meta.get_cache", return_value=_Cache()):
+            _backfill_dj_meta(entries, tmp_path, workers=1)
+
+        out = capsys.readouterr().out
+        assert seen == [{"a.flac", "b.flac"}]
+        assert "pruned 2 stale entries" in out
 
     def test_serial_path_records_results(self, tmp_path: Path) -> None:
         from autodj.dj_meta import DjMeta

@@ -1294,6 +1294,8 @@ def _backfill_dj_meta(
     index_dir: Path,
     workers: int | None = None,
     throttle_ms: float = 0.0,
+    music_dir: Path | None = None,
+    path_remap: list[tuple[str, str]] | None = None,
 ) -> None:
     """Fill in DJ-meta for already-indexed tracks that have no sidecar entry.
 
@@ -1318,6 +1320,8 @@ def _backfill_dj_meta(
             sustained passes — e.g. ``500`` cuts effective duty cycle
             sharply with little wall-clock cost when paired with a low
             worker count.
+        music_dir: Library root used to store DJ-meta keys portably.
+        path_remap: Optional absolute-prefix swaps for legacy cache rows.
     """
     import os
     import time as _time
@@ -1325,7 +1329,7 @@ def _backfill_dj_meta(
 
     from autodj.dj_meta import get_cache
 
-    cache = get_cache(index_dir)
+    cache = get_cache(index_dir, music_dir=music_dir, path_remap=path_remap)
     if cache is None:
         return
     prune_to_paths = getattr(cache, "prune_to_paths", None)

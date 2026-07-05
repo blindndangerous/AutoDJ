@@ -1271,7 +1271,13 @@ class Player:
             from autodj.dj_meta import get_cache
 
             if isinstance(self._cfg.index.active_dir, Path):
-                self._dj_cache = get_cache(self._cfg.index.active_dir)
+                self._dj_cache = get_cache(
+                    self._cfg.index.active_dir,
+                    music_dir=self._cfg.library.music_dir
+                    if isinstance(self._cfg.library.music_dir, Path)
+                    else None,
+                    path_remap=self._cfg.library.path_remap,
+                )
         except (OSError, ValueError) as exc:
             logger.debug("DJ cache unavailable: %s", exc)
             self._dj_cache = None

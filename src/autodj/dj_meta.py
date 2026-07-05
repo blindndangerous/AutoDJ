@@ -574,13 +574,23 @@ class DjMetaCache:
         );
     """
 
-    def __init__(self, sidecar_path: Path) -> None:
+    def __init__(
+        self,
+        sidecar_path: Path,
+        music_dir: Path | None = None,
+        path_remap: list[tuple[str, str]] | None = None,
+    ) -> None:
         """Initialise the cache, opening or creating the SQLite store.
 
         Args:
             sidecar_path: Path to the SQLite database (``*.db``).
+            music_dir: Optional library root used to store cache keys as
+                portable relative paths.
+            path_remap: Optional absolute-prefix swaps for legacy cache rows.
         """
         self._path = sidecar_path
+        self._music_dir = music_dir
+        self._path_remap = path_remap or []
         self._lock = threading.Lock()
         self._dirty = 0
         # Pending writes — flushed in a single transaction by `flush()`.
@@ -590,6 +600,29 @@ class DjMetaCache:
         self._mem_cache: dict[str, DjMeta] = {}
         self._conn: sqlite3.Connection | None = None
         self._open()
+
+    def _key(self, path: str) -> str:
+        """Return the canonical SQLite key for *path*.
+
+        Runtime paths are absolute so audio can be opened directly, but cache
+        identity should be portable.  When a path lives under ``music_dir`` we
+        store it relative to that root, matching ``tracks.db``.  Legacy absolute
+        rows from another machine can be normalized through ``path_remap``.
+        """
+        s = path.replace("\\", "/")
+        is_abs = s.startswith("/") or (len(s) >= 2 and s[1] == ":")
+        if is_abs:
+            for from_pre, to_pre in self._path_remap:
+                from_norm = from_pre.replace("\\", "/")
+                if s.startswith(from_norm):
+                    s = to_pre.replace("\\", "/") + s[len(from_norm) :]
+                    break
+
+        if is_abs and self._music_dir is not None:
+            md = self._music_dir.as_posix().rstrip("/") + "/"
+            if s.startswith(md):
+                return s[len(md) :]
+        return s if is_abs else Path(s).as_posix()
 
     def _open(self) -> None:
         """Open the SQLite connection and run the schema."""
@@ -608,10 +641,52 @@ class DjMetaCache:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA synchronous=NORMAL")
 
+        if not first_init and self._music_dir is not None:
+            self._migrate_legacy_keys()
+
         if not first_init:
             count = self._conn.execute("SELECT COUNT(*) FROM dj_meta").fetchone()[0]
             if count:
                 logger.info("Loaded DJ meta cache: %d entries", count)
+
+    def _migrate_legacy_keys(self) -> None:
+        """Rewrite legacy absolute cache keys to portable relative keys."""
+        assert self._conn is not None
+        rows = self._conn.execute(
+            "SELECT path, intro_end_s, outro_start_s, analysed, beats, cues FROM dj_meta"
+        ).fetchall()
+        moved = 0
+        removed = 0
+        with self._conn:
+            for row in rows:
+                old = str(row[0])
+                new = self._key(old)
+                if new == old:
+                    continue
+                target = self._conn.execute("SELECT analysed FROM dj_meta WHERE path = ?", (new,))
+                target_row = target.fetchone()
+                if target_row is None:
+                    self._conn.execute(
+                        "UPDATE dj_meta SET path = ? WHERE path = ?",
+                        (new, old),
+                    )
+                    moved += 1
+                    continue
+                # Prefer an analysed target row over a duplicate legacy row.
+                if not bool(target_row[0]) and bool(row[3]):
+                    self._conn.execute(
+                        "UPDATE dj_meta SET intro_end_s = ?, outro_start_s = ?, "
+                        "analysed = ?, beats = ?, cues = ? WHERE path = ?",
+                        (row[1], row[2], row[3], row[4], row[5], new),
+                    )
+                self._conn.execute("DELETE FROM dj_meta WHERE path = ?", (old,))
+                removed += 1
+        if moved or removed:
+            logger.info(
+                "Migrated DJ meta cache to portable keys: %d moved, %d duplicates removed",
+                moved,
+                removed,
+            )
 
     def _row_to_meta(self, row: tuple) -> DjMeta:
         intro, outro, analysed, beats_json, cues_json = row
@@ -631,26 +706,28 @@ class DjMetaCache:
 
     def get(self, path: str) -> DjMeta:
         """Return the cached :class:`DjMeta` for *path*, or a fresh empty one."""
+        key = self._key(path)
         with self._lock:
-            if path in self._buf:
-                return self._buf[path]
-            if path in self._mem_cache:
-                return self._mem_cache[path]
+            if key in self._buf:
+                return self._buf[key]
+            if key in self._mem_cache:
+                return self._mem_cache[key]
             assert self._conn is not None
             row = self._conn.execute(
                 "SELECT intro_end_s, outro_start_s, analysed, beats, cues "
                 "FROM dj_meta WHERE path = ?",
-                (path,),
+                (key,),
             ).fetchone()
             meta = self._row_to_meta(row) if row else DjMeta()
-            self._mem_cache[path] = meta
+            self._mem_cache[key] = meta
             return meta
 
     def set(self, path: str, meta: DjMeta) -> None:
         """Store *meta* under *path* and mark the cache dirty."""
+        key = self._key(path)
         with self._lock:
-            self._buf[path] = meta
-            self._mem_cache[path] = meta
+            self._buf[key] = meta
+            self._mem_cache[key] = meta
             self._dirty += 1
 
     def flush(self, force: bool = False, batch: int = 25) -> None:
@@ -696,6 +773,7 @@ class DjMetaCache:
         Returns:
             Number of stale rows removed.
         """
+        valid_keys = {self._key(path) for path in valid_paths}
         with self._lock:
             assert self._conn is not None
             if self._buf:
@@ -721,7 +799,7 @@ class DjMetaCache:
                 self._dirty = 0
 
             existing = [row[0] for row in self._conn.execute("SELECT path FROM dj_meta")]
-            stale = [p for p in existing if p not in valid_paths]
+            stale = [p for p in existing if p not in valid_keys]
             if not stale:
                 return 0
             with self._conn:
@@ -744,7 +822,11 @@ _CACHE: DjMetaCache | None = None
 _CACHE_LOCK = threading.Lock()
 
 
-def get_cache(index_dir: Path | None = None) -> DjMetaCache | None:
+def get_cache(
+    index_dir: Path | None = None,
+    music_dir: Path | None = None,
+    path_remap: list[tuple[str, str]] | None = None,
+) -> DjMetaCache | None:
     """Return the process-wide :class:`DjMetaCache` instance.
 
     Pass *index_dir* on the first call to initialise the cache; subsequent
@@ -753,6 +835,8 @@ def get_cache(index_dir: Path | None = None) -> DjMetaCache | None:
     Args:
         index_dir: Directory containing the FAISS index (the cache lives
             at ``<index_dir>/dj_meta.db``).  Required on first call.
+        music_dir: Optional library root for portable relative cache keys.
+        path_remap: Optional absolute-prefix swaps for legacy cache keys.
 
     Returns:
         The shared cache, or ``None`` if uninitialised and no *index_dir*
@@ -761,7 +845,7 @@ def get_cache(index_dir: Path | None = None) -> DjMetaCache | None:
     global _CACHE
     with _CACHE_LOCK:
         if _CACHE is None and index_dir is not None:
-            _CACHE = DjMetaCache(index_dir / "dj_meta.db")
+            _CACHE = DjMetaCache(index_dir / "dj_meta.db", music_dir, path_remap)
         return _CACHE
 
 

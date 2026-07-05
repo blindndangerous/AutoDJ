@@ -241,6 +241,7 @@ class TestDjMetaCache:
         cache.close()
         cache2 = DjMetaCache(path)
         assert cache2.get("foo.flac").analysed is False
+        cache2.close()
 
     def test_prune_to_paths_removes_stale_rows(self, tmp_path) -> None:
         path = tmp_path / "cache.db"
@@ -259,6 +260,154 @@ class TestDjMetaCache:
         assert cache2.get("keep.flac").analysed is True
         assert cache2.get("stale.flac").analysed is False
         cache2.close()
+
+    def test_absolute_paths_are_stored_as_relative_keys(self, tmp_path) -> None:
+        import sqlite3 as _sql
+
+        path = tmp_path / "cache.db"
+        music_dir = tmp_path / "Music"
+        cache = DjMetaCache(path, music_dir=music_dir)
+        cache.set(str(music_dir / "Artist" / "song.flac"), DjMeta(analysed=True))
+        cache.flush(force=True)
+        cache.close()
+
+        conn = _sql.connect(path)
+        try:
+            rows = conn.execute("SELECT path FROM dj_meta").fetchall()
+        finally:
+            conn.close()
+        assert rows == [("Artist/song.flac",)]
+
+    def test_absolute_paths_outside_music_dir_stay_absolute(self, tmp_path) -> None:
+        import sqlite3 as _sql
+
+        path = tmp_path / "cache.db"
+        music_dir = tmp_path / "Music"
+        outside = tmp_path / "Other" / "song.flac"
+        cache = DjMetaCache(path, music_dir=music_dir)
+        cache.set(str(outside), DjMeta(analysed=True))
+        cache.flush(force=True)
+        cache.close()
+
+        conn = _sql.connect(path)
+        try:
+            rows = conn.execute("SELECT path FROM dj_meta").fetchall()
+        finally:
+            conn.close()
+        assert rows == [(outside.as_posix(),)]
+
+    def test_legacy_absolute_rows_migrate_to_relative_keys(self, tmp_path) -> None:
+        import sqlite3 as _sql
+
+        path = tmp_path / "cache.db"
+        music_dir = tmp_path / "Music"
+        legacy = "/volume1/Mike/Beetsmusic/Artist/song.flac"
+
+        conn = _sql.connect(path)
+        conn.execute(DjMetaCache._SCHEMA)
+        conn.execute(
+            "INSERT INTO dj_meta (path, intro_end_s, outro_start_s, analysed, beats, cues) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (legacy, 1.0, 100.0, 1, "[]", "[]"),
+        )
+        conn.commit()
+        conn.close()
+
+        cache = DjMetaCache(
+            path,
+            music_dir=music_dir,
+            path_remap=[("/volume1/Mike/Beetsmusic/", f"{music_dir.as_posix()}/")],
+        )
+        assert cache.get(str(music_dir / "Artist" / "song.flac")).analysed is True
+        cache.close()
+
+        conn = _sql.connect(path)
+        try:
+            rows = conn.execute("SELECT path FROM dj_meta").fetchall()
+        finally:
+            conn.close()
+        assert rows == [("Artist/song.flac",)]
+
+    def test_legacy_duplicate_migration_prefers_analysed_row(self, tmp_path) -> None:
+        import sqlite3 as _sql
+
+        path = tmp_path / "cache.db"
+        music_dir = tmp_path / "Music"
+        legacy = "/volume1/Mike/Beetsmusic/Artist/song.flac"
+
+        conn = _sql.connect(path)
+        conn.execute(DjMetaCache._SCHEMA)
+        conn.executemany(
+            "INSERT INTO dj_meta (path, intro_end_s, outro_start_s, analysed, beats, cues) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                ("Artist/song.flac", 0.0, 0.0, 0, "[]", "[]"),
+                (legacy, 4.0, 120.0, 1, "[]", "[]"),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        cache = DjMetaCache(
+            path,
+            music_dir=music_dir,
+            path_remap=[("/volume1/Mike/Beetsmusic/", f"{music_dir.as_posix()}/")],
+        )
+        meta = cache.get("Artist/song.flac")
+        assert meta.analysed is True
+        assert meta.intro_end_s == 4.0
+        cache.close()
+
+        conn = _sql.connect(path)
+        try:
+            rows = conn.execute("SELECT path FROM dj_meta").fetchall()
+        finally:
+            conn.close()
+        assert rows == [("Artist/song.flac",)]
+
+    def test_legacy_duplicate_migration_keeps_analysed_target(self, tmp_path) -> None:
+        import sqlite3 as _sql
+
+        path = tmp_path / "cache.db"
+        music_dir = tmp_path / "Music"
+        legacy = "/volume1/Mike/Beetsmusic/Artist/song.flac"
+
+        conn = _sql.connect(path)
+        conn.execute(DjMetaCache._SCHEMA)
+        conn.executemany(
+            "INSERT INTO dj_meta (path, intro_end_s, outro_start_s, analysed, beats, cues) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                ("Artist/song.flac", 2.0, 90.0, 1, "[]", "[]"),
+                (legacy, 4.0, 120.0, 0, "[]", "[]"),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        cache = DjMetaCache(
+            path,
+            music_dir=music_dir,
+            path_remap=[("/volume1/Mike/Beetsmusic/", f"{music_dir.as_posix()}/")],
+        )
+        meta = cache.get("Artist/song.flac")
+        assert meta.analysed is True
+        assert meta.intro_end_s == 2.0
+        cache.close()
+
+    def test_prune_to_paths_returns_zero_when_nothing_stale(self, tmp_path) -> None:
+        path = tmp_path / "cache.db"
+        music_dir = tmp_path / "Music"
+        song = music_dir / "Artist" / "song.flac"
+        cache = DjMetaCache(path, music_dir=music_dir)
+        cache.set(str(song), DjMeta(analysed=True))
+        cache.flush(force=True)
+
+        removed = cache.prune_to_paths({str(song)})
+
+        assert removed == 0
+        assert cache.get(str(song)).analysed is True
+        cache.close()
 
 
 # ---------------------------------------------------------------------------

@@ -663,7 +663,13 @@ def cmd_index(
                     e.path = _resolve_for_runtime(
                         e.path, cfg.library.music_dir, cfg.library.path_remap
                     )
-                _backfill_dj_meta(entries, cfg.index.active_dir, workers=workers)
+                _backfill_dj_meta(
+                    entries,
+                    cfg.index.active_dir,
+                    workers=workers,
+                    music_dir=cfg.library.music_dir,
+                    path_remap=cfg.library.path_remap,
+                )
         except Exception as exc:
             console.print(f"[bold red]Analyse failed:[/] {exc}")
 
@@ -943,7 +949,13 @@ def cmd_analyse(
     console.print()
 
     try:
-        _backfill_dj_meta(entries, cfg.index.active_dir, workers=workers)
+        _backfill_dj_meta(
+            entries,
+            cfg.index.active_dir,
+            workers=workers,
+            music_dir=cfg.library.music_dir,
+            path_remap=cfg.library.path_remap,
+        )
     except Exception as exc:
         console.print(f"[bold red]Analyse failed:[/] {exc}")
         sys.exit(1)
