@@ -75,7 +75,6 @@ describe("renderCueStrip", () => {
       cues: [{ type: "drop", time_s: 30 }],
     };
     renderCueStrip(el, track);
-    const first = el.innerHTML;
     el.innerHTML = "tampered";
     renderCueStrip(el, track);
     // Same path + same cue count -> no rebuild.

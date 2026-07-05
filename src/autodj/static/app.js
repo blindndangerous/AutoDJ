@@ -7,13 +7,25 @@ import {
   fmtTime,
   fmtTrack,
   escHtml,
-  isTypingTarget,
 } from "./modules/dom-helpers.js";
 
 if (isDebug()) {
   console.log("[autodj] debug logging ENABLED " +
     "(disable with localStorage.removeItem('autodjDebug') " +
     "or remove ?debug=1 from URL).");
+}
+
+const CONTROL_FETCH_TIMEOUT_MS = 10000;
+
+async function fetchControl(url, options) {
+  const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const timer = ctrl ? setTimeout(() => ctrl.abort(), CONTROL_FETCH_TIMEOUT_MS) : null;
+  try {
+    const opts = ctrl ? { ...(options || {}), signal: ctrl.signal } : (options || {});
+    return await fetch(url, opts);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 // ----------------------------------------------------------------
@@ -47,15 +59,6 @@ const queueCount   = document.getElementById("queue-count");
 const queueAnnounce= document.getElementById("queue-announce");
 const badgesRow    = document.getElementById("now-playing-badges");
 const badgesAnnounce = document.getElementById("badges-announce");
-const eqLow        = document.getElementById("eq-low");
-const eqMid        = document.getElementById("eq-mid");
-const eqHigh       = document.getElementById("eq-high");
-const eqLowVal     = document.getElementById("eq-low-value");
-const eqMidVal     = document.getElementById("eq-mid-value");
-const eqHighVal    = document.getElementById("eq-high-value");
-const btnEqReset   = document.getElementById("btn-eq-reset");
-const eqAnnounce   = document.getElementById("eq-announce");
-const audioEl      = document.getElementById("browser-player");
 // (enable-playback-card was removed — Play button is unified into btn-pause)
 // Settings card
 const presetSelect    = document.getElementById("preset-select");
@@ -64,7 +67,6 @@ const harmonicMode    = document.getElementById("harmonic-mode");
 const djBeatmatch     = document.getElementById("dj-beatmatch");
 const djPhraseAlign   = document.getElementById("dj-phrase-align");
 const djOutroIntro    = document.getElementById("dj-outro-intro");
-const djFilterSweep   = null;  // moved into Transition effect dropdown
 const pbEqDuck        = document.getElementById("pb-eq-duck");
 const pbPickMode      = document.getElementById("pb-pick-mode");
 const pbShowLyrics    = document.getElementById("pb-show-lyrics");
@@ -97,7 +99,6 @@ const volAnnounce     = document.getElementById("vol-announce");
 let lastTrackKey = null;   // detect track changes for aria-live announce
 const historyItems = [];   // most-recent first
 // lastLyricIndex + cachedLyrics moved into ./modules/lyrics.js.
-let lastBadgeKey = null;   // suppress repeated badge announcements within one track
 let lastNextKey  = null;   // suppress aria-live re-announce of unchanged next track
 
 // ----------------------------------------------------------------
@@ -717,7 +718,6 @@ import { applyBadges } from "./modules/badges.js";
 // Cue strip rendering moved to ./modules/cues.js.
 import {
   renderCueStrip as _renderCueStripModule,
-  summariseCues,
 } from "./modules/cues.js";
 
 const _cueStrip = document.getElementById("cue-strip");
@@ -742,10 +742,8 @@ function applyCamelotWheel(currentCell, harmonicMode) {
 // accessors.
 import {
   setVolume, applyBrowserPlaybackState, startCrossfade, stopAllDecks,
-  applyEqState, loadCoverArt, applyTransitionFx, resetTrackCaches,
+  applyEqState, loadCoverArt, resetTrackCaches,
   ensureAudioGraph, unlockAndPlay,
-  deckActive, deckStandby, setSrcOnDeck, playOnDeck,
-  postEq, eqValueLabel,
   _ctx, decks, activeIdx, _volume, _lastBrowserPlayback, playbackEnabled,
   _outBpmCache, _inBpmCache,
   _crossfadeSecondsCache, _nextTrackPathCache,
@@ -764,9 +762,8 @@ setApplyState(applyState);
 
 // Lyrics rendering moved to ./modules/lyrics.js.
 import {
-  loadLyrics, applyLyricsState, renderLyricsList,
+  loadLyrics, applyLyricsState,
   resetLyricState,
-  getCachedLyrics,
 } from "./modules/lyrics.js";
 
 const _lyricEls = { lyricsCard, lyricsList, lyricAnnounce };
@@ -881,7 +878,8 @@ btnPause.addEventListener("click", async () => {
   // Standard transport: toggle on the server, browser deck mirrors via
   // applyBrowserPlaybackState on the next state push.
   try {
-    const res  = await fetch("/api/pause", { method: "POST" });
+    const res  = await fetchControl("/api/pause", { method: "POST" });
+    if (!res.ok) throw new Error(`/api/pause returned ${res.status}`);
     const data = await res.json();
     const isPaused = data.paused;
     // A11y C2: glyph + label + aria-pressed updated together.
@@ -889,7 +887,10 @@ btnPause.addEventListener("click", async () => {
       ? '<span aria-hidden="true">\u25B6</span> Resume'
       : '<span aria-hidden="true">\u23F8</span> Pause';
     btnPause.setAttribute("aria-pressed", isPaused ? "false" : "true");
-  } catch (_) { /* ignore \u2014 next WS state push will reconcile */ }
+  } catch (err) {
+    npAnnounce.textContent = "Pause failed: " + (err.message || err);
+    console.warn("pause failed:", err);
+  }
 });
 
 // (`_lastBrowserPlayback` is declared up in the audio playback module so
@@ -897,38 +898,46 @@ btnPause.addEventListener("click", async () => {
 
 btnSkip.addEventListener("click", async () => {
   btnSkip.disabled = true;
-  // In browser-playback mode, run a client-side crossfade with the
-  // current transition effect.  Falls back to plain server skip if the
-  // audio context isn't running yet (user hasn't clicked Play).
-  if (_lastBrowserPlayback && playbackEnabled && _ctx && _nextTrackPathCache && !crossfading) {
-    // Beatmatch-on-skip: when the user opted in AND both BPMs are
-    // known, pitch-shift the standby deck so the new track joins the
-    // existing groove instead of cold-cutting.  preservesPitch=true
-    // gives a tempo-only stretch (proper beatmatch).  Reverted at
-    // crossfade teardown by the timeout below.
-    let bmRevert = null;
-    if (_beatmatchOnSkip && _outBpmCache > 0 && _inBpmCache > 0) {
-      const ratio = _outBpmCache / _inBpmCache;
-      // Clamp ±15% so wildly mismatched tempos don't sound silly.
-      const clamped = Math.max(0.85, Math.min(1.15, ratio));
-      const standby = decks[activeIdx ^ 1];
-      const audio = standby.audio;
-      const prevPitch = audio.preservesPitch;
-      const prevRate = audio.playbackRate;
-      try { audio.preservesPitch = true; } catch (_) {}
-      try { audio.playbackRate = clamped; } catch (_) {}
-      dbg("beatmatch-on-skip: ratio=", clamped.toFixed(3),
-        "(", _outBpmCache.toFixed(1), "/", _inBpmCache.toFixed(1), ")");
-      bmRevert = setTimeout(() => {
-        try { audio.playbackRate = prevRate; } catch (_) {}
-        try { audio.preservesPitch = prevPitch; } catch (_) {}
-      }, _crossfadeSecondsCache * 1000 + 200);
+  try {
+    // In browser-playback mode, run a client-side crossfade with the
+    // current transition effect.  Falls back to plain server skip if the
+    // audio context isn't running yet (user hasn't clicked Play).
+    if (_lastBrowserPlayback && playbackEnabled && _ctx && _nextTrackPathCache && !crossfading) {
+      // Beatmatch-on-skip: when the user opted in AND both BPMs are
+      // known, pitch-shift the standby deck so the new track joins the
+      // existing groove instead of cold-cutting.  preservesPitch=true
+      // gives a tempo-only stretch (proper beatmatch).  Reverted at
+      // crossfade teardown by the timeout below.
+      if (_beatmatchOnSkip && _outBpmCache > 0 && _inBpmCache > 0) {
+        const ratio = _outBpmCache / _inBpmCache;
+        // Clamp ±15% so wildly mismatched tempos don't sound silly.
+        const clamped = Math.max(0.85, Math.min(1.15, ratio));
+        const standby = decks[activeIdx ^ 1];
+        const audio = standby.audio;
+        const prevPitch = audio.preservesPitch;
+        const prevRate = audio.playbackRate;
+        try { audio.preservesPitch = true; } catch (_) {}
+        try { audio.playbackRate = clamped; } catch (_) {}
+        dbg("beatmatch-on-skip: ratio=", clamped.toFixed(3),
+          "(", _outBpmCache.toFixed(1), "/", _inBpmCache.toFixed(1), ")");
+        setTimeout(() => {
+          try { audio.playbackRate = prevRate; } catch (_) {}
+          try { audio.preservesPitch = prevPitch; } catch (_) {}
+        }, _crossfadeSecondsCache * 1000 + 200);
+      }
+      startCrossfade(_nextTrackPathCache, _crossfadeSecondsCache);
+    } else {
+      const res = await fetchControl("/api/skip", { method: "POST" });
+      if (!res.ok) throw new Error(`/api/skip returned ${res.status}`);
+      const state = await res.json();
+      applyState(state);
     }
-    startCrossfade(_nextTrackPathCache, _crossfadeSecondsCache);
-  } else {
-    await fetch("/api/skip", { method: "POST" });
+  } catch (err) {
+    npAnnounce.textContent = "Skip failed: " + (err.message || err);
+    console.warn("skip failed:", err);
+  } finally {
+    setTimeout(() => { btnSkip.disabled = false; }, 800);
   }
-  setTimeout(() => { btnSkip.disabled = false; }, 800);
 });
 
 // ----------------------------------------------------------------
@@ -1057,19 +1066,34 @@ const btnShuffle = document.getElementById("btn-shuffle");
 if (btnShuffle) {
   btnShuffle.addEventListener("click", async () => {
     btnShuffle.disabled = true;
-    await fetch("/api/random-track", { method: "POST" });
-    setTimeout(() => { btnShuffle.disabled = false; }, 800);
+    try {
+      const res = await fetchControl("/api/random-track", { method: "POST" });
+      if (!res.ok) throw new Error(`/api/random-track returned ${res.status}`);
+      const state = await res.json();
+      applyState(state);
+    } catch (err) {
+      npAnnounce.textContent = "Shuffle failed: " + (err.message || err);
+      console.warn("shuffle failed:", err);
+    } finally {
+      setTimeout(() => { btnShuffle.disabled = false; }, 800);
+    }
   });
 }
 
 btnMute.addEventListener("click", async () => {
-  const res   = await fetch("/api/mute", { method: "POST" });
-  const data  = await res.json();
-  const muted = data.muted;
-  btnMute.setAttribute("aria-pressed", muted ? "true" : "false");
-  btnMute.innerHTML = muted
-    ? '<span aria-hidden="true">\uD83D\uDD07</span> Unmute'
-    : '<span aria-hidden="true">\uD83D\uDD0A</span> Mute';
+  try {
+    const res   = await fetchControl("/api/mute", { method: "POST" });
+    if (!res.ok) throw new Error(`/api/mute returned ${res.status}`);
+    const data  = await res.json();
+    const muted = data.muted;
+    btnMute.setAttribute("aria-pressed", muted ? "true" : "false");
+    btnMute.innerHTML = muted
+      ? '<span aria-hidden="true">\uD83D\uDD07</span> Unmute'
+      : '<span aria-hidden="true">\uD83D\uDD0A</span> Mute';
+  } catch (err) {
+    npAnnounce.textContent = "Mute failed: " + (err.message || err);
+    console.warn("mute failed:", err);
+  }
 });
 
 // Shortcuts modal: toolbar button + Close button inside the modal.

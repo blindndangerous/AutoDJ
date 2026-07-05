@@ -202,6 +202,7 @@ class TestDjMetaCache:
         meta = cache.get("unknown.flac")
         assert meta.analysed is False
         assert meta.beats == []
+        cache.close()
 
     def test_set_then_get_round_trip(self, tmp_path) -> None:
         cache = DjMetaCache(tmp_path / "cache.db")
@@ -219,6 +220,7 @@ class TestDjMetaCache:
         assert meta.outro_start_s == 180.0
         assert meta.beats == [0.5, 1.0, 1.5]
         assert meta.analysed is True
+        cache.close()
 
     def test_flush_persists_to_db(self, tmp_path) -> None:
         path = tmp_path / "cache.db"
@@ -231,6 +233,7 @@ class TestDjMetaCache:
         meta = cache2.get("foo.flac")
         assert meta.intro_end_s == 1.0
         assert meta.analysed is True
+        cache2.close()
 
     def test_flush_skips_when_not_dirty_enough(self, tmp_path) -> None:
         path = tmp_path / "cache.db"
@@ -592,6 +595,8 @@ class TestGetCacheAndAnalyse:
         c2 = _dm.get_cache(tmp_path)
         assert c1 is c2
         assert _dm.get_cache(None) is c1
+        c1.close()
+        _dm._CACHE = None
 
     def test_get_cache_none_when_uninitialised(self) -> None:
         from autodj import dj_meta as _dm

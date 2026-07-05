@@ -33,13 +33,12 @@ describe("audio-engine setApplyState dependency injection", () => {
     );
     expect(typeof mod.setApplyState).toBe("function");
 
-    let captured = null;
-    mod.setApplyState((s) => { captured = s; });
+    mod.setApplyState(() => {});
     // Indirect verification: there is no public function that calls
     // _applyState synchronously, but the setter must at minimum accept
     // a function without throwing and remember it.  A direct call via
     // setter+symbol is not exposed; the contract under test is that
     // app.js can wire the dependency without the engine throwing.
-    expect(() => mod.setApplyState(() => { captured = "called"; })).not.toThrow();
+    expect(() => mod.setApplyState(() => {})).not.toThrow();
   });
 });

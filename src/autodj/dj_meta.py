@@ -816,6 +816,11 @@ class DjMetaCache:
                     self._conn.close()
                 self._conn = None
 
+    def __del__(self) -> None:
+        """Best-effort cleanup for callers that drop a cache without closing."""
+        with contextlib.suppress(Exception):
+            self.close()
+
 
 # Process-wide singleton — set by the player / server when they boot
 _CACHE: DjMetaCache | None = None

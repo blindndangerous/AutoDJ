@@ -23,7 +23,6 @@ const eqHighVal  = document.getElementById("eq-high-value");
 const eqAnnounce = document.getElementById("eq-announce");
 const btnEqReset = document.getElementById("btn-eq-reset");
 const volSlider  = document.getElementById("vol");
-const btnPause   = document.getElementById("btn-pause");
 const coverArt   = document.getElementById("cover-art");
 const npAnnounce = document.getElementById("now-playing-announce");
 
@@ -226,13 +225,6 @@ export function setSrcOnDeck(deck, path) {
   if (deck.path === path) return;
   deck.path = path;
   deck.audio.src = "/api/audio?path=" + encodeURIComponent(path);
-  // Kick off background decode so spin / tape_stop / freeze effects have
-  // the AudioBuffer ready when the crossfade fires.  Decoded buffers are
-  // cached in _bufferCache so repeated transitions on the same track
-  // don't re-fetch.
-  if (typeof _decodeFor === "function") {
-    _decodeFor(path).catch(() => {});
-  }
 }
 
 export function playOnDeck(deck) {
@@ -363,13 +355,22 @@ function _disconnectAll(...nodes) {
 // through an AudioBufferSourceNode while muting the live deck.  Caches
 // the decoded buffer per path so a Skip → Skip cycle doesn't re-decode.
 const _bufferCache = new Map();   // path → AudioBuffer
+const DECODE_FETCH_TIMEOUT_MS = 8000;
 
 async function _decodeFor(path) {
   if (_bufferCache.has(path)) return _bufferCache.get(path);
   const url = "/api/audio?path=" + encodeURIComponent(path);
-  const resp = await fetch(url);
-  if (!resp.ok) throw new Error(`audio fetch ${resp.status}`);
-  const arr = await resp.arrayBuffer();
+  const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const timer = ctrl ? setTimeout(() => ctrl.abort(), DECODE_FETCH_TIMEOUT_MS) : null;
+  let arr;
+  try {
+    const opts = ctrl ? { signal: ctrl.signal } : undefined;
+    const resp = await fetch(url, opts);
+    if (!resp.ok) throw new Error(`audio fetch ${resp.status}`);
+    arr = await resp.arrayBuffer();
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
   const buf = await _ctx.decodeAudioData(arr);
   // Cap cache at 4 entries — these can be 100+ MB each
   if (_bufferCache.size >= 4) {
@@ -400,7 +401,6 @@ function _doSpin(ctx, outDeck, t0, fadeSec, reverse, teardowns, slow = false) {
   outDeck.audio.muted = true;
   // Force live deck silent — caller's crossfade ramp may not reach 0 fast
   // enough.  We restore on teardown.
-  const prevGain = outDeck.gain.gain.value;
   outDeck.gain.gain.cancelScheduledValues(t0);
   outDeck.gain.gain.setValueAtTime(0, t0);
 
@@ -763,7 +763,7 @@ function _effectDurationFor(effect, fadeSec, outroLen) {
     return Math.max(fadeSec, staticMin);
   }
   const frac = _OUTRO_FRACTION[effect] != null ? _OUTRO_FRACTION[effect] : 0.5;
-  let target = outroLen * frac;
+  const target = outroLen * frac;
   // Clamp: never below the per-effect floor (or absolute 1.0s), never
   // above 12s — keeps musically sane boundaries even on edge tracks.
   const lo = Math.max(_ABS_MIN_FX_DURATION_S, staticMin);

@@ -75,7 +75,6 @@ async function audit(name, launcher) {
   // Cycle through each effect and post to /api/transition
   const transitions = {};
   for (const fx of EFFECTS) {
-    const before = logs.length;
     const res = await page.request.post(`${BASE}/api/transition`, {
       headers: { "Content-Type": "application/json" },
       data: JSON.stringify({ effect: fx }),

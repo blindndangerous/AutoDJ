@@ -2039,6 +2039,34 @@ class TestAudioEndpoint:
         assert resp.headers["accept-ranges"] == "bytes"
         assert int(resp.headers["content-length"]) == fake_mp3.stat().st_size
 
+    def test_audio_full_stream_file_io_runs_off_event_loop(
+        self, tmp_path, bridge, monkeypatch
+    ) -> None:
+        from fastapi.testclient import TestClient
+
+        fake_mp3 = tmp_path / "fake.mp3"
+        fake_mp3.write_bytes(b"\xff\xfb" + b"\x00" * 4096)
+        e = _make_entry(199)
+        e.path = str(fake_mp3)
+        bridge.sim.entries.append(e)
+        calls: list[str] = []
+
+        async def fake_to_thread(func, /, *args, **kwargs):
+            calls.append(getattr(func, "__name__", type(func).__name__))
+            return func(*args, **kwargs)
+
+        monkeypatch.setattr("autodj.server.asyncio.to_thread", fake_to_thread)
+        tc = TestClient(create_app(bridge))
+
+        resp = tc.get(f"/api/audio?path={fake_mp3}")
+
+        assert resp.status_code == 200
+        assert resp.content.startswith(b"\xff\xfb")
+        assert "_audio_file_info" in calls
+        assert "open" in calls
+        assert "read" in calls
+        assert "close" in calls
+
     def test_audio_range_request(self, tmp_path, bridge) -> None:
         from fastapi.testclient import TestClient
 
@@ -2052,6 +2080,35 @@ class TestAudioEndpoint:
         assert resp.status_code == 206
         assert resp.headers["content-range"] == "bytes 100-199/10000"
         assert int(resp.headers["content-length"]) == 100
+
+    def test_audio_range_seek_and_read_run_off_event_loop(
+        self, tmp_path, bridge, monkeypatch
+    ) -> None:
+        from fastapi.testclient import TestClient
+
+        fake = tmp_path / "song.flac"
+        fake.write_bytes(bytes(range(256)) * 4)
+        e = _make_entry(200)
+        e.path = str(fake)
+        bridge.sim.entries.append(e)
+        calls: list[str] = []
+
+        async def fake_to_thread(func, /, *args, **kwargs):
+            calls.append(getattr(func, "__name__", type(func).__name__))
+            return func(*args, **kwargs)
+
+        monkeypatch.setattr("autodj.server.asyncio.to_thread", fake_to_thread)
+        tc = TestClient(create_app(bridge))
+
+        resp = tc.get(f"/api/audio?path={fake}", headers={"Range": "bytes=10-19"})
+
+        assert resp.status_code == 206
+        assert resp.content == bytes(range(10, 20))
+        assert "_audio_file_info" in calls
+        assert "open" in calls
+        assert "seek" in calls
+        assert "read" in calls
+        assert "close" in calls
 
     def test_audio_invalid_range_416(self, tmp_path, bridge) -> None:
         from fastapi.testclient import TestClient

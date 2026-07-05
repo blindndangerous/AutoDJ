@@ -848,6 +848,24 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
         except (OSError, ValueError, ImportError):
             return False
 
+    def _audio_file_info(p: Path) -> tuple[int, str, bool] | None:
+        """Return ``(size, mime, is_alac)`` for *p*, or ``None`` if missing."""
+        if not p.exists() or not p.is_file():
+            return None
+        return (p.stat().st_size, _audio_mime(p), _is_alac(p))
+
+    async def _open_audio_file(p: Path) -> Any:
+        return await asyncio.to_thread(open, p, "rb")
+
+    async def _close_audio_file(fh: Any) -> None:
+        await asyncio.to_thread(fh.close)
+
+    async def _seek_audio_file(fh: Any, offset: int) -> None:
+        await asyncio.to_thread(fh.seek, offset)
+
+    async def _read_audio_chunk(fh: Any, n: int) -> bytes:
+        return await asyncio.to_thread(fh.read, n)
+
     async def _transcode_alac_to_mp3(p: Path) -> AsyncGenerator[bytes]:  # pragma: no cover
         """Yield MP3 bytes from an ALAC source via ffmpeg subprocess.
 
@@ -907,12 +925,14 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
         if not known:
             raise HTTPException(status_code=404, detail="Track not in index")
         f = Path(path)
-        if not f.exists() or not f.is_file():
+        info = await asyncio.to_thread(_audio_file_info, f)
+        if info is None:
             raise HTTPException(status_code=404, detail="File not found on disk")
+        file_size, mime, is_alac = info
 
         # Transcode ALAC → MP3 on the fly so non-Safari browsers can
         # play Apple Lossless tracks.  ffmpeg must be on PATH.
-        if _is_alac(f):  # pragma: no cover — requires ALAC source + ffmpeg
+        if is_alac:  # pragma: no cover — requires ALAC source + ffmpeg
             try:
                 return StreamingResponse(
                     _transcode_alac_to_mp3(f),
@@ -924,24 +944,22 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
                     "ffmpeg not on PATH; serving ALAC raw (browser may reject).",
                 )
 
-        file_size = f.stat().st_size
-        mime = _audio_mime(f)
         range_header = request.headers.get("range") or request.headers.get("Range")
 
         # No Range — full body
         if not range_header:
 
-            def _full_iter() -> AsyncGenerator[bytes]:
-                async def _gen() -> AsyncGenerator[bytes]:
-                    chunk = 64 * 1024
-                    with open(f, "rb") as fh:
-                        while True:
-                            data = fh.read(chunk)
-                            if not data:
-                                break
-                            yield data
-
-                return _gen()
+            async def _full_iter() -> AsyncGenerator[bytes]:
+                chunk = 64 * 1024
+                fh = await _open_audio_file(f)
+                try:
+                    while True:
+                        data = await _read_audio_chunk(fh, chunk)
+                        if not data:
+                            break
+                        yield data
+                finally:
+                    await _close_audio_file(fh)
 
             return StreamingResponse(
                 _full_iter(),
@@ -975,16 +993,19 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
         async def _range_gen() -> AsyncGenerator[bytes]:
             chunk = 64 * 1024
             remaining = length
-            with open(f, "rb") as fh:
-                fh.seek(start)
+            fh = await _open_audio_file(f)
+            try:
+                await _seek_audio_file(fh, start)
                 while remaining > 0:
-                    data = fh.read(min(chunk, remaining))
+                    data = await _read_audio_chunk(fh, min(chunk, remaining))
                     if (
                         not data
                     ):  # pragma: no cover — EOF mid-range only when file truncated under us
                         break
                     remaining -= len(data)
                     yield data
+            finally:
+                await _close_audio_file(fh)
 
         return StreamingResponse(
             _range_gen(),
