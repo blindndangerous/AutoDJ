@@ -280,6 +280,125 @@ class TestSaveLoadIndex:
         with pytest.raises(FileNotFoundError):
             load_index(tmp_path / "nonexistent")
 
+    def test_load_ignores_unpublished_metadata_ahead_crash(self, tmp_path: Path) -> None:
+        from autodj.indexer import _save_tracks_metadata
+
+        entries, vectors = self._make_entries(4)
+        save_index(entries[:3], vectors[:3], tmp_path)
+        _save_tracks_metadata(entries, tmp_path, music_dir=None)
+        loaded, faiss_index = load_index(tmp_path)
+        assert len(loaded) == faiss_index.ntotal == 3
+
+    def test_load_ignores_unpublished_vectors_ahead_crash(self, tmp_path: Path) -> None:
+        from autodj.indexer import _save_vectors
+
+        entries, vectors = self._make_entries(4)
+        save_index(entries[:3], vectors[:3], tmp_path)
+        _save_vectors(vectors, tmp_path)
+        loaded, faiss_index = load_index(tmp_path)
+        assert len(loaded) == faiss_index.ntotal == 3
+
+    def test_restart_restores_canonical_working_files_from_live_generation(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from autodj.index_manifest import read_manifest, sha256_file
+        from autodj.indexer import _load_existing_artifacts, _save_vectors
+
+        entries, vectors = self._make_entries(3)
+        save_index(entries, vectors, tmp_path)
+        manifest = read_manifest(tmp_path)
+        assert manifest is not None
+        _save_vectors(np.flip(vectors, axis=0).copy(), tmp_path)
+        _load_existing_artifacts(tmp_path, tmp_path, None)
+        assert sha256_file(tmp_path / "tracks.db") == manifest.tracks_sha256
+        assert sha256_file(tmp_path / "vectors.index") == manifest.vectors_sha256
+        assert not (tmp_path / "tracks.db-wal").exists()
+
+    def test_load_rejects_same_count_vector_mix(self, tmp_path: Path) -> None:
+        from autodj.index_manifest import IndexConsistencyError, read_manifest
+        from autodj.indexer import _save_vectors
+
+        entries, vectors = self._make_entries(3)
+        save_index(entries, vectors, tmp_path)
+        manifest = read_manifest(tmp_path)
+        assert manifest is not None
+        _save_vectors(np.flip(vectors, axis=0).copy(), tmp_path)
+        (tmp_path / manifest.vectors_file).write_bytes((tmp_path / "vectors.index").read_bytes())
+        with pytest.raises(IndexConsistencyError, match="vectors SHA-256"):
+            load_index(tmp_path)
+
+    def test_load_rejects_same_count_metadata_mix(self, tmp_path: Path) -> None:
+        import sqlite3
+
+        from autodj.index_manifest import IndexConsistencyError, read_manifest
+        from autodj.indexer import _save_tracks_metadata
+
+        old_entries, vectors = self._make_entries(3)
+        save_index(old_entries, vectors, tmp_path)
+        manifest = read_manifest(tmp_path)
+        assert manifest is not None
+        mixed_entries, _ = self._make_entries(3)
+        for index, entry in enumerate(mixed_entries):
+            entry.path = f"Z:/Other/song_{index}.flac"
+        _save_tracks_metadata(mixed_entries, tmp_path, music_dir=None)
+        conn = sqlite3.connect(tmp_path / "tracks.db", isolation_level=None)
+        try:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            conn.close()
+        (tmp_path / manifest.tracks_file).write_bytes((tmp_path / "tracks.db").read_bytes())
+        with pytest.raises(IndexConsistencyError, match="tracks SHA-256"):
+            load_index(tmp_path)
+
+    def test_legacy_index_without_manifest_still_loads(self, tmp_path: Path) -> None:
+        entries, vectors = self._make_entries(3)
+        save_index(entries, vectors, tmp_path)
+        (tmp_path / "index-manifest.json").unlink()
+        loaded, faiss_index = load_index(tmp_path)
+        assert len(loaded) == 3
+        assert faiss_index.ntotal == 3
+
+    def test_failed_second_save_does_not_publish_generation(self, tmp_path: Path) -> None:
+        from autodj.index_manifest import read_manifest
+
+        entries, vectors = self._make_entries(4)
+        save_index(entries[:3], vectors[:3], tmp_path)
+        first = read_manifest(tmp_path)
+        assert first is not None
+        with (
+            patch("autodj.indexer._save_tracks_metadata", side_effect=OSError("injected")),
+            pytest.raises(OSError, match="injected"),
+        ):
+            save_index(entries, vectors, tmp_path)
+        current = read_manifest(tmp_path)
+        assert current is not None
+        assert current.generation == first.generation == 1
+        loaded, loaded_faiss = load_index(tmp_path)
+        assert len(loaded) == loaded_faiss.ntotal == 3
+
+    def test_load_rejects_manifest_change_during_artifact_read(self, tmp_path: Path) -> None:
+        from autodj.index_manifest import IndexConsistencyError, publish_manifest
+
+        entries, vectors = self._make_entries(3)
+        save_index(entries, vectors, tmp_path)
+        real_read_index = faiss.read_index
+        raced = False
+
+        def read_then_publish(path: str):
+            nonlocal raced
+            loaded = real_read_index(path)
+            if not raced:
+                raced = True
+                publish_manifest(tmp_path, 3)
+            return loaded
+
+        with (
+            patch("autodj.indexer.faiss.read_index", side_effect=read_then_publish),
+            pytest.raises(IndexConsistencyError, match="changed during load"),
+        ):
+            load_index(tmp_path)
+
     def test_metadata_path_preserved(self, tmp_path: Path) -> None:
         entries, vectors = self._make_entries(2)
         index_dir = tmp_path / "index"
@@ -863,6 +982,9 @@ class TestPruneIndex:
         assert kept == 0
         assert not (idx / "vectors.index").exists()
         assert not (idx / "tracks.db").exists()
+        assert not (idx / "index-manifest.json").exists()
+        assert list(idx.glob("tracks.g*.db")) == []
+        assert list(idx.glob("vectors.g*.index")) == []
 
 
 # ---------------------------------------------------------------------------
@@ -1885,6 +2007,9 @@ class TestThrottledFaissCheckpoint:
 
         # Healthy save first (3 entries + 3 vectors).
         save_index(entries[:3], vectors[:3], index_dir)
+        # Exercise Task 3's legacy recovery path; manifested generations
+        # intentionally ignore unpublished canonical-file mutations.
+        (index_dir / "index-manifest.json").unlink()
 
         # Simulate crash recovery: metadata wrote 5 rows but FAISS only
         # got 3 vectors.
@@ -1929,6 +2054,9 @@ class TestThrottledFaissCheckpoint:
         index_dir = tmp_path / "idx"
         index_dir.mkdir()
         save_index(entries, vectors, index_dir)
+        # Exercise Task 3's legacy recovery path; manifested generations
+        # intentionally ignore unpublished canonical-file mutations.
+        (index_dir / "index-manifest.json").unlink()
         # Shrink tracks.db without rewriting FAISS.
         _save_tracks_metadata(entries[:2], index_dir, music_dir=None)
 

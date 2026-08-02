@@ -40,6 +40,15 @@ import numpy as np
 
 from autodj.beets import BeetsNotFoundError, Track, get_all_tracks
 from autodj.config import AutoDJConfig
+from autodj.index_manifest import (
+    MANIFEST_NAME,
+    IndexConsistencyError,
+    publication_lock,
+    publish_manifest,
+    read_manifest,
+    restore_working_snapshot,
+    sha256_file,
+)
 from autodj.sqlite_utils import immediate_transaction
 
 # Heavy audio deps imported with graceful None fallback so the lighter
@@ -884,6 +893,33 @@ def _save_tracks_metadata(
         conn.close()
 
 
+def _publish_full_snapshot(
+    entries: list[IndexEntry],
+    vectors: np.ndarray,
+    index_dir: Path,
+    music_dir: Path | None,
+) -> None:
+    """Publish vectors and metadata together as one immutable generation."""
+    with publication_lock(index_dir):
+        _save_vectors(vectors, index_dir)
+        _save_tracks_metadata(entries, index_dir, music_dir)
+        publish_manifest(index_dir, len(entries))
+
+
+def _publish_metadata_snapshot(
+    entries: list[IndexEntry],
+    index_dir: Path,
+    music_dir: Path | None,
+) -> None:
+    """Publish metadata paired with the last published vector artifact."""
+    with publication_lock(index_dir):
+        current = read_manifest(index_dir)
+        if current is not None:
+            restore_working_snapshot(index_dir, expected_generation=current.generation)
+        _save_tracks_metadata(entries, index_dir, music_dir)
+        publish_manifest(index_dir, len(entries))
+
+
 @dataclass
 class IncrementalCheckpoint:
     """Publish aligned FAISS vectors and metadata at throttled checkpoints."""
@@ -915,19 +951,21 @@ class IncrementalCheckpoint:
             if self.existing_vectors
             else np.asarray(new_vectors, dtype=np.float32)
         )
-        _save_vectors(all_vectors, self.index_dir)
         pending = new_entries[self.published_new_count :]
-        _upsert_tracks_metadata(
-            pending,
-            self.index_dir,
-            first_vec_row=len(self.existing_entries) + self.published_new_count,
-            music_dir=self.music_dir,
-            baseline_entries=(
-                self.existing_entries
-                if self.baseline_requires_reconcile and not self.baseline_published
-                else None
-            ),
-        )
+        with publication_lock(self.index_dir):
+            _save_vectors(all_vectors, self.index_dir)
+            _upsert_tracks_metadata(
+                pending,
+                self.index_dir,
+                first_vec_row=len(self.existing_entries) + self.published_new_count,
+                music_dir=self.music_dir,
+                baseline_entries=(
+                    self.existing_entries
+                    if self.baseline_requires_reconcile and not self.baseline_published
+                    else None
+                ),
+            )
+            publish_manifest(self.index_dir, len(self.existing_entries) + len(new_entries))
         self.baseline_published = True
         self.published_new_count = len(new_entries)
 
@@ -966,8 +1004,7 @@ def save_index(
         index_dir: Directory to write files into (must already exist).
         music_dir: Library root — when set, paths are relativized for storage.
     """
-    _save_vectors(vectors, index_dir)
-    _save_tracks_metadata(entries, index_dir, music_dir)
+    _publish_full_snapshot(entries, vectors, index_dir, music_dir)
     logger.info("Saved index with %d tracks to %s", len(entries), index_dir)
 
 
@@ -1170,11 +1207,7 @@ def enrich_from_beets(
     # cheaper than the legacy "reconstruct every vector + full save_index"
     # round-trip, which paid O(N) vector reconstruct cost just to re-emit
     # JSON.  Bonus: enrich no longer needs vectors.index on disk.
-    conn_db = _open_tracks_db(index_dir)
-    try:
-        _replace_tracks_rows(conn_db, entries, music_dir)
-    finally:
-        conn_db.close()
+    _publish_metadata_snapshot(entries, index_dir, music_dir)
     logger.info("Enrich: updated %d/%d tracks", updated, len(entries))
     return (updated, len(entries))
 
@@ -1202,17 +1235,22 @@ def _check_prune_safety(removed: int, total: int, allow_mass_prune: bool) -> Non
 def _delete_index_files(index_dir: Path) -> None:
     """Remove the index files (called when prune empties the library).
 
-    Cleans up ``vectors.index``, ``tracks.db``, and the SQLite WAL / SHM
-    sidecars so the next index run starts from a clean slate.
+    Cleans up canonical working files, published generations, the manifest,
+    and SQLite sidecars so the next index run starts from a clean slate.
     """
-    for name in (
-        "vectors.index",
-        "tracks.db",
-        "tracks.db-wal",
-        "tracks.db-shm",
-    ):
-        with contextlib.suppress(FileNotFoundError, OSError):
-            (index_dir / name).unlink()
+    with publication_lock(index_dir):
+        paths = [
+            index_dir / "vectors.index",
+            index_dir / "tracks.db",
+            index_dir / "tracks.db-wal",
+            index_dir / "tracks.db-shm",
+            index_dir / MANIFEST_NAME,
+            *index_dir.glob("tracks.g*.db"),
+            *index_dir.glob("vectors.g*.index"),
+        ]
+        for path in paths:
+            with contextlib.suppress(FileNotFoundError, OSError):
+                path.unlink()
 
 
 def _maybe_migrate_paths(
@@ -1231,11 +1269,7 @@ def _maybe_migrate_paths(
     """
     if music_dir is None or already_relative:
         return
-    conn = _open_tracks_db(index_dir)
-    try:
-        _replace_tracks_rows(conn, entries, music_dir)
-    finally:
-        conn.close()
+    _publish_metadata_snapshot(entries, index_dir, music_dir)
 
 
 def prune_index(
@@ -1399,6 +1433,8 @@ def load_index(
     index_dir: Path,
     music_dir: Path | None = None,
     path_remap: list[tuple[str, str]] | None = None,
+    *,
+    expected_generation: int | None = None,
 ) -> tuple[list[IndexEntry], faiss.IndexFlatIP]:
     """Load the FAISS index and metadata from *index_dir*.
 
@@ -1425,36 +1461,77 @@ def load_index(
     # empty, slide them across so the user doesn't have to re-index.
     _migrate_flat_index_if_needed(index_dir)
 
-    index_file = index_dir / "vectors.index"
-    db_path = _tracks_db_path(index_dir)
-
-    if not index_dir.exists():
-        raise FileNotFoundError(
-            f"Index directory not found: {index_dir}\n"
-            f"Expected layout: {index_dir}/vectors.index + {index_dir}/tracks.db.\n"
-            "Run 'autodj index' to build the library index first.",
+    with publication_lock(index_dir):
+        before = read_manifest(index_dir)
+        if expected_generation is not None and (
+            before is None or before.generation != expected_generation
+        ):
+            raise IndexConsistencyError(
+                f"expected generation {expected_generation}, got "
+                f"{getattr(before, 'generation', None)}"
+            )
+        tracks_path = (
+            index_dir / before.tracks_file if before is not None else index_dir / "tracks.db"
         )
-    if not index_file.exists() or not db_path.exists():
-        raise FileNotFoundError(
-            f"Index files missing in {index_dir}.\n"
-            f"Expected: {db_path} + {index_file}.\n"
-            "Note: each named index lives in its own sub-directory "
-            "(<index_dir>/<name>/...).  Track metadata lives in tracks.db "
-            "(SQLite).  Run 'autodj list-indexes' to see what's available, "
-            "or 'autodj index' to build a fresh one.",
+        vectors_path = (
+            index_dir / before.vectors_file if before is not None else index_dir / "vectors.index"
+        )
+        if not tracks_path.is_file() or not vectors_path.is_file():
+            raise FileNotFoundError(
+                f"Index files missing: {tracks_path.name} + {vectors_path.name}"
+            )
+        pre_hashes = (
+            (sha256_file(tracks_path), sha256_file(vectors_path)) if before is not None else None
         )
 
-    faiss_index = cast("faiss.IndexFlatIP", faiss.read_index(str(index_file)))
-    conn = _open_tracks_db(index_dir)
-    try:
-        entries = _load_tracks_rows(conn)
-    finally:
-        conn.close()
-    if music_dir is not None or path_remap:
-        for e in entries:
-            e.path = _resolve_for_runtime(e.path, music_dir, path_remap)
-    logger.info("Loaded index with %d tracks from %s", len(entries), index_dir)
-    return entries, faiss_index
+        faiss_index = cast("faiss.IndexFlatIP", faiss.read_index(str(vectors_path)))
+        if before is None:
+            conn = _open_tracks_db(index_dir)
+        else:
+            conn = sqlite3.connect(str(tracks_path))
+            conn.execute("PRAGMA query_only=ON")
+        try:
+            entries = _load_tracks_rows(conn)
+        finally:
+            conn.close()
+        if music_dir is not None or path_remap:
+            for entry in entries:
+                entry.path = _resolve_for_runtime(entry.path, music_dir, path_remap)
+
+        post_hashes = (
+            (sha256_file(tracks_path), sha256_file(vectors_path)) if before is not None else None
+        )
+        after = read_manifest(index_dir)
+        if after != before:
+            raise IndexConsistencyError("manifest changed during load; retry generation")
+        if pre_hashes != post_hashes:
+            raise IndexConsistencyError("index artifact changed during load; retry generation")
+
+        sqlite_count = len(entries)
+        faiss_count = int(faiss_index.ntotal)
+        expected_count = before.vector_count if before is not None else sqlite_count
+        if sqlite_count != expected_count or faiss_count != expected_count:
+            raise IndexConsistencyError(
+                f"index count mismatch: manifest={getattr(before, 'vector_count', None)}, "
+                f"sqlite={sqlite_count}, faiss={faiss_count}"
+            )
+        if before is not None and pre_hashes != (
+            before.tracks_sha256,
+            before.vectors_sha256,
+        ):
+            assert pre_hashes is not None
+            tracks_hash, vectors_hash = pre_hashes
+            if tracks_hash != before.tracks_sha256:
+                raise IndexConsistencyError("tracks SHA-256 mismatch")
+            if vectors_hash != before.vectors_sha256:
+                raise IndexConsistencyError("vectors SHA-256 mismatch")
+        logger.info(
+            "Loaded index generation %s with %d tracks from %s",
+            0 if before is None else before.generation,
+            len(entries),
+            index_dir,
+        )
+        return entries, faiss_index
 
 
 # ---------------------------------------------------------------------------
@@ -1789,6 +1866,72 @@ def _detect_stale_entries(
     return stale, migrated
 
 
+def _load_existing_artifacts(
+    index_dir: Path,
+    music_dir: Path,
+    path_remap: list[tuple[str, str]] | None,
+) -> tuple[list[IndexEntry], list[np.ndarray], bool]:
+    """Load one coherent baseline and restore its canonical working files."""
+    with publication_lock(index_dir):
+        manifest = read_manifest(index_dir)
+        if manifest is not None:
+            manifest_entries, manifest_index = load_index(
+                index_dir,
+                expected_generation=manifest.generation,
+            )
+            already_relative = _is_relative_storage([entry.path for entry in manifest_entries])
+            for entry in manifest_entries:
+                entry.path = _resolve_for_runtime(entry.path, music_dir, path_remap)
+            vectors = [
+                np.asarray(row, dtype=np.float32)
+                for row in manifest_index.reconstruct_n(0, manifest_index.ntotal)
+            ]
+            restore_working_snapshot(index_dir, expected_generation=manifest.generation)
+            return manifest_entries, vectors, already_relative
+
+        db_exists = (index_dir / "tracks.db").is_file()
+        vectors_exist = (index_dir / "vectors.index").is_file()
+        if not db_exists and not vectors_exist:
+            return [], [], False
+
+        entries: list[IndexEntry] = []
+        already_relative = True
+        if db_exists:
+            conn = _open_tracks_db(index_dir)
+            try:
+                entries = _load_tracks_rows(conn)
+            finally:
+                conn.close()
+            already_relative = _is_relative_storage([entry.path for entry in entries])
+
+        loaded: faiss.IndexFlatIP | None = None
+        if vectors_exist:
+            loaded = cast(
+                "faiss.IndexFlatIP",
+                faiss.read_index(str(index_dir / "vectors.index")),
+            )
+        entry_count = len(entries)
+        vector_count = 0 if loaded is None else int(loaded.ntotal)
+        common = min(entry_count, vector_count)
+        entries = entries[:common]
+        vectors = (
+            []
+            if loaded is None or common == 0
+            else [np.asarray(row, dtype=np.float32) for row in loaded.reconstruct_n(0, common)]
+        )
+        for entry in entries:
+            entry.path = _resolve_for_runtime(entry.path, music_dir, path_remap)
+        if common != entry_count or common != vector_count:
+            dimension = FEATURE_DIM if loaded is None else int(loaded.d)
+            aligned_vectors = (
+                np.asarray(vectors, dtype=np.float32)
+                if vectors
+                else np.empty((0, dimension), dtype=np.float32)
+            )
+            save_index(entries, aligned_vectors, index_dir, music_dir)
+        return entries, vectors, already_relative
+
+
 def _load_existing_index(  # pragma: no cover -- exercised via build_index integration runs
     index_dir: Path,
     music_dir: Path,
@@ -1808,61 +1951,14 @@ def _load_existing_index(  # pragma: no cover -- exercised via build_index integ
     if force:
         return [], [], set(), True
 
-    db_path = _tracks_db_path(index_dir)
-    faiss_file = index_dir / "vectors.index"
-    if not db_path.exists() and not faiss_file.exists():
+    existing_entries, existing_vectors, already_relative = _load_existing_artifacts(
+        index_dir,
+        music_dir,
+        path_remap,
+    )
+    if not existing_entries:
         return [], [], set(), False
-
-    conn = _open_tracks_db(index_dir)
-    try:
-        existing_entries: list[IndexEntry] = _load_tracks_rows(conn)
-    finally:
-        conn.close()
-    already_relative = _is_relative_storage([e.path for e in existing_entries])
-    for e in existing_entries:
-        e.path = _resolve_for_runtime(e.path, music_dir, path_remap)
-
-    existing_vectors: list[np.ndarray] = []
-    if faiss_file.exists():
-        # faiss-cpu >=1.14 stubs type read_index as the base Index; we only ever
-        # persist an IndexFlatIP, so narrow back for the typed signatures below.
-        loaded = cast("faiss.IndexFlatIP", faiss.read_index(str(faiss_file)))
-        # Reconcile legacy or interrupted writes that left metadata rows
-        # without matching vectors. Drop the unmatched tail so those tracks
-        # get re-embedded on this run.
-        if loaded.ntotal < len(existing_entries):
-            drop = len(existing_entries) - loaded.ntotal
-            logger.warning(
-                "Recovered from partial checkpoint: tracks.db had %d rows "
-                "but vectors.index has %d -- dropping last %d entries so "
-                "they get re-embedded.",
-                len(existing_entries),
-                loaded.ntotal,
-                drop,
-            )
-            existing_entries = existing_entries[: loaded.ntotal]
-            _save_tracks_metadata(existing_entries, index_dir, music_dir)
-        # Batch reconstruct in one FAISS call — per-entry reconstruct()
-        # at 70k tracks dominated incremental-index startup time.
-        all_vectors = loaded.reconstruct_n(0, loaded.ntotal)
-        # A crash after the vector checkpoint lands but before its metadata
-        # delta commits can leave FAISS ahead. Keep only the aligned prefix.
-        if loaded.ntotal > len(existing_entries):
-            logger.warning(
-                "vectors.index has %d rows but tracks.db has only %d -- "
-                "truncating FAISS to match metadata.",
-                loaded.ntotal,
-                len(existing_entries),
-            )
-            all_vectors = all_vectors[: len(existing_entries)]
-            durable_vectors = (
-                np.asarray(all_vectors, dtype=np.float32)
-                if len(existing_entries)
-                else np.empty((0, loaded.d), dtype=np.float32)
-            )
-            _save_vectors(durable_vectors, index_dir)
-        existing_vectors = [np.asarray(row, dtype=np.float32) for row in all_vectors]
-        logger.info("Incremental mode: %d tracks already indexed", len(existing_entries))
+    logger.info("Incremental mode: %d tracks already indexed", len(existing_entries))
 
     print(
         f"[AutoDJ] Phase: Prune + stale-check — stat'ing {len(existing_entries)} files.",
@@ -1923,7 +2019,7 @@ def _load_existing_index(  # pragma: no cover -- exercised via build_index integ
     elif not already_relative and existing_entries:
         # Legacy absolute-path storage detected; rewrite tracks.db in
         # portable relative form without touching FAISS.
-        _save_tracks_metadata(existing_entries, index_dir, music_dir)
+        _publish_metadata_snapshot(existing_entries, index_dir, music_dir)
 
     return (
         existing_entries,
