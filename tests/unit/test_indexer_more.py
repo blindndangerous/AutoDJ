@@ -485,6 +485,29 @@ class TestSaveIndexErrorPaths:
             conn.close()
         assert count == 0
 
+    def test_replace_tracks_rows_rolls_back_mid_batch(self, tmp_path: Path) -> None:
+        import sqlite3
+
+        from autodj.indexer import _open_tracks_db, _replace_tracks_rows
+
+        original, _ = self._entries_vectors(2)
+        replacement, _ = self._entries_vectors(3)
+        replacement[1].path = "Z:/explode.flac"
+        conn = _open_tracks_db(tmp_path)
+        try:
+            _replace_tracks_rows(conn, original, music_dir=None)
+            conn.execute(
+                "CREATE TRIGGER reject_explode BEFORE INSERT ON tracks "
+                "WHEN NEW.path = 'Z:/explode.flac' BEGIN "
+                "SELECT RAISE(ABORT, 'injected'); END"
+            )
+            with pytest.raises(sqlite3.IntegrityError, match="injected"):
+                _replace_tracks_rows(conn, replacement, music_dir=None)
+            paths = conn.execute("SELECT path FROM tracks ORDER BY id").fetchall()
+        finally:
+            conn.close()
+        assert paths == [(original[0].path,), (original[1].path,)]
+
 
 # ---------------------------------------------------------------------------
 # load_index missing-file branch (FileNotFoundError at line 1053)

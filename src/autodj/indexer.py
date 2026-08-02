@@ -40,6 +40,7 @@ import numpy as np
 
 from autodj.beets import BeetsNotFoundError, Track, get_all_tracks
 from autodj.config import AutoDJConfig
+from autodj.sqlite_utils import immediate_transaction
 
 # Heavy audio deps imported with graceful None fallback so the lighter
 # commands (`enrich`, `prune`, `stats`, `playlist`) work on minimal
@@ -230,15 +231,9 @@ def _replace_tracks_rows(
     entries: list[IndexEntry],
     music_dir: Path | None,
 ) -> None:
-    """Atomically replace the entire ``tracks`` table contents.
-
-    save_index always receives the full entries list, so we DELETE then
-    INSERT inside a single transaction.  At 70k tracks this still writes
-    less than the legacy whole-file JSON rewrite because SQLite WAL pages
-    are smaller and rows that did not change get the same on-disk page.
-    """
+    """Atomically replace rows when vector order intentionally changes."""
     rows = [_entry_to_row(e, music_dir) for e in entries]
-    with conn:
+    with immediate_transaction(conn):
         conn.execute("DELETE FROM tracks")
         if rows:
             conn.executemany(_TRACKS_INSERT_SQL, rows)
