@@ -177,3 +177,81 @@ def test_manifest_rejects_wrong_schema(tmp_path: Path) -> None:
     (tmp_path / "index-manifest.json").write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(IndexConsistencyError, match="schema"):
         read_manifest(tmp_path)
+
+
+def test_manifested_sqlite_reads_ignore_committed_wal_sidecar(tmp_path: Path) -> None:
+    from autodj.index_manifest import (
+        _immutable_sqlite_uri,
+        _validate_snapshot_files,
+    )
+    from autodj.indexer import FEATURE_DIM, IndexEntry, load_index, save_index
+
+    paths = [str(tmp_path / "first.flac"), str(tmp_path / "second.flac")]
+    stored_paths = [path.replace("\\", "/") for path in paths]
+    entries = [
+        IndexEntry(
+            path=path,
+            title=title,
+            artist="Artist",
+            album="Album",
+            genre="Genre",
+            bpm=120.0,
+            year=2026,
+            length=180.0,
+            energy=0.5,
+            key=0,
+            mode=1,
+            tempo_confidence=0.8,
+        )
+        for path, title in zip(paths, ("First", "Second"), strict=True)
+    ]
+    vectors = np.zeros((2, FEATURE_DIM), dtype=np.float32)
+    vectors[0, 3] = 1.0
+    vectors[1, 7] = 1.0
+    save_index(entries, vectors, tmp_path)
+    manifest = read_manifest(tmp_path)
+    assert manifest is not None
+    tracks_path = tmp_path / manifest.tracks_file
+    main_hash = sha256_file(tracks_path)
+
+    writer = sqlite3.connect(tracks_path, isolation_level=None)
+    try:
+        assert writer.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute("UPDATE tracks SET path = 'dirty.tmp' WHERE vec_row = 0")
+        writer.execute(
+            "UPDATE tracks SET path = ?, title = 'Dirty first' WHERE vec_row = 1", (paths[0],)
+        )
+        writer.execute(
+            "UPDATE tracks SET path = ?, title = 'Dirty second' WHERE vec_row = 0", (paths[1],)
+        )
+        writer.commit()
+        wal = tracks_path.with_name(f"{tracks_path.name}-wal")
+        assert wal.stat().st_size > 0
+        assert sha256_file(tracks_path) == main_hash == manifest.tracks_sha256
+
+        uri = _immutable_sqlite_uri(tracks_path)
+        assert "mode=ro" in uri
+        assert "immutable=1" in uri
+        immutable = sqlite3.connect(uri, uri=True)
+        try:
+            immutable_rows = immutable.execute(
+                "SELECT path, title FROM tracks ORDER BY vec_row"
+            ).fetchall()
+        finally:
+            immutable.close()
+        assert immutable_rows == [
+            (stored_paths[0], "First"),
+            (stored_paths[1], "Second"),
+        ]
+
+        _validate_snapshot_files(tmp_path, manifest)
+        loaded, loaded_vectors = load_index(tmp_path)
+        assert [(entry.path, entry.title) for entry in loaded] == [
+            (stored_paths[0], "First"),
+            (stored_paths[1], "Second"),
+        ]
+        assert [int(np.argmax(loaded_vectors.reconstruct(row))) for row in range(2)] == [3, 7]
+    finally:
+        writer.close()

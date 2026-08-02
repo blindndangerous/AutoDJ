@@ -43,6 +43,7 @@ from autodj.config import AutoDJConfig
 from autodj.index_manifest import (
     MANIFEST_NAME,
     IndexConsistencyError,
+    _immutable_sqlite_uri,
     publication_lock,
     publish_manifest,
     read_manifest,
@@ -898,9 +899,19 @@ def _publish_full_snapshot(
     vectors: np.ndarray,
     index_dir: Path,
     music_dir: Path | None,
+    *,
+    expected_generation: int | None = None,
 ) -> None:
     """Publish vectors and metadata together as one immutable generation."""
     with publication_lock(index_dir):
+        current = read_manifest(index_dir)
+        if expected_generation is not None and (
+            current is None or current.generation != expected_generation
+        ):
+            raise IndexConsistencyError(
+                f"expected generation {expected_generation}, got "
+                f"{getattr(current, 'generation', None)}"
+            )
         _save_vectors(vectors, index_dir)
         _save_tracks_metadata(entries, index_dir, music_dir)
         publish_manifest(index_dir, len(entries))
@@ -910,10 +921,19 @@ def _publish_metadata_snapshot(
     entries: list[IndexEntry],
     index_dir: Path,
     music_dir: Path | None,
+    *,
+    expected_generation: int | None = None,
 ) -> None:
     """Publish metadata paired with the last published vector artifact."""
     with publication_lock(index_dir):
         current = read_manifest(index_dir)
+        if expected_generation is not None and (
+            current is None or current.generation != expected_generation
+        ):
+            raise IndexConsistencyError(
+                f"expected generation {expected_generation}, got "
+                f"{getattr(current, 'generation', None)}"
+            )
         if current is not None:
             restore_working_snapshot(index_dir, expected_generation=current.generation)
         _save_tracks_metadata(entries, index_dir, music_dir)
@@ -1137,16 +1157,25 @@ def enrich_from_beets(
         parse_initial_key,
     )
 
-    db_path = _tracks_db_path(index_dir)
-    faiss_file = index_dir / "vectors.index"
-    if not db_path.exists() or not faiss_file.exists():
-        return (0, 0)
-
-    conn_db = _open_tracks_db(index_dir)
-    try:
-        entries = _load_tracks_rows(conn_db)
-    finally:
-        conn_db.close()
+    source_generation: int | None = None
+    with publication_lock(index_dir):
+        current = read_manifest(index_dir)
+        if current is not None:
+            source_generation = current.generation
+            entries, _loaded = load_index(
+                index_dir,
+                expected_generation=source_generation,
+            )
+        else:
+            db_path = _tracks_db_path(index_dir)
+            faiss_file = index_dir / "vectors.index"
+            if not db_path.exists() or not faiss_file.exists():
+                return (0, 0)
+            conn_db = _open_tracks_db(index_dir)
+            try:
+                entries = _load_tracks_rows(conn_db)
+            finally:
+                conn_db.close()
     for e in entries:
         e.path = _resolve_for_runtime(e.path, music_dir, path_remap)
 
@@ -1206,8 +1235,13 @@ def enrich_from_beets(
     # SQLite replacement inside a single transaction is far
     # cheaper than the legacy "reconstruct every vector + full save_index"
     # round-trip, which paid O(N) vector reconstruct cost just to re-emit
-    # JSON.  Bonus: enrich no longer needs vectors.index on disk.
-    _publish_metadata_snapshot(entries, index_dir, music_dir)
+    # JSON. No vector reconstruction or rewrite is required.
+    _publish_metadata_snapshot(
+        entries,
+        index_dir,
+        music_dir,
+        expected_generation=source_generation,
+    )
     logger.info("Enrich: updated %d/%d tracks", updated, len(entries))
     return (updated, len(entries))
 
@@ -1232,13 +1266,25 @@ def _check_prune_safety(removed: int, total: int, allow_mass_prune: bool) -> Non
     )
 
 
-def _delete_index_files(index_dir: Path) -> None:
+def _delete_index_files(
+    index_dir: Path,
+    *,
+    expected_generation: int | None = None,
+) -> None:
     """Remove the index files (called when prune empties the library).
 
     Cleans up canonical working files, published generations, the manifest,
     and SQLite sidecars so the next index run starts from a clean slate.
     """
     with publication_lock(index_dir):
+        current = read_manifest(index_dir)
+        if expected_generation is not None and (
+            current is None or current.generation != expected_generation
+        ):
+            raise IndexConsistencyError(
+                f"expected generation {expected_generation}, got "
+                f"{getattr(current, 'generation', None)}"
+            )
         paths = [
             index_dir / "vectors.index",
             index_dir / "tracks.db",
@@ -1259,6 +1305,8 @@ def _maybe_migrate_paths(
     index_dir: Path,
     music_dir: Path | None,
     already_relative: bool,
+    *,
+    expected_generation: int | None = None,
 ) -> None:
     """Re-save tracks DB in relative path form when storage is still absolute.
 
@@ -1269,7 +1317,12 @@ def _maybe_migrate_paths(
     """
     if music_dir is None or already_relative:
         return
-    _publish_metadata_snapshot(entries, index_dir, music_dir)
+    _publish_metadata_snapshot(
+        entries,
+        index_dir,
+        music_dir,
+        expected_generation=expected_generation,
+    )
 
 
 def prune_index(
@@ -1310,22 +1363,31 @@ def prune_index(
         PruneSafetyError: If the prune would exceed the safety threshold
             and ``allow_mass_prune`` is not set.
     """
-    db_path = _tracks_db_path(index_dir)
-    faiss_file = index_dir / "vectors.index"
-    if not db_path.exists() or not faiss_file.exists():
-        return (0, 0)
-
-    conn = _open_tracks_db(index_dir)
-    try:
-        entries = _load_tracks_rows(conn)
-    finally:
-        conn.close()
-    already_relative = music_dir is not None and _is_relative_storage([e.path for e in entries])
+    source_generation: int | None = None
+    with publication_lock(index_dir):
+        current = read_manifest(index_dir)
+        if current is not None:
+            source_generation = current.generation
+            entries, loaded = load_index(
+                index_dir,
+                expected_generation=source_generation,
+            )
+        else:
+            db_path = _tracks_db_path(index_dir)
+            faiss_file = index_dir / "vectors.index"
+            if not db_path.exists() or not faiss_file.exists():
+                return (0, 0)
+            conn = _open_tracks_db(index_dir)
+            try:
+                entries = _load_tracks_rows(conn)
+            finally:
+                conn.close()
+            loaded = cast("faiss.IndexFlatIP", faiss.read_index(str(faiss_file)))
+    already_relative = music_dir is not None and _is_relative_storage(
+        [entry.path for entry in entries]
+    )
     for e in entries:
         e.path = _resolve_for_runtime(e.path, music_dir, path_remap)
-    # faiss-cpu >=1.14 stubs type read_index as the base Index; we only ever
-    # persist an IndexFlatIP, so narrow back for the typed signatures below.
-    loaded = cast("faiss.IndexFlatIP", faiss.read_index(str(faiss_file)))
 
     # Existence check is RTT-bound on NFS/SMB libraries — at 70k+ tracks the
     # serial loop dominates the whole `index` command.  Fan out across a
@@ -1359,12 +1421,19 @@ def prune_index(
 
     surviving_entries = [e for e, k in zip(entries, keep_mask, strict=False) if k]
     if not surviving_entries and removed:
-        _delete_index_files(index_dir)
+        _delete_index_files(index_dir, expected_generation=source_generation)
         logger.info("Pruned all %d entries — index is now empty", removed)
         return (removed, 0)
 
     if removed == 0:
-        _maybe_migrate_paths(loaded, entries, index_dir, music_dir, already_relative)
+        _maybe_migrate_paths(
+            loaded,
+            entries,
+            index_dir,
+            music_dir,
+            already_relative,
+            expected_generation=source_generation,
+        )
         return (0, len(entries))
 
     # Batch reconstruct: one FAISS call returns the whole (N, dim) array,
@@ -1373,7 +1442,13 @@ def prune_index(
     all_vectors = loaded.reconstruct_n(0, loaded.ntotal)
     mask = np.fromiter(keep_mask, dtype=bool, count=len(keep_mask))
     surviving_vectors = np.asarray(all_vectors[mask], dtype=np.float32)
-    save_index(surviving_entries, surviving_vectors, index_dir, music_dir=music_dir)
+    _publish_full_snapshot(
+        surviving_entries,
+        surviving_vectors,
+        index_dir,
+        music_dir,
+        expected_generation=source_generation,
+    )
     logger.info("Pruned %d missing tracks (%d remain)", removed, len(surviving_entries))
     return (removed, len(surviving_entries))
 
@@ -1488,8 +1563,7 @@ def load_index(
         if before is None:
             conn = _open_tracks_db(index_dir)
         else:
-            conn = sqlite3.connect(str(tracks_path))
-            conn.execute("PRAGMA query_only=ON")
+            conn = sqlite3.connect(_immutable_sqlite_uri(tracks_path), uri=True)
         try:
             entries = _load_tracks_rows(conn)
         finally:

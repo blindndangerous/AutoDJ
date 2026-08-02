@@ -17,6 +17,7 @@ from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import BinaryIO
+from urllib.parse import quote
 
 SCHEMA_VERSION = 1
 MANIFEST_NAME = "index-manifest.json"
@@ -93,6 +94,12 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _immutable_sqlite_uri(path: Path) -> str:
+    """Build a read-only immutable SQLite URI, including for Windows UNC paths."""
+    encoded = quote(str(path.resolve()), safe="/:\\")
+    return f"file:{encoded}?mode=ro&immutable=1"
 
 
 def _thread_lock(path: Path) -> threading.RLock:
@@ -277,11 +284,8 @@ def _validate_snapshot_files(root: Path, manifest: IndexManifest) -> None:
         raise IndexConsistencyError("tracks SHA-256 mismatch")
     if sha256_file(vectors) != manifest.vectors_sha256:
         raise IndexConsistencyError("vectors SHA-256 mismatch")
-    # SQLite rejects a normal ``file://server/share`` URI authority on Windows.
-    # A plain path plus query_only preserves read-only behavior on UNC shares.
-    conn = sqlite3.connect(str(tracks))
+    conn = sqlite3.connect(_immutable_sqlite_uri(tracks), uri=True)
     try:
-        conn.execute("PRAGMA query_only=ON")
         sqlite_count = int(conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0])
     finally:
         conn.close()

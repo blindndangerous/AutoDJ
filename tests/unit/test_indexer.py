@@ -858,6 +858,38 @@ class TestResolveBeetsPath:
 
 
 class TestPruneIndex:
+    def _distinctive_entries(
+        self,
+        tmp_path: Path,
+        *,
+        missing_rows: set[int] | None = None,
+    ) -> tuple[list[IndexEntry], np.ndarray]:
+        missing_rows = missing_rows or set()
+        entries: list[IndexEntry] = []
+        vectors = np.zeros((3, FEATURE_DIM), dtype=np.float32)
+        for row, marker in enumerate((3, 7, 11)):
+            path = tmp_path / f"song_{row}.flac"
+            if row not in missing_rows:
+                path.write_bytes(b"")
+            entries.append(
+                IndexEntry(
+                    path=str(path),
+                    title=f"Original {row}",
+                    artist="Artist",
+                    album="Album",
+                    genre="Genre",
+                    bpm=120.0,
+                    year=2026,
+                    length=180.0,
+                    energy=0.5,
+                    key=0,
+                    mode=1,
+                    tempo_confidence=0.8,
+                )
+            )
+            vectors[row, marker] = 1.0
+        return entries, vectors
+
     def _save_with_files(self, tmp_path: Path, n_present: int, n_missing: int) -> Path:
         """Build an index where some entries have real files, others don't."""
         from autodj.indexer import save_index
@@ -927,6 +959,167 @@ class TestPruneIndex:
         assert removed == 0
         assert kept == 5
 
+    def test_prune_ignores_dirty_canonical_metadata_and_preserves_vector_mapping(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from autodj.indexer import (
+            _save_tracks_metadata,
+            load_index,
+            prune_index,
+            save_index,
+        )
+
+        entries, vectors = self._distinctive_entries(tmp_path, missing_rows={1})
+        idx = tmp_path / "idx"
+        save_index(entries, vectors, idx)
+        dirty_entries = [entries[1], entries[0], entries[2]]
+        _save_tracks_metadata(dirty_entries, idx, music_dir=None)
+
+        assert prune_index(idx, allow_mass_prune=True) == (1, 2)
+        loaded, loaded_vectors = load_index(idx)
+        assert [Path(entry.path).name for entry in loaded] == ["song_0.flac", "song_2.flac"]
+        assert [int(np.argmax(loaded_vectors.reconstruct(row))) for row in range(2)] == [3, 11]
+
+    def test_prune_rejects_generation_race_without_overwriting_newer_snapshot(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from dataclasses import replace
+
+        import autodj.indexer as indexer
+        from autodj.index_manifest import IndexConsistencyError, read_manifest
+        from autodj.indexer import load_index, prune_index, save_index
+
+        entries, vectors = self._distinctive_entries(tmp_path, missing_rows={2})
+        idx = tmp_path / "idx"
+        save_index(entries, vectors, idx)
+        first = read_manifest(idx)
+        assert first is not None
+        concurrent_entries = [
+            replace(entry, title=f"Concurrent {row}") for row, entry in enumerate(entries)
+        ]
+        concurrent_vectors = np.zeros_like(vectors)
+        concurrent_vectors[0, 13] = 1.0
+        concurrent_vectors[1, 17] = 1.0
+        concurrent_vectors[2, 19] = 1.0
+        real_check = indexer._check_prune_safety
+        raced = False
+
+        def check_after_concurrent_publish(*args, **kwargs):
+            nonlocal raced
+            real_check(*args, **kwargs)
+            if not raced:
+                raced = True
+                save_index(concurrent_entries, concurrent_vectors, idx)
+
+        with (
+            patch(
+                "autodj.indexer._check_prune_safety",
+                side_effect=check_after_concurrent_publish,
+            ),
+            pytest.raises(IndexConsistencyError, match="expected generation"),
+        ):
+            prune_index(idx, allow_mass_prune=True)
+
+        current = read_manifest(idx)
+        assert current is not None
+        assert current.generation == first.generation + 1
+        loaded, loaded_vectors = load_index(idx)
+        assert [entry.title for entry in loaded] == [
+            "Concurrent 0",
+            "Concurrent 1",
+            "Concurrent 2",
+        ]
+        assert [int(np.argmax(loaded_vectors.reconstruct(row))) for row in range(3)] == [13, 17, 19]
+
+    def test_prune_all_rejects_generation_race_without_deleting_newer_snapshot(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from autodj.index_manifest import IndexConsistencyError
+        from autodj.indexer import load_index, prune_index, save_index
+
+        entries, vectors = self._distinctive_entries(tmp_path, missing_rows={0, 1, 2})
+        idx = tmp_path / "idx"
+        save_index(entries, vectors, idx)
+        replacement_path = tmp_path / "replacement.flac"
+        replacement_path.write_bytes(b"")
+        replacement = [
+            IndexEntry(
+                path=str(replacement_path),
+                title="Concurrent replacement",
+                artist="Artist",
+                album="Album",
+                genre="Genre",
+                bpm=120.0,
+                year=2026,
+                length=180.0,
+                energy=0.5,
+                key=0,
+                mode=1,
+                tempo_confidence=0.8,
+            )
+        ]
+        replacement_vectors = np.zeros((1, FEATURE_DIM), dtype=np.float32)
+        replacement_vectors[0, 23] = 1.0
+
+        def publish_replacement(*_args, **_kwargs) -> None:
+            save_index(replacement, replacement_vectors, idx)
+
+        with (
+            patch(
+                "autodj.indexer._check_prune_safety",
+                side_effect=publish_replacement,
+            ),
+            pytest.raises(IndexConsistencyError, match="expected generation"),
+        ):
+            prune_index(idx, allow_mass_prune=True)
+
+        loaded, loaded_vectors = load_index(idx)
+        assert [entry.title for entry in loaded] == ["Concurrent replacement"]
+        assert int(np.argmax(loaded_vectors.reconstruct(0))) == 23
+
+    def test_prune_path_migration_rejects_generation_race(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from dataclasses import replace
+
+        from autodj.index_manifest import IndexConsistencyError
+        from autodj.indexer import load_index, prune_index, save_index
+
+        entries, vectors = self._distinctive_entries(tmp_path)
+        idx = tmp_path / "idx"
+        save_index(entries, vectors, idx, music_dir=None)
+        concurrent_entries = [
+            replace(entry, title=f"Concurrent {row}") for row, entry in enumerate(entries)
+        ]
+        concurrent_vectors = np.zeros_like(vectors)
+        concurrent_vectors[0, 29] = 1.0
+        concurrent_vectors[1, 31] = 1.0
+        concurrent_vectors[2, 37] = 1.0
+
+        def publish_concurrent(*_args, **_kwargs) -> None:
+            save_index(concurrent_entries, concurrent_vectors, idx, music_dir=None)
+
+        with (
+            patch(
+                "autodj.indexer._check_prune_safety",
+                side_effect=publish_concurrent,
+            ),
+            pytest.raises(IndexConsistencyError, match="expected generation"),
+        ):
+            prune_index(idx, music_dir=tmp_path)
+
+        loaded, loaded_vectors = load_index(idx)
+        assert [entry.title for entry in loaded] == [
+            "Concurrent 0",
+            "Concurrent 1",
+            "Concurrent 2",
+        ]
+        assert [int(np.argmax(loaded_vectors.reconstruct(row))) for row in range(3)] == [29, 31, 37]
+
     def test_load_audio_falls_back_to_librosa_when_soundfile_errors(self, tmp_path: Path) -> None:
         # Some FLACs over NFS make libsndfile raise "flac decoder lost sync"
         # mid-stream — librosa's audioread/ffmpeg path decodes them fine and
@@ -993,6 +1186,32 @@ class TestPruneIndex:
 
 
 class TestEnrichFromBeets:
+    def _make_distinctive_index(
+        self,
+        tmp_path: Path,
+    ) -> tuple[list[IndexEntry], np.ndarray]:
+        entries = [
+            IndexEntry(
+                path=str(tmp_path / f"song_{row}.flac"),
+                title=f"Original {row}",
+                artist="Artist",
+                album="Album",
+                genre="Genre",
+                bpm=120.0,
+                year=2026,
+                length=180.0,
+                energy=0.5,
+                key=0,
+                mode=1,
+                tempo_confidence=0.8,
+            )
+            for row in range(2)
+        ]
+        vectors = np.zeros((2, FEATURE_DIM), dtype=np.float32)
+        vectors[0, 3] = 1.0
+        vectors[1, 7] = 1.0
+        return entries, vectors
+
     def _make_beets(self, db_path: Path, entries: list[dict]) -> None:
         import sqlite3
 
@@ -1027,6 +1246,85 @@ class TestEnrichFromBeets:
         beets = tmp_path / "library.db"
         self._make_beets(beets, [])
         assert enrich_from_beets(tmp_path / "noidx", music_dir=None, beets_db=beets) == (0, 0)
+
+    def test_enrich_ignores_dirty_canonical_metadata_and_preserves_vector_mapping(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from autodj.indexer import (
+            _save_tracks_metadata,
+            enrich_from_beets,
+            load_index,
+            save_index,
+        )
+
+        entries, vectors = self._make_distinctive_index(tmp_path)
+        idx = tmp_path / "idx"
+        save_index(entries, vectors, idx)
+        _save_tracks_metadata(list(reversed(entries)), idx, music_dir=None)
+        beets = tmp_path / "library.db"
+        self._make_beets(
+            beets,
+            [{"path": entry.path, "title": f"Enriched {row}"} for row, entry in enumerate(entries)],
+        )
+
+        assert enrich_from_beets(idx, music_dir=None, beets_db=beets) == (2, 2)
+        loaded, loaded_vectors = load_index(idx)
+        assert [Path(entry.path).name for entry in loaded] == ["song_0.flac", "song_1.flac"]
+        assert [entry.title for entry in loaded] == ["Enriched 0", "Enriched 1"]
+        assert [int(np.argmax(loaded_vectors.reconstruct(row))) for row in range(2)] == [3, 7]
+
+    def test_enrich_rejects_generation_race_without_overwriting_newer_snapshot(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from dataclasses import replace
+
+        import autodj.indexer as indexer
+        from autodj.index_manifest import IndexConsistencyError, read_manifest
+        from autodj.indexer import enrich_from_beets, load_index, save_index
+
+        entries, vectors = self._make_distinctive_index(tmp_path)
+        idx = tmp_path / "idx"
+        save_index(entries, vectors, idx)
+        first = read_manifest(idx)
+        assert first is not None
+        beets = tmp_path / "library.db"
+        self._make_beets(
+            beets,
+            [{"path": entry.path, "title": f"Enriched {row}"} for row, entry in enumerate(entries)],
+        )
+        concurrent_entries = [
+            replace(entry, title=f"Concurrent {row}") for row, entry in enumerate(entries)
+        ]
+        concurrent_vectors = np.zeros_like(vectors)
+        concurrent_vectors[0, 11] = 1.0
+        concurrent_vectors[1, 13] = 1.0
+        real_apply = indexer._apply_beets_row
+        raced = False
+
+        def apply_after_concurrent_publish(*args, **kwargs):
+            nonlocal raced
+            if not raced:
+                raced = True
+                save_index(concurrent_entries, concurrent_vectors, idx)
+            return real_apply(*args, **kwargs)
+
+        with (
+            patch(
+                "autodj.indexer._apply_beets_row",
+                side_effect=apply_after_concurrent_publish,
+            ),
+            pytest.raises(IndexConsistencyError, match="expected generation"),
+        ):
+            enrich_from_beets(idx, music_dir=None, beets_db=beets)
+
+        current = read_manifest(idx)
+        assert current is not None
+        assert current.generation == first.generation + 1
+        loaded, loaded_vectors = load_index(idx)
+        assert [entry.title for entry in loaded] == ["Concurrent 0", "Concurrent 1"]
+        assert [int(np.argmax(loaded_vectors.reconstruct(row))) for row in range(2)] == [11, 13]
 
     def test_updates_initial_key(self, tmp_path: Path) -> None:
         from autodj.indexer import enrich_from_beets, save_index
