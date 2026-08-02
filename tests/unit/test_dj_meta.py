@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 import numpy as np
 import pytest
 
@@ -197,79 +199,117 @@ class TestNearestPhraseBoundary:
 
 
 class TestDjMetaCache:
-    def test_get_returns_empty_for_unknown(self, tmp_path) -> None:
+    def test_flush_rolls_back_mid_batch(self, tmp_path) -> None:
+        path = tmp_path / "cache.db"
+        with DjMetaCache(path) as cache:
+            cache.set("before.flac", DjMeta(analysed=True))
+            cache.flush(force=True)
+            assert cache._conn is not None
+            cache._conn.execute(
+                "CREATE TRIGGER reject_bad BEFORE INSERT ON dj_meta "
+                "WHEN NEW.path = 'bad.flac' BEGIN SELECT RAISE(ABORT, 'injected'); END"
+            )
+            cache.set("good.flac", DjMeta(analysed=True))
+            cache.set("bad.flac", DjMeta(analysed=True))
+            with pytest.raises(sqlite3.IntegrityError, match="injected"):
+                cache.flush(force=True)
+            rows = cache._conn.execute("SELECT path FROM dj_meta ORDER BY path").fetchall()
+            assert rows == [("before.flac",)]
+            cache._conn.execute("DROP TRIGGER reject_bad")
+
+        with DjMetaCache(path) as reopened:
+            rows = reopened._conn.execute("SELECT path FROM dj_meta ORDER BY path").fetchall()
+            assert rows == [("bad.flac",), ("before.flac",), ("good.flac",)]
+
+    def test_context_manager_closes_connection(self, tmp_path) -> None:
         cache = DjMetaCache(tmp_path / "cache.db")
-        meta = cache.get("unknown.flac")
-        assert meta.analysed is False
-        assert meta.beats == []
+        with cache:
+            assert cache._conn is not None
+        assert cache._conn is None
+
+    def test_close_cache_flushes_closes_and_clears_singleton(self, tmp_path) -> None:
+        from autodj.dj_meta import close_cache, get_cache
+
+        cache = get_cache(tmp_path)
+        assert cache is not None
+        cache.set("pending.flac", DjMeta(analysed=True))
+        close_cache()
+        assert cache._conn is None
+        assert get_cache() is None
+
+        reopened = DjMetaCache(tmp_path / "dj_meta.db")
+        try:
+            assert reopened.get("pending.flac").analysed is True
+        finally:
+            reopened.close()
+
+    def test_get_returns_empty_for_unknown(self, tmp_path) -> None:
+        with DjMetaCache(tmp_path / "cache.db") as cache:
+            meta = cache.get("unknown.flac")
+            assert meta.analysed is False
+            assert meta.beats == []
 
     def test_set_then_get_round_trip(self, tmp_path) -> None:
-        cache = DjMetaCache(tmp_path / "cache.db")
-        cache.set(
-            "foo.flac",
-            DjMeta(
-                intro_end_s=2.5,
-                outro_start_s=180.0,
-                beats=[0.5, 1.0, 1.5],
-                analysed=True,
-            ),
-        )
-        meta = cache.get("foo.flac")
-        assert meta.intro_end_s == 2.5
-        assert meta.outro_start_s == 180.0
-        assert meta.beats == [0.5, 1.0, 1.5]
-        assert meta.analysed is True
+        with DjMetaCache(tmp_path / "cache.db") as cache:
+            cache.set(
+                "foo.flac",
+                DjMeta(
+                    intro_end_s=2.5,
+                    outro_start_s=180.0,
+                    beats=[0.5, 1.0, 1.5],
+                    analysed=True,
+                ),
+            )
+            meta = cache.get("foo.flac")
+            assert meta.intro_end_s == 2.5
+            assert meta.outro_start_s == 180.0
+            assert meta.beats == [0.5, 1.0, 1.5]
+            assert meta.analysed is True
 
     def test_flush_persists_to_db(self, tmp_path) -> None:
         path = tmp_path / "cache.db"
-        cache = DjMetaCache(path)
-        cache.set("foo.flac", DjMeta(intro_end_s=1.0, analysed=True))
-        cache.flush(force=True)
-        cache.close()
+        with DjMetaCache(path) as cache:
+            cache.set("foo.flac", DjMeta(intro_end_s=1.0, analysed=True))
+            cache.flush(force=True)
         # Reopen and confirm the row survives a fresh connection.
-        cache2 = DjMetaCache(path)
-        meta = cache2.get("foo.flac")
-        assert meta.intro_end_s == 1.0
-        assert meta.analysed is True
+        with DjMetaCache(path) as cache2:
+            meta = cache2.get("foo.flac")
+            assert meta.intro_end_s == 1.0
+            assert meta.analysed is True
 
     def test_flush_skips_when_not_dirty_enough(self, tmp_path) -> None:
         path = tmp_path / "cache.db"
-        cache = DjMetaCache(path)
-        cache.set("foo.flac", DjMeta(analysed=True))
-        cache.flush(force=False, batch=10)  # only 1 dirty, batch=10
-        # DB file exists (opened on init) but contains no row yet.
-        cache.close()
-        cache2 = DjMetaCache(path)
-        assert cache2.get("foo.flac").analysed is False
-        cache2.close()
+        with DjMetaCache(path) as cache:
+            cache.set("foo.flac", DjMeta(analysed=True))
+            cache.flush(force=False, batch=10)  # only 1 dirty, batch=10
+            # DB file exists (opened on init) but contains no row yet.
+            with DjMetaCache(path) as cache2:
+                assert cache2.get("foo.flac").analysed is False
 
     def test_prune_to_paths_removes_stale_rows(self, tmp_path) -> None:
         path = tmp_path / "cache.db"
-        cache = DjMetaCache(path)
-        cache.set("keep.flac", DjMeta(analysed=True))
-        cache.set("stale.flac", DjMeta(analysed=True))
+        with DjMetaCache(path) as cache:
+            cache.set("keep.flac", DjMeta(analysed=True))
+            cache.set("stale.flac", DjMeta(analysed=True))
 
-        removed = cache.prune_to_paths({"keep.flac"})
+            removed = cache.prune_to_paths({"keep.flac"})
 
-        assert removed == 1
-        assert cache.get("keep.flac").analysed is True
-        assert cache.get("stale.flac").analysed is False
-        cache.close()
+            assert removed == 1
+            assert cache.get("keep.flac").analysed is True
+            assert cache.get("stale.flac").analysed is False
 
-        cache2 = DjMetaCache(path)
-        assert cache2.get("keep.flac").analysed is True
-        assert cache2.get("stale.flac").analysed is False
-        cache2.close()
+        with DjMetaCache(path) as cache2:
+            assert cache2.get("keep.flac").analysed is True
+            assert cache2.get("stale.flac").analysed is False
 
     def test_absolute_paths_are_stored_as_relative_keys(self, tmp_path) -> None:
         import sqlite3 as _sql
 
         path = tmp_path / "cache.db"
         music_dir = tmp_path / "Music"
-        cache = DjMetaCache(path, music_dir=music_dir)
-        cache.set(str(music_dir / "Artist" / "song.flac"), DjMeta(analysed=True))
-        cache.flush(force=True)
-        cache.close()
+        with DjMetaCache(path, music_dir=music_dir) as cache:
+            cache.set(str(music_dir / "Artist" / "song.flac"), DjMeta(analysed=True))
+            cache.flush(force=True)
 
         conn = _sql.connect(path)
         try:
@@ -284,10 +324,9 @@ class TestDjMetaCache:
         path = tmp_path / "cache.db"
         music_dir = tmp_path / "Music"
         outside = tmp_path / "Other" / "song.flac"
-        cache = DjMetaCache(path, music_dir=music_dir)
-        cache.set(str(outside), DjMeta(analysed=True))
-        cache.flush(force=True)
-        cache.close()
+        with DjMetaCache(path, music_dir=music_dir) as cache:
+            cache.set(str(outside), DjMeta(analysed=True))
+            cache.flush(force=True)
 
         conn = _sql.connect(path)
         try:
@@ -313,13 +352,12 @@ class TestDjMetaCache:
         conn.commit()
         conn.close()
 
-        cache = DjMetaCache(
+        with DjMetaCache(
             path,
             music_dir=music_dir,
             path_remap=[("/volume1/Mike/Beetsmusic/", f"{music_dir.as_posix()}/")],
-        )
-        assert cache.get(str(music_dir / "Artist" / "song.flac")).analysed is True
-        cache.close()
+        ) as cache:
+            assert cache.get(str(music_dir / "Artist" / "song.flac")).analysed is True
 
         conn = _sql.connect(path)
         try:
@@ -348,15 +386,14 @@ class TestDjMetaCache:
         conn.commit()
         conn.close()
 
-        cache = DjMetaCache(
+        with DjMetaCache(
             path,
             music_dir=music_dir,
             path_remap=[("/volume1/Mike/Beetsmusic/", f"{music_dir.as_posix()}/")],
-        )
-        meta = cache.get("Artist/song.flac")
-        assert meta.analysed is True
-        assert meta.intro_end_s == 4.0
-        cache.close()
+        ) as cache:
+            meta = cache.get("Artist/song.flac")
+            assert meta.analysed is True
+            assert meta.intro_end_s == 4.0
 
         conn = _sql.connect(path)
         try:
@@ -385,29 +422,27 @@ class TestDjMetaCache:
         conn.commit()
         conn.close()
 
-        cache = DjMetaCache(
+        with DjMetaCache(
             path,
             music_dir=music_dir,
             path_remap=[("/volume1/Mike/Beetsmusic/", f"{music_dir.as_posix()}/")],
-        )
-        meta = cache.get("Artist/song.flac")
-        assert meta.analysed is True
-        assert meta.intro_end_s == 2.0
-        cache.close()
+        ) as cache:
+            meta = cache.get("Artist/song.flac")
+            assert meta.analysed is True
+            assert meta.intro_end_s == 2.0
 
     def test_prune_to_paths_returns_zero_when_nothing_stale(self, tmp_path) -> None:
         path = tmp_path / "cache.db"
         music_dir = tmp_path / "Music"
         song = music_dir / "Artist" / "song.flac"
-        cache = DjMetaCache(path, music_dir=music_dir)
-        cache.set(str(song), DjMeta(analysed=True))
-        cache.flush(force=True)
+        with DjMetaCache(path, music_dir=music_dir) as cache:
+            cache.set(str(song), DjMeta(analysed=True))
+            cache.flush(force=True)
 
-        removed = cache.prune_to_paths({str(song)})
+            removed = cache.prune_to_paths({str(song)})
 
-        assert removed == 0
-        assert cache.get(str(song)).analysed is True
-        cache.close()
+            assert removed == 0
+            assert cache.get(str(song)).analysed is True
 
 
 # ---------------------------------------------------------------------------
@@ -537,26 +572,24 @@ class TestDjMetaCacheExtra:
         from autodj.dj_meta import DjMetaCache
 
         path = tmp_path / "cache.db"
-        cache = DjMetaCache(path)
-        cache.flush(force=True)  # no writes pending; must not raise
-        # Round-trip survives the no-op flush.
-        cache.set("a.flac", DjMeta(analysed=True))
-        cache.flush(force=True)
-        cache.close()
-        cache2 = DjMetaCache(path)
-        assert cache2.get("a.flac").analysed is True
+        with DjMetaCache(path) as cache:
+            cache.flush(force=True)  # no writes pending; must not raise
+            # Round-trip survives the no-op flush.
+            cache.set("a.flac", DjMeta(analysed=True))
+            cache.flush(force=True)
+        with DjMetaCache(path) as cache2:
+            assert cache2.get("a.flac").analysed is True
 
     def test_get_uses_mem_cache_on_second_call(self, tmp_path) -> None:
         from autodj.dj_meta import DjMetaCache
 
         path = tmp_path / "cache.db"
-        cache = DjMetaCache(path)
-        # First call: miss, returns empty DjMeta and caches it.
-        first = cache.get("unknown.flac")
-        # Second call: hits self._mem_cache (different code path).
-        second = cache.get("unknown.flac")
-        assert first is second
-        cache.close()
+        with DjMetaCache(path) as cache:
+            # First call: miss, returns empty DjMeta and caches it.
+            first = cache.get("unknown.flac")
+            # Second call: hits self._mem_cache (different code path).
+            second = cache.get("unknown.flac")
+            assert first is second
 
     def test_row_to_meta_handles_corrupt_blob(self, tmp_path) -> None:
         import sqlite3 as _sql
@@ -575,12 +608,11 @@ class TestDjMetaCacheExtra:
         conn.commit()
         conn.close()
 
-        cache = DjMetaCache(path)
-        meta = cache.get("x.flac")
-        # Corrupt JSON falls back to empty lists rather than blowing up.
-        assert meta.beats == []
-        assert meta.cues == []
-        cache.close()
+        with DjMetaCache(path) as cache:
+            meta = cache.get("x.flac")
+            # Corrupt JSON falls back to empty lists rather than blowing up.
+            assert meta.beats == []
+            assert meta.cues == []
 
 
 class TestGetCacheAndAnalyse:

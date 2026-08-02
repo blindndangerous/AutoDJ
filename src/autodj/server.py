@@ -33,6 +33,7 @@ import functools
 import json as _json
 import logging
 import threading
+import time
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -63,6 +64,26 @@ if TYPE_CHECKING:
     from autodj.similarity import SimilarityIndex
 
 logger = logging.getLogger(__name__)
+
+
+def _quiesce_cache_writers(
+    bridge: PlayerBridge,
+    player_thread: threading.Thread | None,
+    timeout_s: float,
+) -> bool:
+    """Wait up to one shared deadline for every possible cache writer."""
+    deadline = time.monotonic() + timeout_s
+    if player_thread is not None:
+        player_thread.join(max(0.0, deadline - time.monotonic()))
+        if player_thread.is_alive():
+            return False
+
+    wait_for_analysis = None
+    if hasattr(type(bridge.player), "wait_for_background_analysis"):
+        wait_for_analysis = bridge.player.wait_for_background_analysis
+    if not callable(wait_for_analysis):
+        return True
+    return bool(wait_for_analysis(timeout=max(0.0, deadline - time.monotonic())))
 
 
 @functools.cache
@@ -276,15 +297,22 @@ class LibraryJobBody(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def create_app(bridge: PlayerBridge) -> FastAPI:
+def create_app(
+    bridge: PlayerBridge,
+    player_thread: threading.Thread | None = None,
+    shutdown_timeout_s: float = 30.0,
+) -> FastAPI:
     """Create and return the FastAPI application.
 
     Args:
         bridge: A fully initialised :class:`PlayerBridge`.
+        player_thread: Optional main player thread to join during shutdown.
+        shutdown_timeout_s: Total seconds allowed for all cache writers to stop.
 
     Returns:
         A configured :class:`fastapi.FastAPI` instance.
     """
+    shutdown_timeout_s = max(0.0, float(shutdown_timeout_s))
     # Connected WebSocket clients — populated at runtime
     _ws_clients: set[WebSocket] = set()
     _ws_lock = asyncio.Lock()
@@ -306,9 +334,10 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
             #      a daemon thread so the process can exit either way,
             #      but a clean stop lets pynput / sounddevice release
             #      OS handles instead of being torn down mid-call.
-            #   2. Flush the DJ-meta sidecar so any cues / beat grids
-            #      computed in background threads land on disk.
-            #   3. Cancel the broadcast + watcher tasks last and await
+            #   2. Join the main Player thread, then every registered
+            #      background analysis worker before closing their cache.
+            #   3. Flush and close the DJ-meta sidecar after all writers exit.
+            #   4. Cancel the broadcast + watcher tasks last and await
             #      them with CancelledError suppressed so asyncio does
             #      not log "Task was destroyed but it is pending" on
             #      Ctrl+C exit.
@@ -318,17 +347,46 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
                 bridge.player._skip_event.set()
             except Exception:  # pragma: no cover -- defensive log-only path
                 logger.debug("shutdown: player stop signal failed", exc_info=True)
-            try:
-                cache = getattr(bridge.player, "_dj_cache", None)
-                if cache is not None:
-                    cache.flush(force=True)
-            except Exception:  # pragma: no cover -- defensive log-only path
-                logger.debug("shutdown: dj-meta flush failed", exc_info=True)
+            has_background_writers = hasattr(type(bridge.player), "wait_for_background_analysis")
+            if player_thread is None and not has_background_writers:
+                writers_quiesced = True
+            else:
+                writers_quiesced = await asyncio.to_thread(
+                    _quiesce_cache_writers,
+                    bridge,
+                    player_thread,
+                    shutdown_timeout_s,
+                )
+            cache_closed = False
+            if writers_quiesced:
+                try:
+                    from autodj.dj_meta import close_cache
+
+                    close_cache()
+                    cache_closed = True
+                except Exception:  # pragma: no cover -- defensive shutdown logging
+                    logger.debug("shutdown: DJ-meta close failed", exc_info=True)
+            else:
+                logger.warning(
+                    "Degraded shutdown: DJ-meta cache remains open because writers "
+                    "did not stop within %.2f seconds",
+                    shutdown_timeout_s,
+                )
             for task in (broadcast, watcher):
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await task
-            logger.info("Server stopped cleanly.")
+            if writers_quiesced and cache_closed:
+                logger.info("Server stopped cleanly.")
+            elif not writers_quiesced:
+                logger.warning(
+                    "Server shutdown completed in degraded mode: active cache writers "
+                    "remain; DJ-meta cache left open."
+                )
+            else:  # pragma: no cover -- close failure is defensive-only
+                logger.warning(
+                    "Server shutdown completed in degraded mode: DJ-meta cache could not be closed."
+                )
 
     app = FastAPI(title="AutoDJ", version="0.1.0", lifespan=lifespan)
 
@@ -1375,7 +1433,7 @@ def serve(
     player_thread.start()
     bridge.record_seed(seed_entry)
 
-    app = create_app(bridge)
+    app = create_app(bridge, player_thread=player_thread)
 
     scheme = "https" if (ssl_certfile and ssl_keyfile) else "http"
     pretty_host = (

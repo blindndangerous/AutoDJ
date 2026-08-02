@@ -196,46 +196,48 @@ class TestMergeCues:
 class TestDjMetaCacheCues:
     def test_cues_roundtrip_through_sqlite(self, tmp_path: Path) -> None:
         sidecar = tmp_path / "dj_meta.db"
-        cache = DjMetaCache(sidecar)
-        meta = DjMeta(
-            intro_end_s=5.0,
-            outro_start_s=180.0,
-            beats=[0.5, 1.0, 1.5],
-            analysed=True,
-            cues=[
-                Cue(time_s=10.0, type="drop", source="auto"),
-                Cue(time_s=60.0, type="user", source="rekordbox", label="Hot 1"),
-            ],
-        )
-        cache.set("track.mp3", meta)
-        cache.flush(force=True)
-        cache.close()
+        with DjMetaCache(sidecar) as cache:
+            meta = DjMeta(
+                intro_end_s=5.0,
+                outro_start_s=180.0,
+                beats=[0.5, 1.0, 1.5],
+                analysed=True,
+                cues=[
+                    Cue(time_s=10.0, type="drop", source="auto"),
+                    Cue(time_s=60.0, type="user", source="rekordbox", label="Hot 1"),
+                ],
+            )
+            cache.set("track.mp3", meta)
+            cache.flush(force=True)
 
         # Reload from disk in a fresh cache.
-        cache2 = DjMetaCache(sidecar)
-        loaded = cache2.get("track.mp3")
-        assert loaded.analysed
-        assert len(loaded.cues) == 2
-        assert loaded.cues[0].type == "drop"
-        assert loaded.cues[1].label == "Hot 1"
-        cache2.close()
+        with DjMetaCache(sidecar) as cache2:
+            loaded = cache2.get("track.mp3")
+            assert loaded.analysed
+            assert len(loaded.cues) == 2
+            assert loaded.cues[0].type == "drop"
+            assert loaded.cues[1].label == "Hot 1"
 
     def test_row_without_cues_loads_empty_list(self, tmp_path: Path) -> None:
         # A track stored before any cues were detected: cues column NULL.
         sidecar = tmp_path / "dj_meta.db"
-        cache = DjMetaCache(sidecar)
-        cache.set(
-            "track.mp3",
-            DjMeta(intro_end_s=5.0, outro_start_s=180.0, beats=[], analysed=True, cues=[]),
-        )
-        cache.flush(force=True)
-        cache.close()
+        with DjMetaCache(sidecar) as cache:
+            cache.set(
+                "track.mp3",
+                DjMeta(
+                    intro_end_s=5.0,
+                    outro_start_s=180.0,
+                    beats=[],
+                    analysed=True,
+                    cues=[],
+                ),
+            )
+            cache.flush(force=True)
 
-        cache2 = DjMetaCache(sidecar)
-        loaded = cache2.get("track.mp3")
-        assert loaded.analysed
-        assert loaded.cues == []
-        cache2.close()
+        with DjMetaCache(sidecar) as cache2:
+            loaded = cache2.get("track.mp3")
+            assert loaded.analysed
+            assert loaded.cues == []
 
 
 # ---------------------------------------------------------------------------

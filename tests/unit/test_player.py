@@ -924,6 +924,166 @@ class TestAnalyseTrackInBackground:
             player.analyse_track_in_background("/track.flac")
             thread.assert_not_called()
 
+    def test_thread_start_failure_clears_inflight_registration(self) -> None:
+        player = self._make()
+        player._dj_cache = MagicMock()
+        player._dj_cache_initialised = True
+        player._dj_cache.get.return_value = MagicMock(analysed=False)
+        thread = MagicMock()
+        thread.start.side_effect = RuntimeError("injected start failure")
+
+        with (
+            patch("autodj.player.threading.Thread", return_value=thread),
+            pytest.raises(RuntimeError, match="injected start failure"),
+        ):
+            player.analyse_track_in_background("/track.flac")
+
+        assert "/track.flac" not in player._bg_analysis_inflight
+        assert thread not in player._bg_analysis_threads
+
+    def test_lifespan_waits_for_background_cache_write_before_close(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        import threading
+
+        from fastapi.testclient import TestClient
+
+        from autodj.dj_meta import DjMeta, DjMetaCache, get_cache
+        from autodj.server import PlayerBridge, create_app
+
+        player = self._make()
+        cache = get_cache(tmp_path)
+        assert cache is not None
+        player._dj_cache = cache
+        player._dj_cache_initialised = True
+        path = "shutdown-race.flac"
+
+        paused_before_write = threading.Event()
+        release_worker = threading.Event()
+        write_attempted = threading.Event()
+        worker_exception_seen = threading.Event()
+        worker_errors: list[BaseException] = []
+
+        def pause_before_write(_meta: DjMeta, _path: str) -> None:
+            paused_before_write.set()
+            assert release_worker.wait(2.0)
+
+        original_set = cache.set
+
+        def tracked_set(track_path: str, meta: DjMeta) -> None:
+            try:
+                original_set(track_path, meta)
+            finally:
+                write_attempted.set()
+
+        def capture_thread_error(args: threading.ExceptHookArgs) -> None:
+            worker_errors.append(args.exc_value)
+            worker_exception_seen.set()
+
+        monkeypatch.setattr("autodj.player.load_audio", lambda _path: (np.zeros(8), 8))
+        monkeypatch.setattr(
+            "autodj.dj_meta.analyse_audio", lambda _audio, _sr: DjMeta(analysed=True)
+        )
+        monkeypatch.setattr(player, "_merge_external_cues_into", pause_before_write)
+        monkeypatch.setattr(cache, "set", tracked_set)
+        monkeypatch.setattr(threading, "excepthook", capture_thread_error)
+
+        player.analyse_track_in_background(path)
+        assert paused_before_write.wait(2.0)
+
+        app = create_app(PlayerBridge(player=player, sim=player._sim))
+        client = TestClient(app)
+        client.__enter__()
+        shutdown_done = threading.Event()
+
+        def shut_down() -> None:
+            try:
+                client.__exit__(None, None, None)
+            finally:
+                shutdown_done.set()
+
+        shutdown_thread = threading.Thread(target=shut_down, name="test-shutdown")
+        shutdown_thread.start()
+        shutdown_returned_early = False
+        try:
+            assert player._skip_event.wait(1.0)
+            shutdown_returned_early = shutdown_done.wait(0.1)
+        finally:
+            release_worker.set()
+            assert write_attempted.wait(2.0)
+            if shutdown_returned_early:
+                assert worker_exception_seen.wait(2.0)
+            assert shutdown_done.wait(2.0)
+            shutdown_thread.join()
+
+        assert not shutdown_returned_early
+        assert worker_errors == []
+        assert player._bg_analysis_threads == set()
+        assert cache._conn is None
+        with DjMetaCache(tmp_path / "dj_meta.db") as reopened:
+            assert reopened.get(path).analysed is True
+
+    def test_lifespan_timeout_keeps_cache_open_for_blocked_analysis(
+        self, tmp_path, monkeypatch, caplog
+    ) -> None:
+        import logging
+        import threading
+        import time
+
+        from fastapi.testclient import TestClient
+
+        from autodj.dj_meta import DjMeta, close_cache, get_cache
+        from autodj.server import PlayerBridge, create_app
+
+        player = self._make()
+        cache = get_cache(tmp_path)
+        assert cache is not None
+        player._dj_cache = cache
+        player._dj_cache_initialised = True
+        path = "blocked-shutdown.flac"
+        worker_blocked = threading.Event()
+        release_worker = threading.Event()
+        worker_errors: list[BaseException] = []
+
+        def block_before_write(_meta: DjMeta, _path: str) -> None:
+            worker_blocked.set()
+            release_worker.wait()
+
+        def capture_thread_error(args: threading.ExceptHookArgs) -> None:
+            worker_errors.append(args.exc_value)
+
+        monkeypatch.setattr("autodj.player.load_audio", lambda _path: (np.zeros(8), 8))
+        monkeypatch.setattr(
+            "autodj.dj_meta.analyse_audio", lambda _audio, _sr: DjMeta(analysed=True)
+        )
+        monkeypatch.setattr(player, "_merge_external_cues_into", block_before_write)
+        monkeypatch.setattr(threading, "excepthook", capture_thread_error)
+        app = create_app(
+            PlayerBridge(player=player, sim=player._sim),
+            shutdown_timeout_s=0.05,
+        )
+
+        player.analyse_track_in_background(path)
+        assert worker_blocked.wait(2.0)
+        client = TestClient(app)
+
+        try:
+            client.__enter__()
+            caplog.set_level(logging.WARNING, logger="autodj.server")
+            started = time.monotonic()
+            client.__exit__(None, None, None)
+            elapsed = time.monotonic() - started
+
+            assert elapsed < 1.0
+            assert cache._conn is not None
+            assert "cache remains open" in caplog.text
+        finally:
+            release_worker.set()
+            assert player.wait_for_background_analysis(timeout=2.0) is True
+            close_cache()
+
+        assert worker_errors == []
+
 
 class TestRunHeadlessSeedHooks:
     """_run_headless seeds lyrics + background cue analysis up-front so the

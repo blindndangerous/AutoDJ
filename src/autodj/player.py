@@ -757,6 +757,7 @@ class Player:
         # workers for the same track.  Lock guards the set; the heavy
         # I/O happens off-lock.
         self._bg_analysis_inflight: set[str] = set()
+        self._bg_analysis_threads: set[threading.Thread] = set()
         self._bg_analysis_lock = threading.Lock()
         self._bg_lyrics_inflight: set[str] = set()
         self._bg_lyrics_lock = threading.Lock()
@@ -1416,10 +1417,6 @@ class Player:
         existing = self._dj_cache.get(path)
         if existing.analysed:
             return
-        with self._bg_analysis_lock:
-            if path in self._bg_analysis_inflight:
-                return
-            self._bg_analysis_inflight.add(path)
 
         def _worker() -> None:  # pragma: no cover -- background thread
             try:
@@ -1459,12 +1456,41 @@ class Player:
             finally:
                 with self._bg_analysis_lock:
                     self._bg_analysis_inflight.discard(path)
+                    self._bg_analysis_threads.discard(threading.current_thread())
 
-        threading.Thread(
-            target=_worker,
-            name=f"autodj-analyse-{Path(path).name}",
-            daemon=True,
-        ).start()
+        with self._bg_analysis_lock:
+            if path in self._bg_analysis_inflight:
+                return
+            thread = threading.Thread(
+                target=_worker,
+                name=f"autodj-analyse-{Path(path).name}",
+                daemon=True,
+            )
+            self._bg_analysis_inflight.add(path)
+            self._bg_analysis_threads.add(thread)
+            try:
+                thread.start()
+            except BaseException:
+                self._bg_analysis_inflight.discard(path)
+                self._bg_analysis_threads.discard(thread)
+                raise
+
+    def wait_for_background_analysis(self, timeout: float | None = None) -> bool:
+        """Wait for registered DJ-metadata workers within one total timeout."""
+        deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+        while True:
+            with self._bg_analysis_lock:
+                workers = tuple(self._bg_analysis_threads)
+            if not workers:
+                return True
+            for worker in workers:
+                if deadline is None:
+                    worker.join()
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                worker.join(remaining)
 
     def _merge_external_cues_into(self, meta: DjMeta, path: str) -> None:
         """Merge externally-imported cues for *path* into *meta* in place.

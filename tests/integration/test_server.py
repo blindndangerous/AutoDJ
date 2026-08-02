@@ -904,6 +904,100 @@ class TestLifespan:
             data = tc.get("/api/status").json()
             assert "current_track" in data
 
+    def test_shutdown_joins_main_player_thread(self) -> None:
+        import threading
+
+        from fastapi.testclient import TestClient
+
+        player = _make_player_mock()
+        player._skip_event = threading.Event()
+        bridge = PlayerBridge(player=player, sim=_make_sim_mock())
+        allow_player_exit = threading.Event()
+        player_received_stop = threading.Event()
+
+        def player_loop() -> None:
+            assert player._skip_event.wait(2.0)
+            player_received_stop.set()
+            assert allow_player_exit.wait(2.0)
+
+        player_thread = threading.Thread(target=player_loop, name="test-player")
+        app = create_app(bridge, player_thread=player_thread)
+        player_thread.start()
+
+        client = TestClient(app)
+        client.__enter__()
+        shutdown_done = threading.Event()
+
+        def shut_down() -> None:
+            try:
+                client.__exit__(None, None, None)
+            finally:
+                shutdown_done.set()
+
+        shutdown_thread = threading.Thread(target=shut_down, name="test-shutdown")
+        shutdown_thread.start()
+        shutdown_returned_early = False
+        try:
+            assert player_received_stop.wait(1.0)
+            shutdown_returned_early = shutdown_done.wait(0.1)
+        finally:
+            allow_player_exit.set()
+            assert shutdown_done.wait(2.0)
+            shutdown_thread.join()
+
+        assert not shutdown_returned_early
+        assert not player_thread.is_alive()
+
+    def test_shutdown_timeout_keeps_cache_open_for_blocked_player_thread(
+        self, tmp_path, caplog
+    ) -> None:
+        import logging
+        import threading
+        import time
+
+        from fastapi.testclient import TestClient
+
+        from autodj.dj_meta import close_cache, get_cache
+
+        player = _make_player_mock()
+        player._skip_event = threading.Event()
+        bridge = PlayerBridge(player=player, sim=_make_sim_mock())
+        cache = get_cache(tmp_path)
+        assert cache is not None
+        allow_player_exit = threading.Event()
+
+        def player_loop() -> None:
+            assert player._skip_event.wait(2.0)
+            allow_player_exit.wait()
+
+        player_thread = threading.Thread(target=player_loop, name="blocked-test-player")
+        app = create_app(
+            bridge,
+            player_thread=player_thread,
+            shutdown_timeout_s=-1.0,
+        )
+        player_thread.start()
+        client = TestClient(app)
+
+        try:
+            client.__enter__()
+            caplog.set_level(logging.INFO, logger="autodj.server")
+            started = time.monotonic()
+            client.__exit__(None, None, None)
+            elapsed = time.monotonic() - started
+
+            assert elapsed < 1.0
+            assert cache._conn is not None
+            assert "did not stop within 0.00 seconds" in caplog.text
+            assert "active cache writers remain; DJ-meta cache left open" in caplog.text
+            assert "Server stopped cleanly." not in caplog.text
+        finally:
+            allow_player_exit.set()
+            player_thread.join(2.0)
+            close_cache()
+
+        assert not player_thread.is_alive()
+
 
 # ---------------------------------------------------------------------------
 # WebSocket text messages (discovery toggle + bad JSON)
