@@ -424,7 +424,7 @@ class TestMaybeMigratePaths:
 
         conn = _sql.connect(index_dir / "tracks.db")
         try:
-            p = conn.execute("SELECT path FROM tracks ORDER BY id ASC LIMIT 1").fetchone()[0]
+            p = conn.execute("SELECT path FROM tracks ORDER BY vec_row ASC LIMIT 1").fetchone()[0]
         finally:
             conn.close()
         # After migration, path should be relative (no drive, no leading slash)
@@ -503,7 +503,7 @@ class TestSaveIndexErrorPaths:
             )
             with pytest.raises(sqlite3.IntegrityError, match="injected"):
                 _replace_tracks_rows(conn, replacement, music_dir=None)
-            paths = conn.execute("SELECT path FROM tracks ORDER BY id").fetchall()
+            paths = conn.execute("SELECT path FROM tracks ORDER BY vec_row").fetchall()
         finally:
             conn.close()
         assert paths == [(original[0].path,), (original[1].path,)]

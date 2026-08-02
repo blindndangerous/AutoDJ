@@ -106,12 +106,10 @@ FEATURE_DIM = EMBEDDING_DIM + _LIBROSA_DIM
 # How often the embed loop rewrites the monolithic FAISS file during a
 # long ``autodj index`` run.  The whole file (~290 MB at 70k tracks) is
 # rebuilt and rewritten on every flush, so per-track rewrites pummel NAS
-# spindles -- ~2.4 TB of writes over a full reindex.  tracks.db still
-# flushes every track (cheap UPSERT), so a crash never loses metadata.
-# On startup, ``_load_existing_index`` reconciles by trimming any
-# metadata rows that lack a matching FAISS vector (max
-# FAISS_CHECKPOINT_EVERY-1 trailing rows) -- those tracks simply get
-# re-embedded on the next run.
+# spindles -- ~2.4 TB of writes over a full reindex.  Metadata deltas flush
+# only after the matching vector checkpoint lands, keeping published rows
+# aligned.  On startup, ``_load_existing_index`` defensively clamps either
+# file to their common prefix after an interrupted write.
 FAISS_CHECKPOINT_EVERY: int = 100
 
 # ---------------------------------------------------------------------------
@@ -119,44 +117,62 @@ FAISS_CHECKPOINT_EVERY: int = 100
 # ---------------------------------------------------------------------------
 #
 # Indexed track metadata lives in ``index/tracks.db`` (SQLite WAL mode).
-# Per-track UPSERTs touch only the dirty pages, so a per-track checkpoint
-# during a long reindex run no longer pummels the spindle.
+# Incremental UPSERTs touch only dirty pages and preserve existing row identity.
 #
-# Schema mirrors :class:`IndexEntry` one-to-one.  The implicit ``rowid``
-# preserves insertion order so ``load_index`` returns entries in the same
-# row order as the FAISS index without needing an explicit ``vec_row``
-# column (we always replace the full table when vectors change).
+# Schema mirrors :class:`IndexEntry` one-to-one.  ``vec_row`` is the stable
+# identity linking each metadata row to its corresponding FAISS vector.
 
 _TRACKS_SCHEMA = """
     CREATE TABLE IF NOT EXISTS tracks (
-        id               INTEGER PRIMARY KEY AUTOINCREMENT,
-        path             TEXT NOT NULL UNIQUE,
-        title            TEXT NOT NULL DEFAULT '',
-        artist           TEXT NOT NULL DEFAULT '',
-        album            TEXT NOT NULL DEFAULT '',
-        genre            TEXT NOT NULL DEFAULT '',
-        bpm              REAL NOT NULL DEFAULT 0,
-        year             INTEGER NOT NULL DEFAULT 0,
-        length           REAL NOT NULL DEFAULT 0,
-        energy           REAL NOT NULL DEFAULT 0,
-        key              INTEGER NOT NULL DEFAULT -1,
-        mode             INTEGER NOT NULL DEFAULT -1,
+        vec_row INTEGER NOT NULL UNIQUE,
+        path TEXT NOT NULL UNIQUE,
+        title TEXT NOT NULL DEFAULT '', artist TEXT NOT NULL DEFAULT '',
+        album TEXT NOT NULL DEFAULT '', genre TEXT NOT NULL DEFAULT '',
+        bpm REAL NOT NULL DEFAULT 0, year INTEGER NOT NULL DEFAULT 0,
+        length REAL NOT NULL DEFAULT 0, energy REAL NOT NULL DEFAULT 0,
+        key INTEGER NOT NULL DEFAULT -1, mode INTEGER NOT NULL DEFAULT -1,
         tempo_confidence REAL NOT NULL DEFAULT 0,
-        embedded_at      REAL NOT NULL DEFAULT 0
+        embedded_at REAL NOT NULL DEFAULT 0
     );
 """
 
 _TRACKS_INSERT_SQL = (
-    "INSERT INTO tracks "
-    "(path, title, artist, album, genre, bpm, year, length, energy, "
-    "key, mode, tempo_confidence, embedded_at) "
-    "VALUES (:path, :title, :artist, :album, :genre, :bpm, :year, "
+    "INSERT INTO tracks (vec_row, path, title, artist, album, genre, bpm, year, "
+    "length, energy, key, mode, tempo_confidence, embedded_at) "
+    "VALUES (:vec_row, :path, :title, :artist, :album, :genre, :bpm, :year, "
     ":length, :energy, :key, :mode, :tempo_confidence, :embedded_at)"
 )
 
 _TRACKS_SELECT_SQL = (
     "SELECT path, title, artist, album, genre, bpm, year, length, energy, "
-    "key, mode, tempo_confidence, embedded_at FROM tracks ORDER BY id ASC"
+    "key, mode, tempo_confidence, embedded_at FROM tracks ORDER BY vec_row ASC"
+)
+
+_TRACKS_SCHEMA_SIGNATURE = (
+    ("vec_row", "INTEGER", 1, None, 0),
+    ("path", "TEXT", 1, None, 0),
+    ("title", "TEXT", 1, "''", 0),
+    ("artist", "TEXT", 1, "''", 0),
+    ("album", "TEXT", 1, "''", 0),
+    ("genre", "TEXT", 1, "''", 0),
+    ("bpm", "REAL", 1, "0", 0),
+    ("year", "INTEGER", 1, "0", 0),
+    ("length", "REAL", 1, "0", 0),
+    ("energy", "REAL", 1, "0", 0),
+    ("key", "INTEGER", 1, "-1", 0),
+    ("mode", "INTEGER", 1, "-1", 0),
+    ("tempo_confidence", "REAL", 1, "0", 0),
+    ("embedded_at", "REAL", 1, "0", 0),
+)
+_TRACKS_REQUIRED_COLUMNS = tuple(column[0] for column in _TRACKS_SCHEMA_SIGNATURE)
+
+_TRACKS_UPSERT_SQL = _TRACKS_INSERT_SQL + (
+    " ON CONFLICT(vec_row) DO UPDATE SET path=excluded.path, "
+    "title=excluded.title, artist=excluded.artist, album=excluded.album, "
+    "genre=excluded.genre, bpm=excluded.bpm, year=excluded.year, "
+    "length=excluded.length, energy=excluded.energy, key=excluded.key, "
+    "mode=excluded.mode, tempo_confidence=excluded.tempo_confidence, "
+    "embedded_at=excluded.embedded_at"
 )
 
 
@@ -175,14 +191,111 @@ def _open_tracks_db(index_dir: Path) -> sqlite3.Connection:
     index_dir.mkdir(parents=True, exist_ok=True)
     db_path = _tracks_db_path(index_dir)
     conn = sqlite3.connect(db_path, isolation_level=None, check_same_thread=False)
-    conn.executescript(_TRACKS_SCHEMA)
+    try:
+        conn.executescript(_TRACKS_SCHEMA)
+        _ensure_vec_row_schema(conn)
+    except BaseException:
+        conn.close()
+        raise
     with contextlib.suppress(sqlite3.DatabaseError):
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
     return conn
 
 
-def _entry_to_row(entry: IndexEntry, music_dir: Path | None) -> dict:
+def _ensure_vec_row_schema(conn: sqlite3.Connection) -> None:
+    """Migrate legacy tracks tables to stable FAISS vector-row identities."""
+    info = {str(row[1]): row for row in conn.execute("PRAGMA table_info(tracks)")}
+    actual_signature = tuple(
+        (
+            str(row[1]),
+            str(row[2]).strip().upper(),
+            int(row[3]),
+            None if row[4] is None else str(row[4]),
+            int(row[5]),
+        )
+        for row in info.values()
+    )
+    unique_single_columns: set[str] = set()
+    for index_row in conn.execute("PRAGMA index_list(tracks)"):
+        if int(index_row[2]) != 1 or (len(index_row) > 4 and int(index_row[4]) != 0):
+            continue
+        index_name = str(index_row[1]).replace('"', '""')
+        index_columns = [
+            str(row[2])
+            for row in conn.execute(  # nosec B608 -- SQLite-owned identifier
+                f'PRAGMA index_info("{index_name}")'
+            )
+        ]
+        if len(index_columns) == 1:
+            unique_single_columns.add(index_columns[0])
+    if actual_signature == _TRACKS_SCHEMA_SIGNATURE and {"vec_row", "path"}.issubset(
+        unique_single_columns
+    ):
+        return
+
+    names = set(info)
+    if "vec_row" in names:
+        vec_row_order = (
+            "vec_row"
+            if str(info["vec_row"][2]).strip().upper() == "INTEGER"
+            else "CAST(vec_row AS INTEGER)"
+        )
+        order_by = f"CASE WHEN vec_row IS NULL THEN 1 ELSE 0 END, {vec_row_order}, rowid"
+    else:
+        order_by = "id, rowid" if "id" in names else "rowid"
+    defaults = {
+        "title": "''",
+        "artist": "''",
+        "album": "''",
+        "genre": "''",
+        "bpm": "0",
+        "year": "0",
+        "length": "0",
+        "energy": "0",
+        "key": "-1",
+        "mode": "-1",
+        "tempo_confidence": "0",
+        "embedded_at": "0",
+    }
+    value_sql = [
+        f"ROW_NUMBER() OVER (ORDER BY {order_by}) - 1",
+        "path",
+        *(name if name in names else default for name, default in defaults.items()),
+    ]
+    with immediate_transaction(conn):
+        duplicate_path = conn.execute(
+            "SELECT path FROM tracks GROUP BY path HAVING COUNT(*) > 1 LIMIT 1"
+        ).fetchone()
+        if duplicate_path is not None:
+            raise sqlite3.IntegrityError(
+                "cannot migrate tracks schema: duplicate paths would break vector identity"
+            )
+        conn.execute(
+            """CREATE TABLE tracks_new (
+                vec_row INTEGER NOT NULL UNIQUE, path TEXT NOT NULL UNIQUE,
+                title TEXT NOT NULL DEFAULT '', artist TEXT NOT NULL DEFAULT '',
+                album TEXT NOT NULL DEFAULT '', genre TEXT NOT NULL DEFAULT '',
+                bpm REAL NOT NULL DEFAULT 0, year INTEGER NOT NULL DEFAULT 0,
+                length REAL NOT NULL DEFAULT 0, energy REAL NOT NULL DEFAULT 0,
+                key INTEGER NOT NULL DEFAULT -1, mode INTEGER NOT NULL DEFAULT -1,
+                tempo_confidence REAL NOT NULL DEFAULT 0,
+                embedded_at REAL NOT NULL DEFAULT 0
+            )"""
+        )
+        columns = (
+            "vec_row, path, title, artist, album, genre, bpm, year, length, "
+            "energy, key, mode, tempo_confidence, embedded_at"
+        )
+        conn.execute(  # nosec B608 -- expressions fixed internally
+            f"INSERT INTO tracks_new ({columns}) "
+            f"SELECT {', '.join(value_sql)} FROM tracks ORDER BY {order_by}"
+        )
+        conn.execute("DROP TABLE tracks")
+        conn.execute("ALTER TABLE tracks_new RENAME TO tracks")
+
+
+def _entry_to_row(entry: IndexEntry, music_dir: Path | None, vec_row: int) -> dict[str, object]:
     """Convert an :class:`IndexEntry` to a SQLite-bound row dict.
 
     Stored ``path`` is relativised against *music_dir* the same way the
@@ -191,6 +304,7 @@ def _entry_to_row(entry: IndexEntry, music_dir: Path | None) -> dict:
     absolute path.
     """
     return {
+        "vec_row": vec_row,
         "path": _relativize_for_storage(entry.path, music_dir),
         "title": entry.title,
         "artist": entry.artist,
@@ -232,15 +346,51 @@ def _replace_tracks_rows(
     music_dir: Path | None,
 ) -> None:
     """Atomically replace rows when vector order intentionally changes."""
-    rows = [_entry_to_row(e, music_dir) for e in entries]
+    rows = [_entry_to_row(entry, music_dir, vec_row) for vec_row, entry in enumerate(entries)]
     with immediate_transaction(conn):
         conn.execute("DELETE FROM tracks")
         if rows:
             conn.executemany(_TRACKS_INSERT_SQL, rows)
 
 
+def _upsert_tracks_metadata(
+    entries: list[IndexEntry],
+    index_dir: Path,
+    first_vec_row: int,
+    music_dir: Path | None,
+    baseline_entries: list[IndexEntry] | None = None,
+) -> None:
+    """Publish a metadata delta, reconciling its baseline when requested."""
+    rows = [
+        _entry_to_row(entry, music_dir, first_vec_row + offset)
+        for offset, entry in enumerate(entries)
+    ]
+    baseline_rows = (
+        [_entry_to_row(entry, music_dir, vec_row) for vec_row, entry in enumerate(baseline_entries)]
+        if baseline_entries is not None
+        else None
+    )
+    conn = _open_tracks_db(index_dir)
+    try:
+        with immediate_transaction(conn):
+            if baseline_rows is not None:
+                actual_baseline = conn.execute(
+                    "SELECT vec_row, path FROM tracks ORDER BY vec_row"
+                ).fetchall()
+                expected_baseline = [
+                    (int(row["vec_row"]), str(row["path"])) for row in baseline_rows
+                ]
+                if actual_baseline != expected_baseline:
+                    conn.execute("DELETE FROM tracks")
+                    if baseline_rows:
+                        conn.executemany(_TRACKS_INSERT_SQL, baseline_rows)
+            conn.executemany(_TRACKS_UPSERT_SQL, rows)
+    finally:
+        conn.close()
+
+
 def _load_tracks_rows(conn: sqlite3.Connection) -> list[IndexEntry]:
-    """SELECT every row from ``tracks`` in insertion order."""
+    """SELECT every row from ``tracks`` in FAISS vector order."""
     cur = conn.execute(_TRACKS_SELECT_SQL)
     return [_row_to_entry(r) for r in cur.fetchall()]
 
@@ -699,9 +849,8 @@ def _write_faiss_chunked(index: faiss.Index, path: Path, chunk_size: int = 1 << 
 def _save_vectors(vectors: np.ndarray, index_dir: Path) -> None:
     """Write only ``vectors.index`` atomically (tmp+rename).
 
-    Used by the per-checkpoint pipeline so we can flush the SQLite tracks
-    table on every track (cheap) but only rebuild + rewrite the FAISS
-    file every ``checkpoint_every_faiss`` tracks (expensive).
+    Used by the checkpoint pipeline before publishing its matching metadata
+    delta, so readers never observe metadata without a corresponding vector.
     """
     index_dir.mkdir(parents=True, exist_ok=True)
     vectors_final = index_dir / "vectors.index"
@@ -724,8 +873,8 @@ def _save_tracks_metadata(
 ) -> None:
     """Replace the ``tracks.db`` rows in one transaction.
 
-    Per-checkpoint cost stays O(rows) (cheap UPSERT) instead of paying
-    the FAISS whole-file rewrite on every track.
+    Used when the complete vector order changes or a full index save must
+    publish the complete metadata set.
     """
     index_dir.mkdir(parents=True, exist_ok=True)
     conn = _open_tracks_db(index_dir)
@@ -733,6 +882,54 @@ def _save_tracks_metadata(
         _replace_tracks_rows(conn, entries, music_dir)
     finally:
         conn.close()
+
+
+@dataclass
+class IncrementalCheckpoint:
+    """Publish aligned FAISS vectors and metadata at throttled checkpoints."""
+
+    index_dir: Path
+    music_dir: Path | None
+    existing_entries: list[IndexEntry]
+    existing_vectors: list[np.ndarray]
+    total_new: int
+    baseline_requires_reconcile: bool = False
+    flush_every: int = FAISS_CHECKPOINT_EVERY
+    published_new_count: int = 0
+    baseline_published: bool = False
+
+    def write(self, new_entries: list[IndexEntry], new_vectors: list[np.ndarray]) -> None:
+        if not new_entries:
+            return
+        due = len(new_entries) == self.total_new or len(new_entries) % self.flush_every == 0
+        if not due:
+            return
+
+        all_vectors = (
+            np.vstack(
+                [
+                    np.asarray(self.existing_vectors, dtype=np.float32),
+                    np.asarray(new_vectors, dtype=np.float32),
+                ]
+            )
+            if self.existing_vectors
+            else np.asarray(new_vectors, dtype=np.float32)
+        )
+        _save_vectors(all_vectors, self.index_dir)
+        pending = new_entries[self.published_new_count :]
+        _upsert_tracks_metadata(
+            pending,
+            self.index_dir,
+            first_vec_row=len(self.existing_entries) + self.published_new_count,
+            music_dir=self.music_dir,
+            baseline_entries=(
+                self.existing_entries
+                if self.baseline_requires_reconcile and not self.baseline_published
+                else None
+            ),
+        )
+        self.baseline_published = True
+        self.published_new_count = len(new_entries)
 
 
 def save_index(
@@ -969,7 +1166,7 @@ def enrich_from_beets(
         return (0, len(entries))
 
     # Metadata-only update — no FAISS rewrite needed (vectors unchanged).
-    # SQLite UPSERT per affected row inside a single transaction is far
+    # SQLite replacement inside a single transaction is far
     # cheaper than the legacy "reconstruct every vector + full save_index"
     # round-trip, which paid O(N) vector reconstruct cost just to re-emit
     # JSON.  Bonus: enrich no longer needs vectors.index on disk.
@@ -1600,7 +1797,7 @@ def _load_existing_index(  # pragma: no cover -- exercised via build_index integ
     reindex_modified_since: float | None,
     throttle_ms: float = 0.0,
     stat_workers: int = 8,
-) -> tuple[list[IndexEntry], list[np.ndarray], set[str]]:
+) -> tuple[list[IndexEntry], list[np.ndarray], set[str], bool]:
     """Load existing entries + vectors, drop missing and replaced files.
 
     Fused single-pass: one stat() per entry returns both existence (None
@@ -1609,11 +1806,12 @@ def _load_existing_index(  # pragma: no cover -- exercised via build_index integ
     ``prune_index`` then ``_detect_stale_entries`` back-to-back.
     """
     if force:
-        return [], [], set()
+        return [], [], set(), True
 
     db_path = _tracks_db_path(index_dir)
-    if not db_path.exists():
-        return [], [], set()
+    faiss_file = index_dir / "vectors.index"
+    if not db_path.exists() and not faiss_file.exists():
+        return [], [], set(), False
 
     conn = _open_tracks_db(index_dir)
     try:
@@ -1625,16 +1823,13 @@ def _load_existing_index(  # pragma: no cover -- exercised via build_index integ
         e.path = _resolve_for_runtime(e.path, music_dir, path_remap)
 
     existing_vectors: list[np.ndarray] = []
-    faiss_file = index_dir / "vectors.index"
-    if faiss_file.exists() and existing_entries:
+    if faiss_file.exists():
         # faiss-cpu >=1.14 stubs type read_index as the base Index; we only ever
         # persist an IndexFlatIP, so narrow back for the typed signatures below.
         loaded = cast("faiss.IndexFlatIP", faiss.read_index(str(faiss_file)))
-        # Reconcile: tracks.db UPSERTs every track but FAISS only flushes
-        # every FAISS_CHECKPOINT_EVERY tracks (perf optimisation), so a
-        # crash between the two writes leaves metadata rows without
-        # matching FAISS vectors.  Drop the unmatched tail so those
-        # tracks get re-embedded on this run.
+        # Reconcile legacy or interrupted writes that left metadata rows
+        # without matching vectors. Drop the unmatched tail so those tracks
+        # get re-embedded on this run.
         if loaded.ntotal < len(existing_entries):
             drop = len(existing_entries) - loaded.ntotal
             logger.warning(
@@ -1650,9 +1845,8 @@ def _load_existing_index(  # pragma: no cover -- exercised via build_index integ
         # Batch reconstruct in one FAISS call — per-entry reconstruct()
         # at 70k tracks dominated incremental-index startup time.
         all_vectors = loaded.reconstruct_n(0, loaded.ntotal)
-        # If FAISS has more vectors than tracks.db (shouldn't happen
-        # given metadata-first ordering, but defend anyway), keep only
-        # the prefix that lines up with metadata.
+        # A crash after the vector checkpoint lands but before its metadata
+        # delta commits can leave FAISS ahead. Keep only the aligned prefix.
         if loaded.ntotal > len(existing_entries):
             logger.warning(
                 "vectors.index has %d rows but tracks.db has only %d -- "
@@ -1661,6 +1855,12 @@ def _load_existing_index(  # pragma: no cover -- exercised via build_index integ
                 len(existing_entries),
             )
             all_vectors = all_vectors[: len(existing_entries)]
+            durable_vectors = (
+                np.asarray(all_vectors, dtype=np.float32)
+                if len(existing_entries)
+                else np.empty((0, loaded.d), dtype=np.float32)
+            )
+            _save_vectors(durable_vectors, index_dir)
         existing_vectors = [np.asarray(row, dtype=np.float32) for row in all_vectors]
         logger.info("Incremental mode: %d tracks already indexed", len(existing_entries))
 
@@ -1725,7 +1925,12 @@ def _load_existing_index(  # pragma: no cover -- exercised via build_index integ
         # portable relative form without touching FAISS.
         _save_tracks_metadata(existing_entries, index_dir, music_dir)
 
-    return existing_entries, existing_vectors, {e.path for e in existing_entries}
+    return (
+        existing_entries,
+        existing_vectors,
+        {e.path for e in existing_entries},
+        bool(drop_paths),
+    )
 
 
 def _collect_tracks_to_index(  # pragma: no cover -- exercised via build_index integration runs
@@ -1849,9 +2054,10 @@ def _embed_new_tracks(  # pragma: no cover -- threaded indexer pipeline
                         entry.key, entry.mode = parsed
                 new_entries.append(entry)
                 new_vectors.append(combined)
-                checkpoint(new_entries, new_vectors)
             except Exception as exc:
                 logger.warning("Skipping %s: %s", track.path, exc)
+                continue
+            checkpoint(new_entries, new_vectors)
 
     return new_entries, new_vectors
 
@@ -1892,7 +2098,12 @@ def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integr
     music_dir = cfg.library.music_dir
     path_remap = cfg.library.path_remap
 
-    existing_entries, existing_vectors, existing_paths = _load_existing_index(
+    (
+        existing_entries,
+        existing_vectors,
+        existing_paths,
+        baseline_requires_reconcile,
+    ) = _load_existing_index(
         index_dir,
         music_dir,
         path_remap,
@@ -1923,46 +2134,17 @@ def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integr
         flush=True,
     )
 
-    # Per-track checkpoint policy:
-    #   * tracks.db UPSERT every track -- cheap, durable, lets a parallel
-    #     ``serve`` see new entries immediately.
-    #   * FAISS file rewrite every FAISS_CHECKPOINT_EVERY tracks (or at
-    #     loop end via the final save_index call) -- the monolithic file
-    #     is expensive to rewrite, so we lump those writes together.
-    # Order: metadata first, then FAISS.  A crash between the two leaves
-    # tracks.db ahead of vectors.index; _load_existing_index trims the
-    # mismatched tail on next startup so those tracks get re-embedded.
-    cp_counter = [0]
-
-    def _checkpoint(new_entries: list[IndexEntry], new_vectors: list[np.ndarray]) -> None:
-        if not new_entries:
-            return
-        cp_counter[0] += 1
-        all_e = existing_entries + new_entries
-        # Metadata always: O(rows) UPSERT, no whole-file rewrite.
-        _save_tracks_metadata(all_e, index_dir, music_dir)
-        # FAISS only every N tracks (or at the very last entry of the run).
-        last_track = cp_counter[0] == len(new_tracks)
-        if last_track or cp_counter[0] % FAISS_CHECKPOINT_EVERY == 0:
-            all_v = (
-                np.vstack(
-                    [
-                        np.array(existing_vectors, dtype=np.float32),
-                        np.array(new_vectors, dtype=np.float32),
-                    ]
-                )
-                if existing_vectors
-                else np.array(new_vectors, dtype=np.float32)
-            )
-            _save_vectors(all_v, index_dir)
-            logger.info(
-                "Checkpoint: %d new tracks saved (%d total) -- FAISS flushed",
-                len(new_entries),
-                len(all_e),
-            )
+    checkpoint = IncrementalCheckpoint(
+        index_dir=index_dir,
+        music_dir=music_dir,
+        existing_entries=existing_entries,
+        existing_vectors=existing_vectors,
+        total_new=len(new_tracks),
+        baseline_requires_reconcile=baseline_requires_reconcile,
+    )
 
     new_entries, new_vectors = _embed_new_tracks(
-        new_tracks, wrapper, workers, _checkpoint, throttle_ms=throttle_ms
+        new_tracks, wrapper, workers, checkpoint.write, throttle_ms=throttle_ms
     )
 
     # --- merge and save ---

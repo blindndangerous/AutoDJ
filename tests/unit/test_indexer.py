@@ -5,7 +5,7 @@ model downloads. Vector math and FAISS operations use real numpy/faiss.
 """
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import faiss
 import numpy as np
@@ -261,7 +261,7 @@ class TestSaveLoadIndex:
 
         conn = _sql.connect(db_path)
         try:
-            rows = conn.execute("SELECT path FROM tracks ORDER BY id ASC").fetchall()
+            rows = conn.execute("SELECT path FROM tracks ORDER BY vec_row ASC").fetchall()
         finally:
             conn.close()
         assert len(rows) == 3
@@ -289,6 +289,389 @@ class TestSaveLoadIndex:
         loaded_entries, _ = load_index(index_dir)
 
         assert loaded_entries[0].path == "Z:/Music/song_0.flac"
+
+    def test_open_tracks_db_backfills_vec_row_in_legacy_id_order(self, tmp_path: Path) -> None:
+        import sqlite3
+
+        from autodj.indexer import _open_tracks_db
+
+        conn = sqlite3.connect(tmp_path / "tracks.db")
+        conn.execute(
+            "CREATE TABLE tracks (id INTEGER PRIMARY KEY AUTOINCREMENT, path TEXT NOT NULL UNIQUE)"
+        )
+        conn.executemany(
+            "INSERT INTO tracks(path) VALUES (?)",
+            [("second.flac",), ("first.flac",)],
+        )
+        conn.commit()
+        conn.close()
+
+        migrated = _open_tracks_db(tmp_path)
+        try:
+            rows = migrated.execute("SELECT vec_row, path FROM tracks ORDER BY vec_row").fetchall()
+            vec_info = next(
+                row for row in migrated.execute("PRAGMA table_info(tracks)") if row[1] == "vec_row"
+            )
+            with pytest.raises(sqlite3.IntegrityError):
+                migrated.execute("INSERT INTO tracks(vec_row, path) VALUES (NULL, 'bad.flac')")
+        finally:
+            migrated.close()
+
+        assert rows == [(0, "second.flac"), (1, "first.flac")]
+        assert vec_info[3] == 1
+
+    def test_open_tracks_db_rebuilds_non_unique_vec_row_schema(self, tmp_path: Path) -> None:
+        import sqlite3
+
+        from autodj.indexer import _open_tracks_db
+
+        conn = sqlite3.connect(tmp_path / "tracks.db")
+        conn.execute(
+            """CREATE TABLE tracks (
+                vec_row INTEGER NOT NULL,
+                path TEXT NOT NULL UNIQUE,
+                title TEXT NOT NULL DEFAULT '', artist TEXT NOT NULL DEFAULT '',
+                album TEXT NOT NULL DEFAULT '', genre TEXT NOT NULL DEFAULT '',
+                bpm REAL NOT NULL DEFAULT 0, year INTEGER NOT NULL DEFAULT 0,
+                length REAL NOT NULL DEFAULT 0, energy REAL NOT NULL DEFAULT 0,
+                key INTEGER NOT NULL DEFAULT -1, mode INTEGER NOT NULL DEFAULT -1,
+                tempo_confidence REAL NOT NULL DEFAULT 0,
+                embedded_at REAL NOT NULL DEFAULT 0
+            )"""
+        )
+        conn.executemany(
+            "INSERT INTO tracks(vec_row, path) VALUES (?, ?)",
+            [(0, "first.flac"), (0, "second.flac")],
+        )
+        conn.commit()
+        conn.close()
+
+        migrated = _open_tracks_db(tmp_path)
+        try:
+            rows = migrated.execute("SELECT vec_row, path FROM tracks ORDER BY vec_row").fetchall()
+            with pytest.raises(sqlite3.IntegrityError):
+                migrated.execute("INSERT INTO tracks(vec_row, path) VALUES (0, 'duplicate.flac')")
+        finally:
+            migrated.close()
+
+        assert rows == [(0, "first.flac"), (1, "second.flac")]
+
+    def test_open_tracks_db_rebuilds_partial_vec_row_schema(self, tmp_path: Path) -> None:
+        import sqlite3
+
+        from autodj.indexer import _load_tracks_rows, _open_tracks_db
+
+        conn = sqlite3.connect(tmp_path / "tracks.db")
+        conn.execute(
+            """CREATE TABLE tracks (
+                vec_row INTEGER NOT NULL UNIQUE,
+                path TEXT NOT NULL UNIQUE,
+                title TEXT NOT NULL DEFAULT ''
+            )"""
+        )
+        conn.execute("INSERT INTO tracks(vec_row, path, title) VALUES (7, 'legacy.flac', 'Legacy')")
+        conn.commit()
+        conn.close()
+
+        migrated = _open_tracks_db(tmp_path)
+        try:
+            names = {row[1] for row in migrated.execute("PRAGMA table_info(tracks)")}
+            entries = _load_tracks_rows(migrated)
+        finally:
+            migrated.close()
+
+        assert names == {
+            "vec_row",
+            "path",
+            "title",
+            "artist",
+            "album",
+            "genre",
+            "bpm",
+            "year",
+            "length",
+            "energy",
+            "key",
+            "mode",
+            "tempo_confidence",
+            "embedded_at",
+        }
+        assert [(entry.path, entry.title, entry.key) for entry in entries] == [
+            ("legacy.flac", "Legacy", -1)
+        ]
+
+    def test_open_tracks_db_removes_extra_legacy_id_column(self, tmp_path: Path) -> None:
+        import sqlite3
+
+        from autodj.indexer import _open_tracks_db
+
+        conn = sqlite3.connect(tmp_path / "tracks.db")
+        conn.execute(
+            """CREATE TABLE tracks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                vec_row INTEGER NOT NULL UNIQUE,
+                path TEXT NOT NULL UNIQUE,
+                title TEXT NOT NULL DEFAULT '', artist TEXT NOT NULL DEFAULT '',
+                album TEXT NOT NULL DEFAULT '', genre TEXT NOT NULL DEFAULT '',
+                bpm REAL NOT NULL DEFAULT 0, year INTEGER NOT NULL DEFAULT 0,
+                length REAL NOT NULL DEFAULT 0, energy REAL NOT NULL DEFAULT 0,
+                key INTEGER NOT NULL DEFAULT -1, mode INTEGER NOT NULL DEFAULT -1,
+                tempo_confidence REAL NOT NULL DEFAULT 0,
+                embedded_at REAL NOT NULL DEFAULT 0
+            )"""
+        )
+        conn.executemany(
+            "INSERT INTO tracks(vec_row, path, title) VALUES (?, ?, ?)",
+            [(0, "first.flac", "First"), (1, "second.flac", "Second")],
+        )
+        conn.commit()
+        conn.close()
+
+        migrated = _open_tracks_db(tmp_path)
+        try:
+            names = [row[1] for row in migrated.execute("PRAGMA table_info(tracks)")]
+            rows = migrated.execute(
+                "SELECT vec_row, path, title FROM tracks ORDER BY vec_row"
+            ).fetchall()
+        finally:
+            migrated.close()
+
+        assert names == [
+            "vec_row",
+            "path",
+            "title",
+            "artist",
+            "album",
+            "genre",
+            "bpm",
+            "year",
+            "length",
+            "energy",
+            "key",
+            "mode",
+            "tempo_confidence",
+            "embedded_at",
+        ]
+        assert rows == [(0, "first.flac", "First"), (1, "second.flac", "Second")]
+
+    def test_open_tracks_db_rebuilds_missing_path_unique_schema(self, tmp_path: Path) -> None:
+        import sqlite3
+
+        from autodj.indexer import _open_tracks_db
+
+        conn = sqlite3.connect(tmp_path / "tracks.db")
+        conn.execute(
+            """CREATE TABLE tracks (
+                vec_row INTEGER NOT NULL UNIQUE,
+                path TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '', artist TEXT NOT NULL DEFAULT '',
+                album TEXT NOT NULL DEFAULT '', genre TEXT NOT NULL DEFAULT '',
+                bpm REAL NOT NULL DEFAULT 0, year INTEGER NOT NULL DEFAULT 0,
+                length REAL NOT NULL DEFAULT 0, energy REAL NOT NULL DEFAULT 0,
+                key INTEGER NOT NULL DEFAULT -1, mode INTEGER NOT NULL DEFAULT -1,
+                tempo_confidence REAL NOT NULL DEFAULT 0,
+                embedded_at REAL NOT NULL DEFAULT 0
+            )"""
+        )
+        conn.executemany(
+            "INSERT INTO tracks(vec_row, path, title) VALUES (?, ?, ?)",
+            [
+                (0, "first.flac", "First"),
+                (1, "second.flac", "Second"),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        migrated = _open_tracks_db(tmp_path)
+        try:
+            names = [row[1] for row in migrated.execute("PRAGMA table_info(tracks)")]
+            rows = migrated.execute(
+                "SELECT vec_row, path, title FROM tracks ORDER BY vec_row"
+            ).fetchall()
+            with pytest.raises(sqlite3.IntegrityError):
+                migrated.execute("INSERT INTO tracks(vec_row, path) VALUES (2, 'first.flac')")
+        finally:
+            migrated.close()
+
+        assert names == [
+            "vec_row",
+            "path",
+            "title",
+            "artist",
+            "album",
+            "genre",
+            "bpm",
+            "year",
+            "length",
+            "energy",
+            "key",
+            "mode",
+            "tempo_confidence",
+            "embedded_at",
+        ]
+        assert rows == [(0, "first.flac", "First"), (1, "second.flac", "Second")]
+
+    def test_open_tracks_db_duplicate_paths_fail_without_changing_vector_identity(
+        self, tmp_path: Path
+    ) -> None:
+        import sqlite3
+
+        import faiss
+
+        from autodj.indexer import _open_tracks_db, _save_vectors
+
+        vectors = np.zeros((3, FEATURE_DIM), dtype=np.float32)
+        for row, marker in enumerate((3, 7, 11)):
+            vectors[row, marker] = 1.0
+        _save_vectors(vectors, tmp_path)
+
+        conn = sqlite3.connect(tmp_path / "tracks.db")
+        conn.execute(
+            """CREATE TABLE tracks (
+                vec_row INTEGER NOT NULL UNIQUE,
+                path TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '', artist TEXT NOT NULL DEFAULT '',
+                album TEXT NOT NULL DEFAULT '', genre TEXT NOT NULL DEFAULT '',
+                bpm REAL NOT NULL DEFAULT 0, year INTEGER NOT NULL DEFAULT 0,
+                length REAL NOT NULL DEFAULT 0, energy REAL NOT NULL DEFAULT 0,
+                key INTEGER NOT NULL DEFAULT -1, mode INTEGER NOT NULL DEFAULT -1,
+                tempo_confidence REAL NOT NULL DEFAULT 0,
+                embedded_at REAL NOT NULL DEFAULT 0
+            )"""
+        )
+        original_rows = [
+            (0, "duplicate.flac", "First copy"),
+            (1, "middle.flac", "Middle"),
+            (2, "duplicate.flac", "Second copy"),
+        ]
+        conn.executemany(
+            "INSERT INTO tracks(vec_row, path, title) VALUES (?, ?, ?)",
+            original_rows,
+        )
+        conn.commit()
+        conn.close()
+
+        with pytest.raises(
+            sqlite3.IntegrityError,
+            match="duplicate paths would break vector identity",
+        ):
+            _open_tracks_db(tmp_path)
+
+        preserved = sqlite3.connect(tmp_path / "tracks.db")
+        try:
+            names = [row[1] for row in preserved.execute("PRAGMA table_info(tracks)")]
+            rows = preserved.execute(
+                "SELECT vec_row, path, title FROM tracks ORDER BY vec_row"
+            ).fetchall()
+        finally:
+            preserved.close()
+        persisted_vectors = faiss.read_index(str(tmp_path / "vectors.index"))
+
+        assert names[0:2] == ["vec_row", "path"]
+        assert rows == original_rows
+        assert persisted_vectors.ntotal == 3
+        assert [int(np.argmax(persisted_vectors.reconstruct(row))) for row in range(3)] == [
+            3,
+            7,
+            11,
+        ]
+
+    def test_open_tracks_db_rebuilds_text_vec_row_in_numeric_vector_order(
+        self, tmp_path: Path
+    ) -> None:
+        import sqlite3
+
+        from autodj.indexer import _load_existing_index, _save_vectors
+
+        vectors = np.zeros((2, FEATURE_DIM), dtype=np.float32)
+        vectors[0, 3] = 1.0
+        vectors[1, 7] = 1.0
+        _save_vectors(vectors, tmp_path)
+
+        conn = sqlite3.connect(tmp_path / "tracks.db")
+        conn.execute(
+            """CREATE TABLE tracks (
+                vec_row TEXT NOT NULL UNIQUE,
+                path TEXT NOT NULL UNIQUE,
+                title TEXT NOT NULL DEFAULT '', artist TEXT NOT NULL DEFAULT '',
+                album TEXT NOT NULL DEFAULT '', genre TEXT NOT NULL DEFAULT '',
+                bpm REAL NOT NULL DEFAULT 0, year INTEGER NOT NULL DEFAULT 0,
+                length REAL NOT NULL DEFAULT 0, energy REAL NOT NULL DEFAULT 0,
+                key INTEGER NOT NULL DEFAULT -1, mode INTEGER NOT NULL DEFAULT -1,
+                tempo_confidence REAL NOT NULL DEFAULT 0,
+                embedded_at REAL NOT NULL DEFAULT 0
+            )"""
+        )
+        conn.executemany(
+            "INSERT INTO tracks(vec_row, path, title) VALUES (?, ?, ?)",
+            [("2", "two.flac", "Two"), ("10", "ten.flac", "Ten")],
+        )
+        conn.commit()
+        conn.close()
+
+        entries, loaded_vectors, *_ = _load_existing_index(
+            tmp_path,
+            music_dir=tmp_path,
+            path_remap=None,
+            force=False,
+            reindex_modified_since=None,
+        )
+        migrated = sqlite3.connect(tmp_path / "tracks.db")
+        try:
+            vec_info = next(
+                row for row in migrated.execute("PRAGMA table_info(tracks)") if row[1] == "vec_row"
+            )
+            rows = migrated.execute("SELECT vec_row, path FROM tracks ORDER BY vec_row").fetchall()
+        finally:
+            migrated.close()
+
+        assert vec_info[2:6] == ("INTEGER", 1, None, 0)
+        assert rows == [(0, "two.flac"), (1, "ten.flac")]
+        assert [Path(entry.path).name for entry in entries] == ["two.flac", "ten.flac"]
+        assert [int(np.argmax(vector)) for vector in loaded_vectors] == [3, 7]
+
+    def test_open_tracks_db_rebuilds_wrong_metadata_type_default_and_pk(
+        self, tmp_path: Path
+    ) -> None:
+        import sqlite3
+
+        from autodj.indexer import _open_tracks_db
+
+        conn = sqlite3.connect(tmp_path / "tracks.db")
+        conn.execute(
+            """CREATE TABLE tracks (
+                vec_row INTEGER NOT NULL UNIQUE,
+                path TEXT NOT NULL PRIMARY KEY,
+                title TEXT NOT NULL DEFAULT 'untitled', artist TEXT NOT NULL DEFAULT '',
+                album TEXT NOT NULL DEFAULT '', genre TEXT NOT NULL DEFAULT '',
+                bpm TEXT NOT NULL DEFAULT '', year INTEGER NOT NULL DEFAULT 0,
+                length REAL NOT NULL DEFAULT 0, energy REAL NOT NULL DEFAULT 0,
+                key INTEGER NOT NULL DEFAULT -1, mode INTEGER NOT NULL DEFAULT -1,
+                tempo_confidence REAL NOT NULL DEFAULT 0,
+                embedded_at REAL NOT NULL DEFAULT 0
+            )"""
+        )
+        conn.execute(
+            "INSERT INTO tracks(vec_row, path, title, bpm) "
+            "VALUES (0, 'legacy.flac', 'Legacy', '123.5')"
+        )
+        conn.commit()
+        conn.close()
+
+        migrated = _open_tracks_db(tmp_path)
+        try:
+            info = {row[1]: row for row in migrated.execute("PRAGMA table_info(tracks)")}
+            row = migrated.execute(
+                "SELECT path, title, bpm FROM tracks WHERE vec_row = 0"
+            ).fetchone()
+        finally:
+            migrated.close()
+
+        assert info["path"][5] == 0
+        assert info["title"][2:6] == ("TEXT", 1, "''", 0)
+        assert info["bpm"][2:6] == ("REAL", 1, "0", 0)
+        assert row == ("legacy.flac", "Legacy", 123.5)
 
 
 # ---------------------------------------------------------------------------
@@ -889,7 +1272,7 @@ class TestPathPortability:
         conn = _sql.connect(idx / "tracks.db")
         try:
             stored_path = conn.execute(
-                "SELECT path FROM tracks ORDER BY id ASC LIMIT 1"
+                "SELECT path FROM tracks ORDER BY vec_row ASC LIMIT 1"
             ).fetchone()[0]
         finally:
             conn.close()
@@ -1179,7 +1562,7 @@ class TestBackfillDjMeta:
 
 
 class TestThrottledFaissCheckpoint:
-    """Per-track tracks.db UPSERT + every-N FAISS rewrite + reload recovery."""
+    """Aligned every-N vector flush + metadata delta + reload recovery."""
 
     @staticmethod
     def _make_entries(n: int) -> tuple[list[IndexEntry], np.ndarray]:
@@ -1233,9 +1616,267 @@ class TestThrottledFaissCheckpoint:
             conn.close()
         assert count == 3
 
+    def test_delta_checkpoint_upserts_one_stable_vector_row(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import autodj.indexer as indexer
+        from autodj.indexer import (
+            _load_tracks_rows,
+            _open_tracks_db,
+            _upsert_tracks_metadata,
+        )
+
+        entries, _ = self._make_entries(3)
+        statements: list[str] = []
+
+        def traced_open(index_dir: Path):
+            conn = _open_tracks_db(index_dir)
+            conn.set_trace_callback(statements.append)
+            return conn
+
+        monkeypatch.setattr(indexer, "_open_tracks_db", traced_open)
+        _upsert_tracks_metadata(entries[:2], tmp_path, first_vec_row=0, music_dir=None)
+        statements.clear()
+        _upsert_tracks_metadata(entries[2:], tmp_path, first_vec_row=2, music_dir=None)
+        conn = _open_tracks_db(tmp_path)
+        try:
+            rows = conn.execute("SELECT vec_row, path FROM tracks ORDER BY vec_row").fetchall()
+            loaded = _load_tracks_rows(conn)
+        finally:
+            conn.close()
+
+        assert rows == [
+            (0, entries[0].path),
+            (1, entries[1].path),
+            (2, entries[2].path),
+        ]
+        assert [entry.path for entry in loaded] == [entry.path for entry in entries]
+        assert not any(
+            statement.lstrip().upper().startswith("DELETE FROM TRACKS") for statement in statements
+        )
+
+    def test_checkpoint_buffers_metadata_until_vectors_are_flushed(self, tmp_path: Path) -> None:
+        from autodj.indexer import IncrementalCheckpoint, _open_tracks_db
+
+        entries, vectors = self._make_entries(2)
+        checkpoint = IncrementalCheckpoint(
+            index_dir=tmp_path,
+            music_dir=None,
+            existing_entries=[],
+            existing_vectors=[],
+            total_new=2,
+            flush_every=2,
+        )
+        checkpoint.write(entries[:1], [vectors[0]])
+        assert not (tmp_path / "tracks.db").exists()
+        assert not (tmp_path / "vectors.index").exists()
+
+        checkpoint.write(entries, [vectors[0], vectors[1]])
+        conn = _open_tracks_db(tmp_path)
+        try:
+            assert conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0] == 2
+        finally:
+            conn.close()
+        assert (tmp_path / "vectors.index").exists()
+
+    def test_aligned_checkpoint_only_converts_binds_and_queries_delta(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import autodj.indexer as indexer
+        from autodj.indexer import IncrementalCheckpoint, _open_tracks_db, save_index
+
+        entries, vectors = self._make_entries(65)
+        existing_entries = entries[:64]
+        existing_vectors = list(vectors[:64])
+        save_index(existing_entries, vectors[:64], tmp_path, music_dir=None)
+
+        converted_paths: list[str] = []
+        statements: list[str] = []
+        real_entry_to_row = indexer._entry_to_row
+        real_open_tracks_db = _open_tracks_db
+
+        def traced_entry_to_row(entry, music_dir, vec_row):
+            converted_paths.append(entry.path)
+            return real_entry_to_row(entry, music_dir, vec_row)
+
+        def traced_open(index_dir: Path):
+            conn = real_open_tracks_db(index_dir)
+            conn.set_trace_callback(statements.append)
+            return conn
+
+        monkeypatch.setattr(indexer, "_entry_to_row", traced_entry_to_row)
+        monkeypatch.setattr(indexer, "_open_tracks_db", traced_open)
+        checkpoint = IncrementalCheckpoint(
+            index_dir=tmp_path,
+            music_dir=None,
+            existing_entries=existing_entries,
+            existing_vectors=existing_vectors,
+            total_new=1,
+            flush_every=1,
+        )
+
+        checkpoint.write(entries[64:], [vectors[64]])
+
+        conn = real_open_tracks_db(tmp_path)
+        try:
+            count = conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
+        finally:
+            conn.close()
+        metadata_inserts = [
+            statement
+            for statement in statements
+            if statement.lstrip().upper().startswith("INSERT INTO TRACKS")
+        ]
+        baseline_queries = [
+            statement
+            for statement in statements
+            if statement.lstrip().upper().startswith("SELECT VEC_ROW, PATH FROM TRACKS")
+        ]
+
+        assert count == 65
+        assert converted_paths == [entries[64].path]
+        assert len(metadata_inserts) == 1
+        assert baseline_queries == []
+
+    def test_embed_propagates_checkpoint_failure_and_allows_full_delta_retry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import faiss
+
+        import autodj.indexer as indexer
+        from autodj.indexer import (
+            IncrementalCheckpoint,
+            _embed_new_tracks,
+            _open_tracks_db,
+        )
+
+        entries, _ = self._make_entries(1)
+        marker_vector = np.zeros(FEATURE_DIM, dtype=np.float32)
+        marker_vector[17] = 1.0
+        embedding = marker_vector[:EMBEDDING_DIM]
+        track = Track(
+            path=Path(entries[0].path),
+            title=entries[0].title,
+            artist=entries[0].artist,
+            album=entries[0].album,
+            genre=entries[0].genre,
+            bpm=entries[0].bpm,
+            year=entries[0].year,
+            length=entries[0].length,
+        )
+        wrapper = MagicMock()
+        wrapper.embed_array.return_value = embedding
+        checkpoint = IncrementalCheckpoint(
+            index_dir=tmp_path,
+            music_dir=None,
+            existing_entries=[],
+            existing_vectors=[],
+            total_new=1,
+            flush_every=1,
+        )
+        real_upsert = indexer._upsert_tracks_metadata
+
+        def fail_metadata(*_args, **_kwargs):
+            raise OSError("metadata checkpoint failed")
+
+        monkeypatch.setattr(indexer, "_upsert_tracks_metadata", fail_metadata)
+        with (
+            patch(
+                "autodj.indexer._extract_librosa_features",
+                return_value=(
+                    np.zeros(16, dtype=np.float32),
+                    np.zeros(32, dtype=np.float32),
+                    22050,
+                    {"energy": 0.0, "key": -1, "mode": -1, "tempo_confidence": 0.0},
+                ),
+            ),
+            pytest.raises(OSError, match="metadata checkpoint failed"),
+        ):
+            _embed_new_tracks([track], wrapper, workers=1, checkpoint=checkpoint.write)
+
+        assert checkpoint.published_new_count == 0
+        assert faiss.read_index(str(tmp_path / "vectors.index")).ntotal == 1
+
+        monkeypatch.setattr(indexer, "_upsert_tracks_metadata", real_upsert)
+        checkpoint.write(entries, [marker_vector])
+        conn = _open_tracks_db(tmp_path)
+        try:
+            paths = conn.execute("SELECT path FROM tracks ORDER BY vec_row").fetchall()
+        finally:
+            conn.close()
+        retried = faiss.read_index(str(tmp_path / "vectors.index"))
+        assert paths == [(entries[0].path,)]
+        assert int(np.argmax(retried.reconstruct(0))) == 17
+
+    def test_checkpoint_reconciles_interior_stale_baseline_before_delta(
+        self, tmp_path: Path
+    ) -> None:
+        from autodj.indexer import (
+            IncrementalCheckpoint,
+            _load_existing_index,
+            load_index,
+            save_index,
+        )
+
+        entries, _ = self._make_entries(3)
+        for index, entry in enumerate(entries):
+            track_path = tmp_path / f"song_{index}.flac"
+            track_path.touch()
+            entry.path = str(track_path)
+            entry.embedded_at = track_path.stat().st_mtime
+        entries[1].embedded_at -= 10.0
+
+        vectors = np.zeros((3, FEATURE_DIM), dtype=np.float32)
+        for row, marker in enumerate((3, 7, 11)):
+            vectors[row, marker] = 1.0
+        index_dir = tmp_path / "index"
+        save_index(entries, vectors, index_dir, music_dir=tmp_path)
+
+        (
+            existing_entries,
+            existing_vectors,
+            _,
+            baseline_requires_reconcile,
+        ) = _load_existing_index(
+            index_dir,
+            music_dir=tmp_path,
+            path_remap=None,
+            force=False,
+            reindex_modified_since=None,
+        )
+        assert [entry.path for entry in existing_entries] == [
+            entries[0].path,
+            entries[2].path,
+        ]
+        assert [int(np.argmax(vector)) for vector in existing_vectors] == [3, 11]
+
+        replacement = entries[1]
+        replacement.embedded_at = Path(replacement.path).stat().st_mtime
+        replacement_vector = np.zeros(FEATURE_DIM, dtype=np.float32)
+        replacement_vector[19] = 1.0
+        checkpoint = IncrementalCheckpoint(
+            index_dir=index_dir,
+            music_dir=tmp_path,
+            existing_entries=existing_entries,
+            existing_vectors=existing_vectors,
+            total_new=1,
+            baseline_requires_reconcile=baseline_requires_reconcile,
+            flush_every=1,
+        )
+        checkpoint.write([replacement], [replacement_vector])
+
+        loaded_entries, loaded_index = load_index(index_dir, music_dir=tmp_path)
+        assert [entry.path for entry in loaded_entries] == [
+            entries[0].path,
+            entries[2].path,
+            entries[1].path,
+        ]
+        assert [
+            int(np.argmax(loaded_index.reconstruct(row))) for row in range(loaded_index.ntotal)
+        ] == [3, 11, 19]
+
     def test_load_existing_index_trims_unmatched_db_tail(self, tmp_path: Path) -> None:
-        """Crash between metadata flush and FAISS flush leaves tracks.db
-        with extra rows.  _load_existing_index must drop the tail."""
+        """Legacy partial writes with extra DB rows are trimmed on reload."""
         from autodj.indexer import _load_existing_index, save_index
 
         entries, vectors = self._make_entries(5)
@@ -1251,7 +1892,7 @@ class TestThrottledFaissCheckpoint:
 
         _save_tracks_metadata(entries, index_dir, music_dir=None)
 
-        existing_e, existing_v, paths = _load_existing_index(
+        existing_e, existing_v, paths, _ = _load_existing_index(
             index_dir,
             music_dir=tmp_path,
             path_remap=None,
@@ -1273,32 +1914,67 @@ class TestThrottledFaissCheckpoint:
         assert db_count == 3
 
     def test_load_existing_index_trims_unmatched_faiss_tail(self, tmp_path: Path) -> None:
-        """Defensive: if FAISS somehow has more vectors than tracks.db
-        (shouldn't happen given metadata-first ordering), the load path
-        must still return aligned lists."""
+        """A vector checkpoint interrupted before metadata stays aligned."""
+        import faiss
+
         from autodj.indexer import (
             _load_existing_index,
             _save_tracks_metadata,
             save_index,
         )
 
-        entries, vectors = self._make_entries(5)
+        entries, _ = self._make_entries(5)
+        vectors = np.zeros((5, FEATURE_DIM), dtype=np.float32)
+        vectors[np.arange(5), np.arange(5)] = 1.0
         index_dir = tmp_path / "idx"
         index_dir.mkdir()
         save_index(entries, vectors, index_dir)
         # Shrink tracks.db without rewriting FAISS.
         _save_tracks_metadata(entries[:2], index_dir, music_dir=None)
 
-        existing_e, existing_v, _ = _load_existing_index(
+        existing_e, existing_v, _, _ = _load_existing_index(
             index_dir,
             music_dir=tmp_path,
             path_remap=None,
             force=False,
             reindex_modified_since=None,
         )
-        # Both lists clamped to the smaller (metadata) length.
-        assert len(existing_e) == 2
-        assert len(existing_v) == 2
+        assert [entry.path for entry in existing_e] == [
+            str(tmp_path / entries[0].path),
+            str(tmp_path / entries[1].path),
+        ]
+        assert [int(np.argmax(vector)) for vector in existing_v] == [0, 1]
+
+        recovered = faiss.read_index(str(index_dir / "vectors.index"))
+        assert recovered.ntotal == 2
+        assert [int(np.argmax(recovered.reconstruct(row))) for row in range(2)] == [0, 1]
+
+    def test_load_existing_index_persists_empty_metadata_prefix(self, tmp_path: Path) -> None:
+        import faiss
+
+        from autodj.indexer import (
+            _load_existing_index,
+            _save_vectors,
+        )
+
+        vectors = np.zeros((3, FEATURE_DIM), dtype=np.float32)
+        vectors[np.arange(3), np.arange(3)] = 1.0
+        _save_vectors(vectors, tmp_path)
+        assert not (tmp_path / "tracks.db").exists()
+
+        existing_entries, existing_vectors, paths, _ = _load_existing_index(
+            tmp_path,
+            music_dir=tmp_path,
+            path_remap=None,
+            force=False,
+            reindex_modified_since=None,
+        )
+
+        assert existing_entries == []
+        assert existing_vectors == []
+        assert paths == set()
+        assert (tmp_path / "tracks.db").exists()
+        assert faiss.read_index(str(tmp_path / "vectors.index")).ntotal == 0
 
     def test_save_index_still_writes_both_files(self, tmp_path: Path) -> None:
         """Public save_index() API kept its both-files contract; the
