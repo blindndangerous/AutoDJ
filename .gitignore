@@ -1,6 +1,3 @@
-# Claude Code local settings
-.claude/
-
 # Personal config (contains local paths) — use config.toml.example as the template
 config.toml
 # Per-machine overlay applied on top of config.toml (paths, music_dir,
