@@ -732,8 +732,8 @@ class TestCmdListIndexes:
             conn = _sql.connect(d / "tracks.db")
             conn.executescript(_TRACKS_SCHEMA)
             conn.executemany(
-                "INSERT INTO tracks (path) VALUES (?)",
-                [(f"x{i}",) for i in range(count)],
+                "INSERT INTO tracks (vec_row, path) VALUES (?, ?)",
+                [(i, f"x{i}") for i in range(count)],
             )
             conn.commit()
             conn.close()
