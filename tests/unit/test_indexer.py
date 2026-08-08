@@ -1210,7 +1210,6 @@ class TestPruneIndex:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from autodj.index_manifest import (
-            IndexConsistencyError,
             current_snapshot_token,
             read_manifest,
         )
@@ -1230,8 +1229,7 @@ class TestPruneIndex:
         with pytest.raises(PermissionError, match="vectors locked"):
             prune_index(idx, allow_mass_prune=True)
 
-        with pytest.raises(IndexConsistencyError, match="tombstone"):
-            read_manifest(idx)
+        assert read_manifest(idx) is None
         assert current_snapshot_token(idx).generation == 0
         assert (idx / "vectors.index").exists()
         assert (idx / "tracks.db").exists()
@@ -1556,6 +1554,33 @@ class TestFlatIndexMigration:
         # Old files gone
         assert not meta_old.exists()
         assert not vec_old.exists()
+
+    def test_migration_upgrades_literal_id_schema_with_vector_order(self, tmp_path: Path) -> None:
+        import sqlite3
+
+        from autodj.indexer import load_index
+
+        conn = sqlite3.connect(tmp_path / "tracks.db")
+        try:
+            conn.execute("CREATE TABLE tracks (id INTEGER, path TEXT, title TEXT)")
+            conn.executemany(
+                "INSERT INTO tracks VALUES (?, ?, ?)",
+                [(5, "first.flac", "First"), (10, "second.flac", "Second")],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        vectors = np.zeros((2, FEATURE_DIM), dtype=np.float32)
+        vectors[0, 17] = 1.0
+        vectors[1, 83] = 1.0
+        index = faiss.IndexFlatIP(FEATURE_DIM)
+        index.add(vectors)
+        faiss.write_index(index, str(tmp_path / "vectors.index"))
+
+        entries, migrated = load_index(tmp_path / "default")
+
+        assert [entry.path for entry in entries] == ["first.flac", "second.flac"]
+        assert [int(np.argmax(migrated.reconstruct(row))) for row in range(2)] == [17, 83]
 
     def test_no_migration_when_already_in_place(self, tmp_path: Path) -> None:
         from autodj.indexer import _migrate_flat_index_if_needed, save_index

@@ -58,11 +58,13 @@ _HELD_LOCKS = _LockState()
 
 def _reset_process_local_locks() -> None:
     """Discard inherited lock ownership after fork."""
-    global _LOCKS_PROCESS_ID
-    with _LOCKS_GUARD:
-        _LOCKS.clear()
-        _LOCKS_PROCESS_ID = os.getpid()
-    _HELD_LOCKS.paths = set()
+    # Never touch inherited synchronization primitives here: another thread
+    # may have held one at fork time, making acquisition in the child hang.
+    global _HELD_LOCKS, _LOCKS, _LOCKS_GUARD, _LOCKS_PROCESS_ID
+    _LOCKS = {}
+    _LOCKS_GUARD = threading.Lock()
+    _HELD_LOCKS = _LockState()
+    _LOCKS_PROCESS_ID = os.getpid()
 
 
 if hasattr(os, "register_at_fork"):
@@ -110,9 +112,8 @@ def snapshot_token_for_manifest(manifest: IndexManifest | None) -> IndexSnapshot
 
 @dataclass(frozen=True)
 class _PublicationState:
-    revision: int
-    high_water_generation: int
-    tombstone: bool
+    high_water: int
+    tombstone_revision: int
 
 
 def _read_publication_state(index_dir: Path) -> _PublicationState | None:
@@ -121,18 +122,28 @@ def _read_publication_state(index_dir: Path) -> _PublicationState | None:
         return None
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-        if (
-            type(raw) is not dict
-            or set(raw) != {"revision", "high_water_generation", "tombstone"}
-            or type(raw["revision"]) is not int
-            or type(raw["high_water_generation"]) is not int
-            or type(raw["tombstone"]) is not bool
-        ):
+        if type(raw) is not dict:
             raise ValueError("invalid publication state")
-        state = _PublicationState(**raw)
+        if set(raw) == {"high_water", "tombstone_revision"}:
+            if type(raw["high_water"]) is not int or type(raw["tombstone_revision"]) is not int:
+                raise ValueError("invalid publication state")
+            state = _PublicationState(**raw)
+        elif set(raw) == {"revision", "high_water_generation", "tombstone"}:
+            if (
+                type(raw["revision"]) is not int
+                or type(raw["high_water_generation"]) is not int
+                or type(raw["tombstone"]) is not bool
+            ):
+                raise ValueError("invalid publication state")
+            state = _PublicationState(
+                high_water=max(raw["revision"], raw["high_water_generation"]),
+                tombstone_revision=raw["revision"] if raw["tombstone"] else 0,
+            )
+        else:
+            raise ValueError("invalid publication state")
     except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
         raise IndexConsistencyError(f"invalid publication state: {exc}") from exc
-    if state.revision < 0 or state.high_water_generation < 0:
+    if state.high_water < 0 or state.tombstone_revision < 0:
         raise IndexConsistencyError("invalid publication state counters")
     return state
 
@@ -157,28 +168,20 @@ def _state_for_manifest(index_dir: Path, manifest: IndexManifest | None) -> _Pub
     if state is not None:
         return state
     return _PublicationState(
-        revision=0 if manifest is None else manifest.state_revision,
-        high_water_generation=0 if manifest is None else manifest.generation,
-        tombstone=False,
+        high_water=0 if manifest is None else max(manifest.generation, manifest.state_revision),
+        tombstone_revision=0,
     )
 
 
 def current_snapshot_token(index_dir: Path) -> IndexSnapshotToken:
     """Read current manifest identity; caller must hold publication lock for mutation."""
-    state = _read_publication_state(index_dir)
-    if state is not None and state.tombstone:
-        return IndexSnapshotToken(0, state.revision)
     manifest = read_manifest(index_dir)
     state = _state_for_manifest(index_dir, manifest)
     if _read_publication_state(index_dir) is None:
         _write_publication_state(index_dir, state)
-    if (
-        manifest is not None
-        and manifest.schema_version == SCHEMA_VERSION
-        and state.revision != manifest.state_revision
-    ):
-        raise IndexConsistencyError("publication state does not match manifest")
-    return IndexSnapshotToken(0 if manifest is None else manifest.generation, state.revision)
+    if manifest is not None:
+        return IndexSnapshotToken(manifest.generation, manifest.state_revision)
+    return IndexSnapshotToken(0, state.tombstone_revision)
 
 
 def require_snapshot_token(
@@ -198,18 +201,24 @@ def require_snapshot_token(
 def tombstone_publication(index_dir: Path) -> None:
     """Durably supersede the live snapshot before prune-all removes files."""
     state = _read_publication_state(index_dir)
-    if state is not None and state.tombstone:
+    if state is not None and state.tombstone_revision:
         return
     manifest = read_manifest(index_dir)
     state = _state_for_manifest(index_dir, manifest)
+    revision = (
+        max(
+            state.high_water,
+            state.tombstone_revision,
+            0 if manifest is None else manifest.generation,
+            0 if manifest is None else manifest.state_revision,
+        )
+        + 1
+    )
     _write_publication_state(
         index_dir,
         _PublicationState(
-            revision=state.revision + 1,
-            high_water_generation=max(
-                state.high_water_generation, 0 if manifest is None else manifest.generation
-            ),
-            tombstone=True,
+            high_water=revision,
+            tombstone_revision=revision,
         ),
     )
 
@@ -264,7 +273,11 @@ def read_manifest(index_dir: Path) -> IndexManifest | None:
         raise IndexConsistencyError(
             f"unsupported manifest schema {manifest.schema_version}; expected {SCHEMA_VERSION}"
         )
-    if manifest.generation < 1 or manifest.vector_count < 0:
+    if (
+        manifest.generation < 1
+        or manifest.vector_count < 0
+        or (manifest.schema_version == SCHEMA_VERSION and manifest.state_revision < 0)
+    ):
         raise IndexConsistencyError("manifest generation/count must be non-negative")
     try:
         published = datetime.fromisoformat(manifest.published_at)
@@ -285,11 +298,8 @@ def read_manifest(index_dir: Path) -> IndexManifest | None:
         if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
             raise IndexConsistencyError("manifest contains an invalid SHA-256 digest")
     state = _read_publication_state(index_dir)
-    if state is not None:
-        if state.tombstone:
-            raise IndexConsistencyError("publication tombstone supersedes manifest")
-        if manifest.schema_version == SCHEMA_VERSION and state.revision != manifest.state_revision:
-            raise IndexConsistencyError("publication state does not match manifest")
+    if state is not None and manifest.state_revision <= state.tombstone_revision:
+        return None
     return manifest
 
 
@@ -446,16 +456,24 @@ def publish_manifest(index_dir: Path, vector_count: int) -> IndexManifest:
     with publication_lock(index_dir):
         previous = read_manifest(index_dir)
         state = _state_for_manifest(index_dir, previous)
-        generation = (
-            max(state.high_water_generation, 0 if previous is None else previous.generation) + 1
+        revision = (
+            max(
+                state.high_water,
+                state.tombstone_revision,
+                0 if previous is None else previous.generation,
+                0 if previous is None else previous.state_revision,
+            )
+            + 1
         )
         state = _PublicationState(
-            revision=state.revision + 1,
-            high_water_generation=generation,
-            tombstone=False,
+            high_water=revision,
+            tombstone_revision=state.tombstone_revision,
         )
+        # This reserves a never-reused ID.  It intentionally leaves the
+        # prior manifest live until the new manifest replace commits.
         _write_publication_state(index_dir, state)
         _checkpoint_working_tracks(index_dir)
+        generation = revision
         tracks_name = f"tracks.g{generation:020d}.db"
         vectors_name = f"vectors.g{generation:020d}.index"
         tracks_path = index_dir / tracks_name
@@ -471,7 +489,7 @@ def publish_manifest(index_dir: Path, vector_count: int) -> IndexManifest:
             vectors_file=vectors_name,
             tracks_sha256=sha256_file(tracks_path),
             vectors_sha256=sha256_file(vectors_path),
-            state_revision=state.revision,
+            state_revision=revision,
         )
         _validate_snapshot_files(index_dir, manifest)
         _write_manifest(index_dir / MANIFEST_NAME, manifest)

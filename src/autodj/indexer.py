@@ -1541,6 +1541,16 @@ def _backup_legacy_tracks_db(source: Path, destination: Path) -> None:
         source_conn.close()
 
 
+def _migrate_staged_legacy_tracks_db(staged_db: Path) -> None:
+    """Upgrade a copied legacy tracks table before target promotion."""
+    conn = sqlite3.connect(staged_db, isolation_level=None)
+    try:
+        _ensure_vec_row_schema(conn)
+        conn.execute("PRAGMA journal_mode=WAL")
+    finally:
+        conn.close()
+
+
 def _validate_flat_migration_staging(staged_db: Path, staged_vectors: Path) -> int:
     """Reject staged legacy cores whose SQLite and FAISS row counts differ."""
     conn = sqlite3.connect(_immutable_sqlite_uri(staged_db), uri=True)
@@ -1626,6 +1636,7 @@ def _migrate_flat_index_if_needed(target_dir: Path) -> None:
                 _write_flat_migration_marker(target_dir, staging, preserve_target_vector=True)
                 shutil.copyfile(target_vec, staged_vec)
                 _backup_legacy_tracks_db(src_db, staged_db)
+                _migrate_staged_legacy_tracks_db(staged_db)
                 vector_count = _validate_flat_migration_staging(staged_db, staged_vec)
                 staged_db.replace(target_db)
                 publish_manifest(target_dir, vector_count)
@@ -1661,6 +1672,7 @@ def _migrate_flat_index_if_needed(target_dir: Path) -> None:
             _write_flat_migration_marker(target_dir, staging)
             shutil.copyfile(src_vec, staged_vec)
             _backup_legacy_tracks_db(src_db, staged_db)
+            _migrate_staged_legacy_tracks_db(staged_db)
             vector_count = _validate_flat_migration_staging(staged_db, staged_vec)
             staged_vec.replace(target_vec)
             staged_db.replace(target_db)

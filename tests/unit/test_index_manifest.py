@@ -14,10 +14,12 @@ import pytest
 from autodj.index_manifest import (
     IndexConsistencyError,
     IndexSnapshotToken,
+    current_snapshot_token,
     publish_manifest,
     read_manifest,
     restore_working_snapshot,
     sha256_file,
+    tombstone_publication,
 )
 
 
@@ -51,6 +53,24 @@ def _publish_once(index_dir_text: str, count: int) -> int:
 def test_snapshot_token_rejects_negative_generation() -> None:
     with pytest.raises(ValueError, match="non-negative"):
         IndexSnapshotToken(-1)
+
+
+def test_fork_reset_rebinds_inherited_lock_state_without_acquiring_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import autodj.index_manifest as manifest_module
+
+    inherited_guard = __import__("threading").Lock()
+    inherited_guard.acquire()
+    monkeypatch.setattr(manifest_module, "_LOCKS_GUARD", inherited_guard)
+    monkeypatch.setattr(manifest_module, "_LOCKS", {Path("old"): __import__("threading").RLock()})
+    manifest_module._HELD_LOCKS.paths = {Path("old")}
+
+    manifest_module._reset_process_local_locks()
+
+    assert manifest_module._LOCKS == {}
+    assert manifest_module._LOCKS_GUARD is not inherited_guard
+    assert manifest_module._HELD_LOCKS.paths == set()
 
 
 def _manifest_payload(**changes: object) -> dict[str, object]:
@@ -149,6 +169,13 @@ def test_manifest_rejects_noncanonical_utc_timestamp(tmp_path: Path, published_a
         read_manifest(tmp_path)
 
 
+def test_v2_manifest_rejects_negative_state_revision_without_state_file(tmp_path: Path) -> None:
+    payload = _manifest_payload(schema_version=2, state_revision=-1)
+    (tmp_path / "index-manifest.json").write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(IndexConsistencyError, match="generation/count"):
+        read_manifest(tmp_path)
+
+
 @pytest.mark.skipif(os.name != "nt", reason="msvcrt locking is Windows-only")
 def test_windows_lock_retries_contention_until_acquired(
     tmp_path: Path,
@@ -224,6 +251,43 @@ def test_publish_manifest_serializes_concurrent_generation_numbers(tmp_path: Pat
     with ThreadPoolExecutor(max_workers=2) as pool:
         futures = [pool.submit(publish_manifest, tmp_path, 3) for _ in range(2)]
     assert {future.result().generation for future in futures} == {1, 2}
+
+
+def test_failed_reserved_publish_keeps_prior_snapshot_live_and_consumes_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import autodj.index_manifest as manifest_module
+
+    _write_working_artifacts(tmp_path, 2)
+    first = publish_manifest(tmp_path, 2)
+    before = current_snapshot_token(tmp_path)
+    monkeypatch.setattr(
+        manifest_module,
+        "_checkpoint_working_tracks",
+        lambda _index_dir: (_ for _ in ()).throw(OSError("checkpoint failed")),
+    )
+    with pytest.raises(OSError, match="checkpoint failed"):
+        publish_manifest(tmp_path, 2)
+
+    assert read_manifest(tmp_path) == first
+    assert current_snapshot_token(tmp_path) == before
+    monkeypatch.undo()
+    retried = publish_manifest(tmp_path, 2)
+    assert retried.generation == first.generation + 2
+
+
+def test_tombstoned_stale_manifest_is_logically_empty_and_publish_recovers(tmp_path: Path) -> None:
+    _write_working_artifacts(tmp_path, 2)
+    first = publish_manifest(tmp_path, 2)
+    tombstone_publication(tmp_path)
+
+    assert (tmp_path / "index-manifest.json").exists()
+    assert read_manifest(tmp_path) is None
+    assert current_snapshot_token(tmp_path).generation == 0
+
+    recovered = publish_manifest(tmp_path, 2)
+    assert recovered.generation > first.generation
+    assert read_manifest(tmp_path) == recovered
 
 
 def test_restore_rejects_same_count_noncanonical_vec_rows(tmp_path: Path) -> None:
