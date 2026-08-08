@@ -143,7 +143,7 @@ def _read_publication_state(index_dir: Path) -> _PublicationState | None:
             raise ValueError("invalid publication state")
     except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
         raise IndexConsistencyError(f"invalid publication state: {exc}") from exc
-    if state.high_water < 0 or state.tombstone_revision < 0:
+    if not 0 <= state.tombstone_revision <= state.high_water:
         raise IndexConsistencyError("invalid publication state counters")
     return state
 
@@ -174,14 +174,12 @@ def _state_for_manifest(index_dir: Path, manifest: IndexManifest | None) -> _Pub
 
 
 def current_snapshot_token(index_dir: Path) -> IndexSnapshotToken:
-    """Read current manifest identity; caller must hold publication lock for mutation."""
+    """Read current manifest identity without mutating publication state."""
     manifest = read_manifest(index_dir)
     state = _state_for_manifest(index_dir, manifest)
-    if _read_publication_state(index_dir) is None:
-        _write_publication_state(index_dir, state)
     if manifest is not None:
         return IndexSnapshotToken(manifest.generation, manifest.state_revision)
-    return IndexSnapshotToken(0, state.tombstone_revision)
+    return IndexSnapshotToken(0, state.high_water)
 
 
 def legacy_artifacts_allowed(index_dir: Path) -> bool:
@@ -289,7 +287,10 @@ def read_manifest(index_dir: Path) -> IndexManifest | None:
     if (
         manifest.generation < 1
         or manifest.vector_count < 0
-        or (manifest.schema_version == SCHEMA_VERSION and manifest.state_revision < 0)
+        or (
+            manifest.schema_version == SCHEMA_VERSION
+            and (manifest.state_revision <= 0 or manifest.state_revision != manifest.generation)
+        )
     ):
         raise IndexConsistencyError("manifest generation/count must be non-negative")
     try:
@@ -311,6 +312,8 @@ def read_manifest(index_dir: Path) -> IndexManifest | None:
         if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
             raise IndexConsistencyError("manifest contains an invalid SHA-256 digest")
     state = _read_publication_state(index_dir)
+    if state is not None and manifest.state_revision > state.high_water:
+        raise IndexConsistencyError("manifest revision exceeds publication state")
     if (
         state is not None
         and state.tombstone_revision > 0
@@ -604,7 +607,13 @@ def copy_published_snapshot(
             staging.mkdir(parents=True)
             _durable_copy(index_dir / before.tracks_file, staging / "tracks.db")
             _durable_copy(index_dir / before.vectors_file, staging / "vectors.index")
-            copied = replace(before, tracks_file="tracks.db", vectors_file="vectors.index")
+            copied = replace(
+                before,
+                schema_version=SCHEMA_VERSION,
+                state_revision=before.generation,
+                tracks_file="tracks.db",
+                vectors_file="vectors.index",
+            )
             _write_manifest(staging / MANIFEST_NAME, copied)
             _validate_snapshot_files(staging, copied)
             after = read_manifest(index_dir)

@@ -1238,6 +1238,23 @@ class TestPruneIndex:
         assert (idx / "vectors.index").exists()
         assert (idx / "tracks.db").exists()
 
+    def test_tombstoned_restart_discards_leftover_working_cores(self, tmp_path: Path) -> None:
+        from autodj.index_manifest import current_snapshot_token, tombstone_publication
+        from autodj.indexer import _load_existing_artifacts, save_index
+
+        entries, vectors = self._distinctive_entries(tmp_path)
+        idx = tmp_path / "idx"
+        save_index(entries, vectors, idx)
+        tombstone_publication(idx)
+
+        loaded, loaded_vectors, _relative, token = _load_existing_artifacts(idx, tmp_path, None)
+
+        assert loaded == []
+        assert loaded_vectors == []
+        assert token == current_snapshot_token(idx)
+        assert not (idx / "tracks.db").exists()
+        assert not (idx / "vectors.index").exists()
+
 
 # ---------------------------------------------------------------------------
 # enrich_from_beets

@@ -995,10 +995,19 @@ class IncrementalCheckpoint:
                     else None
                 ),
             )
-            published = publish_manifest(
-                self.index_dir,
-                len(self.existing_entries) + len(new_entries),
-            )
+            try:
+                published = publish_manifest(
+                    self.index_dir,
+                    len(self.existing_entries) + len(new_entries),
+                )
+            except Exception:
+                # A failed first publication consumes an ID but leaves no
+                # live manifest.  Retrying the exact checkpoint must carry
+                # that reservation epoch, while concurrent work remains
+                # excluded by this publication lock.
+                if self.expected_snapshot.generation == 0:
+                    self.expected_snapshot = current_snapshot_token(self.index_dir)
+                raise
         self.expected_snapshot = snapshot_token_for_manifest(published)
         self.baseline_published = True
         self.published_new_count = len(new_entries)
@@ -2195,6 +2204,16 @@ def _load_existing_artifacts(
         vectors_exist = (index_dir / "vectors.index").is_file()
         if not db_exists and not vectors_exist:
             return [], [], False, snapshot
+        if publication_is_tombstoned(index_dir):
+            for path in (
+                index_dir / "tracks.db",
+                index_dir / "tracks.db-wal",
+                index_dir / "tracks.db-shm",
+                index_dir / "vectors.index",
+            ):
+                path.unlink(missing_ok=True)
+            fsync_directory(index_dir)
+            return [], [], False, current_snapshot_token(index_dir)
         if not legacy_artifacts_allowed(index_dir):
             raise IndexConsistencyError("manifest-free artifacts have publication history")
 

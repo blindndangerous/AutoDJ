@@ -277,6 +277,41 @@ def test_failed_reserved_publish_keeps_prior_snapshot_live_and_consumes_id(
     assert retried.generation == first.generation + 2
 
 
+def test_failed_first_reservation_invalidates_empty_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import autodj.index_manifest as manifest_module
+
+    _write_working_artifacts(tmp_path, 1)
+    empty = current_snapshot_token(tmp_path)
+    monkeypatch.setattr(
+        manifest_module,
+        "_checkpoint_working_tracks",
+        lambda _index_dir: (_ for _ in ()).throw(OSError("checkpoint failed")),
+    )
+    with pytest.raises(OSError, match="checkpoint failed"):
+        publish_manifest(tmp_path, 1)
+
+    assert current_snapshot_token(tmp_path) == IndexSnapshotToken(0, 1)
+    with pytest.raises(IndexConsistencyError, match="expected generation"):
+        manifest_module.require_snapshot_token(tmp_path, empty)
+
+
+def test_manifest_rejects_mismatched_v2_identity_and_state_bounds(tmp_path: Path) -> None:
+    payload = _manifest_payload(schema_version=2, state_revision=2)
+    (tmp_path / "index-manifest.json").write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(IndexConsistencyError, match="generation/count"):
+        read_manifest(tmp_path)
+
+    payload["state_revision"] = 1
+    (tmp_path / "index-manifest.json").write_text(json.dumps(payload), encoding="utf-8")
+    (tmp_path / ".index-publication-state.json").write_text(
+        json.dumps({"high_water": 1, "tombstone_revision": 2}), encoding="utf-8"
+    )
+    with pytest.raises(IndexConsistencyError, match="publication state"):
+        read_manifest(tmp_path)
+
+
 def test_tombstoned_stale_manifest_is_logically_empty_and_publish_recovers(tmp_path: Path) -> None:
     from autodj.indexer import load_index
 
@@ -324,7 +359,8 @@ def test_v1_manifest_remains_live_with_initialized_non_tombstone_state(tmp_path:
     assert legacy is not None
     assert legacy.schema_version == 1
     copied = copy_published_snapshot(tmp_path, tmp_path / "backup")
-    assert copied.schema_version == 1
+    assert copied.schema_version == 2
+    assert read_manifest(tmp_path / "backup") == copied
     upgraded = publish_manifest(tmp_path, 1)
     assert upgraded.schema_version == 2
     assert upgraded.generation > published.generation
