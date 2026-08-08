@@ -1752,6 +1752,89 @@ class TestFlatIndexMigration:
         assert not source_db.exists()
         assert not source_vectors.exists()
 
+    def test_migration_fsyncs_marker_directory_before_core_install(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import autodj.indexer as indexer
+        from autodj.indexer import load_index
+
+        self._make_flat(tmp_path)
+        target = tmp_path / "default"
+        events: list[tuple[str, Path]] = []
+        real_replace = Path.replace
+
+        def record_fsync(path: Path) -> None:
+            events.append(("fsync", path))
+
+        def require_marker_fsync(source: Path, destination: Path) -> Path:
+            if destination == target / "vectors.index":
+                assert events == [("fsync", target)]
+            return real_replace(source, destination)
+
+        monkeypatch.setattr(indexer, "fsync_directory", record_fsync)
+        monkeypatch.setattr(Path, "replace", require_marker_fsync)
+        load_index(target)
+
+    @pytest.mark.parametrize("cleanup", ["marker", "staging"])
+    def test_manifest_winner_survives_stale_migration_cleanup_failure(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        cleanup: str,
+    ) -> None:
+        import autodj.indexer as indexer
+        from autodj.indexer import _FLAT_MIGRATION_MARKER, _write_flat_migration_marker, load_index
+
+        target = tmp_path / "default"
+        entries = [
+            IndexEntry(
+                path=str(tmp_path / "published.flac"),
+                title="Published",
+                artist="Artist",
+                album="Album",
+                genre="Genre",
+                bpm=120.0,
+                year=2026,
+                length=180.0,
+                energy=0.5,
+                key=0,
+                mode=1,
+                tempo_confidence=0.8,
+            )
+        ]
+        vectors = np.zeros((1, FEATURE_DIM), dtype=np.float32)
+        vectors[0, 103] = 1.0
+        save_index(entries, vectors, target)
+        staging = target / ".flat-migration-stale"
+        staging.mkdir()
+        _write_flat_migration_marker(target, staging)
+
+        if cleanup == "marker":
+            real_unlink = Path.unlink
+
+            def refuse_marker(path: Path, *args: object, **kwargs: object) -> None:
+                if path == target / _FLAT_MIGRATION_MARKER:
+                    raise PermissionError("marker locked")
+                real_unlink(path, *args, **kwargs)
+
+            monkeypatch.setattr(Path, "unlink", refuse_marker)
+        else:
+            monkeypatch.setattr(
+                indexer.shutil,
+                "rmtree",
+                lambda _path: (_ for _ in ()).throw(OSError("staging locked")),
+            )
+
+        with caplog.at_level("WARNING"):
+            loaded, loaded_vectors = load_index(target)
+
+        assert [entry.title for entry in loaded] == ["Published"]
+        assert int(np.argmax(loaded_vectors.reconstruct(0))) == 103
+        assert any("flat migration" in record.message.lower() for record in caplog.records)
+
 
 class TestDetectStaleEntries:
     def _entry(self, path: str, embedded_at: float = 0.0) -> IndexEntry:

@@ -227,7 +227,7 @@ def publication_lock(index_dir: Path) -> Iterator[None]:
                 _release_os_lock(handle)
 
 
-def _fsync_directory(path: Path) -> None:
+def fsync_directory(path: Path) -> None:
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
     try:
         fd = os.open(path, flags)
@@ -276,7 +276,7 @@ def _write_manifest(path: Path, manifest: IndexManifest) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, path)
-        _fsync_directory(path.parent)
+        fsync_directory(path.parent)
     finally:
         tmp.unlink(missing_ok=True)
 
@@ -290,7 +290,7 @@ def _cleanup_generations(index_dir: Path, keep: set[int]) -> None:
             path.unlink()
         except OSError as exc:
             logger.warning("Could not remove old index generation %s: %s", path.name, exc)
-    _fsync_directory(index_dir)
+    fsync_directory(index_dir)
 
 
 def publish_manifest(index_dir: Path, vector_count: int) -> IndexManifest:
@@ -343,7 +343,7 @@ def restore_working_snapshot(
         (index_dir / "tracks.db-shm").unlink(missing_ok=True)
         _durable_copy(index_dir / manifest.tracks_file, index_dir / "tracks.db")
         _durable_copy(index_dir / manifest.vectors_file, index_dir / "vectors.index")
-        _fsync_directory(index_dir)
+        fsync_directory(index_dir)
         return manifest
 
 
@@ -399,7 +399,7 @@ def copy_published_snapshot(
             if after != before:
                 raise IndexConsistencyError("generation changed while copying snapshot")
             os.replace(staging, destination)
-            _fsync_directory(destination.parent)
+            fsync_directory(destination.parent)
             return copied
         finally:
             if staging.exists():

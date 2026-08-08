@@ -50,6 +50,7 @@ from autodj.index_manifest import (
     IndexSnapshotToken,
     _immutable_sqlite_uri,
     current_snapshot_token,
+    fsync_directory,
     publication_lock,
     publish_manifest,
     read_manifest,
@@ -1470,6 +1471,7 @@ def _write_flat_migration_marker(target_dir: Path, staging: Path) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         temporary.replace(marker)
+        fsync_directory(target_dir)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -1561,7 +1563,14 @@ def _migrate_flat_index_if_needed(target_dir: Path) -> None:
         manifest = read_manifest(target_dir)
         if staging is not None:
             if manifest is not None:
-                _clear_flat_migration_state(target_dir, staging, remove_cores=False)
+                try:
+                    _clear_flat_migration_state(target_dir, staging, remove_cores=False)
+                except OSError as exc:
+                    logger.warning(
+                        "Could not clean stale flat migration state for published target %s: %s",
+                        target_dir,
+                        exc,
+                    )
                 return
             _clear_flat_migration_state(target_dir, staging, remove_cores=True)
 
