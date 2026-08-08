@@ -1191,6 +1191,32 @@ class TestPruneIndex:
         assert list(idx.glob("tracks.g*.db")) == []
         assert list(idx.glob("vectors.g*.index")) == []
 
+    def test_prune_propagates_delete_failure_without_reporting_success(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from autodj.index_manifest import read_manifest
+        from autodj.indexer import prune_index
+
+        idx = self._save_with_files(tmp_path, n_present=0, n_missing=3)
+        before = read_manifest(idx)
+        assert before is not None
+        real_unlink = Path.unlink
+
+        def refuse_vectors(path: Path, *args: object, **kwargs: object) -> None:
+            if path == idx / "vectors.index":
+                raise PermissionError("vectors locked")
+            real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", refuse_vectors)
+        with pytest.raises(PermissionError, match="vectors locked"):
+            prune_index(idx, allow_mass_prune=True)
+
+        assert read_manifest(idx) == before
+        assert (idx / "vectors.index").exists()
+        assert (idx / "tracks.db").exists()
+
 
 # ---------------------------------------------------------------------------
 # enrich_from_beets
@@ -1536,6 +1562,49 @@ class TestFlatIndexMigration:
         # Neither source nor target — silent no-op
         _migrate_flat_index_if_needed(target)
         assert not target.exists()
+
+    def test_target_publication_during_migration_keeps_legacy_source(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from autodj.indexer import load_index, save_index
+
+        source_db, source_vectors = self._make_flat(tmp_path)
+        target = tmp_path / "default"
+        replacement = IndexEntry(
+            path=str(tmp_path / "concurrent.flac"),
+            title="Concurrent",
+            artist="Artist",
+            album="Album",
+            genre="Genre",
+            bpm=120.0,
+            year=2026,
+            length=180.0,
+            energy=0.5,
+            key=0,
+            mode=1,
+            tempo_confidence=0.8,
+        )
+        replacement_vectors = np.zeros((1, FEATURE_DIM), dtype=np.float32)
+        replacement_vectors[0, 97] = 1.0
+        real_exists = Path.exists
+        published = False
+
+        def publish_target_before_move(path: Path) -> bool:
+            nonlocal published
+            if path == source_db and not published:
+                published = True
+                save_index([replacement], replacement_vectors, target)
+            return real_exists(path)
+
+        monkeypatch.setattr(Path, "exists", publish_target_before_move)
+        loaded, loaded_vectors = load_index(target)
+
+        assert [entry.title for entry in loaded] == ["Concurrent"]
+        assert int(np.argmax(loaded_vectors.reconstruct(0))) == 97
+        assert source_db.exists()
+        assert source_vectors.exists()
 
 
 class TestDetectStaleEntries:

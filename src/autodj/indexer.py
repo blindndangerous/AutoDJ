@@ -26,7 +26,9 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import shutil
 import sqlite3
+import uuid
 import warnings
 from collections import deque
 from collections.abc import Callable
@@ -1297,8 +1299,7 @@ def _delete_index_files(
             *index_dir.glob("vectors.g*.index"),
         ]
         for path in paths:
-            with contextlib.suppress(FileNotFoundError, OSError):
-                path.unlink()
+            path.unlink(missing_ok=True)
 
 
 def _maybe_migrate_paths(
@@ -1469,20 +1470,58 @@ def _migrate_flat_index_if_needed(target_dir: Path) -> None:
     Args:
         target_dir: The named-index sub-directory (e.g. ``index/default``).
     """
-    target_vec = target_dir / "vectors.index"
-    target_db = target_dir / "tracks.db"
-    if target_vec.exists() and target_db.exists():
-        return  # Already migrated or fresh build — nothing to do
     parent = target_dir.parent
     src_vec = parent / "vectors.index"
     src_db = parent / "tracks.db"
     if not src_vec.exists() or not src_db.exists():
-        return  # Nothing to migrate
-    target_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        src_vec.replace(target_vec)
-        src_db.replace(target_db)
-        # Move sidecars too if present
+        return
+    with publication_lock(target_dir):
+        # Check the source before inspecting target state so the target state
+        # is rechecked immediately before migration under its lock.
+        if not src_vec.exists() or not src_db.exists():
+            return
+        target_vec = target_dir / "vectors.index"
+        target_db = target_dir / "tracks.db"
+        if read_manifest(target_dir) is not None or target_vec.exists() or target_db.exists():
+            return
+
+        staging = target_dir / f".flat-migration-{uuid.uuid4().hex}"
+        staging.mkdir()
+        staged_vec = staging / target_vec.name
+        staged_db = staging / target_db.name
+        installed: list[Path] = []
+        try:
+            shutil.copyfile(src_vec, staged_vec)
+            shutil.copyfile(src_db, staged_db)
+            staged_vec.replace(target_vec)
+            installed.append(target_vec)
+            staged_db.replace(target_db)
+            installed.append(target_db)
+            vector_count = int(faiss.read_index(str(target_vec)).ntotal)
+            publish_manifest(target_dir, vector_count)
+        except OSError as exc:
+            for path in reversed(installed):
+                path.unlink()
+            logger.warning(
+                "Auto-migration failed (%s); move manually:\n  mv %s %s\n  (and tracks.db alongside)",
+                exc,
+                src_vec,
+                target_vec,
+            )
+            return
+        except Exception:
+            for path in reversed(installed):
+                path.unlink(missing_ok=True)
+            raise
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+
+        for source in (src_vec, src_db):
+            try:
+                source.unlink()
+            except OSError as exc:
+                logger.warning("Could not remove migrated legacy artifact %s: %s", source, exc)
+        # Move sidecars only after the coherent core snapshot is published.
         for sidecar in (
             "dj_meta.db",
             "tracks.db-wal",
@@ -1491,18 +1530,15 @@ def _migrate_flat_index_if_needed(target_dir: Path) -> None:
             "runtime_state.json",
         ):
             old = parent / sidecar
-            if old.exists() and not (target_dir / sidecar).exists():
-                old.replace(target_dir / sidecar)
+            new = target_dir / sidecar
+            if old.exists() and not new.exists():
+                try:
+                    old.replace(new)
+                except OSError as exc:
+                    logger.warning("Could not migrate sidecar %s: %s", old, exc)
         logger.info(
             "Migrated flat index → %s (named-index layout)",
             target_dir,
-        )
-    except OSError as exc:
-        logger.warning(
-            "Auto-migration failed (%s); move manually:\n  mv %s %s\n  (and tracks.db alongside)",
-            exc,
-            src_vec,
-            target_vec,
         )
 
 

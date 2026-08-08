@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import logging
@@ -10,6 +11,7 @@ import re
 import shutil
 import sqlite3
 import threading
+import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -24,6 +26,7 @@ MANIFEST_NAME = "index-manifest.json"
 _GENERATION_RE = re.compile(r"^(tracks|vectors)\.g(\d{20})\.(db|index)$")
 _LOCKS: dict[Path, threading.RLock] = {}
 _LOCKS_GUARD = threading.Lock()
+_WINDOWS_LOCK_RETRY_SECONDS = 0.1
 logger = logging.getLogger(__name__)
 
 
@@ -95,15 +98,33 @@ def read_manifest(index_dir: Path) -> IndexManifest | None:
         return None
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
+        fields = {
+            "schema_version",
+            "generation",
+            "vector_count",
+            "published_at",
+            "tracks_file",
+            "vectors_file",
+            "tracks_sha256",
+            "vectors_sha256",
+        }
+        if type(raw) is not dict or set(raw) != fields:
+            raise IndexConsistencyError("invalid index manifest structure")
+        int_fields = ("schema_version", "generation", "vector_count")
+        string_fields = tuple(fields - set(int_fields))
+        if any(type(raw[field]) is not int for field in int_fields) or any(
+            type(raw[field]) is not str for field in string_fields
+        ):
+            raise IndexConsistencyError("invalid index manifest field types")
         manifest = IndexManifest(
-            schema_version=int(raw["schema_version"]),
-            generation=int(raw["generation"]),
-            vector_count=int(raw["vector_count"]),
-            published_at=str(raw["published_at"]),
-            tracks_file=str(raw["tracks_file"]),
-            vectors_file=str(raw["vectors_file"]),
-            tracks_sha256=str(raw["tracks_sha256"]),
-            vectors_sha256=str(raw["vectors_sha256"]),
+            schema_version=raw["schema_version"],
+            generation=raw["generation"],
+            vector_count=raw["vector_count"],
+            published_at=raw["published_at"],
+            tracks_file=raw["tracks_file"],
+            vectors_file=raw["vectors_file"],
+            tracks_sha256=raw["tracks_sha256"],
+            vectors_sha256=raw["vectors_sha256"],
         )
     except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
         raise IndexConsistencyError(f"invalid index manifest: {exc}") from exc
@@ -113,9 +134,13 @@ def read_manifest(index_dir: Path) -> IndexManifest | None:
         )
     if manifest.generation < 1 or manifest.vector_count < 0:
         raise IndexConsistencyError("manifest generation/count must be non-negative")
-    for name in (manifest.tracks_file, manifest.vectors_file):
-        if Path(name).name != name:
-            raise IndexConsistencyError("manifest artifact must be one plain filename")
+    canonical_pair = ("tracks.db", "vectors.index")
+    generation_pair = (
+        f"tracks.g{manifest.generation:020d}.db",
+        f"vectors.g{manifest.generation:020d}.index",
+    )
+    if (manifest.tracks_file, manifest.vectors_file) not in {canonical_pair, generation_pair}:
+        raise IndexConsistencyError("manifest artifacts do not match its generation")
     for digest in (manifest.tracks_sha256, manifest.vectors_sha256):
         if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
             raise IndexConsistencyError("manifest contains an invalid SHA-256 digest")
@@ -147,7 +172,17 @@ def _acquire_os_lock(handle: BinaryIO) -> None:
         import msvcrt
 
         handle.seek(0)
-        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        while True:
+            try:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError as exc:
+                if exc.errno not in {errno.EACCES, errno.EAGAIN} and getattr(
+                    exc, "winerror", None
+                ) not in {32, 33}:
+                    raise
+                time.sleep(_WINDOWS_LOCK_RETRY_SECONDS)
+            else:
+                break
         handle.seek(0, os.SEEK_END)
         if handle.tell() == 0:
             handle.write(b"0")

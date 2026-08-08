@@ -50,6 +50,135 @@ def test_snapshot_token_rejects_negative_generation() -> None:
         IndexSnapshotToken(-1)
 
 
+def _manifest_payload(**changes: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "schema_version": 1,
+        "generation": 1,
+        "vector_count": 2,
+        "published_at": "2026-08-08T00:00:00+00:00",
+        "tracks_file": "tracks.g00000000000000000001.db",
+        "vectors_file": "vectors.g00000000000000000001.index",
+        "tracks_sha256": "0" * 64,
+        "vectors_sha256": "1" * 64,
+    }
+    payload.update(changes)
+    return payload
+
+
+def test_manifest_rejects_non_object_and_extra_keys(tmp_path: Path) -> None:
+    path = tmp_path / "index-manifest.json"
+    for payload in ([], _manifest_payload(unexpected="value")):
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(IndexConsistencyError, match="manifest"):
+            read_manifest(tmp_path)
+
+
+@pytest.mark.parametrize("field", ["schema_version", "generation", "vector_count"])
+@pytest.mark.parametrize("value", [True, "1", 1.0, None])
+def test_manifest_rejects_non_integer_fields(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    (tmp_path / "index-manifest.json").write_text(
+        json.dumps(_manifest_payload(**{field: value})), encoding="utf-8"
+    )
+    with pytest.raises(IndexConsistencyError, match="manifest"):
+        read_manifest(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["published_at", "tracks_file", "vectors_file", "tracks_sha256", "vectors_sha256"],
+)
+@pytest.mark.parametrize("value", [1, 1.0, None])
+def test_manifest_rejects_non_string_fields(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    (tmp_path / "index-manifest.json").write_text(
+        json.dumps(_manifest_payload(**{field: value})), encoding="utf-8"
+    )
+    with pytest.raises(IndexConsistencyError, match="manifest"):
+        read_manifest(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("tracks_file", "vectors_file"),
+    [
+        ("tracks.g00000000000000000002.db", "vectors.g00000000000000000001.index"),
+        ("tracks.g00000000000000000001.db", "vectors.g00000000000000000002.index"),
+        ("other.db", "other.index"),
+        ("tracks.db", "vectors.g00000000000000000001.index"),
+    ],
+)
+def test_manifest_rejects_artifacts_not_matching_its_generation(
+    tmp_path: Path,
+    tracks_file: str,
+    vectors_file: str,
+) -> None:
+    (tmp_path / "index-manifest.json").write_text(
+        json.dumps(_manifest_payload(tracks_file=tracks_file, vectors_file=vectors_file)),
+        encoding="utf-8",
+    )
+    with pytest.raises(IndexConsistencyError, match="artifact"):
+        read_manifest(tmp_path)
+
+
+def test_manifest_accepts_canonical_backup_artifact_pair(tmp_path: Path) -> None:
+    (tmp_path / "index-manifest.json").write_text(
+        json.dumps(_manifest_payload(tracks_file="tracks.db", vectors_file="vectors.index")),
+        encoding="utf-8",
+    )
+    assert read_manifest(tmp_path) is not None
+
+
+@pytest.mark.skipif(os.name != "nt", reason="msvcrt locking is Windows-only")
+def test_windows_lock_retries_contention_until_acquired(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import errno
+    import msvcrt
+
+    import autodj.index_manifest as manifest_module
+
+    calls: list[int] = []
+
+    def locking(_fd: int, mode: int, _length: int) -> None:
+        calls.append(mode)
+        if len(calls) < 3:
+            raise OSError(errno.EACCES, "locked")
+
+    monkeypatch.setattr(msvcrt, "locking", locking)
+    with (tmp_path / "lock").open("a+b") as handle:
+        manifest_module._acquire_os_lock(handle)
+    assert calls == [msvcrt.LK_NBLCK, msvcrt.LK_NBLCK, msvcrt.LK_NBLCK]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="msvcrt locking is Windows-only")
+def test_windows_lock_propagates_non_contention_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import errno
+    import msvcrt
+
+    import autodj.index_manifest as manifest_module
+
+    calls: list[int] = []
+
+    def locking(_fd: int, mode: int, _length: int) -> None:
+        calls.append(mode)
+        raise OSError(errno.EIO, "disk failure")
+
+    monkeypatch.setattr(msvcrt, "locking", locking)
+    with (tmp_path / "lock").open("a+b") as handle, pytest.raises(OSError, match="disk failure"):
+        manifest_module._acquire_os_lock(handle)
+    assert calls == [msvcrt.LK_NBLCK]
+
+
 def test_publish_manifest_is_monotonic_atomic_and_retains_two_generations(
     tmp_path: Path,
 ) -> None:
