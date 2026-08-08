@@ -52,6 +52,7 @@ from autodj.index_manifest import (
     current_snapshot_token,
     fsync_directory,
     legacy_artifacts_allowed,
+    publication_is_tombstoned,
     publication_lock,
     publish_manifest,
     read_manifest,
@@ -1605,6 +1606,18 @@ def _migrate_flat_index_if_needed(target_dir: Path) -> None:
     with publication_lock(parent), publication_lock(target_dir):
         migration_state = _read_flat_migration_staging(target_dir)
         manifest = read_manifest(target_dir)
+        if publication_is_tombstoned(target_dir):
+            if migration_state is not None:
+                staging, _preserve_target_vector = migration_state
+                try:
+                    _clear_flat_migration_state(target_dir, staging, remove_cores=False)
+                except OSError as exc:
+                    logger.warning(
+                        "Could not clean stale flat migration state for tombstoned target %s: %s",
+                        target_dir,
+                        exc,
+                    )
+            return
         if migration_state is not None:
             staging, preserve_target_vector = migration_state
             if manifest is not None:

@@ -1623,6 +1623,24 @@ class TestFlatIndexMigration:
         _migrate_flat_index_if_needed(target)
         assert not target.exists()
 
+    def test_tombstoned_target_never_resurrects_parent_flat_cores(self, tmp_path: Path) -> None:
+        from autodj.index_manifest import IndexConsistencyError, tombstone_publication
+        from autodj.indexer import load_index
+
+        source_db, source_vectors = self._make_flat(tmp_path)
+        target = tmp_path / "default"
+        target.mkdir()
+        tombstone_publication(target)
+
+        with pytest.raises(IndexConsistencyError, match="publication history"):
+            load_index(target)
+
+        assert source_db.exists()
+        assert source_vectors.exists()
+        assert not (target / "index-manifest.json").exists()
+        assert not (target / "tracks.db").exists()
+        assert not (target / "vectors.index").exists()
+
     def test_load_index_recovers_exact_historical_split(self, tmp_path: Path) -> None:
         from autodj.indexer import load_index
 

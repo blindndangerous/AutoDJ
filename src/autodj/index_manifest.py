@@ -192,6 +192,12 @@ def legacy_artifacts_allowed(index_dir: Path) -> bool:
     return state.high_water == 0 and state.tombstone_revision == 0
 
 
+def publication_is_tombstoned(index_dir: Path) -> bool:
+    """Whether a committed logical-empty state currently wins."""
+    state = _read_publication_state(index_dir)
+    return state is not None and state.tombstone_revision > 0 and read_manifest(index_dir) is None
+
+
 def require_snapshot_token(
     index_dir: Path,
     expected: IndexSnapshotToken,
