@@ -248,6 +248,19 @@ class TestSaveLoadIndex:
         assert len(loaded_entries) == 5
         assert loaded_index.ntotal == 5
 
+    def test_prune_all_never_reuses_stale_snapshot_token(self, tmp_path: Path) -> None:
+        from autodj.index_manifest import IndexConsistencyError, current_snapshot_token
+        from autodj.indexer import _delete_index_files
+
+        entries, vectors = self._make_entries(1)
+        save_index(entries, vectors, tmp_path)
+        stale = current_snapshot_token(tmp_path)
+        _delete_index_files(tmp_path, expected_snapshot=stale)
+        save_index(entries, vectors, tmp_path)
+
+        with pytest.raises(IndexConsistencyError, match="expected"):
+            save_index(entries, vectors, tmp_path, expected_snapshot=stale)
+
     def test_tracks_db_written(self, tmp_path: Path) -> None:
         entries, vectors = self._make_entries(3)
         index_dir = tmp_path / "index"
@@ -1028,7 +1041,7 @@ class TestPruneIndex:
 
         current = read_manifest(idx)
         assert current is not None
-        assert current.generation == (1 if legacy_without_manifest else first.generation + 1)
+        assert current.generation == first.generation + 1
         loaded, loaded_vectors = load_index(idx)
         assert [entry.title for entry in loaded] == [
             "Concurrent 0",
@@ -1196,7 +1209,11 @@ class TestPruneIndex:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from autodj.index_manifest import read_manifest
+        from autodj.index_manifest import (
+            IndexConsistencyError,
+            current_snapshot_token,
+            read_manifest,
+        )
         from autodj.indexer import prune_index
 
         idx = self._save_with_files(tmp_path, n_present=0, n_missing=3)
@@ -1213,7 +1230,9 @@ class TestPruneIndex:
         with pytest.raises(PermissionError, match="vectors locked"):
             prune_index(idx, allow_mass_prune=True)
 
-        assert read_manifest(idx) == before
+        with pytest.raises(IndexConsistencyError, match="tombstone"):
+            read_manifest(idx)
+        assert current_snapshot_token(idx).generation == 0
         assert (idx / "vectors.index").exists()
         assert (idx / "tracks.db").exists()
 
@@ -1363,7 +1382,7 @@ class TestEnrichFromBeets:
 
         current = read_manifest(idx)
         assert current is not None
-        assert current.generation == (1 if legacy_without_manifest else first.generation + 1)
+        assert current.generation == first.generation + 1
         loaded, loaded_vectors = load_index(idx)
         assert [entry.title for entry in loaded] == ["Concurrent 0", "Concurrent 1"]
         assert [int(np.argmax(loaded_vectors.reconstruct(row))) for row in range(2)] == [11, 13]
@@ -1482,8 +1501,8 @@ class TestFlatIndexMigration:
     """Auto-migration of pre-0.9 flat-layout indexes into <dir>/<name>/."""
 
     def _make_flat(self, parent: Path) -> tuple[Path, Path]:
-        """Build a fake flat-layout index at *parent* — files directly inside."""
-        from autodj.indexer import save_index
+        """Build literal manifest-free legacy cores directly in *parent*."""
+        from autodj.indexer import _TRACKS_INSERT_SQL, _entry_to_row, _open_tracks_db
 
         e = [
             IndexEntry(
@@ -1503,7 +1522,18 @@ class TestFlatIndexMigration:
         ]
         v = np.random.randn(1, FEATURE_DIM).astype(np.float32)
         v /= np.linalg.norm(v, axis=1, keepdims=True)
-        save_index(e, v, parent)
+        parent.mkdir(parents=True, exist_ok=True)
+        conn = _open_tracks_db(parent)
+        try:
+            conn.execute("DELETE FROM tracks")
+            conn.execute(_TRACKS_INSERT_SQL, _entry_to_row(e[0], None, 0))
+        finally:
+            conn.close()
+        faiss.write_index(faiss.IndexFlatIP(FEATURE_DIM), str(parent / "vectors.index"))
+        loaded = faiss.read_index(str(parent / "vectors.index"))
+        loaded.add(v)
+        faiss.write_index(loaded, str(parent / "vectors.index"))
+        assert not (parent / "index-manifest.json").exists()
         return parent / "tracks.db", parent / "vectors.index"
 
     def test_load_index_auto_migrates(self, tmp_path: Path) -> None:
@@ -1562,6 +1592,21 @@ class TestFlatIndexMigration:
         # Neither source nor target — silent no-op
         _migrate_flat_index_if_needed(target)
         assert not target.exists()
+
+    def test_load_index_recovers_exact_historical_split(self, tmp_path: Path) -> None:
+        from autodj.indexer import load_index
+
+        source_db, source_vectors = self._make_flat(tmp_path)
+        target = tmp_path / "default"
+        target.mkdir()
+        source_vectors.replace(target / "vectors.index")
+
+        entries, loaded = load_index(target)
+
+        assert [entry.title for entry in entries] == ["T"]
+        assert loaded.ntotal == 1
+        assert (target / "tracks.db").exists()
+        assert not source_db.exists()
 
     def test_target_publication_during_migration_keeps_legacy_source(
         self,
@@ -2475,6 +2520,36 @@ class TestThrottledFaissCheckpoint:
         assert converted_paths == [entries[64].path]
         assert len(metadata_inserts) == 1
         assert baseline_queries == []
+
+    def test_checkpoint_restores_published_baseline_before_delta(self, tmp_path: Path) -> None:
+        from autodj.index_manifest import current_snapshot_token
+        from autodj.indexer import (
+            IncrementalCheckpoint,
+            _save_tracks_metadata,
+            load_index,
+            save_index,
+        )
+
+        entries, vectors = self._make_entries(3)
+        save_index(entries[:2], vectors[:2], tmp_path, music_dir=None)
+        # Same-count canonical dirt must never become the next checkpoint baseline.
+        _save_tracks_metadata([entries[1], entries[0]], tmp_path, music_dir=None)
+        checkpoint = IncrementalCheckpoint(
+            index_dir=tmp_path,
+            music_dir=None,
+            existing_entries=entries[:2],
+            existing_vectors=list(vectors[:2]),
+            total_new=1,
+            expected_snapshot=current_snapshot_token(tmp_path),
+            flush_every=1,
+        )
+
+        checkpoint.write(entries[2:], [vectors[2]])
+
+        loaded, loaded_vectors = load_index(tmp_path)
+        assert [entry.path for entry in loaded] == [entry.path for entry in entries]
+        assert np.allclose(loaded_vectors.reconstruct(0), vectors[0])
+        assert np.allclose(loaded_vectors.reconstruct(1), vectors[1])
 
     def test_embed_propagates_checkpoint_failure_and_allows_full_delta_retry(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

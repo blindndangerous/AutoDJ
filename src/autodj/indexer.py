@@ -58,6 +58,7 @@ from autodj.index_manifest import (
     restore_working_snapshot,
     sha256_file,
     snapshot_token_for_manifest,
+    tombstone_publication,
 )
 from autodj.sqlite_utils import immediate_transaction
 
@@ -975,6 +976,11 @@ class IncrementalCheckpoint:
         pending = new_entries[self.published_new_count :]
         with publication_lock(self.index_dir):
             require_snapshot_token(self.index_dir, self.expected_snapshot)
+            if self.expected_snapshot.generation:
+                restore_working_snapshot(
+                    self.index_dir,
+                    expected_generation=self.expected_snapshot.generation,
+                )
             _save_vectors(all_vectors, self.index_dir)
             _upsert_tracks_metadata(
                 pending,
@@ -1174,7 +1180,7 @@ def enrich_from_beets(
     source_snapshot: IndexSnapshotToken
     with publication_lock(index_dir):
         current = read_manifest(index_dir)
-        source_snapshot = snapshot_token_for_manifest(current)
+        source_snapshot = current_snapshot_token(index_dir)
         if current is not None:
             entries, _loaded = load_index(
                 index_dir,
@@ -1293,6 +1299,7 @@ def _delete_index_files(
     with publication_lock(index_dir):
         if expected_snapshot is not None:
             require_snapshot_token(index_dir, expected_snapshot)
+        tombstone_publication(index_dir)
         paths = [
             index_dir / "vectors.index",
             index_dir / "tracks.db",
@@ -1304,6 +1311,7 @@ def _delete_index_files(
         ]
         for path in paths:
             path.unlink(missing_ok=True)
+        fsync_directory(index_dir)
 
 
 def _maybe_migrate_paths(
@@ -1373,7 +1381,7 @@ def prune_index(
     source_snapshot: IndexSnapshotToken
     with publication_lock(index_dir):
         current = read_manifest(index_dir)
-        source_snapshot = snapshot_token_for_manifest(current)
+        source_snapshot = current_snapshot_token(index_dir)
         if current is not None:
             entries, loaded = load_index(
                 index_dir,
@@ -1460,13 +1468,21 @@ def prune_index(
     return (removed, len(surviving_entries))
 
 
-def _write_flat_migration_marker(target_dir: Path, staging: Path) -> None:
+def _write_flat_migration_marker(
+    target_dir: Path,
+    staging: Path,
+    *,
+    preserve_target_vector: bool = False,
+) -> None:
     """Durably mark one owned in-progress flat-index migration."""
     marker = target_dir / _FLAT_MIGRATION_MARKER
     temporary = marker.with_name(f".{marker.name}.{uuid.uuid4().hex}.tmp")
     try:
         with temporary.open("x", encoding="utf-8", newline="\n") as handle:
-            json.dump({"staging": staging.name}, handle)
+            json.dump(
+                {"staging": staging.name, "preserve_target_vector": preserve_target_vector},
+                handle,
+            )
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
@@ -1476,7 +1492,7 @@ def _write_flat_migration_marker(target_dir: Path, staging: Path) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _read_flat_migration_staging(target_dir: Path) -> Path | None:
+def _read_flat_migration_staging(target_dir: Path) -> tuple[Path, bool] | None:
     """Return owned migration staging directory, rejecting malformed markers."""
     marker = target_dir / _FLAT_MIGRATION_MARKER
     if not marker.exists():
@@ -1487,13 +1503,14 @@ def _read_flat_migration_staging(target_dir: Path) -> Path | None:
         raise IndexConsistencyError(f"invalid flat migration marker: {exc}") from exc
     if (
         type(raw) is not dict
-        or set(raw) != {"staging"}
+        or set(raw) not in ({"staging"}, {"staging", "preserve_target_vector"})
         or type(raw["staging"]) is not str
+        or ("preserve_target_vector" in raw and type(raw["preserve_target_vector"]) is not bool)
         or Path(raw["staging"]).name != raw["staging"]
         or not raw["staging"].startswith(_FLAT_MIGRATION_STAGING_PREFIX)
     ):
         raise IndexConsistencyError("invalid flat migration marker")
-    return target_dir / raw["staging"]
+    return target_dir / raw["staging"], bool(raw.get("preserve_target_vector", False))
 
 
 def _clear_flat_migration_state(
@@ -1501,10 +1518,12 @@ def _clear_flat_migration_state(
     staging: Path,
     *,
     remove_cores: bool,
+    preserve_target_vector: bool = False,
 ) -> None:
     """Remove marker-owned staging and, after an incomplete install, cores."""
     if remove_cores:
-        (target_dir / "vectors.index").unlink(missing_ok=True)
+        if not preserve_target_vector:
+            (target_dir / "vectors.index").unlink(missing_ok=True)
         (target_dir / "tracks.db").unlink(missing_ok=True)
     if staging.exists():
         shutil.rmtree(staging)
@@ -1555,13 +1574,24 @@ def _migrate_flat_index_if_needed(target_dir: Path) -> None:
     src_vec = parent / "vectors.index"
     src_db = parent / "tracks.db"
     marker = target_dir / _FLAT_MIGRATION_MARKER
-    if (not src_vec.exists() or not src_db.exists()) and not marker.exists():
+    historical_split = (
+        (target_dir / "vectors.index").is_file()
+        and not (target_dir / "tracks.db").exists()
+        and not src_vec.exists()
+        and src_db.is_file()
+    )
+    if (
+        (not src_vec.exists() or not src_db.exists())
+        and not marker.exists()
+        and not historical_split
+    ):
         return
     # Every source/target operation takes locks in parent-before-target order.
     with publication_lock(parent), publication_lock(target_dir):
-        staging = _read_flat_migration_staging(target_dir)
+        migration_state = _read_flat_migration_staging(target_dir)
         manifest = read_manifest(target_dir)
-        if staging is not None:
+        if migration_state is not None:
+            staging, preserve_target_vector = migration_state
             if manifest is not None:
                 try:
                     _clear_flat_migration_state(target_dir, staging, remove_cores=False)
@@ -1572,12 +1602,54 @@ def _migrate_flat_index_if_needed(target_dir: Path) -> None:
                         exc,
                     )
                 return
-            _clear_flat_migration_state(target_dir, staging, remove_cores=True)
+            _clear_flat_migration_state(
+                target_dir,
+                staging,
+                remove_cores=True,
+                preserve_target_vector=preserve_target_vector,
+            )
+
+        target_vec = target_dir / "vectors.index"
+        target_db = target_dir / "tracks.db"
+        historical_split = (
+            target_vec.is_file()
+            and not target_db.exists()
+            and not src_vec.exists()
+            and src_db.is_file()
+        )
+        if historical_split:
+            staging = target_dir / f"{_FLAT_MIGRATION_STAGING_PREFIX}{uuid.uuid4().hex}"
+            staging.mkdir()
+            staged_vec = staging / target_vec.name
+            staged_db = staging / target_db.name
+            try:
+                _write_flat_migration_marker(target_dir, staging, preserve_target_vector=True)
+                shutil.copyfile(target_vec, staged_vec)
+                _backup_legacy_tracks_db(src_db, staged_db)
+                vector_count = _validate_flat_migration_staging(staged_db, staged_vec)
+                staged_db.replace(target_db)
+                publish_manifest(target_dir, vector_count)
+            except Exception:
+                _clear_flat_migration_state(
+                    target_dir,
+                    staging,
+                    remove_cores=True,
+                    preserve_target_vector=True,
+                )
+                raise
+            try:
+                src_db.unlink()
+            except OSError as exc:
+                logger.warning("Could not remove migrated legacy artifact %s: %s", src_db, exc)
+            try:
+                _clear_flat_migration_state(target_dir, staging, remove_cores=False)
+            except OSError as exc:
+                logger.warning("Could not clean flat migration marker for %s: %s", target_dir, exc)
+            logger.info("Resumed split flat index migration → %s", target_dir)
+            return
 
         if not src_vec.exists() or not src_db.exists():
             return
-        target_vec = target_dir / "vectors.index"
-        target_db = target_dir / "tracks.db"
         if manifest is not None or target_vec.exists() or target_db.exists():
             return
 
@@ -2071,7 +2143,7 @@ def _load_existing_artifacts(
     """Load one coherent baseline and restore its canonical working files."""
     with publication_lock(index_dir):
         manifest = read_manifest(index_dir)
-        snapshot = snapshot_token_for_manifest(manifest)
+        snapshot = current_snapshot_token(index_dir)
         if manifest is not None:
             manifest_entries, manifest_index = load_index(
                 index_dir,
@@ -2225,7 +2297,7 @@ def _load_existing_index(  # pragma: no cover -- exercised via build_index integ
             # the files.
             if not existing_entries:
                 _delete_index_files(index_dir, expected_snapshot=snapshot)
-                snapshot = IndexSnapshotToken(0)
+                snapshot = current_snapshot_token(index_dir)
             else:
                 vectors_arr = np.asarray(np.stack(existing_vectors), dtype=np.float32)
                 published = _publish_full_snapshot(

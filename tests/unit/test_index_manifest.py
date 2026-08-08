@@ -16,20 +16,23 @@ from autodj.index_manifest import (
     IndexSnapshotToken,
     publish_manifest,
     read_manifest,
+    restore_working_snapshot,
     sha256_file,
 )
 
 
 def _write_working_artifacts(index_dir: Path, count: int) -> None:
+    from autodj.indexer import _TRACKS_SCHEMA
+
     index_dir.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(index_dir / "tracks.db", isolation_level=None)
     try:
         conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("CREATE TABLE IF NOT EXISTS tracks (vec_row INTEGER, path TEXT)")
+        conn.executescript(_TRACKS_SCHEMA)
         conn.execute("BEGIN IMMEDIATE")
         conn.execute("DELETE FROM tracks")
         conn.executemany(
-            "INSERT INTO tracks VALUES (?, ?)",
+            "INSERT INTO tracks (vec_row, path) VALUES (?, ?)",
             [(row, f"song-{row}.flac") for row in range(count)],
         )
         conn.commit()
@@ -134,6 +137,18 @@ def test_manifest_accepts_canonical_backup_artifact_pair(tmp_path: Path) -> None
     assert read_manifest(tmp_path) is not None
 
 
+@pytest.mark.parametrize(
+    "published_at",
+    ["not-a-timestamp", "2026-08-08T00:00:00", "2026-08-08T00:00:00Z", "2026-08-08T00:00:00+01:00"],
+)
+def test_manifest_rejects_noncanonical_utc_timestamp(tmp_path: Path, published_at: str) -> None:
+    (tmp_path / "index-manifest.json").write_text(
+        json.dumps(_manifest_payload(published_at=published_at)), encoding="utf-8"
+    )
+    with pytest.raises(IndexConsistencyError, match="timestamp"):
+        read_manifest(tmp_path)
+
+
 @pytest.mark.skipif(os.name != "nt", reason="msvcrt locking is Windows-only")
 def test_windows_lock_retries_contention_until_acquired(
     tmp_path: Path,
@@ -209,6 +224,24 @@ def test_publish_manifest_serializes_concurrent_generation_numbers(tmp_path: Pat
     with ThreadPoolExecutor(max_workers=2) as pool:
         futures = [pool.submit(publish_manifest, tmp_path, 3) for _ in range(2)]
     assert {future.result().generation for future in futures} == {1, 2}
+
+
+def test_restore_rejects_same_count_noncanonical_vec_rows(tmp_path: Path) -> None:
+    _write_working_artifacts(tmp_path, 3)
+    manifest = publish_manifest(tmp_path, 3)
+    tracks = tmp_path / manifest.tracks_file
+    conn = sqlite3.connect(tracks)
+    try:
+        conn.execute("UPDATE tracks SET vec_row = vec_row + 10")
+        conn.commit()
+    finally:
+        conn.close()
+    raw = json.loads((tmp_path / "index-manifest.json").read_text(encoding="utf-8"))
+    raw["tracks_sha256"] = sha256_file(tracks)
+    (tmp_path / "index-manifest.json").write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(IndexConsistencyError, match="vec_row"):
+        restore_working_snapshot(tmp_path)
 
 
 def test_publish_manifest_serializes_concurrent_processes(tmp_path: Path) -> None:

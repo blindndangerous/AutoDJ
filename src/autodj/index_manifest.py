@@ -21,11 +21,29 @@ from pathlib import Path
 from typing import BinaryIO
 from urllib.parse import quote
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MANIFEST_NAME = "index-manifest.json"
+PUBLICATION_STATE_NAME = ".index-publication-state.json"
 _GENERATION_RE = re.compile(r"^(tracks|vectors)\.g(\d{20})\.(db|index)$")
+_TRACKS_SCHEMA_CONTRACT = (
+    ("vec_row", "INTEGER"),
+    ("path", "TEXT"),
+    ("title", "TEXT"),
+    ("artist", "TEXT"),
+    ("album", "TEXT"),
+    ("genre", "TEXT"),
+    ("bpm", "REAL"),
+    ("year", "INTEGER"),
+    ("length", "REAL"),
+    ("energy", "REAL"),
+    ("key", "INTEGER"),
+    ("mode", "INTEGER"),
+    ("tempo_confidence", "REAL"),
+    ("embedded_at", "REAL"),
+)
 _LOCKS: dict[Path, threading.RLock] = {}
 _LOCKS_GUARD = threading.Lock()
+_LOCKS_PROCESS_ID = os.getpid()
 _WINDOWS_LOCK_RETRY_SECONDS = 0.1
 logger = logging.getLogger(__name__)
 
@@ -36,6 +54,19 @@ class _LockState(threading.local):
 
 
 _HELD_LOCKS = _LockState()
+
+
+def _reset_process_local_locks() -> None:
+    """Discard inherited lock ownership after fork."""
+    global _LOCKS_PROCESS_ID
+    with _LOCKS_GUARD:
+        _LOCKS.clear()
+        _LOCKS_PROCESS_ID = os.getpid()
+    _HELD_LOCKS.paths = set()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_process_local_locks)
 
 
 class IndexConsistencyError(RuntimeError):
@@ -54,6 +85,7 @@ class IndexManifest:
     vectors_file: str
     tracks_sha256: str
     vectors_sha256: str
+    state_revision: int = 0
 
 
 @dataclass(frozen=True)
@@ -61,20 +93,92 @@ class IndexSnapshotToken:
     """Optimistic-concurrency identity; generation zero means no manifest."""
 
     generation: int
+    state_revision: int = 0
 
     def __post_init__(self) -> None:
-        if self.generation < 0:
+        if self.generation < 0 or self.state_revision < 0:
             raise ValueError("snapshot generation must be non-negative")
 
 
 def snapshot_token_for_manifest(manifest: IndexManifest | None) -> IndexSnapshotToken:
     """Return explicit identity for a manifest or its confirmed absence."""
-    return IndexSnapshotToken(0 if manifest is None else manifest.generation)
+    return IndexSnapshotToken(
+        0 if manifest is None else manifest.generation,
+        0 if manifest is None else manifest.state_revision,
+    )
+
+
+@dataclass(frozen=True)
+class _PublicationState:
+    revision: int
+    high_water_generation: int
+    tombstone: bool
+
+
+def _read_publication_state(index_dir: Path) -> _PublicationState | None:
+    path = index_dir / PUBLICATION_STATE_NAME
+    if not path.exists():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if (
+            type(raw) is not dict
+            or set(raw) != {"revision", "high_water_generation", "tombstone"}
+            or type(raw["revision"]) is not int
+            or type(raw["high_water_generation"]) is not int
+            or type(raw["tombstone"]) is not bool
+        ):
+            raise ValueError("invalid publication state")
+        state = _PublicationState(**raw)
+    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+        raise IndexConsistencyError(f"invalid publication state: {exc}") from exc
+    if state.revision < 0 or state.high_water_generation < 0:
+        raise IndexConsistencyError("invalid publication state counters")
+    return state
+
+
+def _write_publication_state(index_dir: Path, state: _PublicationState) -> None:
+    path = index_dir / PUBLICATION_STATE_NAME
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("x", encoding="utf-8", newline="\n") as handle:
+            json.dump(asdict(state), handle, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        fsync_directory(index_dir)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _state_for_manifest(index_dir: Path, manifest: IndexManifest | None) -> _PublicationState:
+    state = _read_publication_state(index_dir)
+    if state is not None:
+        return state
+    return _PublicationState(
+        revision=0 if manifest is None else manifest.state_revision,
+        high_water_generation=0 if manifest is None else manifest.generation,
+        tombstone=False,
+    )
 
 
 def current_snapshot_token(index_dir: Path) -> IndexSnapshotToken:
     """Read current manifest identity; caller must hold publication lock for mutation."""
-    return snapshot_token_for_manifest(read_manifest(index_dir))
+    state = _read_publication_state(index_dir)
+    if state is not None and state.tombstone:
+        return IndexSnapshotToken(0, state.revision)
+    manifest = read_manifest(index_dir)
+    state = _state_for_manifest(index_dir, manifest)
+    if _read_publication_state(index_dir) is None:
+        _write_publication_state(index_dir, state)
+    if (
+        manifest is not None
+        and manifest.schema_version == SCHEMA_VERSION
+        and state.revision != manifest.state_revision
+    ):
+        raise IndexConsistencyError("publication state does not match manifest")
+    return IndexSnapshotToken(0 if manifest is None else manifest.generation, state.revision)
 
 
 def require_snapshot_token(
@@ -82,13 +186,32 @@ def require_snapshot_token(
     expected: IndexSnapshotToken,
 ) -> IndexManifest | None:
     """Raise unless current manifest identity exactly matches *expected*."""
-    current = read_manifest(index_dir)
-    actual = snapshot_token_for_manifest(current)
+    actual = current_snapshot_token(index_dir)
     if actual != expected:
         raise IndexConsistencyError(
-            f"expected generation {expected.generation}, got {actual.generation}"
+            f"expected generation {expected.generation}/{expected.state_revision}, got "
+            f"{actual.generation}/{actual.state_revision}"
         )
-    return current
+    return None if actual.generation == 0 else read_manifest(index_dir)
+
+
+def tombstone_publication(index_dir: Path) -> None:
+    """Durably supersede the live snapshot before prune-all removes files."""
+    state = _read_publication_state(index_dir)
+    if state is not None and state.tombstone:
+        return
+    manifest = read_manifest(index_dir)
+    state = _state_for_manifest(index_dir, manifest)
+    _write_publication_state(
+        index_dir,
+        _PublicationState(
+            revision=state.revision + 1,
+            high_water_generation=max(
+                state.high_water_generation, 0 if manifest is None else manifest.generation
+            ),
+            tombstone=True,
+        ),
+    )
 
 
 def read_manifest(index_dir: Path) -> IndexManifest | None:
@@ -108,9 +231,17 @@ def read_manifest(index_dir: Path) -> IndexManifest | None:
             "tracks_sha256",
             "vectors_sha256",
         }
-        if type(raw) is not dict or set(raw) != fields:
+        if type(raw) is not dict:
+            raise IndexConsistencyError("invalid index manifest structure")
+        if raw.get("schema_version") not in {1, SCHEMA_VERSION}:
+            raise IndexConsistencyError("unsupported manifest schema")
+        if raw["schema_version"] == SCHEMA_VERSION:
+            fields.add("state_revision")
+        if set(raw) != fields:
             raise IndexConsistencyError("invalid index manifest structure")
         int_fields = ("schema_version", "generation", "vector_count")
+        if raw["schema_version"] == SCHEMA_VERSION:
+            int_fields += ("state_revision",)
         string_fields = tuple(fields - set(int_fields))
         if any(type(raw[field]) is not int for field in int_fields) or any(
             type(raw[field]) is not str for field in string_fields
@@ -125,15 +256,24 @@ def read_manifest(index_dir: Path) -> IndexManifest | None:
             vectors_file=raw["vectors_file"],
             tracks_sha256=raw["tracks_sha256"],
             vectors_sha256=raw["vectors_sha256"],
+            state_revision=raw.get("state_revision", 0),
         )
     except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
         raise IndexConsistencyError(f"invalid index manifest: {exc}") from exc
-    if manifest.schema_version != SCHEMA_VERSION:
+    if manifest.schema_version not in {1, SCHEMA_VERSION}:
         raise IndexConsistencyError(
             f"unsupported manifest schema {manifest.schema_version}; expected {SCHEMA_VERSION}"
         )
     if manifest.generation < 1 or manifest.vector_count < 0:
         raise IndexConsistencyError("manifest generation/count must be non-negative")
+    try:
+        published = datetime.fromisoformat(manifest.published_at)
+    except ValueError as exc:
+        raise IndexConsistencyError("manifest timestamp is invalid") from exc
+    if published.tzinfo != UTC or manifest.published_at != published.astimezone(UTC).isoformat(
+        timespec="seconds"
+    ):
+        raise IndexConsistencyError("manifest timestamp must be canonical UTC")
     canonical_pair = ("tracks.db", "vectors.index")
     generation_pair = (
         f"tracks.g{manifest.generation:020d}.db",
@@ -144,6 +284,12 @@ def read_manifest(index_dir: Path) -> IndexManifest | None:
     for digest in (manifest.tracks_sha256, manifest.vectors_sha256):
         if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
             raise IndexConsistencyError("manifest contains an invalid SHA-256 digest")
+    state = _read_publication_state(index_dir)
+    if state is not None:
+        if state.tombstone:
+            raise IndexConsistencyError("publication tombstone supersedes manifest")
+        if manifest.schema_version == SCHEMA_VERSION and state.revision != manifest.state_revision:
+            raise IndexConsistencyError("publication state does not match manifest")
     return manifest
 
 
@@ -163,6 +309,8 @@ def _immutable_sqlite_uri(path: Path) -> str:
 
 
 def _thread_lock(path: Path) -> threading.RLock:
+    if os.getpid() != _LOCKS_PROCESS_ID:
+        _reset_process_local_locks()
     with _LOCKS_GUARD:
         return _LOCKS.setdefault(path, threading.RLock())
 
@@ -297,7 +445,16 @@ def publish_manifest(index_dir: Path, vector_count: int) -> IndexManifest:
     """Publish canonical working files as a new immutable generation."""
     with publication_lock(index_dir):
         previous = read_manifest(index_dir)
-        generation = 1 if previous is None else previous.generation + 1
+        state = _state_for_manifest(index_dir, previous)
+        generation = (
+            max(state.high_water_generation, 0 if previous is None else previous.generation) + 1
+        )
+        state = _PublicationState(
+            revision=state.revision + 1,
+            high_water_generation=generation,
+            tombstone=False,
+        )
+        _write_publication_state(index_dir, state)
         _checkpoint_working_tracks(index_dir)
         tracks_name = f"tracks.g{generation:020d}.db"
         vectors_name = f"vectors.g{generation:020d}.index"
@@ -314,6 +471,7 @@ def publish_manifest(index_dir: Path, vector_count: int) -> IndexManifest:
             vectors_file=vectors_name,
             tracks_sha256=sha256_file(tracks_path),
             vectors_sha256=sha256_file(vectors_path),
+            state_revision=state.revision,
         )
         _validate_snapshot_files(index_dir, manifest)
         _write_manifest(index_dir / MANIFEST_NAME, manifest)
@@ -356,7 +514,26 @@ def _validate_snapshot_files(root: Path, manifest: IndexManifest) -> None:
         raise IndexConsistencyError("vectors SHA-256 mismatch")
     conn = sqlite3.connect(_immutable_sqlite_uri(tracks), uri=True)
     try:
+        columns = tuple(
+            (str(row[1]), str(row[2]).strip().upper(), int(row[3]))
+            for row in conn.execute("PRAGMA table_info(tracks)")
+        )
+        required = tuple((name, kind, 1) for name, kind in _TRACKS_SCHEMA_CONTRACT)
+        if columns != required:
+            raise IndexConsistencyError("tracks schema does not match published contract")
+        unique_columns: set[str] = set()
+        for index in conn.execute("PRAGMA index_list(tracks)"):
+            if not int(index[2]):
+                continue
+            names = tuple(str(row[2]) for row in conn.execute(f"PRAGMA index_info({index[1]!r})"))
+            if len(names) == 1:
+                unique_columns.add(names[0])
+        if not {"vec_row", "path"}.issubset(unique_columns):
+            raise IndexConsistencyError("tracks schema is missing required unique identities")
         sqlite_count = int(conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0])
+        vec_rows = [row[0] for row in conn.execute("SELECT vec_row FROM tracks ORDER BY vec_row")]
+        if vec_rows != list(range(sqlite_count)):
+            raise IndexConsistencyError("tracks vec_row identity is not canonical")
     finally:
         conn.close()
     import faiss
