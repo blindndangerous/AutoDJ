@@ -1606,6 +1606,152 @@ class TestFlatIndexMigration:
         assert source_db.exists()
         assert source_vectors.exists()
 
+    def test_migration_snapshots_committed_legacy_wal_rows(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        import sqlite3
+
+        from autodj.indexer import load_index, save_index
+
+        parent = tmp_path
+        target = parent / "default"
+        entries = [
+            IndexEntry(
+                path=str(parent / f"song-{row}.flac"),
+                title=f"Original {row}",
+                artist="Artist",
+                album="Album",
+                genre="Genre",
+                bpm=120.0,
+                year=2026,
+                length=180.0,
+                energy=0.5,
+                key=0,
+                mode=1,
+                tempo_confidence=0.8,
+            )
+            for row in range(2)
+        ]
+        vectors = np.zeros((2, FEATURE_DIM), dtype=np.float32)
+        vectors[0, 17] = 1.0
+        vectors[1, 31] = 1.0
+        save_index(entries, vectors, parent)
+        (parent / "index-manifest.json").unlink()
+        writer = sqlite3.connect(parent / "tracks.db", isolation_level=None)
+        try:
+            assert writer.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+            writer.execute("PRAGMA wal_autocheckpoint=0")
+            writer.execute("BEGIN IMMEDIATE")
+            writer.execute("UPDATE tracks SET title = 'WAL second' WHERE vec_row = 1")
+            writer.commit()
+            assert (parent / "tracks.db-wal").stat().st_size > 0
+
+            migrated, migrated_vectors = load_index(target)
+        finally:
+            writer.close()
+
+        assert [entry.title for entry in migrated] == ["Original 0", "WAL second"]
+        assert [int(np.argmax(migrated_vectors.reconstruct(row))) for row in range(2)] == [17, 31]
+        assert not (target / "tracks.db-wal").exists()
+        assert not (target / "tracks.db-shm").exists()
+
+    def test_migration_holds_parent_lock_for_coherent_source_snapshot(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import threading
+
+        import autodj.indexer as indexer
+        from autodj.indexer import load_index, save_index
+
+        source_db, source_vectors = self._make_flat(tmp_path)
+        source_index = faiss.read_index(str(source_vectors))
+        source_vector = source_index.reconstruct(0).copy()
+        target = tmp_path / "default"
+        replacement = IndexEntry(
+            path=str(tmp_path / "replacement.flac"),
+            title="Replacement",
+            artist="Artist",
+            album="Album",
+            genre="Genre",
+            bpm=120.0,
+            year=2026,
+            length=180.0,
+            energy=0.5,
+            key=0,
+            mode=1,
+            tempo_confidence=0.8,
+        )
+        replacement_vectors = np.zeros((1, FEATURE_DIM), dtype=np.float32)
+        replacement_vectors[0, 101] = 1.0
+        writer_started = threading.Event()
+        writer_finished = threading.Event()
+        writers: list[threading.Thread] = []
+
+        def publish_source() -> None:
+            writer_started.set()
+            save_index([replacement], replacement_vectors, tmp_path)
+            writer_finished.set()
+
+        real_backup = indexer._backup_legacy_tracks_db
+
+        def backup_while_writer_waits(source: Path, destination: Path) -> None:
+            writer = threading.Thread(target=publish_source)
+            writers.append(writer)
+            writer.start()
+            assert writer_started.wait(timeout=5)
+            assert not writer_finished.wait(timeout=0.1)
+            real_backup(source, destination)
+
+        monkeypatch.setattr(indexer, "_backup_legacy_tracks_db", backup_while_writer_waits)
+        migrated, migrated_vectors = load_index(target)
+        writers[0].join(timeout=5)
+
+        assert writer_finished.is_set()
+        assert source_db.exists()
+        assert source_vectors.exists()
+        assert [entry.title for entry in migrated] == ["T"]
+        np.testing.assert_array_equal(migrated_vectors.reconstruct(0), source_vector)
+
+    @pytest.mark.parametrize("crash_after", ["vectors.index", "tracks.db"])
+    def test_migration_recovers_owned_partial_core_after_crash(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        crash_after: str,
+    ) -> None:
+        from autodj.indexer import _FLAT_MIGRATION_MARKER, load_index
+
+        source_db, source_vectors = self._make_flat(tmp_path)
+        target = tmp_path / "default"
+        real_replace = Path.replace
+        crashed = False
+
+        def crash_after_install(source: Path, destination: Path) -> Path:
+            nonlocal crashed
+            moved = real_replace(source, destination)
+            if destination == target / crash_after and not crashed:
+                crashed = True
+                raise SystemExit("simulated abrupt exit")
+            return moved
+
+        monkeypatch.setattr(Path, "replace", crash_after_install)
+        with pytest.raises(SystemExit, match="simulated abrupt exit"):
+            load_index(target)
+
+        assert (target / _FLAT_MIGRATION_MARKER).exists()
+        assert source_db.exists()
+        assert source_vectors.exists()
+        monkeypatch.setattr(Path, "replace", real_replace)
+        migrated, _vectors = load_index(target)
+
+        assert len(migrated) == 1
+        assert not (target / _FLAT_MIGRATION_MARKER).exists()
+        assert not source_db.exists()
+        assert not source_vectors.exists()
+
 
 class TestDetectStaleEntries:
     def _entry(self, path: str, embedded_at: float = 0.0) -> IndexEntry:
