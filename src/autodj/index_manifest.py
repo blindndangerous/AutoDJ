@@ -53,6 +53,41 @@ class IndexManifest:
     vectors_sha256: str
 
 
+@dataclass(frozen=True)
+class IndexSnapshotToken:
+    """Optimistic-concurrency identity; generation zero means no manifest."""
+
+    generation: int
+
+    def __post_init__(self) -> None:
+        if self.generation < 0:
+            raise ValueError("snapshot generation must be non-negative")
+
+
+def snapshot_token_for_manifest(manifest: IndexManifest | None) -> IndexSnapshotToken:
+    """Return explicit identity for a manifest or its confirmed absence."""
+    return IndexSnapshotToken(0 if manifest is None else manifest.generation)
+
+
+def current_snapshot_token(index_dir: Path) -> IndexSnapshotToken:
+    """Read current manifest identity; caller must hold publication lock for mutation."""
+    return snapshot_token_for_manifest(read_manifest(index_dir))
+
+
+def require_snapshot_token(
+    index_dir: Path,
+    expected: IndexSnapshotToken,
+) -> IndexManifest | None:
+    """Raise unless current manifest identity exactly matches *expected*."""
+    current = read_manifest(index_dir)
+    actual = snapshot_token_for_manifest(current)
+    if actual != expected:
+        raise IndexConsistencyError(
+            f"expected generation {expected.generation}, got {actual.generation}"
+        )
+    return current
+
+
 def read_manifest(index_dir: Path) -> IndexManifest | None:
     """Read and validate the current generation manifest, when present."""
     path = index_dir / MANIFEST_NAME

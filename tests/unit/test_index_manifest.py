@@ -13,6 +13,7 @@ import pytest
 
 from autodj.index_manifest import (
     IndexConsistencyError,
+    IndexSnapshotToken,
     publish_manifest,
     read_manifest,
     sha256_file,
@@ -42,6 +43,11 @@ def _write_working_artifacts(index_dir: Path, count: int) -> None:
 
 def _publish_once(index_dir_text: str, count: int) -> int:
     return publish_manifest(Path(index_dir_text), count).generation
+
+
+def test_snapshot_token_rejects_negative_generation() -> None:
+    with pytest.raises(ValueError, match="non-negative"):
+        IndexSnapshotToken(-1)
 
 
 def test_publish_manifest_is_monotonic_atomic_and_retains_two_generations(

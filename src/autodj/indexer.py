@@ -43,12 +43,17 @@ from autodj.config import AutoDJConfig
 from autodj.index_manifest import (
     MANIFEST_NAME,
     IndexConsistencyError,
+    IndexManifest,
+    IndexSnapshotToken,
     _immutable_sqlite_uri,
+    current_snapshot_token,
     publication_lock,
     publish_manifest,
     read_manifest,
+    require_snapshot_token,
     restore_working_snapshot,
     sha256_file,
+    snapshot_token_for_manifest,
 )
 from autodj.sqlite_utils import immediate_transaction
 
@@ -900,21 +905,15 @@ def _publish_full_snapshot(
     index_dir: Path,
     music_dir: Path | None,
     *,
-    expected_generation: int | None = None,
-) -> None:
+    expected_snapshot: IndexSnapshotToken | None = None,
+) -> IndexManifest:
     """Publish vectors and metadata together as one immutable generation."""
     with publication_lock(index_dir):
-        current = read_manifest(index_dir)
-        if expected_generation is not None and (
-            current is None or current.generation != expected_generation
-        ):
-            raise IndexConsistencyError(
-                f"expected generation {expected_generation}, got "
-                f"{getattr(current, 'generation', None)}"
-            )
+        if expected_snapshot is not None:
+            require_snapshot_token(index_dir, expected_snapshot)
         _save_vectors(vectors, index_dir)
         _save_tracks_metadata(entries, index_dir, music_dir)
-        publish_manifest(index_dir, len(entries))
+        return publish_manifest(index_dir, len(entries))
 
 
 def _publish_metadata_snapshot(
@@ -922,22 +921,17 @@ def _publish_metadata_snapshot(
     index_dir: Path,
     music_dir: Path | None,
     *,
-    expected_generation: int | None = None,
-) -> None:
+    expected_snapshot: IndexSnapshotToken | None = None,
+) -> IndexManifest:
     """Publish metadata paired with the last published vector artifact."""
     with publication_lock(index_dir):
         current = read_manifest(index_dir)
-        if expected_generation is not None and (
-            current is None or current.generation != expected_generation
-        ):
-            raise IndexConsistencyError(
-                f"expected generation {expected_generation}, got "
-                f"{getattr(current, 'generation', None)}"
-            )
+        if expected_snapshot is not None:
+            current = require_snapshot_token(index_dir, expected_snapshot)
         if current is not None:
             restore_working_snapshot(index_dir, expected_generation=current.generation)
         _save_tracks_metadata(entries, index_dir, music_dir)
-        publish_manifest(index_dir, len(entries))
+        return publish_manifest(index_dir, len(entries))
 
 
 @dataclass
@@ -949,6 +943,7 @@ class IncrementalCheckpoint:
     existing_entries: list[IndexEntry]
     existing_vectors: list[np.ndarray]
     total_new: int
+    expected_snapshot: IndexSnapshotToken
     baseline_requires_reconcile: bool = False
     flush_every: int = FAISS_CHECKPOINT_EVERY
     published_new_count: int = 0
@@ -973,6 +968,7 @@ class IncrementalCheckpoint:
         )
         pending = new_entries[self.published_new_count :]
         with publication_lock(self.index_dir):
+            require_snapshot_token(self.index_dir, self.expected_snapshot)
             _save_vectors(all_vectors, self.index_dir)
             _upsert_tracks_metadata(
                 pending,
@@ -985,7 +981,11 @@ class IncrementalCheckpoint:
                     else None
                 ),
             )
-            publish_manifest(self.index_dir, len(self.existing_entries) + len(new_entries))
+            published = publish_manifest(
+                self.index_dir,
+                len(self.existing_entries) + len(new_entries),
+            )
+        self.expected_snapshot = snapshot_token_for_manifest(published)
         self.baseline_published = True
         self.published_new_count = len(new_entries)
 
@@ -995,6 +995,8 @@ def save_index(
     vectors: np.ndarray,
     index_dir: Path,
     music_dir: Path | None = None,
+    *,
+    expected_snapshot: IndexSnapshotToken | None = None,
 ) -> None:
     """Write the FAISS index and tracks DB to *index_dir* atomically.
 
@@ -1024,7 +1026,13 @@ def save_index(
         index_dir: Directory to write files into (must already exist).
         music_dir: Library root — when set, paths are relativized for storage.
     """
-    _publish_full_snapshot(entries, vectors, index_dir, music_dir)
+    _publish_full_snapshot(
+        entries,
+        vectors,
+        index_dir,
+        music_dir,
+        expected_snapshot=expected_snapshot,
+    )
     logger.info("Saved index with %d tracks to %s", len(entries), index_dir)
 
 
@@ -1157,14 +1165,14 @@ def enrich_from_beets(
         parse_initial_key,
     )
 
-    source_generation: int | None = None
+    source_snapshot: IndexSnapshotToken
     with publication_lock(index_dir):
         current = read_manifest(index_dir)
+        source_snapshot = snapshot_token_for_manifest(current)
         if current is not None:
-            source_generation = current.generation
             entries, _loaded = load_index(
                 index_dir,
-                expected_generation=source_generation,
+                expected_generation=current.generation,
             )
         else:
             db_path = _tracks_db_path(index_dir)
@@ -1240,7 +1248,7 @@ def enrich_from_beets(
         entries,
         index_dir,
         music_dir,
-        expected_generation=source_generation,
+        expected_snapshot=source_snapshot,
     )
     logger.info("Enrich: updated %d/%d tracks", updated, len(entries))
     return (updated, len(entries))
@@ -1269,7 +1277,7 @@ def _check_prune_safety(removed: int, total: int, allow_mass_prune: bool) -> Non
 def _delete_index_files(
     index_dir: Path,
     *,
-    expected_generation: int | None = None,
+    expected_snapshot: IndexSnapshotToken | None = None,
 ) -> None:
     """Remove the index files (called when prune empties the library).
 
@@ -1277,14 +1285,8 @@ def _delete_index_files(
     and SQLite sidecars so the next index run starts from a clean slate.
     """
     with publication_lock(index_dir):
-        current = read_manifest(index_dir)
-        if expected_generation is not None and (
-            current is None or current.generation != expected_generation
-        ):
-            raise IndexConsistencyError(
-                f"expected generation {expected_generation}, got "
-                f"{getattr(current, 'generation', None)}"
-            )
+        if expected_snapshot is not None:
+            require_snapshot_token(index_dir, expected_snapshot)
         paths = [
             index_dir / "vectors.index",
             index_dir / "tracks.db",
@@ -1306,7 +1308,7 @@ def _maybe_migrate_paths(
     music_dir: Path | None,
     already_relative: bool,
     *,
-    expected_generation: int | None = None,
+    expected_snapshot: IndexSnapshotToken | None = None,
 ) -> None:
     """Re-save tracks DB in relative path form when storage is still absolute.
 
@@ -1321,7 +1323,7 @@ def _maybe_migrate_paths(
         entries,
         index_dir,
         music_dir,
-        expected_generation=expected_generation,
+        expected_snapshot=expected_snapshot,
     )
 
 
@@ -1363,14 +1365,14 @@ def prune_index(
         PruneSafetyError: If the prune would exceed the safety threshold
             and ``allow_mass_prune`` is not set.
     """
-    source_generation: int | None = None
+    source_snapshot: IndexSnapshotToken
     with publication_lock(index_dir):
         current = read_manifest(index_dir)
+        source_snapshot = snapshot_token_for_manifest(current)
         if current is not None:
-            source_generation = current.generation
             entries, loaded = load_index(
                 index_dir,
-                expected_generation=source_generation,
+                expected_generation=current.generation,
             )
         else:
             db_path = _tracks_db_path(index_dir)
@@ -1421,7 +1423,7 @@ def prune_index(
 
     surviving_entries = [e for e, k in zip(entries, keep_mask, strict=False) if k]
     if not surviving_entries and removed:
-        _delete_index_files(index_dir, expected_generation=source_generation)
+        _delete_index_files(index_dir, expected_snapshot=source_snapshot)
         logger.info("Pruned all %d entries — index is now empty", removed)
         return (removed, 0)
 
@@ -1432,7 +1434,7 @@ def prune_index(
             index_dir,
             music_dir,
             already_relative,
-            expected_generation=source_generation,
+            expected_snapshot=source_snapshot,
         )
         return (0, len(entries))
 
@@ -1447,7 +1449,7 @@ def prune_index(
         surviving_vectors,
         index_dir,
         music_dir,
-        expected_generation=source_generation,
+        expected_snapshot=source_snapshot,
     )
     logger.info("Pruned %d missing tracks (%d remain)", removed, len(surviving_entries))
     return (removed, len(surviving_entries))
@@ -1944,10 +1946,11 @@ def _load_existing_artifacts(
     index_dir: Path,
     music_dir: Path,
     path_remap: list[tuple[str, str]] | None,
-) -> tuple[list[IndexEntry], list[np.ndarray], bool]:
+) -> tuple[list[IndexEntry], list[np.ndarray], bool, IndexSnapshotToken]:
     """Load one coherent baseline and restore its canonical working files."""
     with publication_lock(index_dir):
         manifest = read_manifest(index_dir)
+        snapshot = snapshot_token_for_manifest(manifest)
         if manifest is not None:
             manifest_entries, manifest_index = load_index(
                 index_dir,
@@ -1961,12 +1964,12 @@ def _load_existing_artifacts(
                 for row in manifest_index.reconstruct_n(0, manifest_index.ntotal)
             ]
             restore_working_snapshot(index_dir, expected_generation=manifest.generation)
-            return manifest_entries, vectors, already_relative
+            return manifest_entries, vectors, already_relative, snapshot
 
         db_exists = (index_dir / "tracks.db").is_file()
         vectors_exist = (index_dir / "vectors.index").is_file()
         if not db_exists and not vectors_exist:
-            return [], [], False
+            return [], [], False, snapshot
 
         entries: list[IndexEntry] = []
         already_relative = True
@@ -2002,8 +2005,15 @@ def _load_existing_artifacts(
                 if vectors
                 else np.empty((0, dimension), dtype=np.float32)
             )
-            save_index(entries, aligned_vectors, index_dir, music_dir)
-        return entries, vectors, already_relative
+            published = _publish_full_snapshot(
+                entries,
+                aligned_vectors,
+                index_dir,
+                music_dir,
+                expected_snapshot=snapshot,
+            )
+            snapshot = snapshot_token_for_manifest(published)
+        return entries, vectors, already_relative, snapshot
 
 
 def _load_existing_index(  # pragma: no cover -- exercised via build_index integration runs
@@ -2014,7 +2024,7 @@ def _load_existing_index(  # pragma: no cover -- exercised via build_index integ
     reindex_modified_since: float | None,
     throttle_ms: float = 0.0,
     stat_workers: int = 8,
-) -> tuple[list[IndexEntry], list[np.ndarray], set[str], bool]:
+) -> tuple[list[IndexEntry], list[np.ndarray], set[str], bool, IndexSnapshotToken]:
     """Load existing entries + vectors, drop missing and replaced files.
 
     Fused single-pass: one stat() per entry returns both existence (None
@@ -2023,15 +2033,22 @@ def _load_existing_index(  # pragma: no cover -- exercised via build_index integ
     ``prune_index`` then ``_detect_stale_entries`` back-to-back.
     """
     if force:
-        return [], [], set(), True
+        with publication_lock(index_dir):
+            snapshot = current_snapshot_token(index_dir)
+        return [], [], set(), True, snapshot
 
-    existing_entries, existing_vectors, already_relative = _load_existing_artifacts(
+    (
+        existing_entries,
+        existing_vectors,
+        already_relative,
+        snapshot,
+    ) = _load_existing_artifacts(
         index_dir,
         music_dir,
         path_remap,
     )
     if not existing_entries:
-        return [], [], set(), False
+        return [], [], set(), False, snapshot
     logger.info("Incremental mode: %d tracks already indexed", len(existing_entries))
 
     print(
@@ -2086,20 +2103,35 @@ def _load_existing_index(  # pragma: no cover -- exercised via build_index integ
             # re-embedded and the indexer's normal checkpoint flow rewrites
             # the files.
             if not existing_entries:
-                _delete_index_files(index_dir)
+                _delete_index_files(index_dir, expected_snapshot=snapshot)
+                snapshot = IndexSnapshotToken(0)
             else:
                 vectors_arr = np.asarray(np.stack(existing_vectors), dtype=np.float32)
-                save_index(existing_entries, vectors_arr, index_dir, music_dir=music_dir)
+                published = _publish_full_snapshot(
+                    existing_entries,
+                    vectors_arr,
+                    index_dir,
+                    music_dir,
+                    expected_snapshot=snapshot,
+                )
+                snapshot = snapshot_token_for_manifest(published)
     elif not already_relative and existing_entries:
         # Legacy absolute-path storage detected; rewrite tracks.db in
         # portable relative form without touching FAISS.
-        _publish_metadata_snapshot(existing_entries, index_dir, music_dir)
+        published = _publish_metadata_snapshot(
+            existing_entries,
+            index_dir,
+            music_dir,
+            expected_snapshot=snapshot,
+        )
+        snapshot = snapshot_token_for_manifest(published)
 
     return (
         existing_entries,
         existing_vectors,
         {e.path for e in existing_entries},
         bool(drop_paths),
+        snapshot,
     )
 
 
@@ -2273,6 +2305,7 @@ def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integr
         existing_vectors,
         existing_paths,
         baseline_requires_reconcile,
+        snapshot,
     ) = _load_existing_index(
         index_dir,
         music_dir,
@@ -2310,6 +2343,7 @@ def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integr
         existing_entries=existing_entries,
         existing_vectors=existing_vectors,
         total_new=len(new_tracks),
+        expected_snapshot=snapshot,
         baseline_requires_reconcile=baseline_requires_reconcile,
     )
 
@@ -2346,5 +2380,11 @@ def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integr
     else:
         all_vectors = np.array(new_vectors, dtype=np.float32)
 
-    save_index(all_entries, all_vectors, index_dir, music_dir=music_dir)
+    save_index(
+        all_entries,
+        all_vectors,
+        index_dir,
+        music_dir=music_dir,
+        expected_snapshot=checkpoint.expected_snapshot,
+    )
     print(f"[AutoDJ] Index updated: {len(new_entries)} new tracks added, {len(all_entries)} total.")
