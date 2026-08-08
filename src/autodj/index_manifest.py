@@ -184,6 +184,14 @@ def current_snapshot_token(index_dir: Path) -> IndexSnapshotToken:
     return IndexSnapshotToken(0, state.tombstone_revision)
 
 
+def legacy_artifacts_allowed(index_dir: Path) -> bool:
+    """Whether manifest-free canonical cores are an untouched legacy index."""
+    if read_manifest(index_dir) is not None:
+        return False
+    state = _state_for_manifest(index_dir, None)
+    return state.high_water == 0 and state.tombstone_revision == 0
+
+
 def require_snapshot_token(
     index_dir: Path,
     expected: IndexSnapshotToken,
@@ -200,11 +208,10 @@ def require_snapshot_token(
 
 def tombstone_publication(index_dir: Path) -> None:
     """Durably supersede the live snapshot before prune-all removes files."""
-    state = _read_publication_state(index_dir)
-    if state is not None and state.tombstone_revision:
-        return
     manifest = read_manifest(index_dir)
     state = _state_for_manifest(index_dir, manifest)
+    if manifest is None and state.tombstone_revision:
+        return
     revision = (
         max(
             state.high_water,
@@ -298,7 +305,11 @@ def read_manifest(index_dir: Path) -> IndexManifest | None:
         if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
             raise IndexConsistencyError("manifest contains an invalid SHA-256 digest")
     state = _read_publication_state(index_dir)
-    if state is not None and manifest.state_revision <= state.tombstone_revision:
+    if (
+        state is not None
+        and state.tombstone_revision > 0
+        and manifest.state_revision <= state.tombstone_revision
+    ):
         return None
     return manifest
 

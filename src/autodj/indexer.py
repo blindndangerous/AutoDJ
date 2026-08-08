@@ -51,6 +51,7 @@ from autodj.index_manifest import (
     _immutable_sqlite_uri,
     current_snapshot_token,
     fsync_directory,
+    legacy_artifacts_allowed,
     publication_lock,
     publish_manifest,
     read_manifest,
@@ -1187,6 +1188,8 @@ def enrich_from_beets(
                 expected_generation=current.generation,
             )
         else:
+            if not legacy_artifacts_allowed(index_dir):
+                raise IndexConsistencyError("manifest-free artifacts have publication history")
             db_path = _tracks_db_path(index_dir)
             faiss_file = index_dir / "vectors.index"
             if not db_path.exists() or not faiss_file.exists():
@@ -1388,6 +1391,8 @@ def prune_index(
                 expected_generation=current.generation,
             )
         else:
+            if not legacy_artifacts_allowed(index_dir):
+                raise IndexConsistencyError("manifest-free artifacts have publication history")
             db_path = _tracks_db_path(index_dir)
             faiss_file = index_dir / "vectors.index"
             if not db_path.exists() or not faiss_file.exists():
@@ -1758,6 +1763,8 @@ def load_index(
         vectors_path = (
             index_dir / before.vectors_file if before is not None else index_dir / "vectors.index"
         )
+        if before is None and not legacy_artifacts_allowed(index_dir):
+            raise IndexConsistencyError("manifest-free artifacts have publication history")
         if not tracks_path.is_file() or not vectors_path.is_file():
             raise FileNotFoundError(
                 f"Index files missing: {tracks_path.name} + {vectors_path.name}"
@@ -2175,6 +2182,8 @@ def _load_existing_artifacts(
         vectors_exist = (index_dir / "vectors.index").is_file()
         if not db_exists and not vectors_exist:
             return [], [], False, snapshot
+        if not legacy_artifacts_allowed(index_dir):
+            raise IndexConsistencyError("manifest-free artifacts have publication history")
 
         entries: list[IndexEntry] = []
         already_relative = True

@@ -368,6 +368,7 @@ class TestSaveLoadIndex:
         entries, vectors = self._make_entries(3)
         save_index(entries, vectors, tmp_path)
         (tmp_path / "index-manifest.json").unlink()
+        (tmp_path / ".index-publication-state.json").unlink()
         loaded, faiss_index = load_index(tmp_path)
         assert len(loaded) == 3
         assert faiss_index.ntotal == 3
@@ -1013,6 +1014,7 @@ class TestPruneIndex:
         assert first is not None
         if legacy_without_manifest:
             (idx / "index-manifest.json").unlink()
+            (idx / ".index-publication-state.json").unlink()
         concurrent_entries = [
             replace(entry, title=f"Concurrent {row}") for row, entry in enumerate(entries)
         ]
@@ -1041,7 +1043,7 @@ class TestPruneIndex:
 
         current = read_manifest(idx)
         assert current is not None
-        assert current.generation == first.generation + 1
+        assert current.generation == (1 if legacy_without_manifest else first.generation + 1)
         loaded, loaded_vectors = load_index(idx)
         assert [entry.title for entry in loaded] == [
             "Concurrent 0",
@@ -1064,6 +1066,7 @@ class TestPruneIndex:
         save_index(entries, vectors, idx)
         if legacy_without_manifest:
             (idx / "index-manifest.json").unlink()
+            (idx / ".index-publication-state.json").unlink()
         replacement_path = tmp_path / "replacement.flac"
         replacement_path.write_bytes(b"")
         replacement = [
@@ -1117,6 +1120,7 @@ class TestPruneIndex:
         save_index(entries, vectors, idx, music_dir=None)
         if legacy_without_manifest:
             (idx / "index-manifest.json").unlink()
+            (idx / ".index-publication-state.json").unlink()
         concurrent_entries = [
             replace(entry, title=f"Concurrent {row}") for row, entry in enumerate(entries)
         ]
@@ -1348,6 +1352,7 @@ class TestEnrichFromBeets:
         assert first is not None
         if legacy_without_manifest:
             (idx / "index-manifest.json").unlink()
+            (idx / ".index-publication-state.json").unlink()
         beets = tmp_path / "library.db"
         self._make_beets(
             beets,
@@ -1380,7 +1385,7 @@ class TestEnrichFromBeets:
 
         current = read_manifest(idx)
         assert current is not None
-        assert current.generation == first.generation + 1
+        assert current.generation == (1 if legacy_without_manifest else first.generation + 1)
         loaded, loaded_vectors = load_index(idx)
         assert [entry.title for entry in loaded] == ["Concurrent 0", "Concurrent 1"]
         assert [int(np.argmax(loaded_vectors.reconstruct(row))) for row in range(2)] == [11, 13]
@@ -2943,6 +2948,7 @@ class TestThrottledFaissCheckpoint:
         # Exercise Task 3's legacy recovery path; manifested generations
         # intentionally ignore unpublished canonical-file mutations.
         (index_dir / "index-manifest.json").unlink()
+        (index_dir / ".index-publication-state.json").unlink()
 
         # Simulate crash recovery: metadata wrote 5 rows but FAISS only
         # got 3 vectors.
@@ -2990,6 +2996,7 @@ class TestThrottledFaissCheckpoint:
         # Exercise Task 3's legacy recovery path; manifested generations
         # intentionally ignore unpublished canonical-file mutations.
         (index_dir / "index-manifest.json").unlink()
+        (index_dir / ".index-publication-state.json").unlink()
         # Shrink tracks.db without rewriting FAISS.
         _save_tracks_metadata(entries[:2], index_dir, music_dir=None)
 

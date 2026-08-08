@@ -14,6 +14,7 @@ import pytest
 from autodj.index_manifest import (
     IndexConsistencyError,
     IndexSnapshotToken,
+    copy_published_snapshot,
     current_snapshot_token,
     publish_manifest,
     read_manifest,
@@ -277,6 +278,8 @@ def test_failed_reserved_publish_keeps_prior_snapshot_live_and_consumes_id(
 
 
 def test_tombstoned_stale_manifest_is_logically_empty_and_publish_recovers(tmp_path: Path) -> None:
+    from autodj.indexer import load_index
+
     _write_working_artifacts(tmp_path, 2)
     first = publish_manifest(tmp_path, 2)
     tombstone_publication(tmp_path)
@@ -284,10 +287,66 @@ def test_tombstoned_stale_manifest_is_logically_empty_and_publish_recovers(tmp_p
     assert (tmp_path / "index-manifest.json").exists()
     assert read_manifest(tmp_path) is None
     assert current_snapshot_token(tmp_path).generation == 0
+    with pytest.raises(IndexConsistencyError, match="publication history"):
+        load_index(tmp_path)
 
     recovered = publish_manifest(tmp_path, 2)
     assert recovered.generation > first.generation
     assert read_manifest(tmp_path) == recovered
+
+
+def test_second_tombstone_supersedes_newer_live_manifest(tmp_path: Path) -> None:
+    _write_working_artifacts(tmp_path, 1)
+    publish_manifest(tmp_path, 1)
+    tombstone_publication(tmp_path)
+    first_empty = current_snapshot_token(tmp_path)
+    recovered = publish_manifest(tmp_path, 1)
+    assert read_manifest(tmp_path) == recovered
+
+    tombstone_publication(tmp_path)
+
+    assert read_manifest(tmp_path) is None
+    second_empty = current_snapshot_token(tmp_path)
+    assert second_empty.generation == 0
+    assert second_empty.state_revision > first_empty.state_revision
+
+
+def test_v1_manifest_remains_live_with_initialized_non_tombstone_state(tmp_path: Path) -> None:
+    _write_working_artifacts(tmp_path, 1)
+    published = publish_manifest(tmp_path, 1)
+    path = tmp_path / "index-manifest.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["schema_version"] = 1
+    del raw["state_revision"]
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    legacy = read_manifest(tmp_path)
+    assert legacy is not None
+    assert legacy.schema_version == 1
+    copied = copy_published_snapshot(tmp_path, tmp_path / "backup")
+    assert copied.schema_version == 1
+    upgraded = publish_manifest(tmp_path, 1)
+    assert upgraded.schema_version == 2
+    assert upgraded.generation > published.generation
+
+
+def test_manifest_free_cores_with_publication_history_are_not_legacy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import autodj.index_manifest as manifest_module
+    from autodj.indexer import load_index
+
+    _write_working_artifacts(tmp_path, 1)
+    monkeypatch.setattr(
+        manifest_module,
+        "_checkpoint_working_tracks",
+        lambda _index_dir: (_ for _ in ()).throw(OSError("checkpoint failed")),
+    )
+    with pytest.raises(OSError, match="checkpoint failed"):
+        publish_manifest(tmp_path, 1)
+
+    with pytest.raises(IndexConsistencyError, match="publication history"):
+        load_index(tmp_path)
 
 
 def test_restore_rejects_same_count_noncanonical_vec_rows(tmp_path: Path) -> None:
