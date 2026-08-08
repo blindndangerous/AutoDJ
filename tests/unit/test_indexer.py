@@ -1658,6 +1658,47 @@ class TestFlatIndexMigration:
         assert not (target / "tracks.db").exists()
         assert not (target / "vectors.index").exists()
 
+    def test_tombstoned_parent_never_seeds_fresh_target(self, tmp_path: Path) -> None:
+        from autodj.index_manifest import tombstone_publication
+        from autodj.indexer import load_index
+
+        source_db, source_vectors = self._make_flat(tmp_path)
+        tombstone_publication(tmp_path)
+        target = tmp_path / "default"
+
+        with pytest.raises(FileNotFoundError):
+            load_index(target)
+
+        assert source_db.exists()
+        assert source_vectors.exists()
+        assert not (target / "index-manifest.json").exists()
+        assert not (target / "tracks.db").exists()
+        assert not (target / "vectors.index").exists()
+
+    def test_failed_reservation_parent_never_seeds_fresh_target(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import autodj.index_manifest as manifest_module
+        from autodj.index_manifest import publish_manifest
+        from autodj.indexer import load_index
+
+        source_db, source_vectors = self._make_flat(tmp_path)
+        monkeypatch.setattr(
+            manifest_module,
+            "_checkpoint_working_tracks",
+            lambda _index_dir: (_ for _ in ()).throw(OSError("checkpoint failed")),
+        )
+        with pytest.raises(OSError, match="checkpoint failed"):
+            publish_manifest(tmp_path, 1)
+        target = tmp_path / "default"
+
+        with pytest.raises(FileNotFoundError):
+            load_index(target)
+
+        assert source_db.exists()
+        assert source_vectors.exists()
+        assert not (target / "index-manifest.json").exists()
+
     def test_load_index_recovers_exact_historical_split(self, tmp_path: Path) -> None:
         from autodj.indexer import load_index
 
@@ -1748,6 +1789,7 @@ class TestFlatIndexMigration:
         vectors[1, 31] = 1.0
         save_index(entries, vectors, parent)
         (parent / "index-manifest.json").unlink()
+        (parent / ".index-publication-state.json").unlink()
         writer = sqlite3.connect(parent / "tracks.db", isolation_level=None)
         try:
             assert writer.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"

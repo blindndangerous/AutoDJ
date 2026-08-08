@@ -1646,6 +1646,14 @@ def _migrate_flat_index_if_needed(target_dir: Path) -> None:
                 preserve_target_vector=preserve_target_vector,
             )
 
+        # Only an owned marker may resume a transaction with publication
+        # history.  Otherwise both sides must be pristine legacy state;
+        # stale canonical cores must never seed a new target snapshot.
+        if migration_state is None and (
+            not legacy_artifacts_allowed(parent) or not legacy_artifacts_allowed(target_dir)
+        ):
+            return
+
         target_vec = target_dir / "vectors.index"
         target_db = target_dir / "tracks.db"
         historical_split = (
