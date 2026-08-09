@@ -27,6 +27,7 @@ def _parse_host_header(value: object) -> str | None:
     if (
         not isinstance(value, str)
         or not value
+        or len(value) > 512
         or value != value.strip()
         or not value.isascii()
         or any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in value)
@@ -60,12 +61,30 @@ def _parse_host_header(value: object) -> str | None:
             canonical = address.compressed
 
     if port_text is not None:
-        if not port_text or not port_text.isascii() or not port_text.isdecimal():
+        if (
+            not port_text
+            or len(port_text) > 5
+            or not port_text.isascii()
+            or not port_text.isdecimal()
+        ):
             return None
         port = int(port_text)
         if not 1 <= port <= 65535:
             return None
     return canonical
+
+
+def _clock_timestamp(now: Callable[[], float]) -> int:
+    try:
+        value = now()
+        if type(value) not in {int, float}:
+            raise TypeError
+        timestamp = int(value)
+    except (OverflowError, TypeError, ValueError):
+        raise ValueError("clock returned an invalid timestamp") from None
+    if not 0 <= timestamp <= _MAX_EXPIRY:
+        raise ValueError("clock returned an invalid timestamp")
+    return timestamp
 
 
 @dataclass
@@ -93,7 +112,7 @@ class SecurityPolicy:
         token = self.config.access_token
         if token is None:
             raise RuntimeError("access token is not configured")
-        expires = int(self.now()) + self.config.session_ttl_seconds
+        expires = _clock_timestamp(self.now) + self.config.session_ttl_seconds
         if not 0 <= expires <= _MAX_EXPIRY:
             raise RuntimeError("session expiry is outside the supported range")
         nonce = secrets.token_hex(16)
@@ -127,7 +146,11 @@ class SecurityPolicy:
         signature_valid = secrets.compare_digest(
             signature.encode("ascii"), expected.encode("ascii")
         )
-        return signature_valid and expires >= int(self.now())
+        try:
+            current_time = _clock_timestamp(self.now)
+        except ValueError:
+            return False
+        return signature_valid and expires >= current_time
 
     def host_allowed(self, host_header: str | None) -> bool:
         hostname = _parse_host_header(host_header)
@@ -153,6 +176,22 @@ def audit_record(
     route: str | None = None,
     status: int | None = None,
 ) -> str:
+    for field_name, required_value in (
+        ("request_id", request_id),
+        ("action", action),
+        ("outcome", outcome),
+    ):
+        if type(required_value) is not str:
+            raise TypeError(f"{field_name} must be a string")
+    for field_name, optional_value in (("method", method), ("route", route)):
+        if optional_value is not None and type(optional_value) is not str:
+            raise TypeError(f"{field_name} must be a string or None")
+    if status is not None:
+        if type(status) is not int:
+            raise TypeError("status must be an integer or None")
+        if not (100 <= status <= 599 or 1000 <= status <= 4999):
+            raise ValueError("status must be a valid HTTP status or WebSocket code")
+
     record: dict[str, str | int] = {
         "action": action,
         "outcome": outcome,
@@ -164,4 +203,4 @@ def audit_record(
         record["route"] = route
     if status is not None:
         record["status"] = status
-    return json.dumps(record, separators=(",", ":"), sort_keys=True)
+    return json.dumps(record, allow_nan=False, separators=(",", ":"), sort_keys=True)

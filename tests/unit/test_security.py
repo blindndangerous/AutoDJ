@@ -133,6 +133,22 @@ def test_session_signature_comparison_uses_constant_time_bytes(monkeypatch) -> N
     assert seen == [(signature, signature)]
 
 
+def test_session_rejects_when_constant_time_signature_comparison_fails(monkeypatch) -> None:
+    policy = SecurityPolicy(_server(access_token=_TOKEN), now=lambda: 1000)
+    cookie = policy.issue_session()
+    signature = cookie.rsplit(".", 1)[1].encode("ascii")
+    seen: list[tuple[bytes, bytes]] = []
+
+    def compare(left: bytes, right: bytes) -> bool:
+        seen.append((left, right))
+        return False
+
+    monkeypatch.setattr(secrets, "compare_digest", compare)
+
+    assert policy.verify_session(cookie) is False
+    assert seen == [(signature, signature)]
+
+
 def test_session_token_rotation_invalidates_existing_cookie() -> None:
     cookie = SecurityPolicy(_server(access_token=_TOKEN), now=lambda: 1000).issue_session()
 
@@ -174,6 +190,68 @@ def test_malformed_session_values_are_rejected_without_raising(value: object) ->
 
 
 @pytest.mark.parametrize(
+    "bad_now",
+    [
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        "not-a-time",
+    ],
+)
+def test_invalid_clock_values_reject_session_without_raising(bad_now: object) -> None:
+    cookie = SecurityPolicy(_server(access_token=_TOKEN), now=lambda: 1000).issue_session()
+    policy = SecurityPolicy(_server(access_token=_TOKEN), now=lambda: bad_now)  # type: ignore[arg-type]
+
+    assert policy.verify_session(cookie) is False
+
+
+@pytest.mark.parametrize("error_type", [ValueError, OverflowError])
+def test_clock_conversion_errors_reject_session_without_raising(
+    error_type: type[Exception],
+) -> None:
+    cookie = SecurityPolicy(_server(access_token=_TOKEN), now=lambda: 1000).issue_session()
+
+    def broken_clock() -> float:
+        raise error_type("clock failed")
+
+    assert (
+        SecurityPolicy(_server(access_token=_TOKEN), now=broken_clock).verify_session(cookie)
+        is False
+    )
+
+
+@pytest.mark.parametrize(
+    "bad_now",
+    [
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        "not-a-time",
+    ],
+)
+def test_invalid_clock_values_fail_session_issue_safely(bad_now: object) -> None:
+    policy = SecurityPolicy(_server(access_token=_TOKEN), now=lambda: bad_now)  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="clock") as raised:
+        policy.issue_session()
+    assert _TOKEN not in str(raised.value)
+
+
+@pytest.mark.parametrize("error_type", [ValueError, OverflowError])
+def test_clock_conversion_errors_fail_session_issue_safely(
+    error_type: type[Exception],
+) -> None:
+    def broken_clock() -> float:
+        raise error_type("secret clock details")
+
+    policy = SecurityPolicy(_server(access_token=_TOKEN), now=broken_clock)
+    with pytest.raises(ValueError, match="clock") as raised:
+        policy.issue_session()
+    assert "secret clock details" not in str(raised.value)
+    assert _TOKEN not in str(raised.value)
+
+
+@pytest.mark.parametrize(
     ("host", "allowed"),
     [
         ("radio.local", True),
@@ -212,6 +290,10 @@ def test_malformed_session_values_are_rejected_without_raising(value: object) ->
 )
 def test_host_policy_requires_valid_exact_hostname(host: object, allowed: bool) -> None:
     assert SecurityPolicy(_server()).host_allowed(host) is allowed  # type: ignore[arg-type]
+
+
+def test_host_policy_rejects_extremely_long_port_without_raising() -> None:
+    assert SecurityPolicy(_server()).host_allowed("radio.local:" + "9" * 5000) is False
 
 
 @pytest.mark.parametrize(
@@ -301,6 +383,37 @@ def test_audit_record_omits_optional_fields_and_rejects_extra_data() -> None:
         audit_record(  # type: ignore[call-arg]
             "request", "login", "rejected", body={"token": _TOKEN}
         )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("request_id", 123),
+        ("action", None),
+        ("outcome", {"secret": "value"}),
+        ("method", 1),
+        ("route", ["/private/path"]),
+        ("status", True),
+        ("status", 200.0),
+        ("status", float("nan")),
+    ],
+)
+def test_audit_record_rejects_wrong_runtime_field_types(field: str, value: object) -> None:
+    arguments: dict[str, object] = {
+        "request_id": "request",
+        "action": "login",
+        "outcome": "success",
+        field: value,
+    }
+
+    with pytest.raises(TypeError, match=field):
+        audit_record(**arguments)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("status", [99, 5000])
+def test_audit_record_rejects_status_outside_http_and_websocket_ranges(status: int) -> None:
+    with pytest.raises(ValueError, match="status"):
+        audit_record("request", "login", "success", status=status)
 
 
 def test_request_ids_are_unique_lowercase_hex() -> None:
