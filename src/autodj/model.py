@@ -77,13 +77,22 @@ _SAFE_SHARD_PATTERNS = {
 _thread_locks: dict[str, threading.RLock] = {}
 _thread_locks_guard = threading.Lock()
 _thread_locks_pid = os.getpid()
+_reentrant_locks: dict[tuple[int, int, str], int] = {}
+_reentrant_locks_guard = threading.Lock()
 
 
 def _reset_model_cache_locks_after_fork() -> None:
     """Discard inherited process-local locks in a fork child."""
-    global _thread_locks, _thread_locks_guard, _thread_locks_pid
+    global \
+        _reentrant_locks, \
+        _reentrant_locks_guard, \
+        _thread_locks, \
+        _thread_locks_guard, \
+        _thread_locks_pid
     _thread_locks = {}
     _thread_locks_guard = threading.Lock()
+    _reentrant_locks = {}
+    _reentrant_locks_guard = threading.Lock()
     _thread_locks_pid = os.getpid()
 
 
@@ -175,7 +184,7 @@ def _indexed_weights(cache_path: Path) -> tuple[bool, str]:
     return True, "indexed-weights"
 
 
-def inspect_model_cache(
+def _inspect_model_path(
     path: Path,
     repo_id: str | None = None,
     revision: str | None = None,
@@ -186,18 +195,24 @@ def inspect_model_cache(
     validation. Omit both for a manually maintained model directory.
     """
     cache_path = Path(path)
+    if cache_path.is_symlink():
+        return ModelCacheStatus(cache_path, False, "symlinked cache path")
     if not cache_path.exists():
-        return ModelCacheStatus(cache_path, False, "missing")
+        return ModelCacheStatus(cache_path, False, "cache directory missing")
     if not cache_path.is_dir():
         return ModelCacheStatus(cache_path, False, "not-directory")
     if not (cache_path / "config.json").is_file():
-        return ModelCacheStatus(cache_path, False, "missing-config")
+        return ModelCacheStatus(cache_path, False, "missing config.json")
+    if any(item.is_symlink() for item in cache_path.rglob("*")):
+        return ModelCacheStatus(cache_path, False, "symlinked cache artifact")
 
     indexed, weight_reason = _indexed_weights(cache_path)
     if not indexed and weight_reason != "no-index":
         return ModelCacheStatus(cache_path, False, weight_reason)
+    files = [item for item in cache_path.iterdir() if item.is_file()]
+    if indexed and any(item.name in {"model.safetensors", "pytorch_model.bin"} for item in files):
+        return ModelCacheStatus(cache_path, False, "ambiguous model weight layout")
     if not indexed:
-        files = [item for item in cache_path.iterdir() if item.is_file()]
         if any(
             pattern.fullmatch(item.name)
             for item in files
@@ -208,22 +223,32 @@ def inspect_model_cache(
             item for item in files if item.name in {"model.safetensors", "pytorch_model.bin"}
         ]
         if len(standalone) != 1:
-            return ModelCacheStatus(cache_path, False, "missing-weights")
+            return ModelCacheStatus(cache_path, False, "missing model weights or shard index")
 
     if (repo_id is None) != (revision is None):
         return ModelCacheStatus(cache_path, False, "invalid-marker-request")
     if repo_id is not None:
         marker = cache_path / _MARKER_NAME
         if not marker.is_file():
-            return ModelCacheStatus(cache_path, False, "missing-marker")
+            return ModelCacheStatus(cache_path, False, "missing completion marker")
         try:
             marker_data = json.loads(marker.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            return ModelCacheStatus(cache_path, False, "invalid-marker")
+            return ModelCacheStatus(cache_path, False, "invalid completion marker")
         expected = {"repo_id": repo_id, "revision": revision}
         if marker_data != expected:
-            return ModelCacheStatus(cache_path, False, "marker-mismatch")
+            return ModelCacheStatus(cache_path, False, "completion marker identity mismatch")
     return ModelCacheStatus(cache_path, True, "complete")
+
+
+def inspect_model_cache(model_cfg: ModelConfig, index_cfg: IndexConfig) -> ModelCacheStatus:
+    """Public inspected-cache status for configured automatic or manual model."""
+    path = model_cache_path(model_cfg, index_cfg)
+    return _inspect_model_path(
+        path,
+        None if model_cfg.manual_path is not None else model_cfg.name,
+        None if model_cfg.manual_path is not None else model_cfg.revision,
+    )
 
 
 def _fsync_file(path: Path) -> None:
@@ -288,6 +313,7 @@ def _model_cache_lock(cache_path: Path) -> Iterator[None]:
     """Serialize a cache promotion across threads and processes."""
     lock = _thread_lock(cache_path)
     lock_path = cache_path.parent / f".{cache_path.name}.lock"
+    key = (os.getpid(), threading.get_ident(), str(cache_path.absolute()))
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         with lock_path.open("xb") as initializer:
@@ -295,24 +321,45 @@ def _model_cache_lock(cache_path: Path) -> Iterator[None]:
             initializer.flush()
     except FileExistsError:
         pass
-    with lock, lock_path.open("r+b") as handle:
-        if os.name == "nt":
-            import msvcrt
+    lock.acquire()
+    with _reentrant_locks_guard:
+        nested = key in _reentrant_locks
+        _reentrant_locks[key] = _reentrant_locks.get(key, 0) + 1
+    if nested:
+        try:
+            yield
+        finally:
+            with _reentrant_locks_guard:
+                _reentrant_locks[key] -= 1
+                if not _reentrant_locks[key]:
+                    del _reentrant_locks[key]
+            lock.release()
+        return
+    try:
+        with lock_path.open("r+b") as handle:
+            if os.name == "nt":
+                import msvcrt
 
-            _acquire_windows_file_lock(handle)
-            try:
-                yield
-            finally:
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-        else:
-            import fcntl
+                _acquire_windows_file_lock(handle)
+                try:
+                    yield
+                finally:
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
 
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        with _reentrant_locks_guard:
+            _reentrant_locks[key] -= 1
+            if not _reentrant_locks[key]:
+                del _reentrant_locks[key]
+        lock.release()
 
 
 # ---------------------------------------------------------------------------
@@ -353,19 +400,19 @@ def download_model_if_needed(
     """
     cache_dir = model_cache_path(model_cfg, index_cfg)
     if model_cfg.manual_path is not None:
-        status = inspect_model_cache(cache_dir)
+        status = inspect_model_cache(model_cfg, index_cfg)
         if not status.complete:
             raise ModelLoadError(f"manual_path is incomplete ({status.reason}): {cache_dir}")
         return cache_dir
 
-    status = inspect_model_cache(cache_dir, model_cfg.name, model_cfg.revision)
+    status = inspect_model_cache(model_cfg, index_cfg)
     if status.complete:
         return cache_dir
 
     staging: Path | None = None
     try:
         with _model_cache_lock(cache_dir):
-            status = inspect_model_cache(cache_dir, model_cfg.name, model_cfg.revision)
+            status = inspect_model_cache(model_cfg, index_cfg)
             if status.complete:
                 return cache_dir
             staging = cache_dir.parent / f".{cache_dir.name}.staging-{uuid.uuid4().hex}"
@@ -378,7 +425,7 @@ def download_model_if_needed(
                 ignore_patterns=_IGNORE_PATTERNS,
                 etag_timeout=_ETAG_TIMEOUT_SECONDS,
             )
-            staged = inspect_model_cache(staging)
+            staged = _inspect_model_path(staging)
             if not staged.complete:
                 raise ModelLoadError(f"download produced incomplete model cache ({staged.reason})")
             marker = staging / _MARKER_NAME
@@ -392,10 +439,12 @@ def download_model_if_needed(
             _fsync_file(marker)
             _fsync_tree(staging)
             # Delete only target already inspected incomplete, immediately before promotion.
-            current = inspect_model_cache(cache_dir, model_cfg.name, model_cfg.revision)
+            current = inspect_model_cache(model_cfg, index_cfg)
             if current.complete:
                 return cache_dir
-            if cache_dir.exists():
+            if cache_dir.is_symlink() or cache_dir.is_file():
+                cache_dir.unlink()
+            elif cache_dir.is_dir():
                 shutil.rmtree(cache_dir)
             os.replace(staging, cache_dir)
             staging = None

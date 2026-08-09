@@ -23,6 +23,7 @@ from autodj.model import (
     ModelCacheStatus,
     ModelLoadError,
     MuqWrapper,
+    _inspect_model_path,
     download_model_if_needed,
     inspect_model_cache,
     model_cache_path,
@@ -235,6 +236,17 @@ class TestDownloadModelIfNeeded:
 
 
 class TestModelCacheInspection:
+    def test_public_inspection_uses_configured_auto_path_and_requires_marker(
+        self, model_config_auto: ModelConfig, index_config: IndexConfig
+    ) -> None:
+        cache = model_cache_path(model_config_auto, index_config)
+        cache.mkdir(parents=True)
+        (cache / "config.json").write_text("{}", encoding="utf-8")
+        (cache / "model.safetensors").write_bytes(b"weights")
+        assert inspect_model_cache(model_config_auto, index_config) == ModelCacheStatus(
+            cache, False, "missing completion marker"
+        )
+
     def test_public_status_is_frozen(self, tmp_path: Path) -> None:
         status = ModelCacheStatus(tmp_path, False, "missing")
         with pytest.raises(AttributeError):
@@ -245,11 +257,11 @@ class TestModelCacheInspection:
         cache.mkdir()
         (cache / "config.json").write_text("{}", encoding="utf-8")
         (cache / "model-00001-of-00002.safetensors").write_bytes(b"one")
-        assert inspect_model_cache(cache).reason == "unindexed-partial-shard"
+        assert _inspect_model_path(cache).reason == "unindexed-partial-shard"
         (cache / "model.safetensors.index.json").write_text(
             json.dumps({"weight_map": {"x": "../outside.safetensors"}}), encoding="utf-8"
         )
-        assert inspect_model_cache(cache).reason == "invalid-index"
+        assert _inspect_model_path(cache).reason == "invalid-index"
 
     def test_sharded_index_requires_all_safe_shards(self, tmp_path: Path) -> None:
         cache = tmp_path / "cache"
@@ -266,10 +278,10 @@ class TestModelCacheInspection:
             ),
             encoding="utf-8",
         )
-        assert inspect_model_cache(cache).reason == "missing-shard"
+        assert _inspect_model_path(cache).reason == "missing-shard"
         (cache / "model-00001-of-00002.safetensors").write_bytes(b"one")
         (cache / "model-00002-of-00002.safetensors").write_bytes(b"two")
-        assert inspect_model_cache(cache).complete
+        assert _inspect_model_path(cache).complete
 
     @pytest.mark.parametrize(
         ("index_name", "shards"),
@@ -295,7 +307,7 @@ class TestModelCacheInspection:
         )
         for shard in set(shards):
             (cache / shard).write_bytes(b"weights")
-        assert not inspect_model_cache(cache).complete
+        assert not _inspect_model_path(cache).complete
 
     @pytest.mark.parametrize("filename", ["training_args.bin", "random.safetensors"])
     def test_arbitrary_weight_filenames_do_not_complete_cache(
@@ -305,7 +317,7 @@ class TestModelCacheInspection:
         cache.mkdir()
         (cache / "config.json").write_text("{}", encoding="utf-8")
         (cache / filename).write_bytes(b"not model weights")
-        assert inspect_model_cache(cache).reason == "missing-weights"
+        assert _inspect_model_path(cache).reason == "missing model weights or shard index"
 
     def test_auto_cache_marker_must_match_exactly(self, tmp_path: Path) -> None:
         cache = tmp_path / "cache"
@@ -313,20 +325,20 @@ class TestModelCacheInspection:
         (cache / "config.json").write_text("{}", encoding="utf-8")
         (cache / "model.safetensors").write_bytes(b"weights")
         assert (
-            inspect_model_cache(cache, repo_id="org/model", revision="main").reason
-            == "missing-marker"
+            _inspect_model_path(cache, repo_id="org/model", revision="main").reason
+            == "missing completion marker"
         )
         (cache / ".autodj-complete").write_text("not-json", encoding="utf-8")
         assert (
-            inspect_model_cache(cache, repo_id="org/model", revision="main").reason
-            == "invalid-marker"
+            _inspect_model_path(cache, repo_id="org/model", revision="main").reason
+            == "invalid completion marker"
         )
         (cache / ".autodj-complete").write_text(
             json.dumps({"repo_id": "org/model", "revision": "other"}), encoding="utf-8"
         )
         assert (
-            inspect_model_cache(cache, repo_id="org/model", revision="main").reason
-            == "marker-mismatch"
+            _inspect_model_path(cache, repo_id="org/model", revision="main").reason
+            == "completion marker identity mismatch"
         )
 
     def test_repo_and_revision_create_distinct_auto_paths(self, index_config: IndexConfig) -> None:
