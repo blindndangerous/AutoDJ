@@ -1753,6 +1753,7 @@ def load_index(
     path_remap: list[tuple[str, str]] | None = None,
     *,
     expected_generation: int | None = None,
+    _migrate_flat: bool = True,
 ) -> tuple[list[IndexEntry], faiss.IndexFlatIP]:
     """Load the FAISS index and metadata from *index_dir*.
 
@@ -1777,7 +1778,8 @@ def load_index(
     # named-index refactor moves them under `<index_dir>/<name>/`.  If
     # the old files are sitting at the parent dir AND the new dir is
     # empty, slide them across so the user doesn't have to re-index.
-    _migrate_flat_index_if_needed(index_dir)
+    if _migrate_flat:
+        _migrate_flat_index_if_needed(index_dir)
 
     with publication_lock(index_dir):
         before = read_manifest(index_dir)
