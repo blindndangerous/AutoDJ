@@ -586,9 +586,11 @@ class TestModelCacheSymlinks:
                 pytest.skip(f"symlinks unavailable: {exc}")
             return str(staging)
 
-        with patch("autodj.model.snapshot_download", side_effect=populate):
-            with pytest.raises(ModelLoadError, match="incomplete"):
-                download_model_if_needed(model_config_auto, index_config)
+        with (
+            patch("autodj.model.snapshot_download", side_effect=populate),
+            pytest.raises(ModelLoadError, match="incomplete"),
+        ):
+            download_model_if_needed(model_config_auto, index_config)
         assert outside.read_text(encoding="utf-8") == "keep"
 
 
