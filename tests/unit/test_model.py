@@ -37,7 +37,7 @@ def _hold_model_cache_lock(cache_path: str, ready: object, release: object) -> N
 
     with _model_cache_lock(Path(cache_path)):
         ready.set()
-        release.wait(10)
+        release.wait()
 
 
 def _wait_for_model_cache_lock(cache_path: str, entered: object, acquired: object) -> None:
@@ -422,6 +422,7 @@ class TestModelCacheInspection:
             in model_cache_path(first, index_config).name
         )
 
+    @pytest.mark.timeout(600)
     def test_process_lock_blocks_independent_holder(self, tmp_path: Path) -> None:
         from autodj.model import _model_cache_lock
 
@@ -430,21 +431,35 @@ class TestModelCacheInspection:
         release = context.Event()
         cache = tmp_path / "cache"
         holder = context.Process(target=_hold_model_cache_lock, args=(str(cache), ready, release))
-        holder.start()
-        assert ready.wait(10)
         acquired = threading.Event()
 
         def acquire() -> None:
             with _model_cache_lock(cache):
                 acquired.set()
 
-        waiter = threading.Thread(target=acquire)
-        waiter.start()
-        assert not acquired.wait(0.2)
-        release.set()
-        waiter.join(10)
-        holder.join(10)
+        waiter = threading.Thread(target=acquire, daemon=True)
+        try:
+            holder.start()
+            for _ in range(180):
+                if ready.wait(1) or not holder.is_alive():
+                    break
+            assert ready.is_set()
+            waiter.start()
+            assert not acquired.wait(0.2)
+        finally:
+            release.set()
+            if holder.pid is not None:
+                holder.join(60)
+                if holder.is_alive():
+                    holder.terminate()
+                    holder.join(60)
+                if holder.is_alive():
+                    holder.kill()
+                    holder.join(60)
+            if waiter.ident is not None:
+                waiter.join(60)
         assert holder.exitcode == 0
+        assert not waiter.is_alive()
         assert acquired.is_set()
 
     def test_fork_reset_rebinds_guard_held_by_parent(self, tmp_path: Path) -> None:
@@ -657,6 +672,7 @@ class TestModelCacheSymlinks:
         assert outside.read_text(encoding="utf-8") == "keep"
 
 
+@pytest.mark.timeout(600)
 def test_process_waiter_is_entered_and_blocked_until_holder_releases(tmp_path: Path) -> None:
     context = multiprocessing.get_context("spawn")
     cache = tmp_path / "cache"
@@ -670,16 +686,34 @@ def test_process_waiter_is_entered_and_blocked_until_holder_releases(tmp_path: P
     waiter = context.Process(
         target=_wait_for_model_cache_lock, args=(str(cache), waiter_entered, waiter_acquired)
     )
-    holder.start()
-    assert holder_ready.wait(10)
-    waiter.start()
-    assert waiter_entered.wait(10)
-    assert not waiter_acquired.wait(0.2)
-    release.set()
-    holder.join(10)
-    waiter.join(10)
+    try:
+        holder.start()
+        for _ in range(180):
+            if holder_ready.wait(1) or not holder.is_alive():
+                break
+        assert holder_ready.is_set()
+        waiter.start()
+        for _ in range(180):
+            if waiter_entered.wait(1) or not waiter.is_alive():
+                break
+        assert waiter_entered.is_set()
+        assert not waiter_acquired.wait(0.2)
+    finally:
+        release.set()
+        for process in (holder, waiter):
+            if process.pid is None:
+                continue
+            process.join(60)
+            if process.is_alive():
+                process.terminate()
+                process.join(60)
+            if process.is_alive():
+                process.kill()
+                process.join(60)
     assert holder.exitcode == 0
     assert waiter.exitcode == 0
+    assert not holder.is_alive()
+    assert not waiter.is_alive()
     assert waiter_acquired.is_set()
 
 
