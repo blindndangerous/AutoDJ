@@ -277,7 +277,16 @@ class TestDownloadModelIfNeeded:
             "metadata.json",
             ".autodj-complete",
         } <= staged_files
+        synced_directories = [path for kind, path in calls if kind == "directory"]
+        staging_root = next(path for path in synced_directories if path.name.startswith("."))
+        assert staging_root / "nested" in synced_directories
+        assert staging_root in synced_directories
         parent_index = calls.index(("directory", result.parent))
+        assert (
+            calls.index(("directory", staging_root / "nested"))
+            < calls.index(("directory", staging_root))
+            < parent_index
+        )
         assert all(path != result.parent for _kind, path in calls[:parent_index])
         assert calls[-1] == ("directory", result.parent)
 
