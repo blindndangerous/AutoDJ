@@ -77,6 +77,8 @@ class TestSimilarityIndexConstruction:
             assert entry is not None
             with pytest.raises(FrozenInstanceError):
                 entry.path = "Z:/Music/mutated.flac"
+            with pytest.raises(FrozenInstanceError):
+                del entry.path
 
         assert sim.entry_for_path("Z:/Music/song_0.flac") is snapshot_entry
         assert sim.entry_for_path("Z:/Music/mutated.flac") is None
@@ -870,6 +872,15 @@ def _similarity_entries_accesses(source: str) -> list[int]:
 
         visit_AsyncFor = visit_For
 
+        def visit_While(self, node: ast.While) -> None:
+            self.visit(node.test)
+            before = set(self.aliases[-1])
+            body = self._visit_block(node.body, before)
+            outcomes = [before, body]
+            if node.orelse:
+                outcomes.append(self._visit_block(node.orelse, before | body))
+            self.aliases[-1] = set().union(*outcomes)
+
         def visit_With(self, node: ast.With) -> None:
             for item in node.items:
                 self.visit(item.context_expr)
@@ -962,6 +973,13 @@ def test_similarity_entries_guard_retains_possible_branch_aliases() -> None:
         "if flag:\n index = self._sim\nelse:\n index = other\nindex.entries\n"
         "if flag:\n index = other\nelse:\n index = self._sim\nindex.entries\n"
     ) == [4, 9, 14]
+
+
+def test_similarity_entries_guard_retains_possible_while_aliases() -> None:
+    assert _similarity_entries_accesses(
+        "index = self._sim\nwhile flag:\n index = other\nindex.entries\n"
+        "while flag:\n index = self._sim\nindex.entries\n"
+    ) == [4, 7]
 
 
 def test_runtime_modules_do_not_read_similarity_entries_directly() -> None:

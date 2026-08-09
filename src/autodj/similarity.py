@@ -135,6 +135,9 @@ class _FrozenIndexEntry(IndexEntry):
             raise FrozenInstanceError(f"cannot assign to field {name!r}")
         object.__setattr__(self, name, value)
 
+    def __delattr__(self, name: str) -> None:
+        raise FrozenInstanceError(f"cannot delete field {name!r}")
+
     def __eq__(self, other: object) -> bool:
         return isinstance(other, IndexEntry) and all(
             getattr(self, field.name) == getattr(other, field.name) for field in fields(IndexEntry)
