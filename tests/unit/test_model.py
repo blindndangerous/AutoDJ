@@ -7,6 +7,7 @@ tests run fast without downloading anything.
 import hashlib
 import json
 import multiprocessing
+import os
 import socket
 import sys
 import threading
@@ -400,6 +401,7 @@ class TestModelCacheCleanup:
 
 
 class TestWindowsModelCacheLock:
+    @pytest.mark.skipif(os.name != "nt", reason="requires msvcrt locking")
     def test_retries_only_recognized_contention(self) -> None:
         import msvcrt
 
@@ -416,6 +418,7 @@ class TestWindowsModelCacheLock:
         assert locking.call_count == 2
         event.return_value.wait.assert_called_once()
 
+    @pytest.mark.skipif(os.name != "nt", reason="requires msvcrt locking")
     def test_propagates_permanent_lock_error(self) -> None:
         import msvcrt
 
@@ -429,6 +432,54 @@ class TestWindowsModelCacheLock:
             pytest.raises(OSError, match="access denied"),
         ):
             model._acquire_windows_file_lock(handle)
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires POSIX fork")
+def test_at_fork_rebinds_guard_before_child_model_cache_lock(tmp_path: Path) -> None:
+    """A child must not inherit a locked thread guard and deadlock on cache use."""
+    import autodj.model as model
+
+    entered = threading.Event()
+    release = threading.Event()
+    guard = model._thread_locks_guard
+
+    def hold_guard() -> None:
+        with guard:
+            entered.set()
+            release.wait(10)
+
+    holder = threading.Thread(target=hold_guard)
+    holder.start()
+    assert entered.wait(10)
+    read_fd, write_fd = os.pipe()
+    child = os.fork()
+    if child == 0:
+        try:
+            os.close(read_fd)
+            with model._model_cache_lock(tmp_path / "cache"):
+                os.write(write_fd, b"ok")
+            os.close(write_fd)
+            os._exit(0)
+        except BaseException:
+            os._exit(1)
+
+    os.close(write_fd)
+    try:
+        deadline = threading.Event()
+        for _ in range(100):
+            exited, status = os.waitpid(child, os.WNOHANG)
+            if exited == child:
+                break
+            deadline.wait(0.05)
+        else:
+            os.kill(child, 9)
+            pytest.fail("forked child deadlocked on inherited model cache guard")
+        assert os.waitstatus_to_exitcode(status) == 0
+        assert os.read(read_fd, 2) == b"ok"
+    finally:
+        os.close(read_fd)
+        release.set()
+        holder.join(10)
 
 
 # ---------------------------------------------------------------------------
