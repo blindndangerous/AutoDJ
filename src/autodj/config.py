@@ -734,8 +734,8 @@ def canonicalize_allowed_origin(value: str) -> str:
         or parsed.netloc.endswith(":")
         or port == 0
         or parsed.path not in {"", "/"}
-        or parsed.query
-        or parsed.fragment
+        or "?" in value
+        or "#" in value
     ):
         raise ValueError(
             "server.allowed_origins entries must be HTTP(S) origins without "
