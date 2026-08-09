@@ -39,6 +39,14 @@ def _hold_model_cache_lock(cache_path: str, ready: object, release: object) -> N
         release.wait(10)
 
 
+def _wait_for_model_cache_lock(cache_path: str, entered: object, acquired: object) -> None:
+    from autodj.model import _model_cache_lock
+
+    entered.set()
+    with _model_cache_lock(Path(cache_path)):
+        acquired.set()
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -538,6 +546,76 @@ class TestModelCacheSymlinks:
         except OSError as exc:
             pytest.skip(f"symlinks unavailable: {exc}")
         assert _inspect_model_path(cache).reason == "symlinked cache path"
+
+    @pytest.mark.parametrize(
+        "name", [".autodj-complete", "model.safetensors.index.json", "model.safetensors"]
+    )
+    def test_symlinked_marker_index_or_weight_is_rejected(self, tmp_path: Path, name: str) -> None:
+        cache = tmp_path / "cache"
+        outside = tmp_path / "outside"
+        cache.mkdir()
+        outside.mkdir()
+        (cache / "config.json").write_text("{}", encoding="utf-8")
+        (cache / "model.safetensors").write_bytes(b"weights")
+        if name == "model.safetensors":
+            (cache / name).unlink()
+        if name == "model.safetensors.index.json":
+            (cache / "model.safetensors").unlink()
+            (outside / name).write_text('{"weight_map": {}}', encoding="utf-8")
+        else:
+            (outside / name).write_text("outside", encoding="utf-8")
+        try:
+            (cache / name).symlink_to(outside / name)
+        except OSError as exc:
+            pytest.skip(f"symlinks unavailable: {exc}")
+        assert _inspect_model_path(cache).reason == "symlinked cache artifact"
+
+    def test_staged_symlink_escape_is_rejected_without_touching_outside(
+        self, model_config_auto: ModelConfig, index_config: IndexConfig
+    ) -> None:
+        outside = index_config.model_dir.parent / "outside"
+        outside.parent.mkdir(parents=True, exist_ok=True)
+        outside.write_text("keep", encoding="utf-8")
+
+        def populate(**kwargs: object) -> str:
+            staging = Path(str(kwargs["local_dir"]))
+            (staging / "config.json").write_text("{}", encoding="utf-8")
+            try:
+                (staging / "model.safetensors").symlink_to(outside)
+            except OSError as exc:
+                pytest.skip(f"symlinks unavailable: {exc}")
+            return str(staging)
+
+        with patch("autodj.model.snapshot_download", side_effect=populate):
+            with pytest.raises(ModelLoadError, match="incomplete"):
+                download_model_if_needed(model_config_auto, index_config)
+        assert outside.read_text(encoding="utf-8") == "keep"
+
+
+def test_process_waiter_is_entered_and_blocked_until_holder_releases(tmp_path: Path) -> None:
+    context = multiprocessing.get_context("spawn")
+    cache = tmp_path / "cache"
+    holder_ready = context.Event()
+    release = context.Event()
+    waiter_entered = context.Event()
+    waiter_acquired = context.Event()
+    holder = context.Process(
+        target=_hold_model_cache_lock, args=(str(cache), holder_ready, release)
+    )
+    waiter = context.Process(
+        target=_wait_for_model_cache_lock, args=(str(cache), waiter_entered, waiter_acquired)
+    )
+    holder.start()
+    assert holder_ready.wait(10)
+    waiter.start()
+    assert waiter_entered.wait(10)
+    assert not waiter_acquired.wait(0.2)
+    release.set()
+    holder.join(10)
+    waiter.join(10)
+    assert holder.exitcode == 0
+    assert waiter.exitcode == 0
+    assert waiter_acquired.is_set()
 
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="requires POSIX fork")
