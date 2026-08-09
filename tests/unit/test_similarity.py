@@ -850,15 +850,19 @@ def _similarity_entries_accesses(source: str) -> list[int]:
 
         def visit_Try(self, node: ast.Try) -> None:
             before = set(self.aliases[-1])
-            outcomes = [self._visit_block(node.body, before)]
+            body_end, body_possible = self._visit_block_states(node.body, before)
+            outcomes = [body_end]
             outcomes.extend(
-                self._visit_except_handler(handler, before) for handler in node.handlers
+                self._visit_except_handler(handler, before | body_possible)
+                for handler in node.handlers
             )
             if node.orelse:
-                outcomes.append(self._visit_block(node.orelse, outcomes[0]))
+                outcomes.append(self._visit_block(node.orelse, body_end))
             self.aliases[-1] = set().union(*outcomes)
             for statement in node.finalbody:
                 self.visit(statement)
+
+        visit_TryStar = visit_Try
 
         def visit_For(self, node: ast.For) -> None:
             self.visit(node.iter)
@@ -908,13 +912,20 @@ def _similarity_entries_accesses(source: str) -> list[int]:
                 self.aliases[-1].discard(target.id)
 
         def _visit_block(self, statements: list[ast.stmt], aliases: set[str]) -> set[str]:
+            return self._visit_block_states(statements, aliases)[0]
+
+        def _visit_block_states(
+            self, statements: list[ast.stmt], aliases: set[str]
+        ) -> tuple[set[str], set[str]]:
             previous = self.aliases[-1]
             self.aliases[-1] = set(aliases)
+            possible = set(aliases)
             for statement in statements:
                 self.visit(statement)
+                possible.update(self.aliases[-1])
             result = self.aliases[-1]
             self.aliases[-1] = previous
-            return result
+            return result, possible
 
         def _visit_except_handler(self, handler: ast.ExceptHandler, aliases: set[str]) -> set[str]:
             handler_aliases = set(aliases)
@@ -980,6 +991,13 @@ def test_similarity_entries_guard_retains_possible_while_aliases() -> None:
         "index = self._sim\nwhile flag:\n index = other\nindex.entries\n"
         "while flag:\n index = self._sim\nindex.entries\n"
     ) == [4, 7]
+
+
+def test_similarity_entries_guard_passes_try_aliases_to_handlers() -> None:
+    assert _similarity_entries_accesses(
+        "try:\n index = self._sim\n risky()\nexcept RuntimeError:\n index.entries\n"
+        "try:\n index = self._sim\n risky()\nexcept ValueError:\n index = record\n index.entries\n"
+    ) == [5]
 
 
 def test_runtime_modules_do_not_read_similarity_entries_directly() -> None:
