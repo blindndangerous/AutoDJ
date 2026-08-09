@@ -224,7 +224,17 @@ def _inspect_model_path(
 
     indexed, weight_reason = _indexed_weights(cache_path)
     if not indexed and weight_reason != "no-index":
-        return ModelCacheStatus(cache_path, False, weight_reason)
+        if weight_reason.startswith("missing indexed weight:"):
+            return ModelCacheStatus(cache_path, False, weight_reason)
+        index_name = next(
+            (
+                item.name
+                for item in cache_path.iterdir()
+                if item.name.endswith((".safetensors.index.json", ".bin.index.json"))
+            ),
+            "model.safetensors.index.json",
+        )
+        return ModelCacheStatus(cache_path, False, f"invalid shard index: {index_name}")
     files = [item for item in cache_path.iterdir() if item.is_file()]
     if indexed and any(item.name in {"model.safetensors", "pytorch_model.bin"} for item in files):
         return ModelCacheStatus(cache_path, False, "ambiguous model weight layout")
@@ -234,7 +244,7 @@ def _inspect_model_path(
             for item in files
             for pattern in _SAFE_SHARD_PATTERNS.values()
         ):
-            return ModelCacheStatus(cache_path, False, "unindexed-partial-shard")
+            return ModelCacheStatus(cache_path, False, "missing model weights or shard index")
         standalone = [
             item for item in files if item.name in {"model.safetensors", "pytorch_model.bin"}
         ]

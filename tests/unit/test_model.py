@@ -314,7 +314,7 @@ class TestModelCacheInspection:
         cache.mkdir()
         (cache / "config.json").write_text("{}", encoding="utf-8")
         (cache / "model-00001-of-00002.safetensors").write_bytes(b"one")
-        assert _inspect_model_path(cache).reason == "unindexed-partial-shard"
+        assert _inspect_model_path(cache).reason == "missing model weights or shard index"
         (cache / "model.safetensors.index.json").write_text(
             json.dumps({"weight_map": {"x": "../outside.safetensors"}}), encoding="utf-8"
         )
