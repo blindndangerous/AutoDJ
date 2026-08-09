@@ -24,6 +24,7 @@ from autodj.model import (
     ModelLoadError,
     MuqWrapper,
     _inspect_model_path,
+    _is_reparse_point,
     download_model_if_needed,
     inspect_model_cache,
     model_cache_path,
@@ -549,6 +550,44 @@ class TestWindowsModelCacheLock:
 
 
 class TestModelCacheSymlinks:
+    def test_windows_reparse_attribute_is_classified_without_windows(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        point = tmp_path / "point"
+        point.write_text("x", encoding="utf-8")
+
+        class Stat:
+            st_file_attributes = 0x400
+
+        monkeypatch.setattr(Path, "is_symlink", lambda _self: False)
+        monkeypatch.setattr(Path, "is_junction", lambda _self: False, raising=False)
+        monkeypatch.setattr(Path, "stat", lambda _self, **_kwargs: Stat())
+        assert _is_reparse_point(point)
+
+    def test_public_inspection_rejects_mocked_reparse_artifact(
+        self,
+        model_config_auto: ModelConfig,
+        index_config: IndexConfig,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        cache = model_cache_path(model_config_auto, index_config)
+        cache.mkdir(parents=True)
+        marker = cache / ".autodj-complete"
+        (cache / "config.json").write_text("{}", encoding="utf-8")
+        (cache / "model.safetensors").write_bytes(b"weights")
+        marker.write_text(
+            json.dumps({"repo_id": model_config_auto.name, "revision": model_config_auto.revision}),
+            encoding="utf-8",
+        )
+        original = _is_reparse_point
+        monkeypatch.setattr(
+            "autodj.model._is_reparse_point", lambda path: path == marker or original(path)
+        )
+        assert (
+            inspect_model_cache(model_config_auto, index_config).reason
+            == "symlinked cache artifact"
+        )
+
     def test_symlinked_artifacts_are_incomplete(self, tmp_path: Path) -> None:
         target = tmp_path / "outside"
         target.mkdir()
