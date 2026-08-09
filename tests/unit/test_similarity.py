@@ -4,11 +4,13 @@ Uses a pre-built fake FAISS index with known vectors so tests are
 deterministic and require no model inference.
 """
 
+import ast
+import json
 import threading
 import time
 from collections import deque
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import faiss
 import numpy as np
@@ -300,6 +302,41 @@ class TestFromIndexDir:
         sim = SimilarityIndex.from_index_dir(tmp_path)
         assert sim.ntotal == 5
 
+    @pytest.mark.parametrize("schema_version", [1, 2])
+    def test_manifested_load_records_validated_generation(
+        self, tmp_path: Path, schema_version: int
+    ) -> None:
+        from autodj.index_manifest import read_manifest
+        from autodj.indexer import save_index
+
+        entries = [_make_entry(0)]
+        vectors = np.array([_unit_vec(seed=0)], dtype=np.float32)
+        save_index(entries, vectors, tmp_path)
+        manifest = read_manifest(tmp_path)
+        assert manifest is not None
+        if schema_version == 1:
+            path = tmp_path / "index-manifest.json"
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            raw["schema_version"] = 1
+            del raw["state_revision"]
+            path.write_text(json.dumps(raw), encoding="utf-8")
+
+        sim = SimilarityIndex.from_index_dir(tmp_path)
+
+        assert sim._generation == manifest.generation
+
+    def test_legacy_load_records_generation_zero(self, tmp_path: Path) -> None:
+        from autodj.indexer import _save_tracks_metadata, _save_vectors
+
+        entries = [_make_entry(0)]
+        vectors = np.array([_unit_vec(seed=0)], dtype=np.float32)
+        _save_vectors(vectors, tmp_path)
+        _save_tracks_metadata(entries, tmp_path, music_dir=None)
+
+        sim = SimilarityIndex.from_index_dir(tmp_path)
+
+        assert sim._generation == 0
+
     def test_raises_if_index_missing(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError):
             SimilarityIndex.from_index_dir(tmp_path / "nonexistent")
@@ -390,19 +427,103 @@ class TestReloadFromDisk:
         assert finished.is_set()
         assert len(sim.entries_snapshot()) == sim.ntotal == 5
 
+    def test_reload_waits_for_public_find_before_swapping_generation(self, tmp_path: Path) -> None:
+        sim, vectors = _make_similarity_index(3)
+        old_snapshot = sim.entries_snapshot()
+        replacement_entries = [_make_entry(i + 10) for i in range(5)]
+        replacement_vectors = np.array([_unit_vec(seed=i + 10) for i in range(5)], dtype=np.float32)
+        replacement_index = faiss.IndexFlatIP(FEATURE_DIM)
+        replacement_index.add(replacement_vectors)
+        public_entered = threading.Event()
+        release_public = threading.Event()
+        reload_loaded = threading.Event()
+        reload_done = threading.Event()
+        original_index = sim.faiss_index
+        original_search = original_index.search
+        blocking_index = MagicMock(wraps=original_index)
+
+        def blocking_search(*args, **kwargs):
+            public_entered.set()
+            assert release_public.wait(timeout=1)
+            return original_search(*args, **kwargs)
+
+        def fake_load_index(*args, **kwargs):
+            reload_loaded.set()
+            return replacement_entries, replacement_index
+
+        sim.faiss_index = blocking_index
+        blocking_index.search.side_effect = blocking_search
+        public = threading.Thread(
+            target=sim.find_next,
+            args=(vectors[0], deque([old_snapshot[0].path])),
+        )
+        with patch("autodj.similarity.load_index", side_effect=fake_load_index):
+            public.start()
+            assert public_entered.wait(timeout=1)
+
+            def reload() -> None:
+                try:
+                    sim.reload_from_disk(tmp_path)
+                finally:
+                    reload_done.set()
+
+            reloader = threading.Thread(target=reload)
+            reloader.start()
+            assert reload_loaded.wait(timeout=1)
+            assert not reload_done.is_set()
+            assert old_snapshot == tuple(_make_entry(i) for i in range(3))
+            release_public.set()
+            public.join(timeout=1)
+            reloader.join(timeout=1)
+
+        assert not public.is_alive()
+        assert not reloader.is_alive()
+        snapshot = sim.entries_snapshot()
+        assert sim.ntotal == len(snapshot) == 5
+        assert snapshot == tuple(replacement_entries)
+        assert sim.entry_for_path(replacement_entries[0].path) is replacement_entries[0]
+        assert np.allclose(sim.faiss_index.reconstruct(0), replacement_vectors[0])
+
+
+def _similarity_entries_accesses(source: str) -> list[int]:
+    class Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.lines: list[int] = []
+
+        def visit_Attribute(self, node: ast.Attribute) -> None:
+            if node.attr == "entries" and self._is_similarity_owner(node.value):
+                self.lines.append(node.lineno)
+            self.generic_visit(node)
+
+        @staticmethod
+        def _is_similarity_owner(node: ast.expr) -> bool:
+            if isinstance(node, ast.Name):
+                return node.id in {"sim", "similarity"}
+            return (
+                isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and (node.value.id, node.attr) in {("bridge", "sim"), ("self", "_sim")}
+            )
+
+    visitor = Visitor()
+    visitor.visit(ast.parse(source))
+    return visitor.lines
+
+
+def test_similarity_entries_guard_detects_known_aliases() -> None:
+    assert _similarity_entries_accesses(
+        "sim.entries\nsimilarity.entries\nbridge.sim.entries\nself._sim.entries\n"
+    ) == [1, 2, 3, 4]
+
 
 def test_runtime_modules_do_not_read_similarity_entries_directly() -> None:
     source_dir = Path(__file__).parents[2] / "src" / "autodj"
-    offenders = [
-        path
+    offenders = {
+        path: _similarity_entries_accesses(path.read_text(encoding="utf-8"))
         for path in source_dir.glob("*.py")
         if path.name != "similarity.py"
-        and any(
-            token in path.read_text(encoding="utf-8")
-            for token in (".sim.entries", "sim.entries", "self._sim.entries")
-        )
-    ]
-    assert offenders == []
+    }
+    assert {path: lines for path, lines in offenders.items() if lines} == {}
 
 
 # ---------------------------------------------------------------------------

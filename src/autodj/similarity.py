@@ -258,8 +258,17 @@ class SimilarityIndex:
         Example:
             >>> sim = SimilarityIndex.from_index_dir(Path("index"))
         """
-        entries, faiss_index = load_index(index_dir, music_dir=music_dir, path_remap=path_remap)
-        return cls(faiss_index=faiss_index, entries=entries)
+        manifest = read_manifest(index_dir)
+        generation = manifest.generation if manifest is not None else 0
+        entries, faiss_index = load_index(
+            index_dir,
+            music_dir=music_dir,
+            path_remap=path_remap,
+            expected_generation=manifest.generation if manifest is not None else None,
+        )
+        sim = cls(faiss_index=faiss_index, entries=entries)
+        sim._generation = generation
+        return sim
 
     # ------------------------------------------------------------------
     # Core query
