@@ -231,6 +231,93 @@ async def test_upload_creates_multiple_missing_root_components(tmp_path: Path) -
     assert target.read_bytes() == b""
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows SMB rename regression")
+@pytest.mark.asyncio
+async def test_windows_smb_fallback_keeps_source_handle_as_root_swap_anchor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from autodj import liner_files
+
+    root = tmp_path / "liners"
+    moved = tmp_path / "swapped-liners"
+    outside = tmp_path / "outside.mp3"
+    outside.write_bytes(b"outside")
+    original_rename = liner_files._windows_rename_by_handle
+    calls: list[tuple[int, str]] = []
+    swap_blocked = False
+
+    def reject_relative_then_publish_full(
+        source_handle: int, root_handle: int, name: str, *, replace: bool
+    ) -> None:
+        nonlocal swap_blocked
+        calls.append((root_handle, name))
+        if len(calls) == 1:
+            raise OSError(32, "sharing violation", name, 32)
+        assert root_handle == 0
+        assert name.startswith("\\??\\")
+        try:
+            root.rename(moved)
+        except PermissionError:
+            swap_blocked = True
+        else:
+            root.mkdir()
+            (root / "clip.mp3").write_bytes(b"outside-root")
+        original_rename(source_handle, root_handle, name, replace=replace)
+
+    monkeypatch.setattr(liner_files, "_windows_rename_by_handle", reject_relative_then_publish_full)
+    target, size = await store_liner_upload(
+        root, "clip.mp3", BytesReader(b"new"), max_bytes=50, replace=False
+    )
+    assert size == 3
+    assert target.read_bytes() == b"new"
+    assert len(calls) == 2
+    assert swap_blocked
+    assert not moved.exists()
+    assert outside.read_bytes() == b"outside"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows SMB rollback regression")
+@pytest.mark.asyncio
+async def test_windows_smb_postcommit_validation_failure_returns_committed_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from autodj import liner_files
+
+    root = tmp_path / "liners"
+    root.mkdir()
+    target = root / "clip.mp3"
+    target.write_bytes(b"old")
+    original_rename = liner_files._windows_rename_by_handle
+    original_open_root = liner_files._open_windows_root
+    rename_calls = 0
+    root_open_calls = 0
+
+    def reject_relative_once(
+        source_handle: int, root_handle: int, name: str, *, replace: bool
+    ) -> None:
+        nonlocal rename_calls
+        rename_calls += 1
+        if rename_calls == 1:
+            raise OSError(32, "sharing violation", name, 32)
+        original_rename(source_handle, root_handle, name, replace=replace)
+
+    def fail_postcommit_reopen(path: Path, *, create: bool, write: bool):
+        nonlocal root_open_calls
+        root_open_calls += 1
+        if root_open_calls == 3:
+            raise UploadAborted
+        return original_open_root(path, create=create, write=write)
+
+    monkeypatch.setattr(liner_files, "_windows_rename_by_handle", reject_relative_once)
+    monkeypatch.setattr(liner_files, "_open_windows_root", fail_postcommit_reopen)
+    returned, size = await store_liner_upload(
+        root, target.name, BytesReader(b"new"), max_bytes=50, replace=True
+    )
+    assert size == 3
+    assert returned == target
+    assert target.read_bytes() == b"new"
+
+
 @pytest.mark.skipif(os.name != "posix", reason="POSIX ownership policy")
 @pytest.mark.asyncio
 async def test_posix_upload_rejects_shared_writable_root_before_mutation(

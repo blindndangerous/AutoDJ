@@ -10,6 +10,7 @@ import ntpath
 import os
 import secrets
 import stat
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -152,7 +153,10 @@ if os.name == "nt":
     _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
     _GENERIC_READ = 0x80000000
     _GENERIC_WRITE = 0x40000000
-    _FILE_SHARE_ALL = 0x00000007
+    _FILE_SHARE_READ = 0x00000001
+    _FILE_SHARE_WRITE = 0x00000002
+    _FILE_SHARE_DELETE = 0x00000004
+    _FILE_SHARE_ALL = _FILE_SHARE_READ | _FILE_SHARE_WRITE | _FILE_SHARE_DELETE
     _OPEN_EXISTING = 3
     _FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
     _FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
@@ -434,6 +438,7 @@ def _nt_create_relative(
     directory: bool,
     create: bool,
     access: int,
+    share_access: int = _FILE_SHARE_ALL,
 ) -> int:
     name_buffer = ctypes.create_unicode_buffer(name)
     encoded_length = len(name.encode("utf-16-le"))
@@ -462,7 +467,7 @@ def _nt_create_relative(
         ctypes.byref(io_status),
         None,
         _FILE_ATTRIBUTE_DIRECTORY if directory else _FILE_ATTRIBUTE_NORMAL,
-        _FILE_SHARE_ALL,
+        share_access,
         _FILE_CREATE if create else _FILE_OPEN,
         options,
         None,
@@ -691,6 +696,7 @@ def _make_staged_upload(root: _PinnedRoot) -> _StagedUpload:
                         directory=False,
                         create=True,
                         access=_DELETE | _FILE_WRITE_DATA,
+                        share_access=_FILE_SHARE_READ | _FILE_SHARE_WRITE,
                     )
                     fd = msvcrt.open_osfhandle(raw_file_handle, os.O_WRONLY | os.O_BINARY)
                     raw_file_handle = None
@@ -880,10 +886,107 @@ def _rename_noreplace_posix(
     raise OSError(error, os.strerror(error), target)
 
 
+def _windows_full_nt_path(path: Path) -> str:
+    absolute = str(path.absolute())
+    if absolute.startswith("\\\\"):
+        return "\\??\\UNC\\" + absolute[2:]
+    return "\\??\\" + absolute
+
+
+def _verify_windows_root_path(root: _PinnedRoot, expected_identity: tuple[int, bytes]) -> None:
+    candidate = _open_windows_root(root.path, create=False, write=False)
+    try:
+        if _windows_file_identity(candidate.handle) != expected_identity:
+            raise InvalidLinerName("liner root changed during secure publish")
+    finally:
+        _close_root(candidate)
+
+
+def _publish_windows_smb_fallback(
+    staged: _StagedUpload,
+    source_handle: int,
+    name: str,
+    *,
+    replace: bool,
+    retry_errors: set[int],
+) -> None:
+    root_identity = _windows_file_identity(staged.root.handle)
+    source_identity = _windows_file_identity(source_handle)
+    _verify_windows_root_path(staged.root, root_identity)
+    _close_windows_handle(staged.root.handle)
+    staged.root.handle = 0
+    target_name = _windows_full_nt_path(staged.root.path / name)
+    last_error: OSError | None = None
+    for delay in (0.0, 0.01, 0.025, 0.05, 0.1, 0.2, 0.4):
+        if delay:
+            time.sleep(delay)
+        try:
+            _windows_rename_by_handle(source_handle, 0, target_name, replace=replace)
+            break
+        except OSError as exc:
+            if getattr(exc, "winerror", None) not in retry_errors:
+                raise
+            last_error = exc
+    else:
+        assert last_error is not None
+        raise last_error
+
+    reopened: _PinnedRoot | None = None
+    target_handle: int | None = None
+    validation_error: BaseException | None = None
+    try:
+        reopened = _open_windows_root(staged.root.path, create=False, write=False)
+        if _windows_file_identity(reopened.handle) != root_identity:
+            raise InvalidLinerName("liner root changed during secure publish")
+        target_handle = _nt_create_relative(
+            reopened.handle,
+            name,
+            directory=False,
+            create=False,
+            access=_FILE_READ_ATTRIBUTES,
+        )
+        if _windows_file_identity(target_handle) != source_identity:
+            raise InvalidLinerName("published liner changed during secure publish")
+    except BaseException as exc:
+        validation_error = exc
+    finally:
+        if target_handle is not None:
+            _close_windows_handle(target_handle)
+
+    if validation_error is not None:
+        if reopened is not None:
+            _close_root(reopened)
+        logger.warning(
+            "Liner committed but post-publish identity validation failed",
+            exc_info=(
+                type(validation_error),
+                validation_error,
+                validation_error.__traceback__,
+            ),
+        )
+        return
+
+    assert reopened is not None
+    staged.root.handle = reopened.handle
+
+
 def _publish_staged_file(staged: _StagedUpload, name: str, *, replace: bool) -> None:
     if staged.root.windows:
         handle = msvcrt.get_osfhandle(staged.file.fileno())
-        _windows_rename_by_handle(handle, staged.root.handle, name, replace=replace)
+        try:
+            _windows_rename_by_handle(handle, staged.root.handle, name, replace=replace)
+        except OSError as exc:
+            is_unc = str(staged.root.path).startswith("\\\\")
+            retry_errors = {32} | ({5} if is_unc else set())
+            if getattr(exc, "winerror", None) not in retry_errors:
+                raise
+            _publish_windows_smb_fallback(
+                staged,
+                handle,
+                name,
+                replace=replace,
+                retry_errors=retry_errors,
+            )
     elif replace:
         os.replace(
             staged.file_name,
