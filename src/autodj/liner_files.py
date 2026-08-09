@@ -207,6 +207,20 @@ if os.name == "nt":
             ("FileId", _FileId128),
         ]
 
+    class _ByHandleFileInformation(ctypes.Structure):
+        _fields_ = [
+            ("FileAttributes", wintypes.DWORD),
+            ("CreationTime", wintypes.FILETIME),
+            ("LastAccessTime", wintypes.FILETIME),
+            ("LastWriteTime", wintypes.FILETIME),
+            ("VolumeSerialNumber", wintypes.DWORD),
+            ("FileSizeHigh", wintypes.DWORD),
+            ("FileSizeLow", wintypes.DWORD),
+            ("NumberOfLinks", wintypes.DWORD),
+            ("FileIndexHigh", wintypes.DWORD),
+            ("FileIndexLow", wintypes.DWORD),
+        ]
+
     class _FileRenameInfo(ctypes.Structure):
         _fields_ = [
             ("ReplaceIfExists", wintypes.BOOLEAN),
@@ -241,6 +255,11 @@ if os.name == "nt":
         wintypes.DWORD,
     ]
     _kernel32.GetFileInformationByHandleEx.restype = wintypes.BOOL
+    _kernel32.GetFileInformationByHandle.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(_ByHandleFileInformation),
+    ]
+    _kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
     _kernel32.SetFileInformationByHandle.argtypes = [
         wintypes.HANDLE,
         ctypes.c_int,
@@ -290,11 +309,22 @@ def _windows_handle_attributes(handle: int) -> int:
 
 def _windows_file_identity(handle: int) -> tuple[int, bytes]:
     info = _FileIdInfo()
-    if not _kernel32.GetFileInformationByHandleEx(
+    if _kernel32.GetFileInformationByHandleEx(
         handle, _FILE_ID_INFO_CLASS, ctypes.byref(info), ctypes.sizeof(info)
     ):
+        return int(info.VolumeSerialNumber), b"file-id-128:" + bytes(info.FileId.Identifier)
+    winerror = ctypes.get_last_error()
+    if winerror not in {1, 50, 87}:
+        raise ctypes.WinError(winerror)
+    classic = _ByHandleFileInformation()
+    if not _kernel32.GetFileInformationByHandle(handle, ctypes.byref(classic)):
         raise ctypes.WinError(ctypes.get_last_error())
-    return int(info.VolumeSerialNumber), bytes(info.FileId.Identifier)
+    file_index = (int(classic.FileIndexHigh) << 32) | int(classic.FileIndexLow)
+    if file_index == 0:
+        raise LinerStorageUnsupportedError(
+            "storage did not provide a stable liner directory identity"
+        )
+    return int(classic.VolumeSerialNumber), b"file-index-64:" + file_index.to_bytes(8, "little")
 
 
 def _open_windows_root(path: Path, *, create: bool, write: bool) -> _PinnedRoot:

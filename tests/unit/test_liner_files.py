@@ -453,6 +453,64 @@ def test_windows_root_rejects_swapped_parent_during_rights_upgrade(
     assert not create_attempted
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows UNC identity regression")
+def test_windows_file_identity_falls_back_when_smb_rejects_file_id_info(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from autodj import liner_files
+
+    def reject_file_id(*args: Any) -> bool:
+        return False
+
+    def provide_classic_identity(handle: int, pointer: Any) -> bool:
+        assert handle == 123
+        info = pointer._obj
+        info.VolumeSerialNumber = 42
+        info.FileIndexHigh = 0x01020304
+        info.FileIndexLow = 0x05060708
+        return True
+
+    monkeypatch.setattr(liner_files._kernel32, "GetFileInformationByHandleEx", reject_file_id)
+    monkeypatch.setattr(
+        liner_files._kernel32,
+        "GetFileInformationByHandle",
+        provide_classic_identity,
+    )
+    monkeypatch.setattr(liner_files.ctypes, "get_last_error", lambda: 87)
+
+    volume, identity = liner_files._windows_file_identity(123)
+    assert volume == 42
+    assert identity == b"file-index-64:\x08\x07\x06\x05\x04\x03\x02\x01"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows UNC identity regression")
+def test_windows_classic_identity_fallback_detects_swapped_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from autodj import liner_files
+
+    monkeypatch.setattr(
+        liner_files._kernel32,
+        "GetFileInformationByHandleEx",
+        lambda *args: False,
+    )
+
+    def provide_distinct_identity(handle: int, pointer: Any) -> bool:
+        info = pointer._obj
+        info.VolumeSerialNumber = 42
+        info.FileIndexHigh = 0
+        info.FileIndexLow = handle
+        return True
+
+    monkeypatch.setattr(
+        liner_files._kernel32,
+        "GetFileInformationByHandle",
+        provide_distinct_identity,
+    )
+    monkeypatch.setattr(liner_files.ctypes, "get_last_error", lambda: 87)
+    assert liner_files._windows_file_identity(10) != liner_files._windows_file_identity(11)
+
+
 @pytest.mark.asyncio
 async def test_oversized_upload_removes_only_owned_temporary_file(tmp_path: Path) -> None:
     root = tmp_path / "liners"
