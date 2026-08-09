@@ -26,7 +26,7 @@ import random
 import threading
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import FrozenInstanceError, dataclass, fields
 from functools import wraps
 from pathlib import Path
 from typing import cast
@@ -35,7 +35,14 @@ import faiss
 import numpy as np
 import numpy.typing as npt
 
-from autodj.index_manifest import IndexConsistencyError, publication_lock, read_manifest
+from autodj.index_manifest import (
+    IndexConsistencyError,
+    IndexSnapshotToken,
+    current_snapshot_token,
+    legacy_artifacts_allowed,
+    publication_lock,
+    read_manifest,
+)
 from autodj.indexer import IndexEntry, _migrate_flat_index_if_needed, load_index
 
 logger = logging.getLogger(__name__)
@@ -112,6 +119,26 @@ class SimilarityError(RuntimeError):
     """Raised when a next-song candidate cannot be found."""
 
 
+class _FrozenIndexEntry(IndexEntry):
+    """Read-only runtime copy of one mutable indexer record."""
+
+    def __init__(self, entry: IndexEntry) -> None:
+        object.__setattr__(self, "_frozen", False)
+        for field in fields(IndexEntry):
+            object.__setattr__(self, field.name, getattr(entry, field.name))
+        object.__setattr__(self, "_frozen", True)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if getattr(self, "_frozen", False):
+            raise FrozenInstanceError(f"cannot assign to field {name!r}")
+        object.__setattr__(self, name, value)
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, IndexEntry) and all(
+            getattr(self, field.name) == getattr(other, field.name) for field in fields(IndexEntry)
+        )
+
+
 def _locked(method: Callable) -> Callable:
     """Run a SimilarityIndex operation against one coherent in-memory generation."""
 
@@ -145,6 +172,7 @@ class SimilarityIndex:
         """Validate consistency and build the path → FAISS index position map."""
         self._reload_lock = threading.RLock()
         self._generation = 0
+        self._snapshot_token = IndexSnapshotToken(0, 0)
         if self.faiss_index.ntotal != len(self.entries):
             raise ValueError(
                 f"Index/metadata mismatch: FAISS has {self.faiss_index.ntotal} vectors "
@@ -152,6 +180,7 @@ class SimilarityIndex:
             )
         # Maps each track's path string to its row position in the FAISS index
         self._path_to_idx: dict[str, int] = {e.path: i for i, e in enumerate(self.entries)}
+        self._public_entries = tuple(_FrozenIndexEntry(entry) for entry in self.entries)
 
     @property
     def ntotal(self) -> int:
@@ -163,16 +192,33 @@ class SimilarityIndex:
         with self._reload_lock:
             return len(self.entries)
 
+    @property
+    def snapshot_token(self) -> IndexSnapshotToken:
+        """Exact publication identity currently loaded by this reader."""
+        with self._reload_lock:
+            return self._snapshot_token
+
     def entries_snapshot(self) -> tuple[IndexEntry, ...]:
         """Return immutable view of entries from one index generation."""
         with self._reload_lock:
-            return tuple(self.entries)
+            return self._public_entries
 
     def entry_for_path(self, path: str) -> IndexEntry | None:
         """Return entry for *path* from one index generation, if present."""
         with self._reload_lock:
             idx = self._path_to_idx.get(path)
-            return self.entries[idx] if idx is not None else None
+            return self._public_entries[idx] if idx is not None else None
+
+    def _public_entry(self, entry: IndexEntry) -> IndexEntry:
+        """Return immutable public view for one internal candidate."""
+        idx = self._path_to_idx[entry.path]
+        public = self._public_entries[idx]
+        if public != entry:
+            refreshed = list(self._public_entries)
+            refreshed[idx] = _FrozenIndexEntry(entry)
+            self._public_entries = tuple(refreshed)
+            public = self._public_entries[idx]
+        return public
 
     # ------------------------------------------------------------------
     # Factory
@@ -185,6 +231,7 @@ class SimilarityIndex:
         path_remap: list[tuple[str, str]] | None = None,
         *,
         expected_generation: int | None = None,
+        expected_snapshot: IndexSnapshotToken | None = None,
     ) -> int:
         """Re-read the index from disk, replacing in-memory state in place.
 
@@ -203,27 +250,39 @@ class SimilarityIndex:
         Returns:
             New track count after reload.
         """
-        manifest = read_manifest(index_dir)
-        generation = manifest.generation if manifest is not None else 0
-        if expected_generation is not None and generation != expected_generation:
-            raise IndexConsistencyError(
-                f"expected generation {expected_generation}, got {generation}"
-            )
-        load_generation = expected_generation
-        if load_generation is None and manifest is not None:
-            load_generation = generation
-        entries, faiss_index = load_index(
-            index_dir,
-            music_dir=music_dir,
-            path_remap=path_remap,
-            expected_generation=load_generation,
-        )
-        candidate = SimilarityIndex(faiss_index=faiss_index, entries=entries)
+        _migrate_flat_index_if_needed(index_dir)
+        with publication_lock(index_dir):
+            snapshot = current_snapshot_token(index_dir)
+            if expected_snapshot is not None and snapshot != expected_snapshot:
+                raise IndexConsistencyError(
+                    f"expected generation {expected_snapshot.generation}/"
+                    f"{expected_snapshot.state_revision}, got {snapshot.generation}/"
+                    f"{snapshot.state_revision}"
+                )
+            if expected_generation is not None and snapshot.generation != expected_generation:
+                raise IndexConsistencyError(
+                    f"expected generation {expected_generation}, got {snapshot.generation}"
+                )
+            if snapshot.generation == 0 and not legacy_artifacts_allowed(index_dir):
+                with self._reload_lock:
+                    dimension = self.faiss_index.d
+                candidate = SimilarityIndex(faiss.IndexFlatIP(dimension), [])
+            else:
+                entries, faiss_index = load_index(
+                    index_dir,
+                    music_dir=music_dir,
+                    path_remap=path_remap,
+                    expected_generation=snapshot.generation if snapshot.generation else None,
+                    _migrate_flat=False,
+                )
+                candidate = SimilarityIndex(faiss_index=faiss_index, entries=entries)
         with self._reload_lock:
             self.entries = candidate.entries
             self.faiss_index = candidate.faiss_index
             self._path_to_idx = candidate._path_to_idx
-            self._generation = generation
+            self._public_entries = candidate._public_entries
+            self._generation = snapshot.generation
+            self._snapshot_token = snapshot
             return len(self.entries)
 
     @classmethod
@@ -269,9 +328,11 @@ class SimilarityIndex:
                 expected_generation=expected_generation,
                 _migrate_flat=False,
             )
-            generation = manifest.generation if manifest is not None else 0
+            snapshot = current_snapshot_token(index_dir)
+            generation = snapshot.generation
         sim = cls(faiss_index=faiss_index, entries=entries)
         sim._generation = generation
+        sim._snapshot_token = snapshot
         return sim
 
     # ------------------------------------------------------------------
@@ -483,13 +544,13 @@ class SimilarityIndex:
             candidates.sort(key=lambda x: x[0])
             best = candidates[0][1]
             logger.debug("Smart-shuffle next: %s", best.display_name)
-            return best
+            return self._public_entry(best)
 
         if target_bpm is None and target_energy is None:
             candidates.sort(key=lambda x: x[0], reverse=True)
             best = _softmax_pick(candidates, pick_top_k, pick_temperature)
             logger.debug("Next track: %s", best.display_name)
-            return best
+            return self._public_entry(best)
 
         reranked = self._rerank(
             candidates,
@@ -505,7 +566,7 @@ class SimilarityIndex:
             best.bpm,
             target_bpm,
         )
-        return best
+        return self._public_entry(best)
 
     @_locked
     def find_next_for_path(
@@ -651,13 +712,13 @@ class SimilarityIndex:
             # Non-security discovery pick — random.choice is fine here.
             chosen = random.choice(distant_candidates)  # nosec B311
             logger.debug("Discovery track: %s", chosen.display_name)
-            return chosen
+            return self._public_entry(chosen)
 
         # Fallback: any non-excluded track (full library)
         fallback = [e for e in self.entries if e.path not in excluded]
         if fallback:
             # Non-security fallback pick.
-            return random.choice(fallback)  # nosec B311
+            return self._public_entry(random.choice(fallback))  # nosec B311
 
         raise SimilarityError(
             "No candidates available for discovery — all tracks are in recently_played."

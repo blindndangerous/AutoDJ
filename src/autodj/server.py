@@ -56,7 +56,7 @@ from pydantic import BaseModel
 # the 2000-line working budget.  Re-export here so the external API
 # (``from autodj.server import PlayerBridge``) keeps working unchanged.
 from autodj._bridge import PlayerBridge
-from autodj.index_manifest import IndexConsistencyError, read_manifest
+from autodj.index_manifest import IndexConsistencyError, IndexSnapshotToken, current_snapshot_token
 
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig
@@ -67,19 +67,21 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-async def reload_published_generation_once(bridge: PlayerBridge, observed: int) -> int:
-    """Reload one newer published generation, preserving observed on no change."""
+async def reload_published_generation_once(
+    bridge: PlayerBridge, observed: IndexSnapshotToken
+) -> IndexSnapshotToken:
+    """Reload one changed publication token, preserving observed on failure/no change."""
     cfg = getattr(bridge.player, "_cfg", None)
     if cfg is None:
         return observed
-    manifest = await asyncio.to_thread(read_manifest, cfg.index.active_dir)
-    if manifest is None or manifest.generation <= observed:
+    snapshot = await asyncio.to_thread(current_snapshot_token, cfg.index.active_dir)
+    if snapshot == observed:
         return observed
     await asyncio.to_thread(
         bridge.reload_index_from_disk,
-        expected_generation=manifest.generation,
+        expected_snapshot=snapshot,
     )
-    return manifest.generation
+    return snapshot
 
 
 def _quiesce_cache_writers(
@@ -1315,14 +1317,8 @@ def create_app(
         cfg = getattr(bridge.player, "_cfg", None)
         if cfg is None:
             return
-        try:
-            manifest = await asyncio.to_thread(read_manifest, cfg.index.active_dir)
-        except (IndexConsistencyError, OSError, ValueError) as exc:
-            logger.debug("Index watcher: %s", exc)
-            manifest = None
-        observed = manifest.generation if manifest is not None else 0
+        observed = bridge.sim.snapshot_token
         while True:
-            await asyncio.sleep(10)
             try:
                 previous = observed
                 observed = await reload_published_generation_once(bridge, observed)
@@ -1330,6 +1326,7 @@ def create_app(
                     logger.info("Index reloaded — %d tracks now available", bridge.sim.ntotal)
             except (IndexConsistencyError, OSError, ValueError) as exc:
                 logger.debug("Index watcher: %s", exc)
+            await asyncio.sleep(10)
 
     return app
 

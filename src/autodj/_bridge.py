@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from autodj.index_manifest import IndexSnapshotToken
     from autodj.indexer import IndexEntry
 
 logger = logging.getLogger(__name__)
@@ -1186,7 +1187,12 @@ class PlayerBridge:
     # Hot-reload — pick up new tracks while a parallel `index` runs
     # ------------------------------------------------------------------
 
-    def reload_index_from_disk(self, expected_generation: int | None = None) -> int:
+    def reload_index_from_disk(
+        self,
+        expected_generation: int | None = None,
+        *,
+        expected_snapshot: IndexSnapshotToken | None = None,
+    ) -> int:
         """Re-read ``tracks.db`` + ``vectors.index`` into the live sim.
 
         Used by the background watcher in :func:`create_app` so a long-
@@ -1200,11 +1206,14 @@ class PlayerBridge:
         cfg = getattr(self.player, "_cfg", None)
         if cfg is None:
             return self.sim.ntotal
+        kwargs: dict[str, Any] = {"expected_generation": expected_generation}
+        if expected_snapshot is not None:
+            kwargs["expected_snapshot"] = expected_snapshot
         return self.sim.reload_from_disk(
             cfg.index.active_dir,
             music_dir=cfg.library.music_dir,
             path_remap=cfg.library.path_remap,
-            expected_generation=expected_generation,
+            **kwargs,
         )
 
 

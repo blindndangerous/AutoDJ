@@ -2262,6 +2262,52 @@ class TestPersistenceHelpers:
 
 
 class TestReloadIndexFromDisk:
+    def test_watcher_reconciles_publish_after_live_token_seed(self, monkeypatch, tmp_path) -> None:
+        from threading import Event
+
+        from fastapi.testclient import TestClient
+
+        from autodj.index_manifest import IndexSnapshotToken
+
+        old = IndexSnapshotToken(1, 1)
+        published = IndexSnapshotToken(2, 2)
+        reloaded = Event()
+        bridge = MagicMock()
+        bridge.player._cfg.index.active_dir = tmp_path
+        bridge.sim.snapshot_token = old
+        bridge.sim.ntotal = 5
+        bridge.reload_index_from_disk.side_effect = lambda **kwargs: reloaded.set()
+        monkeypatch.setattr("autodj.server.current_snapshot_token", lambda _: published)
+
+        with TestClient(create_app(bridge)):
+            assert reloaded.wait(timeout=1)
+        bridge.reload_index_from_disk.assert_called_once_with(expected_snapshot=published)
+
+    def test_watcher_retries_same_snapshot_token_after_consistency_failure(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        import asyncio
+
+        from autodj.index_manifest import IndexConsistencyError, IndexSnapshotToken
+        from autodj.server import reload_published_generation_once
+
+        token = IndexSnapshotToken(1, 3)
+        monkeypatch.setattr("autodj.server.current_snapshot_token", lambda _: token)
+        bridge = MagicMock()
+        bridge.player._cfg.index.active_dir = tmp_path
+        bridge.reload_index_from_disk.side_effect = [
+            IndexConsistencyError("snapshot changed"),
+            5,
+        ]
+
+        with pytest.raises(IndexConsistencyError):
+            asyncio.run(reload_published_generation_once(bridge, IndexSnapshotToken(0, 0)))
+        observed = asyncio.run(reload_published_generation_once(bridge, IndexSnapshotToken(0, 0)))
+
+        assert observed == token
+        assert bridge.reload_index_from_disk.call_count == 2
+        bridge.reload_index_from_disk.assert_called_with(expected_snapshot=token)
+
     def test_reload_no_cfg_returns_current_total(self) -> None:
         sim = MagicMock()
         sim.ntotal = 7
@@ -2290,11 +2336,11 @@ class TestReloadIndexFromDisk:
     ) -> None:
         import asyncio
 
-        from autodj.index_manifest import IndexConsistencyError
+        from autodj.index_manifest import IndexConsistencyError, IndexSnapshotToken
         from autodj.server import reload_published_generation_once
 
-        manifest = MagicMock(generation=1)
-        monkeypatch.setattr("autodj.server.read_manifest", lambda _: manifest)
+        token = IndexSnapshotToken(1, 1)
+        monkeypatch.setattr("autodj.server.current_snapshot_token", lambda _: token)
         bridge = MagicMock()
         bridge.player._cfg.index.active_dir = tmp_path
         bridge.reload_index_from_disk.side_effect = [
@@ -2303,12 +2349,14 @@ class TestReloadIndexFromDisk:
         ]
 
         with pytest.raises(IndexConsistencyError):
-            asyncio.run(reload_published_generation_once(bridge, observed=0))
-        observed = asyncio.run(reload_published_generation_once(bridge, observed=0))
+            asyncio.run(reload_published_generation_once(bridge, observed=IndexSnapshotToken(0, 0)))
+        observed = asyncio.run(
+            reload_published_generation_once(bridge, observed=IndexSnapshotToken(0, 0))
+        )
 
-        assert observed == 1
+        assert observed == token
         assert bridge.reload_index_from_disk.call_count == 2
-        bridge.reload_index_from_disk.assert_called_with(expected_generation=1)
+        bridge.reload_index_from_disk.assert_called_with(expected_snapshot=token)
 
 
 # ---------------------------------------------------------------------------
