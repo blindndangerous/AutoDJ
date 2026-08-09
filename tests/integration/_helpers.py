@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, PropertyMock
 
+from autodj.config import ServerConfig
 from autodj.indexer import IndexEntry
 
 
@@ -73,6 +74,10 @@ def _make_player_mock(entry: IndexEntry | None = None) -> MagicMock:
     # Concrete config so get_settings does not traverse MagicMock chains
     # and trip JSONResponse on un-serialisable mocks.
     cfg = MagicMock()
+    cfg.server = ServerConfig(
+        allowed_hosts=["testserver"],
+        allowed_origins=["http://testserver"],
+    )
     cfg.transitions.effect = "none"
     cfg.transitions.wet_mix = 1.0
     cfg.djmix.harmonic_mixing = False

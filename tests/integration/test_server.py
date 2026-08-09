@@ -14,7 +14,6 @@ budget.  Shared fixtures ``client`` / ``bridge`` come from
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -348,7 +347,7 @@ class TestLiners:
 
         folder = tmp_path / "liners"
         bridge.player._cfg.playback.liners_folder = str(folder)
-        bridge.player._cfg.server = SimpleNamespace(liner_upload_max_bytes=50)
+        bridge.player._cfg.server.liner_upload_max_bytes = 50
 
         tc = TestClient(create_app(bridge))
         resp = tc.post(
@@ -363,7 +362,7 @@ class TestLiners:
 
         folder = tmp_path / "liners"
         bridge.player._cfg.playback.liners_folder = str(folder)
-        bridge.player._cfg.server = SimpleNamespace(liner_upload_max_bytes=50)
+        bridge.player._cfg.server.liner_upload_max_bytes = 50
 
         tc = TestClient(create_app(bridge))
         resp = tc.post(
@@ -906,7 +905,11 @@ async def test_broadcast_loop_sends_to_websocket_clients() -> None:
         await asyncio.sleep(0)
 
     # Use ASGI transport for real async HTTP — no need for a running server
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+        headers={"Origin": "http://testserver"},
+    ) as ac:
         resp = await ac.get("/api/status")
         assert resp.status_code == 200
         data = resp.json()
@@ -915,7 +918,11 @@ async def test_broadcast_loop_sends_to_websocket_clients() -> None:
     # Now exercise the WebSocket endpoint with async client
     # The broadcast loop is tested by checking it can run without crashing
     with _patch("asyncio.sleep", instant_sleep):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://testserver",
+            headers={"Origin": "http://testserver"},
+        ) as ac:
             resp = await ac.get("/api/status")
             assert resp.status_code == 200
 
@@ -949,7 +956,11 @@ async def test_http_api_accessible_via_async_client() -> None:
     bridge = PlayerBridge(player=player, sim=sim)
     app = create_app(bridge)
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+        headers={"Origin": "http://testserver"},
+    ) as ac:
         assert (await ac.get("/api/status")).status_code == 200
         assert (await ac.post("/api/skip")).status_code == 200
         assert (await ac.post("/api/pause")).status_code == 200

@@ -59,6 +59,14 @@ from starlette.background import BackgroundTask
 # (``from autodj.server import PlayerBridge``) keeps working unchanged.
 from autodj._bridge import PlayerBridge
 from autodj.index_manifest import IndexConsistencyError, IndexSnapshotToken, current_snapshot_token
+from autodj.security import (
+    COOKIE_NAME,
+    SecurityMiddleware,
+    SecurityPolicy,
+    _raw_header_values,
+    emit_audit,
+    new_request_id,
+)
 
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig
@@ -312,6 +320,12 @@ class LibraryJobBody(BaseModel):
     args: list[str] = []
 
 
+class LoginBody(BaseModel):
+    """Access token submitted once in exchange for a signed session cookie."""
+
+    token: str
+
+
 # ---------------------------------------------------------------------------
 # FastAPI application factory
 # ---------------------------------------------------------------------------
@@ -321,6 +335,8 @@ def create_app(
     bridge: PlayerBridge,
     player_thread: threading.Thread | None = None,
     shutdown_timeout_s: float = 30.0,
+    *,
+    secure_cookie: bool = False,
 ) -> FastAPI:
     """Create and return the FastAPI application.
 
@@ -425,6 +441,12 @@ def create_app(
         LinerUploadBodyLimitMiddleware,
         max_file_bytes=_liner_upload_max_bytes,
     )
+
+    policy = SecurityPolicy(bridge.player._cfg.server, secure_cookie=secure_cookie)
+    app.state.security_policy = policy
+    # Last-added middleware is outermost. Security rejects before upload limiting
+    # can inspect or consume a request body.
+    app.add_middleware(SecurityMiddleware, policy=policy)
 
     # ------------------------------------------------------------------
     # Static HTML
@@ -555,6 +577,50 @@ def create_app(
     async def api_status() -> JSONResponse:
         """Return the current player state snapshot."""
         return JSONResponse(bridge.get_state())
+
+    @app.get("/api/auth/status")
+    async def api_auth_status(request: Request) -> dict[str, bool]:
+        """Report whether this browser holds a valid authenticated session."""
+        request_policy: SecurityPolicy = request.app.state.security_policy
+        return {
+            "required": request_policy.authentication_required,
+            "authenticated": (
+                not request_policy.authentication_required
+                or request_policy.verify_session(request.cookies.get(COOKIE_NAME))
+            ),
+        }
+
+    @app.post("/api/login")
+    async def api_login(body: LoginBody, request: Request) -> Response:
+        """Exchange a valid configured access token for a signed session."""
+        request_policy: SecurityPolicy = request.app.state.security_policy
+        if not request_policy.verify_access_token(body.token):
+            raise HTTPException(status_code=401, detail="Invalid access token")
+        response = JSONResponse({"authenticated": True})
+        response.set_cookie(
+            COOKIE_NAME,
+            request_policy.issue_session(),
+            httponly=True,
+            samesite="strict",
+            secure=request_policy.secure_cookie,
+            max_age=request_policy.config.session_ttl_seconds,
+            path="/",
+        )
+        return response
+
+    @app.post("/api/logout")
+    async def api_logout(request: Request) -> Response:
+        """Delete the browser session using the same cookie scope and flags."""
+        request_policy: SecurityPolicy = request.app.state.security_policy
+        response = JSONResponse({"authenticated": False})
+        response.delete_cookie(
+            COOKIE_NAME,
+            path="/",
+            secure=request_policy.secure_cookie,
+            httponly=True,
+            samesite="strict",
+        )
+        return response
 
     @app.get("/api/version")
     async def api_version() -> JSONResponse:
@@ -1331,8 +1397,49 @@ def create_app(
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
         """WebSocket: broadcast state updates to a connected browser."""
-        # Parameter renamed from 'ws' to 'websocket' to avoid FastAPI
-        # mistaking the path segment '/ws' for a query parameter.
+        request_id = new_request_id()
+        route = "/ws"
+        host_values = _raw_header_values(websocket.scope, b"host")
+        origin_values = _raw_header_values(websocket.scope, b"origin")
+        if len(host_values) != 1 or not policy.host_allowed(host_values[0]):
+            emit_audit(
+                request_id,
+                route,
+                "rejected",
+                method="WS",
+                route=route,
+                status=403,
+                level=logging.WARNING,
+            )
+            await websocket.close(code=4403)
+            return
+        if len(origin_values) != 1 or not policy.origin_allowed(origin_values[0]):
+            emit_audit(
+                request_id,
+                route,
+                "rejected",
+                method="WS",
+                route=route,
+                status=403,
+                level=logging.WARNING,
+            )
+            await websocket.close(code=4403)
+            return
+        if policy.authentication_required and not policy.verify_session(
+            websocket.cookies.get(COOKIE_NAME)
+        ):
+            emit_audit(
+                request_id,
+                route,
+                "rejected",
+                method="WS",
+                route=route,
+                status=401,
+                level=logging.WARNING,
+            )
+            await websocket.close(code=4401)
+            return
+
         await websocket.accept()
         client_host = getattr(getattr(websocket, "client", None), "host", "unknown")
         async with _ws_lock:
@@ -1344,17 +1451,57 @@ def create_app(
             client_count,
             "" if client_count == 1 else "s",
         )
+        emit_audit(
+            request_id,
+            route,
+            "connected",
+            method="WS",
+            route=route,
+            status=101,
+        )
+        disconnect_code = 1000
         try:
             while True:
-                text = await websocket.receive_text()
+                message = await websocket.receive()
+                if message["type"] == "websocket.disconnect":
+                    raise WebSocketDisconnect(
+                        code=message.get("code", 1000),
+                        reason=message.get("reason", ""),
+                    )
+                text = message.get("text")
+                if not isinstance(text, str):
+                    continue
                 # Handle incoming control commands from the client
                 try:
                     msg = _json.loads(text)
                     if isinstance(msg, dict) and msg.get("type") == "toggle_discovery":
-                        bridge.toggle_discovery()
+                        try:
+                            bridge.toggle_discovery()
+                        except Exception:
+                            disconnect_code = 1011
+                            emit_audit(
+                                request_id,
+                                "toggle_discovery",
+                                "rejected",
+                                method="WS",
+                                route=route,
+                                status=500,
+                                level=logging.WARNING,
+                            )
+                            await websocket.close(code=disconnect_code)
+                            return
+                        emit_audit(
+                            request_id,
+                            "toggle_discovery",
+                            "success",
+                            method="WS",
+                            route=route,
+                            status=200,
+                        )
                 except (_json.JSONDecodeError, AttributeError):
                     pass
-        except WebSocketDisconnect:
+        except WebSocketDisconnect as exc:
+            disconnect_code = exc.code
             pass
         finally:
             async with _ws_lock:
@@ -1365,6 +1512,14 @@ def create_app(
                 client_host,
                 remaining,
                 "" if remaining == 1 else "s",
+            )
+            emit_audit(
+                request_id,
+                route,
+                "disconnected",
+                method="WS",
+                route=route,
+                status=disconnect_code,
             )
 
     async def _broadcast_loop() -> None:  # pragma: no cover — long-running task
@@ -1519,7 +1674,11 @@ def serve(
     player_thread.start()
     bridge.record_seed(seed_entry)
 
-    app = create_app(bridge, player_thread=player_thread)
+    app = create_app(
+        bridge,
+        player_thread=player_thread,
+        secure_cookie=bool(ssl_certfile and ssl_keyfile),
+    )
 
     scheme = "https" if (ssl_certfile and ssl_keyfile) else "http"
     pretty_host = (

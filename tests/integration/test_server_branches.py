@@ -6,9 +6,530 @@ upload/delete edge cases, and other small uncovered branches.
 
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
+import time
 from pathlib import Path
+from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
+from fastapi.testclient import TestClient
+from httpx import Headers
+from starlette.websockets import WebSocketDisconnect
+
+from autodj.config import ServerConfig
+from autodj.security import COOKIE_NAME
+from autodj.server import PlayerBridge, create_app
+
+from ._helpers import _make_player_mock, _make_sim_mock
+
+_TEST_ACCESS_TOKEN = "task10-test-access-token-is-32-bytes"
+
+
+def _security_client(*, secure_cookie: bool = False) -> TestClient:
+    scheme = "https" if secure_cookie else "http"
+    origin = f"{scheme}://testserver"
+    player = _make_player_mock()
+    player._cfg.server = ServerConfig(
+        access_token=_TEST_ACCESS_TOKEN,
+        allowed_hosts=["testserver"],
+        allowed_origins=[origin],
+    )
+    bridge = PlayerBridge(player=player, sim=_make_sim_mock())
+    return TestClient(
+        create_app(bridge, secure_cookie=secure_cookie),
+        base_url=origin,
+        headers={"Host": "testserver", "Origin": origin},
+    )
+
+
+def _security_app():
+    player = _make_player_mock()
+    player._cfg.server = ServerConfig(
+        access_token=_TEST_ACCESS_TOKEN,
+        allowed_hosts=["testserver"],
+        allowed_origins=["http://testserver"],
+    )
+    return create_app(PlayerBridge(player=player, sim=_make_sim_mock()))
+
+
+def _security_client_and_bridge() -> tuple[TestClient, PlayerBridge]:
+    player = _make_player_mock()
+    player._cfg.server = ServerConfig(
+        access_token=_TEST_ACCESS_TOKEN,
+        allowed_hosts=["testserver"],
+        allowed_origins=["http://testserver"],
+    )
+    bridge = PlayerBridge(player=player, sim=_make_sim_mock())
+    return (
+        TestClient(
+            create_app(bridge),
+            headers={"Host": "testserver", "Origin": "http://testserver"},
+        ),
+        bridge,
+    )
+
+
+def _call_http_without_body_read(
+    *,
+    path: str = "/api/liners/upload",
+    raw_path: bytes | None = None,
+    headers: list[tuple[bytes, bytes]],
+) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+
+    async def receive() -> dict[str, Any]:
+        raise AssertionError("security rejection read request body")
+
+    async def send(message: dict[str, Any]) -> None:
+        messages.append(message)
+
+    scope: dict[str, Any] = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": path,
+        "raw_path": raw_path or path.encode("ascii"),
+        "query_string": b"",
+        "root_path": "",
+        "headers": headers,
+        "client": ("127.0.0.1", 50000),
+        "server": ("testserver", 80),
+        "state": {},
+    }
+    asyncio.run(_security_app()(scope, receive, send))
+    return messages
+
+
+def _response_status(messages: list[dict[str, Any]]) -> int:
+    return next(
+        message["status"] for message in messages if message["type"] == "http.response.start"
+    )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/status",
+        "/api/audio?path=Z%3A%2FMusic%2Fsong_0.flac",
+        "/api/library/job",
+        "/api/profiles",
+        "/api/liners",
+    ],
+)
+def test_secured_route_categories_require_session(path: str) -> None:
+    response = _security_client().get(path)
+
+    assert response.status_code == 401
+    assert len(response.headers["X-Request-ID"]) == 32
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "kwargs"),
+    [
+        ("post", "/api/skip", {}),
+        ("post", "/api/profiles", {"json": {}}),
+        ("delete", "/api/profiles/default", {}),
+        (
+            "post",
+            "/api/liners/upload",
+            {"files": {"file": ("id.mp3", b"x", "audio/mpeg")}},
+        ),
+        ("delete", "/api/liners/file/id.mp3", {}),
+        ("post", "/api/library/run", {"json": {}}),
+    ],
+)
+def test_unsafe_route_categories_reject_before_parsing_body(
+    method: str,
+    path: str,
+    kwargs: dict[str, object],
+) -> None:
+    response = getattr(_security_client(), method)(path, **kwargs)
+
+    assert response.status_code == 401
+
+
+def test_login_status_logout_cookie_contract() -> None:
+    client = _security_client(secure_cookie=True)
+
+    assert client.get("/api/auth/status").json() == {
+        "required": True,
+        "authenticated": False,
+    }
+    assert client.post("/api/login", json={"token": "wrong"}).status_code == 401
+    response = client.post("/api/login", json={"token": _TEST_ACCESS_TOKEN})
+    assert response.status_code == 200
+    cookie = response.headers["set-cookie"]
+    assert all(
+        flag in cookie
+        for flag in ("HttpOnly", "SameSite=strict", "Secure", "Max-Age=86400", "Path=/")
+    )
+    assert client.get("/api/auth/status").json() == {
+        "required": True,
+        "authenticated": True,
+    }
+    assert client.get("/api/status").status_code == 200
+
+    logout = client.post("/api/logout")
+    assert logout.status_code == 200
+    deletion = logout.headers["set-cookie"]
+    assert all(flag in deletion for flag in ("HttpOnly", "SameSite=strict", "Secure", "Path=/"))
+    assert "Max-Age=0" in deletion
+    assert client.get("/api/status").status_code == 401
+
+
+def test_tampered_cookie_is_rejected() -> None:
+    client = _security_client()
+    assert client.post("/api/login", json={"token": _TEST_ACCESS_TOKEN}).status_code == 200
+    client.cookies.set(COOKIE_NAME, "tampered")
+
+    assert client.get("/api/status").status_code == 401
+
+
+def test_anonymous_loopback_fixture_remains_usable(client: TestClient) -> None:
+    assert client.get("/api/status").status_code == 200
+    assert client.get("/api/auth/status").json() == {
+        "required": False,
+        "authenticated": True,
+    }
+
+
+def test_public_routes_still_enforce_host_and_unsafe_origin() -> None:
+    client = _security_client()
+
+    assert client.get("/api/version").status_code == 200
+    assert client.get("/", headers={"Host": "evil.example"}).status_code == 403
+    assert client.get("/api/version", headers={"Host": "evil.example"}).status_code == 403
+    assert (
+        client.post(
+            "/api/login",
+            headers={"Origin": "http://evil.example"},
+            json={"token": _TEST_ACCESS_TOKEN},
+        ).status_code
+        == 403
+    )
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        [(b"host", b"testserver"), (b"host", b"evil.example"), (b"origin", b"http://testserver")],
+        [
+            (b"host", b"testserver"),
+            (b"origin", b"http://testserver"),
+            (b"origin", b"http://evil.example"),
+        ],
+        [(b"host", b"testserver"), (b"origin", b"http://testserver")],
+        [(b"host", b"testserver"), (b"origin", b"http://evil.example")],
+    ],
+)
+def test_security_rejection_never_reads_large_upload_body(
+    headers: list[tuple[bytes, bytes]],
+) -> None:
+    messages = _call_http_without_body_read(
+        headers=[
+            *headers,
+            (b"content-length", str(100 * 1024 * 1024).encode("ascii")),
+        ]
+    )
+
+    assert _response_status(messages) in {401, 403}
+
+
+def test_unauthorized_chunked_upload_never_reads_receive() -> None:
+    messages = _call_http_without_body_read(
+        headers=[(b"host", b"testserver"), (b"origin", b"http://testserver")]
+    )
+
+    assert _response_status(messages) == 401
+
+
+@pytest.mark.parametrize(
+    ("path", "raw_path"),
+    [
+        ("/static/../api/status", b"/static/%2e%2e/api/status"),
+        ("/static/\\api/status", b"/static/%5capi/status"),
+        ("/modules//api/status", b"/modules/%2fapi/status"),
+    ],
+)
+def test_public_prefix_cannot_bypass_authentication(path: str, raw_path: bytes) -> None:
+    messages = _call_http_without_body_read(
+        path=path,
+        raw_path=raw_path,
+        headers=[(b"host", b"testserver"), (b"origin", b"http://testserver")],
+    )
+
+    assert _response_status(messages) == 401
+
+
+def test_request_id_is_generated_not_accepted_from_client() -> None:
+    response = _security_client().get(
+        "/api/status",
+        headers={"X-Request-ID": "attacker-controlled"},
+    )
+
+    assert response.status_code == 401
+    assert response.headers["X-Request-ID"] != "attacker-controlled"
+    assert len(response.headers["X-Request-ID"]) == 32
+
+
+def test_request_id_and_template_survive_validation_and_method_errors(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client = _security_client()
+    assert client.post("/api/login", json={"token": _TEST_ACCESS_TOKEN}).status_code == 200
+    caplog.clear()
+
+    with caplog.at_level(logging.WARNING, logger="autodj.audit"):
+        validation = client.post("/api/login", json={})
+        wrong_method = client.put("/api/status")
+    assert validation.status_code == 422
+    assert len(validation.headers["X-Request-ID"]) == 32
+    assert wrong_method.status_code == 405
+    assert len(wrong_method.headers["X-Request-ID"]) == 32
+    records = [json.loads(item.message) for item in caplog.records if item.name == "autodj.audit"]
+    assert [(record["route"], record["status"]) for record in records] == [
+        ("/api/login", 422),
+        ("/api/status", 405),
+    ]
+
+
+def test_options_has_no_cors_bypass() -> None:
+    response = _security_client().options("/api/status")
+
+    assert response.status_code == 401
+    assert "access-control-allow-origin" not in response.headers
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("post", "/api/logout"),
+        ("post", "/api/seek"),
+        ("post", "/api/profiles/default/apply"),
+        ("post", "/api/pause"),
+        ("post", "/api/volume"),
+        ("post", "/api/mute"),
+        ("post", "/api/play-next"),
+        ("post", "/api/queue/add"),
+        ("post", "/api/queue/remove"),
+        ("post", "/api/queue/reorder"),
+        ("post", "/api/advance"),
+        ("post", "/api/repick-next"),
+        ("post", "/api/random-track"),
+        ("post", "/api/preset"),
+        ("post", "/api/transition"),
+        ("post", "/api/djmix"),
+        ("post", "/api/playback-settings"),
+        ("post", "/api/bpm-range"),
+        ("post", "/api/discovery"),
+        ("post", "/api/eq"),
+        ("post", "/api/library/stop"),
+    ],
+)
+def test_every_mutation_route_requires_session_before_body_validation(
+    method: str,
+    path: str,
+) -> None:
+    response = getattr(_security_client(), method)(path)
+
+    assert response.status_code == 401
+
+
+def test_authenticated_mutation_emits_one_success_audit(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client = _security_client()
+    assert client.post("/api/login", json={"token": _TEST_ACCESS_TOKEN}).status_code == 200
+    caplog.clear()
+
+    with caplog.at_level(logging.INFO, logger="autodj.audit"):
+        response = client.post("/api/skip")
+
+    assert response.status_code == 200
+    records = [json.loads(item.message) for item in caplog.records if item.name == "autodj.audit"]
+    assert records == [
+        {
+            "action": "/api/skip",
+            "method": "POST",
+            "outcome": "success",
+            "request_id": response.headers["X-Request-ID"],
+            "route": "/api/skip",
+            "status": 200,
+        }
+    ]
+
+
+def test_audit_rejections_use_route_templates_and_redact_inputs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client = _security_client()
+    private_name = "private-profile-name"
+    secret_query = "secret-query-value"
+    with caplog.at_level(logging.INFO, logger="autodj.audit"):
+        response = client.get(f"/api/profiles/{private_name}?token={secret_query}")
+
+    assert response.status_code == 401
+    records = [json.loads(item.message) for item in caplog.records if item.name == "autodj.audit"]
+    assert len(records) == 1
+    assert records[0] == {
+        "action": "/api/profiles/{name}",
+        "method": "GET",
+        "outcome": "rejected",
+        "request_id": response.headers["X-Request-ID"],
+        "route": "/api/profiles/{name}",
+        "status": 401,
+    }
+    assert private_name not in caplog.text
+    assert secret_query not in caplog.text
+
+
+def test_unsafe_audit_is_structured_redacted_and_single_event(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client = _security_client()
+    private_path = "Z:/Private/Music/secret.flac"
+    with caplog.at_level(logging.INFO, logger="autodj.audit"):
+        response = client.post(
+            "/api/login",
+            json={"token": "wrong", "path": private_path},
+        )
+
+    assert response.status_code == 401
+    records = [json.loads(item.message) for item in caplog.records if item.name == "autodj.audit"]
+    assert len(records) == 1
+    assert records[0]["request_id"] == response.headers["X-Request-ID"]
+    assert records[0]["method"] == "POST"
+    assert records[0]["route"] == "/api/login"
+    assert records[0]["status"] == 401
+    assert records[0]["outcome"] == "rejected"
+    assert "wrong" not in caplog.text
+    assert private_path not in caplog.text
+
+
+def test_websocket_rejects_origin_then_missing_cookie(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client = _security_client()
+    with caplog.at_level(logging.WARNING, logger="autodj.audit"):
+        with (
+            pytest.raises(WebSocketDisconnect) as wrong_origin,
+            client.websocket_connect("/ws", headers={"Origin": "http://evil.example"}),
+        ):
+            raise AssertionError("handshake unexpectedly succeeded")
+        assert wrong_origin.value.code == 4403
+        with (
+            pytest.raises(WebSocketDisconnect) as missing_cookie,
+            client.websocket_connect("/ws"),
+        ):
+            raise AssertionError("handshake unexpectedly succeeded")
+        assert missing_cookie.value.code == 4401
+    rejected = [
+        json.loads(item.message)
+        for item in caplog.records
+        if item.name == "autodj.audit" and json.loads(item.message)["outcome"] == "rejected"
+    ]
+    assert [record["status"] for record in rejected[-2:]] == [403, 401]
+    assert all(record["route"] == "/ws" for record in rejected[-2:])
+
+
+def test_websocket_rejects_duplicate_security_headers() -> None:
+    client = _security_client()
+
+    with (
+        pytest.raises(WebSocketDisconnect) as duplicate_host,
+        client.websocket_connect(
+            "/ws",
+            headers=Headers(
+                [
+                    ("Host", "testserver"),
+                    ("Host", "evil.example"),
+                    ("Origin", "http://testserver"),
+                ]
+            ),
+        ),
+    ):
+        raise AssertionError("handshake unexpectedly succeeded")
+    assert duplicate_host.value.code == 4403
+
+    with (
+        pytest.raises(WebSocketDisconnect) as duplicate_origin,
+        client.websocket_connect(
+            "/ws",
+            headers=Headers(
+                [
+                    ("Host", "testserver"),
+                    ("Origin", "http://testserver"),
+                    ("Origin", "http://evil.example"),
+                ]
+            ),
+        ),
+    ):
+        raise AssertionError("handshake unexpectedly succeeded")
+    assert duplicate_origin.value.code == 4403
+
+
+def test_websocket_audits_connect_mutation_and_disconnect(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client = _security_client()
+    assert client.post("/api/login", json={"token": _TEST_ACCESS_TOKEN}).status_code == 200
+    with (
+        caplog.at_level(logging.INFO, logger="autodj.audit"),
+        client.websocket_connect("/ws") as websocket,
+    ):
+        websocket.send_text("not-json")
+        websocket.send_json({"type": "toggle_discovery"})
+    records = [json.loads(item.message) for item in caplog.records if item.name == "autodj.audit"]
+    assert [record["outcome"] for record in records[-3:]] == [
+        "connected",
+        "success",
+        "disconnected",
+    ]
+    assert records[-2]["action"] == "toggle_discovery"
+    assert all(record["route"] == "/ws" for record in records[-3:])
+
+
+def test_websocket_ignores_binary_frame_then_processes_mutation() -> None:
+    client, bridge = _security_client_and_bridge()
+    assert client.post("/api/login", json={"token": _TEST_ACCESS_TOKEN}).status_code == 200
+    initial = bridge.player._state.discovery_enabled
+
+    with client.websocket_connect("/ws") as websocket:
+        websocket.send_bytes(b"not-a-text-command")
+        websocket.send_json({"type": "toggle_discovery"})
+        time.sleep(0.05)
+
+    assert bridge.player._state.discovery_enabled is not initial
+
+
+def test_websocket_bridge_failure_closes_and_audits_cleanup(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client, bridge = _security_client_and_bridge()
+    bridge.toggle_discovery = MagicMock(side_effect=RuntimeError("private failure details"))
+    assert client.post("/api/login", json={"token": _TEST_ACCESS_TOKEN}).status_code == 200
+
+    with (
+        caplog.at_level(logging.INFO, logger="autodj.audit"),
+        client.websocket_connect("/ws") as websocket,
+    ):
+        websocket.send_json({"type": "toggle_discovery"})
+        with pytest.raises(WebSocketDisconnect) as closed:
+            websocket.receive_text()
+    assert closed.value.code == 1011
+    records = [json.loads(item.message) for item in caplog.records if item.name == "autodj.audit"]
+    assert [(record["action"], record["outcome"], record["status"]) for record in records] == [
+        ("/ws", "connected", 101),
+        ("toggle_discovery", "rejected", 500),
+        ("/ws", "disconnected", 1011),
+    ]
+    assert "private failure details" not in caplog.text
+
 
 # ---------------------------------------------------------------------------
 # Profile name validation 400 paths

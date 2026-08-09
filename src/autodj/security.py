@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import logging
 import re
 import secrets
 import time
@@ -11,9 +12,31 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from starlette.routing import Match
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
 from autodj.config import ServerConfig, canonicalize_allowed_origin
 
 COOKIE_NAME = "autodj_session"
+
+_AUDIT_LOGGER = logging.getLogger("autodj.audit")
+_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+_PUBLIC_FILES = frozenset(
+    {
+        "/",
+        "/app.css",
+        "/app.js",
+        "/bitcrusher-worklet.js",
+        "/stutter-worklet.js",
+        "/freeze-worklet.js",
+        "/glitch-worklet.js",
+        "/api/version",
+        "/api/auth/status",
+        "/api/login",
+    }
+)
 
 _HEX_32 = re.compile(r"[0-9a-f]{32}\Z")
 _HEX_64 = re.compile(r"[0-9a-f]{64}\Z")
@@ -204,3 +227,136 @@ def audit_record(
     if status is not None:
         record["status"] = status
     return json.dumps(record, allow_nan=False, separators=(",", ":"), sort_keys=True)
+
+
+def emit_audit(
+    request_id: str,
+    action: str,
+    outcome: str,
+    *,
+    method: str | None = None,
+    route: str | None = None,
+    status: int | None = None,
+    level: int = logging.INFO,
+) -> None:
+    """Write one closed-schema audit event without request-controlled details."""
+    _AUDIT_LOGGER.log(
+        level,
+        audit_record(request_id, action, outcome, method, route, status),
+    )
+
+
+def _safe_public_prefix(path: str, prefix: str) -> bool:
+    if not path.startswith(prefix):
+        return False
+    suffix = path[len(prefix) :]
+    if not suffix or "\\" in suffix:
+        return False
+    return all(part not in {"", ".", ".."} for part in suffix.split("/"))
+
+
+def _is_public_path(path: str) -> bool:
+    return (
+        path in _PUBLIC_FILES
+        or _safe_public_prefix(path, "/static/")
+        or _safe_public_prefix(path, "/modules/")
+    )
+
+
+def _route_template(scope: Scope) -> str:
+    app = scope.get("app")
+    partial = "<unmatched>"
+    for route in getattr(app, "routes", ()):
+        match, _child_scope = route.matches(scope)
+        if match is Match.FULL:
+            return str(getattr(route, "path", "<mounted>"))
+        if match is Match.PARTIAL and partial == "<unmatched>":
+            partial = str(getattr(route, "path", "<mounted>"))
+    return partial
+
+
+def _raw_header_values(scope: Scope, name: bytes) -> list[str]:
+    return [
+        value.decode("latin-1") for key, value in scope.get("headers", ()) if key.lower() == name
+    ]
+
+
+class SecurityMiddleware:
+    """Enforce HTTP request policy before any downstream body consumer."""
+
+    def __init__(self, app: ASGIApp, policy: SecurityPolicy) -> None:
+        self.app = app
+        self._policy = policy
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request_id = new_request_id()
+        state = scope.setdefault("state", {})
+        state["request_id"] = request_id
+        method = str(scope.get("method", "")).upper()
+        path = str(scope.get("path", ""))
+        route = _route_template(scope)
+        host_values = _raw_header_values(scope, b"host")
+        origin_values = _raw_header_values(scope, b"origin")
+
+        rejection: tuple[int, str] | None = None
+        if len(host_values) != 1 or not self._policy.host_allowed(host_values[0]):
+            rejection = (403, "Disallowed Host")
+        elif len(origin_values) > 1 or (
+            method in _UNSAFE_METHODS
+            and (len(origin_values) != 1 or not self._policy.origin_allowed(origin_values[0]))
+        ):
+            rejection = (403, "Disallowed Origin")
+        elif self._policy.authentication_required and not _is_public_path(path):
+            cookie = Request(scope).cookies.get(COOKIE_NAME)
+            if not self._policy.verify_session(cookie):
+                rejection = (401, "Authentication required")
+
+        if rejection is not None:
+            status, detail = rejection
+            response = JSONResponse(
+                {"detail": detail},
+                status_code=status,
+                headers={"X-Request-ID": request_id},
+            )
+            await response(scope, receive, send)
+            emit_audit(
+                request_id,
+                route,
+                "rejected",
+                method=method,
+                route=route,
+                status=status,
+                level=logging.WARNING,
+            )
+            return
+
+        response_status: int | None = None
+
+        async def send_with_request_id(message: Message) -> None:
+            nonlocal response_status
+            if message["type"] == "http.response.start":
+                response_status = int(message["status"])
+                headers = [
+                    (key, value)
+                    for key, value in message.get("headers", [])
+                    if key.lower() != b"x-request-id"
+                ]
+                headers.append((b"x-request-id", request_id.encode("ascii")))
+                message["headers"] = headers
+            await send(message)
+
+        await self.app(scope, receive, send_with_request_id)
+        if method in _UNSAFE_METHODS and response_status is not None:
+            emit_audit(
+                request_id,
+                route,
+                "success" if response_status < 400 else "rejected",
+                method=method,
+                route=route,
+                status=response_status,
+                level=logging.INFO if response_status < 400 else logging.WARNING,
+            )
