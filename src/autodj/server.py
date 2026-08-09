@@ -52,6 +52,7 @@ from fastapi import (
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.background import BackgroundTask
 
 # PlayerBridge lives in autodj._bridge so neither file balloons over
 # the 2000-line working budget.  Re-export here so the external API
@@ -409,6 +410,22 @@ def create_app(
 
     app = FastAPI(title="AutoDJ", version="0.1.0", lifespan=lifespan)
 
+    def _liner_upload_max_bytes() -> int:
+        server_cfg = getattr(bridge.player._cfg, "server", None)
+        configured_limit = getattr(server_cfg, "liner_upload_max_bytes", None)
+        return (
+            configured_limit
+            if isinstance(configured_limit, int) and not isinstance(configured_limit, bool)
+            else 50 * 1024 * 1024
+        )
+
+    from autodj.liner_files import LinerUploadBodyLimitMiddleware
+
+    app.add_middleware(
+        LinerUploadBodyLimitMiddleware,
+        max_file_bytes=_liner_upload_max_bytes,
+    )
+
     # ------------------------------------------------------------------
     # Static HTML
     # ------------------------------------------------------------------
@@ -753,6 +770,7 @@ def create_app(
         from autodj.liner_files import (
             InvalidLinerName,
             LinerConflictError,
+            LinerStorageUnsupportedError,
             LinerTooLargeError,
             resolve_liner_path,
             store_liner_upload,
@@ -771,19 +789,12 @@ def create_app(
                 status_code=400,
                 detail=(f"Unsupported extension {extension!r}; allowed: {', '.join(LINER_EXTS)}"),
             )
-        server_cfg = getattr(bridge.player._cfg, "server", None)
-        configured_limit = getattr(server_cfg, "liner_upload_max_bytes", None)
-        max_bytes = (
-            configured_limit
-            if isinstance(configured_limit, int) and not isinstance(configured_limit, bool)
-            else 50 * 1024 * 1024
-        )
         try:
             target, size = await store_liner_upload(
                 folder,
                 name,
                 file,
-                max_bytes=max_bytes,
+                max_bytes=_liner_upload_max_bytes(),
                 replace=replace,
             )
         except InvalidLinerName as exc:
@@ -792,38 +803,86 @@ def create_app(
             raise HTTPException(status_code=409, detail="Liner already exists") from exc
         except LinerTooLargeError as exc:
             raise HTTPException(status_code=413, detail=str(exc)) from exc
+        except LinerStorageUnsupportedError as exc:
+            raise HTTPException(status_code=503, detail="Liner storage is unavailable") from exc
         return {"filename": target.name, "size": size}
 
     @app.delete("/api/liners/file/{name}")
     async def api_liner_delete(name: str) -> dict[str, str]:
         """Remove one validated plain liner file."""
-        from autodj.liner_files import InvalidLinerName, resolve_liner_path
+        from autodj.liner_files import (
+            InvalidLinerName,
+            LinerStorageUnsupportedError,
+            delete_liner_file,
+        )
 
         try:
-            target = resolve_liner_path(_resolve_liner_folder(), name, require_file=True)
+            delete_liner_file(_resolve_liner_folder(), name)
         except InvalidLinerName as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail="Liner not found") from exc
-        try:
-            target.unlink()
+        except LinerStorageUnsupportedError as exc:
+            raise HTTPException(status_code=503, detail="Liner storage is unavailable") from exc
         except OSError as exc:
             raise HTTPException(status_code=500, detail="Unable to delete liner") from exc
-        return {"deleted": target.name}
+        return {"deleted": name}
 
     @app.get("/api/liners/file/{name}")
-    async def api_liner_file(name: str) -> FileResponse:
+    async def api_liner_file(name: str, request: Request) -> StreamingResponse:
         """Serve one validated plain liner file."""
-        from autodj.liner_files import InvalidLinerName, resolve_liner_path
+        from autodj.liner_files import (
+            InvalidLinerName,
+            LinerRangeNotSatisfiable,
+            LinerStorageUnsupportedError,
+            MalformedLinerRange,
+            iter_opened_liner,
+            open_liner_file,
+            parse_liner_range,
+        )
 
         try:
-            target = resolve_liner_path(_resolve_liner_folder(), name, require_file=True)
+            opened = open_liner_file(_resolve_liner_folder(), name)
         except InvalidLinerName as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail="Liner not found") from exc
-        media_type, _encoding = mimetypes.guess_type(str(target))
-        return FileResponse(target, media_type=media_type or "application/octet-stream")
+        except LinerStorageUnsupportedError as exc:
+            raise HTTPException(status_code=503, detail="Liner storage is unavailable") from exc
+        media_type, _encoding = mimetypes.guess_type(name)
+        file_size = opened.stat_result.st_size
+        start = 0
+        end = file_size
+        status_code = 200
+        headers = {"Content-Length": str(file_size), "Accept-Ranges": "bytes"}
+        requested_range = request.headers.get("range")
+        if requested_range is not None:
+            try:
+                start, end = parse_liner_range(requested_range, file_size)
+            except MalformedLinerRange as exc:
+                opened.file.close()
+                raise HTTPException(status_code=400, detail="Malformed byte range") from exc
+            except LinerRangeNotSatisfiable as exc:
+                opened.file.close()
+                raise HTTPException(
+                    status_code=416,
+                    detail="Byte range is not satisfiable",
+                    headers={"Content-Range": f"bytes */{file_size}"},
+                ) from exc
+            status_code = 206
+            headers["Content-Length"] = str(end - start)
+            headers["Content-Range"] = f"bytes {start}-{end - 1}/{file_size}"
+        try:
+            return StreamingResponse(
+                iter_opened_liner(opened, start=start, end=end),
+                status_code=status_code,
+                media_type=media_type or "application/octet-stream",
+                headers=headers,
+                background=BackgroundTask(opened.file.close),
+            )
+        except BaseException:
+            opened.file.close()
+            raise
 
     @app.get("/api/liners/file/{escaped:path}", include_in_schema=False)
     async def api_liner_file_reject_path(escaped: str) -> None:

@@ -251,6 +251,39 @@ class TestLiners:
         assert resp.content == b"raw-mp3-bytes"
         assert resp.headers["content-type"] == "audio/mpeg"
 
+    def test_liner_file_range_uses_held_descriptor(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        folder = tmp_path / "liners"
+        folder.mkdir()
+        (folder / "test.mp3").write_bytes(b"0123456789")
+        bridge.player._cfg.playback.liners_folder = str(folder)
+
+        tc = TestClient(create_app(bridge))
+        resp = tc.get("/api/liners/file/test.mp3", headers={"Range": "bytes=2-5"})
+        assert resp.status_code == 206
+        assert resp.content == b"2345"
+        assert resp.headers["content-range"] == "bytes 2-5/10"
+        assert resp.headers["content-length"] == "4"
+
+    def test_liner_file_suffix_range_and_unsatisfiable_range(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        folder = tmp_path / "liners"
+        folder.mkdir()
+        (folder / "test.mp3").write_bytes(b"0123456789")
+        bridge.player._cfg.playback.liners_folder = str(folder)
+
+        tc = TestClient(create_app(bridge))
+        suffix = tc.get("/api/liners/file/test.mp3", headers={"Range": "bytes=-3"})
+        assert suffix.status_code == 206
+        assert suffix.content == b"789"
+        assert suffix.headers["content-range"] == "bytes 7-9/10"
+
+        unsatisfiable = tc.get("/api/liners/file/test.mp3", headers={"Range": "bytes=20-"})
+        assert unsatisfiable.status_code == 416
+        assert unsatisfiable.headers["content-range"] == "bytes */10"
+
     def test_liner_file_path_traversal_blocked(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
@@ -323,6 +356,21 @@ class TestLiners:
         )
         assert resp.status_code == 413
         assert not (folder / "clip.mp3").exists()
+
+    def test_liner_body_cap_rejects_before_creating_staging(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        folder = tmp_path / "liners"
+        bridge.player._cfg.playback.liners_folder = str(folder)
+        bridge.player._cfg.server = SimpleNamespace(liner_upload_max_bytes=50)
+
+        tc = TestClient(create_app(bridge))
+        resp = tc.post(
+            "/api/liners/upload",
+            files={"file": ("clip.mp3", b"x" * 100_000, "audio/mpeg")},
+        )
+        assert resp.status_code == 413
+        assert not folder.exists() or list(folder.iterdir()) == []
 
     def test_liner_upload_conflict_and_explicit_replace(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient

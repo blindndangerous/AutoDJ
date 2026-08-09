@@ -344,8 +344,6 @@ class TestLinerUploadDelete:
         assert not (tmp_path / "clip.wav").exists()
 
     def test_delete_unlink_raises_oserror_returns_500(self, client, tmp_path, monkeypatch) -> None:
-        from pathlib import Path as _P
-
         from fastapi.testclient import TestClient
 
         # Closure captures bridge.player._cfg.playback.liners_folder;
@@ -358,16 +356,14 @@ class TestLinerUploadDelete:
         player._cfg.playback.liners_folder = str(tmp_path)
         bridge = PlayerBridge(player=player, sim=_make_sim_mock())
         client = TestClient(create_app(bridge))
-        # Create a real file then patch unlink to raise.
+        from autodj import liner_files
+
         (tmp_path / "doomed.wav").write_bytes(b"x")
-        original_unlink = _P.unlink
 
-        def _broken_unlink(self, *a, **kw):
-            if self.name == "doomed.wav":
-                raise OSError("locked")
-            return original_unlink(self, *a, **kw)
+        def _broken_delete(*args, **kwargs):
+            raise OSError("locked")
 
-        monkeypatch.setattr(_P, "unlink", _broken_unlink)
+        monkeypatch.setattr(liner_files, "_delete_relative_file", _broken_delete)
         resp = client.delete("/api/liners/file/doomed.wav")
         assert resp.status_code == 500
 
