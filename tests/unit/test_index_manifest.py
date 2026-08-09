@@ -254,6 +254,23 @@ def test_publish_manifest_serializes_concurrent_generation_numbers(tmp_path: Pat
     assert {future.result().generation for future in futures} == {1, 2}
 
 
+def test_publish_and_public_tombstone_serialize_to_coherent_state(tmp_path: Path) -> None:
+    _write_working_artifacts(tmp_path, 1)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        published = pool.submit(publish_manifest, tmp_path, 1)
+        tombstoned = pool.submit(tombstone_publication, tmp_path)
+        manifest = published.result()
+        tombstoned.result()
+
+    state = json.loads((tmp_path / ".index-publication-state.json").read_text(encoding="utf-8"))
+    live = read_manifest(tmp_path)
+    assert state["high_water"] >= manifest.generation
+    if live is None:
+        assert current_snapshot_token(tmp_path).generation == 0
+    else:
+        assert live.state_revision > state["tombstone_revision"]
+
+
 def test_failed_reserved_publish_keeps_prior_snapshot_live_and_consumes_id(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

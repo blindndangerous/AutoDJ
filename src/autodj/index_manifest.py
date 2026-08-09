@@ -212,26 +212,27 @@ def require_snapshot_token(
 
 def tombstone_publication(index_dir: Path) -> None:
     """Durably supersede the live snapshot before prune-all removes files."""
-    manifest = read_manifest(index_dir)
-    state = _state_for_manifest(index_dir, manifest)
-    if manifest is None and state.tombstone_revision:
-        return
-    revision = (
-        max(
-            state.high_water,
-            state.tombstone_revision,
-            0 if manifest is None else manifest.generation,
-            0 if manifest is None else manifest.state_revision,
+    with publication_lock(index_dir):
+        manifest = read_manifest(index_dir)
+        state = _state_for_manifest(index_dir, manifest)
+        if manifest is None and state.tombstone_revision:
+            return
+        revision = (
+            max(
+                state.high_water,
+                state.tombstone_revision,
+                0 if manifest is None else manifest.generation,
+                0 if manifest is None else manifest.state_revision,
+            )
+            + 1
         )
-        + 1
-    )
-    _write_publication_state(
-        index_dir,
-        _PublicationState(
-            high_water=revision,
-            tombstone_revision=revision,
-        ),
-    )
+        _write_publication_state(
+            index_dir,
+            _PublicationState(
+                high_water=revision,
+                tombstone_revision=revision,
+            ),
+        )
 
 
 def read_manifest(index_dir: Path) -> IndexManifest | None:
