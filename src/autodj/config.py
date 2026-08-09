@@ -595,11 +595,13 @@ class ModelConfig:
 
     Attributes:
         name: HuggingFace model ID to load (used for auto-download).
+        revision: HuggingFace revision (branch, tag, or commit) to cache.
         manual_path: Optional local path to a pre-downloaded model directory.
             When set, ``name`` is ignored and the model is loaded from disk.
     """
 
     name: str = "OpenMuQ/MuQ-large-msd-iter"
+    revision: str = "main"
     manual_path: Path | None = None
 
     @classmethod
@@ -613,8 +615,12 @@ class ModelConfig:
             A populated ModelConfig instance.
         """
         manual_raw = data.get("manual_path")
+        revision = data.get("revision", "main")
+        if not isinstance(revision, str) or not revision.strip():
+            raise ValueError("model.revision must be a non-empty string")
         return cls(
             name=data.get("name", "OpenMuQ/MuQ-large-msd-iter"),
+            revision=revision,
             manual_path=Path(manual_raw) if manual_raw else None,
         )
 

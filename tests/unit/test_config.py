@@ -70,6 +70,7 @@ class TestLoadConfig:
     def test_loads_minimal_config(self, minimal_toml: Path) -> None:
         cfg = load_config(minimal_toml)
         assert isinstance(cfg, AutoDJConfig)
+        assert cfg.model.revision == "main"
 
     def test_raises_if_file_missing(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError):
@@ -376,6 +377,16 @@ class TestAutoDJConfig:
     def test_huggingface_token_defaults_none(self, minimal_toml: Path) -> None:
         cfg = load_config(minimal_toml)
         assert cfg.huggingface.token is None
+
+
+class TestModelConfigRevision:
+    def test_custom_revision_loads(self) -> None:
+        assert ModelConfig.from_dict({"revision": "v1.2.3"}).revision == "v1.2.3"
+
+    @pytest.mark.parametrize("value", [None, 1, True, ["main"]])
+    def test_revision_must_be_string(self, value: object) -> None:
+        with pytest.raises(ValueError, match=r"model\.revision"):
+            ModelConfig.from_dict({"revision": value})
 
 
 # ---------------------------------------------------------------------------

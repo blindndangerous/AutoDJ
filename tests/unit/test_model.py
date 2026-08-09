@@ -4,7 +4,12 @@ All external dependencies (muq, torch, huggingface_hub) are mocked so
 tests run fast without downloading anything.
 """
 
+import hashlib
+import json
+import multiprocessing
+import socket
 import sys
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -12,7 +17,25 @@ import numpy as np
 import pytest
 
 from autodj.config import IndexConfig, ModelConfig
-from autodj.model import EMBEDDING_DIM, ModelLoadError, MuqWrapper, download_model_if_needed
+from autodj.model import (
+    EMBEDDING_DIM,
+    ModelCacheStatus,
+    ModelLoadError,
+    MuqWrapper,
+    download_model_if_needed,
+    inspect_model_cache,
+    model_cache_path,
+)
+
+
+def _hold_model_cache_lock(cache_path: str, ready: object, release: object) -> None:
+    """Spawn-safe helper proving OS lock serializes independent processes."""
+    from autodj.model import _model_cache_lock
+
+    with _model_cache_lock(Path(cache_path)):
+        ready.set()
+        release.wait(10)
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -31,6 +54,7 @@ def model_config_manual(tmp_path: Path) -> ModelConfig:
     model_dir = tmp_path / "MuQ-large-msd-iter"
     model_dir.mkdir()
     (model_dir / "config.json").write_text("{}", encoding="utf-8")
+    (model_dir / "model.safetensors").write_bytes(b"weights")
     return ModelConfig(name="OpenMuQ/MuQ-large-msd-iter", manual_path=model_dir)
 
 
@@ -51,7 +75,7 @@ class TestDownloadModelIfNeeded:
     def test_returns_manual_path_directly(
         self, model_config_manual: ModelConfig, index_config: IndexConfig
     ) -> None:
-        """When manual_path is set and exists, no download is performed."""
+        """Complete manual cache is accepted without download."""
         result = download_model_if_needed(model_config_manual, index_config)
         assert result == model_config_manual.manual_path
 
@@ -59,6 +83,15 @@ class TestDownloadModelIfNeeded:
         cfg = ModelConfig(name="x", manual_path=tmp_path / "nonexistent")
         with pytest.raises(ModelLoadError, match="manual_path"):
             download_model_if_needed(cfg, index_config)
+
+    def test_raises_if_manual_path_is_incomplete(
+        self, tmp_path: Path, index_config: IndexConfig
+    ) -> None:
+        manual = tmp_path / "manual"
+        manual.mkdir()
+        (manual / "config.json").write_text("{}", encoding="utf-8")
+        with pytest.raises(ModelLoadError, match="incomplete"):
+            download_model_if_needed(ModelConfig(manual_path=manual), index_config)
 
     def test_returns_cached_path_if_exists(
         self, model_config_auto: ModelConfig, tmp_path: Path
@@ -68,10 +101,14 @@ class TestDownloadModelIfNeeded:
             index_dir=tmp_path / "index",
             model_dir=tmp_path / "models",
         )
-        # Pre-create the expected cache directory with a marker file
-        cache_dir = tmp_path / "models" / "MuQ-large-msd-iter"
+        cache_dir = model_cache_path(model_config_auto, index_config)
         cache_dir.mkdir(parents=True)
         (cache_dir / "config.json").write_text("{}", encoding="utf-8")
+        (cache_dir / "model.safetensors").write_bytes(b"weights")
+        (cache_dir / ".autodj-complete").write_text(
+            json.dumps({"repo_id": model_config_auto.name, "revision": "main"}),
+            encoding="utf-8",
+        )
 
         result = download_model_if_needed(model_config_auto, index_config)
         assert result == cache_dir
@@ -79,18 +116,26 @@ class TestDownloadModelIfNeeded:
     def test_calls_snapshot_download_if_not_cached(
         self, model_config_auto: ModelConfig, index_config: IndexConfig, tmp_path: Path
     ) -> None:
-        """When model is not cached, _snapshot_download_with_timeout is called."""
+        """New automatic cache is staged, marked, then promoted."""
         index_config = IndexConfig(
             index_dir=tmp_path / "index",
             model_dir=tmp_path / "models",
         )
 
-        with patch("autodj.model._snapshot_download_with_timeout") as mock_dl:
-            download_model_if_needed(model_config_auto, index_config)
+        def populate(**kwargs: object) -> str:
+            staged = Path(str(kwargs["local_dir"]))
+            (staged / "config.json").write_text("{}", encoding="utf-8")
+            (staged / "model.safetensors").write_bytes(b"weights")
+            return str(staged)
+
+        with patch("autodj.model.snapshot_download", side_effect=populate) as mock_dl:
+            result = download_model_if_needed(model_config_auto, index_config)
 
         mock_dl.assert_called_once()
-        call_kwargs = mock_dl.call_args
-        assert "OpenMuQ/MuQ-large-msd-iter" in str(call_kwargs)
+        assert result == model_cache_path(model_config_auto, index_config)
+        marker = json.loads((result / ".autodj-complete").read_text(encoding="utf-8"))
+        assert marker == {"repo_id": model_config_auto.name, "revision": "main"}
+        assert mock_dl.call_args.kwargs["revision"] == "main"
 
     def test_raises_model_load_error_on_download_failure(
         self, model_config_auto: ModelConfig, index_config: IndexConfig, tmp_path: Path
@@ -100,81 +145,177 @@ class TestDownloadModelIfNeeded:
             model_dir=tmp_path / "models",
         )
         with (
-            patch(
-                "autodj.model._snapshot_download_with_timeout",
-                side_effect=Exception("network error"),
-            ),
+            patch("autodj.model.snapshot_download", side_effect=Exception("network error")),
             pytest.raises(ModelLoadError, match="download"),
         ):
             download_model_if_needed(model_config_auto, index_config)
 
-    def test_retries_on_timeout(self, model_config_auto: ModelConfig, tmp_path: Path) -> None:
-        """Download is retried up to max_retries times on TimeoutError."""
-        index_config = IndexConfig(
-            index_dir=tmp_path / "index",
-            model_dir=tmp_path / "models",
-        )
-        call_count = {"n": 0}
-
-        def _fail_twice_then_succeed(*args, **kwargs):
-            call_count["n"] += 1
-            if call_count["n"] < 3:
-                raise TimeoutError("stuck")
-
-        with (
-            patch(
-                "autodj.model._snapshot_download_with_timeout", side_effect=_fail_twice_then_succeed
-            ),
-            patch("autodj.model.time") as mock_time,
-        ):
-            download_model_if_needed(model_config_auto, index_config)
-
-        assert call_count["n"] == 3
-        # sleep was called between retries (twice for 3 attempts)
-        assert mock_time.sleep.call_count == 2
-
-    def test_raises_after_all_retries_exhausted(
-        self, model_config_auto: ModelConfig, tmp_path: Path
+    def test_failure_removes_only_owned_staging(
+        self, model_config_auto: ModelConfig, index_config: IndexConfig
     ) -> None:
-        """ModelLoadError raised with manual-download instructions after all retries fail."""
-        index_config = IndexConfig(
-            index_dir=tmp_path / "index",
-            model_dir=tmp_path / "models",
-        )
         with (
-            patch(
-                "autodj.model._snapshot_download_with_timeout",
-                side_effect=TimeoutError("stuck"),
-            ),
-            patch("autodj.model.time"),
-            pytest.raises(ModelLoadError, match="manual_path"),
+            patch("autodj.model.snapshot_download", side_effect=TimeoutError("stuck")),
+            pytest.raises(ModelLoadError, match="download"),
         ):
             download_model_if_needed(model_config_auto, index_config)
+        assert not list(index_config.model_dir.glob("*.staging-*"))
 
-    def test_retry_count_equals_max_retries(
-        self, model_config_auto: ModelConfig, tmp_path: Path
+    def test_download_timeout_does_not_mutate_global_socket_timeout(
+        self, model_config_auto: ModelConfig, index_config: IndexConfig
     ) -> None:
-        """Exactly _DEFAULT_MAX_RETRIES attempts are made before giving up."""
-        from autodj.model import _DEFAULT_MAX_RETRIES
-
-        index_config = IndexConfig(
-            index_dir=tmp_path / "index",
-            model_dir=tmp_path / "models",
-        )
-        call_count = {"n": 0}
-
-        def _always_timeout(*args, **kwargs):
-            call_count["n"] += 1
-            raise TimeoutError("stuck")
-
+        original_timeout = socket.getdefaulttimeout()
         with (
-            patch("autodj.model._snapshot_download_with_timeout", side_effect=_always_timeout),
-            patch("autodj.model.time"),
-            pytest.raises(ModelLoadError),
+            patch("autodj.model.snapshot_download", side_effect=TimeoutError("stuck")),
+            pytest.raises(ModelLoadError, match="download"),
         ):
             download_model_if_needed(model_config_auto, index_config)
+        assert socket.getdefaulttimeout() == original_timeout
 
-        assert call_count["n"] == _DEFAULT_MAX_RETRIES
+    def test_concurrent_threads_share_one_download(
+        self, model_config_auto: ModelConfig, index_config: IndexConfig
+    ) -> None:
+        started = threading.Event()
+        release = threading.Event()
+        calls = 0
+        calls_guard = threading.Lock()
+
+        def populate(**kwargs: object) -> str:
+            nonlocal calls
+            with calls_guard:
+                calls += 1
+            started.set()
+            assert release.wait(10)
+            staged = Path(str(kwargs["local_dir"]))
+            (staged / "config.json").write_text("{}", encoding="utf-8")
+            (staged / "model.safetensors").write_bytes(b"weights")
+            return str(staged)
+
+        results: list[Path] = []
+        failures: list[BaseException] = []
+
+        def download() -> None:
+            try:
+                results.append(download_model_if_needed(model_config_auto, index_config))
+            except BaseException as exc:  # test propagates worker failure below
+                failures.append(exc)
+
+        with patch("autodj.model.snapshot_download", side_effect=populate):
+            first = threading.Thread(target=download)
+            second = threading.Thread(target=download)
+            first.start()
+            assert started.wait(10)
+            second.start()
+            release.set()
+            first.join(10)
+            second.join(10)
+        assert not failures
+        assert calls == 1
+        assert results == [model_cache_path(model_config_auto, index_config)] * 2
+
+    def test_promotion_fsyncs_marker_tree_and_parent(
+        self, model_config_auto: ModelConfig, index_config: IndexConfig
+    ) -> None:
+        def populate(**kwargs: object) -> str:
+            staged = Path(str(kwargs["local_dir"]))
+            (staged / "config.json").write_text("{}", encoding="utf-8")
+            (staged / "model.safetensors").write_bytes(b"weights")
+            return str(staged)
+
+        with (
+            patch("autodj.model.snapshot_download", side_effect=populate),
+            patch("autodj.model._fsync_file") as fsync_file,
+            patch("autodj.model._fsync_tree") as fsync_tree,
+            patch("autodj.model._fsync_directory") as fsync_directory,
+        ):
+            result = download_model_if_needed(model_config_auto, index_config)
+        assert fsync_file.call_args.args[0].name == ".autodj-complete"
+        assert fsync_tree.call_args.args[0].name.startswith(".")
+        assert fsync_directory.call_args.args[0] == result.parent
+
+
+class TestModelCacheInspection:
+    def test_public_status_is_frozen(self, tmp_path: Path) -> None:
+        status = ModelCacheStatus(tmp_path, False, "missing")
+        with pytest.raises(AttributeError):
+            status.complete = True  # type: ignore[misc]
+
+    def test_rejects_partial_and_invalid_sharded_weights(self, tmp_path: Path) -> None:
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        (cache / "config.json").write_text("{}", encoding="utf-8")
+        (cache / "model-00001-of-00002.safetensors").write_bytes(b"one")
+        assert inspect_model_cache(cache).reason == "unindexed-partial-shard"
+        (cache / "model.safetensors.index.json").write_text(
+            json.dumps({"weight_map": {"x": "../outside.safetensors"}}), encoding="utf-8"
+        )
+        assert inspect_model_cache(cache).reason == "invalid-index"
+
+    def test_sharded_index_requires_all_safe_shards(self, tmp_path: Path) -> None:
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        (cache / "config.json").write_text("{}", encoding="utf-8")
+        (cache / "model.safetensors.index.json").write_text(
+            json.dumps({"weight_map": {"x": "model-00001-of-00002.safetensors"}}), encoding="utf-8"
+        )
+        assert inspect_model_cache(cache).reason == "missing-shard"
+        (cache / "model-00001-of-00002.safetensors").write_bytes(b"one")
+        assert inspect_model_cache(cache).complete
+
+    def test_auto_cache_marker_must_match_exactly(self, tmp_path: Path) -> None:
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        (cache / "config.json").write_text("{}", encoding="utf-8")
+        (cache / "model.safetensors").write_bytes(b"weights")
+        assert (
+            inspect_model_cache(cache, repo_id="org/model", revision="main").reason
+            == "missing-marker"
+        )
+        (cache / ".autodj-complete").write_text("not-json", encoding="utf-8")
+        assert (
+            inspect_model_cache(cache, repo_id="org/model", revision="main").reason
+            == "invalid-marker"
+        )
+        (cache / ".autodj-complete").write_text(
+            json.dumps({"repo_id": "org/model", "revision": "other"}), encoding="utf-8"
+        )
+        assert (
+            inspect_model_cache(cache, repo_id="org/model", revision="main").reason
+            == "marker-mismatch"
+        )
+
+    def test_repo_and_revision_create_distinct_auto_paths(self, index_config: IndexConfig) -> None:
+        first = ModelConfig(name="org/same", revision="main")
+        second = ModelConfig(name="other/same", revision="v2")
+        assert model_cache_path(first, index_config) != model_cache_path(second, index_config)
+        assert (
+            hashlib.sha256(b"org/same@main").hexdigest()[:16]
+            in model_cache_path(first, index_config).name
+        )
+
+    def test_process_lock_blocks_independent_holder(self, tmp_path: Path) -> None:
+        from autodj.model import _model_cache_lock
+
+        context = multiprocessing.get_context("spawn")
+        ready = context.Event()
+        release = context.Event()
+        cache = tmp_path / "cache"
+        holder = context.Process(target=_hold_model_cache_lock, args=(str(cache), ready, release))
+        holder.start()
+        assert ready.wait(10)
+        acquired = threading.Event()
+
+        def acquire() -> None:
+            with _model_cache_lock(cache):
+                acquired.set()
+
+        waiter = threading.Thread(target=acquire)
+        waiter.start()
+        assert not acquired.wait(0.2)
+        release.set()
+        waiter.join(10)
+        holder.join(10)
+        assert holder.exitcode == 0
+        assert acquired.is_set()
 
 
 # ---------------------------------------------------------------------------
