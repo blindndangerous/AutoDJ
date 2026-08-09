@@ -2276,9 +2276,39 @@ class TestReloadIndexFromDisk:
         cfg.library.music_dir = None
         cfg.library.path_remap = None
         bridge = PlayerBridge(player=MagicMock(_cfg=cfg), sim=sim)
-        result = bridge.reload_index_from_disk()
+        result = bridge.reload_index_from_disk(expected_generation=7)
         assert result == 42
-        sim.reload_from_disk.assert_called_once()
+        sim.reload_from_disk.assert_called_once_with(
+            tmp_path,
+            music_dir=None,
+            path_remap=None,
+            expected_generation=7,
+        )
+
+    def test_watcher_retries_same_generation_after_consistency_failure(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        import asyncio
+
+        from autodj.index_manifest import IndexConsistencyError
+        from autodj.server import reload_published_generation_once
+
+        manifest = MagicMock(generation=1)
+        monkeypatch.setattr("autodj.server.read_manifest", lambda _: manifest)
+        bridge = MagicMock()
+        bridge.player._cfg.index.active_dir = tmp_path
+        bridge.reload_index_from_disk.side_effect = [
+            IndexConsistencyError("generation changed"),
+            5,
+        ]
+
+        with pytest.raises(IndexConsistencyError):
+            asyncio.run(reload_published_generation_once(bridge, observed=0))
+        observed = asyncio.run(reload_published_generation_once(bridge, observed=0))
+
+        assert observed == 1
+        assert bridge.reload_index_from_disk.call_count == 2
+        bridge.reload_index_from_disk.assert_called_with(expected_generation=1)
 
 
 # ---------------------------------------------------------------------------

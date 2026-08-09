@@ -38,10 +38,21 @@ def _make_entry(i: int = 0) -> IndexEntry:
     )
 
 
+def _configure_sim_api(sim: MagicMock) -> MagicMock:
+    sim.entries_snapshot.side_effect = lambda: tuple(sim.entries)
+    sim.entry_for_path.side_effect = lambda path: next(
+        (entry for entry in sim.entries if entry.path == path),
+        None,
+    )
+    sim.ntotal = len(sim.entries)
+    return sim
+
+
 def _make_sim(n: int = 5) -> MagicMock:
     sim = MagicMock()
     entries = [_make_entry(i) for i in range(n)]
     sim.entries = entries
+    _configure_sim_api(sim)
     sim.ntotal = n
     # Return a real IndexEntry so callers that serialize it (write_m3u, etc.) don't crash
     sim.find_next_for_path.return_value = entries[0]
@@ -510,6 +521,7 @@ class TestResolveSeedBeets:
             tempo_confidence=0.0,
         )
         sim.entries.append(matching)
+        _configure_sim_api(sim)
 
         cfg = _make_cfg(beets_db=db)
 

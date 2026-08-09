@@ -4,8 +4,11 @@ Uses a pre-built fake FAISS index with known vectors so tests are
 deterministic and require no model inference.
 """
 
+import threading
+import time
 from collections import deque
 from pathlib import Path
+from unittest.mock import patch
 
 import faiss
 import numpy as np
@@ -336,6 +339,70 @@ class TestReloadFromDisk:
         sim.reload_from_disk(tmp_path)
         # _path_to_idx should now know about song_99
         assert "Z:/Music/song_99.flac" in sim._path_to_idx
+
+    def test_failed_expected_generation_keeps_live_state(self, tmp_path: Path) -> None:
+        from autodj.index_manifest import IndexConsistencyError
+        from autodj.indexer import save_index
+
+        entries = [_make_entry(i) for i in range(3)]
+        vectors = np.array([_unit_vec(seed=i) for i in range(3)], dtype=np.float32)
+        save_index(entries, vectors, tmp_path)
+        sim = SimilarityIndex.from_index_dir(tmp_path)
+        old_entries = sim.entries_snapshot()
+        old_faiss_index = sim.faiss_index
+
+        with pytest.raises(IndexConsistencyError, match="expected generation 2"):
+            sim.reload_from_disk(tmp_path, expected_generation=2)
+
+        assert sim.entries_snapshot() == old_entries
+        assert sim.faiss_index is old_faiss_index
+        assert sim.ntotal == 3
+
+    def test_reload_swaps_entries_and_index_under_one_lock(self, tmp_path: Path) -> None:
+        sim, _ = _make_similarity_index(3)
+        replacement_entries = [_make_entry(i) for i in range(5)]
+        replacement_vectors = np.array([_unit_vec(seed=i) for i in range(5)], dtype=np.float32)
+        replacement_index = faiss.IndexFlatIP(FEATURE_DIM)
+        replacement_index.add(replacement_vectors)
+        loaded = threading.Event()
+        finished = threading.Event()
+
+        def fake_load_index(*args, **kwargs):
+            loaded.set()
+            return replacement_entries, replacement_index
+
+        def reload() -> None:
+            try:
+                sim.reload_from_disk(tmp_path)
+            finally:
+                finished.set()
+
+        with patch("autodj.similarity.load_index", side_effect=fake_load_index):
+            with sim._reload_lock:
+                worker = threading.Thread(target=reload)
+                worker.start()
+                assert loaded.wait(timeout=1)
+                time.sleep(0.05)
+                assert not finished.is_set()
+                assert len(sim.entries_snapshot()) == sim.ntotal == 3
+            worker.join(timeout=1)
+
+        assert finished.is_set()
+        assert len(sim.entries_snapshot()) == sim.ntotal == 5
+
+
+def test_runtime_modules_do_not_read_similarity_entries_directly() -> None:
+    source_dir = Path(__file__).parents[2] / "src" / "autodj"
+    offenders = [
+        path
+        for path in source_dir.glob("*.py")
+        if path.name != "similarity.py"
+        and any(
+            token in path.read_text(encoding="utf-8")
+            for token in (".sim.entries", "sim.entries", "self._sim.entries")
+        )
+    ]
+    assert offenders == []
 
 
 # ---------------------------------------------------------------------------

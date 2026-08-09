@@ -885,7 +885,8 @@ class Player:
 
         if seed_entry is None:
             # Non-security seed pick — random.choice is fine here.
-            seed_entry = random.choice(self._sim.entries)  # nosec B311
+            similarity = self._sim
+            seed_entry = random.choice(similarity.entries_snapshot())  # nosec B311
         # Remember the seed so anchored mode can keep coming back to it.
         self._seed_path = seed_entry.path
 
@@ -1033,9 +1034,11 @@ class Player:
         import random as _rnd
 
         excluded = set(self._state.recently_played)
-        pool = [e for e in self._sim.entries if e.path not in excluded]
+        similarity = self._sim
+        entries = similarity.entries_snapshot()
+        pool = [e for e in entries if e.path not in excluded]
         if not pool:
-            pool = list(self._sim.entries)
+            pool = list(entries)
         self._last_pick_mode = "pure_shuffle"
         return _rnd.choice(pool)  # nosec B311 -- non-security
 
@@ -1433,11 +1436,11 @@ class Player:
                 # full picture (cues + intro/outro + tempo + key).
                 from autodj.dj_meta import camelot_label
 
-                idx = getattr(self._sim, "_path_to_idx", {}).get(path)
+                similarity = self._sim
+                e = similarity.entry_for_path(path)
                 bpm_str = "BPM ?"
                 cam = "--"
-                if idx is not None:
-                    e = self._sim.entries[idx]
+                if e is not None:
                     if e.bpm:
                         bpm_str = f"{e.bpm:.0f} BPM"
                     cam = camelot_label(e.key, e.mode)

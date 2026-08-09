@@ -28,6 +28,16 @@ def _entry(i: int = 0) -> IndexEntry:
     )
 
 
+def _configure_sim_api(sim: MagicMock) -> MagicMock:
+    sim.entries_snapshot.side_effect = lambda: tuple(sim.entries)
+    sim.entry_for_path.side_effect = lambda path: next(
+        (entry for entry in sim.entries if entry.path == path),
+        None,
+    )
+    sim.ntotal = len(sim.entries)
+    return sim
+
+
 def _cfg() -> MagicMock:
     cfg = MagicMock()
     cfg.library.beets_db = None
@@ -67,6 +77,7 @@ class TestResolveSeedInteractive:
     def test_prompt_choice_picks_match(self) -> None:
         sim = MagicMock()
         sim.entries = [_entry(0), _entry(1), _entry(2)]
+        _configure_sim_api(sim)
         # Simulate `click.prompt` returning the second choice.
         with patch("autodj.cli.click.prompt", return_value=2):
             chosen = _resolve_seed(sim, _cfg(), "Song", MagicMock(), interactive=True)
@@ -77,6 +88,7 @@ class TestResolveSeedInteractive:
     def test_prompt_eof_aborts_to_none(self) -> None:
         sim = MagicMock()
         sim.entries = [_entry(0), _entry(1)]
+        _configure_sim_api(sim)
         with patch("autodj.cli.click.prompt", side_effect=EOFError()):
             chosen = _resolve_seed(sim, _cfg(), "Song", MagicMock(), interactive=True)
         assert chosen is None
@@ -417,6 +429,7 @@ class TestPlaylistRandomSeed:
         cfg_mock = _cfg()
         sim_mock = MagicMock()
         sim_mock.entries = [_entry(i) for i in range(5)]
+        _configure_sim_api(sim_mock)
         sim_mock.find_next_for_path.return_value = sim_mock.entries[0]
 
         with (

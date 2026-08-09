@@ -56,6 +56,7 @@ from pydantic import BaseModel
 # the 2000-line working budget.  Re-export here so the external API
 # (``from autodj.server import PlayerBridge``) keeps working unchanged.
 from autodj._bridge import PlayerBridge
+from autodj.index_manifest import IndexConsistencyError, read_manifest
 
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig
@@ -64,6 +65,21 @@ if TYPE_CHECKING:
     from autodj.similarity import SimilarityIndex
 
 logger = logging.getLogger(__name__)
+
+
+async def reload_published_generation_once(bridge: PlayerBridge, observed: int) -> int:
+    """Reload one newer published generation, preserving observed on no change."""
+    cfg = getattr(bridge.player, "_cfg", None)
+    if cfg is None:
+        return observed
+    manifest = await asyncio.to_thread(read_manifest, cfg.index.active_dir)
+    if manifest is None or manifest.generation <= observed:
+        return observed
+    await asyncio.to_thread(
+        bridge.reload_index_from_disk,
+        expected_generation=manifest.generation,
+    )
+    return manifest.generation
 
 
 def _quiesce_cache_writers(
@@ -857,7 +873,8 @@ def create_app(
         """Return the embedded album art for a track (304 if unchanged)."""
         # Only serve art for tracks that exist in the index — prevents
         # arbitrary file access through the path parameter.
-        known = any(e.path == path for e in bridge.sim.entries)
+        similarity = bridge.sim
+        known = similarity.entry_for_path(path) is not None
         if not known:
             raise HTTPException(status_code=404, detail="Track not in index")
         result = await asyncio.to_thread(bridge.cover_art_for, path)
@@ -961,7 +978,8 @@ def create_app(
         verbatim in the loaded similarity index.
         """
         # Path validation — must be in the index
-        known = any(e.path == path for e in bridge.sim.entries)
+        similarity = bridge.sim
+        known = similarity.entry_for_path(path) is not None
         if not known:
             raise HTTPException(status_code=404, detail="Track not in index")
         f = Path(path)
@@ -1201,7 +1219,8 @@ def create_app(
         Single pass over ``entries`` so the cost stays O(N) instead of
         4×O(N).  Negligible at 1 k tracks; measurable at 70 k.
         """
-        entries = bridge.sim.entries
+        similarity = bridge.sim
+        entries = similarity.entries_snapshot()
         n = len(entries)
         bpm_count = 0
         bpm_sum = 0.0
@@ -1292,41 +1311,24 @@ def create_app(
                         _ws_clients.discard(client)
 
     async def _index_watcher_loop() -> None:  # pragma: no cover — long-running task
-        """Reload the FAISS index when ``tracks.db`` mtime changes.
-
-        Runs every 10 seconds.  Lets a parallel ``autodj index`` add
-        tracks while a long-running ``serve`` is up — the next track
-        pick will see the new entries without restarting the server.
-
-        Stat calls are dispatched to a thread so the asyncio event loop
-        is never blocked on a slow NAS round-trip.
-        """
+        """Reload each newly published index generation every 10 seconds."""
         cfg = getattr(bridge.player, "_cfg", None)
         if cfg is None:
             return
-        index_dir = cfg.index.active_dir
-
-        def _probe_mtime() -> float:
-            try:
-                return (index_dir / "tracks.db").stat().st_mtime
-            except OSError:
-                return 0.0
-
-        last_mtime = await asyncio.to_thread(_probe_mtime)
+        try:
+            manifest = await asyncio.to_thread(read_manifest, cfg.index.active_dir)
+        except (IndexConsistencyError, OSError, ValueError) as exc:
+            logger.debug("Index watcher: %s", exc)
+            manifest = None
+        observed = manifest.generation if manifest is not None else 0
         while True:
             await asyncio.sleep(10)
             try:
-                mtime = await asyncio.to_thread(_probe_mtime)
-                if mtime > last_mtime:
-                    last_mtime = mtime
-                    new_total = await asyncio.to_thread(
-                        bridge.reload_index_from_disk,
-                    )
-                    logger.info(
-                        "Index reloaded — %d tracks now available",
-                        new_total,
-                    )
-            except (OSError, ValueError) as exc:
+                previous = observed
+                observed = await reload_published_generation_once(bridge, observed)
+                if observed != previous:
+                    logger.info("Index reloaded — %d tracks now available", bridge.sim.ntotal)
+            except (IndexConsistencyError, OSError, ValueError) as exc:
                 logger.debug("Index watcher: %s", exc)
 
     return app

@@ -627,7 +627,8 @@ class PlayerBridge:
             return []
 
         results = []
-        for entry in self.sim.entries:
+        similarity = self.sim
+        for entry in similarity.entries_snapshot():
             haystack = (f"{entry.title} — {entry.artist} — {entry.album}").lower()
             if all(tok in haystack for tok in tokens):
                 results.append(
@@ -704,10 +705,8 @@ class PlayerBridge:
         Returns:
             ``True`` if the track was found in the index, ``False`` otherwise.
         """
-        entry = next(
-            (e for e in self.sim.entries if e.path == path),
-            None,
-        )
+        similarity = self.sim
+        entry = similarity.entry_for_path(path)
         if entry is None:
             return False
         self._capture_pre_queue_seed()
@@ -731,7 +730,8 @@ class PlayerBridge:
         """
         import random as _random
 
-        entries = self.sim.entries
+        similarity = self.sim
+        entries = similarity.entries_snapshot()
         if not entries:
             return False
         chosen = _random.choice(entries)  # nosec B311 — non-security
@@ -741,10 +741,8 @@ class PlayerBridge:
 
     def queue_add(self, path: str) -> bool:
         """Append a track by path to the end of the user queue."""
-        entry = next(
-            (e for e in self.sim.entries if e.path == path),
-            None,
-        )
+        similarity = self.sim
+        entry = similarity.entry_for_path(path)
         if entry is None:
             return False
         self._capture_pre_queue_seed()
@@ -919,7 +917,7 @@ class PlayerBridge:
                     getattr(cfg.playback, "beat_sync_fx", True),
                 ),
                 "no_repeat_window": int(p._state.no_repeat_window),
-                "library_size": int(len(p._sim.entries) if p._sim else 0),
+                "library_size": int(p._sim.ntotal if p._sim else 0),
                 "key_sync_fx": bool(
                     getattr(cfg.playback, "key_sync_fx", True),
                 ),
@@ -1188,7 +1186,7 @@ class PlayerBridge:
     # Hot-reload — pick up new tracks while a parallel `index` runs
     # ------------------------------------------------------------------
 
-    def reload_index_from_disk(self) -> int:
+    def reload_index_from_disk(self, expected_generation: int | None = None) -> int:
         """Re-read ``tracks.db`` + ``vectors.index`` into the live sim.
 
         Used by the background watcher in :func:`create_app` so a long-
@@ -1206,6 +1204,7 @@ class PlayerBridge:
             cfg.index.active_dir,
             music_dir=cfg.library.music_dir,
             path_remap=cfg.library.path_remap,
+            expected_generation=expected_generation,
         )
 
 

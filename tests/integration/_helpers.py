@@ -13,7 +13,7 @@ delegate to these.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, PropertyMock
 
 from autodj.indexer import IndexEntry
 
@@ -117,4 +117,10 @@ def _make_sim_mock(entries: list[IndexEntry] | None = None) -> MagicMock:
     """Build a mock SimilarityIndex carrying a default 5-track list."""
     sim = MagicMock()
     sim.entries = entries if entries is not None else [_make_entry(i) for i in range(5)]
+    sim.entries_snapshot.side_effect = lambda: tuple(sim.entries)
+    sim.entry_for_path.side_effect = lambda path: next(
+        (entry for entry in sim.entries if entry.path == path),
+        None,
+    )
+    type(sim).ntotal = PropertyMock(side_effect=lambda: len(sim.entries))
     return sim

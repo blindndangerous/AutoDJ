@@ -103,18 +103,20 @@ def _resolve_seed(
     if seed is None:
         return None
 
+    similarity = sim
+    entries = similarity.entries_snapshot()
     candidates: list[Track | IndexEntry] = []
 
     if cfg.library.beets_db and cfg.library.beets_db.exists():
         from autodj.beets import search_tracks as _search
 
         beets_results = _search(cfg.library.beets_db, seed)
-        indexed_paths = {e.path for e in sim.entries}
+        indexed_paths = {e.path for e in entries}
         candidates = [t for t in beets_results if str(t.path) in indexed_paths]
 
     if not candidates:
         q = seed.lower()
-        candidates = [e for e in sim.entries if q in e.title.lower() or q in e.artist.lower()]
+        candidates = [e for e in entries if q in e.title.lower() or q in e.artist.lower()]
 
     if not candidates:
         console_.print(f"[yellow]No indexed tracks match '{seed}'. Starting random.[/yellow]")
@@ -125,7 +127,7 @@ def _resolve_seed(
         display = getattr(chosen, "display_name", str(chosen))
         console_.print(f"Seed: [bold]{display}[/bold]")
         path_str = str(getattr(chosen, "path", chosen))
-        return next((e for e in sim.entries if e.path == path_str), None)
+        return next((e for e in entries if e.path == path_str), None)
 
     console_.print(f"\nMultiple matches for '{seed}':")
     for i, c in enumerate(candidates[:10], 1):
@@ -135,7 +137,7 @@ def _resolve_seed(
         choice = click.prompt("Choose (number)", type=click.IntRange(1, min(len(candidates), 10)))
         chosen = candidates[choice - 1]
         path_str = str(getattr(chosen, "path", chosen))
-        return next((e for e in sim.entries if e.path == path_str), None)
+        return next((e for e in entries if e.path == path_str), None)
     except (click.Abort, EOFError):
         console_.print("[yellow]Cancelled — starting random.[/yellow]")
         return None
@@ -1788,12 +1790,13 @@ def cmd_playlist(
     playlist: list = []
     recently_played: deque = deque(maxlen=cfg.playback.no_repeat_window)
 
+    similarity = sim
     # Start with seed or random
     if seed_entry is not None:
         current = seed_entry
     else:
         # Non-security playlist seeding — random.choice is fine here.
-        current = random.choice(sim.entries)  # nosec B311
+        current = random.choice(similarity.entries_snapshot())  # nosec B311
 
     playlist.append(current)
     recently_played.append(current.path)

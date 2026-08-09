@@ -23,9 +23,11 @@ from __future__ import annotations
 import logging
 import math
 import random
+import threading
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import wraps
 from pathlib import Path
 from typing import cast
 
@@ -33,6 +35,7 @@ import faiss
 import numpy as np
 import numpy.typing as npt
 
+from autodj.index_manifest import IndexConsistencyError, read_manifest
 from autodj.indexer import IndexEntry, load_index
 
 logger = logging.getLogger(__name__)
@@ -109,6 +112,17 @@ class SimilarityError(RuntimeError):
     """Raised when a next-song candidate cannot be found."""
 
 
+def _locked(method: Callable) -> Callable:
+    """Run a SimilarityIndex operation against one coherent in-memory generation."""
+
+    @wraps(method)
+    def wrapped(self: SimilarityIndex, *args: object, **kwargs: object) -> object:
+        with self._reload_lock:
+            return method(self, *args, **kwargs)
+
+    return wrapped
+
+
 # ---------------------------------------------------------------------------
 # SimilarityIndex
 # ---------------------------------------------------------------------------
@@ -129,6 +143,8 @@ class SimilarityIndex:
 
     def __post_init__(self) -> None:
         """Validate consistency and build the path → FAISS index position map."""
+        self._reload_lock = threading.RLock()
+        self._generation = 0
         if self.faiss_index.ntotal != len(self.entries):
             raise ValueError(
                 f"Index/metadata mismatch: FAISS has {self.faiss_index.ntotal} vectors "
@@ -144,7 +160,19 @@ class SimilarityIndex:
         Returns:
             Integer count of indexed tracks.
         """
-        return len(self.entries)
+        with self._reload_lock:
+            return len(self.entries)
+
+    def entries_snapshot(self) -> tuple[IndexEntry, ...]:
+        """Return immutable view of entries from one index generation."""
+        with self._reload_lock:
+            return tuple(self.entries)
+
+    def entry_for_path(self, path: str) -> IndexEntry | None:
+        """Return entry for *path* from one index generation, if present."""
+        with self._reload_lock:
+            idx = self._path_to_idx.get(path)
+            return self.entries[idx] if idx is not None else None
 
     # ------------------------------------------------------------------
     # Factory
@@ -155,6 +183,8 @@ class SimilarityIndex:
         index_dir: Path,
         music_dir: Path | None = None,
         path_remap: list[tuple[str, str]] | None = None,
+        *,
+        expected_generation: int | None = None,
     ) -> int:
         """Re-read the index from disk, replacing in-memory state in place.
 
@@ -173,16 +203,28 @@ class SimilarityIndex:
         Returns:
             New track count after reload.
         """
+        manifest = read_manifest(index_dir)
+        generation = manifest.generation if manifest is not None else 0
+        if expected_generation is not None and generation != expected_generation:
+            raise IndexConsistencyError(
+                f"expected generation {expected_generation}, got {generation}"
+            )
+        load_generation = expected_generation
+        if load_generation is None and manifest is not None:
+            load_generation = generation
         entries, faiss_index = load_index(
             index_dir,
             music_dir=music_dir,
             path_remap=path_remap,
+            expected_generation=load_generation,
         )
-        self.entries = entries
-        self.faiss_index = faiss_index
-        # Rebuild the path → row index lookup
-        self._path_to_idx = {e.path: i for i, e in enumerate(self.entries)}
-        return len(entries)
+        candidate = SimilarityIndex(faiss_index=faiss_index, entries=entries)
+        with self._reload_lock:
+            self.entries = candidate.entries
+            self.faiss_index = candidate.faiss_index
+            self._path_to_idx = candidate._path_to_idx
+            self._generation = generation
+            return len(self.entries)
 
     @classmethod
     def from_index_dir(
@@ -351,6 +393,7 @@ class SimilarityIndex:
         out.sort(key=lambda x: x[0], reverse=True)
         return out
 
+    @_locked
     def find_next(
         self,
         query_vector: np.ndarray,
@@ -451,6 +494,7 @@ class SimilarityIndex:
         )
         return best
 
+    @_locked
     def find_next_for_path(
         self,
         current_path: str,
@@ -534,6 +578,7 @@ class SimilarityIndex:
             pick_temperature=pick_temperature,
         )
 
+    @_locked
     def find_distant(
         self,
         current_path: str,
