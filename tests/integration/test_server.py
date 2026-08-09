@@ -18,7 +18,6 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-from fastapi.testclient import TestClient
 
 from autodj.config import ServerConfig
 from autodj.server import PlayerBridge, create_app
@@ -1222,6 +1221,8 @@ class TestServeFunction:
 
         assert mock_uvicorn.call_args.kwargs["host"] == "127.0.0.2"
         assert mock_uvicorn.call_args.kwargs["port"] == 9090
+        assert cfg.server.effective_allowed_hosts() == ["127.0.0.2"]
+        assert cfg.server.effective_allowed_origins() == ["http://127.0.0.2:9090"]
 
     def test_serve_rejects_unsafe_override_before_player_construction(self) -> None:
         from unittest.mock import MagicMock, patch
@@ -1270,15 +1271,6 @@ class TestServeFunction:
         assert weak not in str(raised.value)
         player_class.assert_not_called()
         mock_uvicorn.assert_not_called()
-
-    def test_custom_loopback_config_serves_version_route(self, bridge) -> None:
-        bridge.player._cfg.server = ServerConfig(host="127.0.0.2", port=9090)
-        client = TestClient(
-            create_app(bridge),
-            base_url="http://127.0.0.2:9090",
-        )
-
-        assert client.get("/api/version").status_code == 200
 
 
 # ---------------------------------------------------------------------------

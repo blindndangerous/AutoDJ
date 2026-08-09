@@ -1678,7 +1678,8 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
     Examples:
       uv run autodj serve
       uv run autodj serve --seed "Portishead" --open
-      uv run autodj serve --host 0.0.0.0 --port 8080
+      uv run autodj serve --host 0.0.0.0 --insecure-lan \
+        --allowed-host radio.local --allowed-origin http://radio.local:8080
       uv run autodj serve --preset wakeup --discovery-every 10
     """
     from autodj.server import serve

@@ -687,7 +687,7 @@ class TestCmdServe:
         load_index.assert_not_called()
         serve_mock.assert_not_called()
 
-    def test_insecure_lan_is_explicit_and_warned(self) -> None:
+    def test_documented_insecure_lan_example_is_executable_and_warned(self) -> None:
         cfg = _make_cfg()
         with (
             patch("autodj.config.load_config", return_value=cfg),
