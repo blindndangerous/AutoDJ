@@ -519,6 +519,98 @@ class TestFromIndexDir:
 
 
 class TestReloadFromDisk:
+    def test_tombstone_cannot_be_followed_by_stale_reload_swap(self, tmp_path: Path) -> None:
+        from autodj.index_manifest import current_snapshot_token, tombstone_publication
+        from autodj.indexer import save_index
+
+        entries = [_make_entry(0)]
+        vectors = np.array([_unit_vec(seed=0)], dtype=np.float32)
+        save_index(entries, vectors, tmp_path)
+        sim = SimilarityIndex.from_index_dir(tmp_path)
+        initial = sim.snapshot_token
+        candidate_ready = threading.Event()
+        tombstone_done = threading.Event()
+        original_load = __import__("autodj.similarity", fromlist=["load_index"]).load_index
+
+        def gated_load(*args, **kwargs):
+            result = original_load(*args, **kwargs)
+            if threading.current_thread().name == "old-reload":
+                candidate_ready.set()
+            return result
+
+        old = threading.Thread(
+            target=lambda: sim.reload_from_disk(tmp_path, expected_snapshot=initial),
+            name="old-reload",
+        )
+
+        def tombstone() -> None:
+            tombstone_publication(tmp_path)
+            tombstone_done.set()
+
+        with patch("autodj.similarity.load_index", side_effect=gated_load):
+            with sim._reload_lock:
+                old.start()
+                assert candidate_ready.wait(timeout=1)
+                newer = threading.Thread(target=tombstone, name="new-tombstone")
+                newer.start()
+                time.sleep(0.05)
+                assert not tombstone_done.is_set()
+            old.join(timeout=1)
+            newer.join(timeout=1)
+
+        assert not old.is_alive()
+        assert tombstone_done.is_set()
+        latest = current_snapshot_token(tmp_path)
+        sim.reload_from_disk(tmp_path, expected_snapshot=latest)
+        assert sim.snapshot_token == latest
+        assert sim.ntotal == 0
+
+    def test_uncommitted_first_publish_preserves_live_state_then_loads_publish(
+        self, tmp_path: Path
+    ) -> None:
+        from autodj.index_manifest import (
+            IndexConsistencyError,
+            IndexSnapshotToken,
+            _PublicationState,
+            _write_publication_state,
+            current_snapshot_token,
+        )
+        from autodj.indexer import save_index
+
+        sim, _ = _make_similarity_index(1)
+        index_dir = tmp_path / "default"
+        index_dir.mkdir()
+        _write_publication_state(index_dir, _PublicationState(high_water=1, tombstone_revision=0))
+        pending = current_snapshot_token(index_dir)
+
+        with pytest.raises(IndexConsistencyError):
+            sim.reload_from_disk(index_dir, expected_snapshot=pending)
+
+        assert sim.ntotal == 1
+        assert sim.snapshot_token == IndexSnapshotToken(0, 0)
+        entries = [_make_entry(5)]
+        vectors = np.array([_unit_vec(seed=5)], dtype=np.float32)
+        save_index(entries, vectors, index_dir)
+        published = current_snapshot_token(index_dir)
+
+        assert sim.reload_from_disk(index_dir, expected_snapshot=published) == 1
+        assert sim.snapshot_token == published
+        assert sim.entry_for_path(entries[0].path) is not None
+
+    def test_pristine_legacy_reload_keeps_generation_zero(self, tmp_path: Path) -> None:
+        from autodj.index_manifest import IndexSnapshotToken
+        from autodj.indexer import _save_tracks_metadata, _save_vectors
+
+        entries = [_make_entry(4)]
+        vectors = np.array([_unit_vec(seed=4)], dtype=np.float32)
+        _save_vectors(vectors, tmp_path)
+        _save_tracks_metadata(entries, tmp_path, music_dir=None)
+        sim, _ = _make_similarity_index(1)
+
+        assert sim.reload_from_disk(tmp_path) == 1
+        assert sim.snapshot_token == IndexSnapshotToken(0, 0)
+        assert sim.entry_for_path(entries[0].path) is not None
+
     def test_reload_captures_first_publish_after_flat_migration(
         self, monkeypatch, tmp_path: Path
     ) -> None:
@@ -747,11 +839,34 @@ def _similarity_entries_accesses(source: str) -> list[int]:
             self.visit(node.value)
             self._bind(node.target, self._is_similarity_owner(node.value))
 
+        def visit_If(self, node: ast.If) -> None:
+            self.visit(node.test)
+            before = set(self.aliases[-1])
+            body = self._visit_block(node.body, before)
+            otherwise = self._visit_block(node.orelse, before) if node.orelse else before
+            self.aliases[-1] = body | otherwise
+
+        def visit_Try(self, node: ast.Try) -> None:
+            before = set(self.aliases[-1])
+            outcomes = [self._visit_block(node.body, before)]
+            outcomes.extend(
+                self._visit_except_handler(handler, before) for handler in node.handlers
+            )
+            if node.orelse:
+                outcomes.append(self._visit_block(node.orelse, outcomes[0]))
+            self.aliases[-1] = set().union(*outcomes)
+            for statement in node.finalbody:
+                self.visit(statement)
+
         def visit_For(self, node: ast.For) -> None:
             self.visit(node.iter)
+            before = set(self.aliases[-1])
             self._bind(node.target, self._is_similarity_iterable(node.iter))
-            for statement in (*node.body, *node.orelse):
-                self.visit(statement)
+            body = self._visit_block(node.body, self.aliases[-1])
+            outcomes = [before, body]
+            if node.orelse:
+                outcomes.append(self._visit_block(node.orelse, before | body))
+            self.aliases[-1] = set().union(*outcomes)
 
         visit_AsyncFor = visit_For
 
@@ -780,6 +895,21 @@ def _similarity_entries_accesses(source: str) -> list[int]:
                 self.aliases[-1].add(target.id)
             else:
                 self.aliases[-1].discard(target.id)
+
+        def _visit_block(self, statements: list[ast.stmt], aliases: set[str]) -> set[str]:
+            previous = self.aliases[-1]
+            self.aliases[-1] = set(aliases)
+            for statement in statements:
+                self.visit(statement)
+            result = self.aliases[-1]
+            self.aliases[-1] = previous
+            return result
+
+        def _visit_except_handler(self, handler: ast.ExceptHandler, aliases: set[str]) -> set[str]:
+            handler_aliases = set(aliases)
+            if handler.name is not None:
+                handler_aliases.discard(handler.name)
+            return self._visit_block(handler.body, handler_aliases)
 
         def _is_similarity_owner(self, node: ast.expr) -> bool:
             if isinstance(node, ast.Name):
@@ -824,6 +954,14 @@ def test_similarity_entries_guard_tracks_and_rebinds_control_flow_aliases() -> N
         )
         == []
     )
+
+
+def test_similarity_entries_guard_retains_possible_branch_aliases() -> None:
+    assert _similarity_entries_accesses(
+        "index = self._sim\nif flag:\n index = other\nindex.entries\n"
+        "if flag:\n index = self._sim\nelse:\n index = other\nindex.entries\n"
+        "if flag:\n index = other\nelse:\n index = self._sim\nindex.entries\n"
+    ) == [4, 9, 14]
 
 
 def test_runtime_modules_do_not_read_similarity_entries_directly() -> None:

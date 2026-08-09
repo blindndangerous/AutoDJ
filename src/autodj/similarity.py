@@ -40,6 +40,8 @@ from autodj.index_manifest import (
     IndexSnapshotToken,
     current_snapshot_token,
     legacy_artifacts_allowed,
+    publication_has_uncommitted_reservation,
+    publication_is_tombstoned,
     publication_lock,
     read_manifest,
 )
@@ -250,6 +252,9 @@ class SimilarityIndex:
         Returns:
             New track count after reload.
         """
+        # Lock order is always publication then reload.  Keep both through
+        # candidate construction and swap so an older candidate cannot win
+        # after a newer publication has already reloaded.
         _migrate_flat_index_if_needed(index_dir)
         with publication_lock(index_dir):
             snapshot = current_snapshot_token(index_dir)
@@ -263,10 +268,14 @@ class SimilarityIndex:
                 raise IndexConsistencyError(
                     f"expected generation {expected_generation}, got {snapshot.generation}"
                 )
-            if snapshot.generation == 0 and not legacy_artifacts_allowed(index_dir):
+            if snapshot.generation == 0 and publication_is_tombstoned(index_dir):
                 with self._reload_lock:
                     dimension = self.faiss_index.d
                 candidate = SimilarityIndex(faiss.IndexFlatIP(dimension), [])
+            elif snapshot.generation == 0 and not legacy_artifacts_allowed(index_dir):
+                if publication_has_uncommitted_reservation(index_dir):
+                    raise IndexConsistencyError("publication reserved without a committed snapshot")
+                raise IndexConsistencyError("manifest-free index is not a pristine legacy snapshot")
             else:
                 entries, faiss_index = load_index(
                     index_dir,
@@ -276,14 +285,14 @@ class SimilarityIndex:
                     _migrate_flat=False,
                 )
                 candidate = SimilarityIndex(faiss_index=faiss_index, entries=entries)
-        with self._reload_lock:
-            self.entries = candidate.entries
-            self.faiss_index = candidate.faiss_index
-            self._path_to_idx = candidate._path_to_idx
-            self._public_entries = candidate._public_entries
-            self._generation = snapshot.generation
-            self._snapshot_token = snapshot
-            return len(self.entries)
+            with self._reload_lock:
+                self.entries = candidate.entries
+                self.faiss_index = candidate.faiss_index
+                self._path_to_idx = candidate._path_to_idx
+                self._public_entries = candidate._public_entries
+                self._generation = snapshot.generation
+                self._snapshot_token = snapshot
+                return len(self.entries)
 
     @classmethod
     def from_index_dir(
