@@ -308,7 +308,9 @@ class TestModelCacheInspection:
         (cache / "model.safetensors.index.json").write_text(
             json.dumps({"weight_map": {"x": "../outside.safetensors"}}), encoding="utf-8"
         )
-        assert _inspect_model_path(cache).reason == "invalid-index"
+        assert (
+            _inspect_model_path(cache).reason == "invalid shard index: model.safetensors.index.json"
+        )
 
     def test_sharded_index_requires_all_safe_shards(self, tmp_path: Path) -> None:
         cache = tmp_path / "cache"
@@ -325,7 +327,10 @@ class TestModelCacheInspection:
             ),
             encoding="utf-8",
         )
-        assert _inspect_model_path(cache).reason == "missing-shard"
+        assert (
+            _inspect_model_path(cache).reason
+            == "missing indexed weight: model-00001-of-00002.safetensors"
+        )
         (cache / "model-00001-of-00002.safetensors").write_bytes(b"one")
         (cache / "model-00002-of-00002.safetensors").write_bytes(b"two")
         assert _inspect_model_path(cache).complete

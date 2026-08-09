@@ -118,6 +118,17 @@ def model_cache_path(model_cfg: ModelConfig, index_cfg: IndexConfig) -> Path:
     return index_cfg.model_dir / f"{readable or 'model'}-{digest}"
 
 
+def _is_reparse_point(path: Path) -> bool:
+    """Reject links and Windows junction/reparse points before filesystem work."""
+    if path.is_symlink() or getattr(path, "is_junction", lambda: False)():
+        return True
+    try:
+        attributes = path.stat(follow_symlinks=False).st_file_attributes
+    except (AttributeError, OSError):
+        return False
+    return bool(attributes & 0x400)
+
+
 def _indexed_weights(cache_path: Path) -> tuple[bool, str]:
     """Validate an optional HuggingFace weight index in *cache_path*."""
     indexes = [
@@ -130,17 +141,18 @@ def _indexed_weights(cache_path: Path) -> tuple[bool, str]:
         return False, "no-index"
     if len(indexes) != 1:
         return False, "invalid-index"
+    index_error = f"invalid shard index: {indexes[0].name}"
     if indexes[0].name == "model.safetensors.index.json":
         extension = ".safetensors"
     elif indexes[0].name == "pytorch_model.bin.index.json":
         extension = ".bin"
     else:
-        return False, "invalid-index"
+        return False, index_error
     try:
         data = json.loads(indexes[0].read_text(encoding="utf-8"))
         weight_map = data["weight_map"]
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError):
-        return False, "invalid-index"
+        return False, index_error
     if not isinstance(weight_map, dict) or not weight_map:
         return False, "invalid-index"
     shards: set[str] = set()
@@ -156,23 +168,23 @@ def _indexed_weights(cache_path: Path) -> tuple[bool, str]:
             or Path(shard).name != shard
             or Path(shard).is_absolute()
         ):
-            return False, "invalid-index"
+            return False, index_error
         match = pattern.fullmatch(shard)
         if match is None:
-            return False, "invalid-index"
+            return False, index_error
         position, total = (int(value) for value in match.groups())
         if position < 1 or total < 1 or position > total:
             return False, "invalid-index"
         if not (cache_path / shard).is_file():
-            return False, "missing-shard"
+            return False, f"missing indexed weight: {shard}"
         shards.add(shard)
         positions.add(position)
         totals.add(total)
     if len(totals) != 1:
-        return False, "invalid-index"
+        return False, index_error
     total = totals.pop()
     if positions != set(range(1, total + 1)) or len(shards) != total:
-        return False, "invalid-index"
+        return False, index_error
     actual_shards = {
         item.name
         for item in cache_path.iterdir()
@@ -180,7 +192,7 @@ def _indexed_weights(cache_path: Path) -> tuple[bool, str]:
         and any(pattern.fullmatch(item.name) for pattern in _SAFE_SHARD_PATTERNS.values())
     }
     if actual_shards != shards:
-        return False, "invalid-index"
+        return False, index_error
     return True, "indexed-weights"
 
 
@@ -195,7 +207,7 @@ def _inspect_model_path(
     validation. Omit both for a manually maintained model directory.
     """
     cache_path = Path(path)
-    if cache_path.is_symlink():
+    if _is_reparse_point(cache_path):
         return ModelCacheStatus(cache_path, False, "symlinked cache path")
     if not cache_path.exists():
         return ModelCacheStatus(cache_path, False, "cache directory missing")
@@ -203,7 +215,11 @@ def _inspect_model_path(
         return ModelCacheStatus(cache_path, False, "not-directory")
     if not (cache_path / "config.json").is_file():
         return ModelCacheStatus(cache_path, False, "missing config.json")
-    if any(item.is_symlink() for item in cache_path.rglob("*")):
+    resolved_root = cache_path.resolve()
+    if any(
+        _is_reparse_point(item) or not item.resolve().is_relative_to(resolved_root)
+        for item in cache_path.rglob("*")
+    ):
         return ModelCacheStatus(cache_path, False, "symlinked cache artifact")
 
     indexed, weight_reason = _indexed_weights(cache_path)
