@@ -388,6 +388,15 @@ class TestModelConfigRevision:
         with pytest.raises(ValueError, match=r"model\.revision"):
             ModelConfig.from_dict({"revision": value})
 
+    @pytest.mark.parametrize("revision", [" main", "main ", "\tmain\n", "   "])
+    def test_revision_rejects_whitespace_in_toml_and_direct_construction(
+        self, revision: str
+    ) -> None:
+        with pytest.raises(ValueError, match=r"model\.revision"):
+            ModelConfig.from_dict({"revision": revision})
+        with pytest.raises(ValueError, match=r"model\.revision"):
+            ModelConfig(revision=revision)
+
 
 # ---------------------------------------------------------------------------
 # DjMixConfig — harmonic_mode added with the harmonic combo box

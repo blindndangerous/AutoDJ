@@ -255,11 +255,56 @@ class TestModelCacheInspection:
         cache.mkdir()
         (cache / "config.json").write_text("{}", encoding="utf-8")
         (cache / "model.safetensors.index.json").write_text(
-            json.dumps({"weight_map": {"x": "model-00001-of-00002.safetensors"}}), encoding="utf-8"
+            json.dumps(
+                {
+                    "weight_map": {
+                        "x": "model-00001-of-00002.safetensors",
+                        "y": "model-00002-of-00002.safetensors",
+                    }
+                }
+            ),
+            encoding="utf-8",
         )
         assert inspect_model_cache(cache).reason == "missing-shard"
         (cache / "model-00001-of-00002.safetensors").write_bytes(b"one")
+        (cache / "model-00002-of-00002.safetensors").write_bytes(b"two")
         assert inspect_model_cache(cache).complete
+
+    @pytest.mark.parametrize(
+        ("index_name", "shards"),
+        [
+            ("model.safetensors.index.json", ["model-00001-of-00002.safetensors"]),
+            (
+                "model.safetensors.index.json",
+                ["model-00001-of-00002.safetensors", "model-00003-of-00002.safetensors"],
+            ),
+            ("model.safetensors.index.json", ["pytorch_model-00001-of-00001.bin"]),
+            ("pytorch_model.bin.index.json", ["model-00001-of-00001.safetensors"]),
+        ],
+    )
+    def test_index_rejects_noncanonical_or_inconsistent_shards(
+        self, tmp_path: Path, index_name: str, shards: list[str]
+    ) -> None:
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        (cache / "config.json").write_text("{}", encoding="utf-8")
+        (cache / index_name).write_text(
+            json.dumps({"weight_map": {str(index): shard for index, shard in enumerate(shards)}}),
+            encoding="utf-8",
+        )
+        for shard in set(shards):
+            (cache / shard).write_bytes(b"weights")
+        assert not inspect_model_cache(cache).complete
+
+    @pytest.mark.parametrize("filename", ["training_args.bin", "random.safetensors"])
+    def test_arbitrary_weight_filenames_do_not_complete_cache(
+        self, tmp_path: Path, filename: str
+    ) -> None:
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        (cache / "config.json").write_text("{}", encoding="utf-8")
+        (cache / filename).write_bytes(b"not model weights")
+        assert inspect_model_cache(cache).reason == "missing-weights"
 
     def test_auto_cache_marker_must_match_exactly(self, tmp_path: Path) -> None:
         cache = tmp_path / "cache"
@@ -316,6 +361,74 @@ class TestModelCacheInspection:
         holder.join(10)
         assert holder.exitcode == 0
         assert acquired.is_set()
+
+    def test_fork_reset_rebinds_guard_held_by_parent(self, tmp_path: Path) -> None:
+        import autodj.model as model
+
+        old_guard = model._thread_locks_guard
+        old_guard.acquire()
+        try:
+            model._reset_model_cache_locks_after_fork()
+            assert model._thread_locks_guard is not old_guard
+            assert model._thread_lock(tmp_path / "cache")
+        finally:
+            old_guard.release()
+
+
+class _DownloadAbort(BaseException):
+    pass
+
+
+class TestModelCacheCleanup:
+    def test_base_exception_cleans_owned_staging_but_preserves_sibling(
+        self, model_config_auto: ModelConfig, index_config: IndexConfig
+    ) -> None:
+        index_config.model_dir.mkdir()
+        sibling = index_config.model_dir / ".unrelated.staging-sentinel"
+        sibling.mkdir()
+        with (
+            patch("autodj.model.snapshot_download", side_effect=_DownloadAbort()),
+            pytest.raises(_DownloadAbort),
+        ):
+            download_model_if_needed(model_config_auto, index_config)
+        assert sibling.exists()
+        assert not [
+            path
+            for path in index_config.model_dir.iterdir()
+            if "staging-" in path.name and path != sibling
+        ]
+
+
+class TestWindowsModelCacheLock:
+    def test_retries_only_recognized_contention(self) -> None:
+        import msvcrt
+
+        import autodj.model as model
+
+        handle = MagicMock()
+        contention = OSError("sharing violation")
+        contention.winerror = 33  # type: ignore[attr-defined]
+        with (
+            patch.object(msvcrt, "locking", side_effect=[contention, None]) as locking,
+            patch("autodj.model.threading.Event") as event,
+        ):
+            model._acquire_windows_file_lock(handle)
+        assert locking.call_count == 2
+        event.return_value.wait.assert_called_once()
+
+    def test_propagates_permanent_lock_error(self) -> None:
+        import msvcrt
+
+        import autodj.model as model
+
+        handle = MagicMock()
+        permanent = OSError("access denied")
+        permanent.winerror = 5  # type: ignore[attr-defined]
+        with (
+            patch.object(msvcrt, "locking", side_effect=permanent),
+            pytest.raises(OSError, match="access denied"),
+        ):
+            model._acquire_windows_file_lock(handle)
 
 
 # ---------------------------------------------------------------------------

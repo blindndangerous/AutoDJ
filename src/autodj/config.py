@@ -604,6 +604,16 @@ class ModelConfig:
     revision: str = "main"
     manual_path: Path | None = None
 
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.revision, str)
+            or not self.revision
+            or self.revision != self.revision.strip()
+        ):
+            raise ValueError(
+                "model.revision must be a non-empty string without surrounding whitespace"
+            )
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ModelConfig:
         """Construct a ModelConfig from a raw TOML section dict.
@@ -616,8 +626,10 @@ class ModelConfig:
         """
         manual_raw = data.get("manual_path")
         revision = data.get("revision", "main")
-        if not isinstance(revision, str) or not revision.strip():
-            raise ValueError("model.revision must be a non-empty string")
+        if not isinstance(revision, str) or not revision or revision != revision.strip():
+            raise ValueError(
+                "model.revision must be a non-empty string without surrounding whitespace"
+            )
         return cls(
             name=data.get("name", "OpenMuQ/MuQ-large-msd-iter"),
             revision=revision,

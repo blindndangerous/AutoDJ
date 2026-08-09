@@ -25,6 +25,7 @@ Example:
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import logging
@@ -69,10 +70,25 @@ class ModelLoadError(RuntimeError):
 _MARKER_NAME = ".autodj-complete"
 _ETAG_TIMEOUT_SECONDS = 10
 _IGNORE_PATTERNS = ["*.msgpack", "flax_model*", "tf_model*", "rust_model*"]
-_SHARDED_WEIGHT = re.compile(r".+-\d{5}-of-\d{5}\.(?:safetensors|bin)$")
+_SAFE_SHARD_PATTERNS = {
+    ".safetensors": re.compile(r"model-(\d{5})-of-(\d{5})\.safetensors$"),
+    ".bin": re.compile(r"pytorch_model-(\d{5})-of-(\d{5})\.bin$"),
+}
 _thread_locks: dict[str, threading.RLock] = {}
 _thread_locks_guard = threading.Lock()
 _thread_locks_pid = os.getpid()
+
+
+def _reset_model_cache_locks_after_fork() -> None:
+    """Discard inherited process-local locks in a fork child."""
+    global _thread_locks, _thread_locks_guard, _thread_locks_pid
+    _thread_locks = {}
+    _thread_locks_guard = threading.Lock()
+    _thread_locks_pid = os.getpid()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_model_cache_locks_after_fork)
 
 
 @dataclass(frozen=True)
@@ -105,6 +121,12 @@ def _indexed_weights(cache_path: Path) -> tuple[bool, str]:
         return False, "no-index"
     if len(indexes) != 1:
         return False, "invalid-index"
+    if indexes[0].name == "model.safetensors.index.json":
+        extension = ".safetensors"
+    elif indexes[0].name == "pytorch_model.bin.index.json":
+        extension = ".bin"
+    else:
+        return False, "invalid-index"
     try:
         data = json.loads(indexes[0].read_text(encoding="utf-8"))
         weight_map = data["weight_map"]
@@ -112,6 +134,10 @@ def _indexed_weights(cache_path: Path) -> tuple[bool, str]:
         return False, "invalid-index"
     if not isinstance(weight_map, dict) or not weight_map:
         return False, "invalid-index"
+    shards: set[str] = set()
+    positions: set[int] = set()
+    totals: set[int] = set()
+    pattern = _SAFE_SHARD_PATTERNS[extension]
     for shard in weight_map.values():
         if (
             not isinstance(shard, str)
@@ -122,8 +148,30 @@ def _indexed_weights(cache_path: Path) -> tuple[bool, str]:
             or Path(shard).is_absolute()
         ):
             return False, "invalid-index"
+        match = pattern.fullmatch(shard)
+        if match is None:
+            return False, "invalid-index"
+        position, total = (int(value) for value in match.groups())
+        if position < 1 or total < 1 or position > total:
+            return False, "invalid-index"
         if not (cache_path / shard).is_file():
             return False, "missing-shard"
+        shards.add(shard)
+        positions.add(position)
+        totals.add(total)
+    if len(totals) != 1:
+        return False, "invalid-index"
+    total = totals.pop()
+    if positions != set(range(1, total + 1)) or len(shards) != total:
+        return False, "invalid-index"
+    actual_shards = {
+        item.name
+        for item in cache_path.iterdir()
+        if item.is_file()
+        and any(pattern.fullmatch(item.name) for pattern in _SAFE_SHARD_PATTERNS.values())
+    }
+    if actual_shards != shards:
+        return False, "invalid-index"
     return True, "indexed-weights"
 
 
@@ -150,13 +198,14 @@ def inspect_model_cache(
         return ModelCacheStatus(cache_path, False, weight_reason)
     if not indexed:
         files = [item for item in cache_path.iterdir() if item.is_file()]
-        if any(_SHARDED_WEIGHT.fullmatch(item.name) for item in files):
+        if any(
+            pattern.fullmatch(item.name)
+            for item in files
+            for pattern in _SAFE_SHARD_PATTERNS.values()
+        ):
             return ModelCacheStatus(cache_path, False, "unindexed-partial-shard")
         standalone = [
-            item
-            for item in files
-            if item.name.endswith((".safetensors", ".bin"))
-            and not _SHARDED_WEIGHT.fullmatch(item.name)
+            item for item in files if item.name in {"model.safetensors", "pytorch_model.bin"}
         ]
         if len(standalone) != 1:
             return ModelCacheStatus(cache_path, False, "missing-weights")
@@ -212,6 +261,28 @@ def _thread_lock(path: Path) -> threading.RLock:
         return _thread_locks.setdefault(str(path.absolute()), threading.RLock())
 
 
+def _is_windows_lock_contention(error: OSError) -> bool:
+    """Return whether Windows reported a transient file-lock collision."""
+    if error.winerror is not None:
+        return error.winerror in {32, 33}
+    return error.errno in {errno.EACCES, errno.EAGAIN}
+
+
+def _acquire_windows_file_lock(handle: object) -> None:
+    """Acquire one-byte lock, retrying only documented contention errors."""
+    import msvcrt
+
+    while True:
+        try:
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            return
+        except OSError as error:
+            if not _is_windows_lock_contention(error):
+                raise
+            threading.Event().wait(0.05)
+
+
 @contextmanager
 def _model_cache_lock(cache_path: Path) -> Iterator[None]:
     """Serialize a cache promotion across threads and processes."""
@@ -228,13 +299,7 @@ def _model_cache_lock(cache_path: Path) -> Iterator[None]:
         if os.name == "nt":
             import msvcrt
 
-            while True:
-                try:
-                    handle.seek(0)
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-                    break
-                except OSError:
-                    threading.Event().wait(0.05)
+            _acquire_windows_file_lock(handle)
             try:
                 yield
             finally:
