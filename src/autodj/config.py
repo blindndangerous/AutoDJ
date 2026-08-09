@@ -12,10 +12,13 @@ Example:
 
 from __future__ import annotations
 
+import ipaddress
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
     from autodj.presets import Preset
@@ -637,6 +640,266 @@ class ModelConfig:
         )
 
 
+MIN_ACCESS_TOKEN_BYTES = 32
+MIN_SESSION_TTL_SECONDS = 60
+MAX_SESSION_TTL_SECONDS = 365 * 24 * 60 * 60
+MAX_LINER_UPLOAD_MIB = 1024
+_MIB = 1024 * 1024
+_DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
+
+
+def _require_int(value: object, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{field_name} must be an integer")
+    return value
+
+
+def _canonicalize_host(
+    value: object,
+    *,
+    field_name: str,
+    allow_unspecified: bool,
+) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{field_name} entries must be strings")
+    if (
+        not value
+        or value != value.strip()
+        or any(ord(char) < 32 or ord(char) == 127 for char in value)
+    ):
+        raise ValueError(f"{field_name} contains an invalid host")
+    if (
+        value.startswith("[")
+        or value.endswith("]")
+        or any(marker in value for marker in ("@", "/", "\\", "?", "#", "%", "*"))
+    ):
+        raise ValueError(f"{field_name} contains an invalid host")
+
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        if ":" in value:
+            raise ValueError(f"{field_name} contains an invalid host") from None
+    else:
+        if address.is_unspecified and not allow_unspecified:
+            raise ValueError(f"{field_name} cannot contain a wildcard host")
+        return address.compressed.lower()
+
+    hostname = value.removesuffix(".")
+    if not hostname or hostname == "0":
+        raise ValueError(f"{field_name} contains an invalid host")
+    try:
+        ascii_hostname = hostname.encode("idna").decode("ascii").lower()
+    except UnicodeError as exc:
+        raise ValueError(f"{field_name} contains an invalid host") from exc
+    if len(ascii_hostname) > 253 or any(
+        not _DNS_LABEL.fullmatch(label) for label in ascii_hostname.split(".")
+    ):
+        raise ValueError(f"{field_name} contains an invalid host")
+    return ascii_hostname
+
+
+def _deduplicate(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(values))
+
+
+def validate_access_token(token: str | None) -> None:
+    if token is None:
+        return
+    if not isinstance(token, str):
+        raise TypeError("server.access_token must be a string")
+    if len(token.encode("utf-8")) < MIN_ACCESS_TOKEN_BYTES:
+        raise ValueError("server.access_token must be at least 32 UTF-8 bytes")
+
+
+def canonicalize_allowed_origin(value: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError("server.allowed_origins entries must be strings")
+    if (
+        not value
+        or value != value.strip()
+        or any(ord(char) < 32 or ord(char) == 127 for char in value)
+    ):
+        raise ValueError("server.allowed_origins contains an invalid origin")
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("server.allowed_origins contains an invalid origin") from exc
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.netloc.endswith(":")
+        or port == 0
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError(
+            "server.allowed_origins entries must be HTTP(S) origins without "
+            "userinfo, path, query, or fragment"
+        )
+    try:
+        hostname = _canonicalize_host(
+            parsed.hostname,
+            field_name="server.allowed_origins",
+            allow_unspecified=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("server.allowed_origins contains an invalid origin") from exc
+    rendered_host = f"[{hostname}]" if ":" in hostname else hostname
+    scheme = parsed.scheme.lower()
+    default_port = 80 if scheme == "http" else 443
+    suffix = "" if port is None or port == default_port else f":{port}"
+    return f"{scheme}://{rendered_host}{suffix}"
+
+
+def _canonicalize_allowed_hosts(values: object) -> list[str] | None:
+    if values is None:
+        return None
+    if not isinstance(values, list):
+        raise TypeError("server.allowed_hosts must be a list of strings")
+    return _deduplicate(
+        [
+            _canonicalize_host(
+                value,
+                field_name="server.allowed_hosts",
+                allow_unspecified=False,
+            )
+            for value in values
+        ]
+    )
+
+
+def _canonicalize_allowed_origins(values: object) -> list[str] | None:
+    if values is None:
+        return None
+    if not isinstance(values, list):
+        raise TypeError("server.allowed_origins must be a list of strings")
+    return _deduplicate([canonicalize_allowed_origin(value) for value in values])
+
+
+@dataclass
+class ServerConfig:
+    """Web-server bind, request policy, session, and upload limits."""
+
+    host: str = "127.0.0.1"
+    port: int = 8080
+    access_token: str | None = field(default=None, repr=False)
+    insecure_lan: bool = False
+    allowed_hosts: list[str] | None = None
+    allowed_origins: list[str] | None = None
+    session_ttl_seconds: int = 24 * 60 * 60
+    liner_upload_max_bytes: int = 50 * _MIB
+
+    def __post_init__(self) -> None:
+        self.host = _canonicalize_host(
+            self.host,
+            field_name="server.host",
+            allow_unspecified=True,
+        )
+        self.port = _require_int(self.port, "server.port")
+        if not 1 <= self.port <= 65535:
+            raise ValueError("server.port must be between 1 and 65535")
+        validate_access_token(self.access_token)
+        if not isinstance(self.insecure_lan, bool):
+            raise TypeError("server.insecure_lan must be a boolean")
+        self.allowed_hosts = _canonicalize_allowed_hosts(self.allowed_hosts)
+        self.allowed_origins = _canonicalize_allowed_origins(self.allowed_origins)
+        self.session_ttl_seconds = _require_int(
+            self.session_ttl_seconds,
+            "server.session_ttl_seconds",
+        )
+        if not MIN_SESSION_TTL_SECONDS <= self.session_ttl_seconds <= MAX_SESSION_TTL_SECONDS:
+            raise ValueError("server.session_ttl_seconds must be between 60 and 31536000")
+        self.liner_upload_max_bytes = _require_int(
+            self.liner_upload_max_bytes,
+            "server.liner_upload_max_bytes",
+        )
+        if not _MIB <= self.liner_upload_max_bytes <= MAX_LINER_UPLOAD_MIB * _MIB:
+            raise ValueError("server.liner_upload_max_bytes must be between 1 MiB and 1024 MiB")
+
+    def effective_allowed_hosts(self) -> list[str]:
+        if self.allowed_hosts is not None:
+            return list(self.allowed_hosts)
+        return [] if self.host in {"0.0.0.0", "::"} else [self.host]
+
+    def effective_allowed_origins(self) -> list[str]:
+        if self.allowed_origins is not None:
+            return list(self.allowed_origins)
+        if self.host in {"0.0.0.0", "::"}:
+            return []
+        rendered_host = f"[{self.host}]" if ":" in self.host else self.host
+        return [canonicalize_allowed_origin(f"http://{rendered_host}:{self.port}")]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ServerConfig:
+        if not isinstance(data, dict):
+            raise TypeError("server section must be a table")
+        max_mib = _require_int(data.get("liner_upload_max_mib", 50), "server.liner_upload_max_mib")
+        if not 1 <= max_mib <= MAX_LINER_UPLOAD_MIB:
+            raise ValueError("server.liner_upload_max_mib must be between 1 and 1024")
+        return cls(
+            host=data.get("host", "127.0.0.1"),
+            port=data.get("port", 8080),
+            access_token=data.get("access_token"),
+            insecure_lan=data.get("insecure_lan", False),
+            allowed_hosts=data.get("allowed_hosts"),
+            allowed_origins=data.get("allowed_origins"),
+            session_ttl_seconds=data.get("session_ttl_seconds", 24 * 60 * 60),
+            liner_upload_max_bytes=max_mib * _MIB,
+        )
+
+
+def is_loopback_bind(host: str) -> bool:
+    try:
+        canonical = _canonicalize_host(
+            host,
+            field_name="server.host",
+            allow_unspecified=True,
+        )
+    except (TypeError, ValueError):
+        return False
+    if canonical == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(canonical).is_loopback
+    except ValueError:
+        return False
+
+
+def validate_server_exposure(cfg: ServerConfig) -> None:
+    """Normalize mutable overrides and reject unsafe bind configurations."""
+    validated = ServerConfig(
+        host=cfg.host,
+        port=cfg.port,
+        access_token=cfg.access_token,
+        insecure_lan=cfg.insecure_lan,
+        allowed_hosts=cfg.allowed_hosts,
+        allowed_origins=cfg.allowed_origins,
+        session_ttl_seconds=cfg.session_ttl_seconds,
+        liner_upload_max_bytes=cfg.liner_upload_max_bytes,
+    )
+    cfg.__dict__.update(validated.__dict__)
+    loopback = is_loopback_bind(cfg.host)
+    if (not loopback) and (not cfg.allowed_hosts or not cfg.allowed_origins):
+        if cfg.host in {"0.0.0.0", "::"}:
+            raise ValueError(
+                "LAN binding requires explicit nonempty allowed_hosts and allowed_origins; "
+                "wildcard binding requires both lists"
+            )
+        raise ValueError("LAN binding requires explicit nonempty allowed_hosts and allowed_origins")
+    if not cfg.effective_allowed_hosts() or not cfg.effective_allowed_origins():
+        raise ValueError("wildcard binding requires explicit allowed_hosts and allowed_origins")
+    if not loopback and not cfg.access_token and not cfg.insecure_lan:
+        raise ValueError(
+            "LAN binding requires [server] access_token/--access-token or explicit --insecure-lan"
+        )
+
+
 @dataclass
 class HuggingFaceConfig:
     """Settings for HuggingFace Hub access.
@@ -691,6 +954,7 @@ class AutoDJConfig:
     replaygain: ReplayGainConfig = field(default_factory=lambda: ReplayGainConfig())
     djmix: DjMixConfig = field(default_factory=lambda: DjMixConfig())
     transitions: TransitionsConfig = field(default_factory=lambda: TransitionsConfig())
+    server: ServerConfig = field(default_factory=ServerConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -784,6 +1048,7 @@ def load_config(path: str | Path = "config.toml") -> AutoDJConfig:
         replaygain=ReplayGainConfig.from_dict(raw.get("replaygain", {})),
         djmix=DjMixConfig.from_dict(raw.get("djmix", {})),
         transitions=TransitionsConfig.from_dict(raw.get("transitions", {})),
+        server=ServerConfig.from_dict(raw.get("server", {})),
         presets=load_user_presets(presets_raw),
         config_path=config_path,
     )

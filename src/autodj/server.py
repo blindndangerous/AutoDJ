@@ -1415,8 +1415,8 @@ def serve(
     cfg: AutoDJConfig,
     sim: SimilarityIndex,
     seed_entry: IndexEntry | None,
-    host: str = "127.0.0.1",
-    port: int = 8080,
+    host: str | None = None,
+    port: int | None = None,
     preset: Preset | None = None,
     export_m3u: Path | None = None,
     history_file: Path | None = None,
@@ -1446,6 +1446,14 @@ def serve(
         discovery_every: Discovery injection rate (forwarded to Player).
         bpm_range: Hard BPM filter ``(lo, hi)`` (forwarded to Player).
     """
+    from autodj.config import validate_server_exposure
+
+    host = cfg.server.host if host is None else host
+    port = cfg.server.port if port is None else port
+    cfg.server.host = host
+    cfg.server.port = port
+    validate_server_exposure(cfg.server)
+
     import importlib.util as _import_util
 
     import uvicorn

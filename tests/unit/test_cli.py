@@ -14,6 +14,7 @@ import pytest
 from click.testing import CliRunner
 
 from autodj.cli import _parse_bpm_range, _resolve_seed, cli
+from autodj.config import ServerConfig
 from autodj.indexer import IndexEntry
 
 # ---------------------------------------------------------------------------
@@ -68,6 +69,7 @@ def _make_cfg(beets_db=None) -> MagicMock:
     cfg.playback.history_file = None
     cfg.playback.discovery_every = None
     cfg.presets = {}
+    cfg.server = ServerConfig()
     return cfg
 
 
@@ -579,6 +581,191 @@ class TestCmdServe:
         ):
             result = CliRunner().invoke(cli, ["serve", "--port", "9999"])
         assert "9999" in result.output or result.exit_code == 0
+
+    def test_lan_bind_requires_token_or_acknowledgement_before_index_load(self) -> None:
+        cfg = _make_cfg()
+        with (
+            patch("autodj.config.load_config", return_value=cfg),
+            patch("autodj.similarity.SimilarityIndex.from_index_dir") as load_index,
+            patch("autodj.server.serve") as serve_mock,
+        ):
+            result = CliRunner().invoke(cli, ["serve", "--host", "0.0.0.0"])
+
+        assert result.exit_code == 1
+        assert "LAN binding requires" in result.output
+        load_index.assert_not_called()
+        serve_mock.assert_not_called()
+
+    def test_authenticated_lan_overrides_reach_server_without_token_output(self) -> None:
+        cfg = _make_cfg()
+        token = "s" * 32
+        with (
+            patch("autodj.config.load_config", return_value=cfg),
+            patch(
+                "autodj.similarity.SimilarityIndex.from_index_dir",
+                return_value=_make_sim(),
+            ),
+            patch("autodj.server.serve") as serve_mock,
+        ):
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "serve",
+                    "--host",
+                    "0.0.0.0",
+                    "--access-token",
+                    token,
+                    "--allowed-host",
+                    "Radio.Local",
+                    "--allowed-origin",
+                    "HTTP://Radio.Local:8080/",
+                ],
+            )
+
+        assert result.exit_code == 0
+        assert token not in result.output
+        assert cfg.server.access_token == token
+        assert cfg.server.allowed_hosts == ["radio.local"]
+        assert cfg.server.allowed_origins == ["http://radio.local:8080"]
+        serve_mock.assert_called_once()
+        assert serve_mock.call_args.kwargs["host"] == "0.0.0.0"
+        assert serve_mock.call_args.kwargs["port"] == 8080
+
+    def test_weak_cli_token_is_rejected_without_echo_or_index_load(self) -> None:
+        cfg = _make_cfg()
+        weak = "do-not-print-me"
+        with (
+            patch("autodj.config.load_config", return_value=cfg),
+            patch("autodj.similarity.SimilarityIndex.from_index_dir") as load_index,
+            patch("autodj.server.serve") as serve_mock,
+        ):
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "serve",
+                    "--host",
+                    "0.0.0.0",
+                    "--access-token",
+                    weak,
+                    "--allowed-host",
+                    "radio.local",
+                    "--allowed-origin",
+                    "http://radio.local:8080",
+                ],
+            )
+
+        assert result.exit_code == 1
+        assert "at least 32 UTF-8 bytes" in result.output
+        assert weak not in result.output
+        assert weak not in repr(result.exception)
+        load_index.assert_not_called()
+        serve_mock.assert_not_called()
+
+    def test_cli_rejects_allowed_origin_with_path(self) -> None:
+        cfg = _make_cfg()
+        with (
+            patch("autodj.config.load_config", return_value=cfg),
+            patch("autodj.similarity.SimilarityIndex.from_index_dir") as load_index,
+            patch("autodj.server.serve") as serve_mock,
+        ):
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "serve",
+                    "--host",
+                    "0.0.0.0",
+                    "--insecure-lan",
+                    "--allowed-host",
+                    "radio.local",
+                    "--allowed-origin",
+                    "https://radio.local/private",
+                ],
+            )
+
+        assert result.exit_code == 1
+        assert "without userinfo, path, query, or fragment" in result.output
+        load_index.assert_not_called()
+        serve_mock.assert_not_called()
+
+    def test_insecure_lan_is_explicit_and_warned(self) -> None:
+        cfg = _make_cfg()
+        with (
+            patch("autodj.config.load_config", return_value=cfg),
+            patch(
+                "autodj.similarity.SimilarityIndex.from_index_dir",
+                return_value=_make_sim(),
+            ),
+            patch("autodj.server.serve") as serve_mock,
+        ):
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "serve",
+                    "--host",
+                    "0.0.0.0",
+                    "--insecure-lan",
+                    "--allowed-host",
+                    "radio.local",
+                    "--allowed-origin",
+                    "http://radio.local:8080",
+                ],
+            )
+
+        assert result.exit_code == 0
+        assert "WARNING" in result.output
+        serve_mock.assert_called_once()
+
+    def test_insecure_ack_on_loopback_emits_no_warning(self) -> None:
+        cfg = _make_cfg()
+        with (
+            patch("autodj.config.load_config", return_value=cfg),
+            patch(
+                "autodj.similarity.SimilarityIndex.from_index_dir",
+                return_value=_make_sim(),
+            ),
+            patch("autodj.server.serve"),
+        ):
+            result = CliRunner().invoke(cli, ["serve", "--insecure-lan"])
+
+        assert result.exit_code == 0
+        assert "WARNING" not in result.output
+
+    def test_serve_uses_toml_host_and_port_when_flags_are_omitted(self) -> None:
+        cfg = _make_cfg()
+        cfg.server = ServerConfig(host="127.0.0.2", port=9090)
+        with (
+            patch("autodj.config.load_config", return_value=cfg),
+            patch(
+                "autodj.similarity.SimilarityIndex.from_index_dir",
+                return_value=_make_sim(),
+            ),
+            patch("autodj.server.serve") as serve_mock,
+        ):
+            result = CliRunner().invoke(cli, ["serve"])
+
+        assert result.exit_code == 0
+        assert serve_mock.call_args.kwargs["host"] == "127.0.0.2"
+        assert serve_mock.call_args.kwargs["port"] == 9090
+
+    def test_explicit_cli_values_override_toml_server_values(self) -> None:
+        cfg = _make_cfg()
+        cfg.server = ServerConfig(host="127.0.0.2", port=9090)
+        with (
+            patch("autodj.config.load_config", return_value=cfg),
+            patch(
+                "autodj.similarity.SimilarityIndex.from_index_dir",
+                return_value=_make_sim(),
+            ),
+            patch("autodj.server.serve") as serve_mock,
+        ):
+            result = CliRunner().invoke(
+                cli,
+                ["serve", "--host", "localhost", "--port", "8123"],
+            )
+
+        assert result.exit_code == 0
+        assert serve_mock.call_args.kwargs["host"] == "localhost"
+        assert serve_mock.call_args.kwargs["port"] == 8123
 
 
 # ---------------------------------------------------------------------------

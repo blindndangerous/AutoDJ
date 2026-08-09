@@ -1359,17 +1359,39 @@ def cmd_play(  # pragma: no cover -- end-to-end orchestrator, exercised by smoke
 )
 @click.option(
     "--host",
-    default="127.0.0.1",
-    show_default=True,
+    default=None,
     type=str,
-    help="Interface to bind the web server to. Use 0.0.0.0 for LAN access.",
+    help="Interface to bind; defaults to [server].host.",
 )
 @click.option(
     "--port",
-    default=8080,
-    show_default=True,
-    type=int,
-    help="Port to bind the web server to.",
+    default=None,
+    type=click.IntRange(1, 65535),
+    help="Port; defaults to [server].port.",
+)
+@click.option(
+    "--access-token",
+    default=None,
+    type=str,
+    help="Token required for LAN clients.",
+)
+@click.option(
+    "--insecure-lan",
+    is_flag=True,
+    default=None,
+    help="Acknowledge unauthenticated LAN exposure.",
+)
+@click.option(
+    "--allowed-host",
+    "allowed_hosts",
+    multiple=True,
+    help="Allowed HTTP Host name.",
+)
+@click.option(
+    "--allowed-origin",
+    "allowed_origins",
+    multiple=True,
+    help="Allowed browser origin including scheme and port.",
 )
 @click.option(
     "--open",
@@ -1610,8 +1632,12 @@ def cmd_play(  # pragma: no cover -- end-to-end orchestrator, exercised by smoke
 def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smoke tests
     ctx: click.Context,
     seed: str | None,
-    host: str,
-    port: int,
+    host: str | None,
+    port: int | None,
+    access_token: str | None,
+    insecure_lan: bool | None,
+    allowed_hosts: tuple[str, ...],
+    allowed_origins: tuple[str, ...],
     open_browser: bool,
     preset: str | None,
     export_m3u: str | None,
@@ -1658,6 +1684,28 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
     from autodj.server import serve
 
     cfg = _load_cfg_or_exit(ctx.obj["config_path"])
+    from autodj.config import is_loopback_bind, validate_server_exposure
+
+    if host is not None:
+        cfg.server.host = host
+    if port is not None:
+        cfg.server.port = port
+    if access_token is not None:
+        cfg.server.access_token = access_token
+    if insecure_lan is not None:
+        cfg.server.insecure_lan = insecure_lan
+    if allowed_hosts:
+        cfg.server.allowed_hosts = list(allowed_hosts)
+    if allowed_origins:
+        cfg.server.allowed_origins = list(allowed_origins)
+    try:
+        validate_server_exposure(cfg.server)
+    except (TypeError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    if cfg.server.insecure_lan and not is_loopback_bind(cfg.server.host):
+        console.print("[yellow]WARNING: LAN access is unauthenticated (--insecure-lan).[/]")
+    host = cfg.server.host
+    port = cfg.server.port
     _apply_index_name(cfg, index_name)
     sim = _load_index_or_exit(cfg)
     resolved_preset = _resolve_preset_or_exit(cfg, preset)

@@ -18,7 +18,9 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from fastapi.testclient import TestClient
 
+from autodj.config import ServerConfig
 from autodj.server import PlayerBridge, create_app
 
 from ._helpers import _make_entry, _make_player_mock, _make_sim_mock
@@ -1159,6 +1161,7 @@ class TestServeFunction:
         cfg_mock.playback.no_repeat_window = 50
         cfg_mock.playback.artist_repeat_window = 3
         cfg_mock.playback.crossfade_seconds = 3.0
+        cfg_mock.server = ServerConfig()
         sim = _make_sim_mock()
 
         with (
@@ -1168,6 +1171,8 @@ class TestServeFunction:
             serve(cfg=cfg_mock, sim=sim, seed_entry=None)
 
         mock_uvicorn.assert_called_once()
+        assert mock_uvicorn.call_args.kwargs["host"] == "127.0.0.1"
+        assert mock_uvicorn.call_args.kwargs["port"] == 8080
 
     def test_serve_starts_player_thread(self) -> None:
         """serve() launches a daemon Player thread before starting uvicorn."""
@@ -1180,6 +1185,7 @@ class TestServeFunction:
         cfg_mock.playback.no_repeat_window = 50
         cfg_mock.playback.artist_repeat_window = 3
         cfg_mock.playback.crossfade_seconds = 3.0
+        cfg_mock.server = ServerConfig()
         sim = _make_sim_mock()
 
         started = threading.Event()
@@ -1195,6 +1201,84 @@ class TestServeFunction:
 
         started.wait(timeout=2.0)
         assert started.is_set(), "Player thread should have started"
+
+    def test_serve_uses_server_config_host_and_port_by_default(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from autodj.server import serve
+
+        cfg = MagicMock()
+        cfg.server = ServerConfig(host="127.0.0.2", port=9090)
+        cfg.playback.no_repeat_window = 50
+        cfg.playback.artist_repeat_window = 3
+        cfg.playback.crossfade_seconds = 3.0
+        sim = _make_sim_mock()
+
+        with (
+            patch("autodj.player.Player.run"),
+            patch("uvicorn.run") as mock_uvicorn,
+        ):
+            serve(cfg=cfg, sim=sim, seed_entry=None)
+
+        assert mock_uvicorn.call_args.kwargs["host"] == "127.0.0.2"
+        assert mock_uvicorn.call_args.kwargs["port"] == 9090
+
+    def test_serve_rejects_unsafe_override_before_player_construction(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from autodj.server import serve
+
+        cfg = MagicMock()
+        cfg.server = ServerConfig()
+        sim = _make_sim_mock()
+
+        with (
+            patch("autodj.player.Player") as player_class,
+            patch("uvicorn.run") as mock_uvicorn,
+            pytest.raises(ValueError, match="wildcard binding requires"),
+        ):
+            serve(
+                cfg=cfg,
+                sim=sim,
+                seed_entry=None,
+                host="0.0.0.0",
+            )
+
+        player_class.assert_not_called()
+        mock_uvicorn.assert_not_called()
+
+    def test_serve_rejects_mutated_weak_token_without_echoing_or_player(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from autodj.server import serve
+
+        weak = "do-not-print-me"
+        cfg = MagicMock()
+        cfg.server = ServerConfig()
+        cfg.server.host = "192.168.1.10"
+        cfg.server.access_token = weak
+        cfg.server.allowed_hosts = ["radio.local"]
+        cfg.server.allowed_origins = ["http://radio.local:8080"]
+
+        with (
+            patch("autodj.player.Player") as player_class,
+            patch("uvicorn.run") as mock_uvicorn,
+            pytest.raises(ValueError) as raised,
+        ):
+            serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None)
+
+        assert weak not in str(raised.value)
+        player_class.assert_not_called()
+        mock_uvicorn.assert_not_called()
+
+    def test_custom_loopback_config_serves_version_route(self, bridge) -> None:
+        bridge.player._cfg.server = ServerConfig(host="127.0.0.2", port=9090)
+        client = TestClient(
+            create_app(bridge),
+            base_url="http://127.0.0.2:9090",
+        )
+
+        assert client.get("/api/version").status_code == 200
 
 
 # ---------------------------------------------------------------------------

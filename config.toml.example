@@ -61,6 +61,17 @@ index_dir = "index"
 # Directory where the MuQ model checkpoint is cached after download
 model_dir = "models"
 
+[server]
+host = "127.0.0.1"
+port = 8080
+# access_token = "generate-at-least-32-random-bytes"
+insecure_lan = false
+# LAN and wildcard binds must set both lists, for example:
+# allowed_hosts = ["radio.local"]
+# allowed_origins = ["https://radio.local:8080"]
+session_ttl_seconds = 86400
+liner_upload_max_mib = 50
+
 [playback]
 # Duration of the crossfade between tracks, in seconds.
 # Set to 0.0 to disable crossfade (instant cuts).

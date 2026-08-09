@@ -16,7 +16,11 @@ from autodj.config import (
     LibraryConfig,
     ModelConfig,
     PlaybackConfig,
+    ServerConfig,
+    canonicalize_allowed_origin,
+    is_loopback_bind,
     load_config,
+    validate_server_exposure,
 )
 
 # ---------------------------------------------------------------------------
@@ -88,6 +92,33 @@ class TestLoadConfig:
         assert cfg.playback.no_repeat_window == 100
         assert cfg.model.name == "OpenMuQ/MuQ-MuLan-large"
         assert cfg.model.manual_path == Path("C:/models/MuQ")
+
+    def test_loads_ordinary_server_toml(self, tmp_path: Path) -> None:
+        cfg_path = tmp_path / "config.toml"
+        cfg_path.write_text(
+            '[library]\nmusic_dir = "Z:/Music"\n'
+            "[server]\n"
+            'host = "192.168.1.10"\n'
+            "port = 9000\n"
+            f'access_token = "{"s" * 32}"\n'
+            'allowed_hosts = ["Radio.Local", "radio.local"]\n'
+            'allowed_origins = ["HTTPS://Radio.Local:443/"]\n'
+            "session_ttl_seconds = 3600\n"
+            "liner_upload_max_mib = 25\n",
+            encoding="utf-8",
+        )
+
+        cfg = load_config(cfg_path)
+
+        assert cfg.server == ServerConfig(
+            host="192.168.1.10",
+            port=9000,
+            access_token="s" * 32,
+            allowed_hosts=["radio.local"],
+            allowed_origins=["https://radio.local"],
+            session_ttl_seconds=3600,
+            liner_upload_max_bytes=25 * 1024 * 1024,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -494,3 +525,170 @@ class TestConfigPathRemapValidation:
             {"music_dir": "/x", "path_remap": [["/a", "/b"]]},
         )
         assert cfg.path_remap == [("/a", "/b")]
+
+
+class TestServerConfig:
+    def test_defaults_to_loopback_and_derives_policy(self) -> None:
+        cfg = ServerConfig.from_dict({})
+
+        assert cfg.host == "127.0.0.1"
+        assert cfg.port == 8080
+        assert cfg.access_token is None
+        assert cfg.insecure_lan is False
+        assert cfg.liner_upload_max_bytes == 50 * 1024 * 1024
+        assert cfg.effective_allowed_hosts() == ["127.0.0.1"]
+        assert cfg.effective_allowed_origins() == ["http://127.0.0.1:8080"]
+
+    def test_custom_bind_and_default_port_drive_derived_policy(self) -> None:
+        custom = ServerConfig.from_dict({"host": "127.0.0.2", "port": 9090})
+        default_port = ServerConfig.from_dict({"host": "127.0.0.2", "port": 80})
+
+        assert custom.effective_allowed_hosts() == ["127.0.0.2"]
+        assert custom.effective_allowed_origins() == ["http://127.0.0.2:9090"]
+        assert default_port.effective_allowed_origins() == ["http://127.0.0.2"]
+
+    def test_canonicalizes_idna_ipv6_origins_and_duplicates(self) -> None:
+        cfg = ServerConfig.from_dict(
+            {
+                "allowed_hosts": ["RADIO.local.", "radio.local", "::1"],
+                "allowed_origins": [
+                    "HTTPS://B\N{LATIN SMALL LETTER U WITH DIAERESIS}CHER.example:443/",
+                    "https://xn--bcher-kva.example",
+                    "http://[2001:DB8::1]:80/",
+                ],
+            }
+        )
+
+        assert cfg.allowed_hosts == ["radio.local", "::1"]
+        assert cfg.allowed_origins == [
+            "https://xn--bcher-kva.example",
+            "http://[2001:db8::1]",
+        ]
+
+    @pytest.mark.parametrize(
+        "origin",
+        [
+            "ftp://radio.local",
+            "https://user:pass@radio.local",
+            "https://radio.local/private",
+            "https://radio.local?token=x",
+            "https://radio.local#fragment",
+            "https://radio.local:99999",
+            "https://radio.local:",
+            "https://radio.local:0",
+            "https://[2001:db8::1",
+            "https://0.0.0.0",
+            "https://*.example",
+            "https://radio.local\x00",
+        ],
+    )
+    def test_rejects_malformed_or_wildcard_origins(self, origin: str) -> None:
+        with pytest.raises(ValueError, match="allowed_origins"):
+            ServerConfig.from_dict({"allowed_origins": [origin]})
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "",
+            " ",
+            "radio.local:8080",
+            "user@radio.local",
+            "[::1]",
+            "radio/local",
+            "*.example",
+            "0.0.0.0",
+            "::",
+            "bad_host",
+            "radio.local\x00",
+        ],
+    )
+    def test_rejects_invalid_allowed_hosts(self, host: str) -> None:
+        with pytest.raises(ValueError, match="allowed_hosts"):
+            ServerConfig.from_dict({"allowed_hosts": [host]})
+
+    @pytest.mark.parametrize(
+        ("data", "message"),
+        [
+            ({"port": True}, "server.port"),
+            ({"port": "8080"}, "server.port"),
+            ({"insecure_lan": 1}, "server.insecure_lan"),
+            ({"allowed_hosts": "radio.local"}, "server.allowed_hosts"),
+            ({"allowed_hosts": [1]}, "server.allowed_hosts"),
+            ({"allowed_origins": "http://radio.local"}, "server.allowed_origins"),
+            ({"session_ttl_seconds": 59}, "server.session_ttl_seconds"),
+            ({"session_ttl_seconds": 31_536_001}, "server.session_ttl_seconds"),
+            ({"liner_upload_max_mib": 0}, "server.liner_upload_max_mib"),
+            ({"liner_upload_max_mib": 1025}, "server.liner_upload_max_mib"),
+        ],
+    )
+    def test_rejects_wrong_types_and_out_of_bounds_values(
+        self, data: dict[str, object], message: str
+    ) -> None:
+        with pytest.raises((TypeError, ValueError), match=message):
+            ServerConfig.from_dict(data)
+
+    def test_rejects_weak_token_without_echoing_it(self) -> None:
+        weak = "do-not-print-me"
+
+        with pytest.raises(ValueError) as raised:
+            ServerConfig.from_dict({"access_token": weak})
+
+        assert "at least 32 UTF-8 bytes" in str(raised.value)
+        assert weak not in str(raised.value)
+
+    def test_token_minimum_counts_utf8_bytes(self) -> None:
+        cfg = ServerConfig.from_dict({"access_token": "\N{LOCK}" * 8})
+
+        assert cfg.access_token == "\N{LOCK}" * 8
+
+    def test_server_config_repr_redacts_access_token(self) -> None:
+        token = "do-not-render-this-secret-value!"
+
+        cfg = ServerConfig(access_token=token)
+
+        assert token not in repr(cfg)
+
+    @pytest.mark.parametrize("host", ["localhost", "127.0.0.2", "::1"])
+    def test_loopback_detection_never_needs_dns(self, host: str) -> None:
+        assert is_loopback_bind(host)
+
+    @pytest.mark.parametrize("host", ["radio.local", "0.0.0.0", "::"])
+    def test_non_loopback_detection(self, host: str) -> None:
+        assert not is_loopback_bind(host)
+
+    def test_wildcard_requires_explicit_nonempty_policy_lists(self) -> None:
+        cfg = ServerConfig(
+            host="0.0.0.0",
+            access_token="s" * 32,
+            allowed_hosts=[],
+            allowed_origins=[],
+        )
+
+        with pytest.raises(ValueError, match="wildcard binding requires"):
+            validate_server_exposure(cfg)
+
+    def test_lan_requires_token_or_insecure_acknowledgement(self) -> None:
+        cfg = ServerConfig(
+            host="192.168.1.10",
+            allowed_hosts=["radio.local"],
+            allowed_origins=["http://radio.local:8080"],
+        )
+
+        with pytest.raises(ValueError, match="LAN binding requires"):
+            validate_server_exposure(cfg)
+
+    def test_validation_rechecks_mutated_direct_configuration(self) -> None:
+        cfg = ServerConfig()
+        cfg.host = "0.0.0.0"
+        cfg.access_token = "weak-secret"
+        cfg.allowed_hosts = ["radio.local"]
+        cfg.allowed_origins = ["http://radio.local:8080"]
+
+        with pytest.raises(ValueError) as raised:
+            validate_server_exposure(cfg)
+
+        assert "weak-secret" not in str(raised.value)
+
+    def test_origin_helper_rejects_non_string_without_value_echo(self) -> None:
+        with pytest.raises(TypeError, match="allowed_origins"):
+            canonicalize_allowed_origin(123)  # type: ignore[arg-type]
