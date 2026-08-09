@@ -69,6 +69,7 @@ class _StagedUpload:
     stage_name: str
     file_name: str
     file: BinaryIO
+    stage_identity: tuple[int, int] | None = None
 
 
 _CHUNK_BYTES = 1024 * 1024
@@ -502,7 +503,26 @@ def _windows_rename_by_handle(
         raise ctypes.WinError(winerror)
 
 
-def _open_posix_root(path: Path, *, create: bool) -> _PinnedRoot:
+def _posix_identity(metadata: os.stat_result) -> tuple[int, int]:
+    return metadata.st_dev, metadata.st_ino
+
+
+def _require_private_posix_directory(
+    metadata: os.stat_result, *, description: str
+) -> tuple[int, int]:
+    # Threat boundary: processes with this effective UID (and root) are trusted.
+    # Other writers are excluded before any handle-relative mutation begins.
+    effective_uid = os.geteuid()
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != effective_uid
+        or stat.S_IMODE(metadata.st_mode) & 0o022
+    ):
+        raise InvalidLinerName(f"{description} must be a private owner-controlled directory")
+    return _posix_identity(metadata)
+
+
+def _open_posix_root(path: Path, *, create: bool, mutate: bool) -> _PinnedRoot:
     absolute = Path(os.path.abspath(path))
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     handle = os.open(absolute.anchor, flags)
@@ -516,20 +536,25 @@ def _open_posix_root(path: Path, *, create: bool) -> _PinnedRoot:
                 with contextlib.suppress(FileExistsError):
                     os.mkdir(part, mode=0o755, dir_fd=handle)
                 child = os.open(part, flags, dir_fd=handle)
-            os.close(handle)
+            parent = handle
             handle = child
+            os.close(parent)
+        if mutate:
+            _require_private_posix_directory(os.fstat(handle), description="configured liner root")
         return _PinnedRoot(path=absolute, handle=handle, windows=False)
     except BaseException:
         os.close(handle)
         raise
 
 
-def _open_pinned_root(path: Path, *, create: bool, write: bool) -> _PinnedRoot:
+def _open_pinned_root(
+    path: Path, *, create: bool, write: bool, mutate: bool = False
+) -> _PinnedRoot:
     _validate_name("root-placeholder")
     root_path = Path(path)
     if os.name == "nt":
         return _open_windows_root(root_path, create=create, write=write)
-    return _open_posix_root(root_path, create=create)
+    return _open_posix_root(root_path, create=create, mutate=mutate)
 
 
 def _close_root(root: _PinnedRoot) -> None:
@@ -537,6 +562,82 @@ def _close_root(root: _PinnedRoot) -> None:
         _close_windows_handle(root.handle)
     else:
         os.close(root.handle)
+
+
+def _remove_bound_posix_directory(
+    root_handle: int,
+    name: str,
+    identity: tuple[int, int],
+    *,
+    description: str,
+) -> None:
+    try:
+        named = os.stat(name, dir_fd=root_handle, follow_symlinks=False)
+        if stat.S_ISDIR(named.st_mode) and _posix_identity(named) == identity:
+            os.rmdir(name, dir_fd=root_handle)
+    except FileNotFoundError:
+        return
+    except BaseException:
+        logger.warning("Unable to remove private %s", description, exc_info=True)
+
+
+def _close_posix_directory(handle: int, *, description: str) -> None:
+    try:
+        os.close(handle)
+    except BaseException:
+        logger.warning("Unable to close private %s", description, exc_info=True)
+
+
+def _unlink_posix_entry(handle: int, name: str, *, description: str) -> None:
+    try:
+        os.unlink(name, dir_fd=handle)
+    except FileNotFoundError:
+        return
+    except BaseException:
+        logger.warning("Unable to unlink private %s", description, exc_info=True)
+
+
+def _make_bound_posix_directory(
+    root: _PinnedRoot, *, prefix: str, description: str
+) -> tuple[str, int, tuple[int, int]]:
+    for _attempt in range(128):
+        name = f"{prefix}{secrets.token_hex(16)}"
+        try:
+            os.mkdir(name, mode=0o700, dir_fd=root.handle)
+        except FileExistsError:
+            continue
+        created_identity: tuple[int, int] | None = None
+        handle = -1
+        try:
+            created = os.stat(name, dir_fd=root.handle, follow_symlinks=False)
+            created_identity = _require_private_posix_directory(created, description=description)
+            handle = os.open(
+                name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=root.handle,
+            )
+            opened_identity = _require_private_posix_directory(
+                os.fstat(handle), description=description
+            )
+            named_identity = _require_private_posix_directory(
+                os.stat(name, dir_fd=root.handle, follow_symlinks=False),
+                description=description,
+            )
+            if not created_identity == opened_identity == named_identity:
+                raise InvalidLinerName(f"{description} changed during secure open")
+            return name, handle, opened_identity
+        except BaseException:
+            if handle >= 0:
+                _close_posix_directory(handle, description=description)
+            if created_identity is not None:
+                _remove_bound_posix_directory(
+                    root.handle,
+                    name,
+                    created_identity,
+                    description=description,
+                )
+            raise
+    raise LinerStorageUnsupportedError(f"unable to allocate private {description}")
 
 
 def _make_staged_upload(root: _PinnedRoot) -> _StagedUpload:
@@ -567,27 +668,58 @@ def _make_staged_upload(root: _PinnedRoot) -> _StagedUpload:
                     fd = None
                 except BaseException:
                     if fd is not None:
-                        with contextlib.suppress(OSError):
+                        try:
                             _windows_delete_by_handle(msvcrt.get_osfhandle(fd))
-                        os.close(fd)
+                        except BaseException:
+                            logger.warning(
+                                "Unable to delete failed liner upload file",
+                                exc_info=True,
+                            )
+                        try:
+                            os.close(fd)
+                        except BaseException:
+                            logger.warning(
+                                "Unable to close failed liner upload descriptor",
+                                exc_info=True,
+                            )
                     if raw_file_handle is not None:
-                        with contextlib.suppress(OSError):
+                        try:
                             _windows_delete_by_handle(raw_file_handle)
-                        _close_windows_handle(raw_file_handle)
-                    with contextlib.suppress(OSError):
+                        except BaseException:
+                            logger.warning(
+                                "Unable to delete failed raw liner upload handle",
+                                exc_info=True,
+                            )
+                        try:
+                            _close_windows_handle(raw_file_handle)
+                        except BaseException:
+                            logger.warning(
+                                "Unable to close failed raw liner upload handle",
+                                exc_info=True,
+                            )
+                    try:
                         _windows_delete_by_handle(stage_handle)
-                    _close_windows_handle(stage_handle)
+                    except BaseException:
+                        logger.warning(
+                            "Unable to delete failed liner staging directory",
+                            exc_info=True,
+                        )
+                    try:
+                        _close_windows_handle(stage_handle)
+                    except BaseException:
+                        logger.warning(
+                            "Unable to close failed liner staging directory",
+                            exc_info=True,
+                        )
                     raise
             else:
-                os.mkdir(stage_name, mode=0o700, dir_fd=root.handle)
-                stage_handle = -1
+                stage_name, stage_handle, stage_identity = _make_bound_posix_directory(
+                    root,
+                    prefix=".liner-upload-",
+                    description="liner upload staging directory",
+                )
                 fd = -1
                 try:
-                    stage_handle = os.open(
-                        stage_name,
-                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                        dir_fd=root.handle,
-                    )
                     fd = os.open(
                         "upload.tmp",
                         os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
@@ -598,15 +730,36 @@ def _make_staged_upload(root: _PinnedRoot) -> _StagedUpload:
                     fd = -1
                 except BaseException:
                     if fd >= 0:
-                        os.close(fd)
-                    if stage_handle >= 0:
-                        with contextlib.suppress(OSError):
-                            os.unlink("upload.tmp", dir_fd=stage_handle)
-                        os.close(stage_handle)
-                    with contextlib.suppress(OSError):
-                        os.rmdir(stage_name, dir_fd=root.handle)
+                        try:
+                            os.close(fd)
+                        except BaseException:
+                            logger.warning(
+                                "Unable to close private liner upload file",
+                                exc_info=True,
+                            )
+                    _unlink_posix_entry(
+                        stage_handle,
+                        "upload.tmp",
+                        description="liner upload staging file",
+                    )
+                    _close_posix_directory(
+                        stage_handle, description="liner upload staging directory"
+                    )
+                    _remove_bound_posix_directory(
+                        root.handle,
+                        stage_name,
+                        stage_identity,
+                        description="liner upload staging directory",
+                    )
                     raise
-            return _StagedUpload(root, stage_handle, stage_name, "upload.tmp", file)
+            return _StagedUpload(
+                root,
+                stage_handle,
+                stage_name,
+                "upload.tmp",
+                file,
+                None if root.windows else stage_identity,
+            )
         except FileExistsError:
             continue
     raise LinerStorageUnsupportedError("unable to allocate private liner staging directory")
@@ -614,33 +767,55 @@ def _make_staged_upload(root: _PinnedRoot) -> _StagedUpload:
 
 def _cleanup_staged_upload(staged: _StagedUpload, *, published: bool) -> None:
     if staged.root.windows:
-        if not staged.file.closed:
-            handle = msvcrt.get_osfhandle(staged.file.fileno())
-            if not published:
-                with contextlib.suppress(OSError):
-                    _windows_delete_by_handle(handle)
-            staged.file.close()
-        with contextlib.suppress(OSError):
+        first_error: BaseException | None = None
+        try:
+            if not staged.file.closed:
+                handle = msvcrt.get_osfhandle(staged.file.fileno())
+                if not published:
+                    try:
+                        _windows_delete_by_handle(handle)
+                    except BaseException as exc:
+                        first_error = exc
+                try:
+                    staged.file.close()
+                except BaseException as exc:
+                    first_error = first_error or exc
+        except BaseException as exc:
+            first_error = first_error or exc
+        try:
             _windows_delete_by_handle(staged.stage_handle)
-        _close_windows_handle(staged.stage_handle)
+        except BaseException as exc:
+            first_error = first_error or exc
+        try:
+            _close_windows_handle(staged.stage_handle)
+        except BaseException as exc:
+            first_error = first_error or exc
+        if first_error is not None:
+            raise first_error
         return
 
-    if not staged.file.closed:
-        staged.file.close()
-    if not published:
-        with contextlib.suppress(OSError):
-            os.unlink(staged.file_name, dir_fd=staged.stage_handle)
-    stage_identity = os.fstat(staged.stage_handle)
-    os.close(staged.stage_handle)
+    first_error = None
     try:
-        metadata = os.stat(staged.stage_name, dir_fd=staged.root.handle, follow_symlinks=False)
-        if stat.S_ISDIR(metadata.st_mode) and (metadata.st_dev, metadata.st_ino) == (
-            stage_identity.st_dev,
-            stage_identity.st_ino,
-        ):
-            os.rmdir(staged.stage_name, dir_fd=staged.root.handle)
-    except FileNotFoundError:
-        pass
+        if not staged.file.closed:
+            staged.file.close()
+    except BaseException as exc:
+        first_error = exc
+    if not published:
+        _unlink_posix_entry(
+            staged.stage_handle,
+            staged.file_name,
+            description="liner upload staging file",
+        )
+    _close_posix_directory(staged.stage_handle, description="liner upload staging directory")
+    if staged.stage_identity is not None:
+        _remove_bound_posix_directory(
+            staged.root.handle,
+            staged.stage_name,
+            staged.stage_identity,
+            description="liner upload staging directory",
+        )
+    if first_error is not None:
+        raise first_error
 
 
 def _rename_noreplace_posix(
@@ -693,7 +868,7 @@ def _publish_staged_file(staged: _StagedUpload, name: str, *, replace: bool) -> 
 def _flush_windows_directory(handle: int) -> None:
     if not _kernel32.FlushFileBuffers(handle):
         winerror = ctypes.get_last_error()
-        if winerror in {1, 50}:
+        if winerror in {1, 5, 6, 50}:
             logger.warning("Storage does not support directory durability flush")
             return
         raise ctypes.WinError(winerror)
@@ -719,7 +894,7 @@ async def store_liner_upload(
     if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes <= 0:
         raise ValueError("max_bytes must be a positive integer")
 
-    pinned = _open_pinned_root(Path(root), create=True, write=True)
+    pinned = _open_pinned_root(Path(root), create=True, write=True, mutate=True)
     staged: _StagedUpload | None = None
     published = False
     total = 0
@@ -745,7 +920,7 @@ async def store_liner_upload(
         published = True
         try:
             _flush_directory(pinned)
-        except OSError:
+        except BaseException:
             logger.warning("Liner published but directory durability flush failed", exc_info=True)
         return pinned.path / name, total
     finally:
@@ -790,7 +965,7 @@ def _open_relative_file(root: _PinnedRoot, name: str) -> OpenedLiner:
 def open_liner_file(root: Path, name: str) -> OpenedLiner:
     """Open and retain one regular liner file relative to a pinned root."""
     _validate_name(name)
-    pinned = _open_pinned_root(Path(root), create=False, write=False)
+    pinned = _open_pinned_root(Path(root), create=False, write=False, mutate=False)
     try:
         return _open_relative_file(pinned, name)
     finally:
@@ -812,7 +987,10 @@ def _delete_relative_file(root: _PinnedRoot, name: str) -> None:
         try:
             _delete_opened_file(root, name, handle)
         finally:
-            _close_windows_handle(handle)
+            try:
+                _close_windows_handle(handle)
+            except BaseException:
+                logger.warning("Unable to close committed liner delete handle", exc_info=True)
     else:
         handle = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=root.handle)
         try:
@@ -820,7 +998,116 @@ def _delete_relative_file(root: _PinnedRoot, name: str) -> None:
                 raise FileNotFoundError(name)
             _delete_opened_file(root, name, handle)
         finally:
-            os.close(handle)
+            try:
+                os.close(handle)
+            except BaseException:
+                logger.warning("Unable to close liner delete handle", exc_info=True)
+
+
+def _verify_posix_delete_rollback(quarantine: int) -> None:
+    source_name = f"rollback-source-{secrets.token_hex(16)}.probe"
+    target_name = f"rollback-target-{secrets.token_hex(16)}.probe"
+    source = -1
+    target = -1
+    try:
+        source = os.open(
+            source_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=quarantine,
+        )
+        target = os.open(
+            target_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=quarantine,
+        )
+        source_to_close = source
+        source = -1
+        os.close(source_to_close)
+        target_to_close = target
+        target = -1
+        os.close(target_to_close)
+        try:
+            _rename_noreplace_posix(quarantine, source_name, quarantine, target_name)
+        except LinerConflictError:
+            return
+        except LinerStorageUnsupportedError:
+            os.unlink(target_name, dir_fd=quarantine)
+            try:
+                os.link(
+                    source_name,
+                    target_name,
+                    src_dir_fd=quarantine,
+                    dst_dir_fd=quarantine,
+                    follow_symlinks=False,
+                )
+            except OSError as exc:
+                if exc.errno in {
+                    errno.ENOSYS,
+                    errno.EINVAL,
+                    errno.EOPNOTSUPP,
+                    errno.ENOTSUP,
+                    errno.EXDEV,
+                }:
+                    raise LinerStorageUnsupportedError(
+                        exc.errno,
+                        "atomic delete rollback unavailable",
+                    ) from exc
+                raise
+            return
+        raise LinerStorageUnsupportedError(
+            "atomic delete rollback probe did not preserve its existing target"
+        )
+    finally:
+        if source >= 0:
+            try:
+                os.close(source)
+            except BaseException:
+                logger.warning("Unable to close delete rollback probe", exc_info=True)
+        if target >= 0:
+            try:
+                os.close(target)
+            except BaseException:
+                logger.warning("Unable to close delete rollback probe", exc_info=True)
+        _unlink_posix_entry(
+            quarantine, source_name, description="liner delete rollback source probe"
+        )
+        _unlink_posix_entry(
+            quarantine, target_name, description="liner delete rollback target probe"
+        )
+
+
+def _restore_posix_delete(quarantine: int, root: _PinnedRoot, name: str) -> None:
+    try:
+        _rename_noreplace_posix(quarantine, "victim", root.handle, name)
+        return
+    except LinerStorageUnsupportedError:
+        try:
+            os.link(
+                "victim",
+                name,
+                src_dir_fd=quarantine,
+                dst_dir_fd=root.handle,
+                follow_symlinks=False,
+            )
+        except FileExistsError as exc:
+            raise LinerConflictError(name) from exc
+        except OSError as exc:
+            if exc.errno in {
+                errno.ENOSYS,
+                errno.EINVAL,
+                errno.EOPNOTSUPP,
+                errno.ENOTSUP,
+                errno.EXDEV,
+            }:
+                raise LinerStorageUnsupportedError(
+                    exc.errno,
+                    "atomic delete rollback unavailable",
+                    name,
+                ) from exc
+            raise
+        os.unlink("victim", dir_fd=quarantine)
 
 
 def _delete_opened_file(root: _PinnedRoot, name: str, handle: int) -> None:
@@ -829,56 +1116,59 @@ def _delete_opened_file(root: _PinnedRoot, name: str, handle: int) -> None:
         return
 
     opened = os.fstat(handle)
-    for _attempt in range(128):
-        quarantine_name = f".liner-delete-{secrets.token_hex(16)}"
-        try:
-            os.mkdir(quarantine_name, mode=0o700, dir_fd=root.handle)
-            break
-        except FileExistsError:
-            continue
-    else:
-        raise LinerStorageUnsupportedError("unable to allocate private delete quarantine")
-    quarantine = os.open(
-        quarantine_name,
-        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-        dir_fd=root.handle,
+    quarantine_name, quarantine, quarantine_identity = _make_bound_posix_directory(
+        root,
+        prefix=".liner-delete-",
+        description="liner delete quarantine",
     )
+    moved = False
     try:
+        _verify_posix_delete_rollback(quarantine)
         os.rename(name, "victim", src_dir_fd=root.handle, dst_dir_fd=quarantine)
-        moved = os.stat("victim", dir_fd=quarantine, follow_symlinks=False)
-        if (moved.st_dev, moved.st_ino) != (opened.st_dev, opened.st_ino):
-            try:
-                _rename_noreplace_posix(quarantine, "victim", root.handle, name)
-            except OSError:
-                logger.error("Unable to restore liner entry raced during deletion", exc_info=True)
+        moved = True
+        moved_metadata = os.stat("victim", dir_fd=quarantine, follow_symlinks=False)
+        if _posix_identity(moved_metadata) != _posix_identity(opened):
             raise InvalidLinerName("liner changed during deletion")
         os.unlink("victim", dir_fd=quarantine)
+        moved = False
+    except BaseException:
+        if moved:
+            try:
+                _restore_posix_delete(quarantine, root, name)
+                moved = False
+            except BaseException:
+                logger.error("Unable to restore liner entry raced during deletion", exc_info=True)
+        raise
     finally:
-        quarantine_identity = os.fstat(quarantine)
-        os.close(quarantine)
-        try:
-            metadata = os.stat(quarantine_name, dir_fd=root.handle, follow_symlinks=False)
-            if (metadata.st_dev, metadata.st_ino) == (
-                quarantine_identity.st_dev,
-                quarantine_identity.st_ino,
-            ) and stat.S_ISDIR(metadata.st_mode):
-                os.rmdir(quarantine_name, dir_fd=root.handle)
-        except OSError:
-            logger.warning("Unable to remove private liner delete quarantine", exc_info=True)
+        _close_posix_directory(quarantine, description="liner delete quarantine")
+        _remove_bound_posix_directory(
+            root.handle,
+            quarantine_name,
+            quarantine_identity,
+            description="liner delete quarantine",
+        )
 
 
 def delete_liner_file(root: Path, name: str) -> None:
     """Delete one regular liner file relative to a pinned root."""
     _validate_name(name)
-    pinned = _open_pinned_root(Path(root), create=False, write=True)
+    pinned = _open_pinned_root(Path(root), create=False, write=False, mutate=True)
+    committed = False
     try:
         _delete_relative_file(pinned, name)
+        committed = True
         try:
             _flush_directory(pinned)
-        except OSError:
+        except BaseException:
             logger.warning("Liner deleted but directory durability flush failed", exc_info=True)
     finally:
-        _close_root(pinned)
+        try:
+            _close_root(pinned)
+        except BaseException:
+            if committed:
+                logger.warning("Unable to close root after committed liner deletion", exc_info=True)
+            else:
+                logger.warning("Unable to close root after failed liner deletion", exc_info=True)
 
 
 class _BodyLimitExceeded(Exception):

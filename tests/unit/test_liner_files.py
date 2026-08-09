@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import errno
 import multiprocessing
 import os
 import threading
@@ -48,15 +50,54 @@ class AbortingReader:
         raise UploadAborted
 
 
+class CloseFailingFile:
+    def __init__(self, wrapped: BinaryIO) -> None:
+        self._wrapped = wrapped
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._wrapped, name)
+
+    def close(self) -> None:
+        self._wrapped.close()
+        raise UploadAborted
+
+
 def _process_upload(
     root: str,
     payload: bytes,
     ready: multiprocessing.Queue,
     start: multiprocessing.synchronize.Event,
+    publication_ready: multiprocessing.Queue,
+    publish: multiprocessing.synchronize.Event,
     results: multiprocessing.Queue,
 ) -> None:
+    from autodj import liner_files
+
+    if os.name == "nt":
+        original_publish_primitive = liner_files._windows_rename_by_handle
+
+        def synchronized_publish_primitive(*args: Any, **kwargs: Any) -> None:
+            publication_ready.put(True)
+            if not publish.wait(timeout=10):
+                raise TimeoutError("publication barrier timed out")
+            original_publish_primitive(*args, **kwargs)
+
+        liner_files._windows_rename_by_handle = synchronized_publish_primitive
+    else:
+        original_publish_primitive = liner_files._rename_noreplace_posix
+
+        def synchronized_publish_primitive(*args: Any, **kwargs: Any) -> None:
+            publication_ready.put(True)
+            if not publish.wait(timeout=10):
+                raise TimeoutError("publication barrier timed out")
+            original_publish_primitive(*args, **kwargs)
+
+        liner_files._rename_noreplace_posix = synchronized_publish_primitive
+
     ready.put(True)
-    start.wait(timeout=10)
+    if not start.wait(timeout=10):
+        results.put("start-timeout")
+        return
     try:
         asyncio.run(
             store_liner_upload(
@@ -188,6 +229,134 @@ async def test_upload_creates_multiple_missing_root_components(tmp_path: Path) -
     assert size == 0
     assert target == root / "silence.wav"
     assert target.read_bytes() == b""
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX ownership policy")
+@pytest.mark.asyncio
+async def test_posix_upload_rejects_shared_writable_root_before_mutation(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "liners"
+    root.mkdir()
+    root.chmod(0o777)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("keep", encoding="utf-8")
+
+    with pytest.raises(InvalidLinerName, match="private owner-controlled"):
+        await store_liner_upload(root, "clip.mp3", BytesReader(b"new"), max_bytes=50, replace=False)
+    assert not (root / "clip.mp3").exists()
+    assert list(root.glob(".liner-upload-*")) == []
+    assert outside.read_text(encoding="utf-8") == "keep"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX stage-binding regression")
+@pytest.mark.asyncio
+async def test_posix_upload_rejects_stage_directory_swapped_before_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from autodj import liner_files
+
+    root = tmp_path / "liners"
+    root.mkdir(mode=0o700)
+    replacement = tmp_path / "replacement-stage"
+    replacement.mkdir(mode=0o700)
+    sentinel = replacement / "outside.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+    displaced = tmp_path / "displaced-created-stage"
+    original_open = liner_files.os.open
+    swapped = False
+
+    def swap_before_stage_open(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
+        nonlocal swapped
+        path_text = os.fsdecode(path)
+        dir_fd = kwargs.get("dir_fd")
+        if not swapped and path_text.startswith(".liner-upload-") and dir_fd is not None:
+            swapped = True
+            stage_path = root / path_text
+            stage_path.rename(displaced)
+            replacement.rename(stage_path)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(liner_files.os, "open", swap_before_stage_open)
+    with pytest.raises(InvalidLinerName, match="changed during secure open"):
+        await store_liner_upload(root, "clip.mp3", BytesReader(b"new"), max_bytes=50, replace=False)
+    assert swapped
+    assert not (root / "clip.mp3").exists()
+    assert (next(root.glob(".liner-upload-*")) / "outside.txt").read_text(
+        encoding="utf-8"
+    ) == "keep"
+    assert not (next(root.glob(".liner-upload-*")) / "upload.tmp").exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX descriptor ownership")
+def test_posix_root_parent_close_base_exception_still_closes_owned_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from autodj import liner_files
+
+    original_open = liner_files.os.open
+    original_close = liner_files.os.close
+    opened: list[int] = []
+    injected = False
+
+    def capture_open(*args: Any, **kwargs: Any) -> int:
+        fd = original_open(*args, **kwargs)
+        opened.append(fd)
+        return fd
+
+    def close_then_raise_once(fd: int) -> None:
+        nonlocal injected
+        original_close(fd)
+        if not injected:
+            injected = True
+            raise UploadAborted
+
+    monkeypatch.setattr(liner_files.os, "open", capture_open)
+    monkeypatch.setattr(liner_files.os, "close", close_then_raise_once)
+    with pytest.raises(UploadAborted):
+        liner_files._open_posix_root(tmp_path, create=False, mutate=False)
+    assert len(opened) >= 2
+    with pytest.raises(OSError) as error:
+        os.fstat(opened[1])
+    assert error.value.errno == errno.EBADF
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX descriptor ownership")
+def test_posix_rollback_probe_never_recloses_reused_descriptor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from autodj import liner_files
+
+    quarantine = tmp_path / "quarantine"
+    quarantine.mkdir(mode=0o700)
+    quarantine_fd = os.open(quarantine, os.O_RDONLY | os.O_DIRECTORY)
+    outside = tmp_path / "outside.txt"
+    outside.write_bytes(b"outside")
+    original_close = liner_files.os.close
+    replacement_fd: int | None = None
+    injected = False
+
+    def close_reuse_then_raise(fd: int) -> None:
+        nonlocal injected, replacement_fd
+        original_close(fd)
+        if not injected:
+            injected = True
+            replacement_fd = os.open(outside, os.O_RDONLY)
+            assert replacement_fd == fd
+            raise UploadAborted
+
+    monkeypatch.setattr(liner_files.os, "close", close_reuse_then_raise)
+    try:
+        with pytest.raises(UploadAborted):
+            liner_files._verify_posix_delete_rollback(quarantine_fd)
+        assert replacement_fd is not None
+        assert os.fstat(replacement_fd).st_size == len(b"outside")
+    finally:
+        monkeypatch.setattr(liner_files.os, "close", original_close)
+        if replacement_fd is not None:
+            with contextlib.suppress(OSError):
+                original_close(replacement_fd)
+        original_close(quarantine_fd)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows handle-rights regression")
@@ -354,16 +523,54 @@ async def test_fstat_failure_cleans_only_private_staging(
     root.mkdir()
     sentinel = root / ".liner-upload-unrelated.tmp"
     sentinel.write_bytes(b"not-owned")
+    outside = tmp_path / "outside.txt"
+    outside.write_bytes(b"outside")
+    original_make = liner_files._make_staged_upload
+    original_fstat = liner_files.os.fstat
+    upload_fd: int | None = None
+
+    def capture_upload_fd(*args: Any, **kwargs: Any):
+        nonlocal upload_fd
+        staged = original_make(*args, **kwargs)
+        upload_fd = staged.file.fileno()
+        return staged
 
     def fail_fstat(fd: int) -> os.stat_result:
-        raise OSError("fstat failed")
+        if fd == upload_fd:
+            raise OSError("fstat failed")
+        return original_fstat(fd)
 
+    monkeypatch.setattr(liner_files, "_make_staged_upload", capture_upload_fd)
     monkeypatch.setattr(liner_files.os, "fstat", fail_fstat)
     with pytest.raises(OSError, match="fstat failed"):
         await store_liner_upload(root, "clip.mp3", BytesReader(b"new"), max_bytes=50, replace=True)
     assert sentinel.read_bytes() == b"not-owned"
     assert list(root.glob(".liner-upload-*")) == [sentinel]
     assert not (root / "clip.mp3").exists()
+    assert outside.read_bytes() == b"outside"
+
+
+@pytest.mark.asyncio
+async def test_upload_close_base_exception_still_removes_private_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from autodj import liner_files
+
+    root = tmp_path / "liners"
+    original_make = liner_files._make_staged_upload
+
+    def wrap_file(*args: Any, **kwargs: Any):
+        staged = original_make(*args, **kwargs)
+        staged.file = CloseFailingFile(staged.file)
+        return staged
+
+    monkeypatch.setattr(liner_files, "_make_staged_upload", wrap_file)
+    target, size = await store_liner_upload(
+        root, "clip.mp3", BytesReader(b"new"), max_bytes=50, replace=False
+    )
+    assert size == 3
+    assert target.read_bytes() == b"new"
+    assert list(root.glob(".liner-upload-*")) == []
 
 
 @pytest.mark.asyncio
@@ -381,6 +588,30 @@ async def test_fdopen_failure_removes_private_staging(
     with pytest.raises(OSError, match="fdopen failed"):
         await store_liner_upload(root, "clip.mp3", BytesReader(b"new"), max_bytes=50, replace=True)
     assert list(root.iterdir()) == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows descriptor cleanup regression")
+@pytest.mark.asyncio
+async def test_windows_fdopen_and_fd_close_failures_still_remove_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from autodj import liner_files
+
+    root = tmp_path / "liners"
+    original_close = liner_files.os.close
+
+    def fail_fdopen(*args: Any, **kwargs: Any) -> BinaryIO:
+        raise OSError("fdopen failed")
+
+    def close_then_raise(fd: int) -> None:
+        original_close(fd)
+        raise UploadAborted
+
+    monkeypatch.setattr(liner_files.os, "fdopen", fail_fdopen)
+    monkeypatch.setattr(liner_files.os, "close", close_then_raise)
+    with pytest.raises(OSError, match="fdopen failed"):
+        await store_liner_upload(root, "clip.mp3", BytesReader(b"new"), max_bytes=50, replace=True)
+    assert list(root.glob(".liner-upload-*")) == []
 
 
 @pytest.mark.asyncio
@@ -439,7 +670,226 @@ def test_delete_uses_pinned_root_when_configured_path_is_swapped(
     assert (root / "clip.mp3").read_bytes() == b"outside-root"
 
 
-def test_delete_target_swap_never_deletes_outside_file(
+def test_delete_opens_root_without_broad_write_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from autodj import liner_files
+
+    calls: list[tuple[bool, bool, bool]] = []
+    pinned = liner_files._PinnedRoot(Path("unused"), 123, os.name == "nt")
+
+    def open_root(path: Path, *, create: bool, write: bool, mutate: bool):
+        calls.append((create, write, mutate))
+        return pinned
+
+    monkeypatch.setattr(liner_files, "_open_pinned_root", open_root)
+    monkeypatch.setattr(liner_files, "_delete_relative_file", lambda *_args: None)
+    monkeypatch.setattr(liner_files, "_flush_directory", lambda *_args: None)
+    monkeypatch.setattr(liner_files, "_close_root", lambda *_args: None)
+
+    delete_liner_file(Path("unused"), "clip.mp3")
+    assert calls == [(False, False, True)]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX ownership policy")
+def test_posix_delete_rejects_shared_writable_root_before_mutation(tmp_path: Path) -> None:
+    root = tmp_path / "liners"
+    root.mkdir()
+    target = root / "clip.mp3"
+    target.write_bytes(b"inside")
+    root.chmod(0o777)
+
+    with pytest.raises(InvalidLinerName, match="private owner-controlled"):
+        delete_liner_file(root, target.name)
+    assert target.read_bytes() == b"inside"
+    assert list(root.glob(".liner-delete-*")) == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows delete-handle regression")
+def test_windows_delete_close_failure_after_commit_returns_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from autodj import liner_files
+
+    root = tmp_path / "liners"
+    root.mkdir()
+    target = root / "clip.mp3"
+    target.write_bytes(b"inside")
+    original_delete = liner_files._windows_delete_by_handle
+    original_close = liner_files._close_windows_handle
+    deleted = False
+    injected = False
+
+    def mark_deleted(handle: int) -> None:
+        nonlocal deleted
+        original_delete(handle)
+        deleted = True
+
+    def fail_first_close_after_delete(handle: int) -> None:
+        nonlocal injected
+        original_close(handle)
+        if deleted and not injected:
+            injected = True
+            raise OSError("child close failed after deletion")
+
+    monkeypatch.setattr(liner_files, "_windows_delete_by_handle", mark_deleted)
+    monkeypatch.setattr(liner_files, "_close_windows_handle", fail_first_close_after_delete)
+
+    delete_liner_file(root, target.name)
+    assert injected
+    assert not target.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX delete cleanup regression")
+def test_posix_delete_quarantine_stat_failure_after_commit_returns_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from autodj import liner_files
+
+    root = tmp_path / "liners"
+    root.mkdir(mode=0o700)
+    target = root / "clip.mp3"
+    target.write_bytes(b"inside")
+    original_stat = liner_files.os.stat
+    quarantine_name_stats = 0
+
+    def fail_cleanup_stat(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+        nonlocal quarantine_name_stats
+        if os.fsdecode(path).startswith(".liner-delete-"):
+            quarantine_name_stats += 1
+            if quarantine_name_stats == 3:
+                raise UploadAborted
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(liner_files.os, "stat", fail_cleanup_stat)
+    delete_liner_file(root, target.name)
+    assert quarantine_name_stats == 3
+    assert not target.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX delete rollback regression")
+def test_posix_delete_requires_atomic_rollback_before_moving_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from autodj import liner_files
+
+    root = tmp_path / "liners"
+    root.mkdir(mode=0o700)
+    target = root / "clip.mp3"
+    target.write_bytes(b"inside")
+
+    def unsupported_rename(*args: Any, **kwargs: Any) -> None:
+        raise liner_files.LinerStorageUnsupportedError("renameat2 unavailable")
+
+    def unsupported_link(*args: Any, **kwargs: Any) -> None:
+        raise OSError(errno.EOPNOTSUPP, "hard links unavailable")
+
+    monkeypatch.setattr(liner_files, "_rename_noreplace_posix", unsupported_rename)
+    monkeypatch.setattr(liner_files.os, "link", unsupported_link)
+    with pytest.raises(liner_files.LinerStorageUnsupportedError, match="rollback unavailable"):
+        delete_liner_file(root, target.name)
+    assert target.read_bytes() == b"inside"
+    assert list(root.glob(".liner-delete-*")) == []
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX delete rollback regression")
+def test_posix_delete_precommit_validation_failure_restores_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from autodj import liner_files
+
+    root = tmp_path / "liners"
+    root.mkdir(mode=0o700)
+    target = root / "clip.mp3"
+    target.write_bytes(b"inside")
+    original_stat = liner_files.os.stat
+
+    def fail_victim_stat(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+        if os.fsdecode(path) == "victim" and kwargs.get("dir_fd") is not None:
+            raise OSError("victim validation failed")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(liner_files.os, "stat", fail_victim_stat)
+    with pytest.raises(OSError, match="victim validation failed"):
+        delete_liner_file(root, target.name)
+    assert target.read_bytes() == b"inside"
+    assert list(root.glob(".liner-delete-*")) == []
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX delete rollback regression")
+def test_posix_delete_uses_atomic_link_rollback_when_renameat2_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from autodj import liner_files
+
+    root = tmp_path / "liners"
+    root.mkdir(mode=0o700)
+    target = root / "clip.mp3"
+    target.write_bytes(b"inside")
+    original_stat = liner_files.os.stat
+
+    def unsupported_rename(*args: Any, **kwargs: Any) -> None:
+        raise liner_files.LinerStorageUnsupportedError("renameat2 unavailable")
+
+    def fail_victim_stat(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+        if os.fsdecode(path) == "victim" and kwargs.get("dir_fd") is not None:
+            raise OSError("victim validation failed")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(liner_files, "_rename_noreplace_posix", unsupported_rename)
+    monkeypatch.setattr(liner_files.os, "stat", fail_victim_stat)
+    with pytest.raises(OSError, match="victim validation failed"):
+        delete_liner_file(root, target.name)
+    assert target.read_bytes() == b"inside"
+    assert list(root.glob(".liner-delete-*")) == []
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX delete rollback race")
+def test_posix_delete_rollback_never_overwrites_concurrent_same_uid_creator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from autodj import liner_files
+
+    root = tmp_path / "liners"
+    root.mkdir(mode=0o700)
+    target = root / "clip.mp3"
+    target.write_bytes(b"original")
+    original_stat = liner_files.os.stat
+    publication = threading.Barrier(2, timeout=10)
+    concurrent_created = threading.Event()
+
+    def unsupported_rename(*args: Any, **kwargs: Any) -> None:
+        raise liner_files.LinerStorageUnsupportedError("renameat2 unavailable")
+
+    def create_concurrent_target(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+        if os.fsdecode(path) == "victim" and kwargs.get("dir_fd") is not None:
+            publication.wait(timeout=10)
+            if not concurrent_created.wait(timeout=10):
+                raise TimeoutError("concurrent creator timed out")
+            raise OSError("victim validation failed")
+        return original_stat(path, *args, **kwargs)
+
+    def create_target() -> None:
+        publication.wait(timeout=10)
+        target.write_bytes(b"concurrent")
+        concurrent_created.set()
+
+    monkeypatch.setattr(liner_files, "_rename_noreplace_posix", unsupported_rename)
+    monkeypatch.setattr(liner_files.os, "stat", create_concurrent_target)
+    creator = threading.Thread(target=create_target)
+    creator.start()
+    with pytest.raises(OSError, match="victim validation failed"):
+        delete_liner_file(root, target.name)
+    creator.join(timeout=10)
+    assert not creator.is_alive()
+    assert target.read_bytes() == b"concurrent"
+    quarantines = list(root.glob(".liner-delete-*"))
+    assert len(quarantines) == 1
+    assert (quarantines[0] / "victim").read_bytes() == b"original"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX quarantine behavior")
+def test_posix_delete_target_swap_is_rejected_and_preserved(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from autodj import liner_files
@@ -462,11 +912,39 @@ def test_delete_target_swap_never_deletes_outside_file(
         original_delete(*args, **kwargs)
 
     monkeypatch.setattr(liner_files, "_delete_opened_file", swap_target_then_delete)
-    delete_liner_file(root, target.name)
+    with pytest.raises(InvalidLinerName, match="changed during deletion"):
+        delete_liner_file(root, target.name)
     assert outside.read_bytes() == b"outside"
+    assert moved.read_bytes() == b"inside"
+    assert target.is_symlink()
+    assert target.resolve() == outside
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows held-handle behavior")
+def test_windows_delete_target_swap_deletes_only_opened_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from autodj import liner_files
+
+    root = tmp_path / "liners"
+    root.mkdir()
+    target = root / "clip.mp3"
+    moved = root / "opened-original.mp3"
+    outside = tmp_path / "outside.mp3"
+    target.write_bytes(b"inside")
+    outside.write_bytes(b"outside")
+    original_delete = liner_files._delete_opened_file
+
+    def swap_target_then_delete(*args: Any, **kwargs: Any) -> None:
+        target.rename(moved)
+        target.write_bytes(b"replacement")
+        original_delete(*args, **kwargs)
+
+    monkeypatch.setattr(liner_files, "_delete_opened_file", swap_target_then_delete)
+    delete_liner_file(root, target.name)
     assert not moved.exists()
-    if target.exists() and not target.is_symlink():
-        assert target.read_bytes() == b"outside-root"
+    assert target.read_bytes() == b"replacement"
+    assert outside.read_bytes() == b"outside"
 
 
 def test_open_uses_pinned_root_when_configured_path_is_swapped(
@@ -543,6 +1021,31 @@ async def test_post_publish_directory_flush_failure_returns_committed_success(
 
 
 @pytest.mark.asyncio
+async def test_post_publish_directory_flush_base_exception_returns_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from autodj import liner_files
+
+    root = tmp_path / "liners"
+    calls = 0
+    original_flush = liner_files._flush_directory
+
+    def fail_second_flush(handle: Any) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise UploadAborted
+        original_flush(handle)
+
+    monkeypatch.setattr(liner_files, "_flush_directory", fail_second_flush)
+    returned, size = await store_liner_upload(
+        root, "clip.mp3", BytesReader(b"new"), max_bytes=50, replace=False
+    )
+    assert size == 3
+    assert returned.read_bytes() == b"new"
+
+
+@pytest.mark.asyncio
 async def test_post_publish_cleanup_failure_returns_committed_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -579,6 +1082,30 @@ def test_windows_directory_flush_dispatches_to_handle_leaf(
     pinned = liner_files._PinnedRoot(Path("unused"), 123, True)
     with pytest.raises(FlushReached):
         liner_files._flush_directory(pinned)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows directory-flush regression")
+@pytest.mark.parametrize("winerror", [1, 5, 6, 50])
+def test_windows_unsupported_directory_flush_errors_are_best_effort(
+    winerror: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from autodj import liner_files
+
+    monkeypatch.setattr(liner_files._kernel32, "FlushFileBuffers", lambda _handle: False)
+    monkeypatch.setattr(liner_files.ctypes, "get_last_error", lambda: winerror)
+    liner_files._flush_windows_directory(123)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows directory-flush regression")
+def test_windows_unexpected_directory_flush_error_propagates_before_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from autodj import liner_files
+
+    monkeypatch.setattr(liner_files._kernel32, "FlushFileBuffers", lambda _handle: False)
+    monkeypatch.setattr(liner_files.ctypes, "get_last_error", lambda: 32)
+    with pytest.raises(OSError):
+        liner_files._flush_windows_directory(123)
 
 
 def test_non_replace_race_reaches_publication_together(
@@ -705,11 +1232,21 @@ def test_non_replace_upload_is_atomic_across_processes(tmp_path: Path) -> None:
     context = multiprocessing.get_context("spawn")
     ready = context.Queue()
     start = context.Event()
+    publication_ready = context.Queue()
+    publish = context.Event()
     results = context.Queue()
     processes = [
         context.Process(
             target=_process_upload,
-            args=(str(root), payload, ready, start, results),
+            args=(
+                str(root),
+                payload,
+                ready,
+                start,
+                publication_ready,
+                publish,
+                results,
+            ),
         )
         for payload in (b"first", b"second")
     ]
@@ -718,6 +1255,9 @@ def test_non_replace_upload_is_atomic_across_processes(tmp_path: Path) -> None:
     assert ready.get(timeout=10) is True
     assert ready.get(timeout=10) is True
     start.set()
+    assert publication_ready.get(timeout=10) is True
+    assert publication_ready.get(timeout=10) is True
+    publish.set()
     outcomes = sorted(results.get(timeout=10) for _ in processes)
     for process in processes:
         process.join(timeout=10)
