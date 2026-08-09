@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 # ---------------------------------------------------------------------------
 # Profile name validation 400 paths
 # ---------------------------------------------------------------------------
@@ -73,6 +75,41 @@ class TestLinerEndpoints:
     def test_get_unknown_liner_404(self, client) -> None:
         resp = client.get("/api/liners/file/nope.wav")
         assert resp.status_code == 404
+
+    @pytest.mark.parametrize(
+        "escaped",
+        [
+            "..%2Fclip.mp3",
+            "sub%2Fclip.mp3",
+            "clip.mp3%3Astream",
+            "clip.mp3.",
+            "clip.mp3%20",
+        ],
+    )
+    @pytest.mark.parametrize("method", ["get", "delete"])
+    def test_file_routes_reject_encoded_or_windows_aliases(
+        self, client, escaped: str, method: str
+    ) -> None:
+        response = getattr(client, method)(f"/api/liners/file/{escaped}")
+        assert response.status_code == 400
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "../clip.mp3",
+            r"..\liners-backup\clip.mp3",
+            r"sub\clip.mp3",
+            "clip.mp3:stream",
+            "clip.mp3.",
+            "clip.mp3 ",
+        ],
+    )
+    def test_upload_rejects_non_plain_names(self, client, name: str) -> None:
+        response = client.post("/api/liners/upload", files={"file": (name, b"audio", "audio/mpeg")})
+        assert response.status_code == 400
+
+    def test_missing_plain_liner_is_404(self, client) -> None:
+        assert client.get("/api/liners/file/missing.mp3").status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -286,7 +323,7 @@ class TestLinerUploadDelete:
         resp = client.delete("/api/liners/file/clip.wav")
         assert resp.status_code == 200
 
-    def test_upload_path_with_slash_is_sanitised(self, client, tmp_path, monkeypatch) -> None:
+    def test_upload_path_with_slash_is_rejected(self, client, tmp_path, monkeypatch) -> None:
         # Closure captures bridge.player._cfg.playback.liners_folder;
         # set that to redirect the liner folder.
         from fastapi.testclient import TestClient
@@ -299,13 +336,12 @@ class TestLinerUploadDelete:
         player._cfg.playback.liners_folder = str(tmp_path)
         bridge = PlayerBridge(player=player, sim=_make_sim_mock())
         client = TestClient(create_app(bridge))
-        # Server strips path components, so the file lands directly in folder.
         resp = client.post(
             "/api/liners/upload",
             files={"file": ("subdir/clip.wav", b"data", "audio/wav")},
         )
-        assert resp.status_code == 200
-        assert resp.json()["filename"] == "clip.wav"
+        assert resp.status_code == 400
+        assert not (tmp_path / "clip.wav").exists()
 
     def test_delete_unlink_raises_oserror_returns_500(self, client, tmp_path, monkeypatch) -> None:
         from pathlib import Path as _P

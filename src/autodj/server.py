@@ -32,6 +32,7 @@ import contextlib
 import functools
 import json as _json
 import logging
+import mimetypes
 import threading
 import time
 from collections.abc import AsyncGenerator
@@ -745,77 +746,92 @@ def create_app(
         return _P(folder_str)
 
     @app.post("/api/liners/upload")
-    async def api_liner_upload(file: UploadFile = File(...)) -> dict:
-        """Upload a new liner clip into the configured folder.
-
-        Rejects files whose extension isn't in :data:`LINER_EXTS` so
-        users can't drop arbitrary binaries into the served folder.
-        Creates the folder when missing.
-        """
+    async def api_liner_upload(
+        file: UploadFile = File(...), replace: bool = False
+    ) -> dict[str, str | int]:
+        """Validate, bound, and atomically store a liner clip."""
+        from autodj.liner_files import (
+            InvalidLinerName,
+            LinerConflictError,
+            LinerTooLargeError,
+            resolve_liner_path,
+            store_liner_upload,
+        )
         from autodj.liners import LINER_EXTS
 
         name = file.filename or ""
-        ext = ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
-        if ext not in LINER_EXTS:
+        folder = _resolve_liner_folder()
+        try:
+            parsed_target = resolve_liner_path(folder, name)
+        except InvalidLinerName as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        extension = parsed_target.suffix.lower()
+        if extension not in LINER_EXTS:
             raise HTTPException(
                 status_code=400,
-                detail=f"Unsupported extension {ext!r}; allowed: {', '.join(LINER_EXTS)}",
+                detail=(f"Unsupported extension {extension!r}; allowed: {', '.join(LINER_EXTS)}"),
             )
-        # Strip path components from the filename so the upload always
-        # lands directly in the liner folder regardless of what the
-        # browser sent.
-        from pathlib import PurePosixPath
-
-        safe_name = PurePosixPath(name).name
-        folder = _resolve_liner_folder()
-        folder.mkdir(parents=True, exist_ok=True)
-        target = (folder / safe_name).resolve()
-        if not str(target).startswith(
-            str(folder.resolve())
-        ):  # pragma: no cover — safe_name already strips path components; defensive belt-and-braces
-            raise HTTPException(status_code=400, detail="Invalid filename")
-        contents = await file.read()
-        target.write_bytes(contents)
-        return {"filename": safe_name, "size": len(contents)}
+        server_cfg = getattr(bridge.player._cfg, "server", None)
+        configured_limit = getattr(server_cfg, "liner_upload_max_bytes", None)
+        max_bytes = (
+            configured_limit
+            if isinstance(configured_limit, int) and not isinstance(configured_limit, bool)
+            else 50 * 1024 * 1024
+        )
+        try:
+            target, size = await store_liner_upload(
+                folder,
+                name,
+                file,
+                max_bytes=max_bytes,
+                replace=replace,
+            )
+        except InvalidLinerName as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except LinerConflictError as exc:
+            raise HTTPException(status_code=409, detail="Liner already exists") from exc
+        except LinerTooLargeError as exc:
+            raise HTTPException(status_code=413, detail=str(exc)) from exc
+        return {"filename": target.name, "size": size}
 
     @app.delete("/api/liners/file/{name}")
-    async def api_liner_delete(name: str) -> dict:
-        """Remove a liner clip identified by filename.
+    async def api_liner_delete(name: str) -> dict[str, str]:
+        """Remove one validated plain liner file."""
+        from autodj.liner_files import InvalidLinerName, resolve_liner_path
 
-        Same path-traversal guard as the GET endpoint.
-        """
-        from pathlib import Path as _P
-
-        folder = _resolve_liner_folder().resolve()
-        target = (folder / name).resolve()
-        if not str(target).startswith(str(folder)) or not target.is_file():
-            raise HTTPException(status_code=404, detail="Liner not found")
         try:
-            _P(target).unlink()
+            target = resolve_liner_path(_resolve_liner_folder(), name, require_file=True)
+        except InvalidLinerName as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Liner not found") from exc
+        try:
+            target.unlink()
         except OSError as exc:
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
+            raise HTTPException(status_code=500, detail="Unable to delete liner") from exc
         return {"deleted": target.name}
 
     @app.get("/api/liners/file/{name}")
     async def api_liner_file(name: str) -> FileResponse:
-        """Stream the raw bytes of a liner clip identified by filename.
+        """Serve one validated plain liner file."""
+        from autodj.liner_files import InvalidLinerName, resolve_liner_path
 
-        Resolves *name* against the liners folder; rejects path
-        traversal by ensuring the resolved file is inside that folder.
-        """
-        import mimetypes
-        from pathlib import Path as _P
+        try:
+            target = resolve_liner_path(_resolve_liner_folder(), name, require_file=True)
+        except InvalidLinerName as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Liner not found") from exc
+        media_type, _encoding = mimetypes.guess_type(str(target))
+        return FileResponse(target, media_type=media_type or "application/octet-stream")
 
-        cfg = bridge.player._cfg
-        folder_str = cfg.playback.liners_folder
-        if not folder_str:
-            folder_str = str(_P(cfg.index.active_dir) / "liners")
-        folder = _P(folder_str).resolve()
-        target = (folder / name).resolve()
-        if not str(target).startswith(str(folder)) or not target.is_file():
-            raise HTTPException(status_code=404, detail="Liner not found")
-        mime, _ = mimetypes.guess_type(str(target))
-        return FileResponse(target, media_type=mime or "application/octet-stream")
+    @app.get("/api/liners/file/{escaped:path}", include_in_schema=False)
+    async def api_liner_file_reject_path(escaped: str) -> None:
+        raise HTTPException(status_code=400, detail="liner name must be one plain filename")
+
+    @app.delete("/api/liners/file/{escaped:path}", include_in_schema=False)
+    async def api_liner_delete_reject_path(escaped: str) -> None:
+        raise HTTPException(status_code=400, detail="liner name must be one plain filename")
 
     @app.post("/api/pause")
     async def api_pause() -> dict[str, bool]:

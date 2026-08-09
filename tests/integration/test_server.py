@@ -14,6 +14,7 @@ budget.  Shared fixtures ``client`` / ``bridge`` come from
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -248,6 +249,7 @@ class TestLiners:
         resp = tc.get("/api/liners/file/test.mp3")
         assert resp.status_code == 200
         assert resp.content == b"raw-mp3-bytes"
+        assert resp.headers["content-type"] == "audio/mpeg"
 
     def test_liner_file_path_traversal_blocked(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
@@ -259,7 +261,7 @@ class TestLiners:
 
         tc = TestClient(create_app(bridge))
         resp = tc.get("/api/liners/file/..%2Fsecret.txt")
-        assert resp.status_code == 404
+        assert resp.status_code == 400
 
     def test_liner_settings_round_trip(self, bridge) -> None:
         from fastapi.testclient import TestClient
@@ -307,6 +309,40 @@ class TestLiners:
         body = tc.get("/api/liners").json()
         assert "hello.mp3" in body["files"]
 
+    def test_liner_upload_enforces_configured_limit(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        folder = tmp_path / "liners"
+        bridge.player._cfg.playback.liners_folder = str(folder)
+        bridge.player._cfg.server = SimpleNamespace(liner_upload_max_bytes=50)
+
+        tc = TestClient(create_app(bridge))
+        resp = tc.post(
+            "/api/liners/upload",
+            files={"file": ("clip.mp3", b"x" * 51, "audio/mpeg")},
+        )
+        assert resp.status_code == 413
+        assert not (folder / "clip.mp3").exists()
+
+    def test_liner_upload_conflict_and_explicit_replace(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        folder = tmp_path / "liners"
+        folder.mkdir()
+        target = folder / "clip.mp3"
+        target.write_bytes(b"old")
+        bridge.player._cfg.playback.liners_folder = str(folder)
+
+        tc = TestClient(create_app(bridge))
+        files = {"file": ("clip.mp3", b"new", "audio/mpeg")}
+        conflict = tc.post("/api/liners/upload", files=files)
+        assert conflict.status_code == 409
+        assert target.read_bytes() == b"old"
+
+        replaced = tc.post("/api/liners/upload?replace=true", files=files)
+        assert replaced.status_code == 200
+        assert target.read_bytes() == b"new"
+
     def test_liner_upload_rejects_unknown_extension(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
@@ -346,7 +382,7 @@ class TestLiners:
 
         tc = TestClient(create_app(bridge))
         resp = tc.delete("/api/liners/file/..%2Fsecret.txt")
-        assert resp.status_code == 404
+        assert resp.status_code == 400
         assert outside.exists()
 
 
