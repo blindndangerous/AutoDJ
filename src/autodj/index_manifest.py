@@ -103,8 +103,11 @@ class IndexSnapshotToken:
 
 
 def snapshot_token_for_manifest(manifest: IndexManifest) -> IndexSnapshotToken:
-    """Return a live manifest's exact positive identity."""
-    if manifest.generation < 1 or manifest.state_revision < 1:
+    """Return a live manifest's exact identity, including schema-v1 tokens."""
+    if manifest.generation < 1 or (
+        manifest.schema_version == SCHEMA_VERSION
+        and (manifest.state_revision < 1 or manifest.state_revision != manifest.generation)
+    ):
         raise ValueError("published manifest token must be positive")
     return IndexSnapshotToken(manifest.generation, manifest.state_revision)
 

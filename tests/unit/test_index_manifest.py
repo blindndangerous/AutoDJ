@@ -63,6 +63,16 @@ def test_snapshot_token_for_manifest_requires_live_manifest() -> None:
         snapshot_token_for_manifest(IndexManifest(1, 0, 0, "", "", "", "", ""))
 
 
+def test_snapshot_token_for_live_v1_manifest_keeps_zero_revision(tmp_path: Path) -> None:
+    payload = _manifest_payload()
+    (tmp_path / "index-manifest.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    manifest = read_manifest(tmp_path)
+
+    assert manifest is not None
+    assert snapshot_token_for_manifest(manifest) == IndexSnapshotToken(1, 0)
+
+
 def test_fork_reset_rebinds_inherited_lock_state_without_acquiring_guard(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
