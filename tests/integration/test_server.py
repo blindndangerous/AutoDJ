@@ -1160,9 +1160,12 @@ class TestWebSocketMessages:
 
 
 class TestServeFunction:
-    def test_serve_starts_uvicorn(self) -> None:
+    def test_serve_starts_uvicorn(self, caplog) -> None:
         """serve() should call uvicorn.run with the FastAPI app."""
+        import logging
         from unittest.mock import MagicMock, patch
+
+        from fastapi.testclient import TestClient
 
         from autodj.server import serve
 
@@ -1177,12 +1180,22 @@ class TestServeFunction:
         with (
             patch("autodj.player.Player.run"),  # prevent audio loop from blocking
             patch("uvicorn.run") as mock_uvicorn,
+            caplog.at_level(logging.INFO, logger="autodj.server"),
         ):
             serve(cfg=cfg_mock, sim=sim, seed_entry=None)
 
         mock_uvicorn.assert_called_once()
         assert mock_uvicorn.call_args.kwargs["host"] == "127.0.0.1"
         assert mock_uvicorn.call_args.kwargs["port"] == 8080
+        assert "http://127.0.0.1:8080" in caplog.text
+        assert "http://localhost:8080" not in caplog.text
+        app = mock_uvicorn.call_args.args[0]
+        client = TestClient(
+            app,
+            base_url="http://127.0.0.1:8080",
+            headers={"Host": "127.0.0.1", "Origin": "http://127.0.0.1:8080"},
+        )
+        assert client.get("/api/version").status_code == 200
 
     def test_serve_starts_player_thread(self) -> None:
         """serve() launches a daemon Player thread before starting uvicorn."""

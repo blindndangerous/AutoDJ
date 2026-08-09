@@ -182,6 +182,45 @@ def test_login_status_logout_cookie_contract() -> None:
     assert client.get("/api/status").status_code == 401
 
 
+def test_tls_implicit_origin_authenticates_http_and_websocket() -> None:
+    player = _make_player_mock()
+    player._cfg.server = ServerConfig(
+        host="testserver",
+        port=8443,
+        access_token=_TEST_ACCESS_TOKEN,
+    )
+    bridge = PlayerBridge(player=player, sim=_make_sim_mock())
+    client = TestClient(
+        create_app(bridge, secure_cookie=True),
+        base_url="https://testserver:8443",
+        headers={"Host": "testserver:8443", "Origin": "https://testserver:8443"},
+    )
+
+    assert client.post("/api/login", json={"token": _TEST_ACCESS_TOKEN}).status_code == 200
+    assert client.post("/api/skip").status_code == 200
+    with client.websocket_connect("wss://testserver:8443/ws") as websocket:
+        assert websocket is not None
+
+
+def test_tls_does_not_override_explicit_allowed_origin() -> None:
+    player = _make_player_mock()
+    player._cfg.server = ServerConfig(
+        host="testserver",
+        port=8443,
+        access_token=_TEST_ACCESS_TOKEN,
+        allowed_origins=["http://trusted.test:8080"],
+    )
+    bridge = PlayerBridge(player=player, sim=_make_sim_mock())
+    client = TestClient(
+        create_app(bridge, secure_cookie=True),
+        base_url="https://testserver:8443",
+        headers={"Host": "testserver", "Origin": "http://trusted.test:8080"},
+    )
+
+    assert client.post("/api/login", json={"token": _TEST_ACCESS_TOKEN}).status_code == 200
+    assert client.post("/api/skip").status_code == 200
+
+
 def test_tampered_cookie_is_rejected() -> None:
     client = _security_client()
     assert client.post("/api/login", json={"token": _TEST_ACCESS_TOKEN}).status_code == 200
@@ -296,6 +335,45 @@ def test_request_id_and_template_survive_validation_and_method_errors(
         ("/api/login", 422),
         ("/api/status", 405),
     ]
+
+
+def test_unhandled_route_error_gets_generic_request_id_and_redacted_audit(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    app = _security_app()
+    exception_secret = "private-exception-secret"
+    query_secret = "private-query-secret"
+
+    @app.get("/api/explode")
+    async def explode() -> None:
+        raise RuntimeError(exception_secret)
+
+    client = TestClient(
+        app,
+        headers={"Host": "testserver", "Origin": "http://testserver"},
+    )
+    assert client.post("/api/login", json={"token": _TEST_ACCESS_TOKEN}).status_code == 200
+    caplog.clear()
+
+    with caplog.at_level(logging.ERROR, logger="autodj.audit"):
+        response = client.get(f"/api/explode?detail={query_secret}")
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Internal server error"}
+    assert len(response.headers["X-Request-ID"]) == 32
+    records = [json.loads(item.message) for item in caplog.records if item.name == "autodj.audit"]
+    assert records == [
+        {
+            "action": "/api/explode",
+            "method": "GET",
+            "outcome": "error",
+            "request_id": response.headers["X-Request-ID"],
+            "route": "/api/explode",
+            "status": 500,
+        }
+    ]
+    assert exception_secret not in caplog.text
+    assert query_secret not in caplog.text
 
 
 def test_options_has_no_cors_bypass() -> None:

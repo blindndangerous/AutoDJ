@@ -110,6 +110,13 @@ def _clock_timestamp(now: Callable[[], float]) -> int:
     return timestamp
 
 
+def _is_unspecified_host(host: str) -> bool:
+    try:
+        return ipaddress.ip_address(host).is_unspecified
+    except ValueError:
+        return False
+
+
 @dataclass
 class SecurityPolicy:
     config: ServerConfig
@@ -184,7 +191,14 @@ class SecurityPolicy:
             canonical = canonicalize_allowed_origin(origin)  # type: ignore[arg-type]
         except (TypeError, ValueError):
             return False
-        return canonical in set(self.config.effective_allowed_origins())
+        if self.config.allowed_origins is not None or not self.secure_cookie:
+            allowed = self.config.effective_allowed_origins()
+        elif _is_unspecified_host(self.config.host):
+            allowed = []
+        else:
+            rendered_host = f"[{self.config.host}]" if ":" in self.config.host else self.config.host
+            allowed = [canonicalize_allowed_origin(f"https://{rendered_host}:{self.config.port}")]
+        return canonical in set(allowed)
 
 
 def new_request_id() -> str:
@@ -349,7 +363,27 @@ class SecurityMiddleware:
                 message["headers"] = headers
             await send(message)
 
-        await self.app(scope, receive, send_with_request_id)
+        try:
+            await self.app(scope, receive, send_with_request_id)
+        except Exception:
+            emit_audit(
+                request_id,
+                route,
+                "error",
+                method=method,
+                route=route,
+                status=500,
+                level=logging.ERROR,
+            )
+            if response_status is not None:
+                raise
+            response = JSONResponse(
+                {"detail": "Internal server error"},
+                status_code=500,
+                headers={"X-Request-ID": request_id},
+            )
+            await response(scope, receive, send)
+            return
         if method in _UNSAFE_METHODS and response_status is not None:
             emit_audit(
                 request_id,

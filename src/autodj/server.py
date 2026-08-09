@@ -1681,11 +1681,7 @@ def serve(
     )
 
     scheme = "https" if (ssl_certfile and ssl_keyfile) else "http"
-    pretty_host = (
-        "localhost"
-        if host in ("0.0.0.0", "127.0.0.1", "::")  # nosec B104 — display only
-        else host
-    )
+    pretty_host = f"[{host}]" if ":" in host else host
     audio_mode = "server-audio" if not no_playback else "browser-driven"
     logger.info(
         "AutoDJ server ready: %s://%s:%d  (%s, %d indexed tracks, seed=%s)",
