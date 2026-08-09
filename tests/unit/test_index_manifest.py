@@ -13,6 +13,7 @@ import pytest
 
 from autodj.index_manifest import (
     IndexConsistencyError,
+    IndexManifest,
     IndexSnapshotToken,
     copy_published_snapshot,
     current_snapshot_token,
@@ -20,6 +21,7 @@ from autodj.index_manifest import (
     read_manifest,
     restore_working_snapshot,
     sha256_file,
+    snapshot_token_for_manifest,
     tombstone_publication,
 )
 
@@ -54,6 +56,11 @@ def _publish_once(index_dir_text: str, count: int) -> int:
 def test_snapshot_token_rejects_negative_generation() -> None:
     with pytest.raises(ValueError, match="non-negative"):
         IndexSnapshotToken(-1)
+
+
+def test_snapshot_token_for_manifest_requires_live_manifest() -> None:
+    with pytest.raises(ValueError, match="positive"):
+        snapshot_token_for_manifest(IndexManifest(1, 0, 0, "", "", "", "", ""))
 
 
 def test_fork_reset_rebinds_inherited_lock_state_without_acquiring_guard(

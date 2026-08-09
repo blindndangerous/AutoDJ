@@ -1255,6 +1255,40 @@ class TestPruneIndex:
         assert not (idx / "tracks.db").exists()
         assert not (idx / "vectors.index").exists()
 
+    def test_reservation_only_restart_discards_uncommitted_working_cores(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import autodj.index_manifest as manifest_module
+        from autodj.index_manifest import current_snapshot_token
+        from autodj.indexer import _load_existing_artifacts, load_index, save_index
+
+        entries, vectors = self._distinctive_entries(tmp_path)
+        idx = tmp_path / "idx"
+        monkeypatch.setattr(
+            manifest_module,
+            "_checkpoint_working_tracks",
+            lambda _index_dir: (_ for _ in ()).throw(OSError("checkpoint failed")),
+        )
+        with pytest.raises(OSError, match="checkpoint failed"):
+            save_index(entries, vectors, idx)
+
+        loaded, loaded_vectors, _relative, token = _load_existing_artifacts(idx, tmp_path, None)
+
+        assert loaded == []
+        assert loaded_vectors == []
+        assert token == current_snapshot_token(idx)
+        assert token.generation == 0 and token.state_revision > 0
+        assert not (idx / "tracks.db").exists()
+        assert not (idx / "vectors.index").exists()
+
+        monkeypatch.undo()
+        save_index(entries, vectors, idx, expected_snapshot=token)
+        rebuilt, rebuilt_vectors = load_index(idx)
+        assert [Path(entry.path).name for entry in rebuilt] == [
+            Path(entry.path).name for entry in entries
+        ]
+        assert [int(np.argmax(rebuilt_vectors.reconstruct(row))) for row in range(3)] == [3, 7, 11]
+
 
 # ---------------------------------------------------------------------------
 # enrich_from_beets

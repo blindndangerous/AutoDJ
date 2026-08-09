@@ -102,12 +102,11 @@ class IndexSnapshotToken:
             raise ValueError("snapshot generation must be non-negative")
 
 
-def snapshot_token_for_manifest(manifest: IndexManifest | None) -> IndexSnapshotToken:
-    """Return explicit identity for a manifest or its confirmed absence."""
-    return IndexSnapshotToken(
-        0 if manifest is None else manifest.generation,
-        0 if manifest is None else manifest.state_revision,
-    )
+def snapshot_token_for_manifest(manifest: IndexManifest) -> IndexSnapshotToken:
+    """Return a live manifest's exact positive identity."""
+    if manifest.generation < 1 or manifest.state_revision < 1:
+        raise ValueError("published manifest token must be positive")
+    return IndexSnapshotToken(manifest.generation, manifest.state_revision)
 
 
 @dataclass(frozen=True)
@@ -194,6 +193,17 @@ def publication_is_tombstoned(index_dir: Path) -> bool:
     """Whether a committed logical-empty state currently wins."""
     state = _read_publication_state(index_dir)
     return state is not None and state.tombstone_revision > 0 and read_manifest(index_dir) is None
+
+
+def publication_has_uncommitted_reservation(index_dir: Path) -> bool:
+    """Whether reservation history exists without a committed live snapshot."""
+    state = _read_publication_state(index_dir)
+    return (
+        state is not None
+        and state.high_water > 0
+        and state.tombstone_revision == 0
+        and read_manifest(index_dir) is None
+    )
 
 
 def require_snapshot_token(
