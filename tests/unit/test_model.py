@@ -234,6 +234,45 @@ class TestDownloadModelIfNeeded:
         assert fsync_tree.call_args.args[0].name.startswith(".")
         assert fsync_directory.call_args.args[0] == result.parent
 
+    def test_promotion_fsyncs_every_staged_artifact_before_parent(
+        self,
+        model_config_auto: ModelConfig,
+        index_config: IndexConfig,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls: list[tuple[str, Path]] = []
+
+        def record_file(path: Path) -> None:
+            calls.append(("file", path))
+
+        def record_directory(path: Path) -> None:
+            calls.append(("directory", path))
+
+        monkeypatch.setattr("autodj.model._fsync_file", record_file)
+        monkeypatch.setattr("autodj.model._fsync_directory", record_directory)
+
+        def populate(**kwargs: object) -> str:
+            staging = Path(str(kwargs["local_dir"]))
+            nested = staging / "nested"
+            nested.mkdir()
+            (staging / "config.json").write_text("{}", encoding="utf-8")
+            (staging / "model.safetensors").write_bytes(b"weights")
+            (nested / "metadata.json").write_text("{}", encoding="utf-8")
+            return str(staging)
+
+        with patch("autodj.model.snapshot_download", side_effect=populate):
+            result = download_model_if_needed(model_config_auto, index_config)
+        staged_files = {path.name for kind, path in calls if kind == "file"}
+        assert {
+            "config.json",
+            "model.safetensors",
+            "metadata.json",
+            ".autodj-complete",
+        } <= staged_files
+        parent_index = calls.index(("directory", result.parent))
+        assert all(path != result.parent for _kind, path in calls[:parent_index])
+        assert calls[-1] == ("directory", result.parent)
+
 
 class TestModelCacheInspection:
     def test_public_inspection_uses_configured_auto_path_and_requires_marker(
@@ -444,6 +483,61 @@ class TestWindowsModelCacheLock:
             pytest.raises(OSError, match="access denied"),
         ):
             model._acquire_windows_file_lock(handle)
+
+    @pytest.mark.skipif(os.name != "nt", reason="requires msvcrt locking")
+    def test_nested_same_thread_acquires_os_lock_once(self, tmp_path: Path) -> None:
+        import msvcrt
+
+        import autodj.model as model
+
+        cache = tmp_path / "cache"
+        with (
+            patch("autodj.model._acquire_windows_file_lock") as acquire,
+            patch.object(msvcrt, "locking") as release,
+        ):
+            with model._model_cache_lock(cache):
+                with model._model_cache_lock(cache):
+                    assert acquire.call_count == 1
+                assert release.call_count == 0
+            assert release.call_count == 1
+
+    def test_competing_thread_stays_blocked_until_outer_nested_lock_exits(
+        self, tmp_path: Path
+    ) -> None:
+        from autodj.model import _model_cache_lock
+
+        cache = tmp_path / "cache"
+        entered = threading.Event()
+        acquired = threading.Event()
+
+        def wait_for_lock() -> None:
+            entered.set()
+            with _model_cache_lock(cache):
+                acquired.set()
+
+        with _model_cache_lock(cache):
+            with _model_cache_lock(cache):
+                waiter = threading.Thread(target=wait_for_lock)
+                waiter.start()
+                assert entered.wait(10)
+                assert not acquired.wait(0.2)
+            assert not acquired.is_set()
+        waiter.join(10)
+        assert acquired.is_set()
+
+
+class TestModelCacheSymlinks:
+    def test_symlinked_artifacts_are_incomplete(self, tmp_path: Path) -> None:
+        target = tmp_path / "outside"
+        target.mkdir()
+        (target / "config.json").write_text("{}", encoding="utf-8")
+        (target / "model.safetensors").write_bytes(b"weights")
+        cache = tmp_path / "cache"
+        try:
+            cache.symlink_to(target, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"symlinks unavailable: {exc}")
+        assert _inspect_model_path(cache).reason == "symlinked cache path"
 
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="requires POSIX fork")
