@@ -186,19 +186,21 @@ class SecurityPolicy:
         hostname = _parse_host_header(host_header)
         return hostname is not None and hostname in set(self.config.effective_allowed_hosts())
 
+    def effective_allowed_origins(self) -> list[str]:
+        """Return transport-aware canonical origins without mutating config."""
+        if self.config.allowed_origins is not None or not self.secure_cookie:
+            return self.config.effective_allowed_origins()
+        if _is_unspecified_host(self.config.host):
+            return []
+        rendered_host = f"[{self.config.host}]" if ":" in self.config.host else self.config.host
+        return [canonicalize_allowed_origin(f"https://{rendered_host}:{self.config.port}")]
+
     def origin_allowed(self, origin: str | None) -> bool:
         try:
             canonical = canonicalize_allowed_origin(origin)  # type: ignore[arg-type]
         except (TypeError, ValueError):
             return False
-        if self.config.allowed_origins is not None or not self.secure_cookie:
-            allowed = self.config.effective_allowed_origins()
-        elif _is_unspecified_host(self.config.host):
-            allowed = []
-        else:
-            rendered_host = f"[{self.config.host}]" if ":" in self.config.host else self.config.host
-            allowed = [canonicalize_allowed_origin(f"https://{rendered_host}:{self.config.port}")]
-        return canonical in set(allowed)
+        return canonical in set(self.effective_allowed_origins())
 
 
 def new_request_id() -> str:

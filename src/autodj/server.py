@@ -114,6 +114,21 @@ def _quiesce_cache_writers(
     return bool(wait_for_analysis(timeout=max(0.0, deadline - time.monotonic())))
 
 
+def _advertised_server_origin(policy: SecurityPolicy) -> str:
+    """Choose one browser URL accepted by both transport and request policy."""
+    from urllib.parse import urlsplit
+
+    expected_scheme = "https" if policy.secure_cookie else "http"
+    for origin in policy.effective_allowed_origins():
+        parsed = urlsplit(origin)
+        if parsed.scheme == expected_scheme and policy.host_allowed(parsed.netloc):
+            return origin
+    raise ValueError(
+        "server.allowed_origins must include an allowed origin whose hostname is "
+        "present in server.allowed_hosts and whose scheme matches server TLS"
+    )
+
+
 @functools.cache
 def _version_info() -> dict[str, str]:
     """Return {version, commit, built_at} for the running build.
@@ -1609,6 +1624,10 @@ def serve(
     port = cfg.server.port if port is None else port
     staged_server = replace(cfg.server, host=host, port=port)
     validate_server_exposure(staged_server)
+    secure_cookie = bool(ssl_certfile and ssl_keyfile)
+    advertised_origin = _advertised_server_origin(
+        SecurityPolicy(staged_server, secure_cookie=secure_cookie)
+    )
     cfg.server = staged_server
     host = staged_server.host
     port = staged_server.port
@@ -1677,17 +1696,13 @@ def serve(
     app = create_app(
         bridge,
         player_thread=player_thread,
-        secure_cookie=bool(ssl_certfile and ssl_keyfile),
+        secure_cookie=secure_cookie,
     )
 
-    scheme = "https" if (ssl_certfile and ssl_keyfile) else "http"
-    pretty_host = f"[{host}]" if ":" in host else host
     audio_mode = "server-audio" if not no_playback else "browser-driven"
     logger.info(
-        "AutoDJ server ready: %s://%s:%d  (%s, %d indexed tracks, seed=%s)",
-        scheme,
-        pretty_host,
-        port,
+        "AutoDJ server ready: %s  (%s, %d indexed tracks, seed=%s)",
+        advertised_origin,
         audio_mode,
         len(getattr(sim, "entries", []) or []),
         getattr(seed_entry, "display_name", "random"),

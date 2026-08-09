@@ -1327,6 +1327,103 @@ class TestServeFunction:
         assert cfg.server.effective_allowed_origins() == ["http://192.168.1.10:8080"]
         assert mock_uvicorn.call_args.kwargs["host"] == "192.168.1.10"
 
+    @pytest.mark.parametrize(
+        ("tls", "origin"),
+        [
+            (False, "http://radio.local:8080"),
+            (True, "https://radio.local:8443"),
+        ],
+    )
+    def test_wildcard_serve_advertises_usable_allowed_origin(
+        self,
+        caplog,
+        tls: bool,
+        origin: str,
+    ) -> None:
+        import logging
+        from unittest.mock import MagicMock, patch
+
+        from fastapi.testclient import TestClient
+
+        from autodj.server import serve
+
+        port = 8443 if tls else 8080
+        cfg = MagicMock()
+        cfg.server = ServerConfig(
+            host="0.0.0.0",
+            port=port,
+            access_token="s" * 32 if tls else None,
+            insecure_lan=not tls,
+            allowed_hosts=["radio.local"],
+            allowed_origins=[origin],
+        )
+        cfg.playback.no_repeat_window = 50
+        cfg.playback.artist_repeat_window = 3
+        cfg.playback.crossfade_seconds = 3.0
+        kwargs = {"ssl_certfile": "radio.pem", "ssl_keyfile": "radio-key.pem"} if tls else {}
+
+        with (
+            patch("autodj.player.Player.run"),
+            patch("uvicorn.run") as mock_uvicorn,
+            caplog.at_level(logging.INFO, logger="autodj.server"),
+        ):
+            serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None, **kwargs)
+
+        assert f"AutoDJ server ready: {origin}" in caplog.text
+        assert "server ready: http://0.0.0.0" not in caplog.text
+        assert "server ready: https://0.0.0.0" not in caplog.text
+        app = mock_uvicorn.call_args.args[0]
+        client = TestClient(
+            app,
+            base_url=origin,
+            headers={"Host": "radio.local", "Origin": origin},
+        )
+        if tls:
+            assert client.post("/api/login", json={"token": "s" * 32}).status_code == 200
+            assert client.post("/api/logout").status_code == 200
+        else:
+            assert client.get("/api/auth/status").status_code == 200
+            assert client.post("/api/login", json={"token": "unused"}).status_code == 401
+
+    @pytest.mark.parametrize(
+        ("origin", "tls_kwargs"),
+        [
+            ("http://other.local:8080", {}),
+            (
+                "http://radio.local:8080",
+                {"ssl_certfile": "radio.pem", "ssl_keyfile": "radio-key.pem"},
+            ),
+        ],
+    )
+    def test_serve_rejects_unusable_advertised_policy_before_side_effects(
+        self,
+        origin: str,
+        tls_kwargs: dict[str, str],
+    ) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from autodj.server import serve
+
+        cfg = MagicMock()
+        cfg.server = ServerConfig(
+            host="0.0.0.0",
+            access_token="s" * 32,
+            allowed_hosts=["radio.local"],
+            allowed_origins=[origin],
+        )
+        original_server = cfg.server
+
+        with (
+            patch("autodj.player.Player") as player_class,
+            patch("uvicorn.run") as mock_uvicorn,
+            pytest.raises(ValueError, match="allowed origin"),
+        ):
+            serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None, **tls_kwargs)
+
+        player_class.assert_not_called()
+        mock_uvicorn.assert_not_called()
+        assert cfg.server is original_server
+
 
 # ---------------------------------------------------------------------------
 # New settings endpoints (transition / preset / djmix / playback / bpm / discovery)
