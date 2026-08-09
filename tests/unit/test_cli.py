@@ -598,6 +598,7 @@ class TestCmdServe:
 
     def test_authenticated_lan_overrides_reach_server_without_token_output(self) -> None:
         cfg = _make_cfg()
+        original_server = cfg.server
         token = "s" * 32
         with (
             patch("autodj.config.load_config", return_value=cfg),
@@ -624,6 +625,7 @@ class TestCmdServe:
 
         assert result.exit_code == 0
         assert token not in result.output
+        assert cfg.server is not original_server
         assert cfg.server.access_token == token
         assert cfg.server.allowed_hosts == ["radio.local"]
         assert cfg.server.allowed_origins == ["http://radio.local:8080"]
@@ -633,6 +635,7 @@ class TestCmdServe:
 
     def test_weak_cli_token_is_rejected_without_echo_or_index_load(self) -> None:
         cfg = _make_cfg()
+        original_server = cfg.server
         weak = "do-not-print-me"
         with (
             patch("autodj.config.load_config", return_value=cfg),
@@ -658,11 +661,14 @@ class TestCmdServe:
         assert "at least 32 UTF-8 bytes" in result.output
         assert weak not in result.output
         assert weak not in repr(result.exception)
+        assert cfg.server is original_server
+        assert cfg.server == ServerConfig()
         load_index.assert_not_called()
         serve_mock.assert_not_called()
 
     def test_cli_rejects_allowed_origin_with_path(self) -> None:
         cfg = _make_cfg()
+        original_server = cfg.server
         with (
             patch("autodj.config.load_config", return_value=cfg),
             patch("autodj.similarity.SimilarityIndex.from_index_dir") as load_index,
@@ -684,8 +690,55 @@ class TestCmdServe:
 
         assert result.exit_code == 1
         assert "without userinfo, path, query, or fragment" in result.output
+        assert cfg.server is original_server
+        assert cfg.server == ServerConfig()
         load_index.assert_not_called()
         serve_mock.assert_not_called()
+
+    def test_cli_rejects_invalid_host_without_mutating_config(self) -> None:
+        cfg = _make_cfg()
+        original_server = cfg.server
+        with (
+            patch("autodj.config.load_config", return_value=cfg),
+            patch("autodj.similarity.SimilarityIndex.from_index_dir") as load_index,
+            patch("autodj.server.serve") as serve_mock,
+        ):
+            result = CliRunner().invoke(cli, ["serve", "--host", "[::1]"])
+
+        assert result.exit_code == 1
+        assert "server.host" in result.output
+        assert cfg.server is original_server
+        assert cfg.server == ServerConfig()
+        load_index.assert_not_called()
+        serve_mock.assert_not_called()
+
+    def test_specific_authenticated_lan_derives_policy_without_lists(self) -> None:
+        cfg = _make_cfg()
+        token = "s" * 32
+        with (
+            patch("autodj.config.load_config", return_value=cfg),
+            patch(
+                "autodj.similarity.SimilarityIndex.from_index_dir",
+                return_value=_make_sim(),
+            ),
+            patch("autodj.server.serve") as serve_mock,
+        ):
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "serve",
+                    "--host",
+                    "192.168.1.10",
+                    "--access-token",
+                    token,
+                ],
+            )
+
+        assert result.exit_code == 0
+        assert cfg.server.effective_allowed_hosts() == ["192.168.1.10"]
+        assert cfg.server.effective_allowed_origins() == ["http://192.168.1.10:8080"]
+        assert "WARNING" not in result.output
+        serve_mock.assert_called_once()
 
     def test_documented_insecure_lan_example_is_executable_and_warned(self) -> None:
         cfg = _make_cfg()
@@ -726,6 +779,35 @@ class TestCmdServe:
             patch("autodj.server.serve"),
         ):
             result = CliRunner().invoke(cli, ["serve", "--insecure-lan"])
+
+        assert result.exit_code == 0
+        assert "WARNING" not in result.output
+
+    def test_token_with_insecure_ack_does_not_warn_unauthenticated(self) -> None:
+        cfg = _make_cfg()
+        with (
+            patch("autodj.config.load_config", return_value=cfg),
+            patch(
+                "autodj.similarity.SimilarityIndex.from_index_dir",
+                return_value=_make_sim(),
+            ),
+            patch("autodj.server.serve"),
+        ):
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "serve",
+                    "--host",
+                    "0.0.0.0",
+                    "--access-token",
+                    "s" * 32,
+                    "--insecure-lan",
+                    "--allowed-host",
+                    "radio.local",
+                    "--allowed-origin",
+                    "http://radio.local:8080",
+                ],
+            )
 
         assert result.exit_code == 0
         assert "WARNING" not in result.output

@@ -547,13 +547,13 @@ class TestServerConfig:
         assert custom.effective_allowed_origins() == ["http://127.0.0.2:9090"]
         assert default_port.effective_allowed_origins() == ["http://127.0.0.2"]
 
-    def test_canonicalizes_idna_ipv6_origins_and_duplicates(self) -> None:
+    def test_canonicalizes_ipv6_origins_and_duplicates(self) -> None:
         cfg = ServerConfig.from_dict(
             {
                 "allowed_hosts": ["RADIO.local.", "radio.local", "::1"],
                 "allowed_origins": [
-                    "HTTPS://B\N{LATIN SMALL LETTER U WITH DIAERESIS}CHER.example:443/",
-                    "https://xn--bcher-kva.example",
+                    "HTTPS://Radio.Local:443/",
+                    "https://radio.local",
                     "http://[2001:DB8::1]:80/",
                 ],
             }
@@ -561,7 +561,7 @@ class TestServerConfig:
 
         assert cfg.allowed_hosts == ["radio.local", "::1"]
         assert cfg.allowed_origins == [
-            "https://xn--bcher-kva.example",
+            "https://radio.local",
             "http://[2001:db8::1]",
         ]
 
@@ -577,6 +577,8 @@ class TestServerConfig:
             "https://radio.local:",
             "https://radio.local:0",
             "https://[2001:db8::1",
+            "https://[v1.foo]",
+            "https://[not-ipv6]",
             "https://0.0.0.0",
             "https://*.example",
             "https://radio.local\x00",
@@ -605,6 +607,29 @@ class TestServerConfig:
     def test_rejects_invalid_allowed_hosts(self, host: str) -> None:
         with pytest.raises(ValueError, match="allowed_hosts"):
             ServerConfig.from_dict({"allowed_hosts": [host]})
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "fa\N{LATIN SMALL LETTER SHARP S}.de",
+            "fa\N{ZERO WIDTH JOINER}ss.de",
+            "b\N{LATIN SMALL LETTER U WITH DIAERESIS}cher.example",
+        ],
+    )
+    def test_rejects_unicode_allowed_hosts_without_idna_aliasing(self, host: str) -> None:
+        with pytest.raises(ValueError, match="ASCII"):
+            ServerConfig.from_dict({"allowed_hosts": [host]})
+
+    @pytest.mark.parametrize(
+        "origin",
+        [
+            "https://fa\N{LATIN SMALL LETTER SHARP S}.de",
+            "https://fa\N{ZERO WIDTH JOINER}ss.de",
+        ],
+    )
+    def test_rejects_unicode_origin_hosts_without_idna_aliasing(self, origin: str) -> None:
+        with pytest.raises(ValueError, match="ASCII"):
+            ServerConfig.from_dict({"allowed_origins": [origin]})
 
     @pytest.mark.parametrize(
         ("data", "message"),
@@ -676,6 +701,22 @@ class TestServerConfig:
 
         with pytest.raises(ValueError, match="LAN binding requires"):
             validate_server_exposure(cfg)
+
+    def test_specific_lan_bind_derives_policy_when_authenticated(self) -> None:
+        cfg = ServerConfig(host="192.168.1.10", access_token="s" * 32)
+
+        validate_server_exposure(cfg)
+
+        assert cfg.effective_allowed_hosts() == ["192.168.1.10"]
+        assert cfg.effective_allowed_origins() == ["http://192.168.1.10:8080"]
+
+    def test_specific_named_lan_bind_derives_policy_with_insecure_ack(self) -> None:
+        cfg = ServerConfig(host="Radio.Local", insecure_lan=True)
+
+        validate_server_exposure(cfg)
+
+        assert cfg.effective_allowed_hosts() == ["radio.local"]
+        assert cfg.effective_allowed_origins() == ["http://radio.local:8080"]
 
     def test_validation_rechecks_mutated_direct_configuration(self) -> None:
         cfg = ServerConfig()

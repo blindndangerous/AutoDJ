@@ -1231,6 +1231,7 @@ class TestServeFunction:
 
         cfg = MagicMock()
         cfg.server = ServerConfig()
+        original_server = cfg.server
         sim = _make_sim_mock()
 
         with (
@@ -1247,6 +1248,10 @@ class TestServeFunction:
 
         player_class.assert_not_called()
         mock_uvicorn.assert_not_called()
+        assert cfg.server is original_server
+        assert cfg.server.host == "127.0.0.1"
+        assert cfg.server.port == 8080
+        assert cfg.server.access_token is None
 
     def test_serve_rejects_mutated_weak_token_without_echoing_or_player(self) -> None:
         from unittest.mock import MagicMock, patch
@@ -1260,6 +1265,7 @@ class TestServeFunction:
         cfg.server.access_token = weak
         cfg.server.allowed_hosts = ["radio.local"]
         cfg.server.allowed_origins = ["http://radio.local:8080"]
+        original_server = cfg.server
 
         with (
             patch("autodj.player.Player") as player_class,
@@ -1269,8 +1275,33 @@ class TestServeFunction:
             serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None)
 
         assert weak not in str(raised.value)
+        assert cfg.server is original_server
+        assert cfg.server.host == "192.168.1.10"
+        assert cfg.server.port == 8080
+        assert cfg.server.access_token == weak
         player_class.assert_not_called()
         mock_uvicorn.assert_not_called()
+
+    def test_serve_allows_specific_authenticated_lan_without_policy_lists(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from autodj.server import serve
+
+        cfg = MagicMock()
+        cfg.server = ServerConfig(host="192.168.1.10", access_token="s" * 32)
+        cfg.playback.no_repeat_window = 50
+        cfg.playback.artist_repeat_window = 3
+        cfg.playback.crossfade_seconds = 3.0
+
+        with (
+            patch("autodj.player.Player.run"),
+            patch("uvicorn.run") as mock_uvicorn,
+        ):
+            serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None)
+
+        assert cfg.server.effective_allowed_hosts() == ["192.168.1.10"]
+        assert cfg.server.effective_allowed_origins() == ["http://192.168.1.10:8080"]
+        assert mock_uvicorn.call_args.kwargs["host"] == "192.168.1.10"
 
 
 # ---------------------------------------------------------------------------

@@ -1446,13 +1446,17 @@ def serve(
         discovery_every: Discovery injection rate (forwarded to Player).
         bpm_range: Hard BPM filter ``(lo, hi)`` (forwarded to Player).
     """
+    from dataclasses import replace
+
     from autodj.config import validate_server_exposure
 
     host = cfg.server.host if host is None else host
     port = cfg.server.port if port is None else port
-    cfg.server.host = host
-    cfg.server.port = port
-    validate_server_exposure(cfg.server)
+    staged_server = replace(cfg.server, host=host, port=port)
+    validate_server_exposure(staged_server)
+    cfg.server = staged_server
+    host = staged_server.host
+    port = staged_server.port
 
     import importlib.util as _import_util
 

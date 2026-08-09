@@ -668,6 +668,8 @@ def _canonicalize_host(
         or any(ord(char) < 32 or ord(char) == 127 for char in value)
     ):
         raise ValueError(f"{field_name} contains an invalid host")
+    if not value.isascii():
+        raise ValueError(f"{field_name} hostnames must use ASCII")
     if (
         value.startswith("[")
         or value.endswith("]")
@@ -688,10 +690,7 @@ def _canonicalize_host(
     hostname = value.removesuffix(".")
     if not hostname or hostname == "0":
         raise ValueError(f"{field_name} contains an invalid host")
-    try:
-        ascii_hostname = hostname.encode("idna").decode("ascii").lower()
-    except UnicodeError as exc:
-        raise ValueError(f"{field_name} contains an invalid host") from exc
+    ascii_hostname = hostname.lower()
     if len(ascii_hostname) > 253 or any(
         not _DNS_LABEL.fullmatch(label) for label in ascii_hostname.split(".")
     ):
@@ -742,14 +741,18 @@ def canonicalize_allowed_origin(value: str) -> str:
             "server.allowed_origins entries must be HTTP(S) origins without "
             "userinfo, path, query, or fragment"
         )
-    try:
-        hostname = _canonicalize_host(
-            parsed.hostname,
-            field_name="server.allowed_origins",
-            allow_unspecified=False,
-        )
-    except (TypeError, ValueError) as exc:
-        raise ValueError("server.allowed_origins contains an invalid origin") from exc
+    if parsed.netloc.startswith("["):
+        try:
+            ipaddress.IPv6Address(parsed.hostname)
+        except ValueError as exc:
+            raise ValueError(
+                "server.allowed_origins bracketed hosts must be valid IPv6 addresses"
+            ) from exc
+    hostname = _canonicalize_host(
+        parsed.hostname,
+        field_name="server.allowed_origins",
+        allow_unspecified=False,
+    )
     rendered_host = f"[{hostname}]" if ":" in hostname else hostname
     scheme = parsed.scheme.lower()
     default_port = 80 if scheme == "http" else 443
@@ -885,13 +888,11 @@ def validate_server_exposure(cfg: ServerConfig) -> None:
     )
     cfg.__dict__.update(validated.__dict__)
     loopback = is_loopback_bind(cfg.host)
-    if (not loopback) and (not cfg.allowed_hosts or not cfg.allowed_origins):
-        if cfg.host in {"0.0.0.0", "::"}:
-            raise ValueError(
-                "LAN binding requires explicit nonempty allowed_hosts and allowed_origins; "
-                "wildcard binding requires both lists"
-            )
-        raise ValueError("LAN binding requires explicit nonempty allowed_hosts and allowed_origins")
+    if cfg.host in {"0.0.0.0", "::"} and (not cfg.allowed_hosts or not cfg.allowed_origins):
+        raise ValueError(
+            "LAN binding requires explicit nonempty allowed_hosts and allowed_origins; "
+            "wildcard binding requires both lists"
+        )
     if not cfg.effective_allowed_hosts() or not cfg.effective_allowed_origins():
         raise ValueError("wildcard binding requires explicit allowed_hosts and allowed_origins")
     if not loopback and not cfg.access_token and not cfg.insecure_lan:

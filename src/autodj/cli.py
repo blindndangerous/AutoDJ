@@ -1685,25 +1685,31 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
     from autodj.server import serve
 
     cfg = _load_cfg_or_exit(ctx.obj["config_path"])
+    from dataclasses import replace
+
     from autodj.config import is_loopback_bind, validate_server_exposure
 
-    if host is not None:
-        cfg.server.host = host
-    if port is not None:
-        cfg.server.port = port
-    if access_token is not None:
-        cfg.server.access_token = access_token
-    if insecure_lan is not None:
-        cfg.server.insecure_lan = insecure_lan
-    if allowed_hosts:
-        cfg.server.allowed_hosts = list(allowed_hosts)
-    if allowed_origins:
-        cfg.server.allowed_origins = list(allowed_origins)
     try:
-        validate_server_exposure(cfg.server)
+        staged_server = replace(
+            cfg.server,
+            host=cfg.server.host if host is None else host,
+            port=cfg.server.port if port is None else port,
+            access_token=cfg.server.access_token if access_token is None else access_token,
+            insecure_lan=(cfg.server.insecure_lan if insecure_lan is None else insecure_lan),
+            allowed_hosts=(cfg.server.allowed_hosts if not allowed_hosts else list(allowed_hosts)),
+            allowed_origins=(
+                cfg.server.allowed_origins if not allowed_origins else list(allowed_origins)
+            ),
+        )
+        validate_server_exposure(staged_server)
     except (TypeError, ValueError) as exc:
         raise click.ClickException(str(exc)) from exc
-    if cfg.server.insecure_lan and not is_loopback_bind(cfg.server.host):
+    cfg.server = staged_server
+    if (
+        cfg.server.insecure_lan
+        and cfg.server.access_token is None
+        and not is_loopback_bind(cfg.server.host)
+    ):
         console.print("[yellow]WARNING: LAN access is unauthenticated (--insecure-lan).[/]")
     host = cfg.server.host
     port = cfg.server.port
