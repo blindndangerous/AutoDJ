@@ -325,7 +325,8 @@ class TestFromIndexDir:
 
         assert sim._generation == manifest.generation
 
-    def test_legacy_load_records_generation_zero(self, tmp_path: Path) -> None:
+    def test_flat_legacy_migration_records_published_generation(self, tmp_path: Path) -> None:
+        from autodj.index_manifest import read_manifest
         from autodj.indexer import _save_tracks_metadata, _save_vectors
 
         entries = [_make_entry(0)]
@@ -333,9 +334,77 @@ class TestFromIndexDir:
         _save_vectors(vectors, tmp_path)
         _save_tracks_metadata(entries, tmp_path, music_dir=None)
 
-        sim = SimilarityIndex.from_index_dir(tmp_path)
+        target = tmp_path / "default"
+        sim = SimilarityIndex.from_index_dir(target)
+        manifest = read_manifest(target)
+
+        assert manifest is not None
+        assert sim._generation == manifest.generation > 0
+
+    def test_legacy_named_load_records_generation_zero(self, tmp_path: Path) -> None:
+        from autodj.indexer import _save_tracks_metadata, _save_vectors
+
+        target = tmp_path / "default"
+        target.mkdir()
+        entries = [_make_entry(0)]
+        vectors = np.array([_unit_vec(seed=0)], dtype=np.float32)
+        _save_vectors(vectors, target)
+        _save_tracks_metadata(entries, target, music_dir=None)
+
+        sim = SimilarityIndex.from_index_dir(target)
 
         assert sim._generation == 0
+
+    def test_concurrent_publish_waits_and_cannot_mislabel_loaded_generation(
+        self, tmp_path: Path
+    ) -> None:
+        import autodj.similarity as similarity_module
+        from autodj.index_manifest import read_manifest
+        from autodj.indexer import save_index
+
+        initial_entries = [_make_entry(0)]
+        initial_vectors = np.array([_unit_vec(seed=0)], dtype=np.float32)
+        save_index(initial_entries, initial_vectors, tmp_path)
+        initial_manifest = read_manifest(tmp_path)
+        assert initial_manifest is not None
+        loaded = threading.Event()
+        release = threading.Event()
+        publish_started = threading.Event()
+        publish_done = threading.Event()
+        result: list[SimilarityIndex] = []
+        original_load_index = similarity_module.load_index
+
+        def blocking_load_index(*args, **kwargs):
+            value = original_load_index(*args, **kwargs)
+            loaded.set()
+            assert release.wait(timeout=1)
+            return value
+
+        def load() -> None:
+            result.append(SimilarityIndex.from_index_dir(tmp_path))
+
+        def publish() -> None:
+            publish_started.set()
+            save_index([_make_entry(9)], np.array([_unit_vec(seed=9)], dtype=np.float32), tmp_path)
+            publish_done.set()
+
+        with patch("autodj.similarity.load_index", side_effect=blocking_load_index):
+            loader = threading.Thread(target=load)
+            loader.start()
+            assert loaded.wait(timeout=1)
+            publisher = threading.Thread(target=publish)
+            publisher.start()
+            assert publish_started.wait(timeout=1)
+            time.sleep(0.05)
+            assert not publish_done.is_set()
+            release.set()
+            loader.join(timeout=1)
+            publisher.join(timeout=1)
+
+        assert not loader.is_alive()
+        assert not publisher.is_alive()
+        assert result[0]._generation == initial_manifest.generation
+        assert result[0].ntotal == 1
 
     def test_raises_if_index_missing(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError):
@@ -498,12 +567,8 @@ def _similarity_entries_accesses(source: str) -> list[int]:
         @staticmethod
         def _is_similarity_owner(node: ast.expr) -> bool:
             if isinstance(node, ast.Name):
-                return node.id in {"sim", "similarity"}
-            return (
-                isinstance(node, ast.Attribute)
-                and isinstance(node.value, ast.Name)
-                and (node.value.id, node.attr) in {("bridge", "sim"), ("self", "_sim")}
-            )
+                return node.id in {"sim", "_sim", "similarity"}
+            return isinstance(node, ast.Attribute) and node.attr in {"sim", "_sim", "similarity"}
 
     visitor = Visitor()
     visitor.visit(ast.parse(source))
@@ -512,8 +577,9 @@ def _similarity_entries_accesses(source: str) -> list[int]:
 
 def test_similarity_entries_guard_detects_known_aliases() -> None:
     assert _similarity_entries_accesses(
-        "sim.entries\nsimilarity.entries\nbridge.sim.entries\nself._sim.entries\n"
-    ) == [1, 2, 3, 4]
+        "sim.entries\nsimilarity.entries\nbridge.sim.entries\nself._sim.entries\np._sim.entries\nnested.bridge.sim.entries\n"
+    ) == [1, 2, 3, 4, 5, 6]
+    assert _similarity_entries_accesses("record.entries\n") == []
 
 
 def test_runtime_modules_do_not_read_similarity_entries_directly() -> None:

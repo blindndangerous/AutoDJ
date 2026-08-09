@@ -35,7 +35,7 @@ import faiss
 import numpy as np
 import numpy.typing as npt
 
-from autodj.index_manifest import IndexConsistencyError, read_manifest
+from autodj.index_manifest import IndexConsistencyError, publication_lock, read_manifest
 from autodj.indexer import IndexEntry, load_index
 
 logger = logging.getLogger(__name__)
@@ -258,14 +258,14 @@ class SimilarityIndex:
         Example:
             >>> sim = SimilarityIndex.from_index_dir(Path("index"))
         """
-        manifest = read_manifest(index_dir)
-        generation = manifest.generation if manifest is not None else 0
-        entries, faiss_index = load_index(
-            index_dir,
-            music_dir=music_dir,
-            path_remap=path_remap,
-            expected_generation=manifest.generation if manifest is not None else None,
-        )
+        with publication_lock(index_dir):
+            entries, faiss_index = load_index(
+                index_dir,
+                music_dir=music_dir,
+                path_remap=path_remap,
+            )
+            manifest = read_manifest(index_dir)
+            generation = manifest.generation if manifest is not None else 0
         sim = cls(faiss_index=faiss_index, entries=entries)
         sim._generation = generation
         return sim
