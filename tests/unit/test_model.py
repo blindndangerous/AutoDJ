@@ -293,6 +293,16 @@ class TestDownloadModelIfNeeded:
 
 
 class TestModelCacheInspection:
+    def test_public_inspection_file_target_reports_missing_cache_directory(
+        self, model_config_auto: ModelConfig, index_config: IndexConfig
+    ) -> None:
+        cache = model_cache_path(model_config_auto, index_config)
+        cache.parent.mkdir(parents=True)
+        cache.write_text("not a directory", encoding="utf-8")
+        assert inspect_model_cache(model_config_auto, index_config) == ModelCacheStatus(
+            cache, False, "cache directory missing"
+        )
+
     def test_public_inspection_uses_configured_auto_path_and_requires_marker(
         self, model_config_auto: ModelConfig, index_config: IndexConfig
     ) -> None:

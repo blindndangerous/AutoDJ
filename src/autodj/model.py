@@ -212,7 +212,7 @@ def _inspect_model_path(
     if not cache_path.exists():
         return ModelCacheStatus(cache_path, False, "cache directory missing")
     if not cache_path.is_dir():
-        return ModelCacheStatus(cache_path, False, "not-directory")
+        return ModelCacheStatus(cache_path, False, "cache directory missing")
     if not (cache_path / "config.json").is_file():
         return ModelCacheStatus(cache_path, False, "missing config.json")
     resolved_root = cache_path.resolve()
