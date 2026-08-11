@@ -9,6 +9,7 @@ const staticPath = (...parts) => join(
 const cssSource = readFileSync(staticPath("app.css"), "utf8");
 const htmlSource = readFileSync(staticPath("index.html"), "utf8");
 const appSource = readFileSync(staticPath("app.js"), "utf8");
+const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
 
 function stripCssComments(source) {
   let result = "";
@@ -1449,5 +1450,122 @@ describe("static accessibility contracts", () => {
     ]) {
       expect(libraryLogStyle[property], property).toBe("0px");
     }
+  });
+});
+
+describe("frontend CI gate", () => {
+  function stripYamlComment(line) {
+    let quote = null;
+    for (let index = 0; index < line.length; index += 1) {
+      const character = line[index];
+      if (quote) {
+        if (quote === '"' && character === "\\") index += 1;
+        else if (character === quote) quote = null;
+      } else if (character === '"' || character === "'") {
+        quote = character;
+      } else if (character === "#"
+        && (index === 0 || /\s/.test(line[index - 1]))) {
+        return line.slice(0, index).trimEnd();
+      }
+    }
+    return line.trimEnd();
+  }
+
+  function workflowJobLines(source, jobName) {
+    const lines = source.split(/\r?\n/).map(stripYamlComment);
+    const jobsIndex = lines.findIndex((line) => line === "jobs:");
+    if (jobsIndex < 0) return [];
+
+    const jobLines = [];
+    let inTarget = false;
+    for (const line of lines.slice(jobsIndex + 1)) {
+      if (!line.trim()) continue;
+      const indentation = line.match(/^ */)[0].length;
+      if (indentation === 0) break;
+      const job = indentation === 2
+        ? line.match(/^ {2}([a-zA-Z0-9_-]+):\s*$/)?.[1]
+        : null;
+      if (job) {
+        if (inTarget) break;
+        inTarget = job === jobName;
+      } else if (inTarget) {
+        jobLines.push(line);
+      }
+    }
+    return jobLines;
+  }
+
+  function frontendRunSteps(source) {
+    const jobLines = workflowJobLines(source, "frontend");
+    const stepsIndex = jobLines.findIndex((line) => line === "    steps:");
+    if (stepsIndex < 0) return { commands: [], blocking: false };
+
+    const commands = [];
+    const continueValues = [];
+    for (const line of jobLines) {
+      const jobValue = line.match(/^ {4}continue-on-error:\s*(.+)$/)?.[1];
+      const stepValue = line.match(
+        /^ {6}(?:-\s+)?continue-on-error:\s*(.+)$/,
+      )?.[1] ?? line.match(/^ {8}continue-on-error:\s*(.+)$/)?.[1];
+      if (jobValue !== undefined) continueValues.push(jobValue.trim());
+      if (stepValue !== undefined) continueValues.push(stepValue.trim());
+    }
+
+    for (const line of jobLines.slice(stepsIndex + 1)) {
+      if (!line.trim()) continue;
+      const indentation = line.match(/^ */)[0].length;
+      if (indentation <= 4) break;
+      const command = line.match(/^ {6}-\s+run:\s*(.+)$/)?.[1]
+        ?? line.match(/^ {8}run:\s*(.+)$/)?.[1];
+      if (command !== undefined) commands.push(command.trim());
+    }
+    return {
+      commands,
+      blocking: continueValues.every((value) => value === "false"),
+    };
+  }
+
+  function frontendGateMeetsContract(source) {
+    const { commands, blocking } = frontendRunSteps(source);
+    return blocking
+      && commands.includes("npm ci --ignore-scripts")
+      && commands.includes("npm run lint")
+      && commands.some((command) => command === "npm test"
+        || command === "npm test -- --run")
+      && commands.includes("npm run build");
+  }
+
+  it("runs install, lint, unit tests, and build as blocking steps", () => {
+    expect(frontendGateMeetsContract(workflow)).toBe(true);
+  });
+
+  it("does not accept required commands from comments", () => {
+    const commented = workflow.replace(
+      "      - run: npm test",
+      "      # - run: npm test",
+    );
+    expect(frontendGateMeetsContract(commented)).toBe(false);
+  });
+
+  it("does not accept a shell-masked unit-test failure", () => {
+    const masked = workflow.replace("run: npm test", "run: npm test || true");
+    expect(frontendGateMeetsContract(masked)).toBe(false);
+  });
+
+  it("does not accept expression-based continue-on-error", () => {
+    const nonblocking = workflow.replace(
+      "      - run: npm test",
+      "      - run: npm test\n        continue-on-error: ${{ always() }}",
+    );
+    expect(frontendGateMeetsContract(nonblocking)).toBe(false);
+  });
+
+  it("ignores comments and permits explicitly blocking steps", () => {
+    const blocking = workflow.replace(
+      "      - run: npm test",
+      "      # continue-on-error: true\n"
+        + "      - run: npm test\n        continue-on-error: false",
+    );
+    expect(frontendGateMeetsContract(blocking)).toBe(true);
   });
 });
