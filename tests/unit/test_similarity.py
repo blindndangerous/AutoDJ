@@ -180,6 +180,20 @@ class TestFindNext:
         )
         assert isinstance(result, IndexEntry)
 
+    @pytest.mark.parametrize("invalid", [0, -1])
+    def test_n_candidates_must_be_positive(self, invalid: int) -> None:
+        sim, vectors = _make_similarity_index(3)
+
+        with pytest.raises(ValueError, match="positive integer"):
+            sim.find_next(vectors[0], deque(), n_candidates=invalid)
+
+    @pytest.mark.parametrize("invalid", [True, 1.5])
+    def test_n_candidates_rejects_bool_and_non_integer(self, invalid: object) -> None:
+        sim, vectors = _make_similarity_index(3)
+
+        with pytest.raises(TypeError, match="positive integer"):
+            sim.find_next(vectors[0], deque(), n_candidates=invalid)  # type: ignore[arg-type]
+
     def test_invert_smart_shuffle(self) -> None:
         """invert=True picks least-similar candidate."""
         sim, vectors = _make_similarity_index(20)
@@ -1143,6 +1157,19 @@ class TestHardFilterExpansion:
 
         assert result.path == entries[70].path
 
+    def test_single_candidate_request_expands_until_later_match(self) -> None:
+        sim, vectors = _make_similarity_index(80, genres={70: "Ambient"})
+        entries = sim.entries_snapshot()
+
+        result = sim.find_next(
+            vectors[0],
+            deque([entries[0].path]),
+            n_candidates=1,
+            genre_filter=["ambient"],
+        )
+
+        assert result.path == entries[70].path
+
     def test_filter_expansion_collects_requested_pool_before_ranking(self) -> None:
         n = 80
         query = np.zeros(FEATURE_DIM, dtype=np.float32)
@@ -1209,6 +1236,22 @@ class TestBpmReranking:
             target_bpm=None,
         )
         assert isinstance(result, IndexEntry)
+
+    def test_energy_only_rerank_emits_clean_debug_log(self, caplog) -> None:
+        import logging
+
+        sim, vectors = _make_similarity_index(5)
+        entries = sim.entries_snapshot()
+
+        with caplog.at_level(logging.DEBUG, logger="autodj.similarity"):
+            result = sim.find_next(
+                vectors[0],
+                deque([entries[0].path]),
+                target_energy=0.5,
+            )
+
+        assert isinstance(result, IndexEntry)
+        assert any("energy re-ranked" in message for message in caplog.messages)
 
 
 # ---------------------------------------------------------------------------

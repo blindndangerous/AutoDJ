@@ -524,8 +524,15 @@ class SimilarityIndex:
             The :class:`IndexEntry` for the recommended next track.
 
         Raises:
+            TypeError: If *n_candidates* is not an integer.
+            ValueError: If *n_candidates* is not positive.
             SimilarityError: If all retrieved candidates were excluded.
         """
+        if isinstance(n_candidates, bool) or not isinstance(n_candidates, int):
+            raise TypeError("n_candidates must be a positive integer.")
+        if n_candidates <= 0:
+            raise ValueError("n_candidates must be a positive integer.")
+
         excluded = set(recently_played)
         query = query_vector.reshape(1, -1).astype(np.float32)
         query64 = query.astype(np.float64)
@@ -609,12 +616,20 @@ class SimilarityIndex:
             energy_weight,
         )
         best = _softmax_pick(reranked, pick_top_k, pick_temperature)
-        logger.debug(
-            "Next track (BPM re-ranked): %s (bpm=%.0f, target=%.0f)",
-            best.display_name,
-            best.bpm,
-            target_bpm,
-        )
+        if target_bpm is not None:
+            logger.debug(
+                "Next track (BPM re-ranked): %s (bpm=%.0f, target=%.0f)",
+                best.display_name,
+                best.bpm,
+                target_bpm,
+            )
+        else:
+            logger.debug(
+                "Next track (energy re-ranked): %s (energy=%.2f, target=%.2f)",
+                best.display_name,
+                best.energy,
+                target_energy,
+            )
         return self._public_entry(best)
 
     @_locked
