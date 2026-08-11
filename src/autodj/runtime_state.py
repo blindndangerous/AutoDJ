@@ -186,11 +186,10 @@ def state_file_for(index_dir: Path | None) -> Path | None:
 
 def _fsync_directory(path: Path) -> None:
     """Durably publish a directory entry where the filesystem supports it."""
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-    try:
-        descriptor = os.open(path, flags)
-    except OSError:
+    directory_flag = getattr(os, "O_DIRECTORY", None)
+    if directory_flag is None:
         return
+    descriptor = os.open(path, os.O_RDONLY | directory_flag)
     try:
         os.fsync(descriptor)
     finally:

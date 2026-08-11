@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -356,6 +357,71 @@ class TestSaveFrom:
         assert json.loads(path.read_text(encoding="utf-8"))["preset"] == "new"
         assert not (tmp_path / "web_state.json.tmp").exists()
         assert len([record for record in caplog.records if "durability" in record.message]) == 1
+
+    def test_directory_fsync_is_no_op_when_directory_open_is_unavailable(
+        self,
+        tmp_path,
+        monkeypatch,
+    ) -> None:
+        import autodj.runtime_state as runtime_state
+
+        def unexpected_open(_path, _flags) -> int:
+            pytest.fail("os.open must not run without O_DIRECTORY support")
+
+        monkeypatch.delattr(runtime_state.os, "O_DIRECTORY", raising=False)
+        monkeypatch.setattr(runtime_state.os, "open", unexpected_open)
+
+        runtime_state._fsync_directory(tmp_path)
+
+    @pytest.mark.parametrize("error_number", [errno.EACCES, errno.EIO])
+    def test_directory_fsync_propagates_supported_open_failure(
+        self,
+        tmp_path,
+        monkeypatch,
+        error_number,
+    ) -> None:
+        import autodj.runtime_state as runtime_state
+
+        def fail_open(_path, _flags) -> int:
+            raise OSError(error_number, "directory open failed")
+
+        monkeypatch.setattr(runtime_state.os, "O_DIRECTORY", 0x10000, raising=False)
+        monkeypatch.setattr(runtime_state.os, "open", fail_open)
+
+        with pytest.raises(OSError) as exc_info:
+            runtime_state._fsync_directory(tmp_path)
+
+        assert exc_info.value.errno == error_number
+
+    def test_directory_fsync_closes_descriptor_when_fsync_fails(
+        self,
+        tmp_path,
+        monkeypatch,
+    ) -> None:
+        import autodj.runtime_state as runtime_state
+
+        events: list[tuple[str, int]] = []
+
+        def record_open(_path, _flags) -> int:
+            events.append(("open", 41))
+            return 41
+
+        def fail_fsync(descriptor: int) -> None:
+            events.append(("fsync", descriptor))
+            raise OSError(errno.EIO, "directory flush failed")
+
+        def record_close(descriptor: int) -> None:
+            events.append(("close", descriptor))
+
+        monkeypatch.setattr(runtime_state.os, "O_DIRECTORY", 0x10000, raising=False)
+        monkeypatch.setattr(runtime_state.os, "open", record_open)
+        monkeypatch.setattr(runtime_state.os, "fsync", fail_fsync)
+        monkeypatch.setattr(runtime_state.os, "close", record_close)
+
+        with pytest.raises(OSError, match="directory flush failed"):
+            runtime_state._fsync_directory(tmp_path)
+
+        assert events == [("open", 41), ("fsync", 41), ("close", 41)]
 
     def test_no_index_dir_is_no_op(self) -> None:
         # Should not raise
