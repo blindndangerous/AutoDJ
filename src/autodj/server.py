@@ -86,6 +86,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 _WS_SEND_TIMEOUT_SECONDS = 2.0
+_ALAC_PREFETCH_TIMEOUT_SECONDS = 5.0
 
 
 @dataclass(eq=False)
@@ -610,7 +611,11 @@ async def _prefetch_alac_output(process: Any) -> bytes | None:
         await _terminate_alac_process(process)
         return None
     try:
-        first_chunk = await process.stdout.read(64 * 1024)
+        async with asyncio.timeout(_ALAC_PREFETCH_TIMEOUT_SECONDS):
+            first_chunk = await process.stdout.read(64 * 1024)
+    except TimeoutError:
+        await _terminate_alac_process(process)
+        return None
     except asyncio.CancelledError:
         await _terminate_alac_process(process)
         raise

@@ -3483,6 +3483,84 @@ async def _collect_audio_asgi(app, *, path: str, method: str = "GET") -> list[di
     return messages
 
 
+async def test_alac_stalled_prefetch_times_out_and_falls_back_without_leaks(
+    tmp_path, bridge, monkeypatch
+) -> None:
+    audio = tmp_path / "stalled-preflight.m4a"
+    audio.write_bytes(b"raw-alac")
+    entry = _make_entry(146)
+    entry.path = str(audio)
+    _register_index_entry(bridge, entry)
+    events: list[str] = []
+    read_cancelled = asyncio.Event()
+    closed = threading.Event()
+    never = asyncio.Event()
+    real_open = Path.open
+
+    class TrackedFile:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __getattr__(self, name):
+            return getattr(self.handle, name)
+
+        def close(self):
+            self.handle.close()
+            closed.set()
+
+    def tracked_open(path, *args, **kwargs):
+        handle = real_open(path, *args, **kwargs)
+        if path == audio and args == ("rb",):
+            return TrackedFile(handle)
+        return handle
+
+    async def stalled_read(_size=-1):
+        try:
+            await never.wait()
+        finally:
+            events.append("read-cancelled")
+            read_cancelled.set()
+
+    async def wait_for_process():
+        events.append("wait")
+        return 1
+
+    process = SimpleNamespace(
+        stdout=SimpleNamespace(read=stalled_read),
+        kill=MagicMock(side_effect=lambda: events.append("kill")),
+        wait=AsyncMock(side_effect=wait_for_process),
+    )
+    monkeypatch.setattr(Path, "open", tracked_open)
+    monkeypatch.setattr("autodj.server._is_alac", lambda *_args: True)
+    monkeypatch.setattr("autodj.server.shutil.which", lambda _name: "X:/ffmpeg.exe")
+    monkeypatch.setattr(
+        "autodj.server._ALAC_PREFETCH_TIMEOUT_SECONDS",
+        0.01,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        asyncio,
+        "create_subprocess_exec",
+        AsyncMock(return_value=process),
+    )
+    existing_tasks = set(asyncio.all_tasks())
+
+    messages = await _collect_audio_asgi(create_app(bridge), path=str(audio))
+    await asyncio.sleep(0)
+
+    start = next(message for message in messages if message["type"] == "http.response.start")
+    body = b"".join(
+        message.get("body", b"") for message in messages if message["type"] == "http.response.body"
+    )
+    assert start["status"] == 200
+    assert (b"content-type", b"audio/mp4") in start["headers"]
+    assert body == b"raw-alac"
+    assert read_cancelled.is_set()
+    assert events[:3] == ["read-cancelled", "kill", "wait"]
+    assert closed.wait(0.5) is True
+    assert {task for task in asyncio.all_tasks() - existing_tasks if not task.done()} == set()
+
+
 async def _cancel_asgi_after_first_body(app, *, path: str, expected_prefix: bytes) -> None:
     first_body = asyncio.Event()
     never = asyncio.Event()
