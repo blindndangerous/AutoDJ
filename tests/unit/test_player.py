@@ -444,7 +444,9 @@ def _make_cfg_mock() -> MagicMock:
     return cfg
 
 
-def _make_sim_index(n: int = 10) -> SimilarityIndex:
+def _make_sim_index(n: int = 10, *, bpms: list[float] | None = None) -> SimilarityIndex:
+    if bpms is not None and len(bpms) != n:
+        raise ValueError("bpms must contain one value per track")
     rng = np.random.default_rng(42)
     vectors = rng.standard_normal((n, FEATURE_DIM)).astype(np.float32)
     norms = np.linalg.norm(vectors, axis=1, keepdims=True)
@@ -452,6 +454,9 @@ def _make_sim_index(n: int = 10) -> SimilarityIndex:
     fi = faiss.IndexFlatIP(FEATURE_DIM)
     fi.add(vectors)
     entries = [_make_entry(i) for i in range(n)]
+    if bpms is not None:
+        for entry, bpm in zip(entries, bpms, strict=True):
+            entry.bpm = bpm
     return SimilarityIndex(faiss_index=fi, entries=entries)
 
 
@@ -741,7 +746,7 @@ class TestPlayerPickNext:
     def test_pure_shuffle_picks_from_pool(self) -> None:
         """Pure shuffle ignores similarity and picks any non-recent track."""
         player = self._make_player(n=8, pure_shuffle=True)
-        current = player._sim.entries[0]
+        current = player._sim.entries_snapshot()[0]
         player._state.record_played(current)
         result = player._pick_next(current)
         assert isinstance(result, IndexEntry)
@@ -750,8 +755,9 @@ class TestPlayerPickNext:
     def test_pure_shuffle_falls_back_when_pool_empty(self) -> None:
         """All entries excluded → relax recent exclusion, but not current track."""
         player = self._make_player(n=4, pure_shuffle=True)
-        player._state.recently_played = deque(e.path for e in player._sim.entries)
-        current = player._sim.entries[0]
+        entries = player._sim.entries_snapshot()
+        player._state.recently_played = deque(e.path for e in entries)
+        current = entries[0]
         player._state.current_track = current
         with patch("random.choice", side_effect=lambda pool: pool[0]):
             result = player._pick_next(current)
@@ -759,42 +765,37 @@ class TestPlayerPickNext:
         assert result.path != current.path
 
     def test_pure_shuffle_does_not_admit_unknown_or_out_of_range_bpm(self) -> None:
-        sim = _make_sim_index(4)
-        entries = sim.entries
-        entries[0].bpm = 110.0
-        entries[1].bpm = 0.0
-        entries[2].bpm = 150.0
-        entries[3].bpm = 125.0
+        sim = _make_sim_index(4, bpms=[110.0, 0.0, 150.0, 125.0])
         player = Player(
             _make_cfg_mock(),
-            SimilarityIndex(sim.faiss_index, entries),
+            sim,
             pure_shuffle=True,
             bpm_range=(120.0, 130.0),
         )
+        entries = sim.entries_snapshot()
         player._state.current_track = entries[0]
 
         assert player._pick_next(entries[0]).path == entries[3].path
 
     def test_pure_shuffle_raises_when_no_track_satisfies_hard_bpm(self) -> None:
-        sim = _make_sim_index(3)
-        for entry in sim.entries:
-            entry.bpm = 0.0
+        sim = _make_sim_index(3, bpms=[0.0] * 3)
         player = Player(
             _make_cfg_mock(),
-            SimilarityIndex(sim.faiss_index, sim.entries),
+            sim,
             pure_shuffle=True,
             bpm_range=(120.0, 130.0),
         )
-        player._state.current_track = sim.entries[0]
+        entries = sim.entries_snapshot()
+        player._state.current_track = entries[0]
 
         with pytest.raises(SimilarityError, match="hard filters for pure shuffle"):
-            player._pick_next(sim.entries[0])
+            player._pick_next(entries[0])
 
     def test_pure_shuffle_logs_once_when_recent_exclusion_is_relaxed(self, caplog) -> None:
         import logging
 
         player = self._make_player(n=3, pure_shuffle=True)
-        entries = player._sim.entries
+        entries = player._sim.entries_snapshot()
         player._state.current_track = entries[0]
         player._state.recently_played = deque(entry.path for entry in entries)
 
@@ -2212,9 +2213,10 @@ class TestPickNextBranches:
         player._pure_shuffle = True
         # Force recently_played to cover every entry path so the filter
         # leaves an empty pool and triggers the full-library fallback.
-        all_paths = [e.path for e in player._sim.entries]
+        entries = player._sim.entries_snapshot()
+        all_paths = [e.path for e in entries]
         player._state.recently_played = deque(all_paths, maxlen=len(all_paths))
-        current = player._sim.entries[0]
+        current = entries[0]
         result = player._pick_next(current)
         assert isinstance(result, IndexEntry)
         assert player._last_pick_mode == "pure_shuffle"

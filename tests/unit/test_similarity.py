@@ -47,12 +47,24 @@ def _make_entry(i: int, bpm: float = 120.0) -> IndexEntry:
     )
 
 
-def _make_similarity_index(n: int) -> tuple[SimilarityIndex, np.ndarray]:
+def _make_similarity_index(
+    n: int,
+    *,
+    bpms: list[float] | None = None,
+    genres: dict[int, str] | None = None,
+) -> tuple[SimilarityIndex, np.ndarray]:
     """Build a SimilarityIndex with *n* deterministic tracks."""
+    if bpms is not None and len(bpms) != n:
+        raise ValueError("bpms must contain one value per track")
     vectors = np.array([_unit_vec(seed=i) for i in range(n)], dtype=np.float32)
     faiss_index = faiss.IndexFlatIP(FEATURE_DIM)
     faiss_index.add(vectors)
     entries = [_make_entry(i) for i in range(n)]
+    if bpms is not None:
+        for entry, bpm in zip(entries, bpms, strict=True):
+            entry.bpm = bpm
+    for idx, genre in (genres or {}).items():
+        entries[idx].genre = genre
     sim_index = SimilarityIndex(faiss_index=faiss_index, entries=entries)
     return sim_index, vectors
 
@@ -249,9 +261,7 @@ class TestFindNext:
         assert result.title != "Same Song"
 
     def test_bpm_range_filter(self) -> None:
-        sim, vectors = _make_similarity_index(8)
-        for i, e in enumerate(sim.entries):
-            e.bpm = 80.0 if i < 4 else 130.0
+        sim, vectors = _make_similarity_index(8, bpms=[80.0] * 4 + [130.0] * 4)
         result = sim.find_next(
             query_vector=vectors[0],
             recently_played=deque(),
@@ -262,13 +272,12 @@ class TestFindNext:
         assert result.bpm == 130.0
 
     def test_empty_hard_bpm_filter_raises(self) -> None:
-        sim, vectors = _make_similarity_index(5)
-        for e in sim.entries:
-            e.bpm = 80.0
+        sim, vectors = _make_similarity_index(5, bpms=[80.0] * 5)
+        entries = sim.entries_snapshot()
         with pytest.raises(SimilarityError, match="hard filters"):
             sim.find_next(
                 query_vector=vectors[0],
-                recently_played=deque([sim.entries[0].path]),
+                recently_played=deque([entries[0].path]),
                 n_candidates=5,
                 bpm_range=(200.0, 220.0),
             )
@@ -1079,12 +1088,7 @@ class TestBpmScore:
 
 def _make_sim_with_bpms(bpms: list[float]) -> tuple[SimilarityIndex, np.ndarray]:
     """Build a SimilarityIndex where each entry has the given BPM."""
-    vectors = np.array([_unit_vec(seed=i) for i in range(len(bpms))], dtype=np.float32)
-    faiss_index = faiss.IndexFlatIP(FEATURE_DIM)
-    faiss_index.add(vectors)
-    entries = [_make_entry(i, bpm=bpm) for i, bpm in enumerate(bpms)]
-    sim = SimilarityIndex(faiss_index=faiss_index, entries=entries)
-    return sim, vectors
+    return _make_similarity_index(len(bpms), bpms=bpms)
 
 
 class TestBpmRangeFilter:
@@ -1092,7 +1096,8 @@ class TestBpmRangeFilter:
         # Tracks: bpm=80 (out), 120 (in), 130 (in), 200 (out)
         bpms = [80.0, 120.0, 130.0, 200.0]
         sim, vectors = _make_sim_with_bpms(bpms)
-        excluded = deque([sim.entries[0].path])  # exclude bpm=80 ourselves
+        entries = sim.entries_snapshot()
+        excluded = deque([entries[0].path])  # exclude bpm=80 ourselves
         result = sim.find_next(
             query_vector=vectors[0],
             recently_played=excluded,
@@ -1103,9 +1108,10 @@ class TestBpmRangeFilter:
     def test_unknown_bpm_is_excluded_by_hard_range(self) -> None:
         bpms = [110.0, 0.0, 125.0]
         sim, vectors = _make_sim_with_bpms(bpms)
+        entries = sim.entries_snapshot()
         result = sim.find_next(
             query_vector=vectors[0],
-            recently_played=deque([sim.entries[0].path]),
+            recently_played=deque([entries[0].path]),
             bpm_range=(120.0, 130.0),
             n_candidates=1,
         )
@@ -1114,29 +1120,28 @@ class TestBpmRangeFilter:
     def test_empty_hard_range_raises_instead_of_relaxing(self) -> None:
         bpms = [80.0, 82.0, 0.0]
         sim, vectors = _make_sim_with_bpms(bpms)
+        entries = sim.entries_snapshot()
         with pytest.raises(SimilarityError, match="hard filters"):
             sim.find_next(
                 query_vector=vectors[0],
-                recently_played=deque([sim.entries[0].path]),
+                recently_played=deque([entries[0].path]),
                 bpm_range=(120.0, 130.0),
             )
 
 
 class TestHardFilterExpansion:
     def test_genre_filter_expands_until_match_outside_initial_window(self) -> None:
-        sim, vectors = _make_similarity_index(80)
-        for entry in sim.entries:
-            entry.genre = "Rock"
-        sim.entries[70].genre = "Ambient"
+        sim, vectors = _make_similarity_index(80, genres={70: "Ambient"})
+        entries = sim.entries_snapshot()
 
         result = sim.find_next(
             vectors[0],
-            deque([sim.entries[0].path]),
+            deque([entries[0].path]),
             n_candidates=5,
             genre_filter=["ambient"],
         )
 
-        assert result.path == sim.entries[70].path
+        assert result.path == entries[70].path
 
     def test_filter_expansion_collects_requested_pool_before_ranking(self) -> None:
         n = 80
@@ -1153,6 +1158,7 @@ class TestHardFilterExpansion:
         for idx in (20, 40, 70):
             entries[idx].genre = "Ambient"
         sim = SimilarityIndex(index, entries)
+        snapshot = sim.entries_snapshot()
 
         with patch(
             "autodj.similarity._softmax_pick",
@@ -1160,7 +1166,7 @@ class TestHardFilterExpansion:
         ) as choose:
             sim.find_next(
                 query,
-                deque([entries[0].path]),
+                deque([snapshot[0].path]),
                 n_candidates=3,
                 genre_filter=["ambient"],
             )
