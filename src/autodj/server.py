@@ -87,25 +87,47 @@ class _WebSocketClient:
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     handler_task: asyncio.Task[Any] | None = None
     failure_code: int | None = None
+    close_started: bool = False
 
 
-async def _close_failed_websocket(client: _WebSocketClient, timeout_seconds: float) -> None:
-    client.failure_code = 1013
+async def _close_websocket_client(
+    client: _WebSocketClient,
+    *,
+    code: int,
+    timeout_seconds: float,
+    failure_action: str,
+) -> bool:
     try:
         async with asyncio.timeout(timeout_seconds):
             async with client.send_lock:
-                await client.websocket.close(code=client.failure_code)
+                if client.close_started:
+                    return True
+                client.close_started = True
+                client.failure_code = code
+                await client.websocket.close(code=code)
     except Exception:
         if client.request_id is not None:
             emit_audit(
                 client.request_id,
-                "broadcast",
+                failure_action,
                 "rejected",
                 method="WS",
                 route="/ws",
-                status=client.failure_code,
+                status=code,
                 level=logging.WARNING,
             )
+        return False
+    return True
+
+
+async def _close_failed_websocket(client: _WebSocketClient, timeout_seconds: float) -> None:
+    try:
+        await _close_websocket_client(
+            client,
+            code=1013,
+            timeout_seconds=timeout_seconds,
+            failure_action="broadcast",
+        )
     finally:
         task = client.handler_task
         if task is not None and not task.done():
@@ -151,6 +173,25 @@ async def _broadcast_and_prune(
         async with clients_lock:
             clients.difference_update(dead)
     return dead
+
+
+async def _close_and_prune_websocket(
+    client: _WebSocketClient,
+    clients: set[_WebSocketClient],
+    clients_lock: asyncio.Lock,
+    *,
+    code: int,
+    timeout_seconds: float = _WS_SEND_TIMEOUT_SECONDS,
+) -> bool:
+    closed = await _close_websocket_client(
+        client,
+        code=code,
+        timeout_seconds=timeout_seconds,
+        failure_action="websocket_close",
+    )
+    async with clients_lock:
+        clients.discard(client)
+    return closed
 
 
 async def reload_published_generation_once(
@@ -1592,7 +1633,12 @@ def create_app(
                                 status=500,
                                 level=logging.WARNING,
                             )
-                            await websocket.close(code=disconnect_code)
+                            await _close_and_prune_websocket(
+                                client,
+                                _ws_clients,
+                                _ws_lock,
+                                code=disconnect_code,
+                            )
                             return
                         emit_audit(
                             request_id,

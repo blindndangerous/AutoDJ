@@ -1040,6 +1040,69 @@ async def test_broadcast_close_failure_is_redacted_and_cancels_handler(caplog) -
     assert "private-close-secret" not in caplog.text
 
 
+async def test_bridge_error_close_waits_for_broadcast_and_prunes_client() -> None:
+    import asyncio
+
+    from autodj.server import (
+        _close_and_prune_websocket,
+        _send_websocket_payload,
+        _WebSocketClient,
+    )
+
+    class OrderedSocket:
+        def __init__(self) -> None:
+            self.send_started = asyncio.Event()
+            self.release_send = asyncio.Event()
+            self.sending = False
+            self.close_codes: list[int] = []
+            self.protocol_errors: list[str] = []
+            self.events: list[str] = []
+
+        async def send_text(self, _payload: str) -> None:
+            self.sending = True
+            self.events.append("send-start")
+            self.send_started.set()
+            await self.release_send.wait()
+            self.events.append("send-end")
+            self.sending = False
+
+        async def close(self, *, code: int) -> None:
+            if self.sending:
+                self.protocol_errors.append("close overlapped send")
+                raise RuntimeError("concurrent ASGI send")
+            self.events.append("close")
+            self.close_codes.append(code)
+
+    websocket = OrderedSocket()
+    client = _WebSocketClient(websocket, request_id="b" * 32)
+    clients = {client}
+    clients_lock = asyncio.Lock()
+    broadcast = asyncio.create_task(_send_websocket_payload(client, "payload", timeout_seconds=1.0))
+    await websocket.send_started.wait()
+
+    bridge_close = asyncio.create_task(
+        _close_and_prune_websocket(
+            client,
+            clients,
+            clients_lock,
+            code=1011,
+            timeout_seconds=1.0,
+        )
+    )
+    await asyncio.sleep(0)
+    assert websocket.close_codes == []
+    assert client in clients
+
+    websocket.release_send.set()
+    assert await broadcast is True
+    assert await bridge_close is True
+
+    assert websocket.events == ["send-start", "send-end", "close"]
+    assert websocket.close_codes == [1011]
+    assert websocket.protocol_errors == []
+    assert client not in clients
+
+
 async def test_http_api_accessible_via_async_client() -> None:
     """Verify all REST endpoints respond correctly using the async ASGI transport."""
     from httpx2 import ASGITransport, AsyncClient
