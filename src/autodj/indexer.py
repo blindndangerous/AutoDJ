@@ -191,8 +191,9 @@ _TRACKS_SCHEMA_SIGNATURE = (
 )
 _TRACKS_REQUIRED_COLUMNS = tuple(column[0] for column in _TRACKS_SCHEMA_SIGNATURE)
 
+# Fixed SQL fragment; all row values remain parameter-bound.
 _TRACKS_UPSERT_SQL = _TRACKS_INSERT_SQL + (
-    " ON CONFLICT(vec_row) DO UPDATE SET path=excluded.path, "
+    " ON CONFLICT(vec_row) DO UPDATE SET path=excluded.path, "  # nosec B608
     "title=excluded.title, artist=excluded.artist, album=excluded.album, "
     "genre=excluded.genre, bpm=excluded.bpm, year=excluded.year, "
     "length=excluded.length, energy=excluded.energy, key=excluded.key, "
@@ -312,8 +313,9 @@ def _ensure_vec_row_schema(conn: sqlite3.Connection) -> None:
             "vec_row, path, title, artist, album, genre, bpm, year, length, "
             "energy, key, mode, tempo_confidence, embedded_at"
         )
-        conn.execute(  # nosec B608 -- expressions fixed internally
-            f"INSERT INTO tracks_new ({columns}) "
+        # Identifiers and expressions come only from fixed schema definitions above.
+        conn.execute(
+            f"INSERT INTO tracks_new ({columns}) "  # nosec B608
             f"SELECT {', '.join(value_sql)} FROM tracks ORDER BY {order_by}"
         )
         conn.execute("DROP TABLE tracks")
@@ -403,7 +405,7 @@ def _upsert_tracks_metadata(
                     "SELECT vec_row, path FROM tracks ORDER BY vec_row"
                 ).fetchall()
                 expected_baseline = [
-                    (int(row["vec_row"]), str(row["path"])) for row in baseline_rows
+                    (int(cast(int, row["vec_row"])), str(row["path"])) for row in baseline_rows
                 ]
                 if actual_baseline != expected_baseline:
                     conn.execute("DELETE FROM tracks")

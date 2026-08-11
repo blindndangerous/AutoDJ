@@ -38,6 +38,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import BinaryIO, Protocol, cast
 
 import numpy as np
 import torch
@@ -79,6 +80,16 @@ _thread_locks_guard = threading.Lock()
 _thread_locks_pid = os.getpid()
 _reentrant_locks: dict[tuple[int, int, str], int] = {}
 _reentrant_locks_guard = threading.Lock()
+
+
+class _FcntlApi(Protocol):
+    """POSIX lock API omitted from Windows type stubs."""
+
+    LOCK_EX: int
+    LOCK_UN: int
+
+    def flock(self, fd: int, operation: int) -> None:
+        """Apply or release an advisory file lock."""
 
 
 def _reset_model_cache_locks_after_fork() -> None:
@@ -319,7 +330,7 @@ def _is_windows_lock_contention(error: OSError) -> bool:
     return error.errno in {errno.EACCES, errno.EAGAIN}
 
 
-def _acquire_windows_file_lock(handle: object) -> None:
+def _acquire_windows_file_lock(handle: BinaryIO) -> None:
     """Acquire one-byte lock, retrying only documented contention errors."""
     import msvcrt
 
@@ -375,11 +386,12 @@ def _model_cache_lock(cache_path: Path) -> Iterator[None]:
             else:
                 import fcntl
 
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                fcntl_api = cast(_FcntlApi, fcntl)
+                fcntl_api.flock(handle.fileno(), fcntl_api.LOCK_EX)
                 try:
                     yield
                 finally:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                    fcntl_api.flock(handle.fileno(), fcntl_api.LOCK_UN)
     finally:
         with _reentrant_locks_guard:
             _reentrant_locks[key] -= 1

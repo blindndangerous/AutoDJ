@@ -828,12 +828,14 @@ class ServerConfig:
     def effective_allowed_hosts(self) -> list[str]:
         if self.allowed_hosts is not None:
             return list(self.allowed_hosts)
-        return [] if self.host in {"0.0.0.0", "::"} else [self.host]
+        # Sentinel comparison selects defaults; it does not bind a socket.
+        return [] if self.host in {"0.0.0.0", "::"} else [self.host]  # nosec B104
 
     def effective_allowed_origins(self) -> list[str]:
         if self.allowed_origins is not None:
             return list(self.allowed_origins)
-        if self.host in {"0.0.0.0", "::"}:
+        # Sentinel comparison selects defaults; it does not bind a socket.
+        if self.host in {"0.0.0.0", "::"}:  # nosec B104
             return []
         rendered_host = f"[{self.host}]" if ":" in self.host else self.host
         return [canonicalize_allowed_origin(f"http://{rendered_host}:{self.port}")]
@@ -888,7 +890,10 @@ def validate_server_exposure(cfg: ServerConfig) -> None:
     )
     cfg.__dict__.update(validated.__dict__)
     loopback = is_loopback_bind(cfg.host)
-    if cfg.host in {"0.0.0.0", "::"} and (not cfg.allowed_hosts or not cfg.allowed_origins):
+    # Sentinel comparison enforces explicit allowlists; it does not bind a socket.
+    if cfg.host in {"0.0.0.0", "::"} and (  # nosec B104
+        not cfg.allowed_hosts or not cfg.allowed_origins
+    ):
         raise ValueError(
             "LAN binding requires explicit nonempty allowed_hosts and allowed_origins; "
             "wildcard binding requires both lists"

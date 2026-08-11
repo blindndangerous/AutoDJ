@@ -14,7 +14,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, BinaryIO, Protocol
+from typing import Any, BinaryIO, Protocol, cast
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +46,19 @@ class LinerRangeNotSatisfiable(ValueError):
 class AsyncReader(Protocol):
     async def read(self, size: int = -1) -> bytes:
         """Read at most *size* bytes."""
+
+
+class _PosixOs(Protocol):
+    """POSIX-only ``os`` members omitted from Windows type stubs."""
+
+    O_DIRECTORY: int
+    O_NOFOLLOW: int
+
+    def geteuid(self) -> int:
+        """Return effective user ID."""
+
+
+_posix_os = cast(_PosixOs, os)
 
 
 @dataclass
@@ -482,7 +495,7 @@ def _nt_create_relative(
         if winerror in {80, 183}:
             raise FileExistsError(winerror, os.strerror(winerror), name)
         raise ctypes.WinError(winerror)
-    result = int(handle.value)
+    result = int(cast(int, handle.value))
     try:
         attributes_value = _windows_handle_attributes(result)
         if attributes_value & _REPARSE_ATTRIBUTE:
@@ -547,7 +560,7 @@ def _require_private_posix_directory(
 ) -> tuple[int, int]:
     # Threat boundary: processes with this effective UID (and root) are trusted.
     # Other writers are excluded before any handle-relative mutation begins.
-    effective_uid = os.geteuid()
+    effective_uid = _posix_os.geteuid()
     if (
         not stat.S_ISDIR(metadata.st_mode)
         or metadata.st_uid != effective_uid
@@ -559,7 +572,7 @@ def _require_private_posix_directory(
 
 def _open_posix_root(path: Path, *, create: bool, mutate: bool) -> _PinnedRoot:
     absolute = Path(os.path.abspath(path))
-    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    flags = os.O_RDONLY | _posix_os.O_DIRECTORY | _posix_os.O_NOFOLLOW
     handle = os.open(absolute.anchor, flags)
     try:
         for part in absolute.parts[1:]:
@@ -648,7 +661,7 @@ def _make_bound_posix_directory(
             created_identity = _require_private_posix_directory(created, description=description)
             handle = os.open(
                 name,
-                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                os.O_RDONLY | _posix_os.O_DIRECTORY | _posix_os.O_NOFOLLOW,
                 dir_fd=root.handle,
             )
             opened_identity = _require_private_posix_directory(
@@ -758,7 +771,7 @@ def _make_staged_upload(root: _PinnedRoot) -> _StagedUpload:
                 try:
                     fd = os.open(
                         "upload.tmp",
-                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | _posix_os.O_NOFOLLOW,
                         0o600,
                         dir_fd=stage_handle,
                     )
@@ -1083,7 +1096,7 @@ def _open_relative_file(root: _PinnedRoot, name: str) -> OpenedLiner:
             _close_windows_handle(raw_handle)
             raise
     else:
-        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=root.handle)
+        fd = os.open(name, os.O_RDONLY | _posix_os.O_NOFOLLOW, dir_fd=root.handle)
     try:
         metadata = os.fstat(fd)
         if not stat.S_ISREG(metadata.st_mode):
@@ -1125,7 +1138,7 @@ def _delete_relative_file(root: _PinnedRoot, name: str) -> None:
             except BaseException:
                 logger.warning("Unable to close committed liner delete handle", exc_info=True)
     else:
-        handle = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=root.handle)
+        handle = os.open(name, os.O_RDONLY | _posix_os.O_NOFOLLOW, dir_fd=root.handle)
         try:
             if not stat.S_ISREG(os.fstat(handle).st_mode):
                 raise FileNotFoundError(name)
@@ -1145,13 +1158,13 @@ def _verify_posix_delete_rollback(quarantine: int) -> None:
     try:
         source = os.open(
             source_name,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | _posix_os.O_NOFOLLOW,
             0o600,
             dir_fd=quarantine,
         )
         target = os.open(
             target_name,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | _posix_os.O_NOFOLLOW,
             0o600,
             dir_fd=quarantine,
         )

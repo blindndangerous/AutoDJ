@@ -273,7 +273,7 @@ def read_manifest(index_dir: Path) -> IndexManifest | None:
             fields.add("state_revision")
         if set(raw) != fields:
             raise IndexConsistencyError("invalid index manifest structure")
-        int_fields = ("schema_version", "generation", "vector_count")
+        int_fields: tuple[str, ...] = ("schema_version", "generation", "vector_count")
         if raw["schema_version"] == SCHEMA_VERSION:
             int_fields += ("state_revision",)
         string_fields = tuple(fields - set(int_fields))
