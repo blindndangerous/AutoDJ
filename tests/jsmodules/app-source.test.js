@@ -51,6 +51,7 @@ async function setupApp({
   const loadCoverArt = audio.loadCoverArt || vi.fn();
   const unlockAndPlay = audio.unlockAndPlay || vi.fn().mockResolvedValue();
   const startCrossfade = audio.startCrossfade || vi.fn().mockResolvedValue(true);
+  const setLastBrowserPlayback = audio.setLastBrowserPlayback || vi.fn();
   const updateMediaSession = vi.fn();
   const bumpLinerTrackCount = vi.fn(linerModule.bumpLinerTrackCount);
   const audioDefaults = {
@@ -79,7 +80,7 @@ async function setupApp({
     resetTrackCaches,
     resetTransitionCaches,
     setApplyState: vi.fn(),
-    setLastBrowserPlayback: vi.fn(),
+    setLastBrowserPlayback,
     setSrcOnDeck: vi.fn(),
     setVolume: vi.fn(),
     startCrossfade,
@@ -155,6 +156,7 @@ async function setupApp({
     loadCoverArt,
     resetTrackCaches,
     resetTransitionCaches,
+    setLastBrowserPlayback,
     startCrossfade,
     stopAllDecks,
     unlockAndPlay,
@@ -172,6 +174,145 @@ afterEach(() => {
 });
 
 describe("app request behavior", () => {
+  it("continues applying unrelated state while pointer seeking", async () => {
+    const { setLastBrowserPlayback, webSocket } = await setupApp({
+      initialState: {
+        current_track: { path: "same.flac", title: "Same" },
+        duration: 120,
+        elapsed: 0,
+      },
+      onRequest: (url) => url.startsWith("/api/lyrics?path=")
+        ? jsonResponse({ path: "same.flac", lyrics: [] })
+        : jsonResponse({ ok: true }),
+    });
+    const progress = document.querySelector("#progress-track");
+    progress.getBoundingClientRect = () => ({ left: 0, width: 100 });
+    const down = new Event("pointerdown", { bubbles: true, cancelable: true });
+    Object.defineProperties(down, {
+      button: { value: 0 },
+      clientX: { value: 50 },
+      isPrimary: { value: true },
+      pointerId: { value: 23 },
+    });
+    progress.dispatchEvent(down);
+
+    webSocket.onmessage({ data: JSON.stringify({
+      browser_playback: true,
+      current_track: { path: "same.flac", title: "Same" },
+      discovery_available: false,
+      duration: 120,
+      elapsed: 30,
+      eq: {},
+      is_muted: false,
+      is_paused: false,
+      next_track: null,
+      queue: [],
+      settings: null,
+      volume: 1,
+    }) });
+
+    expect(document.querySelector("#progress-fill").style.width).toBe("50.0%");
+    expect(setLastBrowserPlayback).toHaveBeenLastCalledWith(true);
+  });
+
+  it("cancels an active seek whenever applied state has no track", async () => {
+    const { fetchImpl, webSocket } = await setupApp({
+      initialState: { duration: 120, elapsed: 0 },
+      onRequest: () => jsonResponse({ ok: true }),
+    });
+    const progress = document.querySelector("#progress-track");
+    progress.getBoundingClientRect = () => ({ left: 0, width: 100 });
+    const dispatchPointer = (type, clientX) => {
+      const event = new Event(type, { bubbles: true, cancelable: true });
+      Object.defineProperties(event, {
+        button: { value: 0 },
+        clientX: { value: clientX },
+        isPrimary: { value: true },
+        pointerId: { value: 24 },
+      });
+      progress.dispatchEvent(event);
+    };
+    dispatchPointer("pointerdown", 50);
+
+    webSocket.onmessage({ data: JSON.stringify({
+      browser_playback: false,
+      current_track: null,
+      discovery_available: false,
+      duration: 120,
+      elapsed: 30,
+      eq: {},
+      is_muted: false,
+      is_paused: false,
+      next_track: null,
+      queue: [],
+      settings: null,
+      volume: 1,
+    }) });
+    dispatchPointer("pointerup", 100);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(document.querySelector("#progress-fill").style.width).toBe("25.0%");
+    const seekBodies = fetchImpl.mock.calls
+      .filter(([url]) => url === "/api/seek")
+      .map(([, options]) => JSON.parse(options.body));
+    expect(seekBodies).toEqual([]);
+  });
+
+  it("cancels an active seek when the current track changes", async () => {
+    const pathFromLyricsUrl = (url) => decodeURIComponent(url.split("path=")[1]);
+    const deckAudio = { currentTime: 10, duration: 120 };
+    const { fetchImpl, webSocket } = await setupApp({
+      audio: {
+        _lastBrowserPlayback: true,
+        decks: [{ audio: deckAudio }],
+        playbackEnabled: true,
+      },
+      initialState: {
+        current_track: { path: "first.flac", title: "First" },
+        duration: 120,
+      },
+      onRequest: (url) => url.startsWith("/api/lyrics?path=")
+        ? jsonResponse({ path: pathFromLyricsUrl(url), lyrics: [] })
+        : jsonResponse({ ok: true }),
+    });
+    const progress = document.querySelector("#progress-track");
+    progress.getBoundingClientRect = () => ({ left: 0, width: 100 });
+    const dispatchPointer = (type, clientX) => {
+      const event = new Event(type, { bubbles: true, cancelable: true });
+      Object.defineProperties(event, {
+        button: { value: 0 },
+        clientX: { value: clientX },
+        isPrimary: { value: true },
+        pointerId: { value: 29 },
+      });
+      progress.dispatchEvent(event);
+    };
+    dispatchPointer("pointerdown", 50);
+
+    webSocket.onmessage({ data: JSON.stringify({
+      browser_playback: false,
+      current_track: { path: "second.flac", title: "Second" },
+      discovery_available: false,
+      duration: 200,
+      elapsed: 0,
+      eq: {},
+      is_muted: false,
+      is_paused: false,
+      next_track: null,
+      queue: [],
+      settings: null,
+      volume: 1,
+    }) });
+    dispatchPointer("pointerup", 100);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const seekBodies = fetchImpl.mock.calls
+      .filter(([url]) => url === "/api/seek")
+      .map(([, options]) => JSON.parse(options.body));
+    expect(seekBodies).toEqual([]);
+    expect(deckAudio.currentTime).toBe(10);
+  });
+
   it("passes every applied state through the liner cadence hook", async () => {
     const initialTrack = { path: "current.mp3", title: "Current" };
     const { bumpLinerTrackCount, webSocket } = await setupApp({
@@ -405,6 +546,103 @@ describe("app request behavior", () => {
     expect(JSON.parse(options.body)).toEqual({ seconds: 99 });
   });
 
+  it("keeps pointer previews local and sends only the final absolute seek", async () => {
+    let resolveSeek;
+    const deckAudio = { currentTime: 10, duration: 100 };
+    const { fetchImpl } = await setupApp({
+      audio: {
+        _lastBrowserPlayback: true,
+        decks: [{ audio: deckAudio }],
+        playbackEnabled: true,
+      },
+      initialState: { duration: 100 },
+      onRequest: (url) => url === "/api/seek"
+        ? new Promise((resolve) => { resolveSeek = resolve; })
+        : jsonResponse({ ok: true }),
+    });
+    const seek = document.querySelector("#progress-track");
+    seek.getBoundingClientRect = () => ({ left: 0, width: 100 });
+    const dispatchPointer = (type, clientX) => {
+      const event = new Event(type, { bubbles: true, cancelable: true });
+      Object.defineProperties(event, {
+        button: { value: 0 },
+        clientX: { value: clientX },
+        isPrimary: { value: true },
+        pointerId: { value: 55 },
+      });
+      seek.dispatchEvent(event);
+    };
+
+    dispatchPointer("pointerdown", 20);
+    dispatchPointer("pointermove", 80);
+    expect(document.querySelector("#progress-fill").style.width).toBe("20.0%");
+    expect(fetchImpl.mock.calls.filter(([url]) => url === "/api/seek")).toHaveLength(0);
+    expect(deckAudio.currentTime).toBe(10);
+
+    dispatchPointer("pointerup", 90);
+    await vi.waitFor(() => expect(fetchImpl.mock.calls.filter(
+      ([url]) => url === "/api/seek",
+    )).toHaveLength(1));
+    const [, options] = fetchImpl.mock.calls.find(([url]) => url === "/api/seek");
+    expect(JSON.parse(options.body)).toEqual({ seconds: 90 });
+    expect(document.querySelector("#progress-fill").style.width).toBe("90.0%");
+    expect(deckAudio.currentTime).toBe(90);
+
+    resolveSeek(jsonResponse({ elapsed: 90 }));
+  });
+
+  it("keeps browser audio at its start position on pointer lifecycle cancellation", async () => {
+    const deckAudio = { currentTime: 10, duration: 100 };
+    const { fetchImpl } = await setupApp({
+      audio: {
+        _lastBrowserPlayback: true,
+        decks: [{ audio: deckAudio }],
+        playbackEnabled: true,
+      },
+      initialState: { duration: 100 },
+      onRequest: () => jsonResponse({ ok: true }),
+    });
+    const seek = document.querySelector("#progress-track");
+    seek.getBoundingClientRect = () => ({
+      bottom: 20, left: 0, right: 100, top: 0, width: 100,
+    });
+    const pointer = (type, clientX = 80) => {
+      const event = new Event(type, { bubbles: true, cancelable: true });
+      Object.defineProperties(event, {
+        button: { value: 0 },
+        clientX: { value: clientX },
+        clientY: { value: 10 },
+        isPrimary: { value: true },
+        pointerId: { value: 57 },
+      });
+      seek.dispatchEvent(event);
+    };
+    const cancellations = [
+      () => pointer("pointercancel"),
+      () => pointer("lostpointercapture"),
+      () => window.dispatchEvent(new Event("blur")),
+      () => {
+        Object.defineProperty(document, "visibilityState", {
+          configurable: true, value: "hidden",
+        });
+        document.dispatchEvent(new Event("visibilitychange"));
+        Object.defineProperty(document, "visibilityState", {
+          configurable: true, value: "visible",
+        });
+      },
+      () => pointer("pointerup", 101),
+    ];
+
+    for (const cancel of cancellations) {
+      deckAudio.currentTime = 10;
+      pointer("pointerdown");
+      expect(deckAudio.currentTime).toBe(10);
+      cancel();
+      expect(deckAudio.currentTime).toBe(10);
+    }
+    expect(fetchImpl.mock.calls.some(([url]) => url === "/api/seek")).toBe(false);
+  });
+
   it("clears stale history and exposes a current load failure", async () => {
     await setupApp({
       onRequest: (url) => url.startsWith("/api/history")
@@ -431,6 +669,7 @@ describe("app request behavior", () => {
 
   it("tears down buffered decks and liners before showing auth on REST 401", async () => {
     let linerDeps;
+    const deckAudio = { currentTime: 10, duration: 100 };
     const source = {
       addEventListener: vi.fn(),
       buffer: null,
@@ -453,11 +692,14 @@ describe("app request behavior", () => {
     };
     const stopAllDecks = vi.fn();
     const resetTrackCaches = vi.fn();
-    const { dialog, updateMediaSession, webSocket } = await setupApp({
+    const { dialog, fetchImpl, updateMediaSession, webSocket } = await setupApp({
       audio: {
         _ctx: audioContext,
         _lastBrowserPlayback: true,
-        decks: [{ gain: { gain: gainParam } }],
+        decks: [{
+          audio: deckAudio,
+          gain: { gain: gainParam },
+        }],
         playbackEnabled: true,
         resetTrackCaches,
         stopAllDecks,
@@ -465,6 +707,7 @@ describe("app request behavior", () => {
       initialState: {
         browser_playback: true,
         current_track: { path: "current.mp3", title: "Current" },
+        duration: 100,
         next_track: { path: "next.mp3", title: "Next" },
         queue: [{ path: "queued.mp3", title: "Queued secret" }],
         settings: {
@@ -488,6 +731,21 @@ describe("app request behavior", () => {
     expect(document.querySelector("#queue-list").textContent).toContain("Queued secret");
     expect(document.querySelector("#preset-select").textContent).toContain("Secret preset");
 
+    const progress = document.querySelector("#progress-track");
+    progress.getBoundingClientRect = () => ({ left: 0, width: 100 });
+    const dispatchPointer = (type, clientX) => {
+      const event = new Event(type, { bubbles: true, cancelable: true });
+      Object.defineProperties(event, {
+        button: { value: 0 },
+        clientX: { value: clientX },
+        isPrimary: { value: true },
+        pointerId: { value: 61 },
+      });
+      progress.dispatchEvent(event);
+    };
+    dispatchPointer("pointerdown", 50);
+    expect(document.querySelector("#progress-fill").style.width).toBe("50.0%");
+
     document.querySelector("#btn-pause").click();
     await vi.waitFor(() => expect(dialog.showModal).toHaveBeenCalledOnce());
     expect(stopAllDecks).toHaveBeenCalledOnce();
@@ -501,6 +759,14 @@ describe("app request behavior", () => {
     expect(document.querySelector("#queue-list").textContent).not.toContain("Queued secret");
     expect(document.querySelector("#preset-select").textContent).not.toContain("Secret preset");
     expect(updateMediaSession).toHaveBeenLastCalledWith({ current_track: null });
+
+    dispatchPointer("pointermove", 90);
+    dispatchPointer("pointerup", 90);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(document.querySelector("#progress-fill").style.width).toBe("0%");
+    expect(document.querySelector("#progress-track").getAttribute("aria-valuenow")).toBe("0");
+    expect(fetchImpl.mock.calls.some(([url]) => url === "/api/seek")).toBe(false);
+    expect(deckAudio.currentTime).toBe(10);
   });
 
   it("does not apply a shuffle response completed after confirmed expiry", async () => {

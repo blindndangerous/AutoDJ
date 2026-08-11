@@ -801,6 +801,11 @@ class PlayerBridge:
         lyrics = getattr(self.player, "_current_lyrics", []) or []
         return [{"time_s": ll.time_s, "text": ll.text} for ll in lyrics]
 
+    def lyrics_for(self, path: str) -> list[dict]:
+        """Read timed lyrics for *path* without depending on current-track state."""
+        lyrics, _plain = self.player._read_lyrics_for_path(path)
+        return [{"time_s": line.time_s, "text": line.text} for line in lyrics]
+
     # ------------------------------------------------------------------
     # 3-band EQ
     # ------------------------------------------------------------------

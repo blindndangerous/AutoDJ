@@ -679,6 +679,24 @@ def create_app(
     # Connected WebSocket clients — populated at runtime
     _ws_clients: set[_WebSocketClient] = set()
     _ws_lock = asyncio.Lock()
+    _lyrics_read_gate = asyncio.Semaphore(1)
+
+    async def _read_lyrics_owned(path: str) -> list[dict[str, object]]:
+        """Run one path read at a time without cancellation leaking capacity."""
+        await _lyrics_read_gate.acquire()
+        try:
+            worker = asyncio.create_task(asyncio.to_thread(bridge.lyrics_for, path))
+        except BaseException:
+            _lyrics_read_gate.release()
+            raise
+
+        def release_capacity(completed: asyncio.Task[list[dict]]) -> None:
+            _lyrics_read_gate.release()
+            if not completed.cancelled():
+                completed.exception()
+
+        worker.add_done_callback(release_capacity)
+        return await asyncio.shield(worker)
 
     # ------------------------------------------------------------------
     # Lifespan (replaces deprecated on_event)
@@ -1355,9 +1373,22 @@ def create_app(
         return Response(content=data, media_type=mime)
 
     @app.get("/api/lyrics")
-    async def api_lyrics() -> dict[str, list]:
-        """Return parsed lyric lines (LRC, beets, or embedded tags)."""
-        return {"lyrics": bridge.current_lyrics()}
+    async def api_lyrics(path: str) -> dict[str, object]:
+        """Return timed lyric lines for one exact indexed track path."""
+        similarity = bridge.sim
+        authorized_snapshot = similarity.snapshot_token
+        if similarity.entry_for_path(path) is None:
+            raise HTTPException(status_code=404, detail="Track not in index")
+        if similarity.snapshot_token != authorized_snapshot:
+            raise HTTPException(status_code=409, detail="Track index changed")
+        lyrics = await _read_lyrics_owned(path)
+        if similarity.snapshot_token != authorized_snapshot:
+            raise HTTPException(status_code=409, detail="Track index changed")
+        if similarity.entry_for_path(path) is None:
+            raise HTTPException(status_code=404, detail="Track not in index")
+        if similarity.snapshot_token != authorized_snapshot:
+            raise HTTPException(status_code=409, detail="Track index changed")
+        return {"path": path, "lyrics": lyrics}
 
     # ------------------------------------------------------------------
     # Browser-driven playback — stream audio bytes + advance trigger

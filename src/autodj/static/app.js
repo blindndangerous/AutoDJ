@@ -26,6 +26,7 @@ import {
   withDisabled,
 } from "./modules/api-client.js";
 import { createLatestRequestOwner } from "./modules/latest-request.js";
+import { installSeekController } from "./modules/seek-controller.js";
 
 if (isDebug()) {
   console.log("[autodj] debug logging ENABLED " +
@@ -127,6 +128,7 @@ function stopProtectedPlayback() {
 }
 
 function clearProtectedSessionData() {
+  _seekController?.cancel();
   resetTrackCaches();
   historyRequestOwner.cancel();
   resetLyricState();
@@ -240,6 +242,7 @@ let lastNextKey  = null;   // suppress aria-live re-announce of unchanged next t
 
 let _lastState = null;
 let _stateApplicationGeneration = 0;
+let _seekController = null;
 
 function applyState(s) {
   _stateApplicationGeneration += 1;
@@ -250,6 +253,7 @@ function applyState(s) {
   const trackKey   = s.current_track ? s.current_track.path : null;
   const trackLabel = fmtTrack(s.current_track);
 
+  if (!trackKey || trackKey !== lastTrackKey) _seekController?.cancel();
   if (trackKey !== lastTrackKey) {
     // Track changed -- update aria-live region so screen readers
     // announce it.  Include BPM in the same announcement as the title
@@ -274,11 +278,11 @@ function applyState(s) {
       document.title = "AutoDJ";
     }
     // Reset lyric tracking — new track may have different lyrics
-    resetLyricState();
+    resetLyricState(_lyricEls);
     // Refresh cover art and full lyric list for the new track
     if (trackKey) {
       loadCoverArt(trackKey);
-      loadLyrics(_lyricEls);
+      void loadLyrics(trackKey, _lyricEls);
     } else {
       loadCoverArt(null);
     }
@@ -346,25 +350,25 @@ function applyState(s) {
   const pct = dur > 0 ? Math.min(100, (elapsed / dur) * 100) : 0;
   // Cache for the seek slider — its keyboard / pointer handlers need
   // the current duration in seconds even when no deck is unlocked yet
-  // (server-audio mode, pre-Play state).  Set before the early-return
-  // path so a paused / not-yet-started session can still seek.
+  // (server-audio mode, pre-Play state).
   _lastDuration = dur;
   // Suppress live progress updates while the user is actively
   // dragging the seek slider so the UI doesn't yo-yo between the
   // drag position and a stale server-broadcast position.
-  if (_seekDragging) return;
-  progressFill.style.width = pct.toFixed(1) + "%";
-  const timeText = `${fmtTime(elapsed)} / ${fmtTime(dur)}`;
-  progressLbl.textContent  = timeText;
-  // A11y C1: expose progressbar value + valuetext so NVDA users can query
-  // track position (insert+T / NVDA+Tab).  pct is 0–100 — matches valuemax=100.
-  const progressTrack = document.getElementById("progress-track");
-  if (progressTrack) {
-    progressTrack.setAttribute("aria-valuenow", pct.toFixed(0));
-    progressTrack.setAttribute(
-      "aria-valuetext",
-      `${fmtTime(elapsed)} of ${fmtTime(dur)}`
-    );
+  if (!_seekController?.isDragging()) {
+    progressFill.style.width = pct.toFixed(1) + "%";
+    const timeText = `${fmtTime(elapsed)} / ${fmtTime(dur)}`;
+    progressLbl.textContent  = timeText;
+    // A11y C1: expose progressbar value + valuetext so NVDA users can query
+    // track position (insert+T / NVDA+Tab).  pct is 0–100 — matches valuemax=100.
+    const progressTrack = document.getElementById("progress-track");
+    if (progressTrack) {
+      progressTrack.setAttribute("aria-valuenow", pct.toFixed(0));
+      progressTrack.setAttribute(
+        "aria-valuetext",
+        `${fmtTime(elapsed)} of ${fmtTime(dur)}`
+      );
+    }
   }
 
   // Snapshot for first-click unlock branch in btnPause handler
@@ -1122,7 +1126,6 @@ btnSkip.addEventListener("click", async () => {
 // ----------------------------------------------------------------
 
 const _seekTrack = document.getElementById("progress-track");
-let _seekDragging = false;
 let _seekLastAriaUpdate = 0;
 let _lastDuration = 0;
 
@@ -1159,10 +1162,9 @@ function _seekToFrac(frac, opts) {
   dbg("seek ->", (frac * 100).toFixed(1) + "%", "of", dur.toFixed(1), "s");
   const f = Math.max(0, Math.min(1, frac));
   const seconds = f * dur;
-  // Local audio jump in browser-playback mode so the user hears the
-  // change immediately; server is informed in parallel for state sync
-  // (CLI listeners + reconnect-time replay).
-  if (_lastBrowserPlayback) {
+  // Pointer previews update only the progress UI.  A committed pointer
+  // seek (and every keyboard seek) moves local audio and informs the server.
+  if (_lastBrowserPlayback && (!opts || opts.local !== false)) {
     try {
       decks[activeIdx].audio.currentTime = Math.max(0, Math.min(dur - 0.1, seconds));
     } catch (_) {}
@@ -1181,31 +1183,23 @@ function _seekToFrac(frac, opts) {
     if (progressFill) progressFill.style.width = (f * 100).toFixed(1) + "%";
     if (progressLbl) progressLbl.textContent = `${fmtTime(seconds)} / ${fmtTime(dur)}`;
   }
-  // Always inform the server, even mid-drag.  The endpoint is cheap
-  // and idempotent; final position wins.
-  void postJsonBestEffort("/api/seek", { seconds }, reportBackgroundRequestError);
+  if (!opts || opts.post !== false) {
+    void postJsonBestEffort("/api/seek", { seconds }, reportBackgroundRequestError);
+  }
 }
 
 if (_seekTrack) {
-  _seekTrack.addEventListener("pointerdown", (e) => {
-    if (e.button !== undefined && e.button !== 0) return;
-    _seekDragging = true;
-    try { _seekTrack.setPointerCapture(e.pointerId); } catch (_) {}
+  function seekFromPointer(e, opts) {
     const rect = _seekTrack.getBoundingClientRect();
-    _seekToFrac((e.clientX - rect.left) / rect.width, { force: true });
-    e.preventDefault();
-  });
-  _seekTrack.addEventListener("pointermove", (e) => {
-    if (!_seekDragging) return;
-    const rect = _seekTrack.getBoundingClientRect();
-    _seekToFrac((e.clientX - rect.left) / rect.width);
-  });
-  _seekTrack.addEventListener("pointerup", (e) => {
-    if (!_seekDragging) return;
-    _seekDragging = false;
-    try { _seekTrack.releasePointerCapture(e.pointerId); } catch (_) {}
-    const rect = _seekTrack.getBoundingClientRect();
-    _seekToFrac((e.clientX - rect.left) / rect.width, { force: true });
+    _seekToFrac((e.clientX - rect.left) / rect.width, opts);
+  }
+  _seekController = installSeekController(_seekTrack, {
+    preview: (event) => seekFromPointer(event, {
+      force: event.type === "pointerdown",
+      local: false,
+      post: false,
+    }),
+    commit: (event) => seekFromPointer(event, { force: true }),
   });
   _seekTrack.addEventListener("keydown", (e) => {
     const dur = _seekTrackDuration();

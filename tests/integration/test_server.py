@@ -2091,6 +2091,19 @@ class TestLibraryEndpoints:
             {"time_s": 1.0, "text": "world"},
         ]
 
+    def test_lyrics_for_reads_and_serialises_the_requested_path(self, bridge) -> None:
+        from autodj.audio_meta import LyricLine
+
+        bridge.player._read_lyrics_for_path.return_value = (
+            [LyricLine(time_s=2.5, text="requested")],
+            "ignored plain text",
+        )
+
+        result = bridge.lyrics_for("Z:/Music/requested.flac")
+
+        assert result == [{"time_s": 2.5, "text": "requested"}]
+        bridge.player._read_lyrics_for_path.assert_called_once_with("Z:/Music/requested.flac")
+
 
 # ---------------------------------------------------------------------------
 # EQ endpoint
@@ -2717,10 +2730,168 @@ class TestMisc:
         assert picked.path in calls
         assert nxt2.path in calls
 
-    def test_lyrics_endpoint_returns_list(self, client) -> None:
-        data = client.get("/api/lyrics").json()
-        assert "lyrics" in data
-        assert isinstance(data["lyrics"], list)
+    def test_lyrics_endpoint_reads_each_requested_index_path(self, bridge) -> None:
+        from fastapi.testclient import TestClient
+
+        from autodj.audio_meta import LyricLine
+
+        first, second = bridge.sim.entries[:2]
+        bridge.player._read_lyrics_for_path.side_effect = [
+            ([LyricLine(time_s=1.0, text="first")], ""),
+            ([LyricLine(time_s=2.0, text="second")], ""),
+        ]
+        tc = TestClient(create_app(bridge))
+
+        first_data = tc.get("/api/lyrics", params={"path": first.path}).json()
+        second_data = tc.get("/api/lyrics", params={"path": second.path}).json()
+
+        assert first_data == {
+            "path": first.path,
+            "lyrics": [{"time_s": 1.0, "text": "first"}],
+        }
+        assert second_data == {
+            "path": second.path,
+            "lyrics": [{"time_s": 2.0, "text": "second"}],
+        }
+        assert bridge.player._read_lyrics_for_path.call_args_list == [
+            ((first.path,), {}),
+            ((second.path,), {}),
+        ]
+
+    def test_lyrics_endpoint_rejects_an_unknown_path_without_reading_it(self, bridge) -> None:
+        from fastapi.testclient import TestClient
+
+        tc = TestClient(create_app(bridge))
+
+        response = tc.get("/api/lyrics", params={"path": "Z:/not-indexed.flac"})
+
+        assert response.status_code == 404
+        bridge.player._read_lyrics_for_path.assert_not_called()
+
+    def test_lyrics_lookup_runs_off_the_event_loop(self, bridge, monkeypatch) -> None:
+        from fastapi.testclient import TestClient
+
+        path = bridge.sim.entries[0].path
+        called: list[str] = []
+
+        def read_lyrics(requested_path: str) -> list[dict]:
+            called.append(requested_path)
+            return []
+
+        async def fake_to_thread(function, *args, **kwargs):
+            called.append("to_thread")
+            return function(*args, **kwargs)
+
+        bridge.lyrics_for = read_lyrics  # type: ignore[assignment]
+        monkeypatch.setattr("autodj.server.asyncio.to_thread", fake_to_thread)
+
+        response = TestClient(create_app(bridge)).get("/api/lyrics", params={"path": path})
+
+        assert response.status_code == 200
+        assert called[-2:] == ["to_thread", path]
+
+    def test_lyrics_endpoint_rejects_result_after_index_generation_swap(self, bridge) -> None:
+        from fastapi.testclient import TestClient
+
+        from autodj.index_manifest import IndexSnapshotToken
+
+        path = bridge.sim.entries[0].path
+        authorized = IndexSnapshotToken(1, 10)
+        replacement = IndexSnapshotToken(2, 20)
+        bridge.sim.snapshot_token = authorized
+
+        def swap_index_generation(_path: str) -> list[dict]:
+            bridge.sim.snapshot_token = replacement
+            bridge.sim.entries = bridge.sim.entries[1:]
+            return [{"time": 0.0, "text": "stale secret"}]
+
+        bridge.lyrics_for = swap_index_generation  # type: ignore[assignment]
+
+        response = TestClient(create_app(bridge)).get("/api/lyrics", params={"path": path})
+
+        assert response.status_code == 409
+        assert "stale secret" not in response.text
+
+    async def test_cancelled_lyrics_waiter_never_starts_a_thread_read(self, bridge) -> None:
+        import contextlib
+
+        from httpx2 import ASGITransport, AsyncClient
+
+        first, second = (entry.path for entry in bridge.sim.entries[:2])
+        first_started = threading.Event()
+        release_first = threading.Event()
+        calls: list[str] = []
+
+        def slow_lyrics(path: str) -> list[dict]:
+            calls.append(path)
+            if path == first:
+                first_started.set()
+                assert release_first.wait(2.0)
+            return []
+
+        bridge.lyrics_for = slow_lyrics  # type: ignore[assignment]
+        app = create_app(bridge)
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            active = asyncio.create_task(client.get("/api/lyrics", params={"path": first}))
+            assert await asyncio.to_thread(first_started.wait, 1.0)
+            queued = asyncio.create_task(client.get("/api/lyrics", params={"path": second}))
+            try:
+                await asyncio.sleep(0.05)
+                queued.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await queued
+            finally:
+                release_first.set()
+            assert (await active).status_code == 200
+
+        assert calls == [first]
+
+    async def test_cancelled_active_lyrics_read_holds_capacity_until_worker_finishes(
+        self, bridge
+    ) -> None:
+        import contextlib
+
+        from httpx2 import ASGITransport, AsyncClient
+
+        first, second = (entry.path for entry in bridge.sim.entries[:2])
+        first_started = threading.Event()
+        release_first = threading.Event()
+        second_started = threading.Event()
+        calls: list[str] = []
+
+        def slow_lyrics(path: str) -> list[dict]:
+            calls.append(path)
+            if path == first:
+                first_started.set()
+                assert release_first.wait(2.0)
+            else:
+                second_started.set()
+            return []
+
+        bridge.lyrics_for = slow_lyrics  # type: ignore[assignment]
+        app = create_app(bridge)
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            active = asyncio.create_task(client.get("/api/lyrics", params={"path": first}))
+            assert await asyncio.to_thread(first_started.wait, 1.0)
+            active.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await active
+
+            following = asyncio.create_task(client.get("/api/lyrics", params={"path": second}))
+            try:
+                await asyncio.sleep(0.05)
+                assert second_started.is_set() is False
+            finally:
+                release_first.set()
+
+            assert await asyncio.to_thread(second_started.wait, 1.0)
+            assert (await following).status_code == 200
+
+        assert calls == [first, second]
 
 
 # ---------------------------------------------------------------------------
