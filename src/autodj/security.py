@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import hmac
 import ipaddress
 import json
 import logging
+import math
 import re
 import secrets
+import threading
 import time
 import uuid
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -44,6 +48,111 @@ _CANONICAL_EXPIRY = re.compile(r"(?:0|[1-9][0-9]{0,18})\Z")
 _MAX_EXPIRY = 2**63 - 1
 _DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
 _BRACKETED_HOST = re.compile(r"\[([^\]]+)\](?::([0-9]+))?\Z")
+LOGIN_BODY_MAX_BYTES = 4096
+
+
+@dataclass(frozen=True)
+class LoginLimitDecision:
+    allowed: bool
+    retry_after: int = 0
+    audit: bool = False
+
+
+@dataclass
+class _LoginClientState:
+    window_started: float
+    failures: int = 0
+    blocked_audited: bool = False
+
+
+class LoginRateLimiter:
+    """Fixed-window login limiter with bounded peer state."""
+
+    def __init__(
+        self,
+        *,
+        now: Callable[[], float] = time.monotonic,
+        per_client_limit: int = 5,
+        global_limit: int = 100,
+        window_seconds: int = 60,
+        max_clients: int = 1024,
+    ) -> None:
+        if min(per_client_limit, global_limit, window_seconds, max_clients) < 1:
+            raise ValueError("login rate-limit settings must be positive")
+        self._now = now
+        self._per_client_limit = per_client_limit
+        self._global_limit = global_limit
+        self._window_seconds = window_seconds
+        self._max_clients = max_clients
+        self._clients: OrderedDict[str, _LoginClientState] = OrderedDict()
+        self._global_started = self._time()
+        self._global_failures = 0
+        self._global_blocked_audited = False
+        self._lock = threading.Lock()
+
+    def _time(self) -> float:
+        value = float(self._now())
+        if not math.isfinite(value):
+            raise ValueError("login limiter clock returned an invalid value")
+        return value
+
+    def _reset_global_if_expired(self, current: float) -> None:
+        if current - self._global_started >= self._window_seconds:
+            self._global_started = current
+            self._global_failures = 0
+            self._global_blocked_audited = False
+            self._clients.clear()
+
+    def _retry_after(self, current: float, started: float) -> int:
+        return max(1, math.ceil(self._window_seconds - (current - started)))
+
+    def check(self, peer: str) -> LoginLimitDecision:
+        with self._lock:
+            current = self._time()
+            self._reset_global_if_expired(current)
+            if self._global_failures >= self._global_limit:
+                audit = not self._global_blocked_audited
+                self._global_blocked_audited = True
+                return LoginLimitDecision(
+                    False, self._retry_after(current, self._global_started), audit
+                )
+            state = self._clients.get(peer)
+            if state is None:
+                return LoginLimitDecision(True)
+            if current - state.window_started >= self._window_seconds:
+                del self._clients[peer]
+                return LoginLimitDecision(True)
+            self._clients.move_to_end(peer)
+            if state.failures < self._per_client_limit:
+                return LoginLimitDecision(True)
+            audit = not state.blocked_audited
+            state.blocked_audited = True
+            return LoginLimitDecision(
+                False, self._retry_after(current, state.window_started), audit
+            )
+
+    def record_failure(self, peer: str) -> None:
+        with self._lock:
+            current = self._time()
+            self._reset_global_if_expired(current)
+            self._global_failures += 1
+            state = self._clients.get(peer)
+            if state is None or current - state.window_started >= self._window_seconds:
+                state = _LoginClientState(current)
+                self._clients[peer] = state
+            state.failures += 1
+            self._clients.move_to_end(peer)
+            while len(self._clients) > self._max_clients:
+                self._clients.popitem(last=False)
+
+    def record_success(self, peer: str) -> None:
+        with self._lock:
+            self._clients.pop(peer, None)
+
+    @property
+    def tracked_clients(self) -> int:
+        with self._lock:
+            return len(self._clients)
 
 
 def _parse_host_header(value: object) -> str | None:
@@ -122,6 +231,10 @@ class SecurityPolicy:
     config: ServerConfig
     secure_cookie: bool = False
     now: Callable[[], float] = time.time
+
+    def __post_init__(self) -> None:
+        """Detach policy decisions from caller-owned mutable configuration."""
+        self.config = copy.deepcopy(self.config)
 
     @property
     def authentication_required(self) -> bool:
@@ -304,6 +417,55 @@ class SecurityMiddleware:
         self.app = app
         self._policy = policy
 
+    def _current_policy(self, scope: Scope) -> SecurityPolicy:
+        app = scope.get("app")
+        state = getattr(app, "state", None)
+        return getattr(state, "security_policy", self._policy)
+
+    @staticmethod
+    def _login_limiter(scope: Scope) -> LoginRateLimiter | None:
+        app = scope.get("app")
+        state = getattr(app, "state", None)
+        limiter = getattr(state, "login_rate_limiter", None)
+        return limiter if isinstance(limiter, LoginRateLimiter) else None
+
+    @staticmethod
+    def _peer(scope: Scope) -> str:
+        client = scope.get("client")
+        if isinstance(client, (tuple, list)) and client:
+            return str(client[0])[:128]
+        return "<unknown>"
+
+    @staticmethod
+    def _declared_login_body_too_large(scope: Scope) -> bool:
+        values = _raw_header_values(scope, b"content-length")
+        if not values:
+            return False
+        if (
+            len(values) != 1
+            or len(values[0]) > 20
+            or not values[0].isascii()
+            or not values[0].isdecimal()
+        ):
+            return True
+        return int(values[0]) > LOGIN_BODY_MAX_BYTES
+
+    @staticmethod
+    async def _buffer_login_body(receive: Receive) -> tuple[bytes, bool]:
+        body = bytearray()
+        while True:
+            message = await receive()
+            if message["type"] != "http.request":
+                return bytes(body), True
+            chunk = message.get("body", b"")
+            if not isinstance(chunk, bytes):
+                raise ValueError("invalid ASGI request body")
+            body.extend(chunk)
+            if len(body) > LOGIN_BODY_MAX_BYTES:
+                raise _LoginBodyTooLarge
+            if not message.get("more_body", False):
+                return bytes(body), False
+
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
@@ -314,21 +476,23 @@ class SecurityMiddleware:
         state["request_id"] = request_id
         method = str(scope.get("method", "")).upper()
         path = str(scope.get("path", ""))
+        is_login = method == "POST" and path == "/api/login"
         route = _route_template(scope)
+        policy = self._current_policy(scope)
         host_values = _raw_header_values(scope, b"host")
         origin_values = _raw_header_values(scope, b"origin")
 
         rejection: tuple[int, str] | None = None
-        if len(host_values) != 1 or not self._policy.host_allowed(host_values[0]):
+        if len(host_values) != 1 or not policy.host_allowed(host_values[0]):
             rejection = (403, "Disallowed Host")
         elif len(origin_values) > 1 or (
             method in _UNSAFE_METHODS
-            and (len(origin_values) != 1 or not self._policy.origin_allowed(origin_values[0]))
+            and (len(origin_values) != 1 or not policy.origin_allowed(origin_values[0]))
         ):
             rejection = (403, "Disallowed Origin")
-        elif self._policy.authentication_required and not _is_public_path(path):
+        elif policy.authentication_required and not _is_public_path(path):
             cookie = Request(scope).cookies.get(COOKIE_NAME)
-            if not self._policy.verify_session(cookie):
+            if not policy.verify_session(cookie):
                 rejection = (401, "Authentication required")
 
         if rejection is not None:
@@ -350,6 +514,56 @@ class SecurityMiddleware:
             )
             return
 
+        login_limiter = self._login_limiter(scope) if is_login else None
+        peer = self._peer(scope)
+        if login_limiter is not None:
+            decision = login_limiter.check(peer)
+            if not decision.allowed:
+                response = JSONResponse(
+                    {"detail": "Too many login attempts"},
+                    status_code=429,
+                    headers={
+                        "X-Request-ID": request_id,
+                        "Retry-After": str(decision.retry_after),
+                    },
+                )
+                await response(scope, receive, send)
+                if decision.audit:
+                    emit_audit(
+                        request_id,
+                        route,
+                        "rejected",
+                        method=method,
+                        route=route,
+                        status=429,
+                        level=logging.WARNING,
+                    )
+                return
+
+        if is_login:
+            if self._declared_login_body_too_large(scope):
+                await self._reject_login_body(scope, receive, send, request_id, method, route)
+                return
+            try:
+                body, disconnected = await self._buffer_login_body(receive)
+            except (_LoginBodyTooLarge, ValueError):
+                await self._reject_login_body(scope, receive, send, request_id, method, route)
+                return
+            replayed = False
+
+            async def receive_login_body() -> Message:
+                nonlocal replayed
+                if replayed:
+                    return await receive()
+                replayed = True
+                if disconnected:
+                    return {"type": "http.disconnect"}
+                return {"type": "http.request", "body": body, "more_body": False}
+
+            downstream_receive: Receive = receive_login_body
+        else:
+            downstream_receive = receive
+
         response_status: int | None = None
 
         async def send_with_request_id(message: Message) -> None:
@@ -366,7 +580,7 @@ class SecurityMiddleware:
             await send(message)
 
         try:
-            await self.app(scope, receive, send_with_request_id)
+            await self.app(scope, downstream_receive, send_with_request_id)
         except Exception:
             emit_audit(
                 request_id,
@@ -374,7 +588,7 @@ class SecurityMiddleware:
                 "error",
                 method=method,
                 route=route,
-                status=500,
+                status=response_status if response_status is not None else 500,
                 level=logging.ERROR,
             )
             if response_status is not None:
@@ -386,6 +600,11 @@ class SecurityMiddleware:
             )
             await response(scope, receive, send)
             return
+        if login_limiter is not None and response_status is not None:
+            if response_status == 401:
+                login_limiter.record_failure(peer)
+            elif 200 <= response_status < 300:
+                login_limiter.record_success(peer)
         if method in _UNSAFE_METHODS and response_status is not None:
             emit_audit(
                 request_id,
@@ -396,3 +615,32 @@ class SecurityMiddleware:
                 status=response_status,
                 level=logging.INFO if response_status < 400 else logging.WARNING,
             )
+
+    @staticmethod
+    async def _reject_login_body(
+        scope: Scope,
+        receive: Receive,
+        send: Send,
+        request_id: str,
+        method: str,
+        route: str,
+    ) -> None:
+        response = JSONResponse(
+            {"detail": "Request body too large"},
+            status_code=413,
+            headers={"X-Request-ID": request_id},
+        )
+        await response(scope, receive, send)
+        emit_audit(
+            request_id,
+            route,
+            "rejected",
+            method=method,
+            route=route,
+            status=413,
+            level=logging.WARNING,
+        )
+
+
+class _LoginBodyTooLarge(Exception):
+    pass

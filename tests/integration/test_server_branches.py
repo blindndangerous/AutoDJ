@@ -20,7 +20,7 @@ from httpx import Headers
 from starlette.websockets import WebSocketDisconnect
 
 from autodj.config import ServerConfig
-from autodj.security import COOKIE_NAME
+from autodj.security import COOKIE_NAME, LoginRateLimiter, SecurityPolicy
 from autodj.server import PlayerBridge, create_app
 
 from ._helpers import _make_player_mock, _make_sim_mock
@@ -77,6 +77,7 @@ def _call_http_without_body_read(
     path: str = "/api/liners/upload",
     raw_path: bytes | None = None,
     headers: list[tuple[bytes, bytes]],
+    app: Any | None = None,
 ) -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = []
 
@@ -101,7 +102,7 @@ def _call_http_without_body_read(
         "server": ("testserver", 80),
         "state": {},
     }
-    asyncio.run(_security_app()(scope, receive, send))
+    asyncio.run((app or _security_app())(scope, receive, send))
     return messages
 
 
@@ -109,6 +110,252 @@ def _response_status(messages: list[dict[str, Any]]) -> int:
     return next(
         message["status"] for message in messages if message["type"] == "http.response.start"
     )
+
+
+def test_security_policy_snapshots_mutable_configuration() -> None:
+    original = ServerConfig(
+        access_token=_TEST_ACCESS_TOKEN,
+        allowed_hosts=["testserver"],
+        allowed_origins=["http://testserver"],
+        session_ttl_seconds=60,
+    )
+    policy = SecurityPolicy(original, now=lambda: 1000)
+    original.access_token = "rotated-task10-access-token-is-32-bytes"
+    assert original.allowed_hosts is not None
+    assert original.allowed_origins is not None
+    original.allowed_hosts[0] = "rotated.local"
+    original.allowed_origins[0] = "http://rotated.local"
+    original.session_ttl_seconds = 120
+
+    assert policy.verify_access_token(_TEST_ACCESS_TOKEN)
+    assert not policy.verify_access_token(original.access_token)
+    assert policy.host_allowed("testserver")
+    assert not policy.host_allowed("rotated.local")
+    assert policy.origin_allowed("http://testserver")
+    assert policy.issue_session().startswith("1060.")
+    assert _TEST_ACCESS_TOKEN not in repr(policy)
+    assert original.access_token not in repr(policy)
+
+    replacement = SecurityPolicy(original)
+    assert replacement.verify_access_token(original.access_token)
+    assert replacement.host_allowed("rotated.local")
+
+
+def test_app_policy_replacement_is_atomic() -> None:
+    app = _security_app()
+    rotated = "rotated-task10-access-token-is-32-bytes"
+    app.state.security_policy = SecurityPolicy(
+        ServerConfig(
+            access_token=rotated,
+            allowed_hosts=["rotated.local"],
+            allowed_origins=["http://rotated.local"],
+        )
+    )
+    client = TestClient(
+        app,
+        base_url="http://rotated.local",
+        headers={"Host": "rotated.local", "Origin": "http://rotated.local"},
+    )
+
+    assert client.post("/api/login", json={"token": rotated}).status_code == 200
+
+
+def test_login_rate_limiter_is_bounded_isolated_and_expires() -> None:
+    now = [100.0]
+    limiter = LoginRateLimiter(
+        now=lambda: now[0], per_client_limit=2, global_limit=4, window_seconds=10, max_clients=2
+    )
+    limiter.record_failure("one")
+    limiter.record_failure("one")
+    assert not limiter.check("one").allowed
+    assert limiter.check("two").allowed
+    limiter.record_failure("two")
+    limiter.record_failure("three")
+    assert limiter.tracked_clients <= 2
+    assert not limiter.check("four").allowed
+    now[0] = 111.0
+    assert limiter.check("one").allowed
+
+
+def test_login_throttle_bypasses_body_and_token_compare(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    limiter = LoginRateLimiter(per_client_limit=1, global_limit=10)
+    app = _security_app()
+    app.state.login_rate_limiter = limiter
+    client = TestClient(
+        app,
+        headers={
+            "Host": "testserver",
+            "Origin": "http://testserver",
+            "X-Forwarded-For": "203.0.113.1",
+        },
+    )
+    policy = app.state.security_policy
+    checked = MagicMock(wraps=policy.verify_access_token)
+    monkeypatch.setattr(policy, "verify_access_token", checked)
+
+    assert client.post("/api/login", json={"token": "wrong"}).status_code == 401
+    with caplog.at_level(logging.WARNING, logger="autodj.audit"):
+        first = client.post("/api/login", content=b"x" * 5000)
+        second = client.post(
+            "/api/login",
+            json={"token": "wrong"},
+            headers={"X-Forwarded-For": "198.51.100.2"},
+        )
+
+    assert first.status_code == second.status_code == 429
+    assert first.headers["Retry-After"]
+    assert checked.call_count == 1
+    limited = [record for record in caplog.records if '"status":429' in record.message]
+    assert len(limited) == 1
+    assert "wrong" not in caplog.text
+
+
+def test_login_throttle_rejects_without_reading_request_body() -> None:
+    limiter = LoginRateLimiter(per_client_limit=1, global_limit=10)
+    limiter.record_failure("127.0.0.1")
+    app = _security_app()
+    app.state.login_rate_limiter = limiter
+
+    messages = _call_http_without_body_read(
+        path="/api/login",
+        headers=[
+            (b"host", b"testserver"),
+            (b"origin", b"http://testserver"),
+            (b"content-length", b"5000"),
+        ],
+        app=app,
+    )
+
+    assert _response_status(messages) == 429
+
+
+def test_successful_login_resets_per_client_failures() -> None:
+    limiter = LoginRateLimiter(per_client_limit=2, global_limit=100)
+    app = _security_app()
+    app.state.login_rate_limiter = limiter
+    client = TestClient(app, headers={"Host": "testserver", "Origin": "http://testserver"})
+
+    assert client.post("/api/login", json={"token": "wrong"}).status_code == 401
+    assert client.post("/api/login", json={"token": _TEST_ACCESS_TOKEN}).status_code == 200
+    client.cookies.clear()
+    assert client.post("/api/login", json={"token": "wrong"}).status_code == 401
+    assert client.post("/api/login", json={"token": _TEST_ACCESS_TOKEN}).status_code == 200
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        [(b"host", b"testserver"), (b"origin", b"http://testserver"), (b"content-length", b"5000")],
+        [
+            (b"host", b"testserver"),
+            (b"origin", b"http://testserver"),
+            (b"content-length", b"12"),
+        ],
+        [(b"host", b"testserver"), (b"origin", b"http://testserver")],
+    ],
+)
+def test_login_body_is_capped_before_json_parsing(
+    headers: list[tuple[bytes, bytes]],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    calls = 0
+    messages: list[dict[str, Any]] = []
+
+    async def receive() -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        return {"type": "http.request", "body": b"x" * 2048, "more_body": calls < 3}
+
+    async def send(message: dict[str, Any]) -> None:
+        messages.append(message)
+
+    scope: dict[str, Any] = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/api/login",
+        "raw_path": b"/api/login",
+        "query_string": b"",
+        "root_path": "",
+        "headers": headers,
+        "client": ("127.0.0.1", 50000),
+        "server": ("testserver", 80),
+        "state": {},
+    }
+    with caplog.at_level(logging.WARNING, logger="autodj.audit"):
+        asyncio.run(_security_app()(scope, receive, send))
+
+    assert _response_status(messages) == 413
+    assert calls == (0 if headers[-1][1] == b"5000" else 3)
+    start = next(message for message in messages if message["type"] == "http.response.start")
+    assert any(key.lower() == b"x-request-id" for key, _ in start["headers"])
+    assert len([record for record in caplog.records if '"status":413' in record.message]) == 1
+
+
+def test_post_start_exception_audits_actual_status_without_second_response(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    app = _security_app()
+
+    async def broken_stream() -> Any:
+        yield b"first"
+        raise RuntimeError("private-stream-secret")
+
+    from fastapi.responses import StreamingResponse
+
+    @app.get("/api/stream-failure")
+    async def stream_failure() -> StreamingResponse:
+        return StreamingResponse(broken_stream(), status_code=206)
+
+    policy: SecurityPolicy = app.state.security_policy
+    cookie = policy.issue_session()
+    messages: list[dict[str, Any]] = []
+
+    async def receive() -> dict[str, Any]:
+        await asyncio.sleep(3600)
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict[str, Any]) -> None:
+        messages.append(message)
+
+    scope: dict[str, Any] = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.4"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": "/api/stream-failure",
+        "raw_path": b"/api/stream-failure",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"host", b"testserver"),
+            (b"cookie", f"{COOKIE_NAME}={cookie}".encode()),
+        ],
+        "client": ("127.0.0.1", 50000),
+        "server": ("testserver", 80),
+        "state": {},
+    }
+    with (
+        caplog.at_level(logging.ERROR, logger="autodj.audit"),
+        pytest.raises(RuntimeError, match="private-stream-secret"),
+    ):
+        asyncio.run(app(scope, receive, send))
+
+    starts = [message for message in messages if message["type"] == "http.response.start"]
+    assert len(starts) == 1
+    assert starts[0]["status"] == 206
+    assert any(key.lower() == b"x-request-id" for key, _ in starts[0]["headers"])
+    audit = [
+        json.loads(record.message) for record in caplog.records if record.name == "autodj.audit"
+    ]
+    assert audit[-1]["status"] == 206
+    assert "private-stream-secret" not in caplog.text
 
 
 @pytest.mark.parametrize(

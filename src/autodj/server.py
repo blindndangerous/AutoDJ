@@ -36,6 +36,7 @@ import mimetypes
 import threading
 import time
 from collections.abc import AsyncGenerator
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -61,6 +62,7 @@ from autodj._bridge import PlayerBridge
 from autodj.index_manifest import IndexConsistencyError, IndexSnapshotToken, current_snapshot_token
 from autodj.security import (
     COOKIE_NAME,
+    LoginRateLimiter,
     SecurityMiddleware,
     SecurityPolicy,
     _raw_header_values,
@@ -75,6 +77,37 @@ if TYPE_CHECKING:
     from autodj.similarity import SimilarityIndex
 
 logger = logging.getLogger(__name__)
+_WS_SEND_TIMEOUT_SECONDS = 2.0
+
+
+@dataclass(eq=False)
+class _WebSocketClient:
+    websocket: Any
+    send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+async def _send_websocket_payload(
+    client: _WebSocketClient, payload: str, timeout_seconds: float
+) -> bool:
+    try:
+        async with asyncio.timeout(timeout_seconds):
+            async with client.send_lock:
+                await client.websocket.send_text(payload)
+    except Exception:
+        return False
+    return True
+
+
+async def _broadcast_clients(
+    clients: tuple[_WebSocketClient, ...],
+    payload: str,
+    *,
+    timeout_seconds: float = _WS_SEND_TIMEOUT_SECONDS,
+) -> set[_WebSocketClient]:
+    results = await asyncio.gather(
+        *(_send_websocket_payload(client, payload, timeout_seconds) for client in clients)
+    )
+    return {client for client, sent in zip(clients, results, strict=True) if not sent}
 
 
 async def reload_published_generation_once(
@@ -121,11 +154,16 @@ def _advertised_server_origin(policy: SecurityPolicy) -> str:
     expected_scheme = "https" if policy.secure_cookie else "http"
     for origin in policy.effective_allowed_origins():
         parsed = urlsplit(origin)
-        if parsed.scheme == expected_scheme and policy.host_allowed(parsed.netloc):
+        origin_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        if (
+            parsed.scheme == expected_scheme
+            and origin_port == policy.config.port
+            and policy.host_allowed(parsed.netloc)
+        ):
             return origin
     raise ValueError(
         "server.allowed_origins must include an allowed origin whose hostname is "
-        "present in server.allowed_hosts and whose scheme matches server TLS"
+        "present in server.allowed_hosts and whose scheme and port match server TLS/bind"
     )
 
 
@@ -352,6 +390,7 @@ def create_app(
     shutdown_timeout_s: float = 30.0,
     *,
     secure_cookie: bool = False,
+    login_rate_limiter: LoginRateLimiter | None = None,
 ) -> FastAPI:
     """Create and return the FastAPI application.
 
@@ -365,7 +404,7 @@ def create_app(
     """
     shutdown_timeout_s = max(0.0, float(shutdown_timeout_s))
     # Connected WebSocket clients — populated at runtime
-    _ws_clients: set[WebSocket] = set()
+    _ws_clients: set[_WebSocketClient] = set()
     _ws_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
@@ -459,6 +498,7 @@ def create_app(
 
     policy = SecurityPolicy(bridge.player._cfg.server, secure_cookie=secure_cookie)
     app.state.security_policy = policy
+    app.state.login_rate_limiter = login_rate_limiter or LoginRateLimiter()
     # Last-added middleware is outermost. Security rejects before upload limiting
     # can inspect or consume a request body.
     app.add_middleware(SecurityMiddleware, policy=policy)
@@ -1414,9 +1454,10 @@ def create_app(
         """WebSocket: broadcast state updates to a connected browser."""
         request_id = new_request_id()
         route = "/ws"
+        request_policy: SecurityPolicy = websocket.app.state.security_policy
         host_values = _raw_header_values(websocket.scope, b"host")
         origin_values = _raw_header_values(websocket.scope, b"origin")
-        if len(host_values) != 1 or not policy.host_allowed(host_values[0]):
+        if len(host_values) != 1 or not request_policy.host_allowed(host_values[0]):
             emit_audit(
                 request_id,
                 route,
@@ -1428,7 +1469,7 @@ def create_app(
             )
             await websocket.close(code=4403)
             return
-        if len(origin_values) != 1 or not policy.origin_allowed(origin_values[0]):
+        if len(origin_values) != 1 or not request_policy.origin_allowed(origin_values[0]):
             emit_audit(
                 request_id,
                 route,
@@ -1440,7 +1481,7 @@ def create_app(
             )
             await websocket.close(code=4403)
             return
-        if policy.authentication_required and not policy.verify_session(
+        if request_policy.authentication_required and not request_policy.verify_session(
             websocket.cookies.get(COOKIE_NAME)
         ):
             emit_audit(
@@ -1456,9 +1497,10 @@ def create_app(
             return
 
         await websocket.accept()
+        client = _WebSocketClient(websocket)
         client_host = getattr(getattr(websocket, "client", None), "host", "unknown")
         async with _ws_lock:
-            _ws_clients.add(websocket)
+            _ws_clients.add(client)
             client_count = len(_ws_clients)
         logger.info(
             "WebSocket connected: %s (%d active client%s)",
@@ -1520,7 +1562,7 @@ def create_app(
             pass
         finally:
             async with _ws_lock:
-                _ws_clients.discard(websocket)
+                _ws_clients.discard(client)
                 remaining = len(_ws_clients)
             logger.info(
                 "WebSocket disconnected: %s (%d active client%s remain)",
@@ -1544,18 +1586,12 @@ def create_app(
             if not _ws_clients:
                 continue
             payload = _json.dumps(bridge.get_state())
-            dead: list[WebSocket] = []
             async with _ws_lock:
-                clients = list(_ws_clients)
-            for client in clients:
-                try:
-                    await client.send_text(payload)
-                except (RuntimeError, WebSocketDisconnect, ConnectionError):
-                    dead.append(client)
+                clients = tuple(_ws_clients)
+            dead = await _broadcast_clients(clients, payload)
             if dead:
                 async with _ws_lock:
-                    for client in dead:
-                        _ws_clients.discard(client)
+                    _ws_clients.difference_update(dead)
 
     async def _index_watcher_loop() -> None:  # pragma: no cover — long-running task
         """Reload each newly published index generation every 10 seconds."""

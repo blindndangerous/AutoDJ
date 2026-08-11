@@ -947,6 +947,43 @@ async def test_broadcast_loop_removes_dead_clients() -> None:
     # No crash = success; the loop pruned the dead client
 
 
+async def test_broadcast_sends_concurrently_evicts_slow_and_serializes() -> None:
+    import asyncio
+
+    from autodj.server import _broadcast_clients, _WebSocketClient
+
+    class FastSocket:
+        def __init__(self) -> None:
+            self.messages: list[str] = []
+            self.active = 0
+            self.max_active = 0
+
+        async def send_text(self, payload: str) -> None:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            await asyncio.sleep(0)
+            self.messages.append(payload)
+            self.active -= 1
+
+    class SlowSocket:
+        async def send_text(self, payload: str) -> None:
+            await asyncio.Event().wait()
+
+    fast_socket = FastSocket()
+    fast = _WebSocketClient(fast_socket)
+    slow = _WebSocketClient(SlowSocket())
+
+    first, second = await asyncio.gather(
+        _broadcast_clients((fast, slow), "one", timeout_seconds=0.02),
+        _broadcast_clients((fast,), "two", timeout_seconds=0.02),
+    )
+
+    assert slow in first
+    assert not second
+    assert set(fast_socket.messages) == {"one", "two"}
+    assert fast_socket.max_active == 1
+
+
 async def test_http_api_accessible_via_async_client() -> None:
     """Verify all REST endpoints respond correctly using the async ASGI transport."""
     from httpx2 import ASGITransport, AsyncClient
@@ -1393,6 +1430,11 @@ class TestServeFunction:
                 "http://radio.local:8080",
                 {"ssl_certfile": "radio.pem", "ssl_keyfile": "radio-key.pem"},
             ),
+            ("http://radio.local:9090", {}),
+            (
+                "https://radio.local:9090",
+                {"ssl_certfile": "radio.pem", "ssl_keyfile": "radio-key.pem"},
+            ),
         ],
     )
     def test_serve_rejects_unusable_advertised_policy_before_side_effects(
@@ -1423,6 +1465,32 @@ class TestServeFunction:
         player_class.assert_not_called()
         mock_uvicorn.assert_not_called()
         assert cfg.server is original_server
+
+    @pytest.mark.parametrize(
+        ("port", "secure_cookie", "origin"),
+        [
+            (80, False, "http://radio.local"),
+            (443, True, "https://radio.local"),
+        ],
+    )
+    def test_advertised_origin_accepts_matching_default_port(
+        self, port: int, secure_cookie: bool, origin: str
+    ) -> None:
+        from autodj.security import SecurityPolicy
+        from autodj.server import _advertised_server_origin
+
+        policy = SecurityPolicy(
+            ServerConfig(
+                host="0.0.0.0",
+                port=port,
+                access_token="s" * 32,
+                allowed_hosts=["radio.local"],
+                allowed_origins=[origin],
+            ),
+            secure_cookie=secure_cookie,
+        )
+
+        assert _advertised_server_origin(policy) == origin
 
 
 # ---------------------------------------------------------------------------
