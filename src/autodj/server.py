@@ -140,6 +140,8 @@ async def _send_websocket_payload(
     try:
         async with asyncio.timeout(timeout_seconds):
             async with client.send_lock:
+                if client.close_started:
+                    return False
                 await client.websocket.send_text(payload)
     except Exception:
         await _close_failed_websocket(client, timeout_seconds)

@@ -1103,6 +1103,67 @@ async def test_bridge_error_close_waits_for_broadcast_and_prunes_client() -> Non
     assert client not in clients
 
 
+async def test_stale_broadcast_snapshot_skips_client_closed_by_bridge() -> None:
+    import asyncio
+    import contextlib
+
+    from autodj.server import (
+        _broadcast_clients,
+        _close_and_prune_websocket,
+        _WebSocketClient,
+    )
+
+    class ClosedSocket:
+        def __init__(self) -> None:
+            self.closed = False
+            self.send_calls = 0
+            self.close_codes: list[int] = []
+            self.protocol_errors: list[str] = []
+
+        async def send_text(self, _payload: str) -> None:
+            self.send_calls += 1
+            if self.closed:
+                self.protocol_errors.append("send after close")
+                raise RuntimeError("ASGI send after close")
+
+        async def close(self, *, code: int) -> None:
+            self.closed = True
+            self.close_codes.append(code)
+
+    async def handler() -> None:
+        await asyncio.Event().wait()
+
+    handler_task = asyncio.create_task(handler())
+    websocket = ClosedSocket()
+    client = _WebSocketClient(
+        websocket,
+        request_id="c" * 32,
+        handler_task=handler_task,
+    )
+    clients = {client}
+    clients_lock = asyncio.Lock()
+    stale_snapshot = tuple(clients)
+
+    assert await _close_and_prune_websocket(
+        client,
+        clients,
+        clients_lock,
+        code=1011,
+        timeout_seconds=1.0,
+    )
+    dead = await _broadcast_clients(stale_snapshot, "stale", timeout_seconds=1.0)
+
+    assert dead == {client}
+    assert client not in clients
+    assert websocket.close_codes == [1011]
+    assert websocket.send_calls == 0
+    assert websocket.protocol_errors == []
+    assert not handler_task.done()
+    handler_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await handler_task
+
+
 async def test_http_api_accessible_via_async_client() -> None:
     """Verify all REST endpoints respond correctly using the async ASGI transport."""
     from httpx2 import ASGITransport, AsyncClient
