@@ -1,9 +1,51 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { installLibraryJobs } from
+import { applyLibraryJobState, installLibraryJobs } from
   "../../src/autodj/static/modules/library-jobs.js";
 
 describe("library job controls", () => {
+  it("throttles running live-region updates but announces terminal state immediately", async () => {
+    document.body.innerHTML = '<p id="status">Idle.</p><pre id="log"></pre>';
+    const jobStatus = document.querySelector("#status");
+    const els = { jobStatus, libLog: document.querySelector("#log") };
+    const mutations = [];
+    const observer = new window.MutationObserver((records) => mutations.push(...records));
+    observer.observe(jobStatus, { childList: true, characterData: true, subtree: true });
+
+    applyLibraryJobState({
+      library_job: { name: "index", running: true, elapsed_seconds: 1, lines: [] },
+    }, els);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(jobStatus.textContent).toBe("index running for 1s…");
+    expect(mutations.length).toBeGreaterThan(0);
+    const initialMutationCount = mutations.length;
+
+    applyLibraryJobState({
+      library_job: { name: "index", running: true, elapsed_seconds: 2, lines: [] },
+    }, els);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(jobStatus.textContent).toBe("index running for 1s…");
+    expect(mutations).toHaveLength(initialMutationCount);
+
+    applyLibraryJobState({
+      library_job: { name: "index", running: true, elapsed_seconds: 10, lines: [] },
+    }, els);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(jobStatus.textContent).toBe("index running for 10s…");
+    expect(mutations.length).toBeGreaterThan(initialMutationCount);
+    const meaningfulMutationCount = mutations.length;
+
+    applyLibraryJobState({
+      library_job: {
+        name: "index", running: false, elapsed_seconds: 11, exit_code: 0, lines: [],
+      },
+    }, els);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(jobStatus.textContent).toBe("index finished cleanly in 11s.");
+    expect(mutations.length).toBeGreaterThan(meaningfulMutationCount);
+    observer.disconnect();
+  });
+
   it("restores the clicked control and announces checked request failures", async () => {
     document.body.innerHTML = '<button id="stop">Stop</button><p id="status"></p>';
     let resolve;

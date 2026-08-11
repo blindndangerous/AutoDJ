@@ -16,7 +16,7 @@ An auto-DJ that picks the next song based on what is playing now.  Point it at t
 - **A queue.**  Search the library, click "Now" to interrupt, click "Next" to add to the line.  Reorder with Up / Down.  Remove with one click.
 - **Lyrics that scroll.**  If a song has an LRC file or lyrics in its tags, the web page shows them and highlights the current line.
 - **Works offline.**  Once installed there is no network requirement.  Use it on a NAS, on a laptop in airplane mode, on a Raspberry Pi.
-- **Built for screen readers.**  AutoDJ was written by a blind developer.  Every control is keyboard-accessible and announced clearly to NVDA / JAWS / VoiceOver.
+- **Accessibility.**  Controls support keyboard use.  Screen-reader claims are limited to the browser and flows recorded for each release; see [Accessibility testing](docs/accessibility-testing.md) for the policy and its limits.
 
 ## Quick start (the short version)
 

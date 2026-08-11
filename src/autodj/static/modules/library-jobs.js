@@ -10,6 +10,32 @@ import {
 } from "./api-client.js";
 
 let _lastLogKey = "";
+const _jobStatusState = new WeakMap();
+
+function updateJobStatus(job, jobStatus) {
+  let key;
+  let text;
+  if (job.running) {
+    const elapsedBucket = Math.floor(Number(job.elapsed_seconds || 0) / 10);
+    key = `running:${job.name}:${elapsedBucket}`;
+    text = `${job.name} running for ${job.elapsed_seconds}s…`;
+  } else if (job.exit_code != null) {
+    key = `finished:${job.name}:${job.exit_code}:${job.elapsed_seconds}`;
+    text = job.exit_code === 0
+      ? `${job.name} finished cleanly in ${job.elapsed_seconds}s.`
+      : `${job.name} exited with code ${job.exit_code} after ${job.elapsed_seconds}s.`;
+  } else if (!job.name) {
+    key = "idle";
+    text = "Idle.";
+  } else {
+    return;
+  }
+
+  const previous = _jobStatusState.get(jobStatus);
+  if (previous?.key === key && jobStatus.textContent === previous.text) return;
+  if (jobStatus.textContent !== text) jobStatus.textContent = text;
+  _jobStatusState.set(jobStatus, { key, text });
+}
 
 export function installLibraryJobs(els) {
   const {
@@ -92,18 +118,7 @@ export function applyLibraryJobState(s, els) {
   const { libLog, jobStatus } = els;
   const job = s && s.library_job;
   if (!job || !libLog) return;
-  if (jobStatus) {
-    if (job.running) {
-      jobStatus.textContent = `${job.name} running for ${job.elapsed_seconds}s…`;
-    } else if (job.exit_code != null) {
-      const ok = job.exit_code === 0;
-      jobStatus.textContent = ok
-        ? `${job.name} finished cleanly in ${job.elapsed_seconds}s.`
-        : `${job.name} exited with code ${job.exit_code} after ${job.elapsed_seconds}s.`;
-    } else if (!job.name) {
-      jobStatus.textContent = "Idle.";
-    }
-  }
+  if (jobStatus) updateJobStatus(job, jobStatus);
   // Append-only log render -- only re-render when payload changed.
   const lines = job.lines || [];
   const key = lines.length + "@" + (lines[lines.length - 1] || "");

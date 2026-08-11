@@ -867,26 +867,23 @@
       </div>
 
       <!-- Status badge + streamed log output -->
-      <!-- A11y C3 (v5.4.0 audit): #library-log streams every line of a
-           long-running subprocess (indexer, prune, etc).  role=log +
-           aria-live=polite would fire continuous NVDA announcements
-           drowning out now-playing/queue/lyrics regions.  Removed the
-           live-region hooks — #lib-job-status above announces start /
-           progress / finish in throttled summary form, log content stays
-           visually scrollable + tab-focusable but silent for AT. -->
+      <!-- #library-log is a neutral preformatted region rather than an
+           output/status/live region.  #lib-job-status announces throttled
+           start, progress, and finish summaries while the full log remains
+           visually scrollable, keyboard focusable, and available on demand. -->
       <h3 id="library-log-heading">Output</h3>
       <p id="lib-job-status" aria-live="polite" aria-atomic="true">Idle.</p>
-      <output id="library-log"
-              aria-labelledby="library-log-heading"
-              tabindex="0"
-              style="display:block;background:#0f1626;color:#cce0ff;
-                     padding:0.5rem;border-radius:var(--radius);
-                     font-family:ui-monospace,Consolas,monospace;
-                     font-size:0.85rem;max-height:16rem;
-                     overflow:auto;white-space:pre-wrap;
-                     border:1px solid var(--border)">
+      <pre id="library-log"
+           aria-labelledby="library-log-heading"
+           tabindex="0"
+           style="display:block;margin:0;background:#0f1626;color:#cce0ff;
+                  padding:0.5rem;border-radius:var(--radius);
+                  font-family:ui-monospace,Consolas,monospace;
+                  font-size:0.85rem;max-height:16rem;
+                  overflow:auto;white-space:pre-wrap;
+                  border:1px solid var(--border)">
         <em style="color:var(--text-dim)">No job has run yet.</em>
-      </output>
+      </pre>
     </details>
   </section>
 
