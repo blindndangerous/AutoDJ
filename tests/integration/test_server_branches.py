@@ -813,7 +813,8 @@ def test_audit_rejections_use_route_templates_and_redact_inputs(
         response = client.get(f"/api/profiles/{private_name}?token={secret_query}")
 
     assert response.status_code == 401
-    records = [json.loads(item.message) for item in caplog.records if item.name == "autodj.audit"]
+    audit_messages = [item.message for item in caplog.records if item.name == "autodj.audit"]
+    records = [json.loads(message) for message in audit_messages]
     assert len(records) == 1
     assert records[0] == {
         "action": "/api/profiles/{name}",
@@ -823,8 +824,8 @@ def test_audit_rejections_use_route_templates_and_redact_inputs(
         "route": "/api/profiles/{name}",
         "status": 401,
     }
-    assert private_name not in caplog.text
-    assert secret_query not in caplog.text
+    assert all(private_name not in message for message in audit_messages)
+    assert all(secret_query not in message for message in audit_messages)
 
 
 def test_unsafe_audit_is_structured_redacted_and_single_event(
@@ -1007,6 +1008,7 @@ def test_websocket_bridge_failure_closes_and_audits_cleanup(
     client, bridge = _security_client_and_bridge()
     bridge.toggle_discovery = MagicMock(side_effect=RuntimeError("private failure details"))
     assert client.post("/api/login", json={"token": _TEST_ACCESS_TOKEN}).status_code == 200
+    caplog.clear()
 
     with (
         caplog.at_level(logging.INFO, logger="autodj.audit"),
