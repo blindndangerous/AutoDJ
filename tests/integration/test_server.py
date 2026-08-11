@@ -950,7 +950,7 @@ async def test_broadcast_loop_removes_dead_clients() -> None:
 async def test_broadcast_sends_concurrently_evicts_slow_and_serializes() -> None:
     import asyncio
 
-    from autodj.server import _broadcast_clients, _WebSocketClient
+    from autodj.server import _broadcast_and_prune, _broadcast_clients, _WebSocketClient
 
     class FastSocket:
         def __init__(self) -> None:
@@ -966,22 +966,78 @@ async def test_broadcast_sends_concurrently_evicts_slow_and_serializes() -> None
             self.active -= 1
 
     class SlowSocket:
+        def __init__(self) -> None:
+            self.close_codes: list[int] = []
+
         async def send_text(self, payload: str) -> None:
             await asyncio.Event().wait()
 
+        async def close(self, *, code: int) -> None:
+            self.close_codes.append(code)
+
     fast_socket = FastSocket()
     fast = _WebSocketClient(fast_socket)
-    slow = _WebSocketClient(SlowSocket())
+    slow_socket = SlowSocket()
+    slow = _WebSocketClient(slow_socket)
+    clients = {fast, slow}
+    clients_lock = asyncio.Lock()
 
     first, second = await asyncio.gather(
-        _broadcast_clients((fast, slow), "one", timeout_seconds=0.02),
+        _broadcast_and_prune(clients, clients_lock, "one", timeout_seconds=0.02),
         _broadcast_clients((fast,), "two", timeout_seconds=0.02),
     )
 
     assert slow in first
     assert not second
+    assert slow not in clients
+    assert fast in clients
+    assert slow_socket.close_codes == [1013]
     assert set(fast_socket.messages) == {"one", "two"}
     assert fast_socket.max_active == 1
+
+
+async def test_broadcast_close_failure_is_redacted_and_cancels_handler(caplog) -> None:
+    import asyncio
+    import json
+    import logging
+
+    from autodj.server import _broadcast_and_prune, _WebSocketClient
+
+    class BrokenSocket:
+        async def send_text(self, _payload: str) -> None:
+            raise RuntimeError("private-send-secret")
+
+        async def close(self, *, code: int) -> None:
+            raise RuntimeError(f"private-close-secret-{code}")
+
+    async def handler() -> None:
+        await asyncio.Event().wait()
+
+    handler_task = asyncio.create_task(handler())
+    client = _WebSocketClient(BrokenSocket(), request_id="a" * 32, handler_task=handler_task)
+    clients = {client}
+    with caplog.at_level(logging.WARNING, logger="autodj.audit"):
+        dead = await _broadcast_and_prune(clients, asyncio.Lock(), "payload", timeout_seconds=0.02)
+        await asyncio.sleep(0)
+
+    assert dead == {client}
+    assert not clients
+    assert handler_task.cancelled()
+    records = [
+        json.loads(record.message) for record in caplog.records if record.name == "autodj.audit"
+    ]
+    assert records == [
+        {
+            "action": "broadcast",
+            "method": "WS",
+            "outcome": "rejected",
+            "request_id": "a" * 32,
+            "route": "/ws",
+            "status": 1013,
+        }
+    ]
+    assert "private-send-secret" not in caplog.text
+    assert "private-close-secret" not in caplog.text
 
 
 async def test_http_api_accessible_via_async_client() -> None:

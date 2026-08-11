@@ -83,7 +83,33 @@ _WS_SEND_TIMEOUT_SECONDS = 2.0
 @dataclass(eq=False)
 class _WebSocketClient:
     websocket: Any
+    request_id: str | None = None
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    handler_task: asyncio.Task[Any] | None = None
+    failure_code: int | None = None
+
+
+async def _close_failed_websocket(client: _WebSocketClient, timeout_seconds: float) -> None:
+    client.failure_code = 1013
+    try:
+        async with asyncio.timeout(timeout_seconds):
+            async with client.send_lock:
+                await client.websocket.close(code=client.failure_code)
+    except Exception:
+        if client.request_id is not None:
+            emit_audit(
+                client.request_id,
+                "broadcast",
+                "rejected",
+                method="WS",
+                route="/ws",
+                status=client.failure_code,
+                level=logging.WARNING,
+            )
+    finally:
+        task = client.handler_task
+        if task is not None and not task.done():
+            task.cancel()
 
 
 async def _send_websocket_payload(
@@ -94,6 +120,7 @@ async def _send_websocket_payload(
             async with client.send_lock:
                 await client.websocket.send_text(payload)
     except Exception:
+        await _close_failed_websocket(client, timeout_seconds)
         return False
     return True
 
@@ -108,6 +135,22 @@ async def _broadcast_clients(
         *(_send_websocket_payload(client, payload, timeout_seconds) for client in clients)
     )
     return {client for client, sent in zip(clients, results, strict=True) if not sent}
+
+
+async def _broadcast_and_prune(
+    clients: set[_WebSocketClient],
+    clients_lock: asyncio.Lock,
+    payload: str,
+    *,
+    timeout_seconds: float = _WS_SEND_TIMEOUT_SECONDS,
+) -> set[_WebSocketClient]:
+    async with clients_lock:
+        snapshot = tuple(clients)
+    dead = await _broadcast_clients(snapshot, payload, timeout_seconds=timeout_seconds)
+    if dead:
+        async with clients_lock:
+            clients.difference_update(dead)
+    return dead
 
 
 async def reload_published_generation_once(
@@ -1497,7 +1540,11 @@ def create_app(
             return
 
         await websocket.accept()
-        client = _WebSocketClient(websocket)
+        client = _WebSocketClient(
+            websocket,
+            request_id=request_id,
+            handler_task=asyncio.current_task(),
+        )
         client_host = getattr(getattr(websocket, "client", None), "host", "unknown")
         async with _ws_lock:
             _ws_clients.add(client)
@@ -1560,6 +1607,10 @@ def create_app(
         except WebSocketDisconnect as exc:
             disconnect_code = exc.code
             pass
+        except asyncio.CancelledError:
+            if client.failure_code is None:
+                raise
+            disconnect_code = client.failure_code
         finally:
             async with _ws_lock:
                 _ws_clients.discard(client)
@@ -1586,12 +1637,7 @@ def create_app(
             if not _ws_clients:
                 continue
             payload = _json.dumps(bridge.get_state())
-            async with _ws_lock:
-                clients = tuple(_ws_clients)
-            dead = await _broadcast_clients(clients, payload)
-            if dead:
-                async with _ws_lock:
-                    _ws_clients.difference_update(dead)
+            await _broadcast_and_prune(_ws_clients, _ws_lock, payload)
 
     async def _index_watcher_loop() -> None:  # pragma: no cover — long-running task
         """Reload each newly published index generation every 10 seconds."""

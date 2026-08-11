@@ -61,7 +61,7 @@ class LoginLimitDecision:
 @dataclass
 class _LoginClientState:
     window_started: float
-    failures: int = 0
+    attempts: int = 0
     blocked_audited: bool = False
 
 
@@ -86,7 +86,7 @@ class LoginRateLimiter:
         self._max_clients = max_clients
         self._clients: OrderedDict[str, _LoginClientState] = OrderedDict()
         self._global_started = self._time()
-        self._global_failures = 0
+        self._global_attempts = 0
         self._global_blocked_audited = False
         self._lock = threading.Lock()
 
@@ -99,51 +99,46 @@ class LoginRateLimiter:
     def _reset_global_if_expired(self, current: float) -> None:
         if current - self._global_started >= self._window_seconds:
             self._global_started = current
-            self._global_failures = 0
+            self._global_attempts = 0
             self._global_blocked_audited = False
             self._clients.clear()
 
     def _retry_after(self, current: float, started: float) -> int:
         return max(1, math.ceil(self._window_seconds - (current - started)))
 
-    def check(self, peer: str) -> LoginLimitDecision:
+    def reserve(self, peer: str) -> LoginLimitDecision:
+        """Atomically admit and count one login attempt before any body work."""
         with self._lock:
             current = self._time()
             self._reset_global_if_expired(current)
-            if self._global_failures >= self._global_limit:
+            if self._global_attempts >= self._global_limit:
                 audit = not self._global_blocked_audited
                 self._global_blocked_audited = True
                 return LoginLimitDecision(
                     False, self._retry_after(current, self._global_started), audit
                 )
-            state = self._clients.get(peer)
-            if state is None:
-                return LoginLimitDecision(True)
-            if current - state.window_started >= self._window_seconds:
-                del self._clients[peer]
-                return LoginLimitDecision(True)
-            self._clients.move_to_end(peer)
-            if state.failures < self._per_client_limit:
-                return LoginLimitDecision(True)
-            audit = not state.blocked_audited
-            state.blocked_audited = True
-            return LoginLimitDecision(
-                False, self._retry_after(current, state.window_started), audit
-            )
 
-    def record_failure(self, peer: str) -> None:
-        with self._lock:
-            current = self._time()
-            self._reset_global_if_expired(current)
-            self._global_failures += 1
             state = self._clients.get(peer)
-            if state is None or current - state.window_started >= self._window_seconds:
+            if state is not None and current - state.window_started >= self._window_seconds:
+                del self._clients[peer]
+                state = None
+            if state is not None and state.attempts >= self._per_client_limit:
+                self._clients.move_to_end(peer)
+                audit = not state.blocked_audited
+                state.blocked_audited = True
+                return LoginLimitDecision(
+                    False, self._retry_after(current, state.window_started), audit
+                )
+
+            if state is None:
                 state = _LoginClientState(current)
                 self._clients[peer] = state
-            state.failures += 1
+            state.attempts += 1
+            self._global_attempts += 1
             self._clients.move_to_end(peer)
             while len(self._clients) > self._max_clients:
                 self._clients.popitem(last=False)
+            return LoginLimitDecision(True)
 
     def record_success(self, peer: str) -> None:
         with self._lock:
@@ -460,9 +455,9 @@ class SecurityMiddleware:
             chunk = message.get("body", b"")
             if not isinstance(chunk, bytes):
                 raise ValueError("invalid ASGI request body")
-            body.extend(chunk)
-            if len(body) > LOGIN_BODY_MAX_BYTES:
+            if len(chunk) > LOGIN_BODY_MAX_BYTES - len(body):
                 raise _LoginBodyTooLarge
+            body.extend(chunk)
             if not message.get("more_body", False):
                 return bytes(body), False
 
@@ -517,7 +512,7 @@ class SecurityMiddleware:
         login_limiter = self._login_limiter(scope) if is_login else None
         peer = self._peer(scope)
         if login_limiter is not None:
-            decision = login_limiter.check(peer)
+            decision = login_limiter.reserve(peer)
             if not decision.allowed:
                 response = JSONResponse(
                     {"detail": "Too many login attempts"},
@@ -600,11 +595,12 @@ class SecurityMiddleware:
             )
             await response(scope, receive, send)
             return
-        if login_limiter is not None and response_status is not None:
-            if response_status == 401:
-                login_limiter.record_failure(peer)
-            elif 200 <= response_status < 300:
-                login_limiter.record_success(peer)
+        if (
+            login_limiter is not None
+            and response_status is not None
+            and 200 <= response_status < 300
+        ):
+            login_limiter.record_success(peer)
         if method in _UNSAFE_METHODS and response_status is not None:
             emit_audit(
                 request_id,

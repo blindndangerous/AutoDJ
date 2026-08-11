@@ -9,7 +9,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -165,16 +167,15 @@ def test_login_rate_limiter_is_bounded_isolated_and_expires() -> None:
     limiter = LoginRateLimiter(
         now=lambda: now[0], per_client_limit=2, global_limit=4, window_seconds=10, max_clients=2
     )
-    limiter.record_failure("one")
-    limiter.record_failure("one")
-    assert not limiter.check("one").allowed
-    assert limiter.check("two").allowed
-    limiter.record_failure("two")
-    limiter.record_failure("three")
+    assert limiter.reserve("one").allowed
+    assert limiter.reserve("one").allowed
+    assert not limiter.reserve("one").allowed
+    assert limiter.reserve("two").allowed
+    assert limiter.reserve("three").allowed
     assert limiter.tracked_clients <= 2
-    assert not limiter.check("four").allowed
+    assert not limiter.reserve("four").allowed
     now[0] = 111.0
-    assert limiter.check("one").allowed
+    assert limiter.reserve("one").allowed
 
 
 def test_login_throttle_bypasses_body_and_token_compare(
@@ -215,7 +216,7 @@ def test_login_throttle_bypasses_body_and_token_compare(
 
 def test_login_throttle_rejects_without_reading_request_body() -> None:
     limiter = LoginRateLimiter(per_client_limit=1, global_limit=10)
-    limiter.record_failure("127.0.0.1")
+    assert limiter.reserve("127.0.0.1").allowed
     app = _security_app()
     app.state.login_rate_limiter = limiter
 
@@ -230,6 +231,119 @@ def test_login_throttle_rejects_without_reading_request_body() -> None:
     )
 
     assert _response_status(messages) == 429
+
+
+def test_concurrent_login_guesses_reserve_capacity_before_comparison(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    limiter = LoginRateLimiter(per_client_limit=2, global_limit=2)
+    app = _security_app()
+    app.state.login_rate_limiter = limiter
+    policy: SecurityPolicy = app.state.security_policy
+    compare_barrier = threading.Barrier(2)
+    compare_calls = 0
+    compare_lock = threading.Lock()
+
+    def compare(_candidate: str) -> bool:
+        nonlocal compare_calls
+        with compare_lock:
+            compare_calls += 1
+        compare_barrier.wait(timeout=5)
+        return False
+
+    monkeypatch.setattr(policy, "verify_access_token", compare)
+
+    def attempt(_index: int) -> int:
+        with TestClient(
+            app,
+            headers={"Host": "testserver", "Origin": "http://testserver"},
+        ) as client:
+            return client.post("/api/login", json={"token": "wrong"}).status_code
+
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        statuses = list(executor.map(attempt, range(6)))
+
+    assert statuses.count(401) == 2
+    assert statuses.count(429) == 4
+    assert compare_calls == 2
+
+
+def test_malformed_and_oversized_logins_consume_bounded_attempt_budget(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    limiter = LoginRateLimiter(per_client_limit=2, global_limit=10)
+    app = _security_app()
+    app.state.login_rate_limiter = limiter
+    client = TestClient(app, headers={"Host": "testserver", "Origin": "http://testserver"})
+
+    with caplog.at_level(logging.INFO, logger="autodj.audit"):
+        oversized = client.post("/api/login", content=b"x" * 5000)
+        malformed = client.post(
+            "/api/login", content=b"{", headers={"Content-Type": "application/json"}
+        )
+        blocked = client.post("/api/login", json={"token": "wrong"})
+        blocked_again = client.post("/api/login", json={"token": "wrong"})
+
+    assert [
+        response.status_code for response in (oversized, malformed, blocked, blocked_again)
+    ] == [
+        413,
+        422,
+        429,
+        429,
+    ]
+    statuses = [
+        json.loads(record.message)["status"]
+        for record in caplog.records
+        if record.name == "autodj.audit"
+    ]
+    assert statuses == [413, 422, 429]
+
+
+def test_single_oversized_login_chunk_is_not_copied_into_accumulator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import autodj.security as security_module
+
+    class BoundedAccumulator:
+        extended = False
+
+        def __len__(self) -> int:
+            return 0
+
+        def extend(self, _chunk: bytes) -> None:
+            type(self).extended = True
+            raise AssertionError("oversized chunk was copied")
+
+    monkeypatch.setattr(security_module, "bytearray", BoundedAccumulator, raising=False)
+    messages: list[dict[str, Any]] = []
+
+    async def receive() -> dict[str, Any]:
+        return {"type": "http.request", "body": b"x" * 1_000_000, "more_body": False}
+
+    async def send(message: dict[str, Any]) -> None:
+        messages.append(message)
+
+    scope: dict[str, Any] = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/api/login",
+        "raw_path": b"/api/login",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"host", b"testserver"), (b"origin", b"http://testserver")],
+        "client": ("127.0.0.1", 50000),
+        "server": ("testserver", 80),
+        "state": {},
+    }
+
+    asyncio.run(_security_app()(scope, receive, send))
+
+    assert _response_status(messages) == 413
+    assert BoundedAccumulator.extended is False
 
 
 def test_successful_login_resets_per_client_failures() -> None:
