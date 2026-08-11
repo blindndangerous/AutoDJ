@@ -115,9 +115,46 @@ It does not work well when:
 
 ## Configuration
 
-A config file is optional.  Without one, AutoDJ uses sensible defaults: index lives in `./index`, music is read from `./music`, the web UI listens on `localhost:8080`.
+AutoDJ currently loads `config.toml` from the working directory unless you pass another path with `--config`.  The default server settings in `config.toml.example` bind the web UI to `localhost:8080`.
 
 Drop a `config.toml` in the repo root (or pass `--config /path/to/config.toml` on every command) to change anything.  The shipped `config.toml.example` is annotated.
+
+### Secure server operation
+
+For anonymous access on the same computer, keep the default loopback binding:
+
+```bash
+uv run autodj serve
+```
+
+To serve authenticated clients on a trusted private network, put the server settings and secret in the gitignored `config.toml`:
+
+```toml
+[server]
+host = "0.0.0.0"
+access_token = "generate-at-least-32-random-bytes"
+allowed_hosts = ["radio.local"]
+allowed_origins = ["https://radio.local:8080"]
+```
+
+Generate your own random secret of at least 32 UTF-8 bytes; do not copy the placeholder above.  Start the server with a certificate and matching private key:
+
+```bash
+uv run autodj serve --ssl-certfile radio.pem --ssl-keyfile radio-key.pem
+```
+
+`config.toml` and its local variants are gitignored.  Never pass the access token as a CLI argument because shell history and process listings can expose it.  AutoDJ compares tokens in constant time and exchanges a valid token for an HttpOnly cookie.  TLS protects both the submitted token and subsequent cookie on the wire.
+
+Authentication can be disabled only with an explicit trusted-LAN acknowledgement.  This still enforces the configured Host and Origin allowlists:
+
+```bash
+uv run autodj serve --host 0.0.0.0 --insecure-lan \
+  --allowed-host radio.local --allowed-origin http://radio.local:8080
+```
+
+`--insecure-lan` disables authentication; use it only on a trusted private network.  Multi-user accounts, roles, cloud identity, and public Internet hosting are not supported.
+
+Index generation manifests are the only publication signal used by live reload.  A partially written generation is not activated.  Incomplete model directories are also ignored instead of being treated as usable caches.  Planned delivery work builds on `ServerConfig` to add no-config defaults, a secret-safe environment source, and Compose changes; those are not part of the current server security contract.
 
 Common things to set:
 
