@@ -557,33 +557,85 @@ class TestMigrateFlatIndexFailure:
 
 
 class TestIndexerExtract:
-    def test_minor_branch_is_lp_infeasible(self) -> None:
-        """Document why the minor branch is marked ``# pragma: no cover``.
-
-        For every rotation of the minor template, the major template has a
-        rotation whose dot product is at least as large.  An LP search
-        across non-negative chromas confirms no feasible point — the
-        ``else`` branch in ``_extract_librosa_features`` is dead code.
-        """
+    def test_weighted_profiles_distinguish_c_major_and_a_minor(self) -> None:
         import numpy as np
-        from scipy.optimize import linprog
 
-        major = np.array([1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1], dtype=np.float32)
-        minor = np.array([1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0], dtype=np.float32)
-        feasible = False
-        for k in range(12):
-            target = np.roll(minor, k)
-            a_ub = np.array([np.roll(major, j) - target for j in range(12)])
-            res = linprog(
-                c=-target,
-                A_ub=a_ub,
-                b_ub=-1e-3 * np.ones(12),
-                bounds=[(0, 1)] * 12,
+        from autodj.indexer import _estimate_key_from_chroma
+
+        c_major = np.array(
+            [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88],
+            dtype=np.float32,
+        )
+        a_minor = np.roll(
+            np.array(
+                [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17],
+                dtype=np.float32,
+            ),
+            9,
+        )
+
+        assert _estimate_key_from_chroma(c_major) == (0, 1)
+        assert _estimate_key_from_chroma(a_minor) == (9, 0)
+
+    def test_key_estimation_preserves_unknown_for_insufficient_evidence(self) -> None:
+        import numpy as np
+
+        from autodj.indexer import _estimate_key_from_chroma
+
+        assert _estimate_key_from_chroma(np.zeros(12, dtype=np.float32)) == (-1, -1)
+        assert _estimate_key_from_chroma(np.full(12, np.nan, dtype=np.float32)) == (-1, -1)
+
+    def test_key_estimation_rejects_weak_noisy_chroma(self) -> None:
+        import numpy as np
+
+        from autodj.indexer import _estimate_key_from_chroma
+
+        noisy = np.array(
+            [1.00, 0.99, 1.01, 1.00, 0.98, 1.02, 1.00, 0.99, 1.01, 1.00, 0.98, 1.02],
+            dtype=np.float32,
+        )
+        assert _estimate_key_from_chroma(noisy) == (-1, -1)
+
+    def test_extract_returns_estimated_bpm_metadata(self) -> None:
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import numpy as np
+
+        from autodj import indexer
+
+        with patch.object(indexer, "_load_audio") as load, patch.object(indexer, "librosa") as lib:
+            load.return_value = (np.ones(22050, dtype=np.float32), 22050)
+            lib.feature.rms.return_value = np.array([[0.5]])
+            lib.feature.spectral_centroid.return_value = np.array([[1000.0]])
+            lib.feature.zero_crossing_rate.return_value = np.array([[0.1]])
+            lib.feature.chroma_stft.return_value = np.tile(
+                np.array(
+                    [
+                        [6.35],
+                        [2.23],
+                        [3.48],
+                        [2.33],
+                        [4.38],
+                        [4.09],
+                        [2.52],
+                        [5.19],
+                        [2.39],
+                        [3.66],
+                        [2.29],
+                        [2.88],
+                    ]
+                ),
+                (1, 4),
             )
-            if res.success and -res.fun > 0:
-                feasible = True
-                break
-        assert feasible is False
+            lib.onset.onset_strength.return_value = np.array([0.5])
+            lib.beat.beat_track.return_value = (np.array([123.0]), np.array([0, 10]))
+
+            _, _, _, meta = indexer._extract_librosa_features(Path("dummy.flac"))
+
+        assert meta["bpm"] == 123.0
+        assert meta["key"] == 0
+        assert meta["mode"] == 1
 
     def test_tempo_confidence_exception_fallback(self) -> None:
         """beat_track raising means tempo_confidence falls back to 0.0."""
@@ -618,3 +670,41 @@ class TestIndexerExtract:
             load.return_value = (np.array([], dtype=np.float32), 22050)
             with pytest.raises(ValueError, match="no samples"):
                 indexer._extract_librosa_features(Path("dummy.flac"))
+
+
+def test_index_entry_prefers_tag_bpm_and_falls_back_to_estimate() -> None:
+    from pathlib import Path
+
+    from autodj.indexer import IndexEntry, Track, _apply_analysis_metadata
+
+    tagged = IndexEntry.from_track(
+        Track(
+            path=Path("tagged.flac"),
+            title="Tagged",
+            artist="Artist",
+            album="Album",
+            genre="Rock",
+            bpm=128.0,
+            year=2026,
+            length=180.0,
+        )
+    )
+    unknown = IndexEntry.from_track(
+        Track(
+            path=Path("unknown.flac"),
+            title="Unknown",
+            artist="Artist",
+            album="Album",
+            genre="Rock",
+            bpm=0.0,
+            year=2026,
+            length=180.0,
+        )
+    )
+    meta = {"energy": 0.4, "key": 9, "mode": 0, "tempo_confidence": 0.8, "bpm": 121.5}
+
+    _apply_analysis_metadata(tagged, meta)
+    _apply_analysis_metadata(unknown, meta)
+
+    assert tagged.bpm == 128.0
+    assert unknown.bpm == 121.5

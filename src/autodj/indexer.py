@@ -686,6 +686,53 @@ def _load_audio(path: Path) -> tuple[np.ndarray, int]:
 # ---------------------------------------------------------------------------
 
 
+_MAJOR_KEY_PROFILE = np.array(
+    [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88],
+    dtype=np.float32,
+)
+_MINOR_KEY_PROFILE = np.array(
+    [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17],
+    dtype=np.float32,
+)
+
+
+def _estimate_key_from_chroma(chroma: np.ndarray) -> tuple[int, int]:
+    """Return ``(pitch_class, mode)`` or ``(-1, -1)`` when evidence is unusable."""
+    values = np.asarray(chroma, dtype=np.float32).reshape(-1)
+    if values.shape != (12,) or not np.isfinite(values).all() or float(values.sum()) <= 1e-6:
+        return (-1, -1)
+    peak_share = float(values.max() / values.sum())
+    if peak_share < 0.12:
+        return (-1, -1)
+    centred = values - float(values.mean())
+    norm = float(np.linalg.norm(centred))
+    if norm <= 1e-6:
+        return (-1, -1)
+    centred /= norm
+
+    scored: list[tuple[float, int, int]] = []
+    for mode, profile in ((1, _MAJOR_KEY_PROFILE), (0, _MINOR_KEY_PROFILE)):
+        profile_centred = profile - float(profile.mean())
+        profile_centred /= float(np.linalg.norm(profile_centred))
+        for key in range(12):
+            scored.append((float(np.dot(np.roll(profile_centred, key), centred)), key, mode))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    best_score, key, mode = scored[0]
+    margin = best_score - scored[1][0]
+    if best_score < 0.50 or margin < 0.08:
+        return (-1, -1)
+    return (key, mode)
+
+
+def _apply_analysis_metadata(entry: IndexEntry, extra_meta: dict[str, float | int]) -> None:
+    entry.energy = float(extra_meta["energy"])
+    entry.key = int(extra_meta["key"])
+    entry.mode = int(extra_meta["mode"])
+    entry.tempo_confidence = float(extra_meta["tempo_confidence"])
+    if entry.bpm <= 0.0 and float(extra_meta["bpm"]) > 0.0:
+        entry.bpm = float(extra_meta["bpm"])
+
+
 def _extract_librosa_features(
     audio_path: Path,
 ) -> tuple[np.ndarray, np.ndarray, int, dict]:
@@ -702,6 +749,7 @@ def _extract_librosa_features(
     - ``energy`` — RMS loudness (same as feature[0])
     - ``key`` — chromatic key 0–11 estimated from chroma template matching
     - ``mode`` — 1 = major, 0 = minor
+    - ``bpm`` — librosa beat-tracker tempo, or 0.0 when unavailable
     - ``tempo_confidence`` — ratio of detected beats to expected beats (0–1)
 
     Args:
@@ -712,7 +760,7 @@ def _extract_librosa_features(
         where *feature_vector* is a float32 array of shape ``(16,)`` (not yet
         normalized), *audio_array* is the mono audio, *sample_rate* is the
         native sample rate, and *extra_meta* is a dict with keys
-        ``energy``, ``key``, ``mode``, ``tempo_confidence``.
+        ``energy``, ``key``, ``mode``, ``bpm``, ``tempo_confidence``.
     """
     audio, sr = _load_audio(audio_path)
 
@@ -736,22 +784,15 @@ def _extract_librosa_features(
         # energy = reuse already-computed RMS
         energy = rms
 
-        # key + mode via major/minor chromatic template matching
-        _major = np.array([1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1], dtype=np.float32)
-        _minor = np.array([1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0], dtype=np.float32)
-        major_scores = [float(np.dot(np.roll(_major, k), chroma)) for k in range(12)]
-        minor_scores = [float(np.dot(np.roll(_minor, k), chroma)) for k in range(12)]
-        if max(major_scores) >= max(minor_scores):
-            mode = 1
-            key = int(np.argmax(major_scores))
-        else:  # pragma: no cover — current major/minor templates make this LP-infeasible (proved unreachable)
-            mode = 0
-            key = int(np.argmax(minor_scores))
+        key, mode = _estimate_key_from_chroma(chroma)
 
         # tempo confidence: detected beats / expected beats at estimated tempo
+        tempo_val = 0.0
         try:
             tempo_arr, beat_frames = librosa.beat.beat_track(y=audio, sr=sr)
             tempo_val = float(np.atleast_1d(tempo_arr)[0])
+            if not np.isfinite(tempo_val) or tempo_val <= 0:
+                tempo_val = 0.0
             duration_sec = len(audio) / max(1, sr)
             expected = (tempo_val / 60.0) * duration_sec
             tempo_confidence = float(min(1.0, len(beat_frames) / max(1.0, expected)))
@@ -766,6 +807,7 @@ def _extract_librosa_features(
         "energy": float(energy),
         "key": key,
         "mode": mode,
+        "bpm": tempo_val,
         "tempo_confidence": tempo_confidence,
     }
     return features, audio, sr, extra_meta
@@ -2512,10 +2554,7 @@ def _embed_new_tracks(  # pragma: no cover -- threaded indexer pipeline
                         "embedding contains NaN or Inf — track may be silent or corrupted"
                     )
                 entry = IndexEntry.from_track(track)
-                entry.energy = extra_meta["energy"]
-                entry.key = extra_meta["key"]
-                entry.mode = extra_meta["mode"]
-                entry.tempo_confidence = extra_meta["tempo_confidence"]
+                _apply_analysis_metadata(entry, extra_meta)
 
                 from autodj.beets import parse_initial_key as _parse_key
 

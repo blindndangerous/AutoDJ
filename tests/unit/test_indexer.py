@@ -127,8 +127,7 @@ class TestExtractLibrosaFeatures:
         assert "key" in extra_meta
         assert "mode" in extra_meta
         assert "tempo_confidence" in extra_meta
-        assert 0 <= extra_meta["key"] <= 11
-        assert extra_meta["mode"] in (0, 1)
+        assert (extra_meta["key"], extra_meta["mode"]) == (-1, -1)
         assert 0.0 <= extra_meta["tempo_confidence"] <= 1.0
 
     def test_vector_is_finite(self, tmp_path: Path) -> None:
