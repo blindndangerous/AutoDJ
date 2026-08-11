@@ -13,6 +13,7 @@ import {
   bootstrapAuthenticatedApp,
   handleWebSocketAuthenticationClose,
   initAuthDialog,
+  reconnectWebSocketAfterClose,
 } from "./modules/auth.js";
 
 if (isDebug()) {
@@ -836,6 +837,11 @@ function setConnStatus(state, label) {
   connStatus.textContent = label;
 }
 
+function authenticatedInteractionEnabled() {
+  return authenticatedActivityActive
+    && !document.getElementById("auth-dialog")?.open;
+}
+
 function connectWS() {
   if (!authenticatedActivityActive) return;
   const proto = location.protocol === "https:" ? "wss" : "ws";
@@ -867,7 +873,21 @@ function connectWS() {
         setConnStatus("error", "Authentication required");
       },
     })) return;
-    setTimeout(connectWS, 3000);
+    if (event.code === 1006) authenticatedActivityActive = false;
+    setTimeout(() => {
+      void reconnectWebSocketAfterClose({
+        event,
+        auth,
+        onExpired: () => {
+          authenticatedActivityActive = false;
+          setConnStatus("error", "Authentication required");
+        },
+        reconnect: () => {
+          if (event.code === 1006) authenticatedActivityActive = true;
+          connectWS();
+        },
+      });
+    }, 3000);
   };
 
   ws.onerror = () => setConnStatus("error", "Error");
@@ -1201,6 +1221,7 @@ function _wireHotkeysWhenReady() {
         if (!dur) return null;
         try { return Math.max(0, dur - decks[activeIdx].audio.currentTime); } catch (_) { return null; }
       },
+      isEnabled: authenticatedInteractionEnabled,
     });
   }, 0);
 }
@@ -1213,6 +1234,7 @@ import {
 } from "./modules/media-session.js";
 
 installMediaActionHandlers({
+  isEnabled: authenticatedInteractionEnabled,
   onPlay: () => {
     if (!playbackEnabled && _lastBrowserPlayback) unlockAndPlay().catch(() => {});
     else fetch("/api/pause", { method: "POST" });

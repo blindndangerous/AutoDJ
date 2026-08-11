@@ -34,16 +34,23 @@ export function updateMediaSession(s) {
 // Wire OS media-key actions.  Caller passes the play handler so this
 // module stays decoupled from playbackEnabled / unlockAndPlay state
 // owned by the audio-engine module.
-export function installMediaActionHandlers({ onPlay, onPauseOrSkipNext } = {}) {
+export function installMediaActionHandlers({
+  isEnabled = () => true,
+  onPlay,
+  onPauseOrSkipNext,
+} = {}) {
   if (!("mediaSession" in navigator)) return;
   navigator.mediaSession.setActionHandler("play", () => {
+    if (!isEnabled()) return;
     if (typeof onPlay === "function") onPlay();
     else fetch("/api/pause", { method: "POST" });
   });
   navigator.mediaSession.setActionHandler("pause", () => {
+    if (!isEnabled()) return;
     fetch("/api/pause", { method: "POST" });
   });
   navigator.mediaSession.setActionHandler("nexttrack", () => {
+    if (!isEnabled()) return;
     if (typeof onPauseOrSkipNext === "function") onPauseOrSkipNext();
     else fetch("/api/skip", { method: "POST" });
   });

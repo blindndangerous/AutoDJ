@@ -193,3 +193,36 @@ export function handleWebSocketAuthenticationClose(
   auth.show();
   return true;
 }
+
+export async function reconnectWebSocketAfterClose({
+  event,
+  fetchImpl = fetch,
+  auth,
+  onExpired = () => {},
+  reconnect,
+}) {
+  if (event?.code === 1006) {
+    try {
+      const response = await fetchImpl("/api/auth/status");
+      if (response.status === 401) {
+        onExpired();
+        auth.show();
+        return false;
+      }
+      if (response.ok) {
+        const authState = await response.json();
+        if (!validAuthState(authState)
+            || (authState.required && !authState.authenticated)) {
+          onExpired();
+          auth.show();
+          return false;
+        }
+      }
+    } catch (_errorValue) {
+      // Status can be unavailable during a genuine server restart.
+      // Preserve the existing WebSocket retry path in that case.
+    }
+  }
+  reconnect();
+  return true;
+}

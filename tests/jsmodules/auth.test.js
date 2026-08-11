@@ -363,6 +363,247 @@ describe("handleWebSocketAuthenticationClose", () => {
     expect(auth.show).toHaveBeenCalledOnce();
     expect(onExpired).toHaveBeenCalledOnce();
   });
+
+  it("rechecks authentication after browser close code 1006", async () => {
+    const authModule = await import(
+      "../../src/autodj/static/modules/auth.js"
+    );
+    const fetchImpl = vi.fn().mockResolvedValue(response({
+      ok: true,
+      status: 200,
+      json: { required: true, authenticated: false },
+    }));
+    const auth = { show: vi.fn() };
+    const onExpired = vi.fn();
+    const reconnect = vi.fn();
+
+    const didReconnect = await authModule.reconnectWebSocketAfterClose({
+      event: { code: 1006, wasClean: false },
+      fetchImpl,
+      auth,
+      onExpired,
+      reconnect,
+    });
+
+    expect(didReconnect).toBe(false);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(fetchImpl).toHaveBeenCalledWith("/api/auth/status");
+    expect(onExpired).toHaveBeenCalledOnce();
+    expect(auth.show).toHaveBeenCalledOnce();
+    expect(reconnect).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["authenticated", response({
+      ok: true,
+      status: 200,
+      json: { required: true, authenticated: true },
+    })],
+    ["auth status unavailable", new Error("server restarting")],
+  ])("preserves transient reconnect when %s after code 1006",
+    async (_caseName, authResult) => {
+      const authModule = await import(
+        "../../src/autodj/static/modules/auth.js"
+      );
+      const fetchImpl = authResult instanceof Error
+        ? vi.fn().mockRejectedValue(authResult)
+        : vi.fn().mockResolvedValue(authResult);
+      const auth = { show: vi.fn() };
+      const onExpired = vi.fn();
+      const reconnect = vi.fn();
+
+      const didReconnect = await authModule.reconnectWebSocketAfterClose({
+        event: { code: 1006, wasClean: false },
+        fetchImpl,
+        auth,
+        onExpired,
+        reconnect,
+      });
+
+      expect(didReconnect).toBe(true);
+      expect(fetchImpl).toHaveBeenCalledWith("/api/auth/status");
+      expect(onExpired).not.toHaveBeenCalled();
+      expect(auth.show).not.toHaveBeenCalled();
+      expect(reconnect).toHaveBeenCalledOnce();
+    });
+});
+
+describe("protected global callbacks", () => {
+  it("ignores global hotkeys while authenticated interaction is disabled", async () => {
+    document.body.innerHTML = `
+      <section id="panel-now"></section>
+      <div id="sr-status"></div>
+      <button id="pause">Pause</button>
+    `;
+    const pause = document.querySelector("#pause");
+    const click = vi.spyOn(pause, "click");
+    const { installHotkeys } = await import(
+      "../../src/autodj/static/modules/hotkeys.js"
+    );
+    installHotkeys({
+      btnPause: pause,
+      isEnabled: () => false,
+    });
+
+    window.dispatchEvent(new window.KeyboardEvent("keydown", {
+      key: "k",
+      bubbles: true,
+      cancelable: true,
+    }));
+    window.dispatchEvent(new window.KeyboardEvent("keyup", {
+      key: "k",
+      bubbles: true,
+    }));
+
+    expect(click).not.toHaveBeenCalled();
+  });
+
+  it("ignores all Media Session actions while authentication is disabled", async () => {
+    const handlers = {};
+    Object.defineProperty(navigator, "mediaSession", {
+      configurable: true,
+      value: {
+        setActionHandler: vi.fn((name, handler) => {
+          handlers[name] = handler;
+        }),
+      },
+    });
+    const fetchImpl = vi.fn();
+    vi.stubGlobal("fetch", fetchImpl);
+    const onPlay = vi.fn();
+    const onPauseOrSkipNext = vi.fn();
+    const { installMediaActionHandlers } = await import(
+      "../../src/autodj/static/modules/media-session.js"
+    );
+    installMediaActionHandlers({
+      isEnabled: () => false,
+      onPlay,
+      onPauseOrSkipNext,
+    });
+
+    handlers.play();
+    handlers.pause();
+    handlers.nexttrack();
+
+    expect(onPlay).not.toHaveBeenCalled();
+    expect(onPauseOrSkipNext).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("app startup integration", () => {
+  it("loads app.js without protected installers, fetches, or WebSocket pre-auth", async () => {
+    vi.resetModules();
+    const html = readFileSync(
+      join(process.cwd(), "src/autodj/static/index.html"), "utf8",
+    );
+    const template = document.createElement("template");
+    template.innerHTML = html;
+    template.content.querySelectorAll('script, link[rel="stylesheet"]')
+      .forEach((element) => element.remove());
+    document.body.replaceChildren(template.content.cloneNode(true));
+    const dialog = document.querySelector("#auth-dialog");
+    dialog.showModal = vi.fn(() => dialog.setAttribute("open", ""));
+
+    const installLibraryJobs = vi.fn();
+    const installLiners = vi.fn();
+    const installHotkeys = vi.fn();
+    const installMediaActionHandlers = vi.fn();
+    vi.doMock("../../src/autodj/static/modules/library-jobs.js", () => ({
+      applyLibraryJobState: vi.fn(),
+      installLibraryJobs,
+    }));
+    vi.doMock("../../src/autodj/static/modules/liners.js", () => ({
+      bumpLinerTrackCount: vi.fn(),
+      installLiners,
+    }));
+    vi.doMock("../../src/autodj/static/modules/hotkeys.js", () => ({
+      installHotkeys,
+      toggleShortcutsModal: vi.fn(),
+    }));
+    vi.doMock("../../src/autodj/static/modules/media-session.js", () => ({
+      installMediaActionHandlers,
+      updateMediaSession: vi.fn(),
+    }));
+    vi.doMock("../../src/autodj/static/modules/audio-engine.js", () => ({
+      _beatmatchOnSkip: false,
+      _ctx: null,
+      _crossfadeSecondsCache: 0,
+      _inBpmCache: 0,
+      _lastBrowserPlayback: null,
+      _nextTrackPathCache: null,
+      _outBpmCache: 0,
+      _volume: 1,
+      activeIdx: 0,
+      applyBrowserPlaybackState: vi.fn(),
+      applyEqState: vi.fn(),
+      applyTransitionFx: vi.fn(),
+      crossfading: false,
+      deckActive: vi.fn(),
+      decks: [],
+      deckStandby: vi.fn(),
+      ensureAudioGraph: vi.fn(),
+      eqValueLabel: vi.fn(),
+      loadCoverArt: vi.fn(),
+      playbackEnabled: false,
+      playOnDeck: vi.fn(),
+      postEq: vi.fn(),
+      resetTrackCaches: vi.fn(),
+      setApplyState: vi.fn(),
+      setLastBrowserPlayback: vi.fn(),
+      setSrcOnDeck: vi.fn(),
+      setVolume: vi.fn(),
+      startCrossfade: vi.fn(),
+      stopAllDecks: vi.fn(),
+      unlockAndPlay: vi.fn(),
+    }));
+
+    const fetchImpl = vi.fn((url) => {
+      if (url === "/api/auth/status") {
+        return Promise.resolve(response({
+          ok: true,
+          status: 200,
+          json: { required: true, authenticated: false },
+        }));
+      }
+      if (url === "/api/version") {
+        return Promise.resolve(response({
+          ok: true,
+          status: 200,
+          json: { version: "test", commit: "test", built_at: "test" },
+        }));
+      }
+      throw new Error(`Protected fetch started before authentication: ${url}`);
+    });
+    const WebSocketImpl = vi.fn();
+    vi.stubGlobal("fetch", fetchImpl);
+    vi.stubGlobal("WebSocket", WebSocketImpl);
+
+    await import("../../src/autodj/static/app.js");
+    await vi.waitFor(() => expect(dialog.showModal).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(installHotkeys).toHaveBeenCalledOnce());
+
+    expect(fetchImpl.mock.calls.map((call) => call[0])).toEqual([
+      "/api/auth/status",
+      "/api/version",
+    ]);
+    expect(WebSocketImpl).not.toHaveBeenCalled();
+    expect(installLibraryJobs).not.toHaveBeenCalled();
+    expect(installLiners).not.toHaveBeenCalled();
+    expect(installHotkeys.mock.calls[0][0].isEnabled).toEqual(expect.any(Function));
+    expect(installHotkeys.mock.calls[0][0].isEnabled()).toBe(false);
+    expect(installMediaActionHandlers.mock.calls[0][0].isEnabled)
+      .toEqual(expect.any(Function));
+    expect(installMediaActionHandlers.mock.calls[0][0].isEnabled()).toBe(false);
+
+    vi.unstubAllGlobals();
+    vi.doUnmock("../../src/autodj/static/modules/library-jobs.js");
+    vi.doUnmock("../../src/autodj/static/modules/liners.js");
+    vi.doUnmock("../../src/autodj/static/modules/hotkeys.js");
+    vi.doUnmock("../../src/autodj/static/modules/media-session.js");
+    vi.doUnmock("../../src/autodj/static/modules/audio-engine.js");
+  });
 });
 
 describe("login dialog markup", () => {

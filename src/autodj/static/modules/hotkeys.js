@@ -58,6 +58,7 @@ export function installHotkeys({
   btnPause, btnSkip, btnShuffle, btnMute, volSlider,
   seekDelta, getBpm,
   getTrack, getNextTrack, getRemaining,
+  isEnabled = () => true,
 }) {
   window.addEventListener("keyup", (e) => {
     _pressed.delete(e.key);
@@ -78,6 +79,7 @@ export function installHotkeys({
     if (e.repeat) return;
     if (_pressed.has(e.key)) return;
     _pressed.add(e.key);
+    if (!isEnabled()) return;
     if (isTypingTarget(e.target)) return;
 
     const nowPanel = document.getElementById("panel-now");
