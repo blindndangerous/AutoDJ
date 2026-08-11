@@ -137,13 +137,13 @@ allowed_hosts = ["radio.local"]
 allowed_origins = ["https://radio.local:8080"]
 ```
 
-Generate your own random secret of at least 32 UTF-8 bytes; do not copy the placeholder above.  Start the server with a certificate and matching private key:
+Authenticated serving rejects access tokens shorter than 32 UTF-8 bytes.  Generate your own random secret; do not copy the placeholder above.  Start the server with a certificate and matching private key:
 
 ```bash
 uv run autodj serve --ssl-certfile radio.pem --ssl-keyfile radio-key.pem
 ```
 
-`config.toml` and its local variants are gitignored.  Never pass the access token as a CLI argument because shell history and process listings can expose it.  AutoDJ compares tokens in constant time and exchanges a valid token for an HttpOnly cookie.  TLS protects both the submitted token and subsequent cookie on the wire.
+`config.toml` and its local variants are gitignored.  Never pass the access token as a CLI argument because shell history and process listings can expose it.  AutoDJ compares tokens in constant time and exchanges a valid token for an HttpOnly cookie.  TLS is required to protect both the submitted token and subsequent session cookie on the wire.
 
 Authentication can be disabled only with an explicit trusted-LAN acknowledgement.  This still enforces the configured Host and Origin allowlists:
 
