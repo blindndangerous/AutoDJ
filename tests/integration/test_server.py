@@ -2905,14 +2905,14 @@ class TestAudioEndpoint:
             "autodj.server._start_alac_transcoder",
             AsyncMock(
                 return_value=SimpleNamespace(
-                    stdout=None,
+                    stdout=SimpleNamespace(read=AsyncMock(return_value=b"prefetched")),
                     kill=MagicMock(),
                     wait=AsyncMock(return_value=0),
                 )
             ),
         )
 
-        async def transcode(_path):
+        async def transcode(_process, _prefetched):
             yield b"complete-mp3"
 
         monkeypatch.setattr("autodj.server._transcode_alac_to_mp3", transcode)
@@ -3164,12 +3164,9 @@ def test_audio_stream_uses_handle_opened_before_metadata_snapshot(
     assert target_open_count == 1
 
 
-@pytest.mark.parametrize(
-    ("mutation", "expected_body"),
-    [("grow", b"abcd"), ("truncate", b"ab")],
-)
+@pytest.mark.parametrize("mutation", ["grow", "truncate"])
 def test_audio_stream_is_bounded_by_same_handle_snapshot(
-    tmp_path, bridge, monkeypatch, mutation, expected_body
+    tmp_path, bridge, monkeypatch, mutation
 ) -> None:
     from fastapi.testclient import TestClient
 
@@ -3183,6 +3180,24 @@ def test_audio_stream_is_bounded_by_same_handle_snapshot(
     real_open = Path.open
     real_stat = Path.stat
     real_fstat = os.fstat
+    closed = threading.Event()
+
+    class TrackedFile:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __getattr__(self, name):
+            return getattr(self.handle, name)
+
+        def close(self):
+            self.handle.close()
+            closed.set()
+
+    def tracked_open(path, *args, **kwargs):
+        handle = real_open(path, *args, **kwargs)
+        if path == audio and args == ("rb",):
+            return TrackedFile(handle)
+        return handle
 
     def mutate_once() -> None:
         nonlocal mutated
@@ -3209,12 +3224,18 @@ def test_audio_stream_is_bounded_by_same_handle_snapshot(
 
     monkeypatch.setattr(Path, "stat", mutating_stat)
     monkeypatch.setattr(os, "fstat", mutating_fstat)
+    monkeypatch.setattr(Path, "open", tracked_open)
 
-    response = TestClient(app).get(f"/api/audio?path={audio}")
+    if mutation == "truncate":
+        with pytest.raises(OSError, match="truncated"):
+            TestClient(app).get(f"/api/audio?path={audio}")
+    else:
+        response = TestClient(app).get(f"/api/audio?path={audio}")
 
-    assert response.status_code == 200
-    assert response.headers["content-length"] == "4"
-    assert response.content == expected_body
+        assert response.status_code == 200
+        assert response.headers["content-length"] == "4"
+        assert response.content == b"abcd"
+    assert closed.wait(0.5) is True
 
 
 @pytest.mark.parametrize(
@@ -3268,8 +3289,14 @@ async def test_alac_process_spawns_with_resolved_path_before_headers(
     entry.path = str(audio)
     _register_index_entry(bridge, entry)
     events: list[tuple[str, object]] = []
+    chunks = iter((b"mp3", b""))
+
+    async def read_chunk(_size=-1):
+        events.append(("read", _size))
+        return next(chunks)
+
     process = SimpleNamespace(
-        stdout=SimpleNamespace(read=AsyncMock(side_effect=[b"mp3", b""])),
+        stdout=SimpleNamespace(read=read_chunk),
         kill=MagicMock(),
         wait=AsyncMock(return_value=0),
     )
@@ -3316,7 +3343,11 @@ async def test_alac_process_spawns_with_resolved_path_before_headers(
     }
     await asyncio.wait_for(app(scope, receive, send), timeout=1.0)
 
-    assert events[:2] == [("spawn", "X:/ffmpeg.exe"), ("headers", 200)]
+    assert events[:3] == [
+        ("spawn", "X:/ffmpeg.exe"),
+        ("read", 64 * 1024),
+        ("headers", 200),
+    ]
     assert (
         b"".join(
             message.get("body", b"")
@@ -3350,6 +3381,50 @@ def test_alac_spawn_failure_falls_back_before_headers(tmp_path, bridge, monkeypa
     assert response.headers["accept-ranges"] == "bytes"
     assert response.headers["content-length"] == str(len(b"raw-alac"))
     assert response.content == b"raw-alac"
+
+
+@pytest.mark.parametrize(
+    "first_read",
+    [b"", OSError("ffmpeg output failed")],
+    ids=["immediate-exit", "read-error"],
+)
+def test_alac_first_output_failure_falls_back_and_reaps_before_headers(
+    tmp_path, bridge, monkeypatch, first_read
+) -> None:
+    from fastapi.testclient import TestClient
+
+    audio = tmp_path / "preflight-failure.m4a"
+    audio.write_bytes(b"raw-alac")
+    entry = _make_entry(145)
+    entry.path = str(audio)
+    _register_index_entry(bridge, entry)
+    read = (
+        AsyncMock(side_effect=first_read)
+        if isinstance(first_read, Exception)
+        else AsyncMock(return_value=first_read)
+    )
+    process = SimpleNamespace(
+        stdout=SimpleNamespace(read=read),
+        kill=MagicMock(),
+        wait=AsyncMock(return_value=1),
+    )
+    monkeypatch.setattr("autodj.server._is_alac", lambda *_args: True)
+    monkeypatch.setattr("autodj.server.shutil.which", lambda _name: "X:/ffmpeg.exe")
+    monkeypatch.setattr(
+        asyncio,
+        "create_subprocess_exec",
+        AsyncMock(return_value=process),
+    )
+
+    response = TestClient(create_app(bridge)).get(f"/api/audio?path={audio}")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "audio/mp4"
+    assert response.headers["accept-ranges"] == "bytes"
+    assert response.headers["content-length"] == str(len(b"raw-alac"))
+    assert response.content == b"raw-alac"
+    process.kill.assert_called_once_with()
+    process.wait.assert_awaited_once_with()
 
 
 async def test_alac_transcoder_reaps_process_when_consumer_closes(tmp_path, monkeypatch) -> None:

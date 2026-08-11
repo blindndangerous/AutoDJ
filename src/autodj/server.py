@@ -572,11 +572,16 @@ async def _start_alac_transcoder(
     )
 
 
-async def _transcode_alac_to_mp3(process: Any) -> AsyncGenerator[bytes]:
+async def _transcode_alac_to_mp3(
+    process: Any,
+    prefetched: bytes = b"",
+) -> AsyncGenerator[bytes]:
     """Yield transcoded MP3 bytes and always reap ffmpeg subprocess."""
     try:
         if process.stdout is None:
             return
+        if prefetched:
+            yield prefetched
         while chunk := await process.stdout.read(64 * 1024):
             yield chunk
     finally:
@@ -597,6 +602,25 @@ async def _terminate_alac_process(process: Any) -> None:
         cleanup = asyncio.create_task(_kill_and_wait(process))
         process._autodj_cleanup_task = cleanup
     await asyncio.shield(cleanup)
+
+
+async def _prefetch_alac_output(process: Any) -> bytes | None:
+    """Read one output chunk before response headers or return fallback signal."""
+    if process.stdout is None:
+        await _terminate_alac_process(process)
+        return None
+    try:
+        first_chunk = await process.stdout.read(64 * 1024)
+    except asyncio.CancelledError:
+        await _terminate_alac_process(process)
+        raise
+    except Exception:
+        await _terminate_alac_process(process)
+        return None
+    if not first_chunk:
+        await _terminate_alac_process(process)
+        return None
+    return first_chunk
 
 
 async def _close_alac_stream(stream: AsyncGenerator[bytes], process: Any) -> None:
@@ -1377,16 +1401,32 @@ def create_app(
                             exc_info=True,
                         )
                     else:
-                        stream = _transcode_alac_to_mp3(process)
-                        response = StreamingResponse(
-                            stream,
-                            media_type="audio/mpeg",
-                            headers={"Accept-Ranges": "none"},
-                            background=BackgroundTask(_close_alac_stream, stream, process),
-                        )
-                        await _close_opened_media(source)
-                        source = None
-                        return response
+                        first_chunk = await _prefetch_alac_output(process)
+                        if first_chunk is None:
+                            logger.warning(
+                                "ffmpeg produced no initial output; serving ALAC source "
+                                "bytes for %s",
+                                audio_path,
+                            )
+                        else:
+                            try:
+                                stream = _transcode_alac_to_mp3(process, first_chunk)
+                                response = StreamingResponse(
+                                    stream,
+                                    media_type="audio/mpeg",
+                                    headers={"Accept-Ranges": "none"},
+                                    background=BackgroundTask(
+                                        _close_alac_stream,
+                                        stream,
+                                        process,
+                                    ),
+                                )
+                                await _close_opened_media(source)
+                            except BaseException:
+                                await _terminate_alac_process(process)
+                                raise
+                            source = None
+                            return response
 
             mime = _audio_mime(audio_path)
             range_header = request.headers.get("range")

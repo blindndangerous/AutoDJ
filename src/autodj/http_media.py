@@ -114,7 +114,7 @@ def iter_file_chunks(
             amount = min(chunk_size, remaining)
             chunk = handle.read(amount)
             if not chunk:
-                break
+                raise OSError(f"media source truncated with {remaining} bytes remaining")
             yield chunk
             remaining -= len(chunk)
     finally:

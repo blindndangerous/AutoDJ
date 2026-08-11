@@ -103,18 +103,18 @@ def test_iter_file_chunks_rejects_nonpositive_chunk_size(chunk_size: int) -> Non
     assert handle.closed is True
 
 
-def test_truncated_file_stops_without_spinning(monkeypatch) -> None:
+def test_truncated_file_raises_and_closes_without_spinning() -> None:
     handle = BytesIO(b"abc")
 
-    chunks = list(
-        iter_file_chunks(
-            OpenedMediaFile(handle, 10),
-            ByteRange(0, 9),
-            chunk_size=4,
+    with pytest.raises(OSError, match="truncated"):
+        list(
+            iter_file_chunks(
+                OpenedMediaFile(handle, 10),
+                ByteRange(0, 9),
+                chunk_size=4,
+            )
         )
-    )
 
-    assert chunks == [b"abc"]
     assert handle.closed is True
 
 
