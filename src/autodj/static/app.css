@@ -52,6 +52,31 @@
       outline-offset: 3px;
     }
 
+    #auth-dialog {
+      width: min(32rem, calc(100% - 2rem));
+      max-height: calc(100vh - 2rem);
+      margin: auto;
+      padding: 1.5rem;
+      overflow: auto;
+      color: var(--text);
+      background: var(--bg-card);
+      border: 1px solid var(--accent);
+      border-radius: var(--radius);
+    }
+    #auth-dialog::backdrop { background: rgba(0, 0, 0, 0.75); }
+    #auth-form { display: grid; gap: 0.75rem; }
+    #auth-token {
+      width: 100%;
+      min-height: 44px;
+      padding: 0.55rem 0.75rem;
+      color: var(--text);
+      background: var(--bg);
+      border: 1px solid var(--accent);
+      border-radius: var(--radius);
+      font: inherit;
+    }
+    #auth-error { color: #ffaaa0; }
+
     header {
       background: var(--bg-card);
       border-bottom: 1px solid var(--border);

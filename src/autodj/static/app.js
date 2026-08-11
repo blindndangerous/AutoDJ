@@ -9,6 +9,11 @@ import {
   escHtml,
   isTypingTarget,
 } from "./modules/dom-helpers.js";
+import {
+  bootstrapAuthenticatedApp,
+  handleWebSocketAuthenticationClose,
+  initAuthDialog,
+} from "./modules/auth.js";
 
 if (isDebug()) {
   console.log("[autodj] debug logging ENABLED " +
@@ -89,6 +94,8 @@ const discEnabled     = document.getElementById("disc-enabled");
 const discEvery       = document.getElementById("disc-every");
 const settingsStatus  = document.getElementById("settings-status");
 const volAnnounce     = document.getElementById("vol-announce");
+
+const auth = initAuthDialog({ document });
 
 // ----------------------------------------------------------------
 // State
@@ -822,6 +829,7 @@ function renderHistory() {
 // runs, otherwise the assignment inside connectWS hits the TDZ and throws,
 // leaving the page stuck on "Connecting…".
 let _ws = null;
+let authenticatedActivityActive = false;
 
 function setConnStatus(state, label) {
   connStatus.className  = state;
@@ -829,6 +837,7 @@ function setConnStatus(state, label) {
 }
 
 function connectWS() {
+  if (!authenticatedActivityActive) return;
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${proto}://${location.host}/ws`);
   _ws = ws;
@@ -841,7 +850,7 @@ function connectWS() {
     try { applyState(JSON.parse(ev.data)); } catch (_) {}
   };
 
-  ws.onclose = () => {
+  ws.onclose = (event) => {
     _ws = null;
     setConnStatus("error", "Disconnected");
     // Server gone — stop both decks immediately so audio doesn't keep
@@ -851,13 +860,18 @@ function connectWS() {
     // trigger a crossfade on a marker that no longer matches the
     // currently-loaded track (race window during reconnect).
     resetTrackCaches();
+    if (handleWebSocketAuthenticationClose(event, {
+      auth,
+      onExpired: () => {
+        authenticatedActivityActive = false;
+        setConnStatus("error", "Authentication required");
+      },
+    })) return;
     setTimeout(connectWS, 3000);
   };
 
   ws.onerror = () => setConnStatus("error", "Error");
 }
-
-connectWS();
 
 // ----------------------------------------------------------------
 // Button handlers
@@ -1244,7 +1258,6 @@ const _libEls = {
   statWithGenre:   document.getElementById("lib-stat-with-genre"),
   statWithEnergy:  document.getElementById("lib-stat-with-energy"),
 };
-installLibraryJobs(_libEls);
 
 // ----------------------------------------------------------------
 // History tab
@@ -1328,21 +1341,6 @@ if (document.readyState === "loading") {
   initViewRouter();
 }
 
-// ----------------------------------------------------------------
-// Initial state fetch
-// ----------------------------------------------------------------
-
-fetch("/api/status")
-  .then(r => {
-    if (!r.ok) throw new Error(`/api/status returned ${r.status}`);
-    return r.json();
-  })
-  .then(applyState)
-  .catch((err) => {
-    setConnStatus("error", `Cannot reach server: ${err.message}`);
-    npAnnounce.textContent = `Cannot reach server: ${err.message}`;
-  });
-
 // data-show-when mechanism moved to ./modules/show-when.js.
 import {
   applyShowWhen,
@@ -1372,32 +1370,50 @@ const _linerEls = {
   lnStatus:        document.getElementById("ln-status"),
 };
 
-// Audio dependencies are still owned by the unmigrated audio engine
-// further down this file -- inject closures that capture the current
-// values at call time so the module never holds a stale ref.
-installLiners(_linerEls, {
-  postSettings: (url, body) => postSettings(url, body),
-  canPlay:      () => !!_ctx && !!_lastBrowserPlayback,
-  playLiner: async (arrayBuf, duckDb) => {
-    if (!_ctx) return false;
-    const audioBuf = await _ctx.decodeAudioData(arrayBuf);
-    const src  = _ctx.createBufferSource();
-    src.buffer = audioBuf;
-    const gain = _ctx.createGain();
-    gain.gain.value = 1.0;
-    src.connect(gain);
-    gain.connect(_ctx.destination);
-    const duckLin = Math.pow(10, duckDb / 20);
-    const dur = audioBuf.duration;
-    const t0 = _ctx.currentTime;
-    const active = decks[activeIdx];
-    active.gain.gain.cancelScheduledValues(t0);
-    active.gain.gain.setValueAtTime(active.gain.gain.value, t0);
-    active.gain.gain.linearRampToValueAtTime(_volume * duckLin, t0 + 0.2);
-    active.gain.gain.setValueAtTime(_volume * duckLin, t0 + dur - 0.2);
-    active.gain.gain.linearRampToValueAtTime(_volume, t0 + dur + 0.2);
-    src.start(t0);
-    return true;
+let authenticatedAppStarted = false;
+
+function startAuthenticatedApp(initialState) {
+  if (authenticatedAppStarted) return;
+  authenticatedAppStarted = true;
+  authenticatedActivityActive = true;
+  installLibraryJobs(_libEls);
+  // Audio dependencies are owned by the audio engine. Inject closures
+  // that read its live bindings and stop liner playback after auth expiry.
+  installLiners(_linerEls, {
+    postSettings: (url, body) => postSettings(url, body),
+    canPlay: () => authenticatedActivityActive && !!_ctx && !!_lastBrowserPlayback,
+    playLiner: async (arrayBuf, duckDb) => {
+      if (!_ctx) return false;
+      const audioBuf = await _ctx.decodeAudioData(arrayBuf);
+      const src = _ctx.createBufferSource();
+      src.buffer = audioBuf;
+      const gain = _ctx.createGain();
+      gain.gain.value = 1.0;
+      src.connect(gain);
+      gain.connect(_ctx.destination);
+      const duckLin = Math.pow(10, duckDb / 20);
+      const dur = audioBuf.duration;
+      const t0 = _ctx.currentTime;
+      const active = decks[activeIdx];
+      active.gain.gain.cancelScheduledValues(t0);
+      active.gain.gain.setValueAtTime(active.gain.gain.value, t0);
+      active.gain.gain.linearRampToValueAtTime(_volume * duckLin, t0 + 0.2);
+      active.gain.gain.setValueAtTime(_volume * duckLin, t0 + dur - 0.2);
+      active.gain.gain.linearRampToValueAtTime(_volume, t0 + dur + 0.2);
+      src.start(t0);
+      return true;
+    },
+  });
+  applyState(initialState);
+  connectWS();
+}
+
+void bootstrapAuthenticatedApp({
+  auth,
+  startAuthenticatedApp,
+  onError: errorValue => {
+    setConnStatus("error", `Cannot reach server: ${errorValue.message}`);
+    npAnnounce.textContent = `Cannot reach server: ${errorValue.message}`;
   },
 });
 
