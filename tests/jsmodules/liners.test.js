@@ -1,5 +1,50 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+describe("liner distinct-track cadence", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it("counts only transitions after the first distinct track", async () => {
+    const {
+      bumpLinerTrackCount,
+      getLinerTrackCountForTest,
+      resetLinerStateForTest,
+    } = await import("../../src/autodj/static/modules/liners.js");
+    resetLinerStateForTest();
+
+    expect(bumpLinerTrackCount(null)).toBe(false);
+    expect(bumpLinerTrackCount({})).toBe(false);
+    expect(bumpLinerTrackCount({ current_track: {} })).toBe(false);
+    expect(bumpLinerTrackCount({ current_track: { path: "one.mp3" } })).toBe(false);
+    expect(getLinerTrackCountForTest()).toBe(0);
+    expect(bumpLinerTrackCount({ current_track: { path: "one.mp3" } })).toBe(false);
+    expect(bumpLinerTrackCount({ current_track: null })).toBe(false);
+    expect(bumpLinerTrackCount({ current_track: { path: "two.mp3" } })).toBe(true);
+    expect(getLinerTrackCountForTest()).toBe(1);
+    expect(bumpLinerTrackCount({ current_track: { path: "two.mp3" } })).toBe(false);
+    expect(bumpLinerTrackCount({ current_track: { path: "one.mp3" } })).toBe(true);
+    expect(getLinerTrackCountForTest()).toBe(2);
+  });
+
+  it("resets both the count and distinct-track baseline", async () => {
+    const {
+      bumpLinerTrackCount,
+      getLinerTrackCountForTest,
+      resetLinerStateForTest,
+    } = await import("../../src/autodj/static/modules/liners.js");
+    bumpLinerTrackCount({ current_track: { path: "one.mp3" } });
+    bumpLinerTrackCount({ current_track: { path: "two.mp3" } });
+    expect(getLinerTrackCountForTest()).toBe(1);
+
+    resetLinerStateForTest();
+
+    expect(getLinerTrackCountForTest()).toBe(0);
+    expect(bumpLinerTrackCount({ current_track: { path: "two.mp3" } })).toBe(false);
+    expect(getLinerTrackCountForTest()).toBe(0);
+  });
+});
+
 describe("liner authentication races", () => {
   beforeEach(() => {
     vi.resetModules();

@@ -239,14 +239,12 @@ let lastNextKey  = null;   // suppress aria-live re-announce of unchanged next t
 // ----------------------------------------------------------------
 
 let _lastState = null;
+let _stateApplicationGeneration = 0;
 
 function applyState(s) {
+  _stateApplicationGeneration += 1;
   _lastState = s;
-  // Voice liner track-count bump (forward declaration of helper -- see
-  // voice liner block at the bottom of this file).  Safe to call here
-  // because module-init runs top-to-bottom and the helper is defined
-  // before WS messages start arriving.
-  if (typeof _bumpLinerTrackCount === "function") bumpLinerTrackCount(s);
+  bumpLinerTrackCount(s);
 
   // Now Playing
   const trackKey   = s.current_track ? s.current_track.path : null;
@@ -1235,12 +1233,14 @@ const btnShuffle = document.getElementById("btn-shuffle");
 if (btnShuffle) {
   btnShuffle.addEventListener("click", async () => {
     const epoch = captureAuthenticatedRequestEpoch();
+    const stateGeneration = _stateApplicationGeneration;
     try {
       const state = await withDisabled(
         btnShuffle,
         () => requestJson("/api/random-track", { method: "POST" }),
       );
-      if (!isAuthenticatedRequestCurrent(epoch)) return;
+      if (!isAuthenticatedRequestCurrent(epoch)
+          || stateGeneration !== _stateApplicationGeneration) return;
       applyState(state);
     } catch (errorValue) {
       if (!isAuthenticatedRequestCurrent(epoch)) return;

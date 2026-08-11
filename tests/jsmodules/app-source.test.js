@@ -43,6 +43,8 @@ async function setupApp({
 } = {}) {
   vi.resetModules();
   const dialog = installDocument();
+  const linerModule = await vi.importActual(moduleMocks[1]);
+  linerModule.resetLinerStateForTest();
   const stopAllDecks = audio.stopAllDecks || vi.fn();
   const resetTrackCaches = audio.resetTrackCaches || vi.fn();
   const resetTransitionCaches = audio.resetTransitionCaches || vi.fn();
@@ -50,6 +52,7 @@ async function setupApp({
   const unlockAndPlay = audio.unlockAndPlay || vi.fn().mockResolvedValue();
   const startCrossfade = audio.startCrossfade || vi.fn().mockResolvedValue(true);
   const updateMediaSession = vi.fn();
+  const bumpLinerTrackCount = vi.fn(linerModule.bumpLinerTrackCount);
   const audioDefaults = {
     _beatmatchOnSkip: false,
     _ctx: null,
@@ -89,7 +92,7 @@ async function setupApp({
     installLibraryJobs: vi.fn(),
   }));
   vi.doMock(moduleMocks[1], () => ({
-    bumpLinerTrackCount: vi.fn(),
+    bumpLinerTrackCount,
     installLiners: vi.fn(onInstallLiners),
   }));
   vi.doMock(moduleMocks[2], () => ({
@@ -145,8 +148,10 @@ async function setupApp({
     });
   }
   return {
+    bumpLinerTrackCount,
     dialog,
     fetchImpl,
+    getLinerTrackCountForTest: linerModule.getLinerTrackCountForTest,
     loadCoverArt,
     resetTrackCaches,
     resetTransitionCaches,
@@ -167,6 +172,34 @@ afterEach(() => {
 });
 
 describe("app request behavior", () => {
+  it("passes every applied state through the liner cadence hook", async () => {
+    const initialTrack = { path: "current.mp3", title: "Current" };
+    const { bumpLinerTrackCount, webSocket } = await setupApp({
+      initialState: { current_track: initialTrack },
+    });
+    expect(bumpLinerTrackCount).toHaveBeenCalledWith(
+      expect.objectContaining({ current_track: initialTrack }),
+    );
+
+    const nextState = {
+      browser_playback: false,
+      current_track: null,
+      discovery_available: false,
+      duration: 0,
+      elapsed: 0,
+      eq: {},
+      is_muted: false,
+      is_paused: false,
+      next_track: null,
+      queue: [],
+      settings: null,
+      volume: 1,
+    };
+    webSocket.onmessage({ data: JSON.stringify(nextState) });
+
+    expect(bumpLinerTrackCount).toHaveBeenLastCalledWith(nextState);
+  });
+
   it("cancels a scheduled transient auth probe after REST expiry", async () => {
     let authStatusCalls = 0;
     const { dialog, webSocket, WebSocketImpl } = await setupApp({
@@ -510,5 +543,90 @@ describe("app request behavior", () => {
     expect(document.querySelector("#now-playing-announce").textContent)
       .not.toContain("Late secret");
     expect(updateMediaSession).toHaveBeenLastCalledWith({ current_track: null });
+  });
+
+  it("does not apply a delayed shuffle response after newer WebSocket state", async () => {
+    let resolveShuffle;
+    const {
+      bumpLinerTrackCount,
+      getLinerTrackCountForTest,
+      webSocket,
+    } = await setupApp({
+      initialState: {
+        current_track: { path: "a.mp3", title: "Track A" },
+      },
+      onRequest: (url) => url === "/api/random-track"
+        ? new Promise((resolve) => { resolveShuffle = resolve; })
+        : jsonResponse({ ok: true }),
+    });
+    const stateC = {
+      browser_playback: false,
+      current_track: { path: "c.mp3", title: "Track C" },
+      discovery_available: false,
+      duration: 0,
+      elapsed: 0,
+      eq: {},
+      is_muted: false,
+      is_paused: false,
+      next_track: null,
+      queue: [],
+      settings: null,
+      volume: 1,
+    };
+
+    document.querySelector("#btn-shuffle").click();
+    await vi.waitFor(() => expect(resolveShuffle).toEqual(expect.any(Function)));
+    webSocket.onmessage({ data: JSON.stringify(stateC) });
+    resolveShuffle(jsonResponse({
+      ...stateC,
+      current_track: { path: "late-b.mp3", title: "Late Track B" },
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(document.querySelector("#now-playing-announce").textContent)
+      .toContain("Track C");
+    expect(document.querySelector("#now-playing-announce").textContent)
+      .not.toContain("Late Track B");
+    webSocket.onmessage({ data: JSON.stringify(stateC) });
+    expect(getLinerTrackCountForTest()).toBe(1);
+    expect(bumpLinerTrackCount.mock.calls.map(
+      ([state]) => state.current_track?.path ?? null,
+    )).toEqual(["a.mp3", "c.mp3", "c.mp3"]);
+  });
+
+  it("applies an ordinary shuffle response when no newer state arrived", async () => {
+    const shuffledState = {
+      browser_playback: false,
+      current_track: { path: "b.mp3", title: "Track B" },
+      discovery_available: false,
+      duration: 0,
+      elapsed: 0,
+      eq: {},
+      is_muted: false,
+      is_paused: false,
+      next_track: null,
+      queue: [],
+      settings: null,
+      volume: 1,
+    };
+    const {
+      bumpLinerTrackCount,
+      getLinerTrackCountForTest,
+    } = await setupApp({
+      initialState: {
+        current_track: { path: "a.mp3", title: "Track A" },
+      },
+      onRequest: (url) => url === "/api/random-track"
+        ? jsonResponse(shuffledState)
+        : jsonResponse({ ok: true }),
+    });
+
+    document.querySelector("#btn-shuffle").click();
+    await vi.waitFor(() => expect(document.querySelector(
+      "#now-playing-announce",
+    ).textContent).toContain("Track B"));
+
+    expect(getLinerTrackCountForTest()).toBe(1);
+    expect(bumpLinerTrackCount).toHaveBeenLastCalledWith(shuffledState);
   });
 });

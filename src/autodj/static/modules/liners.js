@@ -255,8 +255,19 @@ export function installLiners(els, deps) {
 // current_track path.  One hook covers every advance route.
 export function bumpLinerTrackCount(s) {
   const cur = (s && s.current_track && s.current_track.path) || null;
-  if (cur && cur !== state.lastSeenPath) {
-    if (state.lastSeenPath !== null) state.trackCount += 1;
-    state.lastSeenPath = cur;
-  }
+  if (!cur || cur === state.lastSeenPath) return false;
+  const hadBaseline = state.lastSeenPath !== null;
+  state.lastSeenPath = cur;
+  if (!hadBaseline) return false;
+  state.trackCount += 1;
+  return true;
+}
+
+export function getLinerTrackCountForTest() {
+  return state.trackCount;
+}
+
+export function resetLinerStateForTest() {
+  state.trackCount = 0;
+  state.lastSeenPath = null;
 }

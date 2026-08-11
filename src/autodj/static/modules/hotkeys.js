@@ -21,6 +21,51 @@
 
 import { isTypingTarget, srSpeak } from "./dom-helpers.js";
 
+const NATIVE_KEYBOARD_SELECTOR = [
+  "button",
+  "input",
+  "select",
+  "textarea",
+  "a[href]",
+  "summary",
+  '[contenteditable="true"]',
+  '[role="button"]',
+  '[role="slider"]',
+  '[role="spinbutton"]',
+  '[role="combobox"]',
+  '[role="listbox"]',
+  '[role="menuitem"]',
+  '[role="option"]',
+  '[role="switch"]',
+  '[role="tab"]',
+].join(",");
+
+export function ownsNativeKeyboardBehavior(target) {
+  if (!target || target.nodeType !== 1 || typeof target.closest !== "function") {
+    return false;
+  }
+  try {
+    return target.closest(NATIVE_KEYBOARD_SELECTOR) !== null;
+  } catch (_) {
+    return false;
+  }
+}
+
+function _ownsKeyboardBehavior(target) {
+  return isTypingTarget(target) || ownsNativeKeyboardBehavior(target);
+}
+
+function _eventTargetOwnsKeyboardBehavior(event) {
+  if (_ownsKeyboardBehavior(event.target)) return true;
+  if (typeof event.composedPath !== "function") return false;
+  try {
+    const path = event.composedPath();
+    return Array.isArray(path) && path.some(_ownsKeyboardBehavior);
+  } catch (_) {
+    return false;
+  }
+}
+
 function _fmtRemaining(sec) {
   const s = Math.max(0, Math.round(sec));
   const mins = Math.floor(s / 60);
@@ -77,10 +122,10 @@ export function installHotkeys({
 
   window.addEventListener("keydown", (e) => {
     if (e.repeat) return;
+    if (_eventTargetOwnsKeyboardBehavior(e)) return;
     if (_pressed.has(e.key)) return;
     _pressed.add(e.key);
     if (!isEnabled()) return;
-    if (isTypingTarget(e.target)) return;
 
     const nowPanel = document.getElementById("panel-now");
     const nowVisible = nowPanel && !nowPanel.hasAttribute("hidden");
@@ -95,10 +140,6 @@ export function installHotkeys({
       return;
     }
     if (e.ctrlKey || e.metaKey || e.altKey) return;
-
-    // Tablist owns its own arrow-key navigation (APG roving tabindex).
-    const targetIsTab =
-      e.target && e.target.getAttribute && e.target.getAttribute("role") === "tab";
 
     const key = e.key;
     let bumpVol = 0;
@@ -120,11 +161,9 @@ export function installHotkeys({
         if (btnMute) btnMute.click();
         break;
       case "ArrowUp":
-        if (targetIsTab) return;
         bumpVol = +5;
         break;
       case "ArrowDown":
-        if (targetIsTab) return;
         bumpVol = -5;
         break;
       case ",": {
