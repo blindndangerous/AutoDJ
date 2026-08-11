@@ -312,6 +312,57 @@ class TestRoundTrip:
 
         bridge1 = PlayerBridge(p1, p1._sim)
         saved = bridge1.get_settings()
+        assert set(saved) == {
+            "preset",
+            "available_presets",
+            "transition",
+            "djmix",
+            "playback",
+            "bpm_range",
+            "discovery_every",
+        }
+        assert set(saved["djmix"]) == {
+            "harmonic_mixing",
+            "harmonic_mode",
+            "beatmatch",
+            "phrase_align",
+            "outro_intro_align",
+            "filter_sweep",
+        }
+        assert set(saved["playback"]) == {
+            "crossfade_seconds",
+            "fade_in_seconds",
+            "crossfade_eq_duck",
+            "smart_shuffle",
+            "pure_shuffle",
+            "anchor_to_seed",
+            "replaygain_enabled",
+            "transition_mode",
+            "post_queue_seed",
+            "key_notation",
+            "key_prefer_flats",
+            "show_lyrics",
+            "enable_daypart",
+            "enable_mood_arc",
+            "mood_arc_hours",
+            "import_external_cues",
+            "beat_sync_fx",
+            "key_sync_fx",
+            "beatmatch_on_skip",
+            "prefetch_next_track",
+            "silence_trigger_crossfade",
+            "liners_enabled",
+            "liners_every_n_songs",
+            "liners_every_minutes",
+            "liners_random_min_minutes",
+            "liners_random_max_minutes",
+            "liners_pick_mode",
+            "liners_duck_db",
+            # Bridge-visible derived session values are never persisted.
+            "no_repeat_window",
+            "library_size",
+        }
+        # Config-only absolute path is neither browser-visible nor persisted.
         assert "liners_folder" not in saved["playback"]
         saved["playback"]["liners_folder"] = p1._cfg.playback.liners_folder
         save_from_player(saved, tmp_path)
