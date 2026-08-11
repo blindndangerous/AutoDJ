@@ -912,6 +912,61 @@ def test_websocket_rejects_duplicate_security_headers() -> None:
     assert duplicate_origin.value.code == 4403
 
 
+def test_websocket_closes_when_an_established_session_expires() -> None:
+    now = [1000.0]
+    player = _make_player_mock()
+    player._cfg.server = ServerConfig(
+        access_token=_TEST_ACCESS_TOKEN,
+        allowed_hosts=["testserver"],
+        allowed_origins=["http://testserver"],
+        session_ttl_seconds=60,
+    )
+    bridge = PlayerBridge(player=player, sim=_make_sim_mock())
+    app = create_app(bridge)
+    app.state.security_policy = SecurityPolicy(
+        player._cfg.server,
+        now=lambda: now[0],
+    )
+
+    with TestClient(
+        app,
+        headers={"Host": "testserver", "Origin": "http://testserver"},
+    ) as client:
+        assert client.post("/api/login", json={"token": _TEST_ACCESS_TOKEN}).status_code == 200
+        with client.websocket_connect("/ws") as websocket:
+            websocket.receive_json()
+            now[0] = 1061.0
+            with pytest.raises(WebSocketDisconnect) as expired:
+                websocket.receive_text()
+
+    assert expired.value.code == 4401
+
+
+def test_websocket_rejects_mutation_after_session_expiry() -> None:
+    now = [1000.0]
+    client, bridge = _security_client_and_bridge()
+    client.app.state.security_policy = SecurityPolicy(
+        ServerConfig(
+            access_token=_TEST_ACCESS_TOKEN,
+            allowed_hosts=["testserver"],
+            allowed_origins=["http://testserver"],
+            session_ttl_seconds=60,
+        ),
+        now=lambda: now[0],
+    )
+    initial = bridge.player._state.discovery_enabled
+    assert client.post("/api/login", json={"token": _TEST_ACCESS_TOKEN}).status_code == 200
+
+    with client.websocket_connect("/ws") as websocket:
+        now[0] = 1061.0
+        websocket.send_json({"type": "toggle_discovery"})
+        with pytest.raises(WebSocketDisconnect) as expired:
+            websocket.receive_text()
+
+    assert expired.value.code == 4401
+    assert bridge.player._state.discovery_enabled is initial
+
+
 def test_websocket_audits_connect_mutation_and_disconnect(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

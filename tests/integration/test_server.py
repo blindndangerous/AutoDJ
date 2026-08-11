@@ -996,6 +996,55 @@ async def test_broadcast_sends_concurrently_evicts_slow_and_serializes() -> None
     assert fast_socket.max_active == 1
 
 
+async def test_broadcast_rechecks_session_after_waiting_for_send_lock() -> None:
+    import asyncio
+    import contextlib
+
+    from autodj.server import _send_websocket_payload, _WebSocketClient
+
+    class Socket:
+        def __init__(self) -> None:
+            self.close_codes: list[int] = []
+            self.messages: list[str] = []
+
+        async def send_text(self, payload: str) -> None:
+            self.messages.append(payload)
+
+        async def close(self, *, code: int) -> None:
+            self.close_codes.append(code)
+
+    async def handler() -> None:
+        await asyncio.Event().wait()
+
+    authenticated = [True]
+    handler_task = asyncio.create_task(handler())
+    socket = Socket()
+    client = _WebSocketClient(
+        socket,
+        session_is_valid=lambda: authenticated[0],
+        handler_task=handler_task,
+    )
+    await client.send_lock.acquire()
+    send_task = asyncio.create_task(
+        _send_websocket_payload(client, "protected", timeout_seconds=1.0)
+    )
+    await asyncio.sleep(0)
+    authenticated[0] = False
+    client.send_lock.release()
+
+    try:
+        assert await send_task is False
+        await asyncio.sleep(0)
+        assert socket.messages == []
+        assert socket.close_codes == [4401]
+        assert handler_task.cancelled()
+    finally:
+        if not handler_task.done():
+            handler_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await handler_task
+
+
 async def test_broadcast_close_failure_is_redacted_and_cancels_handler(caplog) -> None:
     import asyncio
     import json

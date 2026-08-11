@@ -862,6 +862,7 @@ function connectWS() {
     // Server gone — stop both decks immediately so audio doesn't keep
     // playing from the buffered <audio> elements after Ctrl+C on serve.
     stopAllDecks();
+    stopActiveLiners();
     // Clear stale intro / outro markers so the next reconnect doesn't
     // trigger a crossfade on a marker that no longer matches the
     // currently-loaded track (race window during reconnect).
@@ -1393,6 +1394,15 @@ const _linerEls = {
 };
 
 let authenticatedAppStarted = false;
+const activeLinerSources = new Set();
+
+function stopActiveLiners() {
+  const sources = Array.from(activeLinerSources);
+  activeLinerSources.clear();
+  for (const source of sources) {
+    try { source.stop(); } catch (_) {}
+  }
+}
 
 function startAuthenticatedApp(initialState) {
   if (authenticatedAppStarted) return;
@@ -1405,23 +1415,27 @@ function startAuthenticatedApp(initialState) {
     postSettings: (url, body) => postSettings(url, body),
     canPlay: () => authenticatedActivityActive && !!_ctx && !!_lastBrowserPlayback,
     playLiner: async (arrayBuf, duckDb) => {
-      if (!_ctx) return false;
-      const audioBuf = await _ctx.decodeAudioData(arrayBuf);
-      const src = _ctx.createBufferSource();
+      if (!authenticatedInteractionEnabled() || !_ctx) return false;
+      const audioContext = _ctx;
+      const audioBuf = await audioContext.decodeAudioData(arrayBuf);
+      if (!authenticatedInteractionEnabled() || _ctx !== audioContext) return false;
+      const src = audioContext.createBufferSource();
       src.buffer = audioBuf;
-      const gain = _ctx.createGain();
+      const gain = audioContext.createGain();
       gain.gain.value = 1.0;
       src.connect(gain);
-      gain.connect(_ctx.destination);
+      gain.connect(audioContext.destination);
       const duckLin = Math.pow(10, duckDb / 20);
       const dur = audioBuf.duration;
-      const t0 = _ctx.currentTime;
+      const t0 = audioContext.currentTime;
       const active = decks[activeIdx];
       active.gain.gain.cancelScheduledValues(t0);
       active.gain.gain.setValueAtTime(active.gain.gain.value, t0);
       active.gain.gain.linearRampToValueAtTime(_volume * duckLin, t0 + 0.2);
       active.gain.gain.setValueAtTime(_volume * duckLin, t0 + dur - 0.2);
       active.gain.gain.linearRampToValueAtTime(_volume, t0 + dur + 0.2);
+      activeLinerSources.add(src);
+      src.addEventListener("ended", () => activeLinerSources.delete(src), { once: true });
       src.start(t0);
       return true;
     },

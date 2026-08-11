@@ -35,7 +35,7 @@ import logging
 import mimetypes
 import threading
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -84,6 +84,7 @@ _WS_SEND_TIMEOUT_SECONDS = 2.0
 class _WebSocketClient:
     websocket: Any
     request_id: str | None = None
+    session_is_valid: Callable[[], bool] | None = field(default=None, repr=False)
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     handler_task: asyncio.Task[Any] | None = None
     failure_code: int | None = None
@@ -134,17 +135,50 @@ async def _close_failed_websocket(client: _WebSocketClient, timeout_seconds: flo
             task.cancel()
 
 
+def _websocket_session_is_valid(client: _WebSocketClient) -> bool:
+    if client.session_is_valid is None:
+        return True
+    try:
+        return client.session_is_valid()
+    except Exception:
+        return False
+
+
+async def _close_expired_websocket(client: _WebSocketClient, timeout_seconds: float) -> None:
+    try:
+        await _close_websocket_client(
+            client,
+            code=4401,
+            timeout_seconds=timeout_seconds,
+            failure_action="websocket_session",
+        )
+    finally:
+        task = client.handler_task
+        if task is not None and not task.done():
+            task.cancel()
+
+
 async def _send_websocket_payload(
     client: _WebSocketClient, payload: str, timeout_seconds: float
 ) -> bool:
+    if not _websocket_session_is_valid(client):
+        await _close_expired_websocket(client, timeout_seconds)
+        return False
+    expired = False
     try:
         async with asyncio.timeout(timeout_seconds):
             async with client.send_lock:
                 if client.close_started:
                     return False
-                await client.websocket.send_text(payload)
+                if not _websocket_session_is_valid(client):
+                    expired = True
+                else:
+                    await client.websocket.send_text(payload)
     except Exception:
         await _close_failed_websocket(client, timeout_seconds)
+        return False
+    if expired:
+        await _close_expired_websocket(client, timeout_seconds)
         return False
     return True
 
@@ -1567,8 +1601,9 @@ def create_app(
             )
             await websocket.close(code=4403)
             return
+        session_cookie = websocket.cookies.get(COOKIE_NAME)
         if request_policy.authentication_required and not request_policy.verify_session(
-            websocket.cookies.get(COOKIE_NAME)
+            session_cookie
         ):
             emit_audit(
                 request_id,
@@ -1583,9 +1618,17 @@ def create_app(
             return
 
         await websocket.accept()
+
+        def session_is_valid() -> bool:
+            live_policy: SecurityPolicy = websocket.app.state.security_policy
+            return not live_policy.authentication_required or live_policy.verify_session(
+                session_cookie
+            )
+
         client = _WebSocketClient(
             websocket,
             request_id=request_id,
+            session_is_valid=session_is_valid,
             handler_task=asyncio.current_task(),
         )
         client_host = getattr(getattr(websocket, "client", None), "host", "unknown")
@@ -1618,6 +1661,15 @@ def create_app(
                 text = message.get("text")
                 if not isinstance(text, str):
                     continue
+                if not _websocket_session_is_valid(client):
+                    disconnect_code = 4401
+                    await _close_and_prune_websocket(
+                        client,
+                        _ws_clients,
+                        _ws_lock,
+                        code=disconnect_code,
+                    )
+                    return
                 # Handle incoming control commands from the client
                 try:
                     msg = _json.loads(text)

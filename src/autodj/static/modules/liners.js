@@ -146,12 +146,15 @@ function _rollRandomTarget() {
 
 async function _playByName(els, deps, name) {
   try {
+    if (!deps.canPlay()) return;
     const resp = await fetch(`/api/liners/file/${encodeURIComponent(name)}`);
+    if (!deps.canPlay()) return;
     if (!resp.ok) {
       _setStatus(els, `Liner fetch failed: HTTP ${resp.status}`);
       return;
     }
     const buf = await resp.arrayBuffer();
+    if (!deps.canPlay()) return;
     const duckDb = (state.lib.config && state.lib.config.duck_db) || -12;
     const ok = await deps.playLiner(buf, duckDb);
     if (!ok) {

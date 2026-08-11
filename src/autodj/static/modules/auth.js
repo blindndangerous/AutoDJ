@@ -134,7 +134,13 @@ function validAuthState(value) {
     && typeof value.authenticated === "boolean";
 }
 
-async function runBootstrap({ fetchImpl, auth, startAuthenticatedApp, onError }) {
+async function runBootstrap({
+  fetchImpl,
+  auth,
+  startAuthenticatedApp,
+  onError,
+  startupState,
+}) {
   try {
     const authResponse = await fetchImpl("/api/auth/status");
     if (authResponse.status === 401) {
@@ -162,6 +168,7 @@ async function runBootstrap({ fetchImpl, auth, startAuthenticatedApp, onError })
       throw new Error(`/api/status returned ${stateResponse.status}`);
     }
     const initialState = await stateResponse.json();
+    startupState.attempted = true;
     startAuthenticatedApp(initialState);
     return true;
   } catch (errorValue) {
@@ -179,8 +186,34 @@ export function bootstrapAuthenticatedApp({
   if (bootstrapRuns.has(startAuthenticatedApp)) {
     return bootstrapRuns.get(startAuthenticatedApp);
   }
-  const run = runBootstrap({ fetchImpl, auth, startAuthenticatedApp, onError });
+  const startupState = { attempted: false };
+  const run = runBootstrap({
+    fetchImpl,
+    auth,
+    startAuthenticatedApp,
+    onError,
+    startupState,
+  });
   bootstrapRuns.set(startAuthenticatedApp, run);
+  void run.then(
+    (started) => {
+      if (
+        !started
+        && !startupState.attempted
+        && bootstrapRuns.get(startAuthenticatedApp) === run
+      ) {
+        bootstrapRuns.delete(startAuthenticatedApp);
+      }
+    },
+    () => {
+      if (
+        !startupState.attempted
+        && bootstrapRuns.get(startAuthenticatedApp) === run
+      ) {
+        bootstrapRuns.delete(startAuthenticatedApp);
+      }
+    },
+  );
   return run;
 }
 

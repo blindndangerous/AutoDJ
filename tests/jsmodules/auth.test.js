@@ -344,6 +344,72 @@ describe("bootstrapAuthenticatedApp", () => {
     expect(auth.show).toHaveBeenCalledOnce();
     expect(startAuthenticatedApp).not.toHaveBeenCalled();
   });
+
+  it("allows an explicit retry after a transient bootstrap failure", async () => {
+    const initialState = { paused: false };
+    const fetchImpl = vi.fn()
+      .mockRejectedValueOnce(new Error("temporary network failure"))
+      .mockResolvedValueOnce(response({
+        ok: true,
+        status: 200,
+        json: { required: true, authenticated: true },
+      }))
+      .mockResolvedValueOnce(response({
+        ok: true,
+        status: 200,
+        json: initialState,
+      }));
+    const startAuthenticatedApp = vi.fn();
+    const onError = vi.fn();
+    const args = {
+      fetchImpl,
+      auth: { show: vi.fn() },
+      startAuthenticatedApp,
+      onError,
+    };
+
+    expect(await bootstrapAuthenticatedApp(args)).toBe(false);
+    expect(await bootstrapAuthenticatedApp(args)).toBe(true);
+
+    expect(onError).toHaveBeenCalledOnce();
+    expect(fetchImpl.mock.calls.map((call) => call[0])).toEqual([
+      "/api/auth/status",
+      "/api/auth/status",
+      "/api/status",
+    ]);
+    expect(startAuthenticatedApp).toHaveBeenCalledOnce();
+    expect(startAuthenticatedApp).toHaveBeenCalledWith(initialState);
+  });
+
+  it("does not retry a callback that threw after startup was attempted", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(response({
+        ok: true,
+        status: 200,
+        json: { required: true, authenticated: true },
+      }))
+      .mockResolvedValueOnce(response({
+        ok: true,
+        status: 200,
+        json: { paused: false },
+      }));
+    const startAuthenticatedApp = vi.fn()
+      .mockImplementationOnce(() => {
+        throw new Error("partial startup");
+      })
+      .mockImplementationOnce(() => {});
+    const args = {
+      fetchImpl,
+      auth: { show: vi.fn() },
+      startAuthenticatedApp,
+      onError: vi.fn(),
+    };
+
+    expect(await bootstrapAuthenticatedApp(args)).toBe(false);
+    expect(await bootstrapAuthenticatedApp(args)).toBe(false);
+    expect(startAuthenticatedApp).toHaveBeenCalledOnce();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("handleWebSocketAuthenticationClose", () => {
@@ -596,6 +662,161 @@ describe("app startup integration", () => {
     expect(installMediaActionHandlers.mock.calls[0][0].isEnabled)
       .toEqual(expect.any(Function));
     expect(installMediaActionHandlers.mock.calls[0][0].isEnabled()).toBe(false);
+
+    vi.unstubAllGlobals();
+    vi.doUnmock("../../src/autodj/static/modules/library-jobs.js");
+    vi.doUnmock("../../src/autodj/static/modules/liners.js");
+    vi.doUnmock("../../src/autodj/static/modules/hotkeys.js");
+    vi.doUnmock("../../src/autodj/static/modules/media-session.js");
+    vi.doUnmock("../../src/autodj/static/modules/audio-engine.js");
+  });
+
+  it("stops active liners and does not start pending audio after auth expires", async () => {
+    vi.resetModules();
+    const html = readFileSync(
+      join(process.cwd(), "src/autodj/static/index.html"), "utf8",
+    );
+    const template = document.createElement("template");
+    template.innerHTML = html;
+    template.content.querySelectorAll('script, link[rel="stylesheet"]')
+      .forEach((element) => element.remove());
+    document.body.replaceChildren(template.content.cloneNode(true));
+    const dialog = document.querySelector("#auth-dialog");
+    dialog.showModal = vi.fn(() => dialog.setAttribute("open", ""));
+
+    let linerDeps;
+    const installLiners = vi.fn((_els, deps) => {
+      linerDeps = deps;
+    });
+    vi.doMock("../../src/autodj/static/modules/library-jobs.js", () => ({
+      applyLibraryJobState: vi.fn(),
+      installLibraryJobs: vi.fn(),
+    }));
+    vi.doMock("../../src/autodj/static/modules/liners.js", () => ({
+      bumpLinerTrackCount: vi.fn(),
+      installLiners,
+    }));
+    vi.doMock("../../src/autodj/static/modules/hotkeys.js", () => ({
+      installHotkeys: vi.fn(),
+      toggleShortcutsModal: vi.fn(),
+    }));
+    vi.doMock("../../src/autodj/static/modules/media-session.js", () => ({
+      installMediaActionHandlers: vi.fn(),
+      updateMediaSession: vi.fn(),
+    }));
+
+    let resolveDecode;
+    const source = {
+      addEventListener: vi.fn(),
+      buffer: null,
+      connect: vi.fn(),
+      start: vi.fn(),
+      stop: vi.fn(),
+    };
+    const audioContext = {
+      createBufferSource: vi.fn(() => source),
+      createGain: vi.fn(() => ({
+        gain: { value: 1 },
+        connect: vi.fn(),
+      })),
+      currentTime: 4,
+      decodeAudioData: vi.fn()
+        .mockResolvedValueOnce({ duration: 2 })
+        .mockImplementationOnce(() => new Promise((resolve) => {
+          resolveDecode = resolve;
+        })),
+      destination: {},
+    };
+    const deckGain = {
+      gain: {
+        cancelScheduledValues: vi.fn(),
+        linearRampToValueAtTime: vi.fn(),
+        setValueAtTime: vi.fn(),
+        value: 1,
+      },
+    };
+    vi.doMock("../../src/autodj/static/modules/audio-engine.js", () => ({
+      _beatmatchOnSkip: false,
+      _ctx: audioContext,
+      _crossfadeSecondsCache: 0,
+      _inBpmCache: 0,
+      _lastBrowserPlayback: true,
+      _nextTrackPathCache: null,
+      _outBpmCache: 0,
+      _volume: 1,
+      activeIdx: 0,
+      applyBrowserPlaybackState: vi.fn(),
+      applyEqState: vi.fn(),
+      applyTransitionFx: vi.fn(),
+      crossfading: false,
+      deckActive: vi.fn(),
+      decks: [{ gain: deckGain }],
+      deckStandby: vi.fn(),
+      ensureAudioGraph: vi.fn(),
+      eqValueLabel: vi.fn(),
+      loadCoverArt: vi.fn(),
+      playbackEnabled: false,
+      playOnDeck: vi.fn(),
+      postEq: vi.fn(),
+      resetTrackCaches: vi.fn(),
+      setApplyState: vi.fn(),
+      setLastBrowserPlayback: vi.fn(),
+      setSrcOnDeck: vi.fn(),
+      setVolume: vi.fn(),
+      startCrossfade: vi.fn(),
+      stopAllDecks: vi.fn(),
+      unlockAndPlay: vi.fn(),
+    }));
+
+    const initialState = {
+      browser_playback: false,
+      current_track: null,
+      discovery_available: false,
+      duration: 0,
+      elapsed: 0,
+      eq: {},
+      is_muted: false,
+      is_paused: false,
+      next_track: null,
+      queue: [],
+      settings: null,
+      volume: 1,
+    };
+    const fetchImpl = vi.fn((url) => {
+      if (url === "/api/auth/status") {
+        return Promise.resolve(response({
+          ok: true,
+          status: 200,
+          json: { required: true, authenticated: true },
+        }));
+      }
+      if (url === "/api/status") {
+        return Promise.resolve(response({ ok: true, status: 200, json: initialState }));
+      }
+      if (url === "/api/version") {
+        return Promise.resolve(response({ ok: false, status: 503 }));
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    const webSocket = { close: vi.fn(), send: vi.fn() };
+    const WebSocketImpl = vi.fn(() => webSocket);
+    WebSocketImpl.OPEN = 1;
+    vi.stubGlobal("fetch", fetchImpl);
+    vi.stubGlobal("WebSocket", WebSocketImpl);
+
+    await import("../../src/autodj/static/app.js");
+    await vi.waitFor(() => expect(installLiners).toHaveBeenCalledOnce());
+    expect(await linerDeps.playLiner(new ArrayBuffer(1), -12)).toBe(true);
+    expect(source.start).toHaveBeenCalledOnce();
+    const pendingPlayback = linerDeps.playLiner(new ArrayBuffer(1), -12);
+    expect(audioContext.decodeAudioData).toHaveBeenCalledTimes(2);
+    webSocket.onclose({ code: 4401 });
+    resolveDecode({ duration: 2 });
+
+    expect(await pendingPlayback).toBe(false);
+    expect(audioContext.createBufferSource).toHaveBeenCalledOnce();
+    expect(source.start).toHaveBeenCalledOnce();
+    expect(source.stop).toHaveBeenCalledOnce();
 
     vi.unstubAllGlobals();
     vi.doUnmock("../../src/autodj/static/modules/library-jobs.js");
