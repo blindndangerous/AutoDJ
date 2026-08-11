@@ -13,17 +13,168 @@ overrides.
 
 The on-disk format mirrors the dict returned by
 ``PlayerBridge.get_settings()`` minus the ``available_presets`` list.
+The liner source folder remains config-owned and is never copied into browser-owned state.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, NotRequired, TypedDict, TypeGuard, cast
 
 logger = logging.getLogger(__name__)
+
+STATE_VERSION = 1
+HARMONIC_MODES = frozenset(
+    {"off", "compatible", "strict", "energy_boost", "mood_change", "neighbour"}
+)
+LINER_PICK_MODES = frozenset({"random", "sequential", "weighted"})
+TRANSITION_EFFECTS = frozenset(
+    {
+        "none",
+        "echo_out",
+        "reverb_tail",
+        "highpass_sweep",
+        "lowpass_sweep",
+        "tape_stop",
+        "gate_stutter",
+        "noise_riser",
+        "noise_drop",
+        "backspin",
+        "forward_spin",
+        "cross_eq_swap",
+        "bitcrusher",
+        "flanger",
+        "pitch_swell",
+        "telephone",
+        "chorus",
+        "submerge",
+        "vinyl_wow",
+        "freeze",
+        "glitch",
+        "scratch",
+        "beat_repeat",
+        "sidechain_pump",
+        "reverse_reverb",
+        "air_horn",
+        "random",
+        "rotate",
+    }
+)
+SESSION_ONLY_PLAYBACK_FIELDS = frozenset({"no_repeat_window", "library_size"})
+CONFIG_ONLY_PLAYBACK_FIELDS = frozenset({"liners_folder"})
+
+
+class DJMixState(TypedDict, total=False):
+    harmonic_mixing: bool
+    harmonic_mode: str
+    beatmatch: bool
+    phrase_align: bool
+    outro_intro_align: bool
+    filter_sweep: bool
+
+
+class PlaybackState(TypedDict, total=False):
+    crossfade_seconds: float
+    fade_in_seconds: float
+    crossfade_eq_duck: bool
+    smart_shuffle: bool
+    pure_shuffle: bool
+    anchor_to_seed: bool
+    replaygain_enabled: bool
+    transition_mode: str
+    post_queue_seed: str
+    key_notation: str
+    key_prefer_flats: bool
+    show_lyrics: bool
+    enable_daypart: bool
+    enable_mood_arc: bool
+    mood_arc_hours: float
+    import_external_cues: bool
+    beat_sync_fx: bool
+    key_sync_fx: bool
+    beatmatch_on_skip: bool
+    prefetch_next_track: bool
+    silence_trigger_crossfade: bool
+    liners_enabled: bool
+    liners_every_n_songs: int | None
+    liners_every_minutes: float | None
+    liners_random_min_minutes: float | None
+    liners_random_max_minutes: float | None
+    liners_pick_mode: str
+    liners_duck_db: float
+
+
+class PersistedState(TypedDict):
+    schema_version: int
+    preset: NotRequired[str | None]
+    transition: NotRequired[str]
+    djmix: NotRequired[DJMixState]
+    playback: NotRequired[PlaybackState]
+    bpm_range: NotRequired[dict[str, float | None] | None]
+    discovery_every: NotRequired[int | None]
+
+
+DJMIX_BOOL_FIELDS = (
+    "harmonic_mixing",
+    "beatmatch",
+    "phrase_align",
+    "outro_intro_align",
+    "filter_sweep",
+)
+PLAYBACK_CFG_BOOL_FIELDS = (
+    "crossfade_eq_duck",
+    "show_lyrics",
+    "enable_daypart",
+    "import_external_cues",
+    "key_prefer_flats",
+    "beat_sync_fx",
+    "key_sync_fx",
+    "beatmatch_on_skip",
+    "prefetch_next_track",
+    "silence_trigger_crossfade",
+    "liners_enabled",
+)
+PLAYER_BOOL_FIELDS = {
+    "smart_shuffle": "_smart_shuffle",
+    "pure_shuffle": "_pure_shuffle",
+    "anchor_to_seed": "_anchor_to_seed",
+}
+PERSISTED_PLAYBACK_FIELDS = frozenset(
+    {
+        "crossfade_seconds",
+        "fade_in_seconds",
+        "crossfade_eq_duck",
+        "smart_shuffle",
+        "pure_shuffle",
+        "anchor_to_seed",
+        "replaygain_enabled",
+        "transition_mode",
+        "post_queue_seed",
+        "key_notation",
+        "key_prefer_flats",
+        "show_lyrics",
+        "enable_daypart",
+        "enable_mood_arc",
+        "mood_arc_hours",
+        "import_external_cues",
+        "beat_sync_fx",
+        "key_sync_fx",
+        "beatmatch_on_skip",
+        "prefetch_next_track",
+        "silence_trigger_crossfade",
+        "liners_enabled",
+        "liners_every_n_songs",
+        "liners_every_minutes",
+        "liners_random_min_minutes",
+        "liners_random_max_minutes",
+        "liners_pick_mode",
+        "liners_duck_db",
+    }
+)
 
 
 def state_file_for(index_dir: Path | None) -> Path | None:
@@ -33,119 +184,218 @@ def state_file_for(index_dir: Path | None) -> Path | None:
     return Path(index_dir) / "web_state.json"
 
 
+def _warn(field: str, value: object) -> None:
+    logger.warning("ignoring invalid %s in web_state.json: %r", field, value)
+
+
+def _read_bool(data: dict, field: str) -> bool | None:
+    if field not in data:
+        return None
+    value = data[field]
+    if type(value) is bool:
+        return value
+    _warn(field, value)
+    return None
+
+
+def _is_finite_number(value: object) -> TypeGuard[int | float]:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def _read_number(data: dict, field: str, minimum: float) -> float | None:
+    if field not in data:
+        return None
+    value = data[field]
+    if _is_finite_number(value) and value >= minimum:
+        return float(value)
+    _warn(field, value)
+    return None
+
+
 def _restore_preset(player: Any, data: dict) -> None:
-    """Restore the active preset (silent on lookup failure)."""
-    if not data.get("preset"):
+    if "preset" not in data:
         return
-    import contextlib
+    value = data["preset"]
+    if value is None or value == "":
+        player._preset = None
+        return
+    if not isinstance(value, str):
+        _warn("preset", value)
+        return
 
     from autodj.presets import get_preset
 
-    with contextlib.suppress(ValueError):
-        player._preset = get_preset(data["preset"], player._cfg.presets)
+    try:
+        player._preset = get_preset(value, player._cfg.presets)
+    except ValueError:
+        _warn("preset", value)
 
 
 def _restore_djmix(cfg: Any, data: dict) -> None:
-    """Restore the saved DJ-mix flags onto *cfg*."""
     djmix = data.get("djmix")
     if not isinstance(djmix, dict):
         return
-    for k, v in djmix.items():
-        if hasattr(cfg.djmix, k):
-            setattr(cfg.djmix, k, bool(v))
+    for field in DJMIX_BOOL_FIELDS:
+        value = _read_bool(djmix, field)
+        if value is not None:
+            setattr(cfg.djmix, field, value)
+    if "harmonic_mode" in djmix:
+        value = djmix["harmonic_mode"]
+        if isinstance(value, str) and value in HARMONIC_MODES:
+            cfg.djmix.harmonic_mode = value
+        else:
+            _warn("harmonic_mode", value)
 
 
 def _restore_transition(cfg: Any, data: dict) -> None:
-    """Restore the saved transition effect."""
-    if isinstance(data.get("transition"), str):
-        cfg.transitions.effect = data["transition"]
+    if "transition" not in data:
+        return
+    value = data["transition"]
+    if isinstance(value, str) and value.lower() in TRANSITION_EFFECTS:
+        cfg.transitions.effect = value.lower()
+    else:
+        _warn("transition", value)
 
 
 def _restore_playback_floats(cfg: Any, pb: dict) -> None:
-    """Restore numeric playback fields (crossfade lengths, mood-arc hours)."""
-    if "crossfade_seconds" in pb:
-        cfg.playback.crossfade_seconds = max(0.0, float(pb["crossfade_seconds"]))
-    if "fade_in_seconds" in pb:
-        cfg.playback.fade_in_seconds = max(0.0, float(pb["fade_in_seconds"]))
-    if "mood_arc_hours" in pb:
-        cfg.playback.mood_arc_hours = max(0.25, float(pb["mood_arc_hours"]))
+    for field, minimum in (
+        ("crossfade_seconds", 0.0),
+        ("fade_in_seconds", 0.0),
+        ("mood_arc_hours", 0.25),
+    ):
+        value = _read_number(pb, field, minimum)
+        if value is not None:
+            setattr(cfg.playback, field, value)
 
 
 def _restore_playback_bools(cfg: Any, player: Any, pb: dict) -> None:
-    """Restore boolean playback flags onto *cfg* / *player*."""
-    if "crossfade_eq_duck" in pb:
-        cfg.playback.crossfade_eq_duck = bool(pb["crossfade_eq_duck"])
-    if "smart_shuffle" in pb:
-        player._smart_shuffle = bool(pb["smart_shuffle"])
-    if "pure_shuffle" in pb:
-        player._pure_shuffle = bool(pb["pure_shuffle"])
-    if "anchor_to_seed" in pb:
-        player._anchor_to_seed = bool(pb["anchor_to_seed"])
-    if "replaygain_enabled" in pb:
-        cfg.replaygain.enabled = bool(pb["replaygain_enabled"])
-    if "show_lyrics" in pb:
-        cfg.playback.show_lyrics = bool(pb["show_lyrics"])
-    if "enable_daypart" in pb:
-        cfg.playback.enable_daypart = bool(pb["enable_daypart"])
-    if "import_external_cues" in pb:
-        cfg.playback.import_external_cues = bool(pb["import_external_cues"])
-    if "key_prefer_flats" in pb:
-        cfg.playback.key_prefer_flats = bool(pb["key_prefer_flats"])
+    for field in PLAYBACK_CFG_BOOL_FIELDS:
+        value = _read_bool(pb, field)
+        if value is not None:
+            setattr(cfg.playback, field, value)
+    for field, attribute in PLAYER_BOOL_FIELDS.items():
+        value = _read_bool(pb, field)
+        if value is not None:
+            setattr(player, attribute, value)
+    replaygain = _read_bool(pb, "replaygain_enabled")
+    if replaygain is not None:
+        cfg.replaygain.enabled = replaygain
 
 
 def _restore_mood_arc(cfg: Any, player: Any, pb: dict) -> None:
-    """Restore mood-arc enabled flag, re-anchoring the start time."""
-    if "enable_mood_arc" not in pb:
+    enabled = _read_bool(pb, "enable_mood_arc")
+    if enabled is None:
         return
-    cfg.playback.enable_mood_arc = bool(pb["enable_mood_arc"])
-    if cfg.playback.enable_mood_arc:
-        from autodj.mood_arc import make_default_arc
+    cfg.playback.enable_mood_arc = enabled
+    if not enabled:
+        player._mood_arc = None
+        return
+    from autodj.mood_arc import make_default_arc
 
-        player._mood_arc = make_default_arc(
-            duration_hours=getattr(cfg.playback, "mood_arc_hours", 3.0),
-        )
+    player._mood_arc = make_default_arc(
+        duration_hours=cfg.playback.mood_arc_hours,
+    )
 
 
 def _restore_validated_strings(cfg: Any, pb: dict) -> None:
-    """Restore validator-gated string fields (transition_mode, key_notation)."""
-    if "transition_mode" in pb:
-        from autodj.config import _validate_transition_mode
+    from autodj.config import (
+        _validate_key_notation,
+        _validate_post_queue_seed,
+        _validate_transition_mode,
+    )
 
+    validators = {
+        "transition_mode": _validate_transition_mode,
+        "post_queue_seed": _validate_post_queue_seed,
+        "key_notation": _validate_key_notation,
+    }
+    for field, validator in validators.items():
+        if field not in pb:
+            continue
+        value = pb[field]
+        if not isinstance(value, str):
+            _warn(field, value)
+            continue
         try:
-            cfg.playback.transition_mode = _validate_transition_mode(str(pb["transition_mode"]))
-        except ValueError as exc:
-            logger.warning("ignoring invalid transition_mode in web_state.json: %s", exc)
-    if "key_notation" in pb:
-        from autodj.config import _validate_key_notation
+            setattr(cfg.playback, field, validator(value))
+        except ValueError:
+            _warn(field, value)
 
-        try:
-            cfg.playback.key_notation = _validate_key_notation(str(pb["key_notation"]))
-        except ValueError as exc:
-            logger.warning("ignoring invalid key_notation in web_state.json: %s", exc)
+
+def _restore_nullable_number(
+    target: Any,
+    pb: dict,
+    field: str,
+    *,
+    integer: bool = False,
+) -> None:
+    if field not in pb:
+        return
+    value = pb[field]
+    if value is None:
+        setattr(target, field, None)
+        return
+    valid_type = type(value) is int if integer else _is_finite_number(value)
+    if not valid_type or value <= 0:
+        _warn(field, value)
+        return
+    setattr(target, field, int(value) if integer else float(value))
+
+
+def _restore_liners(cfg: Any, pb: dict) -> None:
+    playback = cfg.playback
+    _restore_nullable_number(playback, pb, "liners_every_n_songs", integer=True)
+    _restore_nullable_number(playback, pb, "liners_every_minutes")
+    _restore_nullable_number(playback, pb, "liners_random_min_minutes")
+    _restore_nullable_number(playback, pb, "liners_random_max_minutes")
+    if "liners_pick_mode" in pb:
+        value = pb["liners_pick_mode"]
+        if isinstance(value, str) and value in LINER_PICK_MODES:
+            playback.liners_pick_mode = value
+        else:
+            _warn("liners_pick_mode", value)
+    if "liners_duck_db" in pb:
+        value = pb["liners_duck_db"]
+        if _is_finite_number(value) and -60 <= value <= 0:
+            playback.liners_duck_db = float(value)
+        else:
+            _warn("liners_duck_db", value)
 
 
 def _restore_bpm_range(player: Any, data: dict) -> None:
-    """Restore the saved BPM range on *player*."""
-    bpm = data.get("bpm_range")
-    if not isinstance(bpm, dict):
+    if "bpm_range" not in data:
         return
-    lo = bpm.get("lo")
-    hi = bpm.get("hi")
-    if lo is not None and hi is not None and lo < hi:
+    value = data["bpm_range"]
+    if value is None:
+        player._bpm_range = None
+        return
+    if not isinstance(value, dict):
+        _warn("bpm_range", value)
+        return
+    lo, hi = value.get("lo"), value.get("hi")
+    if lo is None and hi is None:
+        player._bpm_range = None
+    elif _is_finite_number(lo) and _is_finite_number(hi) and lo < hi:
         player._bpm_range = (float(lo), float(hi))
     else:
-        player._bpm_range = None
+        _warn("bpm_range", value)
 
 
 def _restore_discovery(player: Any, data: dict) -> None:
-    """Restore the saved discovery interval on *player*."""
     if "discovery_every" not in data:
         return
-    every = data["discovery_every"]
-    if every and int(every) > 0:
-        player._discovery_every = int(every)
-    else:
+    value = data["discovery_every"]
+    if value is None:
         player._discovery_every = None
+    elif type(value) is int and value >= 0:
+        player._discovery_every = value or None
+    else:
+        _warn("discovery_every", value)
 
 
 def load_into_player(player: Any, index_dir: Path | None) -> None:
@@ -166,16 +416,32 @@ def load_into_player(player: Any, index_dir: Path | None) -> None:
         logger.warning("web_state.json unreadable, ignoring: %s", exc)
         return
 
+    if not isinstance(data, dict):
+        logger.warning("web_state.json root is not an object, ignoring")
+        return
+    version = data.get("schema_version", 0)
+    if type(version) is not int or version < 0:
+        _warn("schema_version", version)
+        return
+    if version > STATE_VERSION:
+        logger.warning(
+            "web_state.json schema_version %d is newer than supported version %d; "
+            "applying known fields",
+            version,
+            STATE_VERSION,
+        )
+
     cfg = player._cfg
     _restore_preset(player, data)
     _restore_transition(cfg, data)
     _restore_djmix(cfg, data)
-    pb = data.get("playback")
-    if isinstance(pb, dict):
-        _restore_playback_floats(cfg, pb)
-        _restore_playback_bools(cfg, player, pb)
-        _restore_mood_arc(cfg, player, pb)
-        _restore_validated_strings(cfg, pb)
+    playback = data.get("playback")
+    if isinstance(playback, dict):
+        _restore_playback_floats(cfg, playback)
+        _restore_playback_bools(cfg, player, playback)
+        _restore_mood_arc(cfg, player, playback)
+        _restore_validated_strings(cfg, playback)
+        _restore_liners(cfg, playback)
     _restore_bpm_range(player, data)
     _restore_discovery(player, data)
 
@@ -193,7 +459,21 @@ def save_from_player(settings: dict, index_dir: Path | None) -> None:
     path = state_file_for(index_dir)
     if path is None:
         return
-    payload = {k: v for k, v in settings.items() if k != "available_presets"}
+    playback = settings.get("playback", {})
+    persisted_playback = (
+        {key: value for key, value in playback.items() if key in PERSISTED_PLAYBACK_FIELDS}
+        if isinstance(playback, dict)
+        else {}
+    )
+    payload: PersistedState = {
+        "schema_version": STATE_VERSION,
+        "preset": settings.get("preset"),
+        "transition": settings.get("transition", "none"),
+        "djmix": settings.get("djmix", {}),
+        "playback": cast("PlaybackState", persisted_playback),
+        "bpm_range": settings.get("bpm_range", {"lo": None, "hi": None}),
+        "discovery_every": settings.get("discovery_every"),
+    }
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".json.tmp")

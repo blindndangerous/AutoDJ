@@ -935,6 +935,39 @@ class PlayerBridge:
                     "silence_trigger_crossfade",
                     True,
                 ),
+                "liners_enabled": bool(
+                    getattr(cfg.playback, "liners_enabled", False),
+                ),
+                "liners_every_n_songs": getattr(
+                    cfg.playback,
+                    "liners_every_n_songs",
+                    None,
+                ),
+                "liners_every_minutes": getattr(
+                    cfg.playback,
+                    "liners_every_minutes",
+                    None,
+                ),
+                "liners_random_min_minutes": getattr(
+                    cfg.playback,
+                    "liners_random_min_minutes",
+                    None,
+                ),
+                "liners_random_max_minutes": getattr(
+                    cfg.playback,
+                    "liners_random_max_minutes",
+                    None,
+                ),
+                "liners_pick_mode": getattr(
+                    cfg.playback,
+                    "liners_pick_mode",
+                    "random",
+                ),
+                "liners_duck_db": getattr(
+                    cfg.playback,
+                    "liners_duck_db",
+                    -12.0,
+                ),
             },
             "bpm_range": {
                 "lo": bpm_range[0] if bpm_range else None,

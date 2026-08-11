@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from autodj.runtime_state import (
@@ -12,27 +13,59 @@ from autodj.runtime_state import (
 )
 
 
-def _make_player() -> MagicMock:
-    """Mock player wired to a real-ish config dataclass tree."""
-    p = MagicMock()
-    cfg = MagicMock()
-    cfg.transitions.effect = "none"
-    cfg.djmix.harmonic_mixing = False
-    cfg.djmix.beatmatch = False
-    cfg.djmix.phrase_align = False
-    cfg.djmix.outro_intro_align = False
-    cfg.djmix.filter_sweep = False
-    cfg.playback.crossfade_seconds = 3.0
-    cfg.playback.crossfade_eq_duck = False
-    cfg.playback.transition_mode = "full_intro_outro"
-    cfg.replaygain.enabled = False
-    cfg.presets = {}
-    p._cfg = cfg
-    p._smart_shuffle = False
-    p._bpm_range = None
-    p._preset = None
-    p._discovery_every = None
-    return p
+def _make_player() -> SimpleNamespace:
+    playback = SimpleNamespace(
+        crossfade_seconds=3.0,
+        fade_in_seconds=3.0,
+        crossfade_eq_duck=False,
+        transition_mode="full_intro_outro",
+        post_queue_seed="last_queued",
+        key_notation="camelot",
+        key_prefer_flats=False,
+        show_lyrics=True,
+        enable_daypart=False,
+        enable_mood_arc=False,
+        mood_arc_hours=3.0,
+        import_external_cues=True,
+        beat_sync_fx=True,
+        key_sync_fx=True,
+        beatmatch_on_skip=False,
+        prefetch_next_track=True,
+        silence_trigger_crossfade=True,
+        liners_enabled=False,
+        liners_every_n_songs=None,
+        liners_every_minutes=None,
+        liners_random_min_minutes=None,
+        liners_random_max_minutes=None,
+        liners_pick_mode="random",
+        liners_duck_db=-12.0,
+    )
+    cfg = SimpleNamespace(
+        transitions=SimpleNamespace(effect="none"),
+        djmix=SimpleNamespace(
+            harmonic_mixing=False,
+            harmonic_mode="compatible",
+            beatmatch=False,
+            phrase_align=False,
+            outro_intro_align=False,
+            filter_sweep=False,
+        ),
+        playback=playback,
+        replaygain=SimpleNamespace(enabled=False),
+        presets={},
+    )
+    return SimpleNamespace(
+        _cfg=cfg,
+        _smart_shuffle=False,
+        _pure_shuffle=False,
+        _anchor_to_seed=False,
+        _bpm_range=None,
+        _preset=None,
+        _discovery_every=None,
+        _mood_arc=None,
+        _state=SimpleNamespace(no_repeat_window=20),
+        _sim=SimpleNamespace(entries_snapshot=lambda: (), ntotal=0),
+    )
 
 
 class TestStateFile:
@@ -231,48 +264,232 @@ class TestSaveFrom:
 
 
 class TestRoundTrip:
-    def test_save_then_load_preserves_settings(self, tmp_path) -> None:
+    def test_save_bridge_snapshot_then_load_preserves_every_persisted_field(
+        self,
+        tmp_path,
+    ) -> None:
+        from autodj._bridge import PlayerBridge
+
         p1 = _make_player()
-        # Pretend the user set some settings
-        p1._cfg.transitions.effect = "tape_stop"
+        p1._cfg.djmix.harmonic_mixing = True
+        p1._cfg.djmix.harmonic_mode = "strict"
         p1._cfg.djmix.beatmatch = True
-        p1._cfg.playback.crossfade_seconds = 5.0
+        p1._cfg.djmix.phrase_align = True
+        p1._cfg.djmix.outro_intro_align = True
+        p1._cfg.djmix.filter_sweep = True
+        p1._cfg.transitions.effect = "echo_out"
+        p1._cfg.playback.crossfade_seconds = 6.0
+        p1._cfg.playback.fade_in_seconds = 1.5
+        p1._cfg.playback.crossfade_eq_duck = True
         p1._smart_shuffle = True
-        p1._bpm_range = (100.0, 130.0)
-        p1._discovery_every = 12
+        p1._pure_shuffle = True
+        p1._anchor_to_seed = True
+        p1._cfg.replaygain.enabled = True
+        p1._cfg.playback.transition_mode = "fixed"
+        p1._cfg.playback.post_queue_seed = "pre_queue"
+        p1._cfg.playback.key_notation = "musical"
+        p1._cfg.playback.key_prefer_flats = True
+        p1._cfg.playback.show_lyrics = False
+        p1._cfg.playback.enable_daypart = True
+        p1._cfg.playback.enable_mood_arc = True
+        p1._cfg.playback.mood_arc_hours = 2.5
+        p1._cfg.playback.import_external_cues = False
+        p1._cfg.playback.beat_sync_fx = False
+        p1._cfg.playback.key_sync_fx = False
+        p1._cfg.playback.beatmatch_on_skip = True
+        p1._cfg.playback.prefetch_next_track = False
+        p1._cfg.playback.silence_trigger_crossfade = False
+        p1._cfg.playback.liners_enabled = True
+        p1._cfg.playback.liners_folder = "Z:/Station/Private/Liners"
+        p1._cfg.playback.liners_every_n_songs = 3
+        p1._cfg.playback.liners_every_minutes = None
+        p1._cfg.playback.liners_random_min_minutes = 8.0
+        p1._cfg.playback.liners_random_max_minutes = 14.0
+        p1._cfg.playback.liners_pick_mode = "sequential"
+        p1._cfg.playback.liners_duck_db = -9.0
+        p1._bpm_range = (100.0, 132.0)
+        p1._discovery_every = 9
 
-        save_from_player(
-            {
-                "preset": None,
-                "transition": p1._cfg.transitions.effect,
-                "djmix": {
-                    "harmonic_mixing": p1._cfg.djmix.harmonic_mixing,
-                    "beatmatch": p1._cfg.djmix.beatmatch,
-                    "phrase_align": p1._cfg.djmix.phrase_align,
-                    "outro_intro_align": p1._cfg.djmix.outro_intro_align,
-                    "filter_sweep": p1._cfg.djmix.filter_sweep,
-                },
-                "playback": {
-                    "crossfade_seconds": p1._cfg.playback.crossfade_seconds,
-                    "crossfade_eq_duck": p1._cfg.playback.crossfade_eq_duck,
-                    "smart_shuffle": p1._smart_shuffle,
-                    "replaygain_enabled": p1._cfg.replaygain.enabled,
-                },
-                "bpm_range": {"lo": p1._bpm_range[0], "hi": p1._bpm_range[1]},
-                "discovery_every": p1._discovery_every,
-            },
-            tmp_path,
-        )
+        bridge1 = PlayerBridge(p1, p1._sim)
+        saved = bridge1.get_settings()
+        assert "liners_folder" not in saved["playback"]
+        saved["playback"]["liners_folder"] = p1._cfg.playback.liners_folder
+        save_from_player(saved, tmp_path)
+        stored = json.loads((tmp_path / "web_state.json").read_text(encoding="utf-8"))
+        assert stored["schema_version"] == 1
+        assert "available_presets" not in stored
+        assert "no_repeat_window" not in stored["playback"]
+        assert "library_size" not in stored["playback"]
+        assert "liners_folder" not in stored["playback"]
 
-        # Fresh player loads back the same settings
         p2 = _make_player()
         load_into_player(p2, tmp_path)
-        assert p2._cfg.transitions.effect == "tape_stop"
-        assert p2._cfg.djmix.beatmatch is True
-        assert p2._cfg.playback.crossfade_seconds == 5.0
-        assert p2._smart_shuffle is True
-        assert p2._bpm_range == (100.0, 130.0)
-        assert p2._discovery_every == 12
+        restored = PlayerBridge(p2, p2._sim).get_settings()
+        expected_playback = {
+            key: value
+            for key, value in saved["playback"].items()
+            if key not in {"no_repeat_window", "library_size", "liners_folder"}
+        }
+        assert restored["transition"] == saved["transition"]
+        assert restored["djmix"] == saved["djmix"]
+        assert {key: restored["playback"][key] for key in expected_playback} == expected_playback
+        assert restored["bpm_range"] == saved["bpm_range"]
+        assert restored["discovery_every"] == saved["discovery_every"]
+
+
+def _write_state(tmp_path, data: dict) -> None:
+    (tmp_path / "web_state.json").write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_string_false_is_rejected_instead_of_coerced(tmp_path, caplog) -> None:
+    _write_state(
+        tmp_path,
+        {"schema_version": 1, "playback": {"prefetch_next_track": "false"}},
+    )
+    player = _make_player()
+
+    with caplog.at_level("WARNING"):
+        load_into_player(player, tmp_path)
+
+    assert player._cfg.playback.prefetch_next_track is True
+    assert [record for record in caplog.records if "prefetch_next_track" in record.message]
+
+
+def test_invalid_harmonic_mode_warns_once_and_keeps_default(tmp_path, caplog) -> None:
+    _write_state(
+        tmp_path,
+        {"schema_version": 1, "djmix": {"harmonic_mode": "same_key"}},
+    )
+    player = _make_player()
+
+    with caplog.at_level("WARNING"):
+        load_into_player(player, tmp_path)
+
+    assert player._cfg.djmix.harmonic_mode == "compatible"
+    assert len([record for record in caplog.records if "harmonic_mode" in record.message]) == 1
+
+
+def test_invalid_enable_mood_arc_warns_once_and_keeps_default(tmp_path, caplog) -> None:
+    _write_state(
+        tmp_path,
+        {"schema_version": 1, "playback": {"enable_mood_arc": "false"}},
+    )
+    player = _make_player()
+
+    with caplog.at_level("WARNING"):
+        load_into_player(player, tmp_path)
+
+    assert player._cfg.playback.enable_mood_arc is False
+    assert len([record for record in caplog.records if "enable_mood_arc" in record.message]) == 1
+
+
+def test_future_version_warns_but_restores_known_fields(tmp_path, caplog) -> None:
+    _write_state(
+        tmp_path,
+        {"schema_version": 99, "playback": {"prefetch_next_track": False}},
+    )
+    player = _make_player()
+
+    with caplog.at_level("WARNING"):
+        load_into_player(player, tmp_path)
+
+    assert player._cfg.playback.prefetch_next_track is False
+    assert len([record for record in caplog.records if "schema_version 99" in record.message]) == 1
+
+
+def test_unknown_future_field_is_ignored(tmp_path) -> None:
+    _write_state(
+        tmp_path,
+        {"schema_version": 1, "playback": {"quantum_crossfade": True}},
+    )
+    player = _make_player()
+
+    load_into_player(player, tmp_path)
+
+    assert not hasattr(player._cfg.playback, "quantum_crossfade")
+
+
+def test_null_clears_every_nullable_liner_cadence(tmp_path) -> None:
+    player = _make_player()
+    player._cfg.playback.liners_every_n_songs = 2
+    player._cfg.playback.liners_every_minutes = 5.0
+    player._cfg.playback.liners_random_min_minutes = 7.0
+    player._cfg.playback.liners_random_max_minutes = 12.0
+    _write_state(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "playback": {
+                "liners_every_n_songs": None,
+                "liners_every_minutes": None,
+                "liners_random_min_minutes": None,
+                "liners_random_max_minutes": None,
+            },
+        },
+    )
+
+    load_into_player(player, tmp_path)
+
+    assert player._cfg.playback.liners_every_n_songs is None
+    assert player._cfg.playback.liners_every_minutes is None
+    assert player._cfg.playback.liners_random_min_minutes is None
+    assert player._cfg.playback.liners_random_max_minutes is None
+
+
+def test_null_bpm_range_clears_an_existing_range(tmp_path) -> None:
+    player = _make_player()
+    player._bpm_range = (90.0, 130.0)
+    _write_state(tmp_path, {"schema_version": 1, "bpm_range": None})
+
+    load_into_player(player, tmp_path)
+
+    assert player._bpm_range is None
+
+
+def test_infinite_playback_number_warns_and_keeps_default(tmp_path, caplog) -> None:
+    _write_state(
+        tmp_path,
+        {"schema_version": 1, "playback": {"crossfade_seconds": float("inf")}},
+    )
+    player = _make_player()
+
+    with caplog.at_level("WARNING"):
+        load_into_player(player, tmp_path)
+
+    assert player._cfg.playback.crossfade_seconds == 3.0
+    assert len([record for record in caplog.records if "crossfade_seconds" in record.message]) == 1
+
+
+def test_infinite_liner_cadence_warns_and_keeps_default(tmp_path, caplog) -> None:
+    _write_state(
+        tmp_path,
+        {"schema_version": 1, "playback": {"liners_every_minutes": float("inf")}},
+    )
+    player = _make_player()
+    player._cfg.playback.liners_every_minutes = 5.0
+
+    with caplog.at_level("WARNING"):
+        load_into_player(player, tmp_path)
+
+    assert player._cfg.playback.liners_every_minutes == 5.0
+    assert (
+        len([record for record in caplog.records if "liners_every_minutes" in record.message]) == 1
+    )
+
+
+def test_infinite_bpm_bound_warns_and_keeps_existing_range(tmp_path, caplog) -> None:
+    _write_state(
+        tmp_path,
+        {"schema_version": 1, "bpm_range": {"lo": 90.0, "hi": float("inf")}},
+    )
+    player = _make_player()
+    player._bpm_range = (100.0, 120.0)
+
+    with caplog.at_level("WARNING"):
+        load_into_player(player, tmp_path)
+
+    assert player._bpm_range == (100.0, 120.0)
+    assert len([record for record in caplog.records if "bpm_range" in record.message]) == 1
 
 
 # ---------------------------------------------------------------------------
