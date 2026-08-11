@@ -4,6 +4,7 @@ sounddevice and pynput are mocked so tests run without audio hardware.
 Audio crossfade math is tested with real numpy arrays.
 """
 
+from collections import deque
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -30,7 +31,7 @@ from autodj.player import (
     make_eq_filters,
     write_m3u,
 )
-from autodj.similarity import SimilarityIndex
+from autodj.similarity import SimilarityError, SimilarityIndex
 
 # Note: Player no longer accepts a model wrapper — vectors are looked up
 # from the pre-built FAISS index at play time via SimilarityIndex.find_next_for_path
@@ -747,13 +748,70 @@ class TestPlayerPickNext:
         assert result.path != current.path
 
     def test_pure_shuffle_falls_back_when_pool_empty(self) -> None:
-        """All entries excluded → fall back to entire library."""
+        """All entries excluded → relax recent exclusion, but not current track."""
         player = self._make_player(n=4, pure_shuffle=True)
-        for e in player._sim.entries:
-            player._state.record_played(e)
-        result = player._pick_next(player._sim.entries[0])
-        # Falls back to full library — must still return something
+        player._state.recently_played = deque(e.path for e in player._sim.entries)
+        current = player._sim.entries[0]
+        player._state.current_track = current
+        with patch("random.choice", side_effect=lambda pool: pool[0]):
+            result = player._pick_next(current)
         assert isinstance(result, IndexEntry)
+        assert result.path != current.path
+
+    def test_pure_shuffle_does_not_admit_unknown_or_out_of_range_bpm(self) -> None:
+        sim = _make_sim_index(4)
+        entries = sim.entries
+        entries[0].bpm = 110.0
+        entries[1].bpm = 0.0
+        entries[2].bpm = 150.0
+        entries[3].bpm = 125.0
+        player = Player(
+            _make_cfg_mock(),
+            SimilarityIndex(sim.faiss_index, entries),
+            pure_shuffle=True,
+            bpm_range=(120.0, 130.0),
+        )
+        player._state.current_track = entries[0]
+
+        assert player._pick_next(entries[0]).path == entries[3].path
+
+    def test_pure_shuffle_raises_when_no_track_satisfies_hard_bpm(self) -> None:
+        sim = _make_sim_index(3)
+        for entry in sim.entries:
+            entry.bpm = 0.0
+        player = Player(
+            _make_cfg_mock(),
+            SimilarityIndex(sim.faiss_index, sim.entries),
+            pure_shuffle=True,
+            bpm_range=(120.0, 130.0),
+        )
+        player._state.current_track = sim.entries[0]
+
+        with pytest.raises(SimilarityError, match="hard filters for pure shuffle"):
+            player._pick_next(sim.entries[0])
+
+    def test_pure_shuffle_logs_once_when_recent_exclusion_is_relaxed(self, caplog) -> None:
+        import logging
+
+        player = self._make_player(n=3, pure_shuffle=True)
+        entries = player._sim.entries
+        player._state.current_track = entries[0]
+        player._state.recently_played = deque(entry.path for entry in entries)
+
+        with caplog.at_level(logging.WARNING):
+            selected = player._pick_next(entries[0])
+
+        assert selected.path in {entries[1].path, entries[2].path}
+        assert (
+            len(
+                [
+                    record
+                    for record in caplog.records
+                    if "relaxing recent-track exclusion" in record.message
+                ]
+            )
+            == 1
+        )
 
     def test_anchor_to_seed_uses_seed_vector(self) -> None:
         """Anchor mode picks similarity from the SEED, not current track."""

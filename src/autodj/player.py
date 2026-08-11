@@ -1030,15 +1030,31 @@ class Player:
         return None
 
     def _pick_pure_shuffle(self) -> IndexEntry:
-        """Random pick from the non-recent pool (or full library on collapse)."""
+        """Random pick from non-recent tracks without violating hard BPM eligibility."""
         import random as _rnd
 
+        from autodj.similarity import SimilarityError
+
         excluded = set(self._state.recently_played)
-        similarity = self._sim
-        entries = similarity.entries_snapshot()
-        pool = [e for e in entries if e.path not in excluded]
+
+        def eligible(entry: IndexEntry) -> bool:
+            if self._bpm_range is None:
+                return True
+            lo, hi = self._bpm_range
+            return entry.bpm > 0 and lo <= entry.bpm <= hi
+
+        entries = self._sim.entries_snapshot()
+        pool = [e for e in entries if e.path not in excluded and eligible(e)]
         if not pool:
-            pool = list(entries)
+            logger.warning(
+                "Pure shuffle exhausted eligible non-recent tracks; relaxing recent-track exclusion"
+            )
+            current_path = (
+                self._state.current_track.path if self._state.current_track is not None else None
+            )
+            pool = [e for e in entries if e.path != current_path and eligible(e)]
+        if not pool:
+            raise SimilarityError("No candidates satisfy hard filters for pure shuffle.")
         self._last_pick_mode = "pure_shuffle"
         return _rnd.choice(pool)  # nosec B311 -- non-security
 

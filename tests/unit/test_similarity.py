@@ -179,6 +179,38 @@ class TestFindNext:
         )
         assert isinstance(result, IndexEntry)
 
+    def test_smart_shuffle_finds_global_farthest_beyond_first_200(self) -> None:
+        n = 257
+        query = np.zeros(FEATURE_DIM, dtype=np.float32)
+        query[0] = 1.0
+        vectors = np.zeros((n, FEATURE_DIM), dtype=np.float32)
+        vectors[:, 0] = np.linspace(1.0, -1.0, n, dtype=np.float32)
+        vectors[:, 1] = np.sqrt(np.maximum(0.0, 1.0 - vectors[:, 0] ** 2))
+        index = faiss.IndexFlatIP(FEATURE_DIM)
+        index.add(vectors)
+        sim = SimilarityIndex(index, [_make_entry(i) for i in range(n)])
+
+        entries = sim.entries_snapshot()
+        result = sim.find_next(query, deque([entries[0].path]), invert=True, n_candidates=10)
+
+        assert result.path == entries[-1].path
+
+    @pytest.mark.parametrize("bad_value", [0.0, np.nan])
+    def test_empty_or_non_finite_query_is_rejected(self, bad_value: float) -> None:
+        sim, _vectors = _make_similarity_index(3)
+        query = np.full(FEATURE_DIM, bad_value, dtype=np.float32)
+
+        with pytest.raises(SimilarityError, match="empty or non-finite"):
+            sim.find_next(query, deque())
+
+    def test_large_finite_query_is_normalized_without_overflow(self) -> None:
+        sim, _vectors = _make_similarity_index(3)
+        query = np.full(FEATURE_DIM, np.finfo(np.float32).max, dtype=np.float32)
+
+        result = sim.find_next(query, deque())
+
+        assert isinstance(result, IndexEntry)
+
     def test_excluded_artist_skipped(self) -> None:
         sim, vectors = _make_similarity_index(8)
         # Force entry artists known
@@ -229,19 +261,17 @@ class TestFindNext:
         # Hit the high band
         assert result.bpm == 130.0
 
-    def test_bpm_filter_relaxes_when_empty(self) -> None:
-        """All candidates fail BPM filter → fallback to relaxed pool."""
+    def test_empty_hard_bpm_filter_raises(self) -> None:
         sim, vectors = _make_similarity_index(5)
         for e in sim.entries:
             e.bpm = 80.0
-        # 200-220 range matches no track; should still return SOMETHING
-        result = sim.find_next(
-            query_vector=vectors[0],
-            recently_played=deque([sim.entries[0].path]),
-            n_candidates=5,
-            bpm_range=(200.0, 220.0),
-        )
-        assert isinstance(result, IndexEntry)
+        with pytest.raises(SimilarityError, match="hard filters"):
+            sim.find_next(
+                query_vector=vectors[0],
+                recently_played=deque([sim.entries[0].path]),
+                n_candidates=5,
+                bpm_range=(200.0, 220.0),
+            )
 
     def test_target_energy_rerank(self) -> None:
         sim, vectors = _make_similarity_index(8)
@@ -1070,31 +1100,74 @@ class TestBpmRangeFilter:
         )
         assert 100.0 <= result.bpm <= 150.0
 
-    def test_unknown_bpm_passes_filter(self) -> None:
-        # Tracks: bpm=200 (out of range), bpm=250 (out of range), bpm=0 (unknown — passes)
-        bpms = [200.0, 250.0, 0.0]
+    def test_unknown_bpm_is_excluded_by_hard_range(self) -> None:
+        bpms = [110.0, 0.0, 125.0]
         sim, vectors = _make_sim_with_bpms(bpms)
-        # Exclude track 0 (the query track); remaining: track1(250) and track2(0.0)
         result = sim.find_next(
             query_vector=vectors[0],
             recently_played=deque([sim.entries[0].path]),
-            bpm_range=(90.0, 130.0),
+            bpm_range=(120.0, 130.0),
+            n_candidates=1,
         )
-        # Only track 2 (bpm=0.0) passes the filter; track 1 (bpm=250) is excluded by range
-        assert result.bpm == 0.0
+        assert result.bpm == 125.0
 
-    def test_fallback_when_all_filtered(self) -> None:
-        """When bpm_range excludes all non-excluded candidates, fall back to unfiltered."""
-        # All known-BPM tracks are outside the range
-        bpms = [200.0, 210.0, 220.0]
+    def test_empty_hard_range_raises_instead_of_relaxing(self) -> None:
+        bpms = [80.0, 82.0, 0.0]
         sim, vectors = _make_sim_with_bpms(bpms)
-        # This should not raise — fall back to unfiltered
+        with pytest.raises(SimilarityError, match="hard filters"):
+            sim.find_next(
+                query_vector=vectors[0],
+                recently_played=deque([sim.entries[0].path]),
+                bpm_range=(120.0, 130.0),
+            )
+
+
+class TestHardFilterExpansion:
+    def test_genre_filter_expands_until_match_outside_initial_window(self) -> None:
+        sim, vectors = _make_similarity_index(80)
+        for entry in sim.entries:
+            entry.genre = "Rock"
+        sim.entries[70].genre = "Ambient"
+
         result = sim.find_next(
-            query_vector=vectors[0],
-            recently_played=deque([sim.entries[0].path]),
-            bpm_range=(90.0, 130.0),
+            vectors[0],
+            deque([sim.entries[0].path]),
+            n_candidates=5,
+            genre_filter=["ambient"],
         )
-        assert isinstance(result, IndexEntry)
+
+        assert result.path == sim.entries[70].path
+
+    def test_filter_expansion_collects_requested_pool_before_ranking(self) -> None:
+        n = 80
+        query = np.zeros(FEATURE_DIM, dtype=np.float32)
+        query[0] = 1.0
+        vectors = np.zeros((n, FEATURE_DIM), dtype=np.float32)
+        vectors[:, 0] = np.linspace(1.0, -1.0, n, dtype=np.float32)
+        vectors[:, 1] = np.sqrt(np.maximum(0.0, 1.0 - vectors[:, 0] ** 2))
+        index = faiss.IndexFlatIP(FEATURE_DIM)
+        index.add(vectors)
+        entries = [_make_entry(i) for i in range(n)]
+        for entry in entries:
+            entry.genre = "Rock"
+        for idx in (20, 40, 70):
+            entries[idx].genre = "Ambient"
+        sim = SimilarityIndex(index, entries)
+
+        with patch(
+            "autodj.similarity._softmax_pick",
+            side_effect=lambda candidates, _top_k, _temperature: candidates[0][1],
+        ) as choose:
+            sim.find_next(
+                query,
+                deque([entries[0].path]),
+                n_candidates=3,
+                genre_filter=["ambient"],
+            )
+
+        ranked_pool = choose.call_args.args[0]
+        assert len(ranked_pool) >= 3
+        assert all(entry.genre == "Ambient" for _score, entry in ranked_pool)
 
 
 # ---------------------------------------------------------------------------
