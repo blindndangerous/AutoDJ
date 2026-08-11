@@ -438,27 +438,31 @@ class TestModelCacheInspection:
             target=_wait_for_model_cache_lock,
             args=(str(cache), waiter_entered, waiter_acquired),
         )
-        deadline = time.monotonic() + 90
+        behavior_deadline = time.monotonic() + 60
         try:
             holder.start()
-            assert holder_ready.wait(max(0.0, deadline - time.monotonic()))
+            assert holder_ready.wait(max(0.0, behavior_deadline - time.monotonic()))
             assert holder.is_alive()
             waiter.start()
-            assert waiter_entered.wait(max(0.0, deadline - time.monotonic()))
+            assert waiter_entered.wait(max(0.0, behavior_deadline - time.monotonic()))
             assert waiter.is_alive()
             assert not waiter_acquired.wait(0.2)
         finally:
             release.set()
+            cleanup_deadline = time.monotonic() + 30
             for process in (holder, waiter):
                 if process.pid is None:
                     continue
-                process.join(min(10.0, max(0.0, deadline - time.monotonic())))
+                remaining = max(0.1, cleanup_deadline - time.monotonic())
+                process.join(min(2.0, remaining))
                 if process.is_alive():
                     process.terminate()
-                    process.join(min(10.0, max(0.0, deadline - time.monotonic())))
+                    remaining = max(0.1, cleanup_deadline - time.monotonic())
+                    process.join(min(2.0, remaining))
                 if process.is_alive():
                     process.kill()
-                    process.join(max(0.0, deadline - time.monotonic()))
+                    remaining = max(0.1, cleanup_deadline - time.monotonic())
+                    process.join(min(5.0, remaining))
         assert holder.exitcode == 0
         assert waiter.exitcode == 0
         assert not holder.is_alive()
