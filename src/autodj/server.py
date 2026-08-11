@@ -60,7 +60,13 @@ from starlette.background import BackgroundTask
 # the 2000-line working budget.  Re-export here so the external API
 # (``from autodj.server import PlayerBridge``) keeps working unchanged.
 from autodj._bridge import PlayerBridge
-from autodj.http_media import RangeNotSatisfiable, parse_single_range, stream_file_chunks
+from autodj.http_media import (
+    OpenedMediaFile,
+    RangeNotSatisfiable,
+    open_media_file,
+    parse_single_range,
+    stream_file_chunks,
+)
 from autodj.index_manifest import IndexConsistencyError, IndexSnapshotToken, current_snapshot_token
 from autodj.security import (
     COOKIE_NAME,
@@ -521,9 +527,9 @@ def _audio_mime(path: Path) -> str:
     return _MIME_BY_SUFFIX.get(path.suffix.lower(), "application/octet-stream")
 
 
-def _is_alac(path: Path) -> bool:
+def _is_alac(source: OpenedMediaFile, suffix: str) -> bool:
     """Return whether an MP4-family file reports Apple Lossless audio."""
-    if path.suffix.lower() not in (".m4a", ".mp4"):
+    if suffix.lower() not in (".m4a", ".mp4"):
         return False
     try:
         from mutagen import MutagenError
@@ -532,20 +538,27 @@ def _is_alac(path: Path) -> bool:
         return False
 
     try:
-        codec = getattr(MP4(str(path)).info, "codec", None) or ""
+        source.handle.seek(0)
+        codec = getattr(MP4(source.handle).info, "codec", None) or ""
         return codec.lower() == "alac"
     except (OSError, ValueError, MutagenError):
         return False
+    finally:
+        with contextlib.suppress(OSError):
+            source.handle.seek(0)
 
 
-async def _transcode_alac_to_mp3(path: Path) -> AsyncGenerator[bytes]:
-    """Yield transcoded MP3 bytes and always reap ffmpeg subprocess."""
-    process = await asyncio.create_subprocess_exec(
-        "ffmpeg",
+async def _start_alac_transcoder(
+    executable: str,
+    source: OpenedMediaFile,
+) -> Any:
+    """Spawn ffmpeg from resolved executable using already-opened source."""
+    return await asyncio.create_subprocess_exec(
+        executable,
         "-loglevel",
         "error",
         "-i",
-        str(path),
+        "pipe:0",
         "-c:a",
         "libmp3lame",
         "-b:a",
@@ -553,23 +566,61 @@ async def _transcode_alac_to_mp3(path: Path) -> AsyncGenerator[bytes]:
         "-f",
         "mp3",
         "pipe:1",
+        stdin=source.handle,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
     )
+
+
+async def _transcode_alac_to_mp3(process: Any) -> AsyncGenerator[bytes]:
+    """Yield transcoded MP3 bytes and always reap ffmpeg subprocess."""
     try:
         if process.stdout is None:
             return
         while chunk := await process.stdout.read(64 * 1024):
             yield chunk
     finally:
-        with contextlib.suppress(ProcessLookupError):
-            process.kill()
-        await process.wait()
+        await _terminate_alac_process(process)
 
 
-async def _close_media_stream(stream: AsyncGenerator[bytes]) -> None:
-    """Close a response-owned media stream after completion or disconnect."""
-    await stream.aclose()
+async def _kill_and_wait(process: Any) -> None:
+    """Kill and reap one transcoder process."""
+    with contextlib.suppress(ProcessLookupError):
+        process.kill()
+    await process.wait()
+
+
+async def _terminate_alac_process(process: Any) -> None:
+    """Idempotently finish process cleanup even if caller is cancelled."""
+    cleanup = getattr(process, "_autodj_cleanup_task", None)
+    if cleanup is None:
+        cleanup = asyncio.create_task(_kill_and_wait(process))
+        process._autodj_cleanup_task = cleanup
+    await asyncio.shield(cleanup)
+
+
+async def _close_alac_stream(stream: AsyncGenerator[bytes], process: Any) -> None:
+    """Close transcoder stream and reap process even before first body read."""
+    try:
+        await stream.aclose()
+    finally:
+        await _terminate_alac_process(process)
+
+
+async def _close_opened_media(source: OpenedMediaFile) -> None:
+    """Close opened media without blocking event loop."""
+    await asyncio.to_thread(source.close)
+
+
+async def _close_file_media_stream(
+    stream: AsyncGenerator[bytes],
+    source: OpenedMediaFile,
+) -> None:
+    """Close both iterator state and handle, including pre-body disconnects."""
+    try:
+        await stream.aclose()
+    finally:
+        await _close_opened_media(source)
 
 
 # ---------------------------------------------------------------------------
@@ -1283,74 +1334,105 @@ def create_app(
     # Browser-driven playback — stream audio bytes + advance trigger
     # ------------------------------------------------------------------
 
-    @app.get("/api/audio")
+    @app.api_route("/api/audio", methods=["GET", "HEAD"])
     async def api_audio(path: str, request: Request) -> Response:
         """Stream indexed audio with one RFC-shaped byte range."""
         if bridge.sim.entry_for_path(path) is None:
             raise HTTPException(status_code=404, detail="Track not in index")
         audio_path = Path(path)
         try:
-            is_file = await asyncio.to_thread(audio_path.is_file)
-            if not is_file:
-                raise OSError("not a regular file")
-            file_size = (await asyncio.to_thread(audio_path.stat)).st_size
+            source: OpenedMediaFile | None = await asyncio.to_thread(
+                open_media_file,
+                audio_path,
+            )
         except OSError:
             raise HTTPException(status_code=404, detail="File not found on disk") from None
 
-        if await asyncio.to_thread(_is_alac, audio_path):
-            ffmpeg = await asyncio.to_thread(shutil.which, "ffmpeg")
-            if ffmpeg is None:
-                logger.warning(
-                    "ffmpeg unavailable; serving ALAC source bytes for %s",
-                    audio_path,
-                )
-            else:
-                stream = _transcode_alac_to_mp3(audio_path)
-                return StreamingResponse(
-                    stream,
-                    media_type="audio/mpeg",
-                    headers={"Accept-Ranges": "none"},
-                    background=BackgroundTask(_close_media_stream, stream),
-                )
-
-        mime = _audio_mime(audio_path)
-        range_header = request.headers.get("range")
-        if range_header is None:
-            stream = stream_file_chunks(audio_path)
-            return StreamingResponse(
-                stream,
-                media_type=mime,
-                headers={
-                    "Accept-Ranges": "bytes",
-                    "Content-Length": str(file_size),
-                },
-                background=BackgroundTask(_close_media_stream, stream),
-            )
-
         try:
-            requested_range = parse_single_range(range_header, file_size)
-        except RangeNotSatisfiable:
-            return Response(
-                status_code=416,
-                headers={
-                    "Accept-Ranges": "bytes",
-                    "Content-Range": f"bytes */{file_size}",
-                },
-            )
-        stream = stream_file_chunks(audio_path, requested_range)
-        return StreamingResponse(
-            stream,
-            status_code=206,
-            media_type=mime,
-            headers={
+            if source is None:  # pragma: no cover - assignment above is non-null
+                raise RuntimeError("media source ownership lost")
+            file_size = source.size
+            if await asyncio.to_thread(_is_alac, source, audio_path.suffix):
+                ffmpeg = await asyncio.to_thread(shutil.which, "ffmpeg")
+                if ffmpeg is None:
+                    logger.warning(
+                        "ffmpeg unavailable; serving ALAC source bytes for %s",
+                        audio_path,
+                    )
+                elif request.method == "HEAD":
+                    response = Response(
+                        status_code=200,
+                        media_type="audio/mpeg",
+                        headers={"Accept-Ranges": "none"},
+                    )
+                    del response.headers["content-length"]
+                    return response
+                else:
+                    try:
+                        process = await _start_alac_transcoder(ffmpeg, source)
+                    except OSError:
+                        logger.warning(
+                            "ffmpeg failed to start; serving ALAC source bytes for %s",
+                            audio_path,
+                            exc_info=True,
+                        )
+                    else:
+                        stream = _transcode_alac_to_mp3(process)
+                        response = StreamingResponse(
+                            stream,
+                            media_type="audio/mpeg",
+                            headers={"Accept-Ranges": "none"},
+                            background=BackgroundTask(_close_alac_stream, stream, process),
+                        )
+                        await _close_opened_media(source)
+                        source = None
+                        return response
+
+            mime = _audio_mime(audio_path)
+            range_header = request.headers.get("range")
+            requested_range = None
+            status_code = 200
+            headers = {
                 "Accept-Ranges": "bytes",
-                "Content-Range": (
+                "Content-Length": str(file_size),
+            }
+            if range_header is not None:
+                try:
+                    requested_range = parse_single_range(range_header, file_size)
+                except RangeNotSatisfiable:
+                    return Response(
+                        status_code=416,
+                        headers={
+                            "Accept-Ranges": "bytes",
+                            "Content-Range": f"bytes */{file_size}",
+                        },
+                    )
+                status_code = 206
+                headers["Content-Range"] = (
                     f"bytes {requested_range.start}-{requested_range.end}/{file_size}"
-                ),
-                "Content-Length": str(requested_range.length),
-            },
-            background=BackgroundTask(_close_media_stream, stream),
-        )
+                )
+                headers["Content-Length"] = str(requested_range.length)
+
+            if request.method == "HEAD":
+                return Response(
+                    status_code=status_code,
+                    media_type=mime,
+                    headers=headers,
+                )
+
+            stream = stream_file_chunks(source, requested_range)
+            response = StreamingResponse(
+                stream,
+                status_code=status_code,
+                media_type=mime,
+                headers=headers,
+                background=BackgroundTask(_close_file_media_stream, stream, source),
+            )
+            source = None
+            return response
+        finally:
+            if source is not None:
+                await _close_opened_media(source)
 
     @app.post("/api/advance")
     async def api_advance() -> JSONResponse:
