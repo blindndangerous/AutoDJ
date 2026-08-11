@@ -1,4 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  document.body.replaceChildren();
+});
 
 describe("liner distinct-track cadence", () => {
   beforeEach(() => {
@@ -181,5 +186,170 @@ describe("liner authentication races", () => {
 
     expect(playLiner).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
+  });
+});
+
+describe("liner file controls", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.stubGlobal("confirm", vi.fn(() => true));
+  });
+
+  it("renders hostile filenames as text with an accurate Delete name", async () => {
+    const { renderLinerFileList } = await import(
+      "../../src/autodj/static/modules/liners.js"
+    );
+    const list = document.createElement("ul");
+    const onDelete = vi.fn();
+    const filename = '<img src=x onerror="alert(1)">.mp3';
+
+    expect(renderLinerFileList).toEqual(expect.any(Function));
+    if (typeof renderLinerFileList !== "function") return;
+    renderLinerFileList(list, [filename], onDelete);
+
+    const button = list.querySelector("button");
+    expect(list.querySelector("img")).toBeNull();
+    expect(list.querySelector("li > span").textContent).toBe(filename);
+    expect(button.textContent).toBe("Delete");
+    expect(button.getAttribute("aria-label")).toBe(`Delete ${filename}`);
+    button.click();
+    expect(onDelete).toHaveBeenCalledWith(filename, button);
+  });
+
+  it("reenables and refocuses the original Delete button after failure", async () => {
+    document.body.innerHTML = '<p id="status"></p><ul id="files"></ul>';
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new globalThis.Response(JSON.stringify({
+        config: {}, files: ["first.mp3"], folder: "liners",
+      }), { headers: { "Content-Type": "application/json" } }))
+      .mockResolvedValueOnce(new globalThis.Response(JSON.stringify({
+        detail: "disk unavailable",
+      }), { status: 500, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchImpl);
+    const { installLiners } = await import(
+      "../../src/autodj/static/modules/liners.js"
+    );
+    const list = document.querySelector("#files");
+    const status = document.querySelector("#status");
+    installLiners({ lnFileList: list, lnStatus: status }, {
+      canPlay: () => false,
+      playLiner: vi.fn(),
+      postSettings: vi.fn(),
+    });
+    await vi.waitFor(() => expect(list.querySelector("button")).not.toBeNull());
+    const originalButton = list.querySelector("button");
+    originalButton.focus();
+
+    originalButton.click();
+    await vi.waitFor(() => expect(status.textContent).toContain("disk unavailable"));
+
+    expect(originalButton.disabled).toBe(false);
+    expect(document.activeElement).toBe(originalButton);
+  });
+
+  it("focuses a stable control when inventory refresh fails after deletion", async () => {
+    document.body.innerHTML = `
+      <p id="status"></p>
+      <button id="upload" type="button">Upload liner</button>
+      <ul id="files"></ul>
+    `;
+    const response = (body, status = 200) => new globalThis.Response(
+      JSON.stringify(body),
+      { status, headers: { "Content-Type": "application/json" } },
+    );
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(response({
+        config: {}, files: ["first.mp3", "second.mp3"], folder: "liners",
+      }))
+      .mockResolvedValueOnce(response({ ok: true }))
+      .mockResolvedValueOnce(response({ detail: "inventory unavailable" }, 500)));
+    const { installLiners } = await import(
+      "../../src/autodj/static/modules/liners.js"
+    );
+    const list = document.querySelector("#files");
+    const status = document.querySelector("#status");
+    installLiners({
+      lnFileList: list,
+      lnStatus: status,
+      lnUploadSubmit: document.querySelector("#upload"),
+    }, {
+      canPlay: () => false,
+      playLiner: vi.fn(),
+      postSettings: vi.fn(),
+    });
+    await vi.waitFor(() => expect(list.querySelectorAll("button")).toHaveLength(2));
+    const originalButton = list.querySelectorAll("button")[0];
+
+    originalButton.click();
+    await vi.waitFor(() => expect(status.textContent).toContain("inventory unavailable"));
+
+    expect(originalButton.isConnected).toBe(true);
+    expect(originalButton.disabled).toBe(false);
+    expect(document.activeElement).toBe(originalButton);
+  });
+
+  it("focuses the next Delete button at the deleted index after refresh", async () => {
+    document.body.innerHTML = '<p id="status"></p><ul id="files"></ul>';
+    const response = (files) => new globalThis.Response(JSON.stringify({
+      config: {}, files, folder: "liners",
+    }), { headers: { "Content-Type": "application/json" } });
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(response(["first.mp3", "second.mp3", "third.mp3"]))
+      .mockResolvedValueOnce(response([]))
+      .mockResolvedValueOnce(response(["first.mp3", "third.mp3"]));
+    vi.stubGlobal("fetch", fetchImpl);
+    const { installLiners } = await import(
+      "../../src/autodj/static/modules/liners.js"
+    );
+    const list = document.querySelector("#files");
+    installLiners({
+      lnFileList: list,
+      lnStatus: document.querySelector("#status"),
+    }, {
+      canPlay: () => false,
+      playLiner: vi.fn(),
+      postSettings: vi.fn(),
+    });
+    await vi.waitFor(() => expect(list.querySelectorAll("button")).toHaveLength(3));
+
+    list.querySelectorAll("button")[1].click();
+    await vi.waitFor(() => expect(list.querySelectorAll("button")).toHaveLength(2));
+
+    expect(document.activeElement).toBe(list.querySelectorAll("button")[1]);
+  });
+
+  it("focuses the labelled upload button after deleting the last file", async () => {
+    document.body.innerHTML = `
+      <p id="status"></p>
+      <button id="upload" type="button">Upload liner</button>
+      <ul id="files"></ul>
+    `;
+    const response = (files) => new globalThis.Response(JSON.stringify({
+      config: {}, files, folder: "liners",
+    }), { headers: { "Content-Type": "application/json" } });
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(response(["only.mp3"]))
+      .mockResolvedValueOnce(response([]))
+      .mockResolvedValueOnce(response([])));
+    const { installLiners } = await import(
+      "../../src/autodj/static/modules/liners.js"
+    );
+    const list = document.querySelector("#files");
+    const upload = document.querySelector("#upload");
+    installLiners({
+      lnFileList: list,
+      lnStatus: document.querySelector("#status"),
+      lnUploadSubmit: upload,
+    }, {
+      canPlay: () => false,
+      playLiner: vi.fn(),
+      postSettings: vi.fn(),
+    });
+    await vi.waitFor(() => expect(list.querySelector("button")).not.toBeNull());
+
+    list.querySelector("button").click();
+    await vi.waitFor(() => expect(list.querySelectorAll("button")).toHaveLength(0));
+
+    expect(document.activeElement).toBe(upload);
   });
 });

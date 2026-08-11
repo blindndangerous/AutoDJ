@@ -173,6 +173,158 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
+describe("durable playback semantics", () => {
+  it("exposes deliberate live regions and durable non-live descriptions", () => {
+    installDocument();
+    const queueAnnounce = document.querySelector("#queue-announce");
+    const settingsStatus = document.querySelector("#settings-status");
+    const linerStatus = document.querySelector("#ln-status");
+    const queueList = document.querySelector("#queue-list");
+    const metadata = document.querySelector("#now-playing-meta");
+    const cueSummary = document.querySelector("#cue-summary");
+    const cueDetails = document.querySelector("#cue-details");
+    const progress = document.querySelector("#progress-track");
+
+    expect(queueAnnounce.getAttribute("role")).toBe("status");
+    expect(queueAnnounce.getAttribute("aria-live")).toBe("polite");
+    expect(queueAnnounce.getAttribute("aria-atomic")).toBe("true");
+    expect(settingsStatus.getAttribute("aria-atomic")).toBe("true");
+    expect(linerStatus.getAttribute("role")).toBe("status");
+    expect(linerStatus.getAttribute("aria-live")).toBe("polite");
+    expect(linerStatus.getAttribute("aria-atomic")).toBe("true");
+
+    expect(metadata.hasAttribute("aria-hidden")).toBe(false);
+    expect(metadata.hasAttribute("role")).toBe(false);
+    expect(metadata.hasAttribute("aria-live")).toBe(false);
+    expect(cueSummary).not.toBeNull();
+    expect(cueSummary.hasAttribute("role")).toBe(false);
+    expect(cueSummary.hasAttribute("aria-live")).toBe(false);
+    expect(progress.contains(cueSummary)).toBe(false);
+    expect(cueDetails).not.toBeNull();
+    expect(cueDetails.hasAttribute("role")).toBe(false);
+    expect(cueDetails.hasAttribute("aria-live")).toBe(false);
+    expect(progress.contains(cueDetails)).toBe(false);
+    const describedBy = progress.getAttribute("aria-describedby").split(/\s+/);
+    expect(describedBy).toContain("cue-summary");
+    expect(describedBy).not.toContain("cue-details");
+
+    expect(queueList.getAttribute("role")).toBe("list");
+    expect(queueList.getAttribute("aria-label")).toBe("Queued tracks");
+    expect(queueList.getAttribute("tabindex")).toBe("-1");
+    expect(queueList.hasAttribute("aria-live")).toBe(false);
+  });
+
+  it("renders complete metadata and cue text without rewriting unchanged ticks", async () => {
+    const track = {
+      album: "Night Drive",
+      bpm: 128,
+      cues: [{ type: "drop", time_s: 30 }],
+      energy: 0.7,
+      key_label: "8A",
+      length: 120,
+      path: "current.mp3",
+      title: "Current",
+    };
+    const { webSocket } = await setupApp({
+      initialState: { current_track: track, duration: 120 },
+      onRequest: (url) => url.startsWith("/api/lyrics?path=")
+        ? jsonResponse({ lyrics: [], path: track.path })
+        : jsonResponse({ ok: true }),
+    });
+    const metadata = document.querySelector("#now-playing-meta");
+    const cueSummary = document.querySelector("#cue-summary");
+    const cueDetails = document.querySelector("#cue-details");
+    expect(cueSummary).not.toBeNull();
+    expect(cueDetails).not.toBeNull();
+    expect(metadata.textContent).toBe(
+      "Album Night Drive · BPM 128 · Key 8A · Energy 0.70",
+    );
+    expect(cueSummary.textContent).toBe("1 cue point, drop at 30 seconds");
+    expect(cueDetails.textContent).toBe("1 cue point, drop at 30 seconds");
+    let metadataWrites = 0;
+    let cueWrites = 0;
+    let cueDetailWrites = 0;
+    const descriptor = Object.getOwnPropertyDescriptor(
+      globalThis.Node.prototype,
+      "textContent",
+    );
+    const countWrites = (element, count) => {
+      let storedText = element.textContent;
+      Object.defineProperty(element, "textContent", {
+        configurable: true,
+        get() { return storedText; },
+        set(value) {
+          count();
+          storedText = String(value);
+          descriptor.set.call(this, value);
+        },
+      });
+    };
+    countWrites(metadata, () => { metadataWrites += 1; });
+    countWrites(cueSummary, () => { cueWrites += 1; });
+    countWrites(cueDetails, () => { cueDetailWrites += 1; });
+
+    webSocket.onmessage({ data: JSON.stringify({
+      browser_playback: false,
+      current_track: track,
+      discovery_available: false,
+      duration: 120,
+      elapsed: 1,
+      eq: {},
+      is_muted: false,
+      is_paused: false,
+      next_track: null,
+      queue: [],
+      settings: null,
+      volume: 1,
+    }) });
+
+    expect(metadataWrites).toBe(0);
+    expect(cueWrites).toBe(0);
+    expect(cueDetailWrites).toBe(0);
+  });
+
+  it("resets the cue summary when applied state has no track", async () => {
+    const { webSocket } = await setupApp({
+      initialState: {
+        current_track: {
+          cues: [{ type: "drop", time_s: 10 }],
+          length: 60,
+          path: "current.mp3",
+          title: "Current",
+        },
+        duration: 60,
+      },
+      onRequest: () => jsonResponse({ ok: true }),
+    });
+    const cueSummary = document.querySelector("#cue-summary");
+    const cueDetails = document.querySelector("#cue-details");
+    const metadata = document.querySelector("#now-playing-meta");
+    expect(cueSummary).not.toBeNull();
+    expect(cueDetails).not.toBeNull();
+    expect(cueSummary.textContent).toContain("drop at 10 seconds");
+
+    webSocket.onmessage({ data: JSON.stringify({
+      browser_playback: false,
+      current_track: null,
+      discovery_available: false,
+      duration: 0,
+      elapsed: 0,
+      eq: {},
+      is_muted: false,
+      is_paused: false,
+      next_track: null,
+      queue: [],
+      settings: null,
+      volume: 1,
+    }) });
+
+    expect(cueSummary.textContent).toBe("No cue points");
+    expect(cueDetails.textContent).toBe("No cue points");
+    expect(metadata.textContent).toBe("");
+  });
+});
+
 describe("app request behavior", () => {
   it("continues applying unrelated state while pointer seeking", async () => {
     const { setLastBrowserPlayback, webSocket } = await setupApp({
@@ -755,6 +907,12 @@ describe("app request behavior", () => {
     expect(document.querySelector("#history-list").children).toHaveLength(0);
     expect(document.querySelector("#now-playing-announce").textContent).not.toContain("Current");
     expect(document.querySelector("#now-playing-meta").textContent).toBe("");
+    const cueSummary = document.querySelector("#cue-summary");
+    expect(cueSummary).not.toBeNull();
+    if (cueSummary) expect(cueSummary.textContent).toBe("No cue points");
+    const cueDetails = document.querySelector("#cue-details");
+    expect(cueDetails).not.toBeNull();
+    if (cueDetails) expect(cueDetails.textContent).toBe("No cue points");
     expect(document.querySelector("#next-track-text").textContent).toBe("—");
     expect(document.querySelector("#queue-list").textContent).not.toContain("Queued secret");
     expect(document.querySelector("#preset-select").textContent).not.toContain("Secret preset");

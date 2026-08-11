@@ -117,7 +117,7 @@ describe("queue mutations", () => {
     vi.unstubAllGlobals();
   });
 
-  it("rolls back the exact snapshot and restores action focus on failure", async () => {
+  it("rolls back the exact snapshot and restores action focus after busy clears", async () => {
     document.body.innerHTML = '<p id="announce"></p><ul id="queue"></ul>';
     const els = {
       queueList: document.querySelector("#queue"),
@@ -135,9 +135,15 @@ describe("queue mutations", () => {
       { status: 500, headers: { "Content-Type": "application/json" } },
     )));
 
-    els.queueList.querySelector(
+    const clicked = els.queueList.querySelector(
       'li[data-path="one.mp3"] [data-action="remove"]',
-    ).click();
+    );
+    clicked.focus();
+    clicked.click();
+    let busyWhenFocusReturned = null;
+    els.queueList.addEventListener("focusin", () => {
+      busyWhenFocusReturned = els.queueList.getAttribute("aria-busy");
+    }, { once: true });
     await vi.waitFor(() => expect(els.queueAnnounce.textContent)
       .toContain("Queue write failed"));
 
@@ -148,6 +154,100 @@ describe("queue mutations", () => {
     );
     expect(restored.disabled).toBe(false);
     expect(document.activeElement).toBe(restored);
+    expect(busyWhenFocusReturned).toBe("false");
+    expect(els.queueList.getAttribute("aria-busy")).toBe("false");
+    vi.unstubAllGlobals();
+  });
+
+  it("clears busy before focusing the queue list after final-row removal", async () => {
+    document.body.innerHTML = '<p id="announce"></p><ol id="queue" tabindex="-1"></ol>';
+    const els = {
+      queueList: document.querySelector("#queue"),
+      queueCount: document.createElement("span"),
+      queueAnnounce: document.querySelector("#announce"),
+    };
+    renderQueue([{ path: "only.mp3", display_name: "Only" }], els);
+    installQueueButtons(els);
+    let resolveRequest;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => {
+      resolveRequest = resolve;
+    })));
+    const focusSpy = vi.spyOn(els.queueList, "focus").mockImplementation(() => {
+      expect(els.queueList.getAttribute("aria-busy")).toBe("false");
+      globalThis.HTMLElement.prototype.focus.call(els.queueList);
+    });
+
+    els.queueList.querySelector('[data-action="remove"]').click();
+    expect(els.queueList.getAttribute("aria-busy")).toBe("true");
+    expect(focusSpy).not.toHaveBeenCalled();
+    resolveRequest(new globalThis.Response('{"ok":true}', {
+      headers: { "Content-Type": "application/json" },
+    }));
+    await vi.waitFor(() => expect(focusSpy).toHaveBeenCalledOnce());
+
+    expect(document.activeElement).toBe(els.queueList);
+    expect(els.queueList.getAttribute("aria-busy")).toBe("false");
+    vi.unstubAllGlobals();
+  });
+
+  it("clears busy without moving focus after a newer authoritative render", async () => {
+    document.body.innerHTML = '<p id="announce"></p><ol id="queue" tabindex="-1"></ol>';
+    const els = {
+      queueList: document.querySelector("#queue"),
+      queueCount: document.createElement("span"),
+      queueAnnounce: document.querySelector("#announce"),
+    };
+    renderQueue([
+      { path: "old.mp3", display_name: "Old" },
+      { path: "tail.mp3", display_name: "Tail" },
+    ], els);
+    installQueueButtons(els);
+    let resolveRequest;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => {
+      resolveRequest = resolve;
+    })));
+    const focusSpy = vi.spyOn(els.queueList, "focus");
+
+    els.queueList.querySelector('[data-action="remove"]').click();
+    applyQueueState([{ path: "server.mp3", display_name: "Server" }], els);
+    resolveRequest(new globalThis.Response('{"ok":true}', {
+      headers: { "Content-Type": "application/json" },
+    }));
+    await vi.waitFor(() => expect(els.queueList.getAttribute("aria-busy")).toBe("false"));
+
+    expect(els.queueList.textContent).toContain("Server");
+    expect(focusSpy).not.toHaveBeenCalled();
+    expect(document.activeElement.closest?.("#queue")).toBeNull();
+    vi.unstubAllGlobals();
+  });
+
+  it("clears busy without moving focus when authentication expires", async () => {
+    document.body.innerHTML = '<p id="announce"></p><ol id="queue" tabindex="-1"></ol>';
+    const els = {
+      queueList: document.querySelector("#queue"),
+      queueCount: document.createElement("span"),
+      queueAnnounce: document.querySelector("#announce"),
+    };
+    renderQueue([{ path: "only.mp3", display_name: "Only" }], els);
+    installQueueButtons(els);
+    let resolveRequest;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => {
+      resolveRequest = resolve;
+    })));
+    const { invalidateAuthenticatedRequestEpoch } = await import(
+      "../../src/autodj/static/modules/api-client.js"
+    );
+    const focusSpy = vi.spyOn(els.queueList, "focus");
+
+    els.queueList.querySelector('[data-action="remove"]').click();
+    invalidateAuthenticatedRequestEpoch();
+    resolveRequest(new globalThis.Response('{"ok":true}', {
+      headers: { "Content-Type": "application/json" },
+    }));
+    await vi.waitFor(() => expect(els.queueList.getAttribute("aria-busy")).toBe("false"));
+
+    expect(focusSpy).not.toHaveBeenCalled();
+    expect(document.activeElement.closest?.("#queue")).toBeNull();
     vi.unstubAllGlobals();
   });
 });

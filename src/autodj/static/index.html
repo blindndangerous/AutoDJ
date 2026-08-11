@@ -83,7 +83,7 @@
              aria-atomic="true">
           Loading…
         </div>
-        <div id="now-playing-meta" aria-hidden="true"></div>
+        <div id="now-playing-meta"></div>
         <!-- Visual-only badge row: BPM / Camelot key / energy / beatmatch ratio.
              aria-hidden because a separate live region announces the same
              info on track change to avoid stepping on the title announcement. -->
@@ -105,7 +105,7 @@
         </svg>
       </div>
     </div>
-    <!-- Independent polite region for badge announcements (Camelot + BPM,
+    <!-- Independent polite region for badge announcements (key + beatmatch,
          only on track change) so it never collides with the title above. -->
     <div id="badges-announce" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
 
@@ -122,15 +122,15 @@
            aria-valuemin="0"
            aria-valuemax="100"
            aria-valuenow="0"
-           aria-valuetext="0:00 of 0:00">
+           aria-valuetext="0:00 of 0:00"
+           aria-describedby="cue-summary">
         <div id="progress-fill" aria-hidden="true"></div>
-        <!-- Decorative cue tick marks.  Screen-reader users hear cue
-             counts + the first few markers via the polite live region
-             #badges-announce on track change (see _summariseCues in
-             app.js); the persistent navigable list was removed at the
-             user's request. -->
+        <!-- Decorative cue tick marks.  A concise slider description and
+             separate full, revisit-able cue details follow this control. -->
         <div id="cue-strip" aria-hidden="true"></div>
       </div>
+      <p id="cue-summary" class="visually-hidden">No cue points</p>
+      <p id="cue-details" class="visually-hidden">No cue points</p>
     </div>
   </details>
 
@@ -321,7 +321,7 @@
 
     <!-- Single shared status region for failures (success is silent — checkbox
          state already announced by the AT). -->
-    <div id="settings-status" role="status" aria-live="polite" class="visually-hidden"></div>
+    <div id="settings-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
 
     <fieldset>
       <legend>Mood</legend>
@@ -769,10 +769,11 @@
     </summary>
     <!-- Visually hidden announce region for queue mutations: "Added X", "Moved X up", "Removed X" -->
     <div id="queue-announce"
+         role="status"
          aria-live="polite"
          aria-atomic="true"
          class="visually-hidden"></div>
-    <ol id="queue-list" role="list" aria-label="Queued tracks">
+    <ol id="queue-list" role="list" aria-label="Queued tracks" tabindex="-1">
       <li class="no-results"
           style="color:var(--text-dim);font-style:italic;list-style:none;padding-left:0">
         Queue is empty.  Search and use "Next" to add a track.

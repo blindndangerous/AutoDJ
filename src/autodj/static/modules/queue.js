@@ -91,6 +91,7 @@ export function installQueueButtons(els) {
     const newQueue = snapshot.slice();
     let focusAction = action;
     let focusIndex = idx;
+    let focusQueueList = false;
     let announceMsg = "";
 
     const niceName = items[idx]
@@ -112,6 +113,7 @@ export function installQueueButtons(els) {
       announceMsg = `Removed ${niceName} from queue.`;
       if (newQueue.length === 0) {
         focusIndex = -1;
+        focusQueueList = true;
       } else {
         focusIndex = Math.min(idx, newQueue.length - 1);
         focusAction = "remove";
@@ -122,13 +124,15 @@ export function installQueueButtons(els) {
 
     // Optimistic local render so the user sees instant feedback.
     mutationPending = true;
-    btn.disabled = true;
     queueList.setAttribute("aria-busy", "true");
+    btn.disabled = true;
     renderQueue(newQueue, els);
     const optimisticGeneration = _renderGeneration;
     const newPaths = newQueue.map((item) => item.path);
     _lastKey = _queueKey(newQueue);
     let ownsRenderedQueue = true;
+    let successful = false;
+    let rolledBack = false;
 
     try {
       const duplicateRemoval = action === "remove" && paths.indexOf(path) !== idx;
@@ -147,6 +151,7 @@ export function installQueueButtons(els) {
       }
       ownsRenderedQueue = _renderGeneration === optimisticGeneration;
       if (!ownsRenderedQueue) focusIndex = -1;
+      successful = ownsRenderedQueue;
       if (queueAnnounce) {
         queueAnnounce.textContent = announceMsg;
         clearLiveRegionLater(queueAnnounce);
@@ -162,10 +167,12 @@ export function installQueueButtons(els) {
         _lastKey = _queueKey(snapshot);
         focusIndex = idx;
         focusAction = action;
+        rolledBack = true;
       } else {
         ownsRenderedQueue = false;
         focusIndex = -1;
       }
+      focusQueueList = false;
       if (queueAnnounce) {
         queueAnnounce.textContent = `Could not update queue: ${errorValue.message}`;
         clearLiveRegionLater(queueAnnounce);
@@ -175,7 +182,12 @@ export function installQueueButtons(els) {
       queueList.setAttribute("aria-busy", "false");
     }
 
-    if (ownsRenderedQueue && focusIndex >= 0) {
+    if ((!successful && !rolledBack) || !ownsRenderedQueue) return;
+    if (focusQueueList) {
+      queueList.focus();
+      return;
+    }
+    if (focusIndex >= 0) {
       const target = queueList.querySelector(
         `li[data-queue-index="${focusIndex}"] .queue-btn[data-action="${focusAction}"]`
       );

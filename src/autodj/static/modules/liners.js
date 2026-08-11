@@ -5,7 +5,7 @@
 // the audio-engine module and is injected via deps.playLiner so this
 // module stays free of AudioContext + decks state.
 
-import { escHtml, dbg } from "./dom-helpers.js";
+import { dbg } from "./dom-helpers.js";
 import { clearLiveRegionLater } from "./live-region.js";
 import { applyShowWhen } from "./show-when.js";
 import {
@@ -53,32 +53,39 @@ function _setStatus(els, msg) {
   }
 }
 
+export function renderLinerFileList(fileList, files, onDelete) {
+  if (!fileList) return;
+  fileList.replaceChildren();
+  for (const name of files || []) {
+    const li = document.createElement("li");
+    const text = document.createElement("span");
+    text.textContent = name;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = "Delete";
+    button.setAttribute("aria-label", `Delete ${name}`);
+    button.addEventListener("click", () => onDelete(name, button));
+    li.appendChild(text);
+    li.appendChild(document.createTextNode(" "));
+    li.appendChild(button);
+    fileList.appendChild(li);
+  }
+}
+
 async function _refreshLibrary(els) {
   const epoch = captureAuthenticatedRequestEpoch();
   try {
     const body = await requestJson("/api/liners");
-    if (!isAuthenticatedRequestCurrent(epoch)) return;
+    if (!isAuthenticatedRequestCurrent(epoch)) return false;
     state.lib = body;
     if (els.lnFolderDisplay) {
       els.lnFolderDisplay.textContent = "Folder: " + (body.folder || "—");
     }
-    if (els.lnFileList) {
-      els.lnFileList.innerHTML = "";
-      for (const name of body.files || []) {
-        const li = document.createElement("li");
-        const text = document.createElement("span");
-        text.textContent = name;
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.innerHTML = '<span aria-hidden="true">Delete</span>' +
-          `<span class="visually-hidden"> ${escHtml(name)}</span>`;
-        btn.addEventListener("click", () => void _deleteLiner(els, name, btn));
-        li.appendChild(text);
-        li.appendChild(document.createTextNode(" "));
-        li.appendChild(btn);
-        els.lnFileList.appendChild(li);
-      }
-    }
+    renderLinerFileList(
+      els.lnFileList,
+      body.files,
+      (name, button) => void _deleteLiner(els, name, button),
+    );
     // Sync config inputs from server payload, leaving fields the user
     // is currently editing untouched.
     const c = body.config || {};
@@ -95,15 +102,21 @@ async function _refreshLibrary(els) {
     sync(els.lnPickMode,  c.pick_mode || "random");
     sync(els.lnDuckDb,    c.duck_db != null ? c.duck_db : -12);
     applyShowWhen();
+    return true;
   } catch (err) {
-    if (!isAuthenticatedRequestCurrent(epoch)) return;
+    if (!isAuthenticatedRequestCurrent(epoch)) return false;
     dbg("liner refresh failed:", err);
     _setStatus(els, `Could not load liners: ${err.message}`);
+    return false;
   }
 }
 
 async function _deleteLiner(els, name, control) {
   if (!confirm(`Delete liner "${name}"?`)) return;
+  const controls = els.lnFileList
+    ? Array.from(els.lnFileList.querySelectorAll("button"))
+    : [];
+  const deletedIndex = Math.max(0, controls.indexOf(control));
   const epoch = captureAuthenticatedRequestEpoch();
   try {
     await withDisabled(control, () => requestJson(
@@ -112,7 +125,30 @@ async function _deleteLiner(els, name, control) {
     ));
     if (!isAuthenticatedRequestCurrent(epoch)) return;
     _setStatus(els, `Deleted ${name}`);
-    await _refreshLibrary(els);
+    const refreshed = await _refreshLibrary(els);
+    if (!isAuthenticatedRequestCurrent(epoch)) return;
+    if (!refreshed) {
+      const connected = (candidate) => candidate?.isConnected && !candidate.disabled;
+      const next = controls.slice(deletedIndex + 1).find(connected);
+      const previous = controls.slice(0, deletedIndex).reverse().find(connected);
+      const stableTarget = connected(control)
+        ? control
+        : next || previous || (connected(els.lnUploadSubmit) ? els.lnUploadSubmit : null);
+      if (stableTarget) {
+        stableTarget.focus();
+      } else if (els.lnFileList) {
+        els.lnFileList.setAttribute("tabindex", "-1");
+        els.lnFileList.focus();
+      }
+      return;
+    }
+    const remaining = els.lnFileList
+      ? Array.from(els.lnFileList.querySelectorAll("button"))
+      : [];
+    const focusTarget = remaining.length
+      ? remaining[Math.min(deletedIndex, remaining.length - 1)]
+      : els.lnUploadSubmit;
+    focusTarget?.focus();
   } catch (err) {
     if (!isAuthenticatedRequestCurrent(epoch)) return;
     _setStatus(els, `Delete failed: ${err.message}`);

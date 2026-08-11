@@ -41,6 +41,8 @@ if (isDebug()) {
 const connStatus   = document.getElementById("conn-status");
 const npAnnounce   = document.getElementById("now-playing-announce");
 const npMeta       = document.getElementById("now-playing-meta");
+const cueSummary   = document.getElementById("cue-summary");
+const cueDetails   = document.getElementById("cue-details");
 const coverArt     = document.getElementById("cover-art");
 const progressFill = document.getElementById("progress-fill");
 const progressLbl  = document.getElementById("progress-bar-label");
@@ -295,27 +297,8 @@ function applyState(s) {
     }
   }
 
-  // Meta line: album · Key · BPM.  Key + BPM render unconditionally
-  // (with "unknown" placeholder when the track has no detected value)
-  // so the line is never empty and users always know where to look
-  // for those fields.  Album is omitted entirely when absent because
-  // an "album: unknown" placeholder is noisier than useful.
-  const parts = [];
-  if (s.current_track) {
-    const t = s.current_track;
-    if (t.album) parts.push(t.album);
-    // Notation-aware display label (Camelot or letter-name per
-    // [playback] key_notation; sharps or flats per key_prefer_flats).
-    const _kl = t.key_label;
-    parts.push(`Key ${_kl && _kl !== "--" ? _kl : "unknown"}`);
-    parts.push(t.bpm ? `${Math.round(t.bpm)} BPM` : "BPM unknown");
-  }
-  // npMeta is the screen-reader-reachable static text for the
-  // now-playing card -- the visual badges row is aria-hidden, and the
-  // live-region announce only fires on track change.  Including key +
-  // BPM here lets NVDA users query the current values by re-reading
-  // the section any time, not only when the track flips.
-  npMeta.textContent = parts.join(" \u00b7 ");
+  const metadata = formatPersistentMetadata(s.current_track);
+  if (npMeta.textContent !== metadata) npMeta.textContent = metadata;
 
   // Badges + announce on track change.  Module needs the els bag and
   // a couple of dispatcher-owned values (lastTrackKey, renderCueStrip).
@@ -591,8 +574,7 @@ keyNotation.addEventListener("change", (event) => {
   void postSettings("/api/playback-settings", { key_notation: keyNotation.value }, event.currentTarget);
   // Polite live-region announce so screen-reader users hear the
   // change without having to navigate back to the now-playing card.
-  // Reuses #badges-announce -- already polite + already owns key /
-  // BPM / energy announcements per accessibility-lead guidance.
+  // Reuses #badges-announce -- already polite + already owns key events.
   const announce = document.getElementById("badges-announce");
   if (announce) {
     const labelMap = { camelot: "Camelot", musical: "Musical letter names" };
@@ -851,7 +833,7 @@ discEvery.addEventListener("change", (event) => {
 });
 
 // Badges moved to ./modules/badges.js.
-import { applyBadges } from "./modules/badges.js";
+import { applyBadges, formatPersistentMetadata } from "./modules/badges.js";
 
 // ----------------------------------------------------------------
 // Cue strip — decorative markers on the progress bar.
@@ -860,12 +842,15 @@ import { applyBadges } from "./modules/badges.js";
 
 // Cue strip rendering moved to ./modules/cues.js.
 import {
+  applyCueSummary,
   renderCueStrip as _renderCueStripModule,
-  summariseCues,
 } from "./modules/cues.js";
 
 const _cueStrip = document.getElementById("cue-strip");
-function renderCueStrip(track) { _renderCueStripModule(_cueStrip, track); }
+function renderCueStrip(track) {
+  _renderCueStripModule(_cueStrip, track);
+  applyCueSummary(track, cueSummary, cueDetails);
+}
 
 // Camelot wheel rendering moved to ./modules/camelot-wheel.js.
 import { applyCamelotWheel as _applyCamelotWheelModule } from "./modules/camelot-wheel.js";
