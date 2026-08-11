@@ -5,28 +5,55 @@
 // updates that fire every few seconds.
 
 import { escHtml } from "./dom-helpers.js";
+import { requestJson } from "./api-client.js";
+import { createLatestRequestOwner } from "./latest-request.js";
 
 const state = {
   cached: [],          // full list, used by the visible scroll
   lastIndex: null,     // suppress repeated lyric announcements
+  loadStatus: "",      // request error currently owned by the live region
 };
+const lyricsRequestOwner = createLatestRequestOwner();
 
 export function getCachedLyrics() {
   return state.cached;
 }
 
 export function resetLyricState() {
+  lyricsRequestOwner.cancel();
   state.lastIndex = null;
   state.cached = [];
 }
 
+function setLoadStatus(elements, message) {
+  const announce = elements.lyricAnnounce;
+  if (!message) {
+    if (announce && state.loadStatus && announce.textContent === state.loadStatus) {
+      announce.textContent = "";
+    }
+    state.loadStatus = "";
+    return;
+  }
+  state.loadStatus = message;
+  if (announce) announce.textContent = message;
+}
+
 export async function loadLyrics(elements) {
+  const request = lyricsRequestOwner.begin();
   try {
-    const res = await fetch("/api/lyrics");
-    const data = await res.json();
+    const data = await requestJson("/api/lyrics", { signal: request.signal });
+    if (!lyricsRequestOwner.isCurrent(request)) return;
     state.cached = data.lyrics || [];
-  } catch (_) {
+    setLoadStatus(elements, "");
+  } catch (errorValue) {
+    if (!lyricsRequestOwner.isCurrent(request)) return;
     state.cached = [];
+    setLoadStatus(
+      elements,
+      `Could not load lyrics: ${errorValue.message || errorValue}`,
+    );
+  } finally {
+    lyricsRequestOwner.finish(request);
   }
   renderLyricsList(elements);
 }
@@ -80,6 +107,7 @@ export function applyLyricsState(s, { lyricsCard, lyricsList, lyricAnnounce }) {
     li.setAttribute("aria-current", "true");
     li.scrollIntoView({ behavior: "smooth", block: "center" });
     if (s.lyric_text && lyricAnnounce) {
+      state.loadStatus = "";
       lyricAnnounce.textContent = s.lyric_text;
     }
   }

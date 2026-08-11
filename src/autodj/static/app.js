@@ -15,6 +15,17 @@ import {
   initAuthDialog,
   reconnectWebSocketAfterClose,
 } from "./modules/auth.js";
+import {
+  captureAuthenticatedRequestEpoch,
+  invalidateAuthenticatedRequestEpoch,
+  isAuthenticatedRequestCurrent,
+  postJsonBestEffort,
+  requestJson,
+  requestJsonBestEffort,
+  setAuthRequiredHandler,
+  withDisabled,
+} from "./modules/api-client.js";
+import { createLatestRequestOwner } from "./modules/latest-request.js";
 
 if (isDebug()) {
   console.log("[autodj] debug logging ENABLED " +
@@ -97,6 +108,121 @@ const settingsStatus  = document.getElementById("settings-status");
 const volAnnounce     = document.getElementById("vol-announce");
 
 const auth = initAuthDialog({ document });
+let authExpiryHandled = false;
+let reconnectGeneration = 0;
+let reconnectTimer = null;
+
+function invalidateReconnectAttempt() {
+  reconnectGeneration += 1;
+  if (reconnectTimer !== null) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+}
+
+function stopProtectedPlayback() {
+  stopAllDecks();
+  stopActiveLiners();
+  resetTransitionCaches();
+}
+
+function clearProtectedSessionData() {
+  resetTrackCaches();
+  historyRequestOwner.cancel();
+  resetLyricState();
+  renderLyricsList(_lyricEls);
+  lyricAnnounce.textContent = "";
+  loadCoverArt(null);
+  _lastState = null;
+  lastTrackKey = null;
+  historyItems.length = 0;
+  historyList.replaceChildren();
+  npAnnounce.textContent = "";
+  npMeta.textContent = "";
+  nextText.textContent = "—";
+  progressFill.style.width = "0%";
+  progressLbl.textContent = "0:00 / 0:00";
+  const progressTrack = document.getElementById("progress-track");
+  if (progressTrack) {
+    progressTrack.setAttribute("aria-valuenow", "0");
+    progressTrack.setAttribute("aria-valuetext", "0:00 of 0:00");
+  }
+  badgesRow.replaceChildren();
+  badgesAnnounce.textContent = "";
+  btnPause.innerHTML = '<span aria-hidden="true">▶</span> Play';
+  btnPause.setAttribute("aria-pressed", "false");
+  btnMute.innerHTML = '<span aria-hidden="true">🔊</span> Mute';
+  btnMute.setAttribute("aria-pressed", "false");
+  btnDiscovery.style.display = "none";
+  btnDiscovery.setAttribute("aria-pressed", "false");
+  volSlider.value = volSlider.defaultValue;
+  volPct.textContent = `${volSlider.value}%`;
+  volAnnounce.textContent = "";
+  for (const [slider, value] of [
+    [eqLow, eqLowVal], [eqMid, eqMidVal], [eqHigh, eqHighVal],
+  ]) {
+    slider.value = slider.defaultValue;
+    slider.setAttribute("aria-valuetext", "Unity");
+    value.textContent = "Unity";
+  }
+  eqAnnounce.textContent = "";
+  whyList.replaceChildren();
+  renderCueStrip(null);
+  applyCamelotWheel(null, "compatible");
+  resetQueueState(_queueEls);
+  queueAnnounce.textContent = "";
+  resetSettingsState(_settingsEls());
+  settingsStatus.textContent = "";
+  searchInput.value = "";
+  searchInput.dispatchEvent(new Event("input"));
+  for (const element of Object.values(_libEls)) {
+    if (element && !element.matches("button, input")) element.textContent = "";
+  }
+  _linerEls.lnFileList.replaceChildren();
+  _linerEls.lnFolderDisplay.textContent = "";
+  _linerEls.lnStatus.textContent = "";
+  updateMediaSession({ current_track: null });
+  lastBadgeKey = null;
+  lastNextKey = null;
+  _lastWhyKey = "";
+  _lastDuration = 0;
+  document.title = "AutoDJ";
+}
+
+function expireAuthenticatedSession({ playbackStopped = false } = {}) {
+  if (!authExpiryHandled) {
+    authExpiryHandled = true;
+    invalidateAuthenticatedRequestEpoch();
+    invalidateReconnectAttempt();
+    authenticatedActivityActive = false;
+    if (!playbackStopped) stopProtectedPlayback();
+    clearProtectedSessionData();
+    const socket = _ws;
+    _ws = null;
+    if (socket && socket.readyState <= WebSocket.OPEN) {
+      socket.close(4401, "Authentication required");
+    }
+    setConnStatus("error", "Authentication required");
+  }
+}
+
+function requireAuthentication() {
+  expireAuthenticatedSession();
+  auth.show();
+}
+
+setAuthRequiredHandler(requireAuthentication);
+
+let lastBackgroundFailure = { message: "", at: 0 };
+function reportBackgroundRequestError(errorValue) {
+  const message = errorValue.message || String(errorValue);
+  const now = Date.now();
+  if (lastBackgroundFailure.at !== 0
+      && message === lastBackgroundFailure.message
+      && now - lastBackgroundFailure.at < 4000) return;
+  lastBackgroundFailure = { message, at: now };
+  npAnnounce.textContent = `Request failed: ${message}`;
+}
 
 // ----------------------------------------------------------------
 // State
@@ -156,8 +282,7 @@ function applyState(s) {
       loadCoverArt(trackKey);
       loadLyrics(_lyricEls);
     } else {
-      coverArt.hidden = true;
-      coverArt.src = "";
+      loadCoverArt(null);
     }
 
     // Push to history (skip duplicates at top)
@@ -342,6 +467,7 @@ function applyState(s) {
 import {
   applySettingsState,
   postSettings as _postSettingsModule,
+  resetSettingsState,
 } from "./modules/settings-panel.js";
 
 const _settingsEls = () => ({
@@ -357,16 +483,16 @@ const _settingsEls = () => ({
   discEnabled, discEvery,
 });
 
-function postSettings(url, body) {
-  return _postSettingsModule(url, body, { settingsStatus });
+function postSettings(url, body, control) {
+  return _postSettingsModule(url, body, { settingsStatus, control });
 }
 
-presetSelect.addEventListener("change", () => {
-  postSettings("/api/preset", { name: presetSelect.value || null });
+presetSelect.addEventListener("change", (event) => {
+  void postSettings("/api/preset", { name: presetSelect.value || null }, event.currentTarget);
 });
 
-transitionSelect.addEventListener("change", () => {
-  postSettings("/api/transition", { effect: transitionSelect.value });
+transitionSelect.addEventListener("change", (event) => {
+  void postSettings("/api/transition", { effect: transitionSelect.value }, event.currentTarget);
 });
 
 const _djToggleMap = [
@@ -375,92 +501,92 @@ const _djToggleMap = [
   [djOutroIntro,  "outro_intro_align"],
 ];
 for (const [el, key] of _djToggleMap) {
-  el.addEventListener("change", () => {
-    postSettings("/api/djmix", { [key]: el.checked });
+  el.addEventListener("change", (event) => {
+    void postSettings("/api/djmix", { [key]: el.checked }, event.currentTarget);
   });
 }
-harmonicMode.addEventListener("change", () => {
-  postSettings("/api/djmix", { harmonic_mode: harmonicMode.value });
+harmonicMode.addEventListener("change", (event) => {
+  void postSettings("/api/djmix", { harmonic_mode: harmonicMode.value }, event.currentTarget);
 });
 
-pbEqDuck.addEventListener("change", () => {
-  postSettings("/api/playback-settings", { crossfade_eq_duck: pbEqDuck.checked });
+pbEqDuck.addEventListener("change", (event) => {
+  void postSettings("/api/playback-settings", { crossfade_eq_duck: pbEqDuck.checked }, event.currentTarget);
 });
-pbPickMode.addEventListener("change", () => {
+pbPickMode.addEventListener("change", (event) => {
   // Three-way select projects to the server's two-flag shape.  Sending
   // both flags every time keeps state consistent regardless of which
   // option is chosen (no stale flag survives the switch).
   const v = pbPickMode.value;
-  postSettings("/api/playback-settings", {
+  void postSettings("/api/playback-settings", {
     smart_shuffle: v === "smart",
     pure_shuffle: v === "pure",
-  });
+  }, event.currentTarget);
 });
-pbShowLyrics.addEventListener("change", () => {
-  postSettings("/api/playback-settings", { show_lyrics: pbShowLyrics.checked });
+pbShowLyrics.addEventListener("change", (event) => {
+  void postSettings("/api/playback-settings", { show_lyrics: pbShowLyrics.checked }, event.currentTarget);
 });
-pbAnchorSeed.addEventListener("change", () => {
-  postSettings("/api/playback-settings", { anchor_to_seed: pbAnchorSeed.checked });
+pbAnchorSeed.addEventListener("change", (event) => {
+  void postSettings("/api/playback-settings", { anchor_to_seed: pbAnchorSeed.checked }, event.currentTarget);
 });
 if (pbDaypart) {
-  pbDaypart.addEventListener("change", () => {
-    postSettings("/api/playback-settings", { enable_daypart: pbDaypart.checked });
+  pbDaypart.addEventListener("change", (event) => {
+    void postSettings("/api/playback-settings", { enable_daypart: pbDaypart.checked }, event.currentTarget);
   });
 }
 if (pbMoodArc) {
-  pbMoodArc.addEventListener("change", () => {
-    postSettings("/api/playback-settings", { enable_mood_arc: pbMoodArc.checked });
+  pbMoodArc.addEventListener("change", (event) => {
+    void postSettings("/api/playback-settings", { enable_mood_arc: pbMoodArc.checked }, event.currentTarget);
   });
 }
 if (pbMoodArcHours) {
-  pbMoodArcHours.addEventListener("change", () => {
+  pbMoodArcHours.addEventListener("change", (event) => {
     const hrs = parseFloat(pbMoodArcHours.value);
     if (isFinite(hrs) && hrs > 0) {
-      postSettings("/api/playback-settings", { mood_arc_hours: hrs });
+      void postSettings("/api/playback-settings", { mood_arc_hours: hrs }, event.currentTarget);
     }
   });
 }
 if (pbImportCues) {
-  pbImportCues.addEventListener("change", () => {
-    postSettings("/api/playback-settings", {
+  pbImportCues.addEventListener("change", (event) => {
+    void postSettings("/api/playback-settings", {
       import_external_cues: pbImportCues.checked,
-    });
+    }, event.currentTarget);
   });
 }
 if (pbBeatSyncFx) {
-  pbBeatSyncFx.addEventListener("change", () => {
-    postSettings("/api/playback-settings", {
+  pbBeatSyncFx.addEventListener("change", (event) => {
+    void postSettings("/api/playback-settings", {
       beat_sync_fx: pbBeatSyncFx.checked,
-    });
+    }, event.currentTarget);
   });
 }
 if (pbKeySyncFx) {
-  pbKeySyncFx.addEventListener("change", () => {
-    postSettings("/api/playback-settings", {
+  pbKeySyncFx.addEventListener("change", (event) => {
+    void postSettings("/api/playback-settings", {
       key_sync_fx: pbKeySyncFx.checked,
-    });
+    }, event.currentTarget);
   });
 }
 if (pbBeatmatchSkip) {
-  pbBeatmatchSkip.addEventListener("change", () => {
-    postSettings("/api/playback-settings", {
+  pbBeatmatchSkip.addEventListener("change", (event) => {
+    void postSettings("/api/playback-settings", {
       beatmatch_on_skip: pbBeatmatchSkip.checked,
-    });
+    }, event.currentTarget);
   });
 }
-pbReplayGain.addEventListener("change", () => {
-  postSettings("/api/playback-settings", { replaygain_enabled: pbReplayGain.checked });
+pbReplayGain.addEventListener("change", (event) => {
+  void postSettings("/api/playback-settings", { replaygain_enabled: pbReplayGain.checked }, event.currentTarget);
 });
-pbTransitionMode.addEventListener("change", () => {
-  postSettings("/api/playback-settings", { transition_mode: pbTransitionMode.value });
+pbTransitionMode.addEventListener("change", (event) => {
+  void postSettings("/api/playback-settings", { transition_mode: pbTransitionMode.value }, event.currentTarget);
 });
 if (pbPostQueueSeed) {
-  pbPostQueueSeed.addEventListener("change", () => {
-    postSettings("/api/playback-settings", { post_queue_seed: pbPostQueueSeed.value });
+  pbPostQueueSeed.addEventListener("change", (event) => {
+    void postSettings("/api/playback-settings", { post_queue_seed: pbPostQueueSeed.value }, event.currentTarget);
   });
 }
-keyNotation.addEventListener("change", () => {
-  postSettings("/api/playback-settings", { key_notation: keyNotation.value });
+keyNotation.addEventListener("change", (event) => {
+  void postSettings("/api/playback-settings", { key_notation: keyNotation.value }, event.currentTarget);
   // Polite live-region announce so screen-reader users hear the
   // change without having to navigate back to the now-playing card.
   // Reuses #badges-announce -- already polite + already owns key /
@@ -471,8 +597,8 @@ keyNotation.addEventListener("change", () => {
     announce.textContent = `Key notation: ${labelMap[keyNotation.value] || keyNotation.value}.`;
   }
 });
-keyPreferFlats.addEventListener("change", () => {
-  postSettings("/api/playback-settings", { key_prefer_flats: keyPreferFlats.checked });
+keyPreferFlats.addEventListener("change", (event) => {
+  void postSettings("/api/playback-settings", { key_prefer_flats: keyPreferFlats.checked }, event.currentTarget);
   const announce = document.getElementById("badges-announce");
   if (announce) {
     announce.textContent = keyPreferFlats.checked
@@ -681,37 +807,45 @@ if (audioDeviceSelect) {
     navigator.mediaDevices.addEventListener("devicechange", _refreshAudioDevices);
   }
 }
-pbCrossfade.addEventListener("change", () => {
+pbCrossfade.addEventListener("change", (event) => {
   const v = parseFloat(pbCrossfade.value);
-  if (!isNaN(v) && v >= 0) postSettings("/api/playback-settings", { crossfade_seconds: v });
+  if (!isNaN(v) && v >= 0) void postSettings(
+    "/api/playback-settings", { crossfade_seconds: v }, event.currentTarget,
+  );
 });
-pbFadeIn.addEventListener("change", () => {
+pbFadeIn.addEventListener("change", (event) => {
   const v = parseFloat(pbFadeIn.value);
-  if (!isNaN(v) && v >= 0) postSettings("/api/playback-settings", { fade_in_seconds: v });
+  if (!isNaN(v) && v >= 0) void postSettings(
+    "/api/playback-settings", { fade_in_seconds: v }, event.currentTarget,
+  );
 });
 
-function postBpmRange() {
+function postBpmRange(control) {
   const lo = parseFloat(bpmLo.value);
   const hi = parseFloat(bpmHi.value);
-  postSettings("/api/bpm-range", {
+  void postSettings("/api/bpm-range", {
     lo: isNaN(lo) ? null : lo,
     hi: isNaN(hi) ? null : hi,
-  });
+  }, control);
 }
-bpmLo.addEventListener("change", postBpmRange);
-bpmHi.addEventListener("change", postBpmRange);
+bpmLo.addEventListener("change", (event) => postBpmRange(event.currentTarget));
+bpmHi.addEventListener("change", (event) => postBpmRange(event.currentTarget));
 
-function postDiscovery() {
+function postDiscovery(control) {
   const on = discEnabled.checked;
   const v = parseInt(discEvery.value, 10);
-  postSettings("/api/discovery", { every: on && !isNaN(v) && v > 0 ? v : null });
+  void postSettings(
+    "/api/discovery",
+    { every: on && !isNaN(v) && v > 0 ? v : null },
+    control,
+  );
 }
-discEnabled.addEventListener("change", () => {
+discEnabled.addEventListener("change", (event) => {
   discEvery.disabled = !discEnabled.checked;
-  postDiscovery();
+  postDiscovery(event.currentTarget);
 });
-discEvery.addEventListener("change", () => {
-  if (discEnabled.checked) postDiscovery();
+discEvery.addEventListener("change", (event) => {
+  if (discEnabled.checked) postDiscovery(event.currentTarget);
 });
 
 // Badges moved to ./modules/badges.js.
@@ -750,7 +884,8 @@ function applyCamelotWheel(currentCell, harmonicMode) {
 // accessors.
 import {
   setVolume, applyBrowserPlaybackState, startCrossfade, stopAllDecks,
-  applyEqState, loadCoverArt, applyTransitionFx, resetTrackCaches,
+  applyEqState, loadCoverArt, applyTransitionFx,
+  resetTrackCaches, resetTransitionCaches,
   ensureAudioGraph, unlockAndPlay,
   deckActive, deckStandby, setSrcOnDeck, playOnDeck,
   postEq, eqValueLabel,
@@ -809,7 +944,7 @@ function applyWhyState(s) {
 
 // Queue (render + Up/Down/Remove buttons) moved to ./modules/queue.js.
 import {
-  applyQueueState, installQueueButtons,
+  applyQueueState, installQueueButtons, resetQueueState,
 } from "./modules/queue.js";
 
 const _queueEls = { queueList, queueCount, queueAnnounce };
@@ -846,52 +981,56 @@ function connectWS() {
   if (!authenticatedActivityActive) return;
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${proto}://${location.host}/ws`);
+  const socketEpoch = captureAuthenticatedRequestEpoch();
   _ws = ws;
 
   setConnStatus("connecting", "Connecting\u2026");
 
-  ws.onopen  = () => setConnStatus("connected", "Live");
+  ws.onopen  = () => {
+    if (_ws === ws && isAuthenticatedRequestCurrent(socketEpoch)) {
+      setConnStatus("connected", "Live");
+    }
+  };
 
   ws.onmessage = (ev) => {
+    if (_ws !== ws || !isAuthenticatedRequestCurrent(socketEpoch)) return;
     try { applyState(JSON.parse(ev.data)); } catch (_) {}
   };
 
   ws.onclose = (event) => {
     _ws = null;
-    setConnStatus("error", "Disconnected");
-    // Server gone — stop both decks immediately so audio doesn't keep
-    // playing from the buffered <audio> elements after Ctrl+C on serve.
-    stopAllDecks();
-    stopActiveLiners();
-    // Clear stale intro / outro markers so the next reconnect doesn't
-    // trigger a crossfade on a marker that no longer matches the
-    // currently-loaded track (race window during reconnect).
-    resetTrackCaches();
+    if (!authenticatedActivityActive) return;
     if (handleWebSocketAuthenticationClose(event, {
       auth,
-      onExpired: () => {
-        authenticatedActivityActive = false;
-        setConnStatus("error", "Authentication required");
-      },
+      onExpired: expireAuthenticatedSession,
     })) return;
-    if (event.code === 1006) authenticatedActivityActive = false;
-    setTimeout(() => {
+    setConnStatus("error", "Disconnected");
+    // A transient transport loss stops audible/protected activity but
+    // preserves the recoverable session projection. The auth recheck below
+    // promotes this to a full teardown only when expiry is confirmed.
+    authenticatedActivityActive = false;
+    stopProtectedPlayback();
+    invalidateReconnectAttempt();
+    const generation = reconnectGeneration;
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
       void reconnectWebSocketAfterClose({
         event,
         auth,
-        onExpired: () => {
-          authenticatedActivityActive = false;
-          setConnStatus("error", "Authentication required");
-        },
+        onExpired: () => expireAuthenticatedSession({ playbackStopped: true }),
         reconnect: () => {
-          if (event.code === 1006) authenticatedActivityActive = true;
+          if (authExpiryHandled || generation !== reconnectGeneration) return;
+          authenticatedActivityActive = true;
           connectWS();
         },
       });
     }, 3000);
   };
 
-  ws.onerror = () => setConnStatus("error", "Error");
+  ws.onerror = () => {
+    setConnStatus("error", "Error");
+    npAnnounce.textContent = "Connection error. Trying to reconnect.";
+  };
 }
 
 // ----------------------------------------------------------------
@@ -905,36 +1044,45 @@ function connectWS() {
 // the visible label honestly conveys the next action ("Play" / "Pause"
 // / "Resume"), so a toggle role would be redundant.
 btnPause.addEventListener("click", async () => {
+  const epoch = captureAuthenticatedRequestEpoch();
   // First-click unlock path \u2014 synchronous play() inside the click
   // handler is required for iOS autoplay grants.
   if (!playbackEnabled && _lastBrowserPlayback) {
     try {
-      await unlockAndPlay();
+      await withDisabled(btnPause, unlockAndPlay);
     } catch (_) { /* unlockAndPlay already announced the error */ }
     return;
   }
   // Standard transport: toggle on the server, browser deck mirrors via
   // applyBrowserPlaybackState on the next state push.
   try {
-    const res  = await fetch("/api/pause", { method: "POST" });
-    const data = await res.json();
+    const data = await withDisabled(
+      btnPause,
+      () => requestJson("/api/pause", { method: "POST" }),
+    );
+    if (!isAuthenticatedRequestCurrent(epoch)) return;
     const isPaused = data.paused;
     // A11y C2: glyph + label + aria-pressed updated together.
     btnPause.innerHTML = isPaused
       ? '<span aria-hidden="true">\u25B6</span> Resume'
       : '<span aria-hidden="true">\u23F8</span> Pause';
     btnPause.setAttribute("aria-pressed", isPaused ? "false" : "true");
-  } catch (_) { /* ignore \u2014 next WS state push will reconcile */ }
+  } catch (errorValue) {
+    if (!isAuthenticatedRequestCurrent(epoch)) return;
+    reportBackgroundRequestError(errorValue);
+    btnPause.focus();
+  }
 });
 
 // (`_lastBrowserPlayback` is declared up in the audio playback module so
 // the click handler can safely reference it before the first WS push.)
 
 btnSkip.addEventListener("click", async () => {
-  btnSkip.disabled = true;
+  const epoch = captureAuthenticatedRequestEpoch();
   // In browser-playback mode, run a client-side crossfade with the
   // current transition effect.  Falls back to plain server skip if the
   // audio context isn't running yet (user hasn't clicked Play).
+  await withDisabled(btnSkip, async () => {
   if (_lastBrowserPlayback && playbackEnabled && _ctx && _nextTrackPathCache && !crossfading) {
     // Beatmatch-on-skip: when the user opted in AND both BPMs are
     // known, pitch-shift the standby deck so the new track joins the
@@ -959,11 +1107,14 @@ btnSkip.addEventListener("click", async () => {
         try { audio.preservesPitch = prevPitch; } catch (_) {}
       }, _crossfadeSecondsCache * 1000 + 200);
     }
-    startCrossfade(_nextTrackPathCache, _crossfadeSecondsCache);
+    await startCrossfade(_nextTrackPathCache, _crossfadeSecondsCache);
   } else {
-    await fetch("/api/skip", { method: "POST" });
+    await requestJson("/api/skip", { method: "POST" });
   }
-  setTimeout(() => { btnSkip.disabled = false; }, 800);
+  }).catch((errorValue) => {
+    if (isAuthenticatedRequestCurrent(epoch)) reportBackgroundRequestError(errorValue);
+  });
+  if (isAuthenticatedRequestCurrent(epoch)) btnSkip.focus();
 });
 
 // ----------------------------------------------------------------
@@ -1001,11 +1152,7 @@ function _seekByDelta(deltaSec) {
       );
     } catch (_) {}
   }
-  fetch("/api/seek", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ delta: deltaSec }),
-  }).catch(() => {});
+  void postJsonBestEffort("/api/seek", { delta: deltaSec }, reportBackgroundRequestError);
 }
 
 function _seekToFrac(frac, opts) {
@@ -1038,11 +1185,7 @@ function _seekToFrac(frac, opts) {
   }
   // Always inform the server, even mid-drag.  The endpoint is cheap
   // and idempotent; final position wins.
-  fetch("/api/seek", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ seconds }),
-  }).catch(() => {});
+  void postJsonBestEffort("/api/seek", { seconds }, reportBackgroundRequestError);
 }
 
 if (_seekTrack) {
@@ -1091,15 +1234,37 @@ if (_seekTrack) {
 const btnShuffle = document.getElementById("btn-shuffle");
 if (btnShuffle) {
   btnShuffle.addEventListener("click", async () => {
-    btnShuffle.disabled = true;
-    await fetch("/api/random-track", { method: "POST" });
-    setTimeout(() => { btnShuffle.disabled = false; }, 800);
+    const epoch = captureAuthenticatedRequestEpoch();
+    try {
+      const state = await withDisabled(
+        btnShuffle,
+        () => requestJson("/api/random-track", { method: "POST" }),
+      );
+      if (!isAuthenticatedRequestCurrent(epoch)) return;
+      applyState(state);
+    } catch (errorValue) {
+      if (!isAuthenticatedRequestCurrent(epoch)) return;
+      reportBackgroundRequestError(errorValue);
+      btnShuffle.focus();
+    }
   });
 }
 
 btnMute.addEventListener("click", async () => {
-  const res   = await fetch("/api/mute", { method: "POST" });
-  const data  = await res.json();
+  const epoch = captureAuthenticatedRequestEpoch();
+  let data;
+  try {
+    data = await withDisabled(
+      btnMute,
+      () => requestJson("/api/mute", { method: "POST" }),
+    );
+  } catch (errorValue) {
+    if (!isAuthenticatedRequestCurrent(epoch)) return;
+    reportBackgroundRequestError(errorValue);
+    btnMute.focus();
+    return;
+  }
+  if (!isAuthenticatedRequestCurrent(epoch)) return;
   const muted = data.muted;
   btnMute.setAttribute("aria-pressed", muted ? "true" : "false");
   btnMute.innerHTML = muted
@@ -1124,6 +1289,11 @@ if (btnShortcutsClose) {
 btnDiscovery.addEventListener("click", () => {
   if (_ws && _ws.readyState === WebSocket.OPEN) {
     _ws.send(JSON.stringify({ type: "toggle_discovery" }));
+  } else {
+    reportBackgroundRequestError(
+      new Error("Discovery is unavailable while disconnected."),
+    );
+    btnDiscovery.focus();
   }
 });
 
@@ -1174,11 +1344,11 @@ volSlider.addEventListener("input", () => {
   volTimer = setTimeout(() => {
     // Send the perceptual gain (matches what we drive locally) so the
     // server-side player + WebSocket echo stay in sync with the slider.
-    fetch("/api/volume", {
+    void requestJsonBestEffort("/api/volume", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ volume: _sliderToGain(val) }),
-    });
+    }, reportBackgroundRequestError);
   }, 120);
   // Polite announce, debounced — fires only after user stops moving
   // the slider so screen readers don't read every intermediate step.
@@ -1236,10 +1406,18 @@ import {
 
 installMediaActionHandlers({
   isEnabled: authenticatedInteractionEnabled,
-  onPlay: () => {
-    if (!playbackEnabled && _lastBrowserPlayback) unlockAndPlay().catch(() => {});
-    else fetch("/api/pause", { method: "POST" });
+  onPlay: async () => {
+    if (!playbackEnabled && _lastBrowserPlayback) {
+      try {
+        await unlockAndPlay();
+      } catch (_errorValue) {
+        // unlockAndPlay owns the visible error announcement.
+      }
+      return true;
+    }
+    return false;
   },
+  onRequestError: reportBackgroundRequestError,
 });
 
 // (Legacy duplicate keydown handler removed -- the canonical hotkey
@@ -1287,6 +1465,7 @@ const _libEls = {
 // ----------------------------------------------------------------
 
 let _histPage = 1;
+const historyRequestOwner = createLatestRequestOwner();
 
 function _fmtDuration(sec) {
   const s = Math.round(sec || 0);
@@ -1301,10 +1480,12 @@ function _fmtTime(iso) {
 
 async function fetchHistory(page) {
   _histPage = page;
+  const request = historyRequestOwner.begin();
   try {
-    const r = await fetch(`/api/history?page=${page}&per_page=50`);
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const data = await r.json();
+    const data = await requestJson(`/api/history?page=${page}&per_page=50`, {
+      signal: request.signal,
+    });
+    if (!historyRequestOwner.isCurrent(request)) return;
     const tbody = document.getElementById("history-tbody");
     const table = document.getElementById("history-table");
     const empty = document.getElementById("history-empty");
@@ -1331,8 +1512,20 @@ async function fetchHistory(page) {
     document.getElementById("hist-next").disabled = data.page >= data.pages;
     pag.removeAttribute("hidden");
   } catch (err) {
+    if (!historyRequestOwner.isCurrent(request)) return;
+    const tbody = document.getElementById("history-tbody");
+    const table = document.getElementById("history-table");
+    const pag = document.getElementById("history-pagination");
     const empty = document.getElementById("history-empty");
-    if (empty) empty.textContent = `Could not load history: ${err.message}`;
+    if (tbody) tbody.replaceChildren();
+    if (table) table.setAttribute("hidden", "");
+    if (pag) pag.setAttribute("hidden", "");
+    if (empty) {
+      empty.textContent = `Could not load history: ${err.message}`;
+      empty.removeAttribute("hidden");
+    }
+  } finally {
+    historyRequestOwner.finish(request);
   }
 }
 
@@ -1407,18 +1600,23 @@ function stopActiveLiners() {
 function startAuthenticatedApp(initialState) {
   if (authenticatedAppStarted) return;
   authenticatedAppStarted = true;
+  authExpiryHandled = false;
   authenticatedActivityActive = true;
   installLibraryJobs(_libEls);
   // Audio dependencies are owned by the audio engine. Inject closures
   // that read its live bindings and stop liner playback after auth expiry.
   installLiners(_linerEls, {
-    postSettings: (url, body) => postSettings(url, body),
+    postSettings: (url, body, control) => postSettings(url, body, control),
     canPlay: () => authenticatedActivityActive && !!_ctx && !!_lastBrowserPlayback,
-    playLiner: async (arrayBuf, duckDb) => {
-      if (!authenticatedInteractionEnabled() || !_ctx) return false;
+    playLiner: async (
+      arrayBuf, duckDb, epoch = captureAuthenticatedRequestEpoch(),
+    ) => {
+      if (!authenticatedInteractionEnabled() || !_ctx
+          || !isAuthenticatedRequestCurrent(epoch)) return false;
       const audioContext = _ctx;
       const audioBuf = await audioContext.decodeAudioData(arrayBuf);
-      if (!authenticatedInteractionEnabled() || _ctx !== audioContext) return false;
+      if (!authenticatedInteractionEnabled() || _ctx !== audioContext
+          || !isAuthenticatedRequestCurrent(epoch)) return false;
       const src = audioContext.createBufferSource();
       src.buffer = audioBuf;
       const gain = audioContext.createGain();
@@ -1455,12 +1653,10 @@ void bootstrapAuthenticatedApp({
 
 // Footer build stamp.  Static populate-once -- no live region, no WS
 // subscription; the stamp is reference data, not a status update.
-// Failure is silent: footer keeps its placeholder so the page never
-// looks broken when /api/version is unreachable (offline cache, etc.).
-fetch("/api/version", { cache: "no-cache" })
-  .then((r) => (r.ok ? r.json() : null))
+// On failure the footer says Unavailable and the shared reporter exposes
+// the transport error instead of leaving a misleading placeholder.
+requestJson("/api/version", { cache: "no-cache" })
   .then((d) => {
-    if (!d) return;
     const setText = (id, value) => {
       const el = document.getElementById(id);
       if (el && value) el.textContent = value;
@@ -1475,4 +1671,8 @@ fetch("/api/version", { cache: "no-cache" })
       t.textContent = d.built_at;
     }
   })
-  .catch(() => {});
+  .catch((errorValue) => {
+    const version = document.getElementById("ver-version");
+    if (version) version.textContent = "Unavailable";
+    reportBackgroundRequestError(errorValue);
+  });

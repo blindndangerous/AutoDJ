@@ -8,27 +8,75 @@
 
 import { escHtml, dbg } from "./dom-helpers.js";
 import { applyShowWhen } from "./show-when.js";
+import {
+  captureAuthenticatedRequestEpoch,
+  isAuthenticatedRequestCurrent,
+  requestJson,
+  withDisabled,
+} from "./api-client.js";
 
 let _lastPresetOptionsKey = "";
 let _libraryWarned = false;
+const _controlDefaults = new WeakMap();
 
-export async function postSettings(url, body, { settingsStatus } = {}) {
+function rememberControlDefaults(els) {
+  for (const control of Object.values(els)) {
+    if (!control || _controlDefaults.has(control)) continue;
+    _controlDefaults.set(control, {
+      checked: control.defaultChecked,
+      disabled: control.disabled,
+      selectedIndex: control.selectedIndex,
+      value: control.defaultValue,
+    });
+  }
+}
+
+export function resetSettingsState(els) {
+  rememberControlDefaults(els);
+  for (const control of Object.values(els)) {
+    if (!control) continue;
+    const defaults = _controlDefaults.get(control);
+    if (control === els.presetSelect) {
+      control.innerHTML = '<option value="">(none)</option>';
+      control.value = "";
+    } else if (control.tagName === "INPUT") {
+      if (control.type === "checkbox" || control.type === "radio") {
+        control.checked = defaults.checked;
+      } else {
+        control.value = defaults.value;
+      }
+    } else if (control.tagName === "SELECT") {
+      control.selectedIndex = defaults.selectedIndex;
+    }
+    control.disabled = defaults.disabled;
+  }
+  _lastPresetOptionsKey = "";
+  _libraryWarned = false;
+  applyShowWhen();
+}
+
+export async function postSettings(url, body, { settingsStatus, control } = {}) {
+  const epoch = captureAuthenticatedRequestEpoch();
   try {
-    const res = await fetch(url, {
+    await withDisabled(control, () => requestJson(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    }));
+    if (!isAuthenticatedRequestCurrent(epoch)) return false;
+    return true;
   } catch (err) {
+    if (!isAuthenticatedRequestCurrent(epoch)) return false;
     if (settingsStatus) {
       settingsStatus.textContent = `Could not save: ${err.message}`;
       setTimeout(() => { settingsStatus.textContent = ""; }, 4000);
     }
+    return false;
   }
 }
 
 export function applySettingsState(st, els) {
+  rememberControlDefaults(els);
   const {
     presetSelect, transitionSelect,
     harmonicMode,

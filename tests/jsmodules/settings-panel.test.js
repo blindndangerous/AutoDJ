@@ -5,8 +5,8 @@
 // "els is undefined", which the /api/status .catch then mislabelled as
 // "Cannot reach server: els is undefined" even when the server was alive.
 
-import { describe, it, expect, beforeEach } from "vitest";
-import { applySettingsState } from
+import { describe, it, expect, beforeEach, vi } from "vitest";
+import { applySettingsState, postSettings } from
   "../../src/autodj/static/modules/settings-panel.js";
 
 function makeEls() {
@@ -112,5 +112,25 @@ describe("applySettingsState", () => {
     expect(els.pbCrossfade.value).toBe("6");
     expect(els.discEnabled.checked).toBe(true);
     expect(els.discEvery.value).toBe("5");
+  });
+});
+
+describe("postSettings", () => {
+  it("returns false, announces failure, and restores the initiating control", async () => {
+    const settingsStatus = document.createElement("p");
+    const control = document.createElement("select");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new globalThis.Response(
+      JSON.stringify({ detail: "Settings locked" }),
+      { status: 423, headers: { "Content-Type": "application/json" } },
+    )));
+
+    await expect(postSettings("/api/preset", { name: "party" }, {
+      settingsStatus,
+      control,
+    })).resolves.toBe(false);
+    expect(settingsStatus.textContent).toContain("Could not save");
+    expect(settingsStatus.textContent).toContain("Settings locked");
+    expect(control.disabled).toBe(false);
+    vi.unstubAllGlobals();
   });
 });

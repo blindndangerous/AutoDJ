@@ -1,6 +1,8 @@
 // Media Session API: OS media keys, lock-screen art, and the
 // notification-shade transport pill on Chromium / WebKit / Firefox.
 
+import { requestJsonBestEffort } from "./api-client.js";
+
 export function updateMediaSession(s) {
   if (!("mediaSession" in navigator)) return;
   const t = s.current_track;
@@ -38,21 +40,41 @@ export function installMediaActionHandlers({
   isEnabled = () => true,
   onPlay,
   onPauseOrSkipNext,
+  onRequestError,
 } = {}) {
   if (!("mediaSession" in navigator)) return;
-  navigator.mediaSession.setActionHandler("play", () => {
+  if (typeof onRequestError !== "function") {
+    throw new TypeError("installMediaActionHandlers requires onRequestError");
+  }
+  const fallback = (url) => requestJsonBestEffort(
+    url, { method: "POST" }, onRequestError,
+  );
+  navigator.mediaSession.setActionHandler("play", async () => {
     if (!isEnabled()) return;
-    if (typeof onPlay === "function") onPlay();
-    else fetch("/api/pause", { method: "POST" });
+    let handled;
+    try {
+      handled = typeof onPlay === "function" ? await onPlay() : false;
+    } catch (errorValue) {
+      onRequestError(errorValue);
+      return;
+    }
+    if (handled !== true) void fallback("/api/pause");
   });
   navigator.mediaSession.setActionHandler("pause", () => {
     if (!isEnabled()) return;
-    fetch("/api/pause", { method: "POST" });
+    void fallback("/api/pause");
   });
-  navigator.mediaSession.setActionHandler("nexttrack", () => {
+  navigator.mediaSession.setActionHandler("nexttrack", async () => {
     if (!isEnabled()) return;
-    if (typeof onPauseOrSkipNext === "function") onPauseOrSkipNext();
-    else fetch("/api/skip", { method: "POST" });
+    if (typeof onPauseOrSkipNext !== "function") {
+      void fallback("/api/skip");
+      return;
+    }
+    try {
+      await onPauseOrSkipNext();
+    } catch (errorValue) {
+      onRequestError(errorValue);
+    }
   });
   navigator.mediaSession.setActionHandler("previoustrack", null);
 }

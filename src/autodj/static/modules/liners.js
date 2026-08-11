@@ -8,6 +8,13 @@
 import { escHtml, dbg } from "./dom-helpers.js";
 import { clearLiveRegionLater } from "./live-region.js";
 import { applyShowWhen } from "./show-when.js";
+import {
+  captureAuthenticatedRequestEpoch,
+  isAuthenticatedRequestCurrent,
+  requestBinary,
+  requestJson,
+  withDisabled,
+} from "./api-client.js";
 
 const state = {
   lib: { folder: "", files: [], config: {} },
@@ -47,10 +54,10 @@ function _setStatus(els, msg) {
 }
 
 async function _refreshLibrary(els) {
+  const epoch = captureAuthenticatedRequestEpoch();
   try {
-    const resp = await fetch("/api/liners");
-    if (!resp.ok) return;
-    const body = await resp.json();
+    const body = await requestJson("/api/liners");
+    if (!isAuthenticatedRequestCurrent(epoch)) return;
     state.lib = body;
     if (els.lnFolderDisplay) {
       els.lnFolderDisplay.textContent = "Folder: " + (body.folder || "—");
@@ -65,7 +72,7 @@ async function _refreshLibrary(els) {
         btn.type = "button";
         btn.innerHTML = '<span aria-hidden="true">Delete</span>' +
           `<span class="visually-hidden"> ${escHtml(name)}</span>`;
-        btn.addEventListener("click", () => _deleteLiner(els, name));
+        btn.addEventListener("click", () => void _deleteLiner(els, name, btn));
         li.appendChild(text);
         li.appendChild(document.createTextNode(" "));
         li.appendChild(btn);
@@ -89,30 +96,32 @@ async function _refreshLibrary(els) {
     sync(els.lnDuckDb,    c.duck_db != null ? c.duck_db : -12);
     applyShowWhen();
   } catch (err) {
+    if (!isAuthenticatedRequestCurrent(epoch)) return;
     dbg("liner refresh failed:", err);
+    _setStatus(els, `Could not load liners: ${err.message}`);
   }
 }
 
-async function _deleteLiner(els, name) {
+async function _deleteLiner(els, name, control) {
   if (!confirm(`Delete liner "${name}"?`)) return;
+  const epoch = captureAuthenticatedRequestEpoch();
   try {
-    const resp = await fetch(
+    await withDisabled(control, () => requestJson(
       `/api/liners/file/${encodeURIComponent(name)}`,
       { method: "DELETE" },
-    );
-    if (!resp.ok) {
-      _setStatus(els, `Delete failed: HTTP ${resp.status}`);
-      return;
-    }
+    ));
+    if (!isAuthenticatedRequestCurrent(epoch)) return;
     _setStatus(els, `Deleted ${name}`);
     await _refreshLibrary(els);
   } catch (err) {
+    if (!isAuthenticatedRequestCurrent(epoch)) return;
     _setStatus(els, `Delete failed: ${err.message}`);
+    control?.focus();
   }
 }
 
-function _postConfig(els, postSettings) {
-  postSettings("/api/playback-settings", {
+function _postConfig(els, postSettings, control) {
+  void postSettings("/api/playback-settings", {
     liners_enabled:            !!(els.lnEnabled && els.lnEnabled.checked),
     liners_every_n_songs:      _intOrNull(els.lnEveryN),
     liners_every_minutes:      _floatOrNull(els.lnEveryMin),
@@ -120,7 +129,7 @@ function _postConfig(els, postSettings) {
     liners_random_max_minutes: _floatOrNull(els.lnRandMax),
     liners_pick_mode:          els.lnPickMode ? els.lnPickMode.value : "random",
     liners_duck_db:            _floatOrNull(els.lnDuckDb),
-  });
+  }, control);
 }
 
 function _pickLiner() {
@@ -145,18 +154,14 @@ function _rollRandomTarget() {
 }
 
 async function _playByName(els, deps, name) {
+  const epoch = captureAuthenticatedRequestEpoch();
   try {
     if (!deps.canPlay()) return;
-    const resp = await fetch(`/api/liners/file/${encodeURIComponent(name)}`);
-    if (!deps.canPlay()) return;
-    if (!resp.ok) {
-      _setStatus(els, `Liner fetch failed: HTTP ${resp.status}`);
-      return;
-    }
-    const buf = await resp.arrayBuffer();
-    if (!deps.canPlay()) return;
+    const buf = await requestBinary(`/api/liners/file/${encodeURIComponent(name)}`);
+    if (!deps.canPlay() || !isAuthenticatedRequestCurrent(epoch)) return;
     const duckDb = (state.lib.config && state.lib.config.duck_db) || -12;
-    const ok = await deps.playLiner(buf, duckDb);
+    const ok = await deps.playLiner(buf, duckDb, epoch);
+    if (!isAuthenticatedRequestCurrent(epoch)) return;
     if (!ok) {
       _setStatus(els, "Liner playback skipped (audio context not ready).");
       return;
@@ -166,15 +171,17 @@ async function _playByName(els, deps, name) {
     state.randomTarget = _rollRandomTarget();
     _setStatus(els, `Liner playing: ${name}`);
   } catch (err) {
+    if (!isAuthenticatedRequestCurrent(epoch)) return;
     _setStatus(els, `Liner playback failed: ${err.message}`);
   }
 }
 
 export function installLiners(els, deps) {
   state.lastFireAt = _now();
+  let scheduledPlayback = null;
 
   if (els.lnUploadSubmit) {
-    els.lnUploadSubmit.addEventListener("click", async () => {
+    els.lnUploadSubmit.addEventListener("click", async (event) => {
       if (!els.lnUpload || !els.lnUpload.files || els.lnUpload.files.length === 0) {
         _setStatus(els, "Pick a file first.");
         return;
@@ -183,17 +190,17 @@ export function installLiners(els, deps) {
       const fd = new FormData();
       fd.append("file", f, f.name);
       _setStatus(els, `Uploading ${f.name}...`);
+      const epoch = captureAuthenticatedRequestEpoch();
       try {
-        const resp = await fetch("/api/liners/upload", { method: "POST", body: fd });
-        if (!resp.ok) {
-          const detail = await resp.text();
-          _setStatus(els, `Upload failed: ${detail}`);
-          return;
-        }
+        await withDisabled(event.currentTarget, () => requestJson(
+          "/api/liners/upload", { method: "POST", body: fd },
+        ));
+        if (!isAuthenticatedRequestCurrent(epoch)) return;
         _setStatus(els, `Uploaded ${f.name}`);
         els.lnUpload.value = "";
         await _refreshLibrary(els);
       } catch (err) {
+        if (!isAuthenticatedRequestCurrent(epoch)) return;
         _setStatus(els, `Upload failed: ${err.message}`);
       }
     });
@@ -204,17 +211,19 @@ export function installLiners(els, deps) {
     els.lnRandMin, els.lnRandMax, els.lnPickMode, els.lnDuckDb,
   ]) {
     if (!el) continue;
-    el.addEventListener("change", () => _postConfig(els, deps.postSettings));
+    el.addEventListener("change", (event) => {
+      _postConfig(els, deps.postSettings, event.currentTarget);
+    });
   }
 
   if (els.lnTestBtn) {
-    els.lnTestBtn.addEventListener("click", async () => {
+    els.lnTestBtn.addEventListener("click", async (event) => {
       const name = _pickLiner();
       if (!name) {
         _setStatus(els, "No liner files in folder.");
         return;
       }
-      await _playByName(els, deps, name);
+      await withDisabled(event.currentTarget, () => _playByName(els, deps, name));
     });
   }
 
@@ -228,14 +237,18 @@ export function installLiners(els, deps) {
     if (c.every_n_songs && state.trackCount >= c.every_n_songs) fire = true;
     if (c.every_minutes && minsSince >= c.every_minutes) fire = true;
     if (state.randomTarget != null && minsSince >= state.randomTarget) fire = true;
-    if (fire) {
+    if (fire && !scheduledPlayback) {
       const name = _pickLiner();
-      if (name) _playByName(els, deps, name);
+      if (name) {
+        scheduledPlayback = _playByName(els, deps, name).finally(() => {
+          scheduledPlayback = null;
+        });
+      }
     }
   }, 1000);
 
   // Initial fetch + reapply hidden state on load.
-  _refreshLibrary(els);
+  void _refreshLibrary(els);
 }
 
 // Bumps the every_n_songs counter when the WS state surfaces a new

@@ -1,3 +1,8 @@
+import {
+  AuthenticationRequiredError,
+  requestJson,
+} from "./api-client.js";
+
 const bootstrapRuns = new WeakMap();
 
 function loginFailureMessage(response) {
@@ -136,6 +141,7 @@ function validAuthState(value) {
 
 async function runBootstrap({
   fetchImpl,
+  requestState,
   auth,
   startAuthenticatedApp,
   onError,
@@ -159,19 +165,12 @@ async function runBootstrap({
       return false;
     }
 
-    const stateResponse = await fetchImpl("/api/status");
-    if (stateResponse.status === 401) {
-      auth.show();
-      return false;
-    }
-    if (!stateResponse.ok) {
-      throw new Error(`/api/status returned ${stateResponse.status}`);
-    }
-    const initialState = await stateResponse.json();
+    const initialState = await requestState("/api/status");
     startupState.attempted = true;
     startAuthenticatedApp(initialState);
     return true;
   } catch (errorValue) {
+    if (errorValue instanceof AuthenticationRequiredError) return false;
     onError(errorValue);
     return false;
   }
@@ -179,6 +178,7 @@ async function runBootstrap({
 
 export function bootstrapAuthenticatedApp({
   fetchImpl = fetch,
+  requestState = requestJson,
   auth,
   startAuthenticatedApp,
   onError = () => {},
@@ -189,6 +189,7 @@ export function bootstrapAuthenticatedApp({
   const startupState = { attempted: false };
   const run = runBootstrap({
     fetchImpl,
+    requestState,
     auth,
     startAuthenticatedApp,
     onError,

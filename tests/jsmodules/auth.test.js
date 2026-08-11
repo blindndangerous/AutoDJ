@@ -8,6 +8,8 @@ import {
   handleWebSocketAuthenticationClose,
   initAuthDialog,
 } from "../../src/autodj/static/modules/auth.js";
+import { AuthenticationRequiredError } from
+  "../../src/autodj/static/modules/api-client.js";
 
 function installDialogMarkup() {
   document.body.innerHTML = `<dialog id="auth-dialog"
@@ -43,8 +45,11 @@ function response({ ok, status, json, retryAfter } = {}) {
     status,
     json: vi.fn().mockResolvedValue(json),
     headers: {
-      get: vi.fn((name) =>
-        name.toLowerCase() === "retry-after" ? retryAfter ?? null : null),
+      get: vi.fn((name) => {
+        if (name.toLowerCase() === "retry-after") return retryAfter ?? null;
+        if (name.toLowerCase() === "content-type") return "application/json";
+        return null;
+      }),
     },
   };
 }
@@ -241,6 +246,29 @@ describe("initAuthDialog", () => {
 });
 
 describe("bootstrapAuthenticatedApp", () => {
+  it("uses requestState for protected bootstrap and treats auth expiry as recoverable", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(response({
+      ok: true,
+      status: 200,
+      json: { required: true, authenticated: true },
+    }));
+    const requestState = vi.fn().mockRejectedValue(
+      new AuthenticationRequiredError(),
+    );
+    const onError = vi.fn();
+
+    await expect(bootstrapAuthenticatedApp({
+      fetchImpl,
+      requestState,
+      auth: { show: vi.fn() },
+      startAuthenticatedApp: vi.fn(),
+      onError,
+    })).resolves.toBe(false);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(requestState).toHaveBeenCalledWith("/api/status");
+    expect(onError).not.toHaveBeenCalled();
+  });
+
   it("starts no protected work while authentication is required", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(response({
       ok: true,
@@ -265,16 +293,16 @@ describe("bootstrapAuthenticatedApp", () => {
 
   it("fetches initial state then starts authenticated work exactly once", async () => {
     const initialState = { paused: false };
-    const fetchImpl = vi.fn()
-      .mockResolvedValueOnce(response({
-        ok: true,
-        status: 200,
-        json: { required: true, authenticated: true },
-      }))
-      .mockResolvedValueOnce(response({ ok: true, status: 200, json: initialState }));
+    const fetchImpl = vi.fn().mockResolvedValue(response({
+      ok: true,
+      status: 200,
+      json: { required: true, authenticated: true },
+    }));
+    const requestState = vi.fn().mockResolvedValue(initialState);
     const startAuthenticatedApp = vi.fn();
     const args = {
       fetchImpl,
+      requestState,
       auth: { show: vi.fn() },
       startAuthenticatedApp,
     };
@@ -286,10 +314,10 @@ describe("bootstrapAuthenticatedApp", () => {
     const third = await bootstrapAuthenticatedApp(args);
 
     expect([first, second, third]).toEqual([true, true, true]);
-    expect(fetchImpl.mock.calls.map((call) => call[0])).toEqual([
-      "/api/auth/status",
-      "/api/status",
-    ]);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(fetchImpl).toHaveBeenCalledWith("/api/auth/status");
+    expect(requestState).toHaveBeenCalledOnce();
+    expect(requestState).toHaveBeenCalledWith("/api/status");
     expect(startAuthenticatedApp).toHaveBeenCalledOnce();
     expect(startAuthenticatedApp).toHaveBeenCalledWith(initialState);
   });
@@ -323,25 +351,24 @@ describe("bootstrapAuthenticatedApp", () => {
       expect(onError).toHaveBeenCalledOnce();
     });
 
-  it("reopens login when initial protected state returns 401", async () => {
-    const fetchImpl = vi.fn()
-      .mockResolvedValueOnce(response({
-        ok: true,
-        status: 200,
-        json: { required: true, authenticated: true },
-      }))
-      .mockResolvedValueOnce(response({ ok: false, status: 401 }));
+  it("suppresses startup when the shared protected request reports auth expiry", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(response({
+      ok: true,
+      status: 200,
+      json: { required: true, authenticated: true },
+    }));
+    const requestState = vi.fn().mockRejectedValue(new AuthenticationRequiredError());
     const auth = { show: vi.fn() };
     const startAuthenticatedApp = vi.fn();
 
     const started = await bootstrapAuthenticatedApp({
       fetchImpl,
+      requestState,
       auth,
       startAuthenticatedApp,
     });
 
     expect(started).toBe(false);
-    expect(auth.show).toHaveBeenCalledOnce();
     expect(startAuthenticatedApp).not.toHaveBeenCalled();
   });
 
@@ -354,15 +381,13 @@ describe("bootstrapAuthenticatedApp", () => {
         status: 200,
         json: { required: true, authenticated: true },
       }))
-      .mockResolvedValueOnce(response({
-        ok: true,
-        status: 200,
-        json: initialState,
-      }));
+      ;
+    const requestState = vi.fn().mockResolvedValue(initialState);
     const startAuthenticatedApp = vi.fn();
     const onError = vi.fn();
     const args = {
       fetchImpl,
+      requestState,
       auth: { show: vi.fn() },
       startAuthenticatedApp,
       onError,
@@ -375,24 +400,19 @@ describe("bootstrapAuthenticatedApp", () => {
     expect(fetchImpl.mock.calls.map((call) => call[0])).toEqual([
       "/api/auth/status",
       "/api/auth/status",
-      "/api/status",
     ]);
+    expect(requestState).toHaveBeenCalledWith("/api/status");
     expect(startAuthenticatedApp).toHaveBeenCalledOnce();
     expect(startAuthenticatedApp).toHaveBeenCalledWith(initialState);
   });
 
   it("does not retry a callback that threw after startup was attempted", async () => {
-    const fetchImpl = vi.fn()
-      .mockResolvedValueOnce(response({
-        ok: true,
-        status: 200,
-        json: { required: true, authenticated: true },
-      }))
-      .mockResolvedValueOnce(response({
-        ok: true,
-        status: 200,
-        json: { paused: false },
-      }));
+    const fetchImpl = vi.fn().mockResolvedValue(response({
+      ok: true,
+      status: 200,
+      json: { required: true, authenticated: true },
+    }));
+    const requestState = vi.fn().mockResolvedValue({ paused: false });
     const startAuthenticatedApp = vi.fn()
       .mockImplementationOnce(() => {
         throw new Error("partial startup");
@@ -400,6 +420,7 @@ describe("bootstrapAuthenticatedApp", () => {
       .mockImplementationOnce(() => {});
     const args = {
       fetchImpl,
+      requestState,
       auth: { show: vi.fn() },
       startAuthenticatedApp,
       onError: vi.fn(),
@@ -408,7 +429,8 @@ describe("bootstrapAuthenticatedApp", () => {
     expect(await bootstrapAuthenticatedApp(args)).toBe(false);
     expect(await bootstrapAuthenticatedApp(args)).toBe(false);
     expect(startAuthenticatedApp).toHaveBeenCalledOnce();
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(requestState).toHaveBeenCalledOnce();
   });
 });
 
@@ -545,6 +567,7 @@ describe("protected global callbacks", () => {
       isEnabled: () => false,
       onPlay,
       onPauseOrSkipNext,
+      onRequestError: vi.fn(),
     });
 
     handlers.play();
@@ -616,6 +639,7 @@ describe("app startup integration", () => {
       playOnDeck: vi.fn(),
       postEq: vi.fn(),
       resetTrackCaches: vi.fn(),
+      resetTransitionCaches: vi.fn(),
       setApplyState: vi.fn(),
       setLastBrowserPlayback: vi.fn(),
       setSrcOnDeck: vi.fn(),
@@ -759,6 +783,7 @@ describe("app startup integration", () => {
       playOnDeck: vi.fn(),
       postEq: vi.fn(),
       resetTrackCaches: vi.fn(),
+      resetTransitionCaches: vi.fn(),
       setApplyState: vi.fn(),
       setLastBrowserPlayback: vi.fn(),
       setSrcOnDeck: vi.fn(),
