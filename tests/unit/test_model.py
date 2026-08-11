@@ -11,6 +11,7 @@ import os
 import socket
 import sys
 import threading
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -422,45 +423,47 @@ class TestModelCacheInspection:
             in model_cache_path(first, index_config).name
         )
 
-    @pytest.mark.timeout(600)
+    @pytest.mark.timeout(120)
     def test_process_lock_blocks_independent_holder(self, tmp_path: Path) -> None:
-        from autodj.model import _model_cache_lock
-
         context = multiprocessing.get_context("spawn")
-        ready = context.Event()
+        holder_ready = context.Event()
         release = context.Event()
+        waiter_entered = context.Event()
+        waiter_acquired = context.Event()
         cache = tmp_path / "cache"
-        holder = context.Process(target=_hold_model_cache_lock, args=(str(cache), ready, release))
-        acquired = threading.Event()
-
-        def acquire() -> None:
-            with _model_cache_lock(cache):
-                acquired.set()
-
-        waiter = threading.Thread(target=acquire, daemon=True)
+        holder = context.Process(
+            target=_hold_model_cache_lock, args=(str(cache), holder_ready, release)
+        )
+        waiter = context.Process(
+            target=_wait_for_model_cache_lock,
+            args=(str(cache), waiter_entered, waiter_acquired),
+        )
+        deadline = time.monotonic() + 90
         try:
             holder.start()
-            for _ in range(180):
-                if ready.wait(1) or not holder.is_alive():
-                    break
-            assert ready.is_set()
+            assert holder_ready.wait(max(0.0, deadline - time.monotonic()))
+            assert holder.is_alive()
             waiter.start()
-            assert not acquired.wait(0.2)
+            assert waiter_entered.wait(max(0.0, deadline - time.monotonic()))
+            assert waiter.is_alive()
+            assert not waiter_acquired.wait(0.2)
         finally:
             release.set()
-            if holder.pid is not None:
-                holder.join(60)
-                if holder.is_alive():
-                    holder.terminate()
-                    holder.join(60)
-                if holder.is_alive():
-                    holder.kill()
-                    holder.join(60)
-            if waiter.ident is not None:
-                waiter.join(60)
+            for process in (holder, waiter):
+                if process.pid is None:
+                    continue
+                process.join(min(10.0, max(0.0, deadline - time.monotonic())))
+                if process.is_alive():
+                    process.terminate()
+                    process.join(min(10.0, max(0.0, deadline - time.monotonic())))
+                if process.is_alive():
+                    process.kill()
+                    process.join(max(0.0, deadline - time.monotonic()))
         assert holder.exitcode == 0
+        assert waiter.exitcode == 0
+        assert not holder.is_alive()
         assert not waiter.is_alive()
-        assert acquired.is_set()
+        assert waiter_acquired.is_set()
 
     def test_fork_reset_rebinds_guard_held_by_parent(self, tmp_path: Path) -> None:
         import autodj.model as model
@@ -670,51 +673,6 @@ class TestModelCacheSymlinks:
         ):
             download_model_if_needed(model_config_auto, index_config)
         assert outside.read_text(encoding="utf-8") == "keep"
-
-
-@pytest.mark.timeout(600)
-def test_process_waiter_is_entered_and_blocked_until_holder_releases(tmp_path: Path) -> None:
-    context = multiprocessing.get_context("spawn")
-    cache = tmp_path / "cache"
-    holder_ready = context.Event()
-    release = context.Event()
-    waiter_entered = context.Event()
-    waiter_acquired = context.Event()
-    holder = context.Process(
-        target=_hold_model_cache_lock, args=(str(cache), holder_ready, release)
-    )
-    waiter = context.Process(
-        target=_wait_for_model_cache_lock, args=(str(cache), waiter_entered, waiter_acquired)
-    )
-    try:
-        holder.start()
-        for _ in range(180):
-            if holder_ready.wait(1) or not holder.is_alive():
-                break
-        assert holder_ready.is_set()
-        waiter.start()
-        for _ in range(180):
-            if waiter_entered.wait(1) or not waiter.is_alive():
-                break
-        assert waiter_entered.is_set()
-        assert not waiter_acquired.wait(0.2)
-    finally:
-        release.set()
-        for process in (holder, waiter):
-            if process.pid is None:
-                continue
-            process.join(60)
-            if process.is_alive():
-                process.terminate()
-                process.join(60)
-            if process.is_alive():
-                process.kill()
-                process.join(60)
-    assert holder.exitcode == 0
-    assert waiter.exitcode == 0
-    assert not holder.is_alive()
-    assert not waiter.is_alive()
-    assert waiter_acquired.is_set()
 
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="requires POSIX fork")
