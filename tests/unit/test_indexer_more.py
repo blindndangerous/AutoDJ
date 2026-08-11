@@ -596,6 +596,17 @@ class TestIndexerExtract:
         )
         assert _estimate_key_from_chroma(noisy) == (-1, -1)
 
+    def test_key_estimation_rejects_negative_chroma_bins(self) -> None:
+        import numpy as np
+
+        from autodj.indexer import _estimate_key_from_chroma
+
+        invalid = np.array(
+            [6.35, -0.50, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88],
+            dtype=np.float32,
+        )
+        assert _estimate_key_from_chroma(invalid) == (-1, -1)
+
     def test_extract_returns_estimated_bpm_metadata(self) -> None:
         from pathlib import Path
         from unittest.mock import patch
@@ -636,6 +647,32 @@ class TestIndexerExtract:
         assert meta["bpm"] == 123.0
         assert meta["key"] == 0
         assert meta["mode"] == 1
+
+    @pytest.mark.parametrize("invalid_tempo", [np.nan, np.inf, -1.0, 0.0])
+    def test_invalid_tempo_has_zero_bpm_and_confidence(self, invalid_tempo: float) -> None:
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import numpy as np
+
+        from autodj import indexer
+
+        with patch.object(indexer, "_load_audio") as load, patch.object(indexer, "librosa") as lib:
+            load.return_value = (np.ones(22050, dtype=np.float32), 22050)
+            lib.feature.rms.return_value = np.array([[0.5]])
+            lib.feature.spectral_centroid.return_value = np.array([[1000.0]])
+            lib.feature.zero_crossing_rate.return_value = np.array([[0.1]])
+            lib.feature.chroma_stft.return_value = np.ones((12, 4), dtype=np.float32)
+            lib.onset.onset_strength.return_value = np.array([0.5])
+            lib.beat.beat_track.return_value = (
+                np.array([invalid_tempo]),
+                np.array([0, 10]),
+            )
+
+            _, _, _, meta = indexer._extract_librosa_features(Path("dummy.flac"))
+
+        assert meta["bpm"] == 0.0
+        assert meta["tempo_confidence"] == 0.0
 
     def test_tempo_confidence_exception_fallback(self) -> None:
         """beat_track raising means tempo_confidence falls back to 0.0."""
@@ -708,3 +745,15 @@ def test_index_entry_prefers_tag_bpm_and_falls_back_to_estimate() -> None:
 
     assert tagged.bpm == 128.0
     assert unknown.bpm == 121.5
+
+
+@pytest.mark.parametrize("tag_bpm", [np.nan, np.inf, -np.inf])
+def test_index_entry_treats_nonfinite_tag_bpm_as_unknown(tag_bpm: float) -> None:
+    from autodj.indexer import _apply_analysis_metadata
+
+    entry = _entry(bpm=tag_bpm)
+    meta = {"energy": 0.4, "key": 9, "mode": 0, "tempo_confidence": 0.8, "bpm": 121.5}
+
+    _apply_analysis_metadata(entry, meta)
+
+    assert entry.bpm == 121.5

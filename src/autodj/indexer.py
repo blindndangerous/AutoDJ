@@ -699,7 +699,12 @@ _MINOR_KEY_PROFILE = np.array(
 def _estimate_key_from_chroma(chroma: np.ndarray) -> tuple[int, int]:
     """Return ``(pitch_class, mode)`` or ``(-1, -1)`` when evidence is unusable."""
     values = np.asarray(chroma, dtype=np.float32).reshape(-1)
-    if values.shape != (12,) or not np.isfinite(values).all() or float(values.sum()) <= 1e-6:
+    if (
+        values.shape != (12,)
+        or not np.isfinite(values).all()
+        or np.any(values < 0)
+        or float(values.sum()) <= 1e-6
+    ):
         return (-1, -1)
     peak_share = float(values.max() / values.sum())
     if peak_share < 0.12:
@@ -729,8 +734,9 @@ def _apply_analysis_metadata(entry: IndexEntry, extra_meta: dict[str, float | in
     entry.key = int(extra_meta["key"])
     entry.mode = int(extra_meta["mode"])
     entry.tempo_confidence = float(extra_meta["tempo_confidence"])
-    if entry.bpm <= 0.0 and float(extra_meta["bpm"]) > 0.0:
-        entry.bpm = float(extra_meta["bpm"])
+    estimated_bpm = float(extra_meta["bpm"])
+    if (not np.isfinite(entry.bpm) or entry.bpm <= 0.0) and estimated_bpm > 0.0:
+        entry.bpm = estimated_bpm
 
 
 def _extract_librosa_features(
@@ -793,9 +799,11 @@ def _extract_librosa_features(
             tempo_val = float(np.atleast_1d(tempo_arr)[0])
             if not np.isfinite(tempo_val) or tempo_val <= 0:
                 tempo_val = 0.0
-            duration_sec = len(audio) / max(1, sr)
-            expected = (tempo_val / 60.0) * duration_sec
-            tempo_confidence = float(min(1.0, len(beat_frames) / max(1.0, expected)))
+                tempo_confidence = 0.0
+            else:
+                duration_sec = len(audio) / max(1, sr)
+                expected = (tempo_val / 60.0) * duration_sec
+                tempo_confidence = float(min(1.0, len(beat_frames) / max(1.0, expected)))
         except Exception:
             tempo_confidence = 0.0
 
