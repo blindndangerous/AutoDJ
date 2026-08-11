@@ -757,3 +757,33 @@ def test_index_entry_treats_nonfinite_tag_bpm_as_unknown(tag_bpm: float) -> None
     _apply_analysis_metadata(entry, meta)
 
     assert entry.bpm == 121.5
+
+
+@pytest.mark.parametrize("tag_bpm", [np.nan, np.inf, -np.inf, -1.0, 0.0])
+def test_invalid_tag_bpm_normalizes_to_zero_without_estimate(tag_bpm: float) -> None:
+    from autodj.indexer import _apply_analysis_metadata
+
+    entry = _entry(bpm=tag_bpm)
+    meta = {"energy": 0.4, "key": 9, "mode": 0, "tempo_confidence": 0.8, "bpm": 0.0}
+
+    _apply_analysis_metadata(entry, meta)
+
+    assert entry.bpm == 0.0
+
+
+@pytest.mark.parametrize("estimated_bpm", [np.nan, np.inf, -np.inf])
+def test_nonfinite_estimated_bpm_is_never_stored(estimated_bpm: float) -> None:
+    from autodj.indexer import _apply_analysis_metadata
+
+    entry = _entry(bpm=0.0)
+    meta = {
+        "energy": 0.4,
+        "key": 9,
+        "mode": 0,
+        "tempo_confidence": 0.8,
+        "bpm": estimated_bpm,
+    }
+
+    _apply_analysis_metadata(entry, meta)
+
+    assert entry.bpm == 0.0

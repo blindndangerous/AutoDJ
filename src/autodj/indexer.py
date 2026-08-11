@@ -735,8 +735,10 @@ def _apply_analysis_metadata(entry: IndexEntry, extra_meta: dict[str, float | in
     entry.mode = int(extra_meta["mode"])
     entry.tempo_confidence = float(extra_meta["tempo_confidence"])
     estimated_bpm = float(extra_meta["bpm"])
-    if (not np.isfinite(entry.bpm) or entry.bpm <= 0.0) and estimated_bpm > 0.0:
-        entry.bpm = estimated_bpm
+    if not np.isfinite(entry.bpm) or entry.bpm <= 0.0:
+        entry.bpm = 0.0
+        if np.isfinite(estimated_bpm) and estimated_bpm > 0.0:
+            entry.bpm = estimated_bpm
 
 
 def _extract_librosa_features(
