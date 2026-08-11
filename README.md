@@ -26,7 +26,23 @@ cd AutoDJ
 
 # Install Python dependencies (uv handles the heavy lifting).
 uv sync --extra all
+```
 
+Copy the example to the private configuration file.  On Windows PowerShell:
+
+```powershell
+Copy-Item config.toml.example config.toml
+```
+
+On macOS or Linux:
+
+```bash
+cp config.toml.example config.toml
+```
+
+Open `config.toml` and set `[library] music_dir` for your music folder.  Set `[library] beets_db` to your beets database, or clear it if you do not use beets.  Then index the library and start the server:
+
+```bash
 # Point AutoDJ at your music folder once and let it learn the library.
 # This pass is the slow one -- it listens to every track and writes
 # what it learned to disk, enriches beets metadata, and backfills DJ
@@ -145,7 +161,7 @@ uv run autodj serve --ssl-certfile radio.pem --ssl-keyfile radio-key.pem
 
 `config.toml` and its local variants are gitignored.  Never pass the access token as a CLI argument because shell history and process listings can expose it.  AutoDJ compares tokens in constant time and exchanges a valid token for an HttpOnly cookie.  TLS is required to protect both the submitted token and subsequent session cookie on the wire.
 
-Authentication can be disabled only with an explicit trusted-LAN acknowledgement.  This still enforces the configured Host and Origin allowlists:
+For non-loopback bindings, including LAN access, authentication can be disabled only with an explicit trusted-LAN acknowledgement.  This still enforces the configured Host and Origin allowlists:
 
 ```bash
 uv run autodj serve --host 0.0.0.0 --insecure-lan \

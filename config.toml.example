@@ -12,11 +12,12 @@
 # Per-machine overlay (config.local.toml)
 # ---------------------------------------------------------------------------
 # If a sibling file `config.local.toml` exists, its keys are deep-merged on
-# top of this file at load time. Use it to override per-machine paths
-# without forking the shared base config:
+# top of this file at load time. Use it for per-machine paths while keeping
+# deployment-wide settings in the private base config. Both files are
+# gitignored:
 #
-#   config.toml          ← shared (committed / on NAS)
-#   config.local.toml    ← per-machine overrides (gitignored)
+#   config.toml          = private deployment/base settings
+#   config.local.toml    = private per-machine overrides
 #
 # Example config.local.toml on a Windows host pointing at a NAS:
 #
