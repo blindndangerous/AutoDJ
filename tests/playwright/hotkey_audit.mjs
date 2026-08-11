@@ -11,7 +11,7 @@
 // Run:
 //   AUTODJ_URL=http://192.168.50.40:8082 node tests/playwright/hotkey_audit.mjs
 
-import { chromium, firefox, webkit } from "playwright";
+import { chromium, firefox, webkit } from "@playwright/test";
 import { writeFileSync } from "node:fs";
 
 const BASE = process.env.AUTODJ_URL || "http://localhost:8080";

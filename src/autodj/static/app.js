@@ -7,7 +7,6 @@ import {
   fmtTime,
   fmtTrack,
   escHtml,
-  isTypingTarget,
 } from "./modules/dom-helpers.js";
 import {
   bootstrapAuthenticatedApp,
@@ -43,7 +42,6 @@ const npAnnounce   = document.getElementById("now-playing-announce");
 const npMeta       = document.getElementById("now-playing-meta");
 const cueSummary   = document.getElementById("cue-summary");
 const cueDetails   = document.getElementById("cue-details");
-const coverArt     = document.getElementById("cover-art");
 const progressFill = document.getElementById("progress-fill");
 const progressLbl  = document.getElementById("progress-bar-label");
 const nextText     = document.getElementById("next-track-text");
@@ -73,9 +71,7 @@ const eqHigh       = document.getElementById("eq-high");
 const eqLowVal     = document.getElementById("eq-low-value");
 const eqMidVal     = document.getElementById("eq-mid-value");
 const eqHighVal    = document.getElementById("eq-high-value");
-const btnEqReset   = document.getElementById("btn-eq-reset");
 const eqAnnounce   = document.getElementById("eq-announce");
-const audioEl      = document.getElementById("browser-player");
 // (enable-playback-card was removed — Play button is unified into btn-pause)
 // Settings card
 const presetSelect    = document.getElementById("preset-select");
@@ -84,7 +80,6 @@ const harmonicMode    = document.getElementById("harmonic-mode");
 const djBeatmatch     = document.getElementById("dj-beatmatch");
 const djPhraseAlign   = document.getElementById("dj-phrase-align");
 const djOutroIntro    = document.getElementById("dj-outro-intro");
-const djFilterSweep   = null;  // moved into Transition effect dropdown
 const pbEqDuck        = document.getElementById("pb-eq-duck");
 const pbPickMode      = document.getElementById("pb-pick-mode");
 const pbShowLyrics    = document.getElementById("pb-show-lyrics");
@@ -186,7 +181,6 @@ function clearProtectedSessionData() {
   _linerEls.lnFolderDisplay.textContent = "";
   _linerEls.lnStatus.textContent = "";
   updateMediaSession({ current_track: null });
-  lastBadgeKey = null;
   lastNextKey = null;
   _lastWhyKey = "";
   _lastDuration = 0;
@@ -235,7 +229,6 @@ function reportBackgroundRequestError(errorValue) {
 let lastTrackKey = null;   // detect track changes for aria-live announce
 const historyItems = [];   // most-recent first
 // lastLyricIndex + cachedLyrics moved into ./modules/lyrics.js.
-let lastBadgeKey = null;   // suppress repeated badge announcements within one track
 let lastNextKey  = null;   // suppress aria-live re-announce of unchanged next track
 
 // ----------------------------------------------------------------
@@ -871,11 +864,9 @@ function applyCamelotWheel(currentCell, harmonicMode) {
 // accessors.
 import {
   setVolume, applyBrowserPlaybackState, startCrossfade, stopAllDecks,
-  applyEqState, loadCoverArt, applyTransitionFx,
+  applyEqState, loadCoverArt,
   resetTrackCaches, resetTransitionCaches,
   ensureAudioGraph, unlockAndPlay,
-  deckActive, deckStandby, setSrcOnDeck, playOnDeck,
-  postEq, eqValueLabel,
   _ctx, decks, activeIdx, _volume, _lastBrowserPlayback, playbackEnabled,
   _outBpmCache, _inBpmCache,
   _crossfadeSecondsCache, _nextTrackPathCache,
@@ -896,7 +887,6 @@ setApplyState(applyState);
 import {
   loadLyrics, applyLyricsState, renderLyricsList,
   resetLyricState,
-  getCachedLyrics,
 } from "./modules/lyrics.js";
 
 const _lyricEls = { lyricsCard, lyricsList, lyricAnnounce };
@@ -1076,7 +1066,6 @@ btnSkip.addEventListener("click", async () => {
     // existing groove instead of cold-cutting.  preservesPitch=true
     // gives a tempo-only stretch (proper beatmatch).  Reverted at
     // crossfade teardown by the timeout below.
-    let bmRevert = null;
     if (_beatmatchOnSkip && _outBpmCache > 0 && _inBpmCache > 0) {
       const ratio = _outBpmCache / _inBpmCache;
       // Clamp ±15% so wildly mismatched tempos don't sound silly.
@@ -1089,7 +1078,7 @@ btnSkip.addEventListener("click", async () => {
       try { audio.playbackRate = clamped; } catch (_) {}
       dbg("beatmatch-on-skip: ratio=", clamped.toFixed(3),
         "(", _outBpmCache.toFixed(1), "/", _inBpmCache.toFixed(1), ")");
-      bmRevert = setTimeout(() => {
+      setTimeout(() => {
         try { audio.playbackRate = prevRate; } catch (_) {}
         try { audio.preservesPitch = prevPitch; } catch (_) {}
       }, _crossfadeSecondsCache * 1000 + 200);

@@ -91,7 +91,7 @@ async function _run(els, name, args = [], control = null) {
   }
 }
 
-export async function refreshLibStats(els, control = null) {
+async function refreshLibStats(els, control = null) {
   const {
     statCount, statAvgBpm, statWithKey, statWithGenre, statWithEnergy,
   } = els;

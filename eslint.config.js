@@ -87,7 +87,7 @@ export default [
     rules: {
       // No unused vars, with the conventional underscore-prefix opt-out.
       "no-unused-vars": [
-        "warn",
+        "error",
         {
           argsIgnorePattern: "^_",
           varsIgnorePattern: "^_",
@@ -98,9 +98,9 @@ export default [
       // logs to console for browser-side debug -- see ?debug=1 flag).
       "no-console": "off",
       // Style.
-      "prefer-const": "warn",
+      "prefer-const": "error",
       "no-var": "error",
-      eqeqeq: ["warn", "smart"],
+      eqeqeq: ["error", "smart"],
       // Relaxed rules -- these patterns appear intentionally throughout
       // the codebase and tightening them would be a noisy churn pass:
       //   - empty catches: best-effort cleanup (try { node.disconnect() } catch {})
@@ -110,7 +110,12 @@ export default [
     },
   },
   {
-    files: ["tests/**/*.{js,mjs}", "vite.config.js", "eslint.config.js"],
+    files: [
+      "tests/**/*.{js,mjs}",
+      "scripts/**/*.mjs",
+      "vite.config.js",
+      "eslint.config.js",
+    ],
     languageOptions: {
       ecmaVersion: "latest",
       sourceType: "module",

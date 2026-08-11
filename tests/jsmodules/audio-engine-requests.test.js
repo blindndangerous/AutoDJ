@@ -76,7 +76,9 @@ function installAudioContext({ decodeAudioData = vi.fn().mockResolvedValue({}) }
     resume: vi.fn().mockResolvedValue(undefined),
     state: "running",
   };
-  vi.stubGlobal("AudioContext", vi.fn(() => context));
+  vi.stubGlobal("AudioContext", vi.fn(function AudioContextMock() {
+    return context;
+  }));
   window.AudioContext = globalThis.AudioContext;
   return context;
 }

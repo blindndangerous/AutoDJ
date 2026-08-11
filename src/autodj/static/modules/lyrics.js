@@ -16,10 +16,6 @@ const state = {
 };
 const lyricsRequestOwner = createLatestRequestOwner();
 
-export function getCachedLyrics() {
-  return state.cached;
-}
-
 export function resetLyricState(elements) {
   lyricsRequestOwner.cancel();
   state.lastIndex = null;

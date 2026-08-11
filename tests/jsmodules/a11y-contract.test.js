@@ -141,6 +141,12 @@ function parseCss(source, media = [], rules = []) {
 
 const cssRules = parseCss(cssSource);
 const normalizeMedia = (value) => value.replace(/\s+/g, " ").trim();
+const specificityBySelector = new Map();
+let matchesByElement = new WeakMap();
+const expandedByDeclaration = new Map();
+const mediaMatchesByRule = new WeakMap();
+const candidatesByRules = new WeakMap();
+let cascadeContractDocumentInstalled = false;
 
 function declarationsFor(selector, media = null, rules = cssRules) {
   return rules.filter((rule) => rule.selectors.includes(selector)
@@ -158,6 +164,7 @@ function lastValue(selector, property, media = null, rules = cssRules) {
 }
 
 function selectorSpecificity(selector) {
+  if (specificityBySelector.has(selector)) return specificityBySelector.get(selector);
   const ids = selector.match(/#[\w-]+/g)?.length || 0;
   const attributes = selector.match(/\[[^\]]+\]/g)?.length || 0;
   const classes = selector.match(/\.[\w-]+/g)?.length || 0;
@@ -167,7 +174,13 @@ function selectorSpecificity(selector) {
     .replace(/#[\w-]+|\.[\w-]+|\[[^\]]+\]|:(?!:)[\w-]+(?:\([^)]*\))?/g, " ");
   const types = typeSource.match(/(?:^|[\s>+~])([a-z][\w-]*)/gi)?.length || 0;
   const pseudoElements = selector.match(/::[\w-]+/g)?.length || 0;
-  return [ids, attributes + classes + pseudoClasses, types + pseudoElements];
+  const specificity = [
+    ids,
+    attributes + classes + pseudoClasses,
+    types + pseudoElements,
+  ];
+  specificityBySelector.set(selector, specificity);
+  return specificity;
 }
 
 function compareSpecificity(first, second) {
@@ -178,14 +191,27 @@ function compareSpecificity(first, second) {
 }
 
 function selectorMatches(element, selector, pseudoElement) {
+  let matches = matchesByElement.get(element);
+  if (!matches) {
+    matches = new Map();
+    matchesByElement.set(element, matches);
+  }
+  const cacheKey = `${pseudoElement}\0${selector}`;
+  if (matches.has(cacheKey)) return matches.get(cacheKey);
   const pseudoMatch = selector.match(/(::[\w-]+)$/);
-  if ((pseudoMatch?.[1] || "") !== pseudoElement) return false;
+  if ((pseudoMatch?.[1] || "") !== pseudoElement) {
+    matches.set(cacheKey, false);
+    return false;
+  }
   const elementSelector = selector
     .slice(0, pseudoMatch ? -pseudoMatch[1].length : undefined)
     .replaceAll(":focus-visible", ".a11y-focus-visible") || "*";
   try {
-    return element.matches(elementSelector);
+    const result = element.matches(elementSelector);
+    matches.set(cacheKey, result);
+    return result;
   } catch {
+    matches.set(cacheKey, false);
     return false;
   }
 }
@@ -238,7 +264,18 @@ function mediaQueryMatches(query, context) {
 }
 
 function ruleApplies(rule, context) {
-  return rule.media.every((query) => mediaQueryMatches(query, context));
+  let contextMatches = mediaMatchesByRule.get(rule);
+  if (!contextMatches) {
+    contextMatches = new WeakMap();
+    mediaMatchesByRule.set(rule, contextMatches);
+  }
+  if (!contextMatches.has(context)) {
+    contextMatches.set(
+      context,
+      rule.media.every((query) => mediaQueryMatches(query, context)),
+    );
+  }
+  return contextMatches.get(context);
 }
 
 function representativeAxisValues(rules, dimension, fallback) {
@@ -341,6 +378,8 @@ function backgroundColorFromShorthand(value) {
 }
 
 function expandedDeclaration(property, value) {
+  const cacheKey = `${property}\0${value}`;
+  if (expandedByDeclaration.has(cacheKey)) return expandedByDeclaration.get(cacheKey);
   const expanded = new Map([[property, value]]);
   const sides = ["top", "right", "bottom", "left"];
   if (["border-color", "border-style", "border-width"].includes(property)) {
@@ -373,43 +412,58 @@ function expandedDeclaration(property, value) {
   if (property === "background") {
     expanded.set("background-color", backgroundColorFromShorthand(value));
   }
+  expandedByDeclaration.set(cacheKey, expanded);
   return expanded;
+}
+
+function declarationCandidates(rules) {
+  if (candidatesByRules.has(rules)) return candidatesByRules.get(rules);
+  const byProperty = new Map();
+  rules.forEach((rule, order) => {
+    [...rule.declarations].forEach(([declaredProperty, rawValue], declarationOrder) => {
+      const important = /\s*!important\s*$/i.test(rawValue);
+      const declaredValue = rawValue.replace(/\s*!important\s*$/i, "").trim();
+      for (const [property, value] of expandedDeclaration(
+        declaredProperty, declaredValue,
+      )) {
+        if (!byProperty.has(property)) byProperty.set(property, []);
+        for (const selector of rule.selectors) {
+          byProperty.get(property).push({
+            important,
+            order: order * 1000 + declarationOrder,
+            rule,
+            selector,
+            specificity: selectorSpecificity(selector),
+            value,
+          });
+        }
+      }
+    });
+  });
+  candidatesByRules.set(rules, byProperty);
+  return byProperty;
 }
 
 function effectiveMediaDeclaration(
   element, pseudoElement, property, context, rules,
 ) {
   let winner;
-  rules.forEach((rule, order) => {
-    if (!ruleApplies(rule, context)) return;
-    [...rule.declarations].forEach(([declaredProperty, rawValue], declarationOrder) => {
-      const important = /\s*!important\s*$/i.test(rawValue);
-      const declaredValue = rawValue.replace(/\s*!important\s*$/i, "").trim();
-      const value = expandedDeclaration(declaredProperty, declaredValue).get(property);
-      if (value === undefined) return;
-      for (const selector of rule.selectors) {
-        if (!selectorMatches(element, selector, pseudoElement)) continue;
-        const candidate = {
-          important,
-          order: order * 1000 + declarationOrder,
-          specificity: selectorSpecificity(selector),
-          value,
-        };
-        const outranks = !winner
-          || Number(candidate.important) > Number(winner.important)
-          || (candidate.important === winner.important
-            && (compareSpecificity(candidate.specificity, winner.specificity) > 0
-              || (compareSpecificity(candidate.specificity, winner.specificity) === 0
-                && candidate.order >= winner.order)));
-        if (outranks) winner = candidate;
-      }
-    });
-  });
+  for (const candidate of declarationCandidates(rules).get(property) || []) {
+    if (!ruleApplies(candidate.rule, context)
+      || !selectorMatches(element, candidate.selector, pseudoElement)) continue;
+    const outranks = !winner
+      || Number(candidate.important) > Number(winner.important)
+      || (candidate.important === winner.important
+        && (compareSpecificity(candidate.specificity, winner.specificity) > 0
+          || (compareSpecificity(candidate.specificity, winner.specificity) === 0
+            && candidate.order >= winner.order)));
+    if (outranks) winner = candidate;
+  }
   return winner;
 }
 
 function reducedMotionMeetsContract(rules = cssRules) {
-  installDocument();
+  installCascadeContractDocument();
   const elements = [...document.querySelectorAll("*")];
   const expected = new Map([
     ["animation-duration", "0.01ms"],
@@ -440,12 +494,13 @@ function reducedMotionMeetsContract(rules = cssRules) {
 }
 
 function forcedColorsMeetsContract(rules = cssRules) {
-  installDocument();
+  installCascadeContractDocument();
   const focusElements = focusContractControls();
   for (const selector of ["details.card > summary", "section[data-view] h2"]) {
     focusElements.push(document.querySelector(selector));
   }
   for (const element of focusElements) element.classList.add("a11y-focus-visible");
+  matchesByElement = new WeakMap();
   return representativeMediaContexts(rules, {
     forcedColors: [true],
     reducedMotion: [false, true],
@@ -585,6 +640,12 @@ function installDocument({ css = cssSource, html = htmlSource } = {}) {
   style.dataset.a11yContract = "";
   style.textContent = css;
   document.head.append(style);
+}
+
+function installCascadeContractDocument() {
+  if (cascadeContractDocumentInstalled) return;
+  installDocument({ css: "" });
+  cascadeContractDocumentInstalled = true;
 }
 
 function normalizedColor(value, background = "#fff") {
@@ -1535,8 +1596,204 @@ describe("frontend CI gate", () => {
       && commands.includes("npm run build");
   }
 
+  function jobRunSteps(source, jobName) {
+    const jobLines = workflowJobLines(source, jobName);
+    const jobContinueValues = jobLines
+      .map((line) => line.match(/^ {4}continue-on-error:\s*(.+)$/)?.[1])
+      .filter((value) => value !== undefined);
+    const jobIfValues = jobLines
+      .map((line) => line.match(/^ {4}if:\s*(.+)$/)?.[1])
+      .filter((value) => value !== undefined);
+    const steps = [];
+    let current = null;
+    for (const line of jobLines) {
+      const stepStart = line.match(/^ {6}-\s*(.*)$/)?.[1];
+      if (stepStart !== undefined) {
+        if (current?.command) steps.push(current);
+        current = { command: null, continueOnError: null, ifCondition: null };
+        const inlineRun = stepStart.match(/^run:\s*(.+)$/)?.[1];
+        const inlineContinue = stepStart.match(/^continue-on-error:\s*(.+)$/)?.[1];
+        const inlineIf = stepStart.match(/^if:\s*(.+)$/)?.[1];
+        if (inlineRun !== undefined) current.command = inlineRun.trim();
+        if (inlineContinue !== undefined) {
+          current.continueOnError = inlineContinue.trim();
+        }
+        if (inlineIf !== undefined) current.ifCondition = inlineIf.trim();
+        continue;
+      }
+      if (!current) continue;
+      const command = line.match(/^ {8}run:\s*(.+)$/)?.[1];
+      const continueValue = line.match(/^ {8}continue-on-error:\s*(.+)$/)?.[1];
+      const ifValue = line.match(/^ {8}if:\s*(.+)$/)?.[1];
+      if (command !== undefined) current.command = command.trim();
+      if (continueValue !== undefined) current.continueOnError = continueValue.trim();
+      if (ifValue !== undefined) current.ifCondition = ifValue.trim();
+    }
+    if (current?.command) steps.push(current);
+    return {
+      blocking: jobContinueValues.every((value) => value.trim() === "false"),
+      unconditional: jobIfValues.every((value) => value.trim() === "true"),
+      steps,
+    };
+  }
+
+  function dependencyGateMeetsContract(source) {
+    const frontend = jobRunSteps(source, "frontend");
+    const quality = jobRunSteps(source, "quality");
+    const testJob = jobRunSteps(source, "test");
+    const frontendCommands = frontend.steps.map((step) => step.command);
+    const qualityCommands = quality.steps.map((step) => step.command);
+    const guard = "uv run python scripts/check_pip_audit_suppressions.py";
+    const audit = "uv run pip-audit --ignore-vuln PYSEC-2022-42969";
+    const hasBlockingCommand = (job, command) => {
+      const step = job.steps.find((candidate) => candidate.command === command);
+      return Boolean(step)
+        && [null, "false"].includes(step.continueOnError)
+        && [null, "true"].includes(step.ifCondition);
+    };
+    const requiredFrontend = [
+      "npm run audit:lock",
+      "npm ci --ignore-scripts",
+      "npm run lint",
+      "npm test",
+      "npm run build",
+      "npm run deadcode",
+      "npm audit --audit-level=high",
+    ];
+    const requiredQuality = [
+      "uv lock --check",
+      "uv sync --frozen --all-extras",
+      guard,
+      audit,
+    ];
+    return frontend.blocking && frontend.unconditional
+      && quality.blocking && quality.unconditional
+      && testJob.blocking && testJob.unconditional
+      && requiredFrontend.every((command) => hasBlockingCommand(frontend, command))
+      && requiredQuality.every((command) => hasBlockingCommand(quality, command))
+      && hasBlockingCommand(testJob, "uv sync --frozen --all-extras")
+      && frontendCommands.indexOf("npm run audit:lock")
+        < frontendCommands.indexOf("npm ci --ignore-scripts")
+      && qualityCommands.indexOf(guard) >= 0
+      && qualityCommands.indexOf(audit) > qualityCommands.indexOf(guard);
+  }
+
   it("runs install, lint, unit tests, and build as blocking steps", () => {
     expect(frontendGateMeetsContract(workflow)).toBe(true);
+  });
+
+  it("gates lock integrity, frozen syncs, and suppression expiry", () => {
+    expect(dependencyGateMeetsContract(workflow)).toBe(true);
+    expect(dependencyGateMeetsContract(workflow.replace(
+      "      - run: npm run audit:lock",
+      "      # - run: npm run audit:lock",
+    ))).toBe(false);
+    expect(dependencyGateMeetsContract(workflow.replace(
+      "uv run python scripts/check_pip_audit_suppressions.py",
+      "true # suppression expiry disabled",
+    ))).toBe(false);
+    expect(dependencyGateMeetsContract(workflow.replace(
+      "        run: uv run python scripts/check_pip_audit_suppressions.py",
+      "        continue-on-error: true\n"
+        + "        run: uv run python scripts/check_pip_audit_suppressions.py",
+    ))).toBe(false);
+    expect(dependencyGateMeetsContract(workflow.replace(
+      /uv sync --frozen --all-extras/g,
+      "uv sync --all-extras",
+    ))).toBe(false);
+    for (const [command, replacement, continueValue] of [
+      [
+        "      - run: npm run audit:lock",
+        "      - run: npm run audit:lock\n        continue-on-error: true",
+        "true",
+      ],
+      [
+        "      - run: npm audit --audit-level=high",
+        "      - run: npm audit --audit-level=high\n"
+          + "        continue-on-error: ${{ always() }}",
+        "${{ always() }}",
+      ],
+      [
+        "        run: uv lock --check",
+        "        continue-on-error: true\n        run: uv lock --check",
+        "true",
+      ],
+      [
+        "        run: uv run pip-audit --ignore-vuln PYSEC-2022-42969",
+        "        continue-on-error: ${{ failure() }}\n"
+          + "        run: uv run pip-audit --ignore-vuln PYSEC-2022-42969",
+        "${{ failure() }}",
+      ],
+    ]) {
+      expect(dependencyGateMeetsContract(workflow.replace(
+        command,
+        replacement,
+      )), `${command} with ${continueValue}`).toBe(false);
+    }
+    expect(dependencyGateMeetsContract(workflow.replace(
+      "      - name: Install dependencies\n"
+        + "        run: uv sync --frozen --all-extras\n\n"
+        + "      - name: Pytest — test suite",
+      "      - name: Install dependencies\n"
+        + "        continue-on-error: true\n"
+        + "        run: uv sync --frozen --all-extras\n\n"
+        + "      - name: Pytest — test suite",
+    ))).toBe(false);
+  });
+
+  it("does not allow required jobs or dependency gates to be conditional", () => {
+    for (const [needle, replacement, label] of [
+      [
+        "  frontend:\n    name: Frontend lint, test, build, audit",
+        "  frontend:\n    if: false\n    name: Frontend lint, test, build, audit",
+        "frontend job false condition",
+      ],
+      [
+        "  quality:\n    name: Quality & security",
+        "  quality:\n    if: ${{ success() }}\n    name: Quality & security",
+        "quality job expression condition",
+      ],
+      [
+        "  test:\n    name: Tests (${{ matrix.os }})",
+        "  test:\n    if: false\n    name: Tests (${{ matrix.os }})",
+        "matrix job false condition",
+      ],
+      [
+        "      - run: npm run audit:lock",
+        "      - run: npm run audit:lock\n        if: false",
+        "frontend gate false condition",
+      ],
+      [
+        "        run: uv run pip-audit --ignore-vuln PYSEC-2022-42969",
+        "        if: ${{ always() }}\n"
+          + "        run: uv run pip-audit --ignore-vuln PYSEC-2022-42969",
+        "quality gate expression condition",
+      ],
+      [
+        "      - name: Install dependencies\n"
+          + "        run: uv sync --frozen --all-extras\n\n"
+          + "      - name: Pytest — test suite",
+        "      - name: Install dependencies\n"
+          + "        if: false\n"
+          + "        run: uv sync --frozen --all-extras\n\n"
+          + "      - name: Pytest — test suite",
+        "matrix dependency gate false condition",
+      ],
+    ]) {
+      expect(
+        dependencyGateMeetsContract(workflow.replace(needle, replacement)),
+        label,
+      ).toBe(false);
+    }
+    expect(dependencyGateMeetsContract(workflow
+      .replace(
+        "  frontend:\n    name: Frontend lint, test, build, audit",
+        "  frontend:\n    if: true\n    name: Frontend lint, test, build, audit",
+      )
+      .replace(
+        "      - run: npm run audit:lock",
+        "      - run: npm run audit:lock\n        if: true",
+      ))).toBe(true);
   });
 
   it("does not accept required commands from comments", () => {

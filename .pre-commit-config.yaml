@@ -141,8 +141,7 @@ repos:
       # so it uses the project's pinned eslint from devDependencies.
       - id: eslint
         name: eslint
-        entry: npx --no -- eslint
+        entry: npm run lint
         language: system
         pass_filenames: false
-        args: ["src/autodj/static", "tests/jsmodules", "tests/playwright", "vite.config.js", "eslint.config.js"]
         files: \.(js|mjs)$

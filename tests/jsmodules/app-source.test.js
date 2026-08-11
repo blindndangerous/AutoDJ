@@ -134,7 +134,9 @@ async function setupApp({
     return Promise.resolve(onRequest(url, options));
   });
   const webSocket = { close: vi.fn(), readyState: 1, send: vi.fn() };
-  const WebSocketImpl = vi.fn(() => webSocket);
+  const WebSocketImpl = vi.fn(function WebSocketMock() {
+    return webSocket;
+  });
   WebSocketImpl.CONNECTING = 0;
   WebSocketImpl.OPEN = 1;
   vi.stubGlobal("fetch", fetchImpl);

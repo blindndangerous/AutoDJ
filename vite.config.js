@@ -62,7 +62,7 @@ export default defineConfig({
         // wrapper would clash with type="module" because the script
         // tag would still be expected to satisfy ES module semantics.
         format: "es",
-        inlineDynamicImports: true,
+        codeSplitting: false,
       },
     },
   },

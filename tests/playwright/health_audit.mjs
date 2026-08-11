@@ -2,7 +2,7 @@
 // across every browser engine, exercises the UI, and dumps a per-engine
 // report so we can spot 404s, broken assets, WS failures, and JS errors.
 
-import { chromium, firefox, webkit } from "playwright";
+import { chromium, firefox, webkit } from "@playwright/test";
 import { writeFileSync } from "node:fs";
 
 // Set AUTODJ_URL=http://host:port before running, e.g.:

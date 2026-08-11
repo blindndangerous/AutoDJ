@@ -34,7 +34,6 @@ const eqHighVal  = document.getElementById("eq-high-value");
 const eqAnnounce = document.getElementById("eq-announce");
 const btnEqReset = document.getElementById("btn-eq-reset");
 const volSlider  = document.getElementById("vol");
-const btnPause   = document.getElementById("btn-pause");
 const coverArt   = document.getElementById("cover-art");
 const npAnnounce = document.getElementById("now-playing-announce");
 
@@ -42,7 +41,7 @@ const npAnnounce = document.getElementById("now-playing-announce");
 // 3-band EQ
 // ----------------------------------------------------------------
 
-export function eqValueLabel(v100) {
+function eqValueLabel(v100) {
   // v100: 0–200 with 100 = unity.  Return human label + dB.
   if (v100 === 0) return "Kill";
   if (v100 === 100) return "Unity";
@@ -128,7 +127,7 @@ btnEqReset.addEventListener("click", () => {
 //      active so the cycle continues.
 
 export let playbackEnabled = false;
-export let suppressAdvance = false;   // gate spurious advance posts during programmatic actions
+let suppressAdvance = false;   // gate spurious advance posts during programmatic actions
 export let _lastBrowserPlayback = false;  // mirror of state.browser_playback for click handlers
 
 // Dependency-injected state applier.  app.js defines applyState (it
@@ -216,8 +215,8 @@ export function ensureAudioGraph() {
   return _ctx;
 }
 
-export function deckActive() { return decks[activeIdx]; }
-export function deckStandby() { return decks[activeIdx ^ 1]; }
+function deckActive() { return decks[activeIdx]; }
+function deckStandby() { return decks[activeIdx ^ 1]; }
 
 export function stopAllDecks() {
   // Hard stop — used when the server disconnects so audio doesn't keep
@@ -258,7 +257,7 @@ export function setSrcOnDeck(deck, path) {
   }
 }
 
-export function playOnDeck(deck) {
+function playOnDeck(deck) {
   return deck.audio.play().catch((err) => {
     console.warn("deck.play failed:", err);
   });
@@ -286,7 +285,7 @@ export let _volume = 1;
 // for fadeSec, and disconnects on teardown.
 // ----------------------------------------------------------------
 
-export let _lastTransitionFx = "none";
+let _lastTransitionFx = "none";
 let _rotateCursor = -1;
 
 function _resolveTransition(name) {
@@ -435,7 +434,6 @@ function _doSpin(ctx, outDeck, t0, fadeSec, reverse, teardowns, slow = false) {
   outDeck.audio.muted = true;
   // Force live deck silent — caller's crossfade ramp may not reach 0 fast
   // enough.  We restore on teardown.
-  const prevGain = outDeck.gain.gain.value;
   outDeck.gain.gain.cancelScheduledValues(t0);
   outDeck.gain.gain.setValueAtTime(0, t0);
 
@@ -514,7 +512,7 @@ function _doSpin(ctx, outDeck, t0, fadeSec, reverse, teardowns, slow = false) {
   teardowns.push(() => {
     cancelled = true;
     outDeck.audio.muted = false;
-    // Don't restore prevGain — the crossfade has handed off to the new
+    // Don't restore outgoing gain — the crossfade has handed off to the new
     // deck.  Setting it back here would cause a brief audible pop of the
     // already-finished outgoing track.
     if (bufSrc) {
@@ -666,7 +664,7 @@ const _ABS_MIN_FX_DURATION_S = 1.0;
 //   snapToDownbeat    when true, the effect's first scheduled event lands
 //                     on the next outgoing downbeat (≤ 1 bar of latency).
 //                     Pure ambient envelope FX get false.
-export const _FX_BAR_TABLE = {
+const _FX_BAR_TABLE = {
   beat_repeat:    [4, true],
   gate_stutter:   [4, true],
   stutter_build:  [4, true],
@@ -708,7 +706,7 @@ export const _FX_BAR_TABLE = {
 // from the server-emitted track payload (downbeats_outro / downbeats_intro
 // / key_hz) plus the cached BPMs.  All accessors take an AudioContext
 // time so the math stays sample-accurate. ---
-export const _BS = {
+const _BS = {
   enabled: false,
   keyEnabled: false,
   outBpm: 0,
@@ -798,7 +796,7 @@ function _effectDurationFor(effect, fadeSec, outroLen) {
     return Math.max(fadeSec, staticMin);
   }
   const frac = _OUTRO_FRACTION[effect] != null ? _OUTRO_FRACTION[effect] : 0.5;
-  let target = outroLen * frac;
+  const target = outroLen * frac;
   // Clamp: never below the per-effect floor (or absolute 1.0s), never
   // above 12s — keeps musically sane boundaries even on edge tracks.
   const lo = Math.max(_ABS_MIN_FX_DURATION_S, staticMin);
@@ -831,7 +829,7 @@ function _effectDurationFor(effect, fadeSec, outroLen) {
   return dur;
 }
 
-export function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
+function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
   const ctx = _ctx;
   if (!ctx || effect === "none" || !effect) return () => {};
   // Caller (startCrossfade) now resolves the effect-preferred duration
@@ -2156,28 +2154,28 @@ for (const d of decks) {
 
 // Latest server hints (cached so timeupdate doesn't have to peek into state)
 export let _crossfadeSecondsCache = 3.0;
-export let _fadeInSecondsCache = 3.0;
+let _fadeInSecondsCache = 3.0;
 export let _currentOutroLenCache = null;
 export let _currentOutroStartCache = null;   // active deck's outro_start_s
 export let _nextTrackIntroEndCache = null;   // incoming track's intro_end_s
 export let _nextTrackPathCache = null;
 let _transitionMode = "full_intro_outro";
-export let _prefetchEnabled = true;
-export let _silenceTriggerEnabled = true;
+let _prefetchEnabled = true;
+let _silenceTriggerEnabled = true;
 
 // --- Beat- + key-sync transition FX caches.  Populated from
 // applyBrowserPlaybackState whenever a state push lands; consumed by
 // _BS.refresh() at the start of every crossfade so per-effect timing
 // can snap to downbeats and oscillator-FX can tune to root notes. ---
-export let _beatSyncEnabled = true;
-export let _keySyncEnabled = true;
+let _beatSyncEnabled = true;
+let _keySyncEnabled = true;
 export let _beatmatchOnSkip = false;
 export let _outBpmCache = 0;
 export let _inBpmCache = 0;
-export let _outDownbeatsCache = [];
-export let _inDownbeatsCache = [];
-export let _outKeyHzCache = null;
-export let _inKeyHzCache = null;
+let _outDownbeatsCache = [];
+let _inDownbeatsCache = [];
+let _outKeyHzCache = null;
+let _inKeyHzCache = null;
 
 // _libraryWarned moved into ./modules/settings-panel.js.
 

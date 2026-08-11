@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   frontend:
-    name: Frontend lint, test, build
+    name: Frontend lint, test, build, audit
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -26,10 +26,13 @@ jobs:
         with:
           node-version: "24.6.0"
           cache: npm
+      - run: npm run audit:lock
       - run: npm ci --ignore-scripts
       - run: npm run lint
       - run: npm test
       - run: npm run build
+      - run: npm run deadcode
+      - run: npm audit --audit-level=high
 
   quality:
     name: Quality & security
@@ -48,8 +51,11 @@ jobs:
         with:
           python-version: "3.14"
 
+      - name: Verify dependency lock
+        run: uv lock --check
+
       - name: Install dependencies
-        run: uv sync --all-extras
+        run: uv sync --frozen --all-extras
 
       - name: Ruff — lint
         run: uv run ruff check src/ tests/
@@ -79,10 +85,14 @@ jobs:
       - name: Bandit — security scan
         run: uv run bandit -r src/ -c pyproject.toml
 
+      - name: Check pip-audit suppression expiry
+        run: uv run python scripts/check_pip_audit_suppressions.py
+
       - name: pip-audit — dependency CVE scan
-        # PYSEC-2022-42969: `py` 1.11.0 ReDoS in error reporting code.  No fix
-        # version upstream; pulled in transitively via xenon -> radon.  Not
-        # exposed at runtime (test-tool only), so suppressed.
+        # PYSEC-2022-42969 affects Subversion metadata parsing in dev-only py,
+        # reached through xenon -> radon; AutoDJ does not accept SVN metadata.
+        # Source: https://osv.dev/vulnerability/PYSEC-2022-42969
+        # Reviewed: 2026-08-02. Expiry/re-review: 2026-11-02.
         run: uv run pip-audit --ignore-vuln PYSEC-2022-42969
 
       - name: Semgrep — multi-rule SAST
@@ -127,7 +137,7 @@ jobs:
           python-version: "3.14"
 
       - name: Install dependencies
-        run: uv sync --all-extras
+        run: uv sync --frozen --all-extras
 
       - name: Pytest — test suite
         run: uv run python scripts/ci_pytest.py

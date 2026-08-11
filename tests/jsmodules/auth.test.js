@@ -824,7 +824,9 @@ describe("app startup integration", () => {
       throw new Error(`Unexpected fetch: ${url}`);
     });
     const webSocket = { close: vi.fn(), send: vi.fn() };
-    const WebSocketImpl = vi.fn(() => webSocket);
+    const WebSocketImpl = vi.fn(function WebSocketMock() {
+      return webSocket;
+    });
     WebSocketImpl.OPEN = 1;
     vi.stubGlobal("fetch", fetchImpl);
     vi.stubGlobal("WebSocket", WebSocketImpl);

@@ -5,7 +5,7 @@
 // Output is written as a JSON report so we can diff worklet-load
 // success and crossfade trigger logs across Chromium / Firefox / WebKit.
 
-import { chromium, firefox, webkit } from "playwright";
+import { chromium, firefox, webkit } from "@playwright/test";
 import { writeFileSync } from "node:fs";
 
 // Set AUTODJ_URL=http://host:port before running, e.g.:
@@ -75,7 +75,6 @@ async function audit(name, launcher) {
   // Cycle through each effect and post to /api/transition
   const transitions = {};
   for (const fx of EFFECTS) {
-    const before = logs.length;
     const res = await page.request.post(`${BASE}/api/transition`, {
       headers: { "Content-Type": "application/json" },
       data: JSON.stringify({ effect: fx }),

@@ -4,7 +4,7 @@
 // each <section>.  Tablist arrow / Home / End navigation follows
 // the ARIA APG roving-tabindex pattern.
 
-export const VIEW_NAMES = ["now", "queue", "history", "settings", "library"];
+const VIEW_NAMES = ["now", "queue", "history", "settings", "library"];
 
 const _viewSections = new Map();
 const _viewLinks = new Map();
@@ -68,7 +68,7 @@ function _onTabKeydown(e) {
   if (nextTab) nextTab.focus();
 }
 
-export function applyView(name, userInitiated) {
+function applyView(name, userInitiated) {
   for (const [k, sec] of _viewSections) {
     if (k === name) sec.removeAttribute("hidden");
     else sec.setAttribute("hidden", "");
