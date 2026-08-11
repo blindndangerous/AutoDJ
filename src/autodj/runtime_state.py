@@ -184,6 +184,19 @@ def state_file_for(index_dir: Path | None) -> Path | None:
     return Path(index_dir) / "web_state.json"
 
 
+def _fsync_directory(path: Path) -> None:
+    """Durably publish a directory entry where the filesystem supports it."""
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _warn(field: str, value: object) -> None:
     logger.warning("ignoring invalid %s in web_state.json: %r", field, value)
 
@@ -347,12 +360,55 @@ def _restore_nullable_number(
     setattr(target, field, int(value) if integer else float(value))
 
 
+def _read_random_liner_bound(
+    playback: Any,
+    pb: dict,
+    field: str,
+) -> tuple[bool, float | None]:
+    present = field in pb
+    value = pb[field] if present else getattr(playback, field, None)
+    if value is None:
+        return True, None
+    if _is_finite_number(value) and value > 0:
+        return True, float(value)
+    if present:
+        _warn(field, value)
+    else:
+        logger.warning("ignoring invalid current %s while restoring web_state.json", field)
+    return False, None
+
+
+def _restore_random_liner_window(playback: Any, pb: dict) -> None:
+    min_field = "liners_random_min_minutes"
+    max_field = "liners_random_max_minutes"
+    min_present = min_field in pb
+    max_present = max_field in pb
+    if not min_present and not max_present:
+        return
+
+    min_valid, minimum = _read_random_liner_bound(playback, pb, min_field)
+    max_valid, maximum = _read_random_liner_bound(playback, pb, max_field)
+    if not min_valid or not max_valid:
+        return
+    if minimum is not None and maximum is not None and minimum > maximum:
+        logger.warning(
+            "ignoring invalid random liner window in web_state.json: min=%r max=%r",
+            minimum,
+            maximum,
+        )
+        return
+
+    if min_present:
+        playback.liners_random_min_minutes = minimum
+    if max_present:
+        playback.liners_random_max_minutes = maximum
+
+
 def _restore_liners(cfg: Any, pb: dict) -> None:
     playback = cfg.playback
     _restore_nullable_number(playback, pb, "liners_every_n_songs", integer=True)
     _restore_nullable_number(playback, pb, "liners_every_minutes")
-    _restore_nullable_number(playback, pb, "liners_random_min_minutes")
-    _restore_nullable_number(playback, pb, "liners_random_max_minutes")
+    _restore_random_liner_window(playback, pb)
     if "liners_pick_mode" in pb:
         value = pb["liners_pick_mode"]
         if isinstance(value, str) and value in LINER_PICK_MODES:
@@ -412,7 +468,7 @@ def load_into_player(player: Any, index_dir: Path | None) -> None:
         return
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         logger.warning("web_state.json unreadable, ignoring: %s", exc)
         return
 
@@ -474,10 +530,25 @@ def save_from_player(settings: dict, index_dir: Path | None) -> None:
         "bpm_range": settings.get("bpm_range", {"lo": None, "hi": None}),
         "discovery_every": settings.get("discovery_every"),
     }
+    tmp = path.with_suffix(".json.tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        with tmp.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, ensure_ascii=False)
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(tmp, path)
+        try:
+            _fsync_directory(path.parent)
+        except OSError as exc:
+            logger.warning(
+                "Saved web_state.json but parent directory durability flush failed: %s",
+                exc,
+            )
     except OSError as exc:
         logger.warning("Failed to save web_state.json: %s", exc)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("Failed to clean temporary web_state.json: %s", exc)

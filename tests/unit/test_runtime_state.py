@@ -6,6 +6,8 @@ import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from autodj.runtime_state import (
     load_into_player,
     save_from_player,
@@ -88,6 +90,16 @@ class TestLoadInto:
         p = _make_player()
         load_into_player(p, tmp_path)
         assert p._cfg.transitions.effect == "none"
+
+    def test_invalid_utf8_is_warned_and_ignored(self, tmp_path, caplog) -> None:
+        (tmp_path / "web_state.json").write_bytes(b"\xff\xfe\xfa")
+        p = _make_player()
+
+        with caplog.at_level("WARNING"):
+            load_into_player(p, tmp_path)
+
+        assert p._cfg.transitions.effect == "none"
+        assert len([record for record in caplog.records if "unreadable" in record.message]) == 1
 
     def test_loads_transition(self, tmp_path) -> None:
         (tmp_path / "web_state.json").write_text(
@@ -234,6 +246,116 @@ class TestSaveFrom:
         # Tmp file should not linger after successful rename
         assert not (tmp_path / "web_state.json.tmp").exists()
         assert (tmp_path / "web_state.json").exists()
+
+    def test_fsyncs_file_before_replace_and_parent_after(
+        self,
+        tmp_path,
+        monkeypatch,
+    ) -> None:
+        import autodj.runtime_state as runtime_state
+
+        events: list[str] = []
+        real_replace = runtime_state.os.replace
+
+        def record_file_fsync(_fd: int) -> None:
+            events.append("file_fsync")
+
+        def record_replace(source, destination) -> None:
+            events.append("replace")
+            real_replace(source, destination)
+
+        def record_directory_fsync(path) -> None:
+            assert path == tmp_path
+            events.append("directory_fsync")
+
+        monkeypatch.setattr(runtime_state.os, "fsync", record_file_fsync)
+        monkeypatch.setattr(runtime_state.os, "replace", record_replace)
+        monkeypatch.setattr(
+            runtime_state,
+            "_fsync_directory",
+            record_directory_fsync,
+            raising=False,
+        )
+
+        save_from_player({"preset": "chill"}, tmp_path)
+
+        assert events == ["file_fsync", "replace", "directory_fsync"]
+        assert (
+            json.loads((tmp_path / "web_state.json").read_text(encoding="utf-8"))["preset"]
+            == "chill"
+        )
+
+    def test_file_fsync_failure_preserves_old_state_and_cleans_temp(
+        self,
+        tmp_path,
+        monkeypatch,
+        caplog,
+    ) -> None:
+        import autodj.runtime_state as runtime_state
+
+        path = tmp_path / "web_state.json"
+        path.write_text('{"preset": "old"}', encoding="utf-8")
+
+        def fail_fsync(_fd: int) -> None:
+            raise OSError("storage flush failed")
+
+        monkeypatch.setattr(runtime_state.os, "fsync", fail_fsync)
+
+        with caplog.at_level("WARNING"):
+            save_from_player({"preset": "new"}, tmp_path)
+
+        assert json.loads(path.read_text(encoding="utf-8"))["preset"] == "old"
+        assert not (tmp_path / "web_state.json.tmp").exists()
+        assert len([record for record in caplog.records if "Failed to save" in record.message]) == 1
+
+    def test_base_exception_during_file_fsync_cleans_temp_and_propagates(
+        self,
+        tmp_path,
+        monkeypatch,
+    ) -> None:
+        import autodj.runtime_state as runtime_state
+
+        path = tmp_path / "web_state.json"
+        path.write_text('{"preset": "old"}', encoding="utf-8")
+
+        def interrupt_fsync(_fd: int) -> None:
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(runtime_state.os, "fsync", interrupt_fsync)
+
+        with pytest.raises(KeyboardInterrupt):
+            save_from_player({"preset": "new"}, tmp_path)
+
+        assert json.loads(path.read_text(encoding="utf-8"))["preset"] == "old"
+        assert not (tmp_path / "web_state.json.tmp").exists()
+
+    def test_directory_fsync_failure_keeps_published_state(
+        self,
+        tmp_path,
+        monkeypatch,
+        caplog,
+    ) -> None:
+        import autodj.runtime_state as runtime_state
+
+        path = tmp_path / "web_state.json"
+        path.write_text('{"preset": "old"}', encoding="utf-8")
+
+        def fail_directory_fsync(_path) -> None:
+            raise OSError("directory flush failed")
+
+        monkeypatch.setattr(
+            runtime_state,
+            "_fsync_directory",
+            fail_directory_fsync,
+            raising=False,
+        )
+
+        with caplog.at_level("WARNING"):
+            save_from_player({"preset": "new"}, tmp_path)
+
+        assert json.loads(path.read_text(encoding="utf-8"))["preset"] == "new"
+        assert not (tmp_path / "web_state.json.tmp").exists()
+        assert len([record for record in caplog.records if "durability" in record.message]) == 1
 
     def test_no_index_dir_is_no_op(self) -> None:
         # Should not raise
@@ -485,6 +607,164 @@ def test_null_clears_every_nullable_liner_cadence(tmp_path) -> None:
     assert player._cfg.playback.liners_every_minutes is None
     assert player._cfg.playback.liners_random_min_minutes is None
     assert player._cfg.playback.liners_random_max_minutes is None
+
+
+def test_reversed_random_liner_window_warns_and_leaves_pair_unchanged(
+    tmp_path,
+    caplog,
+) -> None:
+    from random import Random
+
+    from autodj.liners import LinerTrigger
+
+    player = _make_player()
+    player._cfg.playback.liners_random_min_minutes = 8.0
+    player._cfg.playback.liners_random_max_minutes = 14.0
+    _write_state(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "playback": {
+                "liners_random_min_minutes": 16.0,
+                "liners_random_max_minutes": 10.0,
+            },
+        },
+    )
+
+    with caplog.at_level("WARNING"):
+        load_into_player(player, tmp_path)
+
+    playback = player._cfg.playback
+    assert playback.liners_random_min_minutes == 8.0
+    assert playback.liners_random_max_minutes == 14.0
+    assert (
+        len([record for record in caplog.records if "random liner window" in record.message]) == 1
+    )
+    trigger = LinerTrigger(
+        enabled=True,
+        random_min_minutes=playback.liners_random_min_minutes,
+        random_max_minutes=playback.liners_random_max_minutes,
+    )
+    target = trigger.roll_random_target(rng=Random(0))
+    assert target is not None
+    assert 8.0 <= target <= 14.0
+
+
+def test_partial_random_liner_min_validates_against_current_max(
+    tmp_path,
+    caplog,
+) -> None:
+    player = _make_player()
+    player._cfg.playback.liners_random_min_minutes = 8.0
+    player._cfg.playback.liners_random_max_minutes = 14.0
+    _write_state(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "playback": {"liners_random_min_minutes": 15.0},
+        },
+    )
+
+    with caplog.at_level("WARNING"):
+        load_into_player(player, tmp_path)
+
+    assert player._cfg.playback.liners_random_min_minutes == 8.0
+    assert player._cfg.playback.liners_random_max_minutes == 14.0
+    assert (
+        len([record for record in caplog.records if "random liner window" in record.message]) == 1
+    )
+
+
+def test_partial_random_liner_max_validates_against_current_min(
+    tmp_path,
+    caplog,
+) -> None:
+    player = _make_player()
+    player._cfg.playback.liners_random_min_minutes = 8.0
+    player._cfg.playback.liners_random_max_minutes = 14.0
+    _write_state(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "playback": {"liners_random_max_minutes": 7.0},
+        },
+    )
+
+    with caplog.at_level("WARNING"):
+        load_into_player(player, tmp_path)
+
+    assert player._cfg.playback.liners_random_min_minutes == 8.0
+    assert player._cfg.playback.liners_random_max_minutes == 14.0
+    assert (
+        len([record for record in caplog.records if "random liner window" in record.message]) == 1
+    )
+
+
+def test_partial_valid_random_liner_bound_is_restored(tmp_path) -> None:
+    player = _make_player()
+    player._cfg.playback.liners_random_min_minutes = 8.0
+    player._cfg.playback.liners_random_max_minutes = 14.0
+    _write_state(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "playback": {"liners_random_min_minutes": 10.0},
+        },
+    )
+
+    load_into_player(player, tmp_path)
+
+    assert player._cfg.playback.liners_random_min_minutes == 10.0
+    assert player._cfg.playback.liners_random_max_minutes == 14.0
+
+
+def test_null_random_liner_bound_clears_only_present_field(tmp_path) -> None:
+    player = _make_player()
+    player._cfg.playback.liners_random_min_minutes = 8.0
+    player._cfg.playback.liners_random_max_minutes = 14.0
+    _write_state(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "playback": {"liners_random_min_minutes": None},
+        },
+    )
+
+    load_into_player(player, tmp_path)
+
+    assert player._cfg.playback.liners_random_min_minutes is None
+    assert player._cfg.playback.liners_random_max_minutes == 14.0
+
+
+@pytest.mark.parametrize("invalid", ["bad", float("inf"), 0, True])
+def test_invalid_random_liner_bound_leaves_both_values_unchanged(
+    tmp_path,
+    caplog,
+    invalid,
+) -> None:
+    player = _make_player()
+    player._cfg.playback.liners_random_min_minutes = 8.0
+    player._cfg.playback.liners_random_max_minutes = 14.0
+    _write_state(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "playback": {
+                "liners_random_min_minutes": invalid,
+                "liners_random_max_minutes": 12.0,
+            },
+        },
+    )
+
+    with caplog.at_level("WARNING"):
+        load_into_player(player, tmp_path)
+
+    assert player._cfg.playback.liners_random_min_minutes == 8.0
+    assert player._cfg.playback.liners_random_max_minutes == 14.0
+    assert (
+        len([record for record in caplog.records if "liners_random_min_minutes" in record.message])
+        == 1
+    )
 
 
 def test_null_bpm_range_clears_an_existing_range(tmp_path) -> None:
