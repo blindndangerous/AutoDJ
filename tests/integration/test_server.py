@@ -14,7 +14,12 @@ budget.  Shared fixtures ``client`` / ``bridge`` come from
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+import asyncio
+import threading
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+from urllib.parse import urlencode
 
 import pytest
 
@@ -22,6 +27,16 @@ from autodj.config import ServerConfig
 from autodj.server import PlayerBridge, create_app
 
 from ._helpers import _make_entry, _make_player_mock, _make_sim_mock
+
+
+def _register_index_entry(bridge, entry) -> None:
+    """Publish one extra entry through immutable similarity-index seams."""
+    entries = (*bridge.sim.entries_snapshot(), entry)
+    bridge.sim.entries_snapshot.side_effect = lambda: entries
+    bridge.sim.entry_for_path.side_effect = lambda path: next(
+        (candidate for candidate in entries if candidate.path == path),
+        None,
+    )
 
 
 class TestStatus:
@@ -2734,7 +2749,7 @@ class TestAudioEndpoint:
         # Inject as a known entry
         e = _make_entry(99)
         e.path = str(fake_mp3)
-        bridge.sim.entries.append(e)
+        _register_index_entry(bridge, e)
         tc = TestClient(create_app(bridge))
         resp = tc.get(f"/api/audio?path={fake_mp3}")
         assert resp.status_code == 200
@@ -2749,7 +2764,7 @@ class TestAudioEndpoint:
         fake.write_bytes(b"\x00" * 10000)
         e = _make_entry(123)
         e.path = str(fake)
-        bridge.sim.entries.append(e)
+        _register_index_entry(bridge, e)
         tc = TestClient(create_app(bridge))
         resp = tc.get(f"/api/audio?path={fake}", headers={"Range": "bytes=100-199"})
         assert resp.status_code == 206
@@ -2763,7 +2778,7 @@ class TestAudioEndpoint:
         fake.write_bytes(b"\x00" * 100)
         e = _make_entry(124)
         e.path = str(fake)
-        bridge.sim.entries.append(e)
+        _register_index_entry(bridge, e)
         tc = TestClient(create_app(bridge))
         resp = tc.get(f"/api/audio?path={fake}", headers={"Range": "bytes=999999-"})
         assert resp.status_code == 416
@@ -2775,10 +2790,350 @@ class TestAudioEndpoint:
         fake.write_bytes(b"\x00" * 100)
         e = _make_entry(125)
         e.path = str(fake)
-        bridge.sim.entries.append(e)
+        _register_index_entry(bridge, e)
         tc = TestClient(create_app(bridge))
         resp = tc.get(f"/api/audio?path={fake}", headers={"Range": "kilobytes=0-50"})
         assert resp.status_code == 416
+
+    def test_audio_suffix_range_returns_final_bytes(self, tmp_path, bridge) -> None:
+        from fastapi.testclient import TestClient
+
+        audio = tmp_path / "suffix.flac"
+        audio.write_bytes(bytes(range(100)))
+        entry = _make_entry(126)
+        entry.path = str(audio)
+        _register_index_entry(bridge, entry)
+
+        response = TestClient(create_app(bridge)).get(
+            f"/api/audio?path={audio}",
+            headers={"Range": "bytes=-10"},
+        )
+
+        assert response.status_code == 206
+        assert response.headers["content-range"] == "bytes 90-99/100"
+        assert response.headers["accept-ranges"] == "bytes"
+        assert response.headers["content-length"] == "10"
+        assert response.content == bytes(range(90, 100))
+
+    @pytest.mark.parametrize(
+        "header",
+        ["bytes=100-", "bytes=0-1,4-5", "bytes=+1-5", "bytes=1- 5"],
+    )
+    def test_audio_unsatisfiable_or_multi_range_has_size_header(
+        self, tmp_path, bridge, header
+    ) -> None:
+        from fastapi.testclient import TestClient
+
+        audio = tmp_path / "range.flac"
+        audio.write_bytes(b"x" * 100)
+        entry = _make_entry(127)
+        entry.path = str(audio)
+        _register_index_entry(bridge, entry)
+
+        response = TestClient(create_app(bridge)).get(
+            f"/api/audio?path={audio}", headers={"Range": header}
+        )
+
+        assert response.status_code == 416
+        assert response.headers["accept-ranges"] == "bytes"
+        assert response.headers["content-range"] == "bytes */100"
+
+    def test_audio_range_on_empty_file_is_unsatisfiable(self, tmp_path, bridge) -> None:
+        from fastapi.testclient import TestClient
+
+        audio = tmp_path / "empty.flac"
+        audio.write_bytes(b"")
+        entry = _make_entry(128)
+        entry.path = str(audio)
+        _register_index_entry(bridge, entry)
+
+        response = TestClient(create_app(bridge)).get(
+            f"/api/audio?path={audio}", headers={"Range": "bytes=0-"}
+        )
+
+        assert response.status_code == 416
+        assert response.headers["content-range"] == "bytes */0"
+
+    def test_missing_ffmpeg_falls_back_before_alac_headers(
+        self, tmp_path, bridge, monkeypatch
+    ) -> None:
+        from fastapi.testclient import TestClient
+
+        audio = tmp_path / "lossless.m4a"
+        audio.write_bytes(b"raw-alac-fixture")
+        entry = _make_entry(129)
+        entry.path = str(audio)
+        _register_index_entry(bridge, entry)
+        monkeypatch.setattr("autodj.server._is_alac", lambda _path: True)
+        monkeypatch.setattr("autodj.server.shutil.which", lambda _name: None)
+
+        response = TestClient(create_app(bridge)).get(f"/api/audio?path={audio}")
+
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "audio/mp4"
+        assert response.headers["accept-ranges"] == "bytes"
+        assert response.headers["content-length"] == str(len(b"raw-alac-fixture"))
+        assert response.content == b"raw-alac-fixture"
+
+    def test_invalid_mp4_metadata_falls_back_to_source_bytes(self, tmp_path, bridge) -> None:
+        from fastapi.testclient import TestClient
+
+        audio = tmp_path / "invalid.m4a"
+        audio.write_bytes(b"not-an-mp4")
+        entry = _make_entry(130)
+        entry.path = str(audio)
+        _register_index_entry(bridge, entry)
+
+        response = TestClient(create_app(bridge)).get(f"/api/audio?path={audio}")
+
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "audio/mp4"
+        assert response.content == b"not-an-mp4"
+
+    def test_alac_transcode_ignores_source_range(self, tmp_path, bridge, monkeypatch) -> None:
+        from fastapi.testclient import TestClient
+
+        audio = tmp_path / "lossless.m4a"
+        audio.write_bytes(b"raw-alac-fixture")
+        entry = _make_entry(130)
+        entry.path = str(audio)
+        _register_index_entry(bridge, entry)
+        monkeypatch.setattr("autodj.server._is_alac", lambda _path: True)
+        monkeypatch.setattr("autodj.server.shutil.which", lambda _name: "ffmpeg")
+
+        async def transcode(_path):
+            yield b"complete-mp3"
+
+        monkeypatch.setattr("autodj.server._transcode_alac_to_mp3", transcode)
+
+        response = TestClient(create_app(bridge)).get(
+            f"/api/audio?path={audio}", headers={"Range": "bytes=1-2"}
+        )
+
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "audio/mpeg"
+        assert response.headers["accept-ranges"] == "none"
+        assert "content-range" not in response.headers
+        assert response.content == b"complete-mp3"
+
+
+async def test_audio_read_runs_off_event_loop(tmp_path, bridge, monkeypatch) -> None:
+    from httpx2 import ASGITransport, AsyncClient
+
+    audio = tmp_path / "slow.flac"
+    audio.write_bytes(b"x" * (512 * 1024))
+    entry = _make_entry(131)
+    entry.path = str(audio)
+    _register_index_entry(bridge, entry)
+    app = create_app(bridge)
+    opened = threading.Event()
+    release = threading.Event()
+    real_open = Path.open
+
+    class SlowFile:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            self.handle.close()
+
+        def __getattr__(self, name):
+            return getattr(self.handle, name)
+
+        def read(self, size=-1):
+            opened.set()
+            assert release.wait(2.0)
+            return self.handle.read(size)
+
+    def slow_open(path, *args, **kwargs):
+        return SlowFile(real_open(path, *args, **kwargs))
+
+    monkeypatch.setattr(Path, "open", slow_open)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        request_task = asyncio.create_task(client.get(f"/api/audio?path={audio}"))
+        try:
+            opened_in_time = await asyncio.to_thread(opened.wait, 1.0)
+            if opened_in_time:
+                loop_was_responsive = asyncio.Event()
+                asyncio.get_running_loop().call_soon(loop_was_responsive.set)
+                await asyncio.wait_for(loop_was_responsive.wait(), timeout=0.2)
+        finally:
+            release.set()
+        response = await request_task
+
+    assert opened_in_time is True
+    assert response.status_code == 200
+    assert len(response.content) == 512 * 1024
+
+
+async def test_audio_file_checks_run_off_event_loop(tmp_path, bridge, monkeypatch) -> None:
+    from httpx2 import ASGITransport, AsyncClient
+
+    audio = tmp_path / "check.flac"
+    audio.write_bytes(b"x")
+    entry = _make_entry(132)
+    entry.path = str(audio)
+    _register_index_entry(bridge, entry)
+    entered = threading.Event()
+    release = threading.Event()
+    real_is_file = Path.is_file
+
+    def slow_is_file(path):
+        entered.set()
+        assert release.wait(2.0)
+        return real_is_file(path)
+
+    monkeypatch.setattr(Path, "is_file", slow_is_file)
+    app = create_app(bridge)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        request_task = asyncio.create_task(client.get(f"/api/audio?path={audio}"))
+        try:
+            entered_in_time = await asyncio.to_thread(entered.wait, 1.0)
+            if entered_in_time:
+                loop_was_responsive = asyncio.Event()
+                asyncio.get_running_loop().call_soon(loop_was_responsive.set)
+                await asyncio.wait_for(loop_was_responsive.wait(), timeout=0.2)
+        finally:
+            release.set()
+        response = await request_task
+
+    assert entered_in_time is True
+    assert response.status_code == 200
+
+
+async def test_alac_transcoder_reaps_process_when_consumer_closes(tmp_path, monkeypatch) -> None:
+    from autodj.server import _transcode_alac_to_mp3
+
+    process = SimpleNamespace(
+        stdout=SimpleNamespace(read=AsyncMock(return_value=b"mp3-chunk")),
+        kill=MagicMock(),
+        wait=AsyncMock(return_value=0),
+    )
+    monkeypatch.setattr(
+        asyncio,
+        "create_subprocess_exec",
+        AsyncMock(return_value=process),
+    )
+    stream = _transcode_alac_to_mp3(tmp_path / "source.m4a")
+
+    assert await anext(stream) == b"mp3-chunk"
+    await stream.aclose()
+
+    process.kill.assert_called_once_with()
+    process.wait.assert_awaited_once_with()
+
+
+async def _cancel_asgi_after_first_body(app, *, path: str, expected_prefix: bytes) -> None:
+    first_body = asyncio.Event()
+    never = asyncio.Event()
+    request_sent = False
+    response_status = None
+    first_chunk = b""
+
+    async def receive() -> dict:
+        nonlocal request_sent
+        if not request_sent:
+            request_sent = True
+            return {"type": "http.request", "body": b"", "more_body": False}
+        await first_body.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict) -> None:
+        nonlocal response_status, first_chunk
+        if message["type"] == "http.response.start":
+            response_status = message["status"]
+        if message["type"] == "http.response.body" and message.get("body"):
+            first_chunk = message["body"]
+            first_body.set()
+            await never.wait()
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": "/api/audio",
+        "raw_path": b"/api/audio",
+        "query_string": urlencode({"path": path}).encode("ascii"),
+        "headers": [(b"host", b"testserver")],
+        "client": ("127.0.0.1", 12345),
+        "server": ("test", 80),
+        "root_path": "",
+    }
+    await asyncio.wait_for(app(scope, receive, send), timeout=1.0)
+    assert response_status == 200
+    assert first_chunk.startswith(expected_prefix)
+
+
+async def test_partial_asgi_file_response_closes_open_handle(bridge, tmp_path, monkeypatch) -> None:
+    audio = tmp_path / "large.flac"
+    audio.write_bytes(b"x" * (256 * 1024))
+    entry = _make_entry(133)
+    entry.path = str(audio)
+    _register_index_entry(bridge, entry)
+    real_open = Path.open
+    closed = threading.Event()
+
+    class TrackedFile:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            self.handle.close()
+            closed.set()
+
+        def __getattr__(self, name):
+            return getattr(self.handle, name)
+
+    def tracked_open(path, *args, **kwargs):
+        handle = real_open(path, *args, **kwargs)
+        return TrackedFile(handle) if path == audio else handle
+
+    monkeypatch.setattr(Path, "open", tracked_open)
+
+    await _cancel_asgi_after_first_body(create_app(bridge), path=str(audio), expected_prefix=b"x")
+
+    assert closed.wait(1.0) is True
+
+
+async def test_partial_asgi_alac_response_cancels_and_reaps_ffmpeg(
+    bridge, tmp_path, monkeypatch
+) -> None:
+    audio = tmp_path / "source.m4a"
+    audio.write_bytes(b"alac")
+    entry = _make_entry(134)
+    entry.path = str(audio)
+    _register_index_entry(bridge, entry)
+    process = SimpleNamespace(
+        stdout=SimpleNamespace(read=AsyncMock(return_value=b"mp3-chunk")),
+        kill=MagicMock(),
+        wait=AsyncMock(return_value=0),
+    )
+    monkeypatch.setattr("autodj.server._is_alac", lambda _path: True)
+    monkeypatch.setattr("autodj.server.shutil.which", lambda _name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(
+        asyncio,
+        "create_subprocess_exec",
+        AsyncMock(return_value=process),
+    )
+
+    await _cancel_asgi_after_first_body(
+        create_app(bridge), path=str(audio), expected_prefix=b"mp3-chunk"
+    )
+
+    process.kill.assert_called_once_with()
+    process.wait.assert_awaited_once_with()
 
 
 # ---------------------------------------------------------------------------

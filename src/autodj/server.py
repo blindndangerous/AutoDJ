@@ -33,6 +33,7 @@ import functools
 import json as _json
 import logging
 import mimetypes
+import shutil
 import threading
 import time
 from collections.abc import AsyncGenerator, Callable
@@ -59,6 +60,7 @@ from starlette.background import BackgroundTask
 # the 2000-line working budget.  Re-export here so the external API
 # (``from autodj.server import PlayerBridge``) keeps working unchanged.
 from autodj._bridge import PlayerBridge
+from autodj.http_media import RangeNotSatisfiable, parse_single_range, stream_file_chunks
 from autodj.index_manifest import IndexConsistencyError, IndexSnapshotToken, current_snapshot_token
 from autodj.security import (
     COOKIE_NAME,
@@ -497,6 +499,77 @@ class LoginBody(BaseModel):
     """Access token submitted once in exchange for a signed session cookie."""
 
     token: str
+
+
+_MIME_BY_SUFFIX = {
+    ".mp3": "audio/mpeg",
+    ".flac": "audio/flac",
+    ".m4a": "audio/mp4",
+    ".mp4": "audio/mp4",
+    ".aac": "audio/aac",
+    ".ogg": "audio/ogg",
+    ".oga": "audio/ogg",
+    ".opus": "audio/ogg",
+    ".wav": "audio/wav",
+    ".aif": "audio/aiff",
+    ".aiff": "audio/aiff",
+}
+
+
+def _audio_mime(path: Path) -> str:
+    """Return MIME type associated with *path*'s audio suffix."""
+    return _MIME_BY_SUFFIX.get(path.suffix.lower(), "application/octet-stream")
+
+
+def _is_alac(path: Path) -> bool:
+    """Return whether an MP4-family file reports Apple Lossless audio."""
+    if path.suffix.lower() not in (".m4a", ".mp4"):
+        return False
+    try:
+        from mutagen import MutagenError
+        from mutagen.mp4 import MP4
+    except ImportError:
+        return False
+
+    try:
+        codec = getattr(MP4(str(path)).info, "codec", None) or ""
+        return codec.lower() == "alac"
+    except (OSError, ValueError, MutagenError):
+        return False
+
+
+async def _transcode_alac_to_mp3(path: Path) -> AsyncGenerator[bytes]:
+    """Yield transcoded MP3 bytes and always reap ffmpeg subprocess."""
+    process = await asyncio.create_subprocess_exec(
+        "ffmpeg",
+        "-loglevel",
+        "error",
+        "-i",
+        str(path),
+        "-c:a",
+        "libmp3lame",
+        "-b:a",
+        "192k",
+        "-f",
+        "mp3",
+        "pipe:1",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        if process.stdout is None:
+            return
+        while chunk := await process.stdout.read(64 * 1024):
+            yield chunk
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
+        await process.wait()
+
+
+async def _close_media_stream(stream: AsyncGenerator[bytes]) -> None:
+    """Close a response-owned media stream after completion or disconnect."""
+    await stream.aclose()
 
 
 # ---------------------------------------------------------------------------
@@ -1210,185 +1283,73 @@ def create_app(
     # Browser-driven playback — stream audio bytes + advance trigger
     # ------------------------------------------------------------------
 
-    _MIME_BY_SUFFIX = {
-        ".mp3": "audio/mpeg",
-        ".flac": "audio/flac",
-        ".m4a": "audio/mp4",
-        ".mp4": "audio/mp4",
-        ".aac": "audio/aac",
-        ".ogg": "audio/ogg",
-        ".oga": "audio/ogg",
-        ".opus": "audio/ogg",
-        ".wav": "audio/wav",
-        ".aif": "audio/aiff",
-        ".aiff": "audio/aiff",
-    }
-
-    def _audio_mime(p: Path) -> str:
-        """Return a MIME type for the given audio file extension."""
-        return _MIME_BY_SUFFIX.get(p.suffix.lower(), "application/octet-stream")
-
-    def _is_alac(p: Path) -> bool:
-        """True iff *p* is an ALAC stream (Apple Lossless inside .m4a)."""
-        if p.suffix.lower() not in (".m4a", ".mp4"):
-            return False
-        try:  # pragma: no cover — requires real ALAC-encoded m4a sample on disk
-            from mutagen.mp4 import MP4
-
-            info = MP4(str(p)).info
-            codec = getattr(info, "codec", None) or ""
-            return codec.lower() == "alac"
-        except (OSError, ValueError, ImportError):
-            return False
-
-    async def _transcode_alac_to_mp3(p: Path) -> AsyncGenerator[bytes]:  # pragma: no cover
-        """Yield MP3 bytes from an ALAC source via ffmpeg subprocess.
-
-        Browser ALAC support is Safari-only, so for Chrome/Firefox we
-        decode + re-encode to MP3 on the fly.  Range requests are not
-        supported on transcoded streams (ffmpeg can't seek-then-encode
-        cheaply); browser falls back to sequential playback which is
-        fine for auto-DJ use.
-
-        Excluded from coverage: requires a real ffmpeg subprocess with
-        an ALAC source — neither is available in CI.
-        """
-        proc = await asyncio.create_subprocess_exec(
-            "ffmpeg",
-            "-loglevel",
-            "error",
-            "-i",
-            str(p),
-            "-c:a",
-            "libmp3lame",
-            "-b:a",
-            "192k",
-            "-f",
-            "mp3",
-            "pipe:1",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        try:
-            stdout = proc.stdout
-            if stdout is None:
-                return
-            while True:
-                chunk = await stdout.read(64 * 1024)
-                if not chunk:
-                    break
-                yield chunk
-        finally:
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            await proc.wait()
-
     @app.get("/api/audio")
     async def api_audio(path: str, request: Request) -> Response:
-        """Stream the bytes of an indexed audio file with HTTP Range support.
-
-        The browser <audio> element uses this to play whatever the server
-        currently reports as ``current_track``.  Range support is required
-        for seek bar scrubbing and for browsers that probe metadata via a
-        small initial range request.
-
-        Path-traversal is prevented by allowing only paths that appear
-        verbatim in the loaded similarity index.
-        """
-        # Path validation — must be in the index
-        similarity = bridge.sim
-        known = similarity.entry_for_path(path) is not None
-        if not known:
+        """Stream indexed audio with one RFC-shaped byte range."""
+        if bridge.sim.entry_for_path(path) is None:
             raise HTTPException(status_code=404, detail="Track not in index")
-        f = Path(path)
-        if not f.exists() or not f.is_file():
-            raise HTTPException(status_code=404, detail="File not found on disk")
+        audio_path = Path(path)
+        try:
+            is_file = await asyncio.to_thread(audio_path.is_file)
+            if not is_file:
+                raise OSError("not a regular file")
+            file_size = (await asyncio.to_thread(audio_path.stat)).st_size
+        except OSError:
+            raise HTTPException(status_code=404, detail="File not found on disk") from None
 
-        # Transcode ALAC → MP3 on the fly so non-Safari browsers can
-        # play Apple Lossless tracks.  ffmpeg must be on PATH.
-        if _is_alac(f):  # pragma: no cover — requires ALAC source + ffmpeg
-            try:
+        if await asyncio.to_thread(_is_alac, audio_path):
+            ffmpeg = await asyncio.to_thread(shutil.which, "ffmpeg")
+            if ffmpeg is None:
+                logger.warning(
+                    "ffmpeg unavailable; serving ALAC source bytes for %s",
+                    audio_path,
+                )
+            else:
+                stream = _transcode_alac_to_mp3(audio_path)
                 return StreamingResponse(
-                    _transcode_alac_to_mp3(f),
+                    stream,
                     media_type="audio/mpeg",
                     headers={"Accept-Ranges": "none"},
-                )
-            except FileNotFoundError:
-                logger.warning(
-                    "ffmpeg not on PATH; serving ALAC raw (browser may reject).",
+                    background=BackgroundTask(_close_media_stream, stream),
                 )
 
-        file_size = f.stat().st_size
-        mime = _audio_mime(f)
-        range_header = request.headers.get("range") or request.headers.get("Range")
-
-        # No Range — full body
-        if not range_header:
-
-            def _full_iter() -> AsyncGenerator[bytes]:
-                async def _gen() -> AsyncGenerator[bytes]:
-                    chunk = 64 * 1024
-                    with open(f, "rb") as fh:
-                        while True:
-                            data = fh.read(chunk)
-                            if not data:
-                                break
-                            yield data
-
-                return _gen()
-
+        mime = _audio_mime(audio_path)
+        range_header = request.headers.get("range")
+        if range_header is None:
+            stream = stream_file_chunks(audio_path)
             return StreamingResponse(
-                _full_iter(),
+                stream,
                 media_type=mime,
                 headers={
                     "Accept-Ranges": "bytes",
                     "Content-Length": str(file_size),
                 },
+                background=BackgroundTask(_close_media_stream, stream),
             )
 
-        # Parse "bytes=START-END" — only single-range supported
         try:
-            units, _, ranges = range_header.partition("=")
-            if units.strip().lower() != "bytes":
-                raise ValueError
-            start_s, _, end_s = ranges.partition("-")
-            start = int(start_s) if start_s else 0
-            end = int(end_s) if end_s else file_size - 1
-        except (ValueError, AttributeError):
-            raise HTTPException(status_code=416, detail="Invalid Range header") from None
-
-        if start < 0 or start >= file_size or end >= file_size or start > end:
-            raise HTTPException(
+            requested_range = parse_single_range(range_header, file_size)
+        except RangeNotSatisfiable:
+            return Response(
                 status_code=416,
-                detail="Requested range not satisfiable",
-                headers={"Content-Range": f"bytes */{file_size}"},
+                headers={
+                    "Accept-Ranges": "bytes",
+                    "Content-Range": f"bytes */{file_size}",
+                },
             )
-
-        length = end - start + 1
-
-        async def _range_gen() -> AsyncGenerator[bytes]:
-            chunk = 64 * 1024
-            remaining = length
-            with open(f, "rb") as fh:
-                fh.seek(start)
-                while remaining > 0:
-                    data = fh.read(min(chunk, remaining))
-                    if (
-                        not data
-                    ):  # pragma: no cover — EOF mid-range only when file truncated under us
-                        break
-                    remaining -= len(data)
-                    yield data
-
+        stream = stream_file_chunks(audio_path, requested_range)
         return StreamingResponse(
-            _range_gen(),
+            stream,
             status_code=206,
             media_type=mime,
             headers={
                 "Accept-Ranges": "bytes",
-                "Content-Range": f"bytes {start}-{end}/{file_size}",
-                "Content-Length": str(length),
+                "Content-Range": (
+                    f"bytes {requested_range.start}-{requested_range.end}/{file_size}"
+                ),
+                "Content-Length": str(requested_range.length),
             },
+            background=BackgroundTask(_close_media_stream, stream),
         )
 
     @app.post("/api/advance")
