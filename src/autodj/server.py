@@ -77,6 +77,7 @@ from autodj.security import (
     emit_audit,
     new_request_id,
 )
+from autodj.version import current_version
 
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig
@@ -87,6 +88,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 _WS_SEND_TIMEOUT_SECONDS = 2.0
 _ALAC_PREFETCH_TIMEOUT_SECONDS = 5.0
+_PACKAGE_DIR = Path(__file__).parent
+_REQUIRED_BUILT_ASSETS = (
+    "index.html",
+    "app.js",
+    "app.css",
+    "bitcrusher-worklet.js",
+    "stutter-worklet.js",
+    "freeze-worklet.js",
+    "glitch-worklet.js",
+)
+_BUILD_INFO_NAME = "build-info.json"
 
 
 @dataclass(eq=False)
@@ -296,6 +308,35 @@ def _advertised_server_origin(policy: SecurityPolicy) -> str:
     )
 
 
+def _selected_static_dir(package_dir: Path) -> Path:
+    """Select a complete built bundle, otherwise source assets."""
+    static_built = package_dir / "static_dist"
+    if all((static_built / name).is_file() for name in (*_REQUIRED_BUILT_ASSETS, _BUILD_INFO_NAME)):
+        return static_built
+    return package_dir / "static"
+
+
+def _validated_bundle_version(static_built: Path, runtime_version: str) -> str | None:
+    """Validate metadata for a built bundle; source assets have no stamp."""
+    if not all((static_built / name).is_file() for name in _REQUIRED_BUILT_ASSETS):
+        return None
+    stamp = static_built / _BUILD_INFO_NAME
+    if not stamp.is_file():
+        raise RuntimeError(f"Built static bundle is missing build-info.json: {stamp}")
+    try:
+        payload = _json.loads(stamp.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, _json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Built static bundle has invalid build-info.json: {exc}") from exc
+    version = payload.get("version") if isinstance(payload, dict) else None
+    if not isinstance(version, str) or not version:
+        raise RuntimeError("Built static bundle build-info.json needs a non-empty string version")
+    if version != runtime_version:
+        raise RuntimeError(
+            f"Built static bundle version {version} does not match runtime version {runtime_version}"
+        )
+    return version
+
+
 @functools.cache
 def _version_info() -> dict[str, str]:
     """Return {version, commit, built_at} for the running build.
@@ -307,14 +348,10 @@ def _version_info() -> dict[str, str]:
     is a git checkout, else "unknown".
     """
     import datetime as _dt
-    import importlib.metadata as _md
     import subprocess as _sp  # nosec B404 - trusted invocation (git, fixed argv)
 
-    here = Path(__file__).parent
-    try:
-        version = _md.version("autodj")
-    except _md.PackageNotFoundError:
-        version = "0.0.0"
+    here = _PACKAGE_DIR
+    version = current_version()
 
     commit = "unknown"
     try:
@@ -333,13 +370,12 @@ def _version_info() -> dict[str, str]:
     except (OSError, _sp.SubprocessError):
         pass
 
+    candidate = _selected_static_dir(here) / "app.js"
     built_at: str | None = None
-    for candidate in (here / "static_dist" / "app.js", here / "static" / "app.js"):
-        if candidate.exists():
-            built_at = _dt.datetime.fromtimestamp(candidate.stat().st_mtime, _dt.UTC).isoformat(
-                timespec="seconds"
-            )
-            break
+    if candidate.exists():
+        built_at = _dt.datetime.fromtimestamp(candidate.stat().st_mtime, _dt.UTC).isoformat(
+            timespec="seconds"
+        )
     if built_at is None:
         built_at = _dt.datetime.now(_dt.UTC).isoformat(timespec="seconds")
 
@@ -769,7 +805,7 @@ def create_app(
                     "Server shutdown completed in degraded mode: DJ-meta cache could not be closed."
                 )
 
-    app = FastAPI(title="AutoDJ", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="AutoDJ", version=current_version(), lifespan=lifespan)
 
     def _liner_upload_max_bytes() -> int:
         server_cfg = getattr(bridge.player._cfg, "server", None)
@@ -803,10 +839,10 @@ def create_app(
     # required).  Both directories share filenames so the FastAPI
     # routes below resolve transparently regardless of which the user
     # has on disk.  See vite.config.js for the build pipeline.
-    _static_src = Path(__file__).parent / "static"
-    _static_built = Path(__file__).parent / "static_dist"
-    _static_dir = _static_built if (_static_built / "index.html").exists() else _static_src
-    if _static_dir is _static_built:
+    _static_built = _PACKAGE_DIR / "static_dist"
+    _static_dir = _selected_static_dir(_PACKAGE_DIR)
+    if _static_dir == _static_built:
+        _validated_bundle_version(_static_built, current_version())
         logger.info("Serving built static assets from %s", _static_dir)
     _static_html_path = _static_dir / "index.html"
     # Read the bundled HTML once at startup so the GET / handler never

@@ -131,22 +131,6 @@ class TestVersionHelperEdgeCases:
         assert info["version"]
         assert info["built_at"]
 
-    def test_version_handles_missing_package_metadata(self, monkeypatch) -> None:
-        """importlib.metadata raising PackageNotFoundError -> version='0.0.0'."""
-        import importlib.metadata as _md
-
-        from autodj.server import _version_info
-
-        _version_info.cache_clear()
-
-        def _missing(_name: str) -> str:
-            raise _md.PackageNotFoundError("autodj")
-
-        monkeypatch.setattr(_md, "version", _missing)
-        info = _version_info()
-        _version_info.cache_clear()
-        assert info["version"] == "0.0.0"
-
     def test_version_built_at_falls_back_to_process_start(self, monkeypatch, tmp_path) -> None:
         """No bundled / source app.js anywhere -> built_at = datetime.now(UTC)."""
         from pathlib import Path as _P
