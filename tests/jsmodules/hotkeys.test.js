@@ -204,6 +204,17 @@ describe("page shortcut scope", () => {
     expect(localSkipClick).toHaveBeenCalledOnce();
   });
 
+  it("registers the page keydown handler in capture phase", () => {
+    const addEventListener = vi.spyOn(window, "addEventListener");
+    installHotkeys({});
+    const registration = addEventListener.mock.calls.find(
+      ([type]) => type === "keydown",
+    );
+    addEventListener.mockRestore();
+
+    expect(registration[2]).toBe(true);
+  });
+
   it.each(["", "plaintext-only"])(
     "uses the composed path for contenteditable=%s without latching",
     (contentEditable) => {

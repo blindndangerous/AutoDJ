@@ -232,5 +232,5 @@ export function installHotkeys({
     // Always swallow the key when we matched one -- prevents the page
     // from scrolling on Space, etc.
     e.preventDefault();
-  });
+  }, true);
 }
