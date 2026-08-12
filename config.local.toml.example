@@ -1,0 +1,18 @@
+# Per-machine overrides, loaded only when a sibling base configuration file is loaded.
+# Copy to config.local.toml; this example remains safe to commit.
+
+[library]
+music_dir = "/srv/music"
+beets_db = "/srv/beets/library.db"
+
+[index]
+# Each named index directory may contain vectors.index, tracks.db (SQLite),
+# dj_meta.db (SQLite), web_state.json, and liner files.
+# Default liner path: <index_dir>/<name>/liners/.
+index_dir = "/srv/autodj/index"
+model_dir = "/srv/autodj/models"
+
+[server]
+host = "127.0.0.1"
+port = 8080
+# Supply access_token through AUTODJ_ACCESS_TOKEN; never commit it here.

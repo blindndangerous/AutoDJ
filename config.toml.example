@@ -24,6 +24,20 @@
 #   [library]
 #   music_dir = "Z:/Music"
 #   beets_db  = "Z:/Music/.config/beets/library.db"
+#
+# Configuration precedence:
+# defaults < config.toml < config.local.toml < environment < CLI
+#
+# Supported environment overrides:
+# BEGIN ENVIRONMENT OVERRIDES
+#   AUTODJ_LIBRARY_MUSIC_DIR
+#   AUTODJ_INDEX_DIR
+#   AUTODJ_MODEL_DIR
+#   AUTODJ_HOST
+#   AUTODJ_PORT
+#   AUTODJ_ACCESS_TOKEN
+#   AUTODJ_HUGGINGFACE_TOKEN
+# END ENVIRONMENT OVERRIDES
 
 [library]
 # Full path to your music folder (local or mapped NAS drive).
@@ -53,7 +67,9 @@ supported_formats = ["mp3", "flac", "m4a"]
 # ]
 
 [index]
-# Directory where the FAISS index and metadata are stored.
+# Each named index directory may contain vectors.index, tracks.db (SQLite),
+# dj_meta.db (SQLite), web_state.json, and liner files.
+# Default liner path: <index_dir>/<name>/liners/.
 # Can be a local path or a NAS path — if you run `autodj index` on a GPU machine
 # and `autodj play` on another machine, point both configs here to the same NAS path.
 # Example: "Z:/autodj-index"
