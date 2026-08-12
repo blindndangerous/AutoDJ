@@ -975,6 +975,11 @@ def create_app(
         # the server is actually serving (browser cache vs. fresh build).
         return JSONResponse(_version_info())
 
+    @app.get("/healthz")
+    async def healthz() -> dict[str, str | int]:
+        """Return process readiness without exposing library metadata."""
+        return {"status": "ok", "tracks": bridge.sim.ntotal}
+
     @app.get("/api/history")
     async def api_history(page: int = 1, per_page: int = 50) -> JSONResponse:
         """Return the persisted play history (newest first).

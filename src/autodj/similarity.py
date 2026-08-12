@@ -229,6 +229,13 @@ class SimilarityIndex:
     # Factory
     # ------------------------------------------------------------------
 
+    @classmethod
+    def empty(cls) -> SimilarityIndex:
+        """Return a valid zero-track index for first-run web serving."""
+        from autodj.indexer import FEATURE_DIM
+
+        return cls(faiss_index=faiss.IndexFlatIP(FEATURE_DIM), entries=[])
+
     def reload_from_disk(
         self,
         index_dir: Path,
@@ -303,6 +310,8 @@ class SimilarityIndex:
         index_dir: Path,
         music_dir: Path | None = None,
         path_remap: list[tuple[str, str]] | None = None,
+        *,
+        _migrate_flat: bool = True,
     ) -> SimilarityIndex:
         """Load a :class:`SimilarityIndex` from the index directory on disk.
 
@@ -329,7 +338,8 @@ class SimilarityIndex:
         Example:
             >>> sim = SimilarityIndex.from_index_dir(Path("index"))
         """
-        _migrate_flat_index_if_needed(index_dir)
+        if _migrate_flat:
+            _migrate_flat_index_if_needed(index_dir)
         with publication_lock(index_dir):
             manifest = read_manifest(index_dir)
             expected_generation = manifest.generation if manifest is not None else None

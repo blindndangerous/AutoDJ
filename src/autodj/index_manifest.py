@@ -25,6 +25,22 @@ SCHEMA_VERSION = 2
 MANIFEST_NAME = "index-manifest.json"
 PUBLICATION_STATE_NAME = ".index-publication-state.json"
 _GENERATION_RE = re.compile(r"^(tracks|vectors)\.g(\d{20})\.(db|index)$")
+_PUBLICATION_TEMP_RE = re.compile(
+    r"^\.(?:index-manifest\.json|\.index-publication-state\.json|"
+    r"tracks\.g\d{20}\.db|vectors\.g\d{20}\.index)\.[0-9a-f]{32}\.tmp$"
+)
+_FLAT_MIGRATION_STAGING_RE = re.compile(r"^\.flat-migration-[0-9a-f]{32}$")
+_WORKING_ARTIFACT_NAMES = frozenset(
+    {
+        MANIFEST_NAME,
+        PUBLICATION_STATE_NAME,
+        "tracks.db",
+        "tracks.db-wal",
+        "tracks.db-shm",
+        "vectors.index",
+        "vectors.index.tmp",
+    }
+)
 _TRACKS_SCHEMA_CONTRACT = (
     ("vec_row", "INTEGER"),
     ("path", "TEXT"),
@@ -196,6 +212,20 @@ def publication_is_tombstoned(index_dir: Path) -> bool:
     """Whether a committed logical-empty state currently wins."""
     state = _read_publication_state(index_dir)
     return state is not None and state.tombstone_revision > 0 and read_manifest(index_dir) is None
+
+
+def publication_is_pristine(index_dir: Path) -> bool:
+    """Return whether no committed, working, or interrupted publication exists."""
+    with publication_lock(index_dir):
+        if not legacy_artifacts_allowed(index_dir):
+            return False
+        return not any(
+            path.name in _WORKING_ARTIFACT_NAMES
+            or _GENERATION_RE.fullmatch(path.name) is not None
+            or _PUBLICATION_TEMP_RE.fullmatch(path.name) is not None
+            or _FLAT_MIGRATION_STAGING_RE.fullmatch(path.name) is not None
+            for path in index_dir.iterdir()
+        )
 
 
 def publication_has_uncommitted_reservation(index_dir: Path) -> bool:

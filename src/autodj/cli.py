@@ -195,6 +195,52 @@ def _load_index_or_exit(
         sys.exit(1)
 
 
+def _load_index_for_serve(
+    cfg: AutoDJConfig, *, active_dir: Path | None = None
+) -> SimilarityIndex:  # pragma: no cover
+    """Load an index for web serving, allowing only known logical-empty states."""
+    from autodj.index_manifest import (
+        IndexConsistencyError,
+        publication_is_pristine,
+        publication_is_tombstoned,
+        publication_lock,
+    )
+    from autodj.indexer import _migrate_flat_index_if_needed
+    from autodj.similarity import SimilarityIndex as _SI
+
+    index_dir = cfg.index.active_dir if active_dir is None else active_dir
+    if not isinstance(index_dir, Path):
+        return _SI.from_index_dir(
+            index_dir,
+            music_dir=cfg.library.music_dir,
+            path_remap=cfg.library.path_remap,
+        )
+
+    _migrate_flat_index_if_needed(index_dir)
+    with publication_lock(index_dir):
+        if publication_is_tombstoned(index_dir):
+            console.print(
+                "[yellow]Index is empty; the web UI will stay ready while you run autodj index.[/]"
+            )
+            return _SI.empty()
+        try:
+            return _SI.from_index_dir(
+                index_dir,
+                music_dir=cfg.library.music_dir,
+                path_remap=cfg.library.path_remap,
+                _migrate_flat=False,
+            )
+        except (FileNotFoundError, IndexConsistencyError):
+            tombstoned = publication_is_tombstoned(index_dir)
+            pristine = publication_is_pristine(index_dir)
+            if not tombstoned and not pristine:
+                raise
+            console.print(
+                "[yellow]Index is empty; the web UI will stay ready while you run autodj index.[/]"
+            )
+            return _SI.empty()
+
+
 def _resolve_preset_or_exit(cfg: AutoDJConfig, preset: str | None) -> Any:  # pragma: no cover
     """Resolve *preset* by name, exiting on ValueError; ``None`` when not requested."""
     if preset is None:
@@ -1725,7 +1771,7 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
     general_cli_override = _apply_serve_overrides(staged_override_cfg, locals())
     resolved_preset = _resolve_preset_or_exit(cfg, preset)
     parsed_bpm_range = _parse_bpm_range_or_exit(bpm_range)
-    sim = _load_index_or_exit(
+    sim = _load_index_for_serve(
         cfg,
         active_dir=cfg.index.index_dir / selected_index_name,
     )

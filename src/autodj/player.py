@@ -870,6 +870,11 @@ class Player:
         if self._live is not None:
             self._live.update(self._build_status())
 
+    def stop(self) -> None:
+        """Wake and stop the playback loop, including empty-library waiting."""
+        self._state.should_stop = True
+        self._skip_event.set()
+
     def run(self, seed_entry: IndexEntry | None) -> None:  # pragma: no cover -- end-to-end loop
         """Start the playback loop.
 
@@ -884,9 +889,16 @@ class Player:
         import random
 
         if seed_entry is None:
-            # Non-security seed pick — random.choice is fine here.
-            similarity = self._sim
-            seed_entry = random.choice(similarity.entries_snapshot())  # nosec B311
+            while not self._state.should_stop:
+                entries = self._sim.entries_snapshot()
+                if entries:
+                    seed_entry = random.choice(entries)  # nosec B311
+                    break
+                self._skip_event.wait(timeout=0.25)
+                self._skip_event.clear()
+            if self._state.should_stop:
+                return
+            assert seed_entry is not None
         # Remember the seed so anchored mode can keep coming back to it.
         self._seed_path = seed_entry.path
 

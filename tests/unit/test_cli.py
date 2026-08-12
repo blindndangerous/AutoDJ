@@ -458,7 +458,7 @@ class TestCliConfigSelection:
 
 
 class TestCliIndexNotFound:
-    """play / serve / playlist / stats should exit(1) when index is missing."""
+    """Offline commands should exit(1) when index is missing."""
 
     def _write_minimal_config(self, tmp_path: Path) -> Path:
         cfg = tmp_path / "config.toml"
@@ -484,11 +484,6 @@ class TestCliIndexNotFound:
     def test_playlist_exits_on_missing_index(self, tmp_path: Path) -> None:
         cfg = self._write_minimal_config(tmp_path)
         result = CliRunner().invoke(cli, ["--config", str(cfg), "playlist"])
-        assert result.exit_code == 1
-
-    def test_serve_exits_on_missing_index(self, tmp_path: Path) -> None:
-        cfg = self._write_minimal_config(tmp_path)
-        result = CliRunner().invoke(cli, ["--config", str(cfg), "serve"])
         assert result.exit_code == 1
 
 
