@@ -13,8 +13,11 @@ Example:
 from __future__ import annotations
 
 import ipaddress
+import os
 import re
 import tomllib
+from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -916,7 +919,7 @@ class HuggingFaceConfig:
             Get one free at https://huggingface.co/settings/tokens
     """
 
-    token: str | None = None
+    token: str | None = field(default=None, repr=False)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> HuggingFaceConfig:
@@ -955,12 +958,13 @@ class AutoDJConfig:
     playback: PlaybackConfig
     model: ModelConfig
     huggingface: HuggingFaceConfig
-    config_path: Path
+    config_path: Path | None
     presets: dict[str, Preset] = field(default_factory=dict)
     replaygain: ReplayGainConfig = field(default_factory=lambda: ReplayGainConfig())
     djmix: DjMixConfig = field(default_factory=lambda: DjMixConfig())
     transitions: TransitionsConfig = field(default_factory=lambda: TransitionsConfig())
     server: ServerConfig = field(default_factory=ServerConfig)
+    config_sources: tuple[str, ...] = ("defaults",)
 
 
 # ---------------------------------------------------------------------------
@@ -975,75 +979,70 @@ def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]
     those in *base*.  Used to apply machine-specific overrides from
     ``config.local.toml`` on top of the shared ``config.toml``.
     """
-    out: dict[str, Any] = dict(base)
+    out: dict[str, Any] = deepcopy(base)
     for k, v in overlay.items():
         if k in out and isinstance(out[k], dict) and isinstance(v, dict):
             out[k] = _deep_merge(out[k], v)
         else:
-            out[k] = v
+            out[k] = deepcopy(v)
     return out
 
 
-def load_config(path: str | Path = "config.toml") -> AutoDJConfig:
-    """Load and validate the AutoDJ configuration from a TOML file.
+ENVIRONMENT_OVERLAY: dict[str, tuple[str, str, type[str] | type[int]]] = {
+    "AUTODJ_LIBRARY_MUSIC_DIR": ("library", "music_dir", str),
+    "AUTODJ_INDEX_DIR": ("index", "index_dir", str),
+    "AUTODJ_MODEL_DIR": ("index", "model_dir", str),
+    "AUTODJ_HOST": ("server", "host", str),
+    "AUTODJ_PORT": ("server", "port", int),
+    "AUTODJ_ACCESS_TOKEN": ("server", "access_token", str),
+    "AUTODJ_HUGGINGFACE_TOKEN": ("huggingface", "token", str),
+}
 
-    If a sibling ``config.local.toml`` file exists alongside *path*, its
-    contents are deep-merged on top of the base config.  This lets you
-    keep a shared ``config.toml`` (e.g. on a network share) and override
-    per-machine settings (paths, ``music_dir``, ``path_remap``) in a
-    gitignored ``config.local.toml``.
 
-    Args:
-        path: Path to the ``config.toml`` file. Defaults to ``config.toml``
-            in the current working directory.
+def _default_raw() -> dict[str, Any]:
+    return {
+        "library": {"music_dir": "music"},
+        "index": {"index_dir": "index", "model_dir": "models"},
+        "server": {"host": "127.0.0.1", "port": 8080},
+    }
 
-    Returns:
-        A fully populated and validated :class:`AutoDJConfig` instance.
 
-    Raises:
-        FileNotFoundError: If the config file does not exist.
-        tomllib.TOMLDecodeError: If the file is not valid TOML.
-        KeyError: If a required key (e.g. ``library.music_dir``) is missing.
-        ValueError: If a value is out of the accepted range.
+def _environment_overlay(environ: Mapping[str, str]) -> dict[str, Any]:
+    overlay: dict[str, Any] = {}
+    for variable, (section, key, converter) in ENVIRONMENT_OVERLAY.items():
+        if variable not in environ:
+            continue
+        raw_value = environ[variable]
+        try:
+            value = converter(raw_value)
+        except ValueError as exc:
+            raise ValueError(f"{variable} has invalid value {raw_value!r}") from exc
+        overlay.setdefault(section, {})[key] = value
+    return overlay
 
-    Example:
-        >>> cfg = load_config("config.toml")
-        >>> cfg.library.music_dir
-        PosixPath('Z:/Music')
-    """
-    config_path = Path(path)
 
-    if not config_path.exists():
-        raise FileNotFoundError(
-            f"Config file not found: {config_path}\n"
-            "Run 'autodj' in the project directory or pass --config <path>."
-        )
-
-    with config_path.open("rb") as fh:
-        raw = tomllib.load(fh)
-
-    # Apply per-machine overlay if config.local.toml exists alongside.
-    local_overlay_path = config_path.parent / "config.local.toml"
-    if local_overlay_path.exists():
-        with local_overlay_path.open("rb") as fh:
-            overlay = tomllib.load(fh)
-        raw = _deep_merge(raw, overlay)
-
-    # Presets live in their own sidecar — `presets.toml` next to the
-    # main config — so user-defined BPM curves are easy to share /
-    # version separately from machine-specific paths.  Falls back to
-    # any legacy ``[presets.*]`` sections inside ``config.toml`` if
-    # the sidecar is missing.
+def _build_config(
+    raw: dict[str, Any],
+    *,
+    config_path: Path | None,
+    sources: list[str],
+    presets_raw: dict[str, Any],
+) -> AutoDJConfig:
     from autodj.presets import load_user_presets
 
-    presets_path = config_path.parent / "presets.toml"
-    presets_raw: dict[str, Any] = {}
-    if presets_path.exists():
-        with presets_path.open("rb") as fh:
-            presets_raw = tomllib.load(fh)
-    elif "presets" in raw:
-        # Legacy inline form — load from config.toml
-        presets_raw = {"presets": raw["presets"]}
+    for section in (
+        "library",
+        "index",
+        "playback",
+        "model",
+        "huggingface",
+        "replaygain",
+        "djmix",
+        "transitions",
+        "server",
+    ):
+        if not isinstance(raw.get(section, {}), Mapping):
+            raise TypeError(f"{section} section must be a table")
 
     return AutoDJConfig(
         library=LibraryConfig.from_dict(raw.get("library", {})),
@@ -1057,4 +1056,55 @@ def load_config(path: str | Path = "config.toml") -> AutoDJConfig:
         server=ServerConfig.from_dict(raw.get("server", {})),
         presets=load_user_presets(presets_raw),
         config_path=config_path,
+        config_sources=tuple(sources),
+    )
+
+
+def load_config(
+    path: str | Path | None = None, *, environ: Mapping[str, str] | None = None
+) -> AutoDJConfig:
+    """Load defaults, optional TOML overlays, then typed environment overrides.
+
+    An omitted path uses ``config.toml`` when present and otherwise keeps
+    validated defaults. An explicitly supplied missing path remains an error.
+    """
+    environment = os.environ if environ is None else environ
+    explicit = path is not None
+    candidate = Path(path) if path is not None else Path("config.toml")
+    raw = _default_raw()
+    sources = ["defaults"]
+    loaded_path: Path | None = None
+
+    if candidate.exists():
+        with candidate.open("rb") as fh:
+            raw = _deep_merge(raw, tomllib.load(fh))
+        loaded_path = candidate
+        sources.append(str(candidate))
+    elif explicit:
+        raise FileNotFoundError(f"Config file not found: {candidate}")
+
+    if loaded_path is not None:
+        local_path = loaded_path.parent / "config.local.toml"
+        if local_path.exists():
+            with local_path.open("rb") as fh:
+                raw = _deep_merge(raw, tomllib.load(fh))
+            sources.append(str(local_path))
+
+    env_raw = _environment_overlay(environment)
+    if env_raw:
+        raw = _deep_merge(raw, env_raw)
+        sources.append("environment")
+
+    sidecar_root = loaded_path.parent if loaded_path is not None else Path.cwd()
+    presets_path = sidecar_root / "presets.toml"
+    if presets_path.exists():
+        with presets_path.open("rb") as fh:
+            presets_raw = tomllib.load(fh)
+    else:
+        presets_raw = {"presets": raw["presets"]} if "presets" in raw else {}
+    return _build_config(
+        raw,
+        config_path=loaded_path,
+        sources=sources,
+        presets_raw=presets_raw,
     )

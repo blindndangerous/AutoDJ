@@ -17,6 +17,7 @@ import io
 import logging
 import os
 import sys
+from copy import deepcopy
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -143,21 +144,26 @@ def _resolve_seed(
         return None
 
 
-def _load_cfg_or_exit(config_path: str) -> AutoDJConfig:  # pragma: no cover
+def _load_cfg_or_exit(config_path: str | None) -> AutoDJConfig:  # pragma: no cover
     """Load *config_path* or print + exit on missing file."""
     from autodj.config import load_config
 
     try:
         return load_config(config_path)
-    except FileNotFoundError as exc:
-        console.print(f"[bold red]Config not found:[/] {exc}")
-        sys.exit(1)
+    except (FileNotFoundError, KeyError, TypeError, ValueError) as exc:
+        console.print(f"[bold red]Config not found or invalid:[/] {exc}")
+        raise click.exceptions.Exit(1) from exc
 
 
-def _apply_index_name(cfg: AutoDJConfig, index_name: str | None) -> None:  # pragma: no cover
-    """Validate + apply ``--name`` to *cfg* (no-op when None)."""
+def _append_cli_source(cfg: AutoDJConfig) -> None:
+    if not cfg.config_sources or cfg.config_sources[-1] != "cli":
+        cfg.config_sources = (*cfg.config_sources, "cli")
+
+
+def _apply_index_name(cfg: AutoDJConfig, index_name: str | None) -> bool:  # pragma: no cover
+    """Validate + apply ``--name``; return whether effective config changed."""
     if index_name is None:
-        return
+        return False
     from autodj.config import validate_index_name
 
     try:
@@ -165,16 +171,22 @@ def _apply_index_name(cfg: AutoDJConfig, index_name: str | None) -> None:  # pra
     except ValueError as exc:
         console.print(f"[bold red]Invalid --name:[/] {exc}")
         sys.exit(1)
+    if cfg.index.name == index_name:
+        return False
     cfg.index.name = index_name
+    _append_cli_source(cfg)
+    return True
 
 
-def _load_index_or_exit(cfg: AutoDJConfig) -> SimilarityIndex:  # pragma: no cover
+def _load_index_or_exit(
+    cfg: AutoDJConfig, *, active_dir: Path | None = None
+) -> SimilarityIndex:  # pragma: no cover
     """Load the similarity index for *cfg*, exiting on FileNotFoundError."""
     from autodj.similarity import SimilarityIndex as _SI
 
     try:
         return _SI.from_index_dir(
-            cfg.index.active_dir,
+            cfg.index.active_dir if active_dir is None else active_dir,
             music_dir=cfg.library.music_dir,
             path_remap=cfg.library.path_remap,
         )
@@ -256,7 +268,7 @@ def _coerce_audio_device(value: str | None) -> str | int | None:
 
 def _apply_serve_overrides(
     cfg: AutoDJConfig, kw: dict
-) -> None:  # pragma: no cover -- exercised by smoke tests
+) -> bool:  # pragma: no cover -- exercised by smoke tests
     """Apply CLI overrides for ``serve`` onto *cfg* in place.
 
     *kw* is the local mapping captured at the top of ``cmd_serve``;
@@ -277,24 +289,46 @@ def _apply_serve_overrides(
         "key_sync_fx": "key_sync_fx",
         "show_lyrics": "show_lyrics",
     }
-    for src_key, dst_key in djmix_keys.items():
-        if kw.get(src_key) is not None:
-            setattr(cfg.djmix, dst_key, kw[src_key])
-    for src_key, dst_key in playback_keys.items():
-        if kw.get(src_key) is not None:
-            setattr(cfg.playback, dst_key, kw[src_key])
-    if kw.get("mood_arc_hours") is not None:
-        cfg.playback.mood_arc_hours = max(0.25, float(kw["mood_arc_hours"]))
-    if kw.get("transition_fx") is not None:
-        cfg.transitions.effect = kw["transition_fx"]
+    validated_transition_mode: str | None = None
     if kw.get("transition_mode") is not None:
         from autodj.config import _validate_transition_mode
 
         try:
-            cfg.playback.transition_mode = _validate_transition_mode(kw["transition_mode"])
+            validated_transition_mode = _validate_transition_mode(kw["transition_mode"])
         except ValueError as exc:
             console.print(f"[bold red]Invalid --transition-mode:[/] {exc}")
             sys.exit(1)
+
+    changed = False
+    for src_key, dst_key in djmix_keys.items():
+        if kw.get(src_key) is not None:
+            value = kw[src_key]
+            if getattr(cfg.djmix, dst_key) != value:
+                setattr(cfg.djmix, dst_key, value)
+                changed = True
+    for src_key, dst_key in playback_keys.items():
+        if kw.get(src_key) is not None:
+            value = kw[src_key]
+            if getattr(cfg.playback, dst_key) != value:
+                setattr(cfg.playback, dst_key, value)
+                changed = True
+    if kw.get("mood_arc_hours") is not None:
+        value = max(0.25, float(kw["mood_arc_hours"]))
+        if cfg.playback.mood_arc_hours != value:
+            cfg.playback.mood_arc_hours = value
+            changed = True
+    if kw.get("transition_fx") is not None:
+        value = kw["transition_fx"]
+        if cfg.transitions.effect != value:
+            cfg.transitions.effect = value
+            changed = True
+    if (
+        validated_transition_mode is not None
+        and cfg.playback.transition_mode != validated_transition_mode
+    ):
+        cfg.playback.transition_mode = validated_transition_mode
+        changed = True
+    return changed
 
 
 def _print_serve_banner(
@@ -370,10 +404,9 @@ def _print_serve_url_banner(
 @click.option(
     "--config",
     "config_path",
-    default="config.toml",
-    show_default=True,
+    default=None,
     type=click.Path(dir_okay=False),
-    help="Path to the AutoDJ config file.",
+    help="Optional TOML config. An explicitly supplied missing path is an error.",
 )
 @click.option(
     "--verbose",
@@ -383,7 +416,7 @@ def _print_serve_url_banner(
     help="Enable debug logging (otherwise info / warning / error are shown).",
 )
 @click.pass_context
-def cli(ctx: click.Context, config_path: str, verbose: bool) -> None:
+def cli(ctx: click.Context, config_path: str | None, verbose: bool) -> None:
     """AutoDJ — AI-powered local music continuity player.
 
     Indexes your music library using MuQ audio embeddings and plays songs
@@ -717,24 +750,11 @@ def cmd_prune(
       uv run autodj prune
       uv run autodj prune --force        # bypass safety threshold
     """
-    from autodj.config import load_config
     from autodj.indexer import PruneSafetyError, prune_index
 
-    try:
-        cfg = load_config(ctx.obj["config_path"])
-    except FileNotFoundError as exc:
-        console.print(f"[bold red]Config not found:[/] {exc}")
-        sys.exit(1)
+    cfg = _load_cfg_or_exit(ctx.obj["config_path"])
 
-    if index_name:
-        from autodj.config import validate_index_name
-
-        try:
-            validate_index_name(index_name)
-        except ValueError as exc:
-            console.print(f"[bold red]Invalid --name:[/] {exc}")
-            sys.exit(1)
-        cfg.index.name = index_name
+    _apply_index_name(cfg, index_name)
 
     try:
         removed, kept = prune_index(
@@ -789,24 +809,11 @@ def cmd_enrich(ctx: click.Context, index_name: str | None) -> None:
     Examples:
       uv run autodj enrich
     """
-    from autodj.config import load_config
     from autodj.indexer import enrich_from_beets
 
-    try:
-        cfg = load_config(ctx.obj["config_path"])
-    except FileNotFoundError as exc:
-        console.print(f"[bold red]Config not found:[/] {exc}")
-        sys.exit(1)
+    cfg = _load_cfg_or_exit(ctx.obj["config_path"])
 
-    if index_name:
-        from autodj.config import validate_index_name
-
-        try:
-            validate_index_name(index_name)
-        except ValueError as exc:
-            console.print(f"[bold red]Invalid --name:[/] {exc}")
-            sys.exit(1)
-        cfg.index.name = index_name
+    _apply_index_name(cfg, index_name)
 
     if not cfg.library.beets_db:
         console.print("[bold red]No [library] beets_db in config — enrich requires beets.[/]")
@@ -890,8 +897,6 @@ def cmd_analyse(
       uv run autodj analyse --name workout
       uv run autodj analyse --limit 100   # smoke-test on a small batch
     """
-    from autodj.config import load_config
-
     missing = []
     for name in ("librosa", "soundfile"):
         try:
@@ -905,21 +910,9 @@ def cmd_analyse(
         )
         sys.exit(1)
 
-    try:
-        cfg = load_config(ctx.obj["config_path"])
-    except FileNotFoundError as exc:
-        console.print(f"[bold red]Config not found:[/] {exc}")
-        sys.exit(1)
+    cfg = _load_cfg_or_exit(ctx.obj["config_path"])
 
-    if index_name:
-        from autodj.config import validate_index_name
-
-        try:
-            validate_index_name(index_name)
-        except ValueError as exc:
-            console.print(f"[bold red]Invalid --name:[/] {exc}")
-            sys.exit(1)
-        cfg.index.name = index_name
+    _apply_index_name(cfg, index_name)
 
     from autodj.indexer import (
         _backfill_dj_meta,
@@ -1689,6 +1682,17 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
 
     from autodj.config import is_loopback_bind, validate_server_exposure
 
+    original_server = cfg.server
+    security_cli_requested = any(
+        (
+            host is not None,
+            port is not None,
+            access_token is not None,
+            insecure_lan is not None,
+            bool(allowed_hosts),
+            bool(allowed_origins),
+        )
+    )
     try:
         staged_server = replace(
             cfg.server,
@@ -1704,20 +1708,33 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
         validate_server_exposure(staged_server)
     except (TypeError, ValueError) as exc:
         raise click.ClickException(str(exc)) from exc
-    cfg.server = staged_server
-    if (
-        cfg.server.insecure_lan
-        and cfg.server.access_token is None
-        and not is_loopback_bind(cfg.server.host)
-    ):
-        console.print("[yellow]WARNING: LAN access is unauthenticated (--insecure-lan).[/]")
-    host = cfg.server.host
-    port = cfg.server.port
-    _apply_index_name(cfg, index_name)
-    sim = _load_index_or_exit(cfg)
+    server_cli_override = security_cli_requested and staged_server != original_server
+    host = staged_server.host
+    port = staged_server.port
+    selected_index_name = cfg.index.name
+    if index_name is not None:
+        from autodj.config import validate_index_name
+
+        try:
+            validate_index_name(index_name)
+        except ValueError as exc:
+            console.print(f"[bold red]Invalid --name:[/] {exc}")
+            sys.exit(1)
+        selected_index_name = index_name
+    staged_override_cfg = deepcopy(cfg)
+    general_cli_override = _apply_serve_overrides(staged_override_cfg, locals())
     resolved_preset = _resolve_preset_or_exit(cfg, preset)
     parsed_bpm_range = _parse_bpm_range_or_exit(bpm_range)
-    _apply_serve_overrides(cfg, locals())
+    sim = _load_index_or_exit(
+        cfg,
+        active_dir=cfg.index.index_dir / selected_index_name,
+    )
+    if (
+        staged_server.insecure_lan
+        and staged_server.access_token is None
+        and not is_loopback_bind(staged_server.host)
+    ):
+        console.print("[yellow]WARNING: LAN access is unauthenticated (--insecure-lan).[/]")
     _print_serve_banner(
         console,
         sim=sim,
@@ -1727,6 +1744,13 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
     )
     seed_entry = _resolve_seed(sim, cfg, seed, console, interactive=False)
     url = _print_serve_url_banner(console, host, port, ssl_certfile, ssl_keyfile)
+    cfg.djmix = staged_override_cfg.djmix
+    cfg.playback = staged_override_cfg.playback
+    cfg.transitions = staged_override_cfg.transitions
+    cfg.server = staged_server
+    _apply_index_name(cfg, index_name)
+    if general_cli_override or server_cli_override:
+        _append_cli_source(cfg)
     if open_browser:
         import threading
         import webbrowser
@@ -2009,25 +2033,12 @@ def cmd_stats(ctx: click.Context, index_name: str | None) -> None:
     Examples:
       uv run autodj stats
     """
-    from autodj.config import load_config
     from autodj.indexer import load_index
     from autodj.stats import print_stats
 
-    try:
-        cfg = load_config(ctx.obj["config_path"])
-    except FileNotFoundError as exc:
-        console.print(f"[bold red]Config not found:[/] {exc}")
-        sys.exit(1)
+    cfg = _load_cfg_or_exit(ctx.obj["config_path"])
 
-    if index_name:
-        from autodj.config import validate_index_name
-
-        try:
-            validate_index_name(index_name)
-        except ValueError as exc:
-            console.print(f"[bold red]Invalid --name:[/] {exc}")
-            sys.exit(1)
-        cfg.index.name = index_name
+    _apply_index_name(cfg, index_name)
 
     try:
         entries, _ = load_index(

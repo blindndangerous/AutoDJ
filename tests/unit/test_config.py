@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from autodj.config import (
+    ENVIRONMENT_OVERLAY,
     AutoDJConfig,
     HuggingFaceConfig,
     IndexConfig,
@@ -17,6 +18,7 @@ from autodj.config import (
     ModelConfig,
     PlaybackConfig,
     ServerConfig,
+    _deep_merge,
     canonicalize_allowed_origin,
     is_loopback_bind,
     load_config,
@@ -26,6 +28,12 @@ from autodj.config import (
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def clear_autodj_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    for variable in ENVIRONMENT_OVERLAY:
+        monkeypatch.delenv(variable, raising=False)
 
 
 @pytest.fixture
@@ -119,6 +127,103 @@ class TestLoadConfig:
             session_ttl_seconds=3600,
             liner_upload_max_bytes=25 * 1024 * 1024,
         )
+
+
+class TestDefaultAndEnvironmentConfig:
+    @pytest.mark.parametrize(
+        "section",
+        [
+            "library",
+            "index",
+            "playback",
+            "model",
+            "huggingface",
+            "replaygain",
+            "djmix",
+            "transitions",
+            "server",
+        ],
+    )
+    def test_known_section_must_be_a_table(self, tmp_path: Path, section: str) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(f"{section} = []\n", encoding="utf-8")
+
+        with pytest.raises(TypeError, match=rf"{section} section must be a table"):
+            load_config(config_path, environ={})
+
+    def test_missing_implicit_config_uses_validated_defaults(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        cfg = load_config(None, environ={})
+        assert cfg.library.music_dir == Path("music")
+        assert cfg.index.index_dir == Path("index")
+        assert cfg.index.model_dir == Path("models")
+        assert cfg.server.host == "127.0.0.1"
+        assert cfg.server.port == 8080
+        assert cfg.config_path is None
+        assert cfg.config_sources == ("defaults",)
+
+    def test_explicit_missing_config_remains_strict(self, tmp_path: Path) -> None:
+        with pytest.raises(FileNotFoundError, match="Config file not found"):
+            load_config(tmp_path / "missing.toml", environ={})
+
+    def test_precedence_defaults_toml_local_environment(self, tmp_path: Path) -> None:
+        base = tmp_path / "config.toml"
+        base.write_text(
+            '[library]\nmusic_dir = "toml-music"\n'
+            '[index]\nindex_dir = "toml-index"\nmodel_dir = "toml-models"\n'
+            '[server]\nhost = "127.0.0.2"\nport = 8081\n'
+            'access_token = "test-token-0123456789abcdef0123456789"\n',
+            encoding="utf-8",
+        )
+        (tmp_path / "config.local.toml").write_text(
+            '[library]\nmusic_dir = "local-music"\n[server]\nport = 8082\n',
+            encoding="utf-8",
+        )
+        cfg = load_config(
+            base,
+            environ={
+                "AUTODJ_LIBRARY_MUSIC_DIR": "env-music",
+                "AUTODJ_INDEX_DIR": "env-index",
+                "AUTODJ_MODEL_DIR": "env-models",
+                "AUTODJ_HOST": "127.0.0.3",
+                "AUTODJ_PORT": "8083",
+                "AUTODJ_ACCESS_TOKEN": "env-token-0123456789abcdef0123456789",
+                "AUTODJ_HUGGINGFACE_TOKEN": "hf-token-0123456789abcdef0123456789",
+            },
+        )
+        assert cfg.library.music_dir == Path("env-music")
+        assert cfg.index.index_dir == Path("env-index")
+        assert cfg.index.model_dir == Path("env-models")
+        assert (cfg.server.host, cfg.server.port) == ("127.0.0.3", 8083)
+        assert cfg.server.access_token == "env-token-0123456789abcdef0123456789"
+        assert cfg.huggingface.token == "hf-token-0123456789abcdef0123456789"
+        assert cfg.config_sources == (
+            "defaults",
+            str(base),
+            str(tmp_path / "config.local.toml"),
+            "environment",
+        )
+
+    @pytest.mark.parametrize("value", ["", "eight", "0", "65536"])
+    def test_invalid_environment_port_uses_server_validator(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(ValueError, match=r"AUTODJ_PORT|port"):
+            load_config(None, environ={"AUTODJ_PORT": value})
+
+    def test_environment_contract_is_complete(self) -> None:
+        assert set(ENVIRONMENT_OVERLAY) == {
+            "AUTODJ_LIBRARY_MUSIC_DIR",
+            "AUTODJ_INDEX_DIR",
+            "AUTODJ_MODEL_DIR",
+            "AUTODJ_HOST",
+            "AUTODJ_PORT",
+            "AUTODJ_ACCESS_TOKEN",
+            "AUTODJ_HUGGINGFACE_TOKEN",
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -343,6 +448,10 @@ class TestHuggingFaceConfig:
         hf = HuggingFaceConfig.from_dict({"token": ""})
         assert hf.token is None
 
+    def test_repr_redacts_token(self) -> None:
+        token = "hf-secret-token"
+        assert token not in repr(HuggingFaceConfig(token=token))
+
 
 # ---------------------------------------------------------------------------
 # AutoDJConfig integration
@@ -350,6 +459,24 @@ class TestHuggingFaceConfig:
 
 
 class TestDeepMergeAndOverlays:
+    def test_deep_merge_result_does_not_alias_either_input(self) -> None:
+        base = {"nested": {"retained": [1]}}
+        overlay = {
+            "nested": {"added": [2]},
+            "replacement": {"value": [3]},
+        }
+
+        merged = _deep_merge(base, overlay)
+        merged["nested"]["retained"].append(4)
+        merged["nested"]["added"].append(5)
+        merged["replacement"]["value"].append(6)
+
+        assert base == {"nested": {"retained": [1]}}
+        assert overlay == {
+            "nested": {"added": [2]},
+            "replacement": {"value": [3]},
+        }
+
     def test_local_overlay_merges_recursively(self, tmp_path: Path) -> None:
         base = tmp_path / "config.toml"
         base.write_text(
