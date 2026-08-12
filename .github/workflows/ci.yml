@@ -15,6 +15,34 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  container:
+    name: Container build, smoke, and scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build and smoke-test unprivileged image
+        run: bash scripts/container_smoke.sh
+      - name: Generate image SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: autodj:local
+          format: cyclonedx-json
+          output-file: container-sbom.cdx.json
+      - name: Scan built image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: autodj:local
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: container-sbom
+          path: container-sbom.cdx.json
+
   frontend:
     name: Frontend lint, test, build, audit
     runs-on: ubuntu-latest

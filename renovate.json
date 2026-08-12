@@ -1,14 +1,9 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:best-practices"],
+  "extends": ["config:best-practices", "docker:pinDigests"],
   "packageRules": [
-    {
-      "matchDepTypes": ["devDependencies"],
-      "automerge": true
-    }
+    {"matchDepTypes": ["devDependencies"], "automerge": true},
+    {"matchDatasources": ["docker"], "groupName": "container base images"}
   ],
-  "lockFileMaintenance": {
-    "enabled": true,
-    "schedule": ["before 5am on Monday"]
-  }
+  "lockFileMaintenance": {"enabled": true, "schedule": ["before 5am on Monday"]}
 }
