@@ -144,14 +144,19 @@ def _resolve_seed(
         return None
 
 
-def _load_cfg_or_exit(config_path: str | None) -> AutoDJConfig:  # pragma: no cover
+def _load_cfg_or_exit(
+    config_path: str | None,
+    *,
+    show_error: bool = True,
+) -> AutoDJConfig:  # pragma: no cover
     """Load *config_path* or print + exit on missing file."""
     from autodj.config import load_config
 
     try:
         return load_config(config_path)
-    except (FileNotFoundError, KeyError, TypeError, ValueError) as exc:
-        console.print(f"[bold red]Config not found or invalid:[/] {exc}")
+    except (OSError, KeyError, TypeError, ValueError) as exc:
+        if show_error:
+            console.print(f"[bold red]Config not found or invalid:[/] {exc}")
         raise click.exceptions.Exit(1) from exc
 
 
@@ -486,6 +491,47 @@ def cli(ctx: click.Context, config_path: str | None, verbose: bool) -> None:
     # level from a prior import.  Set it explicitly so the configured
     # level takes effect regardless of import order.
     logging.getLogger().setLevel(level)
+
+
+# ---------------------------------------------------------------------------
+# doctor subcommand
+# ---------------------------------------------------------------------------
+
+
+@cli.command("doctor")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+@click.pass_context
+def cmd_doctor(ctx: click.Context, as_json: bool) -> None:
+    """Check configuration, storage, dependencies, model, network, and bundle health."""
+    from autodj.doctor import (
+        CheckStatus,
+        DoctorCheck,
+        DoctorReport,
+        render_text,
+        run_doctor,
+    )
+
+    try:
+        cfg = _load_cfg_or_exit(ctx.obj["config_path"], show_error=not as_json)
+    except click.exceptions.Exit:
+        if not as_json:
+            raise
+        report = DoctorReport(
+            (
+                DoctorCheck(
+                    "configuration",
+                    CheckStatus.FAIL,
+                    "configuration invalid",
+                    "fix the configuration and retry",
+                ),
+            )
+        )
+        click.echo(report.to_json())
+        raise click.exceptions.Exit(1) from None
+    report = run_doctor(cfg)
+    click.echo(report.to_json() if as_json else render_text(report))
+    if report.exit_code:
+        raise click.exceptions.Exit(report.exit_code)
 
 
 # ---------------------------------------------------------------------------
