@@ -10,18 +10,23 @@ git clone https://github.com/<your-fork>/autodj
 cd autodj
 
 # 2. Install with dev tools
-uv sync --extra all --extra dev
+uv sync --frozen --all-extras
+npm ci
 
 # 3. Wire pre-commit
 uv run pre-commit install
 uv run pre-commit install --hook-type commit-msg
 
-# 4. Run the test suite
-uv run pytest
+# 4. Run reproducible Python and frontend gates
+uv run python scripts/ci_pytest.py
+npm run lint
+npm test
+npm run build
 ```
 
-Full suite has to stay green. Coverage floor is 90% (`fail_under = 90`
-in `pyproject.toml`) and only ratchets up. New code lands with tests.
+Full suite must remain green. `scripts/ci_pytest.py` enforces at least 99.1% line coverage and 94.7%
+branch coverage. `pyproject.toml` also rejects an incomplete test run below its combined coverage
+floor. New behavior needs focused tests.
 
 ## Branching + commits
 
@@ -46,9 +51,15 @@ The PR template auto-renders this list. Tick the boxes:
 
 - Tests added or updated for the new behaviour.
 - `CHANGELOG.md` updated under `[Unreleased]`.
-- `ruff`, `mypy`, `bandit`, `vulture`, `deptry`, `eslint`, `pytest` all clean locally (or run `uv run pre-commit run --all-files`).
-- Any web UI change has had a manual accessibility pass (keyboard,
-  screen reader if you have one handy).
+- `ruff`, `mypy`, `bandit`, `vulture`, `deptry`, ESLint, and all tests pass locally. You can run
+  their overlapping hooks with `uv run pre-commit run --all-files`.
+- `uv run pyright src/autodj/` remains required; pre-commit does not run Pyright.
+- Run `uv run autodj doctor` against intended local configuration.
+- For web UI changes, start AutoDJ and run Playwright Chromium audit with
+  `AUTODJ_BROWSERS=chromium npm run audit:ci`.
+- For container changes on Linux or WSL2, run `bash scripts/container_smoke.sh`.
+
+See [Operations](docs/operations.md) for setup, diagnosis, backup, restore, and upgrade procedures.
 
 ## Where things live
 

@@ -24,11 +24,15 @@ An auto-DJ that picks the next song based on what is playing now.  Point it at t
 git clone https://github.com/blindndangerous/AutoDJ
 cd AutoDJ
 
-# Install Python dependencies (uv handles the heavy lifting).
-uv sync --extra all
+# Install exactly the dependencies recorded in uv.lock.
+uv sync --frozen --all-extras
+npm ci
+mkdir -p music index models
 ```
 
-Copy the example to the private configuration file.  On Windows PowerShell:
+AutoDJ works without a configuration file. Its defaults use `music/`, `index/`, and `models/`
+under the current directory and listen on `127.0.0.1:8080`. To change those defaults, copy the
+example to a private configuration file. On Windows PowerShell:
 
 ```powershell
 Copy-Item config.toml.example config.toml
@@ -40,14 +44,16 @@ On macOS or Linux:
 cp config.toml.example config.toml
 ```
 
-Open `config.toml` and set `[library] music_dir` for your music folder.  Set `[library] beets_db` to your beets database, or clear it if you do not use beets.  Then index the library and start the server:
+If you created `config.toml`, set `[library] music_dir` for your music folder. Set
+`[library] beets_db` to your beets database, or clear it if you do not use beets. Run doctor before
+indexing and serving:
 
 ```bash
+# Check configuration, paths, dependencies, and security settings without writing the index.
+uv run autodj doctor
+
 # Point AutoDJ at your music folder once and let it learn the library.
-# This pass is the slow one -- it listens to every track and writes
-# what it learned to disk, enriches beets metadata, and backfills DJ
-# intro/outro/cue analysis.  For a quick embed-only smoke test, skip
-# the post-passes.
+# For a quick embed-only smoke test, skip the post-passes.
 uv run autodj index --limit 50 --no-enrich --no-analyse
 uv run autodj index               # full library, can take hours
 
@@ -57,19 +63,27 @@ uv run autodj serve
 # Open http://localhost:8080 in your browser.
 ```
 
-That is the whole flow.  Index once, serve forever.  Future runs of `autodj index` only embed new files and refresh the post-processing cache.
+Future runs of `autodj index` embed new files and refresh the post-processing cache. See
+[Operations](docs/operations.md) for diagnosis, `autodj backup`, `autodj restore`, container
+ownership, and upgrades.
 
 ## Containers (no Python install needed)
 
-If you have Podman or Docker installed:
+If you have Docker Compose installed:
 
 ```bash
 git clone https://github.com/blindndangerous/AutoDJ
 cd AutoDJ
-podman compose up        # or: docker compose up
+mkdir -p music index models
+sudo chown 10001:10001 music index models
+chmod 0755 music index models
+AUTODJ_MUSIC_DIR=./music AUTODJ_INDEX_DIR=./index AUTODJ_MODEL_DIR=./models \
+  docker compose up --build
 ```
 
-Open `http://localhost:8080`.  Music goes in `./music`; the index lives in `./index`.
+Open `http://localhost:8080`. Container runs as UID/GID 10001. Default Compose publication is host
+loopback only. See [Operations](docs/operations.md) for WSL2, bind mounts, and authenticated LAN
+startup.
 
 The container does not run the indexing step (it goes faster on a machine with a GPU, which a container does not always have).  Run `uv run autodj index` on the host first, then start the container.
 
@@ -131,9 +145,11 @@ It does not work well when:
 
 ## Configuration
 
-AutoDJ currently loads `config.toml` from the working directory unless you pass another path with `--config`.  The default server settings in `config.toml.example` bind the web UI to `localhost:8080`.
-
-Drop a `config.toml` in the repo root (or pass `--config /path/to/config.toml` on every command) to change anything.  The shipped `config.toml.example` is annotated.
+AutoDJ starts with validated defaults. If `config.toml` exists in the working directory, AutoDJ
+loads it, then loads sibling `config.local.toml`. Environment variables override files, and
+explicit CLI flags override all other sources. Omitting `--config` is valid. Passing
+`--config /path/to/config.toml` makes that file explicit, so a missing path is an error. Shipped
+`config.toml.example` lists supported environment variables and settings.
 
 ### Secure server operation
 
@@ -170,7 +186,9 @@ uv run autodj serve --host 0.0.0.0 --insecure-lan \
 
 `--insecure-lan` disables authentication; use it only on a trusted private network.  Multi-user accounts, roles, cloud identity, and public Internet hosting are not supported.
 
-Index generation manifests are the only publication signal used by live reload.  A partially written generation is not activated.  Incomplete model directories are also ignored instead of being treated as usable caches.  Planned delivery work builds on `ServerConfig` to add no-config defaults, a secret-safe environment source, and Compose changes; those are not part of the current server security contract.
+Index generation manifests are the only publication signal used by live reload. A partially
+written generation is not activated. Incomplete model directories are ignored instead of being
+treated as usable caches.
 
 Common things to set:
 
@@ -194,13 +212,16 @@ transition_mode         = "full_intro_outro"
 
 The index is portable.  Build it on a fast machine (one with a GPU is best), then copy `index/` to another machine that mounts the music library at any path.  AutoDJ stores music files and DJ metadata relative to a configurable root, so the same index works on Windows, Linux, and macOS as long as `music_dir` points at the right place on each machine.  Legacy DJ-meta rows with absolute paths are migrated to relative keys on the next `autodj index` or `autodj analyse` run.
 
-Per-machine overrides go in `config.local.toml` next to `config.toml`.  AutoDJ reads it last, so anything in there wins.
+Per-machine file overrides go in `config.local.toml` next to loaded base configuration. Environment
+variables and CLI flags still take precedence.
 
 ## Troubleshooting
 
 **The first index run is taking forever.**  This is the slow pass.  AutoDJ has to listen to every file and remember what it sounds like.  On a CPU it can take many hours for a 10000-track library.  On a machine with an NVIDIA GPU it is much faster.  Run with `--limit 50` first to confirm it works, then leave the full run going overnight.
 
-**Browser says "loading module ... was blocked".**  You probably ran `npm run build` once and then deleted `node_modules`.  Either delete `src/autodj/static_dist` (the server falls back to the unbundled source) or re-run `npm install && npm run build`.
+**Browser says "loading module ... was blocked".** You probably ran `npm run build` once and then
+deleted `node_modules`. Either delete `src/autodj/static_dist` (server falls back to unbundled
+source) or run `npm ci && npm run build`.
 
 **No sound from the web UI.**  Click the **Play** button once -- browsers require a user gesture before they will play audio.  After the first click, AutoDJ unlocks its audio context and plays normally for the rest of the session.
 
@@ -240,27 +261,38 @@ If you plan to change the code:
 
 ```bash
 # Python tests + linting + type checking + dead-code + dep audit.
-uv sync --extra all --extra dev
-uv run pytest
-uv run ruff check
-uv run mypy src
-uv run vulture src/autodj   # dead-code scan
+uv sync --frozen --all-extras
+uv run python scripts/ci_pytest.py
+uv run ruff check src tests scripts
+uv run mypy src/autodj
+uv run pyright src/autodj
+uv run vulture              # dead-code scan
 uv run deptry src/autodj    # dep-declaration audit
 
 # Web UI build (optional -- the server falls back to unbundled source
 # when the build output is missing).
-npm install
+npm ci
 npm run build           # writes src/autodj/static_dist/
 
 # JS lint + module unit tests.
 npm run lint
 npm test
 
-# Cross-browser audit against a running server.
-AUTODJ_URL=http://192.168.50.40:8080 npm run audit:regression
+# Chromium audit against a running server.
+AUTODJ_BROWSERS=chromium npm run audit:ci
 ```
 
-The Python side uses `uv`, `pytest`, `ruff`, `mypy`, `bandit`, `vulture` (dead-code), and `deptry` (dependency declarations).  The web side uses `vite` for bundling, `vitest` for unit tests, `eslint` for JS lint, and `@playwright/test` for cross-browser audits.  All of these run as `pre-commit` hooks; install once with `uv run pre-commit install`.
+Pre-commit runs these hooks: `trailing-whitespace`, `end-of-file-fixer`, `mixed-line-ending`,
+`check-added-large-files`, `check-merge-conflict`, `check-yaml`, `check-toml`, `check-json`,
+`detect-private-key`, `check-case-conflict`, `check-symlinks`, `gitleaks`, `actionlint`, `ruff`,
+`ruff-format`, `bandit`, `mypy`, `vulture`, `deptry`, `interrogate`, `xenon`, `pip-audit`,
+`pip-licenses`, `osv-scanner`, `trivy-fs`, `pytest`, `eslint`, and `commitlint`. Install them with
+`uv run pre-commit install` and `uv run pre-commit install --hook-type commit-msg`.
+
+Gates outside pre-commit include lock checks, the coverage-exclusion policy, Pyright, Vitest, the
+Vite build, the frontend dead-code scan, npm audit, Playwright audits, container smoke, and release
+verification. Run their commands directly or through CI as described in
+[Contributing](CONTRIBUTING.md).
 
 ## Credits and licensing
 

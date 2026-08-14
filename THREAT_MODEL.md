@@ -1,80 +1,98 @@
-# Threat Model: AutoDJ
+# Threat model: AutoDJ
 
-Last reviewed: 2026-05-05. Re-review every major release.
+Last reviewed: 2026-08-02. Re-review every major release.
 
-## Scope
+## Scope and trust boundaries
 
-AutoDJ is a single-user offline music player. Two surfaces ship:
+AutoDJ is a single-user local music player with these exposed surfaces:
 
-1. **CLI** (`autodj` subcommands). Reads local audio + the FAISS
-   index, writes M3U and history files. No network.
-2. **Web UI** (`autodj serve`). FastAPI + WebSocket bound to
-   `127.0.0.1:8080` by default. Opt into LAN with `--host 0.0.0.0`.
+- CLI commands read local audio and configuration, then write index, profile, liner, history, or
+  backup data as the invoking user.
+- The web UI uses FastAPI and WebSocket. The default host process binds to `127.0.0.1:8080`.
+  The default Compose service listens on container-internal `0.0.0.0` but publishes only on host
+  `127.0.0.1`.
+- LAN mode requires either an access token or explicit `--insecure-lan`, plus exact Host and Origin
+  allowlists. `AUTODJ_ACCESS_TOKEN` is supported for secret injection.
+- Backup and restore trust configured source and destination roots after applying path, type,
+  identity, size, digest, and free-space checks.
 
-Out of scope: cloud sync, multi-user, anything paid. No authentication.
-If you need remote access, put it behind Tailscale, mTLS, or a
-reverse proxy with real auth.
+Cloud sync, multi-user roles, billing, and direct public Internet hosting are out of scope. Use TLS
+for any network where observers could read HTTP traffic. For remote access, place AutoDJ behind a
+trusted TLS reverse proxy, mTLS, or a private overlay network.
 
-## STRIDE per surface
+## CLI risks
 
-### CLI
+- Crafted audio metadata is handled through Mutagen with guarded errors.
+- Checkpoints preserve index progress across interruption. `--limit` bounds operator-requested
+  indexing work.
+- Error and diagnostic output must not expose access tokens or Hugging Face tokens. `autodj doctor`
+  serializes secret fields as `<redacted>` and does not write index state.
+- Background jobs accept fixed subcommands and validated arguments. They run with `shell=False`.
 
-| STRIDE | Threat | Mitigation |
-|---|---|---|
-| Spoofing | n/a, local user | OS file permissions |
-| Tampering | Malicious audio with crafted tags | mutagen handles malformed tags safely; every tag read is in a defensive try/except |
-| Repudiation | n/a, single user. Optional history file is informational | (n/a) |
-| Information disclosure | Path to private audio leaks via crash trace | Logs at INFO level redact paths beyond `music_dir` |
-| Denial of service | Indexer hangs on huge corpora | `--limit N` flag, plus per-track checkpoint so partial progress survives a kill |
-| Elevation of privilege | n/a, runs as the invoking user | `autodj.jobs` allows only a fixed subcommand allowlist; arg metachars rejected |
+## Web request policy
 
-### Web UI (`autodj serve`)
+Default loopback mode is anonymous. For a non-loopback bind, startup validation requires a token or
+explicit insecure-LAN acknowledgement. Wildcard binds also require nonempty exact allowed-host and
+allowed-origin lists.
 
-| STRIDE | Threat | Mitigation |
-|---|---|---|
-| Spoofing | Anyone on the LAN reaches the server when bound to `0.0.0.0` | Default bind is `127.0.0.1`. LAN bind needs explicit `--host 0.0.0.0` and the startup banner shouts about it |
-| Tampering | Path traversal via `/api/audio?path=` | The path parameter must appear verbatim in the loaded FAISS index. It's an allowlist, not a filesystem walk |
-| Repudiation | No per-action audit trail | Logs include a request ID; that's enough for a single-user player |
-| Information disclosure | `/api/audio` could exfiltrate any readable file | Allowlist of indexed paths; `Path.exists()` + `is_file()` re-checked before streaming |
-| Denial of service | Heavy `index` job blocks the event loop | Long jobs run as subprocesses via `autodj.jobs`, one at a time. The API stays responsive |
-| Elevation of privilege | Web UI invokes `autodj index/enrich/prune` as a subprocess | `JobManager._ALLOWED` is a hard-coded allowlist; arg metachars rejected; `shell=False` |
+When `server.access_token` or `AUTODJ_ACCESS_TOKEN` is set:
 
-## Subprocess hardening
+- The token must contain at least 32 UTF-8 bytes.
+- The login handler compares the token in constant time and exchanges it for a signed
+  `autodj_session` cookie.
+- The cookie is HttpOnly and SameSite Strict. It becomes Secure when AutoDJ serves with TLS.
+- The login body is limited to 4096 bytes before downstream parsing.
+- A fixed-window limiter permits five attempts per client and 100 total attempts per 60 seconds,
+  with bounded state for 1024 clients.
+- The HTTP API and WebSocket both enforce session, Host, and Origin policy.
 
-`autodj.jobs.JobManager.start()`:
+Public assets, `/healthz`, `/api/version`, `/api/auth/status`, and `/api/login` remain available
+without a session cookie. Unsafe HTTP methods require one allowed Origin. Audio and liner file
+endpoints use indexed or validated plain-file allowlists rather than arbitrary filesystem paths.
 
-- Accepts only `{"index", "enrich", "prune", "stats", "list-indexes"}`.
-- Rejects any arg containing `&`, `|`, `;`, `` ` ``, `\n`, `\r`.
-- Builds the command from a constant prefix (`sys.executable, "-m",
-  "autodj"`) and vetted args. It never accepts an executable path
-  from the request.
-- `shell=False`.
+## Request and audit records
 
-Bandit flags B404 (`import subprocess`) and B603 (`Popen` with
-non-literal args). Both are annotated `# nosec` with the rationale
-above. If you change the allowlist or relax the metachar reject, the
-annotations have to be re-justified.
+HTTP responses receive `X-Request-ID`. WebSocket connections also receive an internal request ID.
+Audit records use fixed JSON fields for request ID, action, outcome, method, route template, and
+status. They do not include tokens, request bodies, query strings, client-supplied filenames, or
+music paths.
 
-## Network exposure
+Rejected requests and rate-limit transitions are audited. Successful or rejected unsafe HTTP
+actions are audited after response status is known. WebSocket connection, control, error, and
+disconnect events are audited. These records support single-user incident review but do not provide
+per-user attribution.
 
-| Endpoint | Bind |
-|---|---|
-| `/`, `/api/*`, `/ws` | `127.0.0.1:8080` by default |
-| `--host 0.0.0.0` | LAN-trusted only. README plus the serve banner say so loudly |
+## Backup and restore boundary
 
-The web server has no authentication. Public-internet exposure is
-unsupported. If you need remote access, put it behind Tailscale, mTLS,
-or a reverse proxy with auth.
+Backups classify published index and SQLite data as derived. Profiles, liners, dayparts, optional
+history, and `web_state.json` are unique data. Each archived payload has an exact destination, size,
+classification, and SHA-256 digest in schema 1 `manifest.json`.
 
-## Dependencies
+Stopped backup rejects SQLite WAL, shared-memory, and rollback-journal sidecars and rechecks state
+during copying. This detects activity but does not prove no writer exists, so the operator must stop
+service. Online backup uses SQLite backup API for live DJ metadata and retries bounded index
+generation changes.
 
-- `uv.lock` committed.
-- `pip-audit` runs in CI on every PR.
-- Renovate opens PRs on dep bumps. Dev-dep bumps auto-merge after CI
-  green; runtime deps need a human review.
-- Trivy + OSV-Scanner run nightly via `.github/workflows/security.yml`
-  and on every PR.
+Restore rejects unknown schema and incompatible release lines, unsafe paths, normalized path
+collisions, symlink or reparse traversal, encrypted or non-regular ZIP members, invalid mappings,
+undeclared files, size mismatches, and digest mismatches. It checks central-directory metadata and
+target free space before extraction, stages every payload, and rolls installed targets back after a
+failure. Filesystem roots remain trusted through operating-system ACLs. AutoDJ does not defend
+against an attacker who already controls those roots and can race filesystem operations.
+
+## Container and dependency controls
+
+The container image runs as UID/GID 10001 with all capabilities dropped and `no-new-privileges`.
+Base images and the copied `uv` binary use immutable digests. CI builds and smoke-tests the image.
+It verifies bind ownership and host loopback publication, generates a CycloneDX SBOM, and blocks on
+Trivy HIGH or CRITICAL findings with fixes available.
+
+`uv.lock` and `package-lock.json` are committed. CI uses frozen installs, runs `pip-audit` and
+`npm audit`, scans source tree with Trivy and OSV-Scanner, checks secrets with Gitleaks, and produces
+dependency and container SBOM artifacts. `osv-scanner.toml` records the rationale for its one
+ignored advisory. `scripts/check_pip_audit_suppressions.py` rejects the matching pip-audit
+suppression after its 2026-11-02 expiry unless reviewed.
 
 ## Reporting a vulnerability
 
-[`SECURITY.md`](SECURITY.md).
+Use the private process in [SECURITY.md](SECURITY.md).
