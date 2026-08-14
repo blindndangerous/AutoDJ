@@ -535,6 +535,53 @@ def cmd_doctor(ctx: click.Context, as_json: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
+# backup and restore subcommands
+# ---------------------------------------------------------------------------
+
+
+@cli.command("backup")
+@click.argument("destination", type=click.Path(path_type=Path, dir_okay=False))
+@click.option("--online", is_flag=True, help="Use SQLite online backup while AutoDJ is running.")
+@click.option("--force", is_flag=True, help="Atomically replace an existing destination archive.")
+@click.pass_context
+def cmd_backup(ctx: click.Context, destination: Path, online: bool, force: bool) -> None:
+    """Create a versioned backup of derived and unique AutoDJ state."""
+    from autodj.backup import BackupError, create_backup
+
+    cfg = _load_cfg_or_exit(ctx.obj["config_path"])
+    try:
+        path = create_backup(cfg, destination, online=online, force=force)
+    except BackupError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Backup written: {path}")
+
+
+@cli.command("restore")
+@click.argument("archive", type=click.Path(path_type=Path, exists=True, dir_okay=False))
+@click.option("--force", is_flag=True, help="Replace files already present at restore targets.")
+@click.pass_context
+def cmd_restore(ctx: click.Context, archive: Path, force: bool) -> None:
+    """Restore a compatible backup, then require doctor validation."""
+    from autodj.backup import BackupError, restore_backup
+    from autodj.doctor import render_text, run_doctor
+
+    cfg = _load_cfg_or_exit(ctx.obj["config_path"])
+    try:
+        result = restore_backup(cfg, archive, force=force)
+    except BackupError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Restored {result.restored} files.")
+    for warning in result.warnings:
+        click.echo(f"WARNING: {warning}", err=True)
+    report = run_doctor(cfg)
+    click.echo(render_text(report))
+    if report.exit_code:
+        raise click.ClickException(
+            "Restore completed, but doctor found required failures; do not serve yet."
+        )
+
+
+# ---------------------------------------------------------------------------
 # index subcommand
 # ---------------------------------------------------------------------------
 
