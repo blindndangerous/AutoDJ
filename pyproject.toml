@@ -248,6 +248,7 @@ dev = [
     "bandit>=1.9.4",
     "mypy>=2.0.0",
     "pyright>=1.1.380",
+    "packaging==26.3",
     "pip-audit>=2.10.0",
     "pre-commit>=4.5.1",
     "pytest-asyncio>=1.3.0",
