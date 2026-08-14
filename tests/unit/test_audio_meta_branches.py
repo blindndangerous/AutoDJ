@@ -2,22 +2,37 @@
 
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 
 from autodj.audio_meta import (
+    _cover_from_apic,
+    _cover_from_mp4,
     _decode_mp4_atom,
+    _frame_text,
     _lyrics_from_mp4,
     _lyrics_from_uslt,
     _lyrics_from_vorbis,
+    _open_mutagen,
     _parse_gain_string,
     _rg_from_id3,
     _rg_from_mp4,
     _rg_from_vorbis,
+    _vorbis_get,
     parse_lrc,
+    read_file_tags,
 )
 
 
 class TestParseGainString:
+    def test_float_conversion_failure_returns_none(self, monkeypatch) -> None:
+        import autodj.audio_meta as audio_meta
+
+        match = SimpleNamespace(group=lambda _index: "not-a-float")
+        monkeypatch.setattr(audio_meta, "_GAIN_RE", SimpleNamespace(search=lambda _value: match))
+
+        assert _parse_gain_string("matched") is None
+
     def test_returns_none_when_no_number(self) -> None:
         assert _parse_gain_string("no number here") is None
 
@@ -121,6 +136,9 @@ class TestRgFromMp4:
         m = SimpleNamespace(tags=tags)
         assert _rg_from_mp4(m) == (None, None)
 
+    def test_unrelated_atom_is_ignored(self) -> None:
+        assert _rg_from_mp4(SimpleNamespace(tags={"artist": ["name"]})) == (None, None)
+
 
 class TestDecodeMp4Atom:
     def test_bytes_decoded(self) -> None:
@@ -158,6 +176,13 @@ class TestLyricsFromVorbis:
     def test_returns_first(self) -> None:
         m = SimpleNamespace(get=lambda k: ["the lyrics"] if k == "lyrics" else None)
         assert _lyrics_from_vorbis(m) == "the lyrics"
+
+    def test_empty_value_continues_to_later_keys(self) -> None:
+        m = SimpleNamespace(
+            get=lambda key: [""] if key == "lyrics" else (["later"] if key == "LYRICS" else None)
+        )
+
+        assert _lyrics_from_vorbis(m) == "later"
 
 
 class TestLyricsFromUslt:
@@ -230,6 +255,94 @@ class TestParseLrcMalformed:
         # 01:1.2.3 -> float("1.2.3") raises ValueError -> skipped
         # only the second line should be present
         assert any(line.text == "world" for line in result)
+
+    def test_dot_only_seconds_are_skipped(self) -> None:
+        result = parse_lrc("[01:.]invalid\n[02:03]valid")
+
+        assert [(line.time_s, line.text) for line in result] == [(123.0, "valid")]
+
+    def test_invalid_matched_timestamp_is_skipped(self, monkeypatch) -> None:
+        import autodj.audio_meta as audio_meta
+
+        timestamps = SimpleNamespace(
+            findall=lambda _line: [("01", "invalid")],
+            sub=lambda _replacement, _line: "lyric",
+        )
+        monkeypatch.setattr(audio_meta, "_LRC_TIMESTAMP_RE", timestamps)
+
+        assert parse_lrc("timestamp") == []
+
+
+class TestCoverArtDefensive:
+    def test_apic_frame_without_data_is_skipped(self) -> None:
+        assert _cover_from_apic({"APIC:front": object()}) is None
+
+    def test_empty_mp4_cover_list_is_ignored(self) -> None:
+        assert _cover_from_mp4({"covr": []}) is None
+
+
+class TestGenericTagDefensive:
+    def test_open_mutagen_incomplete_module_returns_none(self, monkeypatch) -> None:
+        monkeypatch.setitem(sys.modules, "mutagen", type(sys)("mutagen"))
+
+        assert _open_mutagen("track.flac") is None
+
+    def test_read_tags_incomplete_module_returns_empty(self, monkeypatch) -> None:
+        monkeypatch.setitem(sys.modules, "mutagen", type(sys)("mutagen"))
+
+        assert read_file_tags("track.flac").length == 0.0
+
+    def test_file_without_info_uses_zero_length(self, monkeypatch) -> None:
+        fake_module = type(sys)("mutagen")
+        fake_module.File = lambda _path: SimpleNamespace(info=None)  # type: ignore[attr-defined]
+        fake_module.MutagenError = type("MutagenError", (Exception,), {})  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "mutagen", fake_module)
+
+        assert read_file_tags("track.flac").length == 0.0
+
+    def test_vorbis_getter_exception_is_ignored(self) -> None:
+        class Tags:
+            def get(self, _key):
+                raise ValueError("bad tags")
+
+        assert _vorbis_get(Tags(), "title") is None
+
+    def test_empty_id3_text_list_is_ignored(self) -> None:
+        assert _frame_text(SimpleNamespace(text=[])) is None
+
+    def test_broken_sequence_is_ignored(self) -> None:
+        class BrokenList(list):
+            def __getitem__(self, _index):
+                raise TypeError("bad sequence")
+
+        assert _frame_text(BrokenList(["value"])) is None
+
+    def test_broken_bytes_decoder_is_ignored(self) -> None:
+        class BrokenBytes(bytes):
+            def decode(self, *args, **kwargs):
+                raise TypeError("bad bytes")
+
+        assert _frame_text(BrokenBytes(b"value")) is None
+
+    def test_uslt_frame_lookup_exception_is_ignored(self) -> None:
+        class Tags:
+            def keys(self):
+                return ["USLT::eng"]
+
+            def __getitem__(self, _key):
+                raise KeyError("missing")
+
+        assert _lyrics_from_uslt(Tags()) == ""
+
+    def test_mp4_empty_atom_is_ignored(self) -> None:
+        assert _lyrics_from_mp4({"\xa9lyr": []}) == ""
+
+    def test_mp4_broken_bytes_decoder_is_ignored(self) -> None:
+        class BrokenBytes(bytes):
+            def decode(self, *args, **kwargs):
+                raise TypeError("bad bytes")
+
+        assert _lyrics_from_mp4({"\xa9lyr": [BrokenBytes(b"value")]}) == ""
 
 
 # ---------------------------------------------------------------------------

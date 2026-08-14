@@ -103,6 +103,8 @@ _BUILD_INFO_NAME = "build-info.json"
 
 @dataclass(eq=False)
 class _WebSocketClient:
+    """Track one WebSocket connection and its coordinated shutdown state."""
+
     websocket: Any
     request_id: str | None = None
     session_is_valid: Callable[[], bool] | None = field(default=None, repr=False)
@@ -119,6 +121,7 @@ async def _close_websocket_client(
     timeout_seconds: float,
     failure_action: str,
 ) -> bool:
+    """Close one WebSocket client once and audit a failed close attempt."""
     try:
         async with asyncio.timeout(timeout_seconds):
             async with client.send_lock:
@@ -143,6 +146,7 @@ async def _close_websocket_client(
 
 
 async def _close_failed_websocket(client: _WebSocketClient, timeout_seconds: float) -> None:
+    """Close and cancel a client whose WebSocket send operation failed."""
     try:
         await _close_websocket_client(
             client,
@@ -157,6 +161,7 @@ async def _close_failed_websocket(client: _WebSocketClient, timeout_seconds: flo
 
 
 def _websocket_session_is_valid(client: _WebSocketClient) -> bool:
+    """Return whether the client session callback accepts its current session."""
     if client.session_is_valid is None:
         return True
     try:
@@ -166,6 +171,7 @@ def _websocket_session_is_valid(client: _WebSocketClient) -> bool:
 
 
 async def _close_expired_websocket(client: _WebSocketClient, timeout_seconds: float) -> None:
+    """Close and cancel a client whose WebSocket session is no longer valid."""
     try:
         await _close_websocket_client(
             client,
@@ -182,6 +188,7 @@ async def _close_expired_websocket(client: _WebSocketClient, timeout_seconds: fl
 async def _send_websocket_payload(
     client: _WebSocketClient, payload: str, timeout_seconds: float
 ) -> bool:
+    """Send one payload or close the client after a send or session failure."""
     if not _websocket_session_is_valid(client):
         await _close_expired_websocket(client, timeout_seconds)
         return False
@@ -210,6 +217,7 @@ async def _broadcast_clients(
     *,
     timeout_seconds: float = _WS_SEND_TIMEOUT_SECONDS,
 ) -> set[_WebSocketClient]:
+    """Broadcast a payload and return clients that did not receive it."""
     results = await asyncio.gather(
         *(_send_websocket_payload(client, payload, timeout_seconds) for client in clients)
     )
@@ -223,6 +231,7 @@ async def _broadcast_and_prune(
     *,
     timeout_seconds: float = _WS_SEND_TIMEOUT_SECONDS,
 ) -> set[_WebSocketClient]:
+    """Broadcast a payload and remove clients that failed to receive it."""
     async with clients_lock:
         snapshot = tuple(clients)
     dead = await _broadcast_clients(snapshot, payload, timeout_seconds=timeout_seconds)
@@ -240,6 +249,7 @@ async def _close_and_prune_websocket(
     code: int,
     timeout_seconds: float = _WS_SEND_TIMEOUT_SECONDS,
 ) -> bool:
+    """Close a WebSocket client and remove it from the shared client set."""
     closed = await _close_websocket_client(
         client,
         code=code,
@@ -569,16 +579,18 @@ def _is_alac(source: OpenedMediaFile, suffix: str) -> bool:
     if suffix.lower() not in (".m4a", ".mp4"):
         return False
     try:
-        from mutagen import MutagenError
+        import mutagen
         from mutagen.mp4 import MP4
-    except ImportError:
+
+        mutagen_error = vars(mutagen)["MutagenError"]
+    except (ImportError, KeyError):
         return False
 
     try:
         source.handle.seek(0)
         codec = getattr(MP4(source.handle).info, "codec", None) or ""
         return codec.lower() == "alac"
-    except (OSError, ValueError, MutagenError):
+    except (OSError, ValueError, mutagen_error):
         return False
     finally:
         with contextlib.suppress(OSError):
@@ -727,6 +739,7 @@ def create_app(
             raise
 
         def release_capacity(completed: asyncio.Task[list[dict]]) -> None:
+            """Release the lyrics-read slot after the worker task finishes."""
             _lyrics_read_gate.release()
             if not completed.cancelled():
                 completed.exception()
@@ -1339,10 +1352,14 @@ def create_app(
 
     @app.get("/api/liners/file/{escaped:path}", include_in_schema=False)
     async def api_liner_file_reject_path(escaped: str) -> None:
+        """Reject liner file requests whose path is not a plain filename."""
+        del escaped
         raise HTTPException(status_code=400, detail="liner name must be one plain filename")
 
     @app.delete("/api/liners/file/{escaped:path}", include_in_schema=False)
     async def api_liner_delete_reject_path(escaped: str) -> None:
+        """Reject liner deletion requests whose path is not a plain filename."""
+        del escaped
         raise HTTPException(status_code=400, detail="liner name must be one plain filename")
 
     @app.post("/api/pause")
@@ -1780,6 +1797,7 @@ def create_app(
         await websocket.accept()
 
         def session_is_valid() -> bool:
+            """Return whether the accepted WebSocket session remains valid."""
             live_policy: SecurityPolicy = websocket.app.state.security_policy
             return not live_policy.authentication_required or live_policy.verify_session(
                 session_cookie

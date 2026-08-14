@@ -6,11 +6,19 @@ import json
 import re
 import secrets
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
 from autodj.config import ServerConfig
-from autodj.security import COOKIE_NAME, SecurityPolicy, audit_record, new_request_id
+from autodj.security import (
+    COOKIE_NAME,
+    LoginRateLimiter,
+    SecurityMiddleware,
+    SecurityPolicy,
+    audit_record,
+    new_request_id,
+)
 
 _TOKEN = "test-access-token-that-is-32-bytes-long"
 _ROTATED_TOKEN = "rotated-access-token-that-is-32-bytes"
@@ -420,3 +428,139 @@ def test_request_ids_are_unique_lowercase_hex() -> None:
     values = {new_request_id() for _ in range(128)}
     assert len(values) == 128
     assert all(re.fullmatch(r"[0-9a-f]{32}", value) for value in values)
+
+
+@pytest.mark.parametrize(
+    "setting",
+    [
+        {"per_client_limit": 0},
+        {"global_limit": 0},
+        {"window_seconds": 0},
+        {"max_clients": 0},
+    ],
+)
+def test_login_limiter_requires_positive_settings(setting) -> None:
+    with pytest.raises(ValueError, match="must be positive"):
+        LoginRateLimiter(**setting)
+
+
+def test_login_limiter_rejects_nonfinite_clock() -> None:
+    with pytest.raises(ValueError, match="clock returned an invalid value"):
+        LoginRateLimiter(now=lambda: float("nan"))
+
+
+def test_login_limiter_discards_expired_client_window() -> None:
+    clock = [0.0]
+    limiter = LoginRateLimiter(now=lambda: clock[0], per_client_limit=1, window_seconds=10)
+    assert limiter.reserve("peer").allowed is True
+    assert limiter.reserve("peer").allowed is False
+
+    limiter._global_started = 5.0
+    clock[0] = 10.0
+
+    assert limiter.reserve("peer").allowed is True
+
+
+def test_issue_session_rejects_expiry_overflow() -> None:
+    policy = SecurityPolicy(
+        _server(access_token=_TOKEN, session_ttl_seconds=60), now=lambda: 2**63 - 1
+    )
+
+    with pytest.raises(RuntimeError, match="expiry is outside"):
+        policy.issue_session()
+
+
+def test_negative_clock_timestamp_is_rejected() -> None:
+    policy = SecurityPolicy(_server(access_token=_TOKEN), now=lambda: -1)
+
+    with pytest.raises(ValueError, match="invalid timestamp"):
+        policy.issue_session()
+
+
+def test_secure_unspecified_host_has_no_implicit_origin() -> None:
+    policy = SecurityPolicy(_server(host="0.0.0.0", allowed_origins=None), secure_cookie=True)
+
+    assert policy.effective_allowed_origins() == []
+
+
+@pytest.mark.parametrize("host", [".", "-invalid.example"])
+def test_host_policy_rejects_empty_or_invalid_dns_name(host: str) -> None:
+    assert SecurityPolicy(_server()).host_allowed(host) is False
+
+
+def test_security_middleware_unknown_peer_and_malformed_length() -> None:
+    assert SecurityMiddleware._peer({"type": "http"}) == "<unknown>"
+    assert SecurityMiddleware._declared_login_body_too_large(
+        {"type": "http", "headers": [(b"content-length", b"invalid")]}
+    )
+
+
+@pytest.mark.asyncio
+async def test_login_body_buffer_rejects_nonbytes_chunk() -> None:
+    async def receive():
+        return {"type": "http.request", "body": "not bytes"}
+
+    with pytest.raises(ValueError, match="invalid ASGI request body"):
+        await SecurityMiddleware._buffer_login_body(receive)
+
+
+def _login_scope() -> dict:
+    return {
+        "type": "http",
+        "method": "POST",
+        "path": "/api/login",
+        "headers": [
+            (b"host", b"radio.local"),
+            (b"origin", b"https://radio.local:8080"),
+        ],
+        "app": SimpleNamespace(routes=[]),
+    }
+
+
+@pytest.mark.asyncio
+async def test_login_body_replay_delegates_after_buffered_message() -> None:
+    received = []
+
+    async def app(_scope, receive, _send):
+        received.append(await receive())
+        received.append(await receive())
+
+    messages = iter(
+        [
+            {"type": "http.request", "body": b"login", "more_body": False},
+            {"type": "http.disconnect"},
+        ]
+    )
+
+    async def receive():
+        return next(messages)
+
+    async def send(_message):
+        return None
+
+    middleware = SecurityMiddleware(app, SecurityPolicy(_server()))
+    await middleware(_login_scope(), receive, send)
+
+    assert received == [
+        {"type": "http.request", "body": b"login", "more_body": False},
+        {"type": "http.disconnect"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_login_disconnect_is_replayed_to_downstream() -> None:
+    received = []
+
+    async def app(_scope, receive, _send):
+        received.append(await receive())
+
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    async def send(_message):
+        return None
+
+    middleware = SecurityMiddleware(app, SecurityPolicy(_server()))
+    await middleware(_login_scope(), receive, send)
+
+    assert received == [{"type": "http.disconnect"}]

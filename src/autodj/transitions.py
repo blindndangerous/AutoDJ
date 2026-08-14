@@ -32,6 +32,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from enum import StrEnum
+from typing import cast
 
 import numpy as np
 
@@ -601,7 +602,8 @@ def telephone(
     hi = max(1e-4, min(0.99, 3500.0 / nyq))
     sos_hp = butter(4, lo, btype="high", output="sos")
     sos_lp = butter(4, hi, btype="low", output="sos")
-    out = sosfilt(sos_lp, sosfilt(sos_hp, tail)).astype(np.float32)
+    highpassed = cast(np.ndarray, sosfilt(sos_hp, tail))
+    out = cast(np.ndarray, sosfilt(sos_lp, highpassed)).astype(np.float32)
     return out
 
 
@@ -695,13 +697,13 @@ def cross_eq_swap(
     hp = butter(4, cutoff, btype="high", output="sos")
     lp = butter(4, cutoff, btype="low", output="sos")
 
-    tail_treble = sosfilt(hp, tail).astype(np.float32)
-    head_bass = sosfilt(lp, head).astype(np.float32)
+    tail_treble = cast(np.ndarray, sosfilt(hp, tail)).astype(np.float32)
+    head_bass = cast(np.ndarray, sosfilt(lp, head)).astype(np.float32)
 
     # Bring incoming treble back over the second half so the new track
     # doesn't sound permanently bass-only.
     n = len(head)
-    head_treble = sosfilt(hp, head).astype(np.float32)
+    head_treble = cast(np.ndarray, sosfilt(hp, head)).astype(np.float32)
     bring_in = np.linspace(0.0, 1.0, n, dtype=np.float32)
     head_full = head_bass + head_treble * bring_in
 

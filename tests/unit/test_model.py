@@ -507,48 +507,40 @@ class TestModelCacheCleanup:
 
 
 class TestWindowsModelCacheLock:
-    @pytest.mark.skipif(os.name != "nt", reason="requires msvcrt locking")
     def test_retries_only_recognized_contention(self) -> None:
-        import msvcrt
-
         import autodj.model as model
 
         handle = MagicMock()
-        contention = OSError("sharing violation")
-        contention.winerror = 33  # type: ignore[attr-defined]
+        contention = OSError(13, "sharing violation")
+        contention.winerror = 33
         with (
-            patch.object(msvcrt, "locking", side_effect=[contention, None]) as locking,
+            patch.object(model, "_windows_lock", side_effect=[contention, None]) as locking,
             patch("autodj.model.threading.Event") as event,
         ):
             model._acquire_windows_file_lock(handle)
         assert locking.call_count == 2
         event.return_value.wait.assert_called_once()
 
-    @pytest.mark.skipif(os.name != "nt", reason="requires msvcrt locking")
     def test_propagates_permanent_lock_error(self) -> None:
-        import msvcrt
-
         import autodj.model as model
 
         handle = MagicMock()
-        permanent = OSError("access denied")
-        permanent.winerror = 5  # type: ignore[attr-defined]
+        permanent = OSError(13, "access denied")
+        permanent.winerror = 5
         with (
-            patch.object(msvcrt, "locking", side_effect=permanent),
+            patch.object(model, "_windows_lock", side_effect=permanent),
             pytest.raises(OSError, match="access denied"),
         ):
             model._acquire_windows_file_lock(handle)
 
     @pytest.mark.skipif(os.name != "nt", reason="requires msvcrt locking")
     def test_nested_same_thread_acquires_os_lock_once(self, tmp_path: Path) -> None:
-        import msvcrt
-
         import autodj.model as model
 
         cache = tmp_path / "cache"
         with (
             patch("autodj.model._acquire_windows_file_lock") as acquire,
-            patch.object(msvcrt, "locking") as release,
+            patch.object(model, "_windows_lock") as release,
         ):
             with model._model_cache_lock(cache):
                 with model._model_cache_lock(cache):

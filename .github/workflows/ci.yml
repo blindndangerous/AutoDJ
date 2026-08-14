@@ -88,6 +88,9 @@ jobs:
       - name: Ruff — lint
         run: uv run ruff check src/ tests/
 
+      - name: Coverage exclusion policy
+        run: uv run python scripts/check_coverage_policy.py
+
       - name: Ruff — format check
         run: uv run ruff format --check src/ tests/
 
@@ -95,7 +98,6 @@ jobs:
         run: uv run mypy src/autodj/
 
       - name: Pyright — cross-check type checker
-        continue-on-error: true     # informational; mypy is the gate
         run: uv run pyright src/autodj/
 
       - name: Vulture — dead code

@@ -94,6 +94,8 @@ class RestoreResult:
 
 @dataclass(frozen=True)
 class _ResolvedRestore:
+    """Describe one validated archive item and its restore target."""
+
     item: BackupItem
     target: Path
     root: Path
@@ -103,12 +105,16 @@ class _ResolvedRestore:
 
 @dataclass(frozen=True)
 class _PathIdentity:
+    """Pair a filesystem path with its captured object identity."""
+
     path: Path
     identity: tuple[int, int, int]
 
 
 @dataclass
 class _StagedRestore:
+    """Track a staged restore payload and its rollback state."""
+
     item: BackupItem
     target: Path
     root: Path
@@ -126,10 +132,14 @@ class _StagedRestore:
 
 
 def _is_reparse(metadata: os.stat_result) -> bool:
+    """Return whether Windows metadata marks a reparse point."""
+
     return bool(getattr(metadata, "st_file_attributes", 0) & _REPARSE_ATTRIBUTE)
 
 
 def _same_file_identity(left: os.stat_result, right: os.stat_result) -> bool:
+    """Compare file identity, type, size, and modification time."""
+
     return (
         left.st_dev,
         left.st_ino,
@@ -156,10 +166,14 @@ def _same_object_identity(left: os.stat_result, right: os.stat_result) -> bool:
 
 
 def _object_identity(metadata: os.stat_result) -> tuple[int, int, int]:
+    """Return the device, inode, and mode that identify an object."""
+
     return metadata.st_dev, metadata.st_ino, metadata.st_mode
 
 
 def _file_identity(metadata: os.stat_result) -> tuple[int, int, int, int, int]:
+    """Return an object's identity together with size and modification time."""
+
     return (
         metadata.st_dev,
         metadata.st_ino,
@@ -170,6 +184,8 @@ def _file_identity(metadata: os.stat_result) -> tuple[int, int, int, int, int]:
 
 
 def _observed_regular_identity(path: Path) -> tuple[int, int, int, int, int] | None:
+    """Return a safe regular file's identity, or ``None`` when it is absent."""
+
     try:
         metadata = path.lstat()
     except FileNotFoundError:
@@ -191,6 +207,8 @@ def _reserved_move_completed(
     expected_identity: tuple[int, int, int, int, int] | None,
     placeholder_identity: tuple[int, int, int, int, int] | None,
 ) -> bool:
+    """Determine whether a reserved move installed its expected source."""
+
     observed = _observed_regular_identity(reservation)
     if expected_identity is not None and observed == expected_identity:
         return True
@@ -206,6 +224,8 @@ def _backup_cleanup_rollback_completed(
     old_identity: tuple[int, int, int, int, int] | None,
     new_identity: tuple[int, int, int, int, int] | None,
 ) -> bool:
+    """Determine whether backup cleanup restored the former destination."""
+
     destination_identity = _observed_regular_identity(destination)
     recovery_identity = _observed_regular_identity(recovery)
     if (
@@ -228,12 +248,16 @@ def _backup_cleanup_rollback_completed(
 
 
 def _path_ancestors(path: Path) -> tuple[Path, ...]:
+    """Return *path* and its ancestors from filesystem root to leaf."""
+
     return tuple(reversed((path, *path.parents)))
 
 
 def _capture_ancestor_identities(
     path: Path, *, leaf_may_be_file: bool = False
 ) -> tuple[_PathIdentity, ...]:
+    """Capture safe existing ancestors and their object identities."""
+
     identities: list[_PathIdentity] = []
     for candidate in _path_ancestors(path):
         try:
@@ -253,6 +277,8 @@ def _capture_ancestor_identities(
 
 
 def _revalidate_ancestor_identities(identities: tuple[_PathIdentity, ...], *, target: Path) -> None:
+    """Reject a target whose captured ancestors changed or became unsafe."""
+
     for captured in identities:
         try:
             metadata = captured.path.lstat()
@@ -272,6 +298,8 @@ def _revalidate_ancestor_identities(identities: tuple[_PathIdentity, ...], *, ta
 
 
 def _regular_source_stat(path: Path) -> os.stat_result:
+    """Stat a backup source after rejecting links and nonregular files."""
+
     try:
         metadata = path.lstat()
     except OSError as exc:
@@ -326,6 +354,8 @@ def _open_regular_source(path: Path, root: Path) -> Iterator[BinaryIO]:
 
 
 def _unique_roots(cfg: AutoDJConfig) -> list[tuple[Path, str]]:
+    """Return configured backup roots with their archive labels."""
+
     active = cfg.index.active_dir
     roots = [
         (active / "web_state.json", "web_state"),
@@ -343,6 +373,8 @@ def _unique_roots(cfg: AutoDJConfig) -> list[tuple[Path, str]]:
 
 
 def _canonical_unique_roots(cfg: AutoDJConfig) -> list[tuple[Path, str]]:
+    """Validate configured backup roots and reject overlapping locations."""
+
     roots: list[tuple[Path, str]] = []
     canonical_roots: list[tuple[Path, str]] = []
     for source, label in _unique_roots(cfg):
@@ -367,6 +399,8 @@ def _canonical_unique_roots(cfg: AutoDJConfig) -> list[tuple[Path, str]]:
 
 
 def _reject_destination_in_unique_roots(destination: Path, roots: list[tuple[Path, str]]) -> None:
+    """Reject an archive destination nested within a source root."""
+
     for lexical_root, label in roots:
         root = lexical_root.resolve(strict=False)
         if destination == root or root in destination.parents:
@@ -376,6 +410,8 @@ def _reject_destination_in_unique_roots(destination: Path, roots: list[tuple[Pat
 
 
 def _walk_regular_files(root: Path) -> list[Path]:
+    """Recursively list regular files below a link-free source root."""
+
     try:
         root_stat = root.lstat()
     except FileNotFoundError:
@@ -392,6 +428,8 @@ def _walk_regular_files(root: Path) -> list[Path]:
     files: list[Path] = []
 
     def visit(directory: Path) -> None:
+        """Visit one validated directory while preserving ancestor identities."""
+
         ancestors = _capture_ancestor_identities(directory)
         _revalidate_ancestor_identities(ancestors, target=directory)
         try:
@@ -428,6 +466,8 @@ def _add_file(
     destination: str,
     items: list[BackupItem],
 ) -> None:
+    """Copy one verified source file into the archive and record its digest."""
+
     digest = hashlib.sha256()
     size = 0
     with _open_regular_source(source, source_root) as src, zf.open(archive_path, "w") as dst:
@@ -444,6 +484,8 @@ def _add_path(
     prefix: str,
     items: list[BackupItem],
 ) -> None:
+    """Add every regular file under one configured source path."""
+
     files = _walk_regular_files(source)
     if not files:
         return
@@ -463,6 +505,8 @@ def _add_path(
 
 
 def _sqlite_snapshot(source: Path, target: Path, root: Path) -> None:
+    """Create a read-only SQLite snapshot without following source swaps."""
+
     before = _regular_source_stat(source)
     resolved_root = root.resolve(strict=True)
     resolved_source = source.resolve(strict=True)
@@ -491,6 +535,8 @@ def _sqlite_snapshot(source: Path, target: Path, root: Path) -> None:
 
 
 def _fsync_directory(path: Path) -> None:
+    """Flush a directory entry update on platforms that support it."""
+
     if os.name == "nt":
         return
     descriptor = os.open(path, os.O_RDONLY)
@@ -501,11 +547,15 @@ def _fsync_directory(path: Path) -> None:
 
 
 def _remove_snapshot(path: Path) -> None:
+    """Remove a temporary snapshot directory when it exists."""
+
     if path.exists():
         shutil.rmtree(path, ignore_errors=True)
 
 
 def _capture_stopped_state(active: Path) -> dict[str, tuple[int, int, int, int, int]]:
+    """Capture identities of index SQLite files and sidecars."""
+
     names = [Path(name) for name in _SQLITE_MAIN_NAMES]
     names.extend(
         Path(f"{name}{suffix}")
@@ -532,6 +582,8 @@ def _capture_stopped_state(active: Path) -> dict[str, tuple[int, int, int, int, 
 
 
 def _begin_stopped_snapshot(active: Path) -> dict[str, tuple[int, int, int, int, int]]:
+    """Capture stopped-mode SQLite state after rejecting active sidecars."""
+
     state = _capture_stopped_state(active)
     sidecars = sorted(name for name in state if name.endswith(_SQLITE_SIDECAR_SUFFIXES))
     if sidecars:
@@ -548,6 +600,8 @@ def _verify_stopped_state(
     *,
     phase: str,
 ) -> None:
+    """Ensure stopped-mode SQLite files match their captured state."""
+
     current = _capture_stopped_state(active)
     if current == expected:
         return
@@ -562,6 +616,8 @@ def _verify_stopped_state(
 
 
 def _snapshot_derived(cfg: AutoDJConfig, destination: Path, *, online: bool) -> None:
+    """Copy the published index and DJ metadata into a temporary snapshot."""
+
     active = cfg.index.active_dir
     stopped_state = None if online else _begin_stopped_snapshot(active)
     try:
@@ -630,6 +686,8 @@ def _snapshot_derived(cfg: AutoDJConfig, destination: Path, *, online: bool) -> 
 
 
 def _write_backup_archive(cfg: AutoDJConfig, archive: Path, *, online: bool) -> None:
+    """Write derived and unique backup data plus its manifest to *archive*."""
+
     items: list[BackupItem] = []
     with tempfile.TemporaryDirectory(prefix="autodj-backup-snapshot-") as temp_name:
         snapshot = Path(temp_name) / "published"
@@ -664,6 +722,8 @@ def _write_backup_archive(cfg: AutoDJConfig, archive: Path, *, online: bool) -> 
 
 
 def _absolute_destination(path: Path) -> Path:
+    """Expand a destination path and anchor relative paths to the current directory."""
+
     expanded = path.expanduser()
     if not expanded.is_absolute():
         expanded = Path.cwd() / expanded
@@ -677,6 +737,8 @@ def _absolute_destination(path: Path) -> Path:
 
 
 def _validate_existing_regular(path: Path, *, description: str) -> bool:
+    """Return whether *path* exists as a safe regular file."""
+
     if not os.path.lexists(path):
         return False
     try:
@@ -693,11 +755,15 @@ def _validate_existing_regular(path: Path, *, description: str) -> bool:
 
 
 def _unlink_quietly(path: Path) -> None:
+    """Remove a path while suppressing cleanup errors."""
+
     with suppress(OSError):
         path.unlink(missing_ok=True)
 
 
 def _new_backup_recovery(destination: Path) -> Path:
+    """Reserve a same-directory path for the replaced backup archive."""
+
     descriptor, name = tempfile.mkstemp(
         prefix=f".{destination.name}.backup-old-",
         dir=destination.parent,
@@ -712,6 +778,8 @@ def _new_backup_recovery(destination: Path) -> Path:
 
 
 def _new_failed_backup_path(destination: Path) -> Path:
+    """Reserve a same-directory path for a failed new backup archive."""
+
     descriptor, name = tempfile.mkstemp(
         prefix=f".{destination.name}.backup-failed-",
         dir=destination.parent,
@@ -726,6 +794,8 @@ def _new_failed_backup_path(destination: Path) -> Path:
 
 
 def _cleanup_empty_reservation(path: Path, *, purpose: str) -> str | None:
+    """Remove an unused reservation and return any cleanup error."""
+
     try:
         path.unlink(missing_ok=True)
     except OSError as exc:
@@ -1027,6 +1097,8 @@ def create_backup(
 
 
 def _safe_relative(value: str, *, field: str) -> PurePosixPath:
+    """Parse a portable, nonescaping relative archive path."""
+
     if not isinstance(value, str):
         raise BackupError(f"unsafe restore path in {field}: {value!r}")
     pieces = value.split("/")
@@ -1052,10 +1124,14 @@ def _safe_relative(value: str, *, field: str) -> PurePosixPath:
 
 
 def _normalized_path_key(path: PurePosixPath) -> tuple[str, ...]:
+    """Return a Unicode-normalized, case-insensitive path comparison key."""
+
     return tuple(unicodedata.normalize("NFC", piece).casefold() for piece in path.parts)
 
 
 def _validate_member_info(info: zipfile.ZipInfo) -> None:
+    """Reject encrypted, nonregular, or unsafe ZIP members."""
+
     if info.flag_bits & 0x1:
         raise BackupError(f"encrypted archive member is unsupported: {info.filename}")
     unix_mode = (info.external_attr >> 16) & 0xFFFF
@@ -1066,6 +1142,8 @@ def _validate_member_info(info: zipfile.ZipInfo) -> None:
 
 
 def _zip64_directory_metadata(handle: BinaryIO, *, eocd_offset: int) -> tuple[int, int, int]:
+    """Read ZIP64 central-directory bounds from a validated locator."""
+
     locator_offset = eocd_offset - 20
     if locator_offset < 0:
         raise BackupError("backup ZIP64 central-directory locator is missing")
@@ -1100,6 +1178,8 @@ def _zip64_directory_metadata(handle: BinaryIO, *, eocd_offset: int) -> tuple[in
 
 
 def _preflight_zip_metadata(handle: BinaryIO) -> None:
+    """Validate archive central-directory bounds before opening the ZIP."""
+
     try:
         handle.seek(0, os.SEEK_END)
         archive_size = handle.tell()
@@ -1152,6 +1232,8 @@ def _preflight_zip_metadata(handle: BinaryIO) -> None:
 
 
 def _open_handle_identity(handle: BinaryIO) -> tuple[int, int, int, int, int] | None:
+    """Return an open file handle's identity when its descriptor is available."""
+
     try:
         return _file_identity(os.fstat(handle.fileno()))
     except (AttributeError, OSError):
@@ -1159,6 +1241,8 @@ def _open_handle_identity(handle: BinaryIO) -> tuple[int, int, int, int, int] | 
 
 
 def _member_map(zf: zipfile.ZipFile) -> dict[str, zipfile.ZipInfo]:
+    """Validate ZIP members and index them by their archive paths."""
+
     members: dict[str, zipfile.ZipInfo] = {}
     normalized: set[tuple[str, ...]] = set()
     for info in zf.infolist():
@@ -1178,6 +1262,8 @@ def _member_map(zf: zipfile.ZipFile) -> dict[str, zipfile.ZipInfo]:
 def _validate_item_mapping(
     item: BackupItem, archive_path: PurePosixPath, destination: PurePosixPath
 ) -> None:
+    """Require a manifest item to use its permitted archive-to-target mapping."""
+
     if item.classification == "derived":
         if _DERIVED_MAPPINGS.get(item.archive_path) != item.destination:
             raise BackupError(
@@ -1199,6 +1285,8 @@ def _validate_item_mapping(
 
 
 def _parse_items(members: dict[str, zipfile.ZipInfo], raw_manifest: Any) -> list[BackupItem]:
+    """Validate manifest items against the archive and return typed records."""
+
     if not isinstance(raw_manifest, dict):
         raise BackupError("backup manifest must be an object")
     raw_items = raw_manifest.get("items")
@@ -1261,6 +1349,8 @@ def _parse_items(members: dict[str, zipfile.ZipInfo], raw_manifest: Any) -> list
 
 
 def _destination_root(cfg: AutoDJConfig, label: str) -> Path:
+    """Return the configured restore root associated with a manifest label."""
+
     active = cfg.index.active_dir
     roots = {
         "active": active,
@@ -1287,6 +1377,8 @@ def _destination_root(cfg: AutoDJConfig, label: str) -> Path:
 def _destination(
     cfg: AutoDJConfig, label: str, relative: PurePosixPath
 ) -> tuple[Path, Path, tuple[_PathIdentity, ...]]:
+    """Resolve a restore target within its validated destination root."""
+
     lexical_root = _destination_root(cfg, label)
     if not lexical_root.is_absolute():
         lexical_root = Path.cwd() / lexical_root
@@ -1313,6 +1405,8 @@ def _destination(
 
 
 def _compatibility_line(version: str) -> tuple[int, int]:
+    """Parse the major and minor components of an AutoDJ version."""
+
     match = re.match(r"^(\d+)\.(\d+)(?:\.|$)", version)
     if match is None:
         raise BackupError(f"invalid AutoDJ version in backup: {version!r}")
@@ -1320,10 +1414,14 @@ def _compatibility_line(version: str) -> tuple[int, int]:
 
 
 def _reject_nonfinite_json(value: str) -> None:
+    """Reject a non-finite JSON constant encountered in a manifest."""
+
     raise BackupError(f"backup manifest contains non-finite JSON constant {value}")
 
 
 def _validate_creator_fields(manifest: dict[str, Any]) -> None:
+    """Validate manifest metadata recorded by the backup creator."""
+
     for field in ("created_at", "index_name"):
         if not isinstance(manifest.get(field), str):
             raise BackupError(f"backup manifest {field} must be a string")
@@ -1333,6 +1431,8 @@ def _validate_creator_fields(manifest: dict[str, Any]) -> None:
 
 
 def _target_is_regular(target: Path) -> bool:
+    """Return whether a restore target exists as a safe regular file."""
+
     if not os.path.lexists(target):
         return False
     try:
@@ -1349,6 +1449,8 @@ def _target_is_regular(target: Path) -> bool:
 
 
 def _assert_target_contained(target: Path, root: Path) -> None:
+    """Ensure a restore target's resolved parent remains inside its root."""
+
     try:
         parent = target.parent.resolve(strict=False)
     except OSError as exc:
@@ -1360,6 +1462,8 @@ def _assert_target_contained(target: Path, root: Path) -> None:
 def _resolve_targets(
     cfg: AutoDJConfig, items: list[BackupItem], *, force: bool
 ) -> list[_ResolvedRestore]:
+    """Resolve every manifest item into a distinct validated restore target."""
+
     targets: list[_ResolvedRestore] = []
     resolved: set[Path] = set()
     for item in items:
@@ -1385,6 +1489,8 @@ def _required_free_space(payload_bytes: int) -> int:
 
 
 def _existing_ancestor(path: Path) -> Path:
+    """Return the nearest existing ancestor of a prospective restore path."""
+
     candidate = path
     while not candidate.exists():
         parent = candidate.parent
@@ -1395,6 +1501,8 @@ def _existing_ancestor(path: Path) -> Path:
 
 
 def _preflight_free_space(targets: list[_ResolvedRestore]) -> None:
+    """Require sufficient free space for staged payloads on each device."""
+
     by_device: dict[int, tuple[Path, int]] = {}
     for resolved in targets:
         _validate_restore_guard(resolved)
@@ -1420,6 +1528,8 @@ def _preflight_free_space(targets: list[_ResolvedRestore]) -> None:
 
 
 def _missing_parents(parent: Path, root: Path) -> tuple[Path, ...]:
+    """List nonexistent parents that staging may need to create."""
+
     missing: list[Path] = []
     candidate = parent
     while not candidate.exists():
@@ -1432,6 +1542,8 @@ def _missing_parents(parent: Path, root: Path) -> tuple[Path, ...]:
 
 
 def _cleanup_empty_parents(records: list[_StagedRestore]) -> None:
+    """Remove empty directories created for failed restore staging."""
+
     created = {path for record in records for path in record.created_parents}
     for path in sorted(created, key=lambda value: len(value.parts), reverse=True):
         with suppress(OSError, BackupError, StopIteration):
@@ -1442,6 +1554,8 @@ def _cleanup_empty_parents(records: list[_StagedRestore]) -> None:
 
 
 def _validate_restore_guard(record: _ResolvedRestore | _StagedRestore) -> None:
+    """Revalidate a restore record's ancestors and target containment."""
+
     _revalidate_ancestor_identities(record.ancestors, target=record.target)
     _assert_target_contained(record.target, record.root)
 
@@ -1452,6 +1566,8 @@ def _validate_restore_file_identity(
     *,
     description: str,
 ) -> None:
+    """Ensure a restore file remains the captured safe regular file."""
+
     if expected is None:
         raise BackupError(f"{description} identity was not captured: {path}")
     try:
@@ -1471,6 +1587,8 @@ def _reconcile_previous_move(
     record: _StagedRestore,
     expected_identity: tuple[int, int, int, int, int],
 ) -> None:
+    """Reconcile whether moving a target into its recovery reservation succeeded."""
+
     if record.previous is None:
         raise BackupError("restore recovery reservation was not recorded")
     observed = _observed_regular_identity(record.previous)
@@ -1489,6 +1607,8 @@ def _reconcile_previous_move(
 
 
 def _reconcile_installed_target(record: _StagedRestore) -> None:
+    """Reconcile whether a staged payload was installed at its target."""
+
     observed = _observed_regular_identity(record.target)
     if observed == record.stage_identity:
         record.installed = True
@@ -1505,6 +1625,8 @@ def _reconcile_installed_target(record: _StagedRestore) -> None:
 
 
 def _move_target_to_previous(record: _StagedRestore) -> None:
+    """Move an existing target to a guarded recovery reservation."""
+
     expected_identity = _observed_regular_identity(record.target)
     if expected_identity is None:
         raise BackupError(f"restore target changed or disappeared: {record.target}")
@@ -1538,6 +1660,8 @@ def _move_target_to_previous(record: _StagedRestore) -> None:
 
 
 def _install_stage(record: _StagedRestore) -> None:
+    """Atomically install a validated staging file at its restore target."""
+
     _validate_restore_guard(record)
     _validate_restore_file_identity(
         record.stage,
@@ -1573,6 +1697,8 @@ def _install_stage(record: _StagedRestore) -> None:
 
 
 def _restore_previous(record: _StagedRestore) -> None:
+    """Restore the former target after a failed staged installation."""
+
     if record.previous is None or record.previous_identity is None:
         raise BackupError(f"restore recovery identity is missing for {record.target}")
     previous = record.previous
@@ -1617,6 +1743,8 @@ def _restore_previous(record: _StagedRestore) -> None:
 
 
 def _cleanup_stages(records: list[_StagedRestore]) -> list[str]:
+    """Remove remaining staging files and return cleanup errors."""
+
     errors: list[str] = []
     for record in records:
         try:
@@ -1635,6 +1763,8 @@ def _cleanup_stages(records: list[_StagedRestore]) -> list[str]:
 
 
 def _stage_payloads(zf: zipfile.ZipFile, targets: list[_ResolvedRestore]) -> list[_StagedRestore]:
+    """Extract verified archive payloads into guarded staging files."""
+
     staged: list[_StagedRestore] = []
     try:
         for resolved in targets:
@@ -1722,6 +1852,8 @@ def _stage_payloads(zf: zipfile.ZipFile, targets: list[_ResolvedRestore]) -> lis
 
 
 def _read_staged_bytes(record: _StagedRestore) -> bytes:
+    """Read a bounded staged manifest after verifying its identity."""
+
     if record.item.size > MAX_MANIFEST_BYTES:
         raise BackupError(
             f"backup index manifest exceeds 16 MiB metadata limit: {record.item.size} bytes"
@@ -1757,6 +1889,8 @@ def _read_staged_bytes(record: _StagedRestore) -> bytes:
 
 
 def _staged_index_manifest(record: _StagedRestore) -> IndexManifest:
+    """Parse and validate the index manifest held in a staged record."""
+
     payload = _read_staged_bytes(record)
     try:
         with tempfile.TemporaryDirectory(prefix="autodj-restore-manifest-") as temp_name:
@@ -1769,6 +1903,8 @@ def _staged_index_manifest(record: _StagedRestore) -> IndexManifest:
 
 
 def _rewrite_staged_payload(record: _StagedRestore, payload: bytes) -> None:
+    """Durably replace a staged payload and refresh its recorded identity."""
+
     _validate_restore_guard(record)
     _validate_restore_file_identity(
         record.stage,
@@ -1813,6 +1949,8 @@ def _stage_publication_state(
     *,
     force: bool,
 ) -> _StagedRestore:
+    """Stage the reconciled publication state for atomic installation."""
+
     target, root, ancestors = _destination(
         cfg,
         "active",
@@ -1886,6 +2024,8 @@ def _validate_staged_index_snapshot(
     manifest: IndexManifest,
     by_destination: dict[str, _StagedRestore],
 ) -> None:
+    """Validate staged index artifacts against their staged manifest."""
+
     tracks = by_destination["active/tracks.db"]
     vectors = by_destination["active/vectors.index"]
     records = (tracks, vectors)
@@ -1922,6 +2062,8 @@ def _prepare_publication_restore(
     *,
     force: bool,
 ) -> _StagedRestore:
+    """Reconcile index revisions and stage the resulting publication state."""
+
     by_destination = {record.item.destination: record for record in staged}
     manifest_record = by_destination[f"active/{MANIFEST_NAME}"]
     required = {
@@ -1984,6 +2126,8 @@ def _prepare_publication_restore(
 
 
 def _rollback_staged(staged: list[_StagedRestore]) -> list[str]:
+    """Undo staged installations and return any rollback errors."""
+
     errors: list[str] = []
     for record in reversed(staged):
         try:
@@ -2037,6 +2181,8 @@ def _commit_staged(
     *,
     restored_count: int | None = None,
 ) -> RestoreResult:
+    """Install staged restore files and roll back the batch on failure."""
+
     parents = {record.target.parent for record in staged}
     parents.update(parent.parent for record in staged for parent in record.created_parents)
     try:

@@ -13,7 +13,7 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from dataclasses import replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from threading import Event
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -2292,3 +2292,2205 @@ def test_restore_cli_prints_warnings_runs_doctor_and_refuses_serve_on_failure(
     assert "Restored 2 files" in result.output
     assert "WARNING: retained old copy" in result.output
     assert "do not serve" in result.output
+
+
+def test_observed_identity_rejects_unreadable_and_non_file_paths(tmp_path: Path) -> None:
+    directory = tmp_path / "directory"
+    directory.mkdir()
+    with pytest.raises(BackupError, match="unsafe object"):
+        backup._observed_regular_identity(directory)
+
+    with (
+        patch("autodj.backup.Path.lstat", side_effect=PermissionError("denied")),
+        pytest.raises(BackupError, match="unable to reconcile") as raised,
+    ):
+        backup._observed_regular_identity(tmp_path / "unreadable")
+    assert isinstance(raised.value.__cause__, PermissionError)
+
+
+def test_move_reconciliation_rejects_unknown_filesystem_outcomes(tmp_path: Path) -> None:
+    reservation = tmp_path / "reservation"
+    reservation.write_bytes(b"unexpected")
+    with pytest.raises(BackupError, match="reserved move outcome"):
+        backup._reserved_move_completed(
+            reservation,
+            expected_identity=(1, 2, 3, 4, 5),
+            placeholder_identity=(6, 7, 8, 9, 10),
+        )
+
+    destination = tmp_path / "destination"
+    recovery = tmp_path / "recovery"
+    with pytest.raises(BackupError, match="cleanup rollback outcome"):
+        backup._backup_cleanup_rollback_completed(
+            destination,
+            recovery,
+            old_identity=(1, 2, 3, 4, 5),
+            new_identity=(6, 7, 8, 9, 10),
+        )
+
+
+def test_ancestor_capture_and_revalidation_reject_non_directory_and_disappearance(
+    tmp_path: Path,
+) -> None:
+    blocking_file = tmp_path / "file"
+    blocking_file.write_bytes(b"data")
+    with pytest.raises(BackupError, match="ancestor is not a directory"):
+        backup._capture_ancestor_identities(blocking_file / "child")
+
+    directory = tmp_path / "captured"
+    directory.mkdir()
+    identities = backup._capture_ancestor_identities(directory)
+    directory.rmdir()
+    with pytest.raises(BackupError, match="changed or disappeared"):
+        _revalidate_ancestor_identities(identities, target=directory / "target")
+
+
+def test_regular_source_validation_reports_missing_and_directory_paths(tmp_path: Path) -> None:
+    with pytest.raises(BackupError, match="source is unreadable"):
+        backup._regular_source_stat(tmp_path / "missing")
+    with pytest.raises(BackupError, match="not a regular file"):
+        backup._regular_source_stat(tmp_path)
+
+
+def test_open_regular_source_rejects_escape_and_closes_descriptor_on_validation_error(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside.bin"
+    outside.write_bytes(b"outside")
+    with (
+        pytest.raises(BackupError, match="escapes its configured root"),
+        _open_regular_source(outside, root),
+    ):
+        pass
+
+    source = root / "source.bin"
+    source.write_bytes(b"source")
+    real_close = os.close
+    with (
+        patch("autodj.backup.os.fstat", side_effect=OSError("fstat failed")),
+        patch("autodj.backup.os.close", wraps=real_close) as close,
+        pytest.raises(OSError, match="fstat failed"),
+        _open_regular_source(source, root),
+    ):
+        pass
+    close.assert_called_once()
+
+
+def test_backup_includes_nested_dayparts_and_history_file(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    dayparts = tmp_path / "dayparts"
+    nested = dayparts / "weekend"
+    nested.mkdir(parents=True)
+    (nested / "night.json").write_text("{}", encoding="utf-8")
+    history = tmp_path / "history.jsonl"
+    history.write_bytes(b'{"track": "one"}\n')
+    cfg = replace(
+        cfg,
+        playback=replace(cfg.playback, dayparts_dir=dayparts, history_file=history),
+    )
+
+    archive = create_backup(cfg, tmp_path / "backup.zip", online=False)
+
+    with zipfile.ZipFile(archive) as zf:
+        assert zf.read("unique/dayparts/weekend/night.json") == b"{}"
+        assert zf.read("unique/history/history.jsonl") == b'{"track": "one"}\n'
+
+
+def test_snapshot_reports_invalid_or_unpublished_index(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    destination = tmp_path / "snapshot"
+    with (
+        patch(
+            "autodj.backup.read_manifest",
+            side_effect=IndexConsistencyError("invalid manifest"),
+        ),
+        pytest.raises(BackupError, match="published index manifest is invalid"),
+    ):
+        backup._snapshot_derived(cfg, destination, online=False)
+
+    (cfg.index.active_dir / "tracks.db").write_bytes(b"unpublished")
+    with (
+        patch("autodj.backup.read_manifest", return_value=None),
+        pytest.raises(BackupError, match="has no published manifest"),
+    ):
+        backup._snapshot_derived(cfg, destination, online=False)
+
+
+def test_stopped_snapshot_reports_copy_consistency_failure(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    _published_index(cfg)
+    with (
+        patch(
+            "autodj.backup.copy_published_snapshot",
+            side_effect=IndexConsistencyError("generation changed"),
+        ),
+        pytest.raises(BackupError, match="published index snapshot failed") as raised,
+    ):
+        backup._snapshot_derived(cfg, tmp_path / "snapshot", online=False)
+    assert isinstance(raised.value.__cause__, IndexConsistencyError)
+
+
+@pytest.mark.parametrize(
+    ("latest", "message"),
+    [
+        (IndexConsistencyError("latest invalid"), "manifest is invalid"),
+        (None, "index disappeared"),
+    ],
+)
+def test_online_snapshot_reports_invalid_or_disappeared_retry_manifest(
+    tmp_path: Path, latest: object, message: str
+) -> None:
+    cfg = _config(tmp_path)
+    _published_index(cfg)
+    initial = read_manifest(cfg.index.active_dir)
+    assert initial is not None
+    with (
+        patch("autodj.backup.read_manifest", side_effect=[initial, latest]),
+        patch(
+            "autodj.backup.copy_published_snapshot",
+            side_effect=IndexConsistencyError("generation changed"),
+        ),
+        pytest.raises(BackupError, match=message),
+    ):
+        backup._snapshot_derived(cfg, tmp_path / "snapshot", online=True)
+
+
+def test_archive_manifest_limit_failure_leaves_no_destination(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    destination = tmp_path / "backup.zip"
+    with (
+        patch("autodj.backup.MAX_MANIFEST_BYTES", 1),
+        pytest.raises(BackupError, match="manifest exceeds"),
+    ):
+        create_backup(cfg, destination, online=False)
+    assert not destination.exists()
+
+
+def test_relative_backup_destination_is_returned_as_absolute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _config(tmp_path / "config")
+    monkeypatch.chdir(tmp_path)
+    result = create_backup(cfg, Path("relative.zip"), online=False)
+    assert result == tmp_path / "relative.zip"
+    assert result.is_file()
+
+
+def test_backup_rejects_directory_destination(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    destination = tmp_path / "backup.zip"
+    destination.mkdir()
+    with pytest.raises(BackupError, match="not a regular file"):
+        create_backup(cfg, destination, online=False, force=True)
+    assert destination.is_dir()
+
+
+def test_backup_reports_destination_directory_and_temporary_file_failures(
+    tmp_path: Path,
+) -> None:
+    cfg = _config(tmp_path / "config")
+    destination = tmp_path / "missing" / "backup.zip"
+    real_mkdir = Path.mkdir
+
+    def reject_destination_parent(path: Path, *args: object, **kwargs: object) -> None:
+        if path == destination.parent:
+            raise PermissionError("mkdir denied")
+        real_mkdir(path, *args, **kwargs)
+
+    with (
+        patch("autodj.backup.Path.mkdir", new=reject_destination_parent),
+        pytest.raises(BackupError, match="directory could not be created"),
+    ):
+        create_backup(cfg, destination, online=False)
+
+    destination.parent.mkdir()
+    with (
+        patch("autodj.backup.tempfile.mkstemp", side_effect=OSError("no temp file")),
+        pytest.raises(BackupError, match="temporary file could not be created"),
+    ):
+        create_backup(cfg, destination, online=False)
+
+
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [
+        (FileExistsError("racer"), "appeared during backup"),
+        (OSError("unsupported"), "cannot atomically publish"),
+    ],
+)
+def test_no_clobber_backup_reports_atomic_link_failures(
+    tmp_path: Path, failure: OSError, message: str
+) -> None:
+    cfg = _config(tmp_path)
+    destination = tmp_path / "backup.zip"
+    with (
+        patch("autodj.backup.os.link", side_effect=failure),
+        pytest.raises(BackupError, match=message),
+    ):
+        create_backup(cfg, destination, online=False)
+    assert not destination.exists()
+    assert not list(tmp_path.glob(".*.backup-*.tmp"))
+
+
+def test_no_clobber_backup_propagates_control_exception_and_removes_temp(
+    tmp_path: Path,
+) -> None:
+    cfg = _config(tmp_path)
+    destination = tmp_path / "backup.zip"
+    with (
+        patch("autodj.backup.os.link", side_effect=KeyboardInterrupt("stop")),
+        pytest.raises(KeyboardInterrupt, match="stop"),
+    ):
+        create_backup(cfg, destination, online=False)
+    assert not destination.exists()
+    assert not list(tmp_path.glob(".*.backup-*.tmp"))
+
+
+def _eocd(
+    *,
+    disk: int = 0,
+    directory_disk: int = 0,
+    entries_on_disk: int = 0,
+    entries: int = 0,
+    directory_size: int = 0,
+    directory_offset: int = 0,
+) -> bytes:
+    return struct.pack(
+        "<4s4H2LH",
+        b"PK\x05\x06",
+        disk,
+        directory_disk,
+        entries_on_disk,
+        entries,
+        directory_size,
+        directory_offset,
+        0,
+    )
+
+
+def _zip64_metadata(
+    *,
+    signature: bytes = b"PK\x06\x06",
+    record_size: int = 44,
+    disk: int = 0,
+    directory_disk: int = 0,
+    entries_on_disk: int = 2,
+    entries: int = 2,
+) -> io.BytesIO:
+    record = struct.pack(
+        "<4sQ2H2L4Q",
+        signature,
+        record_size,
+        45,
+        45,
+        disk,
+        directory_disk,
+        entries_on_disk,
+        entries,
+        92,
+        8,
+    )
+    locator = struct.pack("<4sLQL", b"PK\x06\x07", 0, 0, 1)
+    return io.BytesIO(record + b"\x00" * 24 + locator)
+
+
+def test_zip64_directory_metadata_parses_valid_single_disk_record() -> None:
+    handle = _zip64_metadata()
+    assert backup._zip64_directory_metadata(handle, eocd_offset=100) == (2, 92, 8)
+
+
+@pytest.mark.parametrize(
+    ("handle", "offset", "message"),
+    [
+        (io.BytesIO(), 10, "locator is missing"),
+        (io.BytesIO(b"short"), 20, "locator is truncated"),
+        (io.BytesIO(b"not a zip locator!!!!"), 20, "multi-disk"),
+        (
+            _zip64_metadata(signature=b"BAD!"),
+            100,
+            "record is invalid",
+        ),
+        (
+            _zip64_metadata(disk=1),
+            100,
+            "multi-disk",
+        ),
+    ],
+)
+def test_zip64_directory_metadata_rejects_malformed_records(
+    handle: io.BytesIO, offset: int, message: str
+) -> None:
+    with pytest.raises(BackupError, match=message):
+        backup._zip64_directory_metadata(handle, eocd_offset=offset)
+
+
+def test_zip64_directory_metadata_rejects_truncated_record() -> None:
+    locator = struct.pack("<4sLQL", b"PK\x06\x07", 0, 0, 1)
+    handle = io.BytesIO(b"short-record" + b"\x00" * 8 + locator)
+    with pytest.raises(BackupError, match="record is truncated"):
+        backup._zip64_directory_metadata(handle, eocd_offset=len(handle.getvalue()))
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        (b"not a zip", "end-of-central-directory record is missing"),
+        (_eocd(disk=1), "multi-disk"),
+        (
+            b"prefix" + _eocd(entries_on_disk=2, entries=2, directory_size=46),
+            "member count is inconsistent",
+        ),
+        (
+            b"prefix" + _eocd(entries_on_disk=1, entries=1, directory_size=46),
+            "central-directory bounds are invalid",
+        ),
+    ],
+)
+def test_zip_preflight_rejects_structurally_invalid_central_directory(
+    payload: bytes, message: str
+) -> None:
+    with pytest.raises(BackupError, match=message):
+        _preflight_zip_metadata(io.BytesIO(payload))
+
+
+def test_zip_preflight_wraps_unreadable_handle_error() -> None:
+    class Unreadable(io.BytesIO):
+        def seek(self, *args: object, **kwargs: object) -> int:
+            raise OSError("seek denied")
+
+    with pytest.raises(BackupError, match="archive is unreadable") as raised:
+        _preflight_zip_metadata(Unreadable())
+    assert isinstance(raised.value.__cause__, OSError)
+
+
+def test_member_map_rejects_exact_duplicate_member(tmp_path: Path) -> None:
+    archive = tmp_path / "duplicate.zip"
+    with (
+        pytest.warns(UserWarning, match="Duplicate name"),
+        zipfile.ZipFile(archive, "w") as zf,
+    ):
+        zf.writestr("manifest.json", b"first")
+        zf.writestr("manifest.json", b"second")
+    with zipfile.ZipFile(archive) as zf, pytest.raises(BackupError, match="duplicate"):
+        backup._member_map(zf)
+
+
+@pytest.mark.parametrize(
+    ("manifest", "message"),
+    [
+        ([], "manifest must be an object"),
+        ({"items": [{"archive_path": "derived/tracks.db"}]}, "invalid fields"),
+        (
+            {
+                "items": [
+                    {
+                        "archive_path": 1,
+                        "classification": "derived",
+                        "destination": "active/tracks.db",
+                        "size": 0,
+                        "sha256": "0" * 64,
+                    }
+                ]
+            },
+            "invalid types",
+        ),
+        (
+            {
+                "items": [
+                    {
+                        "archive_path": "derived/tracks.db",
+                        "classification": "derived",
+                        "destination": "active",
+                        "size": 0,
+                        "sha256": "0" * 64,
+                    }
+                ]
+            },
+            "unsafe restore path in destination",
+        ),
+        (
+            {
+                "items": [
+                    {
+                        "archive_path": "other/tracks.db",
+                        "classification": "other",
+                        "destination": "active/tracks.db",
+                        "size": 0,
+                        "sha256": "0" * 64,
+                    }
+                ]
+            },
+            "unsupported backup classification",
+        ),
+        (
+            {
+                "items": [
+                    {
+                        "archive_path": "unique/tracks.db",
+                        "classification": "derived",
+                        "destination": "active/tracks.db",
+                        "size": 0,
+                        "sha256": "0" * 64,
+                    }
+                ]
+            },
+            "classification does not match",
+        ),
+        (
+            {
+                "items": [
+                    {
+                        "archive_path": "derived/tracks.db",
+                        "classification": "derived",
+                        "destination": "active/tracks.db",
+                        "size": True,
+                        "sha256": "0" * 64,
+                    }
+                ]
+            },
+            "size must be a non-negative integer",
+        ),
+        (
+            {
+                "items": [
+                    {
+                        "archive_path": "derived/tracks.db",
+                        "classification": "derived",
+                        "destination": "active/tracks.db",
+                        "size": 0,
+                        "sha256": "INVALID",
+                    }
+                ]
+            },
+            "checksum is invalid",
+        ),
+    ],
+)
+def test_parse_items_rejects_malformed_manifest_fields(manifest: object, message: str) -> None:
+    with pytest.raises(BackupError, match=message):
+        backup._parse_items({}, manifest)
+
+
+def test_parse_items_rejects_unicode_normalized_destination_collision() -> None:
+    payload = b""
+    items = [
+        _item("unique/liners/\u00e9.wav", "liners/\u00e9.wav", payload, classification="unique"),
+        _item(
+            "unique/liners/e\u0301.wav",
+            "liners/e\u0301.wav",
+            payload,
+            classification="unique",
+        ),
+    ]
+    members = {item["archive_path"]: ZipInfo(str(item["archive_path"])) for item in items}
+    with pytest.raises(BackupError, match="duplicate normalized restore destination"):
+        backup._parse_items(members, {"items": items})
+
+
+def test_destination_root_and_version_reject_unsupported_values(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    with pytest.raises(BackupError, match="unsupported restore destination"):
+        backup._destination_root(cfg, "unknown")
+    with pytest.raises(BackupError, match="invalid AutoDJ version"):
+        backup._compatibility_line("development")
+
+
+def test_restore_rejects_directory_target(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    target = cfg.index.active_dir / "tracks.db"
+    target.mkdir()
+    archive = _archive(tmp_path / "backup.zip", [("derived/tracks.db", b"tracks")])
+    with pytest.raises(BackupError, match="target is not a regular file"):
+        restore_backup(cfg, archive, force=True)
+    assert target.is_dir()
+
+
+def test_restore_reports_free_space_inspection_failure(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    archive = _archive(tmp_path / "backup.zip", [("derived/tracks.db", b"tracks")])
+    with (
+        patch("autodj.backup.shutil.disk_usage", side_effect=OSError("usage denied")),
+        pytest.raises(BackupError, match="unable to inspect free space") as raised,
+    ):
+        restore_backup(cfg, archive, force=True)
+    assert isinstance(raised.value.__cause__, OSError)
+    assert not list(cfg.index.active_dir.glob(".*.restore-stage-*"))
+
+
+def test_restore_file_identity_requires_capture_and_rejects_change(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.write_bytes(b"first")
+    with pytest.raises(BackupError, match="identity was not captured"):
+        backup._validate_restore_file_identity(target, None, description="test file")
+
+    identity = backup._observed_regular_identity(target)
+    assert identity is not None
+    target.unlink()
+    with pytest.raises(BackupError, match="changed or disappeared"):
+        backup._validate_restore_file_identity(target, identity, description="test file")
+
+    target.write_bytes(b"replacement")
+    with pytest.raises(BackupError, match="identity changed"):
+        backup._validate_restore_file_identity(target, identity, description="test file")
+
+
+@pytest.mark.parametrize(
+    ("manifest_payload", "message"),
+    [
+        (None, "manifest is missing"),
+        (b"not json", "manifest is missing or invalid"),
+    ],
+)
+def test_restore_rejects_missing_or_invalid_manifest(
+    tmp_path: Path, manifest_payload: bytes | None, message: str
+) -> None:
+    cfg = _config(tmp_path / "config")
+    archive = tmp_path / "bad.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        if manifest_payload is not None:
+            zf.writestr("manifest.json", manifest_payload)
+    with pytest.raises(BackupError, match=message):
+        restore_backup(cfg, archive, force=True)
+
+
+@pytest.mark.parametrize(
+    ("manifest", "message"),
+    [
+        ([], "manifest must be an object"),
+        (
+            {
+                "schema_version": True,
+                "autodj_version": current_version(),
+                "created_at": "now",
+                "index_name": "default",
+                "mode": "stopped",
+                "items": [],
+            },
+            "schema_version must be an integer",
+        ),
+        (
+            {
+                "schema_version": 1,
+                "autodj_version": 1,
+                "created_at": "now",
+                "index_name": "default",
+                "mode": "stopped",
+                "items": [],
+            },
+            "autodj_version must be a string",
+        ),
+    ],
+)
+def test_restore_rejects_manifest_root_and_scalar_field_types(
+    tmp_path: Path, manifest: object, message: str
+) -> None:
+    cfg = _config(tmp_path / "config")
+    archive = tmp_path / "bad.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("manifest.json", json.dumps(manifest))
+    with pytest.raises(BackupError, match=message):
+        restore_backup(cfg, archive, force=True)
+
+
+def test_restore_reports_unreadable_archive(tmp_path: Path) -> None:
+    cfg = _config(tmp_path / "config")
+    with pytest.raises(BackupError, match="archive is unreadable") as raised:
+        restore_backup(cfg, tmp_path / "missing.zip", force=True)
+    assert isinstance(raised.value.__cause__, OSError)
+
+
+def test_safe_relative_rejects_non_string_value() -> None:
+    with pytest.raises(BackupError, match="unsafe restore path"):
+        backup._safe_relative(1, field="destination")  # type: ignore[arg-type]
+
+
+def test_relative_restore_root_is_resolved_from_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    cfg = _config(Path("config"))
+    archive = _archive(tmp_path / "backup.zip", [("derived/tracks.db", b"tracks")])
+
+    result = restore_backup(cfg, archive, force=True)
+
+    assert result.restored == 1
+    assert (tmp_path / "config/index/default/tracks.db").read_bytes() == b"tracks"
+
+
+def test_distinct_manifest_destinations_cannot_resolve_to_same_target(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    cfg = replace(
+        cfg,
+        playback=replace(cfg.playback, liners_folder=shared, dayparts_dir=shared),
+    )
+    payloads = [
+        ("unique/liners/same.wav", b"liner"),
+        ("unique/dayparts/same.wav", b"daypart"),
+    ]
+    items = [
+        _item(name, f"{name.split('/')[1]}/same.wav", data, classification="unique")
+        for name, data in payloads
+    ]
+    archive = _archive(tmp_path / "backup.zip", payloads, items=items)
+
+    with pytest.raises(BackupError, match="duplicate restore target"):
+        restore_backup(cfg, archive, force=True)
+    assert list(shared.iterdir()) == []
+
+
+def test_target_and_restore_filesystem_inspection_errors_are_reported(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.write_bytes(b"payload")
+    with (
+        patch("autodj.backup.Path.lstat", side_effect=PermissionError("target denied")),
+        pytest.raises(BackupError, match="unable to inspect restore target") as target_error,
+    ):
+        backup._target_is_regular(target)
+    assert isinstance(target_error.value.__cause__, PermissionError)
+
+    item = backup.BackupItem("derived/tracks.db", "derived", "active/tracks.db", 1, "0" * 64)
+    resolved = backup._ResolvedRestore(item, target, tmp_path, True, ())
+    with (
+        patch("autodj.backup.os.stat", side_effect=PermissionError("filesystem denied")),
+        pytest.raises(BackupError, match="unable to inspect restore filesystem") as fs_error,
+    ):
+        backup._preflight_free_space([resolved])
+    assert isinstance(fs_error.value.__cause__, PermissionError)
+
+
+def test_target_containment_rejects_lexically_changed_parent(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    target = root / "child" / ".." / "target"
+    with pytest.raises(BackupError, match="parent changed"):
+        backup._assert_target_contained(target, root)
+
+
+def _restore_record(
+    tmp_path: Path,
+    *,
+    force: bool = True,
+    target_data: bytes | None = None,
+    stage_data: bytes | None = b"stage",
+) -> backup._StagedRestore:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    target = tmp_path / "target"
+    stage = tmp_path / "stage"
+    if target_data is not None:
+        target.write_bytes(target_data)
+    if stage_data is not None:
+        stage.write_bytes(stage_data)
+    item = backup.BackupItem(
+        "derived/tracks.db",
+        "derived",
+        "active/tracks.db",
+        len(stage_data or b""),
+        hashlib.sha256(stage_data or b"").hexdigest(),
+    )
+    return backup._StagedRestore(
+        item=item,
+        target=target,
+        root=tmp_path,
+        force=force,
+        stage=stage,
+        ancestors=backup._capture_ancestor_identities(tmp_path),
+        stage_identity=backup._observed_regular_identity(stage),
+    )
+
+
+def _changed_device(metadata: os.stat_result) -> SimpleNamespace:
+    return SimpleNamespace(
+        st_dev=metadata.st_dev + 1,
+        st_ino=metadata.st_ino,
+        st_mode=metadata.st_mode,
+        st_size=metadata.st_size,
+        st_mtime_ns=metadata.st_mtime_ns,
+        st_file_attributes=getattr(metadata, "st_file_attributes", 0),
+    )
+
+
+@pytest.mark.parametrize("operation", ["existing", "missing"])
+def test_restore_parent_walk_rejects_filesystem_without_existing_root(operation: str) -> None:
+    candidate = Path("C:/missing/restore/parent")
+    path_type = type(candidate)
+
+    with (
+        patch.object(path_type, "exists", autospec=True, return_value=False),
+        pytest.raises(BackupError, match="no existing filesystem ancestor"),
+    ):
+        if operation == "existing":
+            backup._existing_ancestor(candidate)
+        else:
+            backup._missing_parents(candidate, Path("C:/missing"))
+
+
+def test_read_staged_bytes_rejects_open_descriptor_identity_change(tmp_path: Path) -> None:
+    record = _restore_record(tmp_path)
+    real_fstat = os.fstat
+
+    def changed_fstat(descriptor: int) -> object:
+        return _changed_device(real_fstat(descriptor))
+
+    with (
+        patch("autodj.backup.os.fstat", side_effect=changed_fstat),
+        pytest.raises(BackupError, match="staging file identity changed"),
+    ):
+        backup._read_staged_bytes(record)
+
+
+def test_read_staged_bytes_wraps_file_read_error(tmp_path: Path) -> None:
+    record = _restore_record(tmp_path)
+    path_type = type(record.stage)
+
+    with (
+        patch.object(path_type, "open", autospec=True, side_effect=OSError("read denied")),
+        pytest.raises(BackupError, match="could not be read") as raised,
+    ):
+        backup._read_staged_bytes(record)
+
+    assert isinstance(raised.value.__cause__, OSError)
+
+
+def test_read_staged_bytes_rejects_post_read_object_change(tmp_path: Path) -> None:
+    record = _restore_record(tmp_path)
+    path_type = type(record.stage)
+    real_lstat = path_type.lstat
+    stage_observations = 0
+
+    def changed_second_stage_observation(path: Path) -> object:
+        nonlocal stage_observations
+        metadata = real_lstat(path)
+        if path == record.stage:
+            stage_observations += 1
+            if stage_observations == 2:
+                return _changed_device(metadata)
+        return metadata
+
+    with (
+        patch.object(
+            path_type,
+            "lstat",
+            autospec=True,
+            side_effect=changed_second_stage_observation,
+        ),
+        pytest.raises(BackupError, match="staging file identity changed"),
+    ):
+        backup._read_staged_bytes(record)
+
+    assert stage_observations == 2
+
+
+def test_read_staged_bytes_enforces_bounded_read_when_declared_size_is_stale(
+    tmp_path: Path,
+) -> None:
+    payload = b"x" * (MAX_MANIFEST_BYTES + 1)
+    record = _restore_record(tmp_path, stage_data=payload)
+    record.item = replace(record.item, size=MAX_MANIFEST_BYTES)
+
+    with pytest.raises(BackupError, match="index manifest exceeds 16 MiB"):
+        backup._read_staged_bytes(record)
+
+
+def test_staged_index_manifest_wraps_invalid_inner_manifest(tmp_path: Path) -> None:
+    record = _restore_record(tmp_path, stage_data=b"{}")
+
+    with pytest.raises(BackupError, match="index manifest is invalid") as raised:
+        backup._staged_index_manifest(record)
+
+    assert isinstance(raised.value.__cause__, IndexConsistencyError)
+
+
+def test_staged_index_manifest_reads_valid_written_manifest(tmp_path: Path) -> None:
+    cfg = _config(tmp_path / "source")
+    _published_index(cfg)
+    expected = read_manifest(cfg.index.active_dir)
+    assert expected is not None
+    payload = (cfg.index.active_dir / "index-manifest.json").read_bytes()
+    record = _restore_record(tmp_path / "restore", stage_data=payload)
+
+    assert backup._staged_index_manifest(record) == expected
+
+
+def test_rewrite_staged_payload_rejects_open_descriptor_identity_change(tmp_path: Path) -> None:
+    record = _restore_record(tmp_path)
+    real_fstat = os.fstat
+
+    def changed_fstat(descriptor: int) -> object:
+        return _changed_device(real_fstat(descriptor))
+
+    with (
+        patch("autodj.backup.os.fstat", side_effect=changed_fstat),
+        pytest.raises(BackupError, match="staging file identity changed"),
+    ):
+        backup._rewrite_staged_payload(record, b"replacement")
+
+
+def test_rewrite_staged_payload_wraps_file_write_error(tmp_path: Path) -> None:
+    record = _restore_record(tmp_path)
+    path_type = type(record.stage)
+
+    with (
+        patch.object(path_type, "open", autospec=True, side_effect=OSError("write denied")),
+        pytest.raises(BackupError, match="could not be reconciled") as raised,
+    ):
+        backup._rewrite_staged_payload(record, b"replacement")
+
+    assert isinstance(raised.value.__cause__, OSError)
+
+
+def test_rewrite_staged_payload_rejects_post_write_object_change(tmp_path: Path) -> None:
+    record = _restore_record(tmp_path)
+    path_type = type(record.stage)
+    real_lstat = path_type.lstat
+    stage_observations = 0
+
+    def changed_second_stage_observation(path: Path) -> object:
+        nonlocal stage_observations
+        metadata = real_lstat(path)
+        if path == record.stage:
+            stage_observations += 1
+            if stage_observations == 2:
+                return _changed_device(metadata)
+        return metadata
+
+    with (
+        patch.object(
+            path_type,
+            "lstat",
+            autospec=True,
+            side_effect=changed_second_stage_observation,
+        ),
+        pytest.raises(BackupError, match="staging file identity changed"),
+    ):
+        backup._rewrite_staged_payload(record, b"replacement")
+
+    assert record.stage.read_bytes() == b"replacement"
+    assert stage_observations == 2
+
+
+def test_publication_state_staging_rejects_nonregular_stage_and_cleans_it(
+    tmp_path: Path,
+) -> None:
+    cfg = _config(tmp_path)
+    active = cfg.index.active_dir
+    path_type = type(active)
+    real_mkstemp = backup.tempfile.mkstemp
+    real_fstat = os.fstat
+    real_lstat = path_type.lstat
+    stable_mtime_ns = 1
+    victim_descriptor = -1
+    victim_path: Path | None = None
+    unsafe_reported = False
+
+    def stable_stage_metadata(metadata: os.stat_result, *, mode: int) -> SimpleNamespace:
+        return SimpleNamespace(
+            st_dev=metadata.st_dev,
+            st_ino=metadata.st_ino,
+            st_mode=mode,
+            st_size=metadata.st_size,
+            st_mtime_ns=stable_mtime_ns,
+            st_file_attributes=getattr(metadata, "st_file_attributes", 0),
+        )
+
+    def capture_stage(*args: object, **kwargs: object) -> tuple[int, str]:
+        nonlocal victim_descriptor, victim_path
+        victim_descriptor, stage_name = real_mkstemp(*args, **kwargs)
+        victim_path = Path(stage_name)
+        return victim_descriptor, stage_name
+
+    def stabilize_stage_descriptor(descriptor: int) -> object:
+        metadata = real_fstat(descriptor)
+        if descriptor == victim_descriptor:
+            return stable_stage_metadata(metadata, mode=metadata.st_mode)
+        return metadata
+
+    def report_state_stage_as_directory_once(path: Path) -> object:
+        nonlocal unsafe_reported
+        metadata = real_lstat(path)
+        if path != victim_path:
+            return metadata
+        if not unsafe_reported:
+            unsafe_reported = True
+            return stable_stage_metadata(metadata, mode=stat.S_IFDIR)
+        return stable_stage_metadata(metadata, mode=metadata.st_mode)
+
+    with (
+        patch("autodj.backup.tempfile.mkstemp", side_effect=capture_stage),
+        patch("autodj.backup.os.fstat", side_effect=stabilize_stage_descriptor),
+        patch.object(
+            path_type,
+            "lstat",
+            autospec=True,
+            side_effect=report_state_stage_as_directory_once,
+        ),
+        pytest.raises(BackupError, match="staging file identity changed"),
+    ):
+        backup._stage_publication_state(cfg, b"{}\n", force=False)
+
+    assert unsafe_reported
+    assert not list(active.glob(".*.restore-stage-*"))
+
+
+def test_publication_state_staging_reports_retained_stage_after_descriptor_open_failure(
+    tmp_path: Path,
+) -> None:
+    cfg = _config(tmp_path)
+    active = cfg.index.active_dir
+    active.rmdir()
+
+    with (
+        patch("autodj.backup.os.fdopen", side_effect=OSError("fdopen denied")),
+        pytest.raises(BackupError, match="retained restore stages") as raised,
+    ):
+        backup._stage_publication_state(cfg, b"{}\n", force=False)
+
+    retained = list(active.glob(".*.restore-stage-*"))
+    assert len(retained) == 1
+    assert str(retained[0]) in str(raised.value)
+    retained[0].unlink()
+    active.rmdir()
+
+
+def test_staged_snapshot_validation_rejects_artifacts_in_different_directories(
+    tmp_path: Path,
+) -> None:
+    tracks = _restore_record(tmp_path / "tracks")
+    vectors = _restore_record(tmp_path / "vectors")
+    manifest = IndexManifest(
+        schema_version=2,
+        generation=1,
+        vector_count=0,
+        published_at="2026-08-14T00:00:00+00:00",
+        tracks_file="tracks.db",
+        vectors_file="vectors.index",
+        tracks_sha256="0" * 64,
+        vectors_sha256="0" * 64,
+        state_revision=1,
+    )
+
+    with pytest.raises(BackupError, match="do not share a validated directory"):
+        backup._validate_staged_index_snapshot(
+            manifest,
+            {
+                "active/tracks.db": tracks,
+                "active/vectors.index": vectors,
+            },
+        )
+
+
+def test_prepare_publication_restore_rejects_incomplete_index_trio(tmp_path: Path) -> None:
+    cfg = _config(tmp_path / "target")
+    manifest = _restore_record(tmp_path / "restore")
+    manifest.item = replace(
+        manifest.item,
+        archive_path="derived/index-manifest.json",
+        destination="active/index-manifest.json",
+    )
+
+    with pytest.raises(BackupError, match=r"incomplete; missing.*tracks\.db.*vectors\.index"):
+        backup._prepare_publication_restore(cfg, [manifest], force=False)
+
+
+def test_restore_reports_retained_stages_when_publication_snapshot_is_invalid(
+    tmp_path: Path,
+) -> None:
+    source = _config(tmp_path / "source")
+    _published_index(source)
+    archive = create_backup(source, tmp_path / "backup.zip", online=False)
+    with zipfile.ZipFile(archive) as zf:
+        inner_manifest = json.loads(zf.read("derived/index-manifest.json"))
+    inner_manifest["tracks_sha256"] = "0" * 64
+    invalid_manifest = (json.dumps(inner_manifest, sort_keys=True) + "\n").encode()
+    _rewrite_archive_payloads(
+        archive,
+        {"derived/index-manifest.json": invalid_manifest},
+    )
+    target = _config(tmp_path / "target")
+    _published_index(target, title="Original")
+    active = target.index.active_dir
+    target_names = (
+        "tracks.db",
+        "vectors.index",
+        "index-manifest.json",
+        ".index-publication-state.json",
+    )
+    before = {name: (active / name).read_bytes() for name in target_names}
+    real_unlink = Path.unlink
+
+    def retain_restore_stages(path: Path, *args: object, **kwargs: object) -> None:
+        if ".restore-stage-" in path.name:
+            raise PermissionError("stage cleanup denied")
+        real_unlink(path, *args, **kwargs)
+
+    with (
+        patch("autodj.backup.Path.unlink", new=retain_restore_stages),
+        pytest.raises(
+            BackupError,
+            match=r"backup index snapshot is invalid.*retained restore stages",
+        ),
+    ):
+        restore_backup(target, archive, force=True)
+
+    retained = list(active.glob(".*.restore-stage-*"))
+    assert len(retained) == 3
+    assert {name: (active / name).read_bytes() for name in target_names} == before
+    for stage in retained:
+        stage.unlink()
+
+
+def test_previous_move_reconciliation_reports_missing_and_unknown_reservations(
+    tmp_path: Path,
+) -> None:
+    record = _restore_record(tmp_path, target_data=b"old")
+    expected = backup._observed_regular_identity(record.target)
+    assert expected is not None
+    with pytest.raises(BackupError, match="reservation was not recorded"):
+        backup._reconcile_previous_move(record, expected)
+
+    record.previous = tmp_path / "previous"
+    record.previous.write_bytes(b"")
+    record.previous_placeholder_identity = backup._observed_regular_identity(record.previous)
+    backup._reconcile_previous_move(record, expected)
+    assert not record.previous_populated
+
+    record.previous.write_bytes(b"attacker")
+    record.target.write_bytes(b"replacement")
+    with pytest.raises(BackupError, match="move outcome could not be reconciled"):
+        backup._reconcile_previous_move(record, expected)
+
+
+def test_installed_target_reconciliation_rejects_unknown_outcome(tmp_path: Path) -> None:
+    record = _restore_record(tmp_path)
+    assert record.stage_identity is not None
+    record.stage.unlink()
+    record.target.write_bytes(b"unrelated")
+    with pytest.raises(BackupError, match="install outcome could not be reconciled"):
+        backup._reconcile_installed_target(record)
+
+
+def test_move_to_previous_reports_disappearance_and_incomplete_move(tmp_path: Path) -> None:
+    disappeared = _restore_record(tmp_path / "disappeared", target_data=None)
+    with pytest.raises(BackupError, match="changed or disappeared"):
+        backup._move_target_to_previous(disappeared)
+
+    incomplete_root = tmp_path / "incomplete"
+    incomplete_root.mkdir()
+    incomplete = _restore_record(incomplete_root, target_data=b"old")
+    with (
+        patch("autodj.backup.os.replace", return_value=None),
+        pytest.raises(BackupError, match="move did not complete"),
+    ):
+        backup._move_target_to_previous(incomplete)
+    assert incomplete.target.read_bytes() == b"old"
+    assert incomplete.previous is not None
+    incomplete.previous.unlink()
+
+
+def test_move_to_previous_chains_unreconciled_move_failure(tmp_path: Path) -> None:
+    record = _restore_record(tmp_path, target_data=b"old")
+
+    def remove_both_then_fail(source: Path, destination: Path) -> None:
+        source.unlink()
+        destination.unlink()
+        raise OSError("move failed")
+
+    with (
+        patch("autodj.backup.os.replace", side_effect=remove_both_then_fail),
+        pytest.raises(BackupError, match="move outcome could not be reconciled") as raised,
+    ):
+        backup._move_target_to_previous(record)
+    assert isinstance(raised.value.__cause__, OSError)
+
+
+def test_install_stage_rejects_racer_and_incomplete_publication(tmp_path: Path) -> None:
+    racer = _restore_record(tmp_path / "racer", target_data=b"racer")
+    with pytest.raises(BackupError, match="appeared during restore"):
+        backup._install_stage(racer)
+    assert racer.target.read_bytes() == b"racer"
+
+    incomplete_root = tmp_path / "incomplete"
+    incomplete_root.mkdir()
+    incomplete = _restore_record(incomplete_root)
+    with (
+        patch("autodj.backup.os.replace", return_value=None),
+        pytest.raises(BackupError, match="install did not complete"),
+    ):
+        backup._install_stage(incomplete)
+    assert incomplete.stage.read_bytes() == b"stage"
+    assert not incomplete.target.exists()
+
+
+def test_install_stage_chains_unreconciled_publication_failure(tmp_path: Path) -> None:
+    record = _restore_record(tmp_path)
+
+    def remove_stage_then_fail(source: Path, destination: Path) -> None:
+        source.unlink()
+        destination.write_bytes(b"unrelated")
+        raise OSError("install failed")
+
+    with (
+        patch("autodj.backup.os.replace", side_effect=remove_stage_then_fail),
+        pytest.raises(BackupError, match="install outcome could not be reconciled") as raised,
+    ):
+        backup._install_stage(record)
+    assert isinstance(raised.value.__cause__, OSError)
+
+
+def test_restore_previous_requires_identity_and_reconciles_interrupt_after_move(
+    tmp_path: Path,
+) -> None:
+    missing = _restore_record(tmp_path / "missing")
+    with pytest.raises(BackupError, match="recovery identity is missing"):
+        backup._restore_previous(missing)
+
+    root = tmp_path / "interrupt"
+    root.mkdir()
+    record = _restore_record(root, target_data=b"installed")
+    previous = root / "previous"
+    previous.write_bytes(b"old")
+    record.previous = previous
+    record.previous_identity = backup._observed_regular_identity(previous)
+    record.previous_populated = True
+    real_replace = os.replace
+
+    def replace_then_interrupt(source: Path, destination: Path) -> None:
+        real_replace(source, destination)
+        raise KeyboardInterrupt("after rollback move")
+
+    with patch("autodj.backup.os.replace", side_effect=replace_then_interrupt):
+        backup._restore_previous(record)
+    assert record.target.read_bytes() == b"old"
+    assert not record.previous_populated
+    assert not record.installed
+
+
+def test_restore_previous_rejects_unreconciled_noop_move(tmp_path: Path) -> None:
+    record = _restore_record(tmp_path, target_data=b"installed")
+    previous = tmp_path / "previous"
+    previous.write_bytes(b"old")
+    record.previous = previous
+    record.previous_identity = backup._observed_regular_identity(previous)
+    record.previous_populated = True
+    with (
+        patch("autodj.backup.os.replace", return_value=None),
+        pytest.raises(BackupError, match="rollback move outcome could not be reconciled"),
+    ):
+        backup._restore_previous(record)
+    assert record.target.read_bytes() == b"installed"
+    assert previous.read_bytes() == b"old"
+
+
+def test_rollback_reconciles_removed_install_and_cleans_empty_reservation(
+    tmp_path: Path,
+) -> None:
+    record = _restore_record(tmp_path, target_data=b"installed", stage_data=None)
+    record.installed = True
+    record.installed_identity = backup._observed_regular_identity(record.target)
+    previous = tmp_path / "previous"
+    previous.write_bytes(b"")
+    record.previous = previous
+    record.previous_placeholder_identity = backup._observed_regular_identity(previous)
+    real_unlink = Path.unlink
+
+    def unlink_then_interrupt(path: Path, *args: object, **kwargs: object) -> None:
+        real_unlink(path, *args, **kwargs)
+        if path == record.target:
+            raise KeyboardInterrupt("after unlink")
+
+    with patch("autodj.backup.Path.unlink", new=unlink_then_interrupt):
+        errors = backup._rollback_staged([record])
+    assert errors == []
+    assert not record.installed
+    assert not record.target.exists()
+    assert not previous.exists()
+
+
+def test_rollback_reports_installed_target_that_cannot_be_removed(tmp_path: Path) -> None:
+    record = _restore_record(tmp_path, target_data=b"installed", stage_data=None)
+    record.installed = True
+    record.installed_identity = backup._observed_regular_identity(record.target)
+    real_unlink = Path.unlink
+
+    def reject_target_unlink(path: Path, *args: object, **kwargs: object) -> None:
+        if path == record.target:
+            raise OSError("unlink denied")
+        real_unlink(path, *args, **kwargs)
+
+    with patch("autodj.backup.Path.unlink", new=reject_target_unlink):
+        errors = backup._rollback_staged([record])
+    assert len(errors) == 1
+    assert "installed restore target retained" in errors[0]
+    assert record.target.read_bytes() == b"installed"
+
+
+def test_staging_short_read_is_rejected_and_cleaned(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    member = "derived/tracks.db"
+    archive = _archive(tmp_path / "backup.zip", [(member, b"tracks")])
+    real_open = zipfile.ZipFile.open
+
+    def truncate_payload(
+        zf: zipfile.ZipFile, name: object, *args: object, **kwargs: object
+    ) -> object:
+        filename = name.filename if isinstance(name, ZipInfo) else name
+        if filename == member:
+            return io.BytesIO(b"")
+        return real_open(zf, name, *args, **kwargs)  # type: ignore[arg-type]
+
+    with (
+        patch("autodj.backup.zipfile.ZipFile.open", new=truncate_payload),
+        pytest.raises(BackupError, match="member size mismatch"),
+    ):
+        restore_backup(cfg, archive, force=True)
+    assert not list(cfg.index.active_dir.glob(".*.restore-stage-*"))
+
+
+def test_control_exception_during_member_open_propagates_after_stage_cleanup(
+    tmp_path: Path,
+) -> None:
+    cfg = _config(tmp_path)
+    member = "derived/tracks.db"
+    archive = _archive(tmp_path / "backup.zip", [(member, b"tracks")])
+    real_open = zipfile.ZipFile.open
+
+    def interrupt_payload(
+        zf: zipfile.ZipFile, name: object, *args: object, **kwargs: object
+    ) -> object:
+        filename = name.filename if isinstance(name, ZipInfo) else name
+        if filename == member:
+            raise KeyboardInterrupt("member interrupted")
+        return real_open(zf, name, *args, **kwargs)  # type: ignore[arg-type]
+
+    with (
+        patch("autodj.backup.zipfile.ZipFile.open", new=interrupt_payload),
+        pytest.raises(KeyboardInterrupt, match="member interrupted"),
+    ):
+        restore_backup(cfg, archive, force=True)
+    assert not list(cfg.index.active_dir.glob(".*.restore-stage-*"))
+
+
+def test_target_appearing_after_staging_is_preserved(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    archive = _archive(tmp_path / "backup.zip", [("derived/tracks.db", b"tracks")])
+    target = cfg.index.active_dir / "tracks.db"
+    real_stage = backup._stage_payloads
+
+    def stage_then_create_racer(
+        zf: zipfile.ZipFile, targets: list[backup._ResolvedRestore]
+    ) -> list[backup._StagedRestore]:
+        staged = real_stage(zf, targets)
+        target.write_bytes(b"racer")
+        return staged
+
+    with (
+        patch("autodj.backup._stage_payloads", new=stage_then_create_racer),
+        pytest.raises(BackupError, match="appeared during restore"),
+    ):
+        restore_backup(cfg, archive, force=False)
+    assert target.read_bytes() == b"racer"
+    assert not list(cfg.index.active_dir.glob(".*.restore-stage-*"))
+
+
+def test_unexpected_atomic_install_error_is_wrapped_after_rollback(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    archive = _archive(tmp_path / "backup.zip", [("derived/tracks.db", b"tracks")])
+    with (
+        patch("autodj.backup.os.link", side_effect=ValueError("unexpected link error")),
+        pytest.raises(BackupError, match="restore failed; previous files restored") as raised,
+    ):
+        restore_backup(cfg, archive, force=False)
+    assert isinstance(raised.value.__cause__, ValueError)
+    assert not list(cfg.index.active_dir.iterdir())
+
+
+def test_restore_detects_archive_identity_change_after_staging(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    archive = _archive(tmp_path / "backup.zip", [("derived/tracks.db", b"tracks")])
+    first = (1, 2, stat.S_IFREG, 4, 5)
+    second = (1, 3, stat.S_IFREG, 4, 5)
+    with (
+        patch("autodj.backup._open_handle_identity", side_effect=[first, second]),
+        pytest.raises(BackupError, match="archive changed while it was being read"),
+    ):
+        restore_backup(cfg, archive, force=True)
+    assert not list(cfg.index.active_dir.iterdir())
+
+
+def test_force_publication_reconciles_control_exception_after_replace(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    destination = tmp_path / "backup.zip"
+    destination.write_bytes(b"old archive")
+    real_replace = os.replace
+
+    def publish_then_interrupt(source: Path, target: Path) -> None:
+        real_replace(source, target)
+        if target == destination and ".backup-" in Path(source).name:
+            raise KeyboardInterrupt("after publication")
+
+    with (
+        patch("autodj.backup.os.replace", side_effect=publish_then_interrupt),
+        pytest.raises(KeyboardInterrupt, match="after publication"),
+    ):
+        create_backup(cfg, destination, online=False, force=True)
+    assert destination.read_bytes() == b"old archive"
+
+
+def test_ancestor_capture_wraps_inspection_error(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    with (
+        patch("autodj.backup.Path.lstat", side_effect=PermissionError("ancestor denied")),
+        pytest.raises(BackupError, match="unable to inspect path ancestor") as raised,
+    ):
+        backup._capture_ancestor_identities(target)
+    assert isinstance(raised.value.__cause__, PermissionError)
+
+
+def test_open_regular_source_wraps_resolution_and_open_errors(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    source = root / "source"
+    source.write_bytes(b"payload")
+    resolved_root = root.resolve()
+
+    with (
+        patch(
+            "autodj.backup.Path.resolve",
+            side_effect=[resolved_root, OSError("resolve denied")],
+        ),
+        pytest.raises(BackupError, match="source is unreadable") as resolve_error,
+        _open_regular_source(source, root),
+    ):
+        pass
+    assert isinstance(resolve_error.value.__cause__, OSError)
+
+    with (
+        patch("autodj.backup.os.open", side_effect=PermissionError("open denied")),
+        pytest.raises(BackupError, match="could not be opened safely") as open_error,
+        _open_regular_source(source, root),
+    ):
+        pass
+    assert isinstance(open_error.value.__cause__, PermissionError)
+
+
+def test_open_regular_source_rejects_nonregular_and_changed_descriptor(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    source = root / "source"
+    source.write_bytes(b"payload")
+    other = root / "other"
+    other.write_bytes(b"payload")
+
+    with (
+        patch("autodj.backup.os.fstat", return_value=root.lstat()),
+        pytest.raises(BackupError, match="not a regular file"),
+        _open_regular_source(source, root),
+    ):
+        pass
+
+    with (
+        patch("autodj.backup.os.fstat", return_value=other.lstat()),
+        pytest.raises(BackupError, match="changed while it was opened"),
+        _open_regular_source(source, root),
+    ):
+        pass
+
+
+def test_open_regular_source_rejects_path_resolution_change_after_open(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    source = root / "source"
+    source.write_bytes(b"payload")
+    other = root / "other"
+    other.write_bytes(b"other")
+    resolved_root = root.resolve()
+    resolved_source = source.resolve()
+    resolved_other = other.resolve()
+
+    with (
+        patch(
+            "autodj.backup.Path.resolve",
+            side_effect=[resolved_root, resolved_source, resolved_other],
+        ),
+        pytest.raises(BackupError, match="changed while it was opened"),
+        _open_regular_source(source, root),
+    ):
+        pass
+
+
+def test_relative_unique_root_is_expanded_from_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _config(tmp_path / "config")
+    monkeypatch.chdir(tmp_path)
+    relative_liners = Path("relative-liners")
+    cfg = replace(cfg, playback=replace(cfg.playback, liners_folder=relative_liners))
+
+    roots = backup._canonical_unique_roots(cfg)
+
+    assert (tmp_path / relative_liners, "liners") in roots
+
+
+def test_unique_root_resolution_error_is_wrapped(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    with (
+        patch("autodj.backup.Path.resolve", side_effect=OSError("resolve denied")),
+        pytest.raises(BackupError, match="source root is invalid") as raised,
+    ):
+        backup._canonical_unique_roots(cfg)
+    assert isinstance(raised.value.__cause__, OSError)
+
+
+def test_walk_regular_files_wraps_root_and_directory_read_errors(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    with (
+        patch("autodj.backup.Path.lstat", side_effect=PermissionError("root denied")),
+        pytest.raises(BackupError, match="source is unreadable") as root_error,
+    ):
+        backup._walk_regular_files(root)
+    assert isinstance(root_error.value.__cause__, PermissionError)
+
+    with (
+        patch("autodj.backup.os.scandir", side_effect=PermissionError("scan denied")),
+        pytest.raises(BackupError, match="directory is unreadable") as scan_error,
+    ):
+        backup._walk_regular_files(root)
+    assert isinstance(scan_error.value.__cause__, PermissionError)
+
+
+@pytest.mark.parametrize(
+    ("entry_stat", "message"),
+    [
+        (PermissionError("entry denied"), "source is unreadable"),
+        (SimpleNamespace(st_mode=stat.S_IFIFO, st_file_attributes=0), "not a regular file"),
+    ],
+)
+def test_walk_regular_files_rejects_unreadable_and_posix_special_entries(
+    tmp_path: Path, entry_stat: object, message: str
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    entry_path = root / "special"
+
+    class SimulatedEntry:
+        name = "special"
+        path = str(entry_path)
+
+        @staticmethod
+        def is_symlink() -> bool:
+            return False
+
+        @staticmethod
+        def stat(*, follow_symlinks: bool) -> object:
+            assert not follow_symlinks
+            if isinstance(entry_stat, BaseException):
+                raise entry_stat
+            return entry_stat
+
+    with (
+        patch("autodj.backup.os.scandir", return_value=[SimulatedEntry()]),
+        pytest.raises(BackupError, match=message),
+    ):
+        backup._walk_regular_files(root)
+
+
+def test_walk_regular_files_rejects_posix_special_root(tmp_path: Path) -> None:
+    simulated_fifo = SimpleNamespace(st_mode=stat.S_IFIFO, st_file_attributes=0)
+    with (
+        patch("autodj.backup.Path.lstat", return_value=simulated_fifo),
+        pytest.raises(BackupError, match="not a regular file or directory"),
+    ):
+        backup._walk_regular_files(tmp_path / "fifo")
+
+
+def test_sqlite_snapshot_rejects_source_outside_active_root(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    active_root = tmp_path / "active"
+    source_root.mkdir()
+    active_root.mkdir()
+    source = source_root / "tracks.db"
+    _sqlite(source, "value")
+
+    with pytest.raises(BackupError, match="escapes the active index"):
+        _sqlite_snapshot(source, tmp_path / "snapshot.db", active_root)
+
+
+def test_sqlite_snapshot_rejects_identity_change_after_real_copy(tmp_path: Path) -> None:
+    root = tmp_path / "active"
+    root.mkdir()
+    source = root / "tracks.db"
+    target = tmp_path / "snapshot.db"
+    _sqlite(source, "value")
+
+    with (
+        patch("autodj.backup._same_object_identity", return_value=False),
+        pytest.raises(BackupError, match="changed identity"),
+    ):
+        _sqlite_snapshot(source, target, root)
+    with closing(sqlite3.connect(target)) as connection:
+        assert connection.execute("SELECT value FROM data").fetchone() == ("value",)
+
+
+@pytest.mark.parametrize("sync_failure", [False, True])
+def test_posix_directory_fsync_always_closes_descriptor(tmp_path: Path, sync_failure: bool) -> None:
+    events: list[object] = []
+
+    def open_directory(path: Path, flags: int) -> int:
+        events.append(("open", path, flags))
+        return 42
+
+    def sync_directory(descriptor: int) -> None:
+        events.append(("fsync", descriptor))
+        if sync_failure:
+            raise OSError("sync denied")
+
+    def close_directory(descriptor: int) -> None:
+        events.append(("close", descriptor))
+
+    with (
+        patch("autodj.backup.os.name", "posix"),
+        patch("autodj.backup.os.open", side_effect=open_directory),
+        patch("autodj.backup.os.fsync", side_effect=sync_directory),
+        patch("autodj.backup.os.close", side_effect=close_directory),
+    ):
+        if sync_failure:
+            with pytest.raises(OSError, match="sync denied"):
+                backup._fsync_directory(tmp_path)
+        else:
+            backup._fsync_directory(tmp_path)
+    assert events == [
+        ("open", tmp_path, os.O_RDONLY),
+        ("fsync", 42),
+        ("close", 42),
+    ]
+
+
+def test_stopped_state_capture_wraps_inspection_error(tmp_path: Path) -> None:
+    with (
+        patch("autodj.backup.Path.lstat", side_effect=PermissionError("state denied")),
+        pytest.raises(BackupError, match="unable to inspect stopped SQLite state") as raised,
+    ):
+        backup._capture_stopped_state(tmp_path)
+    assert isinstance(raised.value.__cause__, PermissionError)
+
+
+def test_destination_and_existing_file_inspection_errors_are_wrapped(tmp_path: Path) -> None:
+    destination = tmp_path / "backup.zip"
+    with (
+        patch("autodj.backup.Path.resolve", side_effect=OSError("parent denied")),
+        pytest.raises(BackupError, match="destination parent is invalid") as parent_error,
+    ):
+        backup._absolute_destination(destination)
+    assert isinstance(parent_error.value.__cause__, OSError)
+
+    destination.write_bytes(b"archive")
+    with (
+        patch("autodj.backup.Path.lstat", side_effect=PermissionError("file denied")),
+        pytest.raises(BackupError, match="unable to inspect backup destination") as file_error,
+    ):
+        backup._validate_existing_regular(destination, description="backup destination")
+    assert isinstance(file_error.value.__cause__, PermissionError)
+
+
+def test_backup_recovery_reports_retained_copy_when_restore_move_fails(tmp_path: Path) -> None:
+    destination = tmp_path / "backup.zip"
+    destination.write_bytes(b"new")
+    recovery = tmp_path / "backup.old"
+    recovery.write_bytes(b"old")
+
+    with patch("autodj.backup.os.replace", side_effect=OSError("restore denied")):
+        error = backup._recover_backup_destination(
+            destination,
+            recovery,
+            destination_installed=True,
+        )
+    assert error is not None
+    assert "recovery copy retained" in error
+    assert recovery.read_bytes() == b"old"
+
+
+def test_force_without_existing_destination_takes_first_publication_path(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    destination = tmp_path / "backup.zip"
+    result = create_backup(cfg, destination, online=False, force=True)
+    assert result == destination
+    assert zipfile.is_zipfile(destination)
+
+
+def test_force_backup_rejects_noop_old_archive_move(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    destination = tmp_path / "backup.zip"
+    destination.write_bytes(b"old")
+    real_replace = os.replace
+
+    def skip_old_move(source: Path, target: Path) -> None:
+        if source == destination and ".backup-old-" in Path(target).name:
+            return
+        real_replace(source, target)
+
+    with (
+        patch("autodj.backup.os.replace", side_effect=skip_old_move),
+        pytest.raises(BackupError, match="old backup destination move could not be reconciled"),
+    ):
+        create_backup(cfg, destination, online=False, force=True)
+    assert destination.read_bytes() == b"old"
+    assert not list(tmp_path.glob(".*.backup-old-*"))
+
+
+def test_force_backup_restores_old_archive_after_noop_publication(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    destination = tmp_path / "backup.zip"
+    destination.write_bytes(b"old")
+    real_replace = os.replace
+
+    def skip_publication(source: Path, target: Path) -> None:
+        if target == destination and Path(source).name.endswith(".tmp"):
+            return
+        real_replace(source, target)
+
+    with (
+        patch("autodj.backup.os.replace", side_effect=skip_publication),
+        pytest.raises(BackupError, match="publication could not be reconciled"),
+    ):
+        create_backup(cfg, destination, online=False, force=True)
+    assert destination.read_bytes() == b"old"
+    assert not list(tmp_path.glob(".*.backup-old-*"))
+
+
+def test_no_clobber_backup_rejects_noop_link_publication(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    destination = tmp_path / "backup.zip"
+    with (
+        patch("autodj.backup.os.link", return_value=None),
+        pytest.raises(BackupError, match="publication could not be reconciled"),
+    ):
+        create_backup(cfg, destination, online=False)
+    assert not destination.exists()
+
+
+def test_cleanup_failure_retains_old_copy_after_noop_rollback(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    destination = tmp_path / "backup.zip"
+    destination.write_bytes(b"old")
+    real_unlink = Path.unlink
+    real_replace = os.replace
+
+    def retain_old_copy(path: Path, *args: object, **kwargs: object) -> None:
+        if ".backup-old-" in path.name:
+            raise OSError("cleanup denied")
+        real_unlink(path, *args, **kwargs)
+
+    def skip_cleanup_rollback(source: Path, target: Path) -> None:
+        if ".backup-old-" in Path(source).name and target == destination:
+            return
+        real_replace(source, target)
+
+    with (
+        patch("autodj.backup.Path.unlink", new=retain_old_copy),
+        patch("autodj.backup.os.replace", side_effect=skip_cleanup_rollback),
+        pytest.raises(BackupError, match="new archive remains") as raised,
+    ):
+        create_backup(cfg, destination, online=False, force=True)
+    retained = list(tmp_path.glob(".*.backup-old-*"))
+    assert len(retained) == 1
+    assert retained[0].read_bytes() == b"old"
+    assert zipfile.is_zipfile(destination)
+    assert str(retained[0]) in str(raised.value)
+
+
+def test_cleanup_rollback_directory_sync_failure_reports_old_archive_restored(
+    tmp_path: Path,
+) -> None:
+    cfg = _config(tmp_path)
+    destination = tmp_path / "backup.zip"
+    destination.write_bytes(b"old")
+    real_unlink = Path.unlink
+    real_fsync = backup._fsync_directory
+
+    def retain_old_copy(path: Path, *args: object, **kwargs: object) -> None:
+        if ".backup-old-" in path.name:
+            raise OSError("cleanup denied")
+        real_unlink(path, *args, **kwargs)
+
+    def fail_after_old_archive_restored(path: Path) -> None:
+        if destination.exists() and destination.read_bytes() == b"old":
+            raise OSError("rollback sync denied")
+        real_fsync(path)
+
+    with (
+        patch("autodj.backup.Path.unlink", new=retain_old_copy),
+        patch("autodj.backup._fsync_directory", side_effect=fail_after_old_archive_restored),
+        pytest.raises(BackupError, match=r"old destination was restored.*sync failed"),
+    ):
+        create_backup(cfg, destination, online=False, force=True)
+    assert destination.read_bytes() == b"old"
+
+
+def test_ambiguous_cleanup_rollback_reports_unreconciled_filesystem_state(
+    tmp_path: Path,
+) -> None:
+    cfg = _config(tmp_path)
+    destination = tmp_path / "backup.zip"
+    destination.write_bytes(b"old")
+    real_unlink = Path.unlink
+    real_replace = os.replace
+
+    def retain_old_copy(path: Path, *args: object, **kwargs: object) -> None:
+        if ".backup-old-" in path.name:
+            raise OSError("cleanup denied")
+        real_unlink(path, *args, **kwargs)
+
+    def corrupt_cleanup_rollback(source: Path, target: Path) -> None:
+        if ".backup-old-" in Path(source).name and target == destination:
+            destination.write_bytes(b"ambiguous")
+            Path(source).unlink()
+            raise OSError("rollback interrupted")
+        real_replace(source, target)
+
+    with (
+        patch("autodj.backup.Path.unlink", new=retain_old_copy),
+        patch("autodj.backup.os.replace", side_effect=corrupt_cleanup_rollback),
+        pytest.raises(BackupError, match="outcome could not be reconciled") as raised,
+    ):
+        create_backup(cfg, destination, online=False, force=True)
+    assert "inspect destination" in str(raised.value)
+    assert destination.read_bytes() == b"ambiguous"
+
+
+def test_ambiguous_old_archive_move_retains_evidence_and_original_destination(
+    tmp_path: Path,
+) -> None:
+    cfg = _config(tmp_path)
+    destination = tmp_path / "backup.zip"
+    destination.write_bytes(b"old")
+    real_replace = os.replace
+
+    def corrupt_reservation(source: Path, target: Path) -> None:
+        if source == destination and ".backup-old-" in Path(target).name:
+            Path(target).write_bytes(b"ambiguous reservation")
+            return
+        real_replace(source, target)
+
+    with (
+        patch("autodj.backup.os.replace", side_effect=corrupt_reservation),
+        pytest.raises(
+            BackupError, match="old backup move outcome could not be reconciled"
+        ) as raised,
+    ):
+        create_backup(cfg, destination, online=False, force=True)
+    retained = list(tmp_path.glob(".*.backup-old-*"))
+    assert len(retained) == 1
+    assert retained[0].read_bytes() == b"ambiguous reservation"
+    assert destination.read_bytes() == b"old"
+    assert str(retained[0]) in str(raised.value)
+
+
+def test_zip_preflight_skips_false_eocd_signature_inside_comment() -> None:
+    false_signature_comment = b"xPK\x05\x06xxx"
+    eocd = struct.pack(
+        "<4s4H2LH",
+        b"PK\x05\x06",
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        len(false_signature_comment),
+    )
+    _preflight_zip_metadata(io.BytesIO(eocd + false_signature_comment))
+
+
+def test_zip_preflight_reads_zip64_directory_metadata() -> None:
+    record = struct.pack(
+        "<4sQ2H2L4Q",
+        b"PK\x06\x06",
+        44,
+        45,
+        45,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    )
+    locator = struct.pack("<4sLQL", b"PK\x06\x07", 0, 0, 1)
+    eocd = struct.pack(
+        "<4s4H2LH",
+        b"PK\x05\x06",
+        0,
+        0,
+        0xFFFF,
+        0xFFFF,
+        0xFFFFFFFF,
+        0xFFFFFFFF,
+        0,
+    )
+    _preflight_zip_metadata(io.BytesIO(record + locator + eocd))
+
+
+def test_destination_wraps_resolution_error_and_rejects_resolved_escape(
+    tmp_path: Path,
+) -> None:
+    cfg = _config(tmp_path)
+    root = cfg.index.active_dir.resolve()
+    outside = tmp_path.parent.resolve()
+
+    with (
+        patch("autodj.backup.Path.resolve", side_effect=[root, OSError("parent denied")]),
+        pytest.raises(BackupError, match="unsafe restore path") as resolve_error,
+    ):
+        backup._destination(cfg, "active", PurePosixPath("track.db"))
+    assert isinstance(resolve_error.value.__cause__, OSError)
+
+    with (
+        patch("autodj.backup.Path.resolve", side_effect=[root, outside]),
+        pytest.raises(BackupError, match="unsafe restore path"),
+    ):
+        backup._destination(cfg, "active", PurePosixPath("track.db"))
+
+
+def test_target_containment_wraps_parent_resolution_error(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    with (
+        patch("autodj.backup.Path.resolve", side_effect=OSError("parent denied")),
+        pytest.raises(BackupError, match="unsafe restore path") as raised,
+    ):
+        backup._assert_target_contained(target, tmp_path)
+    assert isinstance(raised.value.__cause__, OSError)
+
+
+def test_empty_parent_cleanup_revalidates_after_removal(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    parent = root / "created"
+    parent.mkdir(parents=True)
+    record = _restore_record(parent, stage_data=None)
+    record.target = parent / "target"
+    record.root = root
+    record.ancestors = backup._capture_ancestor_identities(parent)
+    record.created_parents = (parent,)
+
+    backup._cleanup_empty_parents([record])
+
+    assert not parent.exists()
+
+
+def test_restore_previous_reports_containment_failure_after_completed_move(
+    tmp_path: Path,
+) -> None:
+    record = _restore_record(tmp_path, target_data=b"installed")
+    previous = tmp_path / "previous"
+    previous.write_bytes(b"old")
+    record.previous = previous
+    record.previous_identity = backup._observed_regular_identity(previous)
+    record.previous_populated = True
+    guard_failure = BackupError("ancestor changed")
+
+    with (
+        patch(
+            "autodj.backup._validate_restore_guard",
+            side_effect=[None, guard_failure, guard_failure],
+        ),
+        pytest.raises(BackupError, match=r"was reinstalled.*containment validation failed"),
+    ):
+        backup._restore_previous(record)
+    assert record.target.read_bytes() == b"old"
+
+
+def test_stage_payload_detects_live_size_change_after_descriptor_stat(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    payload = b"tracks"
+    archive = _archive(tmp_path / "backup.zip", [("derived/tracks.db", payload)])
+    real_fstat = os.fstat
+    real_write = os.write
+    seen: dict[int, int] = {}
+
+    def mutate_after_second_stage_stat(descriptor: int) -> os.stat_result:
+        metadata = real_fstat(descriptor)
+        count = seen.get(descriptor, 0) + 1
+        seen[descriptor] = count
+        if count >= 2 and metadata.st_size == len(payload):
+            real_write(descriptor, b"x")
+        return metadata
+
+    with (
+        patch("autodj.backup.os.fstat", side_effect=mutate_after_second_stage_stat),
+        pytest.raises(BackupError, match="staging file identity changed") as raised,
+    ):
+        restore_backup(cfg, archive, force=True)
+    retained = list(cfg.index.active_dir.glob(".*.restore-stage-*"))
+    assert len(retained) == 1
+    assert retained[0].stat().st_size == len(payload) + 1
+    assert str(retained[0]) in str(raised.value)
+
+
+def test_restore_validation_reports_stage_cleanup_failure_after_archive_change(
+    tmp_path: Path,
+) -> None:
+    cfg = _config(tmp_path)
+    archive = _archive(tmp_path / "backup.zip", [("derived/tracks.db", b"tracks")])
+    first = (1, 2, stat.S_IFREG, 4, 5)
+    second = (1, 3, stat.S_IFREG, 4, 5)
+    real_unlink = Path.unlink
+
+    def retain_stage(path: Path, *args: object, **kwargs: object) -> None:
+        if ".restore-stage-" in path.name:
+            raise PermissionError("stage cleanup denied")
+        real_unlink(path, *args, **kwargs)
+
+    with (
+        patch("autodj.backup._open_handle_identity", side_effect=[first, second]),
+        patch("autodj.backup.Path.unlink", new=retain_stage),
+        pytest.raises(BackupError, match="retained restore stages") as raised,
+    ):
+        restore_backup(cfg, archive, force=True)
+    retained = list(cfg.index.active_dir.glob(".*.restore-stage-*"))
+    assert len(retained) == 1
+    assert str(retained[0]) in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("failure", "wrapped"),
+    [
+        (zipfile.BadZipFile("bad central directory"), True),
+        (TypeError("unexpected constructor failure"), False),
+    ],
+)
+def test_restore_wraps_known_zip_error_but_propagates_unexpected_constructor_error(
+    tmp_path: Path, failure: Exception, wrapped: bool
+) -> None:
+    cfg = _config(tmp_path / "config")
+    archive = _archive(tmp_path / "backup.zip", [])
+    expected = BackupError if wrapped else TypeError
+    message = "backup archive validation failed" if wrapped else "unexpected constructor failure"
+    with (
+        patch("autodj.backup.zipfile.ZipFile", side_effect=failure),
+        pytest.raises(expected, match=message) as raised,
+    ):
+        restore_backup(cfg, archive, force=True)
+    if wrapped:
+        assert raised.value.__cause__ is failure
+
+
+def test_simulated_symlink_metadata_is_rejected_at_each_source_boundary(
+    tmp_path: Path,
+) -> None:
+    symlink_metadata = SimpleNamespace(st_mode=stat.S_IFLNK, st_file_attributes=0)
+
+    with (
+        patch("autodj.backup.Path.lstat", return_value=symlink_metadata),
+        pytest.raises(BackupError, match="ancestor is a symbolic link"),
+    ):
+        backup._capture_ancestor_identities(tmp_path / "ancestor-link")
+
+    with (
+        patch("autodj.backup.Path.lstat", return_value=symlink_metadata),
+        pytest.raises(BackupError, match="refusing symbolic link"),
+    ):
+        backup._regular_source_stat(tmp_path / "source-link")
+
+    with (
+        patch("autodj.backup.Path.lstat", return_value=symlink_metadata),
+        pytest.raises(BackupError, match="refusing symbolic link"),
+    ):
+        backup._walk_regular_files(tmp_path / "root-link")
+
+
+def test_simulated_symlink_directory_entry_is_rejected(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    symlink_metadata = SimpleNamespace(st_mode=stat.S_IFLNK, st_file_attributes=0)
+
+    class SimulatedSymlinkEntry:
+        name = "link"
+        path = str(root / "link")
+
+        @staticmethod
+        def is_symlink() -> bool:
+            return True
+
+        @staticmethod
+        def stat(*, follow_symlinks: bool) -> object:
+            assert not follow_symlinks
+            return symlink_metadata
+
+    with (
+        patch("autodj.backup.os.scandir", return_value=[SimulatedSymlinkEntry()]),
+        pytest.raises(BackupError, match="refusing symbolic link"),
+    ):
+        backup._walk_regular_files(root)
+
+
+def test_recovery_without_prior_or_installed_destination_only_syncs_parent(
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / "backup.zip"
+    assert (
+        backup._recover_backup_destination(
+            destination,
+            None,
+            destination_installed=False,
+        )
+        is None
+    )
+    assert not destination.exists()
+
+
+def test_interrupted_cleanup_reconciliation_is_completed_by_outer_recovery(
+    tmp_path: Path,
+) -> None:
+    cfg = _config(tmp_path)
+    destination = tmp_path / "backup.zip"
+    destination.write_bytes(b"old")
+    real_unlink = Path.unlink
+    real_reconcile = backup._backup_cleanup_rollback_completed
+    calls = 0
+
+    def retain_old_copy(path: Path, *args: object, **kwargs: object) -> None:
+        if ".backup-old-" in path.name:
+            raise OSError("cleanup denied")
+        real_unlink(path, *args, **kwargs)
+
+    def interrupt_reconciliation(*args: object, **kwargs: object) -> bool:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise KeyboardInterrupt("first reconciliation interrupted")
+        if calls == 2:
+            raise BackupError("second reconciliation interrupted")
+        return real_reconcile(*args, **kwargs)  # type: ignore[arg-type]
+
+    with (
+        patch("autodj.backup.Path.unlink", new=retain_old_copy),
+        patch(
+            "autodj.backup._backup_cleanup_rollback_completed",
+            side_effect=interrupt_reconciliation,
+        ),
+        pytest.raises(BackupError, match="second reconciliation interrupted"),
+    ):
+        create_backup(cfg, destination, online=False, force=True)
+    assert calls == 3
+    assert destination.read_bytes() == b"old"
+    assert not list(tmp_path.glob(".*.backup-old-*"))
+
+
+def test_zip_preflight_skips_false_complete_eocd_inside_comment() -> None:
+    false_eocd = struct.pack(
+        "<4s4H2LH",
+        b"PK\x05\x06",
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    )
+    comment = false_eocd + b"trailing"
+    valid_eocd = struct.pack(
+        "<4s4H2LH",
+        b"PK\x05\x06",
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        len(comment),
+    )
+    _preflight_zip_metadata(io.BytesIO(valid_eocd + comment))
+
+
+def test_simulated_restore_target_symlink_is_rejected_before_resolution(
+    tmp_path: Path,
+) -> None:
+    cfg = _config(tmp_path)
+    candidate = cfg.index.active_dir / "track.db"
+    candidate.write_bytes(b"regular placeholder")
+    real_lstat = Path.lstat
+    symlink_metadata = SimpleNamespace(st_mode=stat.S_IFLNK, st_file_attributes=0)
+
+    def report_candidate_as_symlink(path: Path) -> object:
+        if path == candidate:
+            return symlink_metadata
+        return real_lstat(path)
+
+    with (
+        patch("autodj.backup.Path.lstat", new=report_candidate_as_symlink),
+        pytest.raises(BackupError, match="restore target is a symbolic link"),
+    ):
+        backup._destination(cfg, "active", PurePosixPath("track.db"))
+
+
+def test_stage_payload_rejects_resolved_stage_parent_escape(tmp_path: Path) -> None:
+    active = tmp_path / "active"
+    active.mkdir()
+    target = active / "tracks.db"
+    payload = b"tracks"
+    item = backup.BackupItem(
+        "derived/tracks.db",
+        "derived",
+        "active/tracks.db",
+        len(payload),
+        hashlib.sha256(payload).hexdigest(),
+    )
+    resolved = backup._ResolvedRestore(
+        item,
+        target,
+        active,
+        True,
+        backup._capture_ancestor_identities(active),
+    )
+    archive = _archive(tmp_path / "backup.zip", [(item.archive_path, payload)])
+    real_resolve = Path.resolve
+    parent_resolutions = 0
+
+    def escape_after_payload(path: Path, *args: object, **kwargs: object) -> Path:
+        nonlocal parent_resolutions
+        if path == active:
+            parent_resolutions += 1
+            if parent_resolutions == 4:
+                return tmp_path / "escaped"
+        return real_resolve(path, *args, **kwargs)
+
+    with (
+        zipfile.ZipFile(archive) as zf,
+        patch("autodj.backup.Path.resolve", new=escape_after_payload),
+        pytest.raises(BackupError, match="staging path escaped"),
+    ):
+        backup._stage_payloads(zf, [resolved])
+    assert parent_resolutions >= 4
+    assert not list(active.glob(".*.restore-stage-*"))
+
+
+def test_rollback_reports_containment_failure_after_installed_target_removed(
+    tmp_path: Path,
+) -> None:
+    record = _restore_record(tmp_path, target_data=b"installed", stage_data=None)
+    record.installed = True
+    record.installed_identity = backup._observed_regular_identity(record.target)
+    real_unlink = Path.unlink
+
+    def unlink_then_interrupt(path: Path, *args: object, **kwargs: object) -> None:
+        real_unlink(path, *args, **kwargs)
+        if path == record.target:
+            raise KeyboardInterrupt("after target removal")
+
+    with (
+        patch("autodj.backup.Path.unlink", new=unlink_then_interrupt),
+        patch(
+            "autodj.backup._validate_restore_guard",
+            side_effect=[None, BackupError("ancestor changed"), None, None],
+        ),
+    ):
+        errors = backup._rollback_staged([record])
+    assert len(errors) == 1
+    assert "containment validation failed" in errors[0]
+    assert not record.target.exists()

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import sys
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -29,3 +31,21 @@ class TestCompute:
         compute._PROBE_CACHE = True
         compute.reset_probe_cache()
         assert compute._PROBE_CACHE is None
+
+    def test_missing_torch_is_cached_as_cpu_only(self) -> None:
+        from autodj import compute
+
+        compute.reset_probe_cache()
+        with patch.dict(sys.modules, {"torch": None}):
+            assert compute.gpu_available() is False
+        assert compute._PROBE_CACHE is False
+
+    def test_successful_cuda_probe_is_reused(self) -> None:
+        from autodj import compute
+
+        compute.reset_probe_cache()
+        torch = SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: True))
+        with patch.dict(sys.modules, {"torch": torch}):
+            assert compute.gpu_available() is True
+            torch.cuda.is_available = lambda: False
+            assert compute.gpu_available() is True

@@ -1,3 +1,5 @@
+"""Request authentication, origin checks, audit logging, and login rate limiting."""
+
 from __future__ import annotations
 
 import copy
@@ -54,6 +56,8 @@ LOGIN_BODY_MAX_BYTES = 4096
 
 @dataclass(frozen=True)
 class LoginLimitDecision:
+    """Result of reserving capacity for one login attempt."""
+
     allowed: bool
     retry_after: int = 0
     audit: bool = False
@@ -61,6 +65,8 @@ class LoginLimitDecision:
 
 @dataclass
 class _LoginClientState:
+    """Fixed-window login attempt state tracked for one peer."""
+
     window_started: float
     attempts: int = 0
     blocked_audited: bool = False
@@ -92,12 +98,14 @@ class LoginRateLimiter:
         self._lock = threading.Lock()
 
     def _time(self) -> float:
+        """Return the configured monotonic time after validating it is finite."""
         value = float(self._now())
         if not math.isfinite(value):
             raise ValueError("login limiter clock returned an invalid value")
         return value
 
     def _reset_global_if_expired(self, current: float) -> None:
+        """Reset global and client counters after the shared window expires."""
         if current - self._global_started >= self._window_seconds:
             self._global_started = current
             self._global_attempts = 0
@@ -105,6 +113,7 @@ class LoginRateLimiter:
             self._clients.clear()
 
     def _retry_after(self, current: float, started: float) -> int:
+        """Return whole seconds remaining in the rate-limit window."""
         return max(1, math.ceil(self._window_seconds - (current - started)))
 
     def reserve(self, peer: str) -> LoginLimitDecision:
@@ -142,16 +151,19 @@ class LoginRateLimiter:
             return LoginLimitDecision(True)
 
     def record_success(self, peer: str) -> None:
+        """Clear tracked attempts for a peer after a successful login."""
         with self._lock:
             self._clients.pop(peer, None)
 
     @property
     def tracked_clients(self) -> int:
+        """Return the number of peers currently tracked by the limiter."""
         with self._lock:
             return len(self._clients)
 
 
 def _parse_host_header(value: object) -> str | None:
+    """Return a normalized host header name or ``None`` when invalid."""
     if (
         not isinstance(value, str)
         or not value
@@ -203,6 +215,7 @@ def _parse_host_header(value: object) -> str | None:
 
 
 def _clock_timestamp(now: Callable[[], float]) -> int:
+    """Return a valid nonnegative integral timestamp from a clock callback."""
     try:
         value = now()
         if type(value) not in {int, float}:
@@ -216,6 +229,7 @@ def _clock_timestamp(now: Callable[[], float]) -> int:
 
 
 def _is_unspecified_host(host: str) -> bool:
+    """Return whether host is an unspecified IP address."""
     try:
         return ipaddress.ip_address(host).is_unspecified
     except ValueError:
@@ -224,6 +238,8 @@ def _is_unspecified_host(host: str) -> bool:
 
 @dataclass
 class SecurityPolicy:
+    """Evaluate host, origin, and session requirements for server requests."""
+
     config: ServerConfig
     secure_cookie: bool = False
     now: Callable[[], float] = time.time
@@ -234,9 +250,11 @@ class SecurityPolicy:
 
     @property
     def authentication_required(self) -> bool:
+        """Return whether the policy has an access token configured."""
         return self.config.access_token is not None
 
     def verify_access_token(self, candidate: str) -> bool:
+        """Compare a candidate access token with the configured token safely."""
         expected = self.config.access_token
         if expected is None:
             return False
@@ -248,6 +266,7 @@ class SecurityPolicy:
         return secrets.compare_digest(candidate_bytes, expected_bytes)
 
     def issue_session(self) -> str:
+        """Create a signed session token with the configured lifetime."""
         token = self.config.access_token
         if token is None:
             raise RuntimeError("access token is not configured")
@@ -262,6 +281,7 @@ class SecurityPolicy:
         return f"{payload}.{signature}"
 
     def verify_session(self, value: str | None) -> bool:
+        """Return whether a session token is well formed, signed, and unexpired."""
         token = self.config.access_token
         if token is None or not isinstance(value, str):
             return False
@@ -292,6 +312,7 @@ class SecurityPolicy:
         return signature_valid and expires >= current_time
 
     def host_allowed(self, host_header: str | None) -> bool:
+        """Return whether a normalized Host header appears in the configured allowlist."""
         hostname = _parse_host_header(host_header)
         return hostname is not None and hostname in set(self.config.effective_allowed_hosts())
 
@@ -305,6 +326,7 @@ class SecurityPolicy:
         return [canonicalize_allowed_origin(f"https://{rendered_host}:{self.config.port}")]
 
     def origin_allowed(self, origin: str | None) -> bool:
+        """Return whether a valid origin appears in the effective allowlist."""
         try:
             canonical = canonicalize_allowed_origin(origin)  # type: ignore[arg-type]
         except (TypeError, ValueError):
@@ -313,6 +335,7 @@ class SecurityPolicy:
 
 
 def new_request_id() -> str:
+    """Return a new hexadecimal request identifier."""
     return uuid.uuid4().hex
 
 
@@ -324,6 +347,7 @@ def audit_record(
     route: str | None = None,
     status: int | None = None,
 ) -> str:
+    """Serialize a validated closed-schema audit event as JSON."""
     for field_name, required_value in (
         ("request_id", request_id),
         ("action", action),
@@ -372,6 +396,7 @@ def emit_audit(
 
 
 def _safe_public_prefix(path: str, prefix: str) -> bool:
+    """Return whether path contains a plain public filename under prefix."""
     if not path.startswith(prefix):
         return False
     suffix = path[len(prefix) :]
@@ -381,6 +406,7 @@ def _safe_public_prefix(path: str, prefix: str) -> bool:
 
 
 def _is_public_path(path: str) -> bool:
+    """Return whether a request path is accessible without authentication."""
     return (
         path in _PUBLIC_FILES
         or _safe_public_prefix(path, "/static/")
@@ -389,6 +415,7 @@ def _is_public_path(path: str) -> bool:
 
 
 def _route_template(scope: Scope) -> str:
+    """Return the matching route template or the first partial match."""
     app = scope.get("app")
     partial = "<unmatched>"
     for route in getattr(app, "routes", ()):
@@ -401,6 +428,7 @@ def _route_template(scope: Scope) -> str:
 
 
 def _raw_header_values(scope: Scope, name: bytes) -> list[str]:
+    """Return all raw header values matching name without combining them."""
     return [
         value.decode("latin-1") for key, value in scope.get("headers", ()) if key.lower() == name
     ]
@@ -414,12 +442,14 @@ class SecurityMiddleware:
         self._policy = policy
 
     def _current_policy(self, scope: Scope) -> SecurityPolicy:
+        """Return the application policy when available, otherwise the default policy."""
         app = scope.get("app")
         state = getattr(app, "state", None)
         return getattr(state, "security_policy", self._policy)
 
     @staticmethod
     def _login_limiter(scope: Scope) -> LoginRateLimiter | None:
+        """Return the application's login limiter when it has the expected type."""
         app = scope.get("app")
         state = getattr(app, "state", None)
         limiter = getattr(state, "login_rate_limiter", None)
@@ -427,6 +457,7 @@ class SecurityMiddleware:
 
     @staticmethod
     def _peer(scope: Scope) -> str:
+        """Return a bounded client address string for rate-limit tracking."""
         client = scope.get("client")
         if isinstance(client, (tuple, list)) and client:
             return str(client[0])[:128]
@@ -434,6 +465,7 @@ class SecurityMiddleware:
 
     @staticmethod
     def _declared_login_body_too_large(scope: Scope) -> bool:
+        """Return whether Content-Length is malformed or exceeds the login body limit."""
         values = _raw_header_values(scope, b"content-length")
         if not values:
             return False
@@ -448,6 +480,7 @@ class SecurityMiddleware:
 
     @staticmethod
     async def _buffer_login_body(receive: Receive) -> tuple[bytes, bool]:
+        """Read a bounded login body and report whether the client disconnected."""
         body = bytearray()
         while True:
             message = await receive()
@@ -463,6 +496,7 @@ class SecurityMiddleware:
                 return bytes(body), False
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Enforce request policy, attach request IDs, and audit unsafe requests."""
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
@@ -548,6 +582,7 @@ class SecurityMiddleware:
             replayed = False
 
             async def receive_login_body() -> Message:
+                """Replay the buffered login body once to the downstream application."""
                 nonlocal replayed
                 if replayed:
                     return await receive()
@@ -563,6 +598,7 @@ class SecurityMiddleware:
         response_status: int | None = None
 
         async def send_with_request_id(message: Message) -> None:
+            """Record response status and add the request ID response header."""
             nonlocal response_status
             if message["type"] == "http.response.start":
                 response_status = int(message["status"])
@@ -622,6 +658,7 @@ class SecurityMiddleware:
         method: str,
         route: str,
     ) -> None:
+        """Send and audit a 413 response for an oversized login request body."""
         response = JSONResponse(
             {"detail": "Request body too large"},
             status_code=413,
@@ -640,4 +677,6 @@ class SecurityMiddleware:
 
 
 class _LoginBodyTooLarge(Exception):
+    """Signal that a buffered login request exceeded the allowed body size."""
+
     pass

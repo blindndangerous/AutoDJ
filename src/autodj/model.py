@@ -34,7 +34,7 @@ import re
 import shutil
 import threading
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,6 +53,22 @@ EMBEDDING_DIM = 1024
 
 # Sampling rate expected by MuQ (24 kHz, hard requirement)
 MUQ_SAMPLE_RATE = 24_000
+
+
+def _unsupported_windows_lock(_descriptor: int, _operation: int, _length: int) -> None:
+    """Raise when Windows file locking is unavailable."""
+    raise OSError("Windows file locking is unavailable")
+
+
+_windows_lock: Callable[[int, int, int], None] = _unsupported_windows_lock
+_WINDOWS_LOCK_NONBLOCKING = 1
+_WINDOWS_LOCK_UNLOCK = 0
+if os.name == "nt":
+    import msvcrt as _windows_msvcrt
+
+    _windows_lock = _windows_msvcrt.locking
+    _WINDOWS_LOCK_NONBLOCKING = _windows_msvcrt.LK_NBLCK
+    _WINDOWS_LOCK_UNLOCK = _windows_msvcrt.LK_UNLCK
 
 
 # ---------------------------------------------------------------------------
@@ -107,8 +123,9 @@ def _reset_model_cache_locks_after_fork() -> None:
     _thread_locks_pid = os.getpid()
 
 
-if hasattr(os, "register_at_fork"):
-    os.register_at_fork(after_in_child=_reset_model_cache_locks_after_fork)
+getattr(os, "register_at_fork", lambda **_kwargs: None)(
+    after_in_child=_reset_model_cache_locks_after_fork
+)
 
 
 @dataclass(frozen=True)
@@ -134,9 +151,10 @@ def _is_reparse_point(path: Path) -> bool:
     if path.is_symlink() or getattr(path, "is_junction", lambda: False)():
         return True
     try:
-        attributes = path.stat(follow_symlinks=False).st_file_attributes
-    except (AttributeError, OSError):
+        metadata = path.stat(follow_symlinks=False)
+    except OSError:
         return False
+    attributes = int(getattr(metadata, "st_file_attributes", 0))
     return bool(attributes & 0x400)
 
 
@@ -289,6 +307,7 @@ def inspect_model_cache(model_cfg: ModelConfig, index_cfg: IndexConfig) -> Model
 
 
 def _fsync_file(path: Path) -> None:
+    """Flush one file's contents to stable storage."""
     with path.open("rb+") as handle:
         os.fsync(handle.fileno())
 
@@ -306,6 +325,7 @@ def _fsync_directory(path: Path) -> None:
 
 
 def _fsync_tree(root: Path) -> None:
+    """Flush every file and directory below a model cache root."""
     for item in root.rglob("*"):
         if item.is_file():
             _fsync_file(item)
@@ -315,6 +335,7 @@ def _fsync_tree(root: Path) -> None:
 
 
 def _thread_lock(path: Path) -> threading.RLock:
+    """Return the process-local lock for a model cache path."""
     global _thread_locks_pid, _thread_locks
     with _thread_locks_guard:
         if _thread_locks_pid != os.getpid():
@@ -325,19 +346,18 @@ def _thread_lock(path: Path) -> threading.RLock:
 
 def _is_windows_lock_contention(error: OSError) -> bool:
     """Return whether Windows reported a transient file-lock collision."""
-    if error.winerror is not None:
-        return error.winerror in {32, 33}
+    winerror = getattr(error, "winerror", None)
+    if winerror is not None:
+        return winerror in {32, 33}
     return error.errno in {errno.EACCES, errno.EAGAIN}
 
 
 def _acquire_windows_file_lock(handle: BinaryIO) -> None:
     """Acquire one-byte lock, retrying only documented contention errors."""
-    import msvcrt
-
     while True:
         try:
             handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            _windows_lock(handle.fileno(), _WINDOWS_LOCK_NONBLOCKING, 1)
             return
         except OSError as error:
             if not _is_windows_lock_contention(error):
@@ -375,14 +395,12 @@ def _model_cache_lock(cache_path: Path) -> Iterator[None]:
     try:
         with lock_path.open("r+b") as handle:
             if os.name == "nt":
-                import msvcrt
-
                 _acquire_windows_file_lock(handle)
                 try:
                     yield
                 finally:
                     handle.seek(0)
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                    _windows_lock(handle.fileno(), _WINDOWS_LOCK_UNLOCK, 1)
             else:
                 import fcntl
 

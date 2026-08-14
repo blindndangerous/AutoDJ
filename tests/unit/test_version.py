@@ -1,3 +1,4 @@
+import importlib.metadata
 import json
 import os
 import subprocess
@@ -10,7 +11,7 @@ import pytest
 
 import autodj
 from autodj.server import _validated_bundle_version, _version_info
-from autodj.version import current_version
+from autodj.version import _project_version, _source_pyproject, current_version
 
 ROOT = Path(__file__).resolve().parents[2]
 REQUIRED_BUILT_ASSETS = (
@@ -63,6 +64,92 @@ def test_python_version_derives_from_project_metadata() -> None:
     expected = project_version()
     assert current_version() == expected
     assert autodj.__version__ == expected
+
+
+def test_source_pyproject_rejects_installed_layout(tmp_path: Path, monkeypatch) -> None:
+    import autodj.version as version_module
+
+    installed_module = tmp_path / "site" / "autodj" / "version.py"
+    installed_module.parent.mkdir(parents=True)
+    installed_module.write_text("", encoding="utf-8")
+    monkeypatch.setattr(version_module, "__file__", str(installed_module))
+
+    assert _source_pyproject() is None
+
+
+def test_source_pyproject_handles_path_without_checkout_parent(monkeypatch) -> None:
+    import autodj.version as version_module
+
+    class ShallowModulePath:
+        parents: tuple[()] = ()
+
+    class FakePath:
+        def __init__(self, _value: str) -> None:
+            pass
+
+        def resolve(self) -> ShallowModulePath:
+            return ShallowModulePath()
+
+    monkeypatch.setattr(version_module, "Path", FakePath)
+
+    assert _source_pyproject() is None
+
+
+@pytest.mark.parametrize(
+    "project",
+    [
+        "[project]\nname = 'other'\nversion = '1.0'\n",
+        "[project]\nname = 'autodj'\nversion = ''\n",
+        "[project]\nname = 'autodj'\nversion = [1]\n",
+        "[tool.other]\nvalue = 1\n",
+    ],
+)
+def test_project_version_rejects_invalid_metadata(tmp_path: Path, project: str) -> None:
+    metadata = tmp_path / "pyproject.toml"
+    metadata.write_text(project, encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="Unable to read AutoDJ version"):
+        _project_version(metadata)
+
+
+@pytest.mark.parametrize(
+    ("metadata", "message"),
+    [
+        (importlib.metadata.PackageNotFoundError("autodj"), "version unavailable"),
+        (ValueError("corrupt metadata"), "metadata is invalid"),
+        ("", "expected a non-empty string"),
+    ],
+)
+def test_installed_version_failures_are_actionable(monkeypatch, metadata, message: str) -> None:
+    import autodj.version as version_module
+
+    current_version.cache_clear()
+    monkeypatch.setattr(version_module, "_source_pyproject", lambda: None)
+    if isinstance(metadata, BaseException):
+        monkeypatch.setattr(
+            version_module.importlib.metadata,
+            "version",
+            lambda _name: (_ for _ in ()).throw(metadata),
+        )
+    else:
+        monkeypatch.setattr(version_module.importlib.metadata, "version", lambda _name: metadata)
+    try:
+        with pytest.raises(RuntimeError, match=message):
+            current_version()
+    finally:
+        current_version.cache_clear()
+
+
+def test_installed_version_is_returned(monkeypatch) -> None:
+    import autodj.version as version_module
+
+    current_version.cache_clear()
+    monkeypatch.setattr(version_module, "_source_pyproject", lambda: None)
+    monkeypatch.setattr(version_module.importlib.metadata, "version", lambda _name: "2.3.4")
+    try:
+        assert current_version() == "2.3.4"
+    finally:
+        current_version.cache_clear()
 
 
 def test_version_endpoint_uses_same_accessor() -> None:

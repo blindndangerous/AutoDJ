@@ -131,14 +131,17 @@ class _FrozenIndexEntry(IndexEntry):
         object.__setattr__(self, "_frozen", True)
 
     def __setattr__(self, name: str, value: object) -> None:
+        """Reject field changes after this runtime copy is frozen."""
         if getattr(self, "_frozen", False):
             raise FrozenInstanceError(f"cannot assign to field {name!r}")
         object.__setattr__(self, name, value)
 
     def __delattr__(self, name: str) -> None:
+        """Reject field deletion from this runtime copy."""
         raise FrozenInstanceError(f"cannot delete field {name!r}")
 
     def __eq__(self, other: object) -> bool:
+        """Compare every index entry field for equality."""
         return isinstance(other, IndexEntry) and all(
             getattr(self, field.name) == getattr(other, field.name) for field in fields(IndexEntry)
         )

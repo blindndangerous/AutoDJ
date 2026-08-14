@@ -2456,3 +2456,70 @@ class TestApplyTransitionEffectWetMix:
             sr_a=sr,
         )
         assert result_a.shape == audio_a.shape
+
+
+class TestPlayerCoverageErrorPaths:
+    def test_time_stretch_failure_returns_original_audio(self) -> None:
+        audio = _sine_audio(0.1)
+        with patch("librosa.effects.time_stretch", side_effect=RuntimeError("bad stretch")):
+            result = _time_stretch(audio, 1.1)
+
+        assert result is audio
+
+    def test_filter_failure_keeps_current_chunk(self) -> None:
+        audio = _sine_audio(0.1)
+        with patch("scipy.signal.butter", side_effect=ValueError("bad filter")):
+            result = apply_filter_sweep(audio, 44100, 8000, 200)
+
+        assert result.shape == audio.shape
+        assert np.all(np.isfinite(result))
+
+    def test_discovery_similarity_failure_returns_none(self) -> None:
+        player = Player(_make_cfg_mock(), _make_sim_index(3), discovery_every=1)
+        player._state.discovery_enabled = True
+        player._state.track_number = 1
+        current = player._sim.entries[0]
+        with patch.object(player._sim, "find_distant", side_effect=SimilarityError("none")):
+            assert player._try_discovery(current) is None
+
+    def test_pick_next_relaxes_repeat_window_after_similarity_failure(self) -> None:
+        player = Player(_make_cfg_mock(), _make_sim_index(3))
+        current = player._sim.entries[0]
+        expected = player._sim.entries[1]
+        with patch.object(
+            player._sim,
+            "find_next_for_path",
+            side_effect=[SimilarityError("excluded"), expected],
+        ) as find_next:
+            result = player._pick_next(current)
+
+        assert result is expected
+        assert find_next.call_count == 2
+        assert list(find_next.call_args_list[1].kwargs["recently_played"]) == [current.path]
+
+    def test_embedded_lyrics_error_returns_empty_text(self) -> None:
+        player = Player(_make_cfg_mock(), _make_sim_index(2))
+        player._cfg.library.beets_db = None
+        with (
+            patch("autodj.audio_meta.load_lrc_for", return_value=[]),
+            patch("autodj.audio_meta.read_plain_lyrics", side_effect=OSError("bad tags")),
+        ):
+            assert player._read_lyrics_for_path("song.flac") == ([], "")
+
+    def test_dj_cache_error_leaves_cache_unavailable(self) -> None:
+        player = Player(_make_cfg_mock(), _make_sim_index(2))
+        player._cfg.index.active_dir = Path("index")
+        with patch("autodj.dj_meta.get_cache", side_effect=OSError("bad database")):
+            player._ensure_dj_cache()
+
+        assert player._dj_cache is None
+        assert player._dj_cache_initialised is True
+
+    def test_unbounded_background_wait_joins_registered_worker(self) -> None:
+        player = Player(_make_cfg_mock(), _make_sim_index(2))
+        worker = MagicMock()
+        worker.join.side_effect = lambda: player._bg_analysis_threads.clear()
+        player._bg_analysis_threads.add(worker)
+
+        assert player.wait_for_background_analysis() is True
+        worker.join.assert_called_once_with()

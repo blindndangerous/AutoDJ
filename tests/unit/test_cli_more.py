@@ -5,9 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import click
 from click.testing import CliRunner
 
-from autodj.cli import _coerce_audio_device, _resolve_seed, cli
+from autodj.backup import BackupError
+from autodj.cli import _can_import, _coerce_audio_device, _resolve_seed, cli
 from autodj.indexer import IndexEntry
 
 
@@ -48,6 +50,8 @@ def _cfg() -> MagicMock:
     cfg.playback.crossfade_seconds = 3.0
     cfg.playback.history_file = None
     cfg.playback.discovery_every = None
+    cfg.playback.pick_top_k = 1
+    cfg.playback.pick_temperature = 0.3
     cfg.presets = {}
     return cfg
 
@@ -134,6 +138,9 @@ class TestStatsNameFlag:
 
 
 class TestIndexCommand:
+    def test_import_probe_returns_false_for_missing_module(self) -> None:
+        assert not _can_import("autodj_module_that_does_not_exist")
+
     def test_index_with_reindex_modified_since_invalid(self, tmp_path: Path) -> None:
         cfg = _write_min_cfg(tmp_path)
         # Pretend deps are present + cfg loads, but build_index gets to the date parse.
@@ -344,6 +351,68 @@ class TestIndexCommand:
         assert result.exit_code == 1
         assert "missing packages" in result.output
 
+    def test_index_force_without_post_passes_reports_mode(self, tmp_path: Path) -> None:
+        cfg = _write_min_cfg(tmp_path)
+        with (
+            patch("autodj.cli._can_import", return_value=True),
+            patch("autodj.cli._load_cfg_or_exit", return_value=_cfg()),
+            patch("autodj.model.download_model_if_needed", return_value=tmp_path / "m"),
+            patch("autodj.model.load_model", return_value=MagicMock()),
+            patch("autodj.indexer.build_index"),
+        ):
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "--config",
+                    str(cfg),
+                    "index",
+                    "--force",
+                    "--no-enrich",
+                    "--no-analyse",
+                ],
+            )
+
+        assert result.exit_code == 0
+        assert "FORCE REBUILD" in result.output
+        assert "Post-pass" in result.output
+        assert "skipped" in result.output
+
+
+class TestDoctorAndBackupErrors:
+    def test_doctor_propagates_config_exit_in_text_mode(self) -> None:
+        with patch("autodj.cli._load_cfg_or_exit", side_effect=click.exceptions.Exit(1)):
+            result = CliRunner().invoke(cli, ["doctor"])
+
+        assert result.exit_code == 1
+
+    def test_backup_error_becomes_click_error(self, tmp_path: Path) -> None:
+        with (
+            patch("autodj.cli._load_cfg_or_exit", return_value=_cfg()),
+            patch(
+                "autodj.backup.create_backup",
+                side_effect=BackupError("snapshot unavailable"),
+            ),
+        ):
+            result = CliRunner().invoke(cli, ["backup", str(tmp_path / "backup.zip")])
+
+        assert result.exit_code == 1
+        assert "snapshot unavailable" in result.output
+
+    def test_restore_error_becomes_click_error(self, tmp_path: Path) -> None:
+        archive = tmp_path / "backup.zip"
+        archive.touch()
+        with (
+            patch("autodj.cli._load_cfg_or_exit", return_value=_cfg()),
+            patch(
+                "autodj.backup.restore_backup",
+                side_effect=BackupError("archive invalid"),
+            ),
+        ):
+            result = CliRunner().invoke(cli, ["restore", str(archive)])
+
+        assert result.exit_code == 1
+        assert "archive invalid" in result.output
+
 
 # ---------------------------------------------------------------------------
 # list-devices
@@ -392,7 +461,13 @@ class TestListDevices:
     def test_default_device_attribute_error(self) -> None:
         # sd.default.device raises AttributeError
         sd_mock = MagicMock()
-        sd_mock.default.device = "not iterable"
+
+        class BrokenDefault:
+            @property
+            def device(self) -> object:
+                raise AttributeError("device unavailable")
+
+        sd_mock.default = BrokenDefault()
         sd_mock.query_devices.return_value = [
             {"name": "Speakers", "max_output_channels": 2, "default_samplerate": 48000},
         ]
@@ -439,3 +514,39 @@ class TestPlaylistRandomSeed:
             # No --seed -> _resolve_seed returns None -> random.choice path (line 1735+)
             result = CliRunner().invoke(cli, ["playlist", "--tracks", "2"])
         assert result.exit_code == 0
+
+    def test_playlist_uses_resolved_seed(self) -> None:
+        cfg_mock = _cfg()
+        sim_mock = MagicMock()
+        sim_mock.entries = [_entry(0)]
+        _configure_sim_api(sim_mock)
+
+        with (
+            patch("autodj.cli._load_cfg_or_exit", return_value=cfg_mock),
+            patch("autodj.cli._load_index_or_exit", return_value=sim_mock),
+            patch("autodj.cli._resolve_seed", return_value=sim_mock.entries[0]),
+        ):
+            result = CliRunner().invoke(
+                cli,
+                ["playlist", "--seed", "Song 0", "--tracks", "1"],
+            )
+
+        assert result.exit_code == 0
+        assert "Z:/Music/song_0.flac" in result.output
+
+    def test_playlist_stops_cleanly_when_selection_fails(self) -> None:
+        cfg_mock = _cfg()
+        sim_mock = MagicMock()
+        sim_mock.entries = [_entry(0)]
+        _configure_sim_api(sim_mock)
+        sim_mock.find_next_for_path.side_effect = RuntimeError("no candidate")
+
+        with (
+            patch("autodj.cli._load_cfg_or_exit", return_value=cfg_mock),
+            patch("autodj.cli._load_index_or_exit", return_value=sim_mock),
+            patch("autodj.cli._resolve_seed", return_value=sim_mock.entries[0]),
+        ):
+            result = CliRunner().invoke(cli, ["playlist", "--tracks", "2"])
+
+        assert result.exit_code == 0
+        assert "Stopping early: no candidate" in result.output

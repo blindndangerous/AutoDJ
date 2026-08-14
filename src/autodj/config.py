@@ -611,6 +611,7 @@ class ModelConfig:
     manual_path: Path | None = None
 
     def __post_init__(self) -> None:
+        """Validate the configured model revision."""
         if (
             not isinstance(self.revision, str)
             or not self.revision
@@ -652,6 +653,7 @@ _DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
 
 
 def _require_int(value: object, field_name: str) -> int:
+    """Return an integer value or raise a field-specific type error."""
     if isinstance(value, bool) or not isinstance(value, int):
         raise TypeError(f"{field_name} must be an integer")
     return value
@@ -663,6 +665,7 @@ def _canonicalize_host(
     field_name: str,
     allow_unspecified: bool,
 ) -> str:
+    """Validate and normalize an IP address or DNS hostname."""
     if not isinstance(value, str):
         raise TypeError(f"{field_name} entries must be strings")
     if (
@@ -702,10 +705,12 @@ def _canonicalize_host(
 
 
 def _deduplicate(values: list[str]) -> list[str]:
+    """Return values in first-seen order with duplicates removed."""
     return list(dict.fromkeys(values))
 
 
 def validate_access_token(token: str | None) -> None:
+    """Reject configured access tokens shorter than the required byte length."""
     if token is None:
         return
     if not isinstance(token, str):
@@ -715,6 +720,7 @@ def validate_access_token(token: str | None) -> None:
 
 
 def canonicalize_allowed_origin(value: str) -> str:
+    """Validate and normalize an HTTP or HTTPS origin."""
     if not isinstance(value, str):
         raise TypeError("server.allowed_origins entries must be strings")
     if (
@@ -764,6 +770,7 @@ def canonicalize_allowed_origin(value: str) -> str:
 
 
 def _canonicalize_allowed_hosts(values: object) -> list[str] | None:
+    """Validate, normalize, and deduplicate an optional host allowlist."""
     if values is None:
         return None
     if not isinstance(values, list):
@@ -781,6 +788,7 @@ def _canonicalize_allowed_hosts(values: object) -> list[str] | None:
 
 
 def _canonicalize_allowed_origins(values: object) -> list[str] | None:
+    """Validate, normalize, and deduplicate an optional origin allowlist."""
     if values is None:
         return None
     if not isinstance(values, list):
@@ -802,6 +810,7 @@ class ServerConfig:
     liner_upload_max_bytes: int = 50 * _MIB
 
     def __post_init__(self) -> None:
+        """Normalize and validate server settings after initialization."""
         self.host = _canonicalize_host(
             self.host,
             field_name="server.host",
@@ -829,12 +838,14 @@ class ServerConfig:
             raise ValueError("server.liner_upload_max_bytes must be between 1 MiB and 1024 MiB")
 
     def effective_allowed_hosts(self) -> list[str]:
+        """Return configured hosts or the default host derived from the bind address."""
         if self.allowed_hosts is not None:
             return list(self.allowed_hosts)
         # Sentinel comparison selects defaults; it does not bind a socket.
         return [] if self.host in {"0.0.0.0", "::"} else [self.host]  # nosec B104
 
     def effective_allowed_origins(self) -> list[str]:
+        """Return configured origins or the default origin derived from the bind address."""
         if self.allowed_origins is not None:
             return list(self.allowed_origins)
         # Sentinel comparison selects defaults; it does not bind a socket.
@@ -845,6 +856,7 @@ class ServerConfig:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ServerConfig:
+        """Construct server settings from a raw configuration section."""
         if not isinstance(data, dict):
             raise TypeError("server section must be a table")
         max_mib = _require_int(data.get("liner_upload_max_mib", 50), "server.liner_upload_max_mib")
@@ -863,6 +875,7 @@ class ServerConfig:
 
 
 def is_loopback_bind(host: str) -> bool:
+    """Return whether a valid bind host resolves to a loopback address."""
     try:
         canonical = _canonicalize_host(
             host,
@@ -1000,6 +1013,7 @@ ENVIRONMENT_OVERLAY: dict[str, tuple[str, str, type[str] | type[int]]] = {
 
 
 def _default_raw() -> dict[str, Any]:
+    """Return the minimal raw configuration defaults."""
     return {
         "library": {"music_dir": "music"},
         "index": {"index_dir": "index", "model_dir": "models"},
@@ -1008,6 +1022,7 @@ def _default_raw() -> dict[str, Any]:
 
 
 def _environment_overlay(environ: Mapping[str, str]) -> dict[str, Any]:
+    """Build a configuration overlay from supported environment variables."""
     overlay: dict[str, Any] = {}
     for variable, (section, key, converter) in ENVIRONMENT_OVERLAY.items():
         if variable not in environ:
@@ -1028,6 +1043,7 @@ def _build_config(
     sources: list[str],
     presets_raw: dict[str, Any],
 ) -> AutoDJConfig:
+    """Validate raw sections and construct the typed application configuration."""
     from autodj.presets import load_user_presets
 
     for section in (

@@ -69,6 +69,8 @@ CONFIG_ONLY_PLAYBACK_FIELDS = frozenset({"liners_folder"})
 
 
 class DJMixState(TypedDict, total=False):
+    """Persisted DJ-mix options restored from browser-owned state."""
+
     harmonic_mixing: bool
     harmonic_mode: str
     beatmatch: bool
@@ -78,6 +80,8 @@ class DJMixState(TypedDict, total=False):
 
 
 class PlaybackState(TypedDict, total=False):
+    """Persisted playback options restored from browser-owned state."""
+
     crossfade_seconds: float
     fade_in_seconds: float
     crossfade_eq_duck: bool
@@ -109,6 +113,8 @@ class PlaybackState(TypedDict, total=False):
 
 
 class PersistedState(TypedDict):
+    """Top-level schema for browser-owned settings stored on disk."""
+
     schema_version: int
     preset: NotRequired[str | None]
     transition: NotRequired[str]
@@ -197,10 +203,12 @@ def _fsync_directory(path: Path) -> None:
 
 
 def _warn(field: str, value: object) -> None:
+    """Log that a persisted field has an invalid value."""
     logger.warning("ignoring invalid %s in web_state.json: %r", field, value)
 
 
 def _read_bool(data: dict, field: str) -> bool | None:
+    """Read a Boolean field or warn when its stored value is invalid."""
     if field not in data:
         return None
     value = data[field]
@@ -211,6 +219,7 @@ def _read_bool(data: dict, field: str) -> bool | None:
 
 
 def _is_finite_number(value: object) -> TypeGuard[int | float]:
+    """Return whether value is a finite non-Boolean number."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return False
     try:
@@ -220,6 +229,7 @@ def _is_finite_number(value: object) -> TypeGuard[int | float]:
 
 
 def _read_number(data: dict, field: str, minimum: float) -> float | None:
+    """Read a finite numeric field that satisfies its minimum value."""
     if field not in data:
         return None
     value = data[field]
@@ -230,6 +240,7 @@ def _read_number(data: dict, field: str, minimum: float) -> float | None:
 
 
 def _restore_preset(player: Any, data: dict) -> None:
+    """Restore a selected preset when its stored name is valid."""
     if "preset" not in data:
         return
     value = data["preset"]
@@ -249,6 +260,7 @@ def _restore_preset(player: Any, data: dict) -> None:
 
 
 def _restore_djmix(cfg: Any, data: dict) -> None:
+    """Restore validated DJ-mix settings from persisted state."""
     djmix = data.get("djmix")
     if not isinstance(djmix, dict):
         return
@@ -265,6 +277,7 @@ def _restore_djmix(cfg: Any, data: dict) -> None:
 
 
 def _restore_transition(cfg: Any, data: dict) -> None:
+    """Restore a configured transition effect when it is supported."""
     if "transition" not in data:
         return
     value = data["transition"]
@@ -275,6 +288,7 @@ def _restore_transition(cfg: Any, data: dict) -> None:
 
 
 def _restore_playback_floats(cfg: Any, pb: dict) -> None:
+    """Restore nonnegative floating-point playback settings."""
     for field, minimum in (
         ("crossfade_seconds", 0.0),
         ("fade_in_seconds", 0.0),
@@ -286,6 +300,7 @@ def _restore_playback_floats(cfg: Any, pb: dict) -> None:
 
 
 def _restore_playback_bools(cfg: Any, player: Any, pb: dict) -> None:
+    """Restore Boolean playback settings on configuration and player state."""
     for field in PLAYBACK_CFG_BOOL_FIELDS:
         value = _read_bool(pb, field)
         if value is not None:
@@ -300,6 +315,7 @@ def _restore_playback_bools(cfg: Any, player: Any, pb: dict) -> None:
 
 
 def _restore_mood_arc(cfg: Any, player: Any, pb: dict) -> None:
+    """Restore mood-arc enablement and create its default arc when enabled."""
     enabled = _read_bool(pb, "enable_mood_arc")
     if enabled is None:
         return
@@ -315,6 +331,7 @@ def _restore_mood_arc(cfg: Any, player: Any, pb: dict) -> None:
 
 
 def _restore_validated_strings(cfg: Any, pb: dict) -> None:
+    """Restore playback strings after validation by their configuration rules."""
     from autodj.config import (
         _validate_key_notation,
         _validate_post_queue_seed,
@@ -346,6 +363,7 @@ def _restore_nullable_number(
     *,
     integer: bool = False,
 ) -> None:
+    """Restore a positive numeric field that may be explicitly null."""
     if field not in pb:
         return
     value = pb[field]
@@ -364,6 +382,7 @@ def _read_random_liner_bound(
     pb: dict,
     field: str,
 ) -> tuple[bool, float | None]:
+    """Read and validate one endpoint of the random liner interval."""
     present = field in pb
     value = pb[field] if present else getattr(playback, field, None)
     if value is None:
@@ -378,6 +397,7 @@ def _read_random_liner_bound(
 
 
 def _restore_random_liner_window(playback: Any, pb: dict) -> None:
+    """Restore a valid random liner interval without changing missing bounds."""
     min_field = "liners_random_min_minutes"
     max_field = "liners_random_max_minutes"
     min_present = min_field in pb
@@ -404,6 +424,7 @@ def _restore_random_liner_window(playback: Any, pb: dict) -> None:
 
 
 def _restore_liners(cfg: Any, pb: dict) -> None:
+    """Restore validated liner scheduling and ducking settings."""
     playback = cfg.playback
     _restore_nullable_number(playback, pb, "liners_every_n_songs", integer=True)
     _restore_nullable_number(playback, pb, "liners_every_minutes")
@@ -423,6 +444,7 @@ def _restore_liners(cfg: Any, pb: dict) -> None:
 
 
 def _restore_bpm_range(player: Any, data: dict) -> None:
+    """Restore a valid BPM range or clear it when explicitly null."""
     if "bpm_range" not in data:
         return
     value = data["bpm_range"]
@@ -442,6 +464,7 @@ def _restore_bpm_range(player: Any, data: dict) -> None:
 
 
 def _restore_discovery(player: Any, data: dict) -> None:
+    """Restore a nonnegative discovery interval or clear it when null."""
     if "discovery_every" not in data:
         return
     value = data["discovery_every"]

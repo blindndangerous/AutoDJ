@@ -606,6 +606,7 @@ class DjMetaCache:
         self._open()
 
     def __enter__(self) -> DjMetaCache:
+        """Return this open cache for context manager use."""
         return self
 
     def __exit__(
@@ -614,6 +615,8 @@ class DjMetaCache:
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
+        """Flush successful work and close the cache connection."""
+        del traceback
         try:
             if exc_type is None:
                 self.flush(force=True)
@@ -705,6 +708,7 @@ class DjMetaCache:
             )
 
     def _row_to_meta(self, row: tuple) -> DjMeta:
+        """Decode one SQLite row into DJ metadata."""
         intro, outro, analysed, beats_json, cues_json = row
         try:
             beats = json.loads(beats_json or "[]")

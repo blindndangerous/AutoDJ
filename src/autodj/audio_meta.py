@@ -75,12 +75,14 @@ def _open_mutagen(audio_path: str | Path) -> Any:
     """Return a mutagen File object, or ``None`` on any failure."""
     try:
         import mutagen
-        from mutagen import File as MutagenFile
-    except ImportError:
+
+        mutagen_file = vars(mutagen)["File"]
+        mutagen_error = vars(mutagen)["MutagenError"]
+    except (ImportError, KeyError):
         return None
     try:
-        return MutagenFile(str(audio_path))
-    except (OSError, ValueError, TypeError, mutagen.MutagenError):
+        return mutagen_file(str(audio_path))
+    except (OSError, ValueError, TypeError, mutagen_error):
         return None
 
 
@@ -402,13 +404,15 @@ def read_file_tags(audio_path: str | Path) -> FileTags:
     """
     try:
         import mutagen
-        from mutagen import File as MutagenFile
-    except ImportError:
+
+        mutagen_file = vars(mutagen)["File"]
+        mutagen_error = vars(mutagen)["MutagenError"]
+    except (ImportError, KeyError):
         return FileTags()
 
     try:
-        m = MutagenFile(str(audio_path))
-    except (OSError, ValueError, TypeError, mutagen.MutagenError):
+        m = mutagen_file(str(audio_path))
+    except (OSError, ValueError, TypeError, mutagen_error):
         return FileTags()
     if m is None:
         return FileTags()

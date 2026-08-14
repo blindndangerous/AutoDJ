@@ -161,6 +161,7 @@ def _load_cfg_or_exit(
 
 
 def _append_cli_source(cfg: AutoDJConfig) -> None:
+    """Record the CLI as the latest configuration source."""
     if not cfg.config_sources or cfg.config_sources[-1] != "cli":
         cfg.config_sources = (*cfg.config_sources, "cli")
 

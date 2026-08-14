@@ -152,6 +152,12 @@ class TestLinerLibrary:
         result = lib.pick("nonsense_mode", rng=random.Random(2))
         assert result in files
 
+    def test_weighted_nan_total_falls_back_to_last_file(self) -> None:
+        files = [Path("a.mp3"), Path("b.mp3")]
+        lib = LinerLibrary(files=files, weights=[float("nan"), 1.0])
+
+        assert lib.pick("weighted", rng=random.Random(2)) == files[-1]
+
     def test_from_folder_sorts_case_insensitive(self, tmp_path: Path) -> None:
         (tmp_path / "Zeta.mp3").write_bytes(b"")
         (tmp_path / "alpha.mp3").write_bytes(b"")

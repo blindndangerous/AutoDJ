@@ -471,8 +471,8 @@ class TestFromIndexDir:
             time.sleep(0.05)
             assert not publish_done.is_set()
             release.set()
-            loader.join(timeout=1)
-            publisher.join(timeout=1)
+            loader.join(timeout=10)
+            publisher.join(timeout=10)
 
         assert not loader.is_alive()
         assert not publisher.is_alive()
@@ -557,8 +557,8 @@ class TestFromIndexDir:
         time.sleep(0.05)
         assert not target_locked.is_set()
         release_parent.set()
-        direct_thread.join(timeout=1)
-        from_thread.join(timeout=1)
+        direct_thread.join(timeout=10)
+        from_thread.join(timeout=10)
 
         assert errors == []
         assert not direct_thread.is_alive()

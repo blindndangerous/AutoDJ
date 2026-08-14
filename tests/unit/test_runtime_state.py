@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import errno
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
 from autodj.runtime_state import (
+    _is_finite_number,
     load_into_player,
     save_from_player,
     state_file_for,
@@ -69,6 +71,101 @@ def _make_player() -> SimpleNamespace:
         _state=SimpleNamespace(no_repeat_window=20),
         _sim=SimpleNamespace(entries_snapshot=lambda: (), ntotal=0),
     )
+
+
+def _write_state(index_dir: Path, payload: object) -> None:
+    (index_dir / "web_state.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_huge_integer_is_not_a_finite_runtime_number() -> None:
+    assert _is_finite_number(10**10000) is False
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"preset": 12},
+        {"transition": 12},
+        {"playback": {"transition_mode": 12}},
+        {"playback": {"liners_pick_mode": "invalid"}},
+        {"playback": {"liners_duck_db": 1.0}},
+        {"bpm_range": "invalid"},
+        {"discovery_every": "invalid"},
+        {"schema_version": "invalid"},
+    ],
+)
+def test_invalid_state_field_is_warned_and_ignored(tmp_path: Path, caplog, payload) -> None:
+    player = _make_player()
+    _write_state(tmp_path, payload)
+
+    load_into_player(player, tmp_path)
+
+    assert "ignoring invalid" in caplog.text
+
+
+def test_non_object_state_root_is_warned_and_ignored(tmp_path: Path, caplog) -> None:
+    _write_state(tmp_path, ["not", "an", "object"])
+
+    load_into_player(_make_player(), tmp_path)
+
+    assert "root is not an object" in caplog.text
+
+
+def test_partial_random_window_rejects_invalid_current_other_bound(tmp_path: Path, caplog) -> None:
+    player = _make_player()
+    player._cfg.playback.liners_random_max_minutes = "invalid"
+    _write_state(tmp_path, {"playback": {"liners_random_min_minutes": 2.0}})
+
+    load_into_player(player, tmp_path)
+
+    assert "invalid current liners_random_max_minutes" in caplog.text
+
+
+def test_partial_random_window_restores_only_maximum(tmp_path: Path) -> None:
+    player = _make_player()
+    player._cfg.playback.liners_random_min_minutes = 1.0
+    _write_state(tmp_path, {"playback": {"liners_random_max_minutes": 5.0}})
+
+    load_into_player(player, tmp_path)
+
+    assert player._cfg.playback.liners_random_min_minutes == 1.0
+    assert player._cfg.playback.liners_random_max_minutes == 5.0
+
+
+def test_disabling_mood_arc_clears_live_arc(tmp_path: Path) -> None:
+    player = _make_player()
+    player._mood_arc = object()
+    _write_state(tmp_path, {"playback": {"enable_mood_arc": False}})
+
+    load_into_player(player, tmp_path)
+
+    assert player._mood_arc is None
+
+
+def test_null_discovery_clears_existing_cadence(tmp_path: Path) -> None:
+    player = _make_player()
+    player._discovery_every = 4
+    _write_state(tmp_path, {"discovery_every": None})
+
+    load_into_player(player, tmp_path)
+
+    assert player._discovery_every is None
+
+
+def test_temporary_state_cleanup_failure_is_warned_after_publish(
+    tmp_path: Path, monkeypatch, caplog
+) -> None:
+    def fail_unlink(self, *, missing_ok=False):
+        raise OSError("cleanup failed")
+
+    monkeypatch.setattr(Path, "unlink", fail_unlink)
+
+    save_from_player({"preset": "chill"}, tmp_path)
+
+    assert (
+        json.loads((tmp_path / "web_state.json").read_text(encoding="utf-8"))["preset"] == "chill"
+    )
+    assert "Failed to clean temporary web_state.json" in caplog.text
 
 
 class TestStateFile:

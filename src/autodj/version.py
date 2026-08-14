@@ -1,3 +1,5 @@
+"""Resolve the AutoDJ version from source or installed metadata."""
+
 from __future__ import annotations
 
 import importlib.metadata
@@ -20,6 +22,7 @@ def _source_pyproject() -> Path | None:
 
 
 def _project_version(path: Path) -> str:
+    """Read and validate the project version from a pyproject file."""
     try:
         with path.open("rb") as fh:
             project = tomllib.load(fh)["project"]

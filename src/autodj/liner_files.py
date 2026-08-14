@@ -12,6 +12,7 @@ import secrets
 import stat
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
+from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Protocol, cast
@@ -44,8 +45,11 @@ class LinerRangeNotSatisfiable(ValueError):
 
 
 class AsyncReader(Protocol):
+    """Describe the asynchronous byte reader accepted for liner uploads."""
+
     async def read(self, size: int = -1) -> bytes:
         """Read at most *size* bytes."""
+        ...
 
 
 class _PosixOs(Protocol):
@@ -56,6 +60,7 @@ class _PosixOs(Protocol):
 
     def geteuid(self) -> int:
         """Return effective user ID."""
+        ...
 
 
 _posix_os = cast(_PosixOs, os)
@@ -71,6 +76,8 @@ class OpenedLiner:
 
 @dataclass
 class _PinnedRoot:
+    """Hold a platform-specific handle to a validated liner root."""
+
     path: Path
     handle: int
     windows: bool
@@ -78,6 +85,8 @@ class _PinnedRoot:
 
 @dataclass
 class _StagedUpload:
+    """Hold an upload file inside its private staging directory."""
+
     root: _PinnedRoot
     stage_handle: int
     stage_name: str
@@ -105,6 +114,8 @@ _REPARSE_ATTRIBUTE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
 
 def _validate_name(name: str) -> None:
+    """Reject names that are unsafe as a single cross-platform filename."""
+
     if (
         not name
         or name in {".", ".."}
@@ -123,6 +134,8 @@ def _validate_name(name: str) -> None:
 
 
 def _is_reparse_point(path: Path) -> bool:
+    """Return whether a path is a symbolic link or Windows reparse point."""
+
     try:
         metadata = path.lstat()
     except FileNotFoundError:
@@ -159,99 +172,148 @@ def resolve_liner_path(root: Path, name: str, *, require_file: bool = False) -> 
     return target
 
 
-if os.name == "nt":
-    import msvcrt
-    from ctypes import wintypes
+_INVALID_HANDLE_VALUE = cast(int, ctypes.c_void_p(-1).value)
+_GENERIC_READ = 0x80000000
+_GENERIC_WRITE = 0x40000000
+_FILE_SHARE_READ = 0x00000001
+_FILE_SHARE_WRITE = 0x00000002
+_FILE_SHARE_DELETE = 0x00000004
+_FILE_SHARE_ALL = _FILE_SHARE_READ | _FILE_SHARE_WRITE | _FILE_SHARE_DELETE
+_OPEN_EXISTING = 3
+_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+_FILE_ATTRIBUTE_DIRECTORY = 0x10
+_FILE_ATTRIBUTE_NORMAL = 0x80
+_DELETE = 0x00010000
+_SYNCHRONIZE = 0x00100000
+_FILE_READ_DATA = 0x0001
+_FILE_WRITE_DATA = 0x0002
+_FILE_ADD_SUBDIRECTORY = 0x0004
+_FILE_READ_ATTRIBUTES = 0x0080
+_FILE_CREATE = 2
+_FILE_OPEN = 1
+_FILE_DIRECTORY_FILE = 0x00000001
+_FILE_NON_DIRECTORY_FILE = 0x00000040
+_FILE_SYNCHRONOUS_IO_NONALERT = 0x00000020
+_OBJ_CASE_INSENSITIVE = 0x00000040
+_FILE_ATTRIBUTE_TAG_INFO_CLASS = 9
+_FILE_ID_INFO_CLASS = 18
+_FILE_DISPOSITION_INFO_CLASS = 4
+_FILE_RENAME_INFORMATION_NT = 10
+_O_BINARY = int(getattr(os, "O_BINARY", 0))
 
-    _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
-    _GENERIC_READ = 0x80000000
-    _GENERIC_WRITE = 0x40000000
-    _FILE_SHARE_READ = 0x00000001
-    _FILE_SHARE_WRITE = 0x00000002
-    _FILE_SHARE_DELETE = 0x00000004
-    _FILE_SHARE_ALL = _FILE_SHARE_READ | _FILE_SHARE_WRITE | _FILE_SHARE_DELETE
-    _OPEN_EXISTING = 3
-    _FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
-    _FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
-    _FILE_ATTRIBUTE_DIRECTORY = 0x10
-    _FILE_ATTRIBUTE_NORMAL = 0x80
-    _DELETE = 0x00010000
-    _SYNCHRONIZE = 0x00100000
-    _FILE_READ_DATA = 0x0001
-    _FILE_WRITE_DATA = 0x0002
-    _FILE_ADD_SUBDIRECTORY = 0x0004
-    _FILE_READ_ATTRIBUTES = 0x0080
-    _FILE_CREATE = 2
-    _FILE_OPEN = 1
-    _FILE_DIRECTORY_FILE = 0x00000001
-    _FILE_NON_DIRECTORY_FILE = 0x00000040
-    _FILE_SYNCHRONOUS_IO_NONALERT = 0x00000020
-    _OBJ_CASE_INSENSITIVE = 0x00000040
-    _FILE_ATTRIBUTE_TAG_INFO_CLASS = 9
-    _FILE_ID_INFO_CLASS = 18
-    _FILE_DISPOSITION_INFO_CLASS = 4
-    _FILE_RENAME_INFORMATION_NT = 10
 
-    class _UnicodeString(ctypes.Structure):
-        _fields_ = [
-            ("Length", wintypes.USHORT),
-            ("MaximumLength", wintypes.USHORT),
-            ("Buffer", wintypes.LPWSTR),
-        ]
+class _UnicodeString(ctypes.Structure):
+    """Represent a Windows ``UNICODE_STRING`` for native calls."""
 
-    class _ObjectAttributes(ctypes.Structure):
-        _fields_ = [
-            ("Length", wintypes.ULONG),
-            ("RootDirectory", wintypes.HANDLE),
-            ("ObjectName", ctypes.POINTER(_UnicodeString)),
-            ("Attributes", wintypes.ULONG),
-            ("SecurityDescriptor", wintypes.LPVOID),
-            ("SecurityQualityOfService", wintypes.LPVOID),
-        ]
+    _fields_ = [
+        ("Length", wintypes.USHORT),
+        ("MaximumLength", wintypes.USHORT),
+        ("Buffer", wintypes.LPWSTR),
+    ]
 
-    class _IoStatusBlock(ctypes.Structure):
-        _fields_ = [("Status", ctypes.c_void_p), ("Information", ctypes.c_size_t)]
 
-    class _FileAttributeTagInfo(ctypes.Structure):
-        _fields_ = [("FileAttributes", wintypes.DWORD), ("ReparseTag", wintypes.DWORD)]
+class _ObjectAttributes(ctypes.Structure):
+    """Represent Windows object attributes for relative native opens."""
 
-    class _FileId128(ctypes.Structure):
-        _fields_ = [("Identifier", wintypes.BYTE * 16)]
+    _fields_ = [
+        ("Length", wintypes.ULONG),
+        ("RootDirectory", wintypes.HANDLE),
+        ("ObjectName", ctypes.POINTER(_UnicodeString)),
+        ("Attributes", wintypes.ULONG),
+        ("SecurityDescriptor", wintypes.LPVOID),
+        ("SecurityQualityOfService", wintypes.LPVOID),
+    ]
 
-    class _FileIdInfo(ctypes.Structure):
-        _fields_ = [
-            ("VolumeSerialNumber", ctypes.c_ulonglong),
-            ("FileId", _FileId128),
-        ]
 
-    class _ByHandleFileInformation(ctypes.Structure):
-        _fields_ = [
-            ("FileAttributes", wintypes.DWORD),
-            ("CreationTime", wintypes.FILETIME),
-            ("LastAccessTime", wintypes.FILETIME),
-            ("LastWriteTime", wintypes.FILETIME),
-            ("VolumeSerialNumber", wintypes.DWORD),
-            ("FileSizeHigh", wintypes.DWORD),
-            ("FileSizeLow", wintypes.DWORD),
-            ("NumberOfLinks", wintypes.DWORD),
-            ("FileIndexHigh", wintypes.DWORD),
-            ("FileIndexLow", wintypes.DWORD),
-        ]
+class _IoStatusBlock(ctypes.Structure):
+    """Represent the status block returned by Windows native I/O calls."""
 
-    class _FileRenameInfo(ctypes.Structure):
-        _fields_ = [
-            ("ReplaceIfExists", wintypes.BOOLEAN),
-            ("RootDirectory", wintypes.HANDLE),
-            ("FileNameLength", wintypes.DWORD),
-            ("FileName", wintypes.WCHAR * 1),
-        ]
+    _fields_ = [("Status", ctypes.c_void_p), ("Information", ctypes.c_size_t)]
 
-    class _FileDispositionInfo(ctypes.Structure):
-        _fields_ = [("DeleteFile", wintypes.BOOLEAN)]
 
-    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    _ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
-    _kernel32.CreateFileW.argtypes = [
+class _FileAttributeTagInfo(ctypes.Structure):
+    """Represent Windows file attributes and reparse tag metadata."""
+
+    _fields_ = [("FileAttributes", wintypes.DWORD), ("ReparseTag", wintypes.DWORD)]
+
+
+class _FileId128(ctypes.Structure):
+    """Represent the 128-bit portion of a Windows file identity."""
+
+    _fields_ = [("Identifier", wintypes.BYTE * 16)]
+
+
+class _FileIdInfo(ctypes.Structure):
+    """Represent a Windows volume serial number and 128-bit file ID."""
+
+    _fields_ = [
+        ("VolumeSerialNumber", ctypes.c_ulonglong),
+        ("FileId", _FileId128),
+    ]
+
+
+class _ByHandleFileInformation(ctypes.Structure):
+    """Represent legacy Windows metadata returned for an open handle."""
+
+    _fields_ = [
+        ("FileAttributes", wintypes.DWORD),
+        ("CreationTime", wintypes.FILETIME),
+        ("LastAccessTime", wintypes.FILETIME),
+        ("LastWriteTime", wintypes.FILETIME),
+        ("VolumeSerialNumber", wintypes.DWORD),
+        ("FileSizeHigh", wintypes.DWORD),
+        ("FileSizeLow", wintypes.DWORD),
+        ("NumberOfLinks", wintypes.DWORD),
+        ("FileIndexHigh", wintypes.DWORD),
+        ("FileIndexLow", wintypes.DWORD),
+    ]
+
+
+class _FileRenameInfo(ctypes.Structure):
+    """Represent Windows handle-relative rename information."""
+
+    _fields_ = [
+        ("ReplaceIfExists", wintypes.BOOLEAN),
+        ("RootDirectory", wintypes.HANDLE),
+        ("FileNameLength", wintypes.DWORD),
+        ("FileName", wintypes.WCHAR * 1),
+    ]
+
+
+class _FileDispositionInfo(ctypes.Structure):
+    """Represent Windows delete disposition for an open handle."""
+
+    _fields_ = [("DeleteFile", wintypes.BOOLEAN)]
+
+
+class _UnavailableWindowsLibrary:
+    """Patchable placeholder used when Windows APIs are unavailable."""
+
+
+def _unsupported_osfhandle(_handle: int, _flags: int = 0) -> int:
+    """Raise when handle-to-descriptor conversion is unavailable."""
+
+    raise LinerStorageUnsupportedError("Windows handle APIs are unavailable")
+
+
+def _fallback_win_error(code: int) -> OSError:
+    """Build an ``OSError`` when ``ctypes.WinError`` is unavailable."""
+
+    return OSError(code, os.strerror(code))
+
+
+_kernel32: Any = _UnavailableWindowsLibrary()
+_ntdll: Any = _UnavailableWindowsLibrary()
+_open_osfhandle: Callable[[int, int], int] = _unsupported_osfhandle
+_get_osfhandle: Callable[[int], int] = _unsupported_osfhandle
+_get_last_error = cast(Callable[[], int], getattr(ctypes, "get_last_error", lambda: 0))
+_win_error = cast(Callable[[int], OSError], getattr(ctypes, "WinError", _fallback_win_error))
+
+
+def _configure_windows_libraries(kernel32: Any, ntdll: Any) -> None:
+    """Declare the native signatures used by Windows liner operations."""
+    kernel32.CreateFileW.argtypes = [
         wintypes.LPCWSTR,
         wintypes.DWORD,
         wintypes.DWORD,
@@ -260,31 +322,31 @@ if os.name == "nt":
         wintypes.DWORD,
         wintypes.HANDLE,
     ]
-    _kernel32.CreateFileW.restype = wintypes.HANDLE
-    _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-    _kernel32.CloseHandle.restype = wintypes.BOOL
-    _kernel32.FlushFileBuffers.argtypes = [wintypes.HANDLE]
-    _kernel32.FlushFileBuffers.restype = wintypes.BOOL
-    _kernel32.GetFileInformationByHandleEx.argtypes = [
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.FlushFileBuffers.argtypes = [wintypes.HANDLE]
+    kernel32.FlushFileBuffers.restype = wintypes.BOOL
+    kernel32.GetFileInformationByHandleEx.argtypes = [
         wintypes.HANDLE,
         ctypes.c_int,
         wintypes.LPVOID,
         wintypes.DWORD,
     ]
-    _kernel32.GetFileInformationByHandleEx.restype = wintypes.BOOL
-    _kernel32.GetFileInformationByHandle.argtypes = [
+    kernel32.GetFileInformationByHandleEx.restype = wintypes.BOOL
+    kernel32.GetFileInformationByHandle.argtypes = [
         wintypes.HANDLE,
         ctypes.POINTER(_ByHandleFileInformation),
     ]
-    _kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
-    _kernel32.SetFileInformationByHandle.argtypes = [
+    kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
+    kernel32.SetFileInformationByHandle.argtypes = [
         wintypes.HANDLE,
         ctypes.c_int,
         wintypes.LPVOID,
         wintypes.DWORD,
     ]
-    _kernel32.SetFileInformationByHandle.restype = wintypes.BOOL
-    _ntdll.NtCreateFile.argtypes = [
+    kernel32.SetFileInformationByHandle.restype = wintypes.BOOL
+    ntdll.NtCreateFile.argtypes = [
         ctypes.POINTER(wintypes.HANDLE),
         wintypes.DWORD,
         ctypes.POINTER(_ObjectAttributes),
@@ -297,45 +359,61 @@ if os.name == "nt":
         ctypes.c_void_p,
         wintypes.ULONG,
     ]
-    _ntdll.NtCreateFile.restype = ctypes.c_long
-    _ntdll.NtSetInformationFile.argtypes = [
+    ntdll.NtCreateFile.restype = ctypes.c_long
+    ntdll.NtSetInformationFile.argtypes = [
         wintypes.HANDLE,
         ctypes.POINTER(_IoStatusBlock),
         wintypes.LPVOID,
         wintypes.ULONG,
         ctypes.c_int,
     ]
-    _ntdll.NtSetInformationFile.restype = ctypes.c_long
-    _ntdll.RtlNtStatusToDosError.argtypes = [ctypes.c_long]
-    _ntdll.RtlNtStatusToDosError.restype = wintypes.ULONG
+    ntdll.NtSetInformationFile.restype = ctypes.c_long
+    ntdll.RtlNtStatusToDosError.argtypes = [ctypes.c_long]
+    ntdll.RtlNtStatusToDosError.restype = wintypes.ULONG
+
+
+if os.name == "nt":
+    import msvcrt as _windows_msvcrt
+
+    _open_osfhandle = _windows_msvcrt.open_osfhandle
+    _get_osfhandle = _windows_msvcrt.get_osfhandle
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
+    _configure_windows_libraries(_kernel32, _ntdll)
 
 
 def _close_windows_handle(handle: int) -> None:
+    """Close a valid Windows handle on Windows hosts."""
+
     if os.name == "nt" and handle not in (0, _INVALID_HANDLE_VALUE):
         _kernel32.CloseHandle(handle)
 
 
 def _windows_handle_attributes(handle: int) -> int:
+    """Return native attributes for an open Windows handle."""
+
     info = _FileAttributeTagInfo()
     if not _kernel32.GetFileInformationByHandleEx(
         handle, _FILE_ATTRIBUTE_TAG_INFO_CLASS, ctypes.byref(info), ctypes.sizeof(info)
     ):
-        raise ctypes.WinError(ctypes.get_last_error())
+        raise _win_error(_get_last_error())
     return int(info.FileAttributes)
 
 
 def _windows_file_identity(handle: int) -> tuple[int, bytes]:
+    """Return a stable Windows volume and file identity for a handle."""
+
     info = _FileIdInfo()
     if _kernel32.GetFileInformationByHandleEx(
         handle, _FILE_ID_INFO_CLASS, ctypes.byref(info), ctypes.sizeof(info)
     ):
         return int(info.VolumeSerialNumber), b"file-id-128:" + bytes(info.FileId.Identifier)
-    winerror = ctypes.get_last_error()
+    winerror = _get_last_error()
     if winerror not in {1, 50, 87}:
-        raise ctypes.WinError(winerror)
+        raise _win_error(winerror)
     classic = _ByHandleFileInformation()
     if not _kernel32.GetFileInformationByHandle(handle, ctypes.byref(classic)):
-        raise ctypes.WinError(ctypes.get_last_error())
+        raise _win_error(_get_last_error())
     file_index = (int(classic.FileIndexHigh) << 32) | int(classic.FileIndexLow)
     if file_index == 0:
         raise LinerStorageUnsupportedError(
@@ -345,6 +423,8 @@ def _windows_file_identity(handle: int) -> tuple[int, bytes]:
 
 
 def _open_windows_root(path: Path, *, create: bool, write: bool) -> _PinnedRoot:
+    """Open a non-reparse Windows liner root through relative handles."""
+
     absolute = path.absolute()
     relative_parts = absolute.parts[1:]
     anchor_access = _GENERIC_READ | (_GENERIC_WRITE if write and not relative_parts else 0)
@@ -404,6 +484,8 @@ def _open_windows_root(path: Path, *, create: bool, write: bool) -> _PinnedRoot:
 
 
 def _open_windows_anchor(anchor: str, access: int) -> int:
+    """Open and validate a non-reparse Windows volume anchor."""
+
     handle = _kernel32.CreateFileW(
         anchor,
         access,
@@ -414,7 +496,7 @@ def _open_windows_anchor(anchor: str, access: int) -> int:
         None,
     )
     if handle == _INVALID_HANDLE_VALUE:
-        raise ctypes.WinError(ctypes.get_last_error())
+        raise _win_error(_get_last_error())
     result = int(handle)
     try:
         attributes = _windows_handle_attributes(result)
@@ -432,6 +514,8 @@ def _reopen_windows_parent_for_create(
     relative_parts: tuple[str, ...],
     missing_index: int,
 ) -> int:
+    """Reopen a Windows parent with permission to create its missing child."""
+
     access = _GENERIC_READ | _FILE_ADD_SUBDIRECTORY
     if missing_index == 0:
         return _open_windows_anchor(anchor, access)
@@ -453,6 +537,8 @@ def _nt_create_relative(
     access: int,
     share_access: int = _FILE_SHARE_ALL,
 ) -> int:
+    """Open or create one non-reparse Windows entry relative to a handle."""
+
     name_buffer = ctypes.create_unicode_buffer(name)
     encoded_length = len(name.encode("utf-16-le"))
     unicode_name = _UnicodeString(
@@ -494,7 +580,7 @@ def _nt_create_relative(
             raise FileNotFoundError(winerror, "not a regular file", name)
         if winerror in {80, 183}:
             raise FileExistsError(winerror, os.strerror(winerror), name)
-        raise ctypes.WinError(winerror)
+        raise _win_error(winerror)
     result = int(cast(int, handle.value))
     try:
         attributes_value = _windows_handle_attributes(result)
@@ -511,6 +597,8 @@ def _nt_create_relative(
 
 
 def _windows_delete_by_handle(handle: int) -> None:
+    """Mark an open Windows file handle for deletion."""
+
     disposition = _FileDispositionInfo(True)
     if not _kernel32.SetFileInformationByHandle(
         handle,
@@ -518,12 +606,14 @@ def _windows_delete_by_handle(handle: int) -> None:
         ctypes.byref(disposition),
         ctypes.sizeof(disposition),
     ):
-        raise ctypes.WinError(ctypes.get_last_error())
+        raise _win_error(_get_last_error())
 
 
 def _windows_rename_by_handle(
     source_handle: int, root_handle: int, name: str, *, replace: bool
 ) -> None:
+    """Rename a Windows handle into a root-relative target name."""
+
     encoded_name = name.encode("utf-16-le")
     filename_offset = _FileRenameInfo.FileName.offset
     buffer = ctypes.create_string_buffer(filename_offset + len(encoded_name))
@@ -548,16 +638,20 @@ def _windows_rename_by_handle(
             raise LinerStorageUnsupportedError(
                 winerror, "storage does not support atomic rename-no-replace", name
             )
-        raise ctypes.WinError(winerror)
+        raise _win_error(winerror)
 
 
 def _posix_identity(metadata: os.stat_result) -> tuple[int, int]:
+    """Return the device and inode identifying a POSIX entry."""
+
     return metadata.st_dev, metadata.st_ino
 
 
 def _require_private_posix_directory(
     metadata: os.stat_result, *, description: str
 ) -> tuple[int, int]:
+    """Require a private owner-controlled POSIX directory and return its identity."""
+
     # Threat boundary: processes with this effective UID (and root) are trusted.
     # Other writers are excluded before any handle-relative mutation begins.
     effective_uid = _posix_os.geteuid()
@@ -571,6 +665,8 @@ def _require_private_posix_directory(
 
 
 def _open_posix_root(path: Path, *, create: bool, mutate: bool) -> _PinnedRoot:
+    """Open a POSIX liner root without following directory links."""
+
     absolute = Path(os.path.abspath(path))
     flags = os.O_RDONLY | _posix_os.O_DIRECTORY | _posix_os.O_NOFOLLOW
     handle = os.open(absolute.anchor, flags)
@@ -598,6 +694,8 @@ def _open_posix_root(path: Path, *, create: bool, mutate: bool) -> _PinnedRoot:
 def _open_pinned_root(
     path: Path, *, create: bool, write: bool, mutate: bool = False
 ) -> _PinnedRoot:
+    """Open a platform-specific pinned liner root."""
+
     _validate_name("root-placeholder")
     root_path = Path(path)
     if os.name == "nt":
@@ -606,6 +704,8 @@ def _open_pinned_root(
 
 
 def _close_root(root: _PinnedRoot) -> None:
+    """Close the native handle held by a pinned liner root."""
+
     if root.windows:
         _close_windows_handle(root.handle)
     else:
@@ -619,6 +719,8 @@ def _remove_bound_posix_directory(
     *,
     description: str,
 ) -> None:
+    """Remove a private POSIX directory only when its identity still matches."""
+
     try:
         named = os.stat(name, dir_fd=root_handle, follow_symlinks=False)
         if stat.S_ISDIR(named.st_mode) and _posix_identity(named) == identity:
@@ -630,6 +732,8 @@ def _remove_bound_posix_directory(
 
 
 def _close_posix_directory(handle: int, *, description: str) -> None:
+    """Close a POSIX directory handle while logging cleanup errors."""
+
     try:
         os.close(handle)
     except BaseException:
@@ -637,6 +741,8 @@ def _close_posix_directory(handle: int, *, description: str) -> None:
 
 
 def _unlink_posix_entry(handle: int, name: str, *, description: str) -> None:
+    """Unlink a private POSIX entry while logging cleanup errors."""
+
     try:
         os.unlink(name, dir_fd=handle)
     except FileNotFoundError:
@@ -648,6 +754,8 @@ def _unlink_posix_entry(handle: int, name: str, *, description: str) -> None:
 def _make_bound_posix_directory(
     root: _PinnedRoot, *, prefix: str, description: str
 ) -> tuple[str, int, tuple[int, int]]:
+    """Create and open a private POSIX directory with a checked identity."""
+
     for _attempt in range(128):
         name = f"{prefix}{secrets.token_hex(16)}"
         try:
@@ -689,6 +797,8 @@ def _make_bound_posix_directory(
 
 
 def _make_staged_upload(root: _PinnedRoot) -> _StagedUpload:
+    """Create a private staging directory and writable upload file."""
+
     for _attempt in range(128):
         stage_name = f".liner-upload-{secrets.token_hex(16)}"
         try:
@@ -711,14 +821,14 @@ def _make_staged_upload(root: _PinnedRoot) -> _StagedUpload:
                         access=_DELETE | _FILE_WRITE_DATA,
                         share_access=_FILE_SHARE_READ | _FILE_SHARE_WRITE,
                     )
-                    fd = msvcrt.open_osfhandle(raw_file_handle, os.O_WRONLY | os.O_BINARY)
+                    fd = _open_osfhandle(raw_file_handle, os.O_WRONLY | _O_BINARY)
                     raw_file_handle = None
                     file = os.fdopen(fd, "wb")
                     fd = None
                 except BaseException:
                     if fd is not None:
                         try:
-                            _windows_delete_by_handle(msvcrt.get_osfhandle(fd))
+                            _windows_delete_by_handle(_get_osfhandle(fd))
                         except BaseException:
                             logger.warning(
                                 "Unable to delete failed liner upload file",
@@ -815,11 +925,13 @@ def _make_staged_upload(root: _PinnedRoot) -> _StagedUpload:
 
 
 def _cleanup_staged_upload(staged: _StagedUpload, *, published: bool) -> None:
+    """Close and remove private staging resources after an upload attempt."""
+
     if staged.root.windows:
         first_error: BaseException | None = None
         try:
             if not staged.file.closed:
-                handle = msvcrt.get_osfhandle(staged.file.fileno())
+                handle = _get_osfhandle(staged.file.fileno())
                 if not published:
                     try:
                         _windows_delete_by_handle(handle)
@@ -870,6 +982,8 @@ def _cleanup_staged_upload(staged: _StagedUpload, *, published: bool) -> None:
 def _rename_noreplace_posix(
     source_dir_fd: int, source: str, target_dir_fd: int, target: str
 ) -> None:
+    """Atomically rename a POSIX entry only when the target is absent."""
+
     libc = ctypes.CDLL(None, use_errno=True)
     renameat2 = getattr(libc, "renameat2", None)
     if renameat2 is None:
@@ -900,13 +1014,17 @@ def _rename_noreplace_posix(
 
 
 def _windows_full_nt_path(path: Path) -> str:
-    absolute = str(path.absolute())
+    """Convert a filesystem path to the Windows NT namespace form."""
+
+    absolute = ntpath.abspath(os.fspath(path))
     if absolute.startswith("\\\\"):
         return "\\??\\UNC\\" + absolute[2:]
     return "\\??\\" + absolute
 
 
 def _verify_windows_root_path(root: _PinnedRoot, expected_identity: tuple[int, bytes]) -> None:
+    """Reopen a Windows root and confirm its identity has not changed."""
+
     candidate = _open_windows_root(root.path, create=False, write=False)
     try:
         if _windows_file_identity(candidate.handle) != expected_identity:
@@ -923,6 +1041,8 @@ def _publish_windows_smb_fallback(
     replace: bool,
     retry_errors: set[int],
 ) -> None:
+    """Publish a Windows SMB upload with retries and identity checks."""
+
     root_identity = _windows_file_identity(staged.root.handle)
     source_identity = _windows_file_identity(source_handle)
     _verify_windows_root_path(staged.root, root_identity)
@@ -984,8 +1104,10 @@ def _publish_windows_smb_fallback(
 
 
 def _publish_staged_file(staged: _StagedUpload, name: str, *, replace: bool) -> None:
+    """Atomically move a staged upload into its requested liner name."""
+
     if staged.root.windows:
-        handle = msvcrt.get_osfhandle(staged.file.fileno())
+        handle = _get_osfhandle(staged.file.fileno())
         try:
             _windows_rename_by_handle(handle, staged.root.handle, name, replace=replace)
         except OSError as exc:
@@ -1012,15 +1134,19 @@ def _publish_staged_file(staged: _StagedUpload, name: str, *, replace: bool) -> 
 
 
 def _flush_windows_directory(handle: int) -> None:
+    """Attempt to flush a Windows directory when its platform and storage support it."""
+
     if not _kernel32.FlushFileBuffers(handle):
-        winerror = ctypes.get_last_error()
+        winerror = _get_last_error()
         if winerror in {1, 5, 6, 50}:
             logger.warning("Storage does not support directory durability flush")
             return
-        raise ctypes.WinError(winerror)
+        raise _win_error(winerror)
 
 
 def _flush_directory(root: _PinnedRoot) -> None:
+    """Attempt to make pinned-root metadata changes durable where supported."""
+
     if root.windows:
         _flush_windows_directory(root.handle)
     else:
@@ -1082,6 +1208,8 @@ async def store_liner_upload(
 
 
 def _open_relative_file(root: _PinnedRoot, name: str) -> OpenedLiner:
+    """Open a regular liner file through an already pinned root."""
+
     if root.windows:
         raw_handle = _nt_create_relative(
             root.handle,
@@ -1091,7 +1219,7 @@ def _open_relative_file(root: _PinnedRoot, name: str) -> OpenedLiner:
             access=_FILE_READ_DATA,
         )
         try:
-            fd = msvcrt.open_osfhandle(raw_handle, os.O_RDONLY | os.O_BINARY)
+            fd = _open_osfhandle(raw_handle, os.O_RDONLY | _O_BINARY)
         except BaseException:
             _close_windows_handle(raw_handle)
             raise
@@ -1122,6 +1250,8 @@ def open_liner_file(root: Path, name: str) -> OpenedLiner:
 
 
 def _delete_relative_file(root: _PinnedRoot, name: str) -> None:
+    """Delete one regular liner entry through an already pinned root."""
+
     if root.windows:
         handle = _nt_create_relative(
             root.handle,
@@ -1151,6 +1281,8 @@ def _delete_relative_file(root: _PinnedRoot, name: str) -> None:
 
 
 def _verify_posix_delete_rollback(quarantine: int) -> None:
+    """Verify the quarantine filesystem can preserve delete rollback targets."""
+
     source_name = f"rollback-source-{secrets.token_hex(16)}.probe"
     target_name = f"rollback-target-{secrets.token_hex(16)}.probe"
     source = -1
@@ -1225,6 +1357,8 @@ def _verify_posix_delete_rollback(quarantine: int) -> None:
 
 
 def _restore_posix_delete(quarantine: int, root: _PinnedRoot, name: str) -> None:
+    """Move a quarantined POSIX liner back without replacing a new entry."""
+
     try:
         _rename_noreplace_posix(quarantine, "victim", root.handle, name)
         return
@@ -1257,6 +1391,8 @@ def _restore_posix_delete(quarantine: int, root: _PinnedRoot, name: str) -> None
 
 
 def _delete_opened_file(root: _PinnedRoot, name: str, handle: int) -> None:
+    """Delete a validated open liner file with rollback protection on POSIX."""
+
     if root.windows:
         _windows_delete_by_handle(handle)
         return
@@ -1318,6 +1454,8 @@ def delete_liner_file(root: Path, name: str) -> None:
 
 
 class _BodyLimitExceeded(Exception):
+    """Signal that streaming request input exceeded the configured cap."""
+
     pass
 
 
@@ -1338,6 +1476,8 @@ class LinerUploadBodyLimitMiddleware:
         self.multipart_overhead_bytes = multipart_overhead_bytes
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        """Enforce the upload request cap before the wrapped app consumes its body."""
+
         if (
             scope.get("type") != "http"
             or scope.get("method") != "POST"
@@ -1368,6 +1508,8 @@ class LinerUploadBodyLimitMiddleware:
         consumed = 0
 
         async def limited_receive() -> dict[str, Any]:
+            """Count request bytes and abort when the cap is exceeded."""
+
             nonlocal consumed
             message = await receive()
             if message.get("type") == "http.request":
@@ -1380,6 +1522,8 @@ class LinerUploadBodyLimitMiddleware:
         response_started = False
 
         async def tracked_send(message: dict[str, Any]) -> None:
+            """Record whether the wrapped app has started its response."""
+
             nonlocal response_started
             if message.get("type") == "http.response.start":
                 response_started = True
@@ -1393,6 +1537,8 @@ class LinerUploadBodyLimitMiddleware:
 
     @staticmethod
     async def _send_too_large(send: Any) -> None:
+        """Send the JSON 413 response used for oversized upload bodies."""
+
         body = b'{"detail":"Request body too large"}'
         await send(
             {
@@ -1457,6 +1603,8 @@ async def iter_opened_liner(
 
 
 async def _read_file_chunk(file: BinaryIO, size: int) -> bytes:
+    """Read one file chunk in a worker thread without blocking the event loop."""
+
     import asyncio
 
     return await asyncio.to_thread(file.read, size)

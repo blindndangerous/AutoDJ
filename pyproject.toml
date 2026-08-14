@@ -28,6 +28,7 @@ dependencies = [
     "librosa>=0.11.0",
     "tqdm>=4.67.3",
     "fastapi>=0.136.3",
+    "starlette==1.6.0",
     "uvicorn[standard]>=0.29.0",
     "muq>=0.1.0",
 ]
@@ -97,6 +98,8 @@ testpaths = ["tests"]
 addopts = "--cov=autodj --cov-report=term-missing --basetemp=tmp --timeout=60 --ignore=tests/fuzz"
 asyncio_mode = "auto"
 filterwarnings = [
+    "error:unclosed database.*:ResourceWarning",
+    "error:Exception ignored while finalizing database connection.*:pytest.PytestUnraisableExceptionWarning",
     # Suppress DeprecationWarnings from FAISS SWIG bindings (third-party, not fixable)
     "ignore:builtin type SwigPyPacked has no __module__ attribute:DeprecationWarning",
     "ignore:builtin type SwigPyObject has no __module__ attribute:DeprecationWarning",
@@ -115,40 +118,8 @@ exclude_lines = [
     "raise NotImplementedError",
     "if TYPE_CHECKING:",
     "@overload",
-    # Defensive metadata-parser fallbacks: malformed tags, missing
-    # libraries, or unusual encodings.  Tested via real-world tag
-    # variety in the index step; not via crafted broken files in unit
-    # tests.
-    "except ImportError:",
-    "except \\(OSError, ValueError, TypeError",
-    "except \\(IndexError, TypeError\\):",
-    "except \\(AttributeError, IndexError, TypeError\\):",
-    "except \\(IndexError, AttributeError, UnicodeDecodeError\\):",
-    "except \\(AttributeError, ValueError\\):",
-    "except AttributeError:",
-    "except \\(IndexError, AttributeError, TypeError\\):",
-    "except \\(TypeError, ValueError\\):",
-    "except \\(TypeError, AttributeError\\):",
-    "except \\(KeyError, TypeError\\):",
-    "except \\(TypeError, UnicodeDecodeError\\):",
-    "except OSError:",
-    "except FileNotFoundError:",
-    "except \\(OSError, FileNotFoundError\\):",
-    "except \\(OSError,",
-    "if not _HAVE_LIBROSA",
-    "if librosa is None",
     "if torch.cuda.is_available\\(\\):",
     "if not torch.cuda.is_available\\(\\):",
-    "except SimilarityError:",
-    "except \\(ValueError, RuntimeError\\):",
-    "except \\(OSError, ValueError\\) as exc:",
-    "except Exception as exc:",
-    # CLI fatal-error and interactive prompt paths -- exercised in
-    # smoke tests, not unit tests.
-    "sys\\.exit\\(1\\)",
-    "console_?\\.print\\(.*Multiple matches",
-    "except \\(click\\.Abort, EOFError\\):",
-    "if open_browser:",
 ]
 
 [tool.autodj.coverage]

@@ -93,18 +93,23 @@ except ImportError:  # pragma: no cover
             self._it = it
 
         def __iter__(self) -> Any:
+            """Iterate over the wrapped input when one was supplied."""
             return iter(self._it) if self._it is not None else iter(())
 
         def update(self, _n: int = 1) -> None:
+            """Accept progress updates without displaying them."""
             return None
 
         def close(self) -> None:
+            """Finish the no-op progress display."""
             return None
 
         def __enter__(self) -> _TqdmFallback:
+            """Return this progress display for context manager use."""
             return self
 
         def __exit__(self, *_a: Any) -> None:
+            """Leave the no-op progress context."""
             return None
 
     tqdm = _TqdmFallback
@@ -730,6 +735,7 @@ def _estimate_key_from_chroma(chroma: np.ndarray) -> tuple[int, int]:
 
 
 def _apply_analysis_metadata(entry: IndexEntry, extra_meta: dict[str, float | int]) -> None:
+    """Apply derived analysis fields without replacing a valid source BPM."""
     entry.energy = float(extra_meta["energy"])
     entry.key = int(extra_meta["key"])
     entry.mode = int(extra_meta["mode"])
@@ -1014,6 +1020,7 @@ class IncrementalCheckpoint:
     baseline_published: bool = False
 
     def write(self, new_entries: list[IndexEntry], new_vectors: list[np.ndarray]) -> None:
+        """Publish a due checkpoint of aligned entries and vectors."""
         if not new_entries:
             return
         due = len(new_entries) == self.total_new or len(new_entries) % self.flush_every == 0
@@ -1273,13 +1280,15 @@ def enrich_from_beets(
         logger.warning("Beets DB not found at %s", beets_db)
         return (0, len(entries))
 
-    text_cols = ("title", "artist", "album", "genre")
-    num_cols = ("bpm", "year", "length")
+    text_cols: tuple[str, ...] = ("title", "artist", "album", "genre")
+    num_cols: tuple[str, ...] = ("bpm", "year", "length")
     has_initial_key = False
     updated = 0
     try:
         cols = _items_columns(conn)
-        select_cols = list(text_cols) + list(num_cols)
+        select_cols: list[str] = []
+        select_cols.extend(text_cols)
+        select_cols.extend(num_cols)
         if "initial_key" in cols:
             select_cols.append("initial_key")
             has_initial_key = True

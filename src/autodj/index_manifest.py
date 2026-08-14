@@ -65,6 +65,8 @@ logger = logging.getLogger(__name__)
 
 
 class _LockState(threading.local):
+    """Track publication locks held by the current thread."""
+
     def __init__(self) -> None:
         self.paths: set[Path] = set()
 
@@ -83,8 +85,7 @@ def _reset_process_local_locks() -> None:
     _LOCKS_PROCESS_ID = os.getpid()
 
 
-if hasattr(os, "register_at_fork"):
-    os.register_at_fork(after_in_child=_reset_process_local_locks)
+getattr(os, "register_at_fork", lambda **_kwargs: None)(after_in_child=_reset_process_local_locks)
 
 
 class IndexConsistencyError(RuntimeError):
@@ -114,6 +115,7 @@ class IndexSnapshotToken:
     state_revision: int = 0
 
     def __post_init__(self) -> None:
+        """Reject negative snapshot identity components."""
         if self.generation < 0 or self.state_revision < 0:
             raise ValueError("snapshot generation must be non-negative")
 
@@ -130,11 +132,14 @@ def snapshot_token_for_manifest(manifest: IndexManifest) -> IndexSnapshotToken:
 
 @dataclass(frozen=True)
 class _PublicationState:
+    """Store publication revision and tombstone counters."""
+
     high_water: int
     tombstone_revision: int
 
 
 def _read_publication_state(index_dir: Path) -> _PublicationState | None:
+    """Read and validate durable publication counters when present."""
     path = index_dir / PUBLICATION_STATE_NAME
     if not path.exists():
         return None
@@ -167,6 +172,7 @@ def _read_publication_state(index_dir: Path) -> _PublicationState | None:
 
 
 def _write_publication_state(index_dir: Path, state: _PublicationState) -> None:
+    """Atomically replace publication counters and flush the directory when supported."""
     path = index_dir / PUBLICATION_STATE_NAME
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
@@ -182,6 +188,7 @@ def _write_publication_state(index_dir: Path, state: _PublicationState) -> None:
 
 
 def _state_for_manifest(index_dir: Path, manifest: IndexManifest | None) -> _PublicationState:
+    """Return stored publication state or derive its initial counters."""
     state = _read_publication_state(index_dir)
     if state is not None:
         return state
@@ -383,6 +390,7 @@ def _immutable_sqlite_uri(path: Path) -> str:
 
 
 def _thread_lock(path: Path) -> threading.RLock:
+    """Return the process-local reentrant lock for an index directory."""
     if os.getpid() != _LOCKS_PROCESS_ID:
         _reset_process_local_locks()
     with _LOCKS_GUARD:
@@ -390,6 +398,7 @@ def _thread_lock(path: Path) -> threading.RLock:
 
 
 def _acquire_os_lock(handle: BinaryIO) -> None:
+    """Acquire the platform file lock, retrying Windows contention."""
     if os.name == "nt":
         import msvcrt
 
@@ -416,6 +425,7 @@ def _acquire_os_lock(handle: BinaryIO) -> None:
 
 
 def _release_os_lock(handle: BinaryIO) -> None:
+    """Release the platform file lock."""
     if os.name == "nt":
         import msvcrt
 
@@ -450,6 +460,7 @@ def publication_lock(index_dir: Path) -> Iterator[None]:
 
 
 def fsync_directory(path: Path) -> None:
+    """Flush directory metadata when the platform supports it."""
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
     try:
         fd = os.open(path, flags)
@@ -462,6 +473,7 @@ def fsync_directory(path: Path) -> None:
 
 
 def _durable_copy(source: Path, destination: Path) -> None:
+    """Copy a file through a flushed temporary replacement."""
     tmp = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
     try:
         with source.open("rb") as reader, tmp.open("xb") as writer:
@@ -474,6 +486,7 @@ def _durable_copy(source: Path, destination: Path) -> None:
 
 
 def _checkpoint_working_tracks(index_dir: Path) -> None:
+    """Checkpoint the working tracks database and require an empty WAL."""
     db_path = index_dir / "tracks.db"
     conn = sqlite3.connect(db_path, isolation_level=None)
     try:
@@ -490,6 +503,7 @@ def _checkpoint_working_tracks(index_dir: Path) -> None:
 
 
 def _write_manifest(path: Path, manifest: IndexManifest) -> None:
+    """Atomically replace a manifest and flush its directory when supported."""
     tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
         with tmp.open("x", encoding="utf-8", newline="\n") as handle:
@@ -504,6 +518,7 @@ def _write_manifest(path: Path, manifest: IndexManifest) -> None:
 
 
 def _cleanup_generations(index_dir: Path, keep: set[int]) -> None:
+    """Remove obsolete generation files and flush the directory."""
     for path in index_dir.iterdir():
         match = _GENERATION_RE.fullmatch(path.name)
         if match is None or int(match.group(2)) in keep:
@@ -588,6 +603,7 @@ def restore_working_snapshot(
 
 
 def _validate_snapshot_files(root: Path, manifest: IndexManifest) -> None:
+    """Validate published artifact hashes, schemas, identities, and counts."""
     tracks = root / manifest.tracks_file
     vectors = root / manifest.vectors_file
     if sha256_file(tracks) != manifest.tracks_sha256:

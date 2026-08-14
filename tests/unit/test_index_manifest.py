@@ -6,6 +6,7 @@ import sqlite3
 import stat
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import faiss
 import numpy as np
@@ -616,3 +617,270 @@ def test_manifested_sqlite_reads_ignore_committed_wal_sidecar(tmp_path: Path) ->
         assert [int(np.argmax(loaded_vectors.reconstruct(row))) for row in range(2)] == [3, 7]
     finally:
         writer.close()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [],
+        {"unexpected": 1},
+        {"high_water": True, "tombstone_revision": 0},
+        {"revision": 1, "high_water_generation": 0, "tombstone": 1},
+    ],
+)
+def test_publication_state_rejects_invalid_shapes(tmp_path: Path, payload: object) -> None:
+    import autodj.index_manifest as manifest_module
+
+    (tmp_path / manifest_module.PUBLICATION_STATE_NAME).write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
+
+    with pytest.raises(IndexConsistencyError, match="invalid publication state"):
+        manifest_module._read_publication_state(tmp_path)
+
+
+@pytest.mark.parametrize("tombstone", [False, True])
+def test_legacy_publication_state_is_migrated_in_memory(tmp_path: Path, tombstone: bool) -> None:
+    import autodj.index_manifest as manifest_module
+
+    (tmp_path / manifest_module.PUBLICATION_STATE_NAME).write_text(
+        json.dumps(
+            {
+                "revision": 3,
+                "high_water_generation": 5,
+                "tombstone": tombstone,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    state = manifest_module._read_publication_state(tmp_path)
+
+    assert state == manifest_module._PublicationState(5, 3 if tombstone else 0)
+
+
+def test_publication_state_rejects_out_of_range_counters(tmp_path: Path) -> None:
+    import autodj.index_manifest as manifest_module
+
+    (tmp_path / manifest_module.PUBLICATION_STATE_NAME).write_text(
+        json.dumps({"high_water": 1, "tombstone_revision": 2}), encoding="utf-8"
+    )
+
+    with pytest.raises(IndexConsistencyError, match="counters"):
+        manifest_module._read_publication_state(tmp_path)
+
+
+def test_repeated_tombstone_is_idempotent(tmp_path: Path) -> None:
+    tombstone_publication(tmp_path)
+    before = current_snapshot_token(tmp_path)
+
+    tombstone_publication(tmp_path)
+
+    assert current_snapshot_token(tmp_path) == before
+
+
+def test_manifest_rejects_invalid_digest(tmp_path: Path) -> None:
+    (tmp_path / "index-manifest.json").write_text(
+        json.dumps(_manifest_payload(tracks_sha256="not-a-digest")), encoding="utf-8"
+    )
+
+    with pytest.raises(IndexConsistencyError, match="SHA-256"):
+        read_manifest(tmp_path)
+
+
+def test_manifest_revision_cannot_exceed_publication_state(tmp_path: Path) -> None:
+    payload = _manifest_payload(schema_version=2, state_revision=1)
+    (tmp_path / "index-manifest.json").write_text(json.dumps(payload), encoding="utf-8")
+    (tmp_path / ".index-publication-state.json").write_text(
+        json.dumps({"high_water": 0, "tombstone_revision": 0}), encoding="utf-8"
+    )
+
+    with pytest.raises(IndexConsistencyError, match="exceeds publication state"):
+        read_manifest(tmp_path)
+
+
+def test_thread_lock_resets_state_after_pid_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import autodj.index_manifest as manifest_module
+
+    monkeypatch.setattr(manifest_module, "_LOCKS_PROCESS_ID", -1)
+
+    lock = manifest_module._thread_lock(tmp_path)
+
+    assert os.getpid() == manifest_module._LOCKS_PROCESS_ID
+    assert manifest_module._LOCKS[tmp_path] is lock
+
+
+def test_fsync_directory_ignores_open_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import autodj.index_manifest as manifest_module
+
+    fsync = MagicMock()
+    monkeypatch.setattr(manifest_module.os, "open", MagicMock(side_effect=OSError("denied")))
+    monkeypatch.setattr(manifest_module.os, "fsync", fsync)
+
+    manifest_module.fsync_directory(tmp_path)
+
+    fsync.assert_not_called()
+
+
+def test_fsync_directory_closes_descriptor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import autodj.index_manifest as manifest_module
+
+    fsync = MagicMock()
+    close = MagicMock()
+    monkeypatch.setattr(manifest_module.os, "open", MagicMock(return_value=91))
+    monkeypatch.setattr(manifest_module.os, "fsync", fsync)
+    monkeypatch.setattr(manifest_module.os, "close", close)
+
+    manifest_module.fsync_directory(tmp_path)
+
+    fsync.assert_called_once_with(91)
+    close.assert_called_once_with(91)
+
+
+def test_checkpoint_rejects_busy_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import autodj.index_manifest as manifest_module
+
+    connection = MagicMock()
+    connection.execute.return_value.fetchone.return_value = (1, 2, 0)
+    monkeypatch.setattr(manifest_module.sqlite3, "connect", MagicMock(return_value=connection))
+
+    with pytest.raises(IndexConsistencyError, match="checkpoint incomplete"):
+        manifest_module._checkpoint_working_tracks(tmp_path)
+
+    connection.close.assert_called_once()
+
+
+def test_checkpoint_rejects_nonempty_wal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import autodj.index_manifest as manifest_module
+
+    connection = MagicMock()
+    connection.execute.return_value.fetchone.return_value = (0, 0, 1)
+    monkeypatch.setattr(manifest_module.sqlite3, "connect", MagicMock(return_value=connection))
+    (tmp_path / "tracks.db-wal").write_bytes(b"pending")
+
+    with pytest.raises(IndexConsistencyError, match="WAL remains"):
+        manifest_module._checkpoint_working_tracks(tmp_path)
+
+
+def test_cleanup_warns_when_old_generation_cannot_be_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import autodj.index_manifest as manifest_module
+
+    old = tmp_path / "tracks.g00000000000000000001.db"
+    old.touch()
+    monkeypatch.setattr(Path, "unlink", MagicMock(side_effect=OSError("busy")))
+    monkeypatch.setattr(manifest_module, "fsync_directory", MagicMock())
+
+    manifest_module._cleanup_generations(tmp_path, keep=set())
+
+    assert "Could not remove old index generation" in caplog.text
+
+
+def test_restore_requires_live_expected_generation(tmp_path: Path) -> None:
+    with pytest.raises(IndexConsistencyError, match="manifest is missing"):
+        restore_working_snapshot(tmp_path)
+
+    _write_working_artifacts(tmp_path, 1)
+    manifest = publish_manifest(tmp_path, 1)
+    with pytest.raises(IndexConsistencyError, match="expected generation"):
+        restore_working_snapshot(tmp_path, expected_generation=manifest.generation + 1)
+
+
+def test_copy_requires_live_expected_generation_and_new_destination(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    with pytest.raises(IndexConsistencyError, match="manifest is missing"):
+        copy_published_snapshot(source, tmp_path / "backup")
+
+    _write_working_artifacts(source, 1)
+    manifest = publish_manifest(source, 1)
+    with pytest.raises(IndexConsistencyError, match="expected generation"):
+        copy_published_snapshot(
+            source,
+            tmp_path / "backup",
+            expected_generation=manifest.generation + 1,
+        )
+
+    destination = tmp_path / "backup"
+    destination.mkdir()
+    with pytest.raises(FileExistsError):
+        copy_published_snapshot(source, destination)
+
+
+def test_snapshot_validation_rejects_tracks_and_vectors_hash_changes(tmp_path: Path) -> None:
+    import autodj.index_manifest as manifest_module
+
+    _write_working_artifacts(tmp_path, 1)
+    manifest = publish_manifest(tmp_path, 1)
+    (tmp_path / manifest.tracks_file).write_bytes(b"changed")
+    with pytest.raises(IndexConsistencyError, match="tracks SHA-256"):
+        manifest_module._validate_snapshot_files(tmp_path, manifest)
+
+    _write_working_artifacts(tmp_path, 1)
+    manifest = publish_manifest(tmp_path, 1)
+    (tmp_path / manifest.vectors_file).write_bytes(b"changed")
+    with pytest.raises(IndexConsistencyError, match="vectors SHA-256"):
+        manifest_module._validate_snapshot_files(tmp_path, manifest)
+
+
+def test_snapshot_validation_rejects_vector_count_mismatch(tmp_path: Path) -> None:
+    import autodj.index_manifest as manifest_module
+
+    _write_working_artifacts(tmp_path, 1)
+    manifest = publish_manifest(tmp_path, 1)
+    vectors = faiss.IndexFlatIP(2)
+    vectors.add(np.ones((2, 2), dtype=np.float32))
+    vectors_path = tmp_path / manifest.vectors_file
+    faiss.write_index(vectors, str(vectors_path))
+    changed = manifest_module.replace(manifest, vectors_sha256=sha256_file(vectors_path))
+
+    with pytest.raises(IndexConsistencyError, match="index count mismatch"):
+        manifest_module._validate_snapshot_files(tmp_path, changed)
+
+
+def test_snapshot_validation_rejects_extra_tracks_column(tmp_path: Path) -> None:
+    import autodj.index_manifest as manifest_module
+
+    _write_working_artifacts(tmp_path, 1)
+    manifest = publish_manifest(tmp_path, 1)
+    tracks_path = tmp_path / manifest.tracks_file
+    connection = sqlite3.connect(tracks_path)
+    try:
+        connection.execute("ALTER TABLE tracks ADD COLUMN unexpected TEXT")
+        connection.commit()
+    finally:
+        connection.close()
+    changed = manifest_module.replace(manifest, tracks_sha256=sha256_file(tracks_path))
+
+    with pytest.raises(IndexConsistencyError, match="schema does not match"):
+        manifest_module._validate_snapshot_files(tmp_path, changed)
+
+
+def test_snapshot_validation_requires_unique_track_identities(tmp_path: Path) -> None:
+    import autodj.index_manifest as manifest_module
+
+    _write_working_artifacts(tmp_path, 1)
+    manifest = publish_manifest(tmp_path, 1)
+    tracks_path = tmp_path / manifest.tracks_file
+    columns = ", ".join(
+        f"{name} {kind} NOT NULL" for name, kind in manifest_module._TRACKS_SCHEMA_CONTRACT
+    )
+    names = ", ".join(name for name, _kind in manifest_module._TRACKS_SCHEMA_CONTRACT)
+    connection = sqlite3.connect(tracks_path)
+    try:
+        connection.execute(f"CREATE TABLE replacement ({columns})")
+        connection.execute(f"INSERT INTO replacement ({names}) SELECT {names} FROM tracks")
+        connection.execute("DROP TABLE tracks")
+        connection.execute("ALTER TABLE replacement RENAME TO tracks")
+        connection.execute("CREATE INDEX tracks_title_idx ON tracks(title)")
+        connection.commit()
+    finally:
+        connection.close()
+    changed = manifest_module.replace(manifest, tracks_sha256=sha256_file(tracks_path))
+
+    with pytest.raises(IndexConsistencyError, match="unique identities"):
+        manifest_module._validate_snapshot_files(tmp_path, changed)

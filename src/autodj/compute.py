@@ -23,6 +23,7 @@ _PROBE_CACHE: bool | None = None
 
 
 def _global_disabled() -> bool:
+    """Return whether the global environment switch disables GPU use."""
     return os.environ.get("AUTODJ_GPU", "1") == "0"
 
 

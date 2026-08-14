@@ -334,6 +334,53 @@ def test_published_vectors_require_runtime_faiss_contract(
     assert "FAISS" in check.detail
 
 
+def test_tracks_schema_ignores_non_unique_lookup_indexes(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    _write_index(cfg)
+    manifest = doctor.read_manifest(cfg.index.active_dir)
+    tracks = cfg.index.active_dir / manifest.tracks_file
+    with closing(sqlite3.connect(tracks)) as conn:
+        conn.execute("CREATE INDEX tracks_title_lookup ON tracks(title)")
+        doctor._validate_schema(conn, "tracks", doctor._TRACKS_COLUMNS)
+
+
+def test_published_index_rejects_generation_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dataclasses import replace
+
+    cfg = _config(tmp_path)
+    _write_index(cfg)
+    manifest = doctor.read_manifest(cfg.index.active_dir)
+    monkeypatch.setattr(
+        doctor,
+        "read_manifest",
+        lambda _index_dir: replace(manifest, generation=manifest.generation + 1),
+    )
+
+    with pytest.raises(doctor.IndexConsistencyError, match="generation changed"):
+        doctor._published_index_counts(cfg.index.active_dir, manifest)
+
+
+def test_published_index_rejects_manifest_count_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dataclasses import replace
+
+    cfg = _config(tmp_path)
+    _write_index(cfg)
+    manifest = replace(
+        doctor.read_manifest(cfg.index.active_dir),
+        vector_count=2,
+    )
+    monkeypatch.setattr(doctor, "read_manifest", lambda _index_dir: manifest)
+
+    with pytest.raises(doctor.IndexConsistencyError, match="index count mismatch"):
+        doctor._published_index_counts(cfg.index.active_dir, manifest)
+
+
 @pytest.mark.parametrize("unavailable", ["faiss", "autodj.indexer"])
 def test_published_index_import_errors_are_actionable_failures(
     tmp_path: Path,
@@ -508,6 +555,64 @@ def test_sqlite_validation_rejects_concurrent_sidecar_change(
 
     monkeypatch.setattr(doctor, "sha256_file", guarded_hash)
     monkeypatch.setattr(Path, "open", guarded_path_open)
+
+    with pytest.raises(sqlite3.DatabaseError, match="changed during validation"):
+        doctor._validate_sqlite(db, "dj_meta", doctor._DJ_META_COLUMNS)
+
+
+def test_file_snapshot_reports_missing_file(tmp_path: Path) -> None:
+    assert doctor._file_snapshot(tmp_path / "missing.db") == (False, None, None, None)
+
+
+def test_sqlite_validation_rejects_failed_integrity_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = tmp_path / "dj_meta.db"
+    _write_dj_meta(db)
+    original_open = doctor._open_readonly_sqlite
+
+    class FailedIntegrityConnection:
+        def __init__(self) -> None:
+            self._conn = original_open(db, immutable=True)
+
+        def execute(self, query: str):
+            if query == "PRAGMA integrity_check":
+                return SimpleNamespace(fetchall=lambda: [("corrupt page",)])
+            return self._conn.execute(query)
+
+        def close(self) -> None:
+            self._conn.close()
+
+    monkeypatch.setattr(
+        doctor,
+        "_open_readonly_sqlite",
+        lambda _path, *, immutable=False: FailedIntegrityConnection(),
+    )
+
+    with pytest.raises(sqlite3.DatabaseError, match="integrity_check: corrupt page"):
+        doctor._validate_sqlite(db, "dj_meta", doctor._DJ_META_COLUMNS)
+
+
+def test_sqlite_validation_rejects_database_file_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = tmp_path / "dj_meta.db"
+    _write_dj_meta(db)
+    original_snapshot = doctor._file_snapshot
+    calls = 0
+
+    def changed_snapshot(path: Path):
+        nonlocal calls
+        calls += 1
+        exists, size, modified, digest = original_snapshot(path)
+        if calls == 2:
+            assert size is not None
+            return exists, size + 1, modified, digest
+        return exists, size, modified, digest
+
+    monkeypatch.setattr(doctor, "_file_snapshot", changed_snapshot)
 
     with pytest.raises(sqlite3.DatabaseError, match="changed during validation"):
         doctor._validate_sqlite(db, "dj_meta", doctor._DJ_META_COLUMNS)

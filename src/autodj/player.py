@@ -31,7 +31,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import numpy as np
 from rich.console import Console
@@ -228,7 +228,7 @@ def _apply_crossfade_ducked(
     cutoff_norm = max(1e-4, min(0.99, bass_cutoff_hz / nyquist))
     try:
         sos = butter(4, cutoff_norm, btype="high", output="sos")
-        a_tail_hp = sosfilt(sos, a_tail).astype(np.float32)
+        a_tail_hp = cast(np.ndarray, sosfilt(sos, a_tail)).astype(np.float32)
     except (ValueError, RuntimeError):  # pragma: no cover — degenerate sample rate
         return _apply_crossfade(audio_a, audio_b, crossfade_samples)
 
@@ -370,7 +370,7 @@ def apply_filter_sweep(
         cutoff_norm = max(1e-4, min(0.99, cutoff / nyquist))
         try:
             sos = butter(4, cutoff_norm, btype=filter_type, output="sos")
-            filt = sosfilt(sos, chunk).astype(np.float32)
+            filt = cast(np.ndarray, sosfilt(sos, chunk)).astype(np.float32)
         except (ValueError, RuntimeError):
             filt = chunk
 
@@ -457,9 +457,10 @@ def apply_eq(
     except ImportError:  # pragma: no cover — scipy required by full install
         return chunk
 
-    low = sosfilt(sos_filters["low"], chunk)
-    high = sosfilt(sos_filters["high"], chunk)
-    mid = sosfilt(sos_filters["mid_lp"], sosfilt(sos_filters["mid_hp"], chunk))
+    low = cast(np.ndarray, sosfilt(sos_filters["low"], chunk))
+    high = cast(np.ndarray, sosfilt(sos_filters["high"], chunk))
+    mid_highpassed = cast(np.ndarray, sosfilt(sos_filters["mid_hp"], chunk))
+    mid = cast(np.ndarray, sosfilt(sos_filters["mid_lp"], mid_highpassed))
 
     out = (low * low_gain + mid * mid_gain + high * high_gain).astype(np.float32)
     np.clip(out, -1.0, 1.0, out=out)

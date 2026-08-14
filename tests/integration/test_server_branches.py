@@ -13,8 +13,9 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -22,6 +23,7 @@ from httpx import Headers
 from starlette.websockets import WebSocketDisconnect
 
 from autodj.config import ServerConfig
+from autodj.index_manifest import IndexSnapshotToken
 from autodj.security import COOKIE_NAME, LoginRateLimiter, SecurityPolicy
 from autodj.server import PlayerBridge, create_app
 
@@ -1383,6 +1385,159 @@ class TestLinerUploadDelete:
         monkeypatch.setattr(liner_files, "_delete_relative_file", _broken_delete)
         resp = client.delete("/api/liners/file/doomed.wav")
         assert resp.status_code == 500
+
+    @pytest.mark.parametrize(
+        ("error_name", "status"),
+        [
+            ("InvalidLinerName", 400),
+            ("LinerStorageUnsupportedError", 503),
+        ],
+    )
+    def test_upload_maps_storage_boundary_errors(
+        self,
+        error_name: str,
+        status: int,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from autodj import liner_files
+
+        player = _make_player_mock()
+        player._cfg.playback.liners_folder = str(tmp_path)
+        client = TestClient(create_app(PlayerBridge(player=player, sim=_make_sim_mock())))
+        error_type = getattr(liner_files, error_name)
+        monkeypatch.setattr(
+            liner_files,
+            "store_liner_upload",
+            AsyncMock(side_effect=error_type("storage rejected")),
+        )
+
+        response = client.post(
+            "/api/liners/upload",
+            files={"file": ("clip.wav", b"data", "audio/wav")},
+        )
+
+        assert response.status_code == status
+
+    def test_delete_maps_unsupported_storage(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from autodj import liner_files
+
+        player = _make_player_mock()
+        player._cfg.playback.liners_folder = str(tmp_path)
+        client = TestClient(create_app(PlayerBridge(player=player, sim=_make_sim_mock())))
+        monkeypatch.setattr(
+            liner_files,
+            "delete_liner_file",
+            MagicMock(side_effect=liner_files.LinerStorageUnsupportedError("unsupported")),
+        )
+
+        assert client.delete("/api/liners/file/clip.wav").status_code == 503
+
+    def test_open_maps_unsupported_storage(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from autodj import liner_files
+
+        player = _make_player_mock()
+        player._cfg.playback.liners_folder = str(tmp_path)
+        client = TestClient(create_app(PlayerBridge(player=player, sim=_make_sim_mock())))
+        monkeypatch.setattr(
+            liner_files,
+            "open_liner_file",
+            MagicMock(side_effect=liner_files.LinerStorageUnsupportedError("unsupported")),
+        )
+
+        assert client.get("/api/liners/file/clip.wav").status_code == 503
+
+    def test_open_rejects_malformed_range_and_closes_file(self, tmp_path: Path) -> None:
+        player = _make_player_mock()
+        player._cfg.playback.liners_folder = str(tmp_path)
+        client = TestClient(create_app(PlayerBridge(player=player, sim=_make_sim_mock())))
+        (tmp_path / "clip.wav").write_bytes(b"audio")
+
+        response = client.get(
+            "/api/liners/file/clip.wav",
+            headers={"Range": "bytes=bad"},
+        )
+
+        assert response.status_code == 400
+
+    def test_streaming_response_construction_failure_closes_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from autodj import liner_files, server
+
+        player = _make_player_mock()
+        player._cfg.playback.liners_folder = str(tmp_path)
+        client = TestClient(create_app(PlayerBridge(player=player, sim=_make_sim_mock())))
+        file = MagicMock()
+        opened = liner_files.OpenedLiner(
+            file=file,
+            stat_result=SimpleNamespace(st_size=5),
+        )
+        monkeypatch.setattr(liner_files, "open_liner_file", MagicMock(return_value=opened))
+        monkeypatch.setattr(
+            server, "StreamingResponse", MagicMock(side_effect=RuntimeError("response"))
+        )
+
+        response = client.get("/api/liners/file/clip.wav")
+
+        assert response.status_code == 500
+        file.close.assert_called()
+
+
+def test_dev_module_route_serves_existing_javascript(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from autodj import server
+
+    monkeypatch.setattr(
+        server,
+        "_selected_static_dir",
+        MagicMock(return_value=server._PACKAGE_DIR / "static"),
+    )
+    player = _make_player_mock()
+    client = TestClient(create_app(PlayerBridge(player=player, sim=_make_sim_mock())))
+    response = client.get("/modules/tabs.js")
+    assert response.status_code == 200
+    assert "javascript" in response.headers["content-type"]
+
+
+@pytest.mark.parametrize(
+    ("tokens", "entries", "status"),
+    [
+        ([IndexSnapshotToken(1, 1), IndexSnapshotToken(2, 2)], [object()], 409),
+        ([IndexSnapshotToken(1, 1)] * 3, [object(), None], 404),
+        (
+            [
+                IndexSnapshotToken(1, 1),
+                IndexSnapshotToken(1, 1),
+                IndexSnapshotToken(1, 1),
+                IndexSnapshotToken(2, 2),
+            ],
+            [object(), object()],
+            409,
+        ),
+    ],
+)
+def test_lyrics_revalidates_snapshot_and_membership(
+    tokens: list[IndexSnapshotToken],
+    entries: list[object | None],
+    status: int,
+) -> None:
+    from unittest.mock import PropertyMock
+
+    player = _make_player_mock()
+    sim = _make_sim_mock()
+    type(sim).snapshot_token = PropertyMock(side_effect=tokens)
+    sim.entry_for_path.side_effect = entries
+    bridge = PlayerBridge(player=player, sim=sim)
+    bridge.lyrics_for = MagicMock(return_value=[])
+    client = TestClient(create_app(bridge))
+
+    assert client.get("/api/lyrics", params={"path": "song.flac"}).status_code == status
 
 
 # ---------------------------------------------------------------------------

@@ -202,6 +202,7 @@ def _python_check(version: tuple[int, int] | None = None) -> DoctorCheck:
 
 
 def _nearest_existing_parent(path: Path) -> Path | None:
+    """Find the nearest existing parent of a path."""
     candidate = path.parent
     while not candidate.exists():
         parent = candidate.parent
@@ -236,6 +237,7 @@ def _path_check(name: str, path: Path, *, writable: bool) -> DoctorCheck:
 
 
 def _legacy_artifacts(index_dir: Path) -> tuple[bool, bool, bool]:
+    """Report which legacy index artifacts exist."""
     tracks = (index_dir / "tracks.db").is_file()
     vectors = (index_dir / "vectors.index").is_file()
     generations = any(index_dir.glob("tracks.g*.db")) or any(index_dir.glob("vectors.g*.index"))
@@ -243,6 +245,7 @@ def _legacy_artifacts(index_dir: Path) -> tuple[bool, bool, bool]:
 
 
 def _legacy_index_counts(index_dir: Path) -> tuple[int, int]:
+    """Read row and vector counts from a legacy index."""
     import faiss
 
     tracks_path = index_dir / "tracks.db"
@@ -256,6 +259,7 @@ def _validate_schema(
     table: str,
     required: frozenset[str],
 ) -> None:
+    """Validate a SQLite table against its runtime schema contract."""
     schema_query = {
         "tracks": "PRAGMA table_info(tracks)",
         "dj_meta": "PRAGMA table_info(dj_meta)",
@@ -492,12 +496,14 @@ def _index_check(cfg: AutoDJConfig) -> DoctorCheck:
 
 
 def _sqlite_uri(path: Path, *, immutable: bool = False) -> str:
+    """Build a read-only SQLite URI for a resolved path."""
     encoded = quote(str(path.resolve()), safe="/:\\")
     suffix = "&immutable=1" if immutable else ""
     return f"file:{encoded}?mode=ro{suffix}"
 
 
 def _open_readonly_sqlite(path: Path, *, immutable: bool = False) -> sqlite3.Connection:
+    """Open a query-only SQLite connection and close it if setup fails."""
     conn = sqlite3.connect(_sqlite_uri(path, immutable=immutable), uri=True)
     try:
         conn.execute("PRAGMA query_only=ON")
@@ -519,6 +525,7 @@ type _SidecarSnapshot = tuple[
 
 
 def _file_snapshot(path: Path) -> _FileSnapshot:
+    """Capture file presence, size, time, and content hash."""
     try:
         stat = path.stat()
     except FileNotFoundError:
@@ -527,6 +534,7 @@ def _file_snapshot(path: Path) -> _FileSnapshot:
 
 
 def _sidecar_snapshot(path: Path) -> _SidecarSnapshot:
+    """Capture identity metadata for one SQLite sidecar path."""
     try:
         stat = path.lstat()
     except FileNotFoundError:
@@ -542,6 +550,7 @@ def _sidecar_snapshot(path: Path) -> _SidecarSnapshot:
 
 
 def _sidecar_snapshots(path: Path) -> tuple[_SidecarSnapshot, _SidecarSnapshot]:
+    """Capture WAL and shared-memory sidecar identities."""
     return (
         _sidecar_snapshot(Path(f"{path}-wal")),
         _sidecar_snapshot(Path(f"{path}-shm")),
@@ -553,6 +562,7 @@ def _validate_sqlite(
     table: str,
     required: frozenset[str],
 ) -> int:
+    """Validate an unchanged SQLite file and return its row count."""
     count_query = {
         "tracks": "SELECT COUNT(*) FROM tracks",
         "dj_meta": "SELECT COUNT(*) FROM dj_meta",
@@ -653,6 +663,7 @@ def _dj_meta_database_check(cfg: AutoDJConfig) -> DoctorCheck:
 
 
 def _module_available(name: str) -> bool:
+    """Return whether a Python module is loaded or has a discoverable import spec."""
     if name in sys.modules:
         return sys.modules[name] is not None
     try:

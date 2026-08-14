@@ -55,6 +55,7 @@ def open_media_file(path: Path) -> OpenedMediaFile:
 
 
 def _parse_decimal(value: str, header: str, maximum: int) -> int:
+    """Parse an ASCII decimal and clamp it to a maximum value."""
     if not value or not value.isascii() or not value.isdigit():
         raise RangeNotSatisfiable(header)
     significant = value.lstrip("0") or "0"
@@ -122,6 +123,7 @@ def iter_file_chunks(
 
 
 def _next_chunk(iterator: Iterator[bytes]) -> bytes | None:
+    """Return the next chunk or None when iteration finishes."""
     try:
         return next(iterator)
     except StopIteration:
@@ -129,6 +131,7 @@ def _next_chunk(iterator: Iterator[bytes]) -> bytes | None:
 
 
 def _close_owned(iterator: Generator[bytes], source: OpenedMediaFile) -> None:
+    """Close a chunk iterator and its owned media source."""
     try:
         iterator.close()
     finally:
