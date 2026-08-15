@@ -13,7 +13,7 @@ import pytest
 from autodj.config import ServerConfig
 from autodj.security import (
     COOKIE_NAME,
-    LoginRateLimiter,
+    PairingRateLimiter,
     SecurityMiddleware,
     SecurityPolicy,
     audit_record,
@@ -22,6 +22,7 @@ from autodj.security import (
 
 _TOKEN = "test-access-token-that-is-32-bytes-long"
 _ROTATED_TOKEN = "rotated-access-token-that-is-32-bytes"
+_DEVICE_ID = "d" * 32
 
 
 def _server(**changes: object) -> ServerConfig:
@@ -41,10 +42,11 @@ def _server(**changes: object) -> ServerConfig:
 def _signed_cookie(
     expires: str,
     *,
+    device_id: str = _DEVICE_ID,
     nonce: str = "a" * 32,
     token: str = _TOKEN,
 ) -> str:
-    payload = f"{expires}.{nonce}"
+    payload = f"{expires}.{device_id}.{nonce}"
     signature = hmac.new(token.encode("utf-8"), payload.encode("ascii"), hashlib.sha256).hexdigest()
     return f"{payload}.{signature}"
 
@@ -58,8 +60,10 @@ def test_authentication_required_tracks_configured_token() -> None:
     assert SecurityPolicy(_server(access_token=_TOKEN)).authentication_required is True
 
 
-def test_access_token_comparison_uses_constant_time_bytes(monkeypatch) -> None:
+def test_pairing_code_comparison_uses_constant_time_bytes(monkeypatch) -> None:
     seen: list[tuple[bytes, bytes]] = []
+    policy = SecurityPolicy(_server(access_token=_TOKEN), now=lambda: 1_000)
+    expected = policy.current_pairing_code().encode("ascii")
 
     def compare(left: bytes, right: bytes) -> bool:
         seen.append((left, right))
@@ -67,16 +71,17 @@ def test_access_token_comparison_uses_constant_time_bytes(monkeypatch) -> None:
 
     monkeypatch.setattr(secrets, "compare_digest", compare)
 
-    assert SecurityPolicy(_server(access_token=_TOKEN)).verify_access_token("candidate")
-    assert seen == [(b"candidate", _TOKEN.encode("utf-8"))]
+    assert policy.verify_pairing_code("12345678")
+    assert seen[0] == (b"12345678", expected)
+    assert len(seen) == 2
 
 
-def test_access_token_rejects_missing_configuration_and_hostile_candidates() -> None:
-    assert SecurityPolicy(_server()).verify_access_token(_TOKEN) is False
+def test_pairing_code_rejects_missing_configuration_and_hostile_candidates() -> None:
+    assert SecurityPolicy(_server()).verify_pairing_code("12345678") is False
     policy = SecurityPolicy(_server(access_token=_TOKEN))
-    assert policy.verify_access_token("not-secret-\N{LOCK}") is False
-    assert policy.verify_access_token("lone-surrogate-\ud800") is False
-    assert policy.verify_access_token(None) is False  # type: ignore[arg-type]
+    assert policy.verify_pairing_code("1234\N{LOCK}") is False
+    assert policy.verify_pairing_code("1234\ud800") is False
+    assert policy.verify_pairing_code(None) is False  # type: ignore[arg-type]
 
 
 def test_access_token_never_appears_in_policy_repr() -> None:
@@ -95,31 +100,31 @@ def test_session_round_trip_uses_integer_expiry_and_generated_nonce(monkeypatch)
         _server(access_token=_TOKEN, session_ttl_seconds=60), now=lambda: 1000.9
     )
 
-    cookie = policy.issue_session()
+    cookie = policy.issue_device_session(_DEVICE_ID)
 
     assert cookie == _signed_cookie("1060")
     assert policy.verify_session(cookie) is True
     assert nonces == [16]
 
 
-def test_issue_session_requires_configured_token() -> None:
+def test_issue_device_session_requires_configured_token() -> None:
     with pytest.raises(RuntimeError, match="access token is not configured"):
-        SecurityPolicy(_server()).issue_session()
+        SecurityPolicy(_server()).issue_device_session(_DEVICE_ID)
 
 
 def test_session_expiry_boundary_is_inclusive() -> None:
     cookie = SecurityPolicy(
         _server(access_token=_TOKEN, session_ttl_seconds=60), now=lambda: 1000
-    ).issue_session()
+    ).issue_device_session(_DEVICE_ID)
 
     assert SecurityPolicy(_server(access_token=_TOKEN), now=lambda: 1060).verify_session(cookie)
     assert not SecurityPolicy(_server(access_token=_TOKEN), now=lambda: 1061).verify_session(cookie)
 
 
-@pytest.mark.parametrize("component", [0, 1, 2])
+@pytest.mark.parametrize("component", [0, 1, 2, 3])
 def test_session_rejects_tampering_of_each_component(component: int) -> None:
     policy = SecurityPolicy(_server(access_token=_TOKEN), now=lambda: 1000)
-    parts = policy.issue_session().split(".")
+    parts = policy.issue_device_session(_DEVICE_ID).split(".")
     parts[component] = ("b" if parts[component][0] != "b" else "c") + parts[component][1:]
 
     assert policy.verify_session(".".join(parts)) is False
@@ -127,7 +132,7 @@ def test_session_rejects_tampering_of_each_component(component: int) -> None:
 
 def test_session_signature_comparison_uses_constant_time_bytes(monkeypatch) -> None:
     policy = SecurityPolicy(_server(access_token=_TOKEN), now=lambda: 1000)
-    cookie = policy.issue_session()
+    cookie = policy.issue_device_session(_DEVICE_ID)
     signature = cookie.rsplit(".", 1)[1].encode("ascii")
     seen: list[tuple[bytes, bytes]] = []
 
@@ -143,7 +148,7 @@ def test_session_signature_comparison_uses_constant_time_bytes(monkeypatch) -> N
 
 def test_session_rejects_when_constant_time_signature_comparison_fails(monkeypatch) -> None:
     policy = SecurityPolicy(_server(access_token=_TOKEN), now=lambda: 1000)
-    cookie = policy.issue_session()
+    cookie = policy.issue_device_session(_DEVICE_ID)
     signature = cookie.rsplit(".", 1)[1].encode("ascii")
     seen: list[tuple[bytes, bytes]] = []
 
@@ -158,7 +163,9 @@ def test_session_rejects_when_constant_time_signature_comparison_fails(monkeypat
 
 
 def test_session_token_rotation_invalidates_existing_cookie() -> None:
-    cookie = SecurityPolicy(_server(access_token=_TOKEN), now=lambda: 1000).issue_session()
+    cookie = SecurityPolicy(_server(access_token=_TOKEN), now=lambda: 1000).issue_device_session(
+        _DEVICE_ID
+    )
 
     assert (
         SecurityPolicy(_server(access_token=_ROTATED_TOKEN), now=lambda: 1000).verify_session(
@@ -181,6 +188,7 @@ def test_session_token_rotation_invalidates_existing_cookie() -> None:
         "01000." + "a" * 32 + "." + "b" * 64,
         "-1." + "a" * 32 + "." + "b" * 64,
         "9223372036854775808." + "a" * 32 + "." + "b" * 64,
+        "9223372036854775808." + _DEVICE_ID + "." + "a" * 32 + "." + "b" * 64,
         "1000.short." + "b" * 64,
         "1000." + "A" * 32 + "." + "b" * 64,
         "1000." + "g" * 32 + "." + "b" * 64,
@@ -207,7 +215,9 @@ def test_malformed_session_values_are_rejected_without_raising(value: object) ->
     ],
 )
 def test_invalid_clock_values_reject_session_without_raising(bad_now: object) -> None:
-    cookie = SecurityPolicy(_server(access_token=_TOKEN), now=lambda: 1000).issue_session()
+    cookie = SecurityPolicy(_server(access_token=_TOKEN), now=lambda: 1000).issue_device_session(
+        _DEVICE_ID
+    )
     policy = SecurityPolicy(_server(access_token=_TOKEN), now=lambda: bad_now)  # type: ignore[arg-type]
 
     assert policy.verify_session(cookie) is False
@@ -217,7 +227,9 @@ def test_invalid_clock_values_reject_session_without_raising(bad_now: object) ->
 def test_clock_conversion_errors_reject_session_without_raising(
     error_type: type[Exception],
 ) -> None:
-    cookie = SecurityPolicy(_server(access_token=_TOKEN), now=lambda: 1000).issue_session()
+    cookie = SecurityPolicy(_server(access_token=_TOKEN), now=lambda: 1000).issue_device_session(
+        _DEVICE_ID
+    )
 
     def broken_clock() -> float:
         raise error_type("clock failed")
@@ -241,7 +253,7 @@ def test_invalid_clock_values_fail_session_issue_safely(bad_now: object) -> None
     policy = SecurityPolicy(_server(access_token=_TOKEN), now=lambda: bad_now)  # type: ignore[arg-type]
 
     with pytest.raises(ValueError, match="clock") as raised:
-        policy.issue_session()
+        policy.issue_device_session(_DEVICE_ID)
     assert _TOKEN not in str(raised.value)
 
 
@@ -254,7 +266,7 @@ def test_clock_conversion_errors_fail_session_issue_safely(
 
     policy = SecurityPolicy(_server(access_token=_TOKEN), now=broken_clock)
     with pytest.raises(ValueError, match="clock") as raised:
-        policy.issue_session()
+        policy.issue_device_session(_DEVICE_ID)
     assert "secret clock details" not in str(raised.value)
     assert _TOKEN not in str(raised.value)
 
@@ -380,8 +392,8 @@ def test_audit_record_has_only_closed_deterministic_fields() -> None:
 
 
 def test_audit_record_omits_optional_fields_and_rejects_extra_data() -> None:
-    encoded = audit_record("request", "login", "rejected")
-    assert encoded == '{"action":"login","outcome":"rejected","request_id":"request"}'
+    encoded = audit_record("request", "pair", "rejected")
+    assert encoded == '{"action":"pair","outcome":"rejected","request_id":"request"}'
     assert "token" not in encoded
     assert "query" not in encoded
     assert "body" not in encoded
@@ -389,7 +401,7 @@ def test_audit_record_omits_optional_fields_and_rejects_extra_data() -> None:
 
     with pytest.raises(TypeError):
         audit_record(  # type: ignore[call-arg]
-            "request", "login", "rejected", body={"token": _TOKEN}
+            "request", "pair", "rejected", body={"code": "12345678"}
         )
 
 
@@ -409,7 +421,7 @@ def test_audit_record_omits_optional_fields_and_rejects_extra_data() -> None:
 def test_audit_record_rejects_wrong_runtime_field_types(field: str, value: object) -> None:
     arguments: dict[str, object] = {
         "request_id": "request",
-        "action": "login",
+        "action": "pair",
         "outcome": "success",
         field: value,
     }
@@ -421,7 +433,7 @@ def test_audit_record_rejects_wrong_runtime_field_types(field: str, value: objec
 @pytest.mark.parametrize("status", [99, 5000])
 def test_audit_record_rejects_status_outside_http_and_websocket_ranges(status: int) -> None:
     with pytest.raises(ValueError, match="status"):
-        audit_record("request", "login", "success", status=status)
+        audit_record("request", "pair", "success", status=status)
 
 
 def test_request_ids_are_unique_lowercase_hex() -> None:
@@ -439,19 +451,19 @@ def test_request_ids_are_unique_lowercase_hex() -> None:
         {"max_clients": 0},
     ],
 )
-def test_login_limiter_requires_positive_settings(setting) -> None:
+def test_pairing_limiter_requires_positive_settings(setting) -> None:
     with pytest.raises(ValueError, match="must be positive"):
-        LoginRateLimiter(**setting)
+        PairingRateLimiter(**setting)
 
 
-def test_login_limiter_rejects_nonfinite_clock() -> None:
+def test_pairing_limiter_rejects_nonfinite_clock() -> None:
     with pytest.raises(ValueError, match="clock returned an invalid value"):
-        LoginRateLimiter(now=lambda: float("nan"))
+        PairingRateLimiter(now=lambda: float("nan"))
 
 
-def test_login_limiter_discards_expired_client_window() -> None:
+def test_pairing_limiter_discards_expired_client_window() -> None:
     clock = [0.0]
-    limiter = LoginRateLimiter(now=lambda: clock[0], per_client_limit=1, window_seconds=10)
+    limiter = PairingRateLimiter(now=lambda: clock[0], per_client_limit=1, window_seconds=10)
     assert limiter.reserve("peer").allowed is True
     assert limiter.reserve("peer").allowed is False
 
@@ -461,20 +473,20 @@ def test_login_limiter_discards_expired_client_window() -> None:
     assert limiter.reserve("peer").allowed is True
 
 
-def test_issue_session_rejects_expiry_overflow() -> None:
+def test_issue_device_session_rejects_expiry_overflow() -> None:
     policy = SecurityPolicy(
         _server(access_token=_TOKEN, session_ttl_seconds=60), now=lambda: 2**63 - 1
     )
 
     with pytest.raises(RuntimeError, match="expiry is outside"):
-        policy.issue_session()
+        policy.issue_device_session(_DEVICE_ID)
 
 
 def test_negative_clock_timestamp_is_rejected() -> None:
     policy = SecurityPolicy(_server(access_token=_TOKEN), now=lambda: -1)
 
     with pytest.raises(ValueError, match="invalid timestamp"):
-        policy.issue_session()
+        policy.issue_device_session(_DEVICE_ID)
 
 
 def test_secure_unspecified_host_has_no_implicit_origin() -> None:
@@ -490,25 +502,25 @@ def test_host_policy_rejects_empty_or_invalid_dns_name(host: str) -> None:
 
 def test_security_middleware_unknown_peer_and_malformed_length() -> None:
     assert SecurityMiddleware._peer({"type": "http"}) == "<unknown>"
-    assert SecurityMiddleware._declared_login_body_too_large(
+    assert SecurityMiddleware._declared_pairing_body_too_large(
         {"type": "http", "headers": [(b"content-length", b"invalid")]}
     )
 
 
 @pytest.mark.asyncio
-async def test_login_body_buffer_rejects_nonbytes_chunk() -> None:
+async def test_pairing_body_buffer_rejects_nonbytes_chunk() -> None:
     async def receive():
         return {"type": "http.request", "body": "not bytes"}
 
     with pytest.raises(ValueError, match="invalid ASGI request body"):
-        await SecurityMiddleware._buffer_login_body(receive)
+        await SecurityMiddleware._buffer_pairing_body(receive)
 
 
-def _login_scope() -> dict:
+def _pairing_scope() -> dict:
     return {
         "type": "http",
         "method": "POST",
-        "path": "/api/login",
+        "path": "/api/pair",
         "headers": [
             (b"host", b"radio.local"),
             (b"origin", b"https://radio.local:8080"),
@@ -518,7 +530,7 @@ def _login_scope() -> dict:
 
 
 @pytest.mark.asyncio
-async def test_login_body_replay_delegates_after_buffered_message() -> None:
+async def test_pairing_body_replay_delegates_after_buffered_message() -> None:
     received = []
 
     async def app(_scope, receive, _send):
@@ -527,7 +539,7 @@ async def test_login_body_replay_delegates_after_buffered_message() -> None:
 
     messages = iter(
         [
-            {"type": "http.request", "body": b"login", "more_body": False},
+            {"type": "http.request", "body": b"pairing", "more_body": False},
             {"type": "http.disconnect"},
         ]
     )
@@ -539,16 +551,16 @@ async def test_login_body_replay_delegates_after_buffered_message() -> None:
         return None
 
     middleware = SecurityMiddleware(app, SecurityPolicy(_server()))
-    await middleware(_login_scope(), receive, send)
+    await middleware(_pairing_scope(), receive, send)
 
     assert received == [
-        {"type": "http.request", "body": b"login", "more_body": False},
+        {"type": "http.request", "body": b"pairing", "more_body": False},
         {"type": "http.disconnect"},
     ]
 
 
 @pytest.mark.asyncio
-async def test_login_disconnect_is_replayed_to_downstream() -> None:
+async def test_pairing_disconnect_is_replayed_to_downstream() -> None:
     received = []
 
     async def app(_scope, receive, _send):
@@ -561,6 +573,6 @@ async def test_login_disconnect_is_replayed_to_downstream() -> None:
         return None
 
     middleware = SecurityMiddleware(app, SecurityPolicy(_server()))
-    await middleware(_login_scope(), receive, send)
+    await middleware(_pairing_scope(), receive, send)
 
     assert received == [{"type": "http.disconnect"}]

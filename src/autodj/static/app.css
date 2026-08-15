@@ -65,7 +65,8 @@
     }
     #auth-dialog::backdrop { background: rgba(0, 0, 0, 0.75); }
     #auth-form { display: grid; gap: 0.75rem; }
-    #auth-token {
+    #auth-token,
+    #auth-device-name {
       width: 100%;
       min-height: 44px;
       padding: 0.55rem 0.75rem;
@@ -742,6 +743,7 @@
       input,
       input:not([type="checkbox"]):not([type="radio"]),
       #auth-token,
+      #auth-device-name,
       #search-input,
       select,
       textarea,

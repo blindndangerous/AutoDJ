@@ -81,12 +81,12 @@ model_dir = "models"
 [server]
 host = "127.0.0.1"
 port = 8080
-# access_token = "generate-at-least-32-random-bytes"
+# access_token = "generate-at-least-32-random-bytes"  # Internal pairing/session secret.
 insecure_lan = false
 # LAN and wildcard binds must set both lists, for example:
 # allowed_hosts = ["radio.local"]
 # allowed_origins = ["https://radio.local:8080"]
-session_ttl_seconds = 86400
+session_ttl_seconds = 7776000  # 90 days; revoke paired browsers with `autodj devices`.
 liner_upload_max_mib = 50
 
 [playback]

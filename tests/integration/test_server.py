@@ -1661,11 +1661,18 @@ class TestServeFunction:
             headers={"Host": "radio.local", "Origin": origin},
         )
         if tls:
-            assert client.post("/api/login", json={"token": "s" * 32}).status_code == 200
+            code = app.state.security_policy.current_pairing_code()
+            assert (
+                client.post(
+                    "/api/pair",
+                    json={"code": code, "device_name": "Serve test browser"},
+                ).status_code
+                == 200
+            )
             assert client.post("/api/logout").status_code == 200
         else:
             assert client.get("/api/auth/status").status_code == 200
-            assert client.post("/api/login", json={"token": "unused"}).status_code == 401
+            assert client.post("/api/login", json={"token": "unused"}).status_code == 404
 
     @pytest.mark.parametrize(
         ("origin", "tls_kwargs"),

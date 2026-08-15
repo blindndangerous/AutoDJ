@@ -1,4 +1,4 @@
-"""Request authentication, origin checks, audit logging, and login rate limiting."""
+"""Request authentication, origin checks, audit logging, and pairing rate limiting."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ import time
 import uuid
 from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -41,7 +41,7 @@ _PUBLIC_FILES = frozenset(
         "/healthz",
         "/api/version",
         "/api/auth/status",
-        "/api/login",
+        "/api/pair",
     }
 )
 
@@ -51,12 +51,14 @@ _CANONICAL_EXPIRY = re.compile(r"(?:0|[1-9][0-9]{0,18})\Z")
 _MAX_EXPIRY = 2**63 - 1
 _DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
 _BRACKETED_HOST = re.compile(r"\[([^\]]+)\](?::([0-9]+))?\Z")
-LOGIN_BODY_MAX_BYTES = 4096
+_DEVICE_ID = re.compile(r"[0-9a-f]{32}\Z")
+PAIRING_BODY_MAX_BYTES = 4096
+PAIRING_CODE_WINDOW_SECONDS = 300
 
 
 @dataclass(frozen=True)
-class LoginLimitDecision:
-    """Result of reserving capacity for one login attempt."""
+class PairingLimitDecision:
+    """Result of reserving capacity for one pairing attempt."""
 
     allowed: bool
     retry_after: int = 0
@@ -64,16 +66,16 @@ class LoginLimitDecision:
 
 
 @dataclass
-class _LoginClientState:
-    """Fixed-window login attempt state tracked for one peer."""
+class _PairingClientState:
+    """Fixed-window pairing attempt state tracked for one peer."""
 
     window_started: float
     attempts: int = 0
     blocked_audited: bool = False
 
 
-class LoginRateLimiter:
-    """Fixed-window login limiter with bounded peer state."""
+class PairingRateLimiter:
+    """Fixed-window pairing limiter with bounded peer state."""
 
     def __init__(
         self,
@@ -85,13 +87,13 @@ class LoginRateLimiter:
         max_clients: int = 1024,
     ) -> None:
         if min(per_client_limit, global_limit, window_seconds, max_clients) < 1:
-            raise ValueError("login rate-limit settings must be positive")
+            raise ValueError("pairing rate-limit settings must be positive")
         self._now = now
         self._per_client_limit = per_client_limit
         self._global_limit = global_limit
         self._window_seconds = window_seconds
         self._max_clients = max_clients
-        self._clients: OrderedDict[str, _LoginClientState] = OrderedDict()
+        self._clients: OrderedDict[str, _PairingClientState] = OrderedDict()
         self._global_started = self._time()
         self._global_attempts = 0
         self._global_blocked_audited = False
@@ -101,7 +103,7 @@ class LoginRateLimiter:
         """Return the configured monotonic time after validating it is finite."""
         value = float(self._now())
         if not math.isfinite(value):
-            raise ValueError("login limiter clock returned an invalid value")
+            raise ValueError("pairing limiter clock returned an invalid value")
         return value
 
     def _reset_global_if_expired(self, current: float) -> None:
@@ -116,15 +118,15 @@ class LoginRateLimiter:
         """Return whole seconds remaining in the rate-limit window."""
         return max(1, math.ceil(self._window_seconds - (current - started)))
 
-    def reserve(self, peer: str) -> LoginLimitDecision:
-        """Atomically admit and count one login attempt before any body work."""
+    def reserve(self, peer: str) -> PairingLimitDecision:
+        """Atomically admit and count one pairing attempt before any body work."""
         with self._lock:
             current = self._time()
             self._reset_global_if_expired(current)
             if self._global_attempts >= self._global_limit:
                 audit = not self._global_blocked_audited
                 self._global_blocked_audited = True
-                return LoginLimitDecision(
+                return PairingLimitDecision(
                     False, self._retry_after(current, self._global_started), audit
                 )
 
@@ -136,22 +138,22 @@ class LoginRateLimiter:
                 self._clients.move_to_end(peer)
                 audit = not state.blocked_audited
                 state.blocked_audited = True
-                return LoginLimitDecision(
+                return PairingLimitDecision(
                     False, self._retry_after(current, state.window_started), audit
                 )
 
             if state is None:
-                state = _LoginClientState(current)
+                state = _PairingClientState(current)
                 self._clients[peer] = state
             state.attempts += 1
             self._global_attempts += 1
             self._clients.move_to_end(peer)
             while len(self._clients) > self._max_clients:
                 self._clients.popitem(last=False)
-            return LoginLimitDecision(True)
+            return PairingLimitDecision(True)
 
     def record_success(self, peer: str) -> None:
-        """Clear tracked attempts for a peer after a successful login."""
+        """Clear tracked attempts for a peer after successful pairing."""
         with self._lock:
             self._clients.pop(peer, None)
 
@@ -243,6 +245,7 @@ class SecurityPolicy:
     config: ServerConfig
     secure_cookie: bool = False
     now: Callable[[], float] = time.time
+    device_is_active: Callable[[str], bool] | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         """Detach policy decisions from caller-owned mutable configuration."""
@@ -253,52 +256,86 @@ class SecurityPolicy:
         """Return whether the policy has an access token configured."""
         return self.config.access_token is not None
 
-    def verify_access_token(self, candidate: str) -> bool:
-        """Compare a candidate access token with the configured token safely."""
-        expected = self.config.access_token
-        if expected is None:
-            return False
-        try:
-            candidate_bytes = candidate.encode("utf-8")
-            expected_bytes = expected.encode("utf-8")
-        except (AttributeError, UnicodeEncodeError):
-            return False
-        return secrets.compare_digest(candidate_bytes, expected_bytes)
-
-    def issue_session(self) -> str:
-        """Create a signed session token with the configured lifetime."""
+    def current_pairing_code(self) -> str:
+        """Return short code authorizing browsers during current time window."""
         token = self.config.access_token
         if token is None:
             raise RuntimeError("access token is not configured")
+        window = _clock_timestamp(self.now) // PAIRING_CODE_WINDOW_SECONDS
+        return self._pairing_code(token, window)
+
+    @staticmethod
+    def _pairing_code(token: str, window: int) -> str:
+        """Derive one pairing code from server secret and numbered time window."""
+        digest = hmac.new(
+            token.encode("utf-8"), f"pair:{window}".encode("ascii"), hashlib.sha256
+        ).digest()
+        return f"{int.from_bytes(digest[:8], 'big') % 100_000_000:08d}"
+
+    def verify_pairing_code(self, candidate: str) -> bool:
+        """Compare a candidate with current short-lived pairing code safely."""
+        if (
+            not isinstance(candidate, str)
+            or len(candidate) != 8
+            or not candidate.isascii()
+            or not candidate.isdecimal()
+        ):
+            return False
+        token = self.config.access_token
+        if token is None:
+            return False
+        try:
+            window = _clock_timestamp(self.now) // PAIRING_CODE_WINDOW_SECONDS
+        except (RuntimeError, ValueError):
+            return False
+        candidate_bytes = candidate.encode("ascii")
+        current = self._pairing_code(token, window).encode("ascii")
+        previous = self._pairing_code(token, max(0, window - 1)).encode("ascii")
+        current_valid = secrets.compare_digest(candidate_bytes, current)
+        previous_valid = secrets.compare_digest(candidate_bytes, previous)
+        return current_valid | previous_valid
+
+    def issue_device_session(self, device_id: str) -> str:
+        """Create signed session bound to one active paired device."""
+        token = self.config.access_token
+        if token is None:
+            raise RuntimeError("access token is not configured")
+        if _DEVICE_ID.fullmatch(device_id) is None:
+            raise ValueError("device ID is invalid")
+        if self.device_is_active is not None and not self.device_is_active(device_id):
+            raise ValueError("device is not active")
         expires = _clock_timestamp(self.now) + self.config.session_ttl_seconds
         if not 0 <= expires <= _MAX_EXPIRY:
             raise RuntimeError("session expiry is outside the supported range")
         nonce = secrets.token_hex(16)
-        payload = f"{expires}.{nonce}"
+        payload = f"{expires}.{device_id}.{nonce}"
         signature = hmac.new(
             token.encode("utf-8"), payload.encode("ascii"), hashlib.sha256
         ).hexdigest()
         return f"{payload}.{signature}"
 
-    def verify_session(self, value: str | None) -> bool:
-        """Return whether a session token is well formed, signed, and unexpired."""
+    def _verified_session(self, value: str | None) -> tuple[bool, str | None]:
+        """Validate session and return optional paired-device identity."""
         token = self.config.access_token
         if token is None or not isinstance(value, str):
-            return False
+            return False, None
         parts = value.split(".")
-        if len(parts) != 3:
-            return False
-        expires_text, nonce, signature = parts
+        if len(parts) == 4:
+            expires_text, device_id, nonce, signature = parts
+            if _DEVICE_ID.fullmatch(device_id) is None:
+                return False, None
+            payload = f"{expires_text}.{device_id}.{nonce}"
+        else:
+            return False, None
         if (
             _CANONICAL_EXPIRY.fullmatch(expires_text) is None
             or _HEX_32.fullmatch(nonce) is None
             or _HEX_64.fullmatch(signature) is None
         ):
-            return False
+            return False, None
         expires = int(expires_text)
         if expires > _MAX_EXPIRY:
-            return False
-        payload = f"{expires_text}.{nonce}"
+            return False, None
         expected = hmac.new(
             token.encode("utf-8"), payload.encode("ascii"), hashlib.sha256
         ).hexdigest()
@@ -308,8 +345,26 @@ class SecurityPolicy:
         try:
             current_time = _clock_timestamp(self.now)
         except ValueError:
-            return False
-        return signature_valid and expires >= current_time
+            return False, None
+        if not signature_valid or expires < current_time:
+            return False, None
+        if (
+            device_id is not None
+            and self.device_is_active is not None
+            and not self.device_is_active(device_id)
+        ):
+            return False, None
+        return True, device_id
+
+    def verify_session(self, value: str | None) -> bool:
+        """Return whether a session token is well formed, signed, and unexpired."""
+        valid, _device_id = self._verified_session(value)
+        return valid
+
+    def session_device_id(self, value: str | None) -> str | None:
+        """Return active paired-device identity carried by a valid session."""
+        valid, device_id = self._verified_session(value)
+        return device_id if valid else None
 
     def host_allowed(self, host_header: str | None) -> bool:
         """Return whether a normalized Host header appears in the configured allowlist."""
@@ -448,12 +503,12 @@ class SecurityMiddleware:
         return getattr(state, "security_policy", self._policy)
 
     @staticmethod
-    def _login_limiter(scope: Scope) -> LoginRateLimiter | None:
-        """Return the application's login limiter when it has the expected type."""
+    def _pairing_limiter(scope: Scope) -> PairingRateLimiter | None:
+        """Return application pairing limiter when it has expected type."""
         app = scope.get("app")
         state = getattr(app, "state", None)
-        limiter = getattr(state, "login_rate_limiter", None)
-        return limiter if isinstance(limiter, LoginRateLimiter) else None
+        limiter = getattr(state, "pairing_rate_limiter", None)
+        return limiter if isinstance(limiter, PairingRateLimiter) else None
 
     @staticmethod
     def _peer(scope: Scope) -> str:
@@ -464,8 +519,8 @@ class SecurityMiddleware:
         return "<unknown>"
 
     @staticmethod
-    def _declared_login_body_too_large(scope: Scope) -> bool:
-        """Return whether Content-Length is malformed or exceeds the login body limit."""
+    def _declared_pairing_body_too_large(scope: Scope) -> bool:
+        """Return whether Content-Length is malformed or exceeds pairing body limit."""
         values = _raw_header_values(scope, b"content-length")
         if not values:
             return False
@@ -476,11 +531,11 @@ class SecurityMiddleware:
             or not values[0].isdecimal()
         ):
             return True
-        return int(values[0]) > LOGIN_BODY_MAX_BYTES
+        return int(values[0]) > PAIRING_BODY_MAX_BYTES
 
     @staticmethod
-    async def _buffer_login_body(receive: Receive) -> tuple[bytes, bool]:
-        """Read a bounded login body and report whether the client disconnected."""
+    async def _buffer_pairing_body(receive: Receive) -> tuple[bytes, bool]:
+        """Read bounded pairing body and report whether client disconnected."""
         body = bytearray()
         while True:
             message = await receive()
@@ -489,8 +544,8 @@ class SecurityMiddleware:
             chunk = message.get("body", b"")
             if not isinstance(chunk, bytes):
                 raise ValueError("invalid ASGI request body")
-            if len(chunk) > LOGIN_BODY_MAX_BYTES - len(body):
-                raise _LoginBodyTooLarge
+            if len(chunk) > PAIRING_BODY_MAX_BYTES - len(body):
+                raise _PairingBodyTooLarge
             body.extend(chunk)
             if not message.get("more_body", False):
                 return bytes(body), False
@@ -506,7 +561,7 @@ class SecurityMiddleware:
         state["request_id"] = request_id
         method = str(scope.get("method", "")).upper()
         path = str(scope.get("path", ""))
-        is_login = method == "POST" and path == "/api/login"
+        is_pairing = method == "POST" and path == "/api/pair"
         route = _route_template(scope)
         policy = self._current_policy(scope)
         host_values = _raw_header_values(scope, b"host")
@@ -544,13 +599,13 @@ class SecurityMiddleware:
             )
             return
 
-        login_limiter = self._login_limiter(scope) if is_login else None
+        pairing_limiter = self._pairing_limiter(scope) if is_pairing else None
         peer = self._peer(scope)
-        if login_limiter is not None:
-            decision = login_limiter.reserve(peer)
+        if pairing_limiter is not None:
+            decision = pairing_limiter.reserve(peer)
             if not decision.allowed:
                 response = JSONResponse(
-                    {"detail": "Too many login attempts"},
+                    {"detail": "Too many pairing attempts"},
                     status_code=429,
                     headers={
                         "X-Request-ID": request_id,
@@ -570,19 +625,19 @@ class SecurityMiddleware:
                     )
                 return
 
-        if is_login:
-            if self._declared_login_body_too_large(scope):
-                await self._reject_login_body(scope, receive, send, request_id, method, route)
+        if is_pairing:
+            if self._declared_pairing_body_too_large(scope):
+                await self._reject_pairing_body(scope, receive, send, request_id, method, route)
                 return
             try:
-                body, disconnected = await self._buffer_login_body(receive)
-            except (_LoginBodyTooLarge, ValueError):
-                await self._reject_login_body(scope, receive, send, request_id, method, route)
+                body, disconnected = await self._buffer_pairing_body(receive)
+            except (_PairingBodyTooLarge, ValueError):
+                await self._reject_pairing_body(scope, receive, send, request_id, method, route)
                 return
             replayed = False
 
-            async def receive_login_body() -> Message:
-                """Replay the buffered login body once to the downstream application."""
+            async def receive_pairing_body() -> Message:
+                """Replay buffered pairing body once to downstream application."""
                 nonlocal replayed
                 if replayed:
                     return await receive()
@@ -591,7 +646,7 @@ class SecurityMiddleware:
                     return {"type": "http.disconnect"}
                 return {"type": "http.request", "body": body, "more_body": False}
 
-            downstream_receive: Receive = receive_login_body
+            downstream_receive: Receive = receive_pairing_body
         else:
             downstream_receive = receive
 
@@ -633,11 +688,11 @@ class SecurityMiddleware:
             await response(scope, receive, send)
             return
         if (
-            login_limiter is not None
+            pairing_limiter is not None
             and response_status is not None
             and 200 <= response_status < 300
         ):
-            login_limiter.record_success(peer)
+            pairing_limiter.record_success(peer)
         if method in _UNSAFE_METHODS and response_status is not None:
             emit_audit(
                 request_id,
@@ -650,7 +705,7 @@ class SecurityMiddleware:
             )
 
     @staticmethod
-    async def _reject_login_body(
+    async def _reject_pairing_body(
         scope: Scope,
         receive: Receive,
         send: Send,
@@ -658,7 +713,7 @@ class SecurityMiddleware:
         method: str,
         route: str,
     ) -> None:
-        """Send and audit a 413 response for an oversized login request body."""
+        """Send and audit 413 response for oversized pairing request body."""
         response = JSONResponse(
             {"detail": "Request body too large"},
             status_code=413,
@@ -676,7 +731,7 @@ class SecurityMiddleware:
         )
 
 
-class _LoginBodyTooLarge(Exception):
-    """Signal that a buffered login request exceeded the allowed body size."""
+class _PairingBodyTooLarge(Exception):
+    """Signal that buffered pairing request exceeded allowed body size."""
 
     pass

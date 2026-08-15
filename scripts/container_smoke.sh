@@ -188,14 +188,21 @@ curl --fail --silent --show-error \
   http://127.0.0.1:8080/healthz >/dev/null
 
 lan_cookie_jar="$smoke_root/autodj-lan.cookies"
+pairing_code="$(
+  docker compose --profile lan exec -T autodj-lan autodj devices pairing-code
+)"
+if [[ ! "$pairing_code" =~ ^[0-9]{8}$ ]]; then
+  echo "LAN service returned an invalid pairing code" >&2
+  exit 1
+fi
 curl --fail --silent --show-error \
   --header "Host: $AUTODJ_LAN_HOST" \
   --header "Origin: $AUTODJ_LAN_ORIGIN" \
   --header "Content-Type: application/json" \
   --cookie-jar "$lan_cookie_jar" \
   --data-binary @- \
-  http://127.0.0.1:8080/api/login >/dev/null <<JSON
-{"token":"$AUTODJ_ACCESS_TOKEN"}
+  http://127.0.0.1:8080/api/pair >/dev/null <<JSON
+{"code":"$pairing_code","device_name":"Container smoke browser"}
 JSON
 curl --fail --silent --show-error \
   --header "Host: $AUTODJ_LAN_HOST" \

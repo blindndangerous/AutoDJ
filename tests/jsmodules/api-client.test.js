@@ -176,7 +176,7 @@ describe("request helpers", () => {
         headers: { "Content-Type": "image/jpeg" },
       }))
       .mockResolvedValueOnce(jsonResponse({ detail: "not image bytes" }))
-      .mockResolvedValueOnce(new globalThis.Response("login", {
+      .mockResolvedValueOnce(new globalThis.Response("pairing", {
         headers: { "Content-Type": "text/html" },
       })));
     await expect(probeResource("/cover.jpg")).resolves.toBe(true);

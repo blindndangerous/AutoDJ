@@ -806,7 +806,7 @@ class ServerConfig:
     insecure_lan: bool = False
     allowed_hosts: list[str] | None = None
     allowed_origins: list[str] | None = None
-    session_ttl_seconds: int = 24 * 60 * 60
+    session_ttl_seconds: int = 90 * 24 * 60 * 60
     liner_upload_max_bytes: int = 50 * _MIB
 
     def __post_init__(self) -> None:
@@ -869,7 +869,7 @@ class ServerConfig:
             insecure_lan=data.get("insecure_lan", False),
             allowed_hosts=data.get("allowed_hosts"),
             allowed_origins=data.get("allowed_origins"),
-            session_ttl_seconds=data.get("session_ttl_seconds", 24 * 60 * 60),
+            session_ttl_seconds=data.get("session_ttl_seconds", 90 * 24 * 60 * 60),
             liner_upload_max_bytes=max_mib * _MIB,
         )
 

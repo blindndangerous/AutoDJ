@@ -5,20 +5,20 @@ import {
 
 const bootstrapRuns = new WeakMap();
 
-function loginFailureMessage(response) {
-  if (response.status === 401) return "That access token was not accepted.";
-  if (response.status === 413) return "That access token is too large.";
+function pairingFailureMessage(response) {
+  if (response.status === 401) return "That pairing code is invalid or expired.";
+  if (response.status === 413) return "That pairing request is too large.";
   if (response.status === 429) {
     const retryAfter = response.headers?.get?.("Retry-After");
     if (/^[1-9]\d*$/.test(retryAfter || "")) {
       const seconds = Number(retryAfter);
       if (Number.isSafeInteger(seconds) && seconds <= 86400) {
-        return `Too many login attempts. Wait about ${seconds} seconds before trying again.`;
+        return `Too many pairing attempts. Wait about ${seconds} seconds before trying again.`;
       }
     }
-    return "Too many login attempts. Wait before trying again.";
+    return "Too many pairing attempts. Wait before trying again.";
   }
-  return "Login failed. Check the server and try again.";
+  return "Pairing failed. Check the server and try again.";
 }
 
 export function initAuthDialog({
@@ -29,10 +29,11 @@ export function initAuthDialog({
   const dialog = document.querySelector("#auth-dialog");
   const form = document.querySelector("#auth-form");
   const token = document.querySelector("#auth-token");
+  const deviceName = document.querySelector("#auth-device-name");
   const status = document.querySelector("#auth-status");
   const error = document.querySelector("#auth-error");
   const submitButton = form?.querySelector('button[type="submit"]');
-  if (!dialog || !form || !token || !status || !error || !submitButton) {
+  if (!dialog || !form || !token || !deviceName || !status || !error || !submitButton) {
     throw new Error("Authentication dialog markup is incomplete.");
   }
 
@@ -55,7 +56,8 @@ export function initAuthDialog({
     form.setAttribute("aria-busy", String(busy));
     token.readOnly = busy;
     submitButton.disabled = busy;
-    status.textContent = busy ? "Signing in…" : "";
+    deviceName.readOnly = busy;
+    status.textContent = busy ? "Pairing browser…" : "";
   }
 
   async function performSubmit() {
@@ -63,21 +65,24 @@ export function initAuthDialog({
     let candidate = token.value;
     token.value = "";
     if (!candidate) {
-      await announceError("Enter an access token.");
+      await announceError("Enter the 8-digit pairing code.");
       return false;
     }
 
     setBusy(true);
     let failureMessage = null;
     try {
-      const response = await fetchImpl("/api/login", {
+      const response = await fetchImpl("/api/pair", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token: candidate }),
+        body: JSON.stringify({
+          code: candidate,
+          device_name: deviceName.value.trim() || "Paired browser",
+        }),
       });
-      if (!response.ok) failureMessage = loginFailureMessage(response);
+      if (!response.ok) failureMessage = pairingFailureMessage(response);
     } catch (_errorValue) {
-      failureMessage = "Login failed. Check the server and try again.";
+      failureMessage = "Pairing failed. Check the server and try again.";
     } finally {
       candidate = "";
       setBusy(false);
@@ -112,7 +117,9 @@ export function initAuthDialog({
   });
   dialog.addEventListener("keydown", (event) => {
     if (event.key !== "Tab") return;
-    const focusable = [token, submitButton].filter((element) => !element.disabled);
+    const focusable = [token, deviceName, submitButton].filter(
+      (element) => !element.disabled,
+    );
     const first = focusable[0];
     const last = focusable[focusable.length - 1];
     if (event.shiftKey && document.activeElement === first) {

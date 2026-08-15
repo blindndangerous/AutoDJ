@@ -15,15 +15,16 @@ function installDialogMarkup() {
   document.body.innerHTML = `<dialog id="auth-dialog"
       aria-labelledby="auth-title" aria-describedby="auth-help">
     <form id="auth-form" method="dialog">
-      <h2 id="auth-title">Connect to AutoDJ</h2>
-      <p id="auth-help">Enter the access token supplied by the server operator.</p>
-      <label for="auth-token">Access token</label>
-      <input id="auth-token" name="token" type="password"
-             autocomplete="current-password" required
+      <h2 id="auth-title">Pair this browser</h2>
+      <p id="auth-help">Enter the pairing code shown by the server.</p>
+      <label for="auth-token">Pairing code</label>
+      <input id="auth-token" name="code" required
              aria-describedby="auth-help auth-error">
+      <label for="auth-device-name">Device name</label>
+      <input id="auth-device-name" name="device_name">
       <p id="auth-error" role="alert" aria-live="assertive"
          aria-atomic="true"></p>
-      <button id="auth-submit" type="submit">Log in</button>
+      <button id="auth-submit" type="submit">Pair browser</button>
     </form><p id="auth-status" role="status" aria-live="polite"
       aria-atomic="true"></p>
   </dialog>`;
@@ -31,6 +32,7 @@ function installDialogMarkup() {
   dialog.showModal = vi.fn(() => dialog.setAttribute("open", ""));
   return {
     dialog,
+    deviceName: document.querySelector("#auth-device-name"),
     error: document.querySelector("#auth-error"),
     form: document.querySelector("#auth-form"),
     submitButton: document.querySelector("#auth-submit"),
@@ -72,15 +74,16 @@ describe("initAuthDialog", () => {
     });
   });
 
-  it("posts token once, clears it immediately, and invokes success", async () => {
+  it("posts pairing code once, clears it immediately, and invokes success", async () => {
     const els = installDialogMarkup();
-    let resolveLogin;
+    let resolvePairing;
     const fetchImpl = vi.fn(() => new Promise((resolve) => {
-      resolveLogin = resolve;
+      resolvePairing = resolve;
     }));
     const onSuccess = vi.fn();
     const auth = initAuthDialog({ document, fetchImpl, onSuccess });
-    els.token.value = "secret-token";
+    els.token.value = "12345678";
+    els.deviceName.value = "Kitchen tablet";
 
     const first = auth.submit();
     const duplicate = auth.submit();
@@ -90,25 +93,25 @@ describe("initAuthDialog", () => {
     expect(els.token.readOnly).toBe(true);
     expect(els.token.disabled).toBe(false);
     expect(els.submitButton.disabled).toBe(true);
-    expect(els.status.textContent).toBe("Signing in…");
+    expect(els.status.textContent).toBe("Pairing browser…");
     expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(fetchImpl).toHaveBeenCalledWith("/api/login", {
+    expect(fetchImpl).toHaveBeenCalledWith("/api/pair", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token: "secret-token" }),
+      body: JSON.stringify({ code: "12345678", device_name: "Kitchen tablet" }),
     });
 
     auth.show();
     expect(els.token.readOnly).toBe(true);
     expect(els.submitButton.disabled).toBe(true);
-    expect(els.status.textContent).toBe("Signing in…");
+    expect(els.status.textContent).toBe("Pairing browser…");
 
-    resolveLogin(response({ ok: true, status: 200 }));
+    resolvePairing(response({ ok: true, status: 200 }));
     await Promise.all([first, duplicate]);
 
     expect(onSuccess).toHaveBeenCalledOnce();
     expect(els.token.value).toBe("");
-    expect(document.body.textContent).not.toContain("secret-token");
+    expect(document.body.textContent).not.toContain("12345678");
     expect(localStorageSet).not.toHaveBeenCalled();
     expect(sessionStorageSet).not.toHaveBeenCalled();
   });
@@ -169,7 +172,7 @@ describe("initAuthDialog", () => {
     await Promise.resolve();
     observer.disconnect();
 
-    expect(els.error.textContent).toBe("That access token was not accepted.");
+    expect(els.error.textContent).toBe("That pairing code is invalid or expired.");
     expect(mutations).toContain("");
     expect(els.token.getAttribute("aria-invalid")).toBe("true");
     expect(els.token.getAttribute("aria-describedby")).toContain("auth-error");
@@ -184,9 +187,9 @@ describe("initAuthDialog", () => {
   });
 
   it.each([
-    [413, undefined, "That access token is too large."],
-    [429, "17", "Too many login attempts. Wait about 17 seconds before trying again."],
-    [500, undefined, "Login failed. Check the server and try again."],
+    [413, undefined, "That pairing request is too large."],
+    [429, "17", "Too many pairing attempts. Wait about 17 seconds before trying again."],
+    [500, undefined, "Pairing failed. Check the server and try again."],
   ])("uses safe message for HTTP %i without echoing server details",
     async (status, retryAfter, expected) => {
       const els = installDialogMarkup();
@@ -217,7 +220,7 @@ describe("initAuthDialog", () => {
     await auth.submit();
 
     expect(els.error.textContent).toBe(
-      "Login failed. Check the server and try again.",
+      "Pairing failed. Check the server and try again.",
     );
     expect(els.error.textContent).not.toContain("secret-token");
     expect(els.token.value).toBe("");
@@ -435,7 +438,7 @@ describe("bootstrapAuthenticatedApp", () => {
 });
 
 describe("handleWebSocketAuthenticationClose", () => {
-  it("reopens login and signals reconnect suppression only for code 4401", () => {
+  it("reopens pairing and signals reconnect suppression only for code 4401", () => {
     const auth = { show: vi.fn() };
     const onExpired = vi.fn();
 
@@ -854,8 +857,8 @@ describe("app startup integration", () => {
   });
 });
 
-describe("login dialog markup", () => {
-  it("parses as a named, described, required password form", () => {
+describe("pairing dialog markup", () => {
+  it("parses as a named, described, one-time-code form", () => {
     const html = readFileSync(
       join(process.cwd(), "src/autodj/static/index.html"), "utf8",
     );
@@ -869,15 +872,17 @@ describe("login dialog markup", () => {
 
     expect(dialog?.tagName).toBe("DIALOG");
     expect(parsed.querySelector(`#${dialog?.getAttribute("aria-labelledby")}`)
-      ?.textContent.trim()).toBe("Connect to AutoDJ");
+      ?.textContent.trim()).toBe("Pair this browser");
     expect(parsed.querySelector(`#${dialog?.getAttribute("aria-describedby")}`)
       ?.textContent.trim()).toBe(
-        "Enter the access token supplied by the server operator.",
+        "Enter the 8-digit pairing code shown by the AutoDJ server. You only need to do this once on this browser.",
       );
-    expect(label?.textContent.trim()).toBe("Access token");
-    expect(input?.type).toBe("password");
+    expect(label?.textContent.trim()).toBe("Pairing code");
+    expect(input?.type).toBe("text");
     expect(input?.required).toBe(true);
-    expect(input?.autocomplete).toBe("current-password");
+    expect(input?.autocomplete).toBe("one-time-code");
+    expect(input?.inputMode).toBe("numeric");
+    expect(input?.maxLength).toBe(8);
     expect(input?.getAttribute("aria-describedby")).toBe(
       "auth-help auth-error",
     );

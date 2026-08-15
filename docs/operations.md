@@ -34,23 +34,26 @@ The Compose `--insecure-lan` flag acknowledges only that internal wildcard bind.
 the port only on host `127.0.0.1` (`127.0.0.1:8080:8080`), so the default does not expose the
 service to the host LAN.
 
-Generate a token and export it in the current Bash session:
+Create fresh-clone LAN settings and start the authenticated service:
 
 ```bash
-AUTODJ_ACCESS_TOKEN="$(openssl rand -hex 32)"
-export AUTODJ_ACCESS_TOKEN
-```
-
-Store the generated token in a secret manager before startup. Then start the authenticated LAN
-service, substituting the DNS name that clients use:
-
-```bash
-AUTODJ_LAN_HOST=radio.local \
-AUTODJ_LAN_ORIGIN=http://radio.local:8080 \
+uv run autodj setup-lan --host-name radio.local
 docker compose --profile lan up autodj-lan
 ```
 
-HTTP does not protect the token or session cookie from network observers. Use this Compose LAN
+Substitute the DNS name or IP that clients use. Setup writes the generated server secret and
+Host/Origin policy to gitignored `.env`. Startup prints an 8-digit code. Enter it once in each
+browser; subsequent visits reuse that browser's paired-device cookie.
+
+Manage paired browsers from the running container:
+
+```bash
+docker compose --profile lan exec autodj-lan autodj devices list
+docker compose --profile lan exec autodj-lan autodj devices pairing-code
+docker compose --profile lan exec autodj-lan autodj devices revoke DEVICE_ID
+```
+
+HTTP does not protect the pairing code or session cookie from network observers. Use this Compose LAN
 profile only on a trusted private network. For browser or LAN access on an untrusted network, use
 end-to-end TLS: run `autodj serve` directly with both `--ssl-certfile` and `--ssl-keyfile` and a
 certificate trusted by every browser. AutoDJ does not support TLS termination in front of its
@@ -78,19 +81,10 @@ $stamp = Get-Date -Format yyyy-MM-dd
 uv run autodj backup "backups\autodj-$stamp.zip"
 ```
 
-Generate an authenticated LAN token without placing it on a command line:
+Create authenticated LAN settings without placing a secret on the command line:
 
 ```powershell
-$tokenBytes = New-Object byte[] 32
-$rng = [Security.Cryptography.RandomNumberGenerator]::Create()
-try {
-    $rng.GetBytes($tokenBytes)
-} finally {
-    $rng.Dispose()
-}
-$env:AUTODJ_ACCESS_TOKEN = -join ($tokenBytes | ForEach-Object { $_.ToString('x2') })
-$env:AUTODJ_LAN_HOST = "radio.local"
-$env:AUTODJ_LAN_ORIGIN = "http://radio.local:8080"
+uv run autodj setup-lan --host-name radio.local
 docker compose --profile lan up autodj-lan
 ```
 

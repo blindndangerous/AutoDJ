@@ -10,6 +10,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Added browser pairing for LAN servers. Operators share an 8-digit code instead of the server
+  secret. Each browser receives its own device record and 90-day HttpOnly session, with CLI
+  commands to list, revoke, or reset paired browsers.
 - Added `autodj doctor` with text and JSON reports, token redaction, and read-only checks for
   configuration, storage, index consistency, dependencies, model cache, network exposure, and web
   bundle identity.
@@ -20,6 +23,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- LAN authentication no longer accepts the server secret from a browser or accepts old session
+  cookies. Existing browsers must pair again after upgrading.
 - Container now runs as UID/GID 10001, publishes default service on host loopback, and requires
   explicit authenticated or acknowledged-insecure LAN configuration.
 - CI enforces 99.1% line coverage and 94.7% branch coverage, both Python type checkers, locked

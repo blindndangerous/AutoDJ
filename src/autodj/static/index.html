@@ -11,15 +11,19 @@
 <dialog id="auth-dialog" aria-modal="true"
         aria-labelledby="auth-title" aria-describedby="auth-help">
   <form id="auth-form" method="dialog">
-    <h2 id="auth-title">Connect to AutoDJ</h2>
-    <p id="auth-help">Enter the access token supplied by the server operator.</p>
-    <label for="auth-token">Access token</label>
-    <input id="auth-token" name="token" type="password"
-           autocomplete="current-password" required
+    <h2 id="auth-title">Pair this browser</h2>
+    <p id="auth-help">Enter the 8-digit pairing code shown by the AutoDJ server. You only need to do this once on this browser.</p>
+    <label for="auth-token">Pairing code</label>
+    <input id="auth-token" name="code" type="text"
+           autocomplete="one-time-code" inputmode="numeric"
+           pattern="[0-9]{8}" maxlength="8" required
            aria-describedby="auth-help auth-error">
+    <label for="auth-device-name">Device name <span class="visually-hidden">(optional)</span></label>
+    <input id="auth-device-name" name="device_name" type="text"
+           autocomplete="off" maxlength="64" placeholder="Kitchen tablet">
     <p id="auth-error" role="alert" aria-live="assertive"
        aria-atomic="true"></p>
-    <button type="submit">Log in</button>
+    <button type="submit">Pair browser</button>
   </form>
   <p id="auth-status" role="status" aria-live="polite"
      aria-atomic="true"></p>

@@ -24,12 +24,19 @@ from starlette.websockets import WebSocketDisconnect
 
 from autodj.config import ServerConfig
 from autodj.index_manifest import IndexSnapshotToken
-from autodj.security import COOKIE_NAME, LoginRateLimiter, SecurityPolicy
+from autodj.security import COOKIE_NAME, PairingRateLimiter, SecurityPolicy
 from autodj.server import PlayerBridge, create_app
 
 from ._helpers import _make_player_mock, _make_sim_mock
 
 _TEST_ACCESS_TOKEN = "task10-test-access-token-is-32-bytes"
+_TEST_DEVICE_ID = "d" * 32
+
+
+def _pair(client: TestClient, *, name: str = "Test browser"):
+    """Pair client through public API using current short-lived code."""
+    code = client.app.state.security_policy.current_pairing_code()
+    return client.post("/api/pair", json={"code": code, "device_name": name})
 
 
 def _security_client(*, secure_cookie: bool = False) -> TestClient:
@@ -131,17 +138,17 @@ def test_security_policy_snapshots_mutable_configuration() -> None:
     original.allowed_origins[0] = "http://rotated.local"
     original.session_ttl_seconds = 120
 
-    assert policy.verify_access_token(_TEST_ACCESS_TOKEN)
-    assert not policy.verify_access_token(original.access_token)
+    current_code = policy.current_pairing_code()
+    assert policy.verify_pairing_code(current_code)
     assert policy.host_allowed("testserver")
     assert not policy.host_allowed("rotated.local")
     assert policy.origin_allowed("http://testserver")
-    assert policy.issue_session().startswith("1060.")
+    assert policy.issue_device_session(_TEST_DEVICE_ID).startswith("1060.")
     assert _TEST_ACCESS_TOKEN not in repr(policy)
     assert original.access_token not in repr(policy)
 
     replacement = SecurityPolicy(original)
-    assert replacement.verify_access_token(original.access_token)
+    assert replacement.verify_pairing_code(replacement.current_pairing_code())
     assert replacement.host_allowed("rotated.local")
 
 
@@ -153,7 +160,8 @@ def test_app_policy_replacement_is_atomic() -> None:
             access_token=rotated,
             allowed_hosts=["rotated.local"],
             allowed_origins=["http://rotated.local"],
-        )
+        ),
+        device_is_active=app.state.device_registry.is_active,
     )
     client = TestClient(
         app,
@@ -161,12 +169,12 @@ def test_app_policy_replacement_is_atomic() -> None:
         headers={"Host": "rotated.local", "Origin": "http://rotated.local"},
     )
 
-    assert client.post("/api/login", json={"token": rotated}).status_code == 200
+    assert _pair(client).status_code == 200
 
 
-def test_login_rate_limiter_is_bounded_isolated_and_expires() -> None:
+def test_pairing_rate_limiter_is_bounded_isolated_and_expires() -> None:
     now = [100.0]
-    limiter = LoginRateLimiter(
+    limiter = PairingRateLimiter(
         now=lambda: now[0], per_client_limit=2, global_limit=4, window_seconds=10, max_clients=2
     )
     assert limiter.reserve("one").allowed
@@ -180,13 +188,13 @@ def test_login_rate_limiter_is_bounded_isolated_and_expires() -> None:
     assert limiter.reserve("one").allowed
 
 
-def test_login_throttle_bypasses_body_and_token_compare(
+def test_pairing_throttle_bypasses_body_and_code_compare(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    limiter = LoginRateLimiter(per_client_limit=1, global_limit=10)
+    limiter = PairingRateLimiter(per_client_limit=1, global_limit=10)
     app = _security_app()
-    app.state.login_rate_limiter = limiter
+    app.state.pairing_rate_limiter = limiter
     client = TestClient(
         app,
         headers={
@@ -196,15 +204,16 @@ def test_login_throttle_bypasses_body_and_token_compare(
         },
     )
     policy = app.state.security_policy
-    checked = MagicMock(wraps=policy.verify_access_token)
-    monkeypatch.setattr(policy, "verify_access_token", checked)
+    checked = MagicMock(wraps=policy.verify_pairing_code)
+    monkeypatch.setattr(policy, "verify_pairing_code", checked)
 
-    assert client.post("/api/login", json={"token": "wrong"}).status_code == 401
+    invalid = {"code": "00000000", "device_name": "Unknown browser"}
+    assert client.post("/api/pair", json=invalid).status_code == 401
     with caplog.at_level(logging.WARNING, logger="autodj.audit"):
-        first = client.post("/api/login", content=b"x" * 5000)
+        first = client.post("/api/pair", content=b"x" * 5000)
         second = client.post(
-            "/api/login",
-            json={"token": "wrong"},
+            "/api/pair",
+            json=invalid,
             headers={"X-Forwarded-For": "198.51.100.2"},
         )
 
@@ -216,14 +225,14 @@ def test_login_throttle_bypasses_body_and_token_compare(
     assert "wrong" not in caplog.text
 
 
-def test_login_throttle_rejects_without_reading_request_body() -> None:
-    limiter = LoginRateLimiter(per_client_limit=1, global_limit=10)
+def test_pairing_throttle_rejects_without_reading_request_body() -> None:
+    limiter = PairingRateLimiter(per_client_limit=1, global_limit=10)
     assert limiter.reserve("127.0.0.1").allowed
     app = _security_app()
-    app.state.login_rate_limiter = limiter
+    app.state.pairing_rate_limiter = limiter
 
     messages = _call_http_without_body_read(
-        path="/api/login",
+        path="/api/pair",
         headers=[
             (b"host", b"testserver"),
             (b"origin", b"http://testserver"),
@@ -235,12 +244,12 @@ def test_login_throttle_rejects_without_reading_request_body() -> None:
     assert _response_status(messages) == 429
 
 
-def test_concurrent_login_guesses_reserve_capacity_before_comparison(
+def test_concurrent_pairing_guesses_reserve_capacity_before_comparison(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    limiter = LoginRateLimiter(per_client_limit=2, global_limit=2)
+    limiter = PairingRateLimiter(per_client_limit=2, global_limit=2)
     app = _security_app()
-    app.state.login_rate_limiter = limiter
+    app.state.pairing_rate_limiter = limiter
     policy: SecurityPolicy = app.state.security_policy
     compare_barrier = threading.Barrier(2)
     compare_calls = 0
@@ -253,14 +262,17 @@ def test_concurrent_login_guesses_reserve_capacity_before_comparison(
         compare_barrier.wait(timeout=5)
         return False
 
-    monkeypatch.setattr(policy, "verify_access_token", compare)
+    monkeypatch.setattr(policy, "verify_pairing_code", compare)
 
     def attempt(_index: int) -> int:
         with TestClient(
             app,
             headers={"Host": "testserver", "Origin": "http://testserver"},
         ) as client:
-            return client.post("/api/login", json={"token": "wrong"}).status_code
+            return client.post(
+                "/api/pair",
+                json={"code": "00000000", "device_name": "Unknown browser"},
+            ).status_code
 
     with ThreadPoolExecutor(max_workers=6) as executor:
         statuses = list(executor.map(attempt, range(6)))
@@ -270,21 +282,22 @@ def test_concurrent_login_guesses_reserve_capacity_before_comparison(
     assert compare_calls == 2
 
 
-def test_malformed_and_oversized_logins_consume_bounded_attempt_budget(
+def test_malformed_and_oversized_pairing_consume_bounded_attempt_budget(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    limiter = LoginRateLimiter(per_client_limit=2, global_limit=10)
+    limiter = PairingRateLimiter(per_client_limit=2, global_limit=10)
     app = _security_app()
-    app.state.login_rate_limiter = limiter
+    app.state.pairing_rate_limiter = limiter
     client = TestClient(app, headers={"Host": "testserver", "Origin": "http://testserver"})
 
     with caplog.at_level(logging.INFO, logger="autodj.audit"):
-        oversized = client.post("/api/login", content=b"x" * 5000)
+        oversized = client.post("/api/pair", content=b"x" * 5000)
         malformed = client.post(
-            "/api/login", content=b"{", headers={"Content-Type": "application/json"}
+            "/api/pair", content=b"{", headers={"Content-Type": "application/json"}
         )
-        blocked = client.post("/api/login", json={"token": "wrong"})
-        blocked_again = client.post("/api/login", json={"token": "wrong"})
+        invalid = {"code": "00000000", "device_name": "Unknown browser"}
+        blocked = client.post("/api/pair", json=invalid)
+        blocked_again = client.post("/api/pair", json=invalid)
 
     assert [
         response.status_code for response in (oversized, malformed, blocked, blocked_again)
@@ -302,7 +315,7 @@ def test_malformed_and_oversized_logins_consume_bounded_attempt_budget(
     assert statuses == [413, 422, 429]
 
 
-def test_single_oversized_login_chunk_is_not_copied_into_accumulator(
+def test_single_oversized_pairing_chunk_is_not_copied_into_accumulator(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import autodj.security as security_module
@@ -332,8 +345,8 @@ def test_single_oversized_login_chunk_is_not_copied_into_accumulator(
         "http_version": "1.1",
         "method": "POST",
         "scheme": "http",
-        "path": "/api/login",
-        "raw_path": b"/api/login",
+        "path": "/api/pair",
+        "raw_path": b"/api/pair",
         "query_string": b"",
         "root_path": "",
         "headers": [(b"host", b"testserver"), (b"origin", b"http://testserver")],
@@ -348,17 +361,18 @@ def test_single_oversized_login_chunk_is_not_copied_into_accumulator(
     assert BoundedAccumulator.extended is False
 
 
-def test_successful_login_resets_per_client_failures() -> None:
-    limiter = LoginRateLimiter(per_client_limit=2, global_limit=100)
+def test_successful_pairing_resets_per_client_failures() -> None:
+    limiter = PairingRateLimiter(per_client_limit=2, global_limit=100)
     app = _security_app()
-    app.state.login_rate_limiter = limiter
+    app.state.pairing_rate_limiter = limiter
     client = TestClient(app, headers={"Host": "testserver", "Origin": "http://testserver"})
 
-    assert client.post("/api/login", json={"token": "wrong"}).status_code == 401
-    assert client.post("/api/login", json={"token": _TEST_ACCESS_TOKEN}).status_code == 200
+    invalid = {"code": "00000000", "device_name": "Unknown browser"}
+    assert client.post("/api/pair", json=invalid).status_code == 401
+    assert _pair(client).status_code == 200
     client.cookies.clear()
-    assert client.post("/api/login", json={"token": "wrong"}).status_code == 401
-    assert client.post("/api/login", json={"token": _TEST_ACCESS_TOKEN}).status_code == 200
+    assert client.post("/api/pair", json=invalid).status_code == 401
+    assert _pair(client, name="Second browser").status_code == 200
 
 
 @pytest.mark.parametrize(
@@ -373,7 +387,7 @@ def test_successful_login_resets_per_client_failures() -> None:
         [(b"host", b"testserver"), (b"origin", b"http://testserver")],
     ],
 )
-def test_login_body_is_capped_before_json_parsing(
+def test_pairing_body_is_capped_before_json_parsing(
     headers: list[tuple[bytes, bytes]],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -394,8 +408,8 @@ def test_login_body_is_capped_before_json_parsing(
         "http_version": "1.1",
         "method": "POST",
         "scheme": "http",
-        "path": "/api/login",
-        "raw_path": b"/api/login",
+        "path": "/api/pair",
+        "raw_path": b"/api/pair",
         "query_string": b"",
         "root_path": "",
         "headers": headers,
@@ -429,7 +443,8 @@ def test_post_start_exception_audits_actual_status_without_second_response(
         return StreamingResponse(broken_stream(), status_code=206)
 
     policy: SecurityPolicy = app.state.security_policy
-    cookie = policy.issue_session()
+    device = app.state.device_registry.pair("Streaming test")
+    cookie = policy.issue_device_session(device.device_id)
     messages: list[dict[str, Any]] = []
 
     async def receive() -> dict[str, Any]:
@@ -516,24 +531,33 @@ def test_unsafe_route_categories_reject_before_parsing_body(
     assert response.status_code == 401
 
 
-def test_login_status_logout_cookie_contract() -> None:
+def test_pairing_status_logout_cookie_contract() -> None:
     client = _security_client(secure_cookie=True)
 
     assert client.get("/api/auth/status").json() == {
         "required": True,
         "authenticated": False,
+        "pairing": True,
+        "device_id": None,
     }
-    assert client.post("/api/login", json={"token": "wrong"}).status_code == 401
-    response = client.post("/api/login", json={"token": _TEST_ACCESS_TOKEN})
+    response = _pair(client)
     assert response.status_code == 200
     cookie = response.headers["set-cookie"]
     assert all(
         flag in cookie
-        for flag in ("HttpOnly", "SameSite=strict", "Secure", "Max-Age=86400", "Path=/")
+        for flag in (
+            "HttpOnly",
+            "SameSite=strict",
+            "Secure",
+            "Max-Age=7776000",
+            "Path=/",
+        )
     )
     assert client.get("/api/auth/status").json() == {
         "required": True,
         "authenticated": True,
+        "pairing": True,
+        "device_id": response.json()["device_id"],
     }
     assert client.get("/api/status").status_code == 200
 
@@ -559,7 +583,7 @@ def test_tls_implicit_origin_authenticates_http_and_websocket() -> None:
         headers={"Host": "testserver:8443", "Origin": "https://testserver:8443"},
     )
 
-    assert client.post("/api/login", json={"token": _TEST_ACCESS_TOKEN}).status_code == 200
+    assert _pair(client).status_code == 200
     assert client.post("/api/skip").status_code == 200
     with client.websocket_connect("wss://testserver:8443/ws") as websocket:
         assert websocket is not None
@@ -580,13 +604,13 @@ def test_tls_does_not_override_explicit_allowed_origin() -> None:
         headers={"Host": "testserver", "Origin": "http://trusted.test:8080"},
     )
 
-    assert client.post("/api/login", json={"token": _TEST_ACCESS_TOKEN}).status_code == 200
+    assert _pair(client).status_code == 200
     assert client.post("/api/skip").status_code == 200
 
 
 def test_tampered_cookie_is_rejected() -> None:
     client = _security_client()
-    assert client.post("/api/login", json={"token": _TEST_ACCESS_TOKEN}).status_code == 200
+    assert _pair(client).status_code == 200
     client.cookies.set(COOKIE_NAME, "tampered")
 
     assert client.get("/api/status").status_code == 401
@@ -597,6 +621,8 @@ def test_anonymous_loopback_fixture_remains_usable(client: TestClient) -> None:
     assert client.get("/api/auth/status").json() == {
         "required": False,
         "authenticated": True,
+        "pairing": False,
+        "device_id": None,
     }
 
 
@@ -608,9 +634,9 @@ def test_public_routes_still_enforce_host_and_unsafe_origin() -> None:
     assert client.get("/api/version", headers={"Host": "evil.example"}).status_code == 403
     assert (
         client.post(
-            "/api/login",
+            "/api/pair",
             headers={"Origin": "http://evil.example"},
-            json={"token": _TEST_ACCESS_TOKEN},
+            json={"code": "00000000", "device_name": "Unknown browser"},
         ).status_code
         == 403
     )
@@ -683,11 +709,11 @@ def test_request_id_and_template_survive_validation_and_method_errors(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     client = _security_client()
-    assert client.post("/api/login", json={"token": _TEST_ACCESS_TOKEN}).status_code == 200
+    assert _pair(client).status_code == 200
     caplog.clear()
 
     with caplog.at_level(logging.WARNING, logger="autodj.audit"):
-        validation = client.post("/api/login", json={})
+        validation = client.post("/api/pair", json={})
         wrong_method = client.put("/api/status")
     assert validation.status_code == 422
     assert len(validation.headers["X-Request-ID"]) == 32
@@ -695,7 +721,7 @@ def test_request_id_and_template_survive_validation_and_method_errors(
     assert len(wrong_method.headers["X-Request-ID"]) == 32
     records = [json.loads(item.message) for item in caplog.records if item.name == "autodj.audit"]
     assert [(record["route"], record["status"]) for record in records] == [
-        ("/api/login", 422),
+        ("/api/pair", 422),
         ("/api/status", 405),
     ]
 
@@ -715,7 +741,7 @@ def test_unhandled_route_error_gets_generic_request_id_and_redacted_audit(
         app,
         headers={"Host": "testserver", "Origin": "http://testserver"},
     )
-    assert client.post("/api/login", json={"token": _TEST_ACCESS_TOKEN}).status_code == 200
+    assert _pair(client).status_code == 200
     caplog.clear()
 
     with caplog.at_level(logging.ERROR, logger="autodj.audit"):
@@ -785,7 +811,7 @@ def test_authenticated_mutation_emits_one_success_audit(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     client = _security_client()
-    assert client.post("/api/login", json={"token": _TEST_ACCESS_TOKEN}).status_code == 200
+    assert _pair(client).status_code == 200
     caplog.clear()
 
     with caplog.at_level(logging.INFO, logger="autodj.audit"):
@@ -837,8 +863,8 @@ def test_unsafe_audit_is_structured_redacted_and_single_event(
     private_path = "Z:/Private/Music/secret.flac"
     with caplog.at_level(logging.INFO, logger="autodj.audit"):
         response = client.post(
-            "/api/login",
-            json={"token": "wrong", "path": private_path},
+            "/api/pair",
+            json={"code": "00000000", "device_name": private_path},
         )
 
     assert response.status_code == 401
@@ -846,10 +872,10 @@ def test_unsafe_audit_is_structured_redacted_and_single_event(
     assert len(records) == 1
     assert records[0]["request_id"] == response.headers["X-Request-ID"]
     assert records[0]["method"] == "POST"
-    assert records[0]["route"] == "/api/login"
+    assert records[0]["route"] == "/api/pair"
     assert records[0]["status"] == 401
     assert records[0]["outcome"] == "rejected"
-    assert "wrong" not in caplog.text
+    assert "00000000" not in caplog.text
     assert private_path not in caplog.text
 
 
@@ -935,7 +961,7 @@ def test_websocket_closes_when_an_established_session_expires() -> None:
         app,
         headers={"Host": "testserver", "Origin": "http://testserver"},
     ) as client:
-        assert client.post("/api/login", json={"token": _TEST_ACCESS_TOKEN}).status_code == 200
+        assert _pair(client).status_code == 200
         with client.websocket_connect("/ws") as websocket:
             websocket.receive_json()
             now[0] = 1061.0
@@ -958,7 +984,7 @@ def test_websocket_rejects_mutation_after_session_expiry() -> None:
         now=lambda: now[0],
     )
     initial = bridge.player._state.discovery_enabled
-    assert client.post("/api/login", json={"token": _TEST_ACCESS_TOKEN}).status_code == 200
+    assert _pair(client).status_code == 200
 
     with client.websocket_connect("/ws") as websocket:
         now[0] = 1061.0
@@ -974,7 +1000,7 @@ def test_websocket_audits_connect_mutation_and_disconnect(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     client = _security_client()
-    assert client.post("/api/login", json={"token": _TEST_ACCESS_TOKEN}).status_code == 200
+    assert _pair(client).status_code == 200
     with (
         caplog.at_level(logging.INFO, logger="autodj.audit"),
         client.websocket_connect("/ws") as websocket,
@@ -993,7 +1019,7 @@ def test_websocket_audits_connect_mutation_and_disconnect(
 
 def test_websocket_ignores_binary_frame_then_processes_mutation() -> None:
     client, bridge = _security_client_and_bridge()
-    assert client.post("/api/login", json={"token": _TEST_ACCESS_TOKEN}).status_code == 200
+    assert _pair(client).status_code == 200
     initial = bridge.player._state.discovery_enabled
 
     with client.websocket_connect("/ws") as websocket:
@@ -1009,7 +1035,7 @@ def test_websocket_bridge_failure_closes_and_audits_cleanup(
 ) -> None:
     client, bridge = _security_client_and_bridge()
     bridge.toggle_discovery = MagicMock(side_effect=RuntimeError("private failure details"))
-    assert client.post("/api/login", json={"token": _TEST_ACCESS_TOKEN}).status_code == 200
+    assert _pair(client).status_code == 200
     caplog.clear()
 
     with (

@@ -159,23 +159,40 @@ For anonymous access on the same computer, keep the default loopback binding:
 uv run autodj serve
 ```
 
-To serve authenticated clients on a trusted private network, put the server settings and secret in the gitignored `config.toml`:
+For a fresh-clone Compose LAN server, run setup once and start the LAN profile:
+
+```bash
+uv run autodj setup-lan --host-name radio.local
+docker compose --profile lan up autodj-lan
+```
+
+Replace `radio.local` with the hostname or IP browsers use. AutoDJ writes a gitignored `.env`,
+generates its server secret, and prints an 8-digit pairing code during startup. Enter that code
+once in each browser. Paired browsers receive distinct, persistent device sessions and do not
+need to sign in again unless revoked or expired.
+
+For native serving, equivalent settings can be stored in gitignored `config.local.toml`:
 
 ```toml
 [server]
 host = "0.0.0.0"
-access_token = "generate-at-least-32-random-bytes"
+access_token = "generate-at-least-32-random-bytes"  # Internal pairing/session secret.
 allowed_hosts = ["radio.local"]
 allowed_origins = ["https://radio.local:8080"]
 ```
 
-Authenticated serving rejects access tokens shorter than 32 UTF-8 bytes.  Generate your own random secret; do not copy the placeholder above.  Start the server with a certificate and matching private key:
+The server secret must contain at least 32 UTF-8 bytes. Do not enter it in a browser or copy the
+placeholder above. Start the native server with a certificate and matching private key:
 
 ```bash
 uv run autodj serve --ssl-certfile radio.pem --ssl-keyfile radio-key.pem
 ```
 
-`config.toml` and its local variants are gitignored.  Never pass the access token as a CLI argument because shell history and process listings can expose it.  AutoDJ compares tokens in constant time and exchanges a valid token for an HttpOnly cookie.  TLS is required to protect both the submitted token and subsequent session cookie on the wire.
+`config.toml` and its local variants are gitignored. Never pass the server secret as a CLI
+argument because shell history and process listings can expose it. AutoDJ derives short-lived
+pairing codes from that secret and exchanges a valid code for a device-bound HttpOnly cookie.
+Use `autodj devices list`, `revoke`, `reset`, and `pairing-code` to manage browsers. TLS protects
+pairing codes and session cookies on the wire.
 
 For non-loopback bindings, including LAN access, authentication can be disabled only with an explicit trusted-LAN acknowledgement.  This still enforces the configured Host and Origin allowlists:
 

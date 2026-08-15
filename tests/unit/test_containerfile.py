@@ -188,15 +188,17 @@ def _assert_bounded_smoke_lifecycle(content: str) -> None:
     )
 
     lan_phase = content.index("lan_phase_active=true")
-    login = content.index("http://127.0.0.1:8080/api/login", lan_phase)
-    status = content.index("http://127.0.0.1:8080/api/status", login)
-    login_command = content[
-        content.rfind("curl --fail", lan_phase, login) : content.index("\nJSON", login)
+    pairing = content.index("http://127.0.0.1:8080/api/pair", lan_phase)
+    status = content.index("http://127.0.0.1:8080/api/status", pairing)
+    pairing_command = content[
+        content.rfind("curl --fail", lan_phase, pairing) : content.index("\nJSON", pairing)
     ]
     status_command = content[
-        content.rfind("curl --fail", login, status) : content.index("\n", status)
+        content.rfind("curl --fail", pairing, status) : content.index("\n", status)
     ]
-    assert "|| true" not in login_command
+    assert "autodj devices pairing-code" in content[lan_phase:pairing]
+    assert '[[ ! "$pairing_code" =~ ^[0-9]{8}$ ]]' in content[lan_phase:pairing]
+    assert "|| true" not in pairing_command
     assert "|| true" not in status_command
 
 
@@ -270,6 +272,7 @@ case "$*" in
   "compose exec -T autodj id -g") echo 10001 ;;
   "compose exec -T autodj stat -c %u:%g:%a "*) echo 10001:10001:755 ;;
   "compose --profile lan up -d autodj-lan") printf running > "$FAKE_LAN_STATE" ;;
+  "compose --profile lan exec -T autodj-lan autodj devices pairing-code") echo 12345678 ;;
   "compose --profile lan down --volumes --remove-orphans") printf stopped > "$FAKE_LAN_STATE" ;;
   "compose logs --no-color --tail 200") echo default-log ;;
   "compose --profile lan logs --no-color --tail 200 autodj-lan") echo lan-log ;;
@@ -286,7 +289,7 @@ exit 0
         fake_bin / "curl",
         """#!/usr/bin/env bash
 printf 'curl %s\\n' "$*" >> "$FAKE_SMOKE_LOG"
-if [[ "$FAKE_CURL_FAILURE" == login && "$*" == *'/api/login'* ]]; then exit 22; fi
+if [[ "$FAKE_CURL_FAILURE" == pairing && "$*" == *'/api/pair'* ]]; then exit 22; fi
 if [[ "$FAKE_CURL_FAILURE" == status && "$*" == *'/api/status'* ]]; then exit 22; fi
 if [[ "$*" == *'/healthz'* ]]; then
   attempts="$(cat "$FAKE_HEALTH_ATTEMPTS" 2>/dev/null || printf 0)"
@@ -327,6 +330,12 @@ exit 0
 def test_external_container_images_use_reviewed_manifest_digests() -> None:
     content = (ROOT / "Containerfile").read_text(encoding="utf-8")
     _assert_reviewed_images(content)
+
+
+def test_runtime_exposes_installed_cli_for_operator_commands() -> None:
+    content = (ROOT / "Containerfile").read_text(encoding="utf-8")
+
+    assert 'PATH="/opt/venv/bin:${PATH}"' in content
 
 
 @pytest.mark.parametrize(
@@ -610,8 +619,8 @@ def test_container_smoke_reports_terminal_default_readiness_before_teardown(
         ),
         ("lan_phase_active=true", "lan_phase_active=false"),
         (
-            "http://127.0.0.1:8080/api/login >/dev/null <<JSON",
-            "http://127.0.0.1:8080/api/login >/dev/null || true <<JSON",
+            "http://127.0.0.1:8080/api/pair >/dev/null <<JSON",
+            "http://127.0.0.1:8080/api/pair >/dev/null || true <<JSON",
         ),
         (
             "http://127.0.0.1:8080/api/status >/dev/null",
@@ -627,7 +636,7 @@ def test_container_smoke_lifecycle_contract_rejects_mutation(old: str, new: str)
         _assert_bounded_smoke_lifecycle(content.replace(old, new, 1))
 
 
-@pytest.mark.parametrize("failing_endpoint", ["login", "status"])
+@pytest.mark.parametrize("failing_endpoint", ["pairing", "status"])
 def test_container_smoke_routes_lan_request_failure_through_bounded_trap(
     tmp_path: Path,
     failing_endpoint: str,
@@ -636,7 +645,8 @@ def test_container_smoke_routes_lan_request_failure_through_bounded_trap(
     commands = (tmp_path / "commands.log").read_text(encoding="utf-8")
 
     assert result.returncode == 22, result.stderr
-    failure = commands.index(f"/api/{failing_endpoint}")
+    endpoint = "pair" if failing_endpoint == "pairing" else failing_endpoint
+    failure = commands.index(f"/api/{endpoint}")
     logs = commands.index(
         "timeout --signal=TERM --kill-after=5s 15s "
         "docker compose --profile lan logs --no-color --tail 200 autodj-lan",
@@ -663,7 +673,7 @@ def test_container_smoke_routes_lan_request_failure_through_bounded_trap(
 
 @pytest.mark.parametrize(
     ("failing_endpoint", "expected_exit"),
-    [("login", 22), ("", 73)],
+    [("pairing", 22), ("", 73)],
 )
 def test_container_smoke_handles_workspace_removal_failure_without_losing_exit_policy(
     tmp_path: Path,

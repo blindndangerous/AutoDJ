@@ -10,6 +10,7 @@ config.toml
 config.local.toml
 config.local.toml.linux
 config.local.toml.windows
+.env
 
 # Python
 __pycache__/

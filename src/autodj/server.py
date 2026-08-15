@@ -68,9 +68,10 @@ from autodj.http_media import (
     stream_file_chunks,
 )
 from autodj.index_manifest import IndexConsistencyError, IndexSnapshotToken, current_snapshot_token
+from autodj.pairing import DeviceRegistry
 from autodj.security import (
     COOKIE_NAME,
-    LoginRateLimiter,
+    PairingRateLimiter,
     SecurityMiddleware,
     SecurityPolicy,
     _raw_header_values,
@@ -548,10 +549,11 @@ class LibraryJobBody(BaseModel):
     args: list[str] = []
 
 
-class LoginBody(BaseModel):
-    """Access token submitted once in exchange for a signed session cookie."""
+class PairBody(BaseModel):
+    """Short-lived code and operator-visible name for one browser."""
 
-    token: str
+    code: str
+    device_name: str
 
 
 _MIME_BY_SUFFIX = {
@@ -711,7 +713,8 @@ def create_app(
     shutdown_timeout_s: float = 30.0,
     *,
     secure_cookie: bool = False,
-    login_rate_limiter: LoginRateLimiter | None = None,
+    pairing_rate_limiter: PairingRateLimiter | None = None,
+    device_registry: DeviceRegistry | None = None,
 ) -> FastAPI:
     """Create and return the FastAPI application.
 
@@ -836,9 +839,18 @@ def create_app(
         max_file_bytes=_liner_upload_max_bytes,
     )
 
-    policy = SecurityPolicy(bridge.player._cfg.server, secure_cookie=secure_cookie)
+    server_config = bridge.player._cfg.server
+    if device_registry is None and isinstance(server_config.access_token, str):
+        registry_path = Path(bridge.player._cfg.index.index_dir) / ".paired-devices.sqlite3"
+        device_registry = DeviceRegistry(registry_path)
+    policy = SecurityPolicy(
+        server_config,
+        secure_cookie=secure_cookie,
+        device_is_active=(device_registry.is_active if device_registry is not None else None),
+    )
     app.state.security_policy = policy
-    app.state.login_rate_limiter = login_rate_limiter or LoginRateLimiter()
+    app.state.device_registry = device_registry
+    app.state.pairing_rate_limiter = pairing_rate_limiter or PairingRateLimiter()
     # Last-added middleware is outermost. Security rejects before upload limiting
     # can inspect or consume a request body.
     app.add_middleware(SecurityMiddleware, policy=policy)
@@ -974,27 +986,42 @@ def create_app(
         return JSONResponse(bridge.get_state())
 
     @app.get("/api/auth/status")
-    async def api_auth_status(request: Request) -> dict[str, bool]:
+    async def api_auth_status(request: Request) -> dict[str, object]:
         """Report whether this browser holds a valid authenticated session."""
         request_policy: SecurityPolicy = request.app.state.security_policy
+        device_id = request_policy.session_device_id(request.cookies.get(COOKIE_NAME))
+        registry: DeviceRegistry | None = request.app.state.device_registry
+        if device_id is not None and registry is not None:
+            registry.touch(device_id)
         return {
             "required": request_policy.authentication_required,
             "authenticated": (
                 not request_policy.authentication_required
                 or request_policy.verify_session(request.cookies.get(COOKIE_NAME))
             ),
+            "pairing": request_policy.authentication_required,
+            "device_id": device_id,
         }
 
-    @app.post("/api/login")
-    async def api_login(body: LoginBody, request: Request) -> Response:
-        """Exchange a valid configured access token for a signed session."""
+    @app.post("/api/pair")
+    async def api_pair(body: PairBody, request: Request) -> Response:
+        """Pair one browser and issue its persistent device-bound session."""
         request_policy: SecurityPolicy = request.app.state.security_policy
-        if not request_policy.verify_access_token(body.token):
-            raise HTTPException(status_code=401, detail="Invalid access token")
-        response = JSONResponse({"authenticated": True})
+        registry: DeviceRegistry | None = request.app.state.device_registry
+        if registry is None or not request_policy.authentication_required:
+            raise HTTPException(status_code=409, detail="Pairing is not enabled")
+        if not request_policy.verify_pairing_code(body.code):
+            raise HTTPException(status_code=401, detail="Invalid or expired pairing code")
+        try:
+            device = registry.pair(body.device_name)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        response = JSONResponse(
+            {"authenticated": True, "device_id": device.device_id, "device_name": device.name}
+        )
         response.set_cookie(
             COOKIE_NAME,
-            request_policy.issue_session(),
+            request_policy.issue_device_session(device.device_id),
             httponly=True,
             samesite="strict",
             secure=request_policy.secure_cookie,
@@ -2058,6 +2085,12 @@ def serve(
         player_thread=player_thread,
         secure_cookie=secure_cookie,
     )
+
+    if app.state.security_policy.authentication_required:
+        logger.info(
+            "Pair this browser within five minutes using code: %s",
+            app.state.security_policy.current_pairing_code(),
+        )
 
     audio_mode = "server-audio" if not no_playback else "browser-driven"
     logger.info(

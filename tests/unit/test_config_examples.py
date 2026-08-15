@@ -180,24 +180,17 @@ def test_operator_docs_keep_security_and_quality_commands_exact() -> None:
     release = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
     package_scripts = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["scripts"]
 
-    token_assignment = 'AUTODJ_ACCESS_TOKEN="$(openssl rand -hex 32)"'
-    token_export = "export AUTODJ_ACCESS_TOKEN"
+    lan_setup = "uv run autodj setup-lan --host-name radio.local"
     lan_start = "docker compose --profile lan up autodj-lan"
-    assert operations.index(token_assignment) < operations.index(token_export)
-    assert operations.index(token_export) < operations.index(lan_start)
-    assert token_assignment + " \\" not in operations
+    assert operations.index(lan_setup) < operations.index(lan_start)
+    assert "gitignored `.env`" in operations
+    assert "8-digit code" in operations
+    assert "paired-device cookie" in operations
 
     assert operations.count("docker compose --profile lan down") == 3
     assert "docker compose down" not in operations
 
-    assert "[Security.Cryptography.RandomNumberGenerator]::Create()" in operations
-    assert "$tokenBytes = New-Object byte[] 32" in operations
-    assert "$rng.GetBytes($tokenBytes)" in operations
-    assert "$rng.Dispose()" in operations
-    assert "-join ($tokenBytes | ForEach-Object { $_.ToString('x2') })" in operations
-    assert "::Fill(" not in operations
-    assert "ToHexString" not in operations
-    assert "[byte[]]::new" not in operations
+    assert operations.count(lan_setup) == 2
 
     configured_hooks = _precommit_hook_ids(precommit_text)
     documented_hooks = _documented_precommit_hook_ids(readme)
