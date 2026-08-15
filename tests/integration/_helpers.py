@@ -20,6 +20,11 @@ from unittest.mock import MagicMock, PropertyMock
 from autodj.config import ServerConfig
 from autodj.indexer import IndexEntry
 
+# Anything deriving a real filesystem path from a mocked config must point here.
+# Left as a MagicMock, ``index_dir`` stringifies into a literal "MagicMock/..."
+# tree of real directories and SQLite files inside the checkout.
+NO_INDEX_DIR = Path(tempfile.gettempdir()).resolve() / "_autodj_no_index"
+
 
 def _make_entry(i: int = 0) -> IndexEntry:
     """Build a deterministic test ``IndexEntry`` keyed by ``i``."""
@@ -113,7 +118,10 @@ def _make_player_mock(entry: IndexEntry | None = None) -> MagicMock:
     cfg.playback.liners_random_max_minutes = None
     cfg.playback.liners_pick_mode = "random"
     cfg.playback.liners_duck_db = -12.0
-    cfg.index.active_dir = str(Path(tempfile.gettempdir()).resolve() / "_autodj_no_index")
+    cfg.index.active_dir = str(NO_INDEX_DIR)
+    # create_app derives the paired-device registry from index_dir. Tests that
+    # assert on pairing state inject their own DeviceRegistry instead.
+    cfg.index.index_dir = NO_INDEX_DIR
     cfg.replaygain.enabled = False
     cfg.presets = {}
     player._cfg = cfg

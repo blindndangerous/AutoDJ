@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- Documented that the default MuQ model weights are CC-BY-NC 4.0. AutoDJ never redistributes them,
+  but commercial use needs a different checkpoint or permission from the publisher. The copyleft
+  dependencies pulled by the `play` and `all` extras are now disclosed too.
+
+### Changed
+
+- CI now rejects AGPL-licensed Python dependencies instead of only printing a license inventory.
+
 ## [0.16.0] - 2026-08-15
 
 ### Added

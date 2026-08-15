@@ -18,7 +18,24 @@ An auto-DJ that picks the next song based on what is playing now.  Point it at t
 - **Works offline.**  Once installed there is no network requirement.  Use it on a NAS, on a laptop in airplane mode, on a Raspberry Pi.
 - **Accessibility.**  Controls support keyboard use.  Screen-reader claims are limited to the browser and flows recorded for each release; see [Accessibility testing](docs/accessibility-testing.md) for the policy and its limits.
 
-## Quick start (the short version)
+## Install a release
+
+Each tagged release publishes a wheel that already contains the minified web UI, so you need
+neither a clone nor Node to run AutoDJ. AutoDJ is not on PyPI; install the wheel from the
+[latest release](https://github.com/blindndangerous/AutoDJ/releases/latest):
+
+```bash
+python -m pip install "autodj[all] @ https://github.com/blindndangerous/AutoDJ/releases/download/v0.16.0/autodj-0.16.0-py3-none-any.whl"
+mkdir -p music index models
+autodj doctor
+```
+
+Drop `[all]` for the lighter install that only runs `enrich`, `prune`, `stats`, and `playlist`.
+Every release is signed; each artifact ships a cosign `.bundle` beside it.
+
+## Quick start from source
+
+Clone instead if you intend to change AutoDJ:
 
 ```bash
 git clone https://github.com/blindndangerous/AutoDJ
@@ -313,10 +330,11 @@ verification. Run their commands directly or through CI as described in
 
 ## Credits and licensing
 
-- AutoDJ is MIT licensed.
-- The default music model is [MuQ-large-msd-iter](https://huggingface.co/OpenMuQ/MuQ-large-msd-iter) by Tencent.
-- Audio analysis uses [librosa](https://librosa.org/).
-- Vector search uses [FAISS](https://github.com/facebookresearch/faiss).
+- AutoDJ's own code is MIT licensed.
+- **The default model weights are not, and this restricts what you may do with them.** [MuQ-large-msd-iter](https://huggingface.co/OpenMuQ/MuQ-large-msd-iter) ships its code under MIT but its *weights* under [CC-BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/), which requires attribution and forbids commercial use. AutoDJ never redistributes those weights: no checkpoint is committed here or baked into the container image, and `autodj index` downloads them from Hugging Face onto your own machine. If you want to use AutoDJ commercially, point `[model] name` at a checkpoint you are licensed for, or get permission from the publisher.
+- Installing the `play` or `all` extras pulls copyleft dependencies from PyPI: `mutagen` (GPL-2.0-or-later) and `pynput` (LGPL-3.0). `librosa` pulls `soxr` (LGPL-2.1-or-later). AutoDJ neither vendors nor redistributes them. The core install is permissive-only.
+- Audio analysis uses [librosa](https://librosa.org/) (ISC).
+- Vector search uses [FAISS](https://github.com/facebookresearch/faiss) (MIT).
 - The web UI uses [FastAPI](https://fastapi.tiangolo.com/) and a hand-written ES module front end (no React, no Vue, no framework).
 - Cue-point importers read [Mixxx](https://mixxx.org/), [Rekordbox](https://rekordbox.com/), and [Traktor](https://www.native-instruments.com/en/products/traktor/) library files.
 

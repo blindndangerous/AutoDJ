@@ -148,6 +148,15 @@ jobs:
       - name: pip-licenses — license inventory
         run: uv run pip-licenses --format=markdown --order=license
 
+      # AGPL is the class that would actually change AutoDJ's obligations as a
+      # network service. The known GPL-2.0/LGPL dependencies live in optional
+      # extras and are disclosed in README; this gate exists to catch a new
+      # copyleft dependency arriving unnoticed.
+      - name: pip-licenses — reject AGPL dependencies
+        run: >-
+          uv run pip-licenses
+          --fail-on="GNU Affero General Public License v3;GNU Affero General Public License v3 or later (AGPLv3+);AGPL-3.0;AGPL-3.0-only;AGPL-3.0-or-later"
+
       - name: Syft — generate SBOM
         uses: anchore/sbom-action@v0
         with:

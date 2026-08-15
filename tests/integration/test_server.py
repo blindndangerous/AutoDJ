@@ -27,7 +27,7 @@ import pytest
 from autodj.config import ServerConfig
 from autodj.server import PlayerBridge, create_app
 
-from ._helpers import _make_entry, _make_player_mock, _make_sim_mock
+from ._helpers import NO_INDEX_DIR, _make_entry, _make_player_mock, _make_sim_mock
 
 
 def _register_index_entry(bridge, entry) -> None:
@@ -1594,6 +1594,7 @@ class TestServeFunction:
         from autodj.server import serve
 
         cfg = MagicMock()
+        cfg.index.index_dir = NO_INDEX_DIR
         cfg.server = ServerConfig(host="192.168.1.10", access_token="s" * 32)
         cfg.playback.no_repeat_window = 50
         cfg.playback.artist_repeat_window = 3
@@ -1631,6 +1632,7 @@ class TestServeFunction:
 
         port = 8443 if tls else 8080
         cfg = MagicMock()
+        cfg.index.index_dir = NO_INDEX_DIR
         cfg.server = ServerConfig(
             host="0.0.0.0",
             port=port,
@@ -1699,6 +1701,7 @@ class TestServeFunction:
         from autodj.server import serve
 
         cfg = MagicMock()
+        cfg.index.index_dir = NO_INDEX_DIR
         cfg.server = ServerConfig(
             host="0.0.0.0",
             access_token="s" * 32,

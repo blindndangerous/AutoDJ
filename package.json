@@ -1,6 +1,7 @@
 {
   "name": "autodj-frontend",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "description": "Build pipeline + JS unit tests + Playwright audits for the AutoDJ web UI.  `npm run build` minifies app.js + app.css and copies worklets / HTML into src/autodj/static_dist/; the Python server prefers static_dist when present so a built deployment serves smaller assets.  `npm test` runs the vitest unit suite.  Audit scripts drive Chromium / Firefox / WebKit against a running AutoDJ server.",
   "scripts": {

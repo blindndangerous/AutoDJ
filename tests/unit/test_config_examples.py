@@ -150,6 +150,63 @@ def test_operator_docs_cover_reproducible_workflows() -> None:
     assert "Get-Date -Format yyyy-MM-dd" in operations
 
 
+def test_release_workflow_grants_every_nested_job_permission() -> None:
+    """Reusable workflows may only reduce permissions, never elevate them.
+
+    A caller that grants less than a nested job requests fails the whole run at
+    tag-push time, which normal CI never exercises because release.yml only
+    triggers on `v*` tags.
+    """
+    rank = {None: 0, "none": 0, "read": 1, "write": 2}
+    workflows = ROOT / ".github" / "workflows"
+    release = yaml.safe_load((workflows / "release.yml").read_text(encoding="utf-8"))
+    ceiling = release.get("permissions") or {}
+    checked = 0
+
+    for job, spec in release["jobs"].items():
+        uses = spec.get("uses")
+        if uses is None:
+            continue
+        granted = spec.get("permissions") or {}
+        for scope, value in granted.items():
+            assert rank[value] <= rank[ceiling.get(scope)], (
+                f"release.yml job {job} grants {scope}={value} above the workflow ceiling"
+            )
+        called = yaml.safe_load((ROOT / uses.removeprefix("./")).read_text(encoding="utf-8"))
+        for nested, nested_spec in called["jobs"].items():
+            wanted = nested_spec.get("permissions")
+            if wanted is None:
+                wanted = called.get("permissions") or {}
+            for scope, value in wanted.items():
+                assert rank[value] <= rank[granted.get(scope)], (
+                    f"{uses} job {nested} needs {scope}={value} but release.yml job "
+                    f"{job} grants {granted.get(scope)}"
+                )
+            checked += 1
+
+    assert checked >= 8
+
+
+def test_readme_release_install_matches_project_version() -> None:
+    """The install command pins a URL, so a version bump must update it too."""
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    version = project["version"]
+
+    assert f"autodj-{version}-py3-none-any.whl" in readme
+    assert f"/download/v{version}/" in readme
+
+
+def test_readme_discloses_non_commercial_model_weights() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "CC-BY-NC 4.0" in readme
+    assert "forbids commercial use" in readme
+    assert "never redistributes those weights" in readme
+    assert "GPL-2.0-or-later" in readme
+    assert "LGPL-3.0" in readme
+
+
 def test_threat_model_describes_device_pairing_not_removed_login() -> None:
     threat = (ROOT / "THREAT_MODEL.md").read_text(encoding="utf-8")
 
@@ -248,12 +305,13 @@ def test_operator_docs_keep_security_and_quality_commands_exact() -> None:
 
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     coverage = project["tool"]["autodj"]["coverage"]
-    headings = [match.start() for match in re.finditer(r"^## \[", changelog, flags=re.MULTILINE)]
-    newest = changelog[headings[0] : headings[1]]
-    assert f"{coverage['line_fail_under']}% line coverage" in newest
-    assert f"{coverage['branch_fail_under']}% branch coverage" in newest
-    assert "CI enforces" in newest
-    release_entry = newest.split("The release workflow", 1)[1]
+    # Search the whole changelog: this prose belongs to whichever release
+    # introduced the gates, so pinning it to the newest section breaks as soon
+    # as a later release is cut.
+    assert f"{coverage['line_fail_under']}% line coverage" in changelog
+    assert f"{coverage['branch_fail_under']}% branch coverage" in changelog
+    assert "CI enforces" in changelog
+    release_entry = changelog.split("The release workflow", 1)[1].split("\n## ", 1)[0]
     verify_step = next(line for line in release.splitlines() if "Verify tag" in line)
     for identity in ("tag", "project", "changelog", "wheel"):
         assert identity in release_entry.lower()

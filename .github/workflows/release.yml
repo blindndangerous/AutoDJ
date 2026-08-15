@@ -109,9 +109,12 @@ jobs:
             exit 1
           fi
           test "$(jq -r .version <<<"$response")" = "${GITHUB_REF_NAME#v}"
+      # Scan the checkout, not dist/. Pointed at dist/ Syft sees two opaque
+      # archives, finds no package manifests, and emits an SBOM with zero
+      # components. The checkout carries pyproject.toml and uv.lock.
       - uses: anchore/sbom-action@v0
         with:
-          path: dist
+          path: .
           format: cyclonedx-json
           output-file: dist/sbom.cdx.json
       - uses: actions/upload-artifact@v7
