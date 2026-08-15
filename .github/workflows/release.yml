@@ -4,11 +4,13 @@ on:
     tags: ["v*"]
 # Reusable workflows can only maintain or reduce permissions down the chain, never
 # elevate them, so the ceiling here must already include every scope a called
-# workflow needs. `ci.yml` requests id-token: write for its Codecov OIDC upload.
+# workflow needs. `ci.yml` requests id-token: write for its Codecov OIDC upload and
+# `security.yml` requests pull-requests: read for gitleaks.
 # Each job below still narrows to its own minimal set.
 permissions:
   contents: read
   id-token: write
+  pull-requests: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -24,6 +26,7 @@ jobs:
     uses: ./.github/workflows/security.yml
     permissions:
       contents: read
+      pull-requests: read
 
   build-and-verify:
     needs: [ci, security]
