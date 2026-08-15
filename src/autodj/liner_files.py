@@ -66,6 +66,18 @@ class _PosixOs(Protocol):
 _posix_os = cast(_PosixOs, os)
 
 
+class _WindowsMsvcrtApi(Protocol):
+    """Windows descriptor conversion members absent from POSIX stubs."""
+
+    def get_osfhandle(self, fd: int) -> int:
+        """Return the Windows OS handle for *fd*."""
+        ...
+
+    def open_osfhandle(self, handle: int, flags: int) -> int:
+        """Wrap a Windows OS handle in a C runtime descriptor."""
+        ...
+
+
 @dataclass
 class OpenedLiner:
     """Held regular-file handle and metadata for race-free streaming."""
@@ -375,10 +387,12 @@ def _configure_windows_libraries(kernel32: Any, ntdll: Any) -> None:
 if os.name == "nt":
     import msvcrt as _windows_msvcrt
 
-    _open_osfhandle = _windows_msvcrt.open_osfhandle
-    _get_osfhandle = _windows_msvcrt.get_osfhandle
-    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    _ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
+    _windows_msvcrt_api = cast(_WindowsMsvcrtApi, _windows_msvcrt)
+    _open_osfhandle = _windows_msvcrt_api.open_osfhandle
+    _get_osfhandle = _windows_msvcrt_api.get_osfhandle
+    _win_dll = cast(Callable[..., Any], ctypes.__dict__["WinDLL"])
+    _kernel32 = _win_dll("kernel32", use_last_error=True)
+    _ntdll = _win_dll("ntdll", use_last_error=True)
     _configure_windows_libraries(_kernel32, _ntdll)
 
 
@@ -1013,6 +1027,40 @@ def _rename_noreplace_posix(
     raise OSError(error, os.strerror(error), target)
 
 
+def _publish_link_noreplace_posix(staged: _StagedUpload, name: str) -> None:
+    """Publish a POSIX upload with link-and-unlink when renameat2 is unavailable."""
+
+    source_identity = _posix_identity(os.fstat(staged.file.fileno()))
+    try:
+        os.link(
+            staged.file_name,
+            name,
+            src_dir_fd=staged.stage_handle,
+            dst_dir_fd=staged.root.handle,
+            follow_symlinks=False,
+        )
+    except FileExistsError as exc:
+        raise LinerConflictError(name) from exc
+    except OSError as exc:
+        if exc.errno in {
+            errno.ENOSYS,
+            errno.EINVAL,
+            errno.EOPNOTSUPP,
+            errno.ENOTSUP,
+            errno.EXDEV,
+        }:
+            raise LinerStorageUnsupportedError(
+                exc.errno, "hard links unavailable for atomic rename-no-replace", name
+            ) from exc
+        raise
+    target_identity = _posix_identity(
+        os.stat(name, dir_fd=staged.root.handle, follow_symlinks=False)
+    )
+    if target_identity != source_identity:
+        raise InvalidLinerName("published liner changed during secure publish")
+    os.unlink(staged.file_name, dir_fd=staged.stage_handle)
+
+
 def _windows_full_nt_path(path: Path) -> str:
     """Convert a filesystem path to the Windows NT namespace form."""
 
@@ -1130,7 +1178,10 @@ def _publish_staged_file(staged: _StagedUpload, name: str, *, replace: bool) -> 
             dst_dir_fd=staged.root.handle,
         )
     else:
-        _rename_noreplace_posix(staged.stage_handle, staged.file_name, staged.root.handle, name)
+        try:
+            _rename_noreplace_posix(staged.stage_handle, staged.file_name, staged.root.handle, name)
+        except LinerStorageUnsupportedError:
+            _publish_link_noreplace_posix(staged, name)
 
 
 def _flush_windows_directory(handle: int) -> None:

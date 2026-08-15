@@ -1249,8 +1249,9 @@ def test_open_uses_pinned_root_when_configured_path_is_swapped(
     assert (root / "clip.mp3").read_bytes() == b"outside-root"
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux renameat2 regression")
 @pytest.mark.asyncio
-async def test_non_replace_does_not_depend_on_hard_links(
+async def test_linux_non_replace_does_not_depend_on_hard_links(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def unsupported_hard_link(*args: Any, **kwargs: Any) -> None:
@@ -1265,6 +1266,87 @@ async def test_non_replace_does_not_depend_on_hard_links(
         replace=False,
     )
     assert target.read_bytes() == b"new"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX renameat2 fallback")
+@pytest.mark.asyncio
+async def test_posix_non_replace_uses_hard_link_fallback_without_renameat2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from autodj import liner_files
+
+    link = MagicMock(wraps=liner_files.os.link)
+    monkeypatch.setattr(
+        liner_files,
+        "_rename_noreplace_posix",
+        MagicMock(side_effect=LinerStorageUnsupportedError("renameat2 unavailable")),
+    )
+    monkeypatch.setattr(liner_files.os, "link", link)
+
+    target, size = await store_liner_upload(
+        tmp_path / "liners",
+        "clip.mp3",
+        BytesReader(b"new"),
+        max_bytes=50,
+        replace=False,
+    )
+
+    assert size == 3
+    assert target.read_bytes() == b"new"
+    link.assert_called_once()
+    assert list(target.parent.glob(".liner-upload-*")) == []
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX renameat2 fallback")
+@pytest.mark.asyncio
+async def test_posix_non_replace_hard_link_fallback_preserves_existing_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from autodj import liner_files
+
+    root = tmp_path / "liners"
+    root.mkdir()
+    target = root / "clip.mp3"
+    target.write_bytes(b"original")
+    monkeypatch.setattr(
+        liner_files,
+        "_rename_noreplace_posix",
+        MagicMock(side_effect=LinerStorageUnsupportedError("renameat2 unavailable")),
+    )
+
+    with pytest.raises(LinerConflictError):
+        await store_liner_upload(root, "clip.mp3", BytesReader(b"new"), max_bytes=50, replace=False)
+
+    assert target.read_bytes() == b"original"
+    assert list(root.glob(".liner-upload-*")) == []
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX renameat2 fallback")
+@pytest.mark.asyncio
+async def test_posix_non_replace_hard_link_fallback_requires_hard_links(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from autodj import liner_files
+
+    monkeypatch.setattr(
+        liner_files,
+        "_rename_noreplace_posix",
+        MagicMock(side_effect=LinerStorageUnsupportedError("renameat2 unavailable")),
+    )
+    monkeypatch.setattr(
+        liner_files.os,
+        "link",
+        MagicMock(side_effect=OSError(errno.EOPNOTSUPP, "hard links unavailable")),
+    )
+
+    with pytest.raises(LinerStorageUnsupportedError, match="hard links unavailable"):
+        await store_liner_upload(
+            tmp_path / "liners",
+            "clip.mp3",
+            BytesReader(b"new"),
+            max_bytes=50,
+            replace=False,
+        )
 
 
 @pytest.mark.asyncio
@@ -1418,6 +1500,50 @@ def test_non_replace_race_reaches_publication_together(
     with ThreadPoolExecutor(max_workers=2) as executor:
         outcomes = sorted(executor.map(upload, (b"one", b"two")))
     assert outcomes == ["conflict", "stored"]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX renameat2 fallback")
+def test_posix_hard_link_fallback_has_exactly_one_winner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from autodj import liner_files
+
+    root = tmp_path / "liners"
+    root.mkdir()
+    barrier = threading.Barrier(2, timeout=10)
+    original_publish = liner_files._publish_staged_file
+
+    def unsupported_rename(*args: Any, **kwargs: Any) -> None:
+        raise LinerStorageUnsupportedError("renameat2 unavailable")
+
+    def synchronized_publish(*args: Any, **kwargs: Any) -> None:
+        barrier.wait(timeout=10)
+        original_publish(*args, **kwargs)
+
+    monkeypatch.setattr(liner_files, "_rename_noreplace_posix", unsupported_rename)
+    monkeypatch.setattr(liner_files, "_publish_staged_file", synchronized_publish)
+
+    def upload(payload: bytes) -> str:
+        try:
+            asyncio.run(
+                store_liner_upload(
+                    root,
+                    "link-race.mp3",
+                    BytesReader(payload),
+                    max_bytes=50,
+                    replace=False,
+                )
+            )
+        except LinerConflictError:
+            return "conflict"
+        return "stored"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = sorted(executor.map(upload, (b"one", b"two")))
+
+    assert outcomes == ["conflict", "stored"]
+    assert (root / "link-race.mp3").read_bytes() in {b"one", b"two"}
+    assert list(root.glob(".liner-upload-*")) == []
 
 
 def _upload_scope(content_length: str | None = None) -> dict[str, Any]:
@@ -1984,14 +2110,22 @@ def test_posix_publish_dispatches_replace_and_noreplace(
     staged = liner_files._StagedUpload(root, 11, ".stage", "upload.tmp", io.BytesIO())
     replace = MagicMock()
     noreplace = MagicMock()
+    fallback = MagicMock()
     monkeypatch.setattr(liner_files.os, "replace", replace)
     monkeypatch.setattr(liner_files, "_rename_noreplace_posix", noreplace)
+    monkeypatch.setattr(liner_files, "_publish_link_noreplace_posix", fallback)
 
     liner_files._publish_staged_file(staged, "clip.mp3", replace=True)
     liner_files._publish_staged_file(staged, "clip.mp3", replace=False)
+    noreplace.side_effect = LinerStorageUnsupportedError("renameat2 unavailable")
+    liner_files._publish_staged_file(staged, "fallback.mp3", replace=False)
 
     replace.assert_called_once_with("upload.tmp", "clip.mp3", src_dir_fd=11, dst_dir_fd=10)
-    noreplace.assert_called_once_with(11, "upload.tmp", 10, "clip.mp3")
+    assert noreplace.call_args_list == [
+        ((11, "upload.tmp", 10, "clip.mp3"), {}),
+        ((11, "upload.tmp", 10, "fallback.mp3"), {}),
+    ]
+    fallback.assert_called_once_with(staged, "fallback.mp3")
 
 
 def test_posix_open_relative_file_rejects_nonregular_descriptor(
@@ -2046,7 +2180,7 @@ def test_open_posix_root_walks_and_closes_parent_handles(
     monkeypatch.setattr(liner_files.os, "open", MagicMock(side_effect=[10, 11]))
     monkeypatch.setattr(liner_files.os, "close", close)
 
-    pinned = liner_files._open_posix_root(Path("C:/liners"), create=False, mutate=False)
+    pinned = liner_files._open_posix_root(Path(os.path.sep) / "liners", create=False, mutate=False)
 
     assert pinned.handle == 11
     assert not pinned.windows
@@ -2072,7 +2206,7 @@ def test_open_posix_root_creates_missing_component_and_checks_policy(
     monkeypatch.setattr(liner_files.os, "fstat", MagicMock(return_value=metadata))
     monkeypatch.setattr(liner_files._posix_os, "geteuid", lambda: 42, raising=False)
 
-    pinned = liner_files._open_posix_root(Path("C:/liners"), create=True, mutate=True)
+    pinned = liner_files._open_posix_root(Path(os.path.sep) / "liners", create=True, mutate=True)
 
     assert pinned.handle == 11
     mkdir.assert_called_once_with("liners", mode=0o755, dir_fd=10)
