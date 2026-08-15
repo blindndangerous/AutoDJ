@@ -72,6 +72,15 @@ def _gitleaks_install_is_verified(workflow: dict) -> bool:
     return script.strip() == "\n".join(required_lines)
 
 
+def _container_scan_has_bounded_timeout(workflow: dict) -> bool:
+    scan_steps = [
+        step
+        for step in workflow["jobs"]["container"]["steps"]
+        if step.get("name") == "Scan built image"
+    ]
+    return len(scan_steps) == 1 and scan_steps[0].get("with", {}).get("timeout") == "15m0s"
+
+
 def test_codecov_oidc_permission_is_scoped_to_test_job() -> None:
     workflow = _workflow()
     assert _oidc_permissions_are_least_privilege(workflow)
@@ -143,3 +152,16 @@ def test_gitleaks_archive_is_pinned_verified_then_extracted() -> None:
                 step["run"] = mutation
                 break
         assert not _gitleaks_install_is_verified(changed)
+
+
+def test_container_scan_has_explicit_bounded_timeout() -> None:
+    workflow = _workflow()
+    assert _container_scan_has_bounded_timeout(workflow)
+
+    scan_step = next(
+        step
+        for step in workflow["jobs"]["container"]["steps"]
+        if step.get("name") == "Scan built image"
+    )
+    del scan_step["with"]["timeout"]
+    assert not _container_scan_has_bounded_timeout(workflow)
