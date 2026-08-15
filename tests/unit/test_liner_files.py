@@ -3263,6 +3263,41 @@ def test_portable_windows_publish_delegates_retryable_rename_to_smb_fallback(
     fallback.assert_called_once_with(staged, 12, "clip.mp3", replace=False, retry_errors={32})
 
 
+def test_portable_windows_handle_helpers_dispatch_native_operations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from autodj import liner_files
+
+    close = MagicMock()
+
+    def provide_attributes(_handle: int, _class: int, pointer: Any, _size: int) -> bool:
+        pointer._obj.FileAttributes = liner_files._FILE_ATTRIBUTE_DIRECTORY
+        return True
+
+    monkeypatch.setattr(liner_files.os, "name", "nt")
+    monkeypatch.setattr(liner_files._kernel32, "CloseHandle", close)
+    monkeypatch.setattr(liner_files._kernel32, "GetFileInformationByHandleEx", provide_attributes)
+
+    liner_files._close_windows_handle(12)
+    assert liner_files._windows_handle_attributes(13) == liner_files._FILE_ATTRIBUTE_DIRECTORY
+    close.assert_called_once_with(12)
+
+
+def test_portable_windows_delete_opened_file_dispatches_native_delete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from autodj import liner_files
+
+    delete = MagicMock()
+    monkeypatch.setattr(liner_files, "_windows_delete_by_handle", delete)
+
+    liner_files._delete_opened_file(
+        liner_files._PinnedRoot(Path("Q:/liners"), 10, True), "clip.mp3", 12
+    )
+
+    delete.assert_called_once_with(12)
+
+
 @pytest.mark.asyncio
 async def test_upload_returns_after_root_close_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
