@@ -71,6 +71,20 @@ def test_setup_lan_formats_ipv6_origin_for_fresh_clone(monkeypatch) -> None:
     assert "AUTODJ_LAN_ORIGIN=http://[2001:db8::25]:8080\n" in content
 
 
+def test_setup_lan_rejects_invalid_host_before_writing_secret(monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr("autodj.cli.secrets.token_hex", lambda size: _SECRET)
+
+    with runner.isolated_filesystem():
+        result = runner.invoke(cli, ["setup-lan", "--host-name", "bad host"])
+        exists = Path(".env").exists()
+
+    assert result.exit_code == 1
+    assert "LAN hostname is invalid" in result.output
+    assert _SECRET not in result.output
+    assert not exists
+
+
 def test_setup_lan_removes_secret_file_when_permission_hardening_fails(
     monkeypatch,
 ) -> None:
@@ -89,6 +103,69 @@ def test_setup_lan_removes_secret_file_when_permission_hardening_fails(
     assert result.exit_code == 1
     assert "Could not create .env" in result.output
     assert not remains
+
+
+def test_setup_lan_reports_retained_file_when_cleanup_fails(monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr("autodj.cli.secrets.token_hex", lambda size: _SECRET)
+
+    def fail_chmod(_path: Path, _mode: int) -> None:
+        raise OSError("permission hardening failed")
+
+    def fail_unlink(_path: Path) -> None:
+        raise OSError("file is busy")
+
+    monkeypatch.setattr(Path, "chmod", fail_chmod)
+    monkeypatch.setattr(Path, "unlink", fail_unlink)
+
+    with runner.isolated_filesystem():
+        result = runner.invoke(cli, ["setup-lan", "--host-name", "radio.local"])
+        remains = Path(".env").exists()
+
+    assert result.exit_code == 1
+    assert "remove the incomplete .env manually: file is busy" in result.output
+    assert _SECRET not in result.output
+    assert remains
+
+
+def test_setup_lan_preserves_stream_error_when_descriptor_close_fails(monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr("autodj.cli.secrets.token_hex", lambda size: _SECRET)
+    real_open = os.open
+    real_close = os.close
+    opened: list[int] = []
+
+    def tracked_open(path, flags, mode=0o777):
+        descriptor = real_open(path, flags, mode)
+        opened.append(descriptor)
+        return descriptor
+
+    def fail_fdopen(*_args, **_kwargs):
+        raise OSError("stream setup failed")
+
+    def fail_close(_descriptor: int) -> None:
+        raise OSError("descriptor close failed")
+
+    with runner.isolated_filesystem():
+        try:
+            with monkeypatch.context() as scoped:
+                scoped.setattr("autodj.cli.os.open", tracked_open)
+                scoped.setattr("autodj.cli.os.fdopen", fail_fdopen)
+                scoped.setattr("autodj.cli.os.close", fail_close)
+                result = runner.invoke(cli, ["setup-lan", "--host-name", "radio.local"])
+        finally:
+            for descriptor in opened:
+                real_close(descriptor)
+        # POSIX unlinks the path even while the descriptor is open; Windows keeps
+        # the file until the handle closes, so only assert the secret never landed.
+        leftover = Path(".env")
+        retained = leftover.read_text(encoding="utf-8") if leftover.exists() else ""
+
+    assert result.exit_code == 1
+    assert "Could not create .env: stream setup failed" in result.output
+    assert "descriptor close failed" in result.output
+    assert _SECRET not in result.output
+    assert _SECRET not in retained
 
 
 def test_devices_list_and_revoke_use_persistent_registry() -> None:
