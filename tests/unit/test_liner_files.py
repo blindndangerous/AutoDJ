@@ -3151,6 +3151,118 @@ def test_portable_windows_smb_fallback_retries_then_rebinds_root(
     assert staged.root.handle == 20
 
 
+def test_portable_posix_staging_fdopen_failure_cleans_all_bound_resources(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from autodj import liner_files
+
+    root = liner_files._PinnedRoot(Path("root"), 10, False)
+    close = MagicMock(side_effect=OSError("close"))
+    unlink = MagicMock()
+    close_stage = MagicMock()
+    remove_stage = MagicMock()
+    monkeypatch.setattr(liner_files._posix_os, "O_NOFOLLOW", 0, raising=False)
+    monkeypatch.setattr(
+        liner_files,
+        "_make_bound_posix_directory",
+        MagicMock(
+            return_value=(
+                ".stage",
+                11,
+                (1, 2),
+            )
+        ),
+    )
+    monkeypatch.setattr(liner_files.os, "open", MagicMock(return_value=12))
+    monkeypatch.setattr(liner_files.os, "fdopen", MagicMock(side_effect=OSError("fdopen")))
+    monkeypatch.setattr(liner_files.os, "close", close)
+    monkeypatch.setattr(liner_files, "_unlink_posix_entry", unlink)
+    monkeypatch.setattr(liner_files, "_close_posix_directory", close_stage)
+    monkeypatch.setattr(liner_files, "_remove_bound_posix_directory", remove_stage)
+
+    with pytest.raises(OSError, match="fdopen"):
+        liner_files._make_staged_upload(root)
+
+    close.assert_called_once_with(12)
+    assert "Unable to close private liner upload file" in caplog.text
+    unlink.assert_called_once()
+    close_stage.assert_called_once()
+    remove_stage.assert_called_once()
+
+
+def test_portable_posix_staged_cleanup_removes_bound_stage_after_close_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from autodj import liner_files
+
+    root = liner_files._PinnedRoot(Path("root"), 10, False)
+    file = MagicMock()
+    file.closed = False
+    file.close.side_effect = OSError("file close")
+    staged = liner_files._StagedUpload(root, 11, ".stage", "upload.tmp", file, (1, 2))
+    unlink = MagicMock()
+    close_stage = MagicMock()
+    remove_stage = MagicMock()
+    monkeypatch.setattr(liner_files, "_unlink_posix_entry", unlink)
+    monkeypatch.setattr(liner_files, "_close_posix_directory", close_stage)
+    monkeypatch.setattr(liner_files, "_remove_bound_posix_directory", remove_stage)
+
+    with pytest.raises(OSError, match="file close"):
+        liner_files._cleanup_staged_upload(staged, published=False)
+
+    unlink.assert_called_once()
+    close_stage.assert_called_once()
+    remove_stage.assert_called_once()
+
+
+def test_portable_windows_flush_tolerates_unsupported_storage(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from autodj import liner_files
+
+    monkeypatch.setattr(liner_files._kernel32, "FlushFileBuffers", MagicMock(return_value=False))
+    monkeypatch.setattr(liner_files, "_get_last_error", lambda: 50)
+
+    liner_files._flush_windows_directory(12)
+
+    assert "does not support directory durability flush" in caplog.text
+
+
+def test_portable_windows_flush_surfaces_unexpected_storage_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from autodj import liner_files
+
+    monkeypatch.setattr(liner_files._kernel32, "FlushFileBuffers", MagicMock(return_value=False))
+    monkeypatch.setattr(liner_files, "_get_last_error", lambda: 32)
+
+    with pytest.raises(OSError):
+        liner_files._flush_windows_directory(12)
+
+
+def test_portable_windows_publish_delegates_retryable_rename_to_smb_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from autodj import liner_files
+
+    root = liner_files._PinnedRoot(Path("Q:/liners"), 10, True)
+    file = MagicMock()
+    file.fileno.return_value = 13
+    staged = liner_files._StagedUpload(root, 11, ".stage", "upload.tmp", file)
+    retryable = OSError("sharing violation")
+    retryable.winerror = 32
+    fallback = MagicMock()
+    monkeypatch.setattr(liner_files, "_get_osfhandle", MagicMock(return_value=12))
+    monkeypatch.setattr(liner_files, "_windows_rename_by_handle", MagicMock(side_effect=retryable))
+    monkeypatch.setattr(liner_files, "_publish_windows_smb_fallback", fallback)
+
+    liner_files._publish_staged_file(staged, "clip.mp3", replace=False)
+
+    fallback.assert_called_once_with(staged, 12, "clip.mp3", replace=False, retry_errors={32})
+
+
 @pytest.mark.asyncio
 async def test_upload_returns_after_root_close_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
