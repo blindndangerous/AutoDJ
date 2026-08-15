@@ -169,6 +169,17 @@ def _rewrite_archive_payloads(archive: Path, replacements: dict[str, bytes]) -> 
             zf.writestr(name, payload)
 
 
+def _reverse_archive_item_order(archive: Path) -> None:
+    with zipfile.ZipFile(archive) as zf:
+        payloads = {info.filename: zf.read(info) for info in zf.infolist()}
+    manifest = json.loads(payloads["manifest.json"])
+    manifest["items"].reverse()
+    payloads["manifest.json"] = json.dumps(manifest).encode()
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for name, payload in payloads.items():
+            zf.writestr(name, payload)
+
+
 def test_stopped_backup_contains_derived_unique_and_schema_manifest(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     _published_index(cfg)
@@ -1967,7 +1978,7 @@ def test_forced_restore_supersedes_tombstone_with_monotonic_live_identity(
     )
     assert state == {
         "high_water": restored.generation,
-        "tombstone_revision": 0,
+        "tombstone_revision": prior.state_revision,
     }
 
 
@@ -1995,7 +2006,7 @@ def test_restore_reconciles_lower_target_high_water_without_hiding_manifest(
     )
     assert state == {
         "high_water": source_manifest.generation,
-        "tombstone_revision": 0,
+        "tombstone_revision": prior.state_revision,
     }
 
 
@@ -2018,8 +2029,113 @@ def test_restore_rebases_older_archive_above_higher_target_high_water(tmp_path: 
     )
     assert state == {
         "high_water": restored.generation,
-        "tombstone_revision": 0,
+        "tombstone_revision": prior.state_revision,
     }
+
+
+def test_restore_installs_publication_state_before_manifest_commit_marker(
+    tmp_path: Path,
+) -> None:
+    source = _config(tmp_path / "source")
+    _published_index(source, title="Restored")
+    archive = create_backup(source, tmp_path / "backup.zip", online=False)
+    target = _config(tmp_path / "target")
+    restore_backup(target, archive, force=False)
+    active = target.index.active_dir
+    prior = current_snapshot_token(active)
+    installed: list[str] = []
+    observed: list[IndexManifest | None] = []
+    real_install = backup._install_stage
+
+    def observe_every_install(record: backup._StagedRestore) -> None:
+        real_install(record)
+        installed.append(record.target.name)
+        observed.append(read_manifest(active))
+
+    with patch("autodj.backup._install_stage", side_effect=observe_every_install):
+        restore_backup(target, archive, force=True)
+
+    assert installed == [
+        ".index-publication-state.json",
+        "tracks.db",
+        "vectors.index",
+        "index-manifest.json",
+    ]
+    assert observed[:-1] == [None, None, None]
+    assert observed[-1] is not None
+    assert observed[-1].generation > prior.generation
+
+
+def test_forced_restore_crash_while_manifest_hidden_restores_previous_snapshot(
+    tmp_path: Path,
+) -> None:
+    source = _config(tmp_path / "source")
+    _published_index(source, title="Restored")
+    archive = create_backup(source, tmp_path / "backup.zip", online=False)
+    target = _config(tmp_path / "target")
+    restore_backup(target, archive, force=False)
+    active = target.index.active_dir
+    prior = read_manifest(active)
+    assert prior is not None
+    observed: list[IndexManifest | None] = []
+    real_install = backup._install_stage
+
+    class SimulatedCrash(BaseException):
+        pass
+
+    def crash_after_vectors(record: backup._StagedRestore) -> None:
+        real_install(record)
+        observed.append(read_manifest(active))
+        if record.target.name == "vectors.index":
+            raise SimulatedCrash
+
+    with (
+        patch("autodj.backup._install_stage", side_effect=crash_after_vectors),
+        pytest.raises(SimulatedCrash),
+    ):
+        restore_backup(target, archive, force=True)
+
+    assert observed == [None, None, None]
+    assert read_manifest(active) == prior
+
+
+def test_restore_canonicalizes_untrusted_item_order_and_keeps_manifest_readable(
+    tmp_path: Path,
+) -> None:
+    source = _config(tmp_path / "source")
+    _published_index(source, title="Restored")
+    _sqlite(source.index.active_dir / "dj_meta.db", "cue")
+    (source.index.active_dir / "web_state.json").write_text("{}", encoding="utf-8")
+    archive = create_backup(source, tmp_path / "backup.zip", online=False)
+    _reverse_archive_item_order(archive)
+    target = _config(tmp_path / "target")
+    for title in ("First", "Second", "Newest"):
+        _published_index(target, title=title)
+    active = target.index.active_dir
+    prior = current_snapshot_token(active)
+    installed: list[str] = []
+    observed: list[IndexManifest | None] = []
+    real_install = backup._install_stage
+
+    def observe_every_install(record: backup._StagedRestore) -> None:
+        real_install(record)
+        installed.append(record.item.destination)
+        observed.append(read_manifest(active))
+
+    with patch("autodj.backup._install_stage", side_effect=observe_every_install):
+        restore_backup(target, archive, force=True)
+
+    assert installed == [
+        "active/.index-publication-state.json",
+        "active/tracks.db",
+        "active/vectors.index",
+        "active/dj_meta.db",
+        "web_state/web_state.json",
+        "active/index-manifest.json",
+    ]
+    assert observed[:-1] == [None, None, None, None, None]
+    assert observed[-1] is not None
+    assert observed[-1].generation > prior.generation
 
 
 def test_publication_state_install_failure_rolls_back_manifest_artifacts_and_state(

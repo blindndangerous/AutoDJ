@@ -845,6 +845,246 @@ def _recover_backup_destination(
     return None
 
 
+@dataclass
+class _BackupPublication:
+    """Track backup publication state needed for recovery."""
+
+    destination: Path
+    unpublished: Path
+    recovery: Path | None = None
+    recovery_expected_identity: tuple[int, int, int, int, int] | None = None
+    recovery_placeholder_identity: tuple[int, int, int, int, int] | None = None
+    recovery_populated: bool = False
+    destination_installed: bool = False
+    unpublished_identity: tuple[int, int, int, int, int] | None = None
+    retain_recovery: bool = False
+    recovery_failure_finalized: bool = False
+    cleanup_rollback_intended: bool = False
+
+
+def _publish_backup_destination(state: _BackupPublication, *, force: bool) -> None:
+    """Install an unpublished archive and record observable outcomes."""
+
+    if force:
+        existing_now = _validate_existing_regular(
+            state.destination,
+            description="backup destination",
+        )
+        if existing_now:
+            state.recovery_expected_identity = _observed_regular_identity(state.destination)
+            state.recovery = _new_backup_recovery(state.destination)
+            state.recovery_placeholder_identity = _observed_regular_identity(state.recovery)
+            try:
+                os.replace(state.destination, state.recovery)
+            except BaseException:
+                state.recovery_populated = _reserved_move_completed(
+                    state.recovery,
+                    expected_identity=state.recovery_expected_identity,
+                    placeholder_identity=state.recovery_placeholder_identity,
+                )
+                raise
+            state.recovery_populated = _reserved_move_completed(
+                state.recovery,
+                expected_identity=state.recovery_expected_identity,
+                placeholder_identity=state.recovery_placeholder_identity,
+            )
+            if not state.recovery_populated:
+                raise BackupError("old backup destination move could not be reconciled")
+            _fsync_directory(state.destination.parent)
+        try:
+            os.replace(state.unpublished, state.destination)
+        except BaseException:
+            state.destination_installed = (
+                _observed_regular_identity(state.destination) == state.unpublished_identity
+            )
+            raise
+        state.destination_installed = (
+            _observed_regular_identity(state.destination) == state.unpublished_identity
+        )
+        if not state.destination_installed:
+            raise BackupError("backup destination publication could not be reconciled")
+        return
+
+    try:
+        os.link(state.unpublished, state.destination)
+        state.destination_installed = (
+            _observed_regular_identity(state.destination) == state.unpublished_identity
+        )
+    except FileExistsError as exc:
+        raise BackupError(
+            f"{state.destination} appeared during backup; pass --force to replace it"
+        ) from exc
+    except OSError as exc:
+        raise BackupError(
+            "filesystem cannot atomically publish a no-clobber backup; "
+            "choose a local destination or pass --force"
+        ) from exc
+    except BaseException:
+        state.destination_installed = (
+            _observed_regular_identity(state.destination) == state.unpublished_identity
+        )
+        raise
+    if not state.destination_installed:
+        raise BackupError("backup destination publication could not be reconciled")
+
+
+def _finish_backup_publication(state: _BackupPublication) -> None:
+    """Sync publication and remove recovery state, rolling back on failure."""
+
+    _unlink_quietly(state.unpublished)
+    try:
+        _fsync_directory(state.destination.parent)
+    except OSError as exc:
+        raise BackupError(
+            f"backup destination directory sync failed after publication: {exc}"
+        ) from exc
+    if state.recovery is None:
+        return
+    try:
+        state.recovery.unlink(missing_ok=True)
+    except OSError as cleanup_exc:
+        state.cleanup_rollback_intended = True
+        try:
+            os.replace(state.recovery, state.destination)
+            cleanup_rollback_completed = _backup_cleanup_rollback_completed(
+                state.destination,
+                state.recovery,
+                old_identity=state.recovery_expected_identity,
+                new_identity=state.unpublished_identity,
+            )
+        except BaseException as rollback_exc:
+            try:
+                cleanup_rollback_completed = _backup_cleanup_rollback_completed(
+                    state.destination,
+                    state.recovery,
+                    old_identity=state.recovery_expected_identity,
+                    new_identity=state.unpublished_identity,
+                )
+            except BackupError as reconcile_exc:
+                state.retain_recovery = True
+                state.recovery_failure_finalized = True
+                raise reconcile_exc from rollback_exc
+            if cleanup_rollback_completed:
+                state.recovery = None
+                state.recovery_populated = False
+                state.destination_installed = False
+                state.cleanup_rollback_intended = False
+                raise
+            state.retain_recovery = True
+            state.recovery_failure_finalized = True
+            raise BackupError(
+                f"backup recovery cleanup failed: {cleanup_exc}; new archive remains at "
+                f"{state.destination}; recovery copy retained at {state.recovery}: {rollback_exc}"
+            ) from cleanup_exc
+        if not cleanup_rollback_completed:
+            state.retain_recovery = True
+            state.recovery_failure_finalized = True
+            raise BackupError(
+                f"backup recovery cleanup failed: {cleanup_exc}; new archive remains at "
+                f"{state.destination}; recovery copy retained at {state.recovery}"
+            ) from cleanup_exc
+        state.recovery = None
+        state.recovery_populated = False
+        state.destination_installed = False
+        state.cleanup_rollback_intended = False
+        try:
+            _fsync_directory(state.destination.parent)
+        except OSError as sync_exc:
+            raise BackupError(
+                "backup recovery cleanup failed and the old destination was restored, "
+                f"but directory sync failed: {sync_exc}"
+            ) from cleanup_exc
+        raise BackupError(
+            f"backup recovery cleanup failed; old destination restored: {cleanup_exc}"
+        ) from cleanup_exc
+    with suppress(OSError):
+        _fsync_directory(state.destination.parent)
+
+
+def _raise_backup_failure(state: _BackupPublication, exc: BaseException) -> None:
+    """Reconcile interrupted publication and raise its final error."""
+
+    recovery_error = None
+    reservation_error = None
+    if state.cleanup_rollback_intended and state.recovery is not None:
+        try:
+            cleanup_rollback_completed = _backup_cleanup_rollback_completed(
+                state.destination,
+                state.recovery,
+                old_identity=state.recovery_expected_identity,
+                new_identity=state.unpublished_identity,
+            )
+        except BackupError as reconcile_exc:
+            recovery_error = str(reconcile_exc)
+            state.retain_recovery = True
+            state.recovery_failure_finalized = True
+        else:
+            if cleanup_rollback_completed:
+                state.recovery = None
+                state.recovery_populated = False
+                state.destination_installed = False
+            else:
+                recovery_error = (
+                    "backup cleanup rollback was interrupted; new archive remains at "
+                    f"{state.destination}; recovery copy retained at {state.recovery}"
+                )
+                state.retain_recovery = True
+                state.recovery_failure_finalized = True
+        state.cleanup_rollback_intended = False
+    if (
+        state.recovery is not None
+        and state.recovery_expected_identity is not None
+        and state.recovery_placeholder_identity is not None
+        and not state.recovery_populated
+    ):
+        observed_recovery = _observed_regular_identity(state.recovery)
+        if observed_recovery == state.recovery_expected_identity:
+            state.recovery_populated = True
+        elif observed_recovery != state.recovery_placeholder_identity:
+            recovery_error = (
+                "old backup move outcome could not be reconciled; inspect destination "
+                f"{state.destination} and recovery path {state.recovery}"
+            )
+            state.retain_recovery = True
+    if state.unpublished_identity is not None and not state.destination_installed:
+        state.destination_installed = (
+            _observed_regular_identity(state.destination) == state.unpublished_identity
+        )
+    if (
+        state.recovery is not None
+        and not state.recovery_populated
+        and not state.recovery_failure_finalized
+        and recovery_error is None
+    ):
+        reservation_error = _cleanup_empty_reservation(state.recovery, purpose="recovery")
+        if reservation_error is None:
+            state.recovery = None
+        else:
+            state.retain_recovery = True
+    if (
+        state.recovery_populated or state.destination_installed
+    ) and not state.recovery_failure_finalized:
+        recovered_error = _recover_backup_destination(
+            state.destination,
+            state.recovery if state.recovery_populated else None,
+            destination_installed=state.destination_installed,
+        )
+        if recovered_error is not None:
+            recovery_error = recovered_error
+        state.retain_recovery = state.retain_recovery or (
+            state.recovery_populated
+            and state.recovery is not None
+            and os.path.lexists(state.recovery)
+        )
+    _unlink_quietly(state.unpublished)
+    cleanup_errors = [error for error in (reservation_error, recovery_error) if error is not None]
+    if cleanup_errors:
+        raise BackupError(f"backup creation failed: {exc}; " + "; ".join(cleanup_errors)) from exc
+    if isinstance(exc, BackupError) or not isinstance(exc, Exception):
+        raise exc
+    raise BackupError(f"backup creation failed: {exc}") from exc
+
+
 def create_backup(
     cfg: AutoDJConfig,
     destination: Path,
@@ -874,225 +1114,21 @@ def create_backup(
         raise BackupError(f"backup temporary file could not be created: {exc}") from exc
     os.close(descriptor)
     unpublished = Path(temp_name)
-    recovery: Path | None = None
-    recovery_expected_identity: tuple[int, int, int, int, int] | None = None
-    recovery_placeholder_identity: tuple[int, int, int, int, int] | None = None
-    recovery_populated = False
-    destination_installed = False
-    unpublished_identity: tuple[int, int, int, int, int] | None = None
-    retain_recovery = False
-    recovery_failure_finalized = False
-    cleanup_rollback_intended = False
+    state = _BackupPublication(destination=destination, unpublished=unpublished)
     try:
         _write_backup_archive(cfg, unpublished, online=online)
         with unpublished.open("rb+") as handle:
             handle.flush()
             os.fsync(handle.fileno())
-        unpublished_identity = _observed_regular_identity(unpublished)
-        if force:
-            existing_now = _validate_existing_regular(destination, description="backup destination")
-            if existing_now:
-                recovery_expected_identity = _observed_regular_identity(destination)
-                recovery = _new_backup_recovery(destination)
-                recovery_placeholder_identity = _observed_regular_identity(recovery)
-                try:
-                    os.replace(destination, recovery)
-                except BaseException:
-                    recovery_populated = _reserved_move_completed(
-                        recovery,
-                        expected_identity=recovery_expected_identity,
-                        placeholder_identity=recovery_placeholder_identity,
-                    )
-                    raise
-                recovery_populated = _reserved_move_completed(
-                    recovery,
-                    expected_identity=recovery_expected_identity,
-                    placeholder_identity=recovery_placeholder_identity,
-                )
-                if not recovery_populated:
-                    raise BackupError("old backup destination move could not be reconciled")
-                _fsync_directory(destination.parent)
-            try:
-                os.replace(unpublished, destination)
-            except BaseException:
-                destination_installed = (
-                    _observed_regular_identity(destination) == unpublished_identity
-                )
-                raise
-            destination_installed = _observed_regular_identity(destination) == unpublished_identity
-            if not destination_installed:
-                raise BackupError("backup destination publication could not be reconciled")
-        else:
-            try:
-                os.link(unpublished, destination)
-                destination_installed = (
-                    _observed_regular_identity(destination) == unpublished_identity
-                )
-            except FileExistsError as exc:
-                raise BackupError(
-                    f"{destination} appeared during backup; pass --force to replace it"
-                ) from exc
-            except OSError as exc:
-                raise BackupError(
-                    "filesystem cannot atomically publish a no-clobber backup; "
-                    "choose a local destination or pass --force"
-                ) from exc
-            except BaseException:
-                destination_installed = (
-                    _observed_regular_identity(destination) == unpublished_identity
-                )
-                raise
-            if not destination_installed:
-                raise BackupError("backup destination publication could not be reconciled")
-        _unlink_quietly(unpublished)
-        try:
-            _fsync_directory(destination.parent)
-        except OSError as exc:
-            raise BackupError(
-                f"backup destination directory sync failed after publication: {exc}"
-            ) from exc
-        if recovery is not None:
-            try:
-                recovery.unlink(missing_ok=True)
-            except OSError as cleanup_exc:
-                cleanup_rollback_intended = True
-                try:
-                    os.replace(recovery, destination)
-                    cleanup_rollback_completed = _backup_cleanup_rollback_completed(
-                        destination,
-                        recovery,
-                        old_identity=recovery_expected_identity,
-                        new_identity=unpublished_identity,
-                    )
-                except BaseException as rollback_exc:
-                    try:
-                        cleanup_rollback_completed = _backup_cleanup_rollback_completed(
-                            destination,
-                            recovery,
-                            old_identity=recovery_expected_identity,
-                            new_identity=unpublished_identity,
-                        )
-                    except BackupError as reconcile_exc:
-                        retain_recovery = True
-                        recovery_failure_finalized = True
-                        raise reconcile_exc from rollback_exc
-                    if cleanup_rollback_completed:
-                        recovery = None
-                        recovery_populated = False
-                        destination_installed = False
-                        cleanup_rollback_intended = False
-                        raise
-                    retain_recovery = True
-                    recovery_failure_finalized = True
-                    raise BackupError(
-                        f"backup recovery cleanup failed: {cleanup_exc}; new archive remains at "
-                        f"{destination}; recovery copy retained at {recovery}: {rollback_exc}"
-                    ) from cleanup_exc
-                if not cleanup_rollback_completed:
-                    retain_recovery = True
-                    recovery_failure_finalized = True
-                    raise BackupError(
-                        f"backup recovery cleanup failed: {cleanup_exc}; new archive remains at "
-                        f"{destination}; recovery copy retained at {recovery}"
-                    ) from cleanup_exc
-                recovery = None
-                recovery_populated = False
-                destination_installed = False
-                cleanup_rollback_intended = False
-                try:
-                    _fsync_directory(destination.parent)
-                except OSError as sync_exc:
-                    raise BackupError(
-                        "backup recovery cleanup failed and the old destination was restored, "
-                        f"but directory sync failed: {sync_exc}"
-                    ) from cleanup_exc
-                raise BackupError(
-                    f"backup recovery cleanup failed; old destination restored: {cleanup_exc}"
-                ) from cleanup_exc
-            with suppress(OSError):
-                _fsync_directory(destination.parent)
+        state.unpublished_identity = _observed_regular_identity(unpublished)
+        _publish_backup_destination(state, force=force)
+        _finish_backup_publication(state)
     except BaseException as exc:
-        recovery_error = None
-        reservation_error = None
-        if cleanup_rollback_intended and recovery is not None:
-            try:
-                cleanup_rollback_completed = _backup_cleanup_rollback_completed(
-                    destination,
-                    recovery,
-                    old_identity=recovery_expected_identity,
-                    new_identity=unpublished_identity,
-                )
-            except BackupError as reconcile_exc:
-                recovery_error = str(reconcile_exc)
-                retain_recovery = True
-                recovery_failure_finalized = True
-            else:
-                if cleanup_rollback_completed:
-                    recovery = None
-                    recovery_populated = False
-                    destination_installed = False
-                else:
-                    recovery_error = (
-                        "backup cleanup rollback was interrupted; new archive remains at "
-                        f"{destination}; recovery copy retained at {recovery}"
-                    )
-                    retain_recovery = True
-                    recovery_failure_finalized = True
-            cleanup_rollback_intended = False
-        if (
-            recovery is not None
-            and recovery_expected_identity is not None
-            and recovery_placeholder_identity is not None
-            and not recovery_populated
-        ):
-            observed_recovery = _observed_regular_identity(recovery)
-            if observed_recovery == recovery_expected_identity:
-                recovery_populated = True
-            elif observed_recovery != recovery_placeholder_identity:
-                recovery_error = (
-                    "old backup move outcome could not be reconciled; inspect destination "
-                    f"{destination} and recovery path {recovery}"
-                )
-                retain_recovery = True
-        if unpublished_identity is not None and not destination_installed:
-            destination_installed = _observed_regular_identity(destination) == unpublished_identity
-        if (
-            recovery is not None
-            and not recovery_populated
-            and not recovery_failure_finalized
-            and recovery_error is None
-        ):
-            reservation_error = _cleanup_empty_reservation(recovery, purpose="recovery")
-            if reservation_error is None:
-                recovery = None
-            else:
-                retain_recovery = True
-        if (recovery_populated or destination_installed) and not recovery_failure_finalized:
-            recovered_error = _recover_backup_destination(
-                destination,
-                recovery if recovery_populated else None,
-                destination_installed=destination_installed,
-            )
-            if recovered_error is not None:
-                recovery_error = recovered_error
-            retain_recovery = retain_recovery or (
-                recovery_populated and recovery is not None and os.path.lexists(recovery)
-            )
-        _unlink_quietly(unpublished)
-        cleanup_errors = [
-            error for error in (reservation_error, recovery_error) if error is not None
-        ]
-        if cleanup_errors:
-            raise BackupError(
-                f"backup creation failed: {exc}; " + "; ".join(cleanup_errors)
-            ) from exc
-        if isinstance(exc, BackupError) or not isinstance(exc, Exception):
-            raise
-        raise BackupError(f"backup creation failed: {exc}") from exc
+        _raise_backup_failure(state, exc)
     finally:
         _unlink_quietly(unpublished)
-        if recovery is not None and not retain_recovery:
-            _unlink_quietly(recovery)
+        if state.recovery is not None and not state.retain_recovery:
+            _unlink_quietly(state.recovery)
     return destination
 
 
@@ -2099,6 +2135,11 @@ def _prepare_publication_restore(
         0 if target_manifest is None else target_manifest.generation,
         0 if target_manifest is None else target_manifest.state_revision,
     )
+    tombstone_revision = max(
+        0 if target_state is None else target_state.tombstone_revision,
+        0 if target_manifest is None else target_manifest.generation,
+        0 if target_manifest is None else target_manifest.state_revision,
+    )
     if restored_identity > target_high_water:
         revision = restored_identity
     else:
@@ -2117,12 +2158,25 @@ def _prepare_publication_restore(
     _rewrite_staged_payload(manifest_record, manifest_payload)
     state_payload = (
         json.dumps(
-            {"high_water": revision, "tombstone_revision": 0},
+            {"high_water": revision, "tombstone_revision": tombstone_revision},
             sort_keys=True,
         )
         + "\n"
     ).encode()
     return _stage_publication_state(cfg, state_payload, force=force)
+
+
+def _publication_restore_order(record: _StagedRestore) -> tuple[int, str]:
+    """Return canonical commit order independent of archive item order."""
+
+    destination = record.item.destination
+    priorities = {
+        f"active/{PUBLICATION_STATE_NAME}": 0,
+        "active/tracks.db": 1,
+        "active/vectors.index": 2,
+        f"active/{MANIFEST_NAME}": 4,
+    }
+    return priorities.get(destination, 3), destination
 
 
 def _rollback_staged(staged: list[_StagedRestore]) -> list[str]:
@@ -2352,4 +2406,5 @@ def restore_backup(cfg: AutoDJConfig, archive: Path, *, force: bool) -> RestoreR
                 raise
             raise BackupError(f"restore publication preparation failed: {exc}") from exc
         staged.append(state_record)
+        staged.sort(key=_publication_restore_order)
         return _commit_staged(staged, restored_count=restored_count)
