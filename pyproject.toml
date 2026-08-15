@@ -85,11 +85,15 @@ dev = [
 autodj = "autodj.cli:cli"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling==1.31.0"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build]
+artifacts = ["src/autodj/static_dist"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/autodj"]
+artifacts = ["src/autodj/static_dist"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -244,6 +248,9 @@ skips = [
 ]
 
 [dependency-groups]
+build = [
+    "hatchling==1.31.0",
+]
 dev = [
     "bandit>=1.9.4",
     "mypy>=2.0.0",

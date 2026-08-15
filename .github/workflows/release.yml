@@ -31,9 +31,24 @@ jobs:
       - uses: astral-sh/setup-uv@v8.1.0
       - uses: actions/setup-python@v6
         with: {python-version: "3.14"}
-      - run: uv build --sdist --wheel
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with: {node-version: "24.6.0", cache: "npm"}
+      - name: Install frontend dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Build frontend assets
+        run: npm run build
+      - name: Export build constraints
+        run: >-
+          uv export --frozen --only-group build --no-emit-project
+          --format requirements-txt
+          --output-file "$RUNNER_TEMP/build-constraints.txt"
+      - name: Build distributions
+        run: >-
+          uv build --sdist --wheel
+          --build-constraints "$RUNNER_TEMP/build-constraints.txt"
+          --require-hashes
       - name: Verify tag, project, changelog, and wheel metadata
-        run: uv run python scripts/verify_release.py --tag "$GITHUB_REF_NAME" --wheel dist/*.whl --sdist dist/*.tar.gz
+        run: uv run --frozen python scripts/verify_release.py --tag "$GITHUB_REF_NAME" --wheel dist/*.whl --sdist dist/*.tar.gz
       - name: Smoke-install exact wheel
         run: |
           uv venv .release-venv --python 3.14

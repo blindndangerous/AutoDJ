@@ -21,11 +21,17 @@ COPY package.json package-lock.json pyproject.toml vite.config.js ./
 COPY src/autodj/static ./src/autodj/static
 RUN npm ci --ignore-scripts --no-audit --no-fund && npm run build
 
-FROM python-base AS runtime
-WORKDIR /app
+FROM python-base AS package
 COPY src ./src
 COPY --from=frontend /build/src/autodj/static_dist ./src/autodj/static_dist
-RUN uv sync --frozen --no-dev \
+RUN uv export --frozen --only-group build --no-emit-project --format requirements-txt --output-file /tmp/build-constraints.txt \
+    && uv build --wheel --out-dir /tmp/dist --build-constraints /tmp/build-constraints.txt --require-hashes
+
+FROM python-base AS runtime
+WORKDIR /app
+COPY --from=package /tmp/dist /tmp/dist
+RUN uv pip install --python /opt/venv/bin/python --no-deps /tmp/dist/*.whl \
+    && rm -rf /tmp/dist \
     && groupadd --gid 10001 autodj \
     && useradd --uid 10001 --gid 10001 --create-home --shell /usr/sbin/nologin autodj \
     && install -d -o 10001 -g 10001 /app/.cache /index /models

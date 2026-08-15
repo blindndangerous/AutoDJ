@@ -1,8 +1,12 @@
 import io
+import json
 import os
+import shutil
 import stat
+import subprocess
 import sys
 import tarfile
+import tempfile
 import tomllib
 import zipfile
 from pathlib import Path
@@ -13,6 +17,12 @@ import yaml
 from scripts.verify_release import ReleaseVerificationError, main, verify_release
 
 ROOT = Path(__file__).parents[2]
+
+
+@pytest.fixture(autouse=True)
+def _close_global_dj_cache_between_tests():
+    """Override the root cache fixture: release tests never import ``autodj``."""
+    yield
 
 
 def _metadata(name: str, version: str, *, extra: str = "") -> bytes:
@@ -626,3 +636,194 @@ def test_release_verifier_dependency_is_directly_pinned_and_locked() -> None:
     packages = {package["name"]: package for package in lock["package"]}
     assert packages["packaging"]["version"] == "26.3"
     assert {"name": "packaging"} in packages["autodj"]["dev-dependencies"]["dev"]
+
+
+def test_release_backend_is_exactly_pinned_and_exports_hashed_lock_closure(
+    tmp_path: Path,
+) -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    requirement = "hatchling==1.31.0"
+    assert project["build-system"] == {
+        "requires": [requirement],
+        "build-backend": "hatchling.build",
+    }
+    assert project["dependency-groups"]["build"] == [requirement]
+    assert project["tool"]["hatch"]["build"]["artifacts"] == ["src/autodj/static_dist"]
+    assert project["tool"]["hatch"]["build"]["targets"]["wheel"]["artifacts"] == [
+        "src/autodj/static_dist"
+    ]
+
+    lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
+    packages = {package["name"]: package for package in lock["package"]}
+    backend = packages["hatchling"]
+    assert backend["version"] == "1.31.0"
+    assert backend["sdist"]["hash"] == (
+        "sha256:6b48ad4068a482ed7239b3a8215bc55b47aad3345d58dfc94e553c5d2d46211b"
+    )
+    assert {wheel["hash"] for wheel in backend["wheels"]} == {
+        "sha256:aac80bec8b6fe35e8480f1c335be8910fa210a0e6f735a139be205dadcacb544"
+    }
+    assert {"name": "hatchling"} in packages["autodj"]["dev-dependencies"]["build"]
+
+    constraints = tmp_path / "build-constraints.txt"
+    result = subprocess.run(
+        [
+            "uv",
+            "export",
+            "--frozen",
+            "--only-group",
+            "build",
+            "--no-emit-project",
+            "--format",
+            "requirements-txt",
+            "--output-file",
+            str(constraints),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    exported = constraints.read_text(encoding="utf-8")
+    assert f"{requirement} \\" in exported
+    assert "--hash=sha256:" in exported
+
+
+def test_release_and_container_builds_require_hashed_locked_backend() -> None:
+    workflow = _release_workflow()
+    steps = workflow["jobs"]["build-and-verify"]["steps"]
+    export_index = next(
+        index for index, step in enumerate(steps) if step.get("name") == "Export build constraints"
+    )
+    build_index = next(
+        index for index, step in enumerate(steps) if step.get("name") == "Build distributions"
+    )
+    export_command = steps[export_index]["run"]
+    build_command = steps[build_index]["run"]
+    assert export_index < build_index
+    assert "uv export --frozen --only-group build --no-emit-project" in export_command
+    assert '--output-file "$RUNNER_TEMP/build-constraints.txt"' in export_command
+    assert '--build-constraints "$RUNNER_TEMP/build-constraints.txt"' in build_command
+    assert "--require-hashes" in build_command
+
+    container = (ROOT / "Containerfile").read_text(encoding="utf-8")
+    container_export = (
+        "uv export --frozen --only-group build --no-emit-project "
+        "--format requirements-txt --output-file /tmp/build-constraints.txt"
+    )
+    assert container_export in container
+    container_build = (
+        "uv build --wheel --out-dir /tmp/dist "
+        "--build-constraints /tmp/build-constraints.txt --require-hashes"
+    )
+    container_install = "uv pip install --python /opt/venv/bin/python --no-deps /tmp/dist/*.whl"
+    assert container_build in container
+    assert container_install in container
+    assert "FROM python-base AS package" in container
+    assert container.index(container_export) < container.index(container_build)
+    assert container.index(container_build) < container.index(container_install)
+
+
+def test_release_workflow_clean_builds_bundle_into_wheel_and_sdist() -> None:
+    workflow = _release_workflow()
+    steps = workflow["jobs"]["build-and-verify"]["steps"]
+    index_by_name = {
+        step.get("name"): index for index, step in enumerate(steps) if step.get("name")
+    }
+    setup_node_index = next(
+        index
+        for index, step in enumerate(steps)
+        if step.get("uses", "").startswith("actions/setup-node@")
+    )
+    assert steps[setup_node_index]["uses"] == (
+        "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38"
+    )
+    assert setup_node_index < index_by_name["Install frontend dependencies"]
+    assert index_by_name["Install frontend dependencies"] < index_by_name["Build frontend assets"]
+    assert index_by_name["Build frontend assets"] < index_by_name["Export build constraints"]
+    assert (
+        "npm ci --ignore-scripts --no-audit --no-fund"
+        in steps[index_by_name["Install frontend dependencies"]]["run"]
+    )
+    assert "npm run build" in steps[index_by_name["Build frontend assets"]]["run"]
+
+    temporary_directory = tempfile.TemporaryDirectory(prefix="autodj-release-build-")
+    clean = Path(temporary_directory.name)
+    for filename in (
+        ".gitignore",
+        "pyproject.toml",
+        "uv.lock",
+        "README.md",
+        "LICENSE",
+        "package.json",
+        "package-lock.json",
+        "vite.config.js",
+    ):
+        shutil.copy2(ROOT / filename, clean / filename)
+    shutil.copytree(
+        ROOT / "src",
+        clean / "src",
+        ignore=shutil.ignore_patterns("static_dist", "__pycache__"),
+    )
+    assert not (clean / "src" / "autodj" / "static_dist").exists()
+
+    def run(*command: str) -> None:
+        result = subprocess.run(command, cwd=clean, capture_output=True, text=True, check=False)
+        assert result.returncode == 0, result.stderr
+
+    npm = "npm.cmd" if os.name == "nt" else "npm"
+    run(npm, "ci", "--ignore-scripts", "--no-audit", "--no-fund")
+    run(npm, "run", "build")
+    run(
+        "uv",
+        "export",
+        "--frozen",
+        "--only-group",
+        "build",
+        "--no-emit-project",
+        "--format",
+        "requirements-txt",
+        "--output-file",
+        "build-constraints.txt",
+    )
+    run(
+        "uv",
+        "build",
+        "--sdist",
+        "--wheel",
+        "--out-dir",
+        "dist",
+        "--build-constraints",
+        "build-constraints.txt",
+        "--require-hashes",
+    )
+
+    project = tomllib.loads((clean / "pyproject.toml").read_text(encoding="utf-8"))
+    version = project["project"]["version"]
+    expected_assets = {
+        "app.css",
+        "app.js",
+        "bitcrusher-worklet.js",
+        "freeze-worklet.js",
+        "glitch-worklet.js",
+        "index.html",
+        "stutter-worklet.js",
+    }
+    build_info = json.loads(
+        (clean / "src" / "autodj" / "static_dist" / "build-info.json").read_text(encoding="utf-8")
+    )
+    assert build_info == {"version": version}
+
+    with zipfile.ZipFile(clean / "dist" / f"autodj-{version}-py3-none-any.whl") as wheel:
+        wheel_members = set(wheel.namelist())
+        for asset in expected_assets:
+            assert f"autodj/static_dist/{asset}" in wheel_members
+        assert json.loads(wheel.read("autodj/static_dist/build-info.json")) == {"version": version}
+    with tarfile.open(clean / "dist" / f"autodj-{version}.tar.gz") as sdist:
+        sdist_members = set(sdist.getnames())
+        for asset in expected_assets:
+            assert f"autodj-{version}/src/autodj/static_dist/{asset}" in sdist_members
+        assert json.loads(
+            sdist.extractfile(f"autodj-{version}/src/autodj/static_dist/build-info.json").read()
+        ) == {"version": version}
