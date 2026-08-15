@@ -10,6 +10,7 @@ import { runAudit, validateTransitionAudit } from "./audit_helpers.mjs";
 // Set AUTODJ_URL=http://host:port before running, e.g.:
 //   AUTODJ_URL=http://localhost:8080 node tests/playwright/transition_audit.mjs
 const BASE = process.env.AUTODJ_URL || "http://localhost:8080";
+const ORIGIN = new URL(BASE).origin;
 const EFFECTS = [
   "highpass_sweep", "lowpass_sweep", "bitcrusher", "freeze",
   "glitch", "reverse_reverb", "forward_spin", "pitch_swell", "pitch_fall",
@@ -72,11 +73,12 @@ export async function audit(name, launcher) {
     return out;
   }, BASE);
 
-  // Cycle through each effect and post to /api/transition
+  // page.request is not a browser fetch, so it does not supply Origin for
+  // state-changing calls.  Match the trusted origin of the page under audit.
   const transitions = {};
   for (const fx of EFFECTS) {
-    const res = await page.request.post(`${BASE}/api/transition`, {
-      headers: { "Content-Type": "application/json" },
+    const res = await page.request.post(`${ORIGIN}/api/transition`, {
+      headers: { "Content-Type": "application/json", Origin: ORIGIN },
       data: JSON.stringify({ effect: fx }),
     });
     transitions[fx] = { status: res.status() };
