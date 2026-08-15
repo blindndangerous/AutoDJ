@@ -155,16 +155,27 @@ def _assert_bounded_smoke_lifecycle(content: str) -> None:
     logs = _shell_function(content, "emit_lan_failure_logs")
     down = _shell_function(content, "bounded_compose_down")
 
-    assert cleanup.index("exit_code=$?") < cleanup.index("emit_lan_failure_logs")
-    assert cleanup.index("emit_lan_failure_logs") < cleanup.index("bounded_compose_down")
+    diagnostics = _shell_function(content, "emit_failure_diagnostics")
+    reclaim = _shell_function(content, "reclaim_smoke_root")
+
+    assert cleanup.index("exit_code=$?") < cleanup.index("emit_failure_diagnostics")
+    assert cleanup.index("emit_failure_diagnostics") < cleanup.index("bounded_compose_down")
     assert cleanup.index("bounded_compose_down") < cleanup.index('exit "$exit_code"')
-    assert '"$lan_phase_active" == true && "$exit_code" -ne 0' in cleanup
+    assert '"$compose_touched" == true && "$exit_code" -ne 0' in cleanup
+    assert "docker compose logs --no-color --tail 200" in diagnostics
+    assert "docker inspect --format '{{json .State}}' autodj" in diagnostics
+    assert "docker inspect --format '{{json .State}}' autodj-lan" in diagnostics
+    assert '"$lan_phase_active" == true' in diagnostics
     assert "timeout --signal=TERM --kill-after=5s 15s" in logs
     assert "docker compose --profile lan logs --no-color --tail 200 autodj-lan" in logs
     assert "|| true" in logs
     assert "timeout --signal=TERM --kill-after=5s 30s" in down
     assert "docker compose --profile lan down --volumes --remove-orphans" in down
     assert "bounded_compose_down || cleanup_exit_code=$?" in cleanup
+    assert "reclaim_smoke_root ||" in cleanup
+    assert '"$smoke_root" != "$temp_parent"/autodj-smoke.*' in reclaim
+    assert 'sudo chown -R "$(id -u):$(id -g)" -- "$smoke_root"' in reclaim
+    assert 'rm -rf -- "$smoke_root" && return 0' in reclaim
     assert (
         len(
             re.findall(
@@ -221,6 +232,9 @@ def _run_fake_container_smoke(
     failing_endpoint: str,
     *,
     fail_rm: bool = False,
+    transient_health_failures: int = 0,
+    default_state: str = "running",
+    default_health: str = "healthy",
 ) -> subprocess.CompletedProcess[str]:
     bash = _git_bash()
     fake_bin = tmp_path / "bin"
@@ -257,6 +271,11 @@ case "$*" in
   "compose exec -T autodj stat -c %u:%g:%a "*) echo 10001:10001:755 ;;
   "compose --profile lan up -d autodj-lan") printf running > "$FAKE_LAN_STATE" ;;
   "compose --profile lan down --volumes --remove-orphans") printf stopped > "$FAKE_LAN_STATE" ;;
+  "compose logs --no-color --tail 200") echo default-log ;;
+  "compose --profile lan logs --no-color --tail 200 autodj-lan") echo lan-log ;;
+  "inspect autodj --format {{.State.Status}}") echo "$FAKE_DEFAULT_STATE" ;;
+  "inspect autodj --format {{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}") echo "$FAKE_DEFAULT_HEALTH" ;;
+  "inspect autodj --format {{json .State}}") echo '{"Status":"failed"}' ;;
   "inspect autodj-lan --format "*) echo healthy ;;
   "inspect autodj --format "*) echo 127.0.0.1 ;;
 esac
@@ -269,7 +288,14 @@ exit 0
 printf 'curl %s\\n' "$*" >> "$FAKE_SMOKE_LOG"
 if [[ "$FAKE_CURL_FAILURE" == login && "$*" == *'/api/login'* ]]; then exit 22; fi
 if [[ "$FAKE_CURL_FAILURE" == status && "$*" == *'/api/status'* ]]; then exit 22; fi
-if [[ "$*" == *'/healthz'* ]]; then printf '{"status":"ok","tracks":0}'; fi
+if [[ "$*" == *'/healthz'* ]]; then
+  attempts="$(cat "$FAKE_HEALTH_ATTEMPTS" 2>/dev/null || printf 0)"
+  if (( attempts < FAKE_TRANSIENT_HEALTH_FAILURES )); then
+    printf '%s' "$((attempts + 1))" > "$FAKE_HEALTH_ATTEMPTS"
+    exit 56
+  fi
+  printf '{"status":"ok","tracks":0}'
+fi
 exit 0
 """,
     )
@@ -277,6 +303,10 @@ exit 0
     environment.update(
         {
             "FAKE_CURL_FAILURE": failing_endpoint,
+            "FAKE_DEFAULT_HEALTH": default_health,
+            "FAKE_DEFAULT_STATE": default_state,
+            "FAKE_HEALTH_ATTEMPTS": _bash_path(bash, tmp_path / "health-attempts"),
+            "FAKE_TRANSIENT_HEALTH_FAILURES": str(transient_health_failures),
             "FAKE_LAN_STATE": _bash_path(bash, tmp_path / "lan.state"),
             "FAKE_RM_FAILURE": str(fail_rm).lower(),
             "FAKE_SMOKE_LOG": _bash_path(bash, log),
@@ -526,6 +556,41 @@ def test_container_smoke_bounds_failure_logs_and_both_teardowns() -> None:
     content = (ROOT / "scripts" / "container_smoke.sh").read_text(encoding="utf-8")
 
     _assert_bounded_smoke_lifecycle(content)
+
+
+def test_container_smoke_retries_transient_default_health_failure(tmp_path: Path) -> None:
+    result = _run_fake_container_smoke(tmp_path, "", transient_health_failures=1)
+    commands = (tmp_path / "commands.log").read_text(encoding="utf-8")
+
+    assert result.returncode == 0, result.stderr
+    assert commands.count("curl --fail --silent --show-error http://127.0.0.1:8080/healthz") == 2
+
+
+@pytest.mark.parametrize(
+    ("default_state", "default_health"),
+    [("exited", "healthy"), ("dead", "healthy"), ("running", "unhealthy")],
+)
+def test_container_smoke_reports_terminal_default_readiness_before_teardown(
+    tmp_path: Path, default_state: str, default_health: str
+) -> None:
+    result = _run_fake_container_smoke(
+        tmp_path,
+        "",
+        default_state=default_state,
+        default_health=default_health,
+    )
+    commands = (tmp_path / "commands.log").read_text(encoding="utf-8")
+
+    assert result.returncode == 1, result.stderr
+    failure = commands.index("inspect autodj --format {{.State.Status}}")
+    logs = commands.index("docker compose logs --no-color --tail 200", failure)
+    inspect = commands.index("docker inspect --format {{json .State}} autodj", logs)
+    cleanup = commands.index(
+        "timeout --signal=TERM --kill-after=5s 30s "
+        "docker compose --profile lan down --volumes --remove-orphans",
+        inspect,
+    )
+    assert failure < logs < inspect < cleanup
 
 
 @pytest.mark.parametrize(

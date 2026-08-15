@@ -17,23 +17,43 @@ emit_lan_failure_logs() {
     docker compose --profile lan logs --no-color --tail 200 autodj-lan >&2 || true
 }
 
+emit_failure_diagnostics() {
+  timeout --signal=TERM --kill-after=5s 15s \
+    docker compose logs --no-color --tail 200 >&2 || true
+  timeout --signal=TERM --kill-after=5s 10s \
+    docker inspect --format '{{json .State}}' autodj >&2 || true
+  if [[ "$lan_phase_active" == true ]]; then
+    emit_lan_failure_logs
+    timeout --signal=TERM --kill-after=5s 10s \
+      docker inspect --format '{{json .State}}' autodj-lan >&2 || true
+  fi
+}
+
 bounded_compose_down() {
   timeout --signal=TERM --kill-after=5s 30s \
     docker compose --profile lan down --volumes --remove-orphans
+}
+
+reclaim_smoke_root() {
+  if [[ ! -d "$smoke_root" || ! -O "$smoke_root" || "$smoke_root" != "$temp_parent"/autodj-smoke.* ]]; then
+    return 0
+  fi
+  rm -rf -- "$smoke_root" && return 0
+  sudo chown -R "$(id -u):$(id -g)" -- "$smoke_root" && rm -rf -- "$smoke_root"
 }
 
 cleanup() {
   exit_code=$?
   cleanup_exit_code=0
   trap - EXIT
-  if [[ "$lan_phase_active" == true && "$exit_code" -ne 0 ]]; then
-    emit_lan_failure_logs
+  if [[ "$compose_touched" == true && "$exit_code" -ne 0 ]]; then
+    emit_failure_diagnostics
   fi
   if [[ "$compose_touched" == true ]]; then
     bounded_compose_down || cleanup_exit_code=$?
   fi
-  if [[ -d "${smoke_root:-}" && -O "$smoke_root" && "$smoke_root" == "$temp_parent"/autodj-smoke.* ]]; then
-    rm -rf -- "$smoke_root" || {
+  if [[ -n "${smoke_root:-}" ]]; then
+    reclaim_smoke_root || {
       removal_exit_code=$?
       if [[ "$cleanup_exit_code" -eq 0 ]]; then
         cleanup_exit_code=$removal_exit_code
@@ -84,8 +104,28 @@ fi
 grep -Eiq 'requires|access[ _-]token|allowed[ _-](host|origin)|invalid.*origin' \
   "$lan_negative_log"
 docker compose up -d
-health_payload="$(curl --fail --retry 30 --retry-delay 1 --retry-connrefused \
-  http://127.0.0.1:8080/healthz)"
+health_payload=""
+for _attempt in $(seq 1 30); do
+  container_state="$(docker inspect autodj --format '{{.State.Status}}' 2>/dev/null || true)"
+  container_health="$(
+    docker inspect autodj --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' \
+      2>/dev/null || true
+  )"
+  case "$container_state/$container_health" in
+    exited/*|dead/*|*/unhealthy)
+      echo "Default container failed readiness (state: $container_state, health: $container_health)" >&2
+      exit 1
+      ;;
+  esac
+  if health_payload="$(curl --fail --silent --show-error http://127.0.0.1:8080/healthz)"; then
+    break
+  fi
+  sleep 1
+done
+if [[ -z "$health_payload" ]]; then
+  echo "Default container did not become ready after 30 attempts" >&2
+  exit 1
+fi
 python3 - "$health_payload" <<'PY'
 # HEALTH_VALIDATOR_START
 import json
