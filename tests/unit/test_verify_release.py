@@ -725,6 +725,7 @@ def test_release_and_container_builds_require_hashed_locked_backend() -> None:
     assert container.index(container_build) < container.index(container_install)
 
 
+@pytest.mark.timeout(300)
 def test_release_workflow_clean_builds_bundle_into_wheel_and_sdist() -> None:
     workflow = _release_workflow()
     steps = workflow["jobs"]["build-and-verify"]["steps"]

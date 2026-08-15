@@ -4,9 +4,10 @@ import json
 import os
 import sqlite3
 import stat
+import sys
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import faiss
 import numpy as np
@@ -238,6 +239,29 @@ def test_windows_lock_propagates_non_contention_error(
     with (tmp_path / "lock").open("a+b") as handle, pytest.raises(OSError, match="disk failure"):
         manifest_module._acquire_os_lock(handle)
     assert calls == [msvcrt.LK_NBLCK]
+
+
+def test_windows_lock_bindings_are_exercised_without_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import autodj.index_manifest as manifest_module
+
+    locking = MagicMock()
+    fake_msvcrt = type("FakeMsvcrt", (), {"LK_NBLCK": 7, "LK_UNLCK": 8, "locking": locking})
+    monkeypatch.setattr(manifest_module.os, "name", "nt")
+    with patch.dict(sys.modules, {"msvcrt": fake_msvcrt}):
+        handle = MagicMock()
+        handle.tell.return_value = 0
+        handle.fileno.return_value = 12
+        manifest_module._acquire_os_lock(handle)
+        manifest_module._release_os_lock(handle)
+
+    handle.write.assert_called_once_with(b"0")
+    handle.flush.assert_called_once_with()
+    assert locking.call_args_list == [
+        ((handle.fileno(), 7, 1), {}),
+        ((handle.fileno(), 8, 1), {}),
+    ]
 
 
 def test_publish_manifest_is_monotonic_atomic_and_retains_two_generations(

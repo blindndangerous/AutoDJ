@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import errno
 import json
+import os
 import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -19,6 +20,46 @@ from autodj.model import ModelLoadError, _indexed_weights, _inspect_model_path
 def test_portable_windows_lock_fallback_reports_unavailable_api() -> None:
     with pytest.raises(OSError, match="Windows file locking is unavailable"):
         model._unsupported_windows_lock(12, 1, 1)
+
+
+def test_windows_module_bindings_are_exercised_without_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    locking = object()
+    fake_msvcrt = SimpleNamespace(LK_NBLCK=7, LK_UNLCK=8, locking=locking)
+    module_name = "autodj._model_windows_coverage"
+    synthetic_module = ModuleType(module_name)
+    synthetic_module.__file__ = model.__file__
+    source = Path(model.__file__).read_text(encoding="utf-8")
+
+    monkeypatch.setitem(sys.modules, module_name, synthetic_module)
+    monkeypatch.setattr(os, "name", "nt")
+    with patch.dict(sys.modules, {"msvcrt": fake_msvcrt}):
+        exec(compile(source, model.__file__, "exec"), synthetic_module.__dict__)
+
+    assert synthetic_module._windows_lock is locking
+    assert synthetic_module._WINDOWS_LOCK_NONBLOCKING == 7
+    assert synthetic_module._WINDOWS_LOCK_UNLOCK == 8
+
+
+def test_windows_directory_fsync_is_a_noop() -> None:
+    fake_os = SimpleNamespace(name="nt")
+
+    with patch("autodj.model.os", fake_os):
+        model._fsync_directory(Path("cache"))
+
+
+def test_windows_cache_lock_acquires_yields_and_releases(tmp_path: Path) -> None:
+    fake_os = SimpleNamespace(name="nt", getpid=os.getpid)
+
+    with (
+        patch("autodj.model.os", fake_os),
+        patch("autodj.model._windows_lock") as lock,
+        model._model_cache_lock(tmp_path / "cache"),
+    ):
+        assert lock.call_count == 1
+
+    assert lock.call_count == 2
 
 
 def _write_complete_model(path: Path, *, repo_id: str | None = None) -> None:

@@ -577,7 +577,6 @@ def test_posix_rollback_probe_never_recloses_reused_descriptor(
         original_close(quarantine_fd)
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows handle-rights regression")
 def test_windows_root_reopens_anchor_before_creating_first_missing_component(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -621,14 +620,15 @@ def test_windows_root_reopens_anchor_before_creating_first_missing_component(
     monkeypatch.setattr(liner_files, "_close_windows_handle", lambda _handle: None)
     monkeypatch.setattr(liner_files, "_windows_file_identity", lambda _handle: (1, b"same"))
 
-    pinned = liner_files._open_windows_root(Path("Q:/missing"), create=True, write=True)
+    windows_path = SimpleNamespace(anchor="Q:\\", parts=("Q:\\", "missing"))
+    windows_path.absolute = lambda: windows_path
+    pinned = liner_files._open_windows_root(windows_path, create=True, write=True)
     assert pinned.handle == 20
     assert len(accesses) == 2
     assert not accesses[0] & file_add_subdirectory
     assert accesses[1] & file_add_subdirectory
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows handle-identity regression")
 def test_windows_root_rejects_swapped_parent_during_rights_upgrade(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -666,12 +666,17 @@ def test_windows_root_rejects_swapped_parent_during_rights_upgrade(
         raising=False,
     )
 
+    windows_path = SimpleNamespace(anchor="Q:\\", parts=("Q:\\", "missing"))
+    windows_path.absolute = lambda: windows_path
     with pytest.raises(InvalidLinerName, match="changed during secure open"):
-        liner_files._open_windows_root(Path("Q:/missing"), create=True, write=True)
+        liner_files._open_windows_root(
+            windows_path,
+            create=True,
+            write=True,
+        )
     assert not create_attempted
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows UNC identity regression")
 def test_windows_file_identity_falls_back_when_smb_rejects_file_id_info(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -701,7 +706,6 @@ def test_windows_file_identity_falls_back_when_smb_rejects_file_id_info(
     assert identity == b"file-index-64:\x08\x07\x06\x05\x04\x03\x02\x01"
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows UNC identity regression")
 def test_windows_classic_identity_fallback_detects_swapped_handle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2959,6 +2963,132 @@ def test_flush_directory_dispatches_to_posix_fsync(monkeypatch: pytest.MonkeyPat
     liner_files._flush_directory(liner_files._PinnedRoot(Path("root"), 10, False))
 
     fsync.assert_called_once_with(10)
+
+
+def test_portable_windows_staged_upload_owns_native_handles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercise Windows staging without requiring a Windows filesystem."""
+    from autodj import liner_files
+
+    root = liner_files._PinnedRoot(Path("Q:/liners"), 10, True)
+    file = MagicMock()
+    monkeypatch.setattr(liner_files, "_nt_create_relative", MagicMock(side_effect=[11, 12]))
+    monkeypatch.setattr(liner_files, "_open_osfhandle", MagicMock(return_value=13))
+    monkeypatch.setattr(liner_files.os, "fdopen", MagicMock(return_value=file))
+
+    staged = liner_files._make_staged_upload(root)
+
+    assert staged.root is root
+    assert staged.stage_handle == 11
+    assert staged.file is file
+    liner_files._open_osfhandle.assert_called_once_with(12, os.O_WRONLY | liner_files._O_BINARY)
+
+
+def test_portable_windows_staged_upload_cleans_raw_handle_on_descriptor_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from autodj import liner_files
+
+    root = liner_files._PinnedRoot(Path("Q:/liners"), 10, True)
+    delete = MagicMock(side_effect=OSError("delete cleanup"))
+    close = MagicMock(side_effect=OSError("close cleanup"))
+    monkeypatch.setattr(liner_files, "_nt_create_relative", MagicMock(side_effect=[11, 12]))
+    monkeypatch.setattr(liner_files, "_open_osfhandle", MagicMock(side_effect=OSError("convert")))
+    monkeypatch.setattr(liner_files, "_windows_delete_by_handle", delete)
+    monkeypatch.setattr(liner_files, "_close_windows_handle", close)
+
+    with pytest.raises(OSError, match="convert"):
+        liner_files._make_staged_upload(root)
+
+    assert delete.call_count == 2
+    delete.assert_any_call(12)
+    delete.assert_any_call(11)
+    assert close.call_count == 2
+    close.assert_any_call(12)
+    close.assert_any_call(11)
+    assert "Unable to delete failed raw liner upload handle" in caplog.text
+    assert "Unable to close failed liner staging directory" in caplog.text
+
+
+def test_portable_windows_staged_upload_cleans_descriptor_on_fdopen_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Once converted, the CRT descriptor—not the native handle—owns the file."""
+    from autodj import liner_files
+
+    root = liner_files._PinnedRoot(Path("Q:/liners"), 10, True)
+    delete = MagicMock(side_effect=OSError("delete cleanup"))
+    close = MagicMock(side_effect=OSError("close cleanup"))
+    close_fd = MagicMock(side_effect=OSError("descriptor cleanup"))
+    monkeypatch.setattr(liner_files, "_nt_create_relative", MagicMock(side_effect=[11, 12]))
+    monkeypatch.setattr(liner_files, "_open_osfhandle", MagicMock(return_value=13))
+    monkeypatch.setattr(liner_files.os, "fdopen", MagicMock(side_effect=OSError("fdopen")))
+    monkeypatch.setattr(liner_files, "_get_osfhandle", MagicMock(return_value=12))
+    monkeypatch.setattr(liner_files, "_windows_delete_by_handle", delete)
+    monkeypatch.setattr(liner_files, "_close_windows_handle", close)
+    monkeypatch.setattr(liner_files.os, "close", close_fd)
+
+    with pytest.raises(OSError, match="fdopen"):
+        liner_files._make_staged_upload(root)
+
+    delete.assert_any_call(12)
+    delete.assert_any_call(11)
+    close_fd.assert_called_once_with(13)
+    close.assert_called_once_with(11)
+    assert "Unable to delete failed liner upload file" in caplog.text
+    assert "Unable to close failed liner upload descriptor" in caplog.text
+    assert "Unable to delete failed liner staging directory" in caplog.text
+    assert "Unable to close failed liner staging directory" in caplog.text
+
+
+def test_portable_windows_publish_dispatches_and_flushes_directory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from autodj import liner_files
+
+    root = liner_files._PinnedRoot(Path("Q:/liners"), 10, True)
+    file = MagicMock()
+    file.fileno.return_value = 13
+    staged = liner_files._StagedUpload(root, 11, ".stage", "upload.tmp", file)
+    rename = MagicMock()
+    flush = MagicMock()
+    monkeypatch.setattr(liner_files, "_get_osfhandle", MagicMock(return_value=12))
+    monkeypatch.setattr(liner_files, "_windows_rename_by_handle", rename)
+    monkeypatch.setattr(liner_files._kernel32, "FlushFileBuffers", flush)
+    flush.return_value = True
+
+    liner_files._publish_staged_file(staged, "clip.mp3", replace=True)
+    liner_files._flush_directory(root)
+
+    rename.assert_called_once_with(12, 10, "clip.mp3", replace=True)
+    flush.assert_called_once_with(10)
+
+
+def test_portable_windows_open_and_delete_relative_file_close_native_handles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from autodj import liner_files
+
+    root = liner_files._PinnedRoot(Path("Q:/liners"), 10, True)
+    metadata = SimpleNamespace(st_mode=stat.S_IFREG | 0o600)
+    file = MagicMock()
+    monkeypatch.setattr(liner_files, "_nt_create_relative", MagicMock(side_effect=[12, 13]))
+    monkeypatch.setattr(liner_files, "_open_osfhandle", MagicMock(return_value=14))
+    monkeypatch.setattr(liner_files.os, "fstat", MagicMock(return_value=metadata))
+    monkeypatch.setattr(liner_files.os, "fdopen", MagicMock(return_value=file))
+    delete = MagicMock()
+    close = MagicMock()
+    monkeypatch.setattr(liner_files, "_delete_opened_file", delete)
+    monkeypatch.setattr(liner_files, "_close_windows_handle", close)
+
+    assert liner_files._open_relative_file(root, "clip.mp3").file is file
+    liner_files._delete_relative_file(root, "clip.mp3")
+
+    delete.assert_called_once_with(root, "clip.mp3", 13)
+    close.assert_called_once_with(13)
 
 
 @pytest.mark.asyncio
