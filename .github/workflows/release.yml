@@ -2,8 +2,13 @@ name: Release
 on:
   push:
     tags: ["v*"]
+# Reusable workflows can only maintain or reduce permissions down the chain, never
+# elevate them, so the ceiling here must already include every scope a called
+# workflow needs. `ci.yml` requests id-token: write for its Codecov OIDC upload.
+# Each job below still narrows to its own minimal set.
 permissions:
   contents: read
+  id-token: write
 
 concurrency:
   group: release-${{ github.ref }}
