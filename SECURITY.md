@@ -36,7 +36,7 @@ Out of scope:
 
 - Vulnerabilities entirely within third-party dependencies. Report those upstream, but tell us if
   AutoDJ makes affected behavior reachable.
-- Public Internet exposure without TLS and a suitable reverse proxy. AutoDJ has token-based LAN
+- Public Internet hosting, including end-to-end TLS deployments. AutoDJ has token-based LAN
   authentication, not multi-user authorization or an Internet-facing identity system.
 - Attacks that already control filesystem roots trusted through local operating-system ACLs.
 

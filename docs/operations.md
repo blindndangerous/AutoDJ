@@ -51,9 +51,21 @@ docker compose --profile lan up autodj-lan
 ```
 
 HTTP does not protect the token or session cookie from network observers. Use this Compose LAN
-profile only on a trusted private network. For an untrusted network, terminate TLS at a trusted
-reverse proxy or use `autodj serve` with its TLS options. Do not publish the loopback service
-directly to the internet.
+profile only on a trusted private network. For browser or LAN access on an untrusted network, use
+end-to-end TLS: run `autodj serve` directly with both `--ssl-certfile` and `--ssl-keyfile` and a
+certificate trusted by every browser. AutoDJ does not support TLS termination in front of its
+server. For a private LAN that needs TLS, leave `AUTODJ_ACCESS_TOKEN` exported and run:
+
+```bash
+uv run autodj serve --host 0.0.0.0 \
+  --allowed-host radio.local \
+  --allowed-origin https://radio.local:8080 \
+  --ssl-certfile radio.pem \
+  --ssl-keyfile radio-key.pem
+```
+
+The certificate and key are local files on the AutoDJ server. This supports private LAN access,
+not public Internet hosting. Do not publish the loopback service directly to the internet.
 
 ## Windows PowerShell setup
 

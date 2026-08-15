@@ -150,6 +150,26 @@ def test_operator_docs_cover_reproducible_workflows() -> None:
     assert "Get-Date -Format yyyy-MM-dd" in operations
 
 
+def test_operator_docs_require_end_to_end_tls_for_untrusted_networks() -> None:
+    operations = (ROOT / "docs" / "operations.md").read_text(encoding="utf-8")
+    security = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
+    normalized_operations = " ".join(operations.replace("\\\n", " ").split())
+
+    assert (
+        "end-to-end TLS: run `autodj serve` directly with both `--ssl-certfile` and "
+        "`--ssl-keyfile`" in normalized_operations
+    )
+    assert (
+        "uv run autodj serve --host 0.0.0.0 --allowed-host radio.local "
+        "--allowed-origin https://radio.local:8080 --ssl-certfile radio.pem "
+        "--ssl-keyfile radio-key.pem" in normalized_operations
+    )
+    assert "leave `AUTODJ_ACCESS_TOKEN` exported" in operations
+    assert "AutoDJ does not support TLS termination in front of its server" in normalized_operations
+    assert "This supports private LAN access, not public Internet hosting" in normalized_operations
+    assert "Public Internet hosting, including end-to-end TLS deployments" in security
+
+
 def test_operator_docs_keep_security_and_quality_commands_exact() -> None:
     operations = (ROOT / "docs" / "operations.md").read_text(encoding="utf-8")
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
