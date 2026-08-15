@@ -43,8 +43,16 @@ export async function audit(name, launcher) {
   // Drive the UI a bit so dormant code paths execute
   await page.click("body");
   await page.waitForTimeout(500);
-  // Cycle the transition select to fire postSettings
+  // The transition control belongs to the Settings tab.  Open the same tab a
+  // user would before selecting it so this audit only drives visible controls.
   try {
+    await page.locator("#tab-settings").click();
+    await page.locator("#panel-settings").waitFor({ state: "visible" });
+    if (await page.locator("#tab-settings").getAttribute("aria-selected") !== "true") {
+      throw new Error("Settings tab did not become selected");
+    }
+    await page.locator("#transition-select").waitFor({ state: "visible" });
+    // Cycle the transition select to fire postSettings.
     await page.selectOption("#transition-select", "highpass_sweep");
     await page.waitForTimeout(200);
     await page.selectOption("#transition-select", "freeze");
