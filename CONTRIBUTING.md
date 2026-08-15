@@ -30,7 +30,7 @@ floor. New behavior needs focused tests.
 
 ## Branching + commits
 
-Trunk-based. Cut a topic branch off `main`, push, open a PR. No
+Trunk-based. Cut a topic branch off `master`, push, open a PR. No
 long-lived `develop` or `release` branches.
 
 Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/).

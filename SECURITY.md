@@ -2,8 +2,8 @@
 
 ## Supported versions
 
-Only the latest tagged release on `main` receives security updates. The current supported line is
-`0.15.x`. Versions before 0.15 no longer receive security fixes.
+Only the latest tagged release on `master` receives security updates. The current supported line is
+`0.16.x`. Versions before 0.16 no longer receive security fixes.
 
 ## Reporting a vulnerability
 

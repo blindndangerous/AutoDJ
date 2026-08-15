@@ -195,8 +195,12 @@ def test_source_checkout_ignores_stale_ambient_distribution(tmp_path: Path) -> N
         text=True,
         check=False,
     )
+    expected = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"][
+        "version"
+    ]
+    assert expected != "0.14.0", "stale fixture must differ from the real project version"
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "0.15.0"
+    assert result.stdout.strip() == expected
 
 
 def test_installed_package_uses_distribution_metadata(tmp_path: Path) -> None:

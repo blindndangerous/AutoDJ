@@ -140,7 +140,7 @@ def test_operator_docs_cover_reproducible_workflows() -> None:
     assert "94.7%" in contributing
     assert "`uv run pyright src/autodj/`" in contributing
     assert "pre-commit does not run Pyright" in contributing
-    assert "0.15.x" in security
+    assert "0.16.x" in security
     assert "AUTODJ_ACCESS_TOKEN" in threat
     assert "SQLite online backup" in operations
     assert "tracks.db-wal" in operations
@@ -248,11 +248,12 @@ def test_operator_docs_keep_security_and_quality_commands_exact() -> None:
 
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     coverage = project["tool"]["autodj"]["coverage"]
-    unreleased = changelog.split("## [Unreleased]", 1)[1].split("## [0.15.0]", 1)[0]
-    assert f"{coverage['line_fail_under']}% line coverage" in unreleased
-    assert f"{coverage['branch_fail_under']}% branch coverage" in unreleased
-    assert "CI enforces" in unreleased
-    release_entry = unreleased.split("The release workflow", 1)[1]
+    headings = [match.start() for match in re.finditer(r"^## \[", changelog, flags=re.MULTILINE)]
+    newest = changelog[headings[0] : headings[1]]
+    assert f"{coverage['line_fail_under']}% line coverage" in newest
+    assert f"{coverage['branch_fail_under']}% branch coverage" in newest
+    assert "CI enforces" in newest
+    release_entry = newest.split("The release workflow", 1)[1]
     verify_step = next(line for line in release.splitlines() if "Verify tag" in line)
     for identity in ("tag", "project", "changelog", "wheel"):
         assert identity in release_entry.lower()

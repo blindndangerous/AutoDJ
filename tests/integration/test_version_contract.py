@@ -1,3 +1,5 @@
+import re
+
 import pytest
 
 import autodj.server as server
@@ -19,7 +21,11 @@ BUILT_FILES = (
 def write_bundle(directory, prefix: str) -> None:
     directory.mkdir()
     for name in BUILT_FILES:
-        contents = '{"version":"0.15.0"}\n' if name == "build-info.json" else f"{prefix}:{name}"
+        contents = (
+            f'{{"version":"{current_version()}"}}\n'
+            if name == "build-info.json"
+            else f"{prefix}:{name}"
+        )
         (directory / name).write_text(contents, encoding="utf-8")
 
 
@@ -33,7 +39,8 @@ def test_api_rejects_a_stale_built_bundle(bridge, tmp_path, monkeypatch) -> None
     (static_dist / "build-info.json").write_text('{"version":"0.14.0"}\n', encoding="utf-8")
     monkeypatch.setattr(server, "_PACKAGE_DIR", tmp_path)
 
-    with pytest.raises(RuntimeError, match=r"bundle version 0\.14\.0.*runtime version 0\.15\.0"):
+    runtime = re.escape(current_version())
+    with pytest.raises(RuntimeError, match=rf"bundle version 0\.14\.0.*runtime version {runtime}"):
         create_app(bridge)
 
 
