@@ -38,15 +38,26 @@ allowed-origin lists.
 When `server.access_token` or `AUTODJ_ACCESS_TOKEN` is set:
 
 - The token must contain at least 32 UTF-8 bytes.
-- The login handler compares the token in constant time and exchanges it for a signed
-  `autodj_session` cookie.
+- The browser never receives or sends the token. Operators share a short pairing code instead.
+- The server derives that code as `HMAC-SHA256(token, "pair:<window>")` reduced to eight decimal
+  digits, where the window advances every 300 seconds. Current and previous windows are both
+  accepted, so one code stays usable for at most ten minutes and is compared in constant time.
+- A browser posts the code and a device name to `/api/pair`. On success the server records a new
+  device identity and returns a session bound to that device.
+- The session is `<expiry>.<device>.<nonce>` signed with HMAC-SHA256 under the same token and
+  carried in an `autodj_session` cookie. Default lifetime is 90 days, configurable between 60
+  seconds and one year.
 - The cookie is HttpOnly and SameSite Strict. It becomes Secure when AutoDJ serves with TLS.
-- The login body is limited to 4096 bytes before downstream parsing.
+- Every request revalidates the signature, the expiry, and whether the device is still active, so
+  `autodj devices revoke` and `autodj devices reset` take effect immediately, including on already
+  connected WebSockets.
+- The pairing body is limited to 4096 bytes before downstream parsing.
 - A fixed-window limiter permits five attempts per client and 100 total attempts per 60 seconds,
   with bounded state for 1024 clients.
+- Rotating the token invalidates every outstanding pairing code and every existing session at once.
 - The HTTP API and WebSocket both enforce session, Host, and Origin policy.
 
-Public assets, `/healthz`, `/api/version`, `/api/auth/status`, and `/api/login` remain available
+Public assets, `/healthz`, `/api/version`, `/api/auth/status`, and `/api/pair` remain available
 without a session cookie. Unsafe HTTP methods require one allowed Origin. Audio and liner file
 endpoints use indexed or validated plain-file allowlists rather than arbitrary filesystem paths.
 

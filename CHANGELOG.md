@@ -32,6 +32,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The release workflow reruns CI and security checks, then verifies tag, project, changelog, and
   wheel identity before publishing.
 
+### Fixed
+
+- Corrected the threat model, which still described the removed token-exchange login endpoint. It
+  now documents pairing-code derivation, device-bound sessions, and immediate device revocation.
+
 ## [0.15.0] - 2026-05-07
 
 The "make it feel like a real radio station" release.

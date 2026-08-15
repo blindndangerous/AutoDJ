@@ -150,6 +150,15 @@ def test_operator_docs_cover_reproducible_workflows() -> None:
     assert "Get-Date -Format yyyy-MM-dd" in operations
 
 
+def test_threat_model_describes_device_pairing_not_removed_login() -> None:
+    threat = (ROOT / "THREAT_MODEL.md").read_text(encoding="utf-8")
+
+    assert "/api/login" not in threat
+    assert "/api/pair" in threat
+    assert "The browser never receives or sends the token" in threat
+    assert "autodj devices revoke" in threat
+
+
 def test_operator_docs_require_end_to_end_tls_for_untrusted_networks() -> None:
     operations = (ROOT / "docs" / "operations.md").read_text(encoding="utf-8")
     security = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
