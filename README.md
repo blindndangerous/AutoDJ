@@ -18,24 +18,7 @@ An auto-DJ that picks the next song based on what is playing now.  Point it at t
 - **Works offline.**  Once installed there is no network requirement.  Use it on a NAS, on a laptop in airplane mode, on a Raspberry Pi.
 - **Accessibility.**  Controls support keyboard use.  Screen-reader claims are limited to the browser and flows recorded for each release; see [Accessibility testing](docs/accessibility-testing.md) for the policy and its limits.
 
-## Install a release
-
-Each tagged release publishes a wheel that already contains the minified web UI, so you need
-neither a clone nor Node to run AutoDJ. AutoDJ is not on PyPI; install the wheel from the
-[latest release](https://github.com/blindndangerous/AutoDJ/releases/latest):
-
-```bash
-python -m pip install "autodj[all] @ https://github.com/blindndangerous/AutoDJ/releases/download/v0.16.0/autodj-0.16.0-py3-none-any.whl"
-mkdir -p music index models
-autodj doctor
-```
-
-Drop `[all]` for the lighter install that only runs `enrich`, `prune`, `stats`, and `playlist`.
-Every release is signed; each artifact ships a cosign `.bundle` beside it.
-
-## Quick start from source
-
-Clone instead if you intend to change AutoDJ:
+## Quick start (the short version)
 
 ```bash
 git clone https://github.com/blindndangerous/AutoDJ
@@ -46,6 +29,8 @@ uv sync --frozen --all-extras
 npm ci
 mkdir -p music index models
 ```
+
+This is the supported install. `--frozen` gives you the exact dependency versions CI tested.
 
 AutoDJ works without a configuration file. Its defaults use `music/`, `index/`, and `models/`
 under the current directory and listen on `127.0.0.1:8080`. To change those defaults, copy the
@@ -327,6 +312,25 @@ Gates outside pre-commit include lock checks, the coverage-exclusion policy, Pyr
 Vite build, the frontend dead-code scan, npm audit, Playwright audits, container smoke, and release
 verification. Run their commands directly or through CI as described in
 [Contributing](CONTRIBUTING.md).
+
+## Release artifacts
+
+Every tag publishes what `uv build` produces: a wheel, an sdist, a CycloneDX SBOM, and a cosign
+signature bundle beside each file. They exist so a build can be verified and archived, and so
+AutoDJ can be installed without a checkout — the wheel already carries the minified web UI, so it
+needs no Node toolchain.
+
+AutoDJ is not on PyPI. To install a tagged wheel:
+
+```bash
+uv pip install "autodj[all] @ https://github.com/blindndangerous/AutoDJ/releases/download/v0.16.0/autodj-0.16.0-py3-none-any.whl"
+```
+
+Drop `[all]` for the lighter install that only runs `enrich`, `prune`, `stats`, and `playlist`.
+
+Installing a wheel resolves dependencies fresh from PyPI instead of from `uv.lock`, so you give up
+the exact versions CI tested. The clone plus `uv sync --frozen --all-extras` above stays the
+supported path; reach for the wheel only when you want AutoDJ without a source tree.
 
 ## Credits and licensing
 
