@@ -96,6 +96,19 @@ async function flushPromises() {
   await Promise.resolve();
 }
 
+function startDecodedTransition(engine, path) {
+  engine.applyBrowserPlaybackState({
+    browser_playback: true,
+    current_track: { path },
+    is_muted: false,
+    is_paused: false,
+    next_track: null,
+    settings: { transition: "tape_stop", playback: { fade_in_seconds: 0 } },
+  });
+  engine.setSrcOnDeck(engine.decks[0], path);
+  return engine.startCrossfade("next.mp3", 1, true);
+}
+
 beforeEach(() => {
   vi.resetModules();
 });
@@ -354,10 +367,12 @@ describe("audio engine request recovery", () => {
     const { engine } = await importEngine({ decodeAudioData });
     engine.ensureAudioGraph();
 
-    engine.setSrcOnDeck(engine.decks[0], "bad.mp3");
+    startDecodedTransition(engine, "bad.mp3");
     await vi.waitFor(() => expect(document.querySelector("#now-playing-announce").textContent)
       .toContain("unexpected content type"));
+    await vi.waitFor(() => expect(engine.decks[0].audio.muted).toBe(false));
     expect(decodeAudioData).not.toHaveBeenCalled();
+    engine.stopAllDecks();
   });
 
   it("announces status failures while unlocking playback", async () => {
@@ -410,16 +425,19 @@ describe("audio engine request recovery", () => {
     const { engine } = await importEngine();
     engine.ensureAudioGraph();
 
-    engine.setSrcOnDeck(engine.decks[0], "same.mp3");
+    startDecodedTransition(engine, "same.mp3");
     engine.resetTrackCaches();
-    engine.setSrcOnDeck(engine.decks[1], "same.mp3");
+    engine.stopAllDecks();
+    startDecodedTransition(engine, "same.mp3");
     oldRequest.reject(new Error("old request failed"));
     await flushPromises();
-    engine.setSrcOnDeck({ audio: {}, path: null }, "same.mp3");
+    engine.stopAllDecks();
+    startDecodedTransition(engine, "same.mp3");
     await flushPromises();
 
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     newRequest.resolve(binaryResponse());
+    engine.stopAllDecks();
   });
 
   it("keeps crossfade ownership pending until teardown completes", async () => {

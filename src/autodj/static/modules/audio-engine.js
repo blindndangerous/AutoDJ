@@ -398,6 +398,13 @@ async function _decodeFor(path) {
       _bufferCache.set(path, buf);
       return buf;
     })
+    .catch((errorValue) => {
+      // Decoded-audio effects are invoked on demand at transition time.
+      // Surface a failed audio request just as other client requests do,
+      // while preserving the rejection for the effect's fallback handler.
+      announceRequestError(errorValue);
+      throw errorValue;
+    })
     .finally(() => {
       if (_bufferPending.get(path) === pending) {
         _bufferPending.delete(path);
