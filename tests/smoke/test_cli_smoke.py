@@ -14,11 +14,18 @@ import pytest
 from click.testing import CliRunner
 
 from autodj.cli import cli
+from autodj.config import ENVIRONMENT_OVERLAY
 from autodj.indexer import FEATURE_DIM, IndexEntry, save_index
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def clear_autodj_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    for variable in ENVIRONMENT_OVERLAY:
+        monkeypatch.delenv(variable, raising=False)
 
 
 @pytest.fixture

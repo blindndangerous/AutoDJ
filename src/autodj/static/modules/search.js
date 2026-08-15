@@ -5,11 +5,25 @@
 
 import { escHtml, fmtTrack } from "./dom-helpers.js";
 import { clearLiveRegionLater } from "./live-region.js";
+import {
+  captureAuthenticatedRequestEpoch,
+  isAuthenticatedRequestCurrent,
+  requestJson,
+  withDisabled,
+} from "./api-client.js";
+import { createLatestRequestOwner } from "./latest-request.js";
 
 export function installSearch({
   searchInput, btnSearch, searchResults, searchCount, queueAnnounce,
 }) {
   if (!searchInput || !searchResults) return;
+  const searchRequestOwner = createLatestRequestOwner();
+
+  function announce(message) {
+    if (!queueAnnounce) return;
+    queueAnnounce.textContent = message;
+    clearLiveRegionLater(queueAnnounce);
+  }
 
   async function doSearch() {
     const q = searchInput.value.trim();
@@ -17,11 +31,24 @@ export function installSearch({
       searchResults.innerHTML = "";
       searchInput.setAttribute("aria-expanded", "false");
       if (searchCount) searchCount.textContent = "";
+      searchRequestOwner.cancel();
       return;
     }
-
-    const res  = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
-    const data = await res.json();
+    const request = searchRequestOwner.begin();
+    let data;
+    try {
+      data = await withDisabled(btnSearch, () => requestJson(
+        `/api/search?q=${encodeURIComponent(q)}`,
+        { signal: request.signal },
+      ));
+    } catch (errorValue) {
+      if (!searchRequestOwner.isCurrent(request)) return;
+      if (searchCount) searchCount.textContent = `Could not search: ${errorValue.message}`;
+      searchInput.focus();
+      return;
+    }
+    if (!searchRequestOwner.isCurrent(request)) return;
+    searchRequestOwner.finish(request);
     const results = data.results || [];
 
     if (results.length === 0) {
@@ -65,6 +92,7 @@ export function installSearch({
   // Collapse results when input is cleared.
   searchInput.addEventListener("input", () => {
     if (!searchInput.value.trim()) {
+      searchRequestOwner.cancel();
       searchResults.innerHTML = "";
       searchInput.setAttribute("aria-expanded", "false");
       if (searchCount) searchCount.textContent = "";
@@ -75,35 +103,35 @@ export function installSearch({
   searchResults.addEventListener("click", async (e) => {
     const btn = e.target.closest(".result-btn");
     if (!btn) return;
+    const epoch = captureAuthenticatedRequestEpoch();
     const path = btn.dataset.path;
     const now  = btn.dataset.now === "true";
     const name = btn.closest("li").querySelector(".result-name").textContent;
-    btn.disabled = true;
     try {
+      await withDisabled(btn, async () => {
       if (now) {
-        await fetch("/api/play-next", {
+        await requestJson("/api/play-next", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ path, now: true }),
         });
-        if (queueAnnounce) {
-          queueAnnounce.textContent = `Playing ${name} now.`;
-          clearLiveRegionLater(queueAnnounce);
-        }
+        if (!isAuthenticatedRequestCurrent(epoch)) return;
+        announce(`Playing ${name} now.`);
       } else {
-        await fetch("/api/queue/add", {
+        await requestJson("/api/queue/add", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ path }),
         });
-        if (queueAnnounce) {
-          queueAnnounce.textContent = `Added ${name} to queue.`;
-          clearLiveRegionLater(queueAnnounce);
-        }
+        if (!isAuthenticatedRequestCurrent(epoch)) return;
+        announce(`Added ${name} to queue.`);
       }
+      });
+    } catch (errorValue) {
+      if (!isAuthenticatedRequestCurrent(epoch)) return;
+      announce(`Could not update queue: ${errorValue.message}`);
     } finally {
-      btn.disabled = false;
-      btn.focus();
+      if (isAuthenticatedRequestCurrent(epoch)) btn.focus();
     }
   });
 }

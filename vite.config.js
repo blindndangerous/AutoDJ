@@ -20,13 +20,113 @@
 //     unchanged in the closeBundle hook below.
 
 import { defineConfig } from "vite";
-import { copyFileSync, mkdirSync, existsSync } from "node:fs";
+import {
+  closeSync,
+  copyFileSync,
+  existsSync,
+  fchmodSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import process from "node:process";
+import { randomUUID } from "node:crypto";
+import { parse } from "smol-toml";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SRC  = resolve(here, "src/autodj/static");
 const OUT  = resolve(here, "src/autodj/static_dist");
+const pyproject = readFileSync(resolve(here, "pyproject.toml"), "utf8");
+
+export function readProjectVersion(source) {
+  let document;
+  try {
+    document = parse(source);
+  } catch (error) {
+    throw new Error(`Unable to read project.version from pyproject.toml: ${error.message}`, {
+      cause: error,
+    });
+  }
+  if (document.project?.name !== "autodj") {
+    throw new Error(
+      "Unable to read project.version from pyproject.toml: project.name must be 'autodj'",
+    );
+  }
+  const version = document.project?.version;
+  if (typeof version !== "string" || !version.trim()) {
+    throw new Error(
+      "Unable to read project.version from pyproject.toml: expected a non-empty string",
+    );
+  }
+  return version;
+}
+
+function syncDirectory(path) {
+  let directory;
+  try {
+    directory = openSync(path, "r");
+    fsyncSync(directory);
+  } catch (error) {
+    if (process.platform !== "win32" || !["EACCES", "EINVAL", "EPERM"].includes(error.code)) {
+      throw error;
+    }
+  } finally {
+    if (directory !== undefined) closeSync(directory);
+  }
+}
+
+export function writeBuildInfo(
+  out,
+  version,
+  replaceFile = renameSync,
+  setMode = fchmodSync,
+  closeFile = closeSync,
+) {
+  if (!existsSync(out)) mkdirSync(out, { recursive: true });
+  const target = resolve(out, "build-info.json");
+  const temporary = resolve(
+    out,
+    `.build-info.json.${process.pid}.${randomUUID()}.tmp`,
+  );
+  let file;
+  try {
+    file = openSync(temporary, "wx", 0o644);
+    writeFileSync(file, `${JSON.stringify({ version }, null, 2)}\n`, "utf8");
+    setMode(file, 0o644);
+    fsyncSync(file);
+    try {
+      closeFile(file);
+    } catch (error) {
+      try {
+        closeSync(file);
+      } catch {
+        // Preserve the original close failure; cleanup below still runs.
+      }
+      file = undefined;
+      throw error;
+    }
+    file = undefined;
+    replaceFile(temporary, target);
+    syncDirectory(out);
+  } finally {
+    if (file !== undefined) {
+      try {
+        closeSync(file);
+      } catch {
+        // Preserve the operation failure while still attempting temp cleanup.
+      }
+    }
+    rmSync(temporary, { force: true });
+  }
+}
+
+const PRODUCT_VERSION = readProjectVersion(pyproject);
 
 // Files we copy as-is into static_dist after the bundle step.
 // Worklets MUST keep their filenames stable (the FastAPI server has
@@ -62,7 +162,7 @@ export default defineConfig({
         // wrapper would clash with type="module" because the script
         // tag would still be expected to satisfy ES module semantics.
         format: "es",
-        inlineDynamicImports: true,
+        codeSplitting: false,
       },
     },
   },
@@ -76,6 +176,7 @@ export default defineConfig({
           const to   = resolve(OUT, f);
           if (existsSync(from)) copyFileSync(from, to);
         }
+        writeBuildInfo(OUT, PRODUCT_VERSION);
       },
     },
   ],

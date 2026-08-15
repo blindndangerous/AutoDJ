@@ -11,15 +11,15 @@
 // Run:
 //   AUTODJ_URL=http://192.168.50.40:8082 node tests/playwright/regression_audit.mjs
 
-import { chromium, firefox, webkit } from "playwright";
-import { writeFileSync } from "node:fs";
+import { runAudit, validateRegressionAudit } from "./audit_helpers.mjs";
 
 const BASE = process.env.AUTODJ_URL || "http://localhost:8080";
 
-async function audit(name, launcher) {
+export async function audit(name, launcher) {
   const browser = await launcher.launch({
     args: name === "chromium" ? ["--autoplay-policy=no-user-gesture-required"] : [],
   });
+  try {
   const ctx = await browser.newContext({ ignoreHTTPSErrors: true });
   const page = await ctx.newPage();
   const errors = [];
@@ -123,26 +123,14 @@ async function audit(name, launcher) {
     };
   });
 
-  await browser.close();
   return { dom, hotkeys, liveRegion, errors };
+  } finally {
+    await browser.close();
+  }
 }
 
-const main = async () => {
-  const results = {};
-  for (const [name, launcher] of [
-    ["chromium", chromium],
-    ["firefox", firefox],
-    ["webkit", webkit],
-  ]) {
-    try {
-      results[name] = await audit(name, launcher);
-    } catch (e) {
-      results[name] = { error: String(e) };
-    }
-  }
-  const out = JSON.stringify(results, null, 2);
-  console.log(out);
-  writeFileSync("regression_audit_report.json", out);
-};
-
-main();
+await runAudit({
+  audit,
+  report: "regression_audit_report.json",
+  validate: validateRegressionAudit,
+});

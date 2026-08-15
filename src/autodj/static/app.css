@@ -52,6 +52,31 @@
       outline-offset: 3px;
     }
 
+    #auth-dialog {
+      width: min(32rem, calc(100% - 2rem));
+      max-height: calc(100vh - 2rem);
+      margin: auto;
+      padding: 1.5rem;
+      overflow: auto;
+      color: var(--text);
+      background: var(--bg-card);
+      border: 1px solid var(--accent);
+      border-radius: var(--radius);
+    }
+    #auth-dialog::backdrop { background: rgba(0, 0, 0, 0.75); }
+    #auth-form { display: grid; gap: 0.75rem; }
+    #auth-token {
+      width: 100%;
+      min-height: 44px;
+      padding: 0.55rem 0.75rem;
+      color: var(--text);
+      background: var(--bg);
+      border: 1px solid #8aa4d6;
+      border-radius: var(--radius);
+      font: inherit;
+    }
+    #auth-error { color: #ffaaa0; }
+
     header {
       background: var(--bg-card);
       border-bottom: 1px solid var(--border);
@@ -72,7 +97,7 @@
       background: var(--border);
       color: var(--text-dim);
     }
-    #conn-status.connected   { background: var(--green);  color: #fff; }
+    #conn-status.connected   { background: #4ade80; color: #081f12; }
     /* Fix 1: #e67e22 on white only reaches 2.85:1 — use dark text instead */
     #conn-status.connecting  { background: #e67e22; color: #000; }
     #conn-status.error       { background: var(--danger);  color: #fff; }
@@ -124,6 +149,7 @@
       width: 100%;
       height: 24px;           /* 2.5.8: min 24 px interactive target */
       background: transparent;
+      border: 1px solid #8aa4d6;
       border-radius: 3px;
       overflow: visible;
       position: relative;
@@ -184,7 +210,7 @@
       padding: 0.55rem 1.1rem;
       background: var(--btn-bg);
       color: var(--btn-text);
-      border: none;
+      border: 1px solid #8aa4d6;
       border-radius: var(--radius);
       font-size: 0.95rem;
       font-weight: 500;
@@ -203,6 +229,12 @@
     button:disabled {
       opacity: 0.45;
       cursor: not-allowed;
+    }
+
+    input:not([type="checkbox"]):not([type="radio"]),
+    select,
+    textarea {
+      border: 1px solid #8aa4d6;
     }
 
     /* ---- Volume ---- */
@@ -259,7 +291,7 @@
       min-width: 180px;
       padding: 0.55rem 0.85rem;
       background: var(--bg);
-      border: 1px solid var(--border);
+      border: 1px solid #8aa4d6;
       border-radius: var(--radius);
       color: var(--text);
       font-size: 0.95rem;
@@ -633,7 +665,7 @@
       padding: 0.5rem 0.9rem;
       color: var(--text);
       background: transparent;
-      border: 1px solid transparent;
+      border: 1px solid #8aa4d6;
       border-radius: var(--radius);
       font: inherit;
       font-weight: 500;
@@ -693,7 +725,54 @@
     #camelot-wheel .label.active { fill: #000; font-weight: 700; }
 
     @media (prefers-reduced-motion: reduce) {
-      #camelot-wheel .sector { transition: none; }
+      html { scroll-behavior: auto; }
+      *,
+      *::before,
+      *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        scroll-behavior: auto !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
+
+    @media (forced-colors: active) {
+      button,
+      #progress-track,
+      input,
+      input:not([type="checkbox"]):not([type="radio"]),
+      #auth-token,
+      #search-input,
+      select,
+      textarea,
+      #view-nav [role="tab"] {
+        border-color: CanvasText;
+      }
+      button,
+      input,
+      select,
+      textarea,
+      #view-nav [role="tab"] {
+        background: Canvas;
+        color: CanvasText;
+      }
+      input { accent-color: Highlight; }
+      #progress-track::before { background: CanvasText; }
+      #progress-fill { background: Highlight; }
+      input[type="range"]::-webkit-slider-thumb,
+      input[type="range"]::-moz-range-thumb {
+        background: Highlight;
+        border-color: CanvasText;
+      }
+      :focus-visible {
+        outline: 2px solid Highlight;
+        outline-color: Highlight;
+      }
+      #search-input:focus-visible,
+      details.card > summary:focus-visible,
+      section[data-view] h2:focus-visible {
+        outline-color: Highlight;
+      }
     }
 
 /* Hotkey help modal -------------------------------------------------- */

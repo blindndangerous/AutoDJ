@@ -1,71 +1,53 @@
-# AutoDJ container image — Podman-native, Docker-compatible.
-#
-# Runs `autodj serve` (CPU-only) so users can `podman compose up` from
-# a fresh clone.  Indexing remains a host task because GPU access
-# would require nvidia-container-toolkit setup; mount the resulting
-# index/ folder into the container for playback.
-#
-# Build:
-#   podman build -t autodj:latest -f Containerfile .
-# Run (compose handles the volume mounts):
-#   podman compose up
-# Or standalone:
-#   podman run --rm -p 8080:8080 \
-#     -v ./music:/music:ro -v ./index:/index \
-#     autodj:latest
-
-FROM python:3.13-slim AS base
+# Manifest-list digests reviewed 2026-08-02 via registry Docker-Content-Digest headers.
+FROM python:3.14.6-slim-bookworm@sha256:86f975aca15cf04a40b399eebede9aea7c82eae084d1f1a0a6ef6bcaae871a30 AS python-base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     UV_LINK_MODE=copy \
     UV_PROJECT_ENVIRONMENT=/opt/venv
 
-# uv installs deps faster than pip + handles the lockfile we already ship.
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
-
-# System deps for soundfile / librosa / ffmpeg-style decoding.
+COPY --from=ghcr.io/astral-sh/uv:0.11.26@sha256:3d868e555f8f1dbc324afa005066cd11e1053fc4743b9808ca8025283e65efa5 /uv /usr/local/bin/uv
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        libsndfile1 \
-        ffmpeg \
-        ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates ffmpeg libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-
-# Install Python deps before copying source so layer cache survives
-# unrelated source edits.
-COPY pyproject.toml uv.lock README.md ./
+COPY pyproject.toml uv.lock README.md LICENSE ./
 RUN uv sync --frozen --no-dev --no-install-project
 
-# Build the web UI bundle in a separate stage so the runtime image
-# does not carry Node.  Output (src/autodj/static_dist/) is copied
-# into the runtime layer below.
-FROM node:22-slim AS frontend
+FROM node:24.6.0-bookworm-slim@sha256:9b741b28148b0195d62fa456ed84dd6c953c1f17a3761f3e6e6797a754d9edff AS frontend
 WORKDIR /build
-COPY package.json vite.config.js ./
+COPY package.json package-lock.json pyproject.toml vite.config.js ./
 COPY src/autodj/static ./src/autodj/static
-RUN npm install --no-audit --no-fund \
-    && npm run build
+RUN npm ci --ignore-scripts --no-audit --no-fund && npm run build
 
-# Back to the runtime image.
-FROM base
-WORKDIR /app
-COPY --from=frontend /build/src/autodj/static_dist ./src/autodj/static_dist
-
-# Now copy the source.  Static assets ride along as a Python package
-# resource so `autodj serve` finds them; the prior stage's bundled
-# assets sit alongside in static_dist/ and the server prefers them.
+FROM python-base AS package
 COPY src ./src
-RUN uv sync --frozen --no-dev
+COPY --from=frontend /build/src/autodj/static_dist ./src/autodj/static_dist
+RUN uv export --frozen --only-group build --no-emit-project --format requirements-txt --output-file /tmp/build-constraints.txt \
+    && uv build --wheel --out-dir /tmp/dist --build-constraints /tmp/build-constraints.txt --require-hashes
 
-EXPOSE 8080
+FROM python-base AS runtime
+WORKDIR /app
+COPY --from=package /tmp/dist /tmp/dist
+RUN uv pip install --python /opt/venv/bin/python --no-deps /tmp/dist/*.whl \
+    && rm -rf /tmp/dist \
+    && groupadd --gid 10001 autodj \
+    && useradd --uid 10001 --gid 10001 --create-home --shell /usr/sbin/nologin autodj \
+    && install -d -o 10001 -g 10001 /app/.cache /index /models
 
-# Defaults — override via compose / -e on the command line.
-ENV AUTODJ_HOST=0.0.0.0 \
+ENV HOME=/home/autodj \
+    XDG_CACHE_HOME=/app/.cache \
+    HF_HOME=/models/huggingface \
+    AUTODJ_HOST=0.0.0.0 \
     AUTODJ_PORT=8080 \
-    AUTODJ_INDEX_DIR=/index
+    AUTODJ_LIBRARY_MUSIC_DIR=/music \
+    AUTODJ_INDEX_DIR=/index \
+    AUTODJ_MODEL_DIR=/models
 
-ENTRYPOINT ["uv", "run", "autodj"]
-CMD ["serve", "--host", "0.0.0.0", "--port", "8080"]
+USER 10001:10001
+EXPOSE 8080
+HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=6 \
+    CMD ["/opt/venv/bin/python", "-c", "import ipaddress, os, re, urllib.request; raw = os.environ['AUTODJ_HOST'].strip(); host = raw[1:-1] if raw.startswith('[') and raw.endswith(']') else raw; port = int(os.environ['AUTODJ_PORT']); assert 1 <= port <= 65535; ipv6 = ':' in host; assert (ipv6 and ipaddress.ip_address(host).version == 6) or (not ipv6 and re.fullmatch(r'(?!-)(?:[A-Za-z0-9-]{1,63}\\.)*[A-Za-z0-9-]{1,63}', host) and all(not label.endswith('-') for label in host.split('.'))); probe = '[::1]' if ipv6 else '127.0.0.1'; urllib.request.build_opener(urllib.request.ProxyHandler({})).open(f'http://{probe}:{port}/healthz', timeout=2).read()"]
+ENTRYPOINT ["/opt/venv/bin/autodj"]
+CMD ["serve", "--no-playback"]

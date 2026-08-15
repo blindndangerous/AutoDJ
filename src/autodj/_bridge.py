@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from autodj.index_manifest import IndexSnapshotToken
     from autodj.indexer import IndexEntry
 
 logger = logging.getLogger(__name__)
@@ -627,7 +628,8 @@ class PlayerBridge:
             return []
 
         results = []
-        for entry in self.sim.entries:
+        similarity = self.sim
+        for entry in similarity.entries_snapshot():
             haystack = (f"{entry.title} — {entry.artist} — {entry.album}").lower()
             if all(tok in haystack for tok in tokens):
                 results.append(
@@ -704,10 +706,8 @@ class PlayerBridge:
         Returns:
             ``True`` if the track was found in the index, ``False`` otherwise.
         """
-        entry = next(
-            (e for e in self.sim.entries if e.path == path),
-            None,
-        )
+        similarity = self.sim
+        entry = similarity.entry_for_path(path)
         if entry is None:
             return False
         self._capture_pre_queue_seed()
@@ -731,7 +731,8 @@ class PlayerBridge:
         """
         import random as _random
 
-        entries = self.sim.entries
+        similarity = self.sim
+        entries = similarity.entries_snapshot()
         if not entries:
             return False
         chosen = _random.choice(entries)  # nosec B311 — non-security
@@ -741,10 +742,8 @@ class PlayerBridge:
 
     def queue_add(self, path: str) -> bool:
         """Append a track by path to the end of the user queue."""
-        entry = next(
-            (e for e in self.sim.entries if e.path == path),
-            None,
-        )
+        similarity = self.sim
+        entry = similarity.entry_for_path(path)
         if entry is None:
             return False
         self._capture_pre_queue_seed()
@@ -801,6 +800,11 @@ class PlayerBridge:
         """Return the currently-loaded lyrics as a list of dicts."""
         lyrics = getattr(self.player, "_current_lyrics", []) or []
         return [{"time_s": ll.time_s, "text": ll.text} for ll in lyrics]
+
+    def lyrics_for(self, path: str) -> list[dict]:
+        """Read timed lyrics for *path* without depending on current-track state."""
+        lyrics, _plain = self.player._read_lyrics_for_path(path)
+        return [{"time_s": line.time_s, "text": line.text} for line in lyrics]
 
     # ------------------------------------------------------------------
     # 3-band EQ
@@ -919,7 +923,7 @@ class PlayerBridge:
                     getattr(cfg.playback, "beat_sync_fx", True),
                 ),
                 "no_repeat_window": int(p._state.no_repeat_window),
-                "library_size": int(len(p._sim.entries) if p._sim else 0),
+                "library_size": int(p._sim.ntotal if p._sim else 0),
                 "key_sync_fx": bool(
                     getattr(cfg.playback, "key_sync_fx", True),
                 ),
@@ -935,6 +939,39 @@ class PlayerBridge:
                     cfg.playback,
                     "silence_trigger_crossfade",
                     True,
+                ),
+                "liners_enabled": bool(
+                    getattr(cfg.playback, "liners_enabled", False),
+                ),
+                "liners_every_n_songs": getattr(
+                    cfg.playback,
+                    "liners_every_n_songs",
+                    None,
+                ),
+                "liners_every_minutes": getattr(
+                    cfg.playback,
+                    "liners_every_minutes",
+                    None,
+                ),
+                "liners_random_min_minutes": getattr(
+                    cfg.playback,
+                    "liners_random_min_minutes",
+                    None,
+                ),
+                "liners_random_max_minutes": getattr(
+                    cfg.playback,
+                    "liners_random_max_minutes",
+                    None,
+                ),
+                "liners_pick_mode": getattr(
+                    cfg.playback,
+                    "liners_pick_mode",
+                    "random",
+                ),
+                "liners_duck_db": getattr(
+                    cfg.playback,
+                    "liners_duck_db",
+                    -12.0,
                 ),
             },
             "bpm_range": {
@@ -1188,7 +1225,12 @@ class PlayerBridge:
     # Hot-reload — pick up new tracks while a parallel `index` runs
     # ------------------------------------------------------------------
 
-    def reload_index_from_disk(self) -> int:
+    def reload_index_from_disk(
+        self,
+        expected_generation: int | None = None,
+        *,
+        expected_snapshot: IndexSnapshotToken | None = None,
+    ) -> int:
         """Re-read ``tracks.db`` + ``vectors.index`` into the live sim.
 
         Used by the background watcher in :func:`create_app` so a long-
@@ -1202,10 +1244,14 @@ class PlayerBridge:
         cfg = getattr(self.player, "_cfg", None)
         if cfg is None:
             return self.sim.ntotal
+        kwargs: dict[str, Any] = {"expected_generation": expected_generation}
+        if expected_snapshot is not None:
+            kwargs["expected_snapshot"] = expected_snapshot
         return self.sim.reload_from_disk(
             cfg.index.active_dir,
             music_dir=cfg.library.music_dir,
             path_remap=cfg.library.path_remap,
+            **kwargs,
         )
 
 

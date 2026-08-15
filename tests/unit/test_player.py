@@ -4,6 +4,10 @@ sounddevice and pynput are mocked so tests run without audio hardware.
 Audio crossfade math is tested with real numpy arrays.
 """
 
+import os
+import subprocess
+import sys
+from collections import deque
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -30,7 +34,7 @@ from autodj.player import (
     make_eq_filters,
     write_m3u,
 )
-from autodj.similarity import SimilarityIndex
+from autodj.similarity import SimilarityError, SimilarityIndex
 
 # Note: Player no longer accepts a model wrapper — vectors are looked up
 # from the pre-built FAISS index at play time via SimilarityIndex.find_next_for_path
@@ -39,6 +43,36 @@ from autodj.similarity import SimilarityIndex
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def test_player_import_tolerates_portaudio_loader_failure() -> None:
+    """Headless serve must load track-picking without a system PortAudio library."""
+    source_root = Path(__file__).parents[2] / "src"
+    probe = """
+import importlib.abc
+import importlib.machinery
+import sys
+
+class Loader(importlib.abc.Loader):
+    def create_module(self, spec):
+        return None
+    def exec_module(self, module):
+        raise OSError('PortAudio library not found')
+
+class Finder(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == 'sounddevice':
+            return importlib.machinery.ModuleSpec(fullname, Loader())
+        return None
+
+sys.meta_path.insert(0, Finder())
+import autodj.player as player
+assert player.sd is None
+"""
+    env = {**os.environ, "PYTHONPATH": str(source_root)}
+    result = subprocess.run([sys.executable, "-c", probe], env=env, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def _make_entry(i: int = 0) -> IndexEntry:
@@ -443,7 +477,9 @@ def _make_cfg_mock() -> MagicMock:
     return cfg
 
 
-def _make_sim_index(n: int = 10) -> SimilarityIndex:
+def _make_sim_index(n: int = 10, *, bpms: list[float] | None = None) -> SimilarityIndex:
+    if bpms is not None and len(bpms) != n:
+        raise ValueError("bpms must contain one value per track")
     rng = np.random.default_rng(42)
     vectors = rng.standard_normal((n, FEATURE_DIM)).astype(np.float32)
     norms = np.linalg.norm(vectors, axis=1, keepdims=True)
@@ -451,6 +487,9 @@ def _make_sim_index(n: int = 10) -> SimilarityIndex:
     fi = faiss.IndexFlatIP(FEATURE_DIM)
     fi.add(vectors)
     entries = [_make_entry(i) for i in range(n)]
+    if bpms is not None:
+        for entry, bpm in zip(entries, bpms, strict=True):
+            entry.bpm = bpm
     return SimilarityIndex(faiss_index=fi, entries=entries)
 
 
@@ -740,20 +779,73 @@ class TestPlayerPickNext:
     def test_pure_shuffle_picks_from_pool(self) -> None:
         """Pure shuffle ignores similarity and picks any non-recent track."""
         player = self._make_player(n=8, pure_shuffle=True)
-        current = player._sim.entries[0]
+        current = player._sim.entries_snapshot()[0]
         player._state.record_played(current)
         result = player._pick_next(current)
         assert isinstance(result, IndexEntry)
         assert result.path != current.path
 
     def test_pure_shuffle_falls_back_when_pool_empty(self) -> None:
-        """All entries excluded → fall back to entire library."""
+        """All entries excluded → relax recent exclusion, but not current track."""
         player = self._make_player(n=4, pure_shuffle=True)
-        for e in player._sim.entries:
-            player._state.record_played(e)
-        result = player._pick_next(player._sim.entries[0])
-        # Falls back to full library — must still return something
+        entries = player._sim.entries_snapshot()
+        player._state.recently_played = deque(e.path for e in entries)
+        current = entries[0]
+        player._state.current_track = current
+        with patch("random.choice", side_effect=lambda pool: pool[0]):
+            result = player._pick_next(current)
         assert isinstance(result, IndexEntry)
+        assert result.path != current.path
+
+    def test_pure_shuffle_does_not_admit_unknown_or_out_of_range_bpm(self) -> None:
+        sim = _make_sim_index(4, bpms=[110.0, 0.0, 150.0, 125.0])
+        player = Player(
+            _make_cfg_mock(),
+            sim,
+            pure_shuffle=True,
+            bpm_range=(120.0, 130.0),
+        )
+        entries = sim.entries_snapshot()
+        player._state.current_track = entries[0]
+
+        assert player._pick_next(entries[0]).path == entries[3].path
+
+    def test_pure_shuffle_raises_when_no_track_satisfies_hard_bpm(self) -> None:
+        sim = _make_sim_index(3, bpms=[0.0] * 3)
+        player = Player(
+            _make_cfg_mock(),
+            sim,
+            pure_shuffle=True,
+            bpm_range=(120.0, 130.0),
+        )
+        entries = sim.entries_snapshot()
+        player._state.current_track = entries[0]
+
+        with pytest.raises(SimilarityError, match="hard filters for pure shuffle"):
+            player._pick_next(entries[0])
+
+    def test_pure_shuffle_logs_once_when_recent_exclusion_is_relaxed(self, caplog) -> None:
+        import logging
+
+        player = self._make_player(n=3, pure_shuffle=True)
+        entries = player._sim.entries_snapshot()
+        player._state.current_track = entries[0]
+        player._state.recently_played = deque(entry.path for entry in entries)
+
+        with caplog.at_level(logging.WARNING):
+            selected = player._pick_next(entries[0])
+
+        assert selected.path in {entries[1].path, entries[2].path}
+        assert (
+            len(
+                [
+                    record
+                    for record in caplog.records
+                    if "relaxing recent-track exclusion" in record.message
+                ]
+            )
+            == 1
+        )
 
     def test_anchor_to_seed_uses_seed_vector(self) -> None:
         """Anchor mode picks similarity from the SEED, not current track."""
@@ -923,6 +1015,166 @@ class TestAnalyseTrackInBackground:
         with patch("autodj.player.threading.Thread") as thread:
             player.analyse_track_in_background("/track.flac")
             thread.assert_not_called()
+
+    def test_thread_start_failure_clears_inflight_registration(self) -> None:
+        player = self._make()
+        player._dj_cache = MagicMock()
+        player._dj_cache_initialised = True
+        player._dj_cache.get.return_value = MagicMock(analysed=False)
+        thread = MagicMock()
+        thread.start.side_effect = RuntimeError("injected start failure")
+
+        with (
+            patch("autodj.player.threading.Thread", return_value=thread),
+            pytest.raises(RuntimeError, match="injected start failure"),
+        ):
+            player.analyse_track_in_background("/track.flac")
+
+        assert "/track.flac" not in player._bg_analysis_inflight
+        assert thread not in player._bg_analysis_threads
+
+    def test_lifespan_waits_for_background_cache_write_before_close(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        import threading
+
+        from fastapi.testclient import TestClient
+
+        from autodj.dj_meta import DjMeta, DjMetaCache, get_cache
+        from autodj.server import PlayerBridge, create_app
+
+        player = self._make()
+        cache = get_cache(tmp_path)
+        assert cache is not None
+        player._dj_cache = cache
+        player._dj_cache_initialised = True
+        path = "shutdown-race.flac"
+
+        paused_before_write = threading.Event()
+        release_worker = threading.Event()
+        write_attempted = threading.Event()
+        worker_exception_seen = threading.Event()
+        worker_errors: list[BaseException] = []
+
+        def pause_before_write(_meta: DjMeta, _path: str) -> None:
+            paused_before_write.set()
+            assert release_worker.wait(2.0)
+
+        original_set = cache.set
+
+        def tracked_set(track_path: str, meta: DjMeta) -> None:
+            try:
+                original_set(track_path, meta)
+            finally:
+                write_attempted.set()
+
+        def capture_thread_error(args: threading.ExceptHookArgs) -> None:
+            worker_errors.append(args.exc_value)
+            worker_exception_seen.set()
+
+        monkeypatch.setattr("autodj.player.load_audio", lambda _path: (np.zeros(8), 8))
+        monkeypatch.setattr(
+            "autodj.dj_meta.analyse_audio", lambda _audio, _sr: DjMeta(analysed=True)
+        )
+        monkeypatch.setattr(player, "_merge_external_cues_into", pause_before_write)
+        monkeypatch.setattr(cache, "set", tracked_set)
+        monkeypatch.setattr(threading, "excepthook", capture_thread_error)
+
+        player.analyse_track_in_background(path)
+        assert paused_before_write.wait(2.0)
+
+        app = create_app(PlayerBridge(player=player, sim=player._sim))
+        client = TestClient(app)
+        client.__enter__()
+        shutdown_done = threading.Event()
+
+        def shut_down() -> None:
+            try:
+                client.__exit__(None, None, None)
+            finally:
+                shutdown_done.set()
+
+        shutdown_thread = threading.Thread(target=shut_down, name="test-shutdown")
+        shutdown_thread.start()
+        shutdown_returned_early = False
+        try:
+            assert player._skip_event.wait(1.0)
+            shutdown_returned_early = shutdown_done.wait(0.1)
+        finally:
+            release_worker.set()
+            assert write_attempted.wait(2.0)
+            if shutdown_returned_early:
+                assert worker_exception_seen.wait(2.0)
+            assert shutdown_done.wait(2.0)
+            shutdown_thread.join()
+
+        assert not shutdown_returned_early
+        assert worker_errors == []
+        assert player._bg_analysis_threads == set()
+        assert cache._conn is None
+        with DjMetaCache(tmp_path / "dj_meta.db") as reopened:
+            assert reopened.get(path).analysed is True
+
+    def test_lifespan_timeout_keeps_cache_open_for_blocked_analysis(
+        self, tmp_path, monkeypatch, caplog
+    ) -> None:
+        import logging
+        import threading
+        import time
+
+        from fastapi.testclient import TestClient
+
+        from autodj.dj_meta import DjMeta, close_cache, get_cache
+        from autodj.server import PlayerBridge, create_app
+
+        player = self._make()
+        cache = get_cache(tmp_path)
+        assert cache is not None
+        player._dj_cache = cache
+        player._dj_cache_initialised = True
+        path = "blocked-shutdown.flac"
+        worker_blocked = threading.Event()
+        release_worker = threading.Event()
+        worker_errors: list[BaseException] = []
+
+        def block_before_write(_meta: DjMeta, _path: str) -> None:
+            worker_blocked.set()
+            release_worker.wait()
+
+        def capture_thread_error(args: threading.ExceptHookArgs) -> None:
+            worker_errors.append(args.exc_value)
+
+        monkeypatch.setattr("autodj.player.load_audio", lambda _path: (np.zeros(8), 8))
+        monkeypatch.setattr(
+            "autodj.dj_meta.analyse_audio", lambda _audio, _sr: DjMeta(analysed=True)
+        )
+        monkeypatch.setattr(player, "_merge_external_cues_into", block_before_write)
+        monkeypatch.setattr(threading, "excepthook", capture_thread_error)
+        app = create_app(
+            PlayerBridge(player=player, sim=player._sim),
+            shutdown_timeout_s=0.05,
+        )
+
+        player.analyse_track_in_background(path)
+        assert worker_blocked.wait(2.0)
+        client = TestClient(app)
+
+        try:
+            client.__enter__()
+            caplog.set_level(logging.WARNING, logger="autodj.server")
+            started = time.monotonic()
+            client.__exit__(None, None, None)
+            elapsed = time.monotonic() - started
+
+            assert elapsed < 1.0
+            assert cache._conn is not None
+            assert "cache remains open" in caplog.text
+        finally:
+            release_worker.set()
+            assert player.wait_for_background_analysis(timeout=2.0) is True
+            close_cache()
+
+        assert worker_errors == []
 
 
 class TestRunHeadlessSeedHooks:
@@ -1994,9 +2246,10 @@ class TestPickNextBranches:
         player._pure_shuffle = True
         # Force recently_played to cover every entry path so the filter
         # leaves an empty pool and triggers the full-library fallback.
-        all_paths = [e.path for e in player._sim.entries]
+        entries = player._sim.entries_snapshot()
+        all_paths = [e.path for e in entries]
         player._state.recently_played = deque(all_paths, maxlen=len(all_paths))
-        current = player._sim.entries[0]
+        current = entries[0]
         result = player._pick_next(current)
         assert isinstance(result, IndexEntry)
         assert player._last_pick_mode == "pure_shuffle"
@@ -2236,3 +2489,70 @@ class TestApplyTransitionEffectWetMix:
             sr_a=sr,
         )
         assert result_a.shape == audio_a.shape
+
+
+class TestPlayerCoverageErrorPaths:
+    def test_time_stretch_failure_returns_original_audio(self) -> None:
+        audio = _sine_audio(0.1)
+        with patch("librosa.effects.time_stretch", side_effect=RuntimeError("bad stretch")):
+            result = _time_stretch(audio, 1.1)
+
+        assert result is audio
+
+    def test_filter_failure_keeps_current_chunk(self) -> None:
+        audio = _sine_audio(0.1)
+        with patch("scipy.signal.butter", side_effect=ValueError("bad filter")):
+            result = apply_filter_sweep(audio, 44100, 8000, 200)
+
+        assert result.shape == audio.shape
+        assert np.all(np.isfinite(result))
+
+    def test_discovery_similarity_failure_returns_none(self) -> None:
+        player = Player(_make_cfg_mock(), _make_sim_index(3), discovery_every=1)
+        player._state.discovery_enabled = True
+        player._state.track_number = 1
+        current = player._sim.entries[0]
+        with patch.object(player._sim, "find_distant", side_effect=SimilarityError("none")):
+            assert player._try_discovery(current) is None
+
+    def test_pick_next_relaxes_repeat_window_after_similarity_failure(self) -> None:
+        player = Player(_make_cfg_mock(), _make_sim_index(3))
+        current = player._sim.entries[0]
+        expected = player._sim.entries[1]
+        with patch.object(
+            player._sim,
+            "find_next_for_path",
+            side_effect=[SimilarityError("excluded"), expected],
+        ) as find_next:
+            result = player._pick_next(current)
+
+        assert result is expected
+        assert find_next.call_count == 2
+        assert list(find_next.call_args_list[1].kwargs["recently_played"]) == [current.path]
+
+    def test_embedded_lyrics_error_returns_empty_text(self) -> None:
+        player = Player(_make_cfg_mock(), _make_sim_index(2))
+        player._cfg.library.beets_db = None
+        with (
+            patch("autodj.audio_meta.load_lrc_for", return_value=[]),
+            patch("autodj.audio_meta.read_plain_lyrics", side_effect=OSError("bad tags")),
+        ):
+            assert player._read_lyrics_for_path("song.flac") == ([], "")
+
+    def test_dj_cache_error_leaves_cache_unavailable(self) -> None:
+        player = Player(_make_cfg_mock(), _make_sim_index(2))
+        player._cfg.index.active_dir = Path("index")
+        with patch("autodj.dj_meta.get_cache", side_effect=OSError("bad database")):
+            player._ensure_dj_cache()
+
+        assert player._dj_cache is None
+        assert player._dj_cache_initialised is True
+
+    def test_unbounded_background_wait_joins_registered_worker(self) -> None:
+        player = Player(_make_cfg_mock(), _make_sim_index(2))
+        worker = MagicMock()
+        worker.join.side_effect = lambda: player._bg_analysis_threads.clear()
+        player._bg_analysis_threads.add(worker)
+
+        assert player.wait_for_background_analysis() is True
+        worker.join.assert_called_once_with()

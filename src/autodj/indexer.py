@@ -24,9 +24,12 @@ Example:
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
+import shutil
 import sqlite3
+import uuid
 import warnings
 from collections import deque
 from collections.abc import Callable
@@ -40,6 +43,27 @@ import numpy as np
 
 from autodj.beets import BeetsNotFoundError, Track, get_all_tracks
 from autodj.config import AutoDJConfig
+from autodj.index_manifest import (
+    MANIFEST_NAME,
+    IndexConsistencyError,
+    IndexManifest,
+    IndexSnapshotToken,
+    _immutable_sqlite_uri,
+    current_snapshot_token,
+    fsync_directory,
+    legacy_artifacts_allowed,
+    publication_has_uncommitted_reservation,
+    publication_is_tombstoned,
+    publication_lock,
+    publish_manifest,
+    read_manifest,
+    require_snapshot_token,
+    restore_working_snapshot,
+    sha256_file,
+    snapshot_token_for_manifest,
+    tombstone_publication,
+)
+from autodj.sqlite_utils import immediate_transaction
 
 # Heavy audio deps imported with graceful None fallback so the lighter
 # commands (`enrich`, `prune`, `stats`, `playlist`) work on minimal
@@ -69,18 +93,23 @@ except ImportError:  # pragma: no cover
             self._it = it
 
         def __iter__(self) -> Any:
+            """Iterate over the wrapped input when one was supplied."""
             return iter(self._it) if self._it is not None else iter(())
 
         def update(self, _n: int = 1) -> None:
+            """Accept progress updates without displaying them."""
             return None
 
         def close(self) -> None:
+            """Finish the no-op progress display."""
             return None
 
         def __enter__(self) -> _TqdmFallback:
+            """Return this progress display for context manager use."""
             return self
 
         def __exit__(self, *_a: Any) -> None:
+            """Leave the no-op progress context."""
             return None
 
     tqdm = _TqdmFallback
@@ -105,57 +134,76 @@ FEATURE_DIM = EMBEDDING_DIM + _LIBROSA_DIM
 # How often the embed loop rewrites the monolithic FAISS file during a
 # long ``autodj index`` run.  The whole file (~290 MB at 70k tracks) is
 # rebuilt and rewritten on every flush, so per-track rewrites pummel NAS
-# spindles -- ~2.4 TB of writes over a full reindex.  tracks.db still
-# flushes every track (cheap UPSERT), so a crash never loses metadata.
-# On startup, ``_load_existing_index`` reconciles by trimming any
-# metadata rows that lack a matching FAISS vector (max
-# FAISS_CHECKPOINT_EVERY-1 trailing rows) -- those tracks simply get
-# re-embedded on the next run.
+# spindles -- ~2.4 TB of writes over a full reindex.  Metadata deltas flush
+# only after the matching vector checkpoint lands, keeping published rows
+# aligned.  On startup, ``_load_existing_index`` defensively clamps either
+# file to their common prefix after an interrupted write.
 FAISS_CHECKPOINT_EVERY: int = 100
+_FLAT_MIGRATION_MARKER = ".flat-migration.json"
+_FLAT_MIGRATION_STAGING_PREFIX = ".flat-migration-"
 
 # ---------------------------------------------------------------------------
 # Tracks SQLite store
 # ---------------------------------------------------------------------------
 #
 # Indexed track metadata lives in ``index/tracks.db`` (SQLite WAL mode).
-# Per-track UPSERTs touch only the dirty pages, so a per-track checkpoint
-# during a long reindex run no longer pummels the spindle.
+# Incremental UPSERTs touch only dirty pages and preserve existing row identity.
 #
-# Schema mirrors :class:`IndexEntry` one-to-one.  The implicit ``rowid``
-# preserves insertion order so ``load_index`` returns entries in the same
-# row order as the FAISS index without needing an explicit ``vec_row``
-# column (we always replace the full table when vectors change).
+# Schema mirrors :class:`IndexEntry` one-to-one.  ``vec_row`` is the stable
+# identity linking each metadata row to its corresponding FAISS vector.
 
 _TRACKS_SCHEMA = """
     CREATE TABLE IF NOT EXISTS tracks (
-        id               INTEGER PRIMARY KEY AUTOINCREMENT,
-        path             TEXT NOT NULL UNIQUE,
-        title            TEXT NOT NULL DEFAULT '',
-        artist           TEXT NOT NULL DEFAULT '',
-        album            TEXT NOT NULL DEFAULT '',
-        genre            TEXT NOT NULL DEFAULT '',
-        bpm              REAL NOT NULL DEFAULT 0,
-        year             INTEGER NOT NULL DEFAULT 0,
-        length           REAL NOT NULL DEFAULT 0,
-        energy           REAL NOT NULL DEFAULT 0,
-        key              INTEGER NOT NULL DEFAULT -1,
-        mode             INTEGER NOT NULL DEFAULT -1,
+        vec_row INTEGER NOT NULL UNIQUE,
+        path TEXT NOT NULL UNIQUE,
+        title TEXT NOT NULL DEFAULT '', artist TEXT NOT NULL DEFAULT '',
+        album TEXT NOT NULL DEFAULT '', genre TEXT NOT NULL DEFAULT '',
+        bpm REAL NOT NULL DEFAULT 0, year INTEGER NOT NULL DEFAULT 0,
+        length REAL NOT NULL DEFAULT 0, energy REAL NOT NULL DEFAULT 0,
+        key INTEGER NOT NULL DEFAULT -1, mode INTEGER NOT NULL DEFAULT -1,
         tempo_confidence REAL NOT NULL DEFAULT 0,
-        embedded_at      REAL NOT NULL DEFAULT 0
+        embedded_at REAL NOT NULL DEFAULT 0
     );
 """
 
 _TRACKS_INSERT_SQL = (
-    "INSERT INTO tracks "
-    "(path, title, artist, album, genre, bpm, year, length, energy, "
-    "key, mode, tempo_confidence, embedded_at) "
-    "VALUES (:path, :title, :artist, :album, :genre, :bpm, :year, "
+    "INSERT INTO tracks (vec_row, path, title, artist, album, genre, bpm, year, "
+    "length, energy, key, mode, tempo_confidence, embedded_at) "
+    "VALUES (:vec_row, :path, :title, :artist, :album, :genre, :bpm, :year, "
     ":length, :energy, :key, :mode, :tempo_confidence, :embedded_at)"
 )
 
 _TRACKS_SELECT_SQL = (
     "SELECT path, title, artist, album, genre, bpm, year, length, energy, "
-    "key, mode, tempo_confidence, embedded_at FROM tracks ORDER BY id ASC"
+    "key, mode, tempo_confidence, embedded_at FROM tracks ORDER BY vec_row ASC"
+)
+
+_TRACKS_SCHEMA_SIGNATURE = (
+    ("vec_row", "INTEGER", 1, None, 0),
+    ("path", "TEXT", 1, None, 0),
+    ("title", "TEXT", 1, "''", 0),
+    ("artist", "TEXT", 1, "''", 0),
+    ("album", "TEXT", 1, "''", 0),
+    ("genre", "TEXT", 1, "''", 0),
+    ("bpm", "REAL", 1, "0", 0),
+    ("year", "INTEGER", 1, "0", 0),
+    ("length", "REAL", 1, "0", 0),
+    ("energy", "REAL", 1, "0", 0),
+    ("key", "INTEGER", 1, "-1", 0),
+    ("mode", "INTEGER", 1, "-1", 0),
+    ("tempo_confidence", "REAL", 1, "0", 0),
+    ("embedded_at", "REAL", 1, "0", 0),
+)
+_TRACKS_REQUIRED_COLUMNS = tuple(column[0] for column in _TRACKS_SCHEMA_SIGNATURE)
+
+# Fixed SQL fragment; all row values remain parameter-bound.
+_TRACKS_UPSERT_SQL = _TRACKS_INSERT_SQL + (
+    " ON CONFLICT(vec_row) DO UPDATE SET path=excluded.path, "  # nosec B608
+    "title=excluded.title, artist=excluded.artist, album=excluded.album, "
+    "genre=excluded.genre, bpm=excluded.bpm, year=excluded.year, "
+    "length=excluded.length, energy=excluded.energy, key=excluded.key, "
+    "mode=excluded.mode, tempo_confidence=excluded.tempo_confidence, "
+    "embedded_at=excluded.embedded_at"
 )
 
 
@@ -174,14 +222,112 @@ def _open_tracks_db(index_dir: Path) -> sqlite3.Connection:
     index_dir.mkdir(parents=True, exist_ok=True)
     db_path = _tracks_db_path(index_dir)
     conn = sqlite3.connect(db_path, isolation_level=None, check_same_thread=False)
-    conn.executescript(_TRACKS_SCHEMA)
+    try:
+        conn.executescript(_TRACKS_SCHEMA)
+        _ensure_vec_row_schema(conn)
+    except BaseException:
+        conn.close()
+        raise
     with contextlib.suppress(sqlite3.DatabaseError):
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
     return conn
 
 
-def _entry_to_row(entry: IndexEntry, music_dir: Path | None) -> dict:
+def _ensure_vec_row_schema(conn: sqlite3.Connection) -> None:
+    """Migrate legacy tracks tables to stable FAISS vector-row identities."""
+    info = {str(row[1]): row for row in conn.execute("PRAGMA table_info(tracks)")}
+    actual_signature = tuple(
+        (
+            str(row[1]),
+            str(row[2]).strip().upper(),
+            int(row[3]),
+            None if row[4] is None else str(row[4]),
+            int(row[5]),
+        )
+        for row in info.values()
+    )
+    unique_single_columns: set[str] = set()
+    for index_row in conn.execute("PRAGMA index_list(tracks)"):
+        if int(index_row[2]) != 1 or (len(index_row) > 4 and int(index_row[4]) != 0):
+            continue
+        index_name = str(index_row[1]).replace('"', '""')
+        index_columns = [
+            str(row[2])
+            for row in conn.execute(  # nosec B608 -- SQLite-owned identifier
+                f'PRAGMA index_info("{index_name}")'
+            )
+        ]
+        if len(index_columns) == 1:
+            unique_single_columns.add(index_columns[0])
+    if actual_signature == _TRACKS_SCHEMA_SIGNATURE and {"vec_row", "path"}.issubset(
+        unique_single_columns
+    ):
+        return
+
+    names = set(info)
+    if "vec_row" in names:
+        vec_row_order = (
+            "vec_row"
+            if str(info["vec_row"][2]).strip().upper() == "INTEGER"
+            else "CAST(vec_row AS INTEGER)"
+        )
+        order_by = f"CASE WHEN vec_row IS NULL THEN 1 ELSE 0 END, {vec_row_order}, rowid"
+    else:
+        order_by = "id, rowid" if "id" in names else "rowid"
+    defaults = {
+        "title": "''",
+        "artist": "''",
+        "album": "''",
+        "genre": "''",
+        "bpm": "0",
+        "year": "0",
+        "length": "0",
+        "energy": "0",
+        "key": "-1",
+        "mode": "-1",
+        "tempo_confidence": "0",
+        "embedded_at": "0",
+    }
+    value_sql = [
+        f"ROW_NUMBER() OVER (ORDER BY {order_by}) - 1",
+        "path",
+        *(name if name in names else default for name, default in defaults.items()),
+    ]
+    with immediate_transaction(conn):
+        duplicate_path = conn.execute(
+            "SELECT path FROM tracks GROUP BY path HAVING COUNT(*) > 1 LIMIT 1"
+        ).fetchone()
+        if duplicate_path is not None:
+            raise sqlite3.IntegrityError(
+                "cannot migrate tracks schema: duplicate paths would break vector identity"
+            )
+        conn.execute(
+            """CREATE TABLE tracks_new (
+                vec_row INTEGER NOT NULL UNIQUE, path TEXT NOT NULL UNIQUE,
+                title TEXT NOT NULL DEFAULT '', artist TEXT NOT NULL DEFAULT '',
+                album TEXT NOT NULL DEFAULT '', genre TEXT NOT NULL DEFAULT '',
+                bpm REAL NOT NULL DEFAULT 0, year INTEGER NOT NULL DEFAULT 0,
+                length REAL NOT NULL DEFAULT 0, energy REAL NOT NULL DEFAULT 0,
+                key INTEGER NOT NULL DEFAULT -1, mode INTEGER NOT NULL DEFAULT -1,
+                tempo_confidence REAL NOT NULL DEFAULT 0,
+                embedded_at REAL NOT NULL DEFAULT 0
+            )"""
+        )
+        columns = (
+            "vec_row, path, title, artist, album, genre, bpm, year, length, "
+            "energy, key, mode, tempo_confidence, embedded_at"
+        )
+        # Identifiers and expressions come only from fixed schema definitions above.
+        conn.execute(
+            f"INSERT INTO tracks_new ({columns}) "  # nosec B608
+            f"SELECT {', '.join(value_sql)} FROM tracks ORDER BY {order_by}"
+        )
+        conn.execute("DROP TABLE tracks")
+        conn.execute("ALTER TABLE tracks_new RENAME TO tracks")
+
+
+def _entry_to_row(entry: IndexEntry, music_dir: Path | None, vec_row: int) -> dict[str, object]:
     """Convert an :class:`IndexEntry` to a SQLite-bound row dict.
 
     Stored ``path`` is relativised against *music_dir* the same way the
@@ -190,6 +336,7 @@ def _entry_to_row(entry: IndexEntry, music_dir: Path | None) -> dict:
     absolute path.
     """
     return {
+        "vec_row": vec_row,
         "path": _relativize_for_storage(entry.path, music_dir),
         "title": entry.title,
         "artist": entry.artist,
@@ -230,22 +377,52 @@ def _replace_tracks_rows(
     entries: list[IndexEntry],
     music_dir: Path | None,
 ) -> None:
-    """Atomically replace the entire ``tracks`` table contents.
-
-    save_index always receives the full entries list, so we DELETE then
-    INSERT inside a single transaction.  At 70k tracks this still writes
-    less than the legacy whole-file JSON rewrite because SQLite WAL pages
-    are smaller and rows that did not change get the same on-disk page.
-    """
-    rows = [_entry_to_row(e, music_dir) for e in entries]
-    with conn:
+    """Atomically replace rows when vector order intentionally changes."""
+    rows = [_entry_to_row(entry, music_dir, vec_row) for vec_row, entry in enumerate(entries)]
+    with immediate_transaction(conn):
         conn.execute("DELETE FROM tracks")
         if rows:
             conn.executemany(_TRACKS_INSERT_SQL, rows)
 
 
+def _upsert_tracks_metadata(
+    entries: list[IndexEntry],
+    index_dir: Path,
+    first_vec_row: int,
+    music_dir: Path | None,
+    baseline_entries: list[IndexEntry] | None = None,
+) -> None:
+    """Publish a metadata delta, reconciling its baseline when requested."""
+    rows = [
+        _entry_to_row(entry, music_dir, first_vec_row + offset)
+        for offset, entry in enumerate(entries)
+    ]
+    baseline_rows = (
+        [_entry_to_row(entry, music_dir, vec_row) for vec_row, entry in enumerate(baseline_entries)]
+        if baseline_entries is not None
+        else None
+    )
+    conn = _open_tracks_db(index_dir)
+    try:
+        with immediate_transaction(conn):
+            if baseline_rows is not None:
+                actual_baseline = conn.execute(
+                    "SELECT vec_row, path FROM tracks ORDER BY vec_row"
+                ).fetchall()
+                expected_baseline = [
+                    (int(cast(int, row["vec_row"])), str(row["path"])) for row in baseline_rows
+                ]
+                if actual_baseline != expected_baseline:
+                    conn.execute("DELETE FROM tracks")
+                    if baseline_rows:
+                        conn.executemany(_TRACKS_INSERT_SQL, baseline_rows)
+            conn.executemany(_TRACKS_UPSERT_SQL, rows)
+    finally:
+        conn.close()
+
+
 def _load_tracks_rows(conn: sqlite3.Connection) -> list[IndexEntry]:
-    """SELECT every row from ``tracks`` in insertion order."""
+    """SELECT every row from ``tracks`` in FAISS vector order."""
     cur = conn.execute(_TRACKS_SELECT_SQL)
     return [_row_to_entry(r) for r in cur.fetchall()]
 
@@ -514,6 +691,62 @@ def _load_audio(path: Path) -> tuple[np.ndarray, int]:
 # ---------------------------------------------------------------------------
 
 
+_MAJOR_KEY_PROFILE = np.array(
+    [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88],
+    dtype=np.float32,
+)
+_MINOR_KEY_PROFILE = np.array(
+    [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17],
+    dtype=np.float32,
+)
+
+
+def _estimate_key_from_chroma(chroma: np.ndarray) -> tuple[int, int]:
+    """Return ``(pitch_class, mode)`` or ``(-1, -1)`` when evidence is unusable."""
+    values = np.asarray(chroma, dtype=np.float32).reshape(-1)
+    if (
+        values.shape != (12,)
+        or not np.isfinite(values).all()
+        or np.any(values < 0)
+        or float(values.sum()) <= 1e-6
+    ):
+        return (-1, -1)
+    peak_share = float(values.max() / values.sum())
+    if peak_share < 0.12:
+        return (-1, -1)
+    centred = values - float(values.mean())
+    norm = float(np.linalg.norm(centred))
+    if norm <= 1e-6:
+        return (-1, -1)
+    centred /= norm
+
+    scored: list[tuple[float, int, int]] = []
+    for mode, profile in ((1, _MAJOR_KEY_PROFILE), (0, _MINOR_KEY_PROFILE)):
+        profile_centred = profile - float(profile.mean())
+        profile_centred /= float(np.linalg.norm(profile_centred))
+        for key in range(12):
+            scored.append((float(np.dot(np.roll(profile_centred, key), centred)), key, mode))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    best_score, key, mode = scored[0]
+    margin = best_score - scored[1][0]
+    if best_score < 0.50 or margin < 0.08:
+        return (-1, -1)
+    return (key, mode)
+
+
+def _apply_analysis_metadata(entry: IndexEntry, extra_meta: dict[str, float | int]) -> None:
+    """Apply derived analysis fields without replacing a valid source BPM."""
+    entry.energy = float(extra_meta["energy"])
+    entry.key = int(extra_meta["key"])
+    entry.mode = int(extra_meta["mode"])
+    entry.tempo_confidence = float(extra_meta["tempo_confidence"])
+    estimated_bpm = float(extra_meta["bpm"])
+    if not np.isfinite(entry.bpm) or entry.bpm <= 0.0:
+        entry.bpm = 0.0
+        if np.isfinite(estimated_bpm) and estimated_bpm > 0.0:
+            entry.bpm = estimated_bpm
+
+
 def _extract_librosa_features(
     audio_path: Path,
 ) -> tuple[np.ndarray, np.ndarray, int, dict]:
@@ -530,6 +763,7 @@ def _extract_librosa_features(
     - ``energy`` — RMS loudness (same as feature[0])
     - ``key`` — chromatic key 0–11 estimated from chroma template matching
     - ``mode`` — 1 = major, 0 = minor
+    - ``bpm`` — librosa beat-tracker tempo, or 0.0 when unavailable
     - ``tempo_confidence`` — ratio of detected beats to expected beats (0–1)
 
     Args:
@@ -540,7 +774,7 @@ def _extract_librosa_features(
         where *feature_vector* is a float32 array of shape ``(16,)`` (not yet
         normalized), *audio_array* is the mono audio, *sample_rate* is the
         native sample rate, and *extra_meta* is a dict with keys
-        ``energy``, ``key``, ``mode``, ``tempo_confidence``.
+        ``energy``, ``key``, ``mode``, ``bpm``, ``tempo_confidence``.
     """
     audio, sr = _load_audio(audio_path)
 
@@ -564,25 +798,20 @@ def _extract_librosa_features(
         # energy = reuse already-computed RMS
         energy = rms
 
-        # key + mode via major/minor chromatic template matching
-        _major = np.array([1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1], dtype=np.float32)
-        _minor = np.array([1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0], dtype=np.float32)
-        major_scores = [float(np.dot(np.roll(_major, k), chroma)) for k in range(12)]
-        minor_scores = [float(np.dot(np.roll(_minor, k), chroma)) for k in range(12)]
-        if max(major_scores) >= max(minor_scores):
-            mode = 1
-            key = int(np.argmax(major_scores))
-        else:  # pragma: no cover — current major/minor templates make this LP-infeasible (proved unreachable)
-            mode = 0
-            key = int(np.argmax(minor_scores))
+        key, mode = _estimate_key_from_chroma(chroma)
 
         # tempo confidence: detected beats / expected beats at estimated tempo
+        tempo_val = 0.0
         try:
             tempo_arr, beat_frames = librosa.beat.beat_track(y=audio, sr=sr)
             tempo_val = float(np.atleast_1d(tempo_arr)[0])
-            duration_sec = len(audio) / max(1, sr)
-            expected = (tempo_val / 60.0) * duration_sec
-            tempo_confidence = float(min(1.0, len(beat_frames) / max(1.0, expected)))
+            if not np.isfinite(tempo_val) or tempo_val <= 0:
+                tempo_val = 0.0
+                tempo_confidence = 0.0
+            else:
+                duration_sec = len(audio) / max(1, sr)
+                expected = (tempo_val / 60.0) * duration_sec
+                tempo_confidence = float(min(1.0, len(beat_frames) / max(1.0, expected)))
         except Exception:
             tempo_confidence = 0.0
 
@@ -594,6 +823,7 @@ def _extract_librosa_features(
         "energy": float(energy),
         "key": key,
         "mode": mode,
+        "bpm": tempo_val,
         "tempo_confidence": tempo_confidence,
     }
     return features, audio, sr, extra_meta
@@ -704,9 +934,8 @@ def _write_faiss_chunked(index: faiss.Index, path: Path, chunk_size: int = 1 << 
 def _save_vectors(vectors: np.ndarray, index_dir: Path) -> None:
     """Write only ``vectors.index`` atomically (tmp+rename).
 
-    Used by the per-checkpoint pipeline so we can flush the SQLite tracks
-    table on every track (cheap) but only rebuild + rewrite the FAISS
-    file every ``checkpoint_every_faiss`` tracks (expensive).
+    Used by the checkpoint pipeline before publishing its matching metadata
+    delta, so readers never observe metadata without a corresponding vector.
     """
     index_dir.mkdir(parents=True, exist_ok=True)
     vectors_final = index_dir / "vectors.index"
@@ -729,8 +958,8 @@ def _save_tracks_metadata(
 ) -> None:
     """Replace the ``tracks.db`` rows in one transaction.
 
-    Per-checkpoint cost stays O(rows) (cheap UPSERT) instead of paying
-    the FAISS whole-file rewrite on every track.
+    Used when the complete vector order changes or a full index save must
+    publish the complete metadata set.
     """
     index_dir.mkdir(parents=True, exist_ok=True)
     conn = _open_tracks_db(index_dir)
@@ -740,11 +969,119 @@ def _save_tracks_metadata(
         conn.close()
 
 
+def _publish_full_snapshot(
+    entries: list[IndexEntry],
+    vectors: np.ndarray,
+    index_dir: Path,
+    music_dir: Path | None,
+    *,
+    expected_snapshot: IndexSnapshotToken | None = None,
+) -> IndexManifest:
+    """Publish vectors and metadata together as one immutable generation."""
+    with publication_lock(index_dir):
+        if expected_snapshot is not None:
+            require_snapshot_token(index_dir, expected_snapshot)
+        _save_vectors(vectors, index_dir)
+        _save_tracks_metadata(entries, index_dir, music_dir)
+        return publish_manifest(index_dir, len(entries))
+
+
+def _publish_metadata_snapshot(
+    entries: list[IndexEntry],
+    index_dir: Path,
+    music_dir: Path | None,
+    *,
+    expected_snapshot: IndexSnapshotToken | None = None,
+) -> IndexManifest:
+    """Publish metadata paired with the last published vector artifact."""
+    with publication_lock(index_dir):
+        current = read_manifest(index_dir)
+        if expected_snapshot is not None:
+            current = require_snapshot_token(index_dir, expected_snapshot)
+        if current is not None:
+            restore_working_snapshot(index_dir, expected_generation=current.generation)
+        _save_tracks_metadata(entries, index_dir, music_dir)
+        return publish_manifest(index_dir, len(entries))
+
+
+@dataclass
+class IncrementalCheckpoint:
+    """Publish aligned FAISS vectors and metadata at throttled checkpoints."""
+
+    index_dir: Path
+    music_dir: Path | None
+    existing_entries: list[IndexEntry]
+    existing_vectors: list[np.ndarray]
+    total_new: int
+    expected_snapshot: IndexSnapshotToken
+    baseline_requires_reconcile: bool = False
+    flush_every: int = FAISS_CHECKPOINT_EVERY
+    published_new_count: int = 0
+    baseline_published: bool = False
+
+    def write(self, new_entries: list[IndexEntry], new_vectors: list[np.ndarray]) -> None:
+        """Publish a due checkpoint of aligned entries and vectors."""
+        if not new_entries:
+            return
+        due = len(new_entries) == self.total_new or len(new_entries) % self.flush_every == 0
+        if not due:
+            return
+
+        all_vectors = (
+            np.vstack(
+                [
+                    np.asarray(self.existing_vectors, dtype=np.float32),
+                    np.asarray(new_vectors, dtype=np.float32),
+                ]
+            )
+            if self.existing_vectors
+            else np.asarray(new_vectors, dtype=np.float32)
+        )
+        pending = new_entries[self.published_new_count :]
+        with publication_lock(self.index_dir):
+            require_snapshot_token(self.index_dir, self.expected_snapshot)
+            if self.expected_snapshot.generation:
+                restore_working_snapshot(
+                    self.index_dir,
+                    expected_generation=self.expected_snapshot.generation,
+                )
+            _save_vectors(all_vectors, self.index_dir)
+            _upsert_tracks_metadata(
+                pending,
+                self.index_dir,
+                first_vec_row=len(self.existing_entries) + self.published_new_count,
+                music_dir=self.music_dir,
+                baseline_entries=(
+                    self.existing_entries
+                    if self.baseline_requires_reconcile and not self.baseline_published
+                    else None
+                ),
+            )
+            try:
+                published = publish_manifest(
+                    self.index_dir,
+                    len(self.existing_entries) + len(new_entries),
+                )
+            except Exception:
+                # A failed first publication consumes an ID but leaves no
+                # live manifest.  Retrying the exact checkpoint must carry
+                # that reservation epoch, while concurrent work remains
+                # excluded by this publication lock.
+                if self.expected_snapshot.generation == 0:
+                    self.expected_snapshot = current_snapshot_token(self.index_dir)
+                raise
+        self.expected_snapshot = snapshot_token_for_manifest(published)
+        self.baseline_published = True
+        self.published_new_count = len(new_entries)
+
+
 def save_index(
     entries: list[IndexEntry],
     vectors: np.ndarray,
     index_dir: Path,
     music_dir: Path | None = None,
+    *,
+    expected_snapshot: IndexSnapshotToken | None = None,
 ) -> None:
     """Write the FAISS index and tracks DB to *index_dir* atomically.
 
@@ -774,8 +1111,13 @@ def save_index(
         index_dir: Directory to write files into (must already exist).
         music_dir: Library root — when set, paths are relativized for storage.
     """
-    _save_vectors(vectors, index_dir)
-    _save_tracks_metadata(entries, index_dir, music_dir)
+    _publish_full_snapshot(
+        entries,
+        vectors,
+        index_dir,
+        music_dir,
+        expected_snapshot=expected_snapshot,
+    )
     logger.info("Saved index with %d tracks to %s", len(entries), index_dir)
 
 
@@ -908,16 +1250,27 @@ def enrich_from_beets(
         parse_initial_key,
     )
 
-    db_path = _tracks_db_path(index_dir)
-    faiss_file = index_dir / "vectors.index"
-    if not db_path.exists() or not faiss_file.exists():
-        return (0, 0)
-
-    conn_db = _open_tracks_db(index_dir)
-    try:
-        entries = _load_tracks_rows(conn_db)
-    finally:
-        conn_db.close()
+    source_snapshot: IndexSnapshotToken
+    with publication_lock(index_dir):
+        current = read_manifest(index_dir)
+        source_snapshot = current_snapshot_token(index_dir)
+        if current is not None:
+            entries, _loaded = load_index(
+                index_dir,
+                expected_generation=current.generation,
+            )
+        else:
+            if not legacy_artifacts_allowed(index_dir):
+                raise IndexConsistencyError("manifest-free artifacts have publication history")
+            db_path = _tracks_db_path(index_dir)
+            faiss_file = index_dir / "vectors.index"
+            if not db_path.exists() or not faiss_file.exists():
+                return (0, 0)
+            conn_db = _open_tracks_db(index_dir)
+            try:
+                entries = _load_tracks_rows(conn_db)
+            finally:
+                conn_db.close()
     for e in entries:
         e.path = _resolve_for_runtime(e.path, music_dir, path_remap)
 
@@ -927,13 +1280,15 @@ def enrich_from_beets(
         logger.warning("Beets DB not found at %s", beets_db)
         return (0, len(entries))
 
-    text_cols = ("title", "artist", "album", "genre")
-    num_cols = ("bpm", "year", "length")
+    text_cols: tuple[str, ...] = ("title", "artist", "album", "genre")
+    num_cols: tuple[str, ...] = ("bpm", "year", "length")
     has_initial_key = False
     updated = 0
     try:
         cols = _items_columns(conn)
-        select_cols = list(text_cols) + list(num_cols)
+        select_cols: list[str] = []
+        select_cols.extend(text_cols)
+        select_cols.extend(num_cols)
         if "initial_key" in cols:
             select_cols.append("initial_key")
             has_initial_key = True
@@ -974,15 +1329,16 @@ def enrich_from_beets(
         return (0, len(entries))
 
     # Metadata-only update — no FAISS rewrite needed (vectors unchanged).
-    # SQLite UPSERT per affected row inside a single transaction is far
+    # SQLite replacement inside a single transaction is far
     # cheaper than the legacy "reconstruct every vector + full save_index"
     # round-trip, which paid O(N) vector reconstruct cost just to re-emit
-    # JSON.  Bonus: enrich no longer needs vectors.index on disk.
-    conn_db = _open_tracks_db(index_dir)
-    try:
-        _replace_tracks_rows(conn_db, entries, music_dir)
-    finally:
-        conn_db.close()
+    # JSON. No vector reconstruction or rewrite is required.
+    _publish_metadata_snapshot(
+        entries,
+        index_dir,
+        music_dir,
+        expected_snapshot=source_snapshot,
+    )
     logger.info("Enrich: updated %d/%d tracks", updated, len(entries))
     return (updated, len(entries))
 
@@ -1007,20 +1363,32 @@ def _check_prune_safety(removed: int, total: int, allow_mass_prune: bool) -> Non
     )
 
 
-def _delete_index_files(index_dir: Path) -> None:
+def _delete_index_files(
+    index_dir: Path,
+    *,
+    expected_snapshot: IndexSnapshotToken | None = None,
+) -> None:
     """Remove the index files (called when prune empties the library).
 
-    Cleans up ``vectors.index``, ``tracks.db``, and the SQLite WAL / SHM
-    sidecars so the next index run starts from a clean slate.
+    Cleans up canonical working files, published generations, the manifest,
+    and SQLite sidecars so the next index run starts from a clean slate.
     """
-    for name in (
-        "vectors.index",
-        "tracks.db",
-        "tracks.db-wal",
-        "tracks.db-shm",
-    ):
-        with contextlib.suppress(FileNotFoundError, OSError):
-            (index_dir / name).unlink()
+    with publication_lock(index_dir):
+        if expected_snapshot is not None:
+            require_snapshot_token(index_dir, expected_snapshot)
+        tombstone_publication(index_dir)
+        paths = [
+            index_dir / "vectors.index",
+            index_dir / "tracks.db",
+            index_dir / "tracks.db-wal",
+            index_dir / "tracks.db-shm",
+            index_dir / MANIFEST_NAME,
+            *index_dir.glob("tracks.g*.db"),
+            *index_dir.glob("vectors.g*.index"),
+        ]
+        for path in paths:
+            path.unlink(missing_ok=True)
+        fsync_directory(index_dir)
 
 
 def _maybe_migrate_paths(
@@ -1029,6 +1397,8 @@ def _maybe_migrate_paths(
     index_dir: Path,
     music_dir: Path | None,
     already_relative: bool,
+    *,
+    expected_snapshot: IndexSnapshotToken | None = None,
 ) -> None:
     """Re-save tracks DB in relative path form when storage is still absolute.
 
@@ -1039,11 +1409,12 @@ def _maybe_migrate_paths(
     """
     if music_dir is None or already_relative:
         return
-    conn = _open_tracks_db(index_dir)
-    try:
-        _replace_tracks_rows(conn, entries, music_dir)
-    finally:
-        conn.close()
+    _publish_metadata_snapshot(
+        entries,
+        index_dir,
+        music_dir,
+        expected_snapshot=expected_snapshot,
+    )
 
 
 def prune_index(
@@ -1084,22 +1455,33 @@ def prune_index(
         PruneSafetyError: If the prune would exceed the safety threshold
             and ``allow_mass_prune`` is not set.
     """
-    db_path = _tracks_db_path(index_dir)
-    faiss_file = index_dir / "vectors.index"
-    if not db_path.exists() or not faiss_file.exists():
-        return (0, 0)
-
-    conn = _open_tracks_db(index_dir)
-    try:
-        entries = _load_tracks_rows(conn)
-    finally:
-        conn.close()
-    already_relative = music_dir is not None and _is_relative_storage([e.path for e in entries])
+    source_snapshot: IndexSnapshotToken
+    with publication_lock(index_dir):
+        current = read_manifest(index_dir)
+        source_snapshot = current_snapshot_token(index_dir)
+        if current is not None:
+            entries, loaded = load_index(
+                index_dir,
+                expected_generation=current.generation,
+            )
+        else:
+            if not legacy_artifacts_allowed(index_dir):
+                raise IndexConsistencyError("manifest-free artifacts have publication history")
+            db_path = _tracks_db_path(index_dir)
+            faiss_file = index_dir / "vectors.index"
+            if not db_path.exists() or not faiss_file.exists():
+                return (0, 0)
+            conn = _open_tracks_db(index_dir)
+            try:
+                entries = _load_tracks_rows(conn)
+            finally:
+                conn.close()
+            loaded = cast("faiss.IndexFlatIP", faiss.read_index(str(faiss_file)))
+    already_relative = music_dir is not None and _is_relative_storage(
+        [entry.path for entry in entries]
+    )
     for e in entries:
         e.path = _resolve_for_runtime(e.path, music_dir, path_remap)
-    # faiss-cpu >=1.14 stubs type read_index as the base Index; we only ever
-    # persist an IndexFlatIP, so narrow back for the typed signatures below.
-    loaded = cast("faiss.IndexFlatIP", faiss.read_index(str(faiss_file)))
 
     # Existence check is RTT-bound on NFS/SMB libraries — at 70k+ tracks the
     # serial loop dominates the whole `index` command.  Fan out across a
@@ -1133,12 +1515,19 @@ def prune_index(
 
     surviving_entries = [e for e, k in zip(entries, keep_mask, strict=False) if k]
     if not surviving_entries and removed:
-        _delete_index_files(index_dir)
+        _delete_index_files(index_dir, expected_snapshot=source_snapshot)
         logger.info("Pruned all %d entries — index is now empty", removed)
         return (removed, 0)
 
     if removed == 0:
-        _maybe_migrate_paths(loaded, entries, index_dir, music_dir, already_relative)
+        _maybe_migrate_paths(
+            loaded,
+            entries,
+            index_dir,
+            music_dir,
+            already_relative,
+            expected_snapshot=source_snapshot,
+        )
         return (0, len(entries))
 
     # Batch reconstruct: one FAISS call returns the whole (N, dim) array,
@@ -1147,9 +1536,113 @@ def prune_index(
     all_vectors = loaded.reconstruct_n(0, loaded.ntotal)
     mask = np.fromiter(keep_mask, dtype=bool, count=len(keep_mask))
     surviving_vectors = np.asarray(all_vectors[mask], dtype=np.float32)
-    save_index(surviving_entries, surviving_vectors, index_dir, music_dir=music_dir)
+    _publish_full_snapshot(
+        surviving_entries,
+        surviving_vectors,
+        index_dir,
+        music_dir,
+        expected_snapshot=source_snapshot,
+    )
     logger.info("Pruned %d missing tracks (%d remain)", removed, len(surviving_entries))
     return (removed, len(surviving_entries))
+
+
+def _write_flat_migration_marker(
+    target_dir: Path,
+    staging: Path,
+    *,
+    preserve_target_vector: bool = False,
+) -> None:
+    """Durably mark one owned in-progress flat-index migration."""
+    marker = target_dir / _FLAT_MIGRATION_MARKER
+    temporary = marker.with_name(f".{marker.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("x", encoding="utf-8", newline="\n") as handle:
+            json.dump(
+                {"staging": staging.name, "preserve_target_vector": preserve_target_vector},
+                handle,
+            )
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(marker)
+        fsync_directory(target_dir)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _read_flat_migration_staging(target_dir: Path) -> tuple[Path, bool] | None:
+    """Return owned migration staging directory, rejecting malformed markers."""
+    marker = target_dir / _FLAT_MIGRATION_MARKER
+    if not marker.exists():
+        return None
+    try:
+        raw = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise IndexConsistencyError(f"invalid flat migration marker: {exc}") from exc
+    if (
+        type(raw) is not dict
+        or set(raw) not in ({"staging"}, {"staging", "preserve_target_vector"})
+        or type(raw["staging"]) is not str
+        or ("preserve_target_vector" in raw and type(raw["preserve_target_vector"]) is not bool)
+        or Path(raw["staging"]).name != raw["staging"]
+        or not raw["staging"].startswith(_FLAT_MIGRATION_STAGING_PREFIX)
+    ):
+        raise IndexConsistencyError("invalid flat migration marker")
+    return target_dir / raw["staging"], bool(raw.get("preserve_target_vector", False))
+
+
+def _clear_flat_migration_state(
+    target_dir: Path,
+    staging: Path,
+    *,
+    remove_cores: bool,
+    preserve_target_vector: bool = False,
+) -> None:
+    """Remove marker-owned staging and, after an incomplete install, cores."""
+    if remove_cores:
+        if not preserve_target_vector:
+            (target_dir / "vectors.index").unlink(missing_ok=True)
+        (target_dir / "tracks.db").unlink(missing_ok=True)
+    if staging.exists():
+        shutil.rmtree(staging)
+    (target_dir / _FLAT_MIGRATION_MARKER).unlink(missing_ok=True)
+
+
+def _backup_legacy_tracks_db(source: Path, destination: Path) -> None:
+    """Create a SQLite snapshot that includes committed source WAL pages."""
+    source_conn = sqlite3.connect(source)
+    destination_conn = sqlite3.connect(destination)
+    try:
+        source_conn.backup(destination_conn)
+    finally:
+        destination_conn.close()
+        source_conn.close()
+
+
+def _migrate_staged_legacy_tracks_db(staged_db: Path) -> None:
+    """Upgrade a copied legacy tracks table before target promotion."""
+    conn = sqlite3.connect(staged_db, isolation_level=None)
+    try:
+        _ensure_vec_row_schema(conn)
+        conn.execute("PRAGMA journal_mode=WAL")
+    finally:
+        conn.close()
+
+
+def _validate_flat_migration_staging(staged_db: Path, staged_vectors: Path) -> int:
+    """Reject staged legacy cores whose SQLite and FAISS row counts differ."""
+    conn = sqlite3.connect(_immutable_sqlite_uri(staged_db), uri=True)
+    try:
+        sqlite_count = int(conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0])
+    finally:
+        conn.close()
+    vector_count = int(faiss.read_index(str(staged_vectors)).ntotal)
+    if sqlite_count != vector_count:
+        raise IndexConsistencyError(
+            f"flat migration count mismatch: sqlite={sqlite_count}, faiss={vector_count}"
+        )
+    return vector_count
 
 
 def _migrate_flat_index_if_needed(target_dir: Path) -> None:
@@ -1166,47 +1659,164 @@ def _migrate_flat_index_if_needed(target_dir: Path) -> None:
     Args:
         target_dir: The named-index sub-directory (e.g. ``index/default``).
     """
-    target_vec = target_dir / "vectors.index"
-    target_db = target_dir / "tracks.db"
-    if target_vec.exists() and target_db.exists():
-        return  # Already migrated or fresh build — nothing to do
     parent = target_dir.parent
     src_vec = parent / "vectors.index"
     src_db = parent / "tracks.db"
-    if not src_vec.exists() or not src_db.exists():
-        return  # Nothing to migrate
-    target_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        src_vec.replace(target_vec)
-        src_db.replace(target_db)
-        # Move sidecars too if present
-        for sidecar in (
-            "dj_meta.db",
-            "tracks.db-wal",
-            "tracks.db-shm",
-            "web_state.json",
-            "runtime_state.json",
+    marker = target_dir / _FLAT_MIGRATION_MARKER
+    historical_split = (
+        (target_dir / "vectors.index").is_file()
+        and not (target_dir / "tracks.db").exists()
+        and not src_vec.exists()
+        and src_db.is_file()
+    )
+    if (
+        (not src_vec.exists() or not src_db.exists())
+        and not marker.exists()
+        and not historical_split
+    ):
+        return
+    # Every source/target operation takes locks in parent-before-target order.
+    with publication_lock(parent), publication_lock(target_dir):
+        migration_state = _read_flat_migration_staging(target_dir)
+        manifest = read_manifest(target_dir)
+        if publication_is_tombstoned(target_dir):
+            if migration_state is not None:
+                staging, _preserve_target_vector = migration_state
+                try:
+                    _clear_flat_migration_state(target_dir, staging, remove_cores=False)
+                except OSError as exc:
+                    logger.warning(
+                        "Could not clean stale flat migration state for tombstoned target %s: %s",
+                        target_dir,
+                        exc,
+                    )
+            return
+        if migration_state is not None:
+            staging, preserve_target_vector = migration_state
+            if manifest is not None:
+                try:
+                    _clear_flat_migration_state(target_dir, staging, remove_cores=False)
+                except OSError as exc:
+                    logger.warning(
+                        "Could not clean stale flat migration state for published target %s: %s",
+                        target_dir,
+                        exc,
+                    )
+                return
+            _clear_flat_migration_state(
+                target_dir,
+                staging,
+                remove_cores=True,
+                preserve_target_vector=preserve_target_vector,
+            )
+
+        # Only an owned marker may resume a transaction with publication
+        # history.  Otherwise both sides must be pristine legacy state;
+        # stale canonical cores must never seed a new target snapshot.
+        if migration_state is None and (
+            not legacy_artifacts_allowed(parent) or not legacy_artifacts_allowed(target_dir)
         ):
+            return
+
+        target_vec = target_dir / "vectors.index"
+        target_db = target_dir / "tracks.db"
+        historical_split = (
+            target_vec.is_file()
+            and not target_db.exists()
+            and not src_vec.exists()
+            and src_db.is_file()
+        )
+        if historical_split:
+            staging = target_dir / f"{_FLAT_MIGRATION_STAGING_PREFIX}{uuid.uuid4().hex}"
+            staging.mkdir()
+            staged_vec = staging / target_vec.name
+            staged_db = staging / target_db.name
+            try:
+                _write_flat_migration_marker(target_dir, staging, preserve_target_vector=True)
+                shutil.copyfile(target_vec, staged_vec)
+                _backup_legacy_tracks_db(src_db, staged_db)
+                _migrate_staged_legacy_tracks_db(staged_db)
+                vector_count = _validate_flat_migration_staging(staged_db, staged_vec)
+                staged_db.replace(target_db)
+                publish_manifest(target_dir, vector_count)
+            except Exception:
+                _clear_flat_migration_state(
+                    target_dir,
+                    staging,
+                    remove_cores=True,
+                    preserve_target_vector=True,
+                )
+                raise
+            try:
+                src_db.unlink()
+            except OSError as exc:
+                logger.warning("Could not remove migrated legacy artifact %s: %s", src_db, exc)
+            try:
+                _clear_flat_migration_state(target_dir, staging, remove_cores=False)
+            except OSError as exc:
+                logger.warning("Could not clean flat migration marker for %s: %s", target_dir, exc)
+            logger.info("Resumed split flat index migration → %s", target_dir)
+            return
+
+        if not src_vec.exists() or not src_db.exists():
+            return
+        if manifest is not None or target_vec.exists() or target_db.exists():
+            return
+
+        staging = target_dir / f"{_FLAT_MIGRATION_STAGING_PREFIX}{uuid.uuid4().hex}"
+        staging.mkdir()
+        staged_vec = staging / target_vec.name
+        staged_db = staging / target_db.name
+        try:
+            _write_flat_migration_marker(target_dir, staging)
+            shutil.copyfile(src_vec, staged_vec)
+            _backup_legacy_tracks_db(src_db, staged_db)
+            _migrate_staged_legacy_tracks_db(staged_db)
+            vector_count = _validate_flat_migration_staging(staged_db, staged_vec)
+            staged_vec.replace(target_vec)
+            staged_db.replace(target_db)
+            publish_manifest(target_dir, vector_count)
+        except OSError as exc:
+            _clear_flat_migration_state(target_dir, staging, remove_cores=True)
+            logger.warning(
+                "Auto-migration failed (%s); move manually:\n  mv %s %s\n  (and tracks.db alongside)",
+                exc,
+                src_vec,
+                target_vec,
+            )
+            return
+        except Exception:
+            _clear_flat_migration_state(target_dir, staging, remove_cores=True)
+            raise
+
+        for source in (src_vec, src_db):
+            try:
+                source.unlink()
+            except OSError as exc:
+                logger.warning("Could not remove migrated legacy artifact %s: %s", source, exc)
+        # Move only non-SQLite sidecars after the coherent core snapshot publishes.
+        for sidecar in ("dj_meta.db", "web_state.json", "runtime_state.json"):
             old = parent / sidecar
-            if old.exists() and not (target_dir / sidecar).exists():
-                old.replace(target_dir / sidecar)
-        logger.info(
-            "Migrated flat index → %s (named-index layout)",
-            target_dir,
-        )
-    except OSError as exc:
-        logger.warning(
-            "Auto-migration failed (%s); move manually:\n  mv %s %s\n  (and tracks.db alongside)",
-            exc,
-            src_vec,
-            target_vec,
-        )
+            new = target_dir / sidecar
+            if old.exists() and not new.exists():
+                try:
+                    old.replace(new)
+                except OSError as exc:
+                    logger.warning("Could not migrate sidecar %s: %s", old, exc)
+        try:
+            _clear_flat_migration_state(target_dir, staging, remove_cores=False)
+        except OSError as exc:
+            logger.warning("Could not clean flat migration marker for %s: %s", target_dir, exc)
+        logger.info("Migrated flat index → %s (named-index layout)", target_dir)
 
 
 def load_index(
     index_dir: Path,
     music_dir: Path | None = None,
     path_remap: list[tuple[str, str]] | None = None,
+    *,
+    expected_generation: int | None = None,
+    _migrate_flat: bool = True,
 ) -> tuple[list[IndexEntry], faiss.IndexFlatIP]:
     """Load the FAISS index and metadata from *index_dir*.
 
@@ -1231,38 +1841,81 @@ def load_index(
     # named-index refactor moves them under `<index_dir>/<name>/`.  If
     # the old files are sitting at the parent dir AND the new dir is
     # empty, slide them across so the user doesn't have to re-index.
-    _migrate_flat_index_if_needed(index_dir)
+    if _migrate_flat:
+        _migrate_flat_index_if_needed(index_dir)
 
-    index_file = index_dir / "vectors.index"
-    db_path = _tracks_db_path(index_dir)
-
-    if not index_dir.exists():
-        raise FileNotFoundError(
-            f"Index directory not found: {index_dir}\n"
-            f"Expected layout: {index_dir}/vectors.index + {index_dir}/tracks.db.\n"
-            "Run 'autodj index' to build the library index first.",
+    with publication_lock(index_dir):
+        before = read_manifest(index_dir)
+        if expected_generation is not None and (
+            before is None or before.generation != expected_generation
+        ):
+            raise IndexConsistencyError(
+                f"expected generation {expected_generation}, got "
+                f"{getattr(before, 'generation', None)}"
+            )
+        tracks_path = (
+            index_dir / before.tracks_file if before is not None else index_dir / "tracks.db"
         )
-    if not index_file.exists() or not db_path.exists():
-        raise FileNotFoundError(
-            f"Index files missing in {index_dir}.\n"
-            f"Expected: {db_path} + {index_file}.\n"
-            "Note: each named index lives in its own sub-directory "
-            "(<index_dir>/<name>/...).  Track metadata lives in tracks.db "
-            "(SQLite).  Run 'autodj list-indexes' to see what's available, "
-            "or 'autodj index' to build a fresh one.",
+        vectors_path = (
+            index_dir / before.vectors_file if before is not None else index_dir / "vectors.index"
+        )
+        if before is None and not legacy_artifacts_allowed(index_dir):
+            raise IndexConsistencyError("manifest-free artifacts have publication history")
+        if not tracks_path.is_file() or not vectors_path.is_file():
+            raise FileNotFoundError(
+                f"Index files missing: {tracks_path.name} + {vectors_path.name}"
+            )
+        pre_hashes = (
+            (sha256_file(tracks_path), sha256_file(vectors_path)) if before is not None else None
         )
 
-    faiss_index = cast("faiss.IndexFlatIP", faiss.read_index(str(index_file)))
-    conn = _open_tracks_db(index_dir)
-    try:
-        entries = _load_tracks_rows(conn)
-    finally:
-        conn.close()
-    if music_dir is not None or path_remap:
-        for e in entries:
-            e.path = _resolve_for_runtime(e.path, music_dir, path_remap)
-    logger.info("Loaded index with %d tracks from %s", len(entries), index_dir)
-    return entries, faiss_index
+        faiss_index = cast("faiss.IndexFlatIP", faiss.read_index(str(vectors_path)))
+        if before is None:
+            conn = _open_tracks_db(index_dir)
+        else:
+            conn = sqlite3.connect(_immutable_sqlite_uri(tracks_path), uri=True)
+        try:
+            entries = _load_tracks_rows(conn)
+        finally:
+            conn.close()
+        if music_dir is not None or path_remap:
+            for entry in entries:
+                entry.path = _resolve_for_runtime(entry.path, music_dir, path_remap)
+
+        post_hashes = (
+            (sha256_file(tracks_path), sha256_file(vectors_path)) if before is not None else None
+        )
+        after = read_manifest(index_dir)
+        if after != before:
+            raise IndexConsistencyError("manifest changed during load; retry generation")
+        if pre_hashes != post_hashes:
+            raise IndexConsistencyError("index artifact changed during load; retry generation")
+
+        sqlite_count = len(entries)
+        faiss_count = int(faiss_index.ntotal)
+        expected_count = before.vector_count if before is not None else sqlite_count
+        if sqlite_count != expected_count or faiss_count != expected_count:
+            raise IndexConsistencyError(
+                f"index count mismatch: manifest={getattr(before, 'vector_count', None)}, "
+                f"sqlite={sqlite_count}, faiss={faiss_count}"
+            )
+        if before is not None and pre_hashes != (
+            before.tracks_sha256,
+            before.vectors_sha256,
+        ):
+            assert pre_hashes is not None
+            tracks_hash, vectors_hash = pre_hashes
+            if tracks_hash != before.tracks_sha256:
+                raise IndexConsistencyError("tracks SHA-256 mismatch")
+            if vectors_hash != before.vectors_sha256:
+                raise IndexConsistencyError("vectors SHA-256 mismatch")
+        logger.info(
+            "Loaded index generation %s with %d tracks from %s",
+            0 if before is None else before.generation,
+            len(entries),
+            index_dir,
+        )
+        return entries, faiss_index
 
 
 # ---------------------------------------------------------------------------
@@ -1597,6 +2250,102 @@ def _detect_stale_entries(
     return stale, migrated
 
 
+def _load_existing_artifacts(
+    index_dir: Path,
+    music_dir: Path,
+    path_remap: list[tuple[str, str]] | None,
+) -> tuple[list[IndexEntry], list[np.ndarray], bool, IndexSnapshotToken]:
+    """Load one coherent baseline and restore its canonical working files."""
+    with publication_lock(index_dir):
+        manifest = read_manifest(index_dir)
+        snapshot = current_snapshot_token(index_dir)
+        if manifest is not None:
+            manifest_entries, manifest_index = load_index(
+                index_dir,
+                expected_generation=manifest.generation,
+            )
+            already_relative = _is_relative_storage([entry.path for entry in manifest_entries])
+            for entry in manifest_entries:
+                entry.path = _resolve_for_runtime(entry.path, music_dir, path_remap)
+            vectors = [
+                np.asarray(row, dtype=np.float32)
+                for row in manifest_index.reconstruct_n(0, manifest_index.ntotal)
+            ]
+            restore_working_snapshot(index_dir, expected_generation=manifest.generation)
+            return manifest_entries, vectors, already_relative, snapshot
+
+        db_exists = (index_dir / "tracks.db").is_file()
+        vectors_exist = (index_dir / "vectors.index").is_file()
+        if not db_exists and not vectors_exist:
+            return [], [], False, snapshot
+        if publication_is_tombstoned(index_dir):
+            for path in (
+                index_dir / "tracks.db",
+                index_dir / "tracks.db-wal",
+                index_dir / "tracks.db-shm",
+                index_dir / "vectors.index",
+            ):
+                path.unlink(missing_ok=True)
+            fsync_directory(index_dir)
+            return [], [], False, current_snapshot_token(index_dir)
+        if publication_has_uncommitted_reservation(index_dir):
+            for path in (
+                index_dir / "tracks.db",
+                index_dir / "tracks.db-wal",
+                index_dir / "tracks.db-shm",
+                index_dir / "vectors.index",
+            ):
+                path.unlink(missing_ok=True)
+            fsync_directory(index_dir)
+            return [], [], False, current_snapshot_token(index_dir)
+        if not legacy_artifacts_allowed(index_dir):
+            raise IndexConsistencyError("manifest-free artifacts have publication history")
+
+        entries: list[IndexEntry] = []
+        already_relative = True
+        if db_exists:
+            conn = _open_tracks_db(index_dir)
+            try:
+                entries = _load_tracks_rows(conn)
+            finally:
+                conn.close()
+            already_relative = _is_relative_storage([entry.path for entry in entries])
+
+        loaded: faiss.IndexFlatIP | None = None
+        if vectors_exist:
+            loaded = cast(
+                "faiss.IndexFlatIP",
+                faiss.read_index(str(index_dir / "vectors.index")),
+            )
+        entry_count = len(entries)
+        vector_count = 0 if loaded is None else int(loaded.ntotal)
+        common = min(entry_count, vector_count)
+        entries = entries[:common]
+        vectors = (
+            []
+            if loaded is None or common == 0
+            else [np.asarray(row, dtype=np.float32) for row in loaded.reconstruct_n(0, common)]
+        )
+        for entry in entries:
+            entry.path = _resolve_for_runtime(entry.path, music_dir, path_remap)
+        if common != entry_count or common != vector_count:
+            dimension = FEATURE_DIM if loaded is None else int(loaded.d)
+            aligned_vectors = (
+                np.asarray(vectors, dtype=np.float32)
+                if vectors
+                else np.empty((0, dimension), dtype=np.float32)
+            )
+            published = _publish_full_snapshot(
+                entries,
+                aligned_vectors,
+                index_dir,
+                music_dir,
+                expected_snapshot=snapshot,
+            )
+            snapshot = snapshot_token_for_manifest(published)
+        return entries, vectors, already_relative, snapshot
+
+
 def _load_existing_index(  # pragma: no cover -- exercised via build_index integration runs
     index_dir: Path,
     music_dir: Path,
@@ -1605,7 +2354,7 @@ def _load_existing_index(  # pragma: no cover -- exercised via build_index integ
     reindex_modified_since: float | None,
     throttle_ms: float = 0.0,
     stat_workers: int = 8,
-) -> tuple[list[IndexEntry], list[np.ndarray], set[str]]:
+) -> tuple[list[IndexEntry], list[np.ndarray], set[str], bool, IndexSnapshotToken]:
     """Load existing entries + vectors, drop missing and replaced files.
 
     Fused single-pass: one stat() per entry returns both existence (None
@@ -1614,60 +2363,23 @@ def _load_existing_index(  # pragma: no cover -- exercised via build_index integ
     ``prune_index`` then ``_detect_stale_entries`` back-to-back.
     """
     if force:
-        return [], [], set()
+        with publication_lock(index_dir):
+            snapshot = current_snapshot_token(index_dir)
+        return [], [], set(), True, snapshot
 
-    db_path = _tracks_db_path(index_dir)
-    if not db_path.exists():
-        return [], [], set()
-
-    conn = _open_tracks_db(index_dir)
-    try:
-        existing_entries: list[IndexEntry] = _load_tracks_rows(conn)
-    finally:
-        conn.close()
-    already_relative = _is_relative_storage([e.path for e in existing_entries])
-    for e in existing_entries:
-        e.path = _resolve_for_runtime(e.path, music_dir, path_remap)
-
-    existing_vectors: list[np.ndarray] = []
-    faiss_file = index_dir / "vectors.index"
-    if faiss_file.exists() and existing_entries:
-        # faiss-cpu >=1.14 stubs type read_index as the base Index; we only ever
-        # persist an IndexFlatIP, so narrow back for the typed signatures below.
-        loaded = cast("faiss.IndexFlatIP", faiss.read_index(str(faiss_file)))
-        # Reconcile: tracks.db UPSERTs every track but FAISS only flushes
-        # every FAISS_CHECKPOINT_EVERY tracks (perf optimisation), so a
-        # crash between the two writes leaves metadata rows without
-        # matching FAISS vectors.  Drop the unmatched tail so those
-        # tracks get re-embedded on this run.
-        if loaded.ntotal < len(existing_entries):
-            drop = len(existing_entries) - loaded.ntotal
-            logger.warning(
-                "Recovered from partial checkpoint: tracks.db had %d rows "
-                "but vectors.index has %d -- dropping last %d entries so "
-                "they get re-embedded.",
-                len(existing_entries),
-                loaded.ntotal,
-                drop,
-            )
-            existing_entries = existing_entries[: loaded.ntotal]
-            _save_tracks_metadata(existing_entries, index_dir, music_dir)
-        # Batch reconstruct in one FAISS call — per-entry reconstruct()
-        # at 70k tracks dominated incremental-index startup time.
-        all_vectors = loaded.reconstruct_n(0, loaded.ntotal)
-        # If FAISS has more vectors than tracks.db (shouldn't happen
-        # given metadata-first ordering, but defend anyway), keep only
-        # the prefix that lines up with metadata.
-        if loaded.ntotal > len(existing_entries):
-            logger.warning(
-                "vectors.index has %d rows but tracks.db has only %d -- "
-                "truncating FAISS to match metadata.",
-                loaded.ntotal,
-                len(existing_entries),
-            )
-            all_vectors = all_vectors[: len(existing_entries)]
-        existing_vectors = [np.asarray(row, dtype=np.float32) for row in all_vectors]
-        logger.info("Incremental mode: %d tracks already indexed", len(existing_entries))
+    (
+        existing_entries,
+        existing_vectors,
+        already_relative,
+        snapshot,
+    ) = _load_existing_artifacts(
+        index_dir,
+        music_dir,
+        path_remap,
+    )
+    if not existing_entries:
+        return [], [], set(), False, snapshot
+    logger.info("Incremental mode: %d tracks already indexed", len(existing_entries))
 
     print(
         f"[AutoDJ] Phase: Prune + stale-check — stat'ing {len(existing_entries)} files.",
@@ -1721,16 +2433,36 @@ def _load_existing_index(  # pragma: no cover -- exercised via build_index integ
             # re-embedded and the indexer's normal checkpoint flow rewrites
             # the files.
             if not existing_entries:
-                _delete_index_files(index_dir)
+                _delete_index_files(index_dir, expected_snapshot=snapshot)
+                snapshot = current_snapshot_token(index_dir)
             else:
                 vectors_arr = np.asarray(np.stack(existing_vectors), dtype=np.float32)
-                save_index(existing_entries, vectors_arr, index_dir, music_dir=music_dir)
+                published = _publish_full_snapshot(
+                    existing_entries,
+                    vectors_arr,
+                    index_dir,
+                    music_dir,
+                    expected_snapshot=snapshot,
+                )
+                snapshot = snapshot_token_for_manifest(published)
     elif not already_relative and existing_entries:
         # Legacy absolute-path storage detected; rewrite tracks.db in
         # portable relative form without touching FAISS.
-        _save_tracks_metadata(existing_entries, index_dir, music_dir)
+        published = _publish_metadata_snapshot(
+            existing_entries,
+            index_dir,
+            music_dir,
+            expected_snapshot=snapshot,
+        )
+        snapshot = snapshot_token_for_manifest(published)
 
-    return existing_entries, existing_vectors, {e.path for e in existing_entries}
+    return (
+        existing_entries,
+        existing_vectors,
+        {e.path for e in existing_entries},
+        bool(drop_paths),
+        snapshot,
+    )
 
 
 def _collect_tracks_to_index(  # pragma: no cover -- exercised via build_index integration runs
@@ -1841,10 +2573,7 @@ def _embed_new_tracks(  # pragma: no cover -- threaded indexer pipeline
                         "embedding contains NaN or Inf — track may be silent or corrupted"
                     )
                 entry = IndexEntry.from_track(track)
-                entry.energy = extra_meta["energy"]
-                entry.key = extra_meta["key"]
-                entry.mode = extra_meta["mode"]
-                entry.tempo_confidence = extra_meta["tempo_confidence"]
+                _apply_analysis_metadata(entry, extra_meta)
 
                 from autodj.beets import parse_initial_key as _parse_key
 
@@ -1854,9 +2583,10 @@ def _embed_new_tracks(  # pragma: no cover -- threaded indexer pipeline
                         entry.key, entry.mode = parsed
                 new_entries.append(entry)
                 new_vectors.append(combined)
-                checkpoint(new_entries, new_vectors)
             except Exception as exc:
                 logger.warning("Skipping %s: %s", track.path, exc)
+                continue
+            checkpoint(new_entries, new_vectors)
 
     return new_entries, new_vectors
 
@@ -1897,7 +2627,13 @@ def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integr
     music_dir = cfg.library.music_dir
     path_remap = cfg.library.path_remap
 
-    existing_entries, existing_vectors, existing_paths = _load_existing_index(
+    (
+        existing_entries,
+        existing_vectors,
+        existing_paths,
+        baseline_requires_reconcile,
+        snapshot,
+    ) = _load_existing_index(
         index_dir,
         music_dir,
         path_remap,
@@ -1928,46 +2664,18 @@ def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integr
         flush=True,
     )
 
-    # Per-track checkpoint policy:
-    #   * tracks.db UPSERT every track -- cheap, durable, lets a parallel
-    #     ``serve`` see new entries immediately.
-    #   * FAISS file rewrite every FAISS_CHECKPOINT_EVERY tracks (or at
-    #     loop end via the final save_index call) -- the monolithic file
-    #     is expensive to rewrite, so we lump those writes together.
-    # Order: metadata first, then FAISS.  A crash between the two leaves
-    # tracks.db ahead of vectors.index; _load_existing_index trims the
-    # mismatched tail on next startup so those tracks get re-embedded.
-    cp_counter = [0]
-
-    def _checkpoint(new_entries: list[IndexEntry], new_vectors: list[np.ndarray]) -> None:
-        if not new_entries:
-            return
-        cp_counter[0] += 1
-        all_e = existing_entries + new_entries
-        # Metadata always: O(rows) UPSERT, no whole-file rewrite.
-        _save_tracks_metadata(all_e, index_dir, music_dir)
-        # FAISS only every N tracks (or at the very last entry of the run).
-        last_track = cp_counter[0] == len(new_tracks)
-        if last_track or cp_counter[0] % FAISS_CHECKPOINT_EVERY == 0:
-            all_v = (
-                np.vstack(
-                    [
-                        np.array(existing_vectors, dtype=np.float32),
-                        np.array(new_vectors, dtype=np.float32),
-                    ]
-                )
-                if existing_vectors
-                else np.array(new_vectors, dtype=np.float32)
-            )
-            _save_vectors(all_v, index_dir)
-            logger.info(
-                "Checkpoint: %d new tracks saved (%d total) -- FAISS flushed",
-                len(new_entries),
-                len(all_e),
-            )
+    checkpoint = IncrementalCheckpoint(
+        index_dir=index_dir,
+        music_dir=music_dir,
+        existing_entries=existing_entries,
+        existing_vectors=existing_vectors,
+        total_new=len(new_tracks),
+        expected_snapshot=snapshot,
+        baseline_requires_reconcile=baseline_requires_reconcile,
+    )
 
     new_entries, new_vectors = _embed_new_tracks(
-        new_tracks, wrapper, workers, _checkpoint, throttle_ms=throttle_ms
+        new_tracks, wrapper, workers, checkpoint.write, throttle_ms=throttle_ms
     )
 
     # --- merge and save ---
@@ -1999,5 +2707,11 @@ def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integr
     else:
         all_vectors = np.array(new_vectors, dtype=np.float32)
 
-    save_index(all_entries, all_vectors, index_dir, music_dir=music_dir)
+    save_index(
+        all_entries,
+        all_vectors,
+        index_dir,
+        music_dir=music_dir,
+        expected_snapshot=checkpoint.expected_snapshot,
+    )
     print(f"[AutoDJ] Index updated: {len(new_entries)} new tracks added, {len(all_entries)} total.")

@@ -32,8 +32,12 @@ import contextlib
 import functools
 import json as _json
 import logging
+import mimetypes
+import shutil
 import threading
-from collections.abc import AsyncGenerator
+import time
+from collections.abc import AsyncGenerator, Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -50,11 +54,30 @@ from fastapi import (
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.background import BackgroundTask
 
 # PlayerBridge lives in autodj._bridge so neither file balloons over
 # the 2000-line working budget.  Re-export here so the external API
 # (``from autodj.server import PlayerBridge``) keeps working unchanged.
 from autodj._bridge import PlayerBridge
+from autodj.http_media import (
+    OpenedMediaFile,
+    RangeNotSatisfiable,
+    open_media_file,
+    parse_single_range,
+    stream_file_chunks,
+)
+from autodj.index_manifest import IndexConsistencyError, IndexSnapshotToken, current_snapshot_token
+from autodj.security import (
+    COOKIE_NAME,
+    LoginRateLimiter,
+    SecurityMiddleware,
+    SecurityPolicy,
+    _raw_header_values,
+    emit_audit,
+    new_request_id,
+)
+from autodj.version import current_version
 
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig
@@ -63,6 +86,265 @@ if TYPE_CHECKING:
     from autodj.similarity import SimilarityIndex
 
 logger = logging.getLogger(__name__)
+_WS_SEND_TIMEOUT_SECONDS = 2.0
+_ALAC_PREFETCH_TIMEOUT_SECONDS = 5.0
+_PACKAGE_DIR = Path(__file__).parent
+_REQUIRED_BUILT_ASSETS = (
+    "index.html",
+    "app.js",
+    "app.css",
+    "bitcrusher-worklet.js",
+    "stutter-worklet.js",
+    "freeze-worklet.js",
+    "glitch-worklet.js",
+)
+_BUILD_INFO_NAME = "build-info.json"
+
+
+@dataclass(eq=False)
+class _WebSocketClient:
+    """Track one WebSocket connection and its coordinated shutdown state."""
+
+    websocket: Any
+    request_id: str | None = None
+    session_is_valid: Callable[[], bool] | None = field(default=None, repr=False)
+    send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    handler_task: asyncio.Task[Any] | None = None
+    failure_code: int | None = None
+    close_started: bool = False
+
+
+async def _close_websocket_client(
+    client: _WebSocketClient,
+    *,
+    code: int,
+    timeout_seconds: float,
+    failure_action: str,
+) -> bool:
+    """Close one WebSocket client once and audit a failed close attempt."""
+    try:
+        async with asyncio.timeout(timeout_seconds):
+            async with client.send_lock:
+                if client.close_started:
+                    return True
+                client.close_started = True
+                client.failure_code = code
+                await client.websocket.close(code=code)
+    except Exception:
+        if client.request_id is not None:
+            emit_audit(
+                client.request_id,
+                failure_action,
+                "rejected",
+                method="WS",
+                route="/ws",
+                status=code,
+                level=logging.WARNING,
+            )
+        return False
+    return True
+
+
+async def _close_failed_websocket(client: _WebSocketClient, timeout_seconds: float) -> None:
+    """Close and cancel a client whose WebSocket send operation failed."""
+    try:
+        await _close_websocket_client(
+            client,
+            code=1013,
+            timeout_seconds=timeout_seconds,
+            failure_action="broadcast",
+        )
+    finally:
+        task = client.handler_task
+        if task is not None and not task.done():
+            task.cancel()
+
+
+def _websocket_session_is_valid(client: _WebSocketClient) -> bool:
+    """Return whether the client session callback accepts its current session."""
+    if client.session_is_valid is None:
+        return True
+    try:
+        return client.session_is_valid()
+    except Exception:
+        return False
+
+
+async def _close_expired_websocket(client: _WebSocketClient, timeout_seconds: float) -> None:
+    """Close and cancel a client whose WebSocket session is no longer valid."""
+    try:
+        await _close_websocket_client(
+            client,
+            code=4401,
+            timeout_seconds=timeout_seconds,
+            failure_action="websocket_session",
+        )
+    finally:
+        task = client.handler_task
+        if task is not None and not task.done():
+            task.cancel()
+
+
+async def _send_websocket_payload(
+    client: _WebSocketClient, payload: str, timeout_seconds: float
+) -> bool:
+    """Send one payload or close the client after a send or session failure."""
+    if not _websocket_session_is_valid(client):
+        await _close_expired_websocket(client, timeout_seconds)
+        return False
+    expired = False
+    try:
+        async with asyncio.timeout(timeout_seconds):
+            async with client.send_lock:
+                if client.close_started:
+                    return False
+                if not _websocket_session_is_valid(client):
+                    expired = True
+                else:
+                    await client.websocket.send_text(payload)
+    except Exception:
+        await _close_failed_websocket(client, timeout_seconds)
+        return False
+    if expired:
+        await _close_expired_websocket(client, timeout_seconds)
+        return False
+    return True
+
+
+async def _broadcast_clients(
+    clients: tuple[_WebSocketClient, ...],
+    payload: str,
+    *,
+    timeout_seconds: float = _WS_SEND_TIMEOUT_SECONDS,
+) -> set[_WebSocketClient]:
+    """Broadcast a payload and return clients that did not receive it."""
+    results = await asyncio.gather(
+        *(_send_websocket_payload(client, payload, timeout_seconds) for client in clients)
+    )
+    return {client for client, sent in zip(clients, results, strict=True) if not sent}
+
+
+async def _broadcast_and_prune(
+    clients: set[_WebSocketClient],
+    clients_lock: asyncio.Lock,
+    payload: str,
+    *,
+    timeout_seconds: float = _WS_SEND_TIMEOUT_SECONDS,
+) -> set[_WebSocketClient]:
+    """Broadcast a payload and remove clients that failed to receive it."""
+    async with clients_lock:
+        snapshot = tuple(clients)
+    dead = await _broadcast_clients(snapshot, payload, timeout_seconds=timeout_seconds)
+    if dead:
+        async with clients_lock:
+            clients.difference_update(dead)
+    return dead
+
+
+async def _close_and_prune_websocket(
+    client: _WebSocketClient,
+    clients: set[_WebSocketClient],
+    clients_lock: asyncio.Lock,
+    *,
+    code: int,
+    timeout_seconds: float = _WS_SEND_TIMEOUT_SECONDS,
+) -> bool:
+    """Close a WebSocket client and remove it from the shared client set."""
+    closed = await _close_websocket_client(
+        client,
+        code=code,
+        timeout_seconds=timeout_seconds,
+        failure_action="websocket_close",
+    )
+    async with clients_lock:
+        clients.discard(client)
+    return closed
+
+
+async def reload_published_generation_once(
+    bridge: PlayerBridge, observed: IndexSnapshotToken
+) -> IndexSnapshotToken:
+    """Reload one changed publication token, preserving observed on failure/no change."""
+    cfg = getattr(bridge.player, "_cfg", None)
+    if cfg is None:
+        return observed
+    snapshot = await asyncio.to_thread(current_snapshot_token, cfg.index.active_dir)
+    if snapshot == observed:
+        return observed
+    await asyncio.to_thread(
+        bridge.reload_index_from_disk,
+        expected_snapshot=snapshot,
+    )
+    return snapshot
+
+
+def _quiesce_cache_writers(
+    bridge: PlayerBridge,
+    player_thread: threading.Thread | None,
+    timeout_s: float,
+) -> bool:
+    """Wait up to one shared deadline for every possible cache writer."""
+    deadline = time.monotonic() + timeout_s
+    if player_thread is not None:
+        player_thread.join(max(0.0, deadline - time.monotonic()))
+        if player_thread.is_alive():
+            return False
+
+    wait_for_analysis = None
+    if hasattr(type(bridge.player), "wait_for_background_analysis"):
+        wait_for_analysis = bridge.player.wait_for_background_analysis
+    if not callable(wait_for_analysis):
+        return True
+    return bool(wait_for_analysis(timeout=max(0.0, deadline - time.monotonic())))
+
+
+def _advertised_server_origin(policy: SecurityPolicy) -> str:
+    """Choose one browser URL accepted by both transport and request policy."""
+    from urllib.parse import urlsplit
+
+    expected_scheme = "https" if policy.secure_cookie else "http"
+    for origin in policy.effective_allowed_origins():
+        parsed = urlsplit(origin)
+        origin_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        if (
+            parsed.scheme == expected_scheme
+            and origin_port == policy.config.port
+            and policy.host_allowed(parsed.netloc)
+        ):
+            return origin
+    raise ValueError(
+        "server.allowed_origins must include an allowed origin whose hostname is "
+        "present in server.allowed_hosts and whose scheme and port match server TLS/bind"
+    )
+
+
+def _selected_static_dir(package_dir: Path) -> Path:
+    """Select a complete built bundle, otherwise source assets."""
+    static_built = package_dir / "static_dist"
+    if all((static_built / name).is_file() for name in (*_REQUIRED_BUILT_ASSETS, _BUILD_INFO_NAME)):
+        return static_built
+    return package_dir / "static"
+
+
+def _validated_bundle_version(static_built: Path, runtime_version: str) -> str | None:
+    """Validate metadata for a built bundle; source assets have no stamp."""
+    if not all((static_built / name).is_file() for name in _REQUIRED_BUILT_ASSETS):
+        return None
+    stamp = static_built / _BUILD_INFO_NAME
+    if not stamp.is_file():
+        raise RuntimeError(f"Built static bundle is missing build-info.json: {stamp}")
+    try:
+        payload = _json.loads(stamp.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, _json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Built static bundle has invalid build-info.json: {exc}") from exc
+    version = payload.get("version") if isinstance(payload, dict) else None
+    if not isinstance(version, str) or not version:
+        raise RuntimeError("Built static bundle build-info.json needs a non-empty string version")
+    if version != runtime_version:
+        raise RuntimeError(
+            f"Built static bundle version {version} does not match runtime version {runtime_version}"
+        )
+    return version
 
 
 @functools.cache
@@ -76,14 +358,10 @@ def _version_info() -> dict[str, str]:
     is a git checkout, else "unknown".
     """
     import datetime as _dt
-    import importlib.metadata as _md
     import subprocess as _sp  # nosec B404 - trusted invocation (git, fixed argv)
 
-    here = Path(__file__).parent
-    try:
-        version = _md.version("autodj")
-    except _md.PackageNotFoundError:
-        version = "0.0.0"
+    here = _PACKAGE_DIR
+    version = current_version()
 
     commit = "unknown"
     try:
@@ -102,13 +380,12 @@ def _version_info() -> dict[str, str]:
     except (OSError, _sp.SubprocessError):
         pass
 
+    candidate = _selected_static_dir(here) / "app.js"
     built_at: str | None = None
-    for candidate in (here / "static_dist" / "app.js", here / "static" / "app.js"):
-        if candidate.exists():
-            built_at = _dt.datetime.fromtimestamp(candidate.stat().st_mtime, _dt.UTC).isoformat(
-                timespec="seconds"
-            )
-            break
+    if candidate.exists():
+        built_at = _dt.datetime.fromtimestamp(candidate.stat().st_mtime, _dt.UTC).isoformat(
+            timespec="seconds"
+        )
     if built_at is None:
         built_at = _dt.datetime.now(_dt.UTC).isoformat(timespec="seconds")
 
@@ -271,23 +548,204 @@ class LibraryJobBody(BaseModel):
     args: list[str] = []
 
 
+class LoginBody(BaseModel):
+    """Access token submitted once in exchange for a signed session cookie."""
+
+    token: str
+
+
+_MIME_BY_SUFFIX = {
+    ".mp3": "audio/mpeg",
+    ".flac": "audio/flac",
+    ".m4a": "audio/mp4",
+    ".mp4": "audio/mp4",
+    ".aac": "audio/aac",
+    ".ogg": "audio/ogg",
+    ".oga": "audio/ogg",
+    ".opus": "audio/ogg",
+    ".wav": "audio/wav",
+    ".aif": "audio/aiff",
+    ".aiff": "audio/aiff",
+}
+
+
+def _audio_mime(path: Path) -> str:
+    """Return MIME type associated with *path*'s audio suffix."""
+    return _MIME_BY_SUFFIX.get(path.suffix.lower(), "application/octet-stream")
+
+
+def _is_alac(source: OpenedMediaFile, suffix: str) -> bool:
+    """Return whether an MP4-family file reports Apple Lossless audio."""
+    if suffix.lower() not in (".m4a", ".mp4"):
+        return False
+    try:
+        import mutagen
+        from mutagen.mp4 import MP4
+
+        mutagen_error = vars(mutagen)["MutagenError"]
+    except (ImportError, KeyError):
+        return False
+
+    try:
+        source.handle.seek(0)
+        codec = getattr(MP4(source.handle).info, "codec", None) or ""
+        return codec.lower() == "alac"
+    except (OSError, ValueError, mutagen_error):
+        return False
+    finally:
+        with contextlib.suppress(OSError):
+            source.handle.seek(0)
+
+
+async def _start_alac_transcoder(
+    executable: str,
+    source: OpenedMediaFile,
+) -> Any:
+    """Spawn ffmpeg from resolved executable using already-opened source."""
+    return await asyncio.create_subprocess_exec(
+        executable,
+        "-loglevel",
+        "error",
+        "-i",
+        "pipe:0",
+        "-c:a",
+        "libmp3lame",
+        "-b:a",
+        "192k",
+        "-f",
+        "mp3",
+        "pipe:1",
+        stdin=source.handle,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+
+
+async def _transcode_alac_to_mp3(
+    process: Any,
+    prefetched: bytes = b"",
+) -> AsyncGenerator[bytes]:
+    """Yield transcoded MP3 bytes and always reap ffmpeg subprocess."""
+    try:
+        if process.stdout is None:
+            return
+        if prefetched:
+            yield prefetched
+        while chunk := await process.stdout.read(64 * 1024):
+            yield chunk
+    finally:
+        await _terminate_alac_process(process)
+
+
+async def _kill_and_wait(process: Any) -> None:
+    """Kill and reap one transcoder process."""
+    with contextlib.suppress(ProcessLookupError):
+        process.kill()
+    await process.wait()
+
+
+async def _terminate_alac_process(process: Any) -> None:
+    """Idempotently finish process cleanup even if caller is cancelled."""
+    cleanup = getattr(process, "_autodj_cleanup_task", None)
+    if cleanup is None:
+        cleanup = asyncio.create_task(_kill_and_wait(process))
+        process._autodj_cleanup_task = cleanup
+    await asyncio.shield(cleanup)
+
+
+async def _prefetch_alac_output(process: Any) -> bytes | None:
+    """Read one output chunk before response headers or return fallback signal."""
+    if process.stdout is None:
+        await _terminate_alac_process(process)
+        return None
+    try:
+        async with asyncio.timeout(_ALAC_PREFETCH_TIMEOUT_SECONDS):
+            first_chunk = await process.stdout.read(64 * 1024)
+    except TimeoutError:
+        await _terminate_alac_process(process)
+        return None
+    except asyncio.CancelledError:
+        await _terminate_alac_process(process)
+        raise
+    except Exception:
+        await _terminate_alac_process(process)
+        return None
+    if not first_chunk:
+        await _terminate_alac_process(process)
+        return None
+    return first_chunk
+
+
+async def _close_alac_stream(stream: AsyncGenerator[bytes], process: Any) -> None:
+    """Close transcoder stream and reap process even before first body read."""
+    try:
+        await stream.aclose()
+    finally:
+        await _terminate_alac_process(process)
+
+
+async def _close_opened_media(source: OpenedMediaFile) -> None:
+    """Close opened media without blocking event loop."""
+    await asyncio.to_thread(source.close)
+
+
+async def _close_file_media_stream(
+    stream: AsyncGenerator[bytes],
+    source: OpenedMediaFile,
+) -> None:
+    """Close both iterator state and handle, including pre-body disconnects."""
+    try:
+        await stream.aclose()
+    finally:
+        await _close_opened_media(source)
+
+
 # ---------------------------------------------------------------------------
 # FastAPI application factory
 # ---------------------------------------------------------------------------
 
 
-def create_app(bridge: PlayerBridge) -> FastAPI:
+def create_app(
+    bridge: PlayerBridge,
+    player_thread: threading.Thread | None = None,
+    shutdown_timeout_s: float = 30.0,
+    *,
+    secure_cookie: bool = False,
+    login_rate_limiter: LoginRateLimiter | None = None,
+) -> FastAPI:
     """Create and return the FastAPI application.
 
     Args:
         bridge: A fully initialised :class:`PlayerBridge`.
+        player_thread: Optional main player thread to join during shutdown.
+        shutdown_timeout_s: Total seconds allowed for all cache writers to stop.
 
     Returns:
         A configured :class:`fastapi.FastAPI` instance.
     """
+    shutdown_timeout_s = max(0.0, float(shutdown_timeout_s))
     # Connected WebSocket clients — populated at runtime
-    _ws_clients: set[WebSocket] = set()
+    _ws_clients: set[_WebSocketClient] = set()
     _ws_lock = asyncio.Lock()
+    _lyrics_read_gate = asyncio.Semaphore(1)
+
+    async def _read_lyrics_owned(path: str) -> list[dict[str, object]]:
+        """Run one path read at a time without cancellation leaking capacity."""
+        await _lyrics_read_gate.acquire()
+        try:
+            worker = asyncio.create_task(asyncio.to_thread(bridge.lyrics_for, path))
+        except BaseException:
+            _lyrics_read_gate.release()
+            raise
+
+        def release_capacity(completed: asyncio.Task[list[dict]]) -> None:
+            """Release the lyrics-read slot after the worker task finishes."""
+            _lyrics_read_gate.release()
+            if not completed.cancelled():
+                completed.exception()
+
+        worker.add_done_callback(release_capacity)
+        return await asyncio.shield(worker)
 
     # ------------------------------------------------------------------
     # Lifespan (replaces deprecated on_event)
@@ -306,9 +764,10 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
             #      a daemon thread so the process can exit either way,
             #      but a clean stop lets pynput / sounddevice release
             #      OS handles instead of being torn down mid-call.
-            #   2. Flush the DJ-meta sidecar so any cues / beat grids
-            #      computed in background threads land on disk.
-            #   3. Cancel the broadcast + watcher tasks last and await
+            #   2. Join the main Player thread, then every registered
+            #      background analysis worker before closing their cache.
+            #   3. Flush and close the DJ-meta sidecar after all writers exit.
+            #   4. Cancel the broadcast + watcher tasks last and await
             #      them with CancelledError suppressed so asyncio does
             #      not log "Task was destroyed but it is pending" on
             #      Ctrl+C exit.
@@ -318,19 +777,71 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
                 bridge.player._skip_event.set()
             except Exception:  # pragma: no cover -- defensive log-only path
                 logger.debug("shutdown: player stop signal failed", exc_info=True)
-            try:
-                cache = getattr(bridge.player, "_dj_cache", None)
-                if cache is not None:
-                    cache.flush(force=True)
-            except Exception:  # pragma: no cover -- defensive log-only path
-                logger.debug("shutdown: dj-meta flush failed", exc_info=True)
+            has_background_writers = hasattr(type(bridge.player), "wait_for_background_analysis")
+            if player_thread is None and not has_background_writers:
+                writers_quiesced = True
+            else:
+                writers_quiesced = await asyncio.to_thread(
+                    _quiesce_cache_writers,
+                    bridge,
+                    player_thread,
+                    shutdown_timeout_s,
+                )
+            cache_closed = False
+            if writers_quiesced:
+                try:
+                    from autodj.dj_meta import close_cache
+
+                    close_cache()
+                    cache_closed = True
+                except Exception:  # pragma: no cover -- defensive shutdown logging
+                    logger.debug("shutdown: DJ-meta close failed", exc_info=True)
+            else:
+                logger.warning(
+                    "Degraded shutdown: DJ-meta cache remains open because writers "
+                    "did not stop within %.2f seconds",
+                    shutdown_timeout_s,
+                )
             for task in (broadcast, watcher):
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await task
-            logger.info("Server stopped cleanly.")
+            if writers_quiesced and cache_closed:
+                logger.info("Server stopped cleanly.")
+            elif not writers_quiesced:
+                logger.warning(
+                    "Server shutdown completed in degraded mode: active cache writers "
+                    "remain; DJ-meta cache left open."
+                )
+            else:  # pragma: no cover -- close failure is defensive-only
+                logger.warning(
+                    "Server shutdown completed in degraded mode: DJ-meta cache could not be closed."
+                )
 
-    app = FastAPI(title="AutoDJ", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="AutoDJ", version=current_version(), lifespan=lifespan)
+
+    def _liner_upload_max_bytes() -> int:
+        server_cfg = getattr(bridge.player._cfg, "server", None)
+        configured_limit = getattr(server_cfg, "liner_upload_max_bytes", None)
+        return (
+            configured_limit
+            if isinstance(configured_limit, int) and not isinstance(configured_limit, bool)
+            else 50 * 1024 * 1024
+        )
+
+    from autodj.liner_files import LinerUploadBodyLimitMiddleware
+
+    app.add_middleware(
+        LinerUploadBodyLimitMiddleware,
+        max_file_bytes=_liner_upload_max_bytes,
+    )
+
+    policy = SecurityPolicy(bridge.player._cfg.server, secure_cookie=secure_cookie)
+    app.state.security_policy = policy
+    app.state.login_rate_limiter = login_rate_limiter or LoginRateLimiter()
+    # Last-added middleware is outermost. Security rejects before upload limiting
+    # can inspect or consume a request body.
+    app.add_middleware(SecurityMiddleware, policy=policy)
 
     # ------------------------------------------------------------------
     # Static HTML
@@ -341,10 +852,10 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
     # required).  Both directories share filenames so the FastAPI
     # routes below resolve transparently regardless of which the user
     # has on disk.  See vite.config.js for the build pipeline.
-    _static_src = Path(__file__).parent / "static"
-    _static_built = Path(__file__).parent / "static_dist"
-    _static_dir = _static_built if (_static_built / "index.html").exists() else _static_src
-    if _static_dir is _static_built:
+    _static_built = _PACKAGE_DIR / "static_dist"
+    _static_dir = _selected_static_dir(_PACKAGE_DIR)
+    if _static_dir == _static_built:
+        _validated_bundle_version(_static_built, current_version())
         logger.info("Serving built static assets from %s", _static_dir)
     _static_html_path = _static_dir / "index.html"
     # Read the bundled HTML once at startup so the GET / handler never
@@ -462,12 +973,61 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
         """Return the current player state snapshot."""
         return JSONResponse(bridge.get_state())
 
+    @app.get("/api/auth/status")
+    async def api_auth_status(request: Request) -> dict[str, bool]:
+        """Report whether this browser holds a valid authenticated session."""
+        request_policy: SecurityPolicy = request.app.state.security_policy
+        return {
+            "required": request_policy.authentication_required,
+            "authenticated": (
+                not request_policy.authentication_required
+                or request_policy.verify_session(request.cookies.get(COOKIE_NAME))
+            ),
+        }
+
+    @app.post("/api/login")
+    async def api_login(body: LoginBody, request: Request) -> Response:
+        """Exchange a valid configured access token for a signed session."""
+        request_policy: SecurityPolicy = request.app.state.security_policy
+        if not request_policy.verify_access_token(body.token):
+            raise HTTPException(status_code=401, detail="Invalid access token")
+        response = JSONResponse({"authenticated": True})
+        response.set_cookie(
+            COOKIE_NAME,
+            request_policy.issue_session(),
+            httponly=True,
+            samesite="strict",
+            secure=request_policy.secure_cookie,
+            max_age=request_policy.config.session_ttl_seconds,
+            path="/",
+        )
+        return response
+
+    @app.post("/api/logout")
+    async def api_logout(request: Request) -> Response:
+        """Delete the browser session using the same cookie scope and flags."""
+        request_policy: SecurityPolicy = request.app.state.security_policy
+        response = JSONResponse({"authenticated": False})
+        response.delete_cookie(
+            COOKIE_NAME,
+            path="/",
+            secure=request_policy.secure_cookie,
+            httponly=True,
+            samesite="strict",
+        )
+        return response
+
     @app.get("/api/version")
     async def api_version() -> JSONResponse:
         """Return server + package version metadata."""
         # Footer build stamp.  Lets the user verify which commit + bundle
         # the server is actually serving (browser cache vs. fresh build).
         return JSONResponse(_version_info())
+
+    @app.get("/healthz")
+    async def healthz() -> dict[str, str | int]:
+        """Return process readiness without exposing library metadata."""
+        return {"status": "ok", "tracks": bridge.sim.ntotal}
 
     @app.get("/api/history")
     async def api_history(page: int = 1, per_page: int = 50) -> JSONResponse:
@@ -669,77 +1229,138 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
         return _P(folder_str)
 
     @app.post("/api/liners/upload")
-    async def api_liner_upload(file: UploadFile = File(...)) -> dict:
-        """Upload a new liner clip into the configured folder.
-
-        Rejects files whose extension isn't in :data:`LINER_EXTS` so
-        users can't drop arbitrary binaries into the served folder.
-        Creates the folder when missing.
-        """
+    async def api_liner_upload(
+        file: UploadFile = File(...), replace: bool = False
+    ) -> dict[str, str | int]:
+        """Validate, bound, and atomically store a liner clip."""
+        from autodj.liner_files import (
+            InvalidLinerName,
+            LinerConflictError,
+            LinerStorageUnsupportedError,
+            LinerTooLargeError,
+            resolve_liner_path,
+            store_liner_upload,
+        )
         from autodj.liners import LINER_EXTS
 
         name = file.filename or ""
-        ext = ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
-        if ext not in LINER_EXTS:
+        folder = _resolve_liner_folder()
+        try:
+            parsed_target = resolve_liner_path(folder, name)
+        except InvalidLinerName as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        extension = parsed_target.suffix.lower()
+        if extension not in LINER_EXTS:
             raise HTTPException(
                 status_code=400,
-                detail=f"Unsupported extension {ext!r}; allowed: {', '.join(LINER_EXTS)}",
+                detail=(f"Unsupported extension {extension!r}; allowed: {', '.join(LINER_EXTS)}"),
             )
-        # Strip path components from the filename so the upload always
-        # lands directly in the liner folder regardless of what the
-        # browser sent.
-        from pathlib import PurePosixPath
-
-        safe_name = PurePosixPath(name).name
-        folder = _resolve_liner_folder()
-        folder.mkdir(parents=True, exist_ok=True)
-        target = (folder / safe_name).resolve()
-        if not str(target).startswith(
-            str(folder.resolve())
-        ):  # pragma: no cover — safe_name already strips path components; defensive belt-and-braces
-            raise HTTPException(status_code=400, detail="Invalid filename")
-        contents = await file.read()
-        target.write_bytes(contents)
-        return {"filename": safe_name, "size": len(contents)}
+        try:
+            target, size = await store_liner_upload(
+                folder,
+                name,
+                file,
+                max_bytes=_liner_upload_max_bytes(),
+                replace=replace,
+            )
+        except InvalidLinerName as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except LinerConflictError as exc:
+            raise HTTPException(status_code=409, detail="Liner already exists") from exc
+        except LinerTooLargeError as exc:
+            raise HTTPException(status_code=413, detail=str(exc)) from exc
+        except LinerStorageUnsupportedError as exc:
+            raise HTTPException(status_code=503, detail="Liner storage is unavailable") from exc
+        return {"filename": target.name, "size": size}
 
     @app.delete("/api/liners/file/{name}")
-    async def api_liner_delete(name: str) -> dict:
-        """Remove a liner clip identified by filename.
+    async def api_liner_delete(name: str) -> dict[str, str]:
+        """Remove one validated plain liner file."""
+        from autodj.liner_files import (
+            InvalidLinerName,
+            LinerStorageUnsupportedError,
+            delete_liner_file,
+        )
 
-        Same path-traversal guard as the GET endpoint.
-        """
-        from pathlib import Path as _P
-
-        folder = _resolve_liner_folder().resolve()
-        target = (folder / name).resolve()
-        if not str(target).startswith(str(folder)) or not target.is_file():
-            raise HTTPException(status_code=404, detail="Liner not found")
         try:
-            _P(target).unlink()
+            delete_liner_file(_resolve_liner_folder(), name)
+        except InvalidLinerName as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Liner not found") from exc
+        except LinerStorageUnsupportedError as exc:
+            raise HTTPException(status_code=503, detail="Liner storage is unavailable") from exc
         except OSError as exc:
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
-        return {"deleted": target.name}
+            raise HTTPException(status_code=500, detail="Unable to delete liner") from exc
+        return {"deleted": name}
 
     @app.get("/api/liners/file/{name}")
-    async def api_liner_file(name: str) -> FileResponse:
-        """Stream the raw bytes of a liner clip identified by filename.
+    async def api_liner_file(name: str, request: Request) -> StreamingResponse:
+        """Serve one validated plain liner file."""
+        from autodj.liner_files import (
+            InvalidLinerName,
+            LinerRangeNotSatisfiable,
+            LinerStorageUnsupportedError,
+            MalformedLinerRange,
+            iter_opened_liner,
+            open_liner_file,
+            parse_liner_range,
+        )
 
-        Resolves *name* against the liners folder; rejects path
-        traversal by ensuring the resolved file is inside that folder.
-        """
-        import mimetypes
-        from pathlib import Path as _P
+        try:
+            opened = open_liner_file(_resolve_liner_folder(), name)
+        except InvalidLinerName as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Liner not found") from exc
+        except LinerStorageUnsupportedError as exc:
+            raise HTTPException(status_code=503, detail="Liner storage is unavailable") from exc
+        media_type, _encoding = mimetypes.guess_type(name)
+        file_size = opened.stat_result.st_size
+        start = 0
+        end = file_size
+        status_code = 200
+        headers = {"Content-Length": str(file_size), "Accept-Ranges": "bytes"}
+        requested_range = request.headers.get("range")
+        if requested_range is not None:
+            try:
+                start, end = parse_liner_range(requested_range, file_size)
+            except MalformedLinerRange as exc:
+                opened.file.close()
+                raise HTTPException(status_code=400, detail="Malformed byte range") from exc
+            except LinerRangeNotSatisfiable as exc:
+                opened.file.close()
+                raise HTTPException(
+                    status_code=416,
+                    detail="Byte range is not satisfiable",
+                    headers={"Content-Range": f"bytes */{file_size}"},
+                ) from exc
+            status_code = 206
+            headers["Content-Length"] = str(end - start)
+            headers["Content-Range"] = f"bytes {start}-{end - 1}/{file_size}"
+        try:
+            return StreamingResponse(
+                iter_opened_liner(opened, start=start, end=end),
+                status_code=status_code,
+                media_type=media_type or "application/octet-stream",
+                headers=headers,
+                background=BackgroundTask(opened.file.close),
+            )
+        except BaseException:
+            opened.file.close()
+            raise
 
-        cfg = bridge.player._cfg
-        folder_str = cfg.playback.liners_folder
-        if not folder_str:
-            folder_str = str(_P(cfg.index.active_dir) / "liners")
-        folder = _P(folder_str).resolve()
-        target = (folder / name).resolve()
-        if not str(target).startswith(str(folder)) or not target.is_file():
-            raise HTTPException(status_code=404, detail="Liner not found")
-        mime, _ = mimetypes.guess_type(str(target))
-        return FileResponse(target, media_type=mime or "application/octet-stream")
+    @app.get("/api/liners/file/{escaped:path}", include_in_schema=False)
+    async def api_liner_file_reject_path(escaped: str) -> None:
+        """Reject liner file requests whose path is not a plain filename."""
+        del escaped
+        raise HTTPException(status_code=400, detail="liner name must be one plain filename")
+
+    @app.delete("/api/liners/file/{escaped:path}", include_in_schema=False)
+    async def api_liner_delete_reject_path(escaped: str) -> None:
+        """Reject liner deletion requests whose path is not a plain filename."""
+        del escaped
+        raise HTTPException(status_code=400, detail="liner name must be one plain filename")
 
     @app.post("/api/pause")
     async def api_pause() -> dict[str, bool]:
@@ -799,7 +1420,8 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
         """Return the embedded album art for a track (304 if unchanged)."""
         # Only serve art for tracks that exist in the index — prevents
         # arbitrary file access through the path parameter.
-        known = any(e.path == path for e in bridge.sim.entries)
+        similarity = bridge.sim
+        known = similarity.entry_for_path(path) is not None
         if not known:
             raise HTTPException(status_code=404, detail="Track not in index")
         result = await asyncio.to_thread(bridge.cover_art_for, path)
@@ -809,214 +1431,142 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
         return Response(content=data, media_type=mime)
 
     @app.get("/api/lyrics")
-    async def api_lyrics() -> dict[str, list]:
-        """Return parsed lyric lines (LRC, beets, or embedded tags)."""
-        return {"lyrics": bridge.current_lyrics()}
+    async def api_lyrics(path: str) -> dict[str, object]:
+        """Return timed lyric lines for one exact indexed track path."""
+        similarity = bridge.sim
+        authorized_snapshot = similarity.snapshot_token
+        if similarity.entry_for_path(path) is None:
+            raise HTTPException(status_code=404, detail="Track not in index")
+        if similarity.snapshot_token != authorized_snapshot:
+            raise HTTPException(status_code=409, detail="Track index changed")
+        lyrics = await _read_lyrics_owned(path)
+        if similarity.snapshot_token != authorized_snapshot:
+            raise HTTPException(status_code=409, detail="Track index changed")
+        if similarity.entry_for_path(path) is None:
+            raise HTTPException(status_code=404, detail="Track not in index")
+        if similarity.snapshot_token != authorized_snapshot:
+            raise HTTPException(status_code=409, detail="Track index changed")
+        return {"path": path, "lyrics": lyrics}
 
     # ------------------------------------------------------------------
     # Browser-driven playback — stream audio bytes + advance trigger
     # ------------------------------------------------------------------
 
-    _MIME_BY_SUFFIX = {
-        ".mp3": "audio/mpeg",
-        ".flac": "audio/flac",
-        ".m4a": "audio/mp4",
-        ".mp4": "audio/mp4",
-        ".aac": "audio/aac",
-        ".ogg": "audio/ogg",
-        ".oga": "audio/ogg",
-        ".opus": "audio/ogg",
-        ".wav": "audio/wav",
-        ".aif": "audio/aiff",
-        ".aiff": "audio/aiff",
-    }
-
-    def _audio_mime(p: Path) -> str:
-        """Return a MIME type for the given audio file extension."""
-        return _MIME_BY_SUFFIX.get(p.suffix.lower(), "application/octet-stream")
-
-    def _is_alac(p: Path) -> bool:
-        """True iff *p* is an ALAC stream (Apple Lossless inside .m4a)."""
-        if p.suffix.lower() not in (".m4a", ".mp4"):
-            return False
-        try:  # pragma: no cover — requires real ALAC-encoded m4a sample on disk
-            from mutagen.mp4 import MP4
-
-            info = MP4(str(p)).info
-            codec = getattr(info, "codec", None) or ""
-            return codec.lower() == "alac"
-        except (OSError, ValueError, ImportError):
-            return False
-
-    def _audio_file_info(p: Path) -> tuple[int, str, bool] | None:
-        """Return ``(size, mime, is_alac)`` for *p*, or ``None`` if missing."""
-        if not p.exists() or not p.is_file():
-            return None
-        return (p.stat().st_size, _audio_mime(p), _is_alac(p))
-
-    async def _open_audio_file(p: Path) -> Any:
-        return await asyncio.to_thread(open, p, "rb")
-
-    async def _close_audio_file(fh: Any) -> None:
-        await asyncio.to_thread(fh.close)
-
-    async def _seek_audio_file(fh: Any, offset: int) -> None:
-        await asyncio.to_thread(fh.seek, offset)
-
-    async def _read_audio_chunk(fh: Any, n: int) -> bytes:
-        return await asyncio.to_thread(fh.read, n)
-
-    async def _transcode_alac_to_mp3(p: Path) -> AsyncGenerator[bytes]:  # pragma: no cover
-        """Yield MP3 bytes from an ALAC source via ffmpeg subprocess.
-
-        Browser ALAC support is Safari-only, so for Chrome/Firefox we
-        decode + re-encode to MP3 on the fly.  Range requests are not
-        supported on transcoded streams (ffmpeg can't seek-then-encode
-        cheaply); browser falls back to sequential playback which is
-        fine for auto-DJ use.
-
-        Excluded from coverage: requires a real ffmpeg subprocess with
-        an ALAC source — neither is available in CI.
-        """
-        proc = await asyncio.create_subprocess_exec(
-            "ffmpeg",
-            "-loglevel",
-            "error",
-            "-i",
-            str(p),
-            "-c:a",
-            "libmp3lame",
-            "-b:a",
-            "192k",
-            "-f",
-            "mp3",
-            "pipe:1",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        try:
-            stdout = proc.stdout
-            if stdout is None:
-                return
-            while True:
-                chunk = await stdout.read(64 * 1024)
-                if not chunk:
-                    break
-                yield chunk
-        finally:
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            await proc.wait()
-
-    @app.get("/api/audio")
+    @app.api_route("/api/audio", methods=["GET", "HEAD"])
     async def api_audio(path: str, request: Request) -> Response:
-        """Stream the bytes of an indexed audio file with HTTP Range support.
-
-        The browser <audio> element uses this to play whatever the server
-        currently reports as ``current_track``.  Range support is required
-        for seek bar scrubbing and for browsers that probe metadata via a
-        small initial range request.
-
-        Path-traversal is prevented by allowing only paths that appear
-        verbatim in the loaded similarity index.
-        """
-        # Path validation — must be in the index
-        known = any(e.path == path for e in bridge.sim.entries)
-        if not known:
+        """Stream indexed audio with one RFC-shaped byte range."""
+        if bridge.sim.entry_for_path(path) is None:
             raise HTTPException(status_code=404, detail="Track not in index")
-        f = Path(path)
-        info = await asyncio.to_thread(_audio_file_info, f)
-        if info is None:
-            raise HTTPException(status_code=404, detail="File not found on disk")
-        file_size, mime, is_alac = info
-
-        # Transcode ALAC → MP3 on the fly so non-Safari browsers can
-        # play Apple Lossless tracks.  ffmpeg must be on PATH.
-        if is_alac:  # pragma: no cover — requires ALAC source + ffmpeg
-            try:
-                return StreamingResponse(
-                    _transcode_alac_to_mp3(f),
-                    media_type="audio/mpeg",
-                    headers={"Accept-Ranges": "none"},
-                )
-            except FileNotFoundError:
-                logger.warning(
-                    "ffmpeg not on PATH; serving ALAC raw (browser may reject).",
-                )
-
-        range_header = request.headers.get("range") or request.headers.get("Range")
-
-        # No Range — full body
-        if not range_header:
-
-            async def _full_iter() -> AsyncGenerator[bytes]:
-                chunk = 64 * 1024
-                fh = await _open_audio_file(f)
-                try:
-                    while True:
-                        data = await _read_audio_chunk(fh, chunk)
-                        if not data:
-                            break
-                        yield data
-                finally:
-                    await _close_audio_file(fh)
-
-            return StreamingResponse(
-                _full_iter(),
-                media_type=mime,
-                headers={
-                    "Accept-Ranges": "bytes",
-                    "Content-Length": str(file_size),
-                },
-            )
-
-        # Parse "bytes=START-END" — only single-range supported
+        audio_path = Path(path)
         try:
-            units, _, ranges = range_header.partition("=")
-            if units.strip().lower() != "bytes":
-                raise ValueError
-            start_s, _, end_s = ranges.partition("-")
-            start = int(start_s) if start_s else 0
-            end = int(end_s) if end_s else file_size - 1
-        except (ValueError, AttributeError):
-            raise HTTPException(status_code=416, detail="Invalid Range header") from None
-
-        if start < 0 or start >= file_size or end >= file_size or start > end:
-            raise HTTPException(
-                status_code=416,
-                detail="Requested range not satisfiable",
-                headers={"Content-Range": f"bytes */{file_size}"},
+            source: OpenedMediaFile | None = await asyncio.to_thread(
+                open_media_file,
+                audio_path,
             )
+        except OSError:
+            raise HTTPException(status_code=404, detail="File not found on disk") from None
 
-        length = end - start + 1
+        try:
+            if source is None:  # pragma: no cover - assignment above is non-null
+                raise RuntimeError("media source ownership lost")
+            file_size = source.size
+            if await asyncio.to_thread(_is_alac, source, audio_path.suffix):
+                ffmpeg = await asyncio.to_thread(shutil.which, "ffmpeg")
+                if ffmpeg is None:
+                    logger.warning(
+                        "ffmpeg unavailable; serving ALAC source bytes for %s",
+                        audio_path,
+                    )
+                elif request.method == "HEAD":
+                    response = Response(
+                        status_code=200,
+                        media_type="audio/mpeg",
+                        headers={"Accept-Ranges": "none"},
+                    )
+                    del response.headers["content-length"]
+                    return response
+                else:
+                    try:
+                        process = await _start_alac_transcoder(ffmpeg, source)
+                    except OSError:
+                        logger.warning(
+                            "ffmpeg failed to start; serving ALAC source bytes for %s",
+                            audio_path,
+                            exc_info=True,
+                        )
+                    else:
+                        first_chunk = await _prefetch_alac_output(process)
+                        if first_chunk is None:
+                            logger.warning(
+                                "ffmpeg produced no initial output; serving ALAC source "
+                                "bytes for %s",
+                                audio_path,
+                            )
+                        else:
+                            try:
+                                stream = _transcode_alac_to_mp3(process, first_chunk)
+                                response = StreamingResponse(
+                                    stream,
+                                    media_type="audio/mpeg",
+                                    headers={"Accept-Ranges": "none"},
+                                    background=BackgroundTask(
+                                        _close_alac_stream,
+                                        stream,
+                                        process,
+                                    ),
+                                )
+                                await _close_opened_media(source)
+                            except BaseException:
+                                await _terminate_alac_process(process)
+                                raise
+                            source = None
+                            return response
 
-        async def _range_gen() -> AsyncGenerator[bytes]:
-            chunk = 64 * 1024
-            remaining = length
-            fh = await _open_audio_file(f)
-            try:
-                await _seek_audio_file(fh, start)
-                while remaining > 0:
-                    data = await _read_audio_chunk(fh, min(chunk, remaining))
-                    if (
-                        not data
-                    ):  # pragma: no cover — EOF mid-range only when file truncated under us
-                        break
-                    remaining -= len(data)
-                    yield data
-            finally:
-                await _close_audio_file(fh)
-
-        return StreamingResponse(
-            _range_gen(),
-            status_code=206,
-            media_type=mime,
-            headers={
+            mime = _audio_mime(audio_path)
+            range_header = request.headers.get("range")
+            requested_range = None
+            status_code = 200
+            headers = {
                 "Accept-Ranges": "bytes",
-                "Content-Range": f"bytes {start}-{end}/{file_size}",
-                "Content-Length": str(length),
-            },
-        )
+                "Content-Length": str(file_size),
+            }
+            if range_header is not None:
+                try:
+                    requested_range = parse_single_range(range_header, file_size)
+                except RangeNotSatisfiable:
+                    return Response(
+                        status_code=416,
+                        headers={
+                            "Accept-Ranges": "bytes",
+                            "Content-Range": f"bytes */{file_size}",
+                        },
+                    )
+                status_code = 206
+                headers["Content-Range"] = (
+                    f"bytes {requested_range.start}-{requested_range.end}/{file_size}"
+                )
+                headers["Content-Length"] = str(requested_range.length)
+
+            if request.method == "HEAD":
+                return Response(
+                    status_code=status_code,
+                    media_type=mime,
+                    headers=headers,
+                )
+
+            stream = stream_file_chunks(source, requested_range)
+            response = StreamingResponse(
+                stream,
+                status_code=status_code,
+                media_type=mime,
+                headers=headers,
+                background=BackgroundTask(_close_file_media_stream, stream, source),
+            )
+            source = None
+            return response
+        finally:
+            if source is not None:
+                await _close_opened_media(source)
 
     @app.post("/api/advance")
     async def api_advance() -> JSONResponse:
@@ -1164,7 +1714,8 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
         Single pass over ``entries`` so the cost stays O(N) instead of
         4×O(N).  Negligible at 1 k tracks; measurable at 70 k.
         """
-        entries = bridge.sim.entries
+        similarity = bridge.sim
+        entries = similarity.entries_snapshot()
         n = len(entries)
         bpm_count = 0
         bpm_sum = 0.0
@@ -1198,12 +1749,69 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
         """WebSocket: broadcast state updates to a connected browser."""
-        # Parameter renamed from 'ws' to 'websocket' to avoid FastAPI
-        # mistaking the path segment '/ws' for a query parameter.
+        request_id = new_request_id()
+        route = "/ws"
+        request_policy: SecurityPolicy = websocket.app.state.security_policy
+        host_values = _raw_header_values(websocket.scope, b"host")
+        origin_values = _raw_header_values(websocket.scope, b"origin")
+        if len(host_values) != 1 or not request_policy.host_allowed(host_values[0]):
+            emit_audit(
+                request_id,
+                route,
+                "rejected",
+                method="WS",
+                route=route,
+                status=403,
+                level=logging.WARNING,
+            )
+            await websocket.close(code=4403)
+            return
+        if len(origin_values) != 1 or not request_policy.origin_allowed(origin_values[0]):
+            emit_audit(
+                request_id,
+                route,
+                "rejected",
+                method="WS",
+                route=route,
+                status=403,
+                level=logging.WARNING,
+            )
+            await websocket.close(code=4403)
+            return
+        session_cookie = websocket.cookies.get(COOKIE_NAME)
+        if request_policy.authentication_required and not request_policy.verify_session(
+            session_cookie
+        ):
+            emit_audit(
+                request_id,
+                route,
+                "rejected",
+                method="WS",
+                route=route,
+                status=401,
+                level=logging.WARNING,
+            )
+            await websocket.close(code=4401)
+            return
+
         await websocket.accept()
+
+        def session_is_valid() -> bool:
+            """Return whether the accepted WebSocket session remains valid."""
+            live_policy: SecurityPolicy = websocket.app.state.security_policy
+            return not live_policy.authentication_required or live_policy.verify_session(
+                session_cookie
+            )
+
+        client = _WebSocketClient(
+            websocket,
+            request_id=request_id,
+            session_is_valid=session_is_valid,
+            handler_task=asyncio.current_task(),
+        )
         client_host = getattr(getattr(websocket, "client", None), "host", "unknown")
         async with _ws_lock:
-            _ws_clients.add(websocket)
+            _ws_clients.add(client)
             client_count = len(_ws_clients)
         logger.info(
             "WebSocket connected: %s (%d active client%s)",
@@ -1211,27 +1819,93 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
             client_count,
             "" if client_count == 1 else "s",
         )
+        emit_audit(
+            request_id,
+            route,
+            "connected",
+            method="WS",
+            route=route,
+            status=101,
+        )
+        disconnect_code = 1000
         try:
             while True:
-                text = await websocket.receive_text()
+                message = await websocket.receive()
+                if message["type"] == "websocket.disconnect":
+                    raise WebSocketDisconnect(
+                        code=message.get("code", 1000),
+                        reason=message.get("reason", ""),
+                    )
+                text = message.get("text")
+                if not isinstance(text, str):
+                    continue
+                if not _websocket_session_is_valid(client):
+                    disconnect_code = 4401
+                    await _close_and_prune_websocket(
+                        client,
+                        _ws_clients,
+                        _ws_lock,
+                        code=disconnect_code,
+                    )
+                    return
                 # Handle incoming control commands from the client
                 try:
                     msg = _json.loads(text)
                     if isinstance(msg, dict) and msg.get("type") == "toggle_discovery":
-                        bridge.toggle_discovery()
+                        try:
+                            bridge.toggle_discovery()
+                        except Exception:
+                            disconnect_code = 1011
+                            emit_audit(
+                                request_id,
+                                "toggle_discovery",
+                                "rejected",
+                                method="WS",
+                                route=route,
+                                status=500,
+                                level=logging.WARNING,
+                            )
+                            await _close_and_prune_websocket(
+                                client,
+                                _ws_clients,
+                                _ws_lock,
+                                code=disconnect_code,
+                            )
+                            return
+                        emit_audit(
+                            request_id,
+                            "toggle_discovery",
+                            "success",
+                            method="WS",
+                            route=route,
+                            status=200,
+                        )
                 except (_json.JSONDecodeError, AttributeError):
                     pass
-        except WebSocketDisconnect:
+        except WebSocketDisconnect as exc:
+            disconnect_code = exc.code
             pass
+        except asyncio.CancelledError:
+            if client.failure_code is None:
+                raise
+            disconnect_code = client.failure_code
         finally:
             async with _ws_lock:
-                _ws_clients.discard(websocket)
+                _ws_clients.discard(client)
                 remaining = len(_ws_clients)
             logger.info(
                 "WebSocket disconnected: %s (%d active client%s remain)",
                 client_host,
                 remaining,
                 "" if remaining == 1 else "s",
+            )
+            emit_audit(
+                request_id,
+                route,
+                "disconnected",
+                method="WS",
+                route=route,
+                status=disconnect_code,
             )
 
     async def _broadcast_loop() -> None:  # pragma: no cover — long-running task
@@ -1241,56 +1915,23 @@ def create_app(bridge: PlayerBridge) -> FastAPI:
             if not _ws_clients:
                 continue
             payload = _json.dumps(bridge.get_state())
-            dead: list[WebSocket] = []
-            async with _ws_lock:
-                clients = list(_ws_clients)
-            for client in clients:
-                try:
-                    await client.send_text(payload)
-                except (RuntimeError, WebSocketDisconnect, ConnectionError):
-                    dead.append(client)
-            if dead:
-                async with _ws_lock:
-                    for client in dead:
-                        _ws_clients.discard(client)
+            await _broadcast_and_prune(_ws_clients, _ws_lock, payload)
 
     async def _index_watcher_loop() -> None:  # pragma: no cover — long-running task
-        """Reload the FAISS index when ``tracks.db`` mtime changes.
-
-        Runs every 10 seconds.  Lets a parallel ``autodj index`` add
-        tracks while a long-running ``serve`` is up — the next track
-        pick will see the new entries without restarting the server.
-
-        Stat calls are dispatched to a thread so the asyncio event loop
-        is never blocked on a slow NAS round-trip.
-        """
+        """Reload each newly published index generation every 10 seconds."""
         cfg = getattr(bridge.player, "_cfg", None)
         if cfg is None:
             return
-        index_dir = cfg.index.active_dir
-
-        def _probe_mtime() -> float:
-            try:
-                return (index_dir / "tracks.db").stat().st_mtime
-            except OSError:
-                return 0.0
-
-        last_mtime = await asyncio.to_thread(_probe_mtime)
+        observed = bridge.sim.snapshot_token
         while True:
-            await asyncio.sleep(10)
             try:
-                mtime = await asyncio.to_thread(_probe_mtime)
-                if mtime > last_mtime:
-                    last_mtime = mtime
-                    new_total = await asyncio.to_thread(
-                        bridge.reload_index_from_disk,
-                    )
-                    logger.info(
-                        "Index reloaded — %d tracks now available",
-                        new_total,
-                    )
-            except (OSError, ValueError) as exc:
+                previous = observed
+                observed = await reload_published_generation_once(bridge, observed)
+                if observed != previous:
+                    logger.info("Index reloaded — %d tracks now available", bridge.sim.ntotal)
+            except (IndexConsistencyError, OSError, ValueError) as exc:
                 logger.debug("Index watcher: %s", exc)
+            await asyncio.sleep(10)
 
     return app
 
@@ -1304,8 +1945,8 @@ def serve(
     cfg: AutoDJConfig,
     sim: SimilarityIndex,
     seed_entry: IndexEntry | None,
-    host: str = "127.0.0.1",
-    port: int = 8080,
+    host: str | None = None,
+    port: int | None = None,
     preset: Preset | None = None,
     export_m3u: Path | None = None,
     history_file: Path | None = None,
@@ -1335,6 +1976,22 @@ def serve(
         discovery_every: Discovery injection rate (forwarded to Player).
         bpm_range: Hard BPM filter ``(lo, hi)`` (forwarded to Player).
     """
+    from dataclasses import replace
+
+    from autodj.config import validate_server_exposure
+
+    host = cfg.server.host if host is None else host
+    port = cfg.server.port if port is None else port
+    staged_server = replace(cfg.server, host=host, port=port)
+    validate_server_exposure(staged_server)
+    secure_cookie = bool(ssl_certfile and ssl_keyfile)
+    advertised_origin = _advertised_server_origin(
+        SecurityPolicy(staged_server, secure_cookie=secure_cookie)
+    )
+    cfg.server = staged_server
+    host = staged_server.host
+    port = staged_server.port
+
     import importlib.util as _import_util
 
     import uvicorn
@@ -1396,20 +2053,16 @@ def serve(
     player_thread.start()
     bridge.record_seed(seed_entry)
 
-    app = create_app(bridge)
-
-    scheme = "https" if (ssl_certfile and ssl_keyfile) else "http"
-    pretty_host = (
-        "localhost"
-        if host in ("0.0.0.0", "127.0.0.1", "::")  # nosec B104 — display only
-        else host
+    app = create_app(
+        bridge,
+        player_thread=player_thread,
+        secure_cookie=secure_cookie,
     )
+
     audio_mode = "server-audio" if not no_playback else "browser-driven"
     logger.info(
-        "AutoDJ server ready: %s://%s:%d  (%s, %d indexed tracks, seed=%s)",
-        scheme,
-        pretty_host,
-        port,
+        "AutoDJ server ready: %s  (%s, %d indexed tracks, seed=%s)",
+        advertised_origin,
         audio_mode,
         len(getattr(sim, "entries", []) or []),
         getattr(seed_entry, "display_name", "random"),

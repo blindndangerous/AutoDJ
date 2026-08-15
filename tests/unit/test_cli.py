@@ -13,12 +13,19 @@ from unittest.mock import MagicMock, patch
 import pytest
 from click.testing import CliRunner
 
-from autodj.cli import _parse_bpm_range, _resolve_seed, cli
+from autodj.cli import _apply_serve_overrides, _parse_bpm_range, _resolve_seed, cli
+from autodj.config import ENVIRONMENT_OVERLAY, ServerConfig
 from autodj.indexer import IndexEntry
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def clear_autodj_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    for variable in ENVIRONMENT_OVERLAY:
+        monkeypatch.delenv(variable, raising=False)
 
 
 def _make_entry(i: int = 0) -> IndexEntry:
@@ -38,10 +45,21 @@ def _make_entry(i: int = 0) -> IndexEntry:
     )
 
 
+def _configure_sim_api(sim: MagicMock) -> MagicMock:
+    sim.entries_snapshot.side_effect = lambda: tuple(sim.entries)
+    sim.entry_for_path.side_effect = lambda path: next(
+        (entry for entry in sim.entries if entry.path == path),
+        None,
+    )
+    sim.ntotal = len(sim.entries)
+    return sim
+
+
 def _make_sim(n: int = 5) -> MagicMock:
     sim = MagicMock()
     entries = [_make_entry(i) for i in range(n)]
     sim.entries = entries
+    _configure_sim_api(sim)
     sim.ntotal = n
     # Return a real IndexEntry so callers that serialize it (write_m3u, etc.) don't crash
     sim.find_next_for_path.return_value = entries[0]
@@ -57,6 +75,9 @@ def _make_cfg(beets_db=None) -> MagicMock:
     cfg.playback.history_file = None
     cfg.playback.discovery_every = None
     cfg.presets = {}
+    cfg.index.name = "default"
+    cfg.server = ServerConfig()
+    cfg.config_sources = ("defaults",)
     return cfg
 
 
@@ -261,13 +282,183 @@ class TestCliConfigNotFound:
         assert "beets" in result.output.lower()
 
 
+class TestCliConfigSelection:
+    @pytest.mark.parametrize("command", ["serve", "prune", "enrich", "stats"])
+    def test_malformed_section_type_is_reported_as_invalid_config(
+        self, tmp_path: Path, command: str
+    ) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[server]\nport = "not-an-integer"\n', encoding="utf-8")
+
+        result = CliRunner().invoke(cli, ["--config", str(config_path), command])
+
+        assert result.exit_code == 1
+        assert "Config not found or invalid" in result.output
+
+    @pytest.mark.parametrize(
+        "section",
+        [
+            "library",
+            "index",
+            "playback",
+            "model",
+            "huggingface",
+            "replaygain",
+            "djmix",
+            "transitions",
+            "server",
+        ],
+    )
+    def test_non_table_section_is_reported_as_invalid_config(
+        self, tmp_path: Path, section: str
+    ) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(f"{section} = []\n", encoding="utf-8")
+
+        result = CliRunner().invoke(cli, ["--config", str(config_path), "serve"])
+
+        assert result.exit_code == 1
+        assert "Config not found or invalid" in result.output
+        assert f"{section} section must be a table" in result.output
+
+    def test_omitted_config_passes_none_to_loader(self) -> None:
+        cfg = _make_cfg()
+        with (
+            patch("autodj.config.load_config", return_value=cfg) as loader,
+            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=_make_sim()),
+            patch("autodj.server.serve"),
+        ):
+            result = CliRunner().invoke(cli, ["serve"])
+        assert result.exit_code == 0
+        loader.assert_called_once_with(None)
+
+    def test_explicit_missing_config_exits_one(self, tmp_path: Path) -> None:
+        result = CliRunner().invoke(cli, ["--config", str(tmp_path / "missing.toml"), "serve"])
+        assert result.exit_code == 1
+        assert "Config not found" in result.output
+
+    def test_explicit_cli_host_port_override_effective_config(self) -> None:
+        cfg = _make_cfg()
+        cfg.server.host = "127.0.0.2"
+        cfg.server.port = 8082
+        with (
+            patch("autodj.config.load_config", return_value=cfg),
+            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=_make_sim()),
+            patch("autodj.server.serve") as serve_mock,
+        ):
+            result = CliRunner().invoke(cli, ["serve", "--host", "127.0.0.3", "--port", "8083"])
+        assert result.exit_code == 0
+        assert serve_mock.call_args.kwargs["host"] == "127.0.0.3"
+        assert serve_mock.call_args.kwargs["port"] == 8083
+        assert cfg.config_sources == ("defaults", "cli")
+
+    def test_no_cli_override_does_not_claim_cli_config_source(self) -> None:
+        cfg = _make_cfg()
+        original_sources = cfg.config_sources
+        with (
+            patch("autodj.config.load_config", return_value=cfg),
+            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=_make_sim()),
+            patch("autodj.server.serve"),
+        ):
+            result = CliRunner().invoke(cli, ["serve"])
+        assert result.exit_code == 0
+        assert cfg.config_sources == original_sources
+
+    def test_invalid_transition_does_not_partially_apply_general_overrides(self) -> None:
+        cfg = _make_cfg()
+        cfg.djmix.harmonic_mixing = False
+
+        with pytest.raises(SystemExit):
+            _apply_serve_overrides(
+                cfg,
+                {"harmonic_mixing": True, "transition_mode": "invalid"},
+            )
+
+        assert cfg.djmix.harmonic_mixing is False
+
+    def test_failed_late_serve_validation_does_not_mutate_effective_config(self) -> None:
+        cfg = _make_cfg()
+        original_server = cfg.server
+        cfg.djmix.harmonic_mixing = False
+        with (
+            patch("autodj.config.load_config", return_value=cfg),
+            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=_make_sim()),
+            patch("autodj.server.serve"),
+        ):
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "serve",
+                    "--host",
+                    "127.0.0.2",
+                    "--name",
+                    "alternate",
+                    "--harmonic",
+                    "--preset",
+                    "missing",
+                ],
+            )
+
+        assert result.exit_code == 1
+        assert cfg.server is original_server
+        assert cfg.index.name == "default"
+        assert cfg.djmix.harmonic_mixing is False
+        assert cfg.config_sources == ("defaults",)
+
+    def test_transition_validation_precedes_serve_startup_side_effects(self) -> None:
+        cfg = _make_cfg()
+        with (
+            patch("autodj.config.load_config", return_value=cfg),
+            patch(
+                "autodj.config._validate_transition_mode",
+                side_effect=ValueError("semantic transition error"),
+            ),
+            patch("autodj.similarity.SimilarityIndex.from_index_dir") as load_index,
+            patch("autodj.cli._resolve_seed") as resolve_seed,
+            patch("autodj.server.serve") as serve_mock,
+        ):
+            result = CliRunner().invoke(cli, ["serve", "--transition-mode", "fixed"])
+
+        assert result.exit_code == 1
+        assert "semantic transition error" in result.output
+        assert "AutoDJ —" not in result.output
+        load_index.assert_not_called()
+        resolve_seed.assert_not_called()
+        serve_mock.assert_not_called()
+
+    def test_name_override_appends_cli_source_exactly_once(self) -> None:
+        cfg = _make_cfg()
+        with (
+            patch("autodj.config.load_config", return_value=cfg),
+            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=_make_sim()),
+            patch("autodj.server.serve"),
+        ):
+            result = CliRunner().invoke(cli, ["serve", "--name", "alternate"])
+        assert result.exit_code == 0
+        assert cfg.index.name == "alternate"
+        assert cfg.config_sources == ("defaults", "cli")
+
+    def test_name_equal_to_effective_config_does_not_claim_cli_source(self) -> None:
+        cfg = _make_cfg()
+        original_sources = cfg.config_sources
+        with (
+            patch("autodj.config.load_config", return_value=cfg),
+            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=_make_sim()),
+            patch("autodj.server.serve"),
+        ):
+            result = CliRunner().invoke(cli, ["serve", "--name", "default"])
+        assert result.exit_code == 0
+        assert cfg.index.name == "default"
+        assert cfg.config_sources == original_sources
+
+
 # ---------------------------------------------------------------------------
 # CLI commands — index-not-found exits with code 1
 # ---------------------------------------------------------------------------
 
 
 class TestCliIndexNotFound:
-    """play / serve / playlist / stats should exit(1) when index is missing."""
+    """Offline commands should exit(1) when index is missing."""
 
     def _write_minimal_config(self, tmp_path: Path) -> Path:
         cfg = tmp_path / "config.toml"
@@ -293,11 +484,6 @@ class TestCliIndexNotFound:
     def test_playlist_exits_on_missing_index(self, tmp_path: Path) -> None:
         cfg = self._write_minimal_config(tmp_path)
         result = CliRunner().invoke(cli, ["--config", str(cfg), "playlist"])
-        assert result.exit_code == 1
-
-    def test_serve_exits_on_missing_index(self, tmp_path: Path) -> None:
-        cfg = self._write_minimal_config(tmp_path)
-        result = CliRunner().invoke(cli, ["--config", str(cfg), "serve"])
         assert result.exit_code == 1
 
 
@@ -510,6 +696,7 @@ class TestResolveSeedBeets:
             tempo_confidence=0.0,
         )
         sim.entries.append(matching)
+        _configure_sim_api(sim)
 
         cfg = _make_cfg(beets_db=db)
 
@@ -567,6 +754,273 @@ class TestCmdServe:
         ):
             result = CliRunner().invoke(cli, ["serve", "--port", "9999"])
         assert "9999" in result.output or result.exit_code == 0
+
+    def test_lan_bind_requires_token_or_acknowledgement_before_index_load(self) -> None:
+        cfg = _make_cfg()
+        with (
+            patch("autodj.config.load_config", return_value=cfg),
+            patch("autodj.similarity.SimilarityIndex.from_index_dir") as load_index,
+            patch("autodj.server.serve") as serve_mock,
+        ):
+            result = CliRunner().invoke(cli, ["serve", "--host", "0.0.0.0"])
+
+        assert result.exit_code == 1
+        assert "LAN binding requires" in result.output
+        load_index.assert_not_called()
+        serve_mock.assert_not_called()
+
+    def test_authenticated_lan_overrides_reach_server_without_token_output(self) -> None:
+        cfg = _make_cfg()
+        original_server = cfg.server
+        token = "s" * 32
+        with (
+            patch("autodj.config.load_config", return_value=cfg),
+            patch(
+                "autodj.similarity.SimilarityIndex.from_index_dir",
+                return_value=_make_sim(),
+            ),
+            patch("autodj.server.serve") as serve_mock,
+        ):
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "serve",
+                    "--host",
+                    "0.0.0.0",
+                    "--access-token",
+                    token,
+                    "--allowed-host",
+                    "Radio.Local",
+                    "--allowed-origin",
+                    "HTTP://Radio.Local:8080/",
+                ],
+            )
+
+        assert result.exit_code == 0
+        assert token not in result.output
+        assert cfg.server is not original_server
+        assert cfg.server.access_token == token
+        assert cfg.server.allowed_hosts == ["radio.local"]
+        assert cfg.server.allowed_origins == ["http://radio.local:8080"]
+        serve_mock.assert_called_once()
+        assert serve_mock.call_args.kwargs["host"] == "0.0.0.0"
+        assert serve_mock.call_args.kwargs["port"] == 8080
+
+    def test_weak_cli_token_is_rejected_without_echo_or_index_load(self) -> None:
+        cfg = _make_cfg()
+        original_server = cfg.server
+        weak = "do-not-print-me"
+        with (
+            patch("autodj.config.load_config", return_value=cfg),
+            patch("autodj.similarity.SimilarityIndex.from_index_dir") as load_index,
+            patch("autodj.server.serve") as serve_mock,
+        ):
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "serve",
+                    "--host",
+                    "0.0.0.0",
+                    "--access-token",
+                    weak,
+                    "--allowed-host",
+                    "radio.local",
+                    "--allowed-origin",
+                    "http://radio.local:8080",
+                ],
+            )
+
+        assert result.exit_code == 1
+        assert "at least 32 UTF-8 bytes" in result.output
+        assert weak not in result.output
+        assert weak not in repr(result.exception)
+        assert cfg.server is original_server
+        assert cfg.server == ServerConfig()
+        load_index.assert_not_called()
+        serve_mock.assert_not_called()
+
+    def test_cli_rejects_allowed_origin_with_path(self) -> None:
+        cfg = _make_cfg()
+        original_server = cfg.server
+        with (
+            patch("autodj.config.load_config", return_value=cfg),
+            patch("autodj.similarity.SimilarityIndex.from_index_dir") as load_index,
+            patch("autodj.server.serve") as serve_mock,
+        ):
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "serve",
+                    "--host",
+                    "0.0.0.0",
+                    "--insecure-lan",
+                    "--allowed-host",
+                    "radio.local",
+                    "--allowed-origin",
+                    "https://radio.local/private",
+                ],
+            )
+
+        assert result.exit_code == 1
+        assert "without userinfo, path, query, or fragment" in result.output
+        assert cfg.server is original_server
+        assert cfg.server == ServerConfig()
+        load_index.assert_not_called()
+        serve_mock.assert_not_called()
+
+    def test_cli_rejects_invalid_host_without_mutating_config(self) -> None:
+        cfg = _make_cfg()
+        original_server = cfg.server
+        with (
+            patch("autodj.config.load_config", return_value=cfg),
+            patch("autodj.similarity.SimilarityIndex.from_index_dir") as load_index,
+            patch("autodj.server.serve") as serve_mock,
+        ):
+            result = CliRunner().invoke(cli, ["serve", "--host", "[::1]"])
+
+        assert result.exit_code == 1
+        assert "server.host" in result.output
+        assert cfg.server is original_server
+        assert cfg.server == ServerConfig()
+        load_index.assert_not_called()
+        serve_mock.assert_not_called()
+
+    def test_specific_authenticated_lan_derives_policy_without_lists(self) -> None:
+        cfg = _make_cfg()
+        token = "s" * 32
+        with (
+            patch("autodj.config.load_config", return_value=cfg),
+            patch(
+                "autodj.similarity.SimilarityIndex.from_index_dir",
+                return_value=_make_sim(),
+            ),
+            patch("autodj.server.serve") as serve_mock,
+        ):
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "serve",
+                    "--host",
+                    "192.168.1.10",
+                    "--access-token",
+                    token,
+                ],
+            )
+
+        assert result.exit_code == 0
+        assert cfg.server.effective_allowed_hosts() == ["192.168.1.10"]
+        assert cfg.server.effective_allowed_origins() == ["http://192.168.1.10:8080"]
+        assert "WARNING" not in result.output
+        serve_mock.assert_called_once()
+
+    def test_documented_insecure_lan_example_is_executable_and_warned(self) -> None:
+        cfg = _make_cfg()
+        with (
+            patch("autodj.config.load_config", return_value=cfg),
+            patch(
+                "autodj.similarity.SimilarityIndex.from_index_dir",
+                return_value=_make_sim(),
+            ),
+            patch("autodj.server.serve") as serve_mock,
+        ):
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "serve",
+                    "--host",
+                    "0.0.0.0",
+                    "--insecure-lan",
+                    "--allowed-host",
+                    "radio.local",
+                    "--allowed-origin",
+                    "http://radio.local:8080",
+                ],
+            )
+
+        assert result.exit_code == 0
+        assert "WARNING" in result.output
+        serve_mock.assert_called_once()
+
+    def test_insecure_ack_on_loopback_emits_no_warning(self) -> None:
+        cfg = _make_cfg()
+        with (
+            patch("autodj.config.load_config", return_value=cfg),
+            patch(
+                "autodj.similarity.SimilarityIndex.from_index_dir",
+                return_value=_make_sim(),
+            ),
+            patch("autodj.server.serve"),
+        ):
+            result = CliRunner().invoke(cli, ["serve", "--insecure-lan"])
+
+        assert result.exit_code == 0
+        assert "WARNING" not in result.output
+
+    def test_token_with_insecure_ack_does_not_warn_unauthenticated(self) -> None:
+        cfg = _make_cfg()
+        with (
+            patch("autodj.config.load_config", return_value=cfg),
+            patch(
+                "autodj.similarity.SimilarityIndex.from_index_dir",
+                return_value=_make_sim(),
+            ),
+            patch("autodj.server.serve"),
+        ):
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "serve",
+                    "--host",
+                    "0.0.0.0",
+                    "--access-token",
+                    "s" * 32,
+                    "--insecure-lan",
+                    "--allowed-host",
+                    "radio.local",
+                    "--allowed-origin",
+                    "http://radio.local:8080",
+                ],
+            )
+
+        assert result.exit_code == 0
+        assert "WARNING" not in result.output
+
+    def test_serve_uses_toml_host_and_port_when_flags_are_omitted(self) -> None:
+        cfg = _make_cfg()
+        cfg.server = ServerConfig(host="127.0.0.2", port=9090)
+        with (
+            patch("autodj.config.load_config", return_value=cfg),
+            patch(
+                "autodj.similarity.SimilarityIndex.from_index_dir",
+                return_value=_make_sim(),
+            ),
+            patch("autodj.server.serve") as serve_mock,
+        ):
+            result = CliRunner().invoke(cli, ["serve"])
+
+        assert result.exit_code == 0
+        assert serve_mock.call_args.kwargs["host"] == "127.0.0.2"
+        assert serve_mock.call_args.kwargs["port"] == 9090
+
+    def test_explicit_cli_values_override_toml_server_values(self) -> None:
+        cfg = _make_cfg()
+        cfg.server = ServerConfig(host="127.0.0.2", port=9090)
+        with (
+            patch("autodj.config.load_config", return_value=cfg),
+            patch(
+                "autodj.similarity.SimilarityIndex.from_index_dir",
+                return_value=_make_sim(),
+            ),
+            patch("autodj.server.serve") as serve_mock,
+        ):
+            result = CliRunner().invoke(
+                cli,
+                ["serve", "--host", "localhost", "--port", "8123"],
+            )
+
+        assert result.exit_code == 0
+        assert serve_mock.call_args.kwargs["host"] == "localhost"
+        assert serve_mock.call_args.kwargs["port"] == 8123
 
 
 # ---------------------------------------------------------------------------
@@ -732,8 +1186,8 @@ class TestCmdListIndexes:
             conn = _sql.connect(d / "tracks.db")
             conn.executescript(_TRACKS_SCHEMA)
             conn.executemany(
-                "INSERT INTO tracks (path) VALUES (?)",
-                [(f"x{i}",) for i in range(count)],
+                "INSERT INTO tracks (vec_row, path) VALUES (?, ?)",
+                [(i, f"x{i}") for i in range(count)],
             )
             conn.commit()
             conn.close()
@@ -810,6 +1264,7 @@ class TestNameValidation:
             result = CliRunner().invoke(cli, ["index", "--name", "workout"])
         assert result.exit_code == 0
         assert cfg_mock.index.name == "workout"
+        assert cfg_mock.config_sources == ("defaults", "cli")
 
 
 class TestListDevices:

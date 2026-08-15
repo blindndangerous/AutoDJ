@@ -2,18 +2,38 @@
 //
 // Visible row pre-rendered every WS tick (cheap dedupe in a parent),
 // plus a polite live-region announce that fires only on real track
-// change so the speech viewer doesn't repeat key/BPM each second.
+// change so the speech viewer does not repeat key/beatmatch each second.
 
 import { escHtml } from "./dom-helpers.js";
 import { clearLiveRegionLater } from "./live-region.js";
 
 let _lastBadgeKey = null;
 
+export function formatPersistentMetadata(track) {
+  if (!track) return "";
+  const t = track;
+  const album = typeof t.album === "string" && t.album.trim()
+    ? t.album.trim()
+    : "unknown";
+  const bpm = Number.isFinite(t.bpm) && t.bpm > 0
+    ? Math.round(t.bpm)
+    : "unknown";
+  const keyValue = typeof t.key_label === "string" ? t.key_label.trim() : "";
+  const key = keyValue && keyValue !== "--"
+    ? keyValue
+    : "unknown";
+  const energy = Number.isFinite(t.energy) && t.energy > 0
+    ? t.energy.toFixed(2)
+    : "unknown";
+  return `Album ${album} · BPM ${bpm} · Key ${key} · Energy ${energy}`;
+}
+
 export function applyBadges(s, els, { lastTrackKey, renderCueStrip }) {
   const { badgesRow, badgesAnnounce } = els;
   const t = s.current_track;
   if (!t) {
     if (badgesRow) badgesRow.innerHTML = "";
+    if (typeof renderCueStrip === "function") renderCueStrip(null);
     return;
   }
   const out = [];
@@ -34,9 +54,9 @@ export function applyBadges(s, els, { lastTrackKey, renderCueStrip }) {
   }
   if (badgesRow) badgesRow.innerHTML = out.join("");
 
-  // Announce key + BPM only on track change (not on every WS tick).
+  // Announce key and beatmatch only on track change (not on every WS tick).
   // The caller has already updated lastTrackKey when the title changed,
-  // so only fire when WE see a fresh track AND there is a key/BPM to
+  // so only fire when WE see a fresh track AND there is a key/beatmatch to
   // read.  Spell "times" for beatmatch (per a11y review).
   if (s.current_track.path === lastTrackKey &&
       _lastBadgeKey !== s.current_track.path) {
@@ -44,13 +64,10 @@ export function applyBadges(s, els, { lastTrackKey, renderCueStrip }) {
     const phrases = [];
     const _klAnn = t.key_label;
     if (_klAnn && _klAnn !== "--") phrases.push(`Key ${_klAnn}`);
-    if (t.bpm) phrases.push(`BPM ${Math.round(t.bpm)}`);
     if (s.beatmatch_ratio && Math.abs(s.beatmatch_ratio - 1.0) > 0.005) {
       phrases.push(`beatmatched ${s.beatmatch_ratio.toFixed(2)} times`);
     }
-    // Cue-point summary intentionally NOT announced -- key + BPM is
-    // what users want on track change.  Cue strip on the progress bar
-    // still conveys the markers visually for sighted users.
+    // Cue-point and BPM summaries intentionally are not repeated here.
     if (phrases.length && badgesAnnounce) {
       // Slight delay so the title aria-live region speaks first.
       setTimeout(() => {

@@ -19,6 +19,11 @@ class TestJobManagerStart:
         assert mgr.start("prune", ["a|b"]) is False
         assert mgr.start("prune", ["x&y"]) is False
 
+    def test_rejects_forbidden_argument_after_safe_argument(self) -> None:
+        mgr = JobManager()
+
+        assert mgr.start("prune", ["safe", "bad;arg"]) is False
+
     def test_starts_allowed_subcommand(self) -> None:
         """Spawn a python subprocess that exits immediately so the test
         exercises the Popen + reader-thread code paths without depending on
@@ -86,6 +91,13 @@ class TestSpawnFailure:
 
 
 class TestReadLoopAndStop:
+    def test_read_loop_without_process_is_a_noop(self) -> None:
+        mgr = JobManager()
+
+        mgr._read_loop()
+
+        assert mgr.snapshot()["lines"] == []
+
     def test_read_loop_handles_oserror(self) -> None:
         """OSError mid-stream → recorded, loop still completes."""
         import time as _time

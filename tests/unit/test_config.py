@@ -10,18 +10,30 @@ from pathlib import Path
 import pytest
 
 from autodj.config import (
+    ENVIRONMENT_OVERLAY,
     AutoDJConfig,
     HuggingFaceConfig,
     IndexConfig,
     LibraryConfig,
     ModelConfig,
     PlaybackConfig,
+    ServerConfig,
+    _deep_merge,
+    canonicalize_allowed_origin,
+    is_loopback_bind,
     load_config,
+    validate_server_exposure,
 )
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def clear_autodj_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    for variable in ENVIRONMENT_OVERLAY:
+        monkeypatch.delenv(variable, raising=False)
 
 
 @pytest.fixture
@@ -70,6 +82,7 @@ class TestLoadConfig:
     def test_loads_minimal_config(self, minimal_toml: Path) -> None:
         cfg = load_config(minimal_toml)
         assert isinstance(cfg, AutoDJConfig)
+        assert cfg.model.revision == "main"
 
     def test_raises_if_file_missing(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError):
@@ -87,6 +100,130 @@ class TestLoadConfig:
         assert cfg.playback.no_repeat_window == 100
         assert cfg.model.name == "OpenMuQ/MuQ-MuLan-large"
         assert cfg.model.manual_path == Path("C:/models/MuQ")
+
+    def test_loads_ordinary_server_toml(self, tmp_path: Path) -> None:
+        cfg_path = tmp_path / "config.toml"
+        cfg_path.write_text(
+            '[library]\nmusic_dir = "Z:/Music"\n'
+            "[server]\n"
+            'host = "192.168.1.10"\n'
+            "port = 9000\n"
+            f'access_token = "{"s" * 32}"\n'
+            'allowed_hosts = ["Radio.Local", "radio.local"]\n'
+            'allowed_origins = ["HTTPS://Radio.Local:443/"]\n'
+            "session_ttl_seconds = 3600\n"
+            "liner_upload_max_mib = 25\n",
+            encoding="utf-8",
+        )
+
+        cfg = load_config(cfg_path)
+
+        assert cfg.server == ServerConfig(
+            host="192.168.1.10",
+            port=9000,
+            access_token="s" * 32,
+            allowed_hosts=["radio.local"],
+            allowed_origins=["https://radio.local"],
+            session_ttl_seconds=3600,
+            liner_upload_max_bytes=25 * 1024 * 1024,
+        )
+
+
+class TestDefaultAndEnvironmentConfig:
+    @pytest.mark.parametrize(
+        "section",
+        [
+            "library",
+            "index",
+            "playback",
+            "model",
+            "huggingface",
+            "replaygain",
+            "djmix",
+            "transitions",
+            "server",
+        ],
+    )
+    def test_known_section_must_be_a_table(self, tmp_path: Path, section: str) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(f"{section} = []\n", encoding="utf-8")
+
+        with pytest.raises(TypeError, match=rf"{section} section must be a table"):
+            load_config(config_path, environ={})
+
+    def test_missing_implicit_config_uses_validated_defaults(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        cfg = load_config(None, environ={})
+        assert cfg.library.music_dir == Path("music")
+        assert cfg.index.index_dir == Path("index")
+        assert cfg.index.model_dir == Path("models")
+        assert cfg.server.host == "127.0.0.1"
+        assert cfg.server.port == 8080
+        assert cfg.config_path is None
+        assert cfg.config_sources == ("defaults",)
+
+    def test_explicit_missing_config_remains_strict(self, tmp_path: Path) -> None:
+        with pytest.raises(FileNotFoundError, match="Config file not found"):
+            load_config(tmp_path / "missing.toml", environ={})
+
+    def test_precedence_defaults_toml_local_environment(self, tmp_path: Path) -> None:
+        base = tmp_path / "config.toml"
+        base.write_text(
+            '[library]\nmusic_dir = "toml-music"\n'
+            '[index]\nindex_dir = "toml-index"\nmodel_dir = "toml-models"\n'
+            '[server]\nhost = "127.0.0.2"\nport = 8081\n'
+            'access_token = "test-token-0123456789abcdef0123456789"\n',
+            encoding="utf-8",
+        )
+        (tmp_path / "config.local.toml").write_text(
+            '[library]\nmusic_dir = "local-music"\n[server]\nport = 8082\n',
+            encoding="utf-8",
+        )
+        cfg = load_config(
+            base,
+            environ={
+                "AUTODJ_LIBRARY_MUSIC_DIR": "env-music",
+                "AUTODJ_INDEX_DIR": "env-index",
+                "AUTODJ_MODEL_DIR": "env-models",
+                "AUTODJ_HOST": "127.0.0.3",
+                "AUTODJ_PORT": "8083",
+                "AUTODJ_ACCESS_TOKEN": "env-token-0123456789abcdef0123456789",
+                "AUTODJ_HUGGINGFACE_TOKEN": "hf-token-0123456789abcdef0123456789",
+            },
+        )
+        assert cfg.library.music_dir == Path("env-music")
+        assert cfg.index.index_dir == Path("env-index")
+        assert cfg.index.model_dir == Path("env-models")
+        assert (cfg.server.host, cfg.server.port) == ("127.0.0.3", 8083)
+        assert cfg.server.access_token == "env-token-0123456789abcdef0123456789"
+        assert cfg.huggingface.token == "hf-token-0123456789abcdef0123456789"
+        assert cfg.config_sources == (
+            "defaults",
+            str(base),
+            str(tmp_path / "config.local.toml"),
+            "environment",
+        )
+
+    @pytest.mark.parametrize("value", ["", "eight", "0", "65536"])
+    def test_invalid_environment_port_uses_server_validator(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(ValueError, match=r"AUTODJ_PORT|port"):
+            load_config(None, environ={"AUTODJ_PORT": value})
+
+    def test_environment_contract_is_complete(self) -> None:
+        assert set(ENVIRONMENT_OVERLAY) == {
+            "AUTODJ_LIBRARY_MUSIC_DIR",
+            "AUTODJ_INDEX_DIR",
+            "AUTODJ_MODEL_DIR",
+            "AUTODJ_HOST",
+            "AUTODJ_PORT",
+            "AUTODJ_ACCESS_TOKEN",
+            "AUTODJ_HUGGINGFACE_TOKEN",
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -311,6 +448,10 @@ class TestHuggingFaceConfig:
         hf = HuggingFaceConfig.from_dict({"token": ""})
         assert hf.token is None
 
+    def test_repr_redacts_token(self) -> None:
+        token = "hf-secret-token"
+        assert token not in repr(HuggingFaceConfig(token=token))
+
 
 # ---------------------------------------------------------------------------
 # AutoDJConfig integration
@@ -318,6 +459,24 @@ class TestHuggingFaceConfig:
 
 
 class TestDeepMergeAndOverlays:
+    def test_deep_merge_result_does_not_alias_either_input(self) -> None:
+        base = {"nested": {"retained": [1]}}
+        overlay = {
+            "nested": {"added": [2]},
+            "replacement": {"value": [3]},
+        }
+
+        merged = _deep_merge(base, overlay)
+        merged["nested"]["retained"].append(4)
+        merged["nested"]["added"].append(5)
+        merged["replacement"]["value"].append(6)
+
+        assert base == {"nested": {"retained": [1]}}
+        assert overlay == {
+            "nested": {"added": [2]},
+            "replacement": {"value": [3]},
+        }
+
     def test_local_overlay_merges_recursively(self, tmp_path: Path) -> None:
         base = tmp_path / "config.toml"
         base.write_text(
@@ -376,6 +535,25 @@ class TestAutoDJConfig:
     def test_huggingface_token_defaults_none(self, minimal_toml: Path) -> None:
         cfg = load_config(minimal_toml)
         assert cfg.huggingface.token is None
+
+
+class TestModelConfigRevision:
+    def test_custom_revision_loads(self) -> None:
+        assert ModelConfig.from_dict({"revision": "v1.2.3"}).revision == "v1.2.3"
+
+    @pytest.mark.parametrize("value", [None, 1, True, ["main"]])
+    def test_revision_must_be_string(self, value: object) -> None:
+        with pytest.raises(ValueError, match=r"model\.revision"):
+            ModelConfig.from_dict({"revision": value})
+
+    @pytest.mark.parametrize("revision", [" main", "main ", "\tmain\n", "   "])
+    def test_revision_rejects_whitespace_in_toml_and_direct_construction(
+        self, revision: str
+    ) -> None:
+        with pytest.raises(ValueError, match=r"model\.revision"):
+            ModelConfig.from_dict({"revision": revision})
+        with pytest.raises(ValueError, match=r"model\.revision"):
+            ModelConfig(revision=revision)
 
 
 # ---------------------------------------------------------------------------
@@ -474,3 +652,216 @@ class TestConfigPathRemapValidation:
             {"music_dir": "/x", "path_remap": [["/a", "/b"]]},
         )
         assert cfg.path_remap == [("/a", "/b")]
+
+
+class TestServerConfig:
+    def test_defaults_to_loopback_and_derives_policy(self) -> None:
+        cfg = ServerConfig.from_dict({})
+
+        assert cfg.host == "127.0.0.1"
+        assert cfg.port == 8080
+        assert cfg.access_token is None
+        assert cfg.insecure_lan is False
+        assert cfg.liner_upload_max_bytes == 50 * 1024 * 1024
+        assert cfg.effective_allowed_hosts() == ["127.0.0.1"]
+        assert cfg.effective_allowed_origins() == ["http://127.0.0.1:8080"]
+
+    def test_custom_bind_and_default_port_drive_derived_policy(self) -> None:
+        custom = ServerConfig.from_dict({"host": "127.0.0.2", "port": 9090})
+        default_port = ServerConfig.from_dict({"host": "127.0.0.2", "port": 80})
+
+        assert custom.effective_allowed_hosts() == ["127.0.0.2"]
+        assert custom.effective_allowed_origins() == ["http://127.0.0.2:9090"]
+        assert default_port.effective_allowed_origins() == ["http://127.0.0.2"]
+
+    def test_canonicalizes_ipv6_origins_and_duplicates(self) -> None:
+        cfg = ServerConfig.from_dict(
+            {
+                "allowed_hosts": ["RADIO.local.", "radio.local", "::1"],
+                "allowed_origins": [
+                    "HTTPS://Radio.Local:443/",
+                    "https://radio.local",
+                    "http://[2001:DB8::1]:80/",
+                ],
+            }
+        )
+
+        assert cfg.allowed_hosts == ["radio.local", "::1"]
+        assert cfg.allowed_origins == [
+            "https://radio.local",
+            "http://[2001:db8::1]",
+        ]
+
+    @pytest.mark.parametrize(
+        "origin",
+        [
+            "ftp://radio.local",
+            "https://user:pass@radio.local",
+            "https://radio.local/private",
+            "https://radio.local?token=x",
+            "https://radio.local#fragment",
+            "https://radio.local?",
+            "https://radio.local#",
+            "https://radio.local?#",
+            "https://radio.local/?",
+            "https://radio.local/#",
+            "https://radio.local:99999",
+            "https://radio.local:",
+            "https://radio.local:0",
+            "https://[2001:db8::1",
+            "https://[v1.foo]",
+            "https://[not-ipv6]",
+            "https://0.0.0.0",
+            "https://*.example",
+            "https://radio.local\x00",
+        ],
+    )
+    def test_rejects_malformed_or_wildcard_origins(self, origin: str) -> None:
+        with pytest.raises(ValueError, match="allowed_origins"):
+            ServerConfig.from_dict({"allowed_origins": [origin]})
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "",
+            " ",
+            "radio.local:8080",
+            "user@radio.local",
+            "[::1]",
+            "radio/local",
+            "*.example",
+            "0.0.0.0",
+            "::",
+            "bad_host",
+            "radio.local\x00",
+        ],
+    )
+    def test_rejects_invalid_allowed_hosts(self, host: str) -> None:
+        with pytest.raises(ValueError, match="allowed_hosts"):
+            ServerConfig.from_dict({"allowed_hosts": [host]})
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "fa\N{LATIN SMALL LETTER SHARP S}.de",
+            "fa\N{ZERO WIDTH JOINER}ss.de",
+            "b\N{LATIN SMALL LETTER U WITH DIAERESIS}cher.example",
+        ],
+    )
+    def test_rejects_unicode_allowed_hosts_without_idna_aliasing(self, host: str) -> None:
+        with pytest.raises(ValueError, match="ASCII"):
+            ServerConfig.from_dict({"allowed_hosts": [host]})
+
+    @pytest.mark.parametrize(
+        "origin",
+        [
+            "https://fa\N{LATIN SMALL LETTER SHARP S}.de",
+            "https://fa\N{ZERO WIDTH JOINER}ss.de",
+        ],
+    )
+    def test_rejects_unicode_origin_hosts_without_idna_aliasing(self, origin: str) -> None:
+        with pytest.raises(ValueError, match="ASCII"):
+            ServerConfig.from_dict({"allowed_origins": [origin]})
+
+    @pytest.mark.parametrize(
+        ("data", "message"),
+        [
+            ({"port": True}, "server.port"),
+            ({"port": "8080"}, "server.port"),
+            ({"insecure_lan": 1}, "server.insecure_lan"),
+            ({"allowed_hosts": "radio.local"}, "server.allowed_hosts"),
+            ({"allowed_hosts": [1]}, "server.allowed_hosts"),
+            ({"allowed_origins": "http://radio.local"}, "server.allowed_origins"),
+            ({"session_ttl_seconds": 59}, "server.session_ttl_seconds"),
+            ({"session_ttl_seconds": 31_536_001}, "server.session_ttl_seconds"),
+            ({"liner_upload_max_mib": 0}, "server.liner_upload_max_mib"),
+            ({"liner_upload_max_mib": 1025}, "server.liner_upload_max_mib"),
+        ],
+    )
+    def test_rejects_wrong_types_and_out_of_bounds_values(
+        self, data: dict[str, object], message: str
+    ) -> None:
+        with pytest.raises((TypeError, ValueError), match=message):
+            ServerConfig.from_dict(data)
+
+    def test_rejects_weak_token_without_echoing_it(self) -> None:
+        weak = "do-not-print-me"
+
+        with pytest.raises(ValueError) as raised:
+            ServerConfig.from_dict({"access_token": weak})
+
+        assert "at least 32 UTF-8 bytes" in str(raised.value)
+        assert weak not in str(raised.value)
+
+    def test_token_minimum_counts_utf8_bytes(self) -> None:
+        cfg = ServerConfig.from_dict({"access_token": "\N{LOCK}" * 8})
+
+        assert cfg.access_token == "\N{LOCK}" * 8
+
+    def test_server_config_repr_redacts_access_token(self) -> None:
+        token = "do-not-render-this-secret-value!"
+
+        cfg = ServerConfig(access_token=token)
+
+        assert token not in repr(cfg)
+
+    @pytest.mark.parametrize("host", ["localhost", "127.0.0.2", "::1"])
+    def test_loopback_detection_never_needs_dns(self, host: str) -> None:
+        assert is_loopback_bind(host)
+
+    @pytest.mark.parametrize("host", ["radio.local", "0.0.0.0", "::"])
+    def test_non_loopback_detection(self, host: str) -> None:
+        assert not is_loopback_bind(host)
+
+    def test_wildcard_requires_explicit_nonempty_policy_lists(self) -> None:
+        cfg = ServerConfig(
+            host="0.0.0.0",
+            access_token="s" * 32,
+            allowed_hosts=[],
+            allowed_origins=[],
+        )
+
+        with pytest.raises(ValueError, match="wildcard binding requires"):
+            validate_server_exposure(cfg)
+
+    def test_lan_requires_token_or_insecure_acknowledgement(self) -> None:
+        cfg = ServerConfig(
+            host="192.168.1.10",
+            allowed_hosts=["radio.local"],
+            allowed_origins=["http://radio.local:8080"],
+        )
+
+        with pytest.raises(ValueError, match="LAN binding requires"):
+            validate_server_exposure(cfg)
+
+    def test_specific_lan_bind_derives_policy_when_authenticated(self) -> None:
+        cfg = ServerConfig(host="192.168.1.10", access_token="s" * 32)
+
+        validate_server_exposure(cfg)
+
+        assert cfg.effective_allowed_hosts() == ["192.168.1.10"]
+        assert cfg.effective_allowed_origins() == ["http://192.168.1.10:8080"]
+
+    def test_specific_named_lan_bind_derives_policy_with_insecure_ack(self) -> None:
+        cfg = ServerConfig(host="Radio.Local", insecure_lan=True)
+
+        validate_server_exposure(cfg)
+
+        assert cfg.effective_allowed_hosts() == ["radio.local"]
+        assert cfg.effective_allowed_origins() == ["http://radio.local:8080"]
+
+    def test_validation_rechecks_mutated_direct_configuration(self) -> None:
+        cfg = ServerConfig()
+        cfg.host = "0.0.0.0"
+        cfg.access_token = "weak-secret"
+        cfg.allowed_hosts = ["radio.local"]
+        cfg.allowed_origins = ["http://radio.local:8080"]
+
+        with pytest.raises(ValueError) as raised:
+            validate_server_exposure(cfg)
+
+        assert "weak-secret" not in str(raised.value)
+
+    def test_origin_helper_rejects_non_string_without_value_echo(self) -> None:
+        with pytest.raises(TypeError, match="allowed_origins"):
+            canonicalize_allowed_origin(123)  # type: ignore[arg-type]

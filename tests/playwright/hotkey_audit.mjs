@@ -11,15 +11,19 @@
 // Run:
 //   AUTODJ_URL=http://192.168.50.40:8082 node tests/playwright/hotkey_audit.mjs
 
-import { chromium, firefox, webkit } from "playwright";
-import { writeFileSync } from "node:fs";
+import {
+  hotkeySourceChecks,
+  runAudit,
+  validateHotkeyAudit,
+} from "./audit_helpers.mjs";
 
 const BASE = process.env.AUTODJ_URL || "http://localhost:8080";
 
-async function audit(name, launcher) {
+export async function audit(name, launcher) {
   const browser = await launcher.launch({
     args: name === "chromium" ? ["--autoplay-policy=no-user-gesture-required"] : [],
   });
+  try {
   const ctx = await browser.newContext({ ignoreHTTPSErrors: true });
   const page = await ctx.newPage();
   const errors = [];
@@ -34,34 +38,20 @@ async function audit(name, launcher) {
   // 1. Static source checks — fixes deployed?
   // ----------------------------------------------------------------
   const source = await page.evaluate(async () => {
-    const scripts = document.querySelectorAll("script[src]");
-    let appJs = "";
-    for (const s of scripts) if (s.src.includes("app.js")) appJs = s.src;
-    return await fetch(appJs).then((r) => r.text());
+    const paths = [
+      "/modules/hotkeys.js",
+      "/modules/audio-engine.js",
+      "/modules/dom-helpers.js",
+    ];
+    const [hotkeys, audio, domHelpers] = await Promise.all(paths.map(async (path) => {
+      const response = await fetch(path);
+      if (!response.ok) throw new Error(`${path} returned ${response.status}`);
+      return response.text();
+    }));
+    return { hotkeys, audio, domHelpers };
   });
 
-  const sourceChecks = {
-    duplicateListenerRemoved:
-      // The legacy "document.addEventListener('keydown'" handler is gone.
-      (source.match(/addEventListener\("keydown"/g) || []).length <= 2,
-    windowCapturePhase: /window\.addEventListener\("keydown"/.test(source),
-    pressLatch: /const _pressed = new Set\(\)/.test(source),
-    eRepeatGuard: /if \(e\.repeat\) return;/.test(source),
-    isTypingTargetNarrowed: /\["text", "search", "email"/.test(source),
-    modalShowModal: /modal\.showModal\(\)/.test(source),
-    closeBtnFocus: /closeBtn\.focus\(\)/.test(source),
-    durationUnified:
-      /linearRampToValueAtTime\([^)]*effectDur/.test(source) &&
-      /effectDur \* 1000/.test(source),
-    // Bug fixes from earlier commits — keep them detectable via grep so
-    // a refactor that drops them gets caught:
-    silenceTrigger95pct: /currentTime > dur \* 0\.95/.test(source),
-    silenceMs2000: /silenceMs >= 2000/.test(source),
-    repickNextEndpoint: /\/api\/repick-next/.test(source),
-    pauseBothDecks: /Pause BOTH decks during a crossfade/.test(source),
-    shuffleCrossfadeOnUnexpectedChange:
-      /Mid-playback: server changed current_track/.test(source),
-  };
+  const sourceChecks = hotkeySourceChecks(source);
 
   // ----------------------------------------------------------------
   // 2. DOM checks — modal in place?
@@ -137,24 +127,24 @@ async function audit(name, launcher) {
       new KeyboardEvent("keyup", { key: "s", bubbles: true, cancelable: true }),
     );
 
-    // ----- _isTypingTarget narrowed: range slider should NOT suppress -----
-    // Simulate focus on the volume slider, then dispatch M.  Should call
-    // btnMute.click() (counter check).
+    // ----- Native range owns keyboard input -----
+    // Dispatch M from the focused range itself.  The page hotkey must
+    // leave every key from native controls untouched.
     let muteClicks = 0;
     const mBtn = document.getElementById("btn-mute");
     const origM = mBtn.click.bind(mBtn);
     mBtn.click = () => { muteClicks++; };
     const vol = document.getElementById("vol");
     vol.focus();
-    document.dispatchEvent(
+    vol.dispatchEvent(
       new KeyboardEvent("keydown", {
-        key: "m", bubbles: true, cancelable: true, target: vol,
+        key: "m", bubbles: true, cancelable: true,
       }),
     );
     await new Promise((r) => setTimeout(r, 100));
     out.muteClicksFromSliderFocus = muteClicks;
     mBtn.click = origM;
-    document.dispatchEvent(
+    vol.dispatchEvent(
       new KeyboardEvent("keyup", { key: "m", bubbles: true, cancelable: true }),
     );
 
@@ -166,7 +156,7 @@ async function audit(name, launcher) {
     const search = document.getElementById("search-input");
     if (search) {
       search.focus();
-      document.dispatchEvent(
+      search.dispatchEvent(
         new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }),
       );
       await new Promise((r) => setTimeout(r, 100));
@@ -175,38 +165,17 @@ async function audit(name, launcher) {
     }
     pBtn.click = origP;
 
-    // ----- _effectDurationFor unified -----
-    // Inside page.evaluate -- _effectDurationFor is a page global from
-    // app.js; ESLint's static analysis can't see across the boundary.
-    out.effectDurationUnified =
-      typeof _effectDurationFor === "function" &&
-      // eslint-disable-next-line no-undef
-      _effectDurationFor("reverb_tail", 2.0, null) ===
-        Math.max(2.0, 4.0); // staticMin reverb_tail = 4
-
     return out;
   });
 
-  await browser.close();
   return { source: sourceChecks, dom, behaviour, errors };
+  } finally {
+    await browser.close();
+  }
 }
 
-const main = async () => {
-  const results = {};
-  for (const [name, launcher] of [
-    ["chromium", chromium],
-    ["firefox", firefox],
-    ["webkit", webkit],
-  ]) {
-    try {
-      results[name] = await audit(name, launcher);
-    } catch (e) {
-      results[name] = { error: String(e) };
-    }
-  }
-  const out = JSON.stringify(results, null, 2);
-  console.log(out);
-  writeFileSync("hotkey_audit_report.json", out);
-};
-
-main();
+await runAudit({
+  audit,
+  report: "hotkey_audit_report.json",
+  validate: validateHotkeyAudit,
+});

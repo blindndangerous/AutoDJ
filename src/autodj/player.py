@@ -31,7 +31,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import numpy as np
 from rich.console import Console
@@ -52,7 +52,7 @@ try:
     import sounddevice as _sd_mod
 
     sd: Any = _sd_mod
-except ImportError:  # pragma: no cover
+except (ImportError, OSError):  # pragma: no cover -- missing PortAudio/minimal host
     sd = None
 
 from autodj.indexer import IndexEntry
@@ -228,7 +228,7 @@ def _apply_crossfade_ducked(
     cutoff_norm = max(1e-4, min(0.99, bass_cutoff_hz / nyquist))
     try:
         sos = butter(4, cutoff_norm, btype="high", output="sos")
-        a_tail_hp = sosfilt(sos, a_tail).astype(np.float32)
+        a_tail_hp = cast(np.ndarray, sosfilt(sos, a_tail)).astype(np.float32)
     except (ValueError, RuntimeError):  # pragma: no cover — degenerate sample rate
         return _apply_crossfade(audio_a, audio_b, crossfade_samples)
 
@@ -370,7 +370,7 @@ def apply_filter_sweep(
         cutoff_norm = max(1e-4, min(0.99, cutoff / nyquist))
         try:
             sos = butter(4, cutoff_norm, btype=filter_type, output="sos")
-            filt = sosfilt(sos, chunk).astype(np.float32)
+            filt = cast(np.ndarray, sosfilt(sos, chunk)).astype(np.float32)
         except (ValueError, RuntimeError):
             filt = chunk
 
@@ -457,9 +457,10 @@ def apply_eq(
     except ImportError:  # pragma: no cover — scipy required by full install
         return chunk
 
-    low = sosfilt(sos_filters["low"], chunk)
-    high = sosfilt(sos_filters["high"], chunk)
-    mid = sosfilt(sos_filters["mid_lp"], sosfilt(sos_filters["mid_hp"], chunk))
+    low = cast(np.ndarray, sosfilt(sos_filters["low"], chunk))
+    high = cast(np.ndarray, sosfilt(sos_filters["high"], chunk))
+    mid_highpassed = cast(np.ndarray, sosfilt(sos_filters["mid_hp"], chunk))
+    mid = cast(np.ndarray, sosfilt(sos_filters["mid_lp"], mid_highpassed))
 
     out = (low * low_gain + mid * mid_gain + high * high_gain).astype(np.float32)
     np.clip(out, -1.0, 1.0, out=out)
@@ -757,6 +758,7 @@ class Player:
         # workers for the same track.  Lock guards the set; the heavy
         # I/O happens off-lock.
         self._bg_analysis_inflight: set[str] = set()
+        self._bg_analysis_threads: set[threading.Thread] = set()
         self._bg_analysis_lock = threading.Lock()
         self._bg_lyrics_inflight: set[str] = set()
         self._bg_lyrics_lock = threading.Lock()
@@ -869,6 +871,11 @@ class Player:
         if self._live is not None:
             self._live.update(self._build_status())
 
+    def stop(self) -> None:
+        """Wake and stop the playback loop, including empty-library waiting."""
+        self._state.should_stop = True
+        self._skip_event.set()
+
     def run(self, seed_entry: IndexEntry | None) -> None:  # pragma: no cover -- end-to-end loop
         """Start the playback loop.
 
@@ -883,8 +890,16 @@ class Player:
         import random
 
         if seed_entry is None:
-            # Non-security seed pick — random.choice is fine here.
-            seed_entry = random.choice(self._sim.entries)  # nosec B311
+            while not self._state.should_stop:
+                entries = self._sim.entries_snapshot()
+                if entries:
+                    seed_entry = random.choice(entries)  # nosec B311
+                    break
+                self._skip_event.wait(timeout=0.25)
+                self._skip_event.clear()
+            if self._state.should_stop:
+                return
+            assert seed_entry is not None
         # Remember the seed so anchored mode can keep coming back to it.
         self._seed_path = seed_entry.path
 
@@ -1028,13 +1043,31 @@ class Player:
         return None
 
     def _pick_pure_shuffle(self) -> IndexEntry:
-        """Random pick from the non-recent pool (or full library on collapse)."""
+        """Random pick from non-recent tracks without violating hard BPM eligibility."""
         import random as _rnd
 
+        from autodj.similarity import SimilarityError
+
         excluded = set(self._state.recently_played)
-        pool = [e for e in self._sim.entries if e.path not in excluded]
+
+        def eligible(entry: IndexEntry) -> bool:
+            if self._bpm_range is None:
+                return True
+            lo, hi = self._bpm_range
+            return entry.bpm > 0 and lo <= entry.bpm <= hi
+
+        entries = self._sim.entries_snapshot()
+        pool = [e for e in entries if e.path not in excluded and eligible(e)]
         if not pool:
-            pool = list(self._sim.entries)
+            logger.warning(
+                "Pure shuffle exhausted eligible non-recent tracks; relaxing recent-track exclusion"
+            )
+            current_path = (
+                self._state.current_track.path if self._state.current_track is not None else None
+            )
+            pool = [e for e in entries if e.path != current_path and eligible(e)]
+        if not pool:
+            raise SimilarityError("No candidates satisfy hard filters for pure shuffle.")
         self._last_pick_mode = "pure_shuffle"
         return _rnd.choice(pool)  # nosec B311 -- non-security
 
@@ -1416,10 +1449,6 @@ class Player:
         existing = self._dj_cache.get(path)
         if existing.analysed:
             return
-        with self._bg_analysis_lock:
-            if path in self._bg_analysis_inflight:
-                return
-            self._bg_analysis_inflight.add(path)
 
         def _worker() -> None:  # pragma: no cover -- background thread
             try:
@@ -1436,11 +1465,11 @@ class Player:
                 # full picture (cues + intro/outro + tempo + key).
                 from autodj.dj_meta import camelot_label
 
-                idx = getattr(self._sim, "_path_to_idx", {}).get(path)
+                similarity = self._sim
+                e = similarity.entry_for_path(path)
                 bpm_str = "BPM ?"
                 cam = "--"
-                if idx is not None:
-                    e = self._sim.entries[idx]
+                if e is not None:
                     if e.bpm:
                         bpm_str = f"{e.bpm:.0f} BPM"
                     cam = camelot_label(e.key, e.mode)
@@ -1459,12 +1488,41 @@ class Player:
             finally:
                 with self._bg_analysis_lock:
                     self._bg_analysis_inflight.discard(path)
+                    self._bg_analysis_threads.discard(threading.current_thread())
 
-        threading.Thread(
-            target=_worker,
-            name=f"autodj-analyse-{Path(path).name}",
-            daemon=True,
-        ).start()
+        with self._bg_analysis_lock:
+            if path in self._bg_analysis_inflight:
+                return
+            thread = threading.Thread(
+                target=_worker,
+                name=f"autodj-analyse-{Path(path).name}",
+                daemon=True,
+            )
+            self._bg_analysis_inflight.add(path)
+            self._bg_analysis_threads.add(thread)
+            try:
+                thread.start()
+            except BaseException:
+                self._bg_analysis_inflight.discard(path)
+                self._bg_analysis_threads.discard(thread)
+                raise
+
+    def wait_for_background_analysis(self, timeout: float | None = None) -> bool:
+        """Wait for registered DJ-metadata workers within one total timeout."""
+        deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+        while True:
+            with self._bg_analysis_lock:
+                workers = tuple(self._bg_analysis_threads)
+            if not workers:
+                return True
+            for worker in workers:
+                if deadline is None:
+                    worker.join()
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                worker.join(remaining)
 
     def _merge_external_cues_into(self, meta: DjMeta, path: str) -> None:
         """Merge externally-imported cues for *path* into *meta* in place.

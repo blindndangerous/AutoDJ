@@ -1,113 +1,135 @@
 name: Release
-
 on:
   push:
     tags: ["v*"]
-  workflow_dispatch:
-
 permissions:
-  contents: write       # gh release create / upload
-  id-token: write       # cosign keyless signing
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
-  cancel-in-progress: false   # never cancel a release midway
+  cancel-in-progress: false
 
 jobs:
-  verify-tag:
-    name: Verify tag matches CHANGELOG
+  ci:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+      id-token: write
+  security:
+    uses: ./.github/workflows/security.yml
+    permissions:
+      contents: read
+
+  build-and-verify:
+    needs: [ci, security]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v6
-        with: { fetch-depth: 0 }
-
-      - name: Confirm tag has CHANGELOG entry
-        run: |
-          tag="${GITHUB_REF#refs/tags/v}"
-          grep -q "^## \[$tag\]" CHANGELOG.md || \
-            { echo "::error::Tag $tag has no CHANGELOG entry"; exit 1; }
-
-  build:
-    name: Build sdist + wheel
-    needs: verify-tag
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
+        with: {fetch-depth: 0}
       - uses: astral-sh/setup-uv@v8.1.0
-        with: { enable-cache: true }
-
-      - name: Build artefacts
-        run: uv build --sdist --wheel
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: dist
-          path: dist/
-
-  sbom:
-    name: Generate SBOM
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
+      - uses: actions/setup-python@v6
+        with: {python-version: "3.14"}
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with: {node-version: "24.6.0", cache: "npm"}
+      - name: Install frontend dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Build frontend assets
+        run: npm run build
+      - name: Export build constraints
+        run: >-
+          uv export --frozen --only-group build --no-emit-project
+          --format requirements-txt
+          --output-file "$RUNNER_TEMP/build-constraints.txt"
+      - name: Build distributions
+        run: >-
+          uv build --sdist --wheel
+          --build-constraints "$RUNNER_TEMP/build-constraints.txt"
+          --require-hashes
+      - name: Verify tag, project, changelog, and wheel metadata
+        run: uv run --frozen python scripts/verify_release.py --tag "$GITHUB_REF_NAME" --wheel dist/*.whl --sdist dist/*.tar.gz
+      - name: Smoke-install exact wheel
+        run: |
+          uv venv .release-venv --python 3.14
+          uv pip install --python .release-venv/bin/python dist/*.whl
+          test "$(.release-venv/bin/python -c 'import autodj; print(autodj.__version__)')" = "${GITHUB_REF_NAME#v}"
+      - name: Verify runtime API version
+        run: |
+          set -euo pipefail
+          server_pid=""
+          server_log="$RUNNER_TEMP/release-server.log"
+          cleanup() {
+            exit_code=$?
+            trap - EXIT
+            if [[ -n "$server_pid" ]]; then
+              kill "$server_pid" 2>/dev/null || true
+              for _shutdown_attempt in $(seq 1 10); do
+                if ! kill -0 "$server_pid" 2>/dev/null; then
+                  break
+                fi
+                sleep 1
+              done
+              kill -KILL "$server_pid" 2>/dev/null || true
+              wait "$server_pid" 2>/dev/null || true
+            fi
+            if (( exit_code != 0 )); then
+              cat "$server_log" || true
+            fi
+            exit "$exit_code"
+          }
+          trap cleanup EXIT
+          mkdir -p "$RUNNER_TEMP/music" "$RUNNER_TEMP/index" "$RUNNER_TEMP/models"
+          AUTODJ_LIBRARY_MUSIC_DIR="$RUNNER_TEMP/music" AUTODJ_INDEX_DIR="$RUNNER_TEMP/index" AUTODJ_MODEL_DIR="$RUNNER_TEMP/models" \
+            .release-venv/bin/autodj serve --no-playback >"$server_log" 2>&1 &
+          server_pid=$!
+          response=""
+          ready=false
+          for _attempt in $(seq 1 30); do
+            if response="$(curl --silent --show-error --fail --max-time 2 http://127.0.0.1:8080/api/version)"; then
+              ready=true
+              break
+            fi
+            if ! kill -0 "$server_pid" 2>/dev/null; then
+              echo "release server exited before becoming ready" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          if [[ "$ready" != true ]]; then
+            echo "release server did not become ready" >&2
+            exit 1
+          fi
+          test "$(jq -r .version <<<"$response")" = "${GITHUB_REF_NAME#v}"
       - uses: anchore/sbom-action@v0
         with:
+          path: dist
           format: cyclonedx-json
-          output-file: sbom.cdx.json
-
+          output-file: dist/sbom.cdx.json
       - uses: actions/upload-artifact@v7
         with:
-          name: sbom
-          path: sbom.cdx.json
+          name: release-artifacts
+          path: dist/
 
-  release:
-    name: GitHub release
-    needs: [build, sbom]
+  publish:
+    needs: build-and-verify
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
     steps:
       - uses: actions/checkout@v6
-
       - uses: actions/download-artifact@v8
-        with: { path: ./artefacts }
-
+        with: {name: release-artifacts, path: dist}
       - uses: sigstore/cosign-installer@v4.1.1
-
-      - name: Sign artefacts (keyless OIDC)
-        env:
-          COSIGN_EXPERIMENTAL: "1"
+      - name: Sign exact artifacts
         run: |
-          shopt -s globstar nullglob
-          for f in ./artefacts/dist/*; do
-            cosign sign-blob --yes \
-              --bundle "${f}.bundle" \
-              --output-signature "${f}.sig" \
-              "$f"
-          done
-          for f in ./artefacts/sbom/*; do
-            cosign sign-blob --yes \
-              --bundle "${f}.bundle" \
-              --output-signature "${f}.sig" \
-              "$f"
-          done
-
-      - name: Extract release notes from CHANGELOG
-        run: |
-          tag="${GITHUB_REF#refs/tags/}"
-          version="${tag#v}"
-          awk "/^## \\[$version\\]/ {flag=1; next} /^## \\[/ {flag=0} flag" CHANGELOG.md > RELEASE_NOTES.md
-          [ -s RELEASE_NOTES.md ] || echo "Release $tag" > RELEASE_NOTES.md
-
-      - name: Create GitHub release
+          for file in dist/*; do cosign sign-blob --yes --bundle "${file}.bundle" "$file"; done
+      - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --title "$GITHUB_REF_NAME" \
-            --notes-file RELEASE_NOTES.md \
-            --verify-tag \
-            ./artefacts/dist/* \
-            ./artefacts/sbom/* \
-            ./artefacts/dist/*.bundle ./artefacts/dist/*.sig \
-            ./artefacts/sbom/*.bundle ./artefacts/sbom/*.sig
+          git fetch --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          tag_commit="$(git rev-parse "$GITHUB_REF_NAME^{commit}")"
+          test "$tag_commit" = "$GITHUB_SHA"
+          gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes dist/*

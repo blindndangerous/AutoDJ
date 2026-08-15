@@ -8,6 +8,23 @@
 </head>
 <body>
 
+<dialog id="auth-dialog" aria-modal="true"
+        aria-labelledby="auth-title" aria-describedby="auth-help">
+  <form id="auth-form" method="dialog">
+    <h2 id="auth-title">Connect to AutoDJ</h2>
+    <p id="auth-help">Enter the access token supplied by the server operator.</p>
+    <label for="auth-token">Access token</label>
+    <input id="auth-token" name="token" type="password"
+           autocomplete="current-password" required
+           aria-describedby="auth-help auth-error">
+    <p id="auth-error" role="alert" aria-live="assertive"
+       aria-atomic="true"></p>
+    <button type="submit">Log in</button>
+  </form>
+  <p id="auth-status" role="status" aria-live="polite"
+     aria-atomic="true"></p>
+</dialog>
+
 <!-- Skip navigation link (WCAG 2.4.1) -->
 <a class="skip-link" href="#main-content">Skip to main content</a>
 
@@ -66,7 +83,7 @@
              aria-atomic="true">
           Loading…
         </div>
-        <div id="now-playing-meta" aria-hidden="true"></div>
+        <div id="now-playing-meta"></div>
         <!-- Visual-only badge row: BPM / Camelot key / energy / beatmatch ratio.
              aria-hidden because a separate live region announces the same
              info on track change to avoid stepping on the title announcement. -->
@@ -88,7 +105,7 @@
         </svg>
       </div>
     </div>
-    <!-- Independent polite region for badge announcements (Camelot + BPM,
+    <!-- Independent polite region for badge announcements (key + beatmatch,
          only on track change) so it never collides with the title above. -->
     <div id="badges-announce" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
 
@@ -105,15 +122,15 @@
            aria-valuemin="0"
            aria-valuemax="100"
            aria-valuenow="0"
-           aria-valuetext="0:00 of 0:00">
+           aria-valuetext="0:00 of 0:00"
+           aria-describedby="cue-summary">
         <div id="progress-fill" aria-hidden="true"></div>
-        <!-- Decorative cue tick marks.  Screen-reader users hear cue
-             counts + the first few markers via the polite live region
-             #badges-announce on track change (see _summariseCues in
-             app.js); the persistent navigable list was removed at the
-             user's request. -->
+        <!-- Decorative cue tick marks.  A concise slider description and
+             separate full, revisit-able cue details follow this control. -->
         <div id="cue-strip" aria-hidden="true"></div>
       </div>
+      <p id="cue-summary" class="visually-hidden">No cue points</p>
+      <p id="cue-details" class="visually-hidden">No cue points</p>
     </div>
   </details>
 
@@ -304,7 +321,7 @@
 
     <!-- Single shared status region for failures (success is silent — checkbox
          state already announced by the AT). -->
-    <div id="settings-status" role="status" aria-live="polite" class="visually-hidden"></div>
+    <div id="settings-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
 
     <fieldset>
       <legend>Mood</legend>
@@ -644,7 +661,9 @@
         <input type="number" id="bpm-hi" min="0" max="300" step="1" aria-describedby="bpm-desc">
       </div>
       <span class="setting-desc" id="bpm-desc">
-        Hard filter on track tempo.  Picks only fall within this range; tracks with unknown BPM always pass.  Leave blank to disable.
+        Hard filter on track tempo. Picks only fall within this range, and tracks
+        with unknown BPM are excluded while the filter is active. Leave both fields
+        blank to disable the filter.
       </span>
     </fieldset>
 
@@ -750,10 +769,11 @@
     </summary>
     <!-- Visually hidden announce region for queue mutations: "Added X", "Moved X up", "Removed X" -->
     <div id="queue-announce"
+         role="status"
          aria-live="polite"
          aria-atomic="true"
          class="visually-hidden"></div>
-    <ol id="queue-list" role="list" aria-label="Queued tracks">
+    <ol id="queue-list" role="list" aria-label="Queued tracks" tabindex="-1">
       <li class="no-results"
           style="color:var(--text-dim);font-style:italic;list-style:none;padding-left:0">
         Queue is empty.  Search and use "Next" to add a track.
@@ -847,26 +867,23 @@
       </div>
 
       <!-- Status badge + streamed log output -->
-      <!-- A11y C3 (v5.4.0 audit): #library-log streams every line of a
-           long-running subprocess (indexer, prune, etc).  role=log +
-           aria-live=polite would fire continuous NVDA announcements
-           drowning out now-playing/queue/lyrics regions.  Removed the
-           live-region hooks — #lib-job-status above announces start /
-           progress / finish in throttled summary form, log content stays
-           visually scrollable + tab-focusable but silent for AT. -->
+      <!-- #library-log is a neutral preformatted region rather than an
+           output/status/live region.  #lib-job-status announces throttled
+           start, progress, and finish summaries while the full log remains
+           visually scrollable, keyboard focusable, and available on demand. -->
       <h3 id="library-log-heading">Output</h3>
       <p id="lib-job-status" aria-live="polite" aria-atomic="true">Idle.</p>
-      <output id="library-log"
-              aria-labelledby="library-log-heading"
-              tabindex="0"
-              style="display:block;background:#0f1626;color:#cce0ff;
-                     padding:0.5rem;border-radius:var(--radius);
-                     font-family:ui-monospace,Consolas,monospace;
-                     font-size:0.85rem;max-height:16rem;
-                     overflow:auto;white-space:pre-wrap;
-                     border:1px solid var(--border)">
+      <pre id="library-log"
+           aria-labelledby="library-log-heading"
+           tabindex="0"
+           style="display:block;margin:0;background:#0f1626;color:#cce0ff;
+                  padding:0.5rem;border-radius:var(--radius);
+                  font-family:ui-monospace,Consolas,monospace;
+                  font-size:0.85rem;max-height:16rem;
+                  overflow:auto;white-space:pre-wrap;
+                  border:1px solid var(--border)">
         <em style="color:var(--text-dim)">No job has run yet.</em>
-      </output>
+      </pre>
     </details>
   </section>
 

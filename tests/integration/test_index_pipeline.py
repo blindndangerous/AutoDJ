@@ -188,6 +188,57 @@ class TestIndexPipeline:
         # force=True means all 10 were re-embedded (5 + 10 = 15 total calls)
         assert wrapper.embed_array.call_count == 15
 
+    def test_force_reordered_checkpoint_preserves_vector_path_mapping_when_final_save_fails(
+        self, fake_config: AutoDJConfig
+    ) -> None:
+        from autodj.beets import get_all_tracks
+
+        tracks = get_all_tracks(fake_config.library.beets_db)
+        wrapper = MagicMock()
+
+        def fake_read(path: str, **_kwargs):
+            marker = int(Path(path).stem.rsplit("_", 1)[1])
+            audio = np.zeros(32, dtype=np.float32)
+            audio[0] = marker
+            return audio, _FAKE_SR
+
+        def fake_embed(audio: np.ndarray, sample_rate: int):
+            assert sample_rate == _FAKE_SR
+            embedding = np.zeros(EMBEDDING_DIM, dtype=np.float32)
+            embedding[int(audio[0])] = 1.0
+            return embedding
+
+        wrapper.embed_array.side_effect = fake_embed
+        with (
+            patch("autodj.indexer.sf") as mock_sf,
+            patch("autodj.indexer.librosa") as mock_librosa,
+            patch(
+                "autodj.indexer.get_all_tracks",
+                side_effect=[tracks, list(reversed(tracks))],
+            ),
+        ):
+            mock_sf.read.side_effect = fake_read
+            _setup_librosa_mock(mock_librosa)
+            build_index(fake_config, wrapper=wrapper, limit=None, force=False)
+
+            with (
+                patch(
+                    "autodj.indexer.save_index",
+                    side_effect=OSError("final save failed"),
+                ),
+                pytest.raises(OSError, match="final save failed"),
+            ):
+                build_index(fake_config, wrapper=wrapper, limit=None, force=True)
+
+        entries, faiss_index = load_index(fake_config.index.active_dir)
+        assert [Path(entry.path).stem for entry in entries] == [
+            f"song_{index}" for index in reversed(range(10))
+        ]
+        assert [
+            int(np.argmax(faiss_index.reconstruct(row)[:EMBEDDING_DIM]))
+            for row in range(faiss_index.ntotal)
+        ] == list(reversed(range(10)))
+
     def test_similarity_search_returns_different_song(self, fake_config: AutoDJConfig) -> None:
         """After indexing, querying a track should not return itself as the top result."""
         wrapper = _fake_wrapper()

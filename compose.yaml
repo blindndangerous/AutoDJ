@@ -1,45 +1,63 @@
-# Podman / Docker compose for AutoDJ.
-#
-# Quickstart:
-#   podman compose up        # build + run
-#   podman compose down      # stop
-#
-# Volumes:
-#   ./music   -> /music (read-only) — your library lives here.  Mount
-#                read-only so the container cannot mutate source files.
-#   ./index   -> /index — FAISS index + tracks.db + dj_meta.db + liners + profiles
-#                + dayparts.  Generate with `autodj index` on the host
-#                first; the container only needs read-write so the user
-#                can upload liners and save profiles.
-#
-# This compose file does NOT run `autodj index`.  Indexing benefits
-# from a GPU and python-multipart-loaded librosa / muq, neither of
-# which fits cleanly in a slim CPU container.  Run on the host:
-#   uv run autodj index
-# then start the container.
+# Default startup binds inside the container on 0.0.0.0 but publishes only on host loopback.
+# --insecure-lan acknowledges that internal bind; it does not authorize host LAN exposure.
+# Authenticated LAN startup: docker compose --profile lan up autodj-lan
+# Targeting autodj-lan prevents the default service from competing for host port 8080.
+
+x-autodj-common: &autodj-common
+  build:
+    context: .
+    dockerfile: Containerfile
+  image: autodj:local
+  restart: unless-stopped
+  volumes:
+    - ${AUTODJ_MUSIC_DIR:-./music}:/music:ro
+    - ${AUTODJ_INDEX_DIR:-autodj-index}:/index
+    - ${AUTODJ_MODEL_DIR:-autodj-models}:/models
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
 
 services:
   autodj:
-    build:
-      context: .
-      dockerfile: Containerfile
-    image: autodj:latest
+    <<: *autodj-common
     container_name: autodj
-    restart: unless-stopped
     ports:
-      - "8080:8080"
-    volumes:
-      - ./music:/music:ro
-      - ./index:/index
+      - "127.0.0.1:8080:8080"
+    # Acknowledge only the container-internal 0.0.0.0 bind; host publication stays loopback-only.
+    command:
+      - serve
+      - --no-playback
+      - --insecure-lan
+      - --allowed-host
+      - 127.0.0.1
+      - --allowed-host
+      - localhost
+      - --allowed-origin
+      - http://127.0.0.1:8080
+      - --allowed-origin
+      - http://localhost:8080
+
+  autodj-lan:
+    <<: *autodj-common
+    profiles: [lan]
+    container_name: autodj-lan
+    ports:
+      - "${AUTODJ_LAN_BIND_ADDRESS:-0.0.0.0}:8080:8080"
     environment:
-      AUTODJ_HOST: 0.0.0.0
-      AUTODJ_PORT: 8080
-      # Override the [library] music_dir + [index] dir at runtime so a
-      # cloned config.toml doesn't need editing.
-      AUTODJ_LIBRARY_MUSIC_DIR: /music
-      AUTODJ_INDEX_DIR: /index
-    # Don't expose privileged ports / drop unneeded capabilities.
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
+      # Empty defaults keep inactive-profile interpolation safe. Application validation below
+      # rejects the selected wildcard service until real auth/host/origin values are supplied.
+      AUTODJ_ACCESS_TOKEN: ${AUTODJ_ACCESS_TOKEN:-}
+    command:
+      - serve
+      - --no-playback
+      # The image healthcheck probes the container-local IPv4 listener. Keep this
+      # exact loopback Host alongside, never instead of, the operator's LAN Host.
+      - --allowed-host
+      - 127.0.0.1
+      - --allowed-host
+      - "${AUTODJ_LAN_HOST:-}"
+      - --allowed-origin
+      - "${AUTODJ_LAN_ORIGIN:-}"
+
+volumes:
+  autodj-index:
+  autodj-models:

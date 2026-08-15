@@ -1,0 +1,78 @@
+name: Full browser audit
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.1.0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24.6.0"
+          cache: npm
+      - run: uv sync --frozen --all-extras
+      - run: npm ci --ignore-scripts
+      - run: npx --no-install playwright install --with-deps firefox webkit
+      - name: Start empty-library server
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/music" "$RUNNER_TEMP/index" "$RUNNER_TEMP/models"
+          AUTODJ_LIBRARY_MUSIC_DIR="$RUNNER_TEMP/music" \
+          AUTODJ_INDEX_DIR="$RUNNER_TEMP/index" \
+          AUTODJ_MODEL_DIR="$RUNNER_TEMP/models" \
+          uv run autodj serve --no-playback >"$RUNNER_TEMP/autodj.log" 2>&1 &
+          server_pid=$!
+          printf '%s\n' "$server_pid" >"$RUNNER_TEMP/autodj.pid"
+          for _attempt in $(seq 1 30); do
+            if curl --silent --show-error --fail --max-time 2 \
+              http://127.0.0.1:8080/healthz; then
+              exit 0
+            fi
+            if ! kill -0 "$server_pid" 2>/dev/null; then
+              cat "$RUNNER_TEMP/autodj.log"
+              exit 1
+            fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/autodj.log"
+          exit 1
+      - name: Run Firefox and WebKit assertions
+        run: npm run audit:ci
+        env:
+          AUTODJ_BROWSERS: firefox,webkit
+          AUTODJ_URL: http://127.0.0.1:8080
+      - name: Stop empty-library server
+        if: always()
+        shell: bash
+        run: |
+          if test -f "$RUNNER_TEMP/autodj.pid"; then
+            server_pid=$(cat "$RUNNER_TEMP/autodj.pid")
+            kill "$server_pid" 2>/dev/null || true
+            for _attempt in $(seq 1 10); do
+              if ! kill -0 "$server_pid" 2>/dev/null; then
+                exit 0
+              fi
+              sleep 1
+            done
+            kill -KILL "$server_pid" 2>/dev/null || true
+          fi
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: full-browser-audit-reports
+          path: |
+            *_audit*.json
+            ${{ runner.temp }}/autodj.log

@@ -5,16 +5,64 @@ on:
     branches: [main, master]
   pull_request:
     branches: [main, master]
+  workflow_call:
 
 permissions:
   contents: read
-  id-token: write          # Codecov OIDC upload
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  container:
+    name: Container build, smoke, and scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build and smoke-test unprivileged image
+        run: bash scripts/container_smoke.sh
+      - name: Generate image SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: autodj:local
+          format: cyclonedx-json
+          output-file: container-sbom.cdx.json
+      - name: Scan built image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: autodj:local
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          timeout: 15m0s
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: container-sbom
+          path: container-sbom.cdx.json
+
+  frontend:
+    name: Frontend lint, test, build, audit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24.6.0"
+          cache: npm
+      - run: npm run audit:lock
+      - run: npm ci --ignore-scripts
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      - run: npm run deadcode
+      - run: npm audit --audit-level=high
+
   quality:
     name: Quality & security
     runs-on: ubuntu-latest
@@ -32,11 +80,17 @@ jobs:
         with:
           python-version: "3.14"
 
+      - name: Verify dependency lock
+        run: uv lock --check
+
       - name: Install dependencies
-        run: uv sync --all-extras
+        run: uv sync --frozen --all-extras
 
       - name: Ruff — lint
         run: uv run ruff check src/ tests/
+
+      - name: Coverage exclusion policy
+        run: uv run python scripts/check_coverage_policy.py
 
       - name: Ruff — format check
         run: uv run ruff format --check src/ tests/
@@ -45,7 +99,6 @@ jobs:
         run: uv run mypy src/autodj/
 
       - name: Pyright — cross-check type checker
-        continue-on-error: true     # informational; mypy is the gate
         run: uv run pyright src/autodj/
 
       - name: Vulture — dead code
@@ -63,10 +116,14 @@ jobs:
       - name: Bandit — security scan
         run: uv run bandit -r src/ -c pyproject.toml
 
+      - name: Check pip-audit suppression expiry
+        run: uv run python scripts/check_pip_audit_suppressions.py
+
       - name: pip-audit — dependency CVE scan
-        # PYSEC-2022-42969: `py` 1.11.0 ReDoS in error reporting code.  No fix
-        # version upstream; pulled in transitively via xenon -> radon.  Not
-        # exposed at runtime (test-tool only), so suppressed.
+        # PYSEC-2022-42969 affects Subversion metadata parsing in dev-only py,
+        # reached through xenon -> radon; AutoDJ does not accept SVN metadata.
+        # Source: https://osv.dev/vulnerability/PYSEC-2022-42969
+        # Reviewed: 2026-08-02. Expiry/re-review: 2026-11-02.
         run: uv run pip-audit --ignore-vuln PYSEC-2022-42969
 
       - name: Semgrep — multi-rule SAST
@@ -77,7 +134,15 @@ jobs:
         # Direct CLI install: gitleaks-action v2 needs GITLEAKS_LICENSE
         # for private repos; the binary is free under MIT.
         run: |
-          curl -fsSL https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz | tar -xz
+          set -euo pipefail
+          GITLEAKS_VERSION="8.21.2"
+          GITLEAKS_SHA256="5bc41815076e6ed6ef8fbecc9d9b75bcae31f39029ceb55da08086315316e3ba"
+          GITLEAKS_ARCHIVE="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl --fail --silent --show-error --location --proto "=https" \
+            --output "$GITLEAKS_ARCHIVE" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${GITLEAKS_ARCHIVE}"
+          printf '%s  %s\n' "$GITLEAKS_SHA256" "$GITLEAKS_ARCHIVE" | sha256sum --check --strict -
+          tar -xzf "$GITLEAKS_ARCHIVE" gitleaks
           ./gitleaks detect --source . --no-banner --redact --exit-code 1
 
       - name: pip-licenses — license inventory
@@ -92,6 +157,9 @@ jobs:
   test:
     name: Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write          # Codecov OIDC upload
     strategy:
       fail-fast: false
       matrix:
@@ -111,7 +179,7 @@ jobs:
           python-version: "3.14"
 
       - name: Install dependencies
-        run: uv sync --all-extras
+        run: uv sync --frozen --all-extras
 
       - name: Pytest — test suite
         run: uv run python scripts/ci_pytest.py
@@ -122,3 +190,75 @@ jobs:
           files: coverage.xml
           fail_ci_if_error: false
           use_oidc: true
+
+  browser:
+    name: Browser assertions (Chromium)
+    needs: [test, frontend]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.1.0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24.6.0"
+          cache: npm
+      - run: uv sync --frozen --all-extras
+      - run: npm ci --ignore-scripts
+      - run: npx --no-install playwright install --with-deps chromium
+      - name: Start empty-library server
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/music" "$RUNNER_TEMP/index" "$RUNNER_TEMP/models"
+          AUTODJ_LIBRARY_MUSIC_DIR="$RUNNER_TEMP/music" \
+          AUTODJ_INDEX_DIR="$RUNNER_TEMP/index" \
+          AUTODJ_MODEL_DIR="$RUNNER_TEMP/models" \
+          uv run autodj serve --no-playback >"$RUNNER_TEMP/autodj.log" 2>&1 &
+          server_pid=$!
+          printf '%s\n' "$server_pid" >"$RUNNER_TEMP/autodj.pid"
+          for _attempt in $(seq 1 30); do
+            if curl --silent --show-error --fail --max-time 2 \
+              http://127.0.0.1:8080/healthz; then
+              exit 0
+            fi
+            if ! kill -0 "$server_pid" 2>/dev/null; then
+              cat "$RUNNER_TEMP/autodj.log"
+              exit 1
+            fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/autodj.log"
+          exit 1
+      - name: Run Chromium assertions
+        run: npm run audit:ci
+        env:
+          AUTODJ_BROWSERS: chromium
+          AUTODJ_URL: http://127.0.0.1:8080
+      - name: Stop empty-library server
+        if: always()
+        shell: bash
+        run: |
+          if test -f "$RUNNER_TEMP/autodj.pid"; then
+            server_pid=$(cat "$RUNNER_TEMP/autodj.pid")
+            kill "$server_pid" 2>/dev/null || true
+            for _attempt in $(seq 1 10); do
+              if ! kill -0 "$server_pid" 2>/dev/null; then
+                exit 0
+              fi
+              sleep 1
+            done
+            kill -KILL "$server_pid" 2>/dev/null || true
+          fi
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: playwright-audit-reports
+          path: |
+            *_audit*.json
+            ${{ runner.temp }}/autodj.log

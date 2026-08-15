@@ -1,5 +1,5 @@
-# Claude Code local settings
-.claude/
+# Local isolated workspaces
+.worktrees/
 
 # Personal config (contains local paths) — use config.toml.example as the template
 config.toml
@@ -48,9 +48,8 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-# Playwright audit infra — devs run `npm i -D @playwright/test` themselves
+# Node dependencies (resolved versions live in committed package-lock.json)
 node_modules/
-package-lock.json
 # Audit reports may contain LAN paths / track metadata
 *_audit.json
 *_audit_report.json

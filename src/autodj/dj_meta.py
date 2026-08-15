@@ -28,6 +28,7 @@ Example:
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import json
 import logging
@@ -37,8 +38,11 @@ import threading
 from collections.abc import Set as AbstractSet
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from types import TracebackType
 
 import numpy as np
+
+from autodj.sqlite_utils import immediate_transaction
 
 logger = logging.getLogger(__name__)
 
@@ -601,6 +605,24 @@ class DjMetaCache:
         self._conn: sqlite3.Connection | None = None
         self._open()
 
+    def __enter__(self) -> DjMetaCache:
+        """Return this open cache for context manager use."""
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Flush successful work and close the cache connection."""
+        del traceback
+        try:
+            if exc_type is None:
+                self.flush(force=True)
+        finally:
+            self.close()
+
     def _key(self, path: str) -> str:
         """Return the canonical SQLite key for *path*.
 
@@ -657,22 +679,19 @@ class DjMetaCache:
         ).fetchall()
         moved = 0
         removed = 0
-        with self._conn:
+        with immediate_transaction(self._conn):
             for row in rows:
                 old = str(row[0])
                 new = self._key(old)
                 if new == old:
                     continue
-                target = self._conn.execute("SELECT analysed FROM dj_meta WHERE path = ?", (new,))
-                target_row = target.fetchone()
+                target_row = self._conn.execute(
+                    "SELECT analysed FROM dj_meta WHERE path = ?", (new,)
+                ).fetchone()
                 if target_row is None:
-                    self._conn.execute(
-                        "UPDATE dj_meta SET path = ? WHERE path = ?",
-                        (new, old),
-                    )
+                    self._conn.execute("UPDATE dj_meta SET path = ? WHERE path = ?", (new, old))
                     moved += 1
                     continue
-                # Prefer an analysed target row over a duplicate legacy row.
                 if not bool(target_row[0]) and bool(row[3]):
                     self._conn.execute(
                         "UPDATE dj_meta SET intro_end_s = ?, outro_start_s = ?, "
@@ -689,6 +708,7 @@ class DjMetaCache:
             )
 
     def _row_to_meta(self, row: tuple) -> DjMeta:
+        """Decode one SQLite row into DJ metadata."""
         intro, outro, analysed, beats_json, cues_json = row
         try:
             beats = json.loads(beats_json or "[]")
@@ -757,7 +777,7 @@ class DjMetaCache:
                 for p, m in self._buf.items()
             ]
             assert self._conn is not None
-            with self._conn:
+            with immediate_transaction(self._conn):
                 self._conn.executemany(
                     "INSERT OR REPLACE INTO dj_meta "
                     "(path, intro_end_s, outro_start_s, analysed, beats, cues) "
@@ -776,34 +796,33 @@ class DjMetaCache:
         valid_keys = {self._key(path) for path in valid_paths}
         with self._lock:
             assert self._conn is not None
-            if self._buf:
-                rows = [
-                    (
-                        p,
-                        float(m.intro_end_s),
-                        float(m.outro_start_s),
-                        int(bool(m.analysed)),
-                        json.dumps([float(b) for b in m.beats]),
-                        json.dumps([asdict(c) for c in m.cues]),
-                    )
-                    for p, m in self._buf.items()
-                ]
-                with self._conn:
+            rows = [
+                (
+                    path,
+                    float(meta.intro_end_s),
+                    float(meta.outro_start_s),
+                    int(bool(meta.analysed)),
+                    json.dumps([float(beat) for beat in meta.beats]),
+                    json.dumps([asdict(cue) for cue in meta.cues]),
+                )
+                for path, meta in self._buf.items()
+            ]
+            with immediate_transaction(self._conn):
+                if rows:
                     self._conn.executemany(
                         "INSERT OR REPLACE INTO dj_meta "
                         "(path, intro_end_s, outro_start_s, analysed, beats, cues) "
                         "VALUES (?, ?, ?, ?, ?, ?)",
                         rows,
                     )
-                self._buf.clear()
-                self._dirty = 0
-
-            existing = [row[0] for row in self._conn.execute("SELECT path FROM dj_meta")]
-            stale = [p for p in existing if p not in valid_keys]
-            if not stale:
-                return 0
-            with self._conn:
-                self._conn.executemany("DELETE FROM dj_meta WHERE path = ?", [(p,) for p in stale])
+                existing = [str(row[0]) for row in self._conn.execute("SELECT path FROM dj_meta")]
+                stale = [path for path in existing if path not in valid_keys]
+                if stale:
+                    self._conn.executemany(
+                        "DELETE FROM dj_meta WHERE path = ?", [(path,) for path in stale]
+                    )
+            self._buf.clear()
+            self._dirty = 0
             for path in stale:
                 self._mem_cache.pop(path, None)
             return len(stale)
@@ -852,6 +871,22 @@ def get_cache(
         if _CACHE is None and index_dir is not None:
             _CACHE = DjMetaCache(index_dir / "dj_meta.db", music_dir, path_remap)
         return _CACHE
+
+
+def close_cache() -> None:
+    """Flush, close, and clear the process-wide cache; safe to call repeatedly."""
+    global _CACHE
+    with _CACHE_LOCK:
+        cache, _CACHE = _CACHE, None
+    if cache is None:
+        return
+    try:
+        cache.flush(force=True)
+    finally:
+        cache.close()
+
+
+atexit.register(close_cache)
 
 
 _CUE_BLOCK_S = 0.5

@@ -5,21 +5,22 @@
 // Output is written as a JSON report so we can diff worklet-load
 // success and crossfade trigger logs across Chromium / Firefox / WebKit.
 
-import { chromium, firefox, webkit } from "playwright";
-import { writeFileSync } from "node:fs";
+import { runAudit, validateTransitionAudit } from "./audit_helpers.mjs";
 
 // Set AUTODJ_URL=http://host:port before running, e.g.:
 //   AUTODJ_URL=http://localhost:8080 node tests/playwright/transition_audit.mjs
 const BASE = process.env.AUTODJ_URL || "http://localhost:8080";
+const ORIGIN = new URL(BASE).origin;
 const EFFECTS = [
   "highpass_sweep", "lowpass_sweep", "bitcrusher", "freeze",
   "glitch", "reverse_reverb", "forward_spin", "pitch_swell", "pitch_fall",
 ];
 
-async function audit(name, launcher) {
+export async function audit(name, launcher) {
   const browser = await launcher.launch({
     args: name === "chromium" ? ["--autoplay-policy=no-user-gesture-required"] : [],
   });
+  try {
   const ctx = await browser.newContext({ ignoreHTTPSErrors: true });
   const page = await ctx.newPage();
   const logs = [];
@@ -72,34 +73,25 @@ async function audit(name, launcher) {
     return out;
   }, BASE);
 
-  // Cycle through each effect and post to /api/transition
+  // page.request is not a browser fetch, so it does not supply Origin for
+  // state-changing calls.  Match the trusted origin of the page under audit.
   const transitions = {};
   for (const fx of EFFECTS) {
-    const res = await page.request.post(`${BASE}/api/transition`, {
-      headers: { "Content-Type": "application/json" },
+    const res = await page.request.post(`${ORIGIN}/api/transition`, {
+      headers: { "Content-Type": "application/json", Origin: ORIGIN },
       data: JSON.stringify({ effect: fx }),
     });
     transitions[fx] = { status: res.status() };
   }
 
-  await browser.close();
   return { name, workletReady: !!workletReady, probe, transitions, logs };
-}
-
-const results = {};
-for (const [n, l] of [
-  ["chromium", chromium],
-  ["firefox", firefox],
-  ["webkit", webkit],
-]) {
-  try {
-    results[n] = await audit(n, l);
-    console.error(`${n}: ok`);
-  } catch (e) {
-    results[n] = { error: String(e) };
-    console.error(`${n}: ${e}`);
+  } finally {
+    await browser.close();
   }
 }
 
-writeFileSync("transition_audit.json", JSON.stringify(results, null, 2));
-console.error("wrote transition_audit.json");
+await runAudit({
+  audit,
+  report: "transition_audit.json",
+  validate: validateTransitionAudit,
+});

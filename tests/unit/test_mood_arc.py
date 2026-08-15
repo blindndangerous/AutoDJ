@@ -10,12 +10,21 @@ from autodj.mood_arc import (
     DEFAULT_ANCHORS,
     ArcAnchor,
     MoodArc,
+    _interpolate,
     current_arc_target,
     make_default_arc,
 )
 
 
 class TestArcInterpolation:
+    def test_default_clock_drives_progress(self, monkeypatch) -> None:
+        import autodj.mood_arc as mood_arc
+
+        monkeypatch.setattr(mood_arc.time, "time", lambda: 25.0)
+        target = current_arc_target(MoodArc(start_time_s=0.0, duration_s=100.0))
+
+        assert target.progress == pytest.approx(0.25)
+
     def test_warmup_target_is_low(self) -> None:
         arc = MoodArc(start_time_s=0.0, duration_s=3600.0)
         target = current_arc_target(arc, now_s=0.0)
@@ -103,6 +112,14 @@ class TestMakeDefaultArc:
 
 
 class TestInterpolationEdges:
+    def test_zero_span_pair_returns_lower_anchor(self) -> None:
+        anchors = (
+            ArcAnchor(progress=0.5, bpm_frac=0.25, energy_frac=0.4),
+            ArcAnchor(progress=0.5, bpm_frac=0.75, energy_frac=0.8),
+        )
+
+        assert _interpolate(anchors, 0.5) == (0.25, 0.4)
+
     def test_zero_span_anchors_return_lo(self) -> None:
         # Two anchors at the same progress -- span = 0 forces the early
         # return at line 115 (lo.bpm_frac, lo.energy_frac).

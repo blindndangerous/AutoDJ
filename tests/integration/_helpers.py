@@ -13,8 +13,11 @@ delegate to these.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+import tempfile
+from pathlib import Path
+from unittest.mock import MagicMock, PropertyMock
 
+from autodj.config import ServerConfig
 from autodj.indexer import IndexEntry
 
 
@@ -73,6 +76,10 @@ def _make_player_mock(entry: IndexEntry | None = None) -> MagicMock:
     # Concrete config so get_settings does not traverse MagicMock chains
     # and trip JSONResponse on un-serialisable mocks.
     cfg = MagicMock()
+    cfg.server = ServerConfig(
+        allowed_hosts=["testserver"],
+        allowed_origins=["http://testserver"],
+    )
     cfg.transitions.effect = "none"
     cfg.transitions.wet_mix = 1.0
     cfg.djmix.harmonic_mixing = False
@@ -106,7 +113,7 @@ def _make_player_mock(entry: IndexEntry | None = None) -> MagicMock:
     cfg.playback.liners_random_max_minutes = None
     cfg.playback.liners_pick_mode = "random"
     cfg.playback.liners_duck_db = -12.0
-    cfg.index.active_dir = "/tmp/_autodj_no_index"
+    cfg.index.active_dir = str(Path(tempfile.gettempdir()).resolve() / "_autodj_no_index")
     cfg.replaygain.enabled = False
     cfg.presets = {}
     player._cfg = cfg
@@ -117,4 +124,10 @@ def _make_sim_mock(entries: list[IndexEntry] | None = None) -> MagicMock:
     """Build a mock SimilarityIndex carrying a default 5-track list."""
     sim = MagicMock()
     sim.entries = entries if entries is not None else [_make_entry(i) for i in range(5)]
+    sim.entries_snapshot.side_effect = lambda: tuple(sim.entries)
+    sim.entry_for_path.side_effect = lambda path: next(
+        (entry for entry in sim.entries if entry.path == path),
+        None,
+    )
+    type(sim).ntotal = PropertyMock(side_effect=lambda: len(sim.entries))
     return sim

@@ -4,8 +4,13 @@ Uses a pre-built fake FAISS index with known vectors so tests are
 deterministic and require no model inference.
 """
 
+import ast
+import json
+import threading
+import time
 from collections import deque
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import faiss
 import numpy as np
@@ -42,12 +47,24 @@ def _make_entry(i: int, bpm: float = 120.0) -> IndexEntry:
     )
 
 
-def _make_similarity_index(n: int) -> tuple[SimilarityIndex, np.ndarray]:
+def _make_similarity_index(
+    n: int,
+    *,
+    bpms: list[float] | None = None,
+    genres: dict[int, str] | None = None,
+) -> tuple[SimilarityIndex, np.ndarray]:
     """Build a SimilarityIndex with *n* deterministic tracks."""
+    if bpms is not None and len(bpms) != n:
+        raise ValueError("bpms must contain one value per track")
     vectors = np.array([_unit_vec(seed=i) for i in range(n)], dtype=np.float32)
     faiss_index = faiss.IndexFlatIP(FEATURE_DIM)
     faiss_index.add(vectors)
     entries = [_make_entry(i) for i in range(n)]
+    if bpms is not None:
+        for entry, bpm in zip(entries, bpms, strict=True):
+            entry.bpm = bpm
+    for idx, genre in (genres or {}).items():
+        entries[idx].genre = genre
     sim_index = SimilarityIndex(faiss_index=faiss_index, entries=entries)
     return sim_index, vectors
 
@@ -58,6 +75,26 @@ def _make_similarity_index(n: int) -> tuple[SimilarityIndex, np.ndarray]:
 
 
 class TestSimilarityIndexConstruction:
+    def test_public_entries_are_immutable_and_keep_path_mapping(self) -> None:
+        from dataclasses import FrozenInstanceError
+
+        sim, vectors = _make_similarity_index(3)
+        snapshot_entry = sim.entries_snapshot()[0]
+        lookup_entry = sim.entry_for_path(snapshot_entry.path)
+        result = sim.find_next(vectors[0], deque([snapshot_entry.path]))
+        by_path_result = sim.find_next_for_path(snapshot_entry.path, deque())
+        distant_result = sim.find_distant(snapshot_entry.path, deque())
+
+        for entry in (snapshot_entry, lookup_entry, result, by_path_result, distant_result):
+            assert entry is not None
+            with pytest.raises(FrozenInstanceError):
+                entry.path = "Z:/Music/mutated.flac"
+            with pytest.raises(FrozenInstanceError):
+                del entry.path
+
+        assert sim.entry_for_path("Z:/Music/song_0.flac") is snapshot_entry
+        assert sim.entry_for_path("Z:/Music/mutated.flac") is None
+
     def test_ntotal_matches_entries(self) -> None:
         sim, _ = _make_similarity_index(10)
         assert sim.ntotal == 10
@@ -143,6 +180,20 @@ class TestFindNext:
         )
         assert isinstance(result, IndexEntry)
 
+    @pytest.mark.parametrize("invalid", [0, -1])
+    def test_n_candidates_must_be_positive(self, invalid: int) -> None:
+        sim, vectors = _make_similarity_index(3)
+
+        with pytest.raises(ValueError, match="positive integer"):
+            sim.find_next(vectors[0], deque(), n_candidates=invalid)
+
+    @pytest.mark.parametrize("invalid", [True, 1.5])
+    def test_n_candidates_rejects_bool_and_non_integer(self, invalid: object) -> None:
+        sim, vectors = _make_similarity_index(3)
+
+        with pytest.raises(TypeError, match="positive integer"):
+            sim.find_next(vectors[0], deque(), n_candidates=invalid)  # type: ignore[arg-type]
+
     def test_invert_smart_shuffle(self) -> None:
         """invert=True picks least-similar candidate."""
         sim, vectors = _make_similarity_index(20)
@@ -152,6 +203,38 @@ class TestFindNext:
             n_candidates=10,
             invert=True,
         )
+        assert isinstance(result, IndexEntry)
+
+    def test_smart_shuffle_finds_global_farthest_beyond_first_200(self) -> None:
+        n = 257
+        query = np.zeros(FEATURE_DIM, dtype=np.float32)
+        query[0] = 1.0
+        vectors = np.zeros((n, FEATURE_DIM), dtype=np.float32)
+        vectors[:, 0] = np.linspace(1.0, -1.0, n, dtype=np.float32)
+        vectors[:, 1] = np.sqrt(np.maximum(0.0, 1.0 - vectors[:, 0] ** 2))
+        index = faiss.IndexFlatIP(FEATURE_DIM)
+        index.add(vectors)
+        sim = SimilarityIndex(index, [_make_entry(i) for i in range(n)])
+
+        entries = sim.entries_snapshot()
+        result = sim.find_next(query, deque([entries[0].path]), invert=True, n_candidates=10)
+
+        assert result.path == entries[-1].path
+
+    @pytest.mark.parametrize("bad_value", [0.0, np.nan])
+    def test_empty_or_non_finite_query_is_rejected(self, bad_value: float) -> None:
+        sim, _vectors = _make_similarity_index(3)
+        query = np.full(FEATURE_DIM, bad_value, dtype=np.float32)
+
+        with pytest.raises(SimilarityError, match="empty or non-finite"):
+            sim.find_next(query, deque())
+
+    def test_large_finite_query_is_normalized_without_overflow(self) -> None:
+        sim, _vectors = _make_similarity_index(3)
+        query = np.full(FEATURE_DIM, np.finfo(np.float32).max, dtype=np.float32)
+
+        result = sim.find_next(query, deque())
+
         assert isinstance(result, IndexEntry)
 
     def test_excluded_artist_skipped(self) -> None:
@@ -192,9 +275,7 @@ class TestFindNext:
         assert result.title != "Same Song"
 
     def test_bpm_range_filter(self) -> None:
-        sim, vectors = _make_similarity_index(8)
-        for i, e in enumerate(sim.entries):
-            e.bpm = 80.0 if i < 4 else 130.0
+        sim, vectors = _make_similarity_index(8, bpms=[80.0] * 4 + [130.0] * 4)
         result = sim.find_next(
             query_vector=vectors[0],
             recently_played=deque(),
@@ -204,19 +285,16 @@ class TestFindNext:
         # Hit the high band
         assert result.bpm == 130.0
 
-    def test_bpm_filter_relaxes_when_empty(self) -> None:
-        """All candidates fail BPM filter → fallback to relaxed pool."""
-        sim, vectors = _make_similarity_index(5)
-        for e in sim.entries:
-            e.bpm = 80.0
-        # 200-220 range matches no track; should still return SOMETHING
-        result = sim.find_next(
-            query_vector=vectors[0],
-            recently_played=deque([sim.entries[0].path]),
-            n_candidates=5,
-            bpm_range=(200.0, 220.0),
-        )
-        assert isinstance(result, IndexEntry)
+    def test_empty_hard_bpm_filter_raises(self) -> None:
+        sim, vectors = _make_similarity_index(5, bpms=[80.0] * 5)
+        entries = sim.entries_snapshot()
+        with pytest.raises(SimilarityError, match="hard filters"):
+            sim.find_next(
+                query_vector=vectors[0],
+                recently_played=deque([entries[0].path]),
+                n_candidates=5,
+                bpm_range=(200.0, 220.0),
+            )
 
     def test_target_energy_rerank(self) -> None:
         sim, vectors = _make_similarity_index(8)
@@ -297,12 +375,346 @@ class TestFromIndexDir:
         sim = SimilarityIndex.from_index_dir(tmp_path)
         assert sim.ntotal == 5
 
+    @pytest.mark.parametrize("schema_version", [1, 2])
+    def test_manifested_load_records_validated_generation(
+        self, tmp_path: Path, schema_version: int
+    ) -> None:
+        from autodj.index_manifest import read_manifest
+        from autodj.indexer import save_index
+
+        entries = [_make_entry(0)]
+        vectors = np.array([_unit_vec(seed=0)], dtype=np.float32)
+        save_index(entries, vectors, tmp_path)
+        manifest = read_manifest(tmp_path)
+        assert manifest is not None
+        if schema_version == 1:
+            path = tmp_path / "index-manifest.json"
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            raw["schema_version"] = 1
+            del raw["state_revision"]
+            path.write_text(json.dumps(raw), encoding="utf-8")
+
+        sim = SimilarityIndex.from_index_dir(tmp_path)
+
+        assert sim._generation == manifest.generation
+
+    def test_flat_legacy_migration_records_published_generation(self, tmp_path: Path) -> None:
+        from autodj.index_manifest import read_manifest
+        from autodj.indexer import _save_tracks_metadata, _save_vectors
+
+        entries = [_make_entry(0)]
+        vectors = np.array([_unit_vec(seed=0)], dtype=np.float32)
+        _save_vectors(vectors, tmp_path)
+        _save_tracks_metadata(entries, tmp_path, music_dir=None)
+
+        target = tmp_path / "default"
+        sim = SimilarityIndex.from_index_dir(target)
+        manifest = read_manifest(target)
+
+        assert manifest is not None
+        assert sim._generation == manifest.generation > 0
+
+    def test_legacy_named_load_records_generation_zero(self, tmp_path: Path) -> None:
+        from autodj.indexer import _save_tracks_metadata, _save_vectors
+
+        target = tmp_path / "default"
+        target.mkdir()
+        entries = [_make_entry(0)]
+        vectors = np.array([_unit_vec(seed=0)], dtype=np.float32)
+        _save_vectors(vectors, target)
+        _save_tracks_metadata(entries, target, music_dir=None)
+
+        sim = SimilarityIndex.from_index_dir(target)
+
+        assert sim._generation == 0
+
+    def test_concurrent_publish_waits_and_cannot_mislabel_loaded_generation(
+        self, tmp_path: Path
+    ) -> None:
+        import autodj.similarity as similarity_module
+        from autodj.index_manifest import read_manifest
+        from autodj.indexer import save_index
+
+        initial_entries = [_make_entry(0)]
+        initial_vectors = np.array([_unit_vec(seed=0)], dtype=np.float32)
+        save_index(initial_entries, initial_vectors, tmp_path)
+        initial_manifest = read_manifest(tmp_path)
+        assert initial_manifest is not None
+        loaded = threading.Event()
+        release = threading.Event()
+        publish_started = threading.Event()
+        publish_done = threading.Event()
+        result: list[SimilarityIndex] = []
+        original_load_index = similarity_module.load_index
+
+        def blocking_load_index(*args, **kwargs):
+            value = original_load_index(*args, **kwargs)
+            loaded.set()
+            assert release.wait(timeout=1)
+            return value
+
+        def load() -> None:
+            result.append(SimilarityIndex.from_index_dir(tmp_path))
+
+        def publish() -> None:
+            publish_started.set()
+            save_index([_make_entry(9)], np.array([_unit_vec(seed=9)], dtype=np.float32), tmp_path)
+            publish_done.set()
+
+        with patch("autodj.similarity.load_index", side_effect=blocking_load_index):
+            loader = threading.Thread(target=load)
+            loader.start()
+            assert loaded.wait(timeout=1)
+            publisher = threading.Thread(target=publish)
+            publisher.start()
+            assert publish_started.wait(timeout=1)
+            time.sleep(0.05)
+            assert not publish_done.is_set()
+            release.set()
+            loader.join(timeout=10)
+            publisher.join(timeout=10)
+
+        assert not loader.is_alive()
+        assert not publisher.is_alive()
+        assert result[0]._generation == initial_manifest.generation
+        assert result[0].ntotal == 1
+
+    def test_load_index_can_skip_flat_migration(self, tmp_path: Path) -> None:
+        from autodj.indexer import _save_tracks_metadata, _save_vectors, load_index
+
+        entries = [_make_entry(0)]
+        vectors = np.array([_unit_vec(seed=0)], dtype=np.float32)
+        _save_vectors(vectors, tmp_path)
+        _save_tracks_metadata(entries, tmp_path, music_dir=None)
+
+        with pytest.raises(FileNotFoundError):
+            load_index(tmp_path / "default", _migrate_flat=False)
+
+        assert (tmp_path / "tracks.db").is_file()
+        assert (tmp_path / "vectors.index").is_file()
+
+    def test_flat_migration_keeps_parent_before_target_lock_order(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        from contextlib import contextmanager
+
+        import autodj.indexer as indexer_module
+        import autodj.similarity as similarity_module
+        from autodj.index_manifest import read_manifest
+        from autodj.indexer import _save_tracks_metadata, _save_vectors, load_index
+
+        entries = [_make_entry(0)]
+        vectors = np.array([_unit_vec(seed=0)], dtype=np.float32)
+        _save_vectors(vectors, tmp_path)
+        _save_tracks_metadata(entries, tmp_path, music_dir=None)
+        target = tmp_path / "default"
+        parent_held = threading.Event()
+        release_parent = threading.Event()
+        target_locked = threading.Event()
+        errors: list[BaseException] = []
+        direct_result: list[tuple[list[IndexEntry], faiss.IndexFlatIP]] = []
+        from_result: list[SimilarityIndex] = []
+        real_indexer_lock = indexer_module.publication_lock
+        real_similarity_lock = similarity_module.publication_lock
+
+        @contextmanager
+        def gated_indexer_lock(path: Path):
+            with real_indexer_lock(path):
+                if (
+                    path.resolve() == tmp_path.resolve()
+                    and threading.current_thread().name == "direct"
+                ):
+                    parent_held.set()
+                    assert release_parent.wait(timeout=1)
+                yield
+
+        @contextmanager
+        def observing_similarity_lock(path: Path):
+            if path.resolve() == target.resolve():
+                target_locked.set()
+            with real_similarity_lock(path):
+                yield
+
+        def direct() -> None:
+            try:
+                direct_result.append(load_index(target))
+            except BaseException as exc:
+                errors.append(exc)
+
+        def from_index() -> None:
+            try:
+                from_result.append(SimilarityIndex.from_index_dir(target))
+            except BaseException as exc:
+                errors.append(exc)
+
+        monkeypatch.setattr(indexer_module, "publication_lock", gated_indexer_lock)
+        monkeypatch.setattr(similarity_module, "publication_lock", observing_similarity_lock)
+        direct_thread = threading.Thread(target=direct, name="direct")
+        direct_thread.start()
+        assert parent_held.wait(timeout=1)
+        from_thread = threading.Thread(target=from_index, name="from-index")
+        from_thread.start()
+        time.sleep(0.05)
+        assert not target_locked.is_set()
+        release_parent.set()
+        direct_thread.join(timeout=10)
+        from_thread.join(timeout=10)
+
+        assert errors == []
+        assert not direct_thread.is_alive()
+        assert not from_thread.is_alive()
+        manifest = read_manifest(target)
+        assert manifest is not None
+        assert len(direct_result[0][0]) == 1
+        assert from_result[0]._generation == manifest.generation
+
     def test_raises_if_index_missing(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError):
             SimilarityIndex.from_index_dir(tmp_path / "nonexistent")
 
 
 class TestReloadFromDisk:
+    def test_tombstone_cannot_be_followed_by_stale_reload_swap(self, tmp_path: Path) -> None:
+        from autodj.index_manifest import current_snapshot_token, tombstone_publication
+        from autodj.indexer import save_index
+
+        entries = [_make_entry(0)]
+        vectors = np.array([_unit_vec(seed=0)], dtype=np.float32)
+        save_index(entries, vectors, tmp_path)
+        sim = SimilarityIndex.from_index_dir(tmp_path)
+        initial = sim.snapshot_token
+        candidate_ready = threading.Event()
+        tombstone_done = threading.Event()
+        original_load = __import__("autodj.similarity", fromlist=["load_index"]).load_index
+
+        def gated_load(*args, **kwargs):
+            result = original_load(*args, **kwargs)
+            if threading.current_thread().name == "old-reload":
+                candidate_ready.set()
+            return result
+
+        old = threading.Thread(
+            target=lambda: sim.reload_from_disk(tmp_path, expected_snapshot=initial),
+            name="old-reload",
+        )
+
+        def tombstone() -> None:
+            tombstone_publication(tmp_path)
+            tombstone_done.set()
+
+        with patch("autodj.similarity.load_index", side_effect=gated_load):
+            with sim._reload_lock:
+                old.start()
+                assert candidate_ready.wait(timeout=1)
+                newer = threading.Thread(target=tombstone, name="new-tombstone")
+                newer.start()
+                time.sleep(0.05)
+                assert not tombstone_done.is_set()
+            old.join(timeout=1)
+            newer.join(timeout=1)
+
+        assert not old.is_alive()
+        assert tombstone_done.is_set()
+        latest = current_snapshot_token(tmp_path)
+        sim.reload_from_disk(tmp_path, expected_snapshot=latest)
+        assert sim.snapshot_token == latest
+        assert sim.ntotal == 0
+
+    def test_uncommitted_first_publish_preserves_live_state_then_loads_publish(
+        self, tmp_path: Path
+    ) -> None:
+        from autodj.index_manifest import (
+            IndexConsistencyError,
+            IndexSnapshotToken,
+            _PublicationState,
+            _write_publication_state,
+            current_snapshot_token,
+        )
+        from autodj.indexer import save_index
+
+        sim, _ = _make_similarity_index(1)
+        index_dir = tmp_path / "default"
+        index_dir.mkdir()
+        _write_publication_state(index_dir, _PublicationState(high_water=1, tombstone_revision=0))
+        pending = current_snapshot_token(index_dir)
+
+        with pytest.raises(IndexConsistencyError):
+            sim.reload_from_disk(index_dir, expected_snapshot=pending)
+
+        assert sim.ntotal == 1
+        assert sim.snapshot_token == IndexSnapshotToken(0, 0)
+        entries = [_make_entry(5)]
+        vectors = np.array([_unit_vec(seed=5)], dtype=np.float32)
+        save_index(entries, vectors, index_dir)
+        published = current_snapshot_token(index_dir)
+
+        assert sim.reload_from_disk(index_dir, expected_snapshot=published) == 1
+        assert sim.snapshot_token == published
+        assert sim.entry_for_path(entries[0].path) is not None
+
+    def test_pristine_legacy_reload_keeps_generation_zero(self, tmp_path: Path) -> None:
+        from autodj.index_manifest import IndexSnapshotToken
+        from autodj.indexer import _save_tracks_metadata, _save_vectors
+
+        entries = [_make_entry(4)]
+        vectors = np.array([_unit_vec(seed=4)], dtype=np.float32)
+        _save_vectors(vectors, tmp_path)
+        _save_tracks_metadata(entries, tmp_path, music_dir=None)
+        sim, _ = _make_similarity_index(1)
+
+        assert sim.reload_from_disk(tmp_path) == 1
+        assert sim.snapshot_token == IndexSnapshotToken(0, 0)
+        assert sim.entry_for_path(entries[0].path) is not None
+
+    def test_reload_captures_first_publish_after_flat_migration(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        from autodj.index_manifest import current_snapshot_token
+        from autodj.indexer import _save_tracks_metadata, _save_vectors, save_index
+
+        legacy_entries = [_make_entry(0)]
+        legacy_vectors = np.array([_unit_vec(seed=0)], dtype=np.float32)
+        _save_vectors(legacy_vectors, tmp_path)
+        _save_tracks_metadata(legacy_entries, tmp_path, music_dir=None)
+        target = tmp_path / "default"
+        sim, _ = _make_similarity_index(1)
+        published_entries = [_make_entry(1)]
+        published_vectors = np.array([_unit_vec(seed=1)], dtype=np.float32)
+        original_migrate = __import__(
+            "autodj.similarity", fromlist=["_migrate_flat_index_if_needed"]
+        )._migrate_flat_index_if_needed
+
+        def migrate_then_publish(index_dir: Path) -> None:
+            original_migrate(index_dir)
+            save_index(published_entries, published_vectors, index_dir)
+
+        monkeypatch.setattr("autodj.similarity._migrate_flat_index_if_needed", migrate_then_publish)
+
+        sim.reload_from_disk(target)
+
+        assert sim.snapshot_token == current_snapshot_token(target)
+        assert sim.snapshot_token.generation > 0
+        assert sim.entry_for_path(published_entries[0].path) is not None
+
+    def test_tombstone_reload_clears_live_entries_atomically(self, tmp_path: Path) -> None:
+        from autodj.index_manifest import current_snapshot_token, tombstone_publication
+        from autodj.indexer import save_index
+
+        entries = [_make_entry(0)]
+        vectors = np.array([_unit_vec(seed=0)], dtype=np.float32)
+        save_index(entries, vectors, tmp_path)
+        sim = SimilarityIndex.from_index_dir(tmp_path)
+        old_token = sim.snapshot_token
+        tombstone_publication(tmp_path)
+        expected = current_snapshot_token(tmp_path)
+
+        assert expected != old_token
+        assert sim.reload_from_disk(tmp_path, expected_snapshot=expected) == 0
+        assert sim.snapshot_token == expected
+        assert sim.ntotal == 0
+        assert sim.entries_snapshot() == ()
+        assert sim.entry_for_path(entries[0].path) is None
+
     def test_reload_picks_up_new_entries(self, tmp_path: Path) -> None:
         from autodj.indexer import save_index
 
@@ -336,6 +748,319 @@ class TestReloadFromDisk:
         sim.reload_from_disk(tmp_path)
         # _path_to_idx should now know about song_99
         assert "Z:/Music/song_99.flac" in sim._path_to_idx
+
+    def test_failed_expected_generation_keeps_live_state(self, tmp_path: Path) -> None:
+        from autodj.index_manifest import IndexConsistencyError
+        from autodj.indexer import save_index
+
+        entries = [_make_entry(i) for i in range(3)]
+        vectors = np.array([_unit_vec(seed=i) for i in range(3)], dtype=np.float32)
+        save_index(entries, vectors, tmp_path)
+        sim = SimilarityIndex.from_index_dir(tmp_path)
+        old_entries = sim.entries_snapshot()
+        old_faiss_index = sim.faiss_index
+
+        with pytest.raises(IndexConsistencyError, match="expected generation 2"):
+            sim.reload_from_disk(tmp_path, expected_generation=2)
+
+        assert sim.entries_snapshot() == old_entries
+        assert sim.faiss_index is old_faiss_index
+        assert sim.ntotal == 3
+
+    def test_reload_swaps_entries_and_index_under_one_lock(self, tmp_path: Path) -> None:
+        sim, _ = _make_similarity_index(3)
+        replacement_entries = [_make_entry(i) for i in range(5)]
+        replacement_vectors = np.array([_unit_vec(seed=i) for i in range(5)], dtype=np.float32)
+        replacement_index = faiss.IndexFlatIP(FEATURE_DIM)
+        replacement_index.add(replacement_vectors)
+        loaded = threading.Event()
+        finished = threading.Event()
+
+        def fake_load_index(*args, **kwargs):
+            loaded.set()
+            return replacement_entries, replacement_index
+
+        def reload() -> None:
+            try:
+                sim.reload_from_disk(tmp_path)
+            finally:
+                finished.set()
+
+        with patch("autodj.similarity.load_index", side_effect=fake_load_index):
+            with sim._reload_lock:
+                worker = threading.Thread(target=reload)
+                worker.start()
+                assert loaded.wait(timeout=1)
+                time.sleep(0.05)
+                assert not finished.is_set()
+                assert len(sim.entries_snapshot()) == sim.ntotal == 3
+            worker.join(timeout=1)
+
+        assert finished.is_set()
+        assert len(sim.entries_snapshot()) == sim.ntotal == 5
+
+    def test_reload_waits_for_public_find_before_swapping_generation(self, tmp_path: Path) -> None:
+        sim, vectors = _make_similarity_index(3)
+        old_snapshot = sim.entries_snapshot()
+        replacement_entries = [_make_entry(i + 10) for i in range(5)]
+        replacement_vectors = np.array([_unit_vec(seed=i + 10) for i in range(5)], dtype=np.float32)
+        replacement_index = faiss.IndexFlatIP(FEATURE_DIM)
+        replacement_index.add(replacement_vectors)
+        public_entered = threading.Event()
+        release_public = threading.Event()
+        reload_loaded = threading.Event()
+        reload_done = threading.Event()
+        original_index = sim.faiss_index
+        original_search = original_index.search
+        blocking_index = MagicMock(wraps=original_index)
+
+        def blocking_search(*args, **kwargs):
+            public_entered.set()
+            assert release_public.wait(timeout=1)
+            return original_search(*args, **kwargs)
+
+        def fake_load_index(*args, **kwargs):
+            reload_loaded.set()
+            return replacement_entries, replacement_index
+
+        sim.faiss_index = blocking_index
+        blocking_index.search.side_effect = blocking_search
+        public = threading.Thread(
+            target=sim.find_next,
+            args=(vectors[0], deque([old_snapshot[0].path])),
+        )
+        with patch("autodj.similarity.load_index", side_effect=fake_load_index):
+            public.start()
+            assert public_entered.wait(timeout=1)
+
+            def reload() -> None:
+                try:
+                    sim.reload_from_disk(tmp_path)
+                finally:
+                    reload_done.set()
+
+            reloader = threading.Thread(target=reload)
+            reloader.start()
+            assert reload_loaded.wait(timeout=1)
+            assert not reload_done.is_set()
+            assert old_snapshot == tuple(_make_entry(i) for i in range(3))
+            release_public.set()
+            public.join(timeout=1)
+            reloader.join(timeout=1)
+
+        assert not public.is_alive()
+        assert not reloader.is_alive()
+        snapshot = sim.entries_snapshot()
+        assert sim.ntotal == len(snapshot) == 5
+        assert snapshot == tuple(replacement_entries)
+        assert sim.entry_for_path(replacement_entries[0].path) == replacement_entries[0]
+        assert np.allclose(sim.faiss_index.reconstruct(0), replacement_vectors[0])
+
+
+def _similarity_entries_accesses(source: str) -> list[int]:
+    class Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.lines: list[int] = []
+            self.aliases: list[set[str]] = [set()]
+
+        def visit_Attribute(self, node: ast.Attribute) -> None:
+            if node.attr == "entries" and self._is_similarity_owner(node.value):
+                self.lines.append(node.lineno)
+            self.generic_visit(node)
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self.aliases.append(set())
+            self.generic_visit(node)
+            self.aliases.pop()
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            self.aliases.append(set())
+            self.generic_visit(node)
+            self.aliases.pop()
+
+        def visit_Assign(self, node: ast.Assign) -> None:
+            self.visit(node.value)
+            for target in node.targets:
+                self._bind(target, self._is_similarity_owner(node.value))
+
+        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+            if node.value is not None:
+                self.visit(node.value)
+                self._bind(node.target, self._is_similarity_owner(node.value))
+
+        def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+            self.visit(node.value)
+            self._bind(node.target, self._is_similarity_owner(node.value))
+
+        def visit_If(self, node: ast.If) -> None:
+            self.visit(node.test)
+            before = set(self.aliases[-1])
+            body = self._visit_block(node.body, before)
+            otherwise = self._visit_block(node.orelse, before) if node.orelse else before
+            self.aliases[-1] = body | otherwise
+
+        def visit_Try(self, node: ast.Try) -> None:
+            before = set(self.aliases[-1])
+            body_end, body_possible = self._visit_block_states(node.body, before)
+            outcomes = [body_end]
+            outcomes.extend(
+                self._visit_except_handler(handler, before | body_possible)
+                for handler in node.handlers
+            )
+            if node.orelse:
+                outcomes.append(self._visit_block(node.orelse, body_end))
+            self.aliases[-1] = set().union(*outcomes)
+            for statement in node.finalbody:
+                self.visit(statement)
+
+        visit_TryStar = visit_Try
+
+        def visit_For(self, node: ast.For) -> None:
+            self.visit(node.iter)
+            before = set(self.aliases[-1])
+            self._bind(node.target, self._is_similarity_iterable(node.iter))
+            body = self._visit_block(node.body, self.aliases[-1])
+            outcomes = [before, body]
+            if node.orelse:
+                outcomes.append(self._visit_block(node.orelse, before | body))
+            self.aliases[-1] = set().union(*outcomes)
+
+        visit_AsyncFor = visit_For
+
+        def visit_While(self, node: ast.While) -> None:
+            self.visit(node.test)
+            before = set(self.aliases[-1])
+            body = self._visit_block(node.body, before)
+            outcomes = [before, body]
+            if node.orelse:
+                outcomes.append(self._visit_block(node.orelse, before | body))
+            self.aliases[-1] = set().union(*outcomes)
+
+        def visit_With(self, node: ast.With) -> None:
+            for item in node.items:
+                self.visit(item.context_expr)
+                if item.optional_vars is not None:
+                    self._bind(item.optional_vars, self._is_similarity_owner(item.context_expr))
+            for statement in node.body:
+                self.visit(statement)
+
+        visit_AsyncWith = visit_With
+
+        def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+            if node.type is not None:
+                self.visit(node.type)
+            if node.name is not None:
+                self.aliases[-1].discard(node.name)
+            for statement in node.body:
+                self.visit(statement)
+
+        def _bind(self, target: ast.expr, is_alias: bool) -> None:
+            if not isinstance(target, ast.Name):
+                return
+            if is_alias:
+                self.aliases[-1].add(target.id)
+            else:
+                self.aliases[-1].discard(target.id)
+
+        def _visit_block(self, statements: list[ast.stmt], aliases: set[str]) -> set[str]:
+            return self._visit_block_states(statements, aliases)[0]
+
+        def _visit_block_states(
+            self, statements: list[ast.stmt], aliases: set[str]
+        ) -> tuple[set[str], set[str]]:
+            previous = self.aliases[-1]
+            self.aliases[-1] = set(aliases)
+            possible = set(aliases)
+            for statement in statements:
+                self.visit(statement)
+                possible.update(self.aliases[-1])
+            result = self.aliases[-1]
+            self.aliases[-1] = previous
+            return result, possible
+
+        def _visit_except_handler(self, handler: ast.ExceptHandler, aliases: set[str]) -> set[str]:
+            handler_aliases = set(aliases)
+            if handler.name is not None:
+                handler_aliases.discard(handler.name)
+            return self._visit_block(handler.body, handler_aliases)
+
+        def _is_similarity_owner(self, node: ast.expr) -> bool:
+            if isinstance(node, ast.Name):
+                return node.id in {"sim", "_sim", "similarity"} or node.id in self.aliases[-1]
+            return isinstance(node, ast.Attribute) and node.attr in {"sim", "_sim", "similarity"}
+
+        def _is_similarity_iterable(self, node: ast.expr) -> bool:
+            return (
+                isinstance(node, (ast.List, ast.Tuple, ast.Set))
+                and len(node.elts) == 1
+                and (self._is_similarity_owner(node.elts[0]))
+            )
+
+    visitor = Visitor()
+    visitor.visit(ast.parse(source))
+    return visitor.lines
+
+
+def test_similarity_entries_guard_detects_known_aliases() -> None:
+    assert _similarity_entries_accesses(
+        "sim.entries\nsimilarity.entries\nbridge.sim.entries\nself._sim.entries\np._sim.entries\nnested.bridge.sim.entries\n"
+    ) == [1, 2, 3, 4, 5, 6]
+    assert _similarity_entries_accesses("record.entries\n") == []
+
+
+def test_similarity_entries_guard_follows_local_aliases() -> None:
+    assert _similarity_entries_accesses(
+        "index = self._sim\nother = index\nindex.entries\nother.entries\n"
+    ) == [3, 4]
+    assert _similarity_entries_accesses("index = self._sim\nindex = record\nindex.entries\n") == []
+
+
+def test_similarity_entries_guard_tracks_and_rebinds_control_flow_aliases() -> None:
+    assert _similarity_entries_accesses(
+        "if (index := self._sim):\n index.entries\n"
+        "for other in [self._sim]:\n other.entries\n"
+        "with self._sim as current:\n current.entries\n"
+    ) == [2, 4, 6]
+    assert (
+        _similarity_entries_accesses(
+            "index = self._sim\ntry:\n pass\nexcept RuntimeError as index:\n index.entries\n"
+        )
+        == []
+    )
+
+
+def test_similarity_entries_guard_retains_possible_branch_aliases() -> None:
+    assert _similarity_entries_accesses(
+        "index = self._sim\nif flag:\n index = other\nindex.entries\n"
+        "if flag:\n index = self._sim\nelse:\n index = other\nindex.entries\n"
+        "if flag:\n index = other\nelse:\n index = self._sim\nindex.entries\n"
+    ) == [4, 9, 14]
+
+
+def test_similarity_entries_guard_retains_possible_while_aliases() -> None:
+    assert _similarity_entries_accesses(
+        "index = self._sim\nwhile flag:\n index = other\nindex.entries\n"
+        "while flag:\n index = self._sim\nindex.entries\n"
+    ) == [4, 7]
+
+
+def test_similarity_entries_guard_passes_try_aliases_to_handlers() -> None:
+    assert _similarity_entries_accesses(
+        "try:\n index = self._sim\n risky()\nexcept RuntimeError:\n index.entries\n"
+        "try:\n index = self._sim\n risky()\nexcept ValueError:\n index = record\n index.entries\n"
+    ) == [5]
+
+
+def test_runtime_modules_do_not_read_similarity_entries_directly() -> None:
+    source_dir = Path(__file__).parents[2] / "src" / "autodj"
+    offenders = {
+        path: _similarity_entries_accesses(path.read_text(encoding="utf-8"))
+        for path in source_dir.glob("*.py")
+        if path.name != "similarity.py"
+    }
+    assert {path: lines for path, lines in offenders.items() if lines} == {}
 
 
 # ---------------------------------------------------------------------------
@@ -377,12 +1102,7 @@ class TestBpmScore:
 
 def _make_sim_with_bpms(bpms: list[float]) -> tuple[SimilarityIndex, np.ndarray]:
     """Build a SimilarityIndex where each entry has the given BPM."""
-    vectors = np.array([_unit_vec(seed=i) for i in range(len(bpms))], dtype=np.float32)
-    faiss_index = faiss.IndexFlatIP(FEATURE_DIM)
-    faiss_index.add(vectors)
-    entries = [_make_entry(i, bpm=bpm) for i, bpm in enumerate(bpms)]
-    sim = SimilarityIndex(faiss_index=faiss_index, entries=entries)
-    return sim, vectors
+    return _make_similarity_index(len(bpms), bpms=bpms)
 
 
 class TestBpmRangeFilter:
@@ -390,7 +1110,8 @@ class TestBpmRangeFilter:
         # Tracks: bpm=80 (out), 120 (in), 130 (in), 200 (out)
         bpms = [80.0, 120.0, 130.0, 200.0]
         sim, vectors = _make_sim_with_bpms(bpms)
-        excluded = deque([sim.entries[0].path])  # exclude bpm=80 ourselves
+        entries = sim.entries_snapshot()
+        excluded = deque([entries[0].path])  # exclude bpm=80 ourselves
         result = sim.find_next(
             query_vector=vectors[0],
             recently_played=excluded,
@@ -398,31 +1119,88 @@ class TestBpmRangeFilter:
         )
         assert 100.0 <= result.bpm <= 150.0
 
-    def test_unknown_bpm_passes_filter(self) -> None:
-        # Tracks: bpm=200 (out of range), bpm=250 (out of range), bpm=0 (unknown — passes)
-        bpms = [200.0, 250.0, 0.0]
+    def test_unknown_bpm_is_excluded_by_hard_range(self) -> None:
+        bpms = [110.0, 0.0, 125.0]
         sim, vectors = _make_sim_with_bpms(bpms)
-        # Exclude track 0 (the query track); remaining: track1(250) and track2(0.0)
+        entries = sim.entries_snapshot()
         result = sim.find_next(
             query_vector=vectors[0],
-            recently_played=deque([sim.entries[0].path]),
-            bpm_range=(90.0, 130.0),
+            recently_played=deque([entries[0].path]),
+            bpm_range=(120.0, 130.0),
+            n_candidates=1,
         )
-        # Only track 2 (bpm=0.0) passes the filter; track 1 (bpm=250) is excluded by range
-        assert result.bpm == 0.0
+        assert result.bpm == 125.0
 
-    def test_fallback_when_all_filtered(self) -> None:
-        """When bpm_range excludes all non-excluded candidates, fall back to unfiltered."""
-        # All known-BPM tracks are outside the range
-        bpms = [200.0, 210.0, 220.0]
+    def test_empty_hard_range_raises_instead_of_relaxing(self) -> None:
+        bpms = [80.0, 82.0, 0.0]
         sim, vectors = _make_sim_with_bpms(bpms)
-        # This should not raise — fall back to unfiltered
+        entries = sim.entries_snapshot()
+        with pytest.raises(SimilarityError, match="hard filters"):
+            sim.find_next(
+                query_vector=vectors[0],
+                recently_played=deque([entries[0].path]),
+                bpm_range=(120.0, 130.0),
+            )
+
+
+class TestHardFilterExpansion:
+    def test_genre_filter_expands_until_match_outside_initial_window(self) -> None:
+        sim, vectors = _make_similarity_index(80, genres={70: "Ambient"})
+        entries = sim.entries_snapshot()
+
         result = sim.find_next(
-            query_vector=vectors[0],
-            recently_played=deque([sim.entries[0].path]),
-            bpm_range=(90.0, 130.0),
+            vectors[0],
+            deque([entries[0].path]),
+            n_candidates=5,
+            genre_filter=["ambient"],
         )
-        assert isinstance(result, IndexEntry)
+
+        assert result.path == entries[70].path
+
+    def test_single_candidate_request_expands_until_later_match(self) -> None:
+        sim, vectors = _make_similarity_index(80, genres={70: "Ambient"})
+        entries = sim.entries_snapshot()
+
+        result = sim.find_next(
+            vectors[0],
+            deque([entries[0].path]),
+            n_candidates=1,
+            genre_filter=["ambient"],
+        )
+
+        assert result.path == entries[70].path
+
+    def test_filter_expansion_collects_requested_pool_before_ranking(self) -> None:
+        n = 80
+        query = np.zeros(FEATURE_DIM, dtype=np.float32)
+        query[0] = 1.0
+        vectors = np.zeros((n, FEATURE_DIM), dtype=np.float32)
+        vectors[:, 0] = np.linspace(1.0, -1.0, n, dtype=np.float32)
+        vectors[:, 1] = np.sqrt(np.maximum(0.0, 1.0 - vectors[:, 0] ** 2))
+        index = faiss.IndexFlatIP(FEATURE_DIM)
+        index.add(vectors)
+        entries = [_make_entry(i) for i in range(n)]
+        for entry in entries:
+            entry.genre = "Rock"
+        for idx in (20, 40, 70):
+            entries[idx].genre = "Ambient"
+        sim = SimilarityIndex(index, entries)
+        snapshot = sim.entries_snapshot()
+
+        with patch(
+            "autodj.similarity._softmax_pick",
+            side_effect=lambda candidates, _top_k, _temperature: candidates[0][1],
+        ) as choose:
+            sim.find_next(
+                query,
+                deque([snapshot[0].path]),
+                n_candidates=3,
+                genre_filter=["ambient"],
+            )
+
+        ranked_pool = choose.call_args.args[0]
+        assert len(ranked_pool) >= 3
+        assert all(entry.genre == "Ambient" for _score, entry in ranked_pool)
 
 
 # ---------------------------------------------------------------------------
@@ -458,6 +1236,22 @@ class TestBpmReranking:
             target_bpm=None,
         )
         assert isinstance(result, IndexEntry)
+
+    def test_energy_only_rerank_emits_clean_debug_log(self, caplog) -> None:
+        import logging
+
+        sim, vectors = _make_similarity_index(5)
+        entries = sim.entries_snapshot()
+
+        with caplog.at_level(logging.DEBUG, logger="autodj.similarity"):
+            result = sim.find_next(
+                vectors[0],
+                deque([entries[0].path]),
+                target_energy=0.5,
+            )
+
+        assert isinstance(result, IndexEntry)
+        assert any("energy re-ranked" in message for message in caplog.messages)
 
 
 # ---------------------------------------------------------------------------

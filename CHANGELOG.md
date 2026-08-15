@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- Added `autodj doctor` with text and JSON reports, token redaction, and read-only checks for
+  configuration, storage, index consistency, dependencies, model cache, network exposure, and web
+  bundle identity.
+- Added versioned `autodj backup` and `autodj restore` workflows for stopped or online backups,
+  classified archive manifests, staged restoration, and post-restore doctor validation.
+- Added [operations guide](docs/operations.md) for no-config startup, container ownership,
+  loopback and authenticated LAN deployment, Windows PowerShell, recovery, and upgrades.
+
+### Changed
+
+- Container now runs as UID/GID 10001, publishes default service on host loopback, and requires
+  explicit authenticated or acknowledged-insecure LAN configuration.
+- CI enforces 99.1% line coverage and 94.7% branch coverage, both Python type checkers, locked
+  frontend installation, and container scanning.
+- The release workflow reruns CI and security checks, then verifies tag, project, changelog, and
+  wheel identity before publishing.
+
 ## [0.15.0] - 2026-05-07
 
 The "make it feel like a real radio station" release.

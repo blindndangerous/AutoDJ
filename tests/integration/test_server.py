@@ -14,13 +14,30 @@ budget.  Shared fixtures ``client`` / ``bridge`` come from
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+import asyncio
+import os
+import threading
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+from urllib.parse import urlencode
 
 import pytest
 
+from autodj.config import ServerConfig
 from autodj.server import PlayerBridge, create_app
 
 from ._helpers import _make_entry, _make_player_mock, _make_sim_mock
+
+
+def _register_index_entry(bridge, entry) -> None:
+    """Publish one extra entry through immutable similarity-index seams."""
+    entries = (*bridge.sim.entries_snapshot(), entry)
+    bridge.sim.entries_snapshot.side_effect = lambda: entries
+    bridge.sim.entry_for_path.side_effect = lambda path: next(
+        (candidate for candidate in entries if candidate.path == path),
+        None,
+    )
 
 
 class TestStatus:
@@ -248,6 +265,40 @@ class TestLiners:
         resp = tc.get("/api/liners/file/test.mp3")
         assert resp.status_code == 200
         assert resp.content == b"raw-mp3-bytes"
+        assert resp.headers["content-type"] == "audio/mpeg"
+
+    def test_liner_file_range_uses_held_descriptor(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        folder = tmp_path / "liners"
+        folder.mkdir()
+        (folder / "test.mp3").write_bytes(b"0123456789")
+        bridge.player._cfg.playback.liners_folder = str(folder)
+
+        tc = TestClient(create_app(bridge))
+        resp = tc.get("/api/liners/file/test.mp3", headers={"Range": "bytes=2-5"})
+        assert resp.status_code == 206
+        assert resp.content == b"2345"
+        assert resp.headers["content-range"] == "bytes 2-5/10"
+        assert resp.headers["content-length"] == "4"
+
+    def test_liner_file_suffix_range_and_unsatisfiable_range(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        folder = tmp_path / "liners"
+        folder.mkdir()
+        (folder / "test.mp3").write_bytes(b"0123456789")
+        bridge.player._cfg.playback.liners_folder = str(folder)
+
+        tc = TestClient(create_app(bridge))
+        suffix = tc.get("/api/liners/file/test.mp3", headers={"Range": "bytes=-3"})
+        assert suffix.status_code == 206
+        assert suffix.content == b"789"
+        assert suffix.headers["content-range"] == "bytes 7-9/10"
+
+        unsatisfiable = tc.get("/api/liners/file/test.mp3", headers={"Range": "bytes=20-"})
+        assert unsatisfiable.status_code == 416
+        assert unsatisfiable.headers["content-range"] == "bytes */10"
 
     def test_liner_file_path_traversal_blocked(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
@@ -259,7 +310,7 @@ class TestLiners:
 
         tc = TestClient(create_app(bridge))
         resp = tc.get("/api/liners/file/..%2Fsecret.txt")
-        assert resp.status_code == 404
+        assert resp.status_code == 400
 
     def test_liner_settings_round_trip(self, bridge) -> None:
         from fastapi.testclient import TestClient
@@ -307,6 +358,55 @@ class TestLiners:
         body = tc.get("/api/liners").json()
         assert "hello.mp3" in body["files"]
 
+    def test_liner_upload_enforces_configured_limit(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        folder = tmp_path / "liners"
+        bridge.player._cfg.playback.liners_folder = str(folder)
+        bridge.player._cfg.server.liner_upload_max_bytes = 50
+
+        tc = TestClient(create_app(bridge))
+        resp = tc.post(
+            "/api/liners/upload",
+            files={"file": ("clip.mp3", b"x" * 51, "audio/mpeg")},
+        )
+        assert resp.status_code == 413
+        assert not (folder / "clip.mp3").exists()
+
+    def test_liner_body_cap_rejects_before_creating_staging(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        folder = tmp_path / "liners"
+        bridge.player._cfg.playback.liners_folder = str(folder)
+        bridge.player._cfg.server.liner_upload_max_bytes = 50
+
+        tc = TestClient(create_app(bridge))
+        resp = tc.post(
+            "/api/liners/upload",
+            files={"file": ("clip.mp3", b"x" * 100_000, "audio/mpeg")},
+        )
+        assert resp.status_code == 413
+        assert not folder.exists() or list(folder.iterdir()) == []
+
+    def test_liner_upload_conflict_and_explicit_replace(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        folder = tmp_path / "liners"
+        folder.mkdir()
+        target = folder / "clip.mp3"
+        target.write_bytes(b"old")
+        bridge.player._cfg.playback.liners_folder = str(folder)
+
+        tc = TestClient(create_app(bridge))
+        files = {"file": ("clip.mp3", b"new", "audio/mpeg")}
+        conflict = tc.post("/api/liners/upload", files=files)
+        assert conflict.status_code == 409
+        assert target.read_bytes() == b"old"
+
+        replaced = tc.post("/api/liners/upload?replace=true", files=files)
+        assert replaced.status_code == 200
+        assert target.read_bytes() == b"new"
+
     def test_liner_upload_rejects_unknown_extension(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
@@ -346,7 +446,7 @@ class TestLiners:
 
         tc = TestClient(create_app(bridge))
         resp = tc.delete("/api/liners/file/..%2Fsecret.txt")
-        assert resp.status_code == 404
+        assert resp.status_code == 400
         assert outside.exists()
 
 
@@ -821,7 +921,11 @@ async def test_broadcast_loop_sends_to_websocket_clients() -> None:
         await asyncio.sleep(0)
 
     # Use ASGI transport for real async HTTP — no need for a running server
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+        headers={"Origin": "http://testserver"},
+    ) as ac:
         resp = await ac.get("/api/status")
         assert resp.status_code == 200
         data = resp.json()
@@ -830,7 +934,11 @@ async def test_broadcast_loop_sends_to_websocket_clients() -> None:
     # Now exercise the WebSocket endpoint with async client
     # The broadcast loop is tested by checking it can run without crashing
     with _patch("asyncio.sleep", instant_sleep):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://testserver",
+            headers={"Origin": "http://testserver"},
+        ) as ac:
             resp = await ac.get("/api/status")
             assert resp.status_code == 200
 
@@ -855,6 +963,272 @@ async def test_broadcast_loop_removes_dead_clients() -> None:
     # No crash = success; the loop pruned the dead client
 
 
+async def test_broadcast_sends_concurrently_evicts_slow_and_serializes() -> None:
+    import asyncio
+
+    from autodj.server import _broadcast_and_prune, _broadcast_clients, _WebSocketClient
+
+    class FastSocket:
+        def __init__(self) -> None:
+            self.messages: list[str] = []
+            self.active = 0
+            self.max_active = 0
+
+        async def send_text(self, payload: str) -> None:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            await asyncio.sleep(0)
+            self.messages.append(payload)
+            self.active -= 1
+
+    class SlowSocket:
+        def __init__(self) -> None:
+            self.close_codes: list[int] = []
+
+        async def send_text(self, payload: str) -> None:
+            await asyncio.Event().wait()
+
+        async def close(self, *, code: int) -> None:
+            self.close_codes.append(code)
+
+    fast_socket = FastSocket()
+    fast = _WebSocketClient(fast_socket)
+    slow_socket = SlowSocket()
+    slow = _WebSocketClient(slow_socket)
+    clients = {fast, slow}
+    clients_lock = asyncio.Lock()
+
+    first, second = await asyncio.gather(
+        _broadcast_and_prune(clients, clients_lock, "one", timeout_seconds=0.02),
+        _broadcast_clients((fast,), "two", timeout_seconds=0.02),
+    )
+
+    assert slow in first
+    assert not second
+    assert slow not in clients
+    assert fast in clients
+    assert slow_socket.close_codes == [1013]
+    assert set(fast_socket.messages) == {"one", "two"}
+    assert fast_socket.max_active == 1
+
+
+async def test_broadcast_rechecks_session_after_waiting_for_send_lock() -> None:
+    import asyncio
+    import contextlib
+
+    from autodj.server import _send_websocket_payload, _WebSocketClient
+
+    class Socket:
+        def __init__(self) -> None:
+            self.close_codes: list[int] = []
+            self.messages: list[str] = []
+
+        async def send_text(self, payload: str) -> None:
+            self.messages.append(payload)
+
+        async def close(self, *, code: int) -> None:
+            self.close_codes.append(code)
+
+    async def handler() -> None:
+        await asyncio.Event().wait()
+
+    authenticated = [True]
+    handler_task = asyncio.create_task(handler())
+    socket = Socket()
+    client = _WebSocketClient(
+        socket,
+        session_is_valid=lambda: authenticated[0],
+        handler_task=handler_task,
+    )
+    await client.send_lock.acquire()
+    send_task = asyncio.create_task(
+        _send_websocket_payload(client, "protected", timeout_seconds=1.0)
+    )
+    await asyncio.sleep(0)
+    authenticated[0] = False
+    client.send_lock.release()
+
+    try:
+        assert await send_task is False
+        await asyncio.sleep(0)
+        assert socket.messages == []
+        assert socket.close_codes == [4401]
+        assert handler_task.cancelled()
+    finally:
+        if not handler_task.done():
+            handler_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await handler_task
+
+
+async def test_broadcast_close_failure_is_redacted_and_cancels_handler(caplog) -> None:
+    import asyncio
+    import json
+    import logging
+
+    from autodj.server import _broadcast_and_prune, _WebSocketClient
+
+    class BrokenSocket:
+        async def send_text(self, _payload: str) -> None:
+            raise RuntimeError("private-send-secret")
+
+        async def close(self, *, code: int) -> None:
+            raise RuntimeError(f"private-close-secret-{code}")
+
+    async def handler() -> None:
+        await asyncio.Event().wait()
+
+    handler_task = asyncio.create_task(handler())
+    client = _WebSocketClient(BrokenSocket(), request_id="a" * 32, handler_task=handler_task)
+    clients = {client}
+    with caplog.at_level(logging.WARNING, logger="autodj.audit"):
+        dead = await _broadcast_and_prune(clients, asyncio.Lock(), "payload", timeout_seconds=0.02)
+        await asyncio.sleep(0)
+
+    assert dead == {client}
+    assert not clients
+    assert handler_task.cancelled()
+    records = [
+        json.loads(record.message) for record in caplog.records if record.name == "autodj.audit"
+    ]
+    assert records == [
+        {
+            "action": "broadcast",
+            "method": "WS",
+            "outcome": "rejected",
+            "request_id": "a" * 32,
+            "route": "/ws",
+            "status": 1013,
+        }
+    ]
+    assert "private-send-secret" not in caplog.text
+    assert "private-close-secret" not in caplog.text
+
+
+async def test_bridge_error_close_waits_for_broadcast_and_prunes_client() -> None:
+    import asyncio
+
+    from autodj.server import (
+        _close_and_prune_websocket,
+        _send_websocket_payload,
+        _WebSocketClient,
+    )
+
+    class OrderedSocket:
+        def __init__(self) -> None:
+            self.send_started = asyncio.Event()
+            self.release_send = asyncio.Event()
+            self.sending = False
+            self.close_codes: list[int] = []
+            self.protocol_errors: list[str] = []
+            self.events: list[str] = []
+
+        async def send_text(self, _payload: str) -> None:
+            self.sending = True
+            self.events.append("send-start")
+            self.send_started.set()
+            await self.release_send.wait()
+            self.events.append("send-end")
+            self.sending = False
+
+        async def close(self, *, code: int) -> None:
+            if self.sending:
+                self.protocol_errors.append("close overlapped send")
+                raise RuntimeError("concurrent ASGI send")
+            self.events.append("close")
+            self.close_codes.append(code)
+
+    websocket = OrderedSocket()
+    client = _WebSocketClient(websocket, request_id="b" * 32)
+    clients = {client}
+    clients_lock = asyncio.Lock()
+    broadcast = asyncio.create_task(_send_websocket_payload(client, "payload", timeout_seconds=1.0))
+    await websocket.send_started.wait()
+
+    bridge_close = asyncio.create_task(
+        _close_and_prune_websocket(
+            client,
+            clients,
+            clients_lock,
+            code=1011,
+            timeout_seconds=1.0,
+        )
+    )
+    await asyncio.sleep(0)
+    assert websocket.close_codes == []
+    assert client in clients
+
+    websocket.release_send.set()
+    assert await broadcast is True
+    assert await bridge_close is True
+
+    assert websocket.events == ["send-start", "send-end", "close"]
+    assert websocket.close_codes == [1011]
+    assert websocket.protocol_errors == []
+    assert client not in clients
+
+
+async def test_stale_broadcast_snapshot_skips_client_closed_by_bridge() -> None:
+    import asyncio
+    import contextlib
+
+    from autodj.server import (
+        _broadcast_clients,
+        _close_and_prune_websocket,
+        _WebSocketClient,
+    )
+
+    class ClosedSocket:
+        def __init__(self) -> None:
+            self.closed = False
+            self.send_calls = 0
+            self.close_codes: list[int] = []
+            self.protocol_errors: list[str] = []
+
+        async def send_text(self, _payload: str) -> None:
+            self.send_calls += 1
+            if self.closed:
+                self.protocol_errors.append("send after close")
+                raise RuntimeError("ASGI send after close")
+
+        async def close(self, *, code: int) -> None:
+            self.closed = True
+            self.close_codes.append(code)
+
+    async def handler() -> None:
+        await asyncio.Event().wait()
+
+    handler_task = asyncio.create_task(handler())
+    websocket = ClosedSocket()
+    client = _WebSocketClient(
+        websocket,
+        request_id="c" * 32,
+        handler_task=handler_task,
+    )
+    clients = {client}
+    clients_lock = asyncio.Lock()
+    stale_snapshot = tuple(clients)
+
+    assert await _close_and_prune_websocket(
+        client,
+        clients,
+        clients_lock,
+        code=1011,
+        timeout_seconds=1.0,
+    )
+    dead = await _broadcast_clients(stale_snapshot, "stale", timeout_seconds=1.0)
+
+    assert dead == {client}
+    assert client not in clients
+    assert websocket.close_codes == [1011]
+    assert websocket.send_calls == 0
+    assert websocket.protocol_errors == []
+    assert not handler_task.done()
+    handler_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await handler_task
+
+
 async def test_http_api_accessible_via_async_client() -> None:
     """Verify all REST endpoints respond correctly using the async ASGI transport."""
     from httpx2 import ASGITransport, AsyncClient
@@ -864,7 +1238,11 @@ async def test_http_api_accessible_via_async_client() -> None:
     bridge = PlayerBridge(player=player, sim=sim)
     app = create_app(bridge)
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+        headers={"Origin": "http://testserver"},
+    ) as ac:
         assert (await ac.get("/api/status")).status_code == 200
         assert (await ac.post("/api/skip")).status_code == 200
         assert (await ac.post("/api/pause")).status_code == 200
@@ -903,6 +1281,100 @@ class TestLifespan:
         with TestClient(app) as tc:
             data = tc.get("/api/status").json()
             assert "current_track" in data
+
+    def test_shutdown_joins_main_player_thread(self) -> None:
+        import threading
+
+        from fastapi.testclient import TestClient
+
+        player = _make_player_mock()
+        player._skip_event = threading.Event()
+        bridge = PlayerBridge(player=player, sim=_make_sim_mock())
+        allow_player_exit = threading.Event()
+        player_received_stop = threading.Event()
+
+        def player_loop() -> None:
+            assert player._skip_event.wait(2.0)
+            player_received_stop.set()
+            assert allow_player_exit.wait(2.0)
+
+        player_thread = threading.Thread(target=player_loop, name="test-player")
+        app = create_app(bridge, player_thread=player_thread)
+        player_thread.start()
+
+        client = TestClient(app)
+        client.__enter__()
+        shutdown_done = threading.Event()
+
+        def shut_down() -> None:
+            try:
+                client.__exit__(None, None, None)
+            finally:
+                shutdown_done.set()
+
+        shutdown_thread = threading.Thread(target=shut_down, name="test-shutdown")
+        shutdown_thread.start()
+        shutdown_returned_early = False
+        try:
+            assert player_received_stop.wait(1.0)
+            shutdown_returned_early = shutdown_done.wait(0.1)
+        finally:
+            allow_player_exit.set()
+            assert shutdown_done.wait(2.0)
+            shutdown_thread.join()
+
+        assert not shutdown_returned_early
+        assert not player_thread.is_alive()
+
+    def test_shutdown_timeout_keeps_cache_open_for_blocked_player_thread(
+        self, tmp_path, caplog
+    ) -> None:
+        import logging
+        import threading
+        import time
+
+        from fastapi.testclient import TestClient
+
+        from autodj.dj_meta import close_cache, get_cache
+
+        player = _make_player_mock()
+        player._skip_event = threading.Event()
+        bridge = PlayerBridge(player=player, sim=_make_sim_mock())
+        cache = get_cache(tmp_path)
+        assert cache is not None
+        allow_player_exit = threading.Event()
+
+        def player_loop() -> None:
+            assert player._skip_event.wait(2.0)
+            allow_player_exit.wait()
+
+        player_thread = threading.Thread(target=player_loop, name="blocked-test-player")
+        app = create_app(
+            bridge,
+            player_thread=player_thread,
+            shutdown_timeout_s=-1.0,
+        )
+        player_thread.start()
+        client = TestClient(app)
+
+        try:
+            client.__enter__()
+            caplog.set_level(logging.INFO, logger="autodj.server")
+            started = time.monotonic()
+            client.__exit__(None, None, None)
+            elapsed = time.monotonic() - started
+
+            assert elapsed < 1.0
+            assert cache._conn is not None
+            assert "did not stop within 0.00 seconds" in caplog.text
+            assert "active cache writers remain; DJ-meta cache left open" in caplog.text
+            assert "Server stopped cleanly." not in caplog.text
+        finally:
+            allow_player_exit.set()
+            player_thread.join(2.0)
+            close_cache()
+
+        assert not player_thread.is_alive()
 
 
 # ---------------------------------------------------------------------------
@@ -970,9 +1442,12 @@ class TestWebSocketMessages:
 
 
 class TestServeFunction:
-    def test_serve_starts_uvicorn(self) -> None:
+    def test_serve_starts_uvicorn(self, caplog) -> None:
         """serve() should call uvicorn.run with the FastAPI app."""
+        import logging
         from unittest.mock import MagicMock, patch
+
+        from fastapi.testclient import TestClient
 
         from autodj.server import serve
 
@@ -981,15 +1456,28 @@ class TestServeFunction:
         cfg_mock.playback.no_repeat_window = 50
         cfg_mock.playback.artist_repeat_window = 3
         cfg_mock.playback.crossfade_seconds = 3.0
+        cfg_mock.server = ServerConfig()
         sim = _make_sim_mock()
 
         with (
             patch("autodj.player.Player.run"),  # prevent audio loop from blocking
             patch("uvicorn.run") as mock_uvicorn,
+            caplog.at_level(logging.INFO, logger="autodj.server"),
         ):
             serve(cfg=cfg_mock, sim=sim, seed_entry=None)
 
         mock_uvicorn.assert_called_once()
+        assert mock_uvicorn.call_args.kwargs["host"] == "127.0.0.1"
+        assert mock_uvicorn.call_args.kwargs["port"] == 8080
+        assert "http://127.0.0.1:8080" in caplog.text
+        assert "http://localhost:8080" not in caplog.text
+        app = mock_uvicorn.call_args.args[0]
+        client = TestClient(
+            app,
+            base_url="http://127.0.0.1:8080",
+            headers={"Host": "127.0.0.1", "Origin": "http://127.0.0.1:8080"},
+        )
+        assert client.get("/api/version").status_code == 200
 
     def test_serve_starts_player_thread(self) -> None:
         """serve() launches a daemon Player thread before starting uvicorn."""
@@ -1002,6 +1490,7 @@ class TestServeFunction:
         cfg_mock.playback.no_repeat_window = 50
         cfg_mock.playback.artist_repeat_window = 3
         cfg_mock.playback.crossfade_seconds = 3.0
+        cfg_mock.server = ServerConfig()
         sim = _make_sim_mock()
 
         started = threading.Event()
@@ -1017,6 +1506,236 @@ class TestServeFunction:
 
         started.wait(timeout=2.0)
         assert started.is_set(), "Player thread should have started"
+
+    def test_serve_uses_server_config_host_and_port_by_default(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from autodj.server import serve
+
+        cfg = MagicMock()
+        cfg.server = ServerConfig(host="127.0.0.2", port=9090)
+        cfg.playback.no_repeat_window = 50
+        cfg.playback.artist_repeat_window = 3
+        cfg.playback.crossfade_seconds = 3.0
+        sim = _make_sim_mock()
+
+        with (
+            patch("autodj.player.Player.run"),
+            patch("uvicorn.run") as mock_uvicorn,
+        ):
+            serve(cfg=cfg, sim=sim, seed_entry=None)
+
+        assert mock_uvicorn.call_args.kwargs["host"] == "127.0.0.2"
+        assert mock_uvicorn.call_args.kwargs["port"] == 9090
+        assert cfg.server.effective_allowed_hosts() == ["127.0.0.2"]
+        assert cfg.server.effective_allowed_origins() == ["http://127.0.0.2:9090"]
+
+    def test_serve_rejects_unsafe_override_before_player_construction(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from autodj.server import serve
+
+        cfg = MagicMock()
+        cfg.server = ServerConfig()
+        original_server = cfg.server
+        sim = _make_sim_mock()
+
+        with (
+            patch("autodj.player.Player") as player_class,
+            patch("uvicorn.run") as mock_uvicorn,
+            pytest.raises(ValueError, match="wildcard binding requires"),
+        ):
+            serve(
+                cfg=cfg,
+                sim=sim,
+                seed_entry=None,
+                host="0.0.0.0",
+            )
+
+        player_class.assert_not_called()
+        mock_uvicorn.assert_not_called()
+        assert cfg.server is original_server
+        assert cfg.server.host == "127.0.0.1"
+        assert cfg.server.port == 8080
+        assert cfg.server.access_token is None
+
+    def test_serve_rejects_mutated_weak_token_without_echoing_or_player(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from autodj.server import serve
+
+        weak = "do-not-print-me"
+        cfg = MagicMock()
+        cfg.server = ServerConfig()
+        cfg.server.host = "192.168.1.10"
+        cfg.server.access_token = weak
+        cfg.server.allowed_hosts = ["radio.local"]
+        cfg.server.allowed_origins = ["http://radio.local:8080"]
+        original_server = cfg.server
+
+        with (
+            patch("autodj.player.Player") as player_class,
+            patch("uvicorn.run") as mock_uvicorn,
+            pytest.raises(ValueError) as raised,
+        ):
+            serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None)
+
+        assert weak not in str(raised.value)
+        assert cfg.server is original_server
+        assert cfg.server.host == "192.168.1.10"
+        assert cfg.server.port == 8080
+        assert cfg.server.access_token == weak
+        player_class.assert_not_called()
+        mock_uvicorn.assert_not_called()
+
+    def test_serve_allows_specific_authenticated_lan_without_policy_lists(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from autodj.server import serve
+
+        cfg = MagicMock()
+        cfg.server = ServerConfig(host="192.168.1.10", access_token="s" * 32)
+        cfg.playback.no_repeat_window = 50
+        cfg.playback.artist_repeat_window = 3
+        cfg.playback.crossfade_seconds = 3.0
+
+        with (
+            patch("autodj.player.Player.run"),
+            patch("uvicorn.run") as mock_uvicorn,
+        ):
+            serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None)
+
+        assert cfg.server.effective_allowed_hosts() == ["192.168.1.10"]
+        assert cfg.server.effective_allowed_origins() == ["http://192.168.1.10:8080"]
+        assert mock_uvicorn.call_args.kwargs["host"] == "192.168.1.10"
+
+    @pytest.mark.parametrize(
+        ("tls", "origin"),
+        [
+            (False, "http://radio.local:8080"),
+            (True, "https://radio.local:8443"),
+        ],
+    )
+    def test_wildcard_serve_advertises_usable_allowed_origin(
+        self,
+        caplog,
+        tls: bool,
+        origin: str,
+    ) -> None:
+        import logging
+        from unittest.mock import MagicMock, patch
+
+        from fastapi.testclient import TestClient
+
+        from autodj.server import serve
+
+        port = 8443 if tls else 8080
+        cfg = MagicMock()
+        cfg.server = ServerConfig(
+            host="0.0.0.0",
+            port=port,
+            access_token="s" * 32 if tls else None,
+            insecure_lan=not tls,
+            allowed_hosts=["radio.local"],
+            allowed_origins=[origin],
+        )
+        cfg.playback.no_repeat_window = 50
+        cfg.playback.artist_repeat_window = 3
+        cfg.playback.crossfade_seconds = 3.0
+        kwargs = {"ssl_certfile": "radio.pem", "ssl_keyfile": "radio-key.pem"} if tls else {}
+
+        with (
+            patch("autodj.player.Player.run"),
+            patch("uvicorn.run") as mock_uvicorn,
+            caplog.at_level(logging.INFO, logger="autodj.server"),
+        ):
+            serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None, **kwargs)
+
+        assert f"AutoDJ server ready: {origin}" in caplog.text
+        assert "server ready: http://0.0.0.0" not in caplog.text
+        assert "server ready: https://0.0.0.0" not in caplog.text
+        app = mock_uvicorn.call_args.args[0]
+        client = TestClient(
+            app,
+            base_url=origin,
+            headers={"Host": "radio.local", "Origin": origin},
+        )
+        if tls:
+            assert client.post("/api/login", json={"token": "s" * 32}).status_code == 200
+            assert client.post("/api/logout").status_code == 200
+        else:
+            assert client.get("/api/auth/status").status_code == 200
+            assert client.post("/api/login", json={"token": "unused"}).status_code == 401
+
+    @pytest.mark.parametrize(
+        ("origin", "tls_kwargs"),
+        [
+            ("http://other.local:8080", {}),
+            (
+                "http://radio.local:8080",
+                {"ssl_certfile": "radio.pem", "ssl_keyfile": "radio-key.pem"},
+            ),
+            ("http://radio.local:9090", {}),
+            (
+                "https://radio.local:9090",
+                {"ssl_certfile": "radio.pem", "ssl_keyfile": "radio-key.pem"},
+            ),
+        ],
+    )
+    def test_serve_rejects_unusable_advertised_policy_before_side_effects(
+        self,
+        origin: str,
+        tls_kwargs: dict[str, str],
+    ) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from autodj.server import serve
+
+        cfg = MagicMock()
+        cfg.server = ServerConfig(
+            host="0.0.0.0",
+            access_token="s" * 32,
+            allowed_hosts=["radio.local"],
+            allowed_origins=[origin],
+        )
+        original_server = cfg.server
+
+        with (
+            patch("autodj.player.Player") as player_class,
+            patch("uvicorn.run") as mock_uvicorn,
+            pytest.raises(ValueError, match="allowed origin"),
+        ):
+            serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None, **tls_kwargs)
+
+        player_class.assert_not_called()
+        mock_uvicorn.assert_not_called()
+        assert cfg.server is original_server
+
+    @pytest.mark.parametrize(
+        ("port", "secure_cookie", "origin"),
+        [
+            (80, False, "http://radio.local"),
+            (443, True, "https://radio.local"),
+        ],
+    )
+    def test_advertised_origin_accepts_matching_default_port(
+        self, port: int, secure_cookie: bool, origin: str
+    ) -> None:
+        from autodj.security import SecurityPolicy
+        from autodj.server import _advertised_server_origin
+
+        policy = SecurityPolicy(
+            ServerConfig(
+                host="0.0.0.0",
+                port=port,
+                access_token="s" * 32,
+                allowed_hosts=["radio.local"],
+                allowed_origins=[origin],
+            ),
+            secure_cookie=secure_cookie,
+        )
+
+        assert _advertised_server_origin(policy) == origin
 
 
 # ---------------------------------------------------------------------------
@@ -1371,6 +2090,19 @@ class TestLibraryEndpoints:
             {"time_s": 0.5, "text": "hello"},
             {"time_s": 1.0, "text": "world"},
         ]
+
+    def test_lyrics_for_reads_and_serialises_the_requested_path(self, bridge) -> None:
+        from autodj.audio_meta import LyricLine
+
+        bridge.player._read_lyrics_for_path.return_value = (
+            [LyricLine(time_s=2.5, text="requested")],
+            "ignored plain text",
+        )
+
+        result = bridge.lyrics_for("Z:/Music/requested.flac")
+
+        assert result == [{"time_s": 2.5, "text": "requested"}]
+        bridge.player._read_lyrics_for_path.assert_called_once_with("Z:/Music/requested.flac")
 
 
 # ---------------------------------------------------------------------------
@@ -1998,10 +2730,168 @@ class TestMisc:
         assert picked.path in calls
         assert nxt2.path in calls
 
-    def test_lyrics_endpoint_returns_list(self, client) -> None:
-        data = client.get("/api/lyrics").json()
-        assert "lyrics" in data
-        assert isinstance(data["lyrics"], list)
+    def test_lyrics_endpoint_reads_each_requested_index_path(self, bridge) -> None:
+        from fastapi.testclient import TestClient
+
+        from autodj.audio_meta import LyricLine
+
+        first, second = bridge.sim.entries[:2]
+        bridge.player._read_lyrics_for_path.side_effect = [
+            ([LyricLine(time_s=1.0, text="first")], ""),
+            ([LyricLine(time_s=2.0, text="second")], ""),
+        ]
+        tc = TestClient(create_app(bridge))
+
+        first_data = tc.get("/api/lyrics", params={"path": first.path}).json()
+        second_data = tc.get("/api/lyrics", params={"path": second.path}).json()
+
+        assert first_data == {
+            "path": first.path,
+            "lyrics": [{"time_s": 1.0, "text": "first"}],
+        }
+        assert second_data == {
+            "path": second.path,
+            "lyrics": [{"time_s": 2.0, "text": "second"}],
+        }
+        assert bridge.player._read_lyrics_for_path.call_args_list == [
+            ((first.path,), {}),
+            ((second.path,), {}),
+        ]
+
+    def test_lyrics_endpoint_rejects_an_unknown_path_without_reading_it(self, bridge) -> None:
+        from fastapi.testclient import TestClient
+
+        tc = TestClient(create_app(bridge))
+
+        response = tc.get("/api/lyrics", params={"path": "Z:/not-indexed.flac"})
+
+        assert response.status_code == 404
+        bridge.player._read_lyrics_for_path.assert_not_called()
+
+    def test_lyrics_lookup_runs_off_the_event_loop(self, bridge, monkeypatch) -> None:
+        from fastapi.testclient import TestClient
+
+        path = bridge.sim.entries[0].path
+        called: list[str] = []
+
+        def read_lyrics(requested_path: str) -> list[dict]:
+            called.append(requested_path)
+            return []
+
+        async def fake_to_thread(function, *args, **kwargs):
+            called.append("to_thread")
+            return function(*args, **kwargs)
+
+        bridge.lyrics_for = read_lyrics  # type: ignore[assignment]
+        monkeypatch.setattr("autodj.server.asyncio.to_thread", fake_to_thread)
+
+        response = TestClient(create_app(bridge)).get("/api/lyrics", params={"path": path})
+
+        assert response.status_code == 200
+        assert called[-2:] == ["to_thread", path]
+
+    def test_lyrics_endpoint_rejects_result_after_index_generation_swap(self, bridge) -> None:
+        from fastapi.testclient import TestClient
+
+        from autodj.index_manifest import IndexSnapshotToken
+
+        path = bridge.sim.entries[0].path
+        authorized = IndexSnapshotToken(1, 10)
+        replacement = IndexSnapshotToken(2, 20)
+        bridge.sim.snapshot_token = authorized
+
+        def swap_index_generation(_path: str) -> list[dict]:
+            bridge.sim.snapshot_token = replacement
+            bridge.sim.entries = bridge.sim.entries[1:]
+            return [{"time": 0.0, "text": "stale secret"}]
+
+        bridge.lyrics_for = swap_index_generation  # type: ignore[assignment]
+
+        response = TestClient(create_app(bridge)).get("/api/lyrics", params={"path": path})
+
+        assert response.status_code == 409
+        assert "stale secret" not in response.text
+
+    async def test_cancelled_lyrics_waiter_never_starts_a_thread_read(self, bridge) -> None:
+        import contextlib
+
+        from httpx2 import ASGITransport, AsyncClient
+
+        first, second = (entry.path for entry in bridge.sim.entries[:2])
+        first_started = threading.Event()
+        release_first = threading.Event()
+        calls: list[str] = []
+
+        def slow_lyrics(path: str) -> list[dict]:
+            calls.append(path)
+            if path == first:
+                first_started.set()
+                assert release_first.wait(2.0)
+            return []
+
+        bridge.lyrics_for = slow_lyrics  # type: ignore[assignment]
+        app = create_app(bridge)
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            active = asyncio.create_task(client.get("/api/lyrics", params={"path": first}))
+            assert await asyncio.to_thread(first_started.wait, 1.0)
+            queued = asyncio.create_task(client.get("/api/lyrics", params={"path": second}))
+            try:
+                await asyncio.sleep(0.05)
+                queued.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await queued
+            finally:
+                release_first.set()
+            assert (await active).status_code == 200
+
+        assert calls == [first]
+
+    async def test_cancelled_active_lyrics_read_holds_capacity_until_worker_finishes(
+        self, bridge
+    ) -> None:
+        import contextlib
+
+        from httpx2 import ASGITransport, AsyncClient
+
+        first, second = (entry.path for entry in bridge.sim.entries[:2])
+        first_started = threading.Event()
+        release_first = threading.Event()
+        second_started = threading.Event()
+        calls: list[str] = []
+
+        def slow_lyrics(path: str) -> list[dict]:
+            calls.append(path)
+            if path == first:
+                first_started.set()
+                assert release_first.wait(2.0)
+            else:
+                second_started.set()
+            return []
+
+        bridge.lyrics_for = slow_lyrics  # type: ignore[assignment]
+        app = create_app(bridge)
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            active = asyncio.create_task(client.get("/api/lyrics", params={"path": first}))
+            assert await asyncio.to_thread(first_started.wait, 1.0)
+            active.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await active
+
+            following = asyncio.create_task(client.get("/api/lyrics", params={"path": second}))
+            try:
+                await asyncio.sleep(0.05)
+                assert second_started.is_set() is False
+            finally:
+                release_first.set()
+
+            assert await asyncio.to_thread(second_started.wait, 1.0)
+            assert (await following).status_code == 200
+
+        assert calls == [first, second]
 
 
 # ---------------------------------------------------------------------------
@@ -2031,41 +2921,13 @@ class TestAudioEndpoint:
         # Inject as a known entry
         e = _make_entry(99)
         e.path = str(fake_mp3)
-        bridge.sim.entries.append(e)
+        _register_index_entry(bridge, e)
         tc = TestClient(create_app(bridge))
         resp = tc.get(f"/api/audio?path={fake_mp3}")
         assert resp.status_code == 200
         assert resp.headers["content-type"] == "audio/mpeg"
         assert resp.headers["accept-ranges"] == "bytes"
         assert int(resp.headers["content-length"]) == fake_mp3.stat().st_size
-
-    def test_audio_full_stream_file_io_runs_off_event_loop(
-        self, tmp_path, bridge, monkeypatch
-    ) -> None:
-        from fastapi.testclient import TestClient
-
-        fake_mp3 = tmp_path / "fake.mp3"
-        fake_mp3.write_bytes(b"\xff\xfb" + b"\x00" * 4096)
-        e = _make_entry(199)
-        e.path = str(fake_mp3)
-        bridge.sim.entries.append(e)
-        calls: list[str] = []
-
-        async def fake_to_thread(func, /, *args, **kwargs):
-            calls.append(getattr(func, "__name__", type(func).__name__))
-            return func(*args, **kwargs)
-
-        monkeypatch.setattr("autodj.server.asyncio.to_thread", fake_to_thread)
-        tc = TestClient(create_app(bridge))
-
-        resp = tc.get(f"/api/audio?path={fake_mp3}")
-
-        assert resp.status_code == 200
-        assert resp.content.startswith(b"\xff\xfb")
-        assert "_audio_file_info" in calls
-        assert "open" in calls
-        assert "read" in calls
-        assert "close" in calls
 
     def test_audio_range_request(self, tmp_path, bridge) -> None:
         from fastapi.testclient import TestClient
@@ -2074,41 +2936,12 @@ class TestAudioEndpoint:
         fake.write_bytes(b"\x00" * 10000)
         e = _make_entry(123)
         e.path = str(fake)
-        bridge.sim.entries.append(e)
+        _register_index_entry(bridge, e)
         tc = TestClient(create_app(bridge))
         resp = tc.get(f"/api/audio?path={fake}", headers={"Range": "bytes=100-199"})
         assert resp.status_code == 206
         assert resp.headers["content-range"] == "bytes 100-199/10000"
         assert int(resp.headers["content-length"]) == 100
-
-    def test_audio_range_seek_and_read_run_off_event_loop(
-        self, tmp_path, bridge, monkeypatch
-    ) -> None:
-        from fastapi.testclient import TestClient
-
-        fake = tmp_path / "song.flac"
-        fake.write_bytes(bytes(range(256)) * 4)
-        e = _make_entry(200)
-        e.path = str(fake)
-        bridge.sim.entries.append(e)
-        calls: list[str] = []
-
-        async def fake_to_thread(func, /, *args, **kwargs):
-            calls.append(getattr(func, "__name__", type(func).__name__))
-            return func(*args, **kwargs)
-
-        monkeypatch.setattr("autodj.server.asyncio.to_thread", fake_to_thread)
-        tc = TestClient(create_app(bridge))
-
-        resp = tc.get(f"/api/audio?path={fake}", headers={"Range": "bytes=10-19"})
-
-        assert resp.status_code == 206
-        assert resp.content == bytes(range(10, 20))
-        assert "_audio_file_info" in calls
-        assert "open" in calls
-        assert "seek" in calls
-        assert "read" in calls
-        assert "close" in calls
 
     def test_audio_invalid_range_416(self, tmp_path, bridge) -> None:
         from fastapi.testclient import TestClient
@@ -2117,7 +2950,7 @@ class TestAudioEndpoint:
         fake.write_bytes(b"\x00" * 100)
         e = _make_entry(124)
         e.path = str(fake)
-        bridge.sim.entries.append(e)
+        _register_index_entry(bridge, e)
         tc = TestClient(create_app(bridge))
         resp = tc.get(f"/api/audio?path={fake}", headers={"Range": "bytes=999999-"})
         assert resp.status_code == 416
@@ -2129,10 +2962,1006 @@ class TestAudioEndpoint:
         fake.write_bytes(b"\x00" * 100)
         e = _make_entry(125)
         e.path = str(fake)
-        bridge.sim.entries.append(e)
+        _register_index_entry(bridge, e)
         tc = TestClient(create_app(bridge))
         resp = tc.get(f"/api/audio?path={fake}", headers={"Range": "kilobytes=0-50"})
         assert resp.status_code == 416
+
+    def test_audio_suffix_range_returns_final_bytes(self, tmp_path, bridge) -> None:
+        from fastapi.testclient import TestClient
+
+        audio = tmp_path / "suffix.flac"
+        audio.write_bytes(bytes(range(100)))
+        entry = _make_entry(126)
+        entry.path = str(audio)
+        _register_index_entry(bridge, entry)
+
+        response = TestClient(create_app(bridge)).get(
+            f"/api/audio?path={audio}",
+            headers={"Range": "bytes=-10"},
+        )
+
+        assert response.status_code == 206
+        assert response.headers["content-range"] == "bytes 90-99/100"
+        assert response.headers["accept-ranges"] == "bytes"
+        assert response.headers["content-length"] == "10"
+        assert response.content == bytes(range(90, 100))
+
+    @pytest.mark.parametrize(
+        "header",
+        ["bytes=100-", "bytes=0-1,4-5", "bytes=+1-5", "bytes=1- 5"],
+    )
+    def test_audio_unsatisfiable_or_multi_range_has_size_header(
+        self, tmp_path, bridge, header
+    ) -> None:
+        from fastapi.testclient import TestClient
+
+        audio = tmp_path / "range.flac"
+        audio.write_bytes(b"x" * 100)
+        entry = _make_entry(127)
+        entry.path = str(audio)
+        _register_index_entry(bridge, entry)
+
+        response = TestClient(create_app(bridge)).get(
+            f"/api/audio?path={audio}", headers={"Range": header}
+        )
+
+        assert response.status_code == 416
+        assert response.headers["accept-ranges"] == "bytes"
+        assert response.headers["content-range"] == "bytes */100"
+
+    def test_audio_range_on_empty_file_is_unsatisfiable(self, tmp_path, bridge) -> None:
+        from fastapi.testclient import TestClient
+
+        audio = tmp_path / "empty.flac"
+        audio.write_bytes(b"")
+        entry = _make_entry(128)
+        entry.path = str(audio)
+        _register_index_entry(bridge, entry)
+
+        response = TestClient(create_app(bridge)).get(
+            f"/api/audio?path={audio}", headers={"Range": "bytes=0-"}
+        )
+
+        assert response.status_code == 416
+        assert response.headers["content-range"] == "bytes */0"
+
+    def test_missing_ffmpeg_falls_back_before_alac_headers(
+        self, tmp_path, bridge, monkeypatch
+    ) -> None:
+        from fastapi.testclient import TestClient
+
+        audio = tmp_path / "lossless.m4a"
+        audio.write_bytes(b"raw-alac-fixture")
+        entry = _make_entry(129)
+        entry.path = str(audio)
+        _register_index_entry(bridge, entry)
+        monkeypatch.setattr("autodj.server._is_alac", lambda *_args: True)
+        monkeypatch.setattr("autodj.server.shutil.which", lambda _name: None)
+
+        response = TestClient(create_app(bridge)).get(f"/api/audio?path={audio}")
+
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "audio/mp4"
+        assert response.headers["accept-ranges"] == "bytes"
+        assert response.headers["content-length"] == str(len(b"raw-alac-fixture"))
+        assert response.content == b"raw-alac-fixture"
+
+    def test_invalid_mp4_metadata_falls_back_to_source_bytes(self, tmp_path, bridge) -> None:
+        from fastapi.testclient import TestClient
+
+        audio = tmp_path / "invalid.m4a"
+        audio.write_bytes(b"not-an-mp4")
+        entry = _make_entry(130)
+        entry.path = str(audio)
+        _register_index_entry(bridge, entry)
+
+        response = TestClient(create_app(bridge)).get(f"/api/audio?path={audio}")
+
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "audio/mp4"
+        assert response.content == b"not-an-mp4"
+
+    def test_alac_transcode_ignores_source_range(self, tmp_path, bridge, monkeypatch) -> None:
+        from fastapi.testclient import TestClient
+
+        audio = tmp_path / "lossless.m4a"
+        audio.write_bytes(b"raw-alac-fixture")
+        entry = _make_entry(130)
+        entry.path = str(audio)
+        _register_index_entry(bridge, entry)
+        monkeypatch.setattr("autodj.server._is_alac", lambda *_args: True)
+        monkeypatch.setattr("autodj.server.shutil.which", lambda _name: "ffmpeg")
+        monkeypatch.setattr(
+            "autodj.server._start_alac_transcoder",
+            AsyncMock(
+                return_value=SimpleNamespace(
+                    stdout=SimpleNamespace(read=AsyncMock(return_value=b"prefetched")),
+                    kill=MagicMock(),
+                    wait=AsyncMock(return_value=0),
+                )
+            ),
+        )
+
+        async def transcode(_process, _prefetched):
+            yield b"complete-mp3"
+
+        monkeypatch.setattr("autodj.server._transcode_alac_to_mp3", transcode)
+
+        response = TestClient(create_app(bridge)).get(
+            f"/api/audio?path={audio}", headers={"Range": "bytes=1-2"}
+        )
+
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "audio/mpeg"
+        assert response.headers["accept-ranges"] == "none"
+        assert "content-range" not in response.headers
+        assert response.content == b"complete-mp3"
+
+    @pytest.mark.parametrize(
+        ("range_header", "status", "content_range", "content_length"),
+        [
+            (None, 200, None, "100"),
+            ("bytes=10-19", 206, "bytes 10-19/100", "10"),
+            ("bytes=100-", 416, "bytes */100", "0"),
+        ],
+    )
+    def test_audio_head_returns_body_free_range_metadata(
+        self,
+        tmp_path,
+        bridge,
+        range_header,
+        status,
+        content_range,
+        content_length,
+    ) -> None:
+        from fastapi.testclient import TestClient
+
+        audio = tmp_path / "head.flac"
+        audio.write_bytes(bytes(range(100)))
+        entry = _make_entry(135)
+        entry.path = str(audio)
+        _register_index_entry(bridge, entry)
+        headers = {} if range_header is None else {"Range": range_header}
+
+        response = TestClient(create_app(bridge)).head(f"/api/audio?path={audio}", headers=headers)
+
+        assert response.status_code == status
+        assert response.content == b""
+        assert response.headers["accept-ranges"] == "bytes"
+        assert response.headers.get("content-range") == content_range
+        assert response.headers["content-length"] == content_length
+
+    def test_audio_head_never_reads_body(self, tmp_path, bridge, monkeypatch) -> None:
+        from fastapi.testclient import TestClient
+
+        audio = tmp_path / "head.flac"
+        audio.write_bytes(b"metadata")
+        entry = _make_entry(136)
+        entry.path = str(audio)
+        _register_index_entry(bridge, entry)
+        app = create_app(bridge)
+        real_open = Path.open
+
+        class NoReadFile:
+            def __init__(self, handle):
+                self.handle = handle
+
+            def __getattr__(self, name):
+                return getattr(self.handle, name)
+
+            def read(self, _size=-1):
+                raise AssertionError("HEAD consumed audio body")
+
+        def no_read_open(path, *args, **kwargs):
+            handle = real_open(path, *args, **kwargs)
+            return NoReadFile(handle) if path == audio else handle
+
+        monkeypatch.setattr(Path, "open", no_read_open)
+
+        response = TestClient(app).head(f"/api/audio?path={audio}")
+
+        assert response.status_code == 200
+        assert response.content == b""
+
+    def test_alac_head_reports_transcode_policy_without_spawning(
+        self, tmp_path, bridge, monkeypatch
+    ) -> None:
+        from fastapi.testclient import TestClient
+
+        audio = tmp_path / "head.m4a"
+        audio.write_bytes(b"alac")
+        entry = _make_entry(137)
+        entry.path = str(audio)
+        _register_index_entry(bridge, entry)
+        monkeypatch.setattr("autodj.server._is_alac", lambda *_args: True)
+        monkeypatch.setattr("autodj.server.shutil.which", lambda _name: "X:/ffmpeg.exe")
+        monkeypatch.setattr(
+            asyncio,
+            "create_subprocess_exec",
+            AsyncMock(side_effect=AssertionError("HEAD spawned ffmpeg")),
+        )
+
+        response = TestClient(create_app(bridge)).head(f"/api/audio?path={audio}")
+
+        assert response.status_code == 200
+        assert response.content == b""
+        assert response.headers["content-type"] == "audio/mpeg"
+        assert response.headers["accept-ranges"] == "none"
+        assert "content-range" not in response.headers
+        assert "content-length" not in response.headers
+
+
+async def test_audio_read_runs_off_event_loop(tmp_path, bridge, monkeypatch) -> None:
+    from httpx2 import ASGITransport, AsyncClient
+
+    audio = tmp_path / "slow.flac"
+    audio.write_bytes(b"x" * (512 * 1024))
+    entry = _make_entry(131)
+    entry.path = str(audio)
+    _register_index_entry(bridge, entry)
+    app = create_app(bridge)
+    opened = threading.Event()
+    release = threading.Event()
+    real_open = Path.open
+
+    class SlowFile:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            self.handle.close()
+
+        def __getattr__(self, name):
+            return getattr(self.handle, name)
+
+        def read(self, size=-1):
+            opened.set()
+            assert release.wait(2.0)
+            return self.handle.read(size)
+
+    def slow_open(path, *args, **kwargs):
+        return SlowFile(real_open(path, *args, **kwargs))
+
+    monkeypatch.setattr(Path, "open", slow_open)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        request_task = asyncio.create_task(client.get(f"/api/audio?path={audio}"))
+        try:
+            opened_in_time = await asyncio.to_thread(opened.wait, 1.0)
+            if opened_in_time:
+                loop_was_responsive = asyncio.Event()
+                asyncio.get_running_loop().call_soon(loop_was_responsive.set)
+                await asyncio.wait_for(loop_was_responsive.wait(), timeout=0.2)
+        finally:
+            release.set()
+        response = await request_task
+
+    assert opened_in_time is True
+    assert response.status_code == 200
+    assert len(response.content) == 512 * 1024
+
+
+async def test_audio_file_checks_run_off_event_loop(tmp_path, bridge, monkeypatch) -> None:
+    from httpx2 import ASGITransport, AsyncClient
+
+    audio = tmp_path / "check.flac"
+    audio.write_bytes(b"x")
+    entry = _make_entry(132)
+    entry.path = str(audio)
+    _register_index_entry(bridge, entry)
+    entered = threading.Event()
+    release = threading.Event()
+    real_fstat = os.fstat
+
+    def slow_fstat(fd):
+        entered.set()
+        assert release.wait(2.0)
+        return real_fstat(fd)
+
+    monkeypatch.setattr(os, "fstat", slow_fstat)
+    app = create_app(bridge)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        request_task = asyncio.create_task(client.get(f"/api/audio?path={audio}"))
+        try:
+            entered_in_time = await asyncio.to_thread(entered.wait, 1.0)
+            if entered_in_time:
+                loop_was_responsive = asyncio.Event()
+                asyncio.get_running_loop().call_soon(loop_was_responsive.set)
+                await asyncio.wait_for(loop_was_responsive.wait(), timeout=0.2)
+        finally:
+            release.set()
+        response = await request_task
+
+    assert entered_in_time is True
+    assert response.status_code == 200
+
+
+def test_audio_stream_uses_handle_opened_before_metadata_snapshot(
+    tmp_path, bridge, monkeypatch
+) -> None:
+    from fastapi.testclient import TestClient
+
+    audio = tmp_path / "authorized.flac"
+    replacement = tmp_path / "replacement.flac"
+    audio.write_bytes(b"original")
+    replacement.write_bytes(b"replaced")
+    entry = _make_entry(140)
+    entry.path = str(audio)
+    _register_index_entry(bridge, entry)
+    app = create_app(bridge)
+    metadata_taken = False
+    target_open_count = 0
+    real_open = Path.open
+    real_stat = Path.stat
+    real_fstat = os.fstat
+
+    def marking_stat(path, *args, **kwargs):
+        nonlocal metadata_taken
+        result = real_stat(path, *args, **kwargs)
+        if path == audio:
+            metadata_taken = True
+        return result
+
+    def marking_fstat(fd):
+        nonlocal metadata_taken
+        result = real_fstat(fd)
+        metadata_taken = True
+        return result
+
+    def routed_open(path, *args, **kwargs):
+        nonlocal target_open_count
+        if path == audio:
+            target_open_count += 1
+            source = replacement if metadata_taken else audio
+            return real_open(source, *args, **kwargs)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", marking_stat)
+    monkeypatch.setattr(os, "fstat", marking_fstat)
+    monkeypatch.setattr(Path, "open", routed_open)
+
+    response = TestClient(app).get(f"/api/audio?path={audio}")
+
+    assert response.status_code == 200
+    assert response.headers["content-length"] == "8"
+    assert response.content == b"original"
+    assert target_open_count == 1
+
+
+@pytest.mark.parametrize("mutation", ["grow", "truncate"])
+def test_audio_stream_is_bounded_by_same_handle_snapshot(
+    tmp_path, bridge, monkeypatch, mutation
+) -> None:
+    from fastapi.testclient import TestClient
+
+    audio = tmp_path / "changing.flac"
+    audio.write_bytes(b"abcd")
+    entry = _make_entry(141)
+    entry.path = str(audio)
+    _register_index_entry(bridge, entry)
+    app = create_app(bridge)
+    mutated = False
+    real_open = Path.open
+    real_stat = Path.stat
+    real_fstat = os.fstat
+    closed = threading.Event()
+
+    class TrackedFile:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __getattr__(self, name):
+            return getattr(self.handle, name)
+
+        def close(self):
+            self.handle.close()
+            closed.set()
+
+    def tracked_open(path, *args, **kwargs):
+        handle = real_open(path, *args, **kwargs)
+        if path == audio and args == ("rb",):
+            return TrackedFile(handle)
+        return handle
+
+    def mutate_once() -> None:
+        nonlocal mutated
+        if mutated:
+            return
+        mutated = True
+        mode = "ab" if mutation == "grow" else "r+b"
+        with real_open(audio, mode) as handle:
+            if mutation == "grow":
+                handle.write(b"efgh")
+            else:
+                handle.truncate(2)
+
+    def mutating_stat(path, *args, **kwargs):
+        result = real_stat(path, *args, **kwargs)
+        if path == audio:
+            mutate_once()
+        return result
+
+    def mutating_fstat(fd):
+        result = real_fstat(fd)
+        mutate_once()
+        return result
+
+    monkeypatch.setattr(Path, "stat", mutating_stat)
+    monkeypatch.setattr(os, "fstat", mutating_fstat)
+    monkeypatch.setattr(Path, "open", tracked_open)
+
+    if mutation == "truncate":
+        with pytest.raises(OSError, match="truncated"):
+            TestClient(app).get(f"/api/audio?path={audio}")
+    else:
+        response = TestClient(app).get(f"/api/audio?path={audio}")
+
+        assert response.status_code == 200
+        assert response.headers["content-length"] == "4"
+        assert response.content == b"abcd"
+    assert closed.wait(0.5) is True
+
+
+@pytest.mark.parametrize(
+    ("method", "range_header", "status"),
+    [("GET", "bytes=100-", 416), ("HEAD", None, 200)],
+)
+def test_audio_preopened_handle_closes_without_body(
+    tmp_path, bridge, monkeypatch, method, range_header, status
+) -> None:
+    from fastapi.testclient import TestClient
+
+    audio = tmp_path / "close.flac"
+    audio.write_bytes(b"body")
+    entry = _make_entry(142)
+    entry.path = str(audio)
+    _register_index_entry(bridge, entry)
+    app = create_app(bridge)
+    real_open = Path.open
+    closed = threading.Event()
+
+    class TrackedFile:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __getattr__(self, name):
+            return getattr(self.handle, name)
+
+        def close(self):
+            self.handle.close()
+            closed.set()
+
+    def tracked_open(path, *args, **kwargs):
+        handle = real_open(path, *args, **kwargs)
+        return TrackedFile(handle) if path == audio else handle
+
+    monkeypatch.setattr(Path, "open", tracked_open)
+    headers = {} if range_header is None else {"Range": range_header}
+
+    response = TestClient(app).request(method, f"/api/audio?path={audio}", headers=headers)
+
+    assert response.status_code == status
+    assert closed.wait(0.5) is True
+
+
+async def test_alac_process_spawns_with_resolved_path_before_headers(
+    tmp_path, bridge, monkeypatch
+) -> None:
+    audio = tmp_path / "preflight.m4a"
+    audio.write_bytes(b"alac")
+    entry = _make_entry(138)
+    entry.path = str(audio)
+    _register_index_entry(bridge, entry)
+    events: list[tuple[str, object]] = []
+    chunks = iter((b"mp3", b""))
+
+    async def read_chunk(_size=-1):
+        events.append(("read", _size))
+        return next(chunks)
+
+    process = SimpleNamespace(
+        stdout=SimpleNamespace(read=read_chunk),
+        kill=MagicMock(),
+        wait=AsyncMock(return_value=0),
+    )
+
+    async def spawn(*args, **_kwargs):
+        events.append(("spawn", args[0]))
+        return process
+
+    monkeypatch.setattr("autodj.server._is_alac", lambda *_args: True)
+    monkeypatch.setattr("autodj.server.shutil.which", lambda _name: "X:/ffmpeg.exe")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    app = create_app(bridge)
+
+    messages: list[dict] = []
+    request_sent = False
+    never = asyncio.Event()
+
+    async def receive() -> dict:
+        nonlocal request_sent
+        if not request_sent:
+            request_sent = True
+            return {"type": "http.request", "body": b"", "more_body": False}
+        await never.wait()
+        raise AssertionError("unreachable")
+
+    async def send(message: dict) -> None:
+        messages.append(message)
+        if message["type"] == "http.response.start":
+            events.append(("headers", message["status"]))
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": "/api/audio",
+        "raw_path": b"/api/audio",
+        "query_string": urlencode({"path": str(audio)}).encode("ascii"),
+        "headers": [(b"host", b"testserver")],
+        "client": ("127.0.0.1", 12345),
+        "server": ("test", 80),
+        "root_path": "",
+    }
+    await asyncio.wait_for(app(scope, receive, send), timeout=1.0)
+
+    assert events[:3] == [
+        ("spawn", "X:/ffmpeg.exe"),
+        ("read", 64 * 1024),
+        ("headers", 200),
+    ]
+    assert (
+        b"".join(
+            message.get("body", b"")
+            for message in messages
+            if message["type"] == "http.response.body"
+        )
+        == b"mp3"
+    )
+
+
+def test_alac_spawn_failure_falls_back_before_headers(tmp_path, bridge, monkeypatch) -> None:
+    from fastapi.testclient import TestClient
+
+    audio = tmp_path / "spawn-failure.m4a"
+    audio.write_bytes(b"raw-alac")
+    entry = _make_entry(139)
+    entry.path = str(audio)
+    _register_index_entry(bridge, entry)
+    monkeypatch.setattr("autodj.server._is_alac", lambda *_args: True)
+    monkeypatch.setattr("autodj.server.shutil.which", lambda _name: "X:/ffmpeg.exe")
+    monkeypatch.setattr(
+        asyncio,
+        "create_subprocess_exec",
+        AsyncMock(side_effect=FileNotFoundError("ffmpeg vanished")),
+    )
+
+    response = TestClient(create_app(bridge)).get(f"/api/audio?path={audio}")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "audio/mp4"
+    assert response.headers["accept-ranges"] == "bytes"
+    assert response.headers["content-length"] == str(len(b"raw-alac"))
+    assert response.content == b"raw-alac"
+
+
+@pytest.mark.parametrize(
+    "first_read",
+    [b"", OSError("ffmpeg output failed")],
+    ids=["immediate-exit", "read-error"],
+)
+def test_alac_first_output_failure_falls_back_and_reaps_before_headers(
+    tmp_path, bridge, monkeypatch, first_read
+) -> None:
+    from fastapi.testclient import TestClient
+
+    audio = tmp_path / "preflight-failure.m4a"
+    audio.write_bytes(b"raw-alac")
+    entry = _make_entry(145)
+    entry.path = str(audio)
+    _register_index_entry(bridge, entry)
+    read = (
+        AsyncMock(side_effect=first_read)
+        if isinstance(first_read, Exception)
+        else AsyncMock(return_value=first_read)
+    )
+    process = SimpleNamespace(
+        stdout=SimpleNamespace(read=read),
+        kill=MagicMock(),
+        wait=AsyncMock(return_value=1),
+    )
+    monkeypatch.setattr("autodj.server._is_alac", lambda *_args: True)
+    monkeypatch.setattr("autodj.server.shutil.which", lambda _name: "X:/ffmpeg.exe")
+    monkeypatch.setattr(
+        asyncio,
+        "create_subprocess_exec",
+        AsyncMock(return_value=process),
+    )
+
+    response = TestClient(create_app(bridge)).get(f"/api/audio?path={audio}")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "audio/mp4"
+    assert response.headers["accept-ranges"] == "bytes"
+    assert response.headers["content-length"] == str(len(b"raw-alac"))
+    assert response.content == b"raw-alac"
+    process.kill.assert_called_once_with()
+    process.wait.assert_awaited_once_with()
+
+
+async def test_alac_transcoder_reaps_process_when_consumer_closes(tmp_path, monkeypatch) -> None:
+    from autodj.server import _transcode_alac_to_mp3
+
+    process = SimpleNamespace(
+        stdout=SimpleNamespace(read=AsyncMock(return_value=b"mp3-chunk")),
+        kill=MagicMock(),
+        wait=AsyncMock(return_value=0),
+    )
+    monkeypatch.setattr(
+        asyncio,
+        "create_subprocess_exec",
+        AsyncMock(side_effect=AssertionError("stream respawned ffmpeg")),
+    )
+    stream = _transcode_alac_to_mp3(process)
+
+    assert await anext(stream) == b"mp3-chunk"
+    await stream.aclose()
+
+    process.kill.assert_called_once_with()
+    process.wait.assert_awaited_once_with()
+
+
+async def _collect_audio_asgi(app, *, path: str, method: str = "GET") -> list[dict]:
+    messages: list[dict] = []
+    request_sent = False
+    never = asyncio.Event()
+
+    async def receive() -> dict:
+        nonlocal request_sent
+        if not request_sent:
+            request_sent = True
+            return {"type": "http.request", "body": b"", "more_body": False}
+        await never.wait()
+        raise AssertionError("unreachable")
+
+    async def send(message: dict) -> None:
+        messages.append(message)
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": method,
+        "scheme": "http",
+        "path": "/api/audio",
+        "raw_path": b"/api/audio",
+        "query_string": urlencode({"path": path}).encode("ascii"),
+        "headers": [(b"host", b"testserver")],
+        "client": ("127.0.0.1", 12345),
+        "server": ("test", 80),
+        "root_path": "",
+    }
+    await asyncio.wait_for(app(scope, receive, send), timeout=1.0)
+    return messages
+
+
+async def test_alac_stalled_prefetch_times_out_and_falls_back_without_leaks(
+    tmp_path, bridge, monkeypatch
+) -> None:
+    audio = tmp_path / "stalled-preflight.m4a"
+    audio.write_bytes(b"raw-alac")
+    entry = _make_entry(146)
+    entry.path = str(audio)
+    _register_index_entry(bridge, entry)
+    events: list[str] = []
+    read_cancelled = asyncio.Event()
+    closed = threading.Event()
+    never = asyncio.Event()
+    real_open = Path.open
+
+    class TrackedFile:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __getattr__(self, name):
+            return getattr(self.handle, name)
+
+        def close(self):
+            self.handle.close()
+            closed.set()
+
+    def tracked_open(path, *args, **kwargs):
+        handle = real_open(path, *args, **kwargs)
+        if path == audio and args == ("rb",):
+            return TrackedFile(handle)
+        return handle
+
+    async def stalled_read(_size=-1):
+        try:
+            await never.wait()
+        finally:
+            events.append("read-cancelled")
+            read_cancelled.set()
+
+    async def wait_for_process():
+        events.append("wait")
+        return 1
+
+    process = SimpleNamespace(
+        stdout=SimpleNamespace(read=stalled_read),
+        kill=MagicMock(side_effect=lambda: events.append("kill")),
+        wait=AsyncMock(side_effect=wait_for_process),
+    )
+    monkeypatch.setattr(Path, "open", tracked_open)
+    monkeypatch.setattr("autodj.server._is_alac", lambda *_args: True)
+    monkeypatch.setattr("autodj.server.shutil.which", lambda _name: "X:/ffmpeg.exe")
+    monkeypatch.setattr(
+        "autodj.server._ALAC_PREFETCH_TIMEOUT_SECONDS",
+        0.01,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        asyncio,
+        "create_subprocess_exec",
+        AsyncMock(return_value=process),
+    )
+    existing_tasks = set(asyncio.all_tasks())
+
+    messages = await _collect_audio_asgi(create_app(bridge), path=str(audio))
+    await asyncio.sleep(0)
+
+    start = next(message for message in messages if message["type"] == "http.response.start")
+    body = b"".join(
+        message.get("body", b"") for message in messages if message["type"] == "http.response.body"
+    )
+    assert start["status"] == 200
+    assert (b"content-type", b"audio/mp4") in start["headers"]
+    assert body == b"raw-alac"
+    assert read_cancelled.is_set()
+    assert events[:3] == ["read-cancelled", "kill", "wait"]
+    assert closed.wait(0.5) is True
+    assert {task for task in asyncio.all_tasks() - existing_tasks if not task.done()} == set()
+
+
+async def _cancel_asgi_after_first_body(app, *, path: str, expected_prefix: bytes) -> None:
+    first_body = asyncio.Event()
+    never = asyncio.Event()
+    request_sent = False
+    response_status = None
+    first_chunk = b""
+
+    async def receive() -> dict:
+        nonlocal request_sent
+        if not request_sent:
+            request_sent = True
+            return {"type": "http.request", "body": b"", "more_body": False}
+        await first_body.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict) -> None:
+        nonlocal response_status, first_chunk
+        if message["type"] == "http.response.start":
+            response_status = message["status"]
+        if message["type"] == "http.response.body" and message.get("body"):
+            first_chunk = message["body"]
+            first_body.set()
+            await never.wait()
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": "/api/audio",
+        "raw_path": b"/api/audio",
+        "query_string": urlencode({"path": path}).encode("ascii"),
+        "headers": [(b"host", b"testserver")],
+        "client": ("127.0.0.1", 12345),
+        "server": ("test", 80),
+        "root_path": "",
+    }
+    await asyncio.wait_for(app(scope, receive, send), timeout=1.0)
+    assert response_status == 200
+    assert first_chunk.startswith(expected_prefix)
+
+
+async def test_partial_asgi_file_response_closes_open_handle(bridge, tmp_path, monkeypatch) -> None:
+    audio = tmp_path / "large.flac"
+    audio.write_bytes(b"x" * (256 * 1024))
+    entry = _make_entry(133)
+    entry.path = str(audio)
+    _register_index_entry(bridge, entry)
+    real_open = Path.open
+    closed = threading.Event()
+
+    class TrackedFile:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            self.close()
+
+        def close(self):
+            self.handle.close()
+            closed.set()
+
+        def __getattr__(self, name):
+            return getattr(self.handle, name)
+
+    def tracked_open(path, *args, **kwargs):
+        handle = real_open(path, *args, **kwargs)
+        return TrackedFile(handle) if path == audio else handle
+
+    monkeypatch.setattr(Path, "open", tracked_open)
+
+    await _cancel_asgi_after_first_body(create_app(bridge), path=str(audio), expected_prefix=b"x")
+
+    assert closed.wait(1.0) is True
+
+
+async def test_asgi_disconnect_before_body_closes_preopened_handle(
+    bridge, tmp_path, monkeypatch
+) -> None:
+    audio = tmp_path / "before-body.flac"
+    audio.write_bytes(b"body")
+    entry = _make_entry(143)
+    entry.path = str(audio)
+    _register_index_entry(bridge, entry)
+    app = create_app(bridge)
+    real_open = Path.open
+    closed = threading.Event()
+    response_started = asyncio.Event()
+    never = asyncio.Event()
+    request_sent = False
+
+    class TrackedFile:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __getattr__(self, name):
+            return getattr(self.handle, name)
+
+        def close(self):
+            self.handle.close()
+            closed.set()
+
+    def tracked_open(path, *args, **kwargs):
+        handle = real_open(path, *args, **kwargs)
+        return TrackedFile(handle) if path == audio else handle
+
+    async def receive() -> dict:
+        nonlocal request_sent
+        if not request_sent:
+            request_sent = True
+            return {"type": "http.request", "body": b"", "more_body": False}
+        await response_started.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict) -> None:
+        if message["type"] == "http.response.start":
+            response_started.set()
+            await never.wait()
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": "/api/audio",
+        "raw_path": b"/api/audio",
+        "query_string": urlencode({"path": str(audio)}).encode("ascii"),
+        "headers": [(b"host", b"testserver")],
+        "client": ("127.0.0.1", 12345),
+        "server": ("test", 80),
+        "root_path": "",
+    }
+    monkeypatch.setattr(Path, "open", tracked_open)
+
+    await asyncio.wait_for(app(scope, receive, send), timeout=1.0)
+
+    assert closed.wait(0.5) is True
+
+
+async def test_partial_asgi_alac_response_cancels_and_reaps_ffmpeg(
+    bridge, tmp_path, monkeypatch
+) -> None:
+    audio = tmp_path / "source.m4a"
+    audio.write_bytes(b"alac")
+    entry = _make_entry(134)
+    entry.path = str(audio)
+    _register_index_entry(bridge, entry)
+    process = SimpleNamespace(
+        stdout=SimpleNamespace(read=AsyncMock(return_value=b"mp3-chunk")),
+        kill=MagicMock(),
+        wait=AsyncMock(return_value=0),
+    )
+    monkeypatch.setattr("autodj.server._is_alac", lambda *_args: True)
+    monkeypatch.setattr("autodj.server.shutil.which", lambda _name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(
+        asyncio,
+        "create_subprocess_exec",
+        AsyncMock(return_value=process),
+    )
+
+    await _cancel_asgi_after_first_body(
+        create_app(bridge), path=str(audio), expected_prefix=b"mp3-chunk"
+    )
+
+    process.kill.assert_called_once_with()
+    process.wait.assert_awaited_once_with()
+
+
+async def test_asgi_disconnect_before_alac_body_reaps_spawned_ffmpeg(
+    bridge, tmp_path, monkeypatch
+) -> None:
+    audio = tmp_path / "before-body.m4a"
+    audio.write_bytes(b"alac")
+    entry = _make_entry(144)
+    entry.path = str(audio)
+    _register_index_entry(bridge, entry)
+    process = SimpleNamespace(
+        stdout=SimpleNamespace(read=AsyncMock(return_value=b"unused")),
+        kill=MagicMock(),
+        wait=AsyncMock(return_value=0),
+    )
+    monkeypatch.setattr("autodj.server._is_alac", lambda *_args: True)
+    monkeypatch.setattr("autodj.server.shutil.which", lambda _name: "X:/ffmpeg.exe")
+    monkeypatch.setattr(
+        asyncio,
+        "create_subprocess_exec",
+        AsyncMock(return_value=process),
+    )
+    app = create_app(bridge)
+    response_started = asyncio.Event()
+    never = asyncio.Event()
+    request_sent = False
+
+    async def receive() -> dict:
+        nonlocal request_sent
+        if not request_sent:
+            request_sent = True
+            return {"type": "http.request", "body": b"", "more_body": False}
+        await response_started.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict) -> None:
+        if message["type"] == "http.response.start":
+            response_started.set()
+            await never.wait()
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": "/api/audio",
+        "raw_path": b"/api/audio",
+        "query_string": urlencode({"path": str(audio)}).encode("ascii"),
+        "headers": [(b"host", b"testserver")],
+        "client": ("127.0.0.1", 12345),
+        "server": ("test", 80),
+        "root_path": "",
+    }
+
+    await asyncio.wait_for(app(scope, receive, send), timeout=1.0)
+
+    process.kill.assert_called_once_with()
+    process.wait.assert_awaited_once_with()
 
 
 # ---------------------------------------------------------------------------
@@ -2225,6 +4054,52 @@ class TestPersistenceHelpers:
 
 
 class TestReloadIndexFromDisk:
+    def test_watcher_reconciles_publish_after_live_token_seed(self, monkeypatch, tmp_path) -> None:
+        from threading import Event
+
+        from fastapi.testclient import TestClient
+
+        from autodj.index_manifest import IndexSnapshotToken
+
+        old = IndexSnapshotToken(1, 1)
+        published = IndexSnapshotToken(2, 2)
+        reloaded = Event()
+        bridge = MagicMock()
+        bridge.player._cfg.index.active_dir = tmp_path
+        bridge.sim.snapshot_token = old
+        bridge.sim.ntotal = 5
+        bridge.reload_index_from_disk.side_effect = lambda **kwargs: reloaded.set()
+        monkeypatch.setattr("autodj.server.current_snapshot_token", lambda _: published)
+
+        with TestClient(create_app(bridge)):
+            assert reloaded.wait(timeout=1)
+        bridge.reload_index_from_disk.assert_called_once_with(expected_snapshot=published)
+
+    def test_watcher_retries_same_snapshot_token_after_consistency_failure(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        import asyncio
+
+        from autodj.index_manifest import IndexConsistencyError, IndexSnapshotToken
+        from autodj.server import reload_published_generation_once
+
+        token = IndexSnapshotToken(1, 3)
+        monkeypatch.setattr("autodj.server.current_snapshot_token", lambda _: token)
+        bridge = MagicMock()
+        bridge.player._cfg.index.active_dir = tmp_path
+        bridge.reload_index_from_disk.side_effect = [
+            IndexConsistencyError("snapshot changed"),
+            5,
+        ]
+
+        with pytest.raises(IndexConsistencyError):
+            asyncio.run(reload_published_generation_once(bridge, IndexSnapshotToken(0, 0)))
+        observed = asyncio.run(reload_published_generation_once(bridge, IndexSnapshotToken(0, 0)))
+
+        assert observed == token
+        assert bridge.reload_index_from_disk.call_count == 2
+        bridge.reload_index_from_disk.assert_called_with(expected_snapshot=token)
+
     def test_reload_no_cfg_returns_current_total(self) -> None:
         sim = MagicMock()
         sim.ntotal = 7
@@ -2239,9 +4114,41 @@ class TestReloadIndexFromDisk:
         cfg.library.music_dir = None
         cfg.library.path_remap = None
         bridge = PlayerBridge(player=MagicMock(_cfg=cfg), sim=sim)
-        result = bridge.reload_index_from_disk()
+        result = bridge.reload_index_from_disk(expected_generation=7)
         assert result == 42
-        sim.reload_from_disk.assert_called_once()
+        sim.reload_from_disk.assert_called_once_with(
+            tmp_path,
+            music_dir=None,
+            path_remap=None,
+            expected_generation=7,
+        )
+
+    def test_watcher_retries_same_generation_after_consistency_failure(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        import asyncio
+
+        from autodj.index_manifest import IndexConsistencyError, IndexSnapshotToken
+        from autodj.server import reload_published_generation_once
+
+        token = IndexSnapshotToken(1, 1)
+        monkeypatch.setattr("autodj.server.current_snapshot_token", lambda _: token)
+        bridge = MagicMock()
+        bridge.player._cfg.index.active_dir = tmp_path
+        bridge.reload_index_from_disk.side_effect = [
+            IndexConsistencyError("generation changed"),
+            5,
+        ]
+
+        with pytest.raises(IndexConsistencyError):
+            asyncio.run(reload_published_generation_once(bridge, observed=IndexSnapshotToken(0, 0)))
+        observed = asyncio.run(
+            reload_published_generation_once(bridge, observed=IndexSnapshotToken(0, 0))
+        )
+
+        assert observed == token
+        assert bridge.reload_index_from_disk.call_count == 2
+        bridge.reload_index_from_disk.assert_called_with(expected_snapshot=token)
 
 
 # ---------------------------------------------------------------------------

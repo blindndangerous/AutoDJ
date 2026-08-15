@@ -4,4 +4,6 @@ Uses MuQ audio embeddings and FAISS nearest-neighbor search to play
 sonically similar songs in a continuous, automatic DJ-style flow.
 """
 
-__version__ = "0.2.0"
+from autodj.version import current_version
+
+__version__ = current_version()

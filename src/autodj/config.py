@@ -12,10 +12,16 @@ Example:
 
 from __future__ import annotations
 
+import ipaddress
+import os
+import re
 import tomllib
+from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
     from autodj.presets import Preset
@@ -595,12 +601,25 @@ class ModelConfig:
 
     Attributes:
         name: HuggingFace model ID to load (used for auto-download).
+        revision: HuggingFace revision (branch, tag, or commit) to cache.
         manual_path: Optional local path to a pre-downloaded model directory.
             When set, ``name`` is ignored and the model is loaded from disk.
     """
 
     name: str = "OpenMuQ/MuQ-large-msd-iter"
+    revision: str = "main"
     manual_path: Path | None = None
+
+    def __post_init__(self) -> None:
+        """Validate the configured model revision."""
+        if (
+            not isinstance(self.revision, str)
+            or not self.revision
+            or self.revision != self.revision.strip()
+        ):
+            raise ValueError(
+                "model.revision must be a non-empty string without surrounding whitespace"
+            )
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ModelConfig:
@@ -613,9 +632,293 @@ class ModelConfig:
             A populated ModelConfig instance.
         """
         manual_raw = data.get("manual_path")
+        revision = data.get("revision", "main")
+        if not isinstance(revision, str) or not revision or revision != revision.strip():
+            raise ValueError(
+                "model.revision must be a non-empty string without surrounding whitespace"
+            )
         return cls(
             name=data.get("name", "OpenMuQ/MuQ-large-msd-iter"),
+            revision=revision,
             manual_path=Path(manual_raw) if manual_raw else None,
+        )
+
+
+MIN_ACCESS_TOKEN_BYTES = 32
+MIN_SESSION_TTL_SECONDS = 60
+MAX_SESSION_TTL_SECONDS = 365 * 24 * 60 * 60
+MAX_LINER_UPLOAD_MIB = 1024
+_MIB = 1024 * 1024
+_DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
+
+
+def _require_int(value: object, field_name: str) -> int:
+    """Return an integer value or raise a field-specific type error."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{field_name} must be an integer")
+    return value
+
+
+def _canonicalize_host(
+    value: object,
+    *,
+    field_name: str,
+    allow_unspecified: bool,
+) -> str:
+    """Validate and normalize an IP address or DNS hostname."""
+    if not isinstance(value, str):
+        raise TypeError(f"{field_name} entries must be strings")
+    if (
+        not value
+        or value != value.strip()
+        or any(ord(char) < 32 or ord(char) == 127 for char in value)
+    ):
+        raise ValueError(f"{field_name} contains an invalid host")
+    if not value.isascii():
+        raise ValueError(f"{field_name} hostnames must use ASCII")
+    if (
+        value.startswith("[")
+        or value.endswith("]")
+        or any(marker in value for marker in ("@", "/", "\\", "?", "#", "%", "*"))
+    ):
+        raise ValueError(f"{field_name} contains an invalid host")
+
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        if ":" in value:
+            raise ValueError(f"{field_name} contains an invalid host") from None
+    else:
+        if address.is_unspecified and not allow_unspecified:
+            raise ValueError(f"{field_name} cannot contain a wildcard host")
+        return address.compressed.lower()
+
+    hostname = value.removesuffix(".")
+    if not hostname or hostname == "0":
+        raise ValueError(f"{field_name} contains an invalid host")
+    ascii_hostname = hostname.lower()
+    if len(ascii_hostname) > 253 or any(
+        not _DNS_LABEL.fullmatch(label) for label in ascii_hostname.split(".")
+    ):
+        raise ValueError(f"{field_name} contains an invalid host")
+    return ascii_hostname
+
+
+def _deduplicate(values: list[str]) -> list[str]:
+    """Return values in first-seen order with duplicates removed."""
+    return list(dict.fromkeys(values))
+
+
+def validate_access_token(token: str | None) -> None:
+    """Reject configured access tokens shorter than the required byte length."""
+    if token is None:
+        return
+    if not isinstance(token, str):
+        raise TypeError("server.access_token must be a string")
+    if len(token.encode("utf-8")) < MIN_ACCESS_TOKEN_BYTES:
+        raise ValueError("server.access_token must be at least 32 UTF-8 bytes")
+
+
+def canonicalize_allowed_origin(value: str) -> str:
+    """Validate and normalize an HTTP or HTTPS origin."""
+    if not isinstance(value, str):
+        raise TypeError("server.allowed_origins entries must be strings")
+    if (
+        not value
+        or value != value.strip()
+        or any(ord(char) < 32 or ord(char) == 127 for char in value)
+    ):
+        raise ValueError("server.allowed_origins contains an invalid origin")
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("server.allowed_origins contains an invalid origin") from exc
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.netloc.endswith(":")
+        or port == 0
+        or parsed.path not in {"", "/"}
+        or "?" in value
+        or "#" in value
+    ):
+        raise ValueError(
+            "server.allowed_origins entries must be HTTP(S) origins without "
+            "userinfo, path, query, or fragment"
+        )
+    if parsed.netloc.startswith("["):
+        try:
+            ipaddress.IPv6Address(parsed.hostname)
+        except ValueError as exc:
+            raise ValueError(
+                "server.allowed_origins bracketed hosts must be valid IPv6 addresses"
+            ) from exc
+    hostname = _canonicalize_host(
+        parsed.hostname,
+        field_name="server.allowed_origins",
+        allow_unspecified=False,
+    )
+    rendered_host = f"[{hostname}]" if ":" in hostname else hostname
+    scheme = parsed.scheme.lower()
+    default_port = 80 if scheme == "http" else 443
+    suffix = "" if port is None or port == default_port else f":{port}"
+    return f"{scheme}://{rendered_host}{suffix}"
+
+
+def _canonicalize_allowed_hosts(values: object) -> list[str] | None:
+    """Validate, normalize, and deduplicate an optional host allowlist."""
+    if values is None:
+        return None
+    if not isinstance(values, list):
+        raise TypeError("server.allowed_hosts must be a list of strings")
+    return _deduplicate(
+        [
+            _canonicalize_host(
+                value,
+                field_name="server.allowed_hosts",
+                allow_unspecified=False,
+            )
+            for value in values
+        ]
+    )
+
+
+def _canonicalize_allowed_origins(values: object) -> list[str] | None:
+    """Validate, normalize, and deduplicate an optional origin allowlist."""
+    if values is None:
+        return None
+    if not isinstance(values, list):
+        raise TypeError("server.allowed_origins must be a list of strings")
+    return _deduplicate([canonicalize_allowed_origin(value) for value in values])
+
+
+@dataclass
+class ServerConfig:
+    """Web-server bind, request policy, session, and upload limits."""
+
+    host: str = "127.0.0.1"
+    port: int = 8080
+    access_token: str | None = field(default=None, repr=False)
+    insecure_lan: bool = False
+    allowed_hosts: list[str] | None = None
+    allowed_origins: list[str] | None = None
+    session_ttl_seconds: int = 24 * 60 * 60
+    liner_upload_max_bytes: int = 50 * _MIB
+
+    def __post_init__(self) -> None:
+        """Normalize and validate server settings after initialization."""
+        self.host = _canonicalize_host(
+            self.host,
+            field_name="server.host",
+            allow_unspecified=True,
+        )
+        self.port = _require_int(self.port, "server.port")
+        if not 1 <= self.port <= 65535:
+            raise ValueError("server.port must be between 1 and 65535")
+        validate_access_token(self.access_token)
+        if not isinstance(self.insecure_lan, bool):
+            raise TypeError("server.insecure_lan must be a boolean")
+        self.allowed_hosts = _canonicalize_allowed_hosts(self.allowed_hosts)
+        self.allowed_origins = _canonicalize_allowed_origins(self.allowed_origins)
+        self.session_ttl_seconds = _require_int(
+            self.session_ttl_seconds,
+            "server.session_ttl_seconds",
+        )
+        if not MIN_SESSION_TTL_SECONDS <= self.session_ttl_seconds <= MAX_SESSION_TTL_SECONDS:
+            raise ValueError("server.session_ttl_seconds must be between 60 and 31536000")
+        self.liner_upload_max_bytes = _require_int(
+            self.liner_upload_max_bytes,
+            "server.liner_upload_max_bytes",
+        )
+        if not _MIB <= self.liner_upload_max_bytes <= MAX_LINER_UPLOAD_MIB * _MIB:
+            raise ValueError("server.liner_upload_max_bytes must be between 1 MiB and 1024 MiB")
+
+    def effective_allowed_hosts(self) -> list[str]:
+        """Return configured hosts or the default host derived from the bind address."""
+        if self.allowed_hosts is not None:
+            return list(self.allowed_hosts)
+        # Sentinel comparison selects defaults; it does not bind a socket.
+        return [] if self.host in {"0.0.0.0", "::"} else [self.host]  # nosec B104
+
+    def effective_allowed_origins(self) -> list[str]:
+        """Return configured origins or the default origin derived from the bind address."""
+        if self.allowed_origins is not None:
+            return list(self.allowed_origins)
+        # Sentinel comparison selects defaults; it does not bind a socket.
+        if self.host in {"0.0.0.0", "::"}:  # nosec B104
+            return []
+        rendered_host = f"[{self.host}]" if ":" in self.host else self.host
+        return [canonicalize_allowed_origin(f"http://{rendered_host}:{self.port}")]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ServerConfig:
+        """Construct server settings from a raw configuration section."""
+        if not isinstance(data, dict):
+            raise TypeError("server section must be a table")
+        max_mib = _require_int(data.get("liner_upload_max_mib", 50), "server.liner_upload_max_mib")
+        if not 1 <= max_mib <= MAX_LINER_UPLOAD_MIB:
+            raise ValueError("server.liner_upload_max_mib must be between 1 and 1024")
+        return cls(
+            host=data.get("host", "127.0.0.1"),
+            port=data.get("port", 8080),
+            access_token=data.get("access_token"),
+            insecure_lan=data.get("insecure_lan", False),
+            allowed_hosts=data.get("allowed_hosts"),
+            allowed_origins=data.get("allowed_origins"),
+            session_ttl_seconds=data.get("session_ttl_seconds", 24 * 60 * 60),
+            liner_upload_max_bytes=max_mib * _MIB,
+        )
+
+
+def is_loopback_bind(host: str) -> bool:
+    """Return whether a valid bind host resolves to a loopback address."""
+    try:
+        canonical = _canonicalize_host(
+            host,
+            field_name="server.host",
+            allow_unspecified=True,
+        )
+    except (TypeError, ValueError):
+        return False
+    if canonical == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(canonical).is_loopback
+    except ValueError:
+        return False
+
+
+def validate_server_exposure(cfg: ServerConfig) -> None:
+    """Normalize mutable overrides and reject unsafe bind configurations."""
+    validated = ServerConfig(
+        host=cfg.host,
+        port=cfg.port,
+        access_token=cfg.access_token,
+        insecure_lan=cfg.insecure_lan,
+        allowed_hosts=cfg.allowed_hosts,
+        allowed_origins=cfg.allowed_origins,
+        session_ttl_seconds=cfg.session_ttl_seconds,
+        liner_upload_max_bytes=cfg.liner_upload_max_bytes,
+    )
+    cfg.__dict__.update(validated.__dict__)
+    loopback = is_loopback_bind(cfg.host)
+    # Sentinel comparison enforces explicit allowlists; it does not bind a socket.
+    if cfg.host in {"0.0.0.0", "::"} and (  # nosec B104
+        not cfg.allowed_hosts or not cfg.allowed_origins
+    ):
+        raise ValueError(
+            "LAN binding requires explicit nonempty allowed_hosts and allowed_origins; "
+            "wildcard binding requires both lists"
+        )
+    if not cfg.effective_allowed_hosts() or not cfg.effective_allowed_origins():
+        raise ValueError("wildcard binding requires explicit allowed_hosts and allowed_origins")
+    if not loopback and not cfg.access_token and not cfg.insecure_lan:
+        raise ValueError(
+            "LAN binding requires [server] access_token/--access-token or explicit --insecure-lan"
         )
 
 
@@ -629,7 +932,7 @@ class HuggingFaceConfig:
             Get one free at https://huggingface.co/settings/tokens
     """
 
-    token: str | None = None
+    token: str | None = field(default=None, repr=False)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> HuggingFaceConfig:
@@ -668,11 +971,13 @@ class AutoDJConfig:
     playback: PlaybackConfig
     model: ModelConfig
     huggingface: HuggingFaceConfig
-    config_path: Path
+    config_path: Path | None
     presets: dict[str, Preset] = field(default_factory=dict)
     replaygain: ReplayGainConfig = field(default_factory=lambda: ReplayGainConfig())
     djmix: DjMixConfig = field(default_factory=lambda: DjMixConfig())
     transitions: TransitionsConfig = field(default_factory=lambda: TransitionsConfig())
+    server: ServerConfig = field(default_factory=ServerConfig)
+    config_sources: tuple[str, ...] = ("defaults",)
 
 
 # ---------------------------------------------------------------------------
@@ -687,75 +992,73 @@ def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]
     those in *base*.  Used to apply machine-specific overrides from
     ``config.local.toml`` on top of the shared ``config.toml``.
     """
-    out: dict[str, Any] = dict(base)
+    out: dict[str, Any] = deepcopy(base)
     for k, v in overlay.items():
         if k in out and isinstance(out[k], dict) and isinstance(v, dict):
             out[k] = _deep_merge(out[k], v)
         else:
-            out[k] = v
+            out[k] = deepcopy(v)
     return out
 
 
-def load_config(path: str | Path = "config.toml") -> AutoDJConfig:
-    """Load and validate the AutoDJ configuration from a TOML file.
+ENVIRONMENT_OVERLAY: dict[str, tuple[str, str, type[str] | type[int]]] = {
+    "AUTODJ_LIBRARY_MUSIC_DIR": ("library", "music_dir", str),
+    "AUTODJ_INDEX_DIR": ("index", "index_dir", str),
+    "AUTODJ_MODEL_DIR": ("index", "model_dir", str),
+    "AUTODJ_HOST": ("server", "host", str),
+    "AUTODJ_PORT": ("server", "port", int),
+    "AUTODJ_ACCESS_TOKEN": ("server", "access_token", str),
+    "AUTODJ_HUGGINGFACE_TOKEN": ("huggingface", "token", str),
+}
 
-    If a sibling ``config.local.toml`` file exists alongside *path*, its
-    contents are deep-merged on top of the base config.  This lets you
-    keep a shared ``config.toml`` (e.g. on a network share) and override
-    per-machine settings (paths, ``music_dir``, ``path_remap``) in a
-    gitignored ``config.local.toml``.
 
-    Args:
-        path: Path to the ``config.toml`` file. Defaults to ``config.toml``
-            in the current working directory.
+def _default_raw() -> dict[str, Any]:
+    """Return the minimal raw configuration defaults."""
+    return {
+        "library": {"music_dir": "music"},
+        "index": {"index_dir": "index", "model_dir": "models"},
+        "server": {"host": "127.0.0.1", "port": 8080},
+    }
 
-    Returns:
-        A fully populated and validated :class:`AutoDJConfig` instance.
 
-    Raises:
-        FileNotFoundError: If the config file does not exist.
-        tomllib.TOMLDecodeError: If the file is not valid TOML.
-        KeyError: If a required key (e.g. ``library.music_dir``) is missing.
-        ValueError: If a value is out of the accepted range.
+def _environment_overlay(environ: Mapping[str, str]) -> dict[str, Any]:
+    """Build a configuration overlay from supported environment variables."""
+    overlay: dict[str, Any] = {}
+    for variable, (section, key, converter) in ENVIRONMENT_OVERLAY.items():
+        if variable not in environ:
+            continue
+        raw_value = environ[variable]
+        try:
+            value = converter(raw_value)
+        except ValueError as exc:
+            raise ValueError(f"{variable} has invalid value {raw_value!r}") from exc
+        overlay.setdefault(section, {})[key] = value
+    return overlay
 
-    Example:
-        >>> cfg = load_config("config.toml")
-        >>> cfg.library.music_dir
-        PosixPath('Z:/Music')
-    """
-    config_path = Path(path)
 
-    if not config_path.exists():
-        raise FileNotFoundError(
-            f"Config file not found: {config_path}\n"
-            "Run 'autodj' in the project directory or pass --config <path>."
-        )
-
-    with config_path.open("rb") as fh:
-        raw = tomllib.load(fh)
-
-    # Apply per-machine overlay if config.local.toml exists alongside.
-    local_overlay_path = config_path.parent / "config.local.toml"
-    if local_overlay_path.exists():
-        with local_overlay_path.open("rb") as fh:
-            overlay = tomllib.load(fh)
-        raw = _deep_merge(raw, overlay)
-
-    # Presets live in their own sidecar — `presets.toml` next to the
-    # main config — so user-defined BPM curves are easy to share /
-    # version separately from machine-specific paths.  Falls back to
-    # any legacy ``[presets.*]`` sections inside ``config.toml`` if
-    # the sidecar is missing.
+def _build_config(
+    raw: dict[str, Any],
+    *,
+    config_path: Path | None,
+    sources: list[str],
+    presets_raw: dict[str, Any],
+) -> AutoDJConfig:
+    """Validate raw sections and construct the typed application configuration."""
     from autodj.presets import load_user_presets
 
-    presets_path = config_path.parent / "presets.toml"
-    presets_raw: dict[str, Any] = {}
-    if presets_path.exists():
-        with presets_path.open("rb") as fh:
-            presets_raw = tomllib.load(fh)
-    elif "presets" in raw:
-        # Legacy inline form — load from config.toml
-        presets_raw = {"presets": raw["presets"]}
+    for section in (
+        "library",
+        "index",
+        "playback",
+        "model",
+        "huggingface",
+        "replaygain",
+        "djmix",
+        "transitions",
+        "server",
+    ):
+        if not isinstance(raw.get(section, {}), Mapping):
+            raise TypeError(f"{section} section must be a table")
 
     return AutoDJConfig(
         library=LibraryConfig.from_dict(raw.get("library", {})),
@@ -766,6 +1069,58 @@ def load_config(path: str | Path = "config.toml") -> AutoDJConfig:
         replaygain=ReplayGainConfig.from_dict(raw.get("replaygain", {})),
         djmix=DjMixConfig.from_dict(raw.get("djmix", {})),
         transitions=TransitionsConfig.from_dict(raw.get("transitions", {})),
+        server=ServerConfig.from_dict(raw.get("server", {})),
         presets=load_user_presets(presets_raw),
         config_path=config_path,
+        config_sources=tuple(sources),
+    )
+
+
+def load_config(
+    path: str | Path | None = None, *, environ: Mapping[str, str] | None = None
+) -> AutoDJConfig:
+    """Load defaults, optional TOML overlays, then typed environment overrides.
+
+    An omitted path uses ``config.toml`` when present and otherwise keeps
+    validated defaults. An explicitly supplied missing path remains an error.
+    """
+    environment = os.environ if environ is None else environ
+    explicit = path is not None
+    candidate = Path(path) if path is not None else Path("config.toml")
+    raw = _default_raw()
+    sources = ["defaults"]
+    loaded_path: Path | None = None
+
+    if candidate.exists():
+        with candidate.open("rb") as fh:
+            raw = _deep_merge(raw, tomllib.load(fh))
+        loaded_path = candidate
+        sources.append(str(candidate))
+    elif explicit:
+        raise FileNotFoundError(f"Config file not found: {candidate}")
+
+    if loaded_path is not None:
+        local_path = loaded_path.parent / "config.local.toml"
+        if local_path.exists():
+            with local_path.open("rb") as fh:
+                raw = _deep_merge(raw, tomllib.load(fh))
+            sources.append(str(local_path))
+
+    env_raw = _environment_overlay(environment)
+    if env_raw:
+        raw = _deep_merge(raw, env_raw)
+        sources.append("environment")
+
+    sidecar_root = loaded_path.parent if loaded_path is not None else Path.cwd()
+    presets_path = sidecar_root / "presets.toml"
+    if presets_path.exists():
+        with presets_path.open("rb") as fh:
+            presets_raw = tomllib.load(fh)
+    else:
+        presets_raw = {"presets": raw["presets"]} if "presets" in raw else {}
+    return _build_config(
+        raw,
+        config_path=loaded_path,
+        sources=sources,
+        presets_raw=presets_raw,
     )

@@ -405,6 +405,29 @@ class TestGetLyricsForPath:
 
         assert beets.get_lyrics_for_path(db, "anything.flac") == ""
 
+    def test_returns_empty_and_closes_when_sqlite_fails_lazily(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from autodj import beets
+
+        db = tmp_path / "library.db"
+        db.write_bytes(b"placeholder")
+
+        class LazyFailure:
+            closed = False
+
+            def execute(self, _query: str):
+                raise sqlite3.DatabaseError("lazy corruption")
+
+            def close(self) -> None:
+                self.closed = True
+
+        conn = LazyFailure()
+        monkeypatch.setattr(beets, "_open_db", lambda _path: conn)
+
+        assert beets.get_lyrics_for_path(db, "anything.flac") == ""
+        assert conn.closed
+
     def test_falls_back_to_relative_path(self, tmp_path) -> None:
         """Beets stored a relative path; we look up by joining music_dir."""
         from autodj.beets import get_lyrics_for_path
@@ -487,3 +510,27 @@ class TestBeetsHelpers:
 
         assert "sub\\track.flac" in candidates
         assert "sub/track.flac" in candidates
+
+    def test_path_candidates_adds_backslash_variant_for_posix_paths(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from pathlib import PurePosixPath
+
+        from autodj import beets
+
+        class PosixPath:
+            def __init__(self, value: str | Path) -> None:
+                self.value = PurePosixPath(value)
+
+            def resolve(self) -> PurePosixPath:
+                return self.value
+
+        monkeypatch.setattr(beets, "Path", PosixPath)
+
+        candidates = beets._path_candidates("/music/sub/track.flac", Path("/music"))
+
+        assert candidates == [
+            "/music/sub/track.flac",
+            "sub/track.flac",
+            "sub\\track.flac",
+        ]

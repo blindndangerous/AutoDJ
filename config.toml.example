@@ -12,17 +12,32 @@
 # Per-machine overlay (config.local.toml)
 # ---------------------------------------------------------------------------
 # If a sibling file `config.local.toml` exists, its keys are deep-merged on
-# top of this file at load time. Use it to override per-machine paths
-# without forking the shared base config:
+# top of this file at load time. Use it for per-machine paths while keeping
+# deployment-wide settings in the private base config. Both files are
+# gitignored:
 #
-#   config.toml          ← shared (committed / on NAS)
-#   config.local.toml    ← per-machine overrides (gitignored)
+#   config.toml          = private deployment/base settings
+#   config.local.toml    = private per-machine overrides
 #
 # Example config.local.toml on a Windows host pointing at a NAS:
 #
 #   [library]
 #   music_dir = "Z:/Music"
 #   beets_db  = "Z:/Music/.config/beets/library.db"
+#
+# Configuration precedence:
+# defaults < config.toml < config.local.toml < environment < CLI
+#
+# Supported environment overrides:
+# BEGIN ENVIRONMENT OVERRIDES
+#   AUTODJ_LIBRARY_MUSIC_DIR
+#   AUTODJ_INDEX_DIR
+#   AUTODJ_MODEL_DIR
+#   AUTODJ_HOST
+#   AUTODJ_PORT
+#   AUTODJ_ACCESS_TOKEN
+#   AUTODJ_HUGGINGFACE_TOKEN
+# END ENVIRONMENT OVERRIDES
 
 [library]
 # Full path to your music folder (local or mapped NAS drive).
@@ -52,7 +67,9 @@ supported_formats = ["mp3", "flac", "m4a"]
 # ]
 
 [index]
-# Directory where the FAISS index and metadata are stored.
+# Each named index directory may contain vectors.index, tracks.db (SQLite),
+# dj_meta.db (SQLite), web_state.json, and liner files.
+# Default liner path: <index_dir>/<name>/liners/.
 # Can be a local path or a NAS path — if you run `autodj index` on a GPU machine
 # and `autodj play` on another machine, point both configs here to the same NAS path.
 # Example: "Z:/autodj-index"
@@ -60,6 +77,17 @@ index_dir = "index"
 
 # Directory where the MuQ model checkpoint is cached after download
 model_dir = "models"
+
+[server]
+host = "127.0.0.1"
+port = 8080
+# access_token = "generate-at-least-32-random-bytes"
+insecure_lan = false
+# LAN and wildcard binds must set both lists, for example:
+# allowed_hosts = ["radio.local"]
+# allowed_origins = ["https://radio.local:8080"]
+session_ttl_seconds = 86400
+liner_upload_max_mib = 50
 
 [playback]
 # Duration of the crossfade between tracks, in seconds.

@@ -25,10 +25,20 @@ Example:
 
 from __future__ import annotations
 
+import errno
+import hashlib
+import json
 import logging
+import os
+import re
+import shutil
 import threading
-import time
+import uuid
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
+from typing import BinaryIO, Protocol, cast
 
 import numpy as np
 import torch
@@ -45,6 +55,33 @@ EMBEDDING_DIM = 1024
 MUQ_SAMPLE_RATE = 24_000
 
 
+class _WindowsLockApi(Protocol):
+    """Windows lock members omitted from non-Windows type stubs."""
+
+    LK_NBLCK: int
+    LK_UNLCK: int
+
+    def locking(self, fd: int, operation: int, length: int) -> None:
+        """Apply or release a byte-range lock."""
+
+
+def _unsupported_windows_lock(_descriptor: int, _operation: int, _length: int) -> None:
+    """Raise when Windows file locking is unavailable."""
+    raise OSError("Windows file locking is unavailable")
+
+
+_windows_lock: Callable[[int, int, int], None] = _unsupported_windows_lock
+_WINDOWS_LOCK_NONBLOCKING = 1
+_WINDOWS_LOCK_UNLOCK = 0
+if os.name == "nt":
+    import msvcrt as _windows_msvcrt
+
+    _windows_lock_api = cast(_WindowsLockApi, _windows_msvcrt)
+    _windows_lock = _windows_lock_api.locking
+    _WINDOWS_LOCK_NONBLOCKING = _windows_lock_api.LK_NBLCK
+    _WINDOWS_LOCK_UNLOCK = _windows_lock_api.LK_UNLCK
+
+
 # ---------------------------------------------------------------------------
 # Exceptions
 # ---------------------------------------------------------------------------
@@ -55,60 +92,341 @@ class ModelLoadError(RuntimeError):
 
 
 # ---------------------------------------------------------------------------
-# Download helpers
+# Durable model-cache helpers
 # ---------------------------------------------------------------------------
 
-# Defaults for retry behaviour — overridable via config
-_DEFAULT_TIMEOUT_SECONDS = 300  # 5 minutes per attempt before declaring it stuck
-_DEFAULT_MAX_RETRIES = 3
-_DEFAULT_RETRY_DELAY = 5  # seconds between attempts
+_MARKER_NAME = ".autodj-complete"
+_ETAG_TIMEOUT_SECONDS = 10
+_IGNORE_PATTERNS = ["*.msgpack", "flax_model*", "tf_model*", "rust_model*"]
+_SAFE_SHARD_PATTERNS = {
+    ".safetensors": re.compile(r"model-(\d{5})-of-(\d{5})\.safetensors$"),
+    ".bin": re.compile(r"pytorch_model-(\d{5})-of-(\d{5})\.bin$"),
+}
+_thread_locks: dict[str, threading.RLock] = {}
+_thread_locks_guard = threading.Lock()
+_thread_locks_pid = os.getpid()
+_reentrant_locks: dict[tuple[int, int, str], int] = {}
+_reentrant_locks_guard = threading.Lock()
 
 
-def _snapshot_download_with_timeout(
-    repo_id: str,
-    local_dir: str,
-    ignore_patterns: list[str],
-    token: str | None,
-    timeout: int,
-) -> None:
-    """Run ``snapshot_download`` in a thread; raise ``TimeoutError`` if it hangs.
+class _FcntlApi(Protocol):
+    """POSIX lock API omitted from Windows type stubs."""
 
-    Args:
-        repo_id: HuggingFace model repository ID.
-        local_dir: Local directory to download files into.
-        ignore_patterns: File patterns to skip (e.g. TF/Flax weights).
-        token: Optional HuggingFace API token.
-        timeout: Maximum seconds to wait before declaring the download stuck.
+    LOCK_EX: int
+    LOCK_UN: int
 
-    Raises:
-        TimeoutError: If the download thread does not finish within *timeout* seconds.
-        Exception: Any exception raised by ``snapshot_download`` itself.
+    def flock(self, fd: int, operation: int) -> None:
+        """Apply or release an advisory file lock."""
+
+
+def _reset_model_cache_locks_after_fork() -> None:
+    """Discard inherited process-local locks in a fork child."""
+    global \
+        _reentrant_locks, \
+        _reentrant_locks_guard, \
+        _thread_locks, \
+        _thread_locks_guard, \
+        _thread_locks_pid
+    _thread_locks = {}
+    _thread_locks_guard = threading.Lock()
+    _reentrant_locks = {}
+    _reentrant_locks_guard = threading.Lock()
+    _thread_locks_pid = os.getpid()
+
+
+getattr(os, "register_at_fork", lambda **_kwargs: None)(
+    after_in_child=_reset_model_cache_locks_after_fork
+)
+
+
+@dataclass(frozen=True)
+class ModelCacheStatus:
+    """Result of checking whether a local model cache is safe to use."""
+
+    path: Path
+    complete: bool
+    reason: str
+
+
+def model_cache_path(model_cfg: ModelConfig, index_cfg: IndexConfig) -> Path:
+    """Return exact manual path or collision-proof automatic cache path."""
+    if model_cfg.manual_path is not None:
+        return model_cfg.manual_path
+    digest = hashlib.sha256(f"{model_cfg.name}@{model_cfg.revision}".encode()).hexdigest()[:16]
+    readable = re.sub(r"[^A-Za-z0-9._-]+", "-", model_cfg.name.rsplit("/", 1)[-1]).strip(".-")
+    return index_cfg.model_dir / f"{readable or 'model'}-{digest}"
+
+
+def _is_reparse_point(path: Path) -> bool:
+    """Reject links and Windows junction/reparse points before filesystem work."""
+    if path.is_symlink() or getattr(path, "is_junction", lambda: False)():
+        return True
+    try:
+        metadata = path.stat(follow_symlinks=False)
+    except OSError:
+        return False
+    attributes = int(getattr(metadata, "st_file_attributes", 0))
+    return bool(attributes & 0x400)
+
+
+def _indexed_weights(cache_path: Path) -> tuple[bool, str]:
+    """Validate an optional HuggingFace weight index in *cache_path*."""
+    indexes = [
+        item
+        for item in cache_path.iterdir()
+        if item.is_file()
+        and (item.name.endswith(".safetensors.index.json") or item.name.endswith(".bin.index.json"))
+    ]
+    if not indexes:
+        return False, "no-index"
+    if len(indexes) != 1:
+        return False, "invalid-index"
+    index_error = f"invalid shard index: {indexes[0].name}"
+    if indexes[0].name == "model.safetensors.index.json":
+        extension = ".safetensors"
+    elif indexes[0].name == "pytorch_model.bin.index.json":
+        extension = ".bin"
+    else:
+        return False, index_error
+    try:
+        data = json.loads(indexes[0].read_text(encoding="utf-8"))
+        weight_map = data["weight_map"]
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError):
+        return False, index_error
+    if not isinstance(weight_map, dict) or not weight_map:
+        return False, "invalid-index"
+    shards: set[str] = set()
+    positions: set[int] = set()
+    totals: set[int] = set()
+    pattern = _SAFE_SHARD_PATTERNS[extension]
+    for shard in weight_map.values():
+        if (
+            not isinstance(shard, str)
+            or not shard
+            or "/" in shard
+            or "\\" in shard
+            or Path(shard).name != shard
+            or Path(shard).is_absolute()
+        ):
+            return False, index_error
+        match = pattern.fullmatch(shard)
+        if match is None:
+            return False, index_error
+        position, total = (int(value) for value in match.groups())
+        if position < 1 or total < 1 or position > total:
+            return False, "invalid-index"
+        if not (cache_path / shard).is_file():
+            return False, f"missing indexed weight: {shard}"
+        shards.add(shard)
+        positions.add(position)
+        totals.add(total)
+    if len(totals) != 1:
+        return False, index_error
+    total = totals.pop()
+    if positions != set(range(1, total + 1)) or len(shards) != total:
+        return False, index_error
+    actual_shards = {
+        item.name
+        for item in cache_path.iterdir()
+        if item.is_file()
+        and any(pattern.fullmatch(item.name) for pattern in _SAFE_SHARD_PATTERNS.values())
+    }
+    if actual_shards != shards:
+        return False, index_error
+    return True, "indexed-weights"
+
+
+def _inspect_model_path(
+    path: Path,
+    repo_id: str | None = None,
+    revision: str | None = None,
+) -> ModelCacheStatus:
+    """Inspect model files without mutating cache state.
+
+    Passing ``repo_id`` and ``revision`` enables strict automatic-cache marker
+    validation. Omit both for a manually maintained model directory.
     """
-    exc_holder: list[BaseException] = []
+    cache_path = Path(path)
+    if _is_reparse_point(cache_path):
+        return ModelCacheStatus(cache_path, False, "symlinked cache path")
+    if not cache_path.exists():
+        return ModelCacheStatus(cache_path, False, "cache directory missing")
+    if not cache_path.is_dir():
+        return ModelCacheStatus(cache_path, False, "cache directory missing")
+    if not (cache_path / "config.json").is_file():
+        return ModelCacheStatus(cache_path, False, "missing config.json")
+    resolved_root = cache_path.resolve()
+    if any(
+        _is_reparse_point(item) or not item.resolve().is_relative_to(resolved_root)
+        for item in cache_path.rglob("*")
+    ):
+        return ModelCacheStatus(cache_path, False, "symlinked cache artifact")
 
-    def _run() -> None:  # pragma: no cover — network IO
-        try:
-            # Public model checkpoint download — repo_id is a known constant.
-            snapshot_download(  # nosec B615
-                repo_id=repo_id,
-                local_dir=local_dir,
-                ignore_patterns=ignore_patterns,
-                token=token,
-            )
-        except Exception as exc:
-            exc_holder.append(exc)
-
-    thread = threading.Thread(target=_run, daemon=True)
-    thread.start()
-    thread.join(timeout=timeout)
-
-    if thread.is_alive():  # pragma: no cover — timing-sensitive
-        raise TimeoutError(
-            f"Download of '{repo_id}' did not complete within {timeout}s — "
-            "the connection appears stuck."
+    indexed, weight_reason = _indexed_weights(cache_path)
+    if not indexed and weight_reason != "no-index":
+        if weight_reason.startswith("missing indexed weight:"):
+            return ModelCacheStatus(cache_path, False, weight_reason)
+        index_name = next(
+            (
+                item.name
+                for item in cache_path.iterdir()
+                if item.name.endswith((".safetensors.index.json", ".bin.index.json"))
+            ),
+            "model.safetensors.index.json",
         )
-    if exc_holder:  # pragma: no cover — network failure path
-        raise exc_holder[0]
+        return ModelCacheStatus(cache_path, False, f"invalid shard index: {index_name}")
+    files = [item for item in cache_path.iterdir() if item.is_file()]
+    if indexed and any(item.name in {"model.safetensors", "pytorch_model.bin"} for item in files):
+        return ModelCacheStatus(cache_path, False, "ambiguous model weight layout")
+    if not indexed:
+        if any(
+            pattern.fullmatch(item.name)
+            for item in files
+            for pattern in _SAFE_SHARD_PATTERNS.values()
+        ):
+            return ModelCacheStatus(cache_path, False, "missing model weights or shard index")
+        standalone = [
+            item for item in files if item.name in {"model.safetensors", "pytorch_model.bin"}
+        ]
+        if len(standalone) != 1:
+            return ModelCacheStatus(cache_path, False, "missing model weights or shard index")
+
+    if (repo_id is None) != (revision is None):
+        return ModelCacheStatus(cache_path, False, "invalid-marker-request")
+    if repo_id is not None:
+        marker = cache_path / _MARKER_NAME
+        if not marker.is_file():
+            return ModelCacheStatus(cache_path, False, "missing completion marker")
+        try:
+            marker_data = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return ModelCacheStatus(cache_path, False, "invalid completion marker")
+        expected = {"repo_id": repo_id, "revision": revision}
+        if marker_data != expected:
+            return ModelCacheStatus(cache_path, False, "completion marker identity mismatch")
+    return ModelCacheStatus(cache_path, True, "complete")
+
+
+def inspect_model_cache(model_cfg: ModelConfig, index_cfg: IndexConfig) -> ModelCacheStatus:
+    """Public inspected-cache status for configured automatic or manual model."""
+    path = model_cache_path(model_cfg, index_cfg)
+    return _inspect_model_path(
+        path,
+        None if model_cfg.manual_path is not None else model_cfg.name,
+        None if model_cfg.manual_path is not None else model_cfg.revision,
+    )
+
+
+def _fsync_file(path: Path) -> None:
+    """Flush one file's contents to stable storage."""
+    with path.open("rb+") as handle:
+        os.fsync(handle.fileno())
+
+
+def _fsync_directory(path: Path) -> None:
+    """Flush directory metadata where platform permits it."""
+    if os.name == "nt":
+        return
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(path, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _fsync_tree(root: Path) -> None:
+    """Flush every file and directory below a model cache root."""
+    for item in root.rglob("*"):
+        if item.is_file():
+            _fsync_file(item)
+    for item in sorted((item for item in root.rglob("*") if item.is_dir()), reverse=True):
+        _fsync_directory(item)
+    _fsync_directory(root)
+
+
+def _thread_lock(path: Path) -> threading.RLock:
+    """Return the process-local lock for a model cache path."""
+    global _thread_locks_pid, _thread_locks
+    with _thread_locks_guard:
+        if _thread_locks_pid != os.getpid():
+            _thread_locks = {}
+            _thread_locks_pid = os.getpid()
+        return _thread_locks.setdefault(str(path.absolute()), threading.RLock())
+
+
+def _is_windows_lock_contention(error: OSError) -> bool:
+    """Return whether Windows reported a transient file-lock collision."""
+    winerror = getattr(error, "winerror", None)
+    if winerror is not None:
+        return winerror in {32, 33}
+    return error.errno in {errno.EACCES, errno.EAGAIN}
+
+
+def _acquire_windows_file_lock(handle: BinaryIO) -> None:
+    """Acquire one-byte lock, retrying only documented contention errors."""
+    while True:
+        try:
+            handle.seek(0)
+            _windows_lock(handle.fileno(), _WINDOWS_LOCK_NONBLOCKING, 1)
+            return
+        except OSError as error:
+            if not _is_windows_lock_contention(error):
+                raise
+            threading.Event().wait(0.05)
+
+
+@contextmanager
+def _model_cache_lock(cache_path: Path) -> Iterator[None]:
+    """Serialize a cache promotion across threads and processes."""
+    lock = _thread_lock(cache_path)
+    lock_path = cache_path.parent / f".{cache_path.name}.lock"
+    key = (os.getpid(), threading.get_ident(), str(cache_path.absolute()))
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with lock_path.open("xb") as initializer:
+            initializer.write(b"0")
+            initializer.flush()
+    except FileExistsError:
+        pass
+    lock.acquire()
+    with _reentrant_locks_guard:
+        nested = key in _reentrant_locks
+        _reentrant_locks[key] = _reentrant_locks.get(key, 0) + 1
+    if nested:
+        try:
+            yield
+        finally:
+            with _reentrant_locks_guard:
+                _reentrant_locks[key] -= 1
+                if not _reentrant_locks[key]:
+                    del _reentrant_locks[key]
+            lock.release()
+        return
+    try:
+        with lock_path.open("r+b") as handle:
+            if os.name == "nt":
+                _acquire_windows_file_lock(handle)
+                try:
+                    yield
+                finally:
+                    handle.seek(0)
+                    _windows_lock(handle.fileno(), _WINDOWS_LOCK_UNLOCK, 1)
+            else:
+                import fcntl
+
+                fcntl_api = cast(_FcntlApi, fcntl)
+                fcntl_api.flock(handle.fileno(), fcntl_api.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl_api.flock(handle.fileno(), fcntl_api.LOCK_UN)
+    finally:
+        with _reentrant_locks_guard:
+            _reentrant_locks[key] -= 1
+            if not _reentrant_locks[key]:
+                del _reentrant_locks[key]
+        lock.release()
 
 
 # ---------------------------------------------------------------------------
@@ -147,89 +465,65 @@ def download_model_if_needed(
         >>> print(path)
         models/MuQ-large-msd-iter
     """
-    # --- manual path ---
+    cache_dir = model_cache_path(model_cfg, index_cfg)
     if model_cfg.manual_path is not None:
-        if not model_cfg.manual_path.exists():
-            raise ModelLoadError(
-                f"manual_path does not exist: {model_cfg.manual_path}\n"
-                "Check [model] manual_path in config.toml."
-            )
-        logger.info("Using manually specified model path: %s", model_cfg.manual_path)
-        return model_cfg.manual_path
-
-    # --- auto-download cache ---
-    model_name = model_cfg.name
-    # Derive a safe directory name from the HuggingFace model ID (strip the "org/" prefix)
-    cache_name = model_name.split("/")[-1]
-    cache_dir = index_cfg.model_dir / cache_name
-
-    if cache_dir.exists() and any(cache_dir.iterdir()):
-        logger.info("Model already cached at %s", cache_dir)
+        status = inspect_model_cache(model_cfg, index_cfg)
+        if not status.complete:
+            raise ModelLoadError(f"manual_path is incomplete ({status.reason}): {cache_dir}")
         return cache_dir
 
-    # --- download with retry ---
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    logger.info("Downloading model %s to %s ...", model_name, cache_dir)
-    print(
-        f"\n[AutoDJ] Downloading model '{model_name}' (~1.2 GB) to {cache_dir}\n"
-        "This is a one-time download. Please wait...\n"
-    )
+    status = inspect_model_cache(model_cfg, index_cfg)
+    if status.complete:
+        return cache_dir
 
-    max_retries = _DEFAULT_MAX_RETRIES
-    timeout = _DEFAULT_TIMEOUT_SECONDS
-    retry_delay = _DEFAULT_RETRY_DELAY
-    ignore_patterns = ["*.msgpack", "flax_model*", "tf_model*", "rust_model*"]
-
-    last_exc: BaseException | None = None
-    for attempt in range(1, max_retries + 1):
-        try:
-            logger.info("Download attempt %d/%d (timeout=%ds) ...", attempt, max_retries, timeout)
-            if attempt > 1:
-                print(f"[AutoDJ] Retry {attempt}/{max_retries} ...\n")
-            _snapshot_download_with_timeout(
-                repo_id=model_name,
-                local_dir=str(cache_dir),
-                ignore_patterns=ignore_patterns,
+    staging: Path | None = None
+    try:
+        with _model_cache_lock(cache_dir):
+            status = inspect_model_cache(model_cfg, index_cfg)
+            if status.complete:
+                return cache_dir
+            staging = cache_dir.parent / f".{cache_dir.name}.staging-{uuid.uuid4().hex}"
+            staging.mkdir()
+            snapshot_download(  # nosec B615 -- repository comes from user configuration
+                repo_id=model_cfg.name,
+                revision=model_cfg.revision,
+                local_dir=str(staging),
                 token=hf_token,
-                timeout=timeout,
+                ignore_patterns=_IGNORE_PATTERNS,
+                etag_timeout=_ETAG_TIMEOUT_SECONDS,
             )
-            logger.info("Download complete.")
+            staged = _inspect_model_path(staging)
+            if not staged.complete:
+                raise ModelLoadError(f"download produced incomplete model cache ({staged.reason})")
+            marker = staging / _MARKER_NAME
+            marker.write_text(
+                json.dumps(
+                    {"repo_id": model_cfg.name, "revision": model_cfg.revision},
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+            _fsync_file(marker)
+            _fsync_tree(staging)
+            # Delete only target already inspected incomplete, immediately before promotion.
+            current = inspect_model_cache(model_cfg, index_cfg)
+            if current.complete:
+                return cache_dir
+            if cache_dir.is_symlink() or cache_dir.is_file():
+                cache_dir.unlink()
+            elif cache_dir.is_dir():
+                shutil.rmtree(cache_dir)
+            os.replace(staging, cache_dir)
+            staging = None
+            _fsync_directory(cache_dir.parent)
             return cache_dir
-        except TimeoutError as exc:
-            last_exc = exc
-            logger.warning(
-                "Attempt %d/%d timed out after %ds: %s",
-                attempt,
-                max_retries,
-                timeout,
-                exc,
-            )
-            print(
-                f"[AutoDJ] Attempt {attempt}/{max_retries} timed out "
-                f"after {timeout}s — retrying in {retry_delay}s...\n"
-            )
-        except Exception as exc:
-            last_exc = exc
-            logger.warning("Attempt %d/%d failed: %s", attempt, max_retries, exc)
-            print(
-                f"[AutoDJ] Attempt {attempt}/{max_retries} failed "
-                f"({exc}) — retrying in {retry_delay}s...\n"
-            )
-
-        if attempt < max_retries:
-            time.sleep(retry_delay)
-
-    raise ModelLoadError(
-        f"Failed to download model '{model_name}' after {max_retries} attempts.\n"
-        f"Last error: {last_exc}\n\n"
-        "Manual download instructions:\n"
-        f"  1. Visit https://huggingface.co/{model_name}\n"
-        "  2. Click 'Files and versions' and download all files\n"
-        f"  3. Place them in: {cache_dir}\n"
-        "  4. Add to config.toml:\n"
-        f"     [model]\n"
-        f'     manual_path = "{cache_dir}"\n'
-    ) from last_exc
+    except Exception as exc:
+        if isinstance(exc, ModelLoadError):
+            raise
+        raise ModelLoadError(f"Failed to download model '{model_cfg.name}': {exc}") from exc
+    finally:
+        if staging is not None and staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------

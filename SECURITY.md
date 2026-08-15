@@ -2,13 +2,8 @@
 
 ## Supported versions
 
-Only the latest tagged release on `main` receives security updates.
-Pre-1.0 versions move fast — pin in your project if you need stability.
-
-| Version  | Supported          |
-|----------|--------------------|
-| 0.12.x   | :white_check_mark: |
-| < 0.12   | :x:                |
+Only the latest tagged release on `main` receives security updates. The current supported line is
+`0.15.x`. Versions before 0.15 no longer receive security fixes.
 
 ## Reporting a vulnerability
 
@@ -34,10 +29,16 @@ In scope:
 - The CLI (`autodj` and its subcommands).
 - The web UI (`autodj serve`).
 - The background job runner (`autodj.jobs`).
+- Backup archive creation and restore validation.
+- Container build and runtime configuration, plus release artifacts.
 
 Out of scope:
 
-- Third-party dependencies — please report those upstream.
-- Self-inflicted issues from running `autodj serve --host 0.0.0.0` on
-  an untrusted network without a reverse proxy.  The web server has no
-  built-in authentication; only bind to a trusted LAN.
+- Vulnerabilities entirely within third-party dependencies. Report those upstream, but tell us if
+  AutoDJ makes affected behavior reachable.
+- Public Internet hosting, including end-to-end TLS deployments. AutoDJ has token-based LAN
+  authentication, not multi-user authorization or an Internet-facing identity system.
+- Attacks that already control filesystem roots trusted through local operating-system ACLs.
+
+Operational security boundaries and recovery procedures are documented in
+[THREAT_MODEL.md](THREAT_MODEL.md) and [docs/operations.md](docs/operations.md).

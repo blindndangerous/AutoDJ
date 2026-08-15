@@ -12,6 +12,17 @@
 
 import { dbg } from "./dom-helpers.js";
 import { clearLiveRegionLater } from "./live-region.js";
+import {
+  captureAuthenticatedRequestEpoch,
+  isAuthenticatedRequestCurrent,
+  makeSingleFlight,
+  postJsonBestEffort,
+  probeResource,
+  requestBinary,
+  requestJson,
+  requestJsonBestEffort,
+} from "./api-client.js";
+import { createLatestRequestOwner } from "./latest-request.js";
 
 // DOM refs are looked up here so app.js doesn't have to inject them.
 const eqLow      = document.getElementById("eq-low");
@@ -30,7 +41,7 @@ const npAnnounce = document.getElementById("now-playing-announce");
 // 3-band EQ
 // ----------------------------------------------------------------
 
-export function eqValueLabel(v100) {
+function eqValueLabel(v100) {
   // v100: 0–200 with 100 = unity.  Return human label + dB.
   if (v100 === 0) return "Kill";
   if (v100 === 100) return "Unity";
@@ -59,18 +70,18 @@ export function applyEqState(eq) {
 }
 
 let eqDebounceTimer = null;
+function announceRequestError(errorValue) {
+  npAnnounce.textContent = `Request failed: ${errorValue.message || errorValue}`;
+}
+
 export function postEq() {
   clearTimeout(eqDebounceTimer);
   eqDebounceTimer = setTimeout(() => {
-    fetch("/api/eq", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+    void postJsonBestEffort("/api/eq", {
         low:  parseInt(eqLow.value, 10) / 100,
         mid:  parseInt(eqMid.value, 10) / 100,
         high: parseInt(eqHigh.value, 10) / 100,
-      }),
-    });
+    }, announceRequestError);
   }, 120);
 }
 
@@ -116,7 +127,7 @@ btnEqReset.addEventListener("click", () => {
 //      active so the cycle continues.
 
 export let playbackEnabled = false;
-export let suppressAdvance = false;   // gate spurious advance posts during programmatic actions
+let suppressAdvance = false;   // gate spurious advance posts during programmatic actions
 export let _lastBrowserPlayback = false;  // mirror of state.browser_playback for click handlers
 
 // Dependency-injected state applier.  app.js defines applyState (it
@@ -148,6 +159,8 @@ export const decks = [
 ];
 export let activeIdx = 0;
 export let crossfading = false;
+let _playbackGeneration = 0;
+let _pendingCrossfade = null;
 
 // Per-worklet readiness flags so a single failed module doesn't disable
 // all four effects.  Settled individually via Promise.allSettled below.
@@ -202,12 +215,21 @@ export function ensureAudioGraph() {
   return _ctx;
 }
 
-export function deckActive() { return decks[activeIdx]; }
-export function deckStandby() { return decks[activeIdx ^ 1]; }
+function deckActive() { return decks[activeIdx]; }
+function deckStandby() { return decks[activeIdx ^ 1]; }
 
 export function stopAllDecks() {
   // Hard stop — used when the server disconnects so audio doesn't keep
   // playing from buffered files after the control surface is gone.
+  _playbackGeneration += 1;
+  if (_pendingCrossfade) {
+    const pending = _pendingCrossfade;
+    _pendingCrossfade = null;
+    clearTimeout(pending.timer);
+    try { pending.cleanupMetadata(); } catch (_) {}
+    try { pending.teardownFx(); } catch (errorValue) { announceRequestError(errorValue); }
+    pending.resolve(false);
+  }
   for (const d of decks) {
     try { d.audio.pause(); } catch (_) {}
     try { d.audio.currentTime = 0; } catch (_) {}
@@ -219,6 +241,7 @@ export function stopAllDecks() {
     }
   }
   crossfading = false;
+  suppressAdvance = false;
 }
 
 export function setSrcOnDeck(deck, path) {
@@ -227,7 +250,7 @@ export function setSrcOnDeck(deck, path) {
   deck.audio.src = "/api/audio?path=" + encodeURIComponent(path);
 }
 
-export function playOnDeck(deck) {
+function playOnDeck(deck) {
   return deck.audio.play().catch((err) => {
     console.warn("deck.play failed:", err);
   });
@@ -255,7 +278,7 @@ export let _volume = 1;
 // for fadeSec, and disconnects on teardown.
 // ----------------------------------------------------------------
 
-export let _lastTransitionFx = "none";
+let _lastTransitionFx = "none";
 let _rotateCursor = -1;
 
 function _resolveTransition(name) {
@@ -355,30 +378,40 @@ function _disconnectAll(...nodes) {
 // through an AudioBufferSourceNode while muting the live deck.  Caches
 // the decoded buffer per path so a Skip → Skip cycle doesn't re-decode.
 const _bufferCache = new Map();   // path → AudioBuffer
-const DECODE_FETCH_TIMEOUT_MS = 8000;
+const _bufferPending = new Map();
+let _bufferGeneration = 0;
 
 async function _decodeFor(path) {
   if (_bufferCache.has(path)) return _bufferCache.get(path);
+  if (_bufferPending.has(path)) return _bufferPending.get(path);
   const url = "/api/audio?path=" + encodeURIComponent(path);
-  const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
-  const timer = ctrl ? setTimeout(() => ctrl.abort(), DECODE_FETCH_TIMEOUT_MS) : null;
-  let arr;
-  try {
-    const opts = ctrl ? { signal: ctrl.signal } : undefined;
-    const resp = await fetch(url, opts);
-    if (!resp.ok) throw new Error(`audio fetch ${resp.status}`);
-    arr = await resp.arrayBuffer();
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-  const buf = await _ctx.decodeAudioData(arr);
-  // Cap cache at 4 entries — these can be 100+ MB each
-  if (_bufferCache.size >= 4) {
-    const k = _bufferCache.keys().next().value;
-    _bufferCache.delete(k);
-  }
-  _bufferCache.set(path, buf);
-  return buf;
+  const generation = _bufferGeneration;
+  const pending = requestBinary(url)
+    .then((arr) => _ctx.decodeAudioData(arr))
+    .then((buf) => {
+      if (generation !== _bufferGeneration) return buf;
+      // Cap cache at 4 entries — these can be 100+ MB each
+      if (_bufferCache.size >= 4) {
+        const k = _bufferCache.keys().next().value;
+        _bufferCache.delete(k);
+      }
+      _bufferCache.set(path, buf);
+      return buf;
+    })
+    .catch((errorValue) => {
+      // Decoded-audio effects are invoked on demand at transition time.
+      // Surface a failed audio request just as other client requests do,
+      // while preserving the rejection for the effect's fallback handler.
+      announceRequestError(errorValue);
+      throw errorValue;
+    })
+    .finally(() => {
+      if (_bufferPending.get(path) === pending) {
+        _bufferPending.delete(path);
+      }
+    });
+  _bufferPending.set(path, pending);
+  return pending;
 }
 
 function _doSpin(ctx, outDeck, t0, fadeSec, reverse, teardowns, slow = false) {
@@ -479,7 +512,7 @@ function _doSpin(ctx, outDeck, t0, fadeSec, reverse, teardowns, slow = false) {
   teardowns.push(() => {
     cancelled = true;
     outDeck.audio.muted = false;
-    // Don't restore prevGain — the crossfade has handed off to the new
+    // Don't restore outgoing gain — the crossfade has handed off to the new
     // deck.  Setting it back here would cause a brief audible pop of the
     // already-finished outgoing track.
     if (bufSrc) {
@@ -631,7 +664,7 @@ const _ABS_MIN_FX_DURATION_S = 1.0;
 //   snapToDownbeat    when true, the effect's first scheduled event lands
 //                     on the next outgoing downbeat (≤ 1 bar of latency).
 //                     Pure ambient envelope FX get false.
-export const _FX_BAR_TABLE = {
+const _FX_BAR_TABLE = {
   beat_repeat:    [4, true],
   gate_stutter:   [4, true],
   stutter_build:  [4, true],
@@ -673,7 +706,7 @@ export const _FX_BAR_TABLE = {
 // from the server-emitted track payload (downbeats_outro / downbeats_intro
 // / key_hz) plus the cached BPMs.  All accessors take an AudioContext
 // time so the math stays sample-accurate. ---
-export const _BS = {
+const _BS = {
   enabled: false,
   keyEnabled: false,
   outBpm: 0,
@@ -796,7 +829,7 @@ function _effectDurationFor(effect, fadeSec, outroLen) {
   return dur;
 }
 
-export function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
+function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
   const ctx = _ctx;
   if (!ctx || effect === "none" || !effect) return () => {};
   // Caller (startCrossfade) now resolves the effect-preferred duration
@@ -1381,7 +1414,7 @@ export function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
         src.stop(t2 + 0.01);
         sources.push({ src, g });
       }
-    }).catch(() => {});
+    }).catch(announceRequestError);
     teardowns.push(() => {
       cancelled = true;
       outDeck.audio.muted = false;
@@ -1432,7 +1465,7 @@ export function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
         src.stop(t1 + sliceSec + 0.01);
         sources.push({ src, g });
       }
-    }).catch(() => {});
+    }).catch(announceRequestError);
     teardowns.push(() => {
       cancelled = true;
       outDeck.audio.muted = false;
@@ -1847,14 +1880,56 @@ export function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
 // MUST NOT POST /api/advance again or the server steps forward a
 // second time and a fresh state push triggers another catch-up
 // crossfade -- cascading "shuffles every few seconds" bug.
+const runAdvance = makeSingleFlight(async (epoch, playbackGeneration) => {
+  const isCurrent = () => isAuthenticatedRequestCurrent(epoch)
+    && playbackGeneration === _playbackGeneration;
+  if (!isCurrent()) return null;
+  const state = await requestJsonBestEffort(
+    "/api/advance", { method: "POST" }, (errorValue) => {
+      if (isCurrent()) announceRequestError(errorValue);
+    },
+  );
+  if (state && _applyState && isCurrent()) _applyState(state);
+  return state;
+});
+function requestAdvance() {
+  return runAdvance(captureAuthenticatedRequestEpoch(), _playbackGeneration);
+}
+
+const repickResponseOwner = createLatestRequestOwner();
+const runRepick = makeSingleFlight(async (blacklist, epoch, playbackGeneration) => {
+  const isCurrent = () => isAuthenticatedRequestCurrent(epoch)
+    && playbackGeneration === _playbackGeneration;
+  if (!isCurrent()) return null;
+  const request = repickResponseOwner.begin();
+  const state = await requestJsonBestEffort("/api/repick-next", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(blacklist ? { blacklist } : {}),
+  }, (errorValue) => {
+    if (repickResponseOwner.isCurrent(request)
+        && isCurrent()) announceRequestError(errorValue);
+  });
+  if (state && _applyState && repickResponseOwner.isCurrent(request)
+      && isCurrent()) _applyState(state);
+  repickResponseOwner.finish(request);
+  return state;
+});
+function requestRepick(blacklist) {
+  return runRepick(
+    blacklist, captureAuthenticatedRequestEpoch(), _playbackGeneration,
+  );
+}
+
 export function startCrossfade(nextPath, fadeSec, serverLed = false) {
-  if (!_ctx || crossfading) return;
-  if (!nextPath) return;
+  if (!_ctx || crossfading || !nextPath) return Promise.resolve(false);
   crossfading = true;
+  const operationGeneration = _playbackGeneration;
   dbg("crossfade ->", nextPath, "| fade=", fadeSec.toFixed(2), "s",
     "| serverLed=", serverLed);
 
   const standby = deckStandby();
+  let cleanupMetadata = () => {};
   setSrcOnDeck(standby, nextPath);
   standby.gain.gain.setValueAtTime(0, _ctx.currentTime);
   // Mixxx-style intro alignment / leading-silence skip — when the
@@ -1874,6 +1949,7 @@ export function startCrossfade(nextPath, fadeSec, serverLed = false) {
     // assignment seeks to the end + decode tail (silent crossfade).
     const seekTarget = _nextTrackIntroEndCache;
     const seekIfReady = () => {
+      if (operationGeneration !== _playbackGeneration) return;
       try {
         const dur = standby.audio.duration;
         const safe = isFinite(dur) && dur > 1.0
@@ -1886,6 +1962,7 @@ export function startCrossfade(nextPath, fadeSec, serverLed = false) {
       seekIfReady();
     } else {
       standby.audio.addEventListener("loadedmetadata", seekIfReady, { once: true });
+      cleanupMetadata = () => standby.audio.removeEventListener("loadedmetadata", seekIfReady);
     }
   }
   playOnDeck(standby);
@@ -1932,19 +2009,36 @@ export function startCrossfade(nextPath, fadeSec, serverLed = false) {
 
   suppressAdvance = true;
   if (!serverLed) {
-    fetch("/api/advance", { method: "POST" }).catch(() => {});
+    void requestAdvance();
   }
 
-  setTimeout(() => {
-    teardownFx();
-    activeIdx ^= 1;
-    crossfading = false;
-    suppressAdvance = false;
-    try { active.audio.pause(); } catch (_) {}
-    active.audio.removeAttribute("src");
-    active.path = null;
-    active.audio.load();
-  }, effectDur * 1000 + 100);
+  return new Promise((resolve) => {
+    const pending = {
+      cleanupMetadata,
+      generation: operationGeneration,
+      resolve,
+      teardownFx,
+      timer: null,
+    };
+    _pendingCrossfade = pending;
+    pending.timer = setTimeout(() => {
+      if (_pendingCrossfade !== pending || operationGeneration !== _playbackGeneration) {
+        resolve(false);
+        return;
+      }
+      _pendingCrossfade = null;
+      cleanupMetadata();
+      try { teardownFx(); } catch (errorValue) { announceRequestError(errorValue); }
+      activeIdx ^= 1;
+      crossfading = false;
+      suppressAdvance = false;
+      try { active.audio.pause(); } catch (_) {}
+      try { active.audio.removeAttribute("src"); } catch (_) {}
+      active.path = null;
+      try { active.audio.load(); } catch (_) {}
+      resolve(true);
+    }, effectDur * 1000 + 100);
+  });
 }
 
 // "ended" on either deck = unconditional advance to next track when not
@@ -1952,7 +2046,7 @@ export function startCrossfade(nextPath, fadeSec, serverLed = false) {
 for (const d of decks) {
   d.audio.addEventListener("ended", () => {
     if (suppressAdvance || crossfading) return;
-    fetch("/api/advance", { method: "POST" }).catch(() => {});
+    void requestAdvance();
   });
   d.audio.addEventListener("error", () => {
     const e = d.audio.error;
@@ -1975,21 +2069,14 @@ for (const d of decks) {
     if (isActive) {
       // Active deck failed mid-playback — auto-advance.
       msg += " — auto-skipping.";
-      fetch("/api/advance", { method: "POST" }).catch(() => {});
+      void requestAdvance();
     } else {
       // Standby deck (the prefetched next track) failed to load.  Don't
       // advance the live track — just ask the server for a different next
       // track and let the live one keep playing.  Blacklist the bad path
       // so similarity won't immediately re-pick it.
       msg += " — picking a different next track.";
-      const body = path ? JSON.stringify({ blacklist: path }) : "{}";
-      fetch("/api/repick-next", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body,
-      }).then(r => r.ok ? r.json() : null).then(state => {
-        if (state && _applyState) _applyState(state);
-      }).catch(() => {});
+      void requestRepick(path);
       // Clear cached prefetch path so timeupdate doesn't try to crossfade
       // into the broken file again before the next WS state push.
       _nextTrackPathCache = null;
@@ -2067,28 +2154,28 @@ for (const d of decks) {
 
 // Latest server hints (cached so timeupdate doesn't have to peek into state)
 export let _crossfadeSecondsCache = 3.0;
-export let _fadeInSecondsCache = 3.0;
+let _fadeInSecondsCache = 3.0;
 export let _currentOutroLenCache = null;
 export let _currentOutroStartCache = null;   // active deck's outro_start_s
 export let _nextTrackIntroEndCache = null;   // incoming track's intro_end_s
 export let _nextTrackPathCache = null;
 let _transitionMode = "full_intro_outro";
-export let _prefetchEnabled = true;
-export let _silenceTriggerEnabled = true;
+let _prefetchEnabled = true;
+let _silenceTriggerEnabled = true;
 
 // --- Beat- + key-sync transition FX caches.  Populated from
 // applyBrowserPlaybackState whenever a state push lands; consumed by
 // _BS.refresh() at the start of every crossfade so per-effect timing
 // can snap to downbeats and oscillator-FX can tune to root notes. ---
-export let _beatSyncEnabled = true;
-export let _keySyncEnabled = true;
+let _beatSyncEnabled = true;
+let _keySyncEnabled = true;
 export let _beatmatchOnSkip = false;
 export let _outBpmCache = 0;
 export let _inBpmCache = 0;
-export let _outDownbeatsCache = [];
-export let _inDownbeatsCache = [];
-export let _outKeyHzCache = null;
-export let _inKeyHzCache = null;
+let _outDownbeatsCache = [];
+let _inDownbeatsCache = [];
+let _outKeyHzCache = null;
+let _inKeyHzCache = null;
 
 // _libraryWarned moved into ./modules/settings-panel.js.
 
@@ -2116,21 +2203,23 @@ function _resolveFadeSec(mode, baseFade, outroLen, nextIntroEnd) {
 
 // First-click unlock — used by the unified Play button (btnPause).
 export async function unlockAndPlay() {
+  const epoch = captureAuthenticatedRequestEpoch();
   ensureAudioGraph();
   if (_ctx && _ctx.state === "suspended") await _ctx.resume();
+  if (!isAuthenticatedRequestCurrent(epoch)) return false;
   // Start a silent play() on the active deck to satisfy iOS gesture rule.
   playOnDeck(deckActive());
 
   // Pull current state and load the active deck with the current track.
   let state;
   try {
-    const r = await fetch("/api/status");
-    if (!r.ok) throw new Error(`/api/status returned ${r.status}`);
-    state = await r.json();
+    state = await requestJson("/api/status");
   } catch (err) {
+    if (!isAuthenticatedRequestCurrent(epoch)) return false;
     npAnnounce.textContent = "Cannot reach server: " + (err.message || err);
     throw err;
   }
+  if (!isAuthenticatedRequestCurrent(epoch)) return false;
   const path = state.current_track ? state.current_track.path : null;
   if (!path) {
     npAnnounce.textContent = "No current track on server.";
@@ -2138,9 +2227,14 @@ export async function unlockAndPlay() {
   }
   setSrcOnDeck(deckActive(), path);
   await playOnDeck(deckActive());
+  if (!isAuthenticatedRequestCurrent(epoch)) {
+    stopAllDecks();
+    return false;
+  }
   playbackEnabled = true;
   setVolume(_volume);   // apply current slider value
   if (_applyState) _applyState(state);    // refresh UI from /api/status
+  return true;
 }
 
 export function applyBrowserPlaybackState(s) {
@@ -2279,36 +2373,58 @@ export function applyBrowserPlaybackState(s) {
 // Cover art
 // ----------------------------------------------------------------
 
+const coverRequestOwner = createLatestRequestOwner();
+
 export function loadCoverArt(trackPath) {
-  // fetch() probe instead of <img> probe — both succeed silently on 200,
+  // A request probe avoids the console noise caused by an image 404.
   // but <img>.onerror logs a console error for every 404, which spams
   // DevTools on tracks without embedded art.  fetch returns ok=false on
   // 404 without logging.  Set <img>.src only after we know the response
   // is a real image.
+  if (!trackPath) {
+    coverRequestOwner.cancel();
+    coverArt.hidden = true;
+    coverArt.removeAttribute("src");
+    return;
+  }
+  const request = coverRequestOwner.begin();
   const url = `/api/art?path=${encodeURIComponent(trackPath)}`;
-  fetch(url, { method: "GET" }).then((res) => {
-    if (!res.ok) {
+  void probeResource(url, { method: "GET", signal: request.signal }).then((exists) => {
+    if (!coverRequestOwner.isCurrent(request)) return;
+    if (!exists) {
       coverArt.hidden = true;
       coverArt.removeAttribute("src");
       return;
     }
     coverArt.src = url;
     coverArt.hidden = false;
-  }).catch(() => {
+  }).catch((errorValue) => {
+    if (!coverRequestOwner.isCurrent(request)) return;
     coverArt.hidden = true;
     coverArt.removeAttribute("src");
+    announceRequestError(errorValue);
+  }).finally(() => {
+    coverRequestOwner.finish(request);
   });
 }
 
 
-// Reset cached track markers + clear deck audio.  Called by the
-// WebSocket onclose handler to wipe stale intro / outro markers so
-// the next reconnect doesn't trigger a crossfade on a marker that
-// no longer matches the currently-loaded track.
-export function resetTrackCaches() {
+// Reset only reconnect-sensitive transition state. A transient socket
+// close uses this without canceling recoverable art/decode ownership.
+export function resetTransitionCaches() {
   _currentOutroLenCache    = null;
   _currentOutroStartCache  = null;
   _nextTrackIntroEndCache  = null;
+  _nextTrackPathCache      = null;
+}
+
+// Full protected-session reset used only after confirmed auth expiry.
+export function resetTrackCaches() {
+  resetTransitionCaches();
+  coverRequestOwner.cancel();
+  _bufferGeneration += 1;
+  _bufferCache.clear();
+  _bufferPending.clear();
 }
 
 // Setter for `_lastBrowserPlayback` so app.js (which mirrors this from

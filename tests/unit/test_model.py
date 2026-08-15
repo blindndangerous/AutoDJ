@@ -4,7 +4,14 @@ All external dependencies (muq, torch, huggingface_hub) are mocked so
 tests run fast without downloading anything.
 """
 
+import hashlib
+import json
+import multiprocessing
+import os
+import socket
 import sys
+import threading
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -12,7 +19,35 @@ import numpy as np
 import pytest
 
 from autodj.config import IndexConfig, ModelConfig
-from autodj.model import EMBEDDING_DIM, ModelLoadError, MuqWrapper, download_model_if_needed
+from autodj.model import (
+    EMBEDDING_DIM,
+    ModelCacheStatus,
+    ModelLoadError,
+    MuqWrapper,
+    _inspect_model_path,
+    _is_reparse_point,
+    download_model_if_needed,
+    inspect_model_cache,
+    model_cache_path,
+)
+
+
+def _hold_model_cache_lock(cache_path: str, ready: object, release: object) -> None:
+    """Spawn-safe helper proving OS lock serializes independent processes."""
+    from autodj.model import _model_cache_lock
+
+    with _model_cache_lock(Path(cache_path)):
+        ready.set()
+        release.wait()
+
+
+def _wait_for_model_cache_lock(cache_path: str, entered: object, acquired: object) -> None:
+    from autodj.model import _model_cache_lock
+
+    entered.set()
+    with _model_cache_lock(Path(cache_path)):
+        acquired.set()
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -31,6 +66,7 @@ def model_config_manual(tmp_path: Path) -> ModelConfig:
     model_dir = tmp_path / "MuQ-large-msd-iter"
     model_dir.mkdir()
     (model_dir / "config.json").write_text("{}", encoding="utf-8")
+    (model_dir / "model.safetensors").write_bytes(b"weights")
     return ModelConfig(name="OpenMuQ/MuQ-large-msd-iter", manual_path=model_dir)
 
 
@@ -51,7 +87,7 @@ class TestDownloadModelIfNeeded:
     def test_returns_manual_path_directly(
         self, model_config_manual: ModelConfig, index_config: IndexConfig
     ) -> None:
-        """When manual_path is set and exists, no download is performed."""
+        """Complete manual cache is accepted without download."""
         result = download_model_if_needed(model_config_manual, index_config)
         assert result == model_config_manual.manual_path
 
@@ -59,6 +95,15 @@ class TestDownloadModelIfNeeded:
         cfg = ModelConfig(name="x", manual_path=tmp_path / "nonexistent")
         with pytest.raises(ModelLoadError, match="manual_path"):
             download_model_if_needed(cfg, index_config)
+
+    def test_raises_if_manual_path_is_incomplete(
+        self, tmp_path: Path, index_config: IndexConfig
+    ) -> None:
+        manual = tmp_path / "manual"
+        manual.mkdir()
+        (manual / "config.json").write_text("{}", encoding="utf-8")
+        with pytest.raises(ModelLoadError, match="incomplete"):
+            download_model_if_needed(ModelConfig(manual_path=manual), index_config)
 
     def test_returns_cached_path_if_exists(
         self, model_config_auto: ModelConfig, tmp_path: Path
@@ -68,10 +113,14 @@ class TestDownloadModelIfNeeded:
             index_dir=tmp_path / "index",
             model_dir=tmp_path / "models",
         )
-        # Pre-create the expected cache directory with a marker file
-        cache_dir = tmp_path / "models" / "MuQ-large-msd-iter"
+        cache_dir = model_cache_path(model_config_auto, index_config)
         cache_dir.mkdir(parents=True)
         (cache_dir / "config.json").write_text("{}", encoding="utf-8")
+        (cache_dir / "model.safetensors").write_bytes(b"weights")
+        (cache_dir / ".autodj-complete").write_text(
+            json.dumps({"repo_id": model_config_auto.name, "revision": "main"}),
+            encoding="utf-8",
+        )
 
         result = download_model_if_needed(model_config_auto, index_config)
         assert result == cache_dir
@@ -79,18 +128,26 @@ class TestDownloadModelIfNeeded:
     def test_calls_snapshot_download_if_not_cached(
         self, model_config_auto: ModelConfig, index_config: IndexConfig, tmp_path: Path
     ) -> None:
-        """When model is not cached, _snapshot_download_with_timeout is called."""
+        """New automatic cache is staged, marked, then promoted."""
         index_config = IndexConfig(
             index_dir=tmp_path / "index",
             model_dir=tmp_path / "models",
         )
 
-        with patch("autodj.model._snapshot_download_with_timeout") as mock_dl:
-            download_model_if_needed(model_config_auto, index_config)
+        def populate(**kwargs: object) -> str:
+            staged = Path(str(kwargs["local_dir"]))
+            (staged / "config.json").write_text("{}", encoding="utf-8")
+            (staged / "model.safetensors").write_bytes(b"weights")
+            return str(staged)
+
+        with patch("autodj.model.snapshot_download", side_effect=populate) as mock_dl:
+            result = download_model_if_needed(model_config_auto, index_config)
 
         mock_dl.assert_called_once()
-        call_kwargs = mock_dl.call_args
-        assert "OpenMuQ/MuQ-large-msd-iter" in str(call_kwargs)
+        assert result == model_cache_path(model_config_auto, index_config)
+        marker = json.loads((result / ".autodj-complete").read_text(encoding="utf-8"))
+        assert marker == {"repo_id": model_config_auto.name, "revision": "main"}
+        assert mock_dl.call_args.kwargs["revision"] == "main"
 
     def test_raises_model_load_error_on_download_failure(
         self, model_config_auto: ModelConfig, index_config: IndexConfig, tmp_path: Path
@@ -100,81 +157,566 @@ class TestDownloadModelIfNeeded:
             model_dir=tmp_path / "models",
         )
         with (
-            patch(
-                "autodj.model._snapshot_download_with_timeout",
-                side_effect=Exception("network error"),
-            ),
+            patch("autodj.model.snapshot_download", side_effect=Exception("network error")),
             pytest.raises(ModelLoadError, match="download"),
         ):
             download_model_if_needed(model_config_auto, index_config)
 
-    def test_retries_on_timeout(self, model_config_auto: ModelConfig, tmp_path: Path) -> None:
-        """Download is retried up to max_retries times on TimeoutError."""
-        index_config = IndexConfig(
-            index_dir=tmp_path / "index",
-            model_dir=tmp_path / "models",
-        )
-        call_count = {"n": 0}
-
-        def _fail_twice_then_succeed(*args, **kwargs):
-            call_count["n"] += 1
-            if call_count["n"] < 3:
-                raise TimeoutError("stuck")
-
-        with (
-            patch(
-                "autodj.model._snapshot_download_with_timeout", side_effect=_fail_twice_then_succeed
-            ),
-            patch("autodj.model.time") as mock_time,
-        ):
-            download_model_if_needed(model_config_auto, index_config)
-
-        assert call_count["n"] == 3
-        # sleep was called between retries (twice for 3 attempts)
-        assert mock_time.sleep.call_count == 2
-
-    def test_raises_after_all_retries_exhausted(
-        self, model_config_auto: ModelConfig, tmp_path: Path
+    def test_failure_removes_only_owned_staging(
+        self, model_config_auto: ModelConfig, index_config: IndexConfig
     ) -> None:
-        """ModelLoadError raised with manual-download instructions after all retries fail."""
-        index_config = IndexConfig(
-            index_dir=tmp_path / "index",
-            model_dir=tmp_path / "models",
-        )
         with (
-            patch(
-                "autodj.model._snapshot_download_with_timeout",
-                side_effect=TimeoutError("stuck"),
-            ),
-            patch("autodj.model.time"),
-            pytest.raises(ModelLoadError, match="manual_path"),
+            patch("autodj.model.snapshot_download", side_effect=TimeoutError("stuck")),
+            pytest.raises(ModelLoadError, match="download"),
         ):
             download_model_if_needed(model_config_auto, index_config)
+        assert not list(index_config.model_dir.glob("*.staging-*"))
 
-    def test_retry_count_equals_max_retries(
-        self, model_config_auto: ModelConfig, tmp_path: Path
+    def test_download_timeout_does_not_mutate_global_socket_timeout(
+        self, model_config_auto: ModelConfig, index_config: IndexConfig
     ) -> None:
-        """Exactly _DEFAULT_MAX_RETRIES attempts are made before giving up."""
-        from autodj.model import _DEFAULT_MAX_RETRIES
-
-        index_config = IndexConfig(
-            index_dir=tmp_path / "index",
-            model_dir=tmp_path / "models",
-        )
-        call_count = {"n": 0}
-
-        def _always_timeout(*args, **kwargs):
-            call_count["n"] += 1
-            raise TimeoutError("stuck")
-
+        original_timeout = socket.getdefaulttimeout()
         with (
-            patch("autodj.model._snapshot_download_with_timeout", side_effect=_always_timeout),
-            patch("autodj.model.time"),
-            pytest.raises(ModelLoadError),
+            patch("autodj.model.snapshot_download", side_effect=TimeoutError("stuck")),
+            pytest.raises(ModelLoadError, match="download"),
         ):
             download_model_if_needed(model_config_auto, index_config)
+        assert socket.getdefaulttimeout() == original_timeout
 
-        assert call_count["n"] == _DEFAULT_MAX_RETRIES
+    def test_concurrent_threads_share_one_download(
+        self, model_config_auto: ModelConfig, index_config: IndexConfig
+    ) -> None:
+        started = threading.Event()
+        release = threading.Event()
+        calls = 0
+        calls_guard = threading.Lock()
+
+        def populate(**kwargs: object) -> str:
+            nonlocal calls
+            with calls_guard:
+                calls += 1
+            started.set()
+            assert release.wait(10)
+            staged = Path(str(kwargs["local_dir"]))
+            (staged / "config.json").write_text("{}", encoding="utf-8")
+            (staged / "model.safetensors").write_bytes(b"weights")
+            return str(staged)
+
+        results: list[Path] = []
+        failures: list[BaseException] = []
+
+        def download() -> None:
+            try:
+                results.append(download_model_if_needed(model_config_auto, index_config))
+            except BaseException as exc:  # test propagates worker failure below
+                failures.append(exc)
+
+        with patch("autodj.model.snapshot_download", side_effect=populate):
+            first = threading.Thread(target=download)
+            second = threading.Thread(target=download)
+            first.start()
+            assert started.wait(10)
+            second.start()
+            release.set()
+            first.join(10)
+            second.join(10)
+        assert not failures
+        assert calls == 1
+        assert results == [model_cache_path(model_config_auto, index_config)] * 2
+
+    def test_promotion_fsyncs_marker_tree_and_parent(
+        self, model_config_auto: ModelConfig, index_config: IndexConfig
+    ) -> None:
+        def populate(**kwargs: object) -> str:
+            staged = Path(str(kwargs["local_dir"]))
+            (staged / "config.json").write_text("{}", encoding="utf-8")
+            (staged / "model.safetensors").write_bytes(b"weights")
+            return str(staged)
+
+        with (
+            patch("autodj.model.snapshot_download", side_effect=populate),
+            patch("autodj.model._fsync_file") as fsync_file,
+            patch("autodj.model._fsync_tree") as fsync_tree,
+            patch("autodj.model._fsync_directory") as fsync_directory,
+        ):
+            result = download_model_if_needed(model_config_auto, index_config)
+        assert fsync_file.call_args.args[0].name == ".autodj-complete"
+        assert fsync_tree.call_args.args[0].name.startswith(".")
+        assert fsync_directory.call_args.args[0] == result.parent
+
+    def test_promotion_fsyncs_every_staged_artifact_before_parent(
+        self,
+        model_config_auto: ModelConfig,
+        index_config: IndexConfig,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls: list[tuple[str, Path]] = []
+
+        def record_file(path: Path) -> None:
+            calls.append(("file", path))
+
+        def record_directory(path: Path) -> None:
+            calls.append(("directory", path))
+
+        monkeypatch.setattr("autodj.model._fsync_file", record_file)
+        monkeypatch.setattr("autodj.model._fsync_directory", record_directory)
+
+        def populate(**kwargs: object) -> str:
+            staging = Path(str(kwargs["local_dir"]))
+            nested = staging / "nested"
+            nested.mkdir()
+            (staging / "config.json").write_text("{}", encoding="utf-8")
+            (staging / "model.safetensors").write_bytes(b"weights")
+            (nested / "metadata.json").write_text("{}", encoding="utf-8")
+            return str(staging)
+
+        with patch("autodj.model.snapshot_download", side_effect=populate):
+            result = download_model_if_needed(model_config_auto, index_config)
+        staged_files = {path.name for kind, path in calls if kind == "file"}
+        assert {
+            "config.json",
+            "model.safetensors",
+            "metadata.json",
+            ".autodj-complete",
+        } <= staged_files
+        synced_directories = [path for kind, path in calls if kind == "directory"]
+        staging_root = next(path for path in synced_directories if path.name.startswith("."))
+        assert staging_root / "nested" in synced_directories
+        assert staging_root in synced_directories
+        parent_index = calls.index(("directory", result.parent))
+        assert (
+            calls.index(("directory", staging_root / "nested"))
+            < calls.index(("directory", staging_root))
+            < parent_index
+        )
+        assert all(path != result.parent for _kind, path in calls[:parent_index])
+        assert calls[-1] == ("directory", result.parent)
+
+
+class TestModelCacheInspection:
+    def test_public_inspection_file_target_reports_missing_cache_directory(
+        self, model_config_auto: ModelConfig, index_config: IndexConfig
+    ) -> None:
+        cache = model_cache_path(model_config_auto, index_config)
+        cache.parent.mkdir(parents=True)
+        cache.write_text("not a directory", encoding="utf-8")
+        assert inspect_model_cache(model_config_auto, index_config) == ModelCacheStatus(
+            cache, False, "cache directory missing"
+        )
+
+    def test_public_inspection_uses_configured_auto_path_and_requires_marker(
+        self, model_config_auto: ModelConfig, index_config: IndexConfig
+    ) -> None:
+        cache = model_cache_path(model_config_auto, index_config)
+        cache.mkdir(parents=True)
+        (cache / "config.json").write_text("{}", encoding="utf-8")
+        (cache / "model.safetensors").write_bytes(b"weights")
+        assert inspect_model_cache(model_config_auto, index_config) == ModelCacheStatus(
+            cache, False, "missing completion marker"
+        )
+
+    def test_public_status_is_frozen(self, tmp_path: Path) -> None:
+        status = ModelCacheStatus(tmp_path, False, "missing")
+        with pytest.raises(AttributeError):
+            status.complete = True  # type: ignore[misc]
+
+    def test_rejects_partial_and_invalid_sharded_weights(self, tmp_path: Path) -> None:
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        (cache / "config.json").write_text("{}", encoding="utf-8")
+        (cache / "model-00001-of-00002.safetensors").write_bytes(b"one")
+        assert _inspect_model_path(cache).reason == "missing model weights or shard index"
+        (cache / "model.safetensors.index.json").write_text(
+            json.dumps({"weight_map": {"x": "../outside.safetensors"}}), encoding="utf-8"
+        )
+        assert (
+            _inspect_model_path(cache).reason == "invalid shard index: model.safetensors.index.json"
+        )
+
+    def test_sharded_index_requires_all_safe_shards(self, tmp_path: Path) -> None:
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        (cache / "config.json").write_text("{}", encoding="utf-8")
+        (cache / "model.safetensors.index.json").write_text(
+            json.dumps(
+                {
+                    "weight_map": {
+                        "x": "model-00001-of-00002.safetensors",
+                        "y": "model-00002-of-00002.safetensors",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        assert (
+            _inspect_model_path(cache).reason
+            == "missing indexed weight: model-00001-of-00002.safetensors"
+        )
+        (cache / "model-00001-of-00002.safetensors").write_bytes(b"one")
+        (cache / "model-00002-of-00002.safetensors").write_bytes(b"two")
+        assert _inspect_model_path(cache).complete
+
+    @pytest.mark.parametrize(
+        ("index_name", "shards"),
+        [
+            ("model.safetensors.index.json", ["model-00001-of-00002.safetensors"]),
+            (
+                "model.safetensors.index.json",
+                ["model-00001-of-00002.safetensors", "model-00003-of-00002.safetensors"],
+            ),
+            ("model.safetensors.index.json", ["pytorch_model-00001-of-00001.bin"]),
+            ("pytorch_model.bin.index.json", ["model-00001-of-00001.safetensors"]),
+        ],
+    )
+    def test_index_rejects_noncanonical_or_inconsistent_shards(
+        self, tmp_path: Path, index_name: str, shards: list[str]
+    ) -> None:
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        (cache / "config.json").write_text("{}", encoding="utf-8")
+        (cache / index_name).write_text(
+            json.dumps({"weight_map": {str(index): shard for index, shard in enumerate(shards)}}),
+            encoding="utf-8",
+        )
+        for shard in set(shards):
+            (cache / shard).write_bytes(b"weights")
+        assert not _inspect_model_path(cache).complete
+
+    @pytest.mark.parametrize("filename", ["training_args.bin", "random.safetensors"])
+    def test_arbitrary_weight_filenames_do_not_complete_cache(
+        self, tmp_path: Path, filename: str
+    ) -> None:
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        (cache / "config.json").write_text("{}", encoding="utf-8")
+        (cache / filename).write_bytes(b"not model weights")
+        assert _inspect_model_path(cache).reason == "missing model weights or shard index"
+
+    def test_auto_cache_marker_must_match_exactly(self, tmp_path: Path) -> None:
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        (cache / "config.json").write_text("{}", encoding="utf-8")
+        (cache / "model.safetensors").write_bytes(b"weights")
+        assert (
+            _inspect_model_path(cache, repo_id="org/model", revision="main").reason
+            == "missing completion marker"
+        )
+        (cache / ".autodj-complete").write_text("not-json", encoding="utf-8")
+        assert (
+            _inspect_model_path(cache, repo_id="org/model", revision="main").reason
+            == "invalid completion marker"
+        )
+        (cache / ".autodj-complete").write_text(
+            json.dumps({"repo_id": "org/model", "revision": "other"}), encoding="utf-8"
+        )
+        assert (
+            _inspect_model_path(cache, repo_id="org/model", revision="main").reason
+            == "completion marker identity mismatch"
+        )
+
+    def test_repo_and_revision_create_distinct_auto_paths(self, index_config: IndexConfig) -> None:
+        first = ModelConfig(name="org/same", revision="main")
+        second = ModelConfig(name="other/same", revision="v2")
+        assert model_cache_path(first, index_config) != model_cache_path(second, index_config)
+        assert (
+            hashlib.sha256(b"org/same@main").hexdigest()[:16]
+            in model_cache_path(first, index_config).name
+        )
+
+    @pytest.mark.timeout(120)
+    def test_process_lock_blocks_independent_holder(self, tmp_path: Path) -> None:
+        context = multiprocessing.get_context("spawn")
+        holder_ready = context.Event()
+        release = context.Event()
+        waiter_entered = context.Event()
+        waiter_acquired = context.Event()
+        cache = tmp_path / "cache"
+        holder = context.Process(
+            target=_hold_model_cache_lock, args=(str(cache), holder_ready, release)
+        )
+        waiter = context.Process(
+            target=_wait_for_model_cache_lock,
+            args=(str(cache), waiter_entered, waiter_acquired),
+        )
+        behavior_deadline = time.monotonic() + 60
+        try:
+            holder.start()
+            assert holder_ready.wait(max(0.0, behavior_deadline - time.monotonic()))
+            assert holder.is_alive()
+            waiter.start()
+            assert waiter_entered.wait(max(0.0, behavior_deadline - time.monotonic()))
+            assert waiter.is_alive()
+            assert not waiter_acquired.wait(0.2)
+        finally:
+            release.set()
+            cleanup_deadline = time.monotonic() + 30
+            for process in (holder, waiter):
+                if process.pid is None:
+                    continue
+                remaining = max(0.1, cleanup_deadline - time.monotonic())
+                process.join(min(2.0, remaining))
+                if process.is_alive():
+                    process.terminate()
+                    remaining = max(0.1, cleanup_deadline - time.monotonic())
+                    process.join(min(2.0, remaining))
+                if process.is_alive():
+                    process.kill()
+                    remaining = max(0.1, cleanup_deadline - time.monotonic())
+                    process.join(min(5.0, remaining))
+        assert holder.exitcode == 0
+        assert waiter.exitcode == 0
+        assert not holder.is_alive()
+        assert not waiter.is_alive()
+        assert waiter_acquired.is_set()
+
+    def test_fork_reset_rebinds_guard_held_by_parent(self, tmp_path: Path) -> None:
+        import autodj.model as model
+
+        old_guard = model._thread_locks_guard
+        old_guard.acquire()
+        try:
+            model._reset_model_cache_locks_after_fork()
+            assert model._thread_locks_guard is not old_guard
+            assert model._thread_lock(tmp_path / "cache")
+        finally:
+            old_guard.release()
+
+
+class _DownloadAbort(BaseException):
+    pass
+
+
+class TestModelCacheCleanup:
+    def test_base_exception_cleans_owned_staging_but_preserves_sibling(
+        self, model_config_auto: ModelConfig, index_config: IndexConfig
+    ) -> None:
+        index_config.model_dir.mkdir()
+        sibling = index_config.model_dir / ".unrelated.staging-sentinel"
+        sibling.mkdir()
+        with (
+            patch("autodj.model.snapshot_download", side_effect=_DownloadAbort()),
+            pytest.raises(_DownloadAbort),
+        ):
+            download_model_if_needed(model_config_auto, index_config)
+        assert sibling.exists()
+        assert not [
+            path
+            for path in index_config.model_dir.iterdir()
+            if "staging-" in path.name and path != sibling
+        ]
+
+
+class TestWindowsModelCacheLock:
+    def test_retries_only_recognized_contention(self) -> None:
+        import autodj.model as model
+
+        handle = MagicMock()
+        contention = OSError(13, "sharing violation")
+        contention.winerror = 33
+        with (
+            patch.object(model, "_windows_lock", side_effect=[contention, None]) as locking,
+            patch("autodj.model.threading.Event") as event,
+        ):
+            model._acquire_windows_file_lock(handle)
+        assert locking.call_count == 2
+        event.return_value.wait.assert_called_once()
+
+    def test_propagates_permanent_lock_error(self) -> None:
+        import autodj.model as model
+
+        handle = MagicMock()
+        permanent = OSError(13, "access denied")
+        permanent.winerror = 5
+        with (
+            patch.object(model, "_windows_lock", side_effect=permanent),
+            pytest.raises(OSError, match="access denied"),
+        ):
+            model._acquire_windows_file_lock(handle)
+
+    @pytest.mark.skipif(os.name != "nt", reason="requires msvcrt locking")
+    def test_nested_same_thread_acquires_os_lock_once(self, tmp_path: Path) -> None:
+        import autodj.model as model
+
+        cache = tmp_path / "cache"
+        with (
+            patch("autodj.model._acquire_windows_file_lock") as acquire,
+            patch.object(model, "_windows_lock") as release,
+        ):
+            with model._model_cache_lock(cache):
+                with model._model_cache_lock(cache):
+                    assert acquire.call_count == 1
+                assert release.call_count == 0
+            assert release.call_count == 1
+
+    def test_competing_thread_stays_blocked_until_outer_nested_lock_exits(
+        self, tmp_path: Path
+    ) -> None:
+        from autodj.model import _model_cache_lock
+
+        cache = tmp_path / "cache"
+        entered = threading.Event()
+        acquired = threading.Event()
+
+        def wait_for_lock() -> None:
+            entered.set()
+            with _model_cache_lock(cache):
+                acquired.set()
+
+        with _model_cache_lock(cache):
+            with _model_cache_lock(cache):
+                waiter = threading.Thread(target=wait_for_lock)
+                waiter.start()
+                assert entered.wait(10)
+                assert not acquired.wait(0.2)
+            assert not acquired.is_set()
+        waiter.join(10)
+        assert acquired.is_set()
+
+
+class TestModelCacheSymlinks:
+    def test_windows_reparse_attribute_is_classified_without_windows(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        point = tmp_path / "point"
+        point.write_text("x", encoding="utf-8")
+
+        class Stat:
+            st_file_attributes = 0x400
+
+        monkeypatch.setattr(Path, "is_symlink", lambda _self: False)
+        monkeypatch.setattr(Path, "is_junction", lambda _self: False, raising=False)
+        monkeypatch.setattr(Path, "stat", lambda _self, **_kwargs: Stat())
+        assert _is_reparse_point(point)
+
+    def test_public_inspection_rejects_mocked_reparse_artifact(
+        self,
+        model_config_auto: ModelConfig,
+        index_config: IndexConfig,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        cache = model_cache_path(model_config_auto, index_config)
+        cache.mkdir(parents=True)
+        marker = cache / ".autodj-complete"
+        (cache / "config.json").write_text("{}", encoding="utf-8")
+        (cache / "model.safetensors").write_bytes(b"weights")
+        marker.write_text(
+            json.dumps({"repo_id": model_config_auto.name, "revision": model_config_auto.revision}),
+            encoding="utf-8",
+        )
+        original = _is_reparse_point
+        monkeypatch.setattr(
+            "autodj.model._is_reparse_point", lambda path: path == marker or original(path)
+        )
+        assert (
+            inspect_model_cache(model_config_auto, index_config).reason
+            == "symlinked cache artifact"
+        )
+
+    def test_symlinked_artifacts_are_incomplete(self, tmp_path: Path) -> None:
+        target = tmp_path / "outside"
+        target.mkdir()
+        (target / "config.json").write_text("{}", encoding="utf-8")
+        (target / "model.safetensors").write_bytes(b"weights")
+        cache = tmp_path / "cache"
+        try:
+            cache.symlink_to(target, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"symlinks unavailable: {exc}")
+        assert _inspect_model_path(cache).reason == "symlinked cache path"
+
+    @pytest.mark.parametrize(
+        "name", [".autodj-complete", "model.safetensors.index.json", "model.safetensors"]
+    )
+    def test_symlinked_marker_index_or_weight_is_rejected(self, tmp_path: Path, name: str) -> None:
+        cache = tmp_path / "cache"
+        outside = tmp_path / "outside"
+        cache.mkdir()
+        outside.mkdir()
+        (cache / "config.json").write_text("{}", encoding="utf-8")
+        (cache / "model.safetensors").write_bytes(b"weights")
+        if name == "model.safetensors":
+            (cache / name).unlink()
+        if name == "model.safetensors.index.json":
+            (cache / "model.safetensors").unlink()
+            (outside / name).write_text('{"weight_map": {}}', encoding="utf-8")
+        else:
+            (outside / name).write_text("outside", encoding="utf-8")
+        try:
+            (cache / name).symlink_to(outside / name)
+        except OSError as exc:
+            pytest.skip(f"symlinks unavailable: {exc}")
+        assert _inspect_model_path(cache).reason == "symlinked cache artifact"
+
+    def test_staged_symlink_escape_is_rejected_without_touching_outside(
+        self, model_config_auto: ModelConfig, index_config: IndexConfig
+    ) -> None:
+        outside = index_config.model_dir.parent / "outside"
+        outside.parent.mkdir(parents=True, exist_ok=True)
+        outside.write_text("keep", encoding="utf-8")
+
+        def populate(**kwargs: object) -> str:
+            staging = Path(str(kwargs["local_dir"]))
+            (staging / "config.json").write_text("{}", encoding="utf-8")
+            try:
+                (staging / "model.safetensors").symlink_to(outside)
+            except OSError as exc:
+                pytest.skip(f"symlinks unavailable: {exc}")
+            return str(staging)
+
+        with (
+            patch("autodj.model.snapshot_download", side_effect=populate),
+            pytest.raises(ModelLoadError, match="incomplete"),
+        ):
+            download_model_if_needed(model_config_auto, index_config)
+        assert outside.read_text(encoding="utf-8") == "keep"
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires POSIX fork")
+def test_at_fork_rebinds_guard_before_child_model_cache_lock(tmp_path: Path) -> None:
+    """A child must not inherit a locked thread guard and deadlock on cache use."""
+    import autodj.model as model
+
+    entered = threading.Event()
+    release = threading.Event()
+    guard = model._thread_locks_guard
+
+    def hold_guard() -> None:
+        with guard:
+            entered.set()
+            release.wait(10)
+
+    holder = threading.Thread(target=hold_guard)
+    holder.start()
+    assert entered.wait(10)
+    read_fd, write_fd = os.pipe()
+    child = os.fork()
+    if child == 0:
+        try:
+            os.close(read_fd)
+            with model._model_cache_lock(tmp_path / "cache"):
+                os.write(write_fd, b"ok")
+            os.close(write_fd)
+            os._exit(0)
+        except BaseException:
+            os._exit(1)
+
+    os.close(write_fd)
+    try:
+        deadline = threading.Event()
+        for _ in range(100):
+            exited, status = os.waitpid(child, os.WNOHANG)
+            if exited == child:
+                break
+            deadline.wait(0.05)
+        else:
+            os.kill(child, 9)
+            pytest.fail("forked child deadlocked on inherited model cache guard")
+        assert os.waitstatus_to_exitcode(status) == 0
+        assert os.read(read_fd, 2) == b"ok"
+    finally:
+        os.close(read_fd)
+        release.set()
+        holder.join(10)
 
 
 # ---------------------------------------------------------------------------

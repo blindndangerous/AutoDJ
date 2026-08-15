@@ -6,11 +6,17 @@
 
 import { escHtml, fmtTrack } from "./dom-helpers.js";
 import { clearLiveRegionLater } from "./live-region.js";
+import {
+  captureAuthenticatedRequestEpoch,
+  isAuthenticatedRequestCurrent,
+  requestJson,
+} from "./api-client.js";
 
 let _lastKey = "";
+let _renderGeneration = 0;
 
 function _queueKey(queue) {
-  return queue.map((t) => t.path).join("|");
+  return JSON.stringify(queue.map((t) => t.path));
 }
 
 export function applyQueueState(queue, els) {
@@ -20,9 +26,16 @@ export function applyQueueState(queue, els) {
   renderQueue(queue, els);
 }
 
+export function resetQueueState(els) {
+  const empty = [];
+  _lastKey = _queueKey(empty);
+  renderQueue(empty, els);
+}
+
 export function renderQueue(queue, { queueList, queueCount }) {
   if (queueCount) queueCount.textContent = queue.length ? `(${queue.length})` : "";
   if (!queueList) return;
+  _renderGeneration += 1;
   if (queue.length === 0) {
     queueList.innerHTML = `
       <li class="no-results"
@@ -36,7 +49,7 @@ export function renderQueue(queue, { queueList, queueCount }) {
     const path = escHtml(t.path);
     const isFirst = i === 0;
     const isLast  = i === queue.length - 1;
-    return `<li data-path="${path}">
+    return `<li data-path="${path}" data-queue-index="${i}">
       <span class="queue-name" title="${name}">${i + 1}. ${name}</span>
       <button class="queue-btn" data-action="up"     data-path="${path}"
               aria-label="Move ${name} up in queue"     ${isFirst ? "disabled" : ""}>
@@ -57,21 +70,28 @@ export function renderQueue(queue, { queueList, queueCount }) {
 export function installQueueButtons(els) {
   const { queueList, queueAnnounce } = els;
   if (!queueList) return;
+  let mutationPending = false;
 
   queueList.addEventListener("click", async (e) => {
     const btn = e.target.closest(".queue-btn");
-    if (!btn || btn.disabled) return;
+    if (!btn || btn.disabled || mutationPending) return;
+    const epoch = captureAuthenticatedRequestEpoch();
     const action = btn.dataset.action;
     const path   = btn.dataset.path;
 
     const items = Array.from(queueList.querySelectorAll("li[data-path]"));
+    const snapshot = items.map((li) => ({
+      path: li.dataset.path,
+      display_name: li.querySelector(".queue-name").textContent.replace(/^\d+\.\s*/, ""),
+    }));
     const paths = items.map((li) => li.dataset.path);
-    const idx   = paths.indexOf(path);
+    const idx   = items.indexOf(btn.closest("li[data-path]"));
     if (idx < 0) return;
 
-    const newPaths = paths.slice();
+    const newQueue = snapshot.slice();
     let focusAction = action;
-    let focusPath = path;
+    let focusIndex = idx;
+    let focusQueueList = false;
     let announceMsg = "";
 
     const niceName = items[idx]
@@ -79,20 +99,23 @@ export function installQueueButtons(els) {
       : path;
 
     if (action === "up" && idx > 0) {
-      [newPaths[idx - 1], newPaths[idx]] = [newPaths[idx], newPaths[idx - 1]];
+      [newQueue[idx - 1], newQueue[idx]] = [newQueue[idx], newQueue[idx - 1]];
+      focusIndex = idx - 1;
       announceMsg = `Moved ${niceName} up.`;
       if (idx - 1 === 0) focusAction = "down";
-    } else if (action === "down" && idx < newPaths.length - 1) {
-      [newPaths[idx + 1], newPaths[idx]] = [newPaths[idx], newPaths[idx + 1]];
+    } else if (action === "down" && idx < newQueue.length - 1) {
+      [newQueue[idx + 1], newQueue[idx]] = [newQueue[idx], newQueue[idx + 1]];
+      focusIndex = idx + 1;
       announceMsg = `Moved ${niceName} down.`;
-      if (idx + 1 === newPaths.length - 1) focusAction = "up";
+      if (idx + 1 === newQueue.length - 1) focusAction = "up";
     } else if (action === "remove") {
-      newPaths.splice(idx, 1);
+      newQueue.splice(idx, 1);
       announceMsg = `Removed ${niceName} from queue.`;
-      if (newPaths.length === 0) {
-        focusPath = null;
+      if (newQueue.length === 0) {
+        focusIndex = -1;
+        focusQueueList = true;
       } else {
-        focusPath = newPaths[Math.min(idx, newPaths.length - 1)];
+        focusIndex = Math.min(idx, newQueue.length - 1);
         focusAction = "remove";
       }
     } else {
@@ -100,44 +123,78 @@ export function installQueueButtons(els) {
     }
 
     // Optimistic local render so the user sees instant feedback.
-    renderQueue(
-      newPaths.map((p) => {
-        const li = items.find((i) => i.dataset.path === p);
-        return {
-          path: p,
-          display_name: li
-            ? li.querySelector(".queue-name").textContent.replace(/^\d+\.\s*/, "")
-            : p,
-        };
-      }),
-      els,
-    );
-    _lastKey = _queueKey(newPaths.map((p) => ({ path: p })));
+    mutationPending = true;
+    queueList.setAttribute("aria-busy", "true");
+    btn.disabled = true;
+    renderQueue(newQueue, els);
+    const optimisticGeneration = _renderGeneration;
+    const newPaths = newQueue.map((item) => item.path);
+    _lastKey = _queueKey(newQueue);
+    let ownsRenderedQueue = true;
+    let successful = false;
+    let rolledBack = false;
 
-    if (action === "remove") {
-      await fetch("/api/queue/remove", {
+    try {
+      const duplicateRemoval = action === "remove" && paths.indexOf(path) !== idx;
+      await requestJson(
+        action === "remove" && !duplicateRemoval ? "/api/queue/remove" : "/api/queue/reorder",
+        {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path }),
-      });
-    } else {
-      await fetch("/api/queue/reorder", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ paths: newPaths }),
-      });
-    }
-
-    if (queueAnnounce) {
-      queueAnnounce.textContent = announceMsg;
-      clearLiveRegionLater(queueAnnounce);
-    }
-
-    if (focusPath) {
-      const target = queueList.querySelector(
-        `li[data-path="${CSS.escape(focusPath)}"] .queue-btn[data-action="${focusAction}"]`
+        body: JSON.stringify(action === "remove" && !duplicateRemoval ? { path } : { paths: newPaths }),
+        },
       );
-      if (target && !target.disabled) target.focus();
+      if (!isAuthenticatedRequestCurrent(epoch)) {
+        ownsRenderedQueue = false;
+        focusIndex = -1;
+        return;
+      }
+      ownsRenderedQueue = _renderGeneration === optimisticGeneration;
+      if (!ownsRenderedQueue) focusIndex = -1;
+      successful = ownsRenderedQueue;
+      if (queueAnnounce) {
+        queueAnnounce.textContent = announceMsg;
+        clearLiveRegionLater(queueAnnounce);
+      }
+    } catch (errorValue) {
+      if (!isAuthenticatedRequestCurrent(epoch)) {
+        ownsRenderedQueue = false;
+        focusIndex = -1;
+        return;
+      }
+      if (_renderGeneration === optimisticGeneration) {
+        renderQueue(snapshot, els);
+        _lastKey = _queueKey(snapshot);
+        focusIndex = idx;
+        focusAction = action;
+        rolledBack = true;
+      } else {
+        ownsRenderedQueue = false;
+        focusIndex = -1;
+      }
+      focusQueueList = false;
+      if (queueAnnounce) {
+        queueAnnounce.textContent = `Could not update queue: ${errorValue.message}`;
+        clearLiveRegionLater(queueAnnounce);
+      }
+    } finally {
+      mutationPending = false;
+      queueList.setAttribute("aria-busy", "false");
+    }
+
+    if ((!successful && !rolledBack) || !ownsRenderedQueue) return;
+    if (focusQueueList) {
+      queueList.focus();
+      return;
+    }
+    if (focusIndex >= 0) {
+      const target = queueList.querySelector(
+        `li[data-queue-index="${focusIndex}"] .queue-btn[data-action="${focusAction}"]`
+      );
+      if (target) {
+        target.disabled = false;
+        if (!target.disabled) target.focus();
+      }
     }
   });
 }

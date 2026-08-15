@@ -4,8 +4,9 @@ The MuQ model and librosa are mocked so tests run without audio files or
 model downloads. Vector math and FAISS operations use real numpy/faiss.
 """
 
+import os
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import faiss
 import numpy as np
@@ -127,8 +128,7 @@ class TestExtractLibrosaFeatures:
         assert "key" in extra_meta
         assert "mode" in extra_meta
         assert "tempo_confidence" in extra_meta
-        assert 0 <= extra_meta["key"] <= 11
-        assert extra_meta["mode"] in (0, 1)
+        assert (extra_meta["key"], extra_meta["mode"]) == (-1, -1)
         assert 0.0 <= extra_meta["tempo_confidence"] <= 1.0
 
     def test_vector_is_finite(self, tmp_path: Path) -> None:
@@ -248,6 +248,19 @@ class TestSaveLoadIndex:
         assert len(loaded_entries) == 5
         assert loaded_index.ntotal == 5
 
+    def test_prune_all_never_reuses_stale_snapshot_token(self, tmp_path: Path) -> None:
+        from autodj.index_manifest import IndexConsistencyError, current_snapshot_token
+        from autodj.indexer import _delete_index_files
+
+        entries, vectors = self._make_entries(1)
+        save_index(entries, vectors, tmp_path)
+        stale = current_snapshot_token(tmp_path)
+        _delete_index_files(tmp_path, expected_snapshot=stale)
+        save_index(entries, vectors, tmp_path)
+
+        with pytest.raises(IndexConsistencyError, match="expected"):
+            save_index(entries, vectors, tmp_path, expected_snapshot=stale)
+
     def test_tracks_db_written(self, tmp_path: Path) -> None:
         entries, vectors = self._make_entries(3)
         index_dir = tmp_path / "index"
@@ -261,7 +274,7 @@ class TestSaveLoadIndex:
 
         conn = _sql.connect(db_path)
         try:
-            rows = conn.execute("SELECT path FROM tracks ORDER BY id ASC").fetchall()
+            rows = conn.execute("SELECT path FROM tracks ORDER BY vec_row ASC").fetchall()
         finally:
             conn.close()
         assert len(rows) == 3
@@ -280,6 +293,126 @@ class TestSaveLoadIndex:
         with pytest.raises(FileNotFoundError):
             load_index(tmp_path / "nonexistent")
 
+    def test_load_ignores_unpublished_metadata_ahead_crash(self, tmp_path: Path) -> None:
+        from autodj.indexer import _save_tracks_metadata
+
+        entries, vectors = self._make_entries(4)
+        save_index(entries[:3], vectors[:3], tmp_path)
+        _save_tracks_metadata(entries, tmp_path, music_dir=None)
+        loaded, faiss_index = load_index(tmp_path)
+        assert len(loaded) == faiss_index.ntotal == 3
+
+    def test_load_ignores_unpublished_vectors_ahead_crash(self, tmp_path: Path) -> None:
+        from autodj.indexer import _save_vectors
+
+        entries, vectors = self._make_entries(4)
+        save_index(entries[:3], vectors[:3], tmp_path)
+        _save_vectors(vectors, tmp_path)
+        loaded, faiss_index = load_index(tmp_path)
+        assert len(loaded) == faiss_index.ntotal == 3
+
+    def test_restart_restores_canonical_working_files_from_live_generation(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from autodj.index_manifest import read_manifest, sha256_file
+        from autodj.indexer import _load_existing_artifacts, _save_vectors
+
+        entries, vectors = self._make_entries(3)
+        save_index(entries, vectors, tmp_path)
+        manifest = read_manifest(tmp_path)
+        assert manifest is not None
+        _save_vectors(np.flip(vectors, axis=0).copy(), tmp_path)
+        _load_existing_artifacts(tmp_path, tmp_path, None)
+        assert sha256_file(tmp_path / "tracks.db") == manifest.tracks_sha256
+        assert sha256_file(tmp_path / "vectors.index") == manifest.vectors_sha256
+        assert not (tmp_path / "tracks.db-wal").exists()
+
+    def test_load_rejects_same_count_vector_mix(self, tmp_path: Path) -> None:
+        from autodj.index_manifest import IndexConsistencyError, read_manifest
+        from autodj.indexer import _save_vectors
+
+        entries, vectors = self._make_entries(3)
+        save_index(entries, vectors, tmp_path)
+        manifest = read_manifest(tmp_path)
+        assert manifest is not None
+        _save_vectors(np.flip(vectors, axis=0).copy(), tmp_path)
+        (tmp_path / manifest.vectors_file).write_bytes((tmp_path / "vectors.index").read_bytes())
+        with pytest.raises(IndexConsistencyError, match="vectors SHA-256"):
+            load_index(tmp_path)
+
+    def test_load_rejects_same_count_metadata_mix(self, tmp_path: Path) -> None:
+        import sqlite3
+
+        from autodj.index_manifest import IndexConsistencyError, read_manifest
+        from autodj.indexer import _save_tracks_metadata
+
+        old_entries, vectors = self._make_entries(3)
+        save_index(old_entries, vectors, tmp_path)
+        manifest = read_manifest(tmp_path)
+        assert manifest is not None
+        mixed_entries, _ = self._make_entries(3)
+        for index, entry in enumerate(mixed_entries):
+            entry.path = f"Z:/Other/song_{index}.flac"
+        _save_tracks_metadata(mixed_entries, tmp_path, music_dir=None)
+        conn = sqlite3.connect(tmp_path / "tracks.db", isolation_level=None)
+        try:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            conn.close()
+        (tmp_path / manifest.tracks_file).write_bytes((tmp_path / "tracks.db").read_bytes())
+        with pytest.raises(IndexConsistencyError, match="tracks SHA-256"):
+            load_index(tmp_path)
+
+    def test_legacy_index_without_manifest_still_loads(self, tmp_path: Path) -> None:
+        entries, vectors = self._make_entries(3)
+        save_index(entries, vectors, tmp_path)
+        (tmp_path / "index-manifest.json").unlink()
+        (tmp_path / ".index-publication-state.json").unlink()
+        loaded, faiss_index = load_index(tmp_path)
+        assert len(loaded) == 3
+        assert faiss_index.ntotal == 3
+
+    def test_failed_second_save_does_not_publish_generation(self, tmp_path: Path) -> None:
+        from autodj.index_manifest import read_manifest
+
+        entries, vectors = self._make_entries(4)
+        save_index(entries[:3], vectors[:3], tmp_path)
+        first = read_manifest(tmp_path)
+        assert first is not None
+        with (
+            patch("autodj.indexer._save_tracks_metadata", side_effect=OSError("injected")),
+            pytest.raises(OSError, match="injected"),
+        ):
+            save_index(entries, vectors, tmp_path)
+        current = read_manifest(tmp_path)
+        assert current is not None
+        assert current.generation == first.generation == 1
+        loaded, loaded_faiss = load_index(tmp_path)
+        assert len(loaded) == loaded_faiss.ntotal == 3
+
+    def test_load_rejects_manifest_change_during_artifact_read(self, tmp_path: Path) -> None:
+        from autodj.index_manifest import IndexConsistencyError, publish_manifest
+
+        entries, vectors = self._make_entries(3)
+        save_index(entries, vectors, tmp_path)
+        real_read_index = faiss.read_index
+        raced = False
+
+        def read_then_publish(path: str):
+            nonlocal raced
+            loaded = real_read_index(path)
+            if not raced:
+                raced = True
+                publish_manifest(tmp_path, 3)
+            return loaded
+
+        with (
+            patch("autodj.indexer.faiss.read_index", side_effect=read_then_publish),
+            pytest.raises(IndexConsistencyError, match="changed during load"),
+        ):
+            load_index(tmp_path)
+
     def test_metadata_path_preserved(self, tmp_path: Path) -> None:
         entries, vectors = self._make_entries(2)
         index_dir = tmp_path / "index"
@@ -289,6 +422,389 @@ class TestSaveLoadIndex:
         loaded_entries, _ = load_index(index_dir)
 
         assert loaded_entries[0].path == "Z:/Music/song_0.flac"
+
+    def test_open_tracks_db_backfills_vec_row_in_legacy_id_order(self, tmp_path: Path) -> None:
+        import sqlite3
+
+        from autodj.indexer import _open_tracks_db
+
+        conn = sqlite3.connect(tmp_path / "tracks.db")
+        conn.execute(
+            "CREATE TABLE tracks (id INTEGER PRIMARY KEY AUTOINCREMENT, path TEXT NOT NULL UNIQUE)"
+        )
+        conn.executemany(
+            "INSERT INTO tracks(path) VALUES (?)",
+            [("second.flac",), ("first.flac",)],
+        )
+        conn.commit()
+        conn.close()
+
+        migrated = _open_tracks_db(tmp_path)
+        try:
+            rows = migrated.execute("SELECT vec_row, path FROM tracks ORDER BY vec_row").fetchall()
+            vec_info = next(
+                row for row in migrated.execute("PRAGMA table_info(tracks)") if row[1] == "vec_row"
+            )
+            with pytest.raises(sqlite3.IntegrityError):
+                migrated.execute("INSERT INTO tracks(vec_row, path) VALUES (NULL, 'bad.flac')")
+        finally:
+            migrated.close()
+
+        assert rows == [(0, "second.flac"), (1, "first.flac")]
+        assert vec_info[3] == 1
+
+    def test_open_tracks_db_rebuilds_non_unique_vec_row_schema(self, tmp_path: Path) -> None:
+        import sqlite3
+
+        from autodj.indexer import _open_tracks_db
+
+        conn = sqlite3.connect(tmp_path / "tracks.db")
+        conn.execute(
+            """CREATE TABLE tracks (
+                vec_row INTEGER NOT NULL,
+                path TEXT NOT NULL UNIQUE,
+                title TEXT NOT NULL DEFAULT '', artist TEXT NOT NULL DEFAULT '',
+                album TEXT NOT NULL DEFAULT '', genre TEXT NOT NULL DEFAULT '',
+                bpm REAL NOT NULL DEFAULT 0, year INTEGER NOT NULL DEFAULT 0,
+                length REAL NOT NULL DEFAULT 0, energy REAL NOT NULL DEFAULT 0,
+                key INTEGER NOT NULL DEFAULT -1, mode INTEGER NOT NULL DEFAULT -1,
+                tempo_confidence REAL NOT NULL DEFAULT 0,
+                embedded_at REAL NOT NULL DEFAULT 0
+            )"""
+        )
+        conn.executemany(
+            "INSERT INTO tracks(vec_row, path) VALUES (?, ?)",
+            [(0, "first.flac"), (0, "second.flac")],
+        )
+        conn.commit()
+        conn.close()
+
+        migrated = _open_tracks_db(tmp_path)
+        try:
+            rows = migrated.execute("SELECT vec_row, path FROM tracks ORDER BY vec_row").fetchall()
+            with pytest.raises(sqlite3.IntegrityError):
+                migrated.execute("INSERT INTO tracks(vec_row, path) VALUES (0, 'duplicate.flac')")
+        finally:
+            migrated.close()
+
+        assert rows == [(0, "first.flac"), (1, "second.flac")]
+
+    def test_open_tracks_db_rebuilds_partial_vec_row_schema(self, tmp_path: Path) -> None:
+        import sqlite3
+
+        from autodj.indexer import _load_tracks_rows, _open_tracks_db
+
+        conn = sqlite3.connect(tmp_path / "tracks.db")
+        conn.execute(
+            """CREATE TABLE tracks (
+                vec_row INTEGER NOT NULL UNIQUE,
+                path TEXT NOT NULL UNIQUE,
+                title TEXT NOT NULL DEFAULT ''
+            )"""
+        )
+        conn.execute("INSERT INTO tracks(vec_row, path, title) VALUES (7, 'legacy.flac', 'Legacy')")
+        conn.commit()
+        conn.close()
+
+        migrated = _open_tracks_db(tmp_path)
+        try:
+            names = {row[1] for row in migrated.execute("PRAGMA table_info(tracks)")}
+            entries = _load_tracks_rows(migrated)
+        finally:
+            migrated.close()
+
+        assert names == {
+            "vec_row",
+            "path",
+            "title",
+            "artist",
+            "album",
+            "genre",
+            "bpm",
+            "year",
+            "length",
+            "energy",
+            "key",
+            "mode",
+            "tempo_confidence",
+            "embedded_at",
+        }
+        assert [(entry.path, entry.title, entry.key) for entry in entries] == [
+            ("legacy.flac", "Legacy", -1)
+        ]
+
+    def test_open_tracks_db_removes_extra_legacy_id_column(self, tmp_path: Path) -> None:
+        import sqlite3
+
+        from autodj.indexer import _open_tracks_db
+
+        conn = sqlite3.connect(tmp_path / "tracks.db")
+        conn.execute(
+            """CREATE TABLE tracks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                vec_row INTEGER NOT NULL UNIQUE,
+                path TEXT NOT NULL UNIQUE,
+                title TEXT NOT NULL DEFAULT '', artist TEXT NOT NULL DEFAULT '',
+                album TEXT NOT NULL DEFAULT '', genre TEXT NOT NULL DEFAULT '',
+                bpm REAL NOT NULL DEFAULT 0, year INTEGER NOT NULL DEFAULT 0,
+                length REAL NOT NULL DEFAULT 0, energy REAL NOT NULL DEFAULT 0,
+                key INTEGER NOT NULL DEFAULT -1, mode INTEGER NOT NULL DEFAULT -1,
+                tempo_confidence REAL NOT NULL DEFAULT 0,
+                embedded_at REAL NOT NULL DEFAULT 0
+            )"""
+        )
+        conn.executemany(
+            "INSERT INTO tracks(vec_row, path, title) VALUES (?, ?, ?)",
+            [(0, "first.flac", "First"), (1, "second.flac", "Second")],
+        )
+        conn.commit()
+        conn.close()
+
+        migrated = _open_tracks_db(tmp_path)
+        try:
+            names = [row[1] for row in migrated.execute("PRAGMA table_info(tracks)")]
+            rows = migrated.execute(
+                "SELECT vec_row, path, title FROM tracks ORDER BY vec_row"
+            ).fetchall()
+        finally:
+            migrated.close()
+
+        assert names == [
+            "vec_row",
+            "path",
+            "title",
+            "artist",
+            "album",
+            "genre",
+            "bpm",
+            "year",
+            "length",
+            "energy",
+            "key",
+            "mode",
+            "tempo_confidence",
+            "embedded_at",
+        ]
+        assert rows == [(0, "first.flac", "First"), (1, "second.flac", "Second")]
+
+    def test_open_tracks_db_rebuilds_missing_path_unique_schema(self, tmp_path: Path) -> None:
+        import sqlite3
+
+        from autodj.indexer import _open_tracks_db
+
+        conn = sqlite3.connect(tmp_path / "tracks.db")
+        conn.execute(
+            """CREATE TABLE tracks (
+                vec_row INTEGER NOT NULL UNIQUE,
+                path TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '', artist TEXT NOT NULL DEFAULT '',
+                album TEXT NOT NULL DEFAULT '', genre TEXT NOT NULL DEFAULT '',
+                bpm REAL NOT NULL DEFAULT 0, year INTEGER NOT NULL DEFAULT 0,
+                length REAL NOT NULL DEFAULT 0, energy REAL NOT NULL DEFAULT 0,
+                key INTEGER NOT NULL DEFAULT -1, mode INTEGER NOT NULL DEFAULT -1,
+                tempo_confidence REAL NOT NULL DEFAULT 0,
+                embedded_at REAL NOT NULL DEFAULT 0
+            )"""
+        )
+        conn.executemany(
+            "INSERT INTO tracks(vec_row, path, title) VALUES (?, ?, ?)",
+            [
+                (0, "first.flac", "First"),
+                (1, "second.flac", "Second"),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        migrated = _open_tracks_db(tmp_path)
+        try:
+            names = [row[1] for row in migrated.execute("PRAGMA table_info(tracks)")]
+            rows = migrated.execute(
+                "SELECT vec_row, path, title FROM tracks ORDER BY vec_row"
+            ).fetchall()
+            with pytest.raises(sqlite3.IntegrityError):
+                migrated.execute("INSERT INTO tracks(vec_row, path) VALUES (2, 'first.flac')")
+        finally:
+            migrated.close()
+
+        assert names == [
+            "vec_row",
+            "path",
+            "title",
+            "artist",
+            "album",
+            "genre",
+            "bpm",
+            "year",
+            "length",
+            "energy",
+            "key",
+            "mode",
+            "tempo_confidence",
+            "embedded_at",
+        ]
+        assert rows == [(0, "first.flac", "First"), (1, "second.flac", "Second")]
+
+    def test_open_tracks_db_duplicate_paths_fail_without_changing_vector_identity(
+        self, tmp_path: Path
+    ) -> None:
+        import sqlite3
+
+        import faiss
+
+        from autodj.indexer import _open_tracks_db, _save_vectors
+
+        vectors = np.zeros((3, FEATURE_DIM), dtype=np.float32)
+        for row, marker in enumerate((3, 7, 11)):
+            vectors[row, marker] = 1.0
+        _save_vectors(vectors, tmp_path)
+
+        conn = sqlite3.connect(tmp_path / "tracks.db")
+        conn.execute(
+            """CREATE TABLE tracks (
+                vec_row INTEGER NOT NULL UNIQUE,
+                path TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '', artist TEXT NOT NULL DEFAULT '',
+                album TEXT NOT NULL DEFAULT '', genre TEXT NOT NULL DEFAULT '',
+                bpm REAL NOT NULL DEFAULT 0, year INTEGER NOT NULL DEFAULT 0,
+                length REAL NOT NULL DEFAULT 0, energy REAL NOT NULL DEFAULT 0,
+                key INTEGER NOT NULL DEFAULT -1, mode INTEGER NOT NULL DEFAULT -1,
+                tempo_confidence REAL NOT NULL DEFAULT 0,
+                embedded_at REAL NOT NULL DEFAULT 0
+            )"""
+        )
+        original_rows = [
+            (0, "duplicate.flac", "First copy"),
+            (1, "middle.flac", "Middle"),
+            (2, "duplicate.flac", "Second copy"),
+        ]
+        conn.executemany(
+            "INSERT INTO tracks(vec_row, path, title) VALUES (?, ?, ?)",
+            original_rows,
+        )
+        conn.commit()
+        conn.close()
+
+        with pytest.raises(
+            sqlite3.IntegrityError,
+            match="duplicate paths would break vector identity",
+        ):
+            _open_tracks_db(tmp_path)
+
+        preserved = sqlite3.connect(tmp_path / "tracks.db")
+        try:
+            names = [row[1] for row in preserved.execute("PRAGMA table_info(tracks)")]
+            rows = preserved.execute(
+                "SELECT vec_row, path, title FROM tracks ORDER BY vec_row"
+            ).fetchall()
+        finally:
+            preserved.close()
+        persisted_vectors = faiss.read_index(str(tmp_path / "vectors.index"))
+
+        assert names[0:2] == ["vec_row", "path"]
+        assert rows == original_rows
+        assert persisted_vectors.ntotal == 3
+        assert [int(np.argmax(persisted_vectors.reconstruct(row))) for row in range(3)] == [
+            3,
+            7,
+            11,
+        ]
+
+    def test_open_tracks_db_rebuilds_text_vec_row_in_numeric_vector_order(
+        self, tmp_path: Path
+    ) -> None:
+        import sqlite3
+
+        from autodj.indexer import _load_existing_index, _save_vectors
+
+        vectors = np.zeros((2, FEATURE_DIM), dtype=np.float32)
+        vectors[0, 3] = 1.0
+        vectors[1, 7] = 1.0
+        _save_vectors(vectors, tmp_path)
+
+        conn = sqlite3.connect(tmp_path / "tracks.db")
+        conn.execute(
+            """CREATE TABLE tracks (
+                vec_row TEXT NOT NULL UNIQUE,
+                path TEXT NOT NULL UNIQUE,
+                title TEXT NOT NULL DEFAULT '', artist TEXT NOT NULL DEFAULT '',
+                album TEXT NOT NULL DEFAULT '', genre TEXT NOT NULL DEFAULT '',
+                bpm REAL NOT NULL DEFAULT 0, year INTEGER NOT NULL DEFAULT 0,
+                length REAL NOT NULL DEFAULT 0, energy REAL NOT NULL DEFAULT 0,
+                key INTEGER NOT NULL DEFAULT -1, mode INTEGER NOT NULL DEFAULT -1,
+                tempo_confidence REAL NOT NULL DEFAULT 0,
+                embedded_at REAL NOT NULL DEFAULT 0
+            )"""
+        )
+        conn.executemany(
+            "INSERT INTO tracks(vec_row, path, title) VALUES (?, ?, ?)",
+            [("2", "two.flac", "Two"), ("10", "ten.flac", "Ten")],
+        )
+        conn.commit()
+        conn.close()
+
+        entries, loaded_vectors, *_ = _load_existing_index(
+            tmp_path,
+            music_dir=tmp_path,
+            path_remap=None,
+            force=False,
+            reindex_modified_since=None,
+        )
+        migrated = sqlite3.connect(tmp_path / "tracks.db")
+        try:
+            vec_info = next(
+                row for row in migrated.execute("PRAGMA table_info(tracks)") if row[1] == "vec_row"
+            )
+            rows = migrated.execute("SELECT vec_row, path FROM tracks ORDER BY vec_row").fetchall()
+        finally:
+            migrated.close()
+
+        assert vec_info[2:6] == ("INTEGER", 1, None, 0)
+        assert rows == [(0, "two.flac"), (1, "ten.flac")]
+        assert [Path(entry.path).name for entry in entries] == ["two.flac", "ten.flac"]
+        assert [int(np.argmax(vector)) for vector in loaded_vectors] == [3, 7]
+
+    def test_open_tracks_db_rebuilds_wrong_metadata_type_default_and_pk(
+        self, tmp_path: Path
+    ) -> None:
+        import sqlite3
+
+        from autodj.indexer import _open_tracks_db
+
+        conn = sqlite3.connect(tmp_path / "tracks.db")
+        conn.execute(
+            """CREATE TABLE tracks (
+                vec_row INTEGER NOT NULL UNIQUE,
+                path TEXT NOT NULL PRIMARY KEY,
+                title TEXT NOT NULL DEFAULT 'untitled', artist TEXT NOT NULL DEFAULT '',
+                album TEXT NOT NULL DEFAULT '', genre TEXT NOT NULL DEFAULT '',
+                bpm TEXT NOT NULL DEFAULT '', year INTEGER NOT NULL DEFAULT 0,
+                length REAL NOT NULL DEFAULT 0, energy REAL NOT NULL DEFAULT 0,
+                key INTEGER NOT NULL DEFAULT -1, mode INTEGER NOT NULL DEFAULT -1,
+                tempo_confidence REAL NOT NULL DEFAULT 0,
+                embedded_at REAL NOT NULL DEFAULT 0
+            )"""
+        )
+        conn.execute(
+            "INSERT INTO tracks(vec_row, path, title, bpm) "
+            "VALUES (0, 'legacy.flac', 'Legacy', '123.5')"
+        )
+        conn.commit()
+        conn.close()
+
+        migrated = _open_tracks_db(tmp_path)
+        try:
+            info = {row[1]: row for row in migrated.execute("PRAGMA table_info(tracks)")}
+            row = migrated.execute(
+                "SELECT path, title, bpm FROM tracks WHERE vec_row = 0"
+            ).fetchone()
+        finally:
+            migrated.close()
+
+        assert info["path"][5] == 0
+        assert info["title"][2:6] == ("TEXT", 1, "''", 0)
+        assert info["bpm"][2:6] == ("REAL", 1, "0", 0)
+        assert row == ("legacy.flac", "Legacy", 123.5)
 
 
 # ---------------------------------------------------------------------------
@@ -356,6 +872,38 @@ class TestResolveBeetsPath:
 
 
 class TestPruneIndex:
+    def _distinctive_entries(
+        self,
+        tmp_path: Path,
+        *,
+        missing_rows: set[int] | None = None,
+    ) -> tuple[list[IndexEntry], np.ndarray]:
+        missing_rows = missing_rows or set()
+        entries: list[IndexEntry] = []
+        vectors = np.zeros((3, FEATURE_DIM), dtype=np.float32)
+        for row, marker in enumerate((3, 7, 11)):
+            path = tmp_path / f"song_{row}.flac"
+            if row not in missing_rows:
+                path.write_bytes(b"")
+            entries.append(
+                IndexEntry(
+                    path=str(path),
+                    title=f"Original {row}",
+                    artist="Artist",
+                    album="Album",
+                    genre="Genre",
+                    bpm=120.0,
+                    year=2026,
+                    length=180.0,
+                    energy=0.5,
+                    key=0,
+                    mode=1,
+                    tempo_confidence=0.8,
+                )
+            )
+            vectors[row, marker] = 1.0
+        return entries, vectors
+
     def _save_with_files(self, tmp_path: Path, n_present: int, n_missing: int) -> Path:
         """Build an index where some entries have real files, others don't."""
         from autodj.indexer import save_index
@@ -425,6 +973,182 @@ class TestPruneIndex:
         assert removed == 0
         assert kept == 5
 
+    def test_prune_ignores_dirty_canonical_metadata_and_preserves_vector_mapping(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from autodj.indexer import (
+            _save_tracks_metadata,
+            load_index,
+            prune_index,
+            save_index,
+        )
+
+        entries, vectors = self._distinctive_entries(tmp_path, missing_rows={1})
+        idx = tmp_path / "idx"
+        save_index(entries, vectors, idx)
+        dirty_entries = [entries[1], entries[0], entries[2]]
+        _save_tracks_metadata(dirty_entries, idx, music_dir=None)
+
+        assert prune_index(idx, allow_mass_prune=True) == (1, 2)
+        loaded, loaded_vectors = load_index(idx)
+        assert [Path(entry.path).name for entry in loaded] == ["song_0.flac", "song_2.flac"]
+        assert [int(np.argmax(loaded_vectors.reconstruct(row))) for row in range(2)] == [3, 11]
+
+    @pytest.mark.parametrize("legacy_without_manifest", [False, True])
+    def test_prune_rejects_generation_race_without_overwriting_newer_snapshot(
+        self,
+        tmp_path: Path,
+        legacy_without_manifest: bool,
+    ) -> None:
+        from dataclasses import replace
+
+        import autodj.indexer as indexer
+        from autodj.index_manifest import IndexConsistencyError, read_manifest
+        from autodj.indexer import load_index, prune_index, save_index
+
+        entries, vectors = self._distinctive_entries(tmp_path, missing_rows={2})
+        idx = tmp_path / "idx"
+        save_index(entries, vectors, idx)
+        first = read_manifest(idx)
+        assert first is not None
+        if legacy_without_manifest:
+            (idx / "index-manifest.json").unlink()
+            (idx / ".index-publication-state.json").unlink()
+        concurrent_entries = [
+            replace(entry, title=f"Concurrent {row}") for row, entry in enumerate(entries)
+        ]
+        concurrent_vectors = np.zeros_like(vectors)
+        concurrent_vectors[0, 13] = 1.0
+        concurrent_vectors[1, 17] = 1.0
+        concurrent_vectors[2, 19] = 1.0
+        real_check = indexer._check_prune_safety
+        raced = False
+
+        def check_after_concurrent_publish(*args, **kwargs):
+            nonlocal raced
+            real_check(*args, **kwargs)
+            if not raced:
+                raced = True
+                save_index(concurrent_entries, concurrent_vectors, idx)
+
+        with (
+            patch(
+                "autodj.indexer._check_prune_safety",
+                side_effect=check_after_concurrent_publish,
+            ),
+            pytest.raises(IndexConsistencyError, match="expected generation"),
+        ):
+            prune_index(idx, allow_mass_prune=True)
+
+        current = read_manifest(idx)
+        assert current is not None
+        assert current.generation == (1 if legacy_without_manifest else first.generation + 1)
+        loaded, loaded_vectors = load_index(idx)
+        assert [entry.title for entry in loaded] == [
+            "Concurrent 0",
+            "Concurrent 1",
+            "Concurrent 2",
+        ]
+        assert [int(np.argmax(loaded_vectors.reconstruct(row))) for row in range(3)] == [13, 17, 19]
+
+    @pytest.mark.parametrize("legacy_without_manifest", [False, True])
+    def test_prune_all_rejects_generation_race_without_deleting_newer_snapshot(
+        self,
+        tmp_path: Path,
+        legacy_without_manifest: bool,
+    ) -> None:
+        from autodj.index_manifest import IndexConsistencyError
+        from autodj.indexer import load_index, prune_index, save_index
+
+        entries, vectors = self._distinctive_entries(tmp_path, missing_rows={0, 1, 2})
+        idx = tmp_path / "idx"
+        save_index(entries, vectors, idx)
+        if legacy_without_manifest:
+            (idx / "index-manifest.json").unlink()
+            (idx / ".index-publication-state.json").unlink()
+        replacement_path = tmp_path / "replacement.flac"
+        replacement_path.write_bytes(b"")
+        replacement = [
+            IndexEntry(
+                path=str(replacement_path),
+                title="Concurrent replacement",
+                artist="Artist",
+                album="Album",
+                genre="Genre",
+                bpm=120.0,
+                year=2026,
+                length=180.0,
+                energy=0.5,
+                key=0,
+                mode=1,
+                tempo_confidence=0.8,
+            )
+        ]
+        replacement_vectors = np.zeros((1, FEATURE_DIM), dtype=np.float32)
+        replacement_vectors[0, 23] = 1.0
+
+        def publish_replacement(*_args, **_kwargs) -> None:
+            save_index(replacement, replacement_vectors, idx)
+
+        with (
+            patch(
+                "autodj.indexer._check_prune_safety",
+                side_effect=publish_replacement,
+            ),
+            pytest.raises(IndexConsistencyError, match="expected generation"),
+        ):
+            prune_index(idx, allow_mass_prune=True)
+
+        loaded, loaded_vectors = load_index(idx)
+        assert [entry.title for entry in loaded] == ["Concurrent replacement"]
+        assert int(np.argmax(loaded_vectors.reconstruct(0))) == 23
+
+    @pytest.mark.parametrize("legacy_without_manifest", [False, True])
+    def test_prune_path_migration_rejects_generation_race(
+        self,
+        tmp_path: Path,
+        legacy_without_manifest: bool,
+    ) -> None:
+        from dataclasses import replace
+
+        from autodj.index_manifest import IndexConsistencyError
+        from autodj.indexer import load_index, prune_index, save_index
+
+        entries, vectors = self._distinctive_entries(tmp_path)
+        idx = tmp_path / "idx"
+        save_index(entries, vectors, idx, music_dir=None)
+        if legacy_without_manifest:
+            (idx / "index-manifest.json").unlink()
+            (idx / ".index-publication-state.json").unlink()
+        concurrent_entries = [
+            replace(entry, title=f"Concurrent {row}") for row, entry in enumerate(entries)
+        ]
+        concurrent_vectors = np.zeros_like(vectors)
+        concurrent_vectors[0, 29] = 1.0
+        concurrent_vectors[1, 31] = 1.0
+        concurrent_vectors[2, 37] = 1.0
+
+        def publish_concurrent(*_args, **_kwargs) -> None:
+            save_index(concurrent_entries, concurrent_vectors, idx, music_dir=None)
+
+        with (
+            patch(
+                "autodj.indexer._check_prune_safety",
+                side_effect=publish_concurrent,
+            ),
+            pytest.raises(IndexConsistencyError, match="expected generation"),
+        ):
+            prune_index(idx, music_dir=tmp_path)
+
+        loaded, loaded_vectors = load_index(idx)
+        assert [entry.title for entry in loaded] == [
+            "Concurrent 0",
+            "Concurrent 1",
+            "Concurrent 2",
+        ]
+        assert [int(np.argmax(loaded_vectors.reconstruct(row))) for row in range(3)] == [29, 31, 37]
+
     def test_load_audio_falls_back_to_librosa_when_soundfile_errors(self, tmp_path: Path) -> None:
         # Some FLACs over NFS make libsndfile raise "flac decoder lost sync"
         # mid-stream — librosa's audioread/ffmpeg path decodes them fine and
@@ -480,6 +1204,90 @@ class TestPruneIndex:
         assert kept == 0
         assert not (idx / "vectors.index").exists()
         assert not (idx / "tracks.db").exists()
+        assert not (idx / "index-manifest.json").exists()
+        assert list(idx.glob("tracks.g*.db")) == []
+        assert list(idx.glob("vectors.g*.index")) == []
+
+    def test_prune_propagates_delete_failure_without_reporting_success(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from autodj.index_manifest import (
+            current_snapshot_token,
+            read_manifest,
+        )
+        from autodj.indexer import prune_index
+
+        idx = self._save_with_files(tmp_path, n_present=0, n_missing=3)
+        before = read_manifest(idx)
+        assert before is not None
+        real_unlink = Path.unlink
+
+        def refuse_vectors(path: Path, *args: object, **kwargs: object) -> None:
+            if path == idx / "vectors.index":
+                raise PermissionError("vectors locked")
+            real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", refuse_vectors)
+        with pytest.raises(PermissionError, match="vectors locked"):
+            prune_index(idx, allow_mass_prune=True)
+
+        assert read_manifest(idx) is None
+        assert current_snapshot_token(idx).generation == 0
+        assert (idx / "vectors.index").exists()
+        assert (idx / "tracks.db").exists()
+
+    def test_tombstoned_restart_discards_leftover_working_cores(self, tmp_path: Path) -> None:
+        from autodj.index_manifest import current_snapshot_token, tombstone_publication
+        from autodj.indexer import _load_existing_artifacts, save_index
+
+        entries, vectors = self._distinctive_entries(tmp_path)
+        idx = tmp_path / "idx"
+        save_index(entries, vectors, idx)
+        tombstone_publication(idx)
+
+        loaded, loaded_vectors, _relative, token = _load_existing_artifacts(idx, tmp_path, None)
+
+        assert loaded == []
+        assert loaded_vectors == []
+        assert token == current_snapshot_token(idx)
+        assert not (idx / "tracks.db").exists()
+        assert not (idx / "vectors.index").exists()
+
+    def test_reservation_only_restart_discards_uncommitted_working_cores(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import autodj.index_manifest as manifest_module
+        from autodj.index_manifest import current_snapshot_token
+        from autodj.indexer import _load_existing_artifacts, load_index, save_index
+
+        entries, vectors = self._distinctive_entries(tmp_path)
+        idx = tmp_path / "idx"
+        monkeypatch.setattr(
+            manifest_module,
+            "_checkpoint_working_tracks",
+            lambda _index_dir: (_ for _ in ()).throw(OSError("checkpoint failed")),
+        )
+        with pytest.raises(OSError, match="checkpoint failed"):
+            save_index(entries, vectors, idx)
+
+        loaded, loaded_vectors, _relative, token = _load_existing_artifacts(idx, tmp_path, None)
+
+        assert loaded == []
+        assert loaded_vectors == []
+        assert token == current_snapshot_token(idx)
+        assert token.generation == 0 and token.state_revision > 0
+        assert not (idx / "tracks.db").exists()
+        assert not (idx / "vectors.index").exists()
+
+        monkeypatch.undo()
+        save_index(entries, vectors, idx, expected_snapshot=token)
+        rebuilt, rebuilt_vectors = load_index(idx)
+        assert [Path(entry.path).name for entry in rebuilt] == [
+            Path(entry.path).name for entry in entries
+        ]
+        assert [int(np.argmax(rebuilt_vectors.reconstruct(row))) for row in range(3)] == [3, 7, 11]
 
 
 # ---------------------------------------------------------------------------
@@ -488,6 +1296,32 @@ class TestPruneIndex:
 
 
 class TestEnrichFromBeets:
+    def _make_distinctive_index(
+        self,
+        tmp_path: Path,
+    ) -> tuple[list[IndexEntry], np.ndarray]:
+        entries = [
+            IndexEntry(
+                path=str(tmp_path / f"song_{row}.flac"),
+                title=f"Original {row}",
+                artist="Artist",
+                album="Album",
+                genre="Genre",
+                bpm=120.0,
+                year=2026,
+                length=180.0,
+                energy=0.5,
+                key=0,
+                mode=1,
+                tempo_confidence=0.8,
+            )
+            for row in range(2)
+        ]
+        vectors = np.zeros((2, FEATURE_DIM), dtype=np.float32)
+        vectors[0, 3] = 1.0
+        vectors[1, 7] = 1.0
+        return entries, vectors
+
     def _make_beets(self, db_path: Path, entries: list[dict]) -> None:
         import sqlite3
 
@@ -522,6 +1356,90 @@ class TestEnrichFromBeets:
         beets = tmp_path / "library.db"
         self._make_beets(beets, [])
         assert enrich_from_beets(tmp_path / "noidx", music_dir=None, beets_db=beets) == (0, 0)
+
+    def test_enrich_ignores_dirty_canonical_metadata_and_preserves_vector_mapping(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from autodj.indexer import (
+            _save_tracks_metadata,
+            enrich_from_beets,
+            load_index,
+            save_index,
+        )
+
+        entries, vectors = self._make_distinctive_index(tmp_path)
+        idx = tmp_path / "idx"
+        save_index(entries, vectors, idx)
+        _save_tracks_metadata(list(reversed(entries)), idx, music_dir=None)
+        beets = tmp_path / "library.db"
+        self._make_beets(
+            beets,
+            [{"path": entry.path, "title": f"Enriched {row}"} for row, entry in enumerate(entries)],
+        )
+
+        assert enrich_from_beets(idx, music_dir=None, beets_db=beets) == (2, 2)
+        loaded, loaded_vectors = load_index(idx)
+        assert [Path(entry.path).name for entry in loaded] == ["song_0.flac", "song_1.flac"]
+        assert [entry.title for entry in loaded] == ["Enriched 0", "Enriched 1"]
+        assert [int(np.argmax(loaded_vectors.reconstruct(row))) for row in range(2)] == [3, 7]
+
+    @pytest.mark.parametrize("legacy_without_manifest", [False, True])
+    def test_enrich_rejects_generation_race_without_overwriting_newer_snapshot(
+        self,
+        tmp_path: Path,
+        legacy_without_manifest: bool,
+    ) -> None:
+        from dataclasses import replace
+
+        import autodj.indexer as indexer
+        from autodj.index_manifest import IndexConsistencyError, read_manifest
+        from autodj.indexer import enrich_from_beets, load_index, save_index
+
+        entries, vectors = self._make_distinctive_index(tmp_path)
+        idx = tmp_path / "idx"
+        save_index(entries, vectors, idx)
+        first = read_manifest(idx)
+        assert first is not None
+        if legacy_without_manifest:
+            (idx / "index-manifest.json").unlink()
+            (idx / ".index-publication-state.json").unlink()
+        beets = tmp_path / "library.db"
+        self._make_beets(
+            beets,
+            [{"path": entry.path, "title": f"Enriched {row}"} for row, entry in enumerate(entries)],
+        )
+        concurrent_entries = [
+            replace(entry, title=f"Concurrent {row}") for row, entry in enumerate(entries)
+        ]
+        concurrent_vectors = np.zeros_like(vectors)
+        concurrent_vectors[0, 11] = 1.0
+        concurrent_vectors[1, 13] = 1.0
+        real_apply = indexer._apply_beets_row
+        raced = False
+
+        def apply_after_concurrent_publish(*args, **kwargs):
+            nonlocal raced
+            if not raced:
+                raced = True
+                save_index(concurrent_entries, concurrent_vectors, idx)
+            return real_apply(*args, **kwargs)
+
+        with (
+            patch(
+                "autodj.indexer._apply_beets_row",
+                side_effect=apply_after_concurrent_publish,
+            ),
+            pytest.raises(IndexConsistencyError, match="expected generation"),
+        ):
+            enrich_from_beets(idx, music_dir=None, beets_db=beets)
+
+        current = read_manifest(idx)
+        assert current is not None
+        assert current.generation == (1 if legacy_without_manifest else first.generation + 1)
+        loaded, loaded_vectors = load_index(idx)
+        assert [entry.title for entry in loaded] == ["Concurrent 0", "Concurrent 1"]
+        assert [int(np.argmax(loaded_vectors.reconstruct(row))) for row in range(2)] == [11, 13]
 
     def test_updates_initial_key(self, tmp_path: Path) -> None:
         from autodj.indexer import enrich_from_beets, save_index
@@ -637,8 +1555,8 @@ class TestFlatIndexMigration:
     """Auto-migration of pre-0.9 flat-layout indexes into <dir>/<name>/."""
 
     def _make_flat(self, parent: Path) -> tuple[Path, Path]:
-        """Build a fake flat-layout index at *parent* — files directly inside."""
-        from autodj.indexer import save_index
+        """Build literal manifest-free legacy cores directly in *parent*."""
+        from autodj.indexer import _TRACKS_INSERT_SQL, _entry_to_row, _open_tracks_db
 
         e = [
             IndexEntry(
@@ -658,7 +1576,18 @@ class TestFlatIndexMigration:
         ]
         v = np.random.randn(1, FEATURE_DIM).astype(np.float32)
         v /= np.linalg.norm(v, axis=1, keepdims=True)
-        save_index(e, v, parent)
+        parent.mkdir(parents=True, exist_ok=True)
+        conn = _open_tracks_db(parent)
+        try:
+            conn.execute("DELETE FROM tracks")
+            conn.execute(_TRACKS_INSERT_SQL, _entry_to_row(e[0], None, 0))
+        finally:
+            conn.close()
+        faiss.write_index(faiss.IndexFlatIP(FEATURE_DIM), str(parent / "vectors.index"))
+        loaded = faiss.read_index(str(parent / "vectors.index"))
+        loaded.add(v)
+        faiss.write_index(loaded, str(parent / "vectors.index"))
+        assert not (parent / "index-manifest.json").exists()
         return parent / "tracks.db", parent / "vectors.index"
 
     def test_load_index_auto_migrates(self, tmp_path: Path) -> None:
@@ -681,6 +1610,33 @@ class TestFlatIndexMigration:
         # Old files gone
         assert not meta_old.exists()
         assert not vec_old.exists()
+
+    def test_migration_upgrades_literal_id_schema_with_vector_order(self, tmp_path: Path) -> None:
+        import sqlite3
+
+        from autodj.indexer import load_index
+
+        conn = sqlite3.connect(tmp_path / "tracks.db")
+        try:
+            conn.execute("CREATE TABLE tracks (id INTEGER, path TEXT, title TEXT)")
+            conn.executemany(
+                "INSERT INTO tracks VALUES (?, ?, ?)",
+                [(5, "first.flac", "First"), (10, "second.flac", "Second")],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        vectors = np.zeros((2, FEATURE_DIM), dtype=np.float32)
+        vectors[0, 17] = 1.0
+        vectors[1, 83] = 1.0
+        index = faiss.IndexFlatIP(FEATURE_DIM)
+        index.add(vectors)
+        faiss.write_index(index, str(tmp_path / "vectors.index"))
+
+        entries, migrated = load_index(tmp_path / "default")
+
+        assert [entry.path for entry in entries] == ["first.flac", "second.flac"]
+        assert [int(np.argmax(migrated.reconstruct(row))) for row in range(2)] == [17, 83]
 
     def test_no_migration_when_already_in_place(self, tmp_path: Path) -> None:
         from autodj.indexer import _migrate_flat_index_if_needed, save_index
@@ -717,6 +1673,353 @@ class TestFlatIndexMigration:
         # Neither source nor target — silent no-op
         _migrate_flat_index_if_needed(target)
         assert not target.exists()
+
+    def test_tombstoned_target_never_resurrects_parent_flat_cores(self, tmp_path: Path) -> None:
+        from autodj.index_manifest import IndexConsistencyError, tombstone_publication
+        from autodj.indexer import load_index
+
+        source_db, source_vectors = self._make_flat(tmp_path)
+        target = tmp_path / "default"
+        target.mkdir()
+        tombstone_publication(target)
+
+        with pytest.raises(IndexConsistencyError, match="publication history"):
+            load_index(target)
+
+        assert source_db.exists()
+        assert source_vectors.exists()
+        assert not (target / "index-manifest.json").exists()
+        assert not (target / "tracks.db").exists()
+        assert not (target / "vectors.index").exists()
+
+    def test_tombstoned_parent_never_seeds_fresh_target(self, tmp_path: Path) -> None:
+        from autodj.index_manifest import tombstone_publication
+        from autodj.indexer import load_index
+
+        source_db, source_vectors = self._make_flat(tmp_path)
+        tombstone_publication(tmp_path)
+        target = tmp_path / "default"
+
+        with pytest.raises(FileNotFoundError):
+            load_index(target)
+
+        assert source_db.exists()
+        assert source_vectors.exists()
+        assert not (target / "index-manifest.json").exists()
+        assert not (target / "tracks.db").exists()
+        assert not (target / "vectors.index").exists()
+
+    def test_failed_reservation_parent_never_seeds_fresh_target(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import autodj.index_manifest as manifest_module
+        from autodj.index_manifest import publish_manifest
+        from autodj.indexer import load_index
+
+        source_db, source_vectors = self._make_flat(tmp_path)
+        monkeypatch.setattr(
+            manifest_module,
+            "_checkpoint_working_tracks",
+            lambda _index_dir: (_ for _ in ()).throw(OSError("checkpoint failed")),
+        )
+        with pytest.raises(OSError, match="checkpoint failed"):
+            publish_manifest(tmp_path, 1)
+        target = tmp_path / "default"
+
+        with pytest.raises(FileNotFoundError):
+            load_index(target)
+
+        assert source_db.exists()
+        assert source_vectors.exists()
+        assert not (target / "index-manifest.json").exists()
+
+    def test_load_index_recovers_exact_historical_split(self, tmp_path: Path) -> None:
+        from autodj.indexer import load_index
+
+        source_db, source_vectors = self._make_flat(tmp_path)
+        target = tmp_path / "default"
+        target.mkdir()
+        source_vectors.replace(target / "vectors.index")
+
+        entries, loaded = load_index(target)
+
+        assert [entry.title for entry in entries] == ["T"]
+        assert loaded.ntotal == 1
+        assert (target / "tracks.db").exists()
+        assert not source_db.exists()
+
+    def test_target_publication_during_migration_keeps_legacy_source(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from autodj.indexer import load_index, save_index
+
+        source_db, source_vectors = self._make_flat(tmp_path)
+        target = tmp_path / "default"
+        replacement = IndexEntry(
+            path=str(tmp_path / "concurrent.flac"),
+            title="Concurrent",
+            artist="Artist",
+            album="Album",
+            genre="Genre",
+            bpm=120.0,
+            year=2026,
+            length=180.0,
+            energy=0.5,
+            key=0,
+            mode=1,
+            tempo_confidence=0.8,
+        )
+        replacement_vectors = np.zeros((1, FEATURE_DIM), dtype=np.float32)
+        replacement_vectors[0, 97] = 1.0
+        real_exists = Path.exists
+        published = False
+
+        def publish_target_before_move(path: Path) -> bool:
+            nonlocal published
+            if path == source_db and not published:
+                published = True
+                save_index([replacement], replacement_vectors, target)
+            return real_exists(path)
+
+        monkeypatch.setattr(Path, "exists", publish_target_before_move)
+        loaded, loaded_vectors = load_index(target)
+
+        assert [entry.title for entry in loaded] == ["Concurrent"]
+        assert int(np.argmax(loaded_vectors.reconstruct(0))) == 97
+        assert source_db.exists()
+        assert source_vectors.exists()
+
+    def test_migration_snapshots_committed_legacy_wal_rows(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        import sqlite3
+
+        from autodj.indexer import load_index, save_index
+
+        parent = tmp_path
+        target = parent / "default"
+        entries = [
+            IndexEntry(
+                path=str(parent / f"song-{row}.flac"),
+                title=f"Original {row}",
+                artist="Artist",
+                album="Album",
+                genre="Genre",
+                bpm=120.0,
+                year=2026,
+                length=180.0,
+                energy=0.5,
+                key=0,
+                mode=1,
+                tempo_confidence=0.8,
+            )
+            for row in range(2)
+        ]
+        vectors = np.zeros((2, FEATURE_DIM), dtype=np.float32)
+        vectors[0, 17] = 1.0
+        vectors[1, 31] = 1.0
+        save_index(entries, vectors, parent)
+        (parent / "index-manifest.json").unlink()
+        (parent / ".index-publication-state.json").unlink()
+        writer = sqlite3.connect(parent / "tracks.db", isolation_level=None)
+        try:
+            assert writer.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+            writer.execute("PRAGMA wal_autocheckpoint=0")
+            writer.execute("BEGIN IMMEDIATE")
+            writer.execute("UPDATE tracks SET title = 'WAL second' WHERE vec_row = 1")
+            writer.commit()
+            assert (parent / "tracks.db-wal").stat().st_size > 0
+
+            migrated, migrated_vectors = load_index(target)
+        finally:
+            writer.close()
+
+        assert [entry.title for entry in migrated] == ["Original 0", "WAL second"]
+        assert [int(np.argmax(migrated_vectors.reconstruct(row))) for row in range(2)] == [17, 31]
+        assert not (target / "tracks.db-wal").exists()
+        assert not (target / "tracks.db-shm").exists()
+
+    def test_migration_holds_parent_lock_for_coherent_source_snapshot(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import threading
+
+        import autodj.indexer as indexer
+        from autodj.indexer import load_index, save_index
+
+        source_db, source_vectors = self._make_flat(tmp_path)
+        source_index = faiss.read_index(str(source_vectors))
+        source_vector = source_index.reconstruct(0).copy()
+        target = tmp_path / "default"
+        replacement = IndexEntry(
+            path=str(tmp_path / "replacement.flac"),
+            title="Replacement",
+            artist="Artist",
+            album="Album",
+            genre="Genre",
+            bpm=120.0,
+            year=2026,
+            length=180.0,
+            energy=0.5,
+            key=0,
+            mode=1,
+            tempo_confidence=0.8,
+        )
+        replacement_vectors = np.zeros((1, FEATURE_DIM), dtype=np.float32)
+        replacement_vectors[0, 101] = 1.0
+        writer_started = threading.Event()
+        writer_finished = threading.Event()
+        writers: list[threading.Thread] = []
+
+        def publish_source() -> None:
+            writer_started.set()
+            save_index([replacement], replacement_vectors, tmp_path)
+            writer_finished.set()
+
+        real_backup = indexer._backup_legacy_tracks_db
+
+        def backup_while_writer_waits(source: Path, destination: Path) -> None:
+            writer = threading.Thread(target=publish_source)
+            writers.append(writer)
+            writer.start()
+            assert writer_started.wait(timeout=5)
+            assert not writer_finished.wait(timeout=0.1)
+            real_backup(source, destination)
+
+        monkeypatch.setattr(indexer, "_backup_legacy_tracks_db", backup_while_writer_waits)
+        migrated, migrated_vectors = load_index(target)
+        writers[0].join(timeout=5)
+
+        assert writer_finished.is_set()
+        assert source_db.exists()
+        assert source_vectors.exists()
+        assert [entry.title for entry in migrated] == ["T"]
+        np.testing.assert_array_equal(migrated_vectors.reconstruct(0), source_vector)
+
+    @pytest.mark.parametrize("crash_after", ["vectors.index", "tracks.db"])
+    def test_migration_recovers_owned_partial_core_after_crash(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        crash_after: str,
+    ) -> None:
+        from autodj.indexer import _FLAT_MIGRATION_MARKER, load_index
+
+        source_db, source_vectors = self._make_flat(tmp_path)
+        target = tmp_path / "default"
+        real_replace = Path.replace
+        crashed = False
+
+        def crash_after_install(source: Path, destination: Path) -> Path:
+            nonlocal crashed
+            moved = real_replace(source, destination)
+            if destination == target / crash_after and not crashed:
+                crashed = True
+                raise SystemExit("simulated abrupt exit")
+            return moved
+
+        monkeypatch.setattr(Path, "replace", crash_after_install)
+        with pytest.raises(SystemExit, match="simulated abrupt exit"):
+            load_index(target)
+
+        assert (target / _FLAT_MIGRATION_MARKER).exists()
+        assert source_db.exists()
+        assert source_vectors.exists()
+        monkeypatch.setattr(Path, "replace", real_replace)
+        migrated, _vectors = load_index(target)
+
+        assert len(migrated) == 1
+        assert not (target / _FLAT_MIGRATION_MARKER).exists()
+        assert not source_db.exists()
+        assert not source_vectors.exists()
+
+    def test_migration_fsyncs_marker_directory_before_core_install(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import autodj.indexer as indexer
+        from autodj.indexer import load_index
+
+        self._make_flat(tmp_path)
+        target = tmp_path / "default"
+        events: list[tuple[str, Path]] = []
+        real_replace = Path.replace
+
+        def record_fsync(path: Path) -> None:
+            events.append(("fsync", path))
+
+        def require_marker_fsync(source: Path, destination: Path) -> Path:
+            if destination == target / "vectors.index":
+                assert events == [("fsync", target)]
+            return real_replace(source, destination)
+
+        monkeypatch.setattr(indexer, "fsync_directory", record_fsync)
+        monkeypatch.setattr(Path, "replace", require_marker_fsync)
+        load_index(target)
+
+    @pytest.mark.parametrize("cleanup", ["marker", "staging"])
+    def test_manifest_winner_survives_stale_migration_cleanup_failure(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        cleanup: str,
+    ) -> None:
+        import autodj.indexer as indexer
+        from autodj.indexer import _FLAT_MIGRATION_MARKER, _write_flat_migration_marker, load_index
+
+        target = tmp_path / "default"
+        entries = [
+            IndexEntry(
+                path=str(tmp_path / "published.flac"),
+                title="Published",
+                artist="Artist",
+                album="Album",
+                genre="Genre",
+                bpm=120.0,
+                year=2026,
+                length=180.0,
+                energy=0.5,
+                key=0,
+                mode=1,
+                tempo_confidence=0.8,
+            )
+        ]
+        vectors = np.zeros((1, FEATURE_DIM), dtype=np.float32)
+        vectors[0, 103] = 1.0
+        save_index(entries, vectors, target)
+        staging = target / ".flat-migration-stale"
+        staging.mkdir()
+        _write_flat_migration_marker(target, staging)
+
+        if cleanup == "marker":
+            real_unlink = Path.unlink
+
+            def refuse_marker(path: Path, *args: object, **kwargs: object) -> None:
+                if path == target / _FLAT_MIGRATION_MARKER:
+                    raise PermissionError("marker locked")
+                real_unlink(path, *args, **kwargs)
+
+            monkeypatch.setattr(Path, "unlink", refuse_marker)
+        else:
+            monkeypatch.setattr(
+                indexer.shutil,
+                "rmtree",
+                lambda _path: (_ for _ in ()).throw(OSError("staging locked")),
+            )
+
+        with caplog.at_level("WARNING"):
+            loaded, loaded_vectors = load_index(target)
+
+        assert [entry.title for entry in loaded] == ["Published"]
+        assert int(np.argmax(loaded_vectors.reconstruct(0))) == 103
+        assert any("flat migration" in record.message.lower() for record in caplog.records)
 
 
 class TestDetectStaleEntries:
@@ -889,7 +2192,7 @@ class TestPathPortability:
         conn = _sql.connect(idx / "tracks.db")
         try:
             stored_path = conn.execute(
-                "SELECT path FROM tracks ORDER BY id ASC LIMIT 1"
+                "SELECT path FROM tracks ORDER BY vec_row ASC LIMIT 1"
             ).fetchone()[0]
         finally:
             conn.close()
@@ -1179,7 +2482,7 @@ class TestBackfillDjMeta:
 
 
 class TestThrottledFaissCheckpoint:
-    """Per-track tracks.db UPSERT + every-N FAISS rewrite + reload recovery."""
+    """Aligned every-N vector flush + metadata delta + reload recovery."""
 
     @staticmethod
     def _make_entries(n: int) -> tuple[list[IndexEntry], np.ndarray]:
@@ -1233,9 +2536,524 @@ class TestThrottledFaissCheckpoint:
             conn.close()
         assert count == 3
 
+    def test_delta_checkpoint_upserts_one_stable_vector_row(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import autodj.indexer as indexer
+        from autodj.indexer import (
+            _load_tracks_rows,
+            _open_tracks_db,
+            _upsert_tracks_metadata,
+        )
+
+        entries, _ = self._make_entries(3)
+        statements: list[str] = []
+
+        def traced_open(index_dir: Path):
+            conn = _open_tracks_db(index_dir)
+            conn.set_trace_callback(statements.append)
+            return conn
+
+        monkeypatch.setattr(indexer, "_open_tracks_db", traced_open)
+        _upsert_tracks_metadata(entries[:2], tmp_path, first_vec_row=0, music_dir=None)
+        statements.clear()
+        _upsert_tracks_metadata(entries[2:], tmp_path, first_vec_row=2, music_dir=None)
+        conn = _open_tracks_db(tmp_path)
+        try:
+            rows = conn.execute("SELECT vec_row, path FROM tracks ORDER BY vec_row").fetchall()
+            loaded = _load_tracks_rows(conn)
+        finally:
+            conn.close()
+
+        assert rows == [
+            (0, entries[0].path),
+            (1, entries[1].path),
+            (2, entries[2].path),
+        ]
+        assert [entry.path for entry in loaded] == [entry.path for entry in entries]
+        assert not any(
+            statement.lstrip().upper().startswith("DELETE FROM TRACKS") for statement in statements
+        )
+
+    def test_checkpoint_buffers_metadata_until_vectors_are_flushed(self, tmp_path: Path) -> None:
+        from autodj.index_manifest import current_snapshot_token
+        from autodj.indexer import IncrementalCheckpoint, _open_tracks_db
+
+        entries, vectors = self._make_entries(2)
+        checkpoint = IncrementalCheckpoint(
+            index_dir=tmp_path,
+            music_dir=None,
+            existing_entries=[],
+            existing_vectors=[],
+            total_new=2,
+            expected_snapshot=current_snapshot_token(tmp_path),
+            flush_every=2,
+        )
+        checkpoint.write(entries[:1], [vectors[0]])
+        assert not (tmp_path / "tracks.db").exists()
+        assert not (tmp_path / "vectors.index").exists()
+
+        checkpoint.write(entries, [vectors[0], vectors[1]])
+        conn = _open_tracks_db(tmp_path)
+        try:
+            assert conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0] == 2
+        finally:
+            conn.close()
+        assert (tmp_path / "vectors.index").exists()
+
+    def test_aligned_checkpoint_only_converts_binds_and_queries_delta(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import autodj.indexer as indexer
+        from autodj.index_manifest import current_snapshot_token
+        from autodj.indexer import IncrementalCheckpoint, _open_tracks_db, save_index
+
+        entries, vectors = self._make_entries(65)
+        existing_entries = entries[:64]
+        existing_vectors = list(vectors[:64])
+        save_index(existing_entries, vectors[:64], tmp_path, music_dir=None)
+
+        converted_paths: list[str] = []
+        statements: list[str] = []
+        real_entry_to_row = indexer._entry_to_row
+        real_open_tracks_db = _open_tracks_db
+
+        def traced_entry_to_row(entry, music_dir, vec_row):
+            converted_paths.append(entry.path)
+            return real_entry_to_row(entry, music_dir, vec_row)
+
+        def traced_open(index_dir: Path):
+            conn = real_open_tracks_db(index_dir)
+            conn.set_trace_callback(statements.append)
+            return conn
+
+        monkeypatch.setattr(indexer, "_entry_to_row", traced_entry_to_row)
+        monkeypatch.setattr(indexer, "_open_tracks_db", traced_open)
+        checkpoint = IncrementalCheckpoint(
+            index_dir=tmp_path,
+            music_dir=None,
+            existing_entries=existing_entries,
+            existing_vectors=existing_vectors,
+            total_new=1,
+            expected_snapshot=current_snapshot_token(tmp_path),
+            flush_every=1,
+        )
+
+        checkpoint.write(entries[64:], [vectors[64]])
+
+        conn = real_open_tracks_db(tmp_path)
+        try:
+            count = conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
+        finally:
+            conn.close()
+        metadata_inserts = [
+            statement
+            for statement in statements
+            if statement.lstrip().upper().startswith("INSERT INTO TRACKS")
+        ]
+        baseline_queries = [
+            statement
+            for statement in statements
+            if statement.lstrip().upper().startswith("SELECT VEC_ROW, PATH FROM TRACKS")
+        ]
+
+        assert count == 65
+        assert converted_paths == [entries[64].path]
+        assert len(metadata_inserts) == 1
+        assert baseline_queries == []
+
+    def test_checkpoint_restores_published_baseline_before_delta(self, tmp_path: Path) -> None:
+        from autodj.index_manifest import current_snapshot_token
+        from autodj.indexer import (
+            IncrementalCheckpoint,
+            _save_tracks_metadata,
+            load_index,
+            save_index,
+        )
+
+        entries, vectors = self._make_entries(3)
+        save_index(entries[:2], vectors[:2], tmp_path, music_dir=None)
+        # Same-count canonical dirt must never become the next checkpoint baseline.
+        _save_tracks_metadata([entries[1], entries[0]], tmp_path, music_dir=None)
+        checkpoint = IncrementalCheckpoint(
+            index_dir=tmp_path,
+            music_dir=None,
+            existing_entries=entries[:2],
+            existing_vectors=list(vectors[:2]),
+            total_new=1,
+            expected_snapshot=current_snapshot_token(tmp_path),
+            flush_every=1,
+        )
+
+        checkpoint.write(entries[2:], [vectors[2]])
+
+        loaded, loaded_vectors = load_index(tmp_path)
+        assert [entry.path for entry in loaded] == [entry.path for entry in entries]
+        assert np.allclose(loaded_vectors.reconstruct(0), vectors[0])
+        assert np.allclose(loaded_vectors.reconstruct(1), vectors[1])
+
+    def test_embed_propagates_checkpoint_failure_and_allows_full_delta_retry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import faiss
+
+        import autodj.indexer as indexer
+        from autodj.index_manifest import current_snapshot_token
+        from autodj.indexer import (
+            IncrementalCheckpoint,
+            _embed_new_tracks,
+            _open_tracks_db,
+        )
+
+        entries, _ = self._make_entries(1)
+        marker_vector = np.zeros(FEATURE_DIM, dtype=np.float32)
+        marker_vector[17] = 1.0
+        embedding = marker_vector[:EMBEDDING_DIM]
+        track = Track(
+            path=Path(entries[0].path),
+            title=entries[0].title,
+            artist=entries[0].artist,
+            album=entries[0].album,
+            genre=entries[0].genre,
+            bpm=entries[0].bpm,
+            year=entries[0].year,
+            length=entries[0].length,
+        )
+        wrapper = MagicMock()
+        wrapper.embed_array.return_value = embedding
+        checkpoint = IncrementalCheckpoint(
+            index_dir=tmp_path,
+            music_dir=None,
+            existing_entries=[],
+            existing_vectors=[],
+            total_new=1,
+            expected_snapshot=current_snapshot_token(tmp_path),
+            flush_every=1,
+        )
+        initial_snapshot = checkpoint.expected_snapshot
+        real_upsert = indexer._upsert_tracks_metadata
+
+        def fail_metadata(*_args, **_kwargs):
+            raise OSError("metadata checkpoint failed")
+
+        monkeypatch.setattr(indexer, "_upsert_tracks_metadata", fail_metadata)
+        with (
+            patch(
+                "autodj.indexer._extract_librosa_features",
+                return_value=(
+                    np.zeros(16, dtype=np.float32),
+                    np.zeros(32, dtype=np.float32),
+                    22050,
+                    {
+                        "energy": 0.0,
+                        "key": -1,
+                        "mode": -1,
+                        "bpm": 0.0,
+                        "tempo_confidence": 0.0,
+                    },
+                ),
+            ),
+            pytest.raises(OSError, match="metadata checkpoint failed"),
+        ):
+            _embed_new_tracks([track], wrapper, workers=1, checkpoint=checkpoint.write)
+
+        assert checkpoint.published_new_count == 0
+        assert checkpoint.expected_snapshot == initial_snapshot
+        assert faiss.read_index(str(tmp_path / "vectors.index")).ntotal == 1
+
+        monkeypatch.setattr(indexer, "_upsert_tracks_metadata", real_upsert)
+        checkpoint.write(entries, [marker_vector])
+        conn = _open_tracks_db(tmp_path)
+        try:
+            paths = conn.execute("SELECT path FROM tracks ORDER BY vec_row").fetchall()
+        finally:
+            conn.close()
+        retried = faiss.read_index(str(tmp_path / "vectors.index"))
+        assert paths == [(entries[0].path,)]
+        assert int(np.argmax(retried.reconstruct(0))) == 17
+        assert checkpoint.expected_snapshot.generation == 1
+
+    def test_final_save_rejects_generation_newer_than_checkpoint_token(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from dataclasses import replace
+
+        from autodj.index_manifest import IndexConsistencyError, IndexSnapshotToken
+        from autodj.indexer import IncrementalCheckpoint, load_index, save_index
+
+        entries, vectors = self._make_entries(2)
+        checkpoint = IncrementalCheckpoint(
+            index_dir=tmp_path,
+            music_dir=None,
+            existing_entries=[],
+            existing_vectors=[],
+            total_new=2,
+            expected_snapshot=IndexSnapshotToken(0),
+            flush_every=2,
+        )
+        checkpoint.write(entries, [vectors[0], vectors[1]])
+        assert checkpoint.expected_snapshot.generation == 1
+
+        concurrent_entries = [
+            replace(entry, title=f"Concurrent {row}") for row, entry in enumerate(entries)
+        ]
+        concurrent_vectors = np.zeros_like(vectors)
+        concurrent_vectors[0, 83] = 1.0
+        concurrent_vectors[1, 89] = 1.0
+        save_index(concurrent_entries, concurrent_vectors, tmp_path)
+
+        with pytest.raises(IndexConsistencyError, match="expected generation"):
+            save_index(
+                entries,
+                vectors,
+                tmp_path,
+                expected_snapshot=checkpoint.expected_snapshot,
+            )
+
+        loaded, loaded_vectors = load_index(tmp_path)
+        assert [entry.title for entry in loaded] == ["Concurrent 0", "Concurrent 1"]
+        assert [int(np.argmax(loaded_vectors.reconstruct(row))) for row in range(2)] == [83, 89]
+
+    def test_checkpoint_reconciles_interior_stale_baseline_before_delta(
+        self, tmp_path: Path
+    ) -> None:
+        from autodj.indexer import (
+            IncrementalCheckpoint,
+            _load_existing_index,
+            load_index,
+            save_index,
+        )
+
+        entries, _ = self._make_entries(3)
+        for index, entry in enumerate(entries):
+            track_path = tmp_path / f"song_{index}.flac"
+            track_path.touch()
+            entry.path = str(track_path)
+            entry.embedded_at = track_path.stat().st_mtime
+        entries[1].embedded_at -= 10.0
+
+        vectors = np.zeros((3, FEATURE_DIM), dtype=np.float32)
+        for row, marker in enumerate((3, 7, 11)):
+            vectors[row, marker] = 1.0
+        index_dir = tmp_path / "index"
+        save_index(entries, vectors, index_dir, music_dir=tmp_path)
+
+        (
+            existing_entries,
+            existing_vectors,
+            _,
+            baseline_requires_reconcile,
+            snapshot_token,
+        ) = _load_existing_index(
+            index_dir,
+            music_dir=tmp_path,
+            path_remap=None,
+            force=False,
+            reindex_modified_since=None,
+        )
+        assert [entry.path for entry in existing_entries] == [
+            entries[0].path,
+            entries[2].path,
+        ]
+        assert [int(np.argmax(vector)) for vector in existing_vectors] == [3, 11]
+
+        replacement = entries[1]
+        replacement.embedded_at = Path(replacement.path).stat().st_mtime
+        replacement_vector = np.zeros(FEATURE_DIM, dtype=np.float32)
+        replacement_vector[19] = 1.0
+        checkpoint = IncrementalCheckpoint(
+            index_dir=index_dir,
+            music_dir=tmp_path,
+            existing_entries=existing_entries,
+            existing_vectors=existing_vectors,
+            total_new=1,
+            expected_snapshot=snapshot_token,
+            baseline_requires_reconcile=baseline_requires_reconcile,
+            flush_every=1,
+        )
+        checkpoint.write([replacement], [replacement_vector])
+
+        loaded_entries, loaded_index = load_index(index_dir, music_dir=tmp_path)
+        assert [entry.path for entry in loaded_entries] == [
+            entries[0].path,
+            entries[2].path,
+            entries[1].path,
+        ]
+        assert [
+            int(np.argmax(loaded_index.reconstruct(row))) for row in range(loaded_index.ntotal)
+        ] == [3, 11, 19]
+
+    def test_fused_path_migration_rejects_generation_published_during_stat(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from dataclasses import replace
+
+        import autodj.indexer as indexer
+        from autodj.index_manifest import IndexConsistencyError
+        from autodj.indexer import _load_existing_index, load_index, save_index
+
+        entries, vectors = self._make_entries(3)
+        for row, entry in enumerate(entries):
+            path = tmp_path / f"song_{row}.flac"
+            path.write_bytes(b"")
+            entry.path = str(path)
+        index_dir = tmp_path / "idx"
+        save_index(entries, vectors, index_dir, music_dir=None)
+        concurrent_entries = [
+            replace(entry, title=f"Concurrent {row}") for row, entry in enumerate(entries)
+        ]
+        concurrent_vectors = np.zeros_like(vectors)
+        concurrent_vectors[0, 41] = 1.0
+        concurrent_vectors[1, 43] = 1.0
+        concurrent_vectors[2, 47] = 1.0
+
+        def stat_after_concurrent_publish(*_args, **_kwargs):
+            save_index(concurrent_entries, concurrent_vectors, index_dir, music_dir=None)
+            return [Path(entry.path).stat().st_mtime for entry in entries]
+
+        monkeypatch.setattr(indexer, "_stat_mtimes", stat_after_concurrent_publish)
+        with pytest.raises(IndexConsistencyError, match="expected generation"):
+            _load_existing_index(
+                index_dir,
+                music_dir=tmp_path,
+                path_remap=None,
+                force=False,
+                reindex_modified_since=None,
+            )
+
+        loaded, loaded_vectors = load_index(index_dir)
+        assert [entry.title for entry in loaded] == [
+            "Concurrent 0",
+            "Concurrent 1",
+            "Concurrent 2",
+        ]
+        assert [int(np.argmax(loaded_vectors.reconstruct(row))) for row in range(3)] == [41, 43, 47]
+
+    def test_fused_missing_prune_rejects_generation_published_during_stat(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from dataclasses import replace
+
+        import autodj.indexer as indexer
+        from autodj.index_manifest import IndexConsistencyError
+        from autodj.indexer import _load_existing_index, load_index, save_index
+
+        entries, vectors = self._make_entries(5)
+        mtimes: list[float | None] = []
+        for row, entry in enumerate(entries):
+            path = tmp_path / f"song_{row}.flac"
+            entry.path = str(path)
+            if row == 4:
+                mtimes.append(None)
+            else:
+                path.write_bytes(b"")
+                mtimes.append(path.stat().st_mtime)
+        index_dir = tmp_path / "idx"
+        save_index(entries, vectors, index_dir, music_dir=tmp_path)
+        concurrent_entries = [
+            replace(entry, title=f"Concurrent {row}") for row, entry in enumerate(entries)
+        ]
+        concurrent_vectors = np.zeros_like(vectors)
+        for row, marker in enumerate((53, 59, 61, 67, 71)):
+            concurrent_vectors[row] = 0.0
+            concurrent_vectors[row, marker] = 1.0
+
+        def stat_after_concurrent_publish(*_args, **_kwargs):
+            save_index(
+                concurrent_entries,
+                concurrent_vectors,
+                index_dir,
+                music_dir=tmp_path,
+            )
+            return mtimes
+
+        monkeypatch.setattr(indexer, "_stat_mtimes", stat_after_concurrent_publish)
+        with pytest.raises(IndexConsistencyError, match="expected generation"):
+            _load_existing_index(
+                index_dir,
+                music_dir=tmp_path,
+                path_remap=None,
+                force=False,
+                reindex_modified_since=None,
+            )
+
+        loaded, loaded_vectors = load_index(index_dir, music_dir=tmp_path)
+        assert [entry.title for entry in loaded] == [f"Concurrent {row}" for row in range(5)]
+        assert [int(np.argmax(loaded_vectors.reconstruct(row))) for row in range(5)] == [
+            53,
+            59,
+            61,
+            67,
+            71,
+        ]
+
+    def test_force_checkpoint_rejects_generation_published_after_start(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from dataclasses import replace
+
+        from autodj.index_manifest import IndexConsistencyError, IndexSnapshotToken
+        from autodj.indexer import (
+            IncrementalCheckpoint,
+            _load_existing_index,
+            load_index,
+            save_index,
+        )
+
+        entries, vectors = self._make_entries(2)
+        index_dir = tmp_path / "idx"
+        save_index(entries, vectors, index_dir)
+        (
+            existing_entries,
+            existing_vectors,
+            _paths,
+            baseline_requires_reconcile,
+            snapshot_token,
+        ) = _load_existing_index(
+            index_dir,
+            music_dir=tmp_path,
+            path_remap=None,
+            force=True,
+            reindex_modified_since=None,
+        )
+        assert existing_entries == []
+        assert existing_vectors == []
+        assert baseline_requires_reconcile is True
+        assert isinstance(snapshot_token, IndexSnapshotToken)
+
+        concurrent_entries = [
+            replace(entry, title=f"Concurrent {row}") for row, entry in enumerate(entries)
+        ]
+        concurrent_vectors = np.zeros_like(vectors)
+        concurrent_vectors[0, 73] = 1.0
+        concurrent_vectors[1, 79] = 1.0
+        save_index(concurrent_entries, concurrent_vectors, index_dir)
+        checkpoint = IncrementalCheckpoint(
+            index_dir=index_dir,
+            music_dir=None,
+            existing_entries=[],
+            existing_vectors=[],
+            total_new=1,
+            expected_snapshot=snapshot_token,
+            baseline_requires_reconcile=True,
+            flush_every=1,
+        )
+        replacement = replace(entries[0], title="Force replacement")
+        with pytest.raises(IndexConsistencyError, match="expected generation"):
+            checkpoint.write([replacement], [vectors[0]])
+
+        loaded, loaded_vectors = load_index(index_dir)
+        assert [entry.title for entry in loaded] == ["Concurrent 0", "Concurrent 1"]
+        assert [int(np.argmax(loaded_vectors.reconstruct(row))) for row in range(2)] == [73, 79]
+
     def test_load_existing_index_trims_unmatched_db_tail(self, tmp_path: Path) -> None:
-        """Crash between metadata flush and FAISS flush leaves tracks.db
-        with extra rows.  _load_existing_index must drop the tail."""
+        """Legacy partial writes with extra DB rows are trimmed on reload."""
         from autodj.indexer import _load_existing_index, save_index
 
         entries, vectors = self._make_entries(5)
@@ -1244,6 +3062,10 @@ class TestThrottledFaissCheckpoint:
 
         # Healthy save first (3 entries + 3 vectors).
         save_index(entries[:3], vectors[:3], index_dir)
+        # Exercise Task 3's legacy recovery path; manifested generations
+        # intentionally ignore unpublished canonical-file mutations.
+        (index_dir / "index-manifest.json").unlink()
+        (index_dir / ".index-publication-state.json").unlink()
 
         # Simulate crash recovery: metadata wrote 5 rows but FAISS only
         # got 3 vectors.
@@ -1251,7 +3073,7 @@ class TestThrottledFaissCheckpoint:
 
         _save_tracks_metadata(entries, index_dir, music_dir=None)
 
-        existing_e, existing_v, paths = _load_existing_index(
+        existing_e, existing_v, paths, _, _snapshot = _load_existing_index(
             index_dir,
             music_dir=tmp_path,
             path_remap=None,
@@ -1273,32 +3095,71 @@ class TestThrottledFaissCheckpoint:
         assert db_count == 3
 
     def test_load_existing_index_trims_unmatched_faiss_tail(self, tmp_path: Path) -> None:
-        """Defensive: if FAISS somehow has more vectors than tracks.db
-        (shouldn't happen given metadata-first ordering), the load path
-        must still return aligned lists."""
+        """A vector checkpoint interrupted before metadata stays aligned."""
+        import faiss
+
         from autodj.indexer import (
             _load_existing_index,
             _save_tracks_metadata,
             save_index,
         )
 
-        entries, vectors = self._make_entries(5)
+        entries, _ = self._make_entries(5)
+        vectors = np.zeros((5, FEATURE_DIM), dtype=np.float32)
+        vectors[np.arange(5), np.arange(5)] = 1.0
         index_dir = tmp_path / "idx"
         index_dir.mkdir()
         save_index(entries, vectors, index_dir)
+        # Exercise Task 3's legacy recovery path; manifested generations
+        # intentionally ignore unpublished canonical-file mutations.
+        (index_dir / "index-manifest.json").unlink()
+        (index_dir / ".index-publication-state.json").unlink()
         # Shrink tracks.db without rewriting FAISS.
         _save_tracks_metadata(entries[:2], index_dir, music_dir=None)
 
-        existing_e, existing_v, _ = _load_existing_index(
+        existing_e, existing_v, _, _, _snapshot = _load_existing_index(
             index_dir,
             music_dir=tmp_path,
             path_remap=None,
             force=False,
             reindex_modified_since=None,
         )
-        # Both lists clamped to the smaller (metadata) length.
-        assert len(existing_e) == 2
-        assert len(existing_v) == 2
+        assert [entry.path for entry in existing_e] == [
+            os.path.normpath(entries[0].path),
+            os.path.normpath(entries[1].path),
+        ]
+        assert [int(np.argmax(vector)) for vector in existing_v] == [0, 1]
+
+        recovered = faiss.read_index(str(index_dir / "vectors.index"))
+        assert recovered.ntotal == 2
+        assert [int(np.argmax(recovered.reconstruct(row))) for row in range(2)] == [0, 1]
+
+    def test_load_existing_index_persists_empty_metadata_prefix(self, tmp_path: Path) -> None:
+        import faiss
+
+        from autodj.indexer import (
+            _load_existing_index,
+            _save_vectors,
+        )
+
+        vectors = np.zeros((3, FEATURE_DIM), dtype=np.float32)
+        vectors[np.arange(3), np.arange(3)] = 1.0
+        _save_vectors(vectors, tmp_path)
+        assert not (tmp_path / "tracks.db").exists()
+
+        existing_entries, existing_vectors, paths, _, _snapshot = _load_existing_index(
+            tmp_path,
+            music_dir=tmp_path,
+            path_remap=None,
+            force=False,
+            reindex_modified_since=None,
+        )
+
+        assert existing_entries == []
+        assert existing_vectors == []
+        assert paths == set()
+        assert (tmp_path / "tracks.db").exists()
+        assert faiss.read_index(str(tmp_path / "vectors.index")).ntotal == 0
 
     def test_save_index_still_writes_both_files(self, tmp_path: Path) -> None:
         """Public save_index() API kept its both-files contract; the

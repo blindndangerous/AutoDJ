@@ -23,9 +23,11 @@ from __future__ import annotations
 import logging
 import math
 import random
+import threading
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import FrozenInstanceError, dataclass, fields
+from functools import wraps
 from pathlib import Path
 from typing import cast
 
@@ -33,7 +35,17 @@ import faiss
 import numpy as np
 import numpy.typing as npt
 
-from autodj.indexer import IndexEntry, load_index
+from autodj.index_manifest import (
+    IndexConsistencyError,
+    IndexSnapshotToken,
+    current_snapshot_token,
+    legacy_artifacts_allowed,
+    publication_has_uncommitted_reservation,
+    publication_is_tombstoned,
+    publication_lock,
+    read_manifest,
+)
+from autodj.indexer import IndexEntry, _migrate_flat_index_if_needed, load_index
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +121,43 @@ class SimilarityError(RuntimeError):
     """Raised when a next-song candidate cannot be found."""
 
 
+class _FrozenIndexEntry(IndexEntry):
+    """Read-only runtime copy of one mutable indexer record."""
+
+    def __init__(self, entry: IndexEntry) -> None:
+        object.__setattr__(self, "_frozen", False)
+        for field in fields(IndexEntry):
+            object.__setattr__(self, field.name, getattr(entry, field.name))
+        object.__setattr__(self, "_frozen", True)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        """Reject field changes after this runtime copy is frozen."""
+        if getattr(self, "_frozen", False):
+            raise FrozenInstanceError(f"cannot assign to field {name!r}")
+        object.__setattr__(self, name, value)
+
+    def __delattr__(self, name: str) -> None:
+        """Reject field deletion from this runtime copy."""
+        raise FrozenInstanceError(f"cannot delete field {name!r}")
+
+    def __eq__(self, other: object) -> bool:
+        """Compare every index entry field for equality."""
+        return isinstance(other, IndexEntry) and all(
+            getattr(self, field.name) == getattr(other, field.name) for field in fields(IndexEntry)
+        )
+
+
+def _locked(method: Callable) -> Callable:
+    """Run a SimilarityIndex operation against one coherent in-memory generation."""
+
+    @wraps(method)
+    def wrapped(self: SimilarityIndex, *args: object, **kwargs: object) -> object:
+        with self._reload_lock:
+            return method(self, *args, **kwargs)
+
+    return wrapped
+
+
 # ---------------------------------------------------------------------------
 # SimilarityIndex
 # ---------------------------------------------------------------------------
@@ -129,6 +178,9 @@ class SimilarityIndex:
 
     def __post_init__(self) -> None:
         """Validate consistency and build the path → FAISS index position map."""
+        self._reload_lock = threading.RLock()
+        self._generation = 0
+        self._snapshot_token = IndexSnapshotToken(0, 0)
         if self.faiss_index.ntotal != len(self.entries):
             raise ValueError(
                 f"Index/metadata mismatch: FAISS has {self.faiss_index.ntotal} vectors "
@@ -136,6 +188,7 @@ class SimilarityIndex:
             )
         # Maps each track's path string to its row position in the FAISS index
         self._path_to_idx: dict[str, int] = {e.path: i for i, e in enumerate(self.entries)}
+        self._public_entries = tuple(_FrozenIndexEntry(entry) for entry in self.entries)
 
     @property
     def ntotal(self) -> int:
@@ -144,17 +197,56 @@ class SimilarityIndex:
         Returns:
             Integer count of indexed tracks.
         """
-        return len(self.entries)
+        with self._reload_lock:
+            return len(self.entries)
+
+    @property
+    def snapshot_token(self) -> IndexSnapshotToken:
+        """Exact publication identity currently loaded by this reader."""
+        with self._reload_lock:
+            return self._snapshot_token
+
+    def entries_snapshot(self) -> tuple[IndexEntry, ...]:
+        """Return immutable view of entries from one index generation."""
+        with self._reload_lock:
+            return self._public_entries
+
+    def entry_for_path(self, path: str) -> IndexEntry | None:
+        """Return entry for *path* from one index generation, if present."""
+        with self._reload_lock:
+            idx = self._path_to_idx.get(path)
+            return self._public_entries[idx] if idx is not None else None
+
+    def _public_entry(self, entry: IndexEntry) -> IndexEntry:
+        """Return immutable public view for one internal candidate."""
+        idx = self._path_to_idx[entry.path]
+        public = self._public_entries[idx]
+        if public != entry:
+            refreshed = list(self._public_entries)
+            refreshed[idx] = _FrozenIndexEntry(entry)
+            self._public_entries = tuple(refreshed)
+            public = self._public_entries[idx]
+        return public
 
     # ------------------------------------------------------------------
     # Factory
     # ------------------------------------------------------------------
+
+    @classmethod
+    def empty(cls) -> SimilarityIndex:
+        """Return a valid zero-track index for first-run web serving."""
+        from autodj.indexer import FEATURE_DIM
+
+        return cls(faiss_index=faiss.IndexFlatIP(FEATURE_DIM), entries=[])
 
     def reload_from_disk(
         self,
         index_dir: Path,
         music_dir: Path | None = None,
         path_remap: list[tuple[str, str]] | None = None,
+        *,
+        expected_generation: int | None = None,
+        expected_snapshot: IndexSnapshotToken | None = None,
     ) -> int:
         """Re-read the index from disk, replacing in-memory state in place.
 
@@ -173,16 +265,47 @@ class SimilarityIndex:
         Returns:
             New track count after reload.
         """
-        entries, faiss_index = load_index(
-            index_dir,
-            music_dir=music_dir,
-            path_remap=path_remap,
-        )
-        self.entries = entries
-        self.faiss_index = faiss_index
-        # Rebuild the path → row index lookup
-        self._path_to_idx = {e.path: i for i, e in enumerate(self.entries)}
-        return len(entries)
+        # Lock order is always publication then reload.  Keep both through
+        # candidate construction and swap so an older candidate cannot win
+        # after a newer publication has already reloaded.
+        _migrate_flat_index_if_needed(index_dir)
+        with publication_lock(index_dir):
+            snapshot = current_snapshot_token(index_dir)
+            if expected_snapshot is not None and snapshot != expected_snapshot:
+                raise IndexConsistencyError(
+                    f"expected generation {expected_snapshot.generation}/"
+                    f"{expected_snapshot.state_revision}, got {snapshot.generation}/"
+                    f"{snapshot.state_revision}"
+                )
+            if expected_generation is not None and snapshot.generation != expected_generation:
+                raise IndexConsistencyError(
+                    f"expected generation {expected_generation}, got {snapshot.generation}"
+                )
+            if snapshot.generation == 0 and publication_is_tombstoned(index_dir):
+                with self._reload_lock:
+                    dimension = self.faiss_index.d
+                candidate = SimilarityIndex(faiss.IndexFlatIP(dimension), [])
+            elif snapshot.generation == 0 and not legacy_artifacts_allowed(index_dir):
+                if publication_has_uncommitted_reservation(index_dir):
+                    raise IndexConsistencyError("publication reserved without a committed snapshot")
+                raise IndexConsistencyError("manifest-free index is not a pristine legacy snapshot")
+            else:
+                entries, faiss_index = load_index(
+                    index_dir,
+                    music_dir=music_dir,
+                    path_remap=path_remap,
+                    expected_generation=snapshot.generation if snapshot.generation else None,
+                    _migrate_flat=False,
+                )
+                candidate = SimilarityIndex(faiss_index=faiss_index, entries=entries)
+            with self._reload_lock:
+                self.entries = candidate.entries
+                self.faiss_index = candidate.faiss_index
+                self._path_to_idx = candidate._path_to_idx
+                self._public_entries = candidate._public_entries
+                self._generation = snapshot.generation
+                self._snapshot_token = snapshot
+                return len(self.entries)
 
     @classmethod
     def from_index_dir(
@@ -190,6 +313,8 @@ class SimilarityIndex:
         index_dir: Path,
         music_dir: Path | None = None,
         path_remap: list[tuple[str, str]] | None = None,
+        *,
+        _migrate_flat: bool = True,
     ) -> SimilarityIndex:
         """Load a :class:`SimilarityIndex` from the index directory on disk.
 
@@ -216,8 +341,24 @@ class SimilarityIndex:
         Example:
             >>> sim = SimilarityIndex.from_index_dir(Path("index"))
         """
-        entries, faiss_index = load_index(index_dir, music_dir=music_dir, path_remap=path_remap)
-        return cls(faiss_index=faiss_index, entries=entries)
+        if _migrate_flat:
+            _migrate_flat_index_if_needed(index_dir)
+        with publication_lock(index_dir):
+            manifest = read_manifest(index_dir)
+            expected_generation = manifest.generation if manifest is not None else None
+            entries, faiss_index = load_index(
+                index_dir,
+                music_dir=music_dir,
+                path_remap=path_remap,
+                expected_generation=expected_generation,
+                _migrate_flat=False,
+            )
+            snapshot = current_snapshot_token(index_dir)
+            generation = snapshot.generation
+        sim = cls(faiss_index=faiss_index, entries=entries)
+        sim._generation = generation
+        sim._snapshot_token = snapshot
+        return sim
 
     # ------------------------------------------------------------------
     # Core query
@@ -260,9 +401,9 @@ class SimilarityIndex:
         def _ok(entry: IndexEntry) -> bool:
             if entry.path in excluded:
                 return False
-            if bpm_range is not None and entry.bpm > 0:
+            if bpm_range is not None:
                 lo, hi = bpm_range
-                if not (lo <= entry.bpm <= hi):
+                if entry.bpm <= 0 or not (lo <= entry.bpm <= hi):
                     return False
             if canonical_filter and not _genre_matches(entry.genre, canonical_filter):
                 return False
@@ -301,21 +442,25 @@ class SimilarityIndex:
                 out.append((float(score), entry))
         return out
 
-    def _relax_filters(
+    def _search_with_expansion(
         self,
-        raw_scores: np.ndarray,
-        raw_indices: np.ndarray,
-        excluded: set[str],
+        query: np.ndarray,
+        predicate: Callable[[IndexEntry], bool],
+        initial_k: int,
+        required_candidates: int,
     ) -> list[tuple[float, IndexEntry]]:
-        """Fallback: keep only the recently-played exclusion when other filters wipe everything."""
-        out: list[tuple[float, IndexEntry]] = []
-        for score, idx in zip(raw_scores, raw_indices, strict=False):
-            if idx < 0:  # pragma: no cover -- FAISS empty-slot sentinel
-                continue
-            entry = self.entries[idx]
-            if entry.path not in excluded:
-                out.append((float(score), entry))
-        return out
+        """Double the FAISS window until the requested pool or full index is reached."""
+        if self.ntotal == 0:
+            return []
+        k = min(max(1, initial_k), self.ntotal)
+        while True:
+            scores_2d, indices_2d = self.faiss_index.search(query, k)
+            candidates = self._filter_candidates(scores_2d[0], indices_2d[0], predicate)
+            if len(candidates) >= required_candidates or k == self.ntotal:
+                return candidates
+            next_k = min(self.ntotal, max(k + 1, k * 2))
+            logger.info("Expanding candidate search from %d to %d tracks", k, next_k)
+            k = next_k
 
     @staticmethod
     def _energy_score(entry: IndexEntry, target_energy: float) -> float:
@@ -351,6 +496,7 @@ class SimilarityIndex:
         out.sort(key=lambda x: x[0], reverse=True)
         return out
 
+    @_locked
     def find_next(
         self,
         query_vector: np.ndarray,
@@ -373,14 +519,14 @@ class SimilarityIndex:
     ) -> IndexEntry:
         """Find the best next track that isn't in *recently_played*.
 
-        Queries FAISS for the top ``n_candidates + len(recently_played)``
-        nearest neighbors (by cosine similarity), then filters out any track
-        whose path appears in *recently_played*, and returns the highest-ranked
-        remaining candidate.
+        Queries FAISS for nearest neighbors (by cosine similarity), expanding
+        to the full index when needed to satisfy active filters and the requested
+        candidate-pool size. Smart shuffle searches the full index for the global
+        farthest eligible track.
 
         Args:
-            query_vector: L2-normalized float32 array of shape
-                ``(FEATURE_DIM,)`` representing the current track.
+            query_vector: Finite, non-zero array of shape ``(FEATURE_DIM,)``
+                representing the current track. It is normalized before search.
             recently_played: Deque of file path strings to exclude.
             n_candidates: Minimum neighbour pool size before filtering.
             target_bpm: Desired BPM for re-ranking.
@@ -391,16 +537,33 @@ class SimilarityIndex:
             The :class:`IndexEntry` for the recommended next track.
 
         Raises:
+            TypeError: If *n_candidates* is not an integer.
+            ValueError: If *n_candidates* is not positive.
             SimilarityError: If all retrieved candidates were excluded.
         """
+        if isinstance(n_candidates, bool) or not isinstance(n_candidates, int):
+            raise TypeError("n_candidates must be a positive integer.")
+        if n_candidates <= 0:
+            raise ValueError("n_candidates must be a positive integer.")
+
         excluded = set(recently_played)
-        n_fetch = self._fetch_size(n_candidates, invert, target_bpm, bpm_range)
-        k = min(n_fetch + len(excluded) + 1, self.ntotal)
-
         query = query_vector.reshape(1, -1).astype(np.float32)
-        scores_2d, indices_2d = self.faiss_index.search(query, k)
-        raw_scores, raw_indices = scores_2d[0], indices_2d[0]
+        query64 = query.astype(np.float64)
+        norm = float(np.linalg.norm(query64))
+        if not np.isfinite(norm) or norm <= 0.0:
+            raise SimilarityError("Query vector is empty or non-finite.")
+        query = (query64 / norm).astype(np.float32)
+        if invert:
+            query = -query
 
+        initial_k = (
+            self.ntotal
+            if invert
+            else min(
+                self.ntotal,
+                self._fetch_size(n_candidates, invert, target_bpm, bpm_range) + len(excluded) + 1,
+            )
+        )
         predicate = self._build_predicate(
             excluded,
             bpm_range,
@@ -411,29 +574,52 @@ class SimilarityIndex:
             excluded_albums,
             excluded_titles,
         )
-        candidates = self._filter_candidates(raw_scores, raw_indices, predicate)
+        candidates = self._search_with_expansion(query, predicate, initial_k, n_candidates)
 
-        if not candidates:
-            logger.warning("No candidates after BPM/genre filters; relaxing filters")
-            candidates = self._relax_filters(raw_scores, raw_indices, excluded)
-
-        if not candidates:
-            raise SimilarityError(
-                f"No candidates available after excluding {len(excluded)} recently played tracks. "
-                f"Try reducing [playback] no_repeat_window in config.toml."
+        if not candidates and any((excluded_artists, excluded_albums, excluded_titles)):
+            logger.warning(
+                "No candidates after full-index preference search; "
+                "relaxing artist/album/title exclusions"
+            )
+            predicate = self._build_predicate(
+                excluded,
+                bpm_range,
+                genre_filter,
+                harmonic_from,
+                harmonic_mode,
+                None,
+                None,
+                None,
+            )
+            candidates = self._search_with_expansion(
+                query,
+                predicate,
+                self.ntotal,
+                n_candidates,
             )
 
+        if not candidates:
+            active = []
+            if bpm_range is not None:
+                active.append(f"BPM {bpm_range[0]:g}-{bpm_range[1]:g}, known values only")
+            if genre_filter:
+                active.append("genre " + ", ".join(genre_filter))
+            if harmonic_from is not None:
+                active.append("harmonic mode " + harmonic_mode)
+            detail = "; ".join(active) or "recent-track exclusion"
+            raise SimilarityError(f"No candidates satisfy hard filters: {detail}.")
+
         if invert:
-            candidates.sort(key=lambda x: x[0])
+            candidates.sort(key=lambda item: item[0], reverse=True)
             best = candidates[0][1]
             logger.debug("Smart-shuffle next: %s", best.display_name)
-            return best
+            return self._public_entry(best)
 
         if target_bpm is None and target_energy is None:
             candidates.sort(key=lambda x: x[0], reverse=True)
             best = _softmax_pick(candidates, pick_top_k, pick_temperature)
             logger.debug("Next track: %s", best.display_name)
-            return best
+            return self._public_entry(best)
 
         reranked = self._rerank(
             candidates,
@@ -443,14 +629,23 @@ class SimilarityIndex:
             energy_weight,
         )
         best = _softmax_pick(reranked, pick_top_k, pick_temperature)
-        logger.debug(
-            "Next track (BPM re-ranked): %s (bpm=%.0f, target=%.0f)",
-            best.display_name,
-            best.bpm,
-            target_bpm,
-        )
-        return best
+        if target_bpm is not None:
+            logger.debug(
+                "Next track (BPM re-ranked): %s (bpm=%.0f, target=%.0f)",
+                best.display_name,
+                best.bpm,
+                target_bpm,
+            )
+        else:
+            logger.debug(
+                "Next track (energy re-ranked): %s (energy=%.2f, target=%.2f)",
+                best.display_name,
+                best.energy,
+                target_energy,
+            )
+        return self._public_entry(best)
 
+    @_locked
     def find_next_for_path(
         self,
         current_path: str,
@@ -534,6 +729,7 @@ class SimilarityIndex:
             pick_temperature=pick_temperature,
         )
 
+    @_locked
     def find_distant(
         self,
         current_path: str,
@@ -593,13 +789,13 @@ class SimilarityIndex:
             # Non-security discovery pick — random.choice is fine here.
             chosen = random.choice(distant_candidates)  # nosec B311
             logger.debug("Discovery track: %s", chosen.display_name)
-            return chosen
+            return self._public_entry(chosen)
 
         # Fallback: any non-excluded track (full library)
         fallback = [e for e in self.entries if e.path not in excluded]
         if fallback:
             # Non-security fallback pick.
-            return random.choice(fallback)  # nosec B311
+            return self._public_entry(random.choice(fallback))  # nosec B311
 
         raise SimilarityError(
             "No candidates available for discovery — all tracks are in recently_played."

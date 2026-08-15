@@ -2,17 +2,17 @@
 // across every browser engine, exercises the UI, and dumps a per-engine
 // report so we can spot 404s, broken assets, WS failures, and JS errors.
 
-import { chromium, firefox, webkit } from "playwright";
-import { writeFileSync } from "node:fs";
+import { runAudit, validateHealthAudit } from "./audit_helpers.mjs";
 
 // Set AUTODJ_URL=http://host:port before running, e.g.:
 //   AUTODJ_URL=http://localhost:8080 node tests/playwright/health_audit.mjs
 const BASE = process.env.AUTODJ_URL || "http://localhost:8080";
 
-async function audit(name, launcher) {
+export async function audit(name, launcher) {
   const browser = await launcher.launch({
     args: name === "chromium" ? ["--autoplay-policy=no-user-gesture-required"] : [],
   });
+  try {
   const ctx = await browser.newContext({ ignoreHTTPSErrors: true });
   const page = await ctx.newPage();
   const out = {
@@ -43,8 +43,16 @@ async function audit(name, launcher) {
   // Drive the UI a bit so dormant code paths execute
   await page.click("body");
   await page.waitForTimeout(500);
-  // Cycle the transition select to fire postSettings
+  // The transition control belongs to the Settings tab.  Open the same tab a
+  // user would before selecting it so this audit only drives visible controls.
   try {
+    await page.locator("#tab-settings").click();
+    await page.locator("#panel-settings").waitFor({ state: "visible" });
+    if (await page.locator("#tab-settings").getAttribute("aria-selected") !== "true") {
+      throw new Error("Settings tab did not become selected");
+    }
+    await page.locator("#transition-select").waitFor({ state: "visible" });
+    // Cycle the transition select to fire postSettings.
     await page.selectOption("#transition-select", "highpass_sweep");
     await page.waitForTimeout(200);
     await page.selectOption("#transition-select", "freeze");
@@ -75,14 +83,14 @@ async function audit(name, launcher) {
   }).catch((e) => ({ error: String(e) }));
 
   await page.waitForTimeout(800);
-  await browser.close();
   return out;
+  } finally {
+    await browser.close();
+  }
 }
 
-const results = {};
-for (const [n, l] of [["chromium", chromium], ["firefox", firefox], ["webkit", webkit]]) {
-  try { results[n] = await audit(n, l); console.error(n + ": ok"); }
-  catch (e) { results[n] = { error: String(e) }; console.error(n + ": " + e); }
-}
-writeFileSync("health_audit.json", JSON.stringify(results, null, 2));
-console.error("wrote health_audit.json");
+await runAudit({
+  audit,
+  report: "health_audit.json",
+  validate: validateHealthAudit,
+});
