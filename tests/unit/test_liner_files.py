@@ -3091,6 +3091,66 @@ def test_portable_windows_open_and_delete_relative_file_close_native_handles(
     close.assert_called_once_with(13)
 
 
+def test_portable_windows_staged_cleanup_preserves_first_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from autodj import liner_files
+
+    root = liner_files._PinnedRoot(Path("Q:/liners"), 10, True)
+    file = MagicMock()
+    file.closed = False
+    file.fileno.return_value = 13
+    staged = liner_files._StagedUpload(root, 11, ".stage", "upload.tmp", file)
+    first = OSError("file delete")
+    monkeypatch.setattr(liner_files, "_get_osfhandle", MagicMock(return_value=12))
+    monkeypatch.setattr(
+        liner_files,
+        "_windows_delete_by_handle",
+        MagicMock(side_effect=[first, OSError("stage delete")]),
+    )
+    file.close.side_effect = OSError("file close")
+    monkeypatch.setattr(
+        liner_files, "_close_windows_handle", MagicMock(side_effect=OSError("stage close"))
+    )
+
+    with pytest.raises(OSError, match="file delete"):
+        liner_files._cleanup_staged_upload(staged, published=False)
+
+
+def test_portable_windows_smb_fallback_retries_then_rebinds_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from autodj import liner_files
+
+    root = liner_files._PinnedRoot(Path("Q:/liners"), 10, True)
+    staged = liner_files._StagedUpload(root, 11, ".stage", "upload.tmp", MagicMock())
+    reopened = liner_files._PinnedRoot(root.path, 20, True)
+    retryable = OSError("sharing violation")
+    retryable.winerror = 32
+    rename = MagicMock(side_effect=[retryable, None])
+    monkeypatch.setattr(
+        liner_files,
+        "_windows_file_identity",
+        MagicMock(side_effect=[(1, b"root"), (2, b"source"), (1, b"root"), (2, b"source")]),
+    )
+    monkeypatch.setattr(liner_files, "_verify_windows_root_path", MagicMock())
+    monkeypatch.setattr(liner_files, "_close_windows_handle", MagicMock())
+    monkeypatch.setattr(liner_files, "_windows_rename_by_handle", rename)
+    monkeypatch.setattr(liner_files, "_open_windows_root", MagicMock(return_value=reopened))
+    monkeypatch.setattr(liner_files, "_nt_create_relative", MagicMock(return_value=21))
+    monkeypatch.setattr(
+        liner_files, "_windows_full_nt_path", MagicMock(return_value="\\\\??\\Q:\\clip.mp3")
+    )
+    monkeypatch.setattr(liner_files.time, "sleep", MagicMock())
+
+    liner_files._publish_windows_smb_fallback(
+        staged, 12, "clip.mp3", replace=False, retry_errors={32}
+    )
+
+    assert rename.call_count == 2
+    assert staged.root.handle == 20
+
+
 @pytest.mark.asyncio
 async def test_upload_returns_after_root_close_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
