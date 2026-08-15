@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Protocol, cast
 from urllib.parse import quote
 
 SCHEMA_VERSION = 2
@@ -72,6 +72,26 @@ class _LockState(threading.local):
 
 
 _HELD_LOCKS = _LockState()
+
+
+class _WindowsLockApi(Protocol):
+    """Windows lock members omitted from non-Windows type stubs."""
+
+    LK_NBLCK: int
+    LK_UNLCK: int
+
+    def locking(self, fd: int, operation: int, length: int) -> None:
+        """Apply or release a byte-range lock."""
+
+
+class _PosixLockApi(Protocol):
+    """POSIX lock members omitted from Windows type stubs."""
+
+    LOCK_EX: int
+    LOCK_UN: int
+
+    def flock(self, fd: int, operation: int) -> None:
+        """Apply or release an advisory file lock."""
 
 
 def _reset_process_local_locks() -> None:
@@ -402,10 +422,12 @@ def _acquire_os_lock(handle: BinaryIO) -> None:
     if os.name == "nt":
         import msvcrt
 
+        windows_lock = cast(_WindowsLockApi, msvcrt)
+
         handle.seek(0)
         while True:
             try:
-                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                windows_lock.locking(handle.fileno(), windows_lock.LK_NBLCK, 1)
             except OSError as exc:
                 if exc.errno not in {errno.EACCES, errno.EAGAIN} and getattr(
                     exc, "winerror", None
@@ -421,7 +443,8 @@ def _acquire_os_lock(handle: BinaryIO) -> None:
     else:
         import fcntl
 
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)  # type: ignore[attr-defined]
+        posix_lock = cast(_PosixLockApi, fcntl)
+        posix_lock.flock(handle.fileno(), posix_lock.LOCK_EX)
 
 
 def _release_os_lock(handle: BinaryIO) -> None:
@@ -429,12 +452,15 @@ def _release_os_lock(handle: BinaryIO) -> None:
     if os.name == "nt":
         import msvcrt
 
+        windows_lock = cast(_WindowsLockApi, msvcrt)
+
         handle.seek(0)
-        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        windows_lock.locking(handle.fileno(), windows_lock.LK_UNLCK, 1)
     else:
         import fcntl
 
-        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)  # type: ignore[attr-defined]
+        posix_lock = cast(_PosixLockApi, fcntl)
+        posix_lock.flock(handle.fileno(), posix_lock.LOCK_UN)
 
 
 @contextmanager

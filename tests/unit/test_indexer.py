@@ -4,6 +4,7 @@ The MuQ model and librosa are mocked so tests run without audio files or
 model downloads. Vector math and FAISS operations use real numpy/faiss.
 """
 
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -3124,8 +3125,8 @@ class TestThrottledFaissCheckpoint:
             reindex_modified_since=None,
         )
         assert [entry.path for entry in existing_e] == [
-            str(tmp_path / entries[0].path),
-            str(tmp_path / entries[1].path),
+            os.path.normpath(entries[0].path),
+            os.path.normpath(entries[1].path),
         ]
         assert [int(np.argmax(vector)) for vector in existing_v] == [0, 1]
 

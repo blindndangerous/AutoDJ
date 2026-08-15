@@ -54,7 +54,7 @@ def main() -> int:
     if platform.system() == "Darwin":
         env.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
-    default_workers = "auto" if platform.system() == "Windows" else "0"
+    default_workers = "0"
     workers = os.environ.get("AUTODJ_PYTEST_WORKERS", default_workers)
     result = subprocess.call(
         [

@@ -55,6 +55,16 @@ EMBEDDING_DIM = 1024
 MUQ_SAMPLE_RATE = 24_000
 
 
+class _WindowsLockApi(Protocol):
+    """Windows lock members omitted from non-Windows type stubs."""
+
+    LK_NBLCK: int
+    LK_UNLCK: int
+
+    def locking(self, fd: int, operation: int, length: int) -> None:
+        """Apply or release a byte-range lock."""
+
+
 def _unsupported_windows_lock(_descriptor: int, _operation: int, _length: int) -> None:
     """Raise when Windows file locking is unavailable."""
     raise OSError("Windows file locking is unavailable")
@@ -66,9 +76,10 @@ _WINDOWS_LOCK_UNLOCK = 0
 if os.name == "nt":
     import msvcrt as _windows_msvcrt
 
-    _windows_lock = _windows_msvcrt.locking
-    _WINDOWS_LOCK_NONBLOCKING = _windows_msvcrt.LK_NBLCK
-    _WINDOWS_LOCK_UNLOCK = _windows_msvcrt.LK_UNLCK
+    _windows_lock_api = cast(_WindowsLockApi, _windows_msvcrt)
+    _windows_lock = _windows_lock_api.locking
+    _WINDOWS_LOCK_NONBLOCKING = _windows_lock_api.LK_NBLCK
+    _WINDOWS_LOCK_UNLOCK = _windows_lock_api.LK_UNLCK
 
 
 # ---------------------------------------------------------------------------

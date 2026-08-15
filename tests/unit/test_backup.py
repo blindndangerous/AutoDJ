@@ -3070,8 +3070,17 @@ def test_target_and_restore_filesystem_inspection_errors_are_reported(tmp_path: 
 
     item = backup.BackupItem("derived/tracks.db", "derived", "active/tracks.db", 1, "0" * 64)
     resolved = backup._ResolvedRestore(item, target, tmp_path, True, ())
+    real_stat = os.stat
+
+    def fail_anchor_stat(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+    ) -> os.stat_result:
+        if Path(path) == tmp_path:
+            raise PermissionError("filesystem denied")
+        return real_stat(path)
+
     with (
-        patch("autodj.backup.os.stat", side_effect=PermissionError("filesystem denied")),
+        patch("autodj.backup.os.stat", side_effect=fail_anchor_stat),
         pytest.raises(BackupError, match="unable to inspect restore filesystem") as fs_error,
     ):
         backup._preflight_free_space([resolved])
