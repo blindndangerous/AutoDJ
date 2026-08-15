@@ -13,6 +13,8 @@ delegate to these.
 
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock, PropertyMock
 
 from autodj.config import ServerConfig
@@ -111,7 +113,7 @@ def _make_player_mock(entry: IndexEntry | None = None) -> MagicMock:
     cfg.playback.liners_random_max_minutes = None
     cfg.playback.liners_pick_mode = "random"
     cfg.playback.liners_duck_db = -12.0
-    cfg.index.active_dir = "/tmp/_autodj_no_index"
+    cfg.index.active_dir = str(Path(tempfile.gettempdir()).resolve() / "_autodj_no_index")
     cfg.replaygain.enabled = False
     cfg.presets = {}
     player._cfg = cfg
