@@ -52,7 +52,7 @@ try:
     import sounddevice as _sd_mod
 
     sd: Any = _sd_mod
-except ImportError:  # pragma: no cover
+except (ImportError, OSError):  # pragma: no cover -- missing PortAudio/minimal host
     sd = None
 
 from autodj.indexer import IndexEntry

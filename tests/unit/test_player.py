@@ -4,6 +4,9 @@ sounddevice and pynput are mocked so tests run without audio hardware.
 Audio crossfade math is tested with real numpy arrays.
 """
 
+import os
+import subprocess
+import sys
 from collections import deque
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -40,6 +43,36 @@ from autodj.similarity import SimilarityError, SimilarityIndex
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def test_player_import_tolerates_portaudio_loader_failure() -> None:
+    """Headless serve must load track-picking without a system PortAudio library."""
+    source_root = Path(__file__).parents[2] / "src"
+    probe = """
+import importlib.abc
+import importlib.machinery
+import sys
+
+class Loader(importlib.abc.Loader):
+    def create_module(self, spec):
+        return None
+    def exec_module(self, module):
+        raise OSError('PortAudio library not found')
+
+class Finder(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == 'sounddevice':
+            return importlib.machinery.ModuleSpec(fullname, Loader())
+        return None
+
+sys.meta_path.insert(0, Finder())
+import autodj.player as player
+assert player.sd is None
+"""
+    env = {**os.environ, "PYTHONPATH": str(source_root)}
+    result = subprocess.run([sys.executable, "-c", probe], env=env, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def _make_entry(i: int = 0) -> IndexEntry:
