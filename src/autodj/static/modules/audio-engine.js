@@ -248,13 +248,6 @@ export function setSrcOnDeck(deck, path) {
   if (deck.path === path) return;
   deck.path = path;
   deck.audio.src = "/api/audio?path=" + encodeURIComponent(path);
-  // Kick off background decode so spin / tape_stop / freeze effects have
-  // the AudioBuffer ready when the crossfade fires.  Decoded buffers are
-  // cached in _bufferCache so repeated transitions on the same track
-  // don't re-fetch.
-  if (typeof _decodeFor === "function") {
-    _decodeFor(path).catch(announceRequestError);
-  }
 }
 
 function playOnDeck(deck) {
