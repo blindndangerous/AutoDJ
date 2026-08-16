@@ -323,7 +323,7 @@ needs no Node toolchain.
 AutoDJ is not on PyPI. To install a tagged wheel:
 
 ```bash
-uv pip install "autodj[all] @ https://github.com/blindndangerous/AutoDJ/releases/download/v0.16.0/autodj-0.16.0-py3-none-any.whl"
+uv pip install "autodj[all] @ https://github.com/blindndangerous/AutoDJ/releases/download/v0.16.1/autodj-0.16.1-py3-none-any.whl"
 ```
 
 Drop `[all]` for the lighter install that only runs `enrich`, `prune`, `stats`, and `playlist`.

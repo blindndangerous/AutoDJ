@@ -6,13 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [Unreleased]
+## [0.16.1] - 2026-08-16
 
 ### Fixed
 
 - Documented that the default MuQ model weights are CC-BY-NC 4.0. AutoDJ never redistributes them,
   but commercial use needs a different checkpoint or permission from the publisher. The copyleft
   dependencies pulled by the `play` and `all` extras are now disclosed too.
+- Released SBOMs listed no components. The generator scanned the built `dist/` directory, saw two
+  opaque archives, and found no package manifests; it now scans the checkout.
+- Documented the published release artifacts and how to install a tagged wheel with uv.
 
 ### Changed
 
