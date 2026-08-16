@@ -262,8 +262,8 @@ src/autodj/
     indexer.py          # builds the FAISS index
     similarity.py       # picks the next track
     static/             # web UI source files
-        app.js              # 1300-line bootstrap
-        modules/            # 16 ES modules (lyrics, queue, hotkeys, ...)
+        app.js              # bootstrap
+        modules/            # ES modules (lyrics, queue, hotkeys, ...)
         index.html
         app.css
     static_dist/        # built output (gitignored; produced by `npm run build`)
