@@ -199,7 +199,7 @@ filter_sweep_floor_hz = 250.0
 #   "none"            standard crossfade only (default)
 #   "echo_out"        feedback-delay echo tail on outgoing track
 #   "reverb_tail"     Schroeder reverb on outgoing
-#   "highpass_riser"  high-pass sweep DOWN on incoming (filter-in)
+#   "highpass_sweep"  high-pass sweep DOWN on incoming (filter-in)
 #   "tape_stop"       vinyl-stop ramp-to-zero on outgoing
 #   "gate_stutter"    rhythmic amplitude gate on outgoing
 #   "noise_riser"     synthesised white-noise build layered on top
@@ -207,6 +207,9 @@ filter_sweep_floor_hz = 250.0
 #   "cross_eq_swap"   outgoing keeps highs / incoming brings bass
 #   "random"          pick uniformly at random per crossfade
 #   "rotate"          cycle through all real effects in order
+#
+# That list is a sample.  `autodj play --help` prints every accepted name,
+# and the Settings tab's Transition effect dropdown offers the same set.
 #
 # wet_mix is the outer wet/dry between dry overlap and effect-processed
 # overlap.  1.0 = full effect; 0.5 = subtle; 0.0 = effect inaudible.

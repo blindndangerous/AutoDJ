@@ -303,16 +303,18 @@ def load_user_presets(raw_config: dict[str, Any]) -> dict[str, Preset]:
     - **Sidecar / bare form** (``presets.toml``)::
 
         [wakeup]
-        type = "ramp_up"
-        ...
+        bpm_start = 85
+        bpm_end = 120
+        curve = "linear"
 
       Top-level keys are preset names directly.
 
     - **Legacy / inline form** (``config.toml``)::
 
         [presets.wakeup]
-        type = "ramp_up"
-        ...
+        bpm_start = 85
+        bpm_end = 120
+        curve = "linear"
 
       Wrapped under a ``[presets]`` table.
 

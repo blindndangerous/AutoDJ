@@ -91,23 +91,28 @@ The container does not run the indexing step (it goes faster on a machine with a
 
 ## How to use the web UI
 
-After `autodj serve`, point a browser at `http://localhost:8080`.  Four tabs:
+After `autodj serve`, point a browser at `http://localhost:8080`.  Five tabs:
 
 - **Now Playing.**  What is playing, the next track, album art, lyrics, the cue strip on the progress bar.
 - **Queue & Search.**  Find any track in your library and play it now or queue it up.  Reorder the queue.
+- **History.**  What has played this session, newest first, one page at a time.
 - **Settings.**  Pick a preset, change the crossfade length, switch transition effects, set a BPM range, toggle voice liners, choose an audio output device.
 - **Library tools.**  Run index / enrich / prune / stats jobs without leaving the page.
 
 ### Keyboard shortcuts (Now Playing tab)
 
-| Key | What it does |
-|---|---|
-| Space | Play / pause |
-| N | Skip to the next track |
-| S | Shuffle (jump to a random track) |
-| M | Mute / unmute |
-| Up / Down | Volume up / down (5%) |
-| ? | Open the shortcut list |
+- **Space** or **K** — play / pause.
+- **N** — skip to the next track.
+- **S** — shuffle (jump to a random track).
+- **M** — mute / unmute.
+- **Up** / **Down** — volume up / down (5%).
+- **Comma** / **Period** — seek back / forward one bar (one measure at the current BPM).
+- **Shift+T** — speak the current artist and title.
+- **Shift+N** — speak the next track and its BPM.
+- **Shift+R** — speak the time remaining.
+- **Shift+B** — speak the current BPM.
+- **Shift+K** — speak the musical key.
+- **?** — open the shortcut list.
 
 The shortcuts are scoped to the Now Playing tab on purpose.  When you switch to Settings or the Library tab, arrow keys go back to navigating dropdowns and the shortcut keys do not interfere with typing in the search box.
 
@@ -133,7 +138,7 @@ You can pick three trigger styles, in any combination:
 - **Every N minutes** -- on a wall-clock timer.
 - **Random window** -- pick a random delay between two values.
 
-Rotation modes: random, sequential, weighted (server stores weights but the browser falls back to uniform random for now).
+Rotation modes: random, sequential, and weighted.  Weighted is accepted but every liner currently carries the same weight, so it behaves like random until per-file weights exist.
 
 ## How well does this work?
 

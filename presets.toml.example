@@ -9,14 +9,16 @@
 # 1.  Bare top-level tables (recommended for this sidecar file):
 #
 #       [wakeup]
-#       type = "ramp_up"
-#       ...
+#       bpm_start = 85
+#       bpm_end   = 120
+#       curve     = "linear"
 #
 # 2.  Wrapped under [presets.*] (legacy, also works inside config.toml):
 #
 #       [presets.wakeup]
-#       type = "ramp_up"
-#       ...
+#       bpm_start = 85
+#       bpm_end   = 120
+#       curve     = "linear"
 #
 # Built-in presets (`wakeup`, `chill`, `party`, `workout`, etc.) are
 # always available — define names below to OVERRIDE a built-in or add

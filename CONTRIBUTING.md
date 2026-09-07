@@ -63,19 +63,18 @@ See [Operations](docs/operations.md) for setup, diagnosis, backup, restore, and 
 
 ## Where things live
 
-| Path | What's there |
-|---|---|
-| `src/autodj/cli.py` | CLI entry points (Click) |
-| `src/autodj/server.py` | FastAPI + WebSocket web layer |
-| `src/autodj/static/` | Web UI: HTML, CSS, JS, AudioWorklets |
-| `src/autodj/player.py` | Crossfade audio engine |
-| `src/autodj/similarity.py` | FAISS query + ranking |
-| `src/autodj/explain.py` | The "why this track?" reasoner |
-| `src/autodj/jobs.py` | Background subprocess runner for the web UI |
-| `src/autodj/transitions.py` | 26 transition effects |
-| `tests/unit/` | Pure unit tests, no audio hardware |
-| `tests/integration/` | Pipeline + server tests against mocks |
-| `tests/smoke/` | CLI end-to-end smoke tests |
+- `src/autodj/cli.py` — CLI entry points (Click).
+- `src/autodj/server.py` — FastAPI + WebSocket web layer.
+- `src/autodj/static/` — web UI: HTML, CSS, JS, AudioWorklets.
+- `src/autodj/player.py` — crossfade audio engine.
+- `src/autodj/similarity.py` — FAISS query + ranking.
+- `src/autodj/explain.py` — the "why this track?" reasoner.
+- `src/autodj/jobs.py` — background subprocess runner for the web UI.
+- `src/autodj/transitions.py` — the transition effects; `TransitionFx` is the single source of
+  truth for the names the CLI, the server and the web UI accept.
+- `tests/unit/` — pure unit tests, no audio hardware.
+- `tests/integration/` — pipeline + server tests against mocks.
+- `tests/smoke/` — CLI end-to-end smoke tests.
 
 ## Reporting bugs / requesting features
 

@@ -6,6 +6,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- The web UI could be taken down for the rest of the session by one bad number. A settings request
+  carrying `NaN` or `Infinity` was stored as-is, and every later status, settings and WebSocket
+  update then failed to encode. Numeric settings requests are now rejected with a 422 and the
+  player refuses non-finite values.
+- Ten transition effects the Settings dropdown offered (halftime, dub delay, phaser, ring
+  modulator, wow + flutter, stutter build, dub siren, transformer, vinyl rewind, pitch fall) were
+  accepted by the server and then ignored, so the dropdown snapped back a second later. Every
+  effect in the catalogue now works from the web UI and from `--transition`, and an unknown name
+  returns 400 instead of being swallowed.
+- `GET /api/history?per_page=0` returned a 500 and a negative page size returned an empty page.
+  Pagination is now range-checked.
+- Listing voice liners walked the whole configured folder tree on the event loop, so every other
+  request waited for it. The walk now runs on a worker thread.
+- Indexing compared the indexing host's clock against the file server's, so a NAS clock running
+  ahead made every freshly embedded track look replaced and re-embedded the library on every run.
+  Both sides of that comparison now come from the file.
+- The server-side 3-band EQ restarted its filters on every audio block, which put a click at every
+  block boundary as soon as a band left unity gain.
+- A library job whose output could not be decoded by the system locale stopped being read, filled
+  its pipe and left the job slot busy until Stop was pressed. Job output is now read as UTF-8.
+- Beets and Mixxx databases stored under a path containing `#` failed to open.
+- Lyrics: enhanced-LRC per-word timestamps were read out literally by screen readers, and UTF-16
+  `.lrc` sidecars (common from Windows tools) decoded to nonsense.
+- The library search box carried `aria-expanded`, so screen readers announced "collapsed" and
+  "expanded" on a plain search field with no popup. The result count still announces normally.
+
+### Changed
+
+- `autodj serve --no-playback` is gone. It could never be turned off; server-side audio is opted
+  into with `--server-audio`, which is unchanged.
+- `pre-commit` now runs the same locked `ruff` and `mypy` that CI runs, instead of separately
+  pinned mirrors that could disagree with it.
+
 ## [0.16.1] - 2026-08-16
 
 ### Fixed

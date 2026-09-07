@@ -9,7 +9,7 @@ to give the impression of a real station.  This module owns:
 - Pick rotation (random / sequential / weighted).
 
 Playback itself happens in the browser (Web Audio decoding the raw
-file bytes from ``GET /api/liner/<index>`` and ducking the active deck
+file bytes from ``GET /api/liners/file/<name>`` and ducking the active deck
 during the overlay).  This module is dependency-free apart from the
 stdlib so it can be unit-tested without spinning up a player.
 

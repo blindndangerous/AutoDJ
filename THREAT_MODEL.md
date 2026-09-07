@@ -1,6 +1,6 @@
 # Threat model: AutoDJ
 
-Last reviewed: 2026-08-02. Re-review every major release.
+Last reviewed: 2026-09-07. Re-review every major release.
 
 ## Scope and trust boundaries
 
@@ -27,7 +27,7 @@ trusted TLS reverse proxy, mTLS, or a private overlay network.
   indexing work.
 - Error and diagnostic output must not expose access tokens or Hugging Face tokens. `autodj doctor`
   serializes secret fields as `<redacted>` and does not write index state.
-- Background jobs accept fixed subcommands and validated arguments. They run with `shell=False`.
+- Background jobs accept a fixed subcommand allowlist, and argument tokens are screened for shell metacharacters. They run with `shell=False` and a UTF-8 child pipe.
 
 ## Web request policy
 
@@ -60,6 +60,9 @@ When `server.access_token` or `AUTODJ_ACCESS_TOKEN` is set:
 Public assets, `/healthz`, `/api/version`, `/api/auth/status`, and `/api/pair` remain available
 without a session cookie. Unsafe HTTP methods require one allowed Origin. Audio and liner file
 endpoints use indexed or validated plain-file allowlists rather than arbitrary filesystem paths.
+The liner *root directory* is a configuration value that a paired browser can still change through
+the settings API, so it can point the liner list, fetch, and delete endpoints at another directory.
+Treat a paired browser as trusted.
 
 ## Request and audit records
 

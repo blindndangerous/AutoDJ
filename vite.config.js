@@ -10,10 +10,9 @@
 //     the deployment story.
 //
 // Why not vite's full HTML pipeline:
-//   - app.js is currently a single non-module script with top-level let
-//     / const used as ad-hoc globals.  An ES-module rewrite is a future
-//     refactor; today we wrap the script in an IIFE via rollup so the
-//     existing globals stay scoped without leaking onto window.
+//   - app.js is an ES module (index.html loads it with type="module") and
+//     the build keeps that format, so the bundle's own bindings stay
+//     module-scoped instead of leaking onto window.
 //   - Worklet files (bitcrusher-worklet.js etc.) are loaded by absolute
 //     URL via AudioWorklet.addModule and must keep their filenames
 //     stable so the FastAPI explicit routes keep working.  We copy them

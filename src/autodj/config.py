@@ -368,7 +368,8 @@ class PlaybackConfig:
     # ``liners_folder`` is the source directory (default
     # ``<index_dir>/liners`` resolved at server startup).  Trigger
     # parameters are evaluated client-side in the browser; the server
-    # exposes the file list + raw bytes via ``/api/liner/...``.
+    # exposes the file list via ``GET /api/liners`` and raw bytes via
+    # ``GET /api/liners/file/<name>``.
     liners_enabled: bool = False
     liners_folder: str | None = None
     liners_every_n_songs: int | None = None
@@ -542,9 +543,9 @@ class TransitionsConfig:
 
     Attributes:
         effect: Which effect to apply.  ``"none"`` = standard crossfade
-            only.  Concrete effects: ``"echo_out"``, ``"reverb_tail"``,
-            ``"highpass_riser"``, ``"tape_stop"``, ``"gate_stutter"``,
-            ``"noise_riser"``, ``"backspin"``, ``"cross_eq_swap"``.
+            only.  Every member of :class:`~autodj.transitions.TransitionFx`
+            is accepted, for example ``"echo_out"``, ``"reverb_tail"``,
+            ``"highpass_sweep"``, ``"tape_stop"`` or ``"halftime"``.
             Meta modes: ``"random"`` (uniform random per crossfade),
             ``"rotate"`` (cycle through all real effects in order).
         wet_mix: Global wet/dry of the transition effect's contribution
