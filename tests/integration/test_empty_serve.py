@@ -495,6 +495,6 @@ def test_serve_uses_empty_index_when_files_are_absent(tmp_path: Path) -> None:
         CliRunner().isolated_filesystem(temp_dir=tmp_path),
         patch("autodj.server.serve") as serve_mock,
     ):
-        result = CliRunner().invoke(cli, ["serve", "--no-playback"])
+        result = CliRunner().invoke(cli, ["serve"])
     assert result.exit_code == 0, result.output
     assert serve_mock.call_args.kwargs["sim"].ntotal == 0

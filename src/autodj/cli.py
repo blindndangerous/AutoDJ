@@ -38,6 +38,12 @@ import click
 from rich.console import Console
 from rich.panel import Panel
 
+from autodj.transitions import TRANSITION_EFFECT_NAMES
+
+# Sorted so `--help` lists the effects in a stable order.  Derived from the
+# enum so the CLI can never offer fewer effects than the web UI.
+_TRANSITION_CHOICES = sorted(TRANSITION_EFFECT_NAMES)
+
 if TYPE_CHECKING:
     from autodj.beets import Track
     from autodj.config import AutoDJConfig
@@ -1436,39 +1442,7 @@ def cmd_analyse(
     "--transition",
     "transition_fx",
     default=None,
-    type=click.Choice(
-        [
-            "none",
-            "echo_out",
-            "reverb_tail",
-            "highpass_sweep",
-            "lowpass_sweep",
-            "tape_stop",
-            "gate_stutter",
-            "noise_riser",
-            "noise_drop",
-            "backspin",
-            "forward_spin",
-            "cross_eq_swap",
-            "bitcrusher",
-            "flanger",
-            "pitch_swell",
-            "telephone",
-            "chorus",
-            "submerge",
-            "vinyl_wow",
-            "freeze",
-            "glitch",
-            "scratch",
-            "beat_repeat",
-            "sidechain_pump",
-            "reverse_reverb",
-            "air_horn",
-            "random",
-            "rotate",
-        ],
-        case_sensitive=False,
-    ),
+    type=click.Choice(_TRANSITION_CHOICES, case_sensitive=False),
     help="Transition effect layered on every crossfade (overrides config).",
 )
 @click.option(
@@ -1790,39 +1764,7 @@ def cmd_play(  # pragma: no cover -- end-to-end orchestrator, exercised by smoke
     "--transition",
     "transition_fx",
     default=None,
-    type=click.Choice(
-        [
-            "none",
-            "echo_out",
-            "reverb_tail",
-            "highpass_sweep",
-            "lowpass_sweep",
-            "tape_stop",
-            "gate_stutter",
-            "noise_riser",
-            "noise_drop",
-            "backspin",
-            "forward_spin",
-            "cross_eq_swap",
-            "bitcrusher",
-            "flanger",
-            "pitch_swell",
-            "telephone",
-            "chorus",
-            "submerge",
-            "vinyl_wow",
-            "freeze",
-            "glitch",
-            "scratch",
-            "beat_repeat",
-            "sidechain_pump",
-            "reverse_reverb",
-            "air_horn",
-            "random",
-            "rotate",
-        ],
-        case_sensitive=False,
-    ),
+    type=click.Choice(_TRANSITION_CHOICES, case_sensitive=False),
     help="Transition effect layered on every crossfade.",
 )
 @click.option(
@@ -1831,17 +1773,6 @@ def cmd_play(  # pragma: no cover -- end-to-end orchestrator, exercised by smoke
     default=None,
     type=str,
     help="Named index to play from (default: 'default').",
-)
-@click.option(
-    "--no-playback",
-    "no_playback",
-    is_flag=True,
-    default=True,
-    help=(
-        "Run the web UI without server-side audio output.  Default — "
-        "the browser handles all playback so the CLI player and web UI "
-        "stay decoupled.  Pass --server-audio to opt back in."
-    ),
 )
 @click.option(
     "--server-audio/--no-server-audio",
@@ -1932,7 +1863,6 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
     transition_fx: str | None,
     transition_mode: str | None,
     index_name: str | None,
-    no_playback: bool,
     server_audio: bool,
     ssl_certfile: str | None,
     ssl_keyfile: str | None,
@@ -2052,7 +1982,7 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
             smart_shuffle=smart_shuffle,
             pure_shuffle=pure_shuffle,
             anchor_to_seed=bool(anchor_to_seed),
-            no_playback=(no_playback and not server_audio),
+            no_playback=not server_audio,
             ssl_certfile=ssl_certfile,
             ssl_keyfile=ssl_keyfile,
         )

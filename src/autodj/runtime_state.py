@@ -25,6 +25,8 @@ import os
 from pathlib import Path
 from typing import Any, NotRequired, TypedDict, TypeGuard, cast
 
+from autodj.transitions import TRANSITION_EFFECT_NAMES
+
 logger = logging.getLogger(__name__)
 
 STATE_VERSION = 1
@@ -32,38 +34,7 @@ HARMONIC_MODES = frozenset(
     {"off", "compatible", "strict", "energy_boost", "mood_change", "neighbour"}
 )
 LINER_PICK_MODES = frozenset({"random", "sequential", "weighted"})
-TRANSITION_EFFECTS = frozenset(
-    {
-        "none",
-        "echo_out",
-        "reverb_tail",
-        "highpass_sweep",
-        "lowpass_sweep",
-        "tape_stop",
-        "gate_stutter",
-        "noise_riser",
-        "noise_drop",
-        "backspin",
-        "forward_spin",
-        "cross_eq_swap",
-        "bitcrusher",
-        "flanger",
-        "pitch_swell",
-        "telephone",
-        "chorus",
-        "submerge",
-        "vinyl_wow",
-        "freeze",
-        "glitch",
-        "scratch",
-        "beat_repeat",
-        "sidechain_pump",
-        "reverse_reverb",
-        "air_horn",
-        "random",
-        "rotate",
-    }
-)
+TRANSITION_EFFECTS = TRANSITION_EFFECT_NAMES
 SESSION_ONLY_PLAYBACK_FIELDS = frozenset({"no_repeat_window", "library_size"})
 CONFIG_ONLY_PLAYBACK_FIELDS = frozenset({"liners_folder"})
 

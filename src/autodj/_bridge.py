@@ -14,6 +14,7 @@ server stack.
 from __future__ import annotations
 
 import logging
+import math
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -25,6 +26,23 @@ if TYPE_CHECKING:
     from autodj.indexer import IndexEntry
 
 logger = logging.getLogger(__name__)
+
+
+def _finite(value: Any) -> float | None:
+    """Return *value* as a float, or ``None`` when it is not finite.
+
+    Mirrors :func:`autodj.runtime_state._is_finite_number`.  ``NaN`` and
+    ``Infinity`` survive the ``max``/``min`` clamps used below and cannot be
+    re-encoded as JSON, so they are dropped rather than stored.
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(number):
+        logger.warning("ignoring non-finite setting value: %r", value)
+        return None
+    return number
 
 
 def _build_why(player: Any) -> list[str]:
@@ -341,7 +359,10 @@ class PlayerBridge:
         Args:
             volume: Float in ``[0.0, 1.0]``.  Clamped automatically.
         """
-        self.player._state.volume = max(0.0, min(1.0, float(volume)))
+        number = _finite(volume)
+        if number is None:
+            return
+        self.player._state.volume = max(0.0, min(1.0, number))
 
     def toggle_mute(self) -> bool:
         """Toggle mute.
@@ -818,12 +839,12 @@ class PlayerBridge:
     ) -> dict[str, float]:
         """Set one or more EQ band gains.  Returns the resulting state."""
         p = self.player
-        if low is not None:
-            p._eq_low = max(0.0, min(2.0, float(low)))
-        if mid is not None:
-            p._eq_mid = max(0.0, min(2.0, float(mid)))
-        if high is not None:
-            p._eq_high = max(0.0, min(2.0, float(high)))
+        if (number := _finite(low)) is not None:
+            p._eq_low = max(0.0, min(2.0, number))
+        if (number := _finite(mid)) is not None:
+            p._eq_mid = max(0.0, min(2.0, number))
+        if (number := _finite(high)) is not None:
+            p._eq_high = max(0.0, min(2.0, number))
         return self.get_eq()
 
     def get_eq(self) -> dict[str, float]:
@@ -999,39 +1020,23 @@ class PlayerBridge:
             pass
 
     def set_transition(self, effect: str) -> None:
-        """Set the transition effect by name."""
-        valid = {
-            "none",
-            "echo_out",
-            "reverb_tail",
-            "highpass_sweep",
-            "lowpass_sweep",
-            "tape_stop",
-            "gate_stutter",
-            "noise_riser",
-            "noise_drop",
-            "backspin",
-            "forward_spin",
-            "cross_eq_swap",
-            "bitcrusher",
-            "flanger",
-            "pitch_swell",
-            "telephone",
-            "chorus",
-            "submerge",
-            "vinyl_wow",
-            "freeze",
-            "glitch",
-            "scratch",
-            "beat_repeat",
-            "sidechain_pump",
-            "reverse_reverb",
-            "air_horn",
-            "random",
-            "rotate",
-        }
-        if effect.lower() in valid:
-            self.player._cfg.transitions.effect = effect.lower()
+        """Set the transition effect by name.
+
+        Args:
+            effect: One of the names in
+                :data:`~autodj.transitions.TRANSITION_EFFECT_NAMES`.
+
+        Raises:
+            ValueError: When *effect* is not a known effect name.  Silently
+                keeping the old value made the web UI's dropdown snap back
+                with no explanation.
+        """
+        from autodj.transitions import TRANSITION_EFFECT_NAMES
+
+        name = effect.lower()
+        if name not in TRANSITION_EFFECT_NAMES:
+            raise ValueError(f"unknown transition effect: {effect}")
+        self.player._cfg.transitions.effect = name
 
     def set_djmix(self, **flags: bool | str | None) -> None:
         """Set one or more DJ-mix toggle flags or harmonic_mode string."""
@@ -1054,10 +1059,10 @@ class PlayerBridge:
     def _apply_crossfade(self, kw: dict) -> None:
         """Apply crossfade / fade-in / EQ-duck overrides from *kw*."""
         cfg = self.player._cfg
-        if (v := kw.get("crossfade_seconds")) is not None:
-            cfg.playback.crossfade_seconds = max(0.0, float(v))
-        if (v := kw.get("fade_in_seconds")) is not None:
-            cfg.playback.fade_in_seconds = max(0.0, float(v))
+        if (v := _finite(kw.get("crossfade_seconds"))) is not None:
+            cfg.playback.crossfade_seconds = max(0.0, v)
+        if (v := _finite(kw.get("fade_in_seconds"))) is not None:
+            cfg.playback.fade_in_seconds = max(0.0, v)
         if (v := kw.get("crossfade_eq_duck")) is not None:
             cfg.playback.crossfade_eq_duck = bool(v)
 
@@ -1123,8 +1128,8 @@ class PlayerBridge:
                 )
             else:
                 self.player._mood_arc = None
-        if (v := kw.get("mood_arc_hours")) is not None:
-            cfg.playback.mood_arc_hours = max(0.25, float(v))
+        if (v := _finite(kw.get("mood_arc_hours"))) is not None:
+            cfg.playback.mood_arc_hours = max(0.25, v)
             if cfg.playback.enable_mood_arc:
                 from autodj.mood_arc import make_default_arc
 
@@ -1149,20 +1154,20 @@ class PlayerBridge:
             cfg.playback.liners_folder = str(v) or None
         if (v := kw.get("liners_every_n_songs")) is not None:
             cfg.playback.liners_every_n_songs = int(v) if v > 0 else None
-        if (v := kw.get("liners_every_minutes")) is not None:
-            cfg.playback.liners_every_minutes = float(v) if v > 0 else None
-        if (v := kw.get("liners_random_min_minutes")) is not None:
-            cfg.playback.liners_random_min_minutes = float(v) if v > 0 else None
-        if (v := kw.get("liners_random_max_minutes")) is not None:
-            cfg.playback.liners_random_max_minutes = float(v) if v > 0 else None
+        if (v := _finite(kw.get("liners_every_minutes"))) is not None:
+            cfg.playback.liners_every_minutes = v if v > 0 else None
+        if (v := _finite(kw.get("liners_random_min_minutes"))) is not None:
+            cfg.playback.liners_random_min_minutes = v if v > 0 else None
+        if (v := _finite(kw.get("liners_random_max_minutes"))) is not None:
+            cfg.playback.liners_random_max_minutes = v if v > 0 else None
         if (v := kw.get("liners_pick_mode")) is not None and str(v) in {
             "random",
             "sequential",
             "weighted",
         }:
             cfg.playback.liners_pick_mode = str(v)
-        if (v := kw.get("liners_duck_db")) is not None:
-            cfg.playback.liners_duck_db = float(v)
+        if (v := _finite(kw.get("liners_duck_db"))) is not None:
+            cfg.playback.liners_duck_db = v
 
     def set_playback_settings(
         self,
@@ -1208,10 +1213,12 @@ class PlayerBridge:
 
     def set_bpm_range(self, lo: float | None, hi: float | None) -> None:
         """Set the hard BPM filter; pass both null to clear."""
-        if lo is None or hi is None or lo >= hi:
+        low = _finite(lo)
+        high = _finite(hi)
+        if low is None or high is None or low >= high:
             self.player._bpm_range = None
         else:
-            self.player._bpm_range = (float(lo), float(hi))
+            self.player._bpm_range = (low, high)
 
     def set_discovery_every(self, every: int | None) -> None:
         """Set the discovery rate; null disables."""

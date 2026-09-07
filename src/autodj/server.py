@@ -39,21 +39,23 @@ import time
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 from fastapi import (
     FastAPI,
     File,
     HTTPException,
+    Query,
     Request,
     Response,
     UploadFile,
     WebSocket,
     WebSocketDisconnect,
 )
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 # PlayerBridge lives in autodj._bridge so neither file balloons over
@@ -396,10 +398,20 @@ def _version_info() -> dict[str, str]:
 __all__ = ["PlayerBridge", "create_app", "serve"]
 
 
+FiniteFloat = Annotated[float, Field(allow_inf_nan=False)]
+"""Float that refuses the ``NaN``/``Infinity`` JSON tokens.
+
+pydantic accepts them by default, but they cannot be re-encoded as JSON:
+one non-finite value stored in the player config turns every later
+``/api/status``, ``/api/settings`` and WebSocket frame into a 500 or an
+unparseable payload until the process restarts.  Reject them at the edge.
+"""
+
+
 class VolumeBody(BaseModel):
     """Request body for POST /api/volume."""
 
-    volume: float
+    volume: FiniteFloat
 
 
 class ProfileSaveBody(BaseModel):
@@ -412,22 +424,22 @@ class ProfileSaveBody(BaseModel):
     name: str
     index_name: str | None = None
     preset: str | None = None
-    bpm_lo: float | None = None
-    bpm_hi: float | None = None
+    bpm_lo: FiniteFloat | None = None
+    bpm_hi: FiniteFloat | None = None
     harmonic_mode: str | None = None
     transition_mode: str | None = None
     post_queue_seed: str | None = None
     beat_sync_fx: bool | None = None
     key_sync_fx: bool | None = None
     beatmatch_on_skip: bool | None = None
-    crossfade_seconds: float | None = None
-    fade_in_seconds: float | None = None
+    crossfade_seconds: FiniteFloat | None = None
+    fade_in_seconds: FiniteFloat | None = None
     smart_shuffle: bool | None = None
     pure_shuffle: bool | None = None
     anchor_to_seed: bool | None = None
     enable_daypart: bool | None = None
     enable_mood_arc: bool | None = None
-    mood_arc_hours: float | None = None
+    mood_arc_hours: FiniteFloat | None = None
     liners_enabled: bool | None = None
     liners_pick_mode: str | None = None
 
@@ -439,8 +451,8 @@ class SeekBody(BaseModel):
     both are provided, ``seconds`` wins.
     """
 
-    seconds: float | None = None
-    delta: float | None = None
+    seconds: FiniteFloat | None = None
+    delta: FiniteFloat | None = None
 
 
 class PlayNextBody(BaseModel):
@@ -469,9 +481,9 @@ class EqBody(BaseModel):
     Omitted fields are left unchanged.
     """
 
-    low: float | None = None
-    mid: float | None = None
-    high: float | None = None
+    low: FiniteFloat | None = None
+    mid: FiniteFloat | None = None
+    high: FiniteFloat | None = None
 
 
 class PresetBody(BaseModel):
@@ -500,8 +512,8 @@ class DjMixBody(BaseModel):
 class PlaybackSettingsBody(BaseModel):
     """Request body for POST /api/playback-settings."""
 
-    crossfade_seconds: float | None = None
-    fade_in_seconds: float | None = None
+    crossfade_seconds: FiniteFloat | None = None
+    fade_in_seconds: FiniteFloat | None = None
     crossfade_eq_duck: bool | None = None
     smart_shuffle: bool | None = None
     pure_shuffle: bool | None = None
@@ -514,7 +526,7 @@ class PlaybackSettingsBody(BaseModel):
     show_lyrics: bool | None = None
     enable_daypart: bool | None = None
     enable_mood_arc: bool | None = None
-    mood_arc_hours: float | None = None
+    mood_arc_hours: FiniteFloat | None = None
     import_external_cues: bool | None = None
     beat_sync_fx: bool | None = None
     key_sync_fx: bool | None = None
@@ -522,18 +534,18 @@ class PlaybackSettingsBody(BaseModel):
     liners_enabled: bool | None = None
     liners_folder: str | None = None
     liners_every_n_songs: int | None = None
-    liners_every_minutes: float | None = None
-    liners_random_min_minutes: float | None = None
-    liners_random_max_minutes: float | None = None
+    liners_every_minutes: FiniteFloat | None = None
+    liners_random_min_minutes: FiniteFloat | None = None
+    liners_random_max_minutes: FiniteFloat | None = None
     liners_pick_mode: str | None = None
-    liners_duck_db: float | None = None
+    liners_duck_db: FiniteFloat | None = None
 
 
 class BpmRangeBody(BaseModel):
     """Request body for POST /api/bpm-range — both null = clear filter."""
 
-    lo: float | None = None
-    hi: float | None = None
+    lo: FiniteFloat | None = None
+    hi: FiniteFloat | None = None
 
 
 class DiscoveryBody(BaseModel):
@@ -823,6 +835,25 @@ def create_app(
 
     app = FastAPI(title="AutoDJ", version=current_version(), lifespan=lifespan)
 
+    @app.exception_handler(RequestValidationError)
+    async def _validation_error(_request: Request, exc: RequestValidationError) -> JSONResponse:
+        """Return a 422 whose body is always JSON-encodable.
+
+        FastAPI's default handler echoes the rejected input back to the
+        client.  A rejected ``NaN``/``Infinity`` cannot be re-encoded, so the
+        echo itself would raise and turn a validation error into a 500.  Only
+        the type, location and message are returned.
+        """
+        detail = [
+            {
+                "type": str(error.get("type", "")),
+                "loc": [str(part) for part in error.get("loc", ())],
+                "msg": str(error.get("msg", "")),
+            }
+            for error in exc.errors()
+        ]
+        return JSONResponse(status_code=422, content={"detail": detail})
+
     def _liner_upload_max_bytes() -> int:
         server_cfg = getattr(bridge.player._cfg, "server", None)
         configured_limit = getattr(server_cfg, "liner_upload_max_bytes", None)
@@ -1053,11 +1084,14 @@ def create_app(
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str | int]:
-        """Return process readiness without exposing library metadata."""
+        """Return process readiness plus the indexed track count."""
         return {"status": "ok", "tracks": bridge.sim.ntotal}
 
     @app.get("/api/history")
-    async def api_history(page: int = 1, per_page: int = 50) -> JSONResponse:
+    async def api_history(
+        page: int = Query(1, ge=1),
+        per_page: int = Query(50, ge=1, le=500),
+    ) -> JSONResponse:
         """Return the persisted play history (newest first).
 
         History is a bounded ``deque`` (cap 500 — see PlayerBridge) so
@@ -1229,7 +1263,10 @@ def create_app(
             folder_str = str(_P(cfg.index.active_dir) / "liners")
         from pathlib import Path as _P
 
-        lib = LinerLibrary.from_folder(_P(folder_str))
+        # from_folder walks the configured directory with rglob.  That
+        # directory is operator-controlled and may live on a slow mount, so
+        # keep the walk off the event loop.
+        lib = await asyncio.to_thread(LinerLibrary.from_folder, _P(folder_str))
         return {
             "folder": str(folder_str),
             "files": [f.name for f in lib.files],
@@ -1661,7 +1698,10 @@ def create_app(
     @app.post("/api/transition")
     async def api_transition(body: TransitionBody) -> dict:
         """Apply transition-effect overrides."""
-        bridge.set_transition(body.effect)
+        try:
+            bridge.set_transition(body.effect)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         bridge.save_persistent_state()
         return bridge.get_settings()
 

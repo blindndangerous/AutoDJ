@@ -1772,13 +1772,14 @@ class TestSettingsEndpoints:
         assert resp.status_code == 200
         assert bridge.player._cfg.transitions.effect == "echo_out"
 
-    def test_post_transition_invalid_ignored(self, bridge, tmp_path) -> None:
+    def test_post_transition_invalid_rejected(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
         bridge.player._cfg.index.active_dir = tmp_path
         bridge.player._cfg.transitions.effect = "echo_out"
         tc = TestClient(create_app(bridge))
-        tc.post("/api/transition", json={"effect": "BOGUS_FX"})
+        resp = tc.post("/api/transition", json={"effect": "BOGUS_FX"})
+        assert resp.status_code == 400
         assert bridge.player._cfg.transitions.effect == "echo_out"
 
     def test_post_transition_persists(self, bridge, tmp_path) -> None:

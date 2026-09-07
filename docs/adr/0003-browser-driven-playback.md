@@ -16,7 +16,7 @@ server-side stream.
 
 ## Decision
 
-`autodj serve` defaults to **`--no-playback=True`**.  The Python
+`autodj serve` runs with **server-side playback off**.  The Python
 process picks tracks; the browser's Web Audio graph plays them.
 Passing `--server-audio` opts back into the legacy mode (rare — only
 useful for headed hosts where the user wants both surfaces).

@@ -10,7 +10,7 @@ Available effects:
 
 - :func:`echo_out` — feedback-delay tail on outgoing (the "echo throw")
 - :func:`reverb_tail` — Schroeder reverb on outgoing
-- :func:`highpass_riser` — high-pass sweep DOWN on incoming intro (filter-in)
+- :func:`highpass_sweep` — high-pass sweep DOWN on incoming intro (filter-in)
 - :func:`tape_stop` — time-stretch ramp-to-zero on outgoing (vinyl stop)
 - :func:`gate_stutter` — rhythmic amplitude gate on outgoing (stutter cut)
 - :func:`noise_riser` — synthesised white-noise build between tracks
@@ -85,6 +85,15 @@ class TransitionFx(StrEnum):
     HALFTIME = "halftime"  # tempo halve, pitch preserved (vs pitch_fall pitch-down)
     RANDOM = "random"  # pick uniformly at random per crossfade
     ROTATE = "rotate"  # cycle through the catalogue in order
+
+
+TRANSITION_EFFECT_NAMES: frozenset[str] = frozenset(fx.value for fx in TransitionFx)
+"""Every selectable effect name, including ``none``, ``random`` and ``rotate``.
+
+Single source of truth for the CLI choice list, the web-UI allowlist and the
+persisted web-state validator, so a new enum member cannot be offered by one
+surface and rejected by another.
+"""
 
 
 # Catalogue used by RANDOM / ROTATE — excludes NONE and the meta-modes.
@@ -1116,7 +1125,6 @@ def air_horn(
     n = len(tail)
     if n == 0:
         return tail
-    t = np.arange(n) / sample_rate
     # Pitch sweep 220 → 880 Hz over the tail length
     freq = 220.0 + 660.0 * (np.arange(n) / max(1, n - 1))
     phase = np.cumsum(2 * np.pi * freq / sample_rate)
@@ -1133,7 +1141,6 @@ def air_horn(
     horn *= env * 0.35  # peak ~0.35 so it sits with the music
     out = (tail + horn).astype(np.float32)
     np.clip(out, -1.0, 1.0, out=out)
-    del t  # silence unused-var lint
     return out
 
 
@@ -1285,7 +1292,6 @@ def stutter_build(
     if n == 0 or start_hz <= 0 or end_hz <= 0:
         return tail
     # Instantaneous gate frequency rising linearly
-    t = np.arange(n, dtype=np.float32) / sample_rate
     freq = start_hz + (end_hz - start_hz) * (np.arange(n) / max(1, n - 1))
     # Phase = integral of frequency.  When phase wraps past 1.0 we toggle
     # the gate state — alternating open / closed cells of varying width.
@@ -1298,7 +1304,6 @@ def stutter_build(
         kernel = np.ones(32, dtype=np.float32) / 32.0
         open_mask = np.convolve(open_mask, kernel, mode="same").astype(np.float32)
     out = (tail * open_mask).astype(np.float32)
-    del t  # silence unused-var lint
     return out
 
 
