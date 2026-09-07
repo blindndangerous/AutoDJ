@@ -40,9 +40,38 @@ from rich.panel import Panel
 
 from autodj.transitions import TRANSITION_EFFECT_NAMES
 
+logger = logging.getLogger(__name__)
+
 # Sorted so `--help` lists the effects in a stable order.  Derived from the
 # enum so the CLI can never offer fewer effects than the web UI.
 _TRANSITION_CHOICES = sorted(TRANSITION_EFFECT_NAMES)
+
+
+def _deprecated_no_playback(ctx: click.Context, param: click.Parameter, value: bool) -> bool:
+    """Accept the retired ``--no-playback`` flag and say it does nothing.
+
+    The flag was declared as ``is_flag=True, default=True``, so it could never
+    be turned off and the effective value has always been ``not
+    --server-audio``.  It is still passed by the container CMD, both compose
+    services and three workflows, so removing it outright made ``autodj serve``
+    exit 2 for every one of them.
+
+    Args:
+        ctx: Click context (unused).
+        param: The parameter being parsed (unused).
+        value: Whether the flag was supplied.
+
+    Returns:
+        *value*, unchanged.
+    """
+    del ctx, param
+    if value:
+        logger.info(
+            "--no-playback is deprecated and does nothing: the browser is the "
+            "audio output unless --server-audio is passed."
+        )
+    return value
+
 
 if TYPE_CHECKING:
     from autodj.beets import Track
@@ -1773,6 +1802,15 @@ def cmd_play(  # pragma: no cover -- end-to-end orchestrator, exercised by smoke
     default=None,
     type=str,
     help="Named index to play from (default: 'default').",
+)
+@click.option(
+    "--no-playback",
+    is_flag=True,
+    default=False,
+    hidden=True,
+    expose_value=False,
+    callback=_deprecated_no_playback,
+    help="Deprecated no-op; kept so existing deployments keep starting.",
 )
 @click.option(
     "--server-audio/--no-server-audio",
