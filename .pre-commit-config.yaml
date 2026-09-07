@@ -29,11 +29,6 @@ repos:
     hooks:
       - id: actionlint
 
-  # Python toolchain: ruff and mypy run through uv so the versions match
-  # uv.lock (and therefore CI) instead of drifting behind pinned mirrors.
-  # Every uv-backed hook runs --frozen so a hook can never rewrite the lock
-  # underneath the commit it is checking.
-
   - repo: https://github.com/PyCQA/bandit
     rev: 1.9.4
     hooks:
@@ -57,13 +52,19 @@ repos:
       - id: vulture
         files: ^src/
 
-  # Dependency declaration auditor -- ensures imports match
-  # [project.dependencies] / [project.optional-dependencies].  Catches
-  # missing declarations (DEP001), unused declarations (DEP002), and
-  # transitive-dep imports that should be made explicit (DEP003).
-  # Run via local hook so deptry resolves against the project's own
-  # uv env (where pyproject.toml + the dep tree live); the published
-  # repo hook does not bundle the project deps for resolution.
+  # Local hooks, all driven through uv.
+  #
+  # ruff and mypy run this way so their versions come from uv.lock, and
+  # therefore match CI, instead of drifting behind separately pinned mirrors.
+  # deptry resolves against the project's own uv env (where pyproject.toml and
+  # the dependency tree live); the published repo hook does not bundle the
+  # project deps for resolution.  It checks that imports match
+  # [project.dependencies] / [project.optional-dependencies], catching missing
+  # declarations (DEP001), unused declarations (DEP002), and transitive-dep
+  # imports that should be explicit (DEP003).
+  #
+  # Every entry passes --frozen so no hook can rewrite uv.lock underneath the
+  # commit it is checking.
   - repo: local
     hooks:
       - id: ruff

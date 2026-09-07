@@ -63,6 +63,26 @@ def test_readonly_uri_can_request_an_immutable_snapshot() -> None:
     assert readonly_uri("library.db", immutable=True).endswith("?mode=ro&immutable=1")
 
 
+def test_readonly_uri_keeps_a_unc_share_intact(monkeypatch) -> None:
+    """The docstring promises UNC paths survive; check the shape it produces.
+
+    ``Path.resolve()`` probes the network for a UNC host (about four seconds
+    against one that does not answer), so resolution is stubbed out here and
+    only the URI construction is under test.
+    """
+    from pathlib import Path
+
+    from autodj.sqlite_utils import readonly_uri
+
+    monkeypatch.setattr(Path, "resolve", lambda self, strict=False: self)
+    uri = readonly_uri(Path(r"\nas\music\best of #1\library.db"))
+
+    assert uri.startswith(r"file:\nas\music")
+    assert "%23" in uri
+    assert "%5C" not in uri
+    assert uri.endswith("?mode=ro")
+
+
 def test_beets_opens_a_library_under_a_fragment_character(tmp_path) -> None:
     """``#`` in a directory name used to read as a URI fragment and fail."""
     from autodj.beets import _open_db

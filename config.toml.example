@@ -115,9 +115,11 @@ show_lyrics = true
 prefetch_next_track = true
 
 # Silence-detector — the web UI's Web-Audio analyser samples the active
-# deck during the second half of the track; if the RMS drops below
-# −60 dBFS for ~600 ms, it triggers the crossfade early so long fade-out
-# tails don't leave a dead-air gap before the next track starts.
+# deck once playback passes 95 % of the track's duration; if the RMS stays
+# below −60 dBFS for 2 continuous seconds, it triggers the crossfade early so
+# long fade-out tails don't leave a dead-air gap before the next track.
+# The thresholds are deliberately late and long: an earlier, shorter trigger
+# cut atmospheric tracks short on quiet mid-song passages.
 silence_trigger_crossfade = true
 
 # Optional — append a JSON Lines record for every track played.
@@ -132,6 +134,84 @@ silence_trigger_crossfade = true
 # track's bass.  Eliminates muddy "two-kicks-at-once" feel.  Tiny CPU cost.
 crossfade_eq_duck = false
 crossfade_bass_cutoff_hz = 180.0     # frequency below which outgoing track is attenuated
+
+# Fade-in applied to the very first track of a session, in seconds.
+fade_in_seconds = 3.0
+
+# How the crossfade lines up with each track's intro_end / outro_start
+# markers from the DJ-meta sidecar:
+#   "full_intro_outro"   incoming intro starts where outgoing outro starts;
+#                        fade length = min(intro, outro), clamped to 12 s
+#   "outro_fade"         fade begins at outro_start, lasts the outro
+#   "fixed_skip_silence" fixed crossfade_seconds, but trims leading and
+#                        trailing silence
+#   "fixed"              legacy: fixed crossfade_seconds at the track end
+transition_mode = "full_intro_outro"
+
+# Where the picker seeds from once a user-built queue empties.
+#   "last_queued"  continue from the final queued track (the user steered)
+#   "pre_queue"    rewind to the track that was playing when the queue began
+post_queue_seed = "last_queued"
+
+# Weighted-random pick over the top K similarity candidates.  k = 1 is fully
+# deterministic (same seed, same set).  For variety try k = 10 with
+# temperature 0.3; higher temperature flattens the weighting.
+pick_top_k = 1
+pick_temperature = 0.3
+
+# How the current key is shown: "camelot" (8A / 8B, matching the in-page
+# wheel) or "musical" (C, Am, F#m).  Picker maths is unaffected.
+key_notation = "camelot"
+# Only read when key_notation = "musical": spell accidentals as flats.
+key_prefer_flats = false
+
+# Output device for server-side audio.  Leave unset for the system default;
+# otherwise a sounddevice index or a substring of the device name.
+# audio_device = "Speakers"
+
+# Wall-clock daypart targeting — bias picks toward the BPM and energy of the
+# current built-in daypart (morning / midday / afternoon / evening / night).
+# Only applied while no explicit preset is active.
+enable_daypart = false
+
+# Set-relative mood arc (warm up, peak, cool down).  Takes priority over
+# daypart while a session is running.
+enable_mood_arc = false
+mood_arc_hours = 3.0          # length of one arc before it loops
+
+# Merge cue points exported by Mixxx / Rekordbox / Traktor with the ones
+# AutoDJ detects itself.
+import_external_cues = true
+
+# Beat-sync transition FX — rhythmic effects (beat_repeat, gate_stutter,
+# echo_out, dub_delay, sidechain_pump, halftime, stutter_build, scratch) snap
+# to the next downbeat and size themselves in whole bars.
+beat_sync_fx = true
+# Key-sync pitched FX — oscillator effects (pitch_swell, pitch_fall,
+# dub_siren, ring_modulator, air_horn) tune to the song's root note.
+key_sync_fx = true
+
+# Beatmatch when the user presses Skip: the browser pitch-preserves the new
+# track onto the outgoing tempo instead of cold-cutting.  Server-side audio
+# cold-cuts regardless.
+beatmatch_on_skip = false
+
+# Voice liners — short spoken clips layered over the mix.  Triggers are
+# evaluated in the browser; any combination may be set, and a null / absent
+# value disables that trigger.
+liners_enabled = false
+# liners_folder = "~/.autodj/liners"   # default: <index_dir>/<name>/liners
+# liners_every_n_songs = 5             # after every N tracks
+# liners_every_minutes = 20.0          # on a wall-clock timer
+# liners_random_min_minutes = 10.0     # random window, lower bound
+# liners_random_max_minutes = 25.0     # random window, upper bound
+liners_pick_mode = "random"            # random | sequential | weighted
+liners_duck_db = -12.0                 # how far the music ducks under a liner
+
+# Per-file dayparts.  Accepted by the config loader and archived by
+# `autodj backup`, but the picker still uses the five built-in profiles —
+# nothing loads this folder yet.
+# dayparts_dir = "~/.autodj/dayparts"
 
 # ---------------------------------------------------------------------------
 # ReplayGain loudness normalisation
@@ -221,6 +301,9 @@ wet_mix = 1.0
 # HuggingFace model ID for the music embedding model.
 # MuQ-large-msd-iter: 24 kHz, 1024-dim, ~300 M params, fp32 inference.
 name = "OpenMuQ/MuQ-large-msd-iter"
+
+# HuggingFace revision (branch, tag, or commit) to download and cache.
+revision = "main"
 
 # Uncomment to skip auto-download and point directly to a local model directory.
 # manual_path = "models/MuQ-large-msd-iter"

@@ -27,7 +27,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ahead made every freshly embedded track look replaced and re-embedded the library on every run.
   Both sides of that comparison now come from the file.
 - The server-side 3-band EQ restarted its filters on every audio block, which put a click at every
-  block boundary as soon as a band left unity gain.
+  block boundary as soon as a band left unity gain. Its filter memory is also cleared whenever the
+  EQ starts working again after a stretch at unity gain, so re-engaging it no longer splices in a
+  fragment of wherever it was last active.
 - A library job whose output could not be decoded by the system locale stopped being read, filled
   its pipe and left the job slot busy until Stop was pressed. Job output is now read as UTF-8.
 - Beets and Mixxx databases stored under a path containing `#` failed to open.
@@ -38,10 +40,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- `autodj serve --no-playback` is gone. It could never be turned off; server-side audio is opted
-  into with `--server-audio`, which is unchanged.
+- `autodj serve --no-playback` is deprecated. It could never be turned off, so it never did
+  anything: server-side audio is opted into with `--server-audio`, which is unchanged. The flag
+  still parses, is hidden from `--help`, and logs one informational line, because the container
+  image, both compose services and three workflows still pass it. A test now checks every flag
+  those files use against the options the CLI actually declares.
 - `pre-commit` now runs the same locked `ruff` and `mypy` that CI runs, instead of separately
   pinned mirrors that could disagree with it.
+- Dependencies moved to their current releases. Direct ones are all minor or patch, except
+  `torchvision` 0.28 to 0.29, which is a 0.x minor and so may change anything. Transitively the
+  lock also moved `evdev` 1.9.3 to 2.0.0 — a major; it is Linux-only, arrives as an sdist and is
+  compiled on the machine that installs it, so Windows and macOS never see it and CI is what
+  proves it — and the 0.x packages `tokenizers` 0.22.2 to 0.23.2, `numba` 0.66 to 0.67,
+  `llvmlite` 0.48 to 0.49 and `ast-serialize` 0.8 to 0.10. `cloudpickle` is a new transitive
+  dependency and `uc-micro-py` is no longer resolved. The lock pins `torch` 2.14.0; each platform
+  wheel carries its own local version on top (a Windows CPU install reports 2.14.0+cpu).
+- `config.toml.example` now lists every `[playback]` and `[model]` setting the loader accepts,
+  including the liner triggers, the FX sync toggles and `dayparts_dir`.
 
 ## [0.16.1] - 2026-08-16
 

@@ -378,11 +378,11 @@ class PlaybackConfig:
     liners_random_max_minutes: float | None = None
     liners_pick_mode: str = "random"
     liners_duck_db: float = -12.0
-    # Per-file daypart directory.  When set, load one TOML per file
-    # under this folder (each file is one daypart) instead of the
-    # built-in profiles.  Each file may declare ``indexes = [...]``
-    # to scope the daypart to specific index names.  Empty / missing
-    # folder falls back to the built-in DAYPARTS list.
+    # Per-file daypart directory.  ``autodj.daypart.load_dayparts_from_dir``
+    # can turn one TOML per file into a daypart (each may declare
+    # ``indexes = [...]`` to scope itself to specific index names), and
+    # ``autodj backup`` archives the folder, but nothing in the playback path
+    # calls the loader yet: the picker always uses the built-in DAYPARTS list.
     dayparts_dir: str | None = None
 
     @classmethod

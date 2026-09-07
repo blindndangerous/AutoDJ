@@ -530,8 +530,21 @@ def source_mtime(path: str | Path) -> float:
     """Return the file's modification time, or the local clock when absent.
 
     Stale detection compares a stored stamp against ``st_mtime``, so both
-    sides have to come from the machine that owns the file.  Falling back to
-    the local clock only happens when the file cannot be stat-ed at all.
+    sides have to come from the machine that owns the file.
+
+    The ``OSError`` fallback covers a file that vanished or became unreadable
+    between the scan and this call.  The local clock is the wrong clock, but
+    the alternatives are worse: ``0.0`` is the sentinel
+    :func:`_detect_stale_entries` reads as "legacy entry, snapshot the file's
+    mtime on first sight", so returning it here would silently re-stamp a real
+    entry, and raising would abort a whole indexing run over one bad file.  A
+    local-clock stamp at worst makes that single track look stale once.
+
+    Args:
+        path: Path to the source audio file.
+
+    Returns:
+        The file's ``st_mtime``, or the local wall clock if it cannot be read.
     """
     import time as _time
 
