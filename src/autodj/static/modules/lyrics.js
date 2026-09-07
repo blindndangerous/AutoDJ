@@ -183,7 +183,31 @@ export function renderLyricsList({ lyricsCard, lyricsList }) {
     .join("");
 }
 
-export function applyLyricsState(s, { lyricsCard, lyricsList, lyricAnnounce }) {
+// Index of the last line whose timestamp has passed, or null before the
+// first one.  Binary search: a long song is a few thousand lines and this
+// runs on every websocket tick.
+function lineIndexAt(lines, elapsed) {
+  if (!Array.isArray(lines) || lines.length === 0) return null;
+  if (!Number.isFinite(elapsed) || elapsed < Number(lines[0].time_s)) return null;
+  let lo = 0;
+  let hi = lines.length - 1;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (Number(lines[mid].time_s) <= elapsed) lo = mid; else hi = mid - 1;
+  }
+  return lo;
+}
+
+// `localClock` means the browser owns the audio clock.  In that mode the
+// server's own `elapsed` is 0.0 forever, so `lyric_index` never leaves
+// null and the highlight -- and the per-line announcement the blind owner
+// relies on -- could never fire.  The deck's currentTime is the real
+// position, so resolve the line here instead of trusting the server.
+export function applyLyricsState(
+  s,
+  { lyricsCard, lyricsList, lyricAnnounce },
+  { elapsed = null, localClock = false } = {},
+) {
   // Plain (unsynced) beets lyrics fallback -- show as a single block
   // when we have no timestamped .lrc list.  Updated on every track
   // change.
@@ -204,7 +228,13 @@ export function applyLyricsState(s, { lyricsCard, lyricsList, lyricAnnounce }) {
     state.lastIndex = null;
     return;
   }
-  const idx = s.lyric_index;
+  const local = localClock && state.cached.length
+    ? lineIndexAt(state.cached, elapsed)
+    : null;
+  const idx = local !== null ? local : s.lyric_index;
+  const text = local !== null
+    ? (state.cached[local] && state.cached[local].text) || null
+    : s.lyric_text;
   if (idx === state.lastIndex) return;
   state.lastIndex = idx;
 
@@ -218,10 +248,10 @@ export function applyLyricsState(s, { lyricsCard, lyricsList, lyricAnnounce }) {
     li.classList.add("active");
     li.setAttribute("aria-current", "true");
     scrollActiveLineIntoView(lyricsList, li);
-    if (s.lyric_text && lyricAnnounce) {
+    if (text && lyricAnnounce) {
       state.loadStatus = null;
-      state.currentLineAnnouncement = s.lyric_text;
-      lyricAnnounce.textContent = s.lyric_text;
+      state.currentLineAnnouncement = text;
+      lyricAnnounce.textContent = text;
     }
   }
 }

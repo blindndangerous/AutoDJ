@@ -378,3 +378,99 @@ describe("plain lyric fallback", () => {
     expect(stripLyricTimestamps("plain")).toBe("plain");
   });
 });
+
+describe("timed highlight from the local playback clock", () => {
+  function timedResponse(path) {
+    return new globalThis.Response(JSON.stringify({
+      path,
+      lyrics: [
+        { time_s: 0, text: "Line zero" },
+        { time_s: 17.49, text: "Line one" },
+        { time_s: 42, text: "Line two" },
+      ],
+    }), { headers: { "Content-Type": "application/json" } });
+  }
+
+  async function loaded() {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(timedResponse("t.flac")));
+    const elements = lyricElements();
+    elements.lyricsList.scrollTo = vi.fn();
+    await loadLyrics("t.flac", elements);
+    return elements;
+  }
+
+  it("highlights from the browser position when the server clock is stuck", async () => {
+    const elements = await loaded();
+
+    // Browser-driven playback: the server reports elapsed 0.0 forever, so
+    // lyric_index is null and the highlight could never fire.
+    applyLyricsState(
+      { has_lyrics: true, lyric_index: null, lyric_text: null },
+      elements,
+      { elapsed: 20.5, localClock: true },
+    );
+
+    const items = elements.lyricsList.querySelectorAll("li");
+    expect(items[1].classList.contains("active")).toBe(true);
+    expect(items[1].getAttribute("aria-current")).toBe("true");
+    expect(elements.lyricAnnounce.textContent).toBe("Line one");
+  });
+
+  it("advances to the next line and announces it once", async () => {
+    const elements = await loaded();
+    const records = [];
+    new window.MutationObserver((r) => records.push(...r))
+      .observe(elements.lyricAnnounce, {
+        childList: true, characterData: true, subtree: true,
+      });
+
+    for (const elapsed of [20.5, 21, 30, 41.9]) {
+      applyLyricsState({ has_lyrics: true, lyric_index: null }, elements,
+        { elapsed, localClock: true });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(elements.lyricAnnounce.textContent).toBe("Line one");
+    // Four ticks inside one line produce one announcement, not four.
+    const afterFirst = records.filter((r) => r.addedNodes.length > 0).length;
+    expect(afterFirst).toBe(1);
+
+    applyLyricsState({ has_lyrics: true, lyric_index: null }, elements,
+      { elapsed: 42.1, localClock: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(elements.lyricAnnounce.textContent).toBe("Line two");
+    expect(records.filter((r) => r.addedNodes.length > 0).length)
+      .toBe(afterFirst + 1);
+  });
+
+  it("highlights nothing before the first line's timestamp", async () => {
+    const elements = await loaded();
+    applyLyricsState({ has_lyrics: true, lyric_index: null }, elements,
+      { elapsed: -1, localClock: true });
+
+    expect(elements.lyricsList.querySelectorAll("li.active")).toHaveLength(0);
+  });
+
+  it("still trusts the server index for server-side playback", async () => {
+    const elements = await loaded();
+
+    applyLyricsState(
+      { has_lyrics: true, lyric_index: 2, lyric_text: "Line two" },
+      elements,
+      { elapsed: 0, localClock: false },
+    );
+
+    const items = elements.lyricsList.querySelectorAll("li");
+    expect(items[2].classList.contains("active")).toBe(true);
+    expect(elements.lyricAnnounce.textContent).toBe("Line two");
+  });
+
+  it("ignores the local clock when there are no timed lines", async () => {
+    const elements = lyricElements();
+    expect(() => applyLyricsState(
+      { has_lyrics: true, lyric_index: null }, elements,
+      { elapsed: 30, localClock: true },
+    )).not.toThrow();
+    expect(elements.lyricsList.querySelectorAll("li.active")).toHaveLength(0);
+  });
+});

@@ -459,7 +459,13 @@ function applyState(s) {
   }
 
   // Lyrics \u2014 visible list highlight + announce only on line change
-  applyLyricsState(s, _lyricEls);
+  // Under browser-driven playback the server's own clock never moves, so
+  // hand the lyrics module the position the deck is actually at.
+  // `elapsed` above is already the deck's currentTime in that mode.
+  applyLyricsState(s, _lyricEls, {
+    elapsed,
+    localClock: Boolean(s.browser_playback),
+  });
 
   // Why this track? \u2014 refresh only on track change to avoid pointless WS churn
   applyWhyState(s);
