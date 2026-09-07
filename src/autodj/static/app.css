@@ -558,6 +558,16 @@
       padding: 0 1.25rem 1rem;
     }
 
+    /* ---- Library tools ---- */
+    /* #lib-job-status is the announcing region; this is its silent
+       companion, so it may tick every second without speaking. */
+    #lib-job-elapsed {
+      font-size: 0.8rem;
+      color: var(--text-dim);
+      font-variant-numeric: tabular-nums;
+      min-height: 1.2em;
+    }
+
     /* ---- Visually hidden utility (WCAG-compliant clip pattern) ---- */
     .visually-hidden {
       position: absolute;

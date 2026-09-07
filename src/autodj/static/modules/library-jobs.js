@@ -1,6 +1,16 @@
 // Library tools panel: index / enrich / prune / stats jobs.
 // All controls are no-ops on pages that don't include the library
 // section markup, so this module is safe to wire unconditionally.
+//
+// Live-region contract (NVDA repeat fix):
+//   #lib-job-status is the ONLY announcing node in this panel.  It is
+//   keyed on the job *phase* (idle / running / finished), never on the
+//   clock, so a job that runs for two hours speaks exactly once when it
+//   starts and once when it ends.  The ticking elapsed counter lives in
+//   the sibling #lib-job-elapsed, which is aria-live="off" and therefore
+//   silent no matter how often it changes.
+//   #library-log is a plain <pre>: it is appended to, never rebuilt, so
+//   a reader who has tabbed into it keeps their reading cursor.
 
 import {
   captureAuthenticatedRequestEpoch,
@@ -9,32 +19,119 @@ import {
   withDisabled,
 } from "./api-client.js";
 
-let _lastLogKey = "";
 const _jobStatusState = new WeakMap();
+const _logState = new WeakMap();
 
-function updateJobStatus(job, jobStatus) {
-  let key;
-  let text;
+// Write `text` into the live region only when the phase actually
+// changed.  Repeated ticks carrying the same phase are silent.
+function setJobPhase(jobStatus, phase, text) {
+  if (!jobStatus) return;
+  const previous = _jobStatusState.get(jobStatus);
+  if (previous && previous.phase === phase) return;
+  _jobStatusState.set(jobStatus, { phase });
+  if (jobStatus.textContent !== text) jobStatus.textContent = text;
+}
+
+// Errors are user-visible failures of a specific action, not a job
+// phase.  They must always land, and they must not be wiped by the very
+// next websocket tick — so they clear the phase memory instead of
+// setting one, and the following tick re-establishes the real phase.
+function reportJobError(jobStatus, text) {
+  if (!jobStatus) return;
+  _jobStatusState.delete(jobStatus);
+  if (jobStatus.textContent !== text) jobStatus.textContent = text;
+}
+
+function updateJobStatus(job, jobStatus, jobElapsed) {
+  // Visual-only clock.  Never announced: the node is aria-live="off".
+  if (jobElapsed) {
+    const elapsed = job.running
+      ? `${Math.round(Number(job.elapsed_seconds) || 0)}s elapsed`
+      : "";
+    if (jobElapsed.textContent !== elapsed) jobElapsed.textContent = elapsed;
+  }
+  if (!jobStatus) return;
+
   if (job.running) {
-    const elapsedBucket = Math.floor(Number(job.elapsed_seconds || 0) / 10);
-    key = `running:${job.name}:${elapsedBucket}`;
-    text = `${job.name} running for ${job.elapsed_seconds}s…`;
-  } else if (job.exit_code != null) {
-    key = `finished:${job.name}:${job.exit_code}:${job.elapsed_seconds}`;
-    text = job.exit_code === 0
-      ? `${job.name} finished cleanly in ${job.elapsed_seconds}s.`
-      : `${job.name} exited with code ${job.exit_code} after ${job.elapsed_seconds}s.`;
-  } else if (!job.name) {
-    key = "idle";
-    text = "Idle.";
-  } else {
+    setJobPhase(jobStatus, `running:${job.name}`, `${job.name} running.`);
+    return;
+  }
+  if (job.exit_code != null) {
+    const seconds = Math.round(Number(job.elapsed_seconds) || 0);
+    setJobPhase(
+      jobStatus,
+      `finished:${job.name}:${job.exit_code}`,
+      job.exit_code === 0
+        ? `${job.name} finished cleanly in ${seconds} seconds.`
+        : `${job.name} exited with code ${job.exit_code} after ${seconds} seconds.`,
+    );
+    return;
+  }
+  if (!job.name) setJobPhase(jobStatus, "idle", "Idle.");
+}
+
+function emptyLogNote(libLog) {
+  const note = libLog.ownerDocument.createElement("em");
+  note.className = "lib-log-empty";
+  note.textContent = "No job has run yet.";
+  return note;
+}
+
+// Index of the first rendered line inside `lines`, or -1 when the two
+// windows do not overlap (a brand-new job, or a reset log).
+function slideOffset(rendered, lines) {
+  for (let offset = 0; offset < rendered.length; offset++) {
+    const tail = rendered.length - offset;
+    if (tail > lines.length) continue;
+    let matches = true;
+    for (let i = 0; i < tail; i++) {
+      if (rendered[offset + i] !== lines[i]) { matches = false; break; }
+    }
+    if (matches) return offset;
+  }
+  return -1;
+}
+
+// Append-only render.  The server sends a sliding 25-line window, so the
+// head may fall off; drop exactly the vanished nodes and append exactly
+// the new ones rather than replacing the whole subtree every second.
+function renderLog(libLog, lines) {
+  const previous = _logState.get(libLog);
+  const rendered = previous ? previous.lines : null;
+
+  if (lines.length === 0) {
+    if (!rendered || rendered.length !== 0) {
+      libLog.replaceChildren(emptyLogNote(libLog));
+      _logState.set(libLog, { lines: [] });
+    }
     return;
   }
 
-  const previous = _jobStatusState.get(jobStatus);
-  if (previous?.key === key && jobStatus.textContent === previous.text) return;
-  if (jobStatus.textContent !== text) jobStatus.textContent = text;
-  _jobStatusState.set(jobStatus, { key, text });
+  const pinned = libLog.scrollTop + libLog.clientHeight
+    >= libLog.scrollHeight - 4;
+  const offset = rendered && rendered.length ? slideOffset(rendered, lines) : -1;
+  let kept = 0;
+  if (offset < 0) {
+    libLog.replaceChildren();
+  } else {
+    kept = rendered.length - offset;
+    for (let i = 0; i < offset; i++) {
+      if (libLog.firstChild) libLog.removeChild(libLog.firstChild);
+    }
+    // The surviving first node still carries the separator newline that
+    // joined it to the node just removed.
+    const first = libLog.firstChild;
+    if (first && typeof first.data === "string" && first.data.startsWith("\n")) {
+      first.data = first.data.slice(1);
+    }
+  }
+  for (let i = kept; i < lines.length; i++) {
+    libLog.appendChild(
+      libLog.ownerDocument.createTextNode((i === 0 ? "" : "\n") + lines[i]),
+    );
+  }
+  _logState.set(libLog, { lines: lines.slice() });
+  if (pinned) libLog.scrollTop = libLog.scrollHeight;
 }
 
 export function installLibraryJobs(els) {
@@ -62,9 +159,10 @@ export function installLibraryJobs(els) {
         "/api/library/stop", { method: "POST" },
       )).catch((errorValue) => {
         if (!isAuthenticatedRequestCurrent(epoch)) return;
-        if (els.jobStatus) {
-          els.jobStatus.textContent = `Could not stop library job: ${errorValue.message}`;
-        }
+        reportJobError(
+          els.jobStatus,
+          `Could not stop library job: ${errorValue.message}`,
+        );
       });
     });
   }
@@ -84,10 +182,12 @@ async function _run(els, name, args = [], control = null) {
       body: JSON.stringify({ name, args }),
     }));
     if (!isAuthenticatedRequestCurrent(epoch)) return;
-    if (jobStatus) jobStatus.textContent = `${name} started…`;
+    // Seed the phase so the websocket tick that lands a fraction of a
+    // second later does not speak the same thing again.
+    setJobPhase(jobStatus, `running:${name}`, `${name} started.`);
   } catch (err) {
     if (!isAuthenticatedRequestCurrent(epoch)) return;
-    if (jobStatus) jobStatus.textContent = `Error starting ${name}: ${err.message || err}`;
+    reportJobError(jobStatus, `Error starting ${name}: ${err.message || err}`);
   }
 }
 
@@ -108,26 +208,17 @@ async function refreshLibStats(els, control = null) {
     statWithEnergy.textContent  = s.tracks_with_energy;
   } catch (errorValue) {
     if (!isAuthenticatedRequestCurrent(epoch)) return;
-    if (els.jobStatus) {
-      els.jobStatus.textContent = `Could not load library stats: ${errorValue.message}`;
-    }
+    reportJobError(
+      els.jobStatus,
+      `Could not load library stats: ${errorValue.message}`,
+    );
   }
 }
 
 export function applyLibraryJobState(s, els) {
-  const { libLog, jobStatus } = els;
+  const { libLog, jobStatus, jobElapsed } = els;
   const job = s && s.library_job;
   if (!job || !libLog) return;
-  if (jobStatus) updateJobStatus(job, jobStatus);
-  // Append-only log render -- only re-render when payload changed.
-  const lines = job.lines || [];
-  const key = lines.length + "@" + (lines[lines.length - 1] || "");
-  if (key === _lastLogKey) return;
-  _lastLogKey = key;
-  if (lines.length === 0) {
-    libLog.innerHTML = '<em style="color:var(--text-dim)">No job has run yet.</em>';
-  } else {
-    libLog.textContent = lines.join("\n");
-    libLog.scrollTop = libLog.scrollHeight;
-  }
+  updateJobStatus(job, jobStatus, jobElapsed);
+  renderLog(libLog, job.lines || []);
 }

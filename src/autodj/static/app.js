@@ -211,14 +211,30 @@ function requireAuthentication() {
 
 setAuthRequiredHandler(requireAuthentication);
 
-let lastBackgroundFailure = { message: "", at: 0 };
+// Background failures repeat: a broken /api/seek fails on every attempt.
+// A fixed 4 s dedupe window still re-announced the identical sentence
+// fifteen times a minute, so the window doubles for each consecutive
+// repeat (4 s, 8 s, 16 s … capped at one minute) and resets as soon as a
+// different message arrives or one succeeds long enough to lapse.
+const BACKGROUND_FAILURE_MIN_MS = 4000;
+const BACKGROUND_FAILURE_MAX_MS = 60000;
+let lastBackgroundFailure = { message: "", at: 0, windowMs: 0 };
+
 function reportBackgroundRequestError(errorValue) {
   const message = errorValue.message || String(errorValue);
   const now = Date.now();
-  if (lastBackgroundFailure.at !== 0
-      && message === lastBackgroundFailure.message
-      && now - lastBackgroundFailure.at < 4000) return;
-  lastBackgroundFailure = { message, at: now };
+  const repeated = lastBackgroundFailure.at !== 0
+    && message === lastBackgroundFailure.message;
+  if (repeated && now - lastBackgroundFailure.at < lastBackgroundFailure.windowMs) {
+    return;
+  }
+  lastBackgroundFailure = {
+    message,
+    at: now,
+    windowMs: repeated
+      ? Math.min(lastBackgroundFailure.windowMs * 2, BACKGROUND_FAILURE_MAX_MS)
+      : BACKGROUND_FAILURE_MIN_MS,
+  };
   npAnnounce.textContent = `Request failed: ${message}`;
 }
 
@@ -238,6 +254,31 @@ let lastNextKey  = null;   // suppress aria-live re-announce of unchanged next t
 let _lastState = null;
 let _stateApplicationGeneration = 0;
 let _seekController = null;
+
+// The seek slider is role="slider" with tabindex="0", so rewriting
+// aria-valuetext on every 1 Hz websocket tick makes NVDA read the new
+// position once per second for as long as the control holds focus.  The
+// clock is already visible in #progress-bar-label, so the attributes are
+// refreshed only while the slider is NOT focused, plus once on blur and
+// on every user-driven seek (see _seekToFrac).  The value is therefore
+// current whenever it can actually be queried, and silent otherwise.
+let _pendingProgressValue = null;
+
+function queueProgressValue(valueNow, valueText) {
+  _pendingProgressValue = { valueNow, valueText };
+}
+
+function flushProgressValue(track) {
+  if (!track || !_pendingProgressValue) return;
+  if (track.ownerDocument?.activeElement === track) return;
+  const { valueNow, valueText } = _pendingProgressValue;
+  if (track.getAttribute("aria-valuenow") !== valueNow) {
+    track.setAttribute("aria-valuenow", valueNow);
+  }
+  if (track.getAttribute("aria-valuetext") !== valueText) {
+    track.setAttribute("aria-valuetext", valueText);
+  }
+}
 
 function applyState(s) {
   _stateApplicationGeneration += 1;
@@ -339,11 +380,8 @@ function applyState(s) {
     // track position (insert+T / NVDA+Tab).  pct is 0–100 — matches valuemax=100.
     const progressTrack = document.getElementById("progress-track");
     if (progressTrack) {
-      progressTrack.setAttribute("aria-valuenow", pct.toFixed(0));
-      progressTrack.setAttribute(
-        "aria-valuetext",
-        `${fmtTime(elapsed)} of ${fmtTime(dur)}`
-      );
+      queueProgressValue(pct.toFixed(0), `${fmtTime(elapsed)} of ${fmtTime(dur)}`);
+      flushProgressValue(progressTrack);
     }
   }
 
@@ -691,10 +729,9 @@ async function _applySink(sinkId) {
   }
   if (lastErr) {
     if (settingsStatus) {
-      settingsStatus.textContent =
-        "Could not switch audio device: " +
-        (lastErr.message || lastErr.name || "unknown");
-      setTimeout(() => { settingsStatus.textContent = ""; }, 5000);
+      settingsStatus.textContent = "Could not switch audio device: "
+        + (lastErr.message || lastErr.name || "unknown");
+      clearLiveRegionLater(settingsStatus, 5000);
     }
     return false;
   }
@@ -729,10 +766,10 @@ async function _grantDeviceLabels() {
     }
     if (settingsStatus) {
       settingsStatus.textContent =
-        "Microphone permission denied.  Reset it via the lock icon in the " +
-        "address bar (or your browser's site settings) and click again.  " +
-        "AutoDJ never records audio; the prompt is the only way browsers " +
-        "expose audio-output device names.";
+        "Microphone permission denied.  Reset it via the lock icon in the "
+        + "address bar (or your browser's site settings) and click again.  "
+        + "AutoDJ never records audio; the prompt is the only way browsers "
+        + "expose audio-output device names.";
       // Don't auto-clear — the user needs time to read this, and the
       // next click on the button will overwrite it anyway.
     }
@@ -772,7 +809,7 @@ if (audioDeviceSelect) {
       const sel = audioDeviceSelect.options[audioDeviceSelect.selectedIndex];
       const label = sel ? sel.textContent : "selected device";
       settingsStatus.textContent = `Audio output: ${label}`;
-      setTimeout(() => { settingsStatus.textContent = ""; }, 3000);
+      clearLiveRegionLater(settingsStatus, 3000);
     }
   });
   if (audioDeviceRefresh) {
@@ -944,8 +981,13 @@ function renderHistory() {
 let _ws = null;
 let authenticatedActivityActive = false;
 
+// #conn-status is a polite live region AND the visible header pill.
+// The reconnect loop calls this every three seconds with the same
+// strings, so write only on a real change: an unchanged message must
+// never be re-announced.
 function setConnStatus(state, label) {
-  connStatus.className  = state;
+  if (connStatus.className !== state) connStatus.className = state;
+  if (connStatus.textContent === label) return;
   connStatus.textContent = label;
 }
 
@@ -1005,8 +1047,11 @@ function connectWS() {
   };
 
   ws.onerror = () => {
+    // #conn-status is the single announcement path for transport state.
+    // Writing the same sentence into the track-title region as well made
+    // NVDA speak the outage three or four times every three seconds and
+    // showed the error where sighted users expect the song name.
     setConnStatus("error", "Error");
-    npAnnounce.textContent = "Connection error. Trying to reconnect.";
   };
 }
 
@@ -1163,6 +1208,10 @@ function _seekToFrac(frac, opts) {
 }
 
 if (_seekTrack) {
+  // Catch the slider up with the broadcast position the moment it stops
+  // being focused, so nothing is ever left stale.
+  _seekTrack.addEventListener("blur", () => flushProgressValue(_seekTrack));
+
   function seekFromPointer(e, opts) {
     const rect = _seekTrack.getBoundingClientRect();
     _seekToFrac((e.clientX - rect.left) / rect.width, opts);
@@ -1421,6 +1470,7 @@ const _libEls = {
   statsRefresh:    document.getElementById("lib-stats-refresh"),
   libLog:          document.getElementById("library-log"),
   jobStatus:       document.getElementById("lib-job-status"),
+  jobElapsed:      document.getElementById("lib-job-elapsed"),
   statCount:       document.getElementById("lib-stat-count"),
   statAvgBpm:      document.getElementById("lib-stat-avg-bpm"),
   statWithKey:     document.getElementById("lib-stat-with-key"),

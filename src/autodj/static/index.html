@@ -878,6 +878,10 @@
            visually scrollable, keyboard focusable, and available on demand. -->
       <h3 id="library-log-heading">Output</h3>
       <p id="lib-job-status" aria-live="polite" aria-atomic="true">Idle.</p>
+      <!-- Ticking clock lives OUTSIDE the live region: aria-live="off"
+           plus no role means NVDA never speaks it, so a two-hour index
+           run produces one announcement, not one every ten seconds. -->
+      <p id="lib-job-elapsed" class="job-elapsed" aria-live="off" aria-hidden="true"></p>
       <pre id="library-log"
            aria-labelledby="library-log-heading"
            tabindex="0"
