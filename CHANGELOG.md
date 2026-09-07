@@ -10,6 +10,51 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- NVDA re-read the Library-tools status roughly every ten seconds for the whole life of a job,
+  because the elapsed-seconds counter was inside the announcing region. The status now speaks once
+  when a job starts and once when it finishes, whatever its length; the counter ticks on silently
+  beside it. Three more places had the same shape: a lost connection re-announced itself on every
+  three-second reconnect attempt, the seek slider read out its new position once a second while it
+  held focus, and a repeatedly failing background request repeated the same sentence every four
+  seconds.
+- Every error and status message was invisible to sighted users — nine live regions were the only
+  place a failure was reported, and all nine were clipped to one pixel. Clicking "Next" on a track
+  that had been deleted from disk produced no visible response at all. The same message a screen
+  reader announces is now also shown, once, in a status line at the foot of the page.
+- Lyrics stored as timestamped text in a file's own tags (which is how most taggers write them)
+  printed their raw `[00:17.49]` stamps on screen, arrived as one unscrollable block and could
+  never highlight the current line. Embedded and beets lyrics are parsed the same way sidecar
+  `.lrc` files always were, so they scroll and highlight; untimestamped prose is unchanged.
+  Following the active line no longer scrolls the whole page.
+- The Camelot wheel drew all twelve numbers half a sector out of position, on the boundary with
+  the next wedge, so the wheel named the wrong key — and the highlighted number landed on an unlit
+  neighbour where it measured 1.43:1 and was effectively invisible. Numbers now sit in their own
+  sectors on both rings, the current one is readable on the lit wedge, and the middle of the wheel
+  names the current key.
+- Losing the connection wrote "Connection error" into the track-title slot while the artwork,
+  metadata, badges, wheel and progress bar all carried on describing the previous track as live.
+  The card says it is showing the last known state instead.
+- The History view and the Library index-stats list shipped with no styling at all: a raw table
+  with zero cell padding, so the time ran into the track title, and a definition list whose terms
+  and values were indistinguishable. Both are styled now.
+- Every `<select>`, number field and file picker rendered as a white 18 px system widget on the
+  dark theme, a quarter the height of the buttons beside them.
+- On a phone the settings help text was squeezed into a 162 px column indented 160 px from the
+  left, queue and search rows truncated to identical strings, the volume and EQ sliders were 6 px
+  tall with an egg-shaped knob, and the settings checkboxes were 18 px.
+- Album art was removed from the layout when a track had none, so the title and the Camelot wheel
+  jumped 111 px sideways on every track change.
+- The cue markers on the progress bar were colour-coded with no visible key.
+- The Settings discovery checkbox and the Now Playing Discovery button read different fields and
+  routinely showed opposite states.
+- Cards had no gap on desktop, the queue list and the empty-queue message started outside their
+  card's padding, the "Refresh stats" button inherited the card's padding and sat out of line, the
+  keyboard-shortcuts dialog opened in the top-left corner of the screen instead of centred, the
+  voice-liner file list showed a heading followed by nothing, and Search Library was collapsed by
+  default on the tab whose empty-queue message tells you to search.
+- The search results list never said it had been capped at the server's first 100 matches.
+- The History table announced itself as "Recently played tracks", which contradicted its visible
+  "History" label and collided with the list of that name on the Queue tab.
 - The web UI could be taken down for the rest of the session by one bad number. A settings request
   carrying `NaN` or `Infinity` was stored as-is, and every later status, settings and WebSocket
   update then failed to encode. Numeric settings requests are now rejected with a 422 and the

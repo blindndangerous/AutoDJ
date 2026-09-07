@@ -816,11 +816,11 @@
              autocomplete="off">
       <button id="btn-search" aria-label="Search">Search</button>
     </div>
-    <!-- aria-atomic="false": announce count separately, not the entire list -->
-    <ul id="search-results" role="list" aria-label="Search results"></ul>
     <!-- Visible AND announced: the same node is the sighted result count
          and the polite region, so there is exactly one source of truth. -->
     <div id="search-count" aria-live="polite" aria-atomic="true"></div>
+    <!-- aria-atomic="false": announce count separately, not the entire list -->
+    <ul id="search-results" role="list" aria-label="Search results"></ul>
   </details>
 
   <!-- History -->
@@ -896,7 +896,7 @@
       <!-- Ticking clock lives OUTSIDE the live region: aria-live="off"
            plus no role means NVDA never speaks it, so a two-hour index
            run produces one announcement, not one every ten seconds. -->
-      <p id="lib-job-elapsed" class="job-elapsed" aria-live="off" aria-hidden="true"></p>
+      <p id="lib-job-elapsed" aria-live="off" aria-hidden="true"></p>
       <pre id="library-log"
            aria-labelledby="library-log-heading"
            tabindex="0"

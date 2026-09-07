@@ -75,9 +75,11 @@ def test_readonly_uri_keeps_a_unc_share_intact(monkeypatch) -> None:
     from autodj.sqlite_utils import readonly_uri
 
     monkeypatch.setattr(Path, "resolve", lambda self, strict=False: self)
-    uri = readonly_uri(Path(r"\nas\music\best of #1\library.db"))
+    # A real UNC path needs BOTH leading backslashes; a single one is just
+    # a root-relative path and never exercised the share-name case.
+    uri = readonly_uri(Path(r"\\nas\music\best of #1\library.db"))
 
-    assert uri.startswith(r"file:\nas\music")
+    assert uri.startswith(r"file:\\nas\music")
     assert "%23" in uri
     assert "%5C" not in uri
     assert uri.endswith("?mode=ro")
