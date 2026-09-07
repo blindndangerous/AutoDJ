@@ -324,7 +324,7 @@ def parse_lrc(text: str) -> list[LyricLine]:
         List of :class:`LyricLine`, sorted by ``time_s`` ascending.
     """
     out: list[LyricLine] = []
-    for line in text.splitlines():
+    for line in text.lstrip(_BOM).splitlines():
         stamps = _LRC_TIMESTAMP_RE.findall(line)
         if not stamps:
             continue
@@ -339,6 +339,98 @@ def parse_lrc(text: str) -> list[LyricLine]:
             out.append(LyricLine(time_s=t, text=body))
     out.sort(key=lambda x: x.time_s)
     return out
+
+
+# A lyric line counts as timestamped only when the stamp LEADS the line.
+# "meet me at [10:30] tonight" is prose, not a cue.
+_LRC_LEADING_STAMP_RE = re.compile(r"^(?:\[\d+:\d+(?:\.\d+)?\]\s*)+")
+# A line that is nothing but an "[xx:value]" header -- [ar:], [ti:], [al:],
+# [by:], [offset:] and friends.  Never lyric content.
+_LRC_METADATA_LINE_RE = re.compile(r"^\[[A-Za-z_]{2,10}:[^\]]*\]$")
+# U+FEFF survives str.strip(): it is a format character, not whitespace.
+_BOM = "\ufeff"
+
+
+def _lyric_lines(text: str) -> list[str]:
+    """Split *text* into lines with the BOM and per-line whitespace removed."""
+    return [line.strip() for line in text.lstrip(_BOM).splitlines()]
+
+
+def strip_lyric_timestamps(text: str) -> str:
+    """Return *text* with LRC cue syntax removed but every lyric line kept.
+
+    Only a *leading* ``[mm:ss.xx]`` run is removed, so a line that merely
+    mentions a time survives intact.  Metadata-only lines (``[ar:]``,
+    ``[ti:]``, ``[offset:]`` …) are dropped, and enhanced-LRC per-word
+    ``<mm:ss.xx>`` stamps go with them because screen readers read those
+    out literally.
+
+    Args:
+        text: Raw lyric text from a tag, a beets field or a sidecar.
+
+    Returns:
+        The cleaned text, joined with newlines.
+    """
+    kept: list[str] = []
+    for line in _lyric_lines(text):
+        if _LRC_METADATA_LINE_RE.match(line):
+            continue
+        cleaned = _LRC_WORD_TAG_RE.sub("", _LRC_LEADING_STAMP_RE.sub("", line))
+        kept.append(cleaned.strip())
+    while kept and not kept[-1]:
+        kept.pop()
+    while kept and not kept[0]:
+        kept.pop(0)
+    return "\n".join(kept)
+
+
+def looks_like_synced_lyrics(text: str) -> bool:
+    """Report whether *text* is an LRC document rather than prose.
+
+    A clear majority of the real lyric lines -- non-empty, not a metadata
+    header -- must start with a timestamp.  Deciding on a single match
+    instead threw every untimestamped line away: a tag reading
+    ``"Written by X / [00:00.00]Intro / Verse one"`` collapsed to
+    ``"Intro"``.
+
+    Args:
+        text: Raw lyric text.
+
+    Returns:
+        True when the text should be parsed as timed lyrics.
+    """
+    candidates = 0
+    stamped = 0
+    for line in _lyric_lines(text):
+        if not line or _LRC_METADATA_LINE_RE.match(line):
+            continue
+        candidates += 1
+        if _LRC_LEADING_STAMP_RE.match(line):
+            stamped += 1
+    # Two lines minimum: one cue among prose is a coincidence, not a file.
+    return stamped >= 2 and stamped * 2 > candidates
+
+
+def parse_embedded_lyrics(text: str) -> tuple[list[LyricLine], str]:
+    """Split a lyric tag into timed lines or cleaned plain text.
+
+    Taggers routinely write synced text into ``LYRICS`` / ``USLT`` /
+    ``©lyr`` instead of a sidecar, so a tag has to be
+    classified before it is used.  ``[offset:]`` is deliberately ignored
+    rather than applied: the sign convention is not agreed on between
+    players, and guessing it wrong would desynchronise every line.
+
+    Args:
+        text: Raw lyric text from a tag or a beets ``lyrics`` field.
+
+    Returns:
+        ``(timed_lines, plain_text)`` -- exactly one of the two is filled.
+    """
+    if not text or not text.strip():
+        return [], ""
+    if looks_like_synced_lyrics(text):
+        return parse_lrc(text), ""
+    return [], strip_lyric_timestamps(text)
 
 
 def decode_lyrics_bytes(raw: bytes) -> str:

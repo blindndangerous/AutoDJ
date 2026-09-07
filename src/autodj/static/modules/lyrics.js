@@ -50,16 +50,32 @@ function finishLoadStatus(request, elements, message) {
 
 // Belt and braces for the raw-timestamp defect.  The server parses LRC
 // out of sidecars and embedded tags now, but any plain text that still
-// arrives carrying "[mm:ss.xx]" (or enhanced per-word "<mm:ss.xx>")
-// stamps must not print them on screen or read them aloud.
-const LRC_STAMP_RE = /\[\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?\]|<\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?>/g;
+// arrives carrying cue syntax must not print it on screen or read it
+// aloud.  Mirrors audio_meta.strip_lyric_timestamps exactly:
+//   * only a LEADING stamp run is removed, so "meet me at [10:30]
+//     tonight" survives intact instead of becoming "meet me at tonight";
+//   * a line that is nothing but an "[xx:value]" header is dropped;
+//   * enhanced per-word "<mm:ss.xx>" stamps go, because readers say them.
+const LRC_LEADING_STAMP_RE = /^(?:\[\d{1,3}:\d{1,2}(?:\.\d{1,3})?\]\s*)+/;
+const LRC_METADATA_LINE_RE = /^\[[A-Za-z_]{2,10}:[^\]]*\]$/;
+const LRC_WORD_TAG_RE = /<\d{1,3}:\d{1,2}(?:\.\d{1,3})?>/g;
+// U+FEFF is a format character, not whitespace: trim() leaves it behind.
+const BOM_RE = /^\uFEFF/;
 
 export function stripLyricTimestamps(text) {
-  if (typeof text !== "string" || !LRC_STAMP_RE.test(text)) return text;
-  return text
-    .split("\n")
-    .map((line) => line.replace(LRC_STAMP_RE, "").trim())
-    .join("\n");
+  if (typeof text !== "string") return text;
+  const kept = [];
+  for (const raw of text.replace(BOM_RE, "").split(/\r?\n/)) {
+    const line = raw.trim();
+    if (LRC_METADATA_LINE_RE.test(line)) continue;
+    kept.push(line
+      .replace(LRC_LEADING_STAMP_RE, "")
+      .replace(LRC_WORD_TAG_RE, "")
+      .trim());
+  }
+  while (kept.length && !kept[kept.length - 1]) kept.pop();
+  while (kept.length && !kept[0]) kept.shift();
+  return kept.join("\n");
 }
 
 function hasPlainFallback(elements) {

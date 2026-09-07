@@ -1291,7 +1291,11 @@ class Player:
 
     def _read_lyrics_for_path(self, path: str) -> tuple[list, str]:
         """Return timestamped/plain lyrics for *path* without mutating state."""
-        from autodj.audio_meta import load_lrc_for, parse_lrc, read_plain_lyrics
+        from autodj.audio_meta import (
+            load_lrc_for,
+            parse_embedded_lyrics,
+            read_plain_lyrics,
+        )
 
         # Respect the lyric-display toggle — when off we skip ALL lyric
         # work so the CLI panel stays compact and the web UI hides its card.
@@ -1328,13 +1332,15 @@ class Player:
         # synced text straight into LYRICS / USLT / ©lyr rather than to a
         # sidecar.  Returning it untouched printed raw "[00:17.49]" stamps
         # on screen, sent the whole song to the live region in one breath,
-        # and made the current-line highlight impossible.  Parse it here so
-        # embedded and sidecar lyrics behave identically; text with no
-        # timestamps yields no lines and stays plain.
-        timed = parse_lrc(plain) if plain else []
-        if timed:
-            return timed, ""
-        return [], plain
+        # and made the current-line highlight impossible.
+        #
+        # The classification has to weigh the whole tag, not stop at the
+        # first bracket that looks like a cue: deciding on one match threw
+        # away every untimestamped line ("Written by X / [00:00.00]Intro /
+        # Verse one" collapsed to "Intro") and mangled prose that merely
+        # mentions a time.  parse_embedded_lyrics requires a clear majority
+        # of leading stamps, and cleans the plain branch instead.
+        return parse_embedded_lyrics(plain)
 
     def _load_lyrics(self, path: str) -> None:
         """Populate ``_current_lyrics`` + ``_current_lyrics_plain`` for *path*.

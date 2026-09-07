@@ -799,3 +799,124 @@ class TestEnhancedAndEncodedLyrics:
         (tmp_path / "song.lrc").write_bytes(b"[00:01.00]caf\xe9")
 
         assert len(load_lrc_for(audio)) == 1
+
+
+class TestEmbeddedLyricClassification:
+    """parse_embedded_lyrics: only treat a tag as synced when it really is.
+
+    A lyric tag is not guaranteed to be LRC.  Deciding on the first
+    bracket that happens to look like a timestamp threw away every
+    untimestamped line in the tag, and mangled prose that merely
+    mentions a time.
+    """
+
+    def test_majority_timestamped_lines_parse_as_synced(self) -> None:
+        from autodj.audio_meta import parse_embedded_lyrics
+
+        text = "[00:01.00]One\n[00:02.00]Two\n[00:03.00]Three\nstray note"
+        timed, plain = parse_embedded_lyrics(text)
+
+        assert plain == ""
+        assert [line.text for line in timed] == ["One", "Two", "Three"]
+
+    def test_one_stamp_among_prose_stays_plain_and_keeps_every_line(self) -> None:
+        from autodj.audio_meta import parse_embedded_lyrics
+
+        text = "Written by X\n[00:00.00]Intro\nVerse one\nVerse two"
+        timed, plain = parse_embedded_lyrics(text)
+
+        assert timed == []
+        assert plain == "Written by X\nIntro\nVerse one\nVerse two"
+
+    def test_a_time_mentioned_mid_line_is_left_alone(self) -> None:
+        from autodj.audio_meta import parse_embedded_lyrics
+
+        timed, plain = parse_embedded_lyrics("meet me at [10:30] tonight")
+
+        assert timed == []
+        assert plain == "meet me at [10:30] tonight"
+
+    def test_stamps_without_a_fraction_parse(self) -> None:
+        from autodj.audio_meta import parse_embedded_lyrics
+
+        timed, _plain = parse_embedded_lyrics("[01:05]A\n[01:07]B")
+
+        assert [line.time_s for line in timed] == [65.0, 67.0]
+
+    def test_three_digit_milliseconds_parse(self) -> None:
+        from autodj.audio_meta import parse_embedded_lyrics
+
+        timed, _plain = parse_embedded_lyrics("[00:12.345]A\n[00:13.500]B")
+
+        assert [line.time_s for line in timed] == [12.345, 13.5]
+
+    def test_crlf_line_endings_parse(self) -> None:
+        from autodj.audio_meta import parse_embedded_lyrics
+
+        timed, plain = parse_embedded_lyrics("[00:01.00]A\r\n[00:02.00]B\r\n")
+
+        assert plain == ""
+        assert [line.text for line in timed] == ["A", "B"]
+
+    def test_byte_order_mark_does_not_hide_the_first_stamp(self) -> None:
+        from autodj.audio_meta import parse_embedded_lyrics
+
+        # str.strip() does not remove U+FEFF, so it has to go explicitly.
+        timed, plain = parse_embedded_lyrics("\ufeff[00:01.00]A\n[00:02.00]B")
+
+        assert plain == ""
+        assert [line.text for line in timed] == ["A", "B"]
+
+    def test_byte_order_mark_is_removed_from_plain_text_too(self) -> None:
+        from autodj.audio_meta import parse_embedded_lyrics
+
+        _timed, plain = parse_embedded_lyrics("\ufeffJust words\nhere")
+
+        assert plain == "Just words\nhere"
+
+    def test_metadata_lines_are_dropped_from_plain_output(self) -> None:
+        from autodj.audio_meta import parse_embedded_lyrics
+
+        text = "[ar:Artist]\n[ti:Title]\n[al:Album]\nplain words\nmore words"
+        timed, plain = parse_embedded_lyrics(text)
+
+        assert timed == []
+        assert plain == "plain words\nmore words"
+
+    def test_metadata_lines_do_not_count_against_the_majority(self) -> None:
+        from autodj.audio_meta import parse_embedded_lyrics
+
+        text = "[ar:Artist]\n[ti:Title]\n[al:Album]\n[00:01.00]A\n[00:02.00]B"
+        timed, plain = parse_embedded_lyrics(text)
+
+        assert plain == ""
+        assert [line.text for line in timed] == ["A", "B"]
+
+    def test_offset_tag_is_ignored_not_applied(self) -> None:
+        """The [offset:] convention's sign is not agreed on; leave times alone."""
+        from autodj.audio_meta import parse_embedded_lyrics
+
+        timed, _plain = parse_embedded_lyrics("[offset:+500]\n[00:10.00]A\n[00:20.00]B")
+
+        assert [line.time_s for line in timed] == [10.0, 20.0]
+
+    def test_a_single_timestamped_line_is_not_enough(self) -> None:
+        from autodj.audio_meta import parse_embedded_lyrics
+
+        timed, plain = parse_embedded_lyrics("[00:01.00]Only one")
+
+        assert timed == []
+        assert plain == "Only one"
+
+    def test_empty_text_is_empty(self) -> None:
+        from autodj.audio_meta import parse_embedded_lyrics
+
+        assert parse_embedded_lyrics("") == ([], "")
+        assert parse_embedded_lyrics("   \n\n  ") == ([], "")
+
+    def test_enhanced_word_stamps_are_stripped_from_plain_output(self) -> None:
+        from autodj.audio_meta import parse_embedded_lyrics
+
+        _timed, plain = parse_embedded_lyrics("prose <00:12.30>with word tags\nmore")
+
+        assert plain == "prose with word tags\nmore"

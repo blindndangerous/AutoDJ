@@ -2656,7 +2656,11 @@ class TestPlayerCoverageErrorPaths:
         assert plain == "Just words\nhere"
 
     def test_metadata_only_lrc_tag_stays_plain(self) -> None:
-        """A tag with only [ar:]/[ti:] headers has no timed lines to scroll."""
+        """A tag with only [ar:]/[ti:] headers has no timed lines to scroll.
+
+        The headers themselves are not lyrics, so they are dropped rather
+        than read out as the first two lines of the song.
+        """
         player = Player(_make_cfg_mock(), _make_sim_index(2))
         player._cfg.library.beets_db = None
         tag = "[ar:Artist]\n[ti:Title]\nplain words"
@@ -2667,7 +2671,21 @@ class TestPlayerCoverageErrorPaths:
             lyrics, plain = player._read_lyrics_for_path("song.flac")
 
         assert lyrics == []
-        assert plain == tag
+        assert plain == "plain words"
+
+    def test_a_lone_cue_among_prose_keeps_every_line(self) -> None:
+        """One timestamp is not an LRC file; nothing may be discarded."""
+        player = Player(_make_cfg_mock(), _make_sim_index(2))
+        player._cfg.library.beets_db = None
+        tag = "Written by X\n[00:00.00]Intro\nVerse one\nVerse two"
+        with (
+            patch("autodj.audio_meta.load_lrc_for", return_value=[]),
+            patch("autodj.audio_meta.read_plain_lyrics", return_value=tag),
+        ):
+            lyrics, plain = player._read_lyrics_for_path("song.flac")
+
+        assert lyrics == []
+        assert plain == "Written by X\nIntro\nVerse one\nVerse two"
 
     def test_embedded_lyrics_error_returns_empty_text(self) -> None:
         player = Player(_make_cfg_mock(), _make_sim_index(2))

@@ -325,6 +325,9 @@ describe("lyrics request ownership", () => {
   });
 });
 
+const NL = "\n";
+const CRLF = "\r\n";
+
 describe("plain lyric fallback", () => {
   it("never prints raw LRC timestamps on screen", () => {
     const elements = lyricElements();
@@ -338,7 +341,7 @@ describe("plain lyric fallback", () => {
     expect(block.textContent).not.toContain("[00:17");
   });
 
-  it("leaves untimestamped prose exactly as it arrived", () => {
+  it("keeps every untimestamped line, tidying only the whitespace", () => {
     const elements = lyricElements();
     applyLyricsState({
       has_lyrics: false,
@@ -346,7 +349,28 @@ describe("plain lyric fallback", () => {
     }, elements);
 
     expect(elements.lyricsList.querySelector(".plain-lyrics").textContent)
-      .toBe("Just words\n  and more words  ");
+      .toBe("Just words\nand more words");
+  });
+
+  it("keeps a time mentioned mid-line", () => {
+    // Only a LEADING stamp is cue syntax; "meet me at [10:30] tonight" is
+    // a lyric and must survive intact.
+    expect(stripLyricTimestamps("meet me at [10:30] tonight"))
+      .toBe("meet me at [10:30] tonight");
+  });
+
+  it("drops metadata-only lines but keeps untimestamped lyrics", () => {
+    expect(stripLyricTimestamps(
+      "[ar:Artist]" + NL + "[ti:Title]" + NL + "Written by X" + NL + "[00:00.00]Intro" + NL + "Verse one",
+    )).toBe("Written by X" + NL + "Intro" + NL + "Verse one");
+  });
+
+  it("handles CRLF, a BOM and stamps with no fraction", () => {
+    expect(stripLyricTimestamps(
+      "\uFEFF[00:01]A" + CRLF + "[00:02.345]B" + CRLF,
+    ).replace(/^\uFEFF/, "")).toBe("A" + NL + "B");
+    // trim() leaves U+FEFF in place, so it has to be removed explicitly.
+    expect(stripLyricTimestamps("\uFEFFplain").startsWith("\uFEFF")).toBe(false);
   });
 
   it("exports a no-op strip for non-string input", () => {
