@@ -216,6 +216,19 @@ describe("liner file controls", () => {
     expect(onDelete).toHaveBeenCalledWith(filename, button);
   });
 
+  it("says so when there are no liner files", async () => {
+    const { renderLinerFileList } = await import(
+      "../../src/autodj/static/modules/liners.js"
+    );
+    const list = document.createElement("ul");
+
+    renderLinerFileList(list, [], vi.fn());
+    expect(list.textContent).toBe("No liner files yet.");
+
+    renderLinerFileList(list, null, vi.fn());
+    expect(list.querySelector(".no-results")).not.toBeNull();
+  });
+
   it("reenables and refocuses the original Delete button after failure", async () => {
     document.body.innerHTML = '<p id="status"></p><ul id="files"></ul>';
     const fetchImpl = vi.fn()

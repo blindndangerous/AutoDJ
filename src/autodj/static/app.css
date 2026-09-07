@@ -8,6 +8,9 @@
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
+      /* Without this every native <select>, number field and file picker
+         renders as a white 18 px OS widget punched into the dark card. */
+      color-scheme: dark;
       --bg:        #1a1a2e;
       --bg-card:   #16213e;
       --border:    #0f3460;
@@ -117,7 +120,12 @@
       border: 1px solid var(--border);
       border-radius: var(--radius);
       padding: 1.25rem 1.5rem;
+      /* main's `gap` applies to the <section data-view> wrappers, not to
+         the cards inside them, so without this the borders touch and the
+         whole column reads as one slab.  The mobile block already had it. */
+      margin-bottom: 1.25rem;
     }
+    .card:last-child { margin-bottom: 0; }
     .card h2 {
       font-size: 0.75rem;
       font-weight: 600;
@@ -238,6 +246,28 @@
       border: 1px solid #8aa4d6;
     }
 
+    /* Native text-ish controls: dark surface and a height that matches the
+       44 px buttons they sit beside.  The OS default rendered them as
+       white 18 px widgets punched into the dark card -- a quarter of the
+       height of their neighbours.  Types are listed explicitly so range,
+       checkbox and radio keep their own geometry. */
+    select,
+    textarea,
+    input[type="text"],
+    input[type="search"],
+    input[type="number"],
+    input[type="file"] {
+      padding: 0.4rem 0.6rem;
+      color: var(--text);
+      background: var(--bg);
+      border-radius: var(--radius);
+      font: inherit;
+      font-size: 0.95rem;
+      min-height: 44px;
+    }
+    input[type="file"] { padding: 0.35rem 0.5rem; }
+    select { cursor: pointer; }
+
     /* ---- Volume ---- */
     .volume-row {
       display: flex;
@@ -345,6 +375,84 @@
     #history-list li:last-child { border-bottom: none; }
     #history-list .history-title { color: var(--text); font-weight: 500; }
 
+    /* ---- History view (its own tab) ----
+       This view shipped with no CSS at all: a browser-default <h2> and a
+       raw <table> with zero cell padding, so "06:45:32 AM" ran straight
+       into the track title. */
+    section[data-view] > h2 {
+      /* Same treatment as details.card > summary, so the app stops having
+         a third heading style. */
+      font-size: 1.1rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--text-dim);
+      margin-bottom: 0.75rem;
+    }
+    #history-empty { color: var(--text-dim); font-style: italic; }
+    #history-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+    }
+    #history-table th,
+    #history-table td {
+      padding: 0.5rem 0.7rem;
+      text-align: left;
+      vertical-align: top;
+      border-bottom: 1px solid var(--border);
+    }
+    #history-table thead th {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-dim);
+    }
+    #history-table tbody tr:nth-child(even) {
+      background: rgba(255, 255, 255, 0.035);
+    }
+    #history-table tbody tr:last-child td { border-bottom: none; }
+    #history-table td:first-child,
+    #history-table td:last-child {
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+    #history-pagination {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem;
+      margin-top: 1rem;
+    }
+    #hist-page-info { color: var(--text-dim); font-size: 0.9rem; }
+    #hist-goto { width: 5rem; }
+
+    /* ---- Library tools: index stats ----
+       <dl> with no CSS rendered as eight identical lines because the
+       global `* { margin: 0 }` also removed the UA dd indent. */
+    #library-stats {
+      display: grid;
+      grid-template-columns: max-content 1fr;
+      gap: 0.2rem 1.25rem;
+      font-size: 0.9rem;
+    }
+    #library-stats dt { color: var(--text-dim); }
+    #library-stats dd { font-variant-numeric: tabular-nums; }
+
+    /* Voice-liner file list. */
+    #ln-file-list { list-style: none; }
+    #ln-file-list li {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.3rem 0;
+    }
+    #ln-file-list .no-results {
+      color: var(--text-dim);
+      font-style: italic;
+    }
+
     /* ---- Now playing row (cover art + text) ---- */
     .now-playing-row {
       display: flex;
@@ -391,9 +499,11 @@
     }
 
     /* ---- Queue ---- */
+    /* No `padding: 0` here: an ID rule outranks the card's own
+       `details.card > *:not(summary)` padding, which pushed queue rows
+       (and the empty-queue message) 20 px left of the card heading. */
     #queue-list {
       list-style: none;
-      padding: 0;
     }
     #queue-list li {
       display: flex;
@@ -422,6 +532,10 @@
       opacity: 0.4;
       cursor: not-allowed;
     }
+
+    /* ---- Why this track? ---- */
+    /* Outside markers hang past the card padding; keep them inside. */
+    #why-list { list-style-position: inside; }
 
     /* ---- Now-playing badges (BPM / key / energy / beatmatch) ---- */
     .badges-row {
@@ -559,6 +673,13 @@
     }
     details.card > *:not(summary) {
       padding: 0 1.25rem 1rem;
+    }
+    /* A button that is a direct child of the card was inheriting the
+       card's block padding, which pinned its label to the top edge and
+       shifted it 20 px left of everything around it. */
+    details.card > button {
+      padding: 0.55rem 1.1rem;
+      margin: 0 1.25rem 1rem;
     }
 
     /* ---- Library tools ---- */
@@ -844,6 +965,10 @@
 /* Hotkey help modal -------------------------------------------------- */
 
 #hotkey-help-modal {
+  /* `*, *::before, *::after { margin: 0 }` overrides the UA
+     `dialog:modal { margin: auto }`, which pinned this dialog to the
+     top-left corner of the viewport.  #auth-dialog already restores it. */
+  margin: auto;
   background: var(--bg-card);
   color: var(--text);
   border: 1px solid var(--border);

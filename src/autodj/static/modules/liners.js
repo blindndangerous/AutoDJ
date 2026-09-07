@@ -54,7 +54,14 @@ function _setStatus(els, msg) {
 export function renderLinerFileList(fileList, files, onDelete) {
   if (!fileList) return;
   fileList.replaceChildren();
-  for (const name of files || []) {
+  if (!files || files.length === 0) {
+    const empty = document.createElement("li");
+    empty.className = "no-results";
+    empty.textContent = "No liner files yet.";
+    fileList.appendChild(empty);
+    return;
+  }
+  for (const name of files) {
     const li = document.createElement("li");
     const text = document.createElement("span");
     text.textContent = name;
