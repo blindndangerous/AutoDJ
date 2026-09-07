@@ -41,8 +41,10 @@ served.html
 .ruff_cache/
 .pytest_cache/
 
-# Coverage
+# Coverage (scripts/ci_pytest.py writes the json + xml into the repo root)
 .coverage
+coverage.json
+coverage.xml
 htmlcov/
 
 # OS

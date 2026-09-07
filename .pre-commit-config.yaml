@@ -29,13 +29,10 @@ repos:
     hooks:
       - id: actionlint
 
-  # Python toolchain
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.10
-    hooks:
-      - id: ruff            # lint
-        args: [--fix]
-      - id: ruff-format     # format
+  # Python toolchain: ruff and mypy run through uv so the versions match
+  # uv.lock (and therefore CI) instead of drifting behind pinned mirrors.
+  # Every uv-backed hook runs --frozen so a hook can never rewrite the lock
+  # underneath the commit it is checking.
 
   - repo: https://github.com/PyCQA/bandit
     rev: 1.9.4
@@ -51,17 +48,6 @@ repos:
       - id: commitlint
         stages: [commit-msg]
         additional_dependencies: ["@commitlint/config-conventional"]
-
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.20.0
-    hooks:
-      - id: mypy
-        args: [--config-file, pyproject.toml]
-        files: ^src/
-        additional_dependencies:
-          - numpy
-          - types-requests
-          - types-tqdm
 
   # Dead-code scan -- catches unused module-level functions, classes,
   # imports, and variables that ruff F401/F841 do not flag.
@@ -80,37 +66,58 @@ repos:
   # repo hook does not bundle the project deps for resolution.
   - repo: local
     hooks:
+      - id: ruff
+        name: ruff
+        entry: uv run --frozen ruff check --fix src/ tests/ scripts/
+        language: system
+        pass_filenames: false
+        files: \.py$
+
+      - id: ruff-format
+        name: ruff-format
+        entry: uv run --frozen ruff format src/ tests/
+        language: system
+        pass_filenames: false
+        files: \.py$
+
+      - id: mypy
+        name: mypy
+        entry: uv run --frozen mypy src/autodj/
+        language: system
+        pass_filenames: false
+        files: ^(src/|pyproject\.toml$)
+
       - id: deptry
         name: deptry
-        entry: uv run deptry src/autodj
+        entry: uv run --frozen deptry src/autodj
         language: system
         pass_filenames: false
         files: ^(src/|pyproject\.toml$)
 
       - id: interrogate
         name: interrogate
-        entry: uv run interrogate -c pyproject.toml src/autodj
+        entry: uv run --frozen interrogate -c pyproject.toml src/autodj
         language: system
         pass_filenames: false
         files: ^(src/|pyproject\.toml$)
 
       - id: xenon
         name: xenon
-        entry: uv run xenon --max-absolute E --max-modules B --max-average B src/
+        entry: uv run --frozen xenon --max-absolute E --max-modules B --max-average B src/
         language: system
         pass_filenames: false
         files: ^src/
 
       - id: pip-audit
         name: pip-audit
-        entry: uv run pip-audit --ignore-vuln PYSEC-2022-42969
+        entry: uv run --frozen pip-audit --ignore-vuln PYSEC-2022-42969
         language: system
         pass_filenames: false
         files: ^(uv\.lock|pyproject\.toml)$
 
       - id: pip-licenses
         name: pip-licenses
-        entry: uv run pip-licenses --format=markdown --order=license
+        entry: uv run --frozen pip-licenses --format=markdown --order=license
         language: system
         pass_filenames: false
         files: ^(uv\.lock|pyproject\.toml)$
@@ -131,7 +138,7 @@ repos:
 
       - id: pytest
         name: pytest
-        entry: uv run python scripts/ci_pytest.py
+        entry: uv run --frozen python scripts/ci_pytest.py
         language: system
         pass_filenames: false
         files: ^(src/|tests/|scripts/ci_pytest\.py|pyproject\.toml|uv\.lock)

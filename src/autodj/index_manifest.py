@@ -351,10 +351,6 @@ def read_manifest(index_dir: Path) -> IndexManifest | None:
         )
     except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
         raise IndexConsistencyError(f"invalid index manifest: {exc}") from exc
-    if manifest.schema_version not in {1, SCHEMA_VERSION}:
-        raise IndexConsistencyError(
-            f"unsupported manifest schema {manifest.schema_version}; expected {SCHEMA_VERSION}"
-        )
     if (
         manifest.generation < 1
         or manifest.vector_count < 0
