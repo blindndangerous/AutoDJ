@@ -43,7 +43,7 @@ export function clearLiveRegionLater(el, dwellMs = 3000) {
 const VISIBLE_STATUS_DWELL_MS = 8000;
 let _visibleStatusTimer = null;
 
-export function showVisibleStatus(message, doc = globalThis.document) {
+export function showVisibleStatus(message, doc = globalThis.document, { force = false } = {}) {
   const toast = doc?.getElementById?.("status-toast");
   if (!toast) return;
   clearTimeout(_visibleStatusTimer);
@@ -53,6 +53,9 @@ export function showVisibleStatus(message, doc = globalThis.document) {
     toast.hidden = true;
     return;
   }
+  // A repeated user action has to look like it happened again, so the
+  // forced path replaces the node's text even when the words match.
+  if (force) toast.textContent = "";
   if (toast.textContent !== message) toast.textContent = message;
   toast.hidden = false;
   _visibleStatusTimer = setTimeout(() => {
@@ -62,15 +65,37 @@ export function showVisibleStatus(message, doc = globalThis.document) {
   }, VISIBLE_STATUS_DWELL_MS);
 }
 
-// Returns true when the region actually changed, i.e. when a screen
-// reader will speak.  Re-writing identical text is what makes NVDA
-// repeat itself, so an unchanged message is a no-op.
-export function announceStatus(region, message, { dwellMs = 0, mirror = true } = {}) {
+// Returns true when a screen reader will speak.
+//
+// Two modes, and picking the wrong one is the whole bug class:
+//
+//   default -- change-detection.  For anything driven by the 1 Hz
+//     websocket tick.  Re-writing identical text is what makes NVDA
+//     repeat itself, so an unchanged message is a no-op.
+//   force   -- clear, then set on the next task, the same pattern
+//     srSpeak uses.  For anything the USER just did.  Pressing "Move up"
+//     twice, or searching twice and getting the same count, has to be
+//     reported twice: silence would read as the button not working.
+export function announceStatus(
+  region,
+  message,
+  { dwellMs = 0, mirror = true, force = false } = {},
+) {
   if (!region) return false;
   const text = message == null ? "" : String(message);
+  const doc = region.ownerDocument || globalThis.document;
+  if (force && text) {
+    region.textContent = "";
+    setTimeout(() => {
+      region.textContent = text;
+      if (dwellMs > 0) clearLiveRegionLater(region, dwellMs);
+    }, 0);
+    if (mirror) showVisibleStatus(text, doc, { force: true });
+    return true;
+  }
   if (region.textContent === text) return false;
   region.textContent = text;
-  if (mirror) showVisibleStatus(text, region.ownerDocument || globalThis.document);
+  if (mirror) showVisibleStatus(text, doc);
   if (dwellMs > 0) clearLiveRegionLater(region, dwellMs);
   return true;
 }

@@ -744,7 +744,8 @@ async function _applySink(sinkId) {
   if (lastErr) {
     if (settingsStatus) {
       announceStatus(settingsStatus, "Could not switch audio device: "
-        + (lastErr.message || lastErr.name || "unknown"), { dwellMs: 5000 });
+        + (lastErr.message || lastErr.name || "unknown"),
+        { dwellMs: 5000, force: true });
     }
     return false;
   }
@@ -778,13 +779,16 @@ async function _grantDeviceLabels() {
       audioDeviceRefresh.disabled = false;
     }
     if (settingsStatus) {
+      // Clicking again after a denial must say so again, and the region
+      // has to clear afterwards rather than parking the sentence forever.
       announceStatus(settingsStatus,
         "Microphone permission denied.  Reset it via the lock icon in the "
         + "address bar (or your browser's site settings) and click again.  "
         + "AutoDJ never records audio; the prompt is the only way browsers "
-        + "expose audio-output device names.");
-      // Don't auto-clear — the user needs time to read this, and the
-      // next click on the button will overwrite it anyway.
+        + "expose audio-output device names.",
+        { dwellMs: 15000, force: true });
+      // Long dwell: the user needs time to read it, and the next click
+      // on the button overwrites it anyway.
     }
   }
 }
@@ -821,7 +825,8 @@ if (audioDeviceSelect) {
     if (ok && settingsStatus) {
       const sel = audioDeviceSelect.options[audioDeviceSelect.selectedIndex];
       const label = sel ? sel.textContent : "selected device";
-      announceStatus(settingsStatus, `Audio output: ${label}`, { dwellMs: 3000 });
+      announceStatus(settingsStatus, `Audio output: ${label}`,
+        { dwellMs: 3000, force: true });
     }
   });
   if (audioDeviceRefresh) {

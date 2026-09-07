@@ -145,7 +145,10 @@ describe("postSettings", () => {
       settingsStatus,
       control,
     })).resolves.toBe(false);
-    expect(settingsStatus.textContent).toContain("Could not save");
+    // The failure is announced with force, which clears the region and
+    // sets it on the next task so a repeated save failure speaks again.
+    await vi.waitFor(() =>
+      expect(settingsStatus.textContent).toContain("Could not save"));
     expect(settingsStatus.textContent).toContain("Settings locked");
     expect(control.disabled).toBe(false);
     vi.unstubAllGlobals();

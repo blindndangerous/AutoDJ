@@ -26,14 +26,17 @@ export function installSearch({
   // copies the same string into the visible #status-toast, so a failed
   // "Next" is no longer silent for a sighted user.
   function announce(message) {
-    announceStatus(queueAnnounce, message, { dwellMs: 3000 });
+    announceStatus(queueAnnounce, message, { dwellMs: 3000, force: true });
   }
 
   // #search-count is visible, so it keeps its text instead of being
   // wiped after a dwell; announceStatus still guarantees one write per
   // real change.
+  // Searching again and getting the same number of hits is still a
+  // completed search, so a repeated count has to be announced again --
+  // except when the field is simply being emptied.
   function setCount(message, { mirror = false } = {}) {
-    announceStatus(searchCount, message, { mirror });
+    announceStatus(searchCount, message, { mirror, force: Boolean(message) });
   }
 
   async function doSearch() {

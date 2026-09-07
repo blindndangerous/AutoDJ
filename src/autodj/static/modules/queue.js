@@ -152,7 +152,9 @@ export function installQueueButtons(els) {
       ownsRenderedQueue = _renderGeneration === optimisticGeneration;
       if (!ownsRenderedQueue) focusIndex = -1;
       successful = ownsRenderedQueue;
-      announceStatus(queueAnnounce, announceMsg, { dwellMs: 3000 });
+      // force: a second "Move up" on the same track is a second action,
+      // and silence would read as the button not working.
+      announceStatus(queueAnnounce, announceMsg, { dwellMs: 3000, force: true });
     } catch (errorValue) {
       if (!isAuthenticatedRequestCurrent(epoch)) {
         ownsRenderedQueue = false;
@@ -171,7 +173,8 @@ export function installQueueButtons(els) {
       }
       focusQueueList = false;
       announceStatus(queueAnnounce,
-        `Could not update queue: ${errorValue.message}`, { dwellMs: 6000 });
+        `Could not update queue: ${errorValue.message}`,
+        { dwellMs: 6000, force: true });
     } finally {
       mutationPending = false;
       queueList.setAttribute("aria-busy", "false");

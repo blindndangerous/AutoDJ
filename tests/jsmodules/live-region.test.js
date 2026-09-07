@@ -99,3 +99,68 @@ describe("announceStatus", () => {
     expect(() => announceStatus(null, "nothing")).not.toThrow();
   });
 });
+
+describe("announceStatus force", () => {
+  beforeEach(() => {
+    document.body.innerHTML =
+      '<p id="region" role="status" aria-live="polite" aria-atomic="true"></p>'
+      + '<div id="status-toast" aria-hidden="true" hidden></div>';
+  });
+
+  function additions(node) {
+    const records = [];
+    const observer = new window.MutationObserver((r) => records.push(...r));
+    observer.observe(node, { childList: true, characterData: true, subtree: true });
+    return {
+      count: () => records.filter((r) => r.addedNodes.length > 0).length,
+      stop: () => observer.disconnect(),
+    };
+  }
+
+  it("re-announces a repeated user action instead of swallowing it", async () => {
+    const region = document.querySelector("#region");
+    const toast = document.querySelector("#status-toast");
+    const spoken = additions(region);
+    const shown = additions(toast);
+
+    // Pressing "Move up" twice puts the same sentence in the region twice;
+    // both presses must be reported.
+    announceStatus(region, "Moved Kryptonite up.", { dwellMs: 3000, force: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    announceStatus(region, "Moved Kryptonite up.", { dwellMs: 3000, force: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(spoken.count()).toBe(2);
+    expect(shown.count()).toBe(2);
+    expect(region.textContent).toBe("Moved Kryptonite up.");
+    expect(toast.textContent).toBe("Moved Kryptonite up.");
+    spoken.stop();
+    shown.stop();
+  });
+
+  it("clears the region before re-setting it so the change is real", async () => {
+    const region = document.querySelector("#region");
+    region.textContent = "Saved.";
+
+    expect(announceStatus(region, "Saved.", { force: true })).toBe(true);
+    expect(region.textContent).toBe("");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(region.textContent).toBe("Saved.");
+  });
+
+  it("still honours the dwell when forced", async () => {
+    const region = document.querySelector("#region");
+    announceStatus(region, "Microphone permission denied.",
+      { dwellMs: 20, force: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(region.textContent).toBe("Microphone permission denied.");
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(region.textContent).toBe("");
+  });
+
+  it("leaves websocket-tick writes on change-detection", () => {
+    const region = document.querySelector("#region");
+    region.textContent = "index running.";
+    expect(announceStatus(region, "index running.")).toBe(false);
+  });
+});

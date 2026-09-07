@@ -251,3 +251,57 @@ describe("queue mutations", () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe("repeated queue actions stay audible", () => {
+  it("announces and shows a second Move up on the same track", async () => {
+    document.body.innerHTML =
+      '<p id="announce" role="status" aria-live="polite" aria-atomic="true"></p>'
+      + '<ul id="queue"></ul>'
+      + '<div id="status-toast" aria-hidden="true" hidden></div>';
+    const els = {
+      queueList: document.querySelector("#queue"),
+      queueCount: document.createElement("span"),
+      queueAnnounce: document.querySelector("#announce"),
+    };
+    renderQueue([
+      { path: "a.mp3", display_name: "Alpha" },
+      { path: "b.mp3", display_name: "Bravo" },
+      { path: "c.mp3", display_name: "Charlie" },
+    ], els);
+    installQueueButtons(els);
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(
+      new globalThis.Response("{}", { headers: { "Content-Type": "application/json" } }),
+    )));
+
+    const spoken = [];
+    const shown = [];
+    const region = document.querySelector("#announce");
+    const toast = document.querySelector("#status-toast");
+    new window.MutationObserver((r) => spoken.push(...r))
+      .observe(region, { childList: true, characterData: true, subtree: true });
+    new window.MutationObserver((r) => shown.push(...r))
+      .observe(toast, { childList: true, characterData: true, subtree: true });
+
+    const added = (records) => records.filter((r) => r.addedNodes.length > 0).length;
+    const clickUpOn = async (name) => {
+      // Count landings rather than text: the second announcement carries
+      // the same sentence, so waiting on the text would pass instantly.
+      const before = added(spoken);
+      const row = [...els.queueList.querySelectorAll("li")]
+        .find((li) => li.textContent.includes(name));
+      row.querySelector('.queue-btn[data-action="up"]').click();
+      await vi.waitFor(() => expect(added(spoken)).toBe(before + 1));
+    };
+
+    // Charlie moves 3 -> 2, then 2 -> 1: the same sentence, twice, well
+    // inside the three-second dwell.
+    await clickUpOn("Charlie");
+    await clickUpOn("Charlie");
+
+    expect(added(spoken)).toBe(2);
+    expect(added(shown)).toBe(2);
+    expect(region.textContent).toBe("Moved Charlie up.");
+    expect(toast.textContent).toBe("Moved Charlie up.");
+    vi.unstubAllGlobals();
+  });
+});
