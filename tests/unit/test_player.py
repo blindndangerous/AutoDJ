@@ -32,6 +32,7 @@ from autodj.player import (
     beatmatch_incoming,
     load_audio,
     make_eq_filters,
+    make_eq_state,
     write_m3u,
 )
 from autodj.similarity import SimilarityError, SimilarityIndex
@@ -1830,6 +1831,48 @@ class TestEq:
         a = _sine_audio(0.1)
         out = apply_eq(a, None, 1.0, 1.0, 1.0)
         np.testing.assert_array_equal(out, a)
+
+    def test_make_eq_state_returns_one_array_per_band(self) -> None:
+        sos = make_eq_filters(44100)
+        state = make_eq_state(sos)
+        assert state is not None
+        assert set(state) == set(sos)
+        assert all(band.shape[1] == 2 for band in state.values())
+
+    def test_make_eq_state_without_filters_is_none(self) -> None:
+        assert make_eq_state(None) is None
+
+    def test_blockwise_filtering_matches_one_shot(self) -> None:
+        """Carried state must make N blocks equal one call over the whole signal.
+
+        Without it every block restarted each biquad from zero, putting a step
+        discontinuity at every block boundary — the audible zipper the EQ was
+        producing whenever a band left unity gain.
+        """
+        sos = make_eq_filters(44100)
+        audio = _sine_audio(0.2)
+        whole = apply_eq(audio, sos, 1.6, 0.4, 1.2, state=make_eq_state(sos))
+
+        state = make_eq_state(sos)
+        block = len(audio) // 4
+        pieces = [
+            apply_eq(audio[i : i + block], sos, 1.6, 0.4, 1.2, state=state)
+            for i in range(0, len(audio), block)
+        ]
+        np.testing.assert_allclose(np.concatenate(pieces), whole, atol=1e-6)
+
+    def test_stateless_blocks_still_differ_from_one_shot(self) -> None:
+        sos = make_eq_filters(44100)
+        audio = _sine_audio(0.2)
+        whole = apply_eq(audio, sos, 1.6, 0.4, 1.2, state=make_eq_state(sos))
+        block = len(audio) // 4
+        stateless = np.concatenate(
+            [
+                apply_eq(audio[i : i + block], sos, 1.6, 0.4, 1.2)
+                for i in range(0, len(audio), block)
+            ]
+        )
+        assert np.abs(stateless - whole).max() > 1e-4
 
 
 # ---------------------------------------------------------------------------

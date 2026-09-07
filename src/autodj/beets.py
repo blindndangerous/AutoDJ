@@ -20,6 +20,8 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+from autodj.sqlite_utils import readonly_uri
+
 # ---------------------------------------------------------------------------
 # Exceptions
 # ---------------------------------------------------------------------------
@@ -234,7 +236,7 @@ def _open_db(db_path: Path) -> sqlite3.Connection:
             "Set [library] beets_db in config.toml or leave it blank to use "
             "filesystem scanning instead."
         )
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    conn = sqlite3.connect(readonly_uri(db_path), uri=True)
     conn.row_factory = sqlite3.Row
     try:
         # Trigger a real read so we fail fast if the file isn't a valid SQLite DB.

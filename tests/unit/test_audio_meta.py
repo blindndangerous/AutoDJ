@@ -679,17 +679,17 @@ class TestLoadLrcOSError:
         lrc = tmp_path / "x.lrc"
         lrc.write_text("[00:01.00]hi\n", encoding="utf-8")
 
-        # Patch read_text to raise OSError
+        # Patch read_bytes to raise OSError
         import pathlib
 
-        orig = pathlib.Path.read_text
+        orig = pathlib.Path.read_bytes
 
         def _bad(self, *_a, **_kw):
             raise OSError("permission denied")
 
-        monkeypatch.setattr(pathlib.Path, "read_text", _bad)
+        monkeypatch.setattr(pathlib.Path, "read_bytes", _bad)
         assert load_lrc_for(audio) == []
-        monkeypatch.setattr(pathlib.Path, "read_text", orig)
+        monkeypatch.setattr(pathlib.Path, "read_bytes", orig)
 
 
 class TestReadFileTagsNoMutagen:
@@ -764,3 +764,38 @@ class TestReplayGainErrors:
         rg = read_replaygain(tmp_path / "x.flac")
         assert rg is not None
         assert rg.track_peak == 1.0
+
+
+class TestEnhancedAndEncodedLyrics:
+    def test_word_level_stamps_are_not_read_aloud(self) -> None:
+        from autodj.audio_meta import parse_lrc
+
+        lines = parse_lrc("[00:12.30]<00:12.30>Never <00:12.80>gonna give")
+        assert [line.text for line in lines] == ["Never gonna give"]
+
+    def test_utf16_sidecar_decodes(self, tmp_path) -> None:
+        from autodj.audio_meta import load_lrc_for
+
+        audio = tmp_path / "song.mp3"
+        audio.write_bytes(b"\x00")
+        (tmp_path / "song.lrc").write_bytes("[00:01.00]Café".encode("utf-16"))
+
+        assert [line.text for line in load_lrc_for(audio)] == ["Café"]
+
+    def test_utf8_bom_sidecar_decodes(self, tmp_path) -> None:
+        from autodj.audio_meta import load_lrc_for
+
+        audio = tmp_path / "song.mp3"
+        audio.write_bytes(b"\x00")
+        (tmp_path / "song.lrc").write_bytes("[00:01.00]Café".encode("utf-8-sig"))
+
+        assert [line.text for line in load_lrc_for(audio)] == ["Café"]
+
+    def test_undecodable_bytes_still_return_a_line(self, tmp_path) -> None:
+        from autodj.audio_meta import load_lrc_for
+
+        audio = tmp_path / "song.mp3"
+        audio.write_bytes(b"\x00")
+        (tmp_path / "song.lrc").write_bytes(b"[00:01.00]caf\xe9")
+
+        assert len(load_lrc_for(audio)) == 1

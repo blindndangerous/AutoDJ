@@ -2123,6 +2123,55 @@ class TestDetectStaleEntries:
         after = time.time()
         assert before <= e.embedded_at <= after
 
+    def _future_track(self, tmp_path: Path, ahead_s: float):
+        """Write a file whose mtime is *ahead_s* seconds in the future."""
+        import os
+        import time
+
+        from autodj.beets import Track
+
+        audio = tmp_path / "nas.flac"
+        audio.write_bytes(b"\x00")
+        stamp = time.time() + ahead_s
+        os.utime(audio, (stamp, stamp))
+        return Track(
+            path=audio,
+            title="t",
+            artist="a",
+            album="al",
+            genre="g",
+            bpm=120.0,
+            year=2020,
+            length=180.0,
+        )
+
+    def test_from_track_uses_the_file_clock_not_the_local_clock(self, tmp_path: Path) -> None:
+        track = self._future_track(tmp_path, ahead_s=3600)
+        entry = IndexEntry.from_track(track)
+        assert entry.embedded_at == pytest.approx(track.path.stat().st_mtime)
+
+    def test_clock_skew_does_not_make_a_fresh_entry_stale(self, tmp_path: Path) -> None:
+        """A NAS clock an hour ahead used to re-embed the whole library forever."""
+        track = self._future_track(tmp_path, ahead_s=3600)
+        entry = IndexEntry.from_track(track)
+        from autodj.indexer import _detect_stale_entries
+
+        stale, migrated = _detect_stale_entries([entry])
+        assert stale == set()
+        assert migrated == 0
+
+    def test_a_later_edit_is_still_stale(self, tmp_path: Path) -> None:
+        import os
+
+        track = self._future_track(tmp_path, ahead_s=3600)
+        entry = IndexEntry.from_track(track)
+        touched = entry.embedded_at + 120
+        os.utime(track.path, (touched, touched))
+        from autodj.indexer import _detect_stale_entries
+
+        stale, _ = _detect_stale_entries([entry])
+        assert stale == {entry.path}
+
 
 class TestRelativizeForStorage:
     def test_strips_music_dir_prefix(self, tmp_path: Path) -> None:

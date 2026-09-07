@@ -526,6 +526,21 @@ def _resolve_beets_path(path: Path, music_dir: Path) -> Path:
     return music_dir / raw.lstrip("/")
 
 
+def source_mtime(path: str | Path) -> float:
+    """Return the file's modification time, or the local clock when absent.
+
+    Stale detection compares a stored stamp against ``st_mtime``, so both
+    sides have to come from the machine that owns the file.  Falling back to
+    the local clock only happens when the file cannot be stat-ed at all.
+    """
+    import time as _time
+
+    try:
+        return Path(path).stat().st_mtime
+    except OSError:
+        return _time.time()
+
+
 # ---------------------------------------------------------------------------
 # Data types
 # ---------------------------------------------------------------------------
@@ -572,18 +587,24 @@ class IndexEntry:
     embedded_at: float = 0.0
 
     @classmethod
-    def from_track(cls, track: Track) -> IndexEntry:
+    def from_track(cls, track: Track, embedded_at: float | None = None) -> IndexEntry:
         """Create an :class:`IndexEntry` from a beets :class:`~autodj.beets.Track`.
 
         Args:
             track: A track loaded from the beets library.
+            embedded_at: Stale-check stamp to store.  Defaults to the source
+                file's own modification time.
 
         Returns:
             An :class:`IndexEntry` with the same metadata.  ``embedded_at``
-            is stamped to the current wall-clock time so future replacements
-            can be detected by mtime comparison.
+            comes from the file server's clock rather than the indexing
+            host's, because :func:`_detect_stale_entries` compares it against
+            ``st_mtime``.  A NAS clock running ahead used to make every
+            freshly embedded track look replaced on the next run, so the whole
+            library was re-embedded forever.
         """
-        import time as _time
+        if embedded_at is None:
+            embedded_at = source_mtime(track.path)
 
         return cls(
             path=str(track.path),
@@ -598,7 +619,7 @@ class IndexEntry:
             key=-1,
             mode=-1,
             tempo_confidence=0.0,
-            embedded_at=_time.time(),
+            embedded_at=embedded_at,
         )
 
     @property
@@ -2535,7 +2556,7 @@ def _embed_new_tracks(  # pragma: no cover -- threaded indexer pipeline
     PREFETCH = max(1, workers)
     throttle_s = max(0.0, throttle_ms) / 1000.0
     track_iter = iter(new_tracks)
-    pending: deque[tuple[Track, Future]] = deque()
+    pending: deque[tuple[Track, float, Future]] = deque()
 
     with ThreadPoolExecutor(max_workers=PREFETCH) as pool:
 
@@ -2544,7 +2565,11 @@ def _embed_new_tracks(  # pragma: no cover -- threaded indexer pipeline
                 t = next(track_iter)
                 if throttle_s:
                     _time.sleep(throttle_s)
-                pending.append((t, pool.submit(_extract_librosa_features, t.path)))
+                # Stat before decoding so a file edited mid-run is still seen
+                # as stale on the next pass.
+                pending.append(
+                    (t, source_mtime(t.path), pool.submit(_extract_librosa_features, t.path))
+                )
             except StopIteration:
                 pass
 
@@ -2561,7 +2586,7 @@ def _embed_new_tracks(  # pragma: no cover -- threaded indexer pipeline
         ):
             if not pending:
                 break
-            track, future = pending.popleft()
+            track, mtime, future = pending.popleft()
             _submit_next()
 
             try:
@@ -2572,7 +2597,7 @@ def _embed_new_tracks(  # pragma: no cover -- threaded indexer pipeline
                     raise ValueError(
                         "embedding contains NaN or Inf — track may be silent or corrupted"
                     )
-                entry = IndexEntry.from_track(track)
+                entry = IndexEntry.from_track(track, embedded_at=mtime)
                 _apply_analysis_metadata(entry, extra_meta)
 
                 from autodj.beets import parse_initial_key as _parse_key

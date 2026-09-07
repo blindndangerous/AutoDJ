@@ -28,6 +28,7 @@ Example:
 
 from __future__ import annotations
 
+import codecs
 import logging
 import re
 from dataclasses import dataclass
@@ -299,6 +300,9 @@ class LyricLine:
 
 
 _LRC_TIMESTAMP_RE = re.compile(r"\[(\d+):(\d+(?:\.\d+)?)\]")
+# Enhanced LRC puts a per-word stamp inline: "[00:12.30]<00:12.30>word".
+# Screen readers read those literally, so they never reach the live region.
+_LRC_WORD_TAG_RE = re.compile(r"<\d+:\d+(?:\.\d+)?>")
 
 
 def parse_lrc(text: str) -> list[LyricLine]:
@@ -308,6 +312,7 @@ def parse_lrc(text: str) -> list[LyricLine]:
 
         [mm:ss.xx]Lyric line text
         [00:12.30][00:45.10]Repeated chorus line  # multiple stamps per line
+        [00:12.30]<00:12.30>Enhanced <00:12.80>word stamps
 
     Metadata tags like ``[ar:Artist]`` and ``[ti:Title]`` are skipped.
     Lines without a timestamp are skipped.  The result is sorted by time.
@@ -323,8 +328,9 @@ def parse_lrc(text: str) -> list[LyricLine]:
         stamps = _LRC_TIMESTAMP_RE.findall(line)
         if not stamps:
             continue
-        # The lyric text is whatever follows the last timestamp
-        body = _LRC_TIMESTAMP_RE.sub("", line).strip()
+        # The lyric text is whatever follows the last timestamp, with any
+        # enhanced-LRC per-word stamps removed.
+        body = _LRC_WORD_TAG_RE.sub("", _LRC_TIMESTAMP_RE.sub("", line)).strip()
         for mm, ss in stamps:
             try:
                 t = int(mm) * 60.0 + float(ss)
@@ -333,6 +339,32 @@ def parse_lrc(text: str) -> list[LyricLine]:
             out.append(LyricLine(time_s=t, text=body))
     out.sort(key=lambda x: x.time_s)
     return out
+
+
+def decode_lyrics_bytes(raw: bytes) -> str:
+    """Decode ``.lrc`` bytes, honouring a byte-order mark when present.
+
+    Windows lyric tools routinely write UTF-16.  Reading those as UTF-8 with
+    ``errors="replace"`` produced a line of replacement characters per
+    character, so the live region announced nothing usable.
+
+    Args:
+        raw: Raw file contents.
+
+    Returns:
+        The decoded text; undecodable bytes become replacement characters.
+    """
+    for bom, encoding in (
+        (codecs.BOM_UTF8, "utf-8-sig"),
+        (codecs.BOM_UTF16_LE, "utf-16"),
+        (codecs.BOM_UTF16_BE, "utf-16"),
+    ):
+        if raw.startswith(bom):
+            try:
+                return raw.decode(encoding)
+            except UnicodeDecodeError:  # pragma: no cover -- truncated BOM only
+                break
+    return raw.decode("utf-8", errors="replace")
 
 
 def load_lrc_for(audio_path: str | Path) -> list[LyricLine]:
@@ -353,10 +385,10 @@ def load_lrc_for(audio_path: str | Path) -> list[LyricLine]:
     if not lrc.exists():
         return []
     try:
-        text = lrc.read_text(encoding="utf-8", errors="replace")
+        raw = lrc.read_bytes()
     except OSError:
         return []
-    return parse_lrc(text)
+    return parse_lrc(decode_lyrics_bytes(raw))
 
 
 @dataclass(frozen=True)

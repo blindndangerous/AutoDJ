@@ -5,7 +5,7 @@ Wraps long-running library-maintenance commands (``index``, ``enrich``,
 terminal.  One concurrent job slot — running a second job while the
 first is in flight returns 409 from the API.
 
-Each job runs as a subprocess (``uv run autodj …``) so a crash in the
+Each job runs as a subprocess (``<python> -m autodj …``) so a crash in the
 indexer can't take down the live web server, and so torch / muq /
 librosa stay confined to the indexer process when the web UI is hosted
 on a slim install.
@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import shlex
 import subprocess  # nosec B404 — used only for spawning vetted CLI subcommands
 import sys
@@ -95,12 +96,20 @@ class JobManager:
             # nosec B603 -- `cmd` is built from a hard-coded subcommand
             # allowlist + arg tokens already screened for shell metacharacters.
             # shell=False so no shell parsing happens regardless.
+            # A child printing a track name under a cp125x locale used to
+            # raise inside the reader, which stopped the pump, filled the pipe
+            # and left the child blocked on write forever — holding the single
+            # job slot until someone pressed Stop.
+            child_env = dict(os.environ, PYTHONIOENCODING="utf-8")
             self._proc = subprocess.Popen(  # nosec B603
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1,
+                env=child_env,
             )
         except (OSError, FileNotFoundError) as exc:
             self._lines.append(f"[autodj-jobs] failed to spawn: {exc}")
@@ -142,6 +151,10 @@ class JobManager:
                 self._lines.append(line.rstrip("\n"))
         except (OSError, ValueError) as exc:
             self._lines.append(f"[autodj-jobs] read error: {exc}")
+            # The pipe is no longer being drained; terminate before waiting so
+            # a child blocked on write cannot hold the job slot open.
+            with contextlib.suppress(OSError):
+                self._proc.terminate()
         finally:
             try:
                 self._exit_code = self._proc.wait(timeout=5)

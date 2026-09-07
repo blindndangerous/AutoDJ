@@ -152,3 +152,46 @@ class TestReadLoopAndStop:
         proc.terminate = MagicMock(side_effect=OSError("already gone"))
         mgr._proc = proc
         assert mgr.stop() is True  # no exception
+
+
+class TestJobPipeEncoding:
+    def test_child_output_is_read_as_utf8(self) -> None:
+        """A track name the locale codec cannot decode used to kill the reader.
+
+        The reader thread stopped, the pipe filled, the child blocked on write
+        forever, and the single job slot stayed busy until someone pressed Stop.
+        """
+        mgr = JobManager()
+        with patch("autodj.jobs.subprocess.Popen") as popen:
+            fake = MagicMock()
+            fake.poll.return_value = None
+            fake.stdout = iter([])
+            fake.wait.return_value = 0
+            popen.return_value = fake
+            assert mgr.start("prune", []) is True
+
+        kwargs = popen.call_args.kwargs
+        assert kwargs["encoding"] == "utf-8"
+        assert kwargs["errors"] == "replace"
+        assert kwargs["env"]["PYTHONIOENCODING"] == "utf-8"
+
+    def test_read_error_terminates_the_child(self) -> None:
+        mgr = JobManager()
+
+        def exploding_lines():
+            raise ValueError("undecodable byte")
+            yield  # pragma: no cover -- generator protocol only
+
+        with patch("autodj.jobs.subprocess.Popen") as popen:
+            fake = MagicMock()
+            fake.poll.return_value = None
+            fake.stdout = exploding_lines()
+            fake.wait.return_value = 0
+            popen.return_value = fake
+            assert mgr.start("prune", []) is True
+            for _ in range(50):
+                if fake.terminate.called:
+                    break
+                time.sleep(0.02)
+
+        fake.terminate.assert_called_once()

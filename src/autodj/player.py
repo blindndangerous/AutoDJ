@@ -18,7 +18,7 @@ Example:
     >>> cfg = load_config()
     >>> sim = SimilarityIndex.from_index_dir(cfg.index.index_dir)
     >>> wrapper = load_model(download_model_if_needed(cfg.model, cfg.index))
-    >>> Player(cfg, sim, wrapper).run(seed_entry=None)
+    >>> Player(cfg, sim).run(seed_entry=None)
 """
 
 from __future__ import annotations
@@ -185,8 +185,8 @@ def _apply_crossfade_ducked(
     """Crossfade with bass-frequency ducking on the outgoing track.
 
     During the overlap, the outgoing track's low frequencies are
-    progressively attenuated via a Butterworth low-shelf cut (low-pass
-    sweep), while the incoming track fades in normally.  This eliminates
+    progressively attenuated by blending in a Butterworth high-pass of
+    the outgoing tail, while the incoming track fades in normally.  This eliminates
     the muddy bass build-up that two simultaneously-playing tracks
     produce in the sub-200 Hz range — the core trick used by pro DJs
     when manually mixing.
@@ -425,20 +425,46 @@ def make_eq_filters(
     }
 
 
+def make_eq_state(sos_filters: dict[str, Any] | None) -> dict[str, np.ndarray] | None:
+    """Return zero-initialised filter memory for :func:`apply_eq`.
+
+    One ``zi`` array per band, shaped for the second-order sections that
+    :func:`make_eq_filters` produced.  Zeros mean "the stream starts from
+    silence", which is what a fresh track does.
+
+    Args:
+        sos_filters: Dict from :func:`make_eq_filters`, or ``None``.
+
+    Returns:
+        Dict of per-band state arrays, or ``None`` when there are no filters.
+    """
+    if sos_filters is None:
+        return None
+    return {
+        name: np.zeros((np.asarray(sos).shape[0], 2), dtype=np.float64)
+        for name, sos in sos_filters.items()
+    }
+
+
 def apply_eq(
     chunk: np.ndarray,
     sos_filters: dict[str, Any] | None,
     low_gain: float,
     mid_gain: float,
     high_gain: float,
+    state: dict[str, np.ndarray] | None = None,
 ) -> np.ndarray:
     """Apply a 3-band gain-only EQ to a short audio chunk.
 
     Splits *chunk* into low / mid / high bands via the filters returned
     by :func:`make_eq_filters`, scales each by its gain, and sums them
     back together.  Designed to be called from a sounddevice output
-    callback — uses ``sosfilt`` (stateless) which is fine for the short
-    independent blocks the callback delivers.
+    callback.
+
+    Pass *state* from :func:`make_eq_state` when filtering a stream one
+    block at a time.  Without it every block restarts each biquad from
+    zero, which puts a step discontinuity — an audible zipper — at every
+    block boundary as soon as a band leaves unity gain.
 
     Args:
         chunk: Mono float32 audio chunk.
@@ -446,6 +472,8 @@ def apply_eq(
         low_gain: Multiplier for the low band (1.0 = unity, 0.0 = kill).
         mid_gain: Multiplier for the mid band.
         high_gain: Multiplier for the high band.
+        state: Per-band filter memory, updated in place.  ``None`` filters
+            the chunk as a standalone signal.
 
     Returns:
         EQ-processed float32 chunk (same length, hard-clipped to ±1.0).
@@ -457,10 +485,15 @@ def apply_eq(
     except ImportError:  # pragma: no cover — scipy required by full install
         return chunk
 
-    low = cast(np.ndarray, sosfilt(sos_filters["low"], chunk))
-    high = cast(np.ndarray, sosfilt(sos_filters["high"], chunk))
-    mid_highpassed = cast(np.ndarray, sosfilt(sos_filters["mid_hp"], chunk))
-    mid = cast(np.ndarray, sosfilt(sos_filters["mid_lp"], mid_highpassed))
+    def _filter(band: str, signal: np.ndarray) -> np.ndarray:
+        if state is None or band not in state:
+            return cast(np.ndarray, sosfilt(sos_filters[band], signal))
+        filtered, state[band] = sosfilt(sos_filters[band], signal, zi=state[band])
+        return cast(np.ndarray, filtered)
+
+    low = _filter("low", chunk)
+    high = _filter("high", chunk)
+    mid = _filter("mid_lp", _filter("mid_hp", chunk))
 
     out = (low * low_gain + mid * mid_gain + high * high_gain).astype(np.float32)
     np.clip(out, -1.0, 1.0, out=out)
@@ -1952,7 +1985,9 @@ class Player:
 
         # Build EQ filters for this sample rate (cheap; cached per-stream).
         # Skipped entirely when all 3 bands are at unity (the common case).
+        # Filter memory is per-stream: a new track starts from silence.
         self._eq_filters = make_eq_filters(sr)
+        self._eq_state = make_eq_state(self._eq_filters)
 
         finished = threading.Event()
 
@@ -1977,6 +2012,7 @@ class Player:
                     self._eq_low,
                     self._eq_mid,
                     self._eq_high,
+                    state=self._eq_state,
                 )
 
             if len(chunk) < frames:

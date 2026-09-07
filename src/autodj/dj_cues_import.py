@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any
 
 from autodj.dj_meta import Cue
+from autodj.sqlite_utils import readonly_uri
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +92,7 @@ def import_from_mixxx(db_path: Path) -> dict[str, list[Cue]]:
 
     try:
         # read-only — we never write to a Mixxx database we don't own
-        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        con = sqlite3.connect(readonly_uri(db_path), uri=True)
     except sqlite3.Error as exc:  # pragma: no cover — depends on local FS
         logger.debug("Could not open Mixxx db %s: %s", db_path, exc)
         return {}
