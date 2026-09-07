@@ -80,6 +80,38 @@ export function renderCueStrip(cueStripEl, track) {
   }
 }
 
+// Visible key for the coloured ticks.  The strip itself is
+// pointer-events:none so there is no tooltip, and the only explanation
+// of what a colour means lived in the visually-hidden #cue-summary --
+// leaving a sighted user with eleven coloured marks and no way to read
+// them (WCAG 1.4.1).  Only the types actually present are listed, so the
+// legend stays short and matches what is on the bar.
+export function renderCueLegend(legendEl, track) {
+  if (!legendEl) return;
+  const cues = _validCues(track);
+  const seen = new Map();
+  for (const cue of cues) {
+    if (!seen.has(cue.type)) seen.set(cue.type, _cueColor(cue));
+  }
+  const key = JSON.stringify([...seen]);
+  if (legendEl.dataset.cueKey === key) return;
+  legendEl.dataset.cueKey = key;
+  legendEl.replaceChildren();
+  legendEl.hidden = seen.size === 0;
+  for (const [type, color] of seen) {
+    const item = legendEl.ownerDocument.createElement("span");
+    item.className = "cue-key";
+    const swatch = legendEl.ownerDocument.createElement("span");
+    swatch.className = "cue-swatch";
+    swatch.style.background = color;
+    item.appendChild(swatch);
+    item.appendChild(
+      legendEl.ownerDocument.createTextNode(type.replace(/_/g, " ")),
+    );
+    legendEl.appendChild(item);
+  }
+}
+
 export function applyCueSummary(track, element, detailsElement) {
   if (!element && !detailsElement) return;
   const cues = _validCues(track);

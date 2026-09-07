@@ -199,7 +199,10 @@ export function applySettingsState(st, els) {
   if (st.bpm_range && document.activeElement !== bpmHi) {
     bpmHi.value = st.bpm_range.hi != null ? st.bpm_range.hi : "";
   }
-  const discOn = st.discovery_every != null;
+  // One concept, one answer: the checkbox tracks the same runtime flag
+  // the Now Playing Discovery button toggles, so the two controls can no
+  // longer disagree.
+  const discOn = st.discovery_every != null && st.discovery_enabled !== false;
   discEnabled.checked = discOn;
   if (document.activeElement !== discEvery && discOn) {
     discEvery.value = st.discovery_every;

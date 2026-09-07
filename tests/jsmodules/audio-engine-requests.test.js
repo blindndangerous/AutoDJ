@@ -411,7 +411,12 @@ describe("audio engine request recovery", () => {
     invalidRequest.resolve(binaryResponse("application/json"));
     await vi.waitFor(() => expect(document.querySelector("#now-playing-announce").textContent)
       .toContain("unexpected content type"));
-    expect(document.querySelector("#cover-art").hidden).toBe(true);
+    // The box stays in the layout as a placeholder rather than being
+    // removed, so the title and wheel do not jump sideways.
+    const art = document.querySelector("#cover-art");
+    expect(art.hidden).toBe(false);
+    expect(art.classList.contains("no-art")).toBe(true);
+    expect(art.hasAttribute("src")).toBe(false);
   });
 
   it("does not let an old decode rejection delete a newer same-path owner", async () => {

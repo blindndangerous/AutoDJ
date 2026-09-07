@@ -477,7 +477,16 @@ function applyState(s) {
   updateMediaSession(s);
 
   // Mirror settings to the form.
-  if (s.settings) applySettingsState(s.settings, _settingsEls());
+  // discovery_enabled is runtime state, not a stored setting, so it rides
+  // in alongside the settings block rather than being folded into it: the
+  // Settings checkbox and the Now Playing Discovery button have to answer
+  // for the same flag or they contradict each other.
+  if (s.settings) {
+    applySettingsState(
+      { ...s.settings, discovery_enabled: s.discovery_enabled },
+      _settingsEls(),
+    );
+  }
 }
 
 // ----------------------------------------------------------------
@@ -876,12 +885,14 @@ import { applyBadges, formatPersistentMetadata } from "./modules/badges.js";
 // Cue strip rendering moved to ./modules/cues.js.
 import {
   applyCueSummary,
+  renderCueLegend,
   renderCueStrip as _renderCueStripModule,
 } from "./modules/cues.js";
 
 const _cueStrip = document.getElementById("cue-strip");
 function renderCueStrip(track) {
   _renderCueStripModule(_cueStrip, track);
+  renderCueLegend(document.getElementById("cue-legend"), track);
   applyCueSummary(track, cueSummary, cueDetails);
 }
 

@@ -3,7 +3,9 @@
 import { describe, it, expect, vi } from "vitest";
 import * as cuesModule from "../../src/autodj/static/modules/cues.js";
 
-const { summariseCues, renderCueStrip, CUE_COLORS } = cuesModule;
+const {
+  summariseCues, renderCueStrip, renderCueLegend, CUE_COLORS,
+} = cuesModule;
 
 describe("summariseCues", () => {
   it("singular cue point label", () => {
@@ -253,5 +255,62 @@ describe("applyCueSummary", () => {
 
     expect(summaryWrites).toBe(1);
     expect(detailWrites).toBe(1);
+  });
+});
+
+describe("renderCueLegend", () => {
+  function legendEl() {
+    document.body.innerHTML = '<div id="cue-legend" hidden></div>';
+    return document.querySelector("#cue-legend");
+  }
+
+  it("lists one visible swatch per cue type present", () => {
+    const el = legendEl();
+    renderCueLegend(el, {
+      path: "a.mp3",
+      length: 200,
+      cues: [
+        { type: "drop", time_s: 10 },
+        { type: "drop", time_s: 90 },
+        { type: "breakdown", time_s: 40 },
+      ],
+    });
+
+    const keys = el.querySelectorAll(".cue-key");
+    expect(keys).toHaveLength(2);
+    expect([...keys].map((k) => k.textContent)).toEqual(["drop", "breakdown"]);
+    expect(keys[0].querySelector(".cue-swatch").style.background)
+      .toBe(CUE_COLORS.drop);
+    expect(el.hidden).toBe(false);
+  });
+
+  it("stays hidden and empty when the track has no cues", () => {
+    const el = legendEl();
+    renderCueLegend(el, { path: "b.mp3", length: 200, cues: [] });
+    expect(el.hidden).toBe(true);
+    expect(el.children).toHaveLength(0);
+  });
+
+  it("spells underscored type names as words", () => {
+    const el = legendEl();
+    renderCueLegend(el, {
+      path: "c.mp3", length: 100, cues: [{ type: "first_downbeat", time_s: 1 }],
+    });
+    expect(el.textContent).toBe("first downbeat");
+  });
+
+  it("does no DOM work when the cue set is unchanged", () => {
+    const el = legendEl();
+    const track = {
+      path: "d.mp3", length: 100, cues: [{ type: "drop", time_s: 5 }],
+    };
+    renderCueLegend(el, track);
+    const first = el.firstElementChild;
+    renderCueLegend(el, track);
+    expect(el.firstElementChild).toBe(first);
+  });
+
+  it("no-ops without an element", () => {
+    expect(() => renderCueLegend(null, null)).not.toThrow();
   });
 });

@@ -2375,6 +2375,16 @@ export function applyBrowserPlaybackState(s) {
 
 const coverRequestOwner = createLatestRequestOwner();
 
+// Keep the 96 px box in the layout when there is no art.  Hiding the
+// <img> moved the title, badges and Camelot wheel 111 px sideways on
+// every track change, and a library where most tracks carry no embedded
+// art spends most of its time in the "no art" case.
+function showArtPlaceholder(element) {
+  element.removeAttribute("src");
+  element.classList.add("no-art");
+  element.hidden = false;
+}
+
 export function loadCoverArt(trackPath) {
   // A request probe avoids the console noise caused by an image 404.
   // but <img>.onerror logs a console error for every 404, which spams
@@ -2383,8 +2393,7 @@ export function loadCoverArt(trackPath) {
   // is a real image.
   if (!trackPath) {
     coverRequestOwner.cancel();
-    coverArt.hidden = true;
-    coverArt.removeAttribute("src");
+    showArtPlaceholder(coverArt);
     return;
   }
   const request = coverRequestOwner.begin();
@@ -2392,16 +2401,15 @@ export function loadCoverArt(trackPath) {
   void probeResource(url, { method: "GET", signal: request.signal }).then((exists) => {
     if (!coverRequestOwner.isCurrent(request)) return;
     if (!exists) {
-      coverArt.hidden = true;
-      coverArt.removeAttribute("src");
+      showArtPlaceholder(coverArt);
       return;
     }
     coverArt.src = url;
+    coverArt.classList.remove("no-art");
     coverArt.hidden = false;
   }).catch((errorValue) => {
     if (!coverRequestOwner.isCurrent(request)) return;
-    coverArt.hidden = true;
-    coverArt.removeAttribute("src");
+    showArtPlaceholder(coverArt);
     announceRequestError(errorValue);
   }).finally(() => {
     coverRequestOwner.finish(request);

@@ -467,9 +467,40 @@
       border-radius: 6px;
       background: var(--surface-2, #222);
     }
+    /* Reserved even when the track has no embedded art: hiding the image
+       shifted the title and the whole Camelot wheel 111 px left on every
+       track change, and most libraries are mostly art-less. */
+    #cover-art.no-art {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px dashed var(--badge-border);
+    }
     .now-playing-text {
       flex: 1;
       min-width: 0;
+    }
+
+    /* ---- Cue legend ----
+       The ticks on the progress bar were colour-only with no tooltip
+       (the strip is pointer-events:none) and no visible key (WCAG 1.4.1). */
+    #cue-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem 0.9rem;
+      margin-top: 0.35rem;
+      font-size: 0.75rem;
+      color: var(--text-dim);
+    }
+    #cue-legend .cue-key {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+    }
+    #cue-legend .cue-swatch {
+      display: inline-block;
+      width: 3px;
+      height: 11px;
+      border-radius: 1px;
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45);
     }
 
     /* ---- Lyrics ---- */
@@ -763,22 +794,73 @@
         gap: 0.5rem;
       }
 
-      /* Bigger touch targets for every button + slider */
-      button,
-      .pill-btn,
-      input[type="range"]::-webkit-slider-thumb,
-      input[type="range"]::-moz-range-thumb {
+      /* Bigger touch targets for every button. */
+      button {
         min-height: 44px;
-      }
-      button, .pill-btn {
         min-width: 44px;
         padding: 0.6rem 0.9rem;
+      }
+
+      /* Sliders: the old rule put min-height:44px on the THUMB, which
+         beat its own height:24px and stretched the circle into a
+         24 x 44 egg -- while leaving the real problem, a 6 px tall
+         track, untouched.  Grow the input itself to a 44 px hit area
+         instead and keep the visible bar at 6 px inside it. */
+      input[type="range"] {
+        height: 44px;
+        background: transparent;
+      }
+      /* Vendor track pseudo-elements need their own rules: an unknown
+         pseudo-element invalidates the whole selector list. */
+      input[type="range"]::-webkit-slider-runnable-track {
+        height: 6px;
+        background: var(--border);
+        border-radius: 3px;
+      }
+      input[type="range"]::-moz-range-track {
+        height: 6px;
+        background: var(--border);
+        border-radius: 3px;
+      }
+      input[type="range"]::-webkit-slider-thumb {
+        margin-top: -9px;   /* centre the 24 px thumb on the 6 px track */
+      }
+
+      /* WCAG 2.5.8 floor is 24 px; these measured 18 x 18. */
+      .settings-check input[type="checkbox"] {
+        width: 1.5rem;
+        height: 1.5rem;
       }
 
       /* Settings card — collapse by default on mobile via [open] state */
       details.settings-card > summary {
         padding: 0.75rem;
         font-size: 1rem;
+      }
+
+      /* Help text: the desktop rule indents it 10rem to line up under the
+         control column, but on a 390 px screen that left 162 px of usable
+         width and turned the 38-effect transition description into a
+         1 901 px ribbon three words wide. */
+      .setting-desc,
+      .settings-row + .setting-desc {
+        margin-left: 0;
+      }
+
+      /* Track names get the full row width instead of being truncated to
+         "3 Doors Down ..." for every entry, which made queue rows
+         indistinguishable from each other. */
+      #queue-list li,
+      #search-results li {
+        flex-wrap: wrap;
+        row-gap: 0.4rem;
+      }
+      .queue-name,
+      .result-name {
+        flex: 1 0 100%;
+        overflow: visible;
+        white-space: normal;
+        text-overflow: clip;
       }
 
       /* Form fields full-width on phone */

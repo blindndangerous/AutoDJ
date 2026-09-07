@@ -1221,12 +1221,18 @@ class PlayerBridge:
             self.player._bpm_range = (low, high)
 
     def set_discovery_every(self, every: int | None) -> None:
-        """Set the discovery rate; null disables."""
+        """Set the discovery rate; null disables.
+
+        Configuring a rate also arms the runtime toggle.  Without that,
+        ticking the Settings checkbox left ``discovery_enabled`` false, so
+        the checkbox read "on" while the Now Playing button read "off".
+        """
         if every is None or every <= 0:
             self.player._discovery_every = None
             self.player._state.discovery_enabled = False
         else:
             self.player._discovery_every = int(every)
+            self.player._state.discovery_enabled = True
 
     # ------------------------------------------------------------------
     # Hot-reload — pick up new tracks while a parallel `index` runs

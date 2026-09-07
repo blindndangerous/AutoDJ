@@ -113,6 +113,23 @@ describe("applySettingsState", () => {
     expect(els.discEnabled.checked).toBe(true);
     expect(els.discEvery.value).toBe("5");
   });
+
+  it("keeps the discovery checkbox in step with the runtime toggle", () => {
+    const els = makeEls();
+
+    // Configured and running: both controls say on.
+    applySettingsState({ discovery_every: 20, discovery_enabled: true }, els);
+    expect(els.discEnabled.checked).toBe(true);
+
+    // Turned off from the Now Playing button: the checkbox follows rather
+    // than contradicting it.
+    applySettingsState({ discovery_every: 20, discovery_enabled: false }, els);
+    expect(els.discEnabled.checked).toBe(false);
+
+    // Servers that predate the field fall back to "configured means on".
+    applySettingsState({ discovery_every: 20 }, els);
+    expect(els.discEnabled.checked).toBe(true);
+  });
 });
 
 describe("postSettings", () => {

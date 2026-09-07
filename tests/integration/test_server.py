@@ -2030,6 +2030,10 @@ class TestLibraryEndpoints:
         tc = TestClient(create_app(bridge))
         tc.post("/api/discovery", json={"every": 25})
         assert bridge.player._discovery_every == 25
+        # Configuring a rate arms the runtime toggle too, so the Settings
+        # checkbox and the Now Playing button agree.
+        assert bridge.player._state.discovery_enabled is True
+        assert tc.get("/api/status").json()["discovery_enabled"] is True
 
     def test_post_discovery_zero_disables(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
@@ -2039,6 +2043,8 @@ class TestLibraryEndpoints:
         tc = TestClient(create_app(bridge))
         tc.post("/api/discovery", json={"every": 0})
         assert bridge.player._discovery_every is None
+        assert bridge.player._state.discovery_enabled is False
+        assert tc.get("/api/status").json()["discovery_enabled"] is False
 
     def test_post_preset_clears_on_null(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
