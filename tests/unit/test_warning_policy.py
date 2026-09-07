@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -12,6 +13,9 @@ ROOT = Path(__file__).resolve().parents[2]
 def _run_probe(tmp_path: Path, source: str) -> subprocess.CompletedProcess[str]:
     probe = tmp_path / "test_warning_probe.py"
     probe.write_text(source, encoding="utf-8")
+    # The nested pytest must not inherit the outer run's PYTEST_ADDOPTS:
+    # a --basetemp override there would fight the one passed below.
+    env = {key: value for key, value in os.environ.items() if key != "PYTEST_ADDOPTS"}
     return subprocess.run(
         [
             sys.executable,
@@ -29,6 +33,7 @@ def _run_probe(tmp_path: Path, source: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         check=False,
+        env=env,
     )
 
 

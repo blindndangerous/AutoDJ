@@ -205,11 +205,28 @@ def _assert_bounded_smoke_lifecycle(content: str) -> None:
 def _git_bash() -> str:
     if os.name != "nt":
         executable = shutil.which("bash")
-    else:
-        git = shutil.which("git")
-        executable = str(Path(git).resolve().parents[1] / "bin" / "bash.exe") if git else None
-    assert executable is not None and Path(executable).is_file()
-    return executable
+        assert executable is not None and Path(executable).is_file()
+        return executable
+
+    # Git for Windows ships bash.exe next to the installation root, but
+    # git.exe itself is found under either <root>/cmd or <root>/mingw64/bin
+    # depending on which copy is first on PATH.  Try both layouts before
+    # falling back to whatever bash is on PATH.
+    candidates: list[Path] = []
+    git = shutil.which("git")
+    if git:
+        root = Path(git).resolve()
+        candidates += [
+            root.parents[1] / "bin" / "bash.exe",
+            root.parents[2] / "bin" / "bash.exe",
+        ]
+    on_path = shutil.which("bash")
+    if on_path:
+        candidates.append(Path(on_path))
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    raise AssertionError(f"no bash.exe found; tried {[str(c) for c in candidates]}")
 
 
 def _bash_path(bash: str, path: Path) -> str:
