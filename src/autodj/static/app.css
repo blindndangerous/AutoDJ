@@ -392,15 +392,26 @@
     #history-empty { color: var(--text-dim); font-style: italic; }
     #history-table {
       width: 100%;
+      /* Fixed layout clamps the table to its container: with the default
+         auto layout the two nowrap columns plus cell padding pushed the
+         minimum content width past a 390 px viewport and the whole page
+         scrolled sideways with DURATION cut off. */
+      table-layout: fixed;
       border-collapse: collapse;
       font-size: 0.9rem;
     }
+    #history-table col.hist-time     { width: 22%; }
+    #history-table col.hist-title    { width: 38%; }
+    #history-table col.hist-artist   { width: 25%; }
+    #history-table col.hist-duration { width: 15%; }
     #history-table th,
     #history-table td {
       padding: 0.5rem 0.7rem;
       text-align: left;
       vertical-align: top;
       border-bottom: 1px solid var(--border);
+      /* A long title has to break rather than widen its column. */
+      overflow-wrap: anywhere;
     }
     #history-table thead th {
       font-size: 0.75rem;
@@ -651,9 +662,11 @@
       gap: 0.5rem;
       margin: 0.3rem 0;
     }
-    .settings-check input[type="checkbox"] {
+    .settings-check input[type="checkbox"],
+    .settings-row input[type="checkbox"] {
       width: 1.1rem;
       height: 1.1rem;
+      flex: none;
     }
     /* Inline help text — sighted readers see grey description below
        each control; screen readers receive it via aria-describedby. */
@@ -745,6 +758,12 @@
       line-height: 1.4;
       pointer-events: none;
     }
+    /* Failures carry the same red edge as the stale-playback banner, so a
+       confirmation and an error are not the same bordered box. */
+    #status-toast.is-error {
+      border-left: 4px solid var(--danger);
+      background: #221a26;
+    }
 
     /* Search result count — visible and announced by the same node. */
     #search-count {
@@ -753,6 +772,13 @@
       color: var(--text-dim);
     }
     #search-count:empty { margin-top: 0; }
+
+    /* The card is flagged while the websocket is down so the panel itself
+       says so, not just the banner inside it.  A border rather than a dim:
+       fading the metadata would drop it below AA. */
+    .card.is-stale {
+      border-left: 3px solid var(--danger);
+    }
 
     /* Stale-playback notice on the Now Playing card. */
     #playback-stale-note {
@@ -806,8 +832,13 @@
          24 x 44 egg -- while leaving the real problem, a 6 px tall
          track, untouched.  Grow the input itself to a 44 px hit area
          instead and keep the visible bar at 6 px inside it. */
-      input[type="range"] {
+      /* Scoped through the wrapper id because the generic
+         `input:not([type=checkbox]):not([type=radio])` boundary rule is
+         more specific than a bare type selector: without the id its 1 px
+         border survived and every slider became a 44 px empty box. */
+      #main-content input[type="range"] {
         height: 44px;
+        border: none;
         background: transparent;
       }
       /* Vendor track pseudo-elements need their own rules: an unknown
@@ -826,16 +857,34 @@
         margin-top: -9px;   /* centre the 24 px thumb on the 6 px track */
       }
 
-      /* WCAG 2.5.8 floor is 24 px; these measured 18 x 18. */
-      .settings-check input[type="checkbox"] {
+      /* WCAG 2.5.8 floor is 24 px; these measured 18 x 18.  Includes the
+         checkboxes that live in a .settings-row rather than a
+         .settings-check, which the first pass missed -- and which the
+         `.settings-row > * { width: 100% }` rule below would otherwise
+         stretch across the whole screen. */
+      .settings-check input[type="checkbox"],
+      .settings-row input[type="checkbox"] {
         width: 1.5rem;
         height: 1.5rem;
+        flex: none;
       }
 
       /* Settings card — collapse by default on mobile via [open] state */
       details.settings-card > summary {
         padding: 0.75rem;
         font-size: 1rem;
+      }
+
+      /* The time and duration columns stop refusing to wrap once there is
+         no room for them; the table is clamped by table-layout: fixed, so
+         nowrap would only clip. */
+      #history-table th,
+      #history-table td {
+        padding: 0.45rem 0.4rem;
+      }
+      #history-table td:first-child,
+      #history-table td:last-child {
+        white-space: normal;
       }
 
       /* Help text: the desktop rule indents it 10rem to line up under the
@@ -868,7 +917,7 @@
         flex-direction: column;
         align-items: stretch;
       }
-      .settings-row > * {
+      .settings-row > *:not(input[type="checkbox"]) {
         width: 100%;
       }
       .settings-row select,
@@ -979,18 +1028,31 @@
       fill: var(--text);
       pointer-events: none;
     }
-    /* Inner A/minor ring reads as secondary to the outer B/major ring. */
-    #camelot-wheel .label.minor { fill: var(--text-dim); }
+
+    /* The inner A/minor ring is distinguished by weight, not by colour.
+       --text-dim over a `.compat` wedge composites to 3.33:1, under the
+       4.5:1 floor; the ring a number sits in is already obvious from its
+       radius, so the dimming bought nothing and cost legibility.
+       :not(.active) rather than source order, so the active rule cannot be
+       beaten by whichever declaration happens to come last. */
+    #camelot-wheel .label:not(.active) { fill: var(--text); font-weight: 600; }
+    #camelot-wheel .label.minor:not(.active) { font-weight: 400; }
     /* The active number is drawn on its OWN wedge now, which is filled
        with --accent, so #000 measures 9.5:1 there. */
     #camelot-wheel .label.active { fill: #000; font-weight: 700; }
-    /* Centre readout — names the current cell and doubles as the only
-       A/B legend the wheel has. */
+    /* Centre readout — names the current cell in the hub. */
     #camelot-wheel .current-cell {
       fill: var(--text);
       font-weight: 700;
     }
-    #camelot-wheel .ring-legend { fill: var(--text-dim); }
+    /* Ring key.  A real element rather than SVG text: at the wheel's
+       0.909 scale, 8 viewBox units rendered at 7.3 px. */
+    #camelot-legend {
+      margin-top: 0.25rem;
+      text-align: center;
+      font-size: 0.75rem;
+      color: var(--text-dim);
+    }
 
     @media (prefers-reduced-motion: reduce) {
       html { scroll-behavior: auto; }
@@ -1026,6 +1088,12 @@
         color: CanvasText;
       }
       input { accent-color: Highlight; }
+      /* The mobile rule drops the slider border so a 44 px hit area is not
+         drawn as an empty box; in forced colours a real boundary is wanted
+         again, and the id beats that rule wherever it lands. */
+      #main-content input[type="range"] {
+        border: 1px solid CanvasText;
+      }
       #progress-track::before { background: CanvasText; }
       #progress-fill { background: Highlight; }
       input[type="range"]::-webkit-slider-thumb,

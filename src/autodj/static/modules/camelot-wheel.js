@@ -65,8 +65,9 @@ function _build(sectorsEl, labelsEl) {
     }
   }
   if (labelsEl) {
-    // Centre readout: names the current cell outright, which is also the
-    // wheel's only A/B legend.
+    // Centre readout: names the current cell outright.  The ring key is
+    // a real element under the SVG (#camelot-legend) rather than more
+    // text in here, where 8 viewBox units render at 7.3 px.
     const current = document.createElementNS(SVG_NS, "text");
     current.setAttribute("id", "camelot-current");
     current.setAttribute("x", "0");
@@ -75,13 +76,6 @@ function _build(sectorsEl, labelsEl) {
     current.setAttribute("class", "current-cell");
     current.textContent = "—";
     labelsEl.appendChild(current);
-    const legend = document.createElementNS(SVG_NS, "text");
-    legend.setAttribute("x", "0");
-    legend.setAttribute("y", "14");
-    legend.setAttribute("font-size", "8");
-    legend.setAttribute("class", "ring-legend");
-    legend.textContent = "outer B · inner A";
-    labelsEl.appendChild(legend);
   }
   _built.add(sectorsEl);
 }

@@ -1,8 +1,12 @@
 // Live-region clear-after-dwell behaviour.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { announceStatus, clearLiveRegionLater } from
-  "../../src/autodj/static/modules/live-region.js";
+import {
+  announceStatus,
+  clearLiveRegionLater,
+  installVisibleStatusDismiss,
+  showVisibleStatus,
+} from "../../src/autodj/static/modules/live-region.js";
 
 describe("clearLiveRegionLater", () => {
   beforeEach(() => { vi.useFakeTimers(); });
@@ -162,5 +166,59 @@ describe("announceStatus force", () => {
     const region = document.querySelector("#region");
     region.textContent = "index running.";
     expect(announceStatus(region, "index running.")).toBe(false);
+  });
+});
+
+describe("visible status mirror behaviour", () => {
+  beforeEach(() => {
+    document.body.innerHTML =
+      '<p id="region" role="status" aria-live="polite" aria-atomic="true"></p>'
+      + '<div id="status-toast" aria-hidden="true" hidden></div>';
+  });
+
+  it("marks a failure differently from a confirmation", () => {
+    const region = document.querySelector("#region");
+    const toast = document.querySelector("#status-toast");
+
+    announceStatus(region, "Added Kryptonite to queue.");
+    expect(toast.classList.contains("is-error")).toBe(false);
+
+    announceStatus(region, "Could not update queue: refused.", { tone: "error" });
+    expect(toast.classList.contains("is-error")).toBe(true);
+
+    announceStatus(region, "Added Loser to queue.");
+    expect(toast.classList.contains("is-error")).toBe(false);
+  });
+
+  it("dismisses on Escape without moving focus", () => {
+    installVisibleStatusDismiss(document);
+    const button = document.createElement("button");
+    document.body.appendChild(button);
+    button.focus();
+    showVisibleStatus("Could not update queue: refused.");
+    const toast = document.querySelector("#status-toast");
+    expect(toast.hidden).toBe(false);
+
+    document.dispatchEvent(new window.KeyboardEvent("keydown", {
+      key: "Escape", bubbles: true,
+    }));
+
+    expect(toast.hidden).toBe(true);
+    expect(toast.textContent).toBe("");
+    expect(document.activeElement).toBe(button);
+  });
+
+  it("leaves Escape to an open dialog", () => {
+    installVisibleStatusDismiss(document);
+    const dialog = document.createElement("dialog");
+    dialog.setAttribute("open", "");
+    document.body.appendChild(dialog);
+    showVisibleStatus("Still visible.");
+
+    document.dispatchEvent(new window.KeyboardEvent("keydown", {
+      key: "Escape", bubbles: true,
+    }));
+
+    expect(document.querySelector("#status-toast").hidden).toBe(false);
   });
 });

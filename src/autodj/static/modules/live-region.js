@@ -43,13 +43,18 @@ export function clearLiveRegionLater(el, dwellMs = 3000) {
 const VISIBLE_STATUS_DWELL_MS = 8000;
 let _visibleStatusTimer = null;
 
-export function showVisibleStatus(message, doc = globalThis.document, { force = false } = {}) {
+export function showVisibleStatus(
+  message,
+  doc = globalThis.document,
+  { force = false, tone = "info" } = {},
+) {
   const toast = doc?.getElementById?.("status-toast");
   if (!toast) return;
   clearTimeout(_visibleStatusTimer);
   _visibleStatusTimer = null;
   if (!message) {
     toast.textContent = "";
+    toast.classList.remove("is-error");
     toast.hidden = true;
     return;
   }
@@ -57,6 +62,8 @@ export function showVisibleStatus(message, doc = globalThis.document, { force = 
   // forced path replaces the node's text even when the words match.
   if (force) toast.textContent = "";
   if (toast.textContent !== message) toast.textContent = message;
+  // A failure and a confirmation must not be the same bordered box.
+  toast.classList.toggle("is-error", tone === "error");
   toast.hidden = false;
   _visibleStatusTimer = setTimeout(() => {
     toast.textContent = "";
@@ -79,7 +86,7 @@ export function showVisibleStatus(message, doc = globalThis.document, { force = 
 export function announceStatus(
   region,
   message,
-  { dwellMs = 0, mirror = true, force = false } = {},
+  { dwellMs = 0, mirror = true, force = false, tone = "info" } = {},
 ) {
   if (!region) return false;
   const text = message == null ? "" : String(message);
@@ -90,12 +97,27 @@ export function announceStatus(
       region.textContent = text;
       if (dwellMs > 0) clearLiveRegionLater(region, dwellMs);
     }, 0);
-    if (mirror) showVisibleStatus(text, doc, { force: true });
+    if (mirror) showVisibleStatus(text, doc, { force: true, tone });
     return true;
   }
   if (region.textContent === text) return false;
   region.textContent = text;
-  if (mirror) showVisibleStatus(text, doc);
+  if (mirror) showVisibleStatus(text, doc, { tone });
   if (dwellMs > 0) clearLiveRegionLater(region, dwellMs);
   return true;
+}
+
+
+// Escape dismisses the visible mirror.  It never moves focus, so a
+// keyboard user does not lose their place, and it defers to an open
+// <dialog>, whose own Escape handling must win.
+export function installVisibleStatusDismiss(doc = globalThis.document) {
+  if (!doc?.addEventListener) return;
+  doc.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || event.defaultPrevented) return;
+    const toast = doc.getElementById("status-toast");
+    if (!toast || toast.hidden) return;
+    if (doc.querySelector("dialog[open]")) return;
+    showVisibleStatus("", doc);
+  });
 }

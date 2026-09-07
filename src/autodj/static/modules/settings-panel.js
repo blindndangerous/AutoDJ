@@ -71,7 +71,7 @@ export async function postSettings(url, body, { settingsStatus, control } = {}) 
     // The settings card is several screens tall, so the failure has to
     // travel to the visible toast as well as the live region.
     announceStatus(settingsStatus, `Could not save: ${err.message}`,
-      { dwellMs: 6000, force: true });
+      { dwellMs: 6000, force: true, tone: "error" });
     return false;
   }
 }

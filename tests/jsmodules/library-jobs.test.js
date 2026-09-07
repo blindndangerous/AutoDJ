@@ -23,7 +23,12 @@ function watch(node) {
   observer.observe(node, { childList: true, characterData: true, subtree: true });
   return {
     records,
-    announcements: () => records.filter((r) => r.addedNodes.length > 0).length,
+    // Count text landing in the node whichever way it got there: replacing
+    // textContent swaps the child node, but a firstChild.data write would
+    // report as characterData and must not slip past as "silent".
+    announcements: () => records.filter(
+      (r) => r.addedNodes.length > 0 || r.type === "characterData",
+    ).length,
     stop: () => observer.disconnect(),
   };
 }

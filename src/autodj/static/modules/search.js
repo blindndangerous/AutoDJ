@@ -25,8 +25,8 @@ export function installSearch({
   // Announced once and shown once: announceStatus writes the region and
   // copies the same string into the visible #status-toast, so a failed
   // "Next" is no longer silent for a sighted user.
-  function announce(message) {
-    announceStatus(queueAnnounce, message, { dwellMs: 3000, force: true });
+  function announce(message, tone = "info") {
+    announceStatus(queueAnnounce, message, { dwellMs: 3000, force: true, tone });
   }
 
   // #search-count is visible, so it keeps its text instead of being
@@ -35,8 +35,9 @@ export function installSearch({
   // Searching again and getting the same number of hits is still a
   // completed search, so a repeated count has to be announced again --
   // except when the field is simply being emptied.
-  function setCount(message, { mirror = false } = {}) {
-    announceStatus(searchCount, message, { mirror, force: Boolean(message) });
+  function setCount(message, { mirror = false, tone = "info" } = {}) {
+    announceStatus(searchCount, message,
+      { mirror, tone, force: Boolean(message) });
   }
 
   async function doSearch() {
@@ -56,7 +57,8 @@ export function installSearch({
       ));
     } catch (errorValue) {
       if (!searchRequestOwner.isCurrent(request)) return;
-      setCount(`Could not search: ${errorValue.message}`, { mirror: true });
+      setCount(`Could not search: ${errorValue.message}`,
+        { mirror: true, tone: "error" });
       searchInput.focus();
       return;
     }
@@ -138,7 +140,7 @@ export function installSearch({
       });
     } catch (errorValue) {
       if (!isAuthenticatedRequestCurrent(epoch)) return;
-      announce(`Could not update queue: ${errorValue.message}`);
+      announce(`Could not update queue: ${errorValue.message}`, "error");
     } finally {
       if (isAuthenticatedRequestCurrent(epoch)) btn.focus();
     }

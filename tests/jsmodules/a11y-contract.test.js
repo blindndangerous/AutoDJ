@@ -1487,6 +1487,7 @@ describe("static accessibility contracts", () => {
 
     for (const selector of [
       "#status-toast", "#playback-stale-note", "#lib-job-elapsed",
+      "#cue-legend", "#camelot-legend",
     ]) {
       expect(document.querySelector(selector).getAttribute("aria-hidden"), selector)
         .toBe("true");
@@ -1504,7 +1505,7 @@ describe("static accessibility contracts", () => {
       "#library-log", "#version-stamp",
       // The sighted status mirror and the silent job clock must never
       // become a second announcement path for the same message.
-      "#status-toast", "#playback-stale-note",
+      "#status-toast", "#playback-stale-note", "#cue-legend", "#camelot-legend",
     ]) {
       const node = document.querySelector(selector);
       expect(node, selector).not.toBeNull();
@@ -1513,6 +1514,7 @@ describe("static accessibility contracts", () => {
     for (const selector of [
       "#now-playing-meta", "#cue-summary", "#cue-details", "#version-stamp",
       "#status-toast", "#playback-stale-note", "#lib-job-elapsed",
+      "#cue-legend", "#camelot-legend",
     ]) {
       expect(document.querySelector(selector).hasAttribute("role"), selector)
         .toBe(false);

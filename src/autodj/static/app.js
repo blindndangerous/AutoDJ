@@ -239,7 +239,7 @@ function reportBackgroundRequestError(errorValue) {
   announceStatus(
     document.getElementById("sr-status"),
     `Request failed: ${message}`,
-    { dwellMs: 8000 },
+    { dwellMs: 8000, tone: "error" },
   );
 }
 
@@ -751,7 +751,7 @@ async function _applySink(sinkId) {
     if (settingsStatus) {
       announceStatus(settingsStatus, "Could not switch audio device: "
         + (lastErr.message || lastErr.name || "unknown"),
-        { dwellMs: 5000, force: true });
+        { dwellMs: 5000, force: true, tone: "error" });
     }
     return false;
   }
@@ -792,7 +792,7 @@ async function _grantDeviceLabels() {
         + "address bar (or your browser's site settings) and click again.  "
         + "AutoDJ never records audio; the prompt is the only way browsers "
         + "expose audio-output device names.",
-        { dwellMs: 15000, force: true });
+        { dwellMs: 15000, force: true, tone: "error" });
       // Long dwell: the user needs time to read it, and the next click
       // on the button overwrites it anyway.
     }
@@ -1019,9 +1019,9 @@ function setConnStatus(state, label) {
 }
 
 // Progress within an outage: seen, never spoken.
-function showConnProgress(state, label) {
+function showConnProgress(state, label, tone = "info") {
   if (connStatus.className !== state) connStatus.className = state;
-  showVisibleStatus(label);
+  showVisibleStatus(label, document, { tone });
 }
 
 // Reconnect pacing.  A fixed three-second retry hammered the server for
@@ -1037,8 +1037,9 @@ let transportDown = false;
 // The Now Playing card keeps its last payload when the socket drops, so
 // without this every field -- art, metadata, wheel, progress -- silently
 // claims the track is still playing.  #conn-status stays the single
-// announcement path; the note and the disabled controls are the sighted
-// half of the same fact.
+// announcement path; the banner and the flagged card are the sighted
+// half of the same fact.  The transport controls stay enabled on purpose:
+// clicking Play is the re-authentication recovery path.
 function setPlaybackStale(stale) {
   const note = document.getElementById("playback-stale-note");
   if (note && note.hidden === stale) note.hidden = !stale;
@@ -1088,7 +1089,7 @@ function connectWS() {
       onExpired: expireAuthenticatedSession,
     })) return;
     if (transportDown) {
-      showConnProgress("error", "Still disconnected — retrying.");
+      showConnProgress("error", "Still disconnected — retrying.", "error");
     } else {
       transportDown = true;
       setConnStatus("error", "Disconnected, retrying");
@@ -1125,7 +1126,7 @@ function connectWS() {
     // The error is part of the retry cycle, so onclose owns the single
     // announcement and this stays visible-only.
     if (transportDown) {
-      showConnProgress("error", "Connection error.");
+      showConnProgress("error", "Connection error.", "error");
     } else {
       transportDown = true;
       setConnStatus("error", "Disconnected, retrying");
@@ -1402,8 +1403,14 @@ let volAnnounceTimer = null;
 // Live-region clear helper extracted to ./modules/live-region.js.
 // Re-bound under the legacy underscore name so existing call sites
 // keep working without a sweep.
-import { announceStatus, clearLiveRegionLater, showVisibleStatus } from
-  "./modules/live-region.js";
+import {
+  announceStatus,
+  clearLiveRegionLater,
+  installVisibleStatusDismiss,
+  showVisibleStatus,
+} from "./modules/live-region.js";
+
+installVisibleStatusDismiss();
 // Logarithmic (perceptual) volume curve — humans hear loudness as
 // log of amplitude, so a linear slider feels backwards: 0-50 % barely
 // changes, 80-100 % feels too loud.  Map slider 0-100 → gain via
@@ -1745,7 +1752,8 @@ void bootstrapAuthenticatedApp({
   startAuthenticatedApp,
   onError: errorValue => {
     setConnStatus("error", `Cannot reach server: ${errorValue.message}`);
-    showVisibleStatus(`Cannot reach server: ${errorValue.message}`);
+    showVisibleStatus(`Cannot reach server: ${errorValue.message}`,
+      document, { tone: "error" });
   },
 });
 

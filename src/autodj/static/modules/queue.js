@@ -174,7 +174,7 @@ export function installQueueButtons(els) {
       focusQueueList = false;
       announceStatus(queueAnnounce,
         `Could not update queue: ${errorValue.message}`,
-        { dwellMs: 6000, force: true });
+        { dwellMs: 6000, force: true, tone: "error" });
     } finally {
       mutationPending = false;
       queueList.setAttribute("aria-busy", "false");

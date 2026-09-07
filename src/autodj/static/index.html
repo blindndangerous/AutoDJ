@@ -114,6 +114,11 @@
              text-anchor="middle"
              dominant-baseline="middle"></g>
         </svg>
+        <!-- The ring key lives outside the SVG: inside it, 8 viewBox units
+             rendered at 7.3 px, which made the wheel's only legend
+             unreadable.  aria-hidden with the wheel -- #badges-announce
+             already says the key. -->
+        <p id="camelot-legend" aria-hidden="true">Outer ring B (major) · inner ring A (minor)</p>
       </div>
     </div>
     <!-- Independent polite region for badge announcements (key + beatmatch,
@@ -305,6 +310,14 @@
     <h2>History</h2>
     <p id="history-empty">No tracks played yet this session.</p>
     <table id="history-table" aria-label="History" hidden>
+      <!-- Proportional widths for table-layout: fixed, which is what stops
+           the table pushing a 390 px page sideways. -->
+      <colgroup>
+        <col class="hist-time">
+        <col class="hist-title">
+        <col class="hist-artist">
+        <col class="hist-duration">
+      </colgroup>
       <thead>
         <tr>
           <th scope="col">Time</th>
