@@ -794,12 +794,13 @@
              style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap">
         Search by artist or title
       </label>
+      <!-- No aria-expanded / aria-controls: this is a plain search field,
+           not a combobox, and the result count is announced through the
+           #search-count live region. -->
       <input type="search"
              id="search-input"
              placeholder="Artist or title…"
-             autocomplete="off"
-             aria-expanded="false"
-             aria-controls="search-results">
+             autocomplete="off">
       <button id="btn-search" aria-label="Search">Search</button>
     </div>
     <!-- aria-atomic="false": announce count separately, not the entire list -->

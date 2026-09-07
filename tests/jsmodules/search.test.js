@@ -66,7 +66,9 @@ describe("search requests", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(els.searchResults.textContent).toBe("");
-    expect(els.searchInput.getAttribute("aria-expanded")).toBe("false");
+    // A plain search input is not a combobox: aria-expanded on it makes
+    // NVDA announce "collapsed" on a field with no popup.
+    expect(els.searchInput.hasAttribute("aria-expanded")).toBe(false);
     vi.unstubAllGlobals();
   });
 

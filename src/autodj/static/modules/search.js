@@ -29,7 +29,6 @@ export function installSearch({
     const q = searchInput.value.trim();
     if (!q) {
       searchResults.innerHTML = "";
-      searchInput.setAttribute("aria-expanded", "false");
       if (searchCount) searchCount.textContent = "";
       searchRequestOwner.cancel();
       return;
@@ -54,7 +53,6 @@ export function installSearch({
     if (results.length === 0) {
       searchResults.innerHTML =
         `<li><span class="no-results">No results for "${escHtml(q)}".</span></li>`;
-      searchInput.setAttribute("aria-expanded", "true");
       if (searchCount) {
         searchCount.textContent = "No results found.";
         clearLiveRegionLater(searchCount);
@@ -77,7 +75,6 @@ export function installSearch({
                 data-now="false"><span aria-hidden="true">&#9197;</span> Next</button>
       </li>`;
     }).join("");
-    searchInput.setAttribute("aria-expanded", "true");
     if (searchCount) {
       searchCount.textContent =
         `${results.length} result${results.length === 1 ? "" : "s"} found.`;
@@ -94,7 +91,6 @@ export function installSearch({
     if (!searchInput.value.trim()) {
       searchRequestOwner.cancel();
       searchResults.innerHTML = "";
-      searchInput.setAttribute("aria-expanded", "false");
       if (searchCount) searchCount.textContent = "";
     }
   });
