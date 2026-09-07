@@ -446,6 +446,23 @@ def make_eq_state(sos_filters: dict[str, Any] | None) -> dict[str, np.ndarray] |
     }
 
 
+def reset_eq_state(state: dict[str, np.ndarray] | None) -> None:
+    """Zero the filter memory in *state*, in place.
+
+    Call this whenever the EQ starts filtering again after a stretch of
+    bypassed blocks: the memory still holds the tail of whatever was filtered
+    before the bypass, and splicing that into a later part of the track is a
+    click.  Starting from zeros is the same assumption a new stream makes.
+
+    Args:
+        state: Dict from :func:`make_eq_state`, or ``None``.
+    """
+    if state is None:
+        return
+    for band in state.values():
+        band.fill(0.0)
+
+
 def apply_eq(
     chunk: np.ndarray,
     sos_filters: dict[str, Any] | None,
@@ -766,6 +783,10 @@ class Player:
         self._eq_mid: float = 1.0
         self._eq_high: float = 1.0
         self._eq_filters: dict[str, Any] | None = None
+        # Per-band biquad memory for the active stream, and whether the last
+        # output block actually ran through it.  Both are rebuilt per stream.
+        self._eq_state: dict[str, np.ndarray] | None = None
+        self._eq_engaged: bool = False
         # Energy ramp target for the current pick (None = disabled)
         self._target_energy: float | None = None
         # Mood-arc state.  Lazy-init: set when the user enables the
@@ -1988,6 +2009,7 @@ class Player:
         # Filter memory is per-stream: a new track starts from silence.
         self._eq_filters = make_eq_filters(sr)
         self._eq_state = make_eq_state(self._eq_filters)
+        self._eq_engaged = False
 
         finished = threading.Event()
 
@@ -2001,11 +2023,17 @@ class Player:
             chunk = audio[pos[0] : pos[0] + frames]
 
             # 3-band EQ — skip when all bands at unity (no allocation, no filtering)
-            if (
+            engaged = (
                 self._eq_filters is not None
                 and (self._eq_low != 1.0 or self._eq_mid != 1.0 or self._eq_high != 1.0)
                 and len(chunk) > 0
-            ):
+            )
+            if engaged and not self._eq_engaged:
+                # Coming back from bypass: the memory is from wherever the EQ
+                # was last active, which is not where playback is now.
+                reset_eq_state(self._eq_state)
+            self._eq_engaged = engaged
+            if engaged:
                 chunk = apply_eq(
                     chunk,
                     self._eq_filters,

@@ -33,6 +33,7 @@ from autodj.player import (
     load_audio,
     make_eq_filters,
     make_eq_state,
+    reset_eq_state,
     write_m3u,
 )
 from autodj.similarity import SimilarityError, SimilarityIndex
@@ -1860,6 +1861,37 @@ class TestEq:
             for i in range(0, len(audio), block)
         ]
         np.testing.assert_allclose(np.concatenate(pieces), whole, atol=1e-6)
+
+    def test_reset_eq_state_zeroes_every_band(self) -> None:
+        sos = make_eq_filters(44100)
+        state = make_eq_state(sos)
+        apply_eq(_sine_audio(0.05), sos, 1.6, 0.4, 1.2, state=state)
+        assert state is not None
+        assert any(np.abs(band).max() > 0 for band in state.values())
+
+        reset_eq_state(state)
+        assert all(np.abs(band).max() == 0 for band in state.values())
+
+    def test_reset_eq_state_without_state_is_a_no_op(self) -> None:
+        reset_eq_state(None)
+
+    def test_re_engaging_after_bypass_matches_a_fresh_stream(self) -> None:
+        """Stale memory from before a bypass would splice a click into playback."""
+        sos = make_eq_filters(44100)
+        audio = _sine_audio(0.1)
+
+        carried = make_eq_state(sos)
+        apply_eq(_sine_audio(0.1) * 0.2, sos, 1.6, 0.4, 1.2, state=carried)
+        reset_eq_state(carried)
+        after_reset = apply_eq(audio, sos, 1.6, 0.4, 1.2, state=carried)
+
+        fresh = apply_eq(audio, sos, 1.6, 0.4, 1.2, state=make_eq_state(sos))
+        np.testing.assert_allclose(after_reset, fresh, atol=1e-6)
+
+    def test_player_starts_with_no_eq_memory(self) -> None:
+        player = Player(_make_cfg_mock(), _make_sim_index())
+        assert player._eq_state is None
+        assert player._eq_engaged is False
 
     def test_stateless_blocks_still_differ_from_one_shot(self) -> None:
         sos = make_eq_filters(44100)
