@@ -1291,7 +1291,7 @@ class Player:
 
     def _read_lyrics_for_path(self, path: str) -> tuple[list, str]:
         """Return timestamped/plain lyrics for *path* without mutating state."""
-        from autodj.audio_meta import load_lrc_for, read_plain_lyrics
+        from autodj.audio_meta import load_lrc_for, parse_lrc, read_plain_lyrics
 
         # Respect the lyric-display toggle — when off we skip ALL lyric
         # work so the CLI panel stays compact and the web UI hides its card.
@@ -1323,6 +1323,17 @@ class Player:
             except (OSError, ValueError) as exc:
                 logger.debug("Embedded lyric tag read failed: %s", exc)
                 plain = ""
+
+        # A "plain" lyric field very often *is* LRC: most taggers write the
+        # synced text straight into LYRICS / USLT / ©lyr rather than to a
+        # sidecar.  Returning it untouched printed raw "[00:17.49]" stamps
+        # on screen, sent the whole song to the live region in one breath,
+        # and made the current-line highlight impossible.  Parse it here so
+        # embedded and sidecar lyrics behave identically; text with no
+        # timestamps yields no lines and stays plain.
+        timed = parse_lrc(plain) if plain else []
+        if timed:
+            return timed, ""
         return [], plain
 
     def _load_lyrics(self, path: str) -> None:
@@ -1330,18 +1341,26 @@ class Player:
 
         Resolution order:
         1. Sibling ``.lrc`` file (timestamped, scrolls in the web UI).
-        2. Beets DB ``lyrics`` field (plain text).
+        2. Beets DB ``lyrics`` field.
         3. Embedded ID3/Vorbis/MP4 lyric tags (USLT, LYRICS, ©lyr).
+
+        Sources 2 and 3 are parsed as LRC too: taggers routinely put the
+        synced text in the tag rather than a sidecar.  Whichever source
+        wins, timestamped text lands in ``_current_lyrics`` and untimed
+        text in ``_current_lyrics_plain`` -- never both.
         """
         self._current_lyrics, self._current_lyrics_plain = self._read_lyrics_for_path(path)
 
-        # CLI: print plain lyrics block once per track so the user can see
+        # CLI: print the lyrics block once per track so the user can see
         # them in the terminal too (web UI already renders them below the
         # now-playing card).  Skipped in dry-run / headless serve mode.
-        if self._current_lyrics_plain and not self._dry_run and not self._no_keyboard:
+        block = self._current_lyrics_plain or "\n".join(
+            line.text for line in self._current_lyrics if line.text
+        )
+        if block and not self._dry_run and not self._no_keyboard:
             _CONSOLE.print(
                 Panel(
-                    self._current_lyrics_plain,
+                    block,
                     title="[bold]Lyrics[/bold]",
                     border_style="dim",
                     padding=(0, 1),

@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { applyLyricsState, loadLyrics, resetLyricState } from
+import {
+  applyLyricsState, loadLyrics, resetLyricState, stripLyricTimestamps,
+} from
   "../../src/autodj/static/modules/lyrics.js";
 
 function lyricsResponse(path, text) {
@@ -272,6 +274,7 @@ describe("lyrics request ownership", () => {
     await loadLyrics("motion.flac", elements);
     const line = elements.lyricsList.querySelector("li");
     line.scrollIntoView = vi.fn();
+    elements.lyricsList.scrollTo = vi.fn();
 
     applyLyricsState({
       has_lyrics: true,
@@ -279,9 +282,12 @@ describe("lyrics request ownership", () => {
       lyric_text: "Line one",
     }, elements);
 
-    expect(line.scrollIntoView).toHaveBeenCalledWith({
+    // Only the lyrics box scrolls -- scrollIntoView would drag every
+    // scrollable ancestor, including the page, once per line.
+    expect(line.scrollIntoView).not.toHaveBeenCalled();
+    expect(elements.lyricsList.scrollTo).toHaveBeenCalledWith({
+      top: expect.any(Number),
       behavior: expectedBehavior,
-      block: "center",
     });
     expect(line.getAttribute("aria-current")).toBe("true");
     expect(elements.lyricAnnounce.textContent).toBe("Line one");
@@ -302,6 +308,7 @@ describe("lyrics request ownership", () => {
     await loadLyrics("safe-motion.flac", elements);
     const line = elements.lyricsList.querySelector("li");
     line.scrollIntoView = vi.fn();
+    elements.lyricsList.scrollTo = vi.fn();
 
     expect(() => applyLyricsState({
       has_lyrics: true,
@@ -309,10 +316,41 @@ describe("lyrics request ownership", () => {
       lyric_text: "Line one",
     }, elements)).not.toThrow();
 
-    expect(line.scrollIntoView).toHaveBeenCalledWith({
+    expect(line.scrollIntoView).not.toHaveBeenCalled();
+    expect(elements.lyricsList.scrollTo).toHaveBeenCalledWith({
+      top: expect.any(Number),
       behavior: "auto",
-      block: "center",
     });
     expect(elements.lyricAnnounce.textContent).toBe("Line one");
+  });
+});
+
+describe("plain lyric fallback", () => {
+  it("never prints raw LRC timestamps on screen", () => {
+    const elements = lyricElements();
+    applyLyricsState({
+      has_lyrics: false,
+      lyrics_plain: "[00:17.49]So unaffectionate\n[00:21.00]<00:21.00>So insecure",
+    }, elements);
+
+    const block = elements.lyricsList.querySelector(".plain-lyrics");
+    expect(block.textContent).toBe("So unaffectionate\nSo insecure");
+    expect(block.textContent).not.toContain("[00:17");
+  });
+
+  it("leaves untimestamped prose exactly as it arrived", () => {
+    const elements = lyricElements();
+    applyLyricsState({
+      has_lyrics: false,
+      lyrics_plain: "Just words\n  and more words  ",
+    }, elements);
+
+    expect(elements.lyricsList.querySelector(".plain-lyrics").textContent)
+      .toBe("Just words\n  and more words  ");
+  });
+
+  it("exports a no-op strip for non-string input", () => {
+    expect(stripLyricTimestamps(null)).toBe(null);
+    expect(stripLyricTimestamps("plain")).toBe("plain");
   });
 });

@@ -48,6 +48,20 @@ function finishLoadStatus(request, elements, message) {
   }
 }
 
+// Belt and braces for the raw-timestamp defect.  The server parses LRC
+// out of sidecars and embedded tags now, but any plain text that still
+// arrives carrying "[mm:ss.xx]" (or enhanced per-word "<mm:ss.xx>")
+// stamps must not print them on screen or read them aloud.
+const LRC_STAMP_RE = /\[\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?\]|<\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?>/g;
+
+export function stripLyricTimestamps(text) {
+  if (typeof text !== "string" || !LRC_STAMP_RE.test(text)) return text;
+  return text
+    .split("\n")
+    .map((line) => line.replace(LRC_STAMP_RE, "").trim())
+    .join("\n");
+}
+
 function hasPlainFallback(elements) {
   return elements.lyricsList.querySelector(".plain-lyrics") !== null;
 }
@@ -72,6 +86,25 @@ function clearCurrentLine({ lyricsList, lyricAnnounce }) {
     lyricAnnounce.textContent = "";
   }
   state.currentLineAnnouncement = null;
+}
+
+// Scroll ONLY the lyrics box.  Element.scrollIntoView walks every
+// scrollable ancestor including the document, so with real synced
+// lyrics it yanked the whole page every few seconds -- which is exactly
+// the case the embedded-LRC fix has just made common.
+function scrollActiveLineIntoView(lyricsList, li) {
+  if (!lyricsList || typeof li.getBoundingClientRect !== "function") return;
+  const lineBox = li.getBoundingClientRect();
+  const listBox = lyricsList.getBoundingClientRect();
+  const top = lyricsList.scrollTop
+    + (lineBox.top - listBox.top)
+    - (listBox.height - lineBox.height) / 2;
+  const behavior = prefersReducedMotion() ? "auto" : "smooth";
+  if (typeof lyricsList.scrollTo === "function") {
+    lyricsList.scrollTo({ top: Math.max(0, top), behavior });
+  } else {
+    lyricsList.scrollTop = Math.max(0, top);
+  }
 }
 
 function prefersReducedMotion() {
@@ -144,7 +177,7 @@ export function applyLyricsState(s, { lyricsCard, lyricsList, lyricAnnounce }) {
       state.cached = [];
       lyricsCard.hidden = false;
       lyricsList.innerHTML =
-        `<li class="plain-lyrics" style="white-space:pre-wrap;list-style:none;padding-left:0">${escHtml(s.lyrics_plain)}</li>`;
+        `<li class="plain-lyrics" style="white-space:pre-wrap;list-style:none;padding-left:0">${escHtml(stripLyricTimestamps(s.lyrics_plain))}</li>`;
     }
     state.lastIndex = null;
     claimPlainLyricsStatus({ lyricsList, lyricAnnounce });
@@ -168,10 +201,7 @@ export function applyLyricsState(s, { lyricsCard, lyricsList, lyricAnnounce }) {
     const li = items[idx];
     li.classList.add("active");
     li.setAttribute("aria-current", "true");
-    li.scrollIntoView({
-      behavior: prefersReducedMotion() ? "auto" : "smooth",
-      block: "center",
-    });
+    scrollActiveLineIntoView(lyricsList, li);
     if (s.lyric_text && lyricAnnounce) {
       state.loadStatus = null;
       state.currentLineAnnouncement = s.lyric_text;

@@ -369,7 +369,10 @@
       list-style: none;
       max-height: 14rem;
       overflow-y: auto;
-      padding: 0.5rem 0;
+      /* Always-visible thin scrollbar: with Firefox overlay scrollbars the
+         only cue that more text existed was a half-clipped last line. */
+      scrollbar-width: thin;
+      scrollbar-color: var(--accent) transparent;
       font-size: 0.95rem;
       line-height: 1.5;
     }

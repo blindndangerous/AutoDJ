@@ -2605,6 +2605,70 @@ class TestPlayerCoverageErrorPaths:
         assert find_next.call_count == 2
         assert list(find_next.call_args_list[1].kwargs["recently_played"]) == [current.path]
 
+    def test_embedded_timestamped_lyrics_parse_as_synced_lines(self) -> None:
+        """An LRC-format embedded tag must scroll, not print its timestamps."""
+        player = Player(_make_cfg_mock(), _make_sim_index(2))
+        player._cfg.library.beets_db = None
+        embedded = "[00:17.49]So unaffectionate\n[00:21.00]So insecure\n"
+        with (
+            patch("autodj.audio_meta.load_lrc_for", return_value=[]),
+            patch("autodj.audio_meta.read_plain_lyrics", return_value=embedded),
+        ):
+            lyrics, plain = player._read_lyrics_for_path("song.flac")
+
+        assert plain == ""
+        assert [line.text for line in lyrics] == [
+            "So unaffectionate",
+            "So insecure",
+        ]
+        assert [line.time_s for line in lyrics] == [17.49, 21.0]
+
+    def test_beets_timestamped_lyrics_parse_as_synced_lines(self) -> None:
+        """Same for a beets `lyrics` field that happens to hold LRC text."""
+        player = Player(_make_cfg_mock(), _make_sim_index(2))
+        player._cfg.library.beets_db = "beets.db"
+        with (
+            patch("autodj.audio_meta.load_lrc_for", return_value=[]),
+            patch(
+                "autodj.beets.get_lyrics_for_path",
+                return_value="[00:05.00]One\n[00:09.50]Two",
+            ),
+        ):
+            lyrics, plain = player._read_lyrics_for_path("song.flac")
+
+        assert plain == ""
+        assert [line.text for line in lyrics] == ["One", "Two"]
+
+    def test_untimestamped_lyrics_stay_plain(self) -> None:
+        """Prose without timestamps must not be mangled into empty lines."""
+        player = Player(_make_cfg_mock(), _make_sim_index(2))
+        player._cfg.library.beets_db = None
+        with (
+            patch("autodj.audio_meta.load_lrc_for", return_value=[]),
+            patch(
+                "autodj.audio_meta.read_plain_lyrics",
+                return_value="Just words\nhere",
+            ),
+        ):
+            lyrics, plain = player._read_lyrics_for_path("song.flac")
+
+        assert lyrics == []
+        assert plain == "Just words\nhere"
+
+    def test_metadata_only_lrc_tag_stays_plain(self) -> None:
+        """A tag with only [ar:]/[ti:] headers has no timed lines to scroll."""
+        player = Player(_make_cfg_mock(), _make_sim_index(2))
+        player._cfg.library.beets_db = None
+        tag = "[ar:Artist]\n[ti:Title]\nplain words"
+        with (
+            patch("autodj.audio_meta.load_lrc_for", return_value=[]),
+            patch("autodj.audio_meta.read_plain_lyrics", return_value=tag),
+        ):
+            lyrics, plain = player._read_lyrics_for_path("song.flac")
+
+        assert lyrics == []
+        assert plain == tag
+
     def test_embedded_lyrics_error_returns_empty_text(self) -> None:
         player = Player(_make_cfg_mock(), _make_sim_index(2))
         player._cfg.library.beets_db = None
