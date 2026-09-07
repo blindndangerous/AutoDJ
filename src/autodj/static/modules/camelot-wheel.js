@@ -5,7 +5,7 @@
 // (B = major) and inner (A = minor) ring.  Numbers 1..12 run clockwise
 // starting at 12 o'clock.  Each sector path has data-cell="<n><A|B>".
 
-let _built = false;
+const _built = new WeakSet();
 
 function _polar(r, angleDeg) {
   // 0deg = 12 o'clock, clockwise
@@ -28,7 +28,7 @@ function _arcPath(r1, r2, a1, a2) {
 }
 
 function _build(sectorsEl, labelsEl) {
-  if (_built || !sectorsEl) return;
+  if (!sectorsEl || _built.has(sectorsEl)) return;
   const SVG_NS = "http://www.w3.org/2000/svg";
   const sweep = 360 / 12;        // 30 deg per slot
   const rings = [
@@ -36,25 +36,54 @@ function _build(sectorsEl, labelsEl) {
     { side: "A", rIn: 40, rOut: 70,  labelR: 55 },
   ];
   for (let n = 1; n <= 12; n++) {
-    const a1 = (n - 1) * sweep - sweep / 2;
-    const a2 = n * sweep - sweep / 2;
+    // Sector n spans (n-1)*30 - 15 .. n*30 - 15, so its CENTRE is at
+    // (n-1)*30.  The label used to be placed at (n-0.5)*30, i.e. exactly
+    // on the boundary with the next wedge, which put every number half a
+    // sector clockwise of the wedge it names.
+    const centre = (n - 1) * sweep;
+    const a1 = centre - sweep / 2;
+    const a2 = centre + sweep / 2;
     for (const r of rings) {
       const path = document.createElementNS(SVG_NS, "path");
       path.setAttribute("d", _arcPath(r.rIn, r.rOut, a1, a2));
       path.setAttribute("class", "sector");
       path.setAttribute("data-cell", `${n}${r.side}`);
       sectorsEl.appendChild(path);
+      if (!labelsEl) continue;
+      // One number per ring: the inner A/minor ring was previously
+      // unlabelled, and a single shared number could not be highlighted
+      // legibly because it might sit over an unlit wedge.
+      const [lx, ly] = _polar(r.labelR, centre);
+      const lab = document.createElementNS(SVG_NS, "text");
+      lab.setAttribute("x", lx.toFixed(2));
+      lab.setAttribute("y", ly.toFixed(2));
+      lab.setAttribute("class", r.side === "A" ? "label minor" : "label");
+      lab.setAttribute("data-cell", `${n}${r.side}`);
+      lab.setAttribute("data-num", String(n));
+      lab.textContent = String(n);
+      labelsEl.appendChild(lab);
     }
-    const [lx, ly] = _polar(78, (n - 0.5) * sweep);
-    const lab = document.createElementNS(SVG_NS, "text");
-    lab.setAttribute("x", lx.toFixed(2));
-    lab.setAttribute("y", ly.toFixed(2));
-    lab.setAttribute("class", "label");
-    lab.setAttribute("data-num", String(n));
-    lab.textContent = String(n);
-    labelsEl.appendChild(lab);
   }
-  _built = true;
+  if (labelsEl) {
+    // Centre readout: names the current cell outright, which is also the
+    // wheel's only A/B legend.
+    const current = document.createElementNS(SVG_NS, "text");
+    current.setAttribute("id", "camelot-current");
+    current.setAttribute("x", "0");
+    current.setAttribute("y", "-4");
+    current.setAttribute("font-size", "18");
+    current.setAttribute("class", "current-cell");
+    current.textContent = "—";
+    labelsEl.appendChild(current);
+    const legend = document.createElementNS(SVG_NS, "text");
+    legend.setAttribute("x", "0");
+    legend.setAttribute("y", "14");
+    legend.setAttribute("font-size", "8");
+    legend.setAttribute("class", "ring-legend");
+    legend.textContent = "outer B · inner A";
+    labelsEl.appendChild(legend);
+  }
+  _built.add(sectorsEl);
 }
 
 // Camelot adjacency rules.  Mirrors dj_meta.harmonic_compatible on the
@@ -103,10 +132,17 @@ export function applyCamelotWheel(currentCell, harmonicMode, { sectorsEl, labels
     sec.classList.toggle("active", isActive);
     sec.classList.toggle("compat", !isActive && compat.has(cell));
   }
-  const activeNum = currentCell && currentCell !== "--"
-    ? currentCell.replace(/[AB]$/, "")
-    : null;
+  if (!labelsEl) return;
   for (const lab of labelsEl.querySelectorAll(".label")) {
-    lab.classList.toggle("active", lab.getAttribute("data-num") === activeNum);
+    // Match the exact cell, so the highlighted number is always the one
+    // drawn on the lit wedge -- black on --accent, 9.5:1.  Matching only
+    // the number lit an unlit neighbour instead, where #000 measured
+    // 1.43:1 and the current key was effectively invisible.
+    lab.classList.toggle("active", lab.getAttribute("data-cell") === currentCell);
+  }
+  const current = labelsEl.querySelector("#camelot-current");
+  if (current) {
+    const text = currentCell && currentCell !== "--" ? currentCell : "—";
+    if (current.textContent !== text) current.textContent = text;
   }
 }

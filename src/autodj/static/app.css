@@ -776,8 +776,18 @@
       fill: var(--text);
       pointer-events: none;
     }
+    /* Inner A/minor ring reads as secondary to the outer B/major ring. */
     #camelot-wheel .label.minor { fill: var(--text-dim); }
+    /* The active number is drawn on its OWN wedge now, which is filled
+       with --accent, so #000 measures 9.5:1 there. */
     #camelot-wheel .label.active { fill: #000; font-weight: 700; }
+    /* Centre readout — names the current cell and doubles as the only
+       A/B legend the wheel has. */
+    #camelot-wheel .current-cell {
+      fill: var(--text);
+      font-weight: 700;
+    }
+    #camelot-wheel .ring-legend { fill: var(--text-dim); }
 
     @media (prefers-reduced-motion: reduce) {
       html { scroll-behavior: auto; }
