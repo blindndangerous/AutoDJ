@@ -6,7 +6,7 @@
 // module stays free of AudioContext + decks state.
 
 import { dbg } from "./dom-helpers.js";
-import { clearLiveRegionLater } from "./live-region.js";
+import { announceStatus } from "./live-region.js";
 import { applyShowWhen } from "./show-when.js";
 import {
   captureAuthenticatedRequestEpoch,
@@ -46,11 +46,9 @@ function _floatOrNull(el) {
 }
 
 function _setStatus(els, msg) {
-  if (els.lnStatus) {
-    els.lnStatus.classList.remove("visually-hidden");
-    els.lnStatus.textContent = msg;
-    clearLiveRegionLater(els.lnStatus, 4000);
-  }
+  if (!els.lnStatus) return;
+  els.lnStatus.classList.remove("visually-hidden");
+  announceStatus(els.lnStatus, msg, { dwellMs: 4000 });
 }
 
 export function renderLinerFileList(fileList, files, onDelete) {

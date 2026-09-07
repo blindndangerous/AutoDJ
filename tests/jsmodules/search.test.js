@@ -12,7 +12,8 @@ function jsonResponse(body, status = 200) {
 function setup() {
   document.body.innerHTML = `
     <input id="search"><button id="go">Search</button>
-    <p id="count"></p><p id="announce"></p><ul id="results"></ul>`;
+    <p id="count"></p><p id="announce"></p><ul id="results"></ul>
+    <div id="status-toast" aria-hidden="true" hidden></div>`;
   const els = {
     searchInput: document.querySelector("#search"),
     btnSearch: document.querySelector("#go"),
@@ -90,6 +91,45 @@ describe("search requests", () => {
       .toContain("Queue unavailable"));
     expect(mutation.disabled).toBe(false);
     expect(document.activeElement).toBe(mutation);
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("search feedback is visible", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  it("says the result list is capped when the server returns a full page", async () => {
+    const results = Array.from({ length: 100 }, (_, i) => ({
+      path: `/m/${i}.mp3`, artist: "A", title: `T${i}`,
+    }));
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(jsonResponse({ results }))));
+    const els = setup();
+    els.searchInput.value = "love";
+    els.btnSearch.click();
+
+    await vi.waitFor(() => expect(els.searchCount.textContent).not.toBe(""));
+    expect(els.searchCount.textContent).toContain("the first 100 matches");
+    // The count stays on screen instead of being wiped after a dwell.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(els.searchCount.textContent).not.toBe("");
+    vi.unstubAllGlobals();
+  });
+
+  it("shows a failed queue add in the sighted status line", async () => {
+    const els = setup();
+    els.searchResults.innerHTML = `<li>
+      <span class="result-name">Gone Track</span>
+      <button class="result-btn" data-path="/m/gone.mp3" data-now="false">Next</button>
+    </li>`;
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(
+      jsonResponse({ detail: "No such file" }, 404),
+    )));
+
+    els.searchResults.querySelector(".result-btn").click();
+    const toast = document.querySelector("#status-toast");
+    await vi.waitFor(() => expect(toast.textContent).toContain("Could not update queue"));
+    expect(toast.hidden).toBe(false);
+    expect(els.queueAnnounce.textContent).toBe(toast.textContent);
     vi.unstubAllGlobals();
   });
 });

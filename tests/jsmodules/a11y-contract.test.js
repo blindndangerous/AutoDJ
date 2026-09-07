@@ -1485,6 +1485,15 @@ describe("static accessibility contracts", () => {
       expect(status.getAttribute("aria-atomic"), selector).toBe("true");
     }
 
+    for (const selector of [
+      "#status-toast", "#playback-stale-note", "#lib-job-elapsed",
+    ]) {
+      expect(document.querySelector(selector).getAttribute("aria-hidden"), selector)
+        .toBe("true");
+    }
+    expect(document.querySelector("#lib-job-elapsed").getAttribute("aria-live"))
+      .toBe("off");
+
     const progress = document.querySelector("#progress-track");
     const describedBy = progress.getAttribute("aria-describedby").split(/\s+/);
     expect(describedBy).toContain("cue-summary");
@@ -1493,6 +1502,9 @@ describe("static accessibility contracts", () => {
     for (const selector of [
       "#now-playing-meta", "#cue-summary", "#cue-details", "#queue-list",
       "#library-log", "#version-stamp",
+      // The sighted status mirror and the silent job clock must never
+      // become a second announcement path for the same message.
+      "#status-toast", "#playback-stale-note",
     ]) {
       const node = document.querySelector(selector);
       expect(node, selector).not.toBeNull();
@@ -1500,6 +1512,7 @@ describe("static accessibility contracts", () => {
     }
     for (const selector of [
       "#now-playing-meta", "#cue-summary", "#cue-details", "#version-stamp",
+      "#status-toast", "#playback-stale-note", "#lib-job-elapsed",
     ]) {
       expect(document.querySelector(selector).hasAttribute("role"), selector)
         .toBe(false);

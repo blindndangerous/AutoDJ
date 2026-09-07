@@ -1,5 +1,7 @@
 // Pure DOM / formatting helpers shared across modules.
 
+import { showVisibleStatus } from "./live-region.js";
+
 // ----------------------------------------------------------------
 // Debug logging — opt-in via `?debug=1` URL param OR
 // localStorage.autodjDebug = "1".  Off by default; calls become no-ops.
@@ -86,6 +88,10 @@ let _srTimer = null;
 export function srSpeak(msg) {
   const el = document.getElementById("sr-status");
   if (!el) return;
+  // Query hotkeys answer out loud; show the same answer so a sighted
+  // keyboard user gets the reply too.  The mirror is aria-hidden, so
+  // this is still one announcement.
+  showVisibleStatus(msg);
   clearTimeout(_srTimer);
   el.textContent = "";
   setTimeout(() => {

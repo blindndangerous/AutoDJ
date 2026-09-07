@@ -138,6 +138,7 @@ function clearProtectedSessionData() {
   historyList.replaceChildren();
   npAnnounce.textContent = "";
   npMeta.textContent = "";
+  setPlaybackStale(false);
   nextText.textContent = "—";
   progressFill.style.width = "0%";
   progressLbl.textContent = "0:00 / 0:00";
@@ -235,7 +236,11 @@ function reportBackgroundRequestError(errorValue) {
       ? Math.min(lastBackgroundFailure.windowMs * 2, BACKGROUND_FAILURE_MAX_MS)
       : BACKGROUND_FAILURE_MIN_MS,
   };
-  npAnnounce.textContent = `Request failed: ${message}`;
+  announceStatus(
+    document.getElementById("sr-status"),
+    `Request failed: ${message}`,
+    { dwellMs: 8000 },
+  );
 }
 
 // ----------------------------------------------------------------
@@ -729,9 +734,8 @@ async function _applySink(sinkId) {
   }
   if (lastErr) {
     if (settingsStatus) {
-      settingsStatus.textContent = "Could not switch audio device: "
-        + (lastErr.message || lastErr.name || "unknown");
-      clearLiveRegionLater(settingsStatus, 5000);
+      announceStatus(settingsStatus, "Could not switch audio device: "
+        + (lastErr.message || lastErr.name || "unknown"), { dwellMs: 5000 });
     }
     return false;
   }
@@ -765,11 +769,11 @@ async function _grantDeviceLabels() {
       audioDeviceRefresh.disabled = false;
     }
     if (settingsStatus) {
-      settingsStatus.textContent =
+      announceStatus(settingsStatus,
         "Microphone permission denied.  Reset it via the lock icon in the "
         + "address bar (or your browser's site settings) and click again.  "
         + "AutoDJ never records audio; the prompt is the only way browsers "
-        + "expose audio-output device names.";
+        + "expose audio-output device names.");
       // Don't auto-clear — the user needs time to read this, and the
       // next click on the button will overwrite it anyway.
     }
@@ -808,8 +812,7 @@ if (audioDeviceSelect) {
     if (ok && settingsStatus) {
       const sel = audioDeviceSelect.options[audioDeviceSelect.selectedIndex];
       const label = sel ? sel.textContent : "selected device";
-      settingsStatus.textContent = `Audio output: ${label}`;
-      clearLiveRegionLater(settingsStatus, 3000);
+      announceStatus(settingsStatus, `Audio output: ${label}`, { dwellMs: 3000 });
     }
   });
   if (audioDeviceRefresh) {
@@ -991,6 +994,18 @@ function setConnStatus(state, label) {
   connStatus.textContent = label;
 }
 
+// The Now Playing card keeps its last payload when the socket drops, so
+// without this every field -- art, metadata, wheel, progress -- silently
+// claims the track is still playing.  #conn-status stays the single
+// announcement path; the note and the disabled controls are the sighted
+// half of the same fact.
+function setPlaybackStale(stale) {
+  const note = document.getElementById("playback-stale-note");
+  if (note && note.hidden === stale) note.hidden = !stale;
+  const card = document.getElementById("now-playing-card");
+  if (card) card.classList.toggle("is-stale", stale);
+}
+
 function authenticatedInteractionEnabled() {
   return authenticatedActivityActive
     && !document.getElementById("auth-dialog")?.open;
@@ -1008,6 +1023,7 @@ function connectWS() {
   ws.onopen  = () => {
     if (_ws === ws && isAuthenticatedRequestCurrent(socketEpoch)) {
       setConnStatus("connected", "Live");
+      setPlaybackStale(false);
     }
   };
 
@@ -1024,6 +1040,7 @@ function connectWS() {
       onExpired: expireAuthenticatedSession,
     })) return;
     setConnStatus("error", "Disconnected");
+    setPlaybackStale(true);
     // A transient transport loss stops audible/protected activity but
     // preserves the recoverable session projection. The auth recheck below
     // promotes this to a full teardown only when expiry is confirmed.
@@ -1052,6 +1069,7 @@ function connectWS() {
     // NVDA speak the outage three or four times every three seconds and
     // showed the error where sighted users expect the song name.
     setConnStatus("error", "Error");
+    setPlaybackStale(true);
   };
 }
 
@@ -1323,7 +1341,8 @@ let volAnnounceTimer = null;
 // Live-region clear helper extracted to ./modules/live-region.js.
 // Re-bound under the legacy underscore name so existing call sites
 // keep working without a sweep.
-import { clearLiveRegionLater } from "./modules/live-region.js";
+import { announceStatus, clearLiveRegionLater, showVisibleStatus } from
+  "./modules/live-region.js";
 // Logarithmic (perceptual) volume curve — humans hear loudness as
 // log of amplitude, so a linear slider feels backwards: 0-50 % barely
 // changes, 80-100 % feels too loud.  Map slider 0-100 → gain via
@@ -1665,7 +1684,7 @@ void bootstrapAuthenticatedApp({
   startAuthenticatedApp,
   onError: errorValue => {
     setConnStatus("error", `Cannot reach server: ${errorValue.message}`);
-    npAnnounce.textContent = `Cannot reach server: ${errorValue.message}`;
+    showVisibleStatus(`Cannot reach server: ${errorValue.message}`);
   },
 });
 

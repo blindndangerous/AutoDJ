@@ -4,7 +4,7 @@
 // "Next" buttons share a single handler instead of N per-row listeners.
 
 import { escHtml, fmtTrack } from "./dom-helpers.js";
-import { clearLiveRegionLater } from "./live-region.js";
+import { announceStatus } from "./live-region.js";
 import {
   captureAuthenticatedRequestEpoch,
   isAuthenticatedRequestCurrent,
@@ -13,23 +13,34 @@ import {
 } from "./api-client.js";
 import { createLatestRequestOwner } from "./latest-request.js";
 
+// Mirrors the `limit` default of GET /api/search (server.py).
+const SEARCH_RESULT_LIMIT = 100;
+
 export function installSearch({
   searchInput, btnSearch, searchResults, searchCount, queueAnnounce,
 }) {
   if (!searchInput || !searchResults) return;
   const searchRequestOwner = createLatestRequestOwner();
 
+  // Announced once and shown once: announceStatus writes the region and
+  // copies the same string into the visible #status-toast, so a failed
+  // "Next" is no longer silent for a sighted user.
   function announce(message) {
-    if (!queueAnnounce) return;
-    queueAnnounce.textContent = message;
-    clearLiveRegionLater(queueAnnounce);
+    announceStatus(queueAnnounce, message, { dwellMs: 3000 });
+  }
+
+  // #search-count is visible, so it keeps its text instead of being
+  // wiped after a dwell; announceStatus still guarantees one write per
+  // real change.
+  function setCount(message, { mirror = false } = {}) {
+    announceStatus(searchCount, message, { mirror });
   }
 
   async function doSearch() {
     const q = searchInput.value.trim();
     if (!q) {
       searchResults.innerHTML = "";
-      if (searchCount) searchCount.textContent = "";
+      setCount("");
       searchRequestOwner.cancel();
       return;
     }
@@ -42,7 +53,7 @@ export function installSearch({
       ));
     } catch (errorValue) {
       if (!searchRequestOwner.isCurrent(request)) return;
-      if (searchCount) searchCount.textContent = `Could not search: ${errorValue.message}`;
+      setCount(`Could not search: ${errorValue.message}`, { mirror: true });
       searchInput.focus();
       return;
     }
@@ -53,10 +64,7 @@ export function installSearch({
     if (results.length === 0) {
       searchResults.innerHTML =
         `<li><span class="no-results">No results for "${escHtml(q)}".</span></li>`;
-      if (searchCount) {
-        searchCount.textContent = "No results found.";
-        clearLiveRegionLater(searchCount);
-      }
+      setCount(`No results for "${q}".`);
       return;
     }
 
@@ -75,11 +83,13 @@ export function installSearch({
                 data-now="false"><span aria-hidden="true">&#9197;</span> Next</button>
       </li>`;
     }).join("");
-    if (searchCount) {
-      searchCount.textContent =
-        `${results.length} result${results.length === 1 ? "" : "s"} found.`;
-      clearLiveRegionLater(searchCount);
-    }
+    // The server caps at SEARCH_RESULT_LIMIT; say so, otherwise a full
+    // page of results silently pretends to be the whole library.
+    const plural = results.length === 1 ? "" : "s";
+    setCount(results.length >= SEARCH_RESULT_LIMIT
+      ? `${results.length} result${plural} shown — the first `
+        + `${SEARCH_RESULT_LIMIT} matches.  Refine the search to narrow it.`
+      : `${results.length} result${plural} found.`);
   }
 
   if (btnSearch) btnSearch.addEventListener("click", doSearch);
@@ -91,7 +101,7 @@ export function installSearch({
     if (!searchInput.value.trim()) {
       searchRequestOwner.cancel();
       searchResults.innerHTML = "";
-      if (searchCount) searchCount.textContent = "";
+      setCount("");
     }
   });
 

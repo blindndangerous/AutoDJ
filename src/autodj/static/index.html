@@ -72,8 +72,15 @@
   <section data-view="now" id="panel-now" role="tabpanel" aria-labelledby="tab-now">
 
   <!-- Now Playing -->
-  <details class="card" open>
+  <details class="card" id="now-playing-card" open>
     <summary>Now Playing</summary>
+
+    <!-- Shown when the websocket drops.  aria-hidden: #conn-status is the
+         single announcement path for transport state, so this note exists
+         purely to stop sighted users reading stale metadata as live. -->
+    <p id="playback-stale-note" aria-hidden="true" hidden>
+      Not live — showing the last known state.
+    </p>
 
     <div class="now-playing-row">
       <!-- Decorative cover art — track info already announced by aria-live below.
@@ -805,7 +812,9 @@
     </div>
     <!-- aria-atomic="false": announce count separately, not the entire list -->
     <ul id="search-results" role="list" aria-label="Search results"></ul>
-    <div id="search-count" aria-live="polite" aria-atomic="true" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap"></div>
+    <!-- Visible AND announced: the same node is the sighted result count
+         and the polite region, so there is exactly one source of truth. -->
+    <div id="search-count" aria-live="polite" aria-atomic="true"></div>
   </details>
 
   <!-- History -->
@@ -930,5 +939,10 @@
 <script type="module" src="/app.js"></script>
 <!-- Screen-reader live region for status announcements (Shift+T/N/R/B/K) -->
 <div id="sr-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+<!-- Sighted mirror of whatever the live regions above just announced.
+     Deliberately aria-hidden with no role and no aria-live: the region
+     that owns the message does the speaking, this only makes the same
+     text visible.  See modules/live-region.js announceStatus(). -->
+<div id="status-toast" aria-hidden="true" hidden></div>
 </body>
 </html>

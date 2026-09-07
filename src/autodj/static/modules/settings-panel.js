@@ -8,6 +8,7 @@
 
 import { escHtml, dbg } from "./dom-helpers.js";
 import { applyShowWhen } from "./show-when.js";
+import { announceStatus } from "./live-region.js";
 import {
   captureAuthenticatedRequestEpoch,
   isAuthenticatedRequestCurrent,
@@ -67,10 +68,10 @@ export async function postSettings(url, body, { settingsStatus, control } = {}) 
     return true;
   } catch (err) {
     if (!isAuthenticatedRequestCurrent(epoch)) return false;
-    if (settingsStatus) {
-      settingsStatus.textContent = `Could not save: ${err.message}`;
-      setTimeout(() => { settingsStatus.textContent = ""; }, 4000);
-    }
+    // The settings card is several screens tall, so the failure has to
+    // travel to the visible toast as well as the live region.
+    announceStatus(settingsStatus, `Could not save: ${err.message}`,
+      { dwellMs: 6000 });
     return false;
   }
 }

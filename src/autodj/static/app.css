@@ -568,6 +568,47 @@
       min-height: 1.2em;
     }
 
+    /* ---- Visible status mirror ----
+       Same string the live region just announced, shown where a sighted
+       user is looking.  aria-hidden in the markup, so it adds no second
+       announcement.  pointer-events:none keeps it from ever swallowing
+       a click on whatever sits underneath. */
+    #status-toast {
+      position: fixed;
+      left: 50%;
+      bottom: 1rem;
+      transform: translateX(-50%);
+      z-index: 9998;
+      max-width: min(40rem, calc(100vw - 2rem));
+      padding: 0.6rem 1rem;
+      background: var(--bg-card);
+      color: var(--text);
+      border: 1px solid var(--accent);
+      border-radius: var(--radius);
+      box-shadow: 0 6px 24px rgba(0, 0, 0, 0.55);
+      font-size: 0.9rem;
+      line-height: 1.4;
+      pointer-events: none;
+    }
+
+    /* Search result count — visible and announced by the same node. */
+    #search-count {
+      margin-top: 0.5rem;
+      font-size: 0.85rem;
+      color: var(--text-dim);
+    }
+    #search-count:empty { margin-top: 0; }
+
+    /* Stale-playback notice on the Now Playing card. */
+    #playback-stale-note {
+      margin-bottom: 0.6rem;
+      padding: 0.35rem 0.6rem;
+      border-left: 3px solid var(--danger);
+      background: rgba(192, 57, 43, 0.18);
+      color: var(--text);
+      font-size: 0.9rem;
+    }
+
     /* ---- Visually hidden utility (WCAG-compliant clip pattern) ---- */
     .visually-hidden {
       position: absolute;

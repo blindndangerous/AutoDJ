@@ -5,7 +5,7 @@
 // immediately without waiting for the server round trip.
 
 import { escHtml, fmtTrack } from "./dom-helpers.js";
-import { clearLiveRegionLater } from "./live-region.js";
+import { announceStatus } from "./live-region.js";
 import {
   captureAuthenticatedRequestEpoch,
   isAuthenticatedRequestCurrent,
@@ -152,10 +152,7 @@ export function installQueueButtons(els) {
       ownsRenderedQueue = _renderGeneration === optimisticGeneration;
       if (!ownsRenderedQueue) focusIndex = -1;
       successful = ownsRenderedQueue;
-      if (queueAnnounce) {
-        queueAnnounce.textContent = announceMsg;
-        clearLiveRegionLater(queueAnnounce);
-      }
+      announceStatus(queueAnnounce, announceMsg, { dwellMs: 3000 });
     } catch (errorValue) {
       if (!isAuthenticatedRequestCurrent(epoch)) {
         ownsRenderedQueue = false;
@@ -173,10 +170,8 @@ export function installQueueButtons(els) {
         focusIndex = -1;
       }
       focusQueueList = false;
-      if (queueAnnounce) {
-        queueAnnounce.textContent = `Could not update queue: ${errorValue.message}`;
-        clearLiveRegionLater(queueAnnounce);
-      }
+      announceStatus(queueAnnounce,
+        `Could not update queue: ${errorValue.message}`, { dwellMs: 6000 });
     } finally {
       mutationPending = false;
       queueList.setAttribute("aria-busy", "false");
