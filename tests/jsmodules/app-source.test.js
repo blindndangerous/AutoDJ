@@ -495,6 +495,52 @@ describe("app request behavior", () => {
     expect(bumpLinerTrackCount).toHaveBeenLastCalledWith(nextState);
   });
 
+  it("announces a lost link once, however many retries it takes", async () => {
+    const { webSocket } = await setupApp({
+      initialState: { current_track: { path: "current.mp3", title: "Current" } },
+      onRequest: () => jsonResponse({ ok: true }),
+    });
+    const pill = document.querySelector("#conn-status");
+    const records = [];
+    new window.MutationObserver((r) => records.push(...r))
+      .observe(pill, { childList: true, characterData: true, subtree: true });
+    vi.useFakeTimers();
+
+    // Ten failed cycles.  The old loop wrote "Connecting...", "Error" and
+    // "Disconnected" once per cycle -- thirty announcements.
+    let delay = 3000;
+    for (let cycle = 0; cycle < 10; cycle += 1) {
+      webSocket.onclose({ code: 1006, wasClean: false });
+      webSocket.onerror();
+      await vi.advanceTimersByTimeAsync(delay);
+      delay = Math.min(delay * 2, 60000);
+    }
+
+    expect(records.filter((r) => r.addedNodes.length > 0)).toHaveLength(1);
+    expect(pill.textContent).toBe("Disconnected, retrying");
+  });
+
+  it("backs off between retries instead of hammering every three seconds", async () => {
+    const { webSocket, WebSocketImpl } = await setupApp({
+      initialState: { current_track: { path: "current.mp3", title: "Current" } },
+      onRequest: () => jsonResponse({ ok: true }),
+    });
+    vi.useFakeTimers();
+
+    webSocket.onclose({ code: 1006, wasClean: false });
+    await vi.advanceTimersByTimeAsync(2999);
+    expect(WebSocketImpl).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(WebSocketImpl).toHaveBeenCalledTimes(2);
+
+    // Second failure waits six seconds, not three.
+    webSocket.onclose({ code: 1006, wasClean: false });
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(WebSocketImpl).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(WebSocketImpl).toHaveBeenCalledTimes(3);
+  });
+
   it("cancels a scheduled transient auth probe after REST expiry", async () => {
     let authStatusCalls = 0;
     const { dialog, webSocket, WebSocketImpl } = await setupApp({

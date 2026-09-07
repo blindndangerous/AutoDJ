@@ -1000,15 +1000,33 @@ function renderHistory() {
 let _ws = null;
 let authenticatedActivityActive = false;
 
-// #conn-status is a polite live region AND the visible header pill.
-// The reconnect loop calls this every three seconds with the same
-// strings, so write only on a real change: an unchanged message must
-// never be re-announced.
+// #conn-status is a polite live region AND the visible header pill, so
+// every word written here is spoken.  Transport state has to be reported
+// as TRANSITIONS, not as a running commentary: one announcement when the
+// link is lost and one when it comes back.  The retry cycle in between
+// -- "Connecting...", "Error", "Disconnected", once per attempt, forever
+// -- was three announcements every three seconds for the whole outage.
 function setConnStatus(state, label) {
   if (connStatus.className !== state) connStatus.className = state;
   if (connStatus.textContent === label) return;
   connStatus.textContent = label;
 }
+
+// Progress within an outage: seen, never spoken.
+function showConnProgress(state, label) {
+  if (connStatus.className !== state) connStatus.className = state;
+  showVisibleStatus(label);
+}
+
+// Reconnect pacing.  A fixed three-second retry hammered the server for
+// as long as the outage lasted; the delay now doubles per failed attempt
+// and resets on a successful open.
+const RECONNECT_BASE_MS = 3000;
+const RECONNECT_MAX_MS = 60000;
+let reconnectDelayMs = RECONNECT_BASE_MS;
+// True from the moment the link drops until it is back, so the pair of
+// announcements fires exactly once each.
+let transportDown = false;
 
 // The Now Playing card keeps its last payload when the socket drops, so
 // without this every field -- art, metadata, wheel, progress -- silently
@@ -1034,11 +1052,19 @@ function connectWS() {
   const socketEpoch = captureAuthenticatedRequestEpoch();
   _ws = ws;
 
-  setConnStatus("connecting", "Connecting\u2026");
+  if (transportDown) {
+    showConnProgress("connecting", "Reconnecting\u2026");
+  } else {
+    setConnStatus("connecting", "Connecting\u2026");
+  }
 
   ws.onopen  = () => {
     if (_ws === ws && isAuthenticatedRequestCurrent(socketEpoch)) {
+      const recovered = transportDown;
+      transportDown = false;
+      reconnectDelayMs = RECONNECT_BASE_MS;
       setConnStatus("connected", "Live");
+      if (recovered) showVisibleStatus("Reconnected.");
       setPlaybackStale(false);
     }
   };
@@ -1055,7 +1081,12 @@ function connectWS() {
       auth,
       onExpired: expireAuthenticatedSession,
     })) return;
-    setConnStatus("error", "Disconnected");
+    if (transportDown) {
+      showConnProgress("error", "Still disconnected — retrying.");
+    } else {
+      transportDown = true;
+      setConnStatus("error", "Disconnected, retrying");
+    }
     setPlaybackStale(true);
     // A transient transport loss stops audible/protected activity but
     // preserves the recoverable session projection. The auth recheck below
@@ -1076,7 +1107,8 @@ function connectWS() {
           connectWS();
         },
       });
-    }, 3000);
+    }, reconnectDelayMs);
+    reconnectDelayMs = Math.min(reconnectDelayMs * 2, RECONNECT_MAX_MS);
   };
 
   ws.onerror = () => {
@@ -1084,7 +1116,14 @@ function connectWS() {
     // Writing the same sentence into the track-title region as well made
     // NVDA speak the outage three or four times every three seconds and
     // showed the error where sighted users expect the song name.
-    setConnStatus("error", "Error");
+    // The error is part of the retry cycle, so onclose owns the single
+    // announcement and this stays visible-only.
+    if (transportDown) {
+      showConnProgress("error", "Connection error.");
+    } else {
+      transportDown = true;
+      setConnStatus("error", "Disconnected, retrying");
+    }
     setPlaybackStale(true);
   };
 }
