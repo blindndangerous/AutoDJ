@@ -495,6 +495,60 @@ describe("app request behavior", () => {
     expect(bumpLinerTrackCount).toHaveBeenLastCalledWith(nextState);
   });
 
+  it("reports a failing saved sink once, not once per devicechange", async () => {
+    const deck = {
+      audio: { setSinkId: vi.fn().mockRejectedValue(new Error("device gone")) },
+    };
+    let deviceChange = null;
+    vi.stubGlobal("navigator", {
+      mediaDevices: {
+        enumerateDevices: vi.fn().mockResolvedValue([
+          { deviceId: "usb-dac", kind: "audiooutput", label: "USB DAC" },
+        ]),
+        addEventListener: (type, handler) => {
+          if (type === "devicechange") deviceChange = handler;
+        },
+      },
+    });
+    // happy-dom exposes localStorage on window, not on globalThis.
+    const store = new Map([["autodj.sinkId", "usb-dac"]]);
+    vi.stubGlobal("localStorage", {
+      getItem: (key) => (store.has(key) ? store.get(key) : null),
+      setItem: (key, value) => store.set(key, value),
+      removeItem: (key) => store.delete(key),
+    });
+    vi.stubGlobal("HTMLMediaElement", { prototype: { setSinkId() {} } });
+
+    await setupApp({
+      audio: { decks: [deck] },
+      initialState: { current_track: { path: "current.mp3", title: "Current" } },
+      onRequest: () => jsonResponse({ ok: true }),
+    });
+    const status = document.querySelector("#settings-status");
+    const records = [];
+    await vi.waitFor(() =>
+      expect(status.textContent).toContain("Could not switch audio device"));
+    new window.MutationObserver((r) => records.push(...r))
+      .observe(status, { childList: true, characterData: true, subtree: true });
+
+    // Three USB plug events, same failure every time.
+    for (let i = 0; i < 3; i += 1) {
+      deviceChange();
+      await vi.waitFor(() => expect(deck.audio.setSinkId).toHaveBeenCalled());
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(records.filter((r) => r.addedNodes.length > 0)).toHaveLength(0);
+
+    // The user picking the device is a fresh action and must be reported,
+    // even though the sentence has not changed.
+    document.querySelector("#audio-device").value = "usb-dac";
+    document.querySelector("#audio-device")
+      .dispatchEvent(new window.Event("change"));
+    await vi.waitFor(() =>
+      expect(records.filter((r) => r.addedNodes.length > 0)).toHaveLength(1));
+
+  });
+
   it("announces a lost link once, however many retries it takes", async () => {
     const { webSocket } = await setupApp({
       initialState: { current_track: { path: "current.mp3", title: "Current" } },

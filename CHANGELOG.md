@@ -10,6 +10,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Every button in the Library tools panel — Index, Enrich, Prune, Stats — died about a second after
+  being pressed. The job runner starts its child with `python -m autodj`, and the module that makes
+  that work had never existed, so the only thing the job log ever showed was "No module named
+  autodj.__main__". The child was also never told which config the server is running on, so once it
+  did start, every job under a config file other than the default one failed with "Index not found".
+- Screen readers described the cue points on the progress bar twice, once in the short form and
+  once in full, because both copies were in the page for them to find.
+- A saved audio output device that could no longer be selected re-announced its failure every time
+  any USB device was plugged in or unplugged. It reports once now, and still reports again whenever
+  you pick a device yourself.
+- Lyrics stored in a file's own tag were classed as timestamped on the strength of a single
+  bracket, which threw away every untimestamped line in the tag: a tag reading "Written by X /
+  [00:00.00]Intro / Verse one / Verse two" showed only "Intro", and a lyric that merely mentions a
+  time ("meet me at [10:30] tonight") had the time cut out of the middle. A tag is now judged as a
+  whole, and anything that is not really an LRC file keeps all of its lines.
+- The current-line highlight in the lyrics panel never fired, and the current line was never
+  announced, because the position it keys off is reported by the server and the server's clock does
+  not move while the browser is doing the playing. The panel follows the browser's own position now.
+- A lost connection announced itself roughly three times every three seconds for as long as the
+  outage lasted. It is now announced once when the link drops and once when it returns; the retry
+  cycle in between is visible only, and retries back off from three seconds to a minute instead of
+  hammering the server.
+- Doing the same thing twice went unreported the second time: a second "Move up" on the same track,
+  a repeated search returning the same number of hits, or a control that failed the same way twice
+  all fell silent, which reads as the button not working.
+- The History table pushed the page sideways on a phone, cutting off the Duration column.
+- The Camelot wheel's ring key was too small to read, and the inner-ring numbers fell below the
+  contrast floor when they landed on a highlighted wedge.
+- On a phone each volume and EQ slider was drawn as a 44 px empty outlined box.
+- The status message that appears at the foot of the page can now be dismissed with Escape, and
+  failures are marked differently from confirmations.
 - NVDA re-read the Library-tools status roughly every ten seconds for the whole life of a job,
   because the elapsed-seconds counter was inside the announcing region. The status now speaks once
   when a job starts and once when it finishes, whatever its length; the counter ticks on silently
@@ -85,6 +116,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `POST /api/discovery` with a rate now starts discovery immediately rather than only configuring
+  it. Setting a rate while leaving the feature switched off is what made the Settings checkbox and
+  the Now Playing button disagree.
 - `autodj serve --no-playback` is deprecated. It could never be turned off, so it never did
   anything: server-side audio is opted into with `--server-audio`, which is unchanged. The flag
   still parses, is hidden from `--help`, and logs one informational line, because the container

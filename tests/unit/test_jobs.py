@@ -195,3 +195,106 @@ class TestJobPipeEncoding:
                 time.sleep(0.02)
 
         fake.terminate.assert_called_once()
+
+
+class TestJobManagerConfigPassthrough:
+    """A child job must run against the same config the server is using.
+
+    ``jobs.py`` spawns a fresh interpreter, so the child re-reads
+    configuration from scratch.  Without the server's ``--config`` it
+    loaded defaults instead, and every job under a non-default config
+    started and then died on "Index not found".
+    """
+
+    @staticmethod
+    def _capture(mgr, name="stats", args=None):
+        with patch("autodj.jobs.subprocess.Popen") as popen:
+            popen.return_value = MagicMock(poll=lambda: 0, stdout=None)
+            mgr._spawn_proc(name, args or [])
+        return popen.call_args
+
+    def test_unconfigured_manager_spawns_the_bare_subcommand(self) -> None:
+        call = self._capture(JobManager())
+
+        assert call.args[0][1:] == ["-m", "autodj", "stats"]
+        assert "AUTODJ_INDEX_DIR" not in call.kwargs["env"]
+
+    def test_config_path_precedes_the_subcommand(self) -> None:
+        mgr = JobManager()
+        mgr.configure(config_path="C:/tmp/autodj.toml")
+
+        argv = self._capture(mgr).args[0]
+
+        # Click reads --config on the GROUP, so it must come first.
+        assert argv[1:] == ["-m", "autodj", "--config", "C:/tmp/autodj.toml", "stats"]
+
+    def test_index_name_is_passed_to_name_aware_subcommands(self) -> None:
+        mgr = JobManager()
+        mgr.configure(config_path="cfg.toml", index_name="party")
+
+        for name in ("index", "enrich", "prune", "stats"):
+            argv = self._capture(mgr, name).args[0]
+            assert argv[1:] == [
+                "-m",
+                "autodj",
+                "--config",
+                "cfg.toml",
+                name,
+                "--name",
+                "party",
+            ]
+
+    def test_index_name_is_withheld_from_subcommands_that_reject_it(self) -> None:
+        mgr = JobManager()
+        mgr.configure(index_name="party")
+
+        argv = self._capture(mgr, "list-indexes").args[0]
+
+        assert argv[1:] == ["-m", "autodj", "list-indexes"]
+
+    def test_default_index_name_is_not_passed(self) -> None:
+        mgr = JobManager()
+        mgr.configure(index_name="default")
+
+        assert self._capture(mgr).args[0][1:] == ["-m", "autodj", "stats"]
+
+    def test_job_arguments_follow_the_subcommand(self) -> None:
+        mgr = JobManager()
+        mgr.configure(config_path="cfg.toml", index_name="party")
+
+        argv = self._capture(mgr, "index", ["--limit", "5"]).args[0]
+
+        assert argv[1:] == [
+            "-m",
+            "autodj",
+            "--config",
+            "cfg.toml",
+            "index",
+            "--name",
+            "party",
+            "--limit",
+            "5",
+        ]
+
+    def test_index_dir_rides_along_in_the_child_environment(self) -> None:
+        mgr = JobManager()
+        mgr.configure(index_dir="Z:/Scripts/autodj/index")
+
+        env = self._capture(mgr).kwargs["env"]
+
+        assert env["AUTODJ_INDEX_DIR"] == "Z:/Scripts/autodj/index"
+        assert env["PYTHONIOENCODING"] == "utf-8"
+
+    def test_logged_command_shows_what_was_actually_run(self) -> None:
+        mgr = JobManager()
+        mgr.configure(config_path="cfg.toml")
+        self._capture(mgr)
+
+        assert "--config" in mgr.snapshot()["lines"][0]
+
+    def test_configure_is_idempotent_and_clearable(self) -> None:
+        mgr = JobManager()
+        mgr.configure(config_path="cfg.toml", index_name="party")
+        mgr.configure(config_path=None, index_name=None)
+
+        assert self._capture(mgr).args[0][1:] == ["-m", "autodj", "stats"]

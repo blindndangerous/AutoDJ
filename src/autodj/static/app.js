@@ -710,6 +710,7 @@ async function _refreshAudioDevices() {
     });
     if (saved && [...audioDeviceSelect.options].some(o => o.value === saved)) {
       audioDeviceSelect.value = saved;
+      // Background re-apply: page load, devicechange, post-permission.
       _applySink(saved);
     }
     if (audioDeviceRefresh) {
@@ -720,7 +721,11 @@ async function _refreshAudioDevices() {
   }
 }
 
-async function _applySink(sinkId) {
+// `userInitiated` separates "the user just picked a device" from the
+// background re-applies that run on page load, after a permission grant,
+// and on every USB plug or unplug.  A saved sink that keeps failing must
+// report once, not once per devicechange event.
+async function _applySink(sinkId, { userInitiated = false } = {}) {
   // Prefer AudioContext.setSinkId — it actually routes the live crossfade
   // graph.  Element-level setSinkId is a fallback for browsers that lack
   // ctx.setSinkId (Firefox 116+) AND only works when we're playing the
@@ -751,7 +756,7 @@ async function _applySink(sinkId) {
     if (settingsStatus) {
       announceStatus(settingsStatus, "Could not switch audio device: "
         + (lastErr.message || lastErr.name || "unknown"),
-        { dwellMs: 5000, force: true, tone: "error" });
+        { dwellMs: 5000, force: userInitiated, tone: "error" });
     }
     return false;
   }
@@ -827,7 +832,7 @@ if (audioDeviceSelect) {
     // First-time selection: AudioContext must exist before ctx.setSinkId
     // works, so build the (silent) graph if it hasn't been yet.
     if (!_ctx) ensureAudioGraph();
-    const ok = await _applySink(id);
+    const ok = await _applySink(id, { userInitiated: true });
     if (ok && settingsStatus) {
       const sel = audioDeviceSelect.options[audioDeviceSelect.selectedIndex];
       const label = sel ? sel.textContent : "selected device";

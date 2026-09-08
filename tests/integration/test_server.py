@@ -19,7 +19,7 @@ import os
 import threading
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import urlencode
 
 import pytest
@@ -2022,6 +2022,49 @@ class TestLibraryEndpoints:
         tc = TestClient(create_app(bridge))
         tc.post("/api/bpm-range", json={"lo": 140, "hi": 100})
         assert bridge.player._bpm_range is None
+
+    def test_library_run_hands_the_child_the_server_config(
+        self,
+        bridge,
+        tmp_path,
+    ) -> None:
+        """A job must run against the config the server itself loaded."""
+        from pathlib import Path
+
+        from fastapi.testclient import TestClient
+
+        from autodj.jobs import get_manager
+
+        bridge.player._cfg.config_path = Path(tmp_path / "autodj.toml")
+        bridge.player._cfg.index.index_dir = Path(tmp_path / "indexes")
+        bridge.player._cfg.index.name = "party"
+        manager = get_manager()
+        captured = {}
+
+        def _fake_popen(cmd, **kwargs):
+            captured["cmd"] = list(cmd)
+            captured["env"] = kwargs["env"]
+
+            class _Proc:
+                stdout = None
+
+                def poll(self):
+                    return 0
+
+            return _Proc()
+
+        tc = TestClient(create_app(bridge))
+        with patch("autodj.jobs.subprocess.Popen", side_effect=_fake_popen):
+            response = tc.post("/api/library/run", json={"name": "stats", "args": []})
+
+        assert response.status_code == 200
+        argv = captured["cmd"]
+        assert argv[2] == "autodj"
+        assert argv[3:5] == ["--config", str(tmp_path / "autodj.toml")]
+        assert argv[5] == "stats"
+        assert argv[6:8] == ["--name", "party"]
+        assert captured["env"]["AUTODJ_INDEX_DIR"] == str(tmp_path / "indexes")
+        manager.configure(config_path=None, index_dir=None, index_name=None)
 
     def test_post_discovery(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient

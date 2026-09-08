@@ -61,7 +61,14 @@ class JobManager:
         "list-indexes",
     }
 
+    # Subcommands that accept ``--name``.  ``list-indexes`` reports on every
+    # index, so it has no single one to be given.
+    _NAME_AWARE: ClassVar[set[str]] = {"index", "enrich", "prune", "stats"}
+
     def __init__(self) -> None:
+        self._config_path: str | None = None
+        self._index_dir: str | None = None
+        self._index_name: str | None = None
         self._lock = threading.Lock()
         self._proc: subprocess.Popen | None = None
         self._thread: threading.Thread | None = None
@@ -71,6 +78,52 @@ class JobManager:
         self._exit_code: int | None = None
         self._started_at: float | None = None
         self._finished_at: float | None = None
+
+    def configure(
+        self,
+        *,
+        config_path: object = None,
+        index_dir: object = None,
+        index_name: object = None,
+    ) -> None:
+        """Point future jobs at the configuration the server is running on.
+
+        Each job is a fresh interpreter, so it re-reads configuration from
+        scratch and would otherwise load defaults -- which under any
+        non-default config meant every job started and immediately died on
+        "Index not found".
+
+        Args:
+            config_path: TOML file the server loaded, or None if it had none.
+            index_dir: Directory holding the named indexes.
+            index_name: Active index name, including a ``--name`` override.
+        """
+        self._config_path = str(config_path) if config_path else None
+        self._index_dir = str(index_dir) if index_dir else None
+        self._index_name = str(index_name) if index_name else None
+
+    def _child_argv(self, name: str, args: list[str]) -> list[str]:
+        """Build the child's argv, config first because Click reads it there."""
+        argv = [sys.executable, "-m", "autodj"]
+        if self._config_path:
+            argv += ["--config", self._config_path]
+        argv.append(name)
+        # "default" is what the child assumes anyway; passing it would only
+        # make the logged command noisier.
+        if self._index_name and self._index_name != "default" and name in self._NAME_AWARE:
+            argv += ["--name", self._index_name]
+        return argv + args
+
+    def _child_env(self) -> dict[str, str]:
+        """Environment for the child: the server's index dir, UTF-8 output."""
+        # A child printing a track name under a cp125x locale used to raise
+        # inside the reader, which stopped the pump, filled the pipe and left
+        # the child blocked on write forever -- holding the single job slot
+        # until someone pressed Stop.
+        env = dict(os.environ, PYTHONIOENCODING="utf-8")
+        if self._index_dir:
+            env["AUTODJ_INDEX_DIR"] = self._index_dir
+        return env
 
     # ------------------------------------------------------------------
     # Control
@@ -90,17 +143,13 @@ class JobManager:
 
     def _spawn_proc(self, name: str, args: list[str]) -> bool:
         """Start the subprocess; populate `_proc` or return False on failure."""
-        cmd = [sys.executable, "-m", "autodj", name, *args]
+        cmd = self._child_argv(name, args)
         self._lines.append(f"[autodj-jobs] $ {' '.join(shlex.quote(c) for c in cmd)}")
         try:
             # nosec B603 -- `cmd` is built from a hard-coded subcommand
             # allowlist + arg tokens already screened for shell metacharacters.
             # shell=False so no shell parsing happens regardless.
-            # A child printing a track name under a cp125x locale used to
-            # raise inside the reader, which stopped the pump, filled the pipe
-            # and left the child blocked on write forever — holding the single
-            # job slot until someone pressed Stop.
-            child_env = dict(os.environ, PYTHONIOENCODING="utf-8")
+            child_env = self._child_env()
             self._proc = subprocess.Popen(  # nosec B603
                 cmd,
                 stdout=subprocess.PIPE,

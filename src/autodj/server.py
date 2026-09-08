@@ -1759,6 +1759,16 @@ def create_app(
         from autodj.jobs import get_manager
 
         mgr = get_manager()
+        # Point the child at the same configuration this server is running
+        # on, every time: --name and settings can change under a live server,
+        # so reading it at app-creation time would go stale.
+        cfg = getattr(bridge.player, "_cfg", None)
+        index_cfg = getattr(cfg, "index", None)
+        mgr.configure(
+            config_path=getattr(cfg, "config_path", None),
+            index_dir=getattr(index_cfg, "index_dir", None),
+            index_name=getattr(index_cfg, "name", None),
+        )
         ok = mgr.start(body.name, body.args)
         if not ok:
             raise HTTPException(

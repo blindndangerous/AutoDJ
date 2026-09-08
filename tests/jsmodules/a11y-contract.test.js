@@ -1487,7 +1487,7 @@ describe("static accessibility contracts", () => {
 
     for (const selector of [
       "#status-toast", "#playback-stale-note", "#lib-job-elapsed",
-      "#cue-legend", "#camelot-legend",
+      "#cue-legend", "#camelot-legend", "#cue-summary",
     ]) {
       expect(document.querySelector(selector).getAttribute("aria-hidden"), selector)
         .toBe("true");
@@ -1499,6 +1499,14 @@ describe("static accessibility contracts", () => {
     const describedBy = progress.getAttribute("aria-describedby").split(/\s+/);
     expect(describedBy).toContain("cue-summary");
     expect(describedBy).not.toContain("cue-details");
+    // The concise summary is reachable ONLY as the slider's description --
+    // aria-describedby reads through aria-hidden -- so browsing the page no
+    // longer meets the summary and the full list one after the other, each
+    // naming the same cues.  Exactly one of the pair is browsable.
+    expect(document.querySelector("#cue-summary").getAttribute("aria-hidden"))
+      .toBe("true");
+    expect(document.querySelector("#cue-details").hasAttribute("aria-hidden"))
+      .toBe(false);
 
     for (const selector of [
       "#now-playing-meta", "#cue-summary", "#cue-details", "#queue-list",
