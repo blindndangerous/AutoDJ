@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Setup documentation now includes container-only indexing, native Windows backup and restore,
+  and checking out a release before upgrading. It corrects offline and dependency claims and
+  explains which model changes require a new index. MuQ remains the default model.
+- Accessibility documentation identifies the missing published screen-reader sampling record
+  for v0.16.1 and explains what must be recorded for the next release.
+
 ### Added
 
 - A tested Windows AMD ROCm setup guide and launcher for GPU indexing and web

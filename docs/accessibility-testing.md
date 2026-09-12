@@ -1,6 +1,13 @@
 # Accessibility testing
 
-AutoDJ uses automated checks and a small manual sample to catch accessibility regressions. The results apply only to the paths that the checks exercise. They do not certify the whole application.
+AutoDJ uses automated checks and requires a manual sample before release to catch accessibility regressions. The results apply only to the paths that the checks exercise. They do not certify the whole application.
+
+## Published evidence
+
+As of 2026-09-12, this repository and the [v0.16.1 release](https://github.com/blindndangerous/AutoDJ/releases/tag/v0.16.1)
+contain no screen-reader sampling record with the versions and flows required below. Automated
+test results therefore remain the only published evidence here. Record the required manual sample
+and link it from the next release's notes before making screen-reader compatibility claims.
 
 ## Continuous integration
 

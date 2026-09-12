@@ -4,21 +4,27 @@
 [![codecov](https://codecov.io/gh/blindndangerous/AutoDJ/graph/badge.svg)](https://codecov.io/gh/blindndangerous/AutoDJ)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-An auto-DJ that picks the next song based on what is playing now.  Point it at the folder where your music lives and it will play forever, picking each next track because it actually sounds like what you just heard.  Everything runs on your own computer.  Nothing is sent to any cloud service.
+AutoDJ plays music from your own library and chooses the next track using audio similarity, tempo,
+key, and your playback settings. Analysis and playback run on your computer. Your music is not
+uploaded to a cloud service.
 
 ## What you get
 
-- **A non-stop set, picked for you.**  Each next track is the one that sounds closest to whatever is playing.  The result feels like a long mix where every change of song still makes sense.
-- **Smooth crossfades, not hard cuts.**  Two tracks overlap for a few seconds at every change, with optional EQ ducking so the basslines do not fight each other.
-- **A web page to control it.**  Open `http://localhost:8080` in any browser.  See what is playing, the album art, the lyrics, the queue.  Change the volume.  Skip a song.  Search and add tracks.
-- **Mood presets.**  Pick from built-in profiles (Wakeup, Chill, Workout, Party, etc.) or write your own.  Each preset shapes the BPM curve so a Wakeup set starts slow and ramps up while a Party set stays fast.
-- **Voice liners.**  Drop spoken clips ("You're listening to AutoDJ FM") into a folder and AutoDJ will play one over the music every few tracks, just like a real radio station.
-- **A queue.**  Search the library, click "Now" to interrupt, click "Next" to add to the line.  Reorder with Up / Down.  Remove with one click.
-- **Lyrics that scroll.**  If a song has an LRC file or lyrics in its tags, the web page shows them and highlights the current line.
-- **Works offline.**  Once installed there is no network requirement.  Use it on a NAS, on a laptop in airplane mode, on a Raspberry Pi.
-- **Accessibility.**  Controls support keyboard use.  Screen-reader claims are limited to the browser and flows recorded for each release; see [Accessibility testing](docs/accessibility-testing.md) for the policy and its limits.
+- Automatic track selection with configurable repeat avoidance and discovery.
+- Crossfades with optional EQ ducking and transition effects.
+- A browser interface for playback, album art, lyrics, search, and queue management.
+- Mood presets that adjust tempo targets during a set.
+- Voice liners that play spoken clips over the music on a schedule.
+- Lyrics from sidecar files or tags, with scrolling and highlighting when timestamps are available.
+- Offline use after installing dependencies and downloading the model. The first indexing run
+  downloads model weights from Hugging Face unless you provide a local checkpoint.
+- Keyboard controls and automated accessibility checks. See [Accessibility testing](docs/accessibility-testing.md)
+  for the limits of those checks and the required screen-reader release sampling.
 
-## Quick start (the short version)
+## Quick start
+
+Install Git, uv, and Node.js with npm first. The project requires Python 3.14; `uv sync` can
+install that interpreter. CI uses Node.js 24.6.0.
 
 ```bash
 git clone https://github.com/blindndangerous/AutoDJ
@@ -73,7 +79,7 @@ Future runs of `autodj index` embed new files and refresh the post-processing ca
 [Operations](docs/operations.md) for diagnosis, `autodj backup`, `autodj restore`, container
 ownership, and upgrades.
 
-## Containers (no Python install needed)
+## Containers
 
 If you have Docker Compose installed:
 
@@ -83,6 +89,9 @@ cd AutoDJ
 mkdir -p music index models
 sudo chown 10001:10001 music index models
 chmod 0755 music index models
+# Copy your audio files into music/ before indexing.
+AUTODJ_MUSIC_DIR=./music AUTODJ_INDEX_DIR=./index AUTODJ_MODEL_DIR=./models \
+  docker compose run --rm --build autodj index
 AUTODJ_MUSIC_DIR=./music AUTODJ_INDEX_DIR=./index AUTODJ_MODEL_DIR=./models \
   docker compose up --build
 ```
@@ -91,7 +100,10 @@ Open `http://localhost:8080`. Container runs as UID/GID 10001. Default Compose p
 loopback only. See [Operations](docs/operations.md) for WSL2, bind mounts, and authenticated LAN
 startup.
 
-The container does not run the indexing step (it goes faster on a machine with a GPU, which a container does not always have).  Run `uv run autodj index` on the host first, then start the container.
+Put your audio files in `music/` before running the indexing command. This setup needs no host
+Python installation. The default container indexes on CPU and does not index automatically when
+the server starts. For a large library, you can instead build the index on a GPU-equipped host
+and copy it to the mounted index directory before starting Compose.
 
 ## How to use the web UI
 
@@ -123,7 +135,7 @@ and `?` work on every tab. Letter and punctuation shortcuts also work when a but
 focus. Text fields and dropdown typeahead keep their keys; Space activates a focused button and
 arrow keys operate the focused slider or tab. Open dialogs keep playback shortcuts inactive.
 
-### Music players already configured: just press play
+### Browser and server audio
 
 The default `serve` mode is browser-driven: the server picks tracks; the browser plays them.  This means the volume in the browser is independent of any CLI volume, and switching audio output devices in the browser only affects the browser.
 
@@ -340,7 +352,9 @@ AutoDJ is not on PyPI. To install a tagged wheel:
 uv pip install "autodj[all] @ https://github.com/blindndangerous/AutoDJ/releases/download/v0.16.1/autodj-0.16.1-py3-none-any.whl"
 ```
 
-Drop `[all]` for the lighter install that only runs `enrich`, `prune`, `stats`, and `playlist`.
+Keep `[all]` for the full application. The base dependency set also includes MuQ, librosa, and
+the web server, so omitting extras does not produce a lightweight installation without model
+or analysis dependencies.
 
 Installing a wheel resolves dependencies fresh from PyPI instead of from `uv.lock`, so you give up
 the exact versions CI tested. The clone plus `uv sync --frozen --all-extras` above stays the
@@ -349,8 +363,18 @@ supported path; reach for the wheel only when you want AutoDJ without a source t
 ## Credits and licensing
 
 - AutoDJ's own code is MIT licensed.
-- **The default model weights are not, and this restricts what you may do with them.** [MuQ-large-msd-iter](https://huggingface.co/OpenMuQ/MuQ-large-msd-iter) ships its code under MIT but its *weights* under [CC-BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/), which requires attribution and forbids commercial use. AutoDJ never redistributes those weights: no checkpoint is committed here or baked into the container image, and `autodj index` downloads them from Hugging Face onto your own machine. If you want to use AutoDJ commercially, point `[model] name` at a checkpoint you are licensed for, or get permission from the publisher.
-- Installing the `play` or `all` extras pulls copyleft dependencies from PyPI: `mutagen` (GPL-2.0-or-later) and `pynput` (LGPL-3.0). `librosa` pulls `soxr` (LGPL-2.1-or-later). AutoDJ neither vendors nor redistributes them. The core install is permissive-only.
+- [MuQ-large-msd-iter](https://huggingface.co/OpenMuQ/MuQ-large-msd-iter) uses MIT-licensed code and
+  [CC-BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/) model weights. The weights require
+  attribution; the license forbids commercial use. AutoDJ never redistributes those weights.
+  It downloads them during indexing; they are not committed here or included in the container image.
+  Commercial use needs permission from the publisher or a separately licensed compatible model.
+  Changing `[model] name` does not add
+  support for another architecture. See [Model selection](docs/model-selection.md).
+- Dependencies have their own licenses. The `play` and `all` extras include `mutagen`
+  under GPL-2.0-or-later and `pynput` under LGPL-3.0. The base installation includes `librosa`
+  and its `soxr` dependency. Omitting extras does not make every dependency permissively licensed.
+  CI logs a dependency license
+  inventory, and container images include their installed dependencies.
 - Audio analysis uses [librosa](https://librosa.org/) (ISC).
 - Vector search uses [FAISS](https://github.com/facebookresearch/faiss) (MIT).
 - The web UI uses [FastAPI](https://fastapi.tiangolo.com/) and a hand-written ES module front end (no React, no Vue, no framework).
@@ -365,10 +389,12 @@ AutoDJ was built collaboratively by humans and AI assistants.  Each contributor 
 ### Human contributors
 
 - **[blindndangerous](https://github.com/blindndangerous)**: project vision, library design, requirements, UX direction (web UI flow, mode semantics, gapless feel), every accessibility decision, all real-world testing on a 10k-track library, every release call.
-- **[jage9](https://github.com/jage9)**: additional contributions and feedback.
+- **[jage9](https://github.com/jage9)**: Windows AMD setup, MuQ compatibility, keyboard shortcut fixes,
+  and additional contributions and feedback.
 
 ### AI assistants
 
-- **Claude (Anthropic)**: paired-programming partner across the whole codebase.  Worked on the MuQ + librosa indexing pipeline, the FAISS similarity engine, crossfade audio math with EQ-ducking, the transition effects (CLI + AudioWorklet), the FastAPI + WebSocket web layer, the section-nav SPA, the gapless prefetch + silence detector, the harmonic Camelot rule set, and the test suite.  Every line was reviewed and guided by a human before it shipped.
+- **Claude (Anthropic)**: paired-programming partner across the whole codebase.  Worked on the MuQ + librosa indexing pipeline, the FAISS similarity engine, crossfade audio math with EQ-ducking, the transition effects (CLI + AudioWorklet), the FastAPI + WebSocket web layer, the section-nav SPA, the gapless prefetch + silence detector, the harmonic Camelot rule set, and the test suite.
+- **Codex (OpenAI)**: pull request review, automated verification, model research, and documentation corrections.
 
-If you contribute, add yourself here in the same shape as the rows above.
+If you contribute, add your name and the work you contributed.
