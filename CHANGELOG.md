@@ -21,6 +21,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Update Vitest to 4.1.11 to address GHSA-82fw-gwwq-j7x9.
 - Refresh the container's PCRE2 runtime package to include Debian security fixes.
 
+- Restore web keyboard shortcuts from focused buttons and sliders, including next track and
+  measure seeking. Keep native control keys intact, allow status shortcuts on every tab, and
+  let `?` close the shortcuts dialog from its focused Close button.
 - Every button in the Library tools panel — Index, Enrich, Prune, Stats — died about a second after
   being pressed. The job runner starts its child with `python -m autodj`, and the module that makes
   that work had never existed, so the only thing the job log ever showed was "No module named

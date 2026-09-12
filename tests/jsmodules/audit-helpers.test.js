@@ -32,7 +32,7 @@ describe("browser audit helpers", () => {
     ]);
   });
 
-  it("requires native range and search controls to keep their keyboard events", () => {
+  it("requires slider shortcuts while preserving native arrows and text input", () => {
     const result = {
       source: Object.fromEntries(
         auditHelpers.REQUIRED_HOTKEY_SOURCE_KEYS.map((key) => [key, true]),
@@ -52,7 +52,11 @@ describe("browser audit helpers", () => {
         modalOpenAfterTrigger: true,
         shuffleClicksLatched: 1,
         shuffleClicksAfterRelease: 2,
-        muteClicksFromSliderFocus: 0,
+        muteClicksFromSliderFocus: 1,
+        sliderArrowPrevented: false,
+        modalOpenFromFocusedButton: true,
+        modalClosedByQuestion: true,
+        statusFromSettingsTab: true,
         pauseClicksFromSearchInput: 0,
       },
       errors: [],
@@ -60,12 +64,12 @@ describe("browser audit helpers", () => {
 
     expect(() => auditHelpers.validateHotkeyAudit("chromium", result)).not.toThrow();
 
-    result.behaviour.muteClicksFromSliderFocus = 1;
+    result.behaviour.muteClicksFromSliderFocus = 0;
     expect(() => auditHelpers.validateHotkeyAudit("chromium", result)).toThrow(
-      "chromium slider native ownership: expected 0, got 1",
+      "chromium slider letter shortcut: expected 1, got 0",
     );
 
-    result.behaviour.muteClicksFromSliderFocus = 0;
+    result.behaviour.muteClicksFromSliderFocus = 1;
     result.behaviour.pauseClicksFromSearchInput = 1;
     expect(() => auditHelpers.validateHotkeyAudit("chromium", result)).toThrow(
       "chromium input suppression: expected 0, got 1",
@@ -152,7 +156,11 @@ describe("browser audit helpers", () => {
         modalOpenAfterTrigger: true,
         shuffleClicksLatched: 1,
         shuffleClicksAfterRelease: 2,
-        muteClicksFromSliderFocus: 0,
+        muteClicksFromSliderFocus: 1,
+        sliderArrowPrevented: false,
+        modalOpenFromFocusedButton: true,
+        modalClosedByQuestion: true,
+        statusFromSettingsTab: true,
         pauseClicksFromSearchInput: 0,
       },
       errors: [],

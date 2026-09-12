@@ -68,11 +68,9 @@ export function escHtml(str) {
 }
 
 // ----------------------------------------------------------------
-// Hotkey gate: suppress hotkeys ONLY when focus is on a text-entry
-// control.  Earlier blanket-suppression on every INPUT/SELECT killed
-// hotkeys whenever the user landed on the volume / EQ slider, the
-// preset dropdown, etc.  Visible-button hotkeys (Space, M, N, S, ?)
-// should still fire from those non-text controls.
+// Text-entry controls keep their keys. The hotkeys module separately
+// preserves native activation, navigation, and dropdown typeahead while
+// allowing unrelated letter shortcuts from buttons and sliders.
 // ----------------------------------------------------------------
 
 // ----------------------------------------------------------------

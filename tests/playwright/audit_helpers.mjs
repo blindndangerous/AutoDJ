@@ -237,7 +237,11 @@ export function validateHotkeyAudit(name, result) {
   equal(result.behaviour.modalOpenAfterTrigger, true, `${name} modal trigger open`);
   equal(result.behaviour.shuffleClicksLatched, 1, `${name} press latch`);
   equal(result.behaviour.shuffleClicksAfterRelease, 2, `${name} release latch`);
-  equal(result.behaviour.muteClicksFromSliderFocus, 0, `${name} slider native ownership`);
+  equal(result.behaviour.muteClicksFromSliderFocus, 1, `${name} slider letter shortcut`);
+  equal(result.behaviour.sliderArrowPrevented, false, `${name} slider native arrows`);
+  equal(result.behaviour.modalOpenFromFocusedButton, true, `${name} focused button help`);
+  equal(result.behaviour.modalClosedByQuestion, true, `${name} focused dialog help toggle`);
+  equal(result.behaviour.statusFromSettingsTab, true, `${name} status on other tabs`);
   equal(result.behaviour.pauseClicksFromSearchInput, 0, `${name} input suppression`);
   equal(result.errors.length, 0, `${name} browser errors`);
 }

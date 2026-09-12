@@ -103,10 +103,10 @@ After `autodj serve`, point a browser at `http://localhost:8080`.  Five tabs:
 - **Settings.**  Pick a preset, change the crossfade length, switch transition effects, set a BPM range, toggle voice liners, choose an audio output device.
 - **Library tools.**  Run index / enrich / prune / stats jobs without leaving the page.
 
-### Keyboard shortcuts (Now Playing tab)
+### Keyboard shortcuts
 
-- **Space** or **K** — play / pause.
-- **N** — skip to the next track.
+- **Space** or **k** — play / pause.
+- **n** — skip to the next track.
 - **S** — shuffle (jump to a random track).
 - **M** — mute / unmute.
 - **Up** / **Down** — volume up / down (5%).
@@ -118,7 +118,10 @@ After `autodj serve`, point a browser at `http://localhost:8080`.  Five tabs:
 - **Shift+K** — speak the musical key.
 - **?** — open the shortcut list.
 
-The shortcuts are scoped to the Now Playing tab on purpose.  When you switch to Settings or the Library tab, arrow keys go back to navigating dropdowns and the shortcut keys do not interfere with typing in the search box.
+Playback, volume, and seek shortcuts work on the Now Playing tab. Status shortcuts (Shift+letter)
+and `?` work on every tab. Letter and punctuation shortcuts also work when a button or slider has
+focus. Text fields and dropdown typeahead keep their keys; Space activates a focused button and
+arrow keys operate the focused slider or tab. Open dialogs keep playback shortcuts inactive.
 
 ### Music players already configured: just press play
 
@@ -259,7 +262,9 @@ source) or run `npm ci && npm run build`.
 
 **Lyrics card never appears.**  AutoDJ checks three places, in order: an LRC file next to the audio file (timestamped, scrolls), the `lyrics` field in the beets database, the embedded ID3 / Vorbis / MP4 lyric tag.  If none of those is present, the lyrics card stays hidden.
 
-**Hotkeys do nothing on the Settings tab.**  This is on purpose.  Hotkeys only fire when the Now Playing tab is visible so they do not fight with the dropdowns and sliders on Settings.  The `?` shortcut still works from any tab.
+**Playback shortcuts do nothing on the Settings tab.** Playback and seek shortcuts only fire on
+Now Playing. Status shortcuts (Shift+letter) and `?` work on every tab, except while typing or
+using dropdown typeahead. With NVDA, use focus mode (NVDA+Space) so the app receives the keys.
 
 ## Project layout
 

@@ -43,6 +43,23 @@ export async function audit(name, launcher) {
       "/modules/audio-engine.js",
       "/modules/dom-helpers.js",
     ];
+    const appResponse = await fetch("/app.js", { cache: "no-store" });
+    if (!appResponse.ok) throw new Error(`/app.js returned ${appResponse.status}`);
+    const appSource = await appResponse.text();
+    if (/^\/\/# sourceMappingURL=/m.test(appSource)) {
+      // Production bundles do not serve /modules. Their source map contains
+      // the deployed originals, so audit the same code the browser is running.
+      const response = await fetch("/static/app.js.map", { cache: "no-store" });
+      if (!response.ok) throw new Error(`/static/app.js.map returned ${response.status}`);
+      const map = await response.json();
+      const modules = paths.map((path) => {
+        const index = map.sources.findIndex((name) => name.endsWith(path));
+        const content = map.sourcesContent[index];
+        if (typeof content !== "string") throw new Error(`Missing source map entry for ${path}`);
+        return content;
+      });
+      return { hotkeys: modules[0], audio: modules[1], domHelpers: modules[2] };
+    }
     const [hotkeys, audio, domHelpers] = await Promise.all(paths.map(async (path) => {
       const response = await fetch(path);
       if (!response.ok) throw new Error(`${path} returned ${response.status}`);
@@ -127,15 +144,18 @@ export async function audit(name, launcher) {
       new KeyboardEvent("keyup", { key: "s", bubbles: true, cancelable: true }),
     );
 
-    // ----- Native range owns keyboard input -----
-    // Dispatch M from the focused range itself.  The page hotkey must
-    // leave every key from native controls untouched.
+    // ----- Range arrows stay native; unrelated letter shortcuts work -----
     let muteClicks = 0;
     const mBtn = document.getElementById("btn-mute");
     const origM = mBtn.click.bind(mBtn);
     mBtn.click = () => { muteClicks++; };
     const vol = document.getElementById("vol");
     vol.focus();
+    const arrow = new KeyboardEvent("keydown", {
+      key: "ArrowUp", bubbles: true, cancelable: true,
+    });
+    vol.dispatchEvent(arrow);
+    out.sliderArrowPrevented = arrow.defaultPrevented;
     vol.dispatchEvent(
       new KeyboardEvent("keydown", {
         key: "m", bubbles: true, cancelable: true,
@@ -167,6 +187,23 @@ export async function audit(name, launcher) {
 
     return out;
   });
+
+  // Real key presses target the focused control. Dispatching on document alone
+  // missed the regression that disabled shortcuts after ordinary tab navigation.
+  await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+  await page.locator("#btn-shortcuts").focus();
+  await page.keyboard.press("?");
+  behaviour.modalOpenFromFocusedButton = await page.locator("#hotkey-help-modal")
+    .evaluate((modal) => modal.open);
+  await page.keyboard.press("?");
+  behaviour.modalClosedByQuestion = await page.locator("#hotkey-help-modal")
+    .evaluate((modal) => !modal.open);
+  await page.keyboard.press("Escape");
+  await page.locator("#tab-settings").click();
+  await page.evaluate(() => { document.getElementById("sr-status").textContent = ""; });
+  await page.keyboard.press("Shift+T");
+  await page.waitForFunction(() => document.getElementById("sr-status").textContent.length > 0);
+  behaviour.statusFromSettingsTab = true;
 
   return { source: sourceChecks, dom, behaviour, errors };
   } finally {
