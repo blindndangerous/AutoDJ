@@ -12,9 +12,8 @@
 // second keydown for the same key is suppressed regardless of the
 // repeat flag.
 //
-// Scope: all hotkeys (transport + status speak) only fire when the
-// Now Playing tab is visible.  ? (open shortcuts dialog) fires from
-// any tab.
+// Scope: transport hotkeys only fire when the Now Playing tab is
+// visible.  Status keys and ? work from any tab.
 //
 // Key conflicts: lowercase k = pause, uppercase K (Shift+K) = speak key.
 // Lowercase n = skip, uppercase N (Shift+N) = speak next track.
@@ -51,19 +50,66 @@ export function ownsNativeKeyboardBehavior(target) {
   }
 }
 
-function _ownsKeyboardBehavior(target) {
-  return isTypingTarget(target) || ownsNativeKeyboardBehavior(target);
+const TYPEAHEAD_SELECTOR = [
+  "select",
+  '[role="combobox"]',
+  '[role="listbox"]',
+  '[role="menu"]',
+  '[role="menuitem"]',
+  '[role="option"]',
+].join(",");
+
+function _eventPath(event) {
+  const path = event.target ? [event.target] : [];
+  if (typeof event.composedPath !== "function") return path;
+  try {
+    const composedPath = event.composedPath();
+    if (Array.isArray(composedPath)) {
+      for (const target of composedPath) {
+        if (!path.includes(target)) path.push(target);
+      }
+    }
+  } catch (_) {
+    // The event target is still useful when a host rejects composedPath().
+  }
+  return path;
 }
 
-function _eventTargetOwnsKeyboardBehavior(event) {
-  if (_ownsKeyboardBehavior(event.target)) return true;
-  if (typeof event.composedPath !== "function") return false;
-  try {
-    const path = event.composedPath();
-    return Array.isArray(path) && path.some(_ownsKeyboardBehavior);
-  } catch (_) {
-    return false;
-  }
+function _eventPathMatches(event, predicate) {
+  return _eventPath(event).some(predicate);
+}
+
+function _eventTargetIsTyping(event) {
+  return _eventPathMatches(event, isTypingTarget);
+}
+
+function _eventTargetOwnsTypeahead(event) {
+  return _eventPathMatches(event, (target) => {
+    if (!target || target.nodeType !== 1 || typeof target.closest !== "function") {
+      return false;
+    }
+    try {
+      return target.closest(TYPEAHEAD_SELECTOR) !== null;
+    } catch (_) {
+      return false;
+    }
+  });
+}
+
+function _shouldDeferToNativeKeyboard(event) {
+  // Select-like widgets own printable-key typeahead as well as their
+  // navigation keys.  Do not steal any of those events for app shortcuts.
+  if (_eventTargetOwnsTypeahead(event)) return true;
+
+  const key = event.key || "";
+  const nativeKey = key === " " || key === "Spacebar" || key.startsWith("Arrow");
+  return nativeKey
+    && _eventPathMatches(event, ownsNativeKeyboardBehavior);
+}
+
+function _eventIsWithin(event, element) {
+  if (event.target && element.contains(event.target)) return true;
+  return _eventPath(event).includes(element);
 }
 
 function _fmtRemaining(sec) {
@@ -122,26 +168,34 @@ export function installHotkeys({
 
   window.addEventListener("keydown", (e) => {
     if (e.repeat) return;
-    if (_eventTargetOwnsKeyboardBehavior(e)) return;
+
+    // Do not latch keys pressed inside the help dialog.  If a keyup is
+    // missed as the dialog closes, it must not suppress the next page key.
+    if (_eventTargetIsTyping(e)) return;
+    const modal = document.getElementById("hotkey-help-modal");
+    if (modal && modal.open && _eventIsWithin(e, modal)) {
+      if (e.key === "?" && !e.ctrlKey && !e.metaKey && !e.altKey
+          && !_pressed.has(e.key) && isEnabled()) {
+        _pressed.add(e.key);
+        e.preventDefault();
+        toggleShortcutsModal();
+      }
+      return;
+    }
+
+    if (_shouldDeferToNativeKeyboard(e)) return;
     if (_pressed.has(e.key)) return;
     _pressed.add(e.key);
     if (!isEnabled()) return;
 
     const nowPanel = document.getElementById("panel-now");
     const nowVisible = nowPanel && !nowPanel.hasAttribute("hidden");
-    if (!nowVisible && e.key !== "?") return;
-
-    const modal = document.getElementById("hotkey-help-modal");
-    if (modal && modal.open && modal.contains(e.target)) {
-      if (e.key === "?") {
-        e.preventDefault();
-        toggleShortcutsModal();
-      }
-      return;
-    }
     if (e.ctrlKey || e.metaKey || e.altKey) return;
 
     const key = e.key;
+    const statusKey = ["T", "N", "R", "B", "K"].includes(key);
+    if (!nowVisible && !statusKey && key !== "?") return;
+
     let bumpVol = 0;
     switch (key) {
       case " ":

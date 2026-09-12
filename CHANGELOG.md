@@ -10,6 +10,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Restore web keyboard shortcuts from focused buttons and sliders, including next track and
+  measure seeking. Keep native control keys intact, allow status shortcuts on every tab, and
+  let `?` close the shortcuts dialog from its focused Close button.
 - Every button in the Library tools panel — Index, Enrich, Prune, Stats — died about a second after
   being pressed. The job runner starts its child with `python -m autodj`, and the module that makes
   that work had never existed, so the only thing the job log ever showed was "No module named
