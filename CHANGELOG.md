@@ -15,8 +15,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- Music imports failed during MuQ inference with Transformers 5, even when model
-  loading and doctor checks passed. Keep Transformers on the compatible 4.x series.
+- Music imports failed during MuQ inference with current Transformers, even when
+  model loading and doctor checks passed. Adapt MuQ's Conformer configuration and
+  final-layer output while retaining current, patched Transformers dependencies.
+- Update Vitest to 4.1.11 to address GHSA-82fw-gwwq-j7x9.
 
 - Every button in the Library tools panel — Index, Enrich, Prune, Stats — died about a second after
   being pressed. The job runner starts its child with `python -m autodj`, and the module that makes

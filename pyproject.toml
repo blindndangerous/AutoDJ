@@ -31,9 +31,7 @@ dependencies = [
     "starlette==1.6.0",
     "uvicorn[standard]>=0.29.0",
     "muq>=0.1.0",
-    # MuQ 0.1.0 passes EasyDict to the Conformer encoder; Transformers 5
-    # requires configuration attributes it does not provide during inference.
-    "transformers>=4.57.6,<5",
+    "transformers>=5.16.1", # MuQ compatibility is handled at model load.
 ]
 
 [project.optional-dependencies]
@@ -215,7 +213,6 @@ extend_exclude = ["tests", "tmp"]
 # tools loaded by pytest itself, not imported in src/.  httpx2 is the
 # starlette TestClient backend + direct ASGI client, used only in tests.
 DEP002 = [
-    "transformers", # Imported by MuQ; bounded here for inference compatibility.
     "python-multipart",
     "pytest",
     "pytest-cov",

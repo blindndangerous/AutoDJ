@@ -7,7 +7,7 @@ launcher; it leaves the standard `.venv`, `pyproject.toml`, and `uv.lock` alone.
 
 This setup was tested on an AMD Ryzen AI 7 PRO 350 with Radeon 860M integrated graphics (`gfx1152`),
 Python 3.14.6, PyTorch 2.12.0+rocm7.14.1, torchvision 0.27.0+rocm7.14.1, and torchaudio
-2.11.0+rocm7.14.1. That is one tested configuration, not a general compatibility guarantee. Check
+2.11.0+rocm7.14.1, with Transformers 5.17.0. That is one tested configuration, not a general compatibility guarantee. Check
 AMD's [ROCm 7.14.1 compatibility matrix](https://rocm.docs.amd.com/en/docs-7.14.1/compatibility/compatibility-matrix.html)
 for supported Windows versions and drivers. AMD's [PyTorch install page](https://rocm.docs.amd.com/projects/ai-ecosystem/en/latest/frameworks/pytorch/install.html)
 lists the device-specific wheel command below.
@@ -23,12 +23,25 @@ uv venv --python 3.14.6 --seed .uv/amd
   "torch[device-gfx1152]==2.12.0+rocm7.14.1" `
   "torchvision[device-gfx1152]==0.27.0+rocm7.14.1" `
   "torchaudio==2.11.0+rocm7.14.1"
-uv pip install --python .uv/amd/Scripts/python.exe -e ".[all]"
+uv pip install --python .uv/amd/Scripts/python.exe -e ".[all]" "pillow>=12.3.0"
 ```
 
 The AMD wheel command follows the versions and index on AMD's install page. For another GPU, select
 the matching `device-gfx*` extra and supported versions from that page. The launcher uses MIOpen
 caches under `.uv/amd/miopen/` so they stay with this environment.
+
+Keep the project's Transformers dependency current. AutoDJ adapts MuQ's configuration and
+final-layer output when loading the model; downgrading to Transformers 4 is neither required nor
+recommended. This compatibility layer serves AutoDJ's final-layer embeddings, not MuQ's optional
+intermediate-layer inspection APIs.
+
+The tested AMD wheel requires `setuptools<82`, which prevents installing the fix in setuptools 83
+for [PYSEC-2026-3447](https://osv.dev/vulnerability/PYSEC-2026-3447). The advisory concerns Unicode
+filename exclusions when building source distributions on macOS; ordinary Windows inference does
+not exercise that operation. The separate AMD environment still reports this audit finding. Do not
+override the wheel's dependency constraint or suppress the advisory: a compatible patched AMD wheel
+is needed to resolve it. See [PyTorch's dependency tracking issue](https://github.com/pytorch/pytorch/issues/187188).
+The Pillow floor above also avoids retaining an older vulnerable version from the AMD wheel install.
 
 If you use AutoDJ's web UI, install and build its frontend once:
 
