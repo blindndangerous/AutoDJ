@@ -8,7 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- A tested Windows AMD ROCm setup guide and launcher for GPU indexing and web
+  library jobs, with model-kernel caches kept inside the project.
+
 ### Fixed
+
+- Music imports failed during MuQ inference with Transformers 5, even when model
+  loading and doctor checks passed. Keep Transformers on the compatible 4.x series.
 
 - Every button in the Library tools panel — Index, Enrich, Prune, Stats — died about a second after
   being pressed. The job runner starts its child with `python -m autodj`, and the module that makes
