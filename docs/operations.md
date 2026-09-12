@@ -81,6 +81,10 @@ $stamp = Get-Date -Format yyyy-MM-dd
 uv run autodj backup "backups\autodj-$stamp.zip"
 ```
 
+For the separate experimental AMD GPU environment, follow
+[Experimental Windows AMD GPU setup](windows-amd.md). Its launcher and dependencies are separate
+from the standard locked `.venv`.
+
 Create authenticated LAN settings without placing a secret on the command line:
 
 ```powershell
@@ -142,21 +146,44 @@ successful install name retained recovery files and do not mean rollback occurre
 until doctor exits 0. Keep an untouched archive until playback and profile and liner inventory are
 confirmed.
 
-Native PowerShell stopped backup and restore equivalents are:
+For a native Windows process, press Ctrl+C in the terminal running `uv run autodj serve`, then wait
+for the process to exit. If a service manager runs AutoDJ, stop that service and wait for it to
+report that the process has stopped. The following commands create a stopped backup:
 
 ```powershell
-docker compose --profile lan down
 $stamp = Get-Date -Format yyyy-MM-dd
 uv run autodj backup "backups\autodj-$stamp.zip"
-uv run autodj restore --force "backups\autodj-$stamp.zip"
-uv run autodj doctor
-docker compose up
 ```
+
+To restore on native Windows, stop AutoDJ the same way, then run:
+
+```powershell
+uv run autodj restore --force "backups\autodj-2026-09-12.zip"
+uv run autodj doctor
+```
+
+Replace the archive path with the backup you intend to restore. Use the same configuration for
+backup, restore, and doctor that the previous `serve` process used. After doctor succeeds, restart
+with the previous `uv run autodj serve` command and its options, or restart the service manager.
 
 ## Upgrade checklist
 
-1. Create and retain a backup.
-2. Run `uv sync --frozen --all-extras` and `npm ci` from committed locks.
-3. Run `uv run autodj doctor`.
-4. Run Python, frontend, and container gates from `CONTRIBUTING.md`.
-5. Start loopback-only and verify `/api/version` before enabling LAN access.
+These steps apply to a native installation from a source checkout.
+
+1. Stop AutoDJ, then create and retain a backup before changing the checkout or its dependencies.
+2. Run `git status --short`. If it prints any paths, stop. Commit the changes on a branch or copy
+   them outside the checkout. Continue only after `git status --short` prints nothing.
+3. Replace `vX.Y.Z` below with the release tag you intend to run. Fetch the tags, then check out
+   that release:
+
+   ```bash
+   git fetch --tags origin
+   git switch --detach vX.Y.Z
+   ```
+
+4. Run `uv sync --frozen --all-extras`, `npm ci`, and `npm run build` from the fetched release and
+   its committed locks. If you use the experimental Windows AMD environment, update it by following
+   [Experimental Windows AMD GPU setup](windows-amd.md).
+5. Run `uv run autodj doctor`.
+6. Run Python, frontend, and container gates from `CONTRIBUTING.md`.
+7. Start loopback-only and verify `/api/version` before enabling LAN access.

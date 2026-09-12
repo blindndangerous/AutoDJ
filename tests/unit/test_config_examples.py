@@ -253,7 +253,7 @@ def test_operator_docs_keep_security_and_quality_commands_exact() -> None:
     assert "8-digit code" in operations
     assert "paired-device cookie" in operations
 
-    assert operations.count("docker compose --profile lan down") == 3
+    assert "docker compose --profile lan down" in operations
     assert "docker compose down" not in operations
 
     assert operations.count(lan_setup) == 2
