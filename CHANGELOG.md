@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Update Vitest to 4.1.11 and refresh the container's PCRE2 package to include security fixes.
 - Restore web keyboard shortcuts from focused buttons and sliders, including next track and
   measure seeking. Keep native control keys intact, allow status shortcuts on every tab, and
   let `?` close the shortcuts dialog from its focused Close button.
