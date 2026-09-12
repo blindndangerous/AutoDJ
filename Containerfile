@@ -9,7 +9,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 COPY --from=ghcr.io/astral-sh/uv:0.11.26@sha256:3d868e555f8f1dbc324afa005066cd11e1053fc4743b9808ca8025283e65efa5 /uv /usr/local/bin/uv
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates ffmpeg libsndfile1 \
+    && apt-get install -y --no-install-recommends ca-certificates ffmpeg libsndfile1 libpcre2-8-0 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
