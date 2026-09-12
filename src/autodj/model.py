@@ -38,13 +38,16 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO, Protocol, cast
+from typing import TYPE_CHECKING, BinaryIO, Protocol, cast
 
 import numpy as np
 import torch
 from huggingface_hub import snapshot_download
 
 from autodj.config import IndexConfig, ModelConfig
+
+if TYPE_CHECKING:
+    from transformers.modeling_outputs import BaseModelOutput
 
 logger = logging.getLogger(__name__)
 
@@ -653,6 +656,60 @@ class MuqWrapper:
 # ---------------------------------------------------------------------------
 
 
+class _MuqConformerAdapter(torch.nn.Module):
+    """Adapt MuQ's encoder for AutoDJ's final-layer-only inference.
+
+    MuQ 0.1.0 supplies an EasyDict instead of a Transformers configuration and
+    reads the final embedding through ``hidden_states[-1]``. Transformers 5
+    expects configuration methods and returns only ``last_hidden_state`` from
+    the bare encoder. Keep its implementation and loaded weights, exposing the
+    final layer in the form MuQ needs. This does not provide intermediate layers.
+    """
+
+    def __init__(self, encoder: torch.nn.Module) -> None:
+        """Normalize the shared configuration without replacing parameters."""
+        super().__init__()
+        from transformers import Wav2Vec2ConformerConfig
+
+        previous = cast("dict[str, object] | Wav2Vec2ConformerConfig", encoder.config)
+        values = dict(previous) if isinstance(previous, dict) else previous.to_dict()
+        config = Wav2Vec2ConformerConfig.from_dict(values)
+        # Match MuQ's original eager attention, including relative position bias.
+        config._attn_implementation = "eager"
+        for module in encoder.modules():
+            if getattr(module, "config", None) is previous:
+                module.config = config  # type: ignore[assignment]  # Third-party non-module attribute.
+        self.encoder = encoder
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+        output_hidden_states: bool = True,
+    ) -> BaseModelOutput:
+        """Return the final encoder layer through MuQ's expected output fields."""
+        from transformers.modeling_outputs import BaseModelOutput
+
+        result = self.encoder(hidden_states, attention_mask=attention_mask)
+        last = result.last_hidden_state
+        return BaseModelOutput(
+            last_hidden_state=last,
+            hidden_states=(last,) if output_hidden_states else None,
+        )
+
+
+def _prepare_muq_conformer(model: torch.nn.Module) -> None:
+    """Adapt the standard MuQ Conformer; leave alternate encoders unchanged."""
+    from transformers.models.wav2vec2_conformer.modeling_wav2vec2_conformer import (
+        Wav2Vec2ConformerEncoder,
+    )
+
+    inner = cast(torch.nn.Module, model.model)
+    encoder = inner.conformer
+    if isinstance(encoder, Wav2Vec2ConformerEncoder):
+        inner.conformer = _MuqConformerAdapter(encoder)
+
+
 def load_model(model_path: Path) -> MuqWrapper:
     """Load the MuQ model from a local directory and return a :class:`MuqWrapper`.
 
@@ -692,6 +749,7 @@ def load_model(model_path: Path) -> MuqWrapper:
 
     try:  # pragma: no cover
         model = MuQ.from_pretrained(str(model_path))
+        _prepare_muq_conformer(model)
     except Exception as exc:  # pragma: no cover
         raise ModelLoadError(
             f"Failed to load model from {model_path}: {exc}\n"

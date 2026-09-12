@@ -8,7 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- A tested Windows AMD ROCm setup guide and launcher for GPU indexing and web
+  library jobs, with model-kernel caches kept inside the project.
+
 ### Fixed
+
+- Music imports failed during MuQ inference with current Transformers, even when
+  model loading and doctor checks passed. Adapt MuQ's Conformer configuration and
+  final-layer output while retaining current, patched Transformers dependencies.
+- Update Vitest to 4.1.11 to address GHSA-82fw-gwwq-j7x9.
+- Refresh the container's PCRE2 runtime package to include Debian security fixes.
 
 - Every button in the Library tools panel — Index, Enrich, Prune, Stats — died about a second after
   being pressed. The job runner starts its child with `python -m autodj`, and the module that makes

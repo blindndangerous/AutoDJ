@@ -1,12 +1,16 @@
 """Shared GPU/CPU device probe.
 
-Single source of truth for "use CUDA when available, fall back to CPU
+Single source of truth for "use a GPU when available, fall back to CPU
 otherwise" across every subcommand that has GPU-eligible work
 (``index``'s MuQ embed, ``analyse``'s beat grid).  Centralising the
 probe here keeps detection logic, the env-var override, and the
 diagnostic log line consistent — and means future GPU-eligible steps
 opt in by calling one helper instead of re-rolling their own
 ``torch.cuda.is_available()`` + try/except dance.
+
+PyTorch exposes both NVIDIA CUDA and AMD ROCm through ``torch.cuda`` and
+the ``"cuda"`` device string. ROCm needs a compatible PyTorch installation;
+see ``docs/windows-amd.md`` for the tested Windows setup.
 
 The ``AUTODJ_GPU=0`` env var disables GPU for every step at once.
 Per-step overrides (e.g. ``AUTODJ_DJMETA_GPU=0``) layer on top.
@@ -28,7 +32,7 @@ def _global_disabled() -> bool:
 
 
 def gpu_available() -> bool:
-    """Return True iff CUDA is usable and the user hasn't disabled it.
+    """Return True iff CUDA or ROCm is usable and the user hasn't disabled it.
 
     Cached after the first probe so CPU-only hosts pay the torch
     import cost once.  Honours ``AUTODJ_GPU=0`` on every call (cheap)

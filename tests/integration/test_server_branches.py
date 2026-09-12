@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
-from httpx import Headers
+from httpx2 import Headers
 from starlette.websockets import WebSocketDisconnect
 
 from autodj.config import ServerConfig

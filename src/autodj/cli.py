@@ -897,7 +897,7 @@ def cmd_index(
             "  [bold]uv sync --extra index[/]\n"
             "or for the whole kit:\n"
             "  [bold]uv sync --extra all[/]\n\n"
-            "Indexing runs on CPU automatically when no NVIDIA GPU is present —\n"
+            "Indexing runs on CPU automatically when no compatible GPU is available —\n"
             "fine for small batches (use --limit 50 to try it on a NAS first)."
         )
         sys.exit(1)

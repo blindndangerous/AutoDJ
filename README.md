@@ -32,6 +32,10 @@ mkdir -p music index models
 
 This is the supported install. `--frozen` gives you the exact dependency versions CI tested.
 
+On Windows, the standard locked environment uses CPU-only PyTorch. For an experimental AMD ROCm
+environment, see [Windows AMD GPU setup](docs/windows-amd.md); use its launcher for GPU indexing
+and serving.
+
 AutoDJ works without a configuration file. Its defaults use `music/`, `index/`, and `models/`
 under the current directory and listen on `127.0.0.1:8080`. To change those defaults, copy the
 example to a private configuration file. On Windows PowerShell:
@@ -241,7 +245,7 @@ variables and CLI flags still take precedence.
 
 ## Troubleshooting
 
-**The first index run is taking forever.**  This is the slow pass.  AutoDJ has to listen to every file and remember what it sounds like.  On a CPU it can take many hours for a 10000-track library.  On a machine with an NVIDIA GPU it is much faster.  Run with `--limit 50` first to confirm it works, then leave the full run going overnight.
+**The first index run is taking forever.**  This is the slow pass.  AutoDJ has to listen to every file and remember what it sounds like.  On a CPU it can take many hours for a 10000-track library.  A compatible GPU can speed up the embedding step.  In one small, repeated benchmark on a Ryzen AI 7 PRO 350 with Radeon 860M graphics, the GPU was about 1.9x faster than CPU after warmup; that smoke-test result does not predict full-library time.  See [Windows AMD GPU setup](docs/windows-amd.md) for the tested configuration.  Run with `--limit 50` first to confirm it works, then leave the full run going overnight.
 
 **Browser says "loading module ... was blocked".** You probably ran `npm run build` once and then
 deleted `node_modules`. Either delete `src/autodj/static_dist` (server falls back to unbundled
