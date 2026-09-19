@@ -36,7 +36,7 @@ import mimetypes
 import shutil
 import threading
 import time
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
@@ -938,46 +938,27 @@ def create_app(
         """Serve the bundled stylesheet."""
         return FileResponse(_static_dir / "app.css", media_type="text/css", headers=_NO_CACHE)
 
-    @app.get("/app.js")
-    async def get_js() -> FileResponse:
-        """Serve the bundled application JS."""
-        return FileResponse(_static_dir / "app.js", media_type="text/javascript", headers=_NO_CACHE)
+    def _js_asset_route(filename: str) -> Callable[[], Awaitable[FileResponse]]:
+        """Build a no-cache handler serving one bundled JS file."""
 
-    @app.get("/bitcrusher-worklet.js")
-    async def get_worklet() -> FileResponse:
-        """Serve the bitcrusher AudioWorklet module."""
-        return FileResponse(
-            _static_dir / "bitcrusher-worklet.js",
-            media_type="text/javascript",
-            headers=_NO_CACHE,
-        )
+        async def get_js_asset() -> FileResponse:
+            """Serve a bundled script or AudioWorklet module."""
+            return FileResponse(
+                _static_dir / filename,
+                media_type="text/javascript",
+                headers=_NO_CACHE,
+            )
 
-    @app.get("/stutter-worklet.js")
-    async def get_stutter_worklet() -> FileResponse:
-        """Serve the stutter AudioWorklet module."""
-        return FileResponse(
-            _static_dir / "stutter-worklet.js",
-            media_type="text/javascript",
-            headers=_NO_CACHE,
-        )
+        return get_js_asset
 
-    @app.get("/freeze-worklet.js")
-    async def get_freeze_worklet() -> FileResponse:
-        """Serve the freeze AudioWorklet module."""
-        return FileResponse(
-            _static_dir / "freeze-worklet.js",
-            media_type="text/javascript",
-            headers=_NO_CACHE,
-        )
-
-    @app.get("/glitch-worklet.js")
-    async def get_glitch_worklet() -> FileResponse:
-        """Serve the glitch AudioWorklet module."""
-        return FileResponse(
-            _static_dir / "glitch-worklet.js",
-            media_type="text/javascript",
-            headers=_NO_CACHE,
-        )
+    for _js_name in (
+        "app.js",
+        "bitcrusher-worklet.js",
+        "stutter-worklet.js",
+        "freeze-worklet.js",
+        "glitch-worklet.js",
+    ):
+        app.get(f"/{_js_name}")(_js_asset_route(_js_name))
 
     # ES module imports.  index.html loads /app.js as a module; that
     # script's `import "./modules/foo.js"` resolves against the script
