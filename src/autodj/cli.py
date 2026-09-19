@@ -364,21 +364,21 @@ def _apply_serve_overrides(
     *kw* is the local mapping captured at the top of ``cmd_serve``;
     every key matches a click option name.
     """
-    djmix_keys = {
-        "harmonic_mixing": "harmonic_mixing",
-        "beatmatch": "beatmatch",
-        "phrase_align": "phrase_align",
-        "outro_intro_align": "outro_intro_align",
-        "filter_sweep": "filter_sweep",
-    }
-    playback_keys = {
-        "enable_daypart": "enable_daypart",
-        "enable_mood_arc": "enable_mood_arc",
-        "import_external_cues": "import_external_cues",
-        "beat_sync_fx": "beat_sync_fx",
-        "key_sync_fx": "key_sync_fx",
-        "show_lyrics": "show_lyrics",
-    }
+    djmix_keys = (
+        "harmonic_mixing",
+        "beatmatch",
+        "phrase_align",
+        "outro_intro_align",
+        "filter_sweep",
+    )
+    playback_keys = (
+        "enable_daypart",
+        "enable_mood_arc",
+        "import_external_cues",
+        "beat_sync_fx",
+        "key_sync_fx",
+        "show_lyrics",
+    )
     validated_transition_mode: str | None = None
     if kw.get("transition_mode") is not None:
         from autodj.config import _validate_transition_mode
@@ -390,17 +390,10 @@ def _apply_serve_overrides(
             sys.exit(1)
 
     changed = False
-    for src_key, dst_key in djmix_keys.items():
-        if kw.get(src_key) is not None:
-            value = kw[src_key]
-            if getattr(cfg.djmix, dst_key) != value:
-                setattr(cfg.djmix, dst_key, value)
-                changed = True
-    for src_key, dst_key in playback_keys.items():
-        if kw.get(src_key) is not None:
-            value = kw[src_key]
-            if getattr(cfg.playback, dst_key) != value:
-                setattr(cfg.playback, dst_key, value)
+    for section, keys in ((cfg.djmix, djmix_keys), (cfg.playback, playback_keys)):
+        for key in keys:
+            if kw.get(key) is not None and getattr(section, key) != kw[key]:
+                setattr(section, key, kw[key])
                 changed = True
     if kw.get("mood_arc_hours") is not None:
         value = max(0.25, float(kw["mood_arc_hours"]))
