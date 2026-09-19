@@ -610,6 +610,13 @@ def _write_m3u_header(path: Path) -> None:
     path.write_text("#EXTM3U\n", encoding="utf-8")
 
 
+def _m3u_entry_lines(entry: IndexEntry) -> str:
+    """Return the ``#EXTINF`` + path lines for a single track."""
+    duration = int(entry.length) if entry.length > 0 else -1
+    display = f"{entry.artist} - {entry.title}" if entry.artist else entry.title
+    return f"#EXTINF:{duration},{display}\n{entry.path}\n"
+
+
 def _append_m3u_entry(path: Path, entry: IndexEntry) -> None:
     """Append a single ``#EXTINF`` + path line to an existing M3U file.
 
@@ -617,10 +624,8 @@ def _append_m3u_entry(path: Path, entry: IndexEntry) -> None:
         path: Path to the M3U file.
         entry: Track to append.
     """
-    duration = int(entry.length) if entry.length > 0 else -1
-    display = f"{entry.artist} - {entry.title}" if entry.artist else entry.title
     with path.open("a", encoding="utf-8") as fh:
-        fh.write(f"#EXTINF:{duration},{display}\n{entry.path}\n")
+        fh.write(_m3u_entry_lines(entry))
 
 
 def write_m3u(entries: list[IndexEntry], path: Path) -> None:
@@ -632,9 +637,8 @@ def write_m3u(entries: list[IndexEntry], path: Path) -> None:
         entries: Ordered list of tracks for the playlist.
         path: Destination file path.
     """
-    _write_m3u_header(path)
-    for entry in entries:
-        _append_m3u_entry(path, entry)
+    body = "".join(_m3u_entry_lines(entry) for entry in entries)
+    path.write_text("#EXTM3U\n" + body, encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
