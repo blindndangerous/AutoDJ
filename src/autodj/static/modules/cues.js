@@ -127,21 +127,3 @@ export function applyCueSummary(track, element, detailsElement) {
     detailsElement.textContent = detailText;
   }
 }
-
-export function summariseCues(cues) {
-  // Compact, screen-reader-friendly summary: count + up to first 3 markers
-  // formatted as "drop at 1 minute 23, breakdown at 2 minutes 10".
-  const fmt = (sec) => {
-    const m = Math.floor(sec / 60);
-    const s = Math.round(sec - m * 60);
-    if (m <= 0) return `${s} seconds`;
-    return `${m} minute${m === 1 ? "" : "s"} ${s}`;
-  };
-  const headline = `${cues.length} cue ${cues.length === 1 ? "point" : "points"}`;
-  const interesting = cues
-    .filter(c => c.type !== "phrase")
-    .slice(0, 3);
-  if (!interesting.length) return headline;
-  const phrases = interesting.map(c => `${c.type.replace(/_/g, " ")} at ${fmt(c.time_s)}`);
-  return `${headline}: ${phrases.join(", ")}`;
-}
