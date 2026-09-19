@@ -20,9 +20,6 @@ from autodj.beat_sync import (
     bar_seconds,
     extract_downbeats,
     key_to_hz,
-    lerp_bpm,
-    lerp_hz,
-    next_downbeat_at,
     synthesize_downbeats,
 )
 
@@ -71,41 +68,6 @@ class TestSynthesizeDownbeats:
         assert synthesize_downbeats(120.0, -1.0) == []
 
 
-class TestNextDownbeatAt:
-    def test_returns_first_match(self) -> None:
-        downbeats = [0.0, 2.0, 4.0, 6.0]
-        assert next_downbeat_at(downbeats, 1.5) == 2.0
-
-    def test_epsilon_treats_now_as_now(self) -> None:
-        downbeats = [0.0, 2.0]
-        # 2.0001 should still snap to 2.0 (within epsilon).
-        assert next_downbeat_at(downbeats, 2.0001) == 2.0
-
-    def test_no_future_downbeat(self) -> None:
-        assert next_downbeat_at([0.0, 1.0], 5.0) is None
-
-    def test_empty(self) -> None:
-        assert next_downbeat_at([], 0.0) is None
-
-
-class TestLerpBpm:
-    def test_midpoint(self) -> None:
-        assert lerp_bpm(120.0, 140.0, 0.5) == pytest.approx(130.0)
-
-    def test_clamps_frac(self) -> None:
-        assert lerp_bpm(120.0, 140.0, 1.5) == pytest.approx(140.0)
-        assert lerp_bpm(120.0, 140.0, -0.5) == pytest.approx(120.0)
-
-    def test_unknown_out(self) -> None:
-        assert lerp_bpm(0.0, 140.0, 0.5) == 140.0
-
-    def test_unknown_in(self) -> None:
-        assert lerp_bpm(120.0, 0.0, 0.5) == 120.0
-
-    def test_both_unknown(self) -> None:
-        assert lerp_bpm(0.0, 0.0, 0.5) == 120.0
-
-
 class TestKeyToHz:
     def test_c4(self) -> None:
         # C4 ≈ 261.63 Hz
@@ -128,24 +90,3 @@ class TestKeyToHz:
     def test_unknown_key(self) -> None:
         assert key_to_hz(-1) is None
         assert key_to_hz(12) is None
-
-
-class TestLerpHz:
-    def test_log_midpoint(self) -> None:
-        # 100 -> 400 at frac 0.5 → exp(mean of logs) = 200 (geometric mean)
-        result = lerp_hz(100.0, 400.0, 0.5)
-        assert result is not None
-        assert result == pytest.approx(200.0, rel=1e-6)
-
-    def test_one_known(self) -> None:
-        assert lerp_hz(None, 440.0, 0.5) == 440.0
-        assert lerp_hz(440.0, None, 0.5) == 440.0
-
-    def test_neither_known(self) -> None:
-        assert lerp_hz(None, None, 0.5) is None
-
-    def test_clamp(self) -> None:
-        # frac 1.5 clamps to 1.0 → exact in_hz
-        result = lerp_hz(100.0, 400.0, 1.5)
-        assert result is not None
-        assert result == pytest.approx(400.0, rel=1e-6)

@@ -13,16 +13,9 @@ amount of music-theory math used by both:
   fallback is good enough for 4-on-floor material; degrades gracefully
   on swung / free-time content where it's no worse than the legacy
   fixed-second scheduling.
-- :func:`next_downbeat_at` — first downbeat ≥ a target time (used by
-  the player to snap effect start to a downbeat).
 - :func:`bar_seconds` — seconds per bar for a given BPM.
-- :func:`lerp_bpm` — linear interpolation across the crossfade window
-  so per-bar timing morphs from the outgoing track's tempo to the
-  incoming track's tempo.
 - :func:`key_to_hz` — chromatic key 0-11 → root frequency in Hz (A4 =
   440 reference, octave 4).  Mode does not affect the root.
-- :func:`lerp_hz` — pitch interpolation in log space so the perceived
-  glide is even.
 
 Module is dependency-free so it imports cleanly under both the indexer
 process (where librosa is loaded) and the headless CLI / web server
@@ -31,7 +24,6 @@ process (where librosa is loaded) and the headless CLI / web server
 
 from __future__ import annotations
 
-import bisect
 from collections.abc import Sequence
 
 # A4 = 440 Hz, octave 4.  C4 (chromatic 0) = 440 / 2^(9/12).
@@ -121,54 +113,6 @@ def synthesize_downbeats(
     return out
 
 
-def next_downbeat_at(
-    downbeats: Sequence[float],
-    t: float,
-    *,
-    epsilon: float = 1e-3,
-) -> float | None:
-    """Return the first downbeat ``>= t``.
-
-    Args:
-        downbeats: Sorted ascending downbeat timestamps in seconds.
-        t: Target time in seconds.
-        epsilon: Tolerance — a downbeat within ``t - epsilon`` counts as
-            "now" so callers don't get a 1-bar shift on already-on-grid
-            timings.
-
-    Returns:
-        First matching downbeat, or ``None`` when ``downbeats`` is empty
-        or every entry is earlier than ``t``.
-    """
-    index = bisect.bisect_left(downbeats, t - epsilon)
-    return float(downbeats[index]) if index < len(downbeats) else None
-
-
-def lerp_bpm(out_bpm: float, in_bpm: float, frac: float) -> float:
-    """Linear blend from *out_bpm* at ``frac=0`` to *in_bpm* at ``frac=1``.
-
-    Either BPM may be 0 (unknown).  In that case the *known* BPM is used
-    for the entire window.  When neither is known, returns ``120.0`` —
-    the long-standing AutoDJ fallback tempo.
-
-    Args:
-        out_bpm: Outgoing track's tempo.
-        in_bpm: Incoming track's tempo.
-        frac: 0-1 position across the crossfade.  Clamped.
-
-    Returns:
-        Blended BPM.
-    """
-    f = max(0.0, min(1.0, frac))
-    if out_bpm > 0 and in_bpm > 0:
-        return float(out_bpm) * (1.0 - f) + float(in_bpm) * f
-    if out_bpm > 0:
-        return float(out_bpm)
-    if in_bpm > 0:
-        return float(in_bpm)
-    return 120.0
-
-
 def key_to_hz(key: int, octave: int = 4) -> float | None:
     """Return the root-note frequency in Hz for chromatic *key* in *octave*.
 
@@ -186,40 +130,9 @@ def key_to_hz(key: int, octave: int = 4) -> float | None:
     return _C4_HZ * (2.0 ** ((key + 12 * (octave - 4)) / 12.0))
 
 
-def lerp_hz(out_hz: float | None, in_hz: float | None, frac: float) -> float | None:
-    """Logarithmic (perceptual) frequency blend.
-
-    Linear blends in Hz sound front-loaded — the high-frequency side
-    races past the low side.  Log-space lerp keeps the glide perceptually
-    uniform.
-
-    Args:
-        out_hz: Outgoing root frequency, or ``None`` when unknown.
-        in_hz: Incoming root frequency, or ``None`` when unknown.
-        frac: 0-1 position across the crossfade.  Clamped.
-
-    Returns:
-        Blended Hz.  When one side is ``None``, the known side is used.
-        When both are ``None``, returns ``None``.
-    """
-    f = max(0.0, min(1.0, frac))
-    if out_hz and in_hz:
-        import math
-
-        return math.exp(math.log(out_hz) * (1.0 - f) + math.log(in_hz) * f)
-    if out_hz:
-        return float(out_hz)
-    if in_hz:
-        return float(in_hz)
-    return None
-
-
 __all__ = [
     "bar_seconds",
     "extract_downbeats",
     "key_to_hz",
-    "lerp_bpm",
-    "lerp_hz",
-    "next_downbeat_at",
     "synthesize_downbeats",
 ]
