@@ -98,13 +98,29 @@ export default [
       // logs to console for browser-side debug -- see ?debug=1 flag).
       "no-console": "off",
       // All browser HTTP goes through modules/api-client.js so auth,
-      // error shaping, and media-type checks stay in one place.  Matched
-      // on the call, not the reference, so auth.js can keep forwarding
-      // the global as its `fetchImpl = fetch` default parameter.
+      // error shaping, and media-type checks stay in one place.
+      // no-restricted-globals is scope-aware, so it catches bare calls
+      // and aliases (`const f = fetch`) but not a local named `fetch`;
+      // the syntax selectors cover the member forms it cannot see.
+      "no-restricted-globals": [
+        "error",
+        {
+          name: "fetch",
+          message:
+            "Route HTTP through modules/api-client.js instead of calling fetch directly.",
+        },
+      ],
       "no-restricted-syntax": [
         "error",
         {
-          selector: "CallExpression[callee.name='fetch']",
+          selector:
+            "MemberExpression[object.name=/^(window|globalThis|self)$/][property.name='fetch']",
+          message:
+            "Route HTTP through modules/api-client.js instead of calling fetch directly.",
+        },
+        {
+          selector:
+            "MemberExpression[object.name=/^(window|globalThis|self)$/][property.value='fetch']",
           message:
             "Route HTTP through modules/api-client.js instead of calling fetch directly.",
         },
@@ -124,7 +140,13 @@ export default [
   {
     // The one module allowed to call the raw transport.
     files: ["src/autodj/static/modules/api-client.js"],
-    rules: { "no-restricted-syntax": "off" },
+    rules: { "no-restricted-globals": "off", "no-restricted-syntax": "off" },
+  },
+  {
+    // auth.js only forwards the global as its `fetchImpl = fetch` default
+    // parameter; every request still goes through fetchImpl.
+    files: ["src/autodj/static/modules/auth.js"],
+    rules: { "no-restricted-globals": "off" },
   },
   {
     files: [
