@@ -793,6 +793,7 @@
       color: var(--text-dim);
       font-style: italic;
       list-style: none;
+      padding-left: 0;
     }
 
     /* ---- Visually hidden utility (WCAG-compliant clip pattern) ---- */
