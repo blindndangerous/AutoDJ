@@ -238,6 +238,29 @@ def reverb_tail(
     return mixed.astype(np.float32)
 
 
+def _resample_by_rate(src: np.ndarray, rate: np.ndarray) -> np.ndarray:
+    """Read *src* at a variable *rate*, stretched to span the whole buffer.
+
+    ``rate`` is a per-output-sample playback speed.  Its cumulative sum is
+    the read position, normalised so the last sample lands on the final
+    frame of *src* — otherwise a curve that averages below 1.0 would stop
+    short of the end.
+
+    Args:
+        src: Source audio to read from.
+        rate: Per-sample playback speed, same length as the desired output.
+
+    Returns:
+        Float32 array with one sample per entry of *rate*.
+    """
+    pos = np.cumsum(rate)
+    if pos[-1] > 0:
+        pos = pos * ((len(src) - 1) / pos[-1])
+    idx = pos.astype(np.int32)
+    np.clip(idx, 0, len(src) - 1, out=idx)
+    return src[idx].astype(np.float32)
+
+
 def tape_stop(
     tail: np.ndarray,
     sample_rate: int,
@@ -267,18 +290,7 @@ def tape_stop(
     else:
         # Exponential decay — most of the slowdown happens in the last 1/3
         speed = np.exp(-3.0 * np.linspace(0.0, 1.0, n, dtype=np.float32))
-    # Cumulative read position
-    read_pos = np.cumsum(speed)
-    # Normalise so the maximum read position equals n - 1 (we use the
-    # whole tail).  Without this the early/exponential curves don't reach
-    # the end of the buffer.
-    if read_pos[-1] > 0:
-        read_pos = read_pos * ((n - 1) / read_pos[-1])
-    out = np.empty(n, dtype=np.float32)
-    idx = read_pos.astype(np.int32)
-    np.clip(idx, 0, n - 1, out=idx)
-    out[:] = tail[idx]
-    return out
+    return _resample_by_rate(tail, speed)
 
 
 def gate_stutter(
@@ -357,12 +369,7 @@ def backspin(
     # to match physical friction).  Quadratic falls off harder near the end.
     t = np.linspace(0.0, 1.0, spin_n, dtype=np.float32)
     rate = (2.0 * (1.0 - t * t) + 0.05).astype(np.float32)
-    pos = np.cumsum(rate)
-    if pos[-1] > 0:
-        pos = pos * ((len(src) - 1) / pos[-1])
-    idx = pos.astype(np.int32)
-    np.clip(idx, 0, len(src) - 1, out=idx)
-    spin = src[idx]
+    spin = _resample_by_rate(src, rate)
 
     # Apply gentle amplitude fade in the final 0.3 s so the spin lands on silence
     fade_samples = min(int(0.3 * sample_rate), spin_n // 4)
@@ -545,12 +552,7 @@ def pitch_swell(
         return tail
     # Accelerating speed envelope: 1.0 -> 2.0
     speed = np.linspace(1.0, 2.0, n, dtype=np.float32)
-    read_pos = np.cumsum(speed)
-    if read_pos[-1] > 0:
-        read_pos = read_pos * ((n - 1) / read_pos[-1])
-    idx = read_pos.astype(np.int32)
-    np.clip(idx, 0, n - 1, out=idx)
-    return tail[idx].astype(np.float32)
+    return _resample_by_rate(tail, speed)
 
 
 def pitch_fall(
@@ -575,12 +577,7 @@ def pitch_fall(
         return tail
     # Decelerating speed envelope: 1.0 -> 0.4
     speed = np.linspace(1.0, 0.4, n, dtype=np.float32)
-    read_pos = np.cumsum(speed)
-    if read_pos[-1] > 0:
-        read_pos = read_pos * ((n - 1) / read_pos[-1])
-    idx = read_pos.astype(np.int32)
-    np.clip(idx, 0, n - 1, out=idx)
-    return tail[idx].astype(np.float32)
+    return _resample_by_rate(tail, speed)
 
 
 def telephone(
@@ -1172,12 +1169,7 @@ def vinyl_rewind(
     rev = tail[::-1]
     t = np.linspace(0.0, 1.0, n, dtype=np.float32)
     rate = (1.0 - 0.5 * t).astype(np.float32)
-    pos = np.cumsum(rate)
-    if pos[-1] > 0:
-        pos = pos * ((n - 1) / pos[-1])
-    idx = pos.astype(np.int32)
-    np.clip(idx, 0, n - 1, out=idx)
-    out = rev[idx].astype(np.float32)
+    out = _resample_by_rate(rev, rate)
     # Gentle fade-out over last 0.1 s so the rewind doesn't end abruptly
     fade_n = min(int(0.1 * sample_rate), n // 8)
     if fade_n > 0:
@@ -1342,12 +1334,7 @@ def wow_flutter(
     t = np.arange(n, dtype=np.float32) / sample_rate
     # Variable-rate read for pitch wobble
     rate = 1.0 + pitch_depth * np.sin(2 * np.pi * wow_hz * t)
-    pos = np.cumsum(rate.astype(np.float32))
-    if pos[-1] > 0:
-        pos = pos * ((n - 1) / pos[-1])
-    idx = pos.astype(np.int32)
-    np.clip(idx, 0, n - 1, out=idx)
-    pitched = tail[idx].astype(np.float32)
+    pitched = _resample_by_rate(tail, rate.astype(np.float32))
     # Amplitude tremolo
     tremolo = (1.0 - amp_depth) + amp_depth * np.sin(2 * np.pi * flutter_hz * t).astype(np.float32)
     out = (pitched * tremolo).astype(np.float32)
@@ -1585,12 +1572,7 @@ def _forward_spin_tail(tail: np.ndarray) -> np.ndarray:
         return tail
     t = np.linspace(0.0, 1.0, n, dtype=np.float32)
     rate = (1.0 + (t**3) * 1.5).astype(np.float32)
-    pos = np.cumsum(rate)
-    if pos[-1] > 0:
-        pos = pos * ((n - 1) / pos[-1])
-    idx = pos.astype(np.int32)
-    np.clip(idx, 0, n - 1, out=idx)
-    return tail[idx].astype(np.float32)
+    return _resample_by_rate(tail, rate)
 
 
 # Effects whose only side effect is to transform the OUTGOING tail.
