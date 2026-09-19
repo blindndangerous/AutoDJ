@@ -880,6 +880,7 @@ class PlayerBridge:
         """Return a snapshot of every adjustable setting + available presets."""
         p = self.player
         cfg = p._cfg
+        pb = cfg.playback
         preset = p._preset
         from autodj.presets import BUILTIN_PRESETS
 
@@ -891,93 +892,43 @@ class PlayerBridge:
             "transition": cfg.transitions.effect,
             "djmix": {
                 "harmonic_mixing": cfg.djmix.harmonic_mixing,
-                "harmonic_mode": getattr(cfg.djmix, "harmonic_mode", "compatible"),
+                "harmonic_mode": cfg.djmix.harmonic_mode,
                 "beatmatch": cfg.djmix.beatmatch,
                 "phrase_align": cfg.djmix.phrase_align,
                 "outro_intro_align": cfg.djmix.outro_intro_align,
                 "filter_sweep": cfg.djmix.filter_sweep,
             },
             "playback": {
-                "crossfade_seconds": cfg.playback.crossfade_seconds,
-                "fade_in_seconds": getattr(cfg.playback, "fade_in_seconds", 3.0),
-                "crossfade_eq_duck": cfg.playback.crossfade_eq_duck,
+                "crossfade_seconds": pb.crossfade_seconds,
+                "fade_in_seconds": pb.fade_in_seconds,
+                "crossfade_eq_duck": pb.crossfade_eq_duck,
                 "smart_shuffle": p._smart_shuffle,
-                "pure_shuffle": getattr(p, "_pure_shuffle", False),
-                "anchor_to_seed": getattr(p, "_anchor_to_seed", False),
+                "pure_shuffle": p._pure_shuffle,
+                "anchor_to_seed": p._anchor_to_seed,
                 "replaygain_enabled": cfg.replaygain.enabled,
-                "transition_mode": cfg.playback.transition_mode,
-                "post_queue_seed": getattr(
-                    cfg.playback,
-                    "post_queue_seed",
-                    "last_queued",
-                ),
-                "key_notation": getattr(cfg.playback, "key_notation", "camelot"),
-                "key_prefer_flats": bool(
-                    getattr(cfg.playback, "key_prefer_flats", False),
-                ),
-                "show_lyrics": getattr(cfg.playback, "show_lyrics", True),
-                "enable_daypart": getattr(cfg.playback, "enable_daypart", False),
-                "enable_mood_arc": getattr(cfg.playback, "enable_mood_arc", False),
-                "mood_arc_hours": getattr(cfg.playback, "mood_arc_hours", 3.0),
-                "import_external_cues": getattr(
-                    cfg.playback,
-                    "import_external_cues",
-                    True,
-                ),
-                "beat_sync_fx": bool(
-                    getattr(cfg.playback, "beat_sync_fx", True),
-                ),
+                "transition_mode": pb.transition_mode,
+                "post_queue_seed": pb.post_queue_seed,
+                "key_notation": pb.key_notation,
+                "key_prefer_flats": bool(pb.key_prefer_flats),
+                "show_lyrics": pb.show_lyrics,
+                "enable_daypart": pb.enable_daypart,
+                "enable_mood_arc": pb.enable_mood_arc,
+                "mood_arc_hours": pb.mood_arc_hours,
+                "import_external_cues": pb.import_external_cues,
+                "beat_sync_fx": bool(pb.beat_sync_fx),
                 "no_repeat_window": int(p._state.no_repeat_window),
                 "library_size": int(p._sim.ntotal if p._sim else 0),
-                "key_sync_fx": bool(
-                    getattr(cfg.playback, "key_sync_fx", True),
-                ),
-                "beatmatch_on_skip": bool(
-                    getattr(cfg.playback, "beatmatch_on_skip", False),
-                ),
-                "prefetch_next_track": getattr(
-                    cfg.playback,
-                    "prefetch_next_track",
-                    True,
-                ),
-                "silence_trigger_crossfade": getattr(
-                    cfg.playback,
-                    "silence_trigger_crossfade",
-                    True,
-                ),
-                "liners_enabled": bool(
-                    getattr(cfg.playback, "liners_enabled", False),
-                ),
-                "liners_every_n_songs": getattr(
-                    cfg.playback,
-                    "liners_every_n_songs",
-                    None,
-                ),
-                "liners_every_minutes": getattr(
-                    cfg.playback,
-                    "liners_every_minutes",
-                    None,
-                ),
-                "liners_random_min_minutes": getattr(
-                    cfg.playback,
-                    "liners_random_min_minutes",
-                    None,
-                ),
-                "liners_random_max_minutes": getattr(
-                    cfg.playback,
-                    "liners_random_max_minutes",
-                    None,
-                ),
-                "liners_pick_mode": getattr(
-                    cfg.playback,
-                    "liners_pick_mode",
-                    "random",
-                ),
-                "liners_duck_db": getattr(
-                    cfg.playback,
-                    "liners_duck_db",
-                    -12.0,
-                ),
+                "key_sync_fx": bool(pb.key_sync_fx),
+                "beatmatch_on_skip": bool(pb.beatmatch_on_skip),
+                "prefetch_next_track": pb.prefetch_next_track,
+                "silence_trigger_crossfade": pb.silence_trigger_crossfade,
+                "liners_enabled": bool(pb.liners_enabled),
+                "liners_every_n_songs": pb.liners_every_n_songs,
+                "liners_every_minutes": pb.liners_every_minutes,
+                "liners_random_min_minutes": pb.liners_random_min_minutes,
+                "liners_random_max_minutes": pb.liners_random_max_minutes,
+                "liners_pick_mode": pb.liners_pick_mode,
+                "liners_duck_db": pb.liners_duck_db,
             },
             "bpm_range": {
                 "lo": bpm_range[0] if bpm_range else None,
