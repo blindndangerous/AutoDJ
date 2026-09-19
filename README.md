@@ -302,30 +302,9 @@ tests/
 
 ## Development
 
-If you plan to change the code:
-
-```bash
-# Python tests + linting + type checking + dead-code + dep audit.
-uv sync --frozen --all-extras
-uv run python scripts/ci_pytest.py
-uv run ruff check src tests scripts
-uv run mypy src/autodj
-uv run pyright src/autodj
-uv run vulture              # dead-code scan
-uv run deptry src/autodj    # dep-declaration audit
-
-# Web UI build (optional -- the server falls back to unbundled source
-# when the build output is missing).
-npm ci
-npm run build           # writes src/autodj/static_dist/
-
-# JS lint + module unit tests.
-npm run lint
-npm test
-
-# Chromium audit against a running server.
-AUTODJ_BROWSERS=chromium npm run audit:ci
-```
+If you plan to change the code, [Contributing](CONTRIBUTING.md) has the clone, install,
+pre-commit and gate commands, plus the PR checklist. It is the one place those commands are
+kept current.
 
 Pre-commit runs these hooks: `trailing-whitespace`, `end-of-file-fixer`, `mixed-line-ending`,
 `check-added-large-files`, `check-merge-conflict`, `check-yaml`, `check-toml`, `check-json`,
