@@ -28,6 +28,7 @@ Example:
 
 from __future__ import annotations
 
+import bisect
 import codecs
 import logging
 import re
@@ -153,10 +154,8 @@ def _coerce_peak(peak_str: str | None) -> float:
     """Parse a ReplayGain peak string; default 1.0 on parse error."""
     if peak_str is None:
         return 1.0
-    try:
-        return float(_GAIN_RE.search(peak_str).group(1))  # type: ignore[union-attr]
-    except (AttributeError, ValueError):
-        return 1.0
+    peak = _parse_gain_string(peak_str)
+    return 1.0 if peak is None else peak
 
 
 def read_replaygain(audio_path: str | Path) -> ReplayGain | None:
@@ -526,18 +525,7 @@ def read_file_tags(audio_path: str | Path) -> FileTags:
         :class:`FileTags` with whatever could be read.  Missing fields
         are left at their type-appropriate zero values.
     """
-    try:
-        import mutagen
-
-        mutagen_file = vars(mutagen)["File"]
-        mutagen_error = vars(mutagen)["MutagenError"]
-    except (ImportError, KeyError):
-        return FileTags()
-
-    try:
-        m = mutagen_file(str(audio_path))
-    except (OSError, ValueError, TypeError, mutagen_error):
-        return FileTags()
+    m = _open_mutagen(audio_path)
     if m is None:
         return FileTags()
 
@@ -718,11 +706,5 @@ def current_lyric(lyrics: list[LyricLine], elapsed_s: float) -> LyricLine | None
         The most recent :class:`LyricLine` whose ``time_s <= elapsed_s``,
         or ``None`` if no line has fired yet.
     """
-    if not lyrics:
-        return None
-    last: LyricLine | None = None
-    for line in lyrics:
-        if line.time_s > elapsed_s:
-            break
-        last = line
-    return last
+    index = bisect.bisect_right(lyrics, elapsed_s, key=lambda line: line.time_s)
+    return lyrics[index - 1] if index else None
