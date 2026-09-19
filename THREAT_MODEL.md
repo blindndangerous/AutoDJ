@@ -63,9 +63,9 @@ without a session cookie. Unsafe HTTP methods require one allowed Origin. Audio 
 endpoints use indexed or validated plain-file allowlists rather than arbitrary filesystem paths.
 The liner *root directory* is a configuration value that a paired browser can still change
 through the settings API, so it can point the liner list, fetch, and delete endpoints at
-another directory. That change is session-only: `liners_folder` is listed in
-`CONFIG_ONLY_PLAYBACK_FIELDS`, so it is never written to `web_state.json` and a restart
-returns the root to whatever the configuration says. Treat a paired browser as trusted.
+another directory. That change is session-only: `liners_folder` is not part of the
+`PlaybackState` schema that `PERSISTED_PLAYBACK_FIELDS` derives from, so it is never written
+to `web_state.json` and a restart returns the root to whatever the configuration says. Treat a paired browser as trusted.
 
 ## Request and audit records
 
