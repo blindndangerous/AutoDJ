@@ -2128,15 +2128,6 @@ class TestLibraryEndpoints:
         tc.post("/api/preset", json={"name": "test"})
         assert bridge.player._discovery_every == 15
 
-    def test_state_file_returns_none_on_typeerror(self, bridge) -> None:
-        """state_file_for swallows TypeError when active_dir isn't path-like."""
-        bridge.player._cfg.index = MagicMock()
-        # Make active_dir attribute access raise via descriptor
-        type(bridge.player._cfg.index).active_dir = property(
-            lambda _self: (_ for _ in ()).throw(TypeError("nope")),
-        )
-        assert bridge._state_file() is None
-
     def test_current_lyrics_returns_serialised_lines(self, bridge) -> None:
         """Bridge.current_lyrics serialises LyricLine into dicts."""
         from autodj.audio_meta import LyricLine
@@ -4101,16 +4092,6 @@ class TestPersistenceHelpers:
         bridge.player._cfg.transitions.effect = "none"
         bridge.load_persistent_state()
         assert bridge.player._cfg.transitions.effect == "tape_stop"
-
-    def test_state_file_returns_none_without_cfg(self) -> None:
-        bridge = PlayerBridge(player=MagicMock(_cfg=None), sim=MagicMock())
-        assert bridge._state_file() is None
-
-    def test_state_file_returns_path(self, tmp_path) -> None:
-        cfg = MagicMock()
-        cfg.index.active_dir = tmp_path
-        bridge = PlayerBridge(player=MagicMock(_cfg=cfg), sim=MagicMock())
-        assert bridge._state_file() == tmp_path / "web_state.json"
 
 
 class TestReloadIndexFromDisk:

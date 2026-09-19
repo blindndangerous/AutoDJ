@@ -18,7 +18,6 @@ import math
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -859,16 +858,6 @@ class PlayerBridge:
     # ------------------------------------------------------------------
     # Persistence — settings survive serve restarts
     # ------------------------------------------------------------------
-
-    def _state_file(self) -> Path | None:
-        """Return the persistent runtime-state JSON path, or None when unavailable."""
-        cfg = getattr(self.player, "_cfg", None)
-        if cfg is None:
-            return None
-        try:
-            return Path(cfg.index.active_dir) / "web_state.json"
-        except (TypeError, AttributeError):
-            return None
 
     def load_persistent_state(self) -> None:
         """Restore previously-saved settings from web_state.json."""
