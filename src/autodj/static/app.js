@@ -1475,37 +1475,30 @@ volSlider.addEventListener("input", () => {
 });
 
 // ----------------------------------------------------------------
-// Keyboard shortcuts moved to ./modules/hotkeys.js.  Wired below
-// after the relevant DOM refs are populated -- see _hotkeysReady().
+// Keyboard shortcuts moved to ./modules/hotkeys.js.  Wired here,
+// after every DOM ref it needs has been declared above.
 import {
   installHotkeys,
   toggleShortcutsModal,
 } from "./modules/hotkeys.js";
 
-function _wireHotkeysWhenReady() {
-  // btnShuffle is declared further down the file; defer wiring to the
-  // next tick so its const initialiser has run.
-  setTimeout(() => {
-    installHotkeys({
-      btnPause:    typeof btnPause   !== "undefined" ? btnPause   : null,
-      btnSkip:     typeof btnSkip    !== "undefined" ? btnSkip    : null,
-      btnShuffle:  typeof btnShuffle !== "undefined" ? btnShuffle : null,
-      btnMute:     typeof btnMute    !== "undefined" ? btnMute    : null,
-      volSlider:   typeof volSlider  !== "undefined" ? volSlider  : null,
-      seekDelta:   _seekByDelta,
-      getBpm:      () => _outBpmCache,
-      getTrack:    () => _lastState && _lastState.current_track,
-      getNextTrack:() => _lastState && _lastState.next_track,
-      getRemaining:() => {
-        const dur = _seekTrackDuration();
-        if (!dur) return null;
-        try { return Math.max(0, dur - decks[activeIdx].audio.currentTime); } catch (_) { return null; }
-      },
-      isEnabled: authenticatedInteractionEnabled,
-    });
-  }, 0);
-}
-_wireHotkeysWhenReady();
+installHotkeys({
+  btnPause,
+  btnSkip,
+  btnShuffle,
+  btnMute,
+  volSlider,
+  seekDelta:   _seekByDelta,
+  getBpm:      () => _outBpmCache,
+  getTrack:    () => _lastState && _lastState.current_track,
+  getNextTrack:() => _lastState && _lastState.next_track,
+  getRemaining:() => {
+    const dur = _seekTrackDuration();
+    if (!dur) return null;
+    try { return Math.max(0, dur - decks[activeIdx].audio.currentTime); } catch (_) { return null; }
+  },
+  isEnabled: authenticatedInteractionEnabled,
+});
 
 // Media Session API moved to ./modules/media-session.js.
 import {
