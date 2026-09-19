@@ -120,38 +120,9 @@ PLAYER_BOOL_FIELDS = {
     "pure_shuffle": "_pure_shuffle",
     "anchor_to_seed": "_anchor_to_seed",
 }
-PERSISTED_PLAYBACK_FIELDS = frozenset(
-    {
-        "crossfade_seconds",
-        "fade_in_seconds",
-        "crossfade_eq_duck",
-        "smart_shuffle",
-        "pure_shuffle",
-        "anchor_to_seed",
-        "replaygain_enabled",
-        "transition_mode",
-        "post_queue_seed",
-        "key_notation",
-        "key_prefer_flats",
-        "show_lyrics",
-        "enable_daypart",
-        "enable_mood_arc",
-        "mood_arc_hours",
-        "import_external_cues",
-        "beat_sync_fx",
-        "key_sync_fx",
-        "beatmatch_on_skip",
-        "prefetch_next_track",
-        "silence_trigger_crossfade",
-        "liners_enabled",
-        "liners_every_n_songs",
-        "liners_every_minutes",
-        "liners_random_min_minutes",
-        "liners_random_max_minutes",
-        "liners_pick_mode",
-        "liners_duck_db",
-    }
-)
+#: Playback keys mirrored into ``web_state.json``.  Derived from the
+#: :class:`PlaybackState` schema so the two cannot drift apart.
+PERSISTED_PLAYBACK_FIELDS = frozenset(PlaybackState.__annotations__)
 
 
 def state_file_for(index_dir: Path | None) -> Path | None:
