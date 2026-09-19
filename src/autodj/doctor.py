@@ -62,39 +62,19 @@ _SCHEMA_SIGNATURES = {
     "tracks": _TRACKS_SCHEMA_SIGNATURE,
     "dj_meta": _DJ_META_SCHEMA_SIGNATURE,
 }
-_TRACK_ROW_COLUMNS = (
-    "vec_row",
-    "path",
-    "title",
-    "artist",
-    "album",
-    "genre",
-    "bpm",
-    "year",
-    "length",
-    "energy",
-    "key",
-    "mode",
-    "tempo_confidence",
-    "embedded_at",
+#: Derived from the tracks schema signature so the row reader, the storage-class
+#: expectations and the SELECT can never drift from the declared columns.
+_TRACK_ROW_COLUMNS = tuple(column[0] for column in _TRACKS_SCHEMA_SIGNATURE)
+_TRACK_STORAGE_CLASSES = tuple(column[1].lower() for column in _TRACKS_SCHEMA_SIGNATURE)
+_TRACK_REAL_POSITIONS = tuple(
+    position for position, column in enumerate(_TRACKS_SCHEMA_SIGNATURE) if column[1] == "REAL"
 )
-_TRACK_STORAGE_CLASSES = (
-    "integer",
-    "text",
-    "text",
-    "text",
-    "text",
-    "text",
-    "real",
-    "integer",
-    "real",
-    "real",
-    "integer",
-    "integer",
-    "real",
-    "real",
+# Identifiers come from the module-level schema signature, never from input.
+_TRACK_ROW_SELECT = (
+    "SELECT "  # nosec B608
+    + ", ".join((*_TRACK_ROW_COLUMNS, *(f"typeof({name})" for name in _TRACK_ROW_COLUMNS)))
+    + " FROM tracks ORDER BY vec_row"
 )
-_TRACK_REAL_POSITIONS = (6, 8, 9, 12, 13)
 
 
 def inspect_model_cache(model_cfg: ModelConfig, index_cfg: IndexConfig) -> ModelCacheStatus:
@@ -306,14 +286,7 @@ def _published_index_counts(index_dir: Path, manifest: IndexManifest) -> tuple[i
 
     with closing(_open_readonly_sqlite(tracks_path, immutable=True)) as conn:
         _validate_schema(conn, "tracks", _TRACKS_COLUMNS)
-        rows = conn.execute(
-            "SELECT vec_row, path, title, artist, album, genre, bpm, year, length, "
-            "energy, key, mode, tempo_confidence, embedded_at, "
-            "typeof(vec_row), typeof(path), typeof(title), typeof(artist), "
-            "typeof(album), typeof(genre), typeof(bpm), typeof(year), typeof(length), "
-            "typeof(energy), typeof(key), typeof(mode), typeof(tempo_confidence), "
-            "typeof(embedded_at) FROM tracks ORDER BY vec_row"
-        ).fetchall()
+        rows = conn.execute(_TRACK_ROW_SELECT).fetchall()
     for expected_row, row in enumerate(rows):
         values = row[: len(_TRACK_ROW_COLUMNS)]
         storage_classes = row[len(_TRACK_ROW_COLUMNS) :]
