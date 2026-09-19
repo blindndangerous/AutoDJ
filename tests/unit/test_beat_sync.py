@@ -10,7 +10,6 @@ the server-side track payload synthesiser:
 - ``lerp_bpm`` blend including unknown-side fallbacks.
 - ``key_to_hz`` chromatic table + invalid input.
 - ``lerp_hz`` log-space pitch glide + unknown-side fallbacks.
-- ``FX_BAR_TABLE`` covers every transition effect surfaced by the web UI.
 """
 
 from __future__ import annotations
@@ -18,11 +17,8 @@ from __future__ import annotations
 import pytest
 
 from autodj.beat_sync import (
-    FX_BAR_TABLE,
     bar_seconds,
     extract_downbeats,
-    fx_bars,
-    fx_snaps_to_downbeat,
     key_to_hz,
     lerp_bpm,
     lerp_hz,
@@ -153,33 +149,3 @@ class TestLerpHz:
         result = lerp_hz(100.0, 400.0, 1.5)
         assert result is not None
         assert result == pytest.approx(400.0, rel=1e-6)
-
-
-class TestFxBarTable:
-    def test_known_effects_present(self) -> None:
-        # Spot-check the rhythmic-set entries called out in the
-        # changelog so a future refactor can't silently drop them.
-        for name in [
-            "beat_repeat",
-            "gate_stutter",
-            "echo_out",
-            "dub_delay",
-            "sidechain_pump",
-            "halftime",
-            "stutter_build",
-            "scratch",
-            "transformer",
-            "air_horn",
-            "dub_siren",
-            "ring_modulator",
-        ]:
-            assert name in FX_BAR_TABLE, name
-
-    def test_fx_bars_default(self) -> None:
-        assert fx_bars("beat_repeat") == 4
-        assert fx_bars("not_a_real_effect") == 4  # unknown-fallback
-
-    def test_fx_snaps_to_downbeat(self) -> None:
-        assert fx_snaps_to_downbeat("beat_repeat") is True
-        assert fx_snaps_to_downbeat("reverb_tail") is False
-        assert fx_snaps_to_downbeat("not_real") is False

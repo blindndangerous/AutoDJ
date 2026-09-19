@@ -218,81 +218,9 @@ def lerp_hz(out_hz: float | None, in_hz: float | None, frac: float) -> float | N
     return None
 
 
-# ---------------------------------------------------------------------------
-# Per-effect bar-length defaults
-# ---------------------------------------------------------------------------
-# Each entry maps an effect name to (bars, snap_to_downbeat).
-#   bars: integer bar count.  When the effect would otherwise be sized via
-#         `outro_len * fraction`, this is rounded to the nearest integer
-#         number of bars at the blended tempo and used directly.
-#   snap_to_downbeat: when True, the FX scheduler shifts its start time
-#         forward to the next outgoing downbeat (≤ 1 bar of latency).  Pure
-#         envelope FX where the start phase doesn't matter (ambient pad
-#         reverb_tail, lowpass_sweep) get False so they fire immediately.
-#
-# Surfaced to the browser via /api/state so app.js doesn't have to maintain
-# a duplicate table.
-FX_BAR_TABLE: dict[str, tuple[int, bool]] = {
-    # Rhythmic FX — bars matter, snap matters
-    "beat_repeat": (4, True),
-    "gate_stutter": (4, True),
-    "stutter_build": (4, True),
-    "sidechain_pump": (8, True),
-    "halftime": (4, True),
-    "transformer": (2, True),
-    "echo_out": (4, True),
-    "dub_delay": (8, True),
-    "scratch": (2, True),
-    # Risers / drops — bar-snapped, downbeat-aligned
-    "noise_riser": (4, True),
-    "noise_drop": (4, True),
-    "reverse_reverb": (4, True),
-    "air_horn": (2, True),
-    "dub_siren": (4, True),
-    # Envelope sweeps — bar-rounded but downbeat-snap optional
-    "highpass_sweep": (4, False),
-    "lowpass_sweep": (4, False),
-    "cross_eq_swap": (4, False),
-    "submerge": (4, False),
-    "telephone": (4, False),
-    "chorus": (4, False),
-    "phaser": (4, False),
-    "flanger": (4, False),
-    "wow_flutter": (4, False),
-    "vinyl_wow": (4, False),
-    "ring_modulator": (4, False),
-    "bitcrusher": (4, False),
-    # Pitch / spin FX — quick events, snap matters
-    "pitch_swell": (2, True),
-    "pitch_fall": (2, True),
-    "tape_stop": (2, True),
-    "backspin": (2, True),
-    "forward_spin": (2, True),
-    "vinyl_rewind": (4, True),
-    "freeze": (2, True),
-    "glitch": (4, True),
-    "reverb_tail": (4, False),
-}
-
-
-def fx_bars(effect: str) -> int:
-    """Return the default bar count for *effect*, or 4 when unknown."""
-    entry = FX_BAR_TABLE.get(effect)
-    return entry[0] if entry else 4
-
-
-def fx_snaps_to_downbeat(effect: str) -> bool:
-    """Return True when *effect* should snap its start to a downbeat."""
-    entry = FX_BAR_TABLE.get(effect)
-    return bool(entry[1]) if entry else False
-
-
 __all__ = [
-    "FX_BAR_TABLE",
     "bar_seconds",
     "extract_downbeats",
-    "fx_bars",
-    "fx_snaps_to_downbeat",
     "key_to_hz",
     "lerp_bpm",
     "lerp_hz",
