@@ -19,7 +19,8 @@ from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, BinaryIO, Protocol, cast
-from urllib.parse import quote
+
+from autodj.sqlite_utils import readonly_uri
 
 SCHEMA_VERSION = 2
 MANIFEST_NAME = "index-manifest.json"
@@ -405,8 +406,7 @@ def sha256_file(path: Path) -> str:
 
 def _immutable_sqlite_uri(path: Path) -> str:
     """Build a read-only immutable SQLite URI, including for Windows UNC paths."""
-    encoded = quote(str(path.resolve()), safe="/:\\")
-    return f"file:{encoded}?mode=ro&immutable=1"
+    return readonly_uri(path, immutable=True)
 
 
 def _thread_lock(path: Path) -> threading.RLock:

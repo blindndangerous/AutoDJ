@@ -14,7 +14,6 @@ from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import quote
 
 from autodj.config import is_loopback_bind
 from autodj.index_manifest import (
@@ -25,6 +24,7 @@ from autodj.index_manifest import (
     read_manifest,
     sha256_file,
 )
+from autodj.sqlite_utils import readonly_uri
 from autodj.version import REQUIRED_BUILT_ASSETS, current_version
 
 if TYPE_CHECKING:
@@ -486,16 +486,9 @@ def _index_check(cfg: AutoDJConfig) -> DoctorCheck:
     )
 
 
-def _sqlite_uri(path: Path, *, immutable: bool = False) -> str:
-    """Build a read-only SQLite URI for a resolved path."""
-    encoded = quote(str(path.resolve()), safe="/:\\")
-    suffix = "&immutable=1" if immutable else ""
-    return f"file:{encoded}?mode=ro{suffix}"
-
-
 def _open_readonly_sqlite(path: Path, *, immutable: bool = False) -> sqlite3.Connection:
     """Open a query-only SQLite connection and close it if setup fails."""
-    conn = sqlite3.connect(_sqlite_uri(path, immutable=immutable), uri=True)
+    conn = sqlite3.connect(readonly_uri(path, immutable=immutable), uri=True)
     try:
         conn.execute("PRAGMA query_only=ON")
     except BaseException:
