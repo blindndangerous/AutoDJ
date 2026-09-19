@@ -875,17 +875,7 @@ def is_loopback_bind(host: str) -> bool:
 
 def validate_server_exposure(cfg: ServerConfig) -> None:
     """Normalize mutable overrides and reject unsafe bind configurations."""
-    validated = ServerConfig(
-        host=cfg.host,
-        port=cfg.port,
-        access_token=cfg.access_token,
-        insecure_lan=cfg.insecure_lan,
-        allowed_hosts=cfg.allowed_hosts,
-        allowed_origins=cfg.allowed_origins,
-        session_ttl_seconds=cfg.session_ttl_seconds,
-        liner_upload_max_bytes=cfg.liner_upload_max_bytes,
-    )
-    cfg.__dict__.update(validated.__dict__)
+    cfg.__post_init__()
     loopback = is_loopback_bind(cfg.host)
     # Sentinel comparison enforces explicit allowlists; it does not bind a socket.
     if cfg.host in {"0.0.0.0", "::"} and (  # nosec B104
