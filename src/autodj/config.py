@@ -618,14 +618,9 @@ class ModelConfig:
             A populated ModelConfig instance.
         """
         manual_raw = data.get("manual_path")
-        revision = data.get("revision", "main")
-        if not isinstance(revision, str) or not revision or revision != revision.strip():
-            raise ValueError(
-                "model.revision must be a non-empty string without surrounding whitespace"
-            )
         return cls(
             name=data.get("name", "OpenMuQ/MuQ-large-msd-iter"),
-            revision=revision,
+            revision=data.get("revision", "main"),
             manual_path=Path(manual_raw) if manual_raw else None,
         )
 
