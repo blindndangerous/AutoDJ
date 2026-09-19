@@ -16,10 +16,6 @@ concurrency:
   group: security-${{ github.ref }}
   cancel-in-progress: true
 
-defaults:
-  run:
-    shell: bash
-
 jobs:
   trivy-fs:
     name: Trivy filesystem scan
