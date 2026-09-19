@@ -24,8 +24,6 @@ from autodj.player import (
     _apply_crossfade,
     _apply_crossfade_ducked,
     _fmt_time,
-    _make_fade_in,
-    _make_fade_out,
     _time_stretch,
     apply_eq,
     apply_filter_sweep,
@@ -98,45 +96,6 @@ def _sine_audio(seconds: float = 1.0, sr: int = 44100) -> np.ndarray:
     """Generate a simple sine wave as float32 audio."""
     t = np.linspace(0, seconds, int(seconds * sr), dtype=np.float32)
     return np.sin(2 * np.pi * 440 * t)
-
-
-# ---------------------------------------------------------------------------
-# Fade helpers
-# ---------------------------------------------------------------------------
-
-
-class TestFadeHelpers:
-    def test_fade_out_starts_at_one(self) -> None:
-        fade = _make_fade_out(100)
-        assert fade[0] == pytest.approx(1.0, abs=0.01)
-
-    def test_fade_out_ends_at_zero(self) -> None:
-        fade = _make_fade_out(100)
-        assert fade[-1] == pytest.approx(0.0, abs=0.01)
-
-    def test_fade_in_starts_at_zero(self) -> None:
-        fade = _make_fade_in(100)
-        assert fade[0] == pytest.approx(0.0, abs=0.01)
-
-    def test_fade_in_ends_at_one(self) -> None:
-        fade = _make_fade_in(100)
-        assert fade[-1] == pytest.approx(1.0, abs=0.01)
-
-    def test_fade_out_length(self) -> None:
-        fade = _make_fade_out(256)
-        assert len(fade) == 256
-
-    def test_fade_in_length(self) -> None:
-        fade = _make_fade_in(512)
-        assert len(fade) == 512
-
-    def test_fade_out_monotonically_decreasing(self) -> None:
-        fade = _make_fade_out(100)
-        assert all(fade[i] >= fade[i + 1] for i in range(len(fade) - 1))
-
-    def test_fade_in_monotonically_increasing(self) -> None:
-        fade = _make_fade_in(100)
-        assert all(fade[i] <= fade[i + 1] for i in range(len(fade) - 1))
 
 
 # ---------------------------------------------------------------------------

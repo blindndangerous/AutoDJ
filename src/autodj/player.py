@@ -94,34 +94,6 @@ def _fmt_time(seconds: float) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _make_fade_out(n_samples: int) -> np.ndarray:
-    """Generate a linear fade-out envelope of length *n_samples*.
-
-    The envelope starts at 1.0 and decreases linearly to 0.0.
-
-    Args:
-        n_samples: Number of samples in the envelope.
-
-    Returns:
-        float32 numpy array of shape ``(n_samples,)`` ranging ``[1.0, 0.0]``.
-    """
-    return np.linspace(1.0, 0.0, n_samples, dtype=np.float32)
-
-
-def _make_fade_in(n_samples: int) -> np.ndarray:
-    """Generate a linear fade-in envelope of length *n_samples*.
-
-    The envelope starts at 0.0 and increases linearly to 1.0.
-
-    Args:
-        n_samples: Number of samples in the envelope.
-
-    Returns:
-        float32 numpy array of shape ``(n_samples,)`` ranging ``[0.0, 1.0]``.
-    """
-    return np.linspace(0.0, 1.0, n_samples, dtype=np.float32)
-
-
 def _apply_crossfade(
     audio_a: np.ndarray,
     audio_b: np.ndarray,
@@ -155,8 +127,8 @@ def _apply_crossfade(
             f"(len_a={len(audio_a)}, len_b={len(audio_b)})"
         )
 
-    fade_out = _make_fade_out(crossfade_samples)
-    fade_in = _make_fade_in(crossfade_samples)
+    fade_out = np.linspace(1.0, 0.0, crossfade_samples, dtype=np.float32)
+    fade_in = np.linspace(0.0, 1.0, crossfade_samples, dtype=np.float32)
 
     # Regions
     a_body = audio_a[: len(audio_a) - crossfade_samples]
@@ -241,8 +213,8 @@ def _apply_crossfade_ducked(
     a_ducked = a_tail * (1.0 - bass_remove) + a_tail_hp * bass_remove
 
     # Standard amplitude fades on top of the ducking
-    fade_out = _make_fade_out(crossfade_samples)
-    fade_in = _make_fade_in(crossfade_samples)
+    fade_out = np.linspace(1.0, 0.0, crossfade_samples, dtype=np.float32)
+    fade_in = np.linspace(0.0, 1.0, crossfade_samples, dtype=np.float32)
 
     overlap = (a_ducked * fade_out) + (b_head * fade_in)
     # Hard-limit to ±1.0 — even with bass-ducking, two bright tracks can sum
