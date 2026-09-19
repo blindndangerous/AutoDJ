@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import BinaryIO, Protocol, cast
+from typing import Any, BinaryIO, Protocol, cast
 from urllib.parse import quote
 
 SCHEMA_VERSION = 2
@@ -191,20 +191,24 @@ def _read_publication_state(index_dir: Path) -> _PublicationState | None:
     return state
 
 
-def _write_publication_state(index_dir: Path, state: _PublicationState) -> None:
-    """Atomically replace publication counters and flush the directory when supported."""
-    path = index_dir / PUBLICATION_STATE_NAME
+def _atomic_json_write(path: Path, payload: dict[str, Any]) -> None:
+    """Atomically replace *path* with *payload* and flush the directory when supported."""
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
         with temporary.open("x", encoding="utf-8", newline="\n") as handle:
-            json.dump(asdict(state), handle, sort_keys=True)
+            json.dump(payload, handle, sort_keys=True)
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
-        fsync_directory(index_dir)
+        fsync_directory(path.parent)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _write_publication_state(index_dir: Path, state: _PublicationState) -> None:
+    """Atomically replace publication counters and flush the directory when supported."""
+    _atomic_json_write(index_dir / PUBLICATION_STATE_NAME, asdict(state))
 
 
 def _state_for_manifest(index_dir: Path, manifest: IndexManifest | None) -> _PublicationState:
@@ -524,21 +528,6 @@ def _checkpoint_working_tracks(index_dir: Path) -> None:
         raise IndexConsistencyError("tracks WAL remains non-empty after checkpoint")
 
 
-def _write_manifest(path: Path, manifest: IndexManifest) -> None:
-    """Atomically replace a manifest and flush its directory when supported."""
-    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        with tmp.open("x", encoding="utf-8", newline="\n") as handle:
-            json.dump(asdict(manifest), handle, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp, path)
-        fsync_directory(path.parent)
-    finally:
-        tmp.unlink(missing_ok=True)
-
-
 def _cleanup_generations(index_dir: Path, keep: set[int]) -> None:
     """Remove obsolete generation files and flush the directory."""
     for path in index_dir.iterdir():
@@ -593,7 +582,7 @@ def publish_manifest(index_dir: Path, vector_count: int) -> IndexManifest:
             state_revision=revision,
         )
         _validate_snapshot_files(index_dir, manifest)
-        _write_manifest(index_dir / MANIFEST_NAME, manifest)
+        _atomic_json_write(index_dir / MANIFEST_NAME, asdict(manifest))
         keep = {generation}
         if previous is not None:
             keep.add(previous.generation)
@@ -696,7 +685,7 @@ def copy_published_snapshot(
                 tracks_file="tracks.db",
                 vectors_file="vectors.index",
             )
-            _write_manifest(staging / MANIFEST_NAME, copied)
+            _atomic_json_write(staging / MANIFEST_NAME, asdict(copied))
             _validate_snapshot_files(staging, copied)
             after = read_manifest(index_dir)
             if after != before:
