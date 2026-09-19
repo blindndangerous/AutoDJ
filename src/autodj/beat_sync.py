@@ -31,6 +31,7 @@ process (where librosa is loaded) and the headless CLI / web server
 
 from __future__ import annotations
 
+import bisect
 from collections.abc import Sequence
 
 # A4 = 440 Hz, octave 4.  C4 (chromatic 0) = 440 / 2^(9/12).
@@ -139,13 +140,8 @@ def next_downbeat_at(
         First matching downbeat, or ``None`` when ``downbeats`` is empty
         or every entry is earlier than ``t``.
     """
-    if not downbeats:
-        return None
-    target = t - epsilon
-    for d in downbeats:
-        if d >= target:
-            return float(d)
-    return None
+    index = bisect.bisect_left(downbeats, t - epsilon)
+    return float(downbeats[index]) if index < len(downbeats) else None
 
 
 def lerp_bpm(out_bpm: float, in_bpm: float, frac: float) -> float:
