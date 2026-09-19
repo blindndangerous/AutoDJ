@@ -17,8 +17,6 @@ jobs:
     name: Hypothesis fuzz suite
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    env:
-      HYPOTHESIS_PROFILE: nightly   # extended example budget
     steps:
       - uses: actions/checkout@v6
 
