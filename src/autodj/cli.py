@@ -882,8 +882,6 @@ def cmd_index(
         uv run autodj index --limit 20 --no-enrich --no-analyse
         uv run autodj index           # full library (run overnight on GPU machine)
     """
-    from autodj.indexer import build_index
-
     # Indexing requires torch + muq + librosa.  Probe before doing any
     # other work so users on minimal installs (NAS, Docker) get a clear
     # message instead of a deep stack trace from inside `model.py`.
@@ -900,6 +898,8 @@ def cmd_index(
         )
         sys.exit(1)
 
+    # Imported after the probe: indexer imports librosa at module scope.
+    from autodj.indexer import build_index
     from autodj.model import download_model_if_needed, load_model
 
     cfg = _load_cfg_or_exit(ctx.obj["config_path"])
