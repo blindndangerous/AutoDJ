@@ -428,6 +428,7 @@ def _print_serve_banner(
     resolved_preset: Any,
     parsed_bpm_range: tuple[float, float] | None,
     discovery_every: int | None,
+    discovery_hint: str = "",
 ) -> None:  # pragma: no cover -- terminal banner
     """Print the index summary + active preset / BPM / discovery banner."""
     console_.print(
@@ -441,7 +442,7 @@ def _print_serve_banner(
     if parsed_bpm_range:
         console_.print(f"  BPM range  : {parsed_bpm_range[0]:.0f}–{parsed_bpm_range[1]:.0f}")
     if discovery_every:
-        console_.print(f"  Discovery  : every {discovery_every} tracks")
+        console_.print(f"  Discovery  : every {discovery_every} tracks{discovery_hint}")
 
 
 def _print_serve_url_banner(
@@ -1575,18 +1576,14 @@ def cmd_play(  # pragma: no cover -- end-to-end orchestrator, exercised by smoke
     resolved_preset = _resolve_preset_or_exit(cfg, preset)
     parsed_bpm_range = _parse_bpm_range_or_exit(bpm_range)
 
-    console.print(
-        Panel(
-            f"[bold green]AutoDJ[/] — {sim.ntotal} tracks indexed",
-            expand=False,
-        )
+    _print_serve_banner(
+        console,
+        sim=sim,
+        resolved_preset=resolved_preset,
+        parsed_bpm_range=parsed_bpm_range,
+        discovery_every=discovery_every,
+        discovery_hint=" (press D to toggle)",
     )
-    if resolved_preset:
-        console.print(f"  Preset     : {resolved_preset.name}")
-    if parsed_bpm_range:
-        console.print(f"  BPM range  : {parsed_bpm_range[0]:.0f}–{parsed_bpm_range[1]:.0f}")
-    if discovery_every:
-        console.print(f"  Discovery  : every {discovery_every} tracks (press D to toggle)")
 
     seed_entry = _resolve_seed(sim, cfg, seed, console)
 
