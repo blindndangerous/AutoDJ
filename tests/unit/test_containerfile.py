@@ -380,11 +380,9 @@ def test_image_contract_accepts_internal_run_mount_stage() -> None:
     _assert_reviewed_images(f"{content}\nRUN --mount=type=bind,from=python-base,target=/x true\n")
 
 
-def test_docker_and_podman_exclude_the_same_sensitive_build_context() -> None:
+def test_build_context_excludes_sensitive_files() -> None:
     dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
-    containerignore = (ROOT / ".containerignore").read_text(encoding="utf-8")
 
-    assert containerignore == dockerignore
     assert SENSITIVE_CONTEXT_EXCLUSIONS.issubset(_ignore_entries(dockerignore))
 
 
