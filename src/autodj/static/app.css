@@ -346,7 +346,6 @@
       font-size: 0.9rem;
     }
     #search-results li:last-child { border-bottom: none; }
-    #search-results .no-results { color: var(--text-dim); font-style: italic; }
     .result-name {
       flex: 1;
       min-width: 0;
@@ -458,10 +457,6 @@
       align-items: center;
       gap: 0.5rem;
       padding: 0.3rem 0;
-    }
-    #ln-file-list .no-results {
-      color: var(--text-dim);
-      font-style: italic;
     }
 
     /* ---- Now playing row (cover art + text) ---- */
@@ -788,6 +783,16 @@
       background: rgba(192, 57, 43, 0.18);
       color: var(--text);
       font-size: 0.9rem;
+    }
+
+    /* ---- Empty-list placeholder utility ---- */
+    /* Used by #why-list, #queue-list, #history-list, #search-results and
+       #ln-file-list.  list-style: none matters for #why-list, which is
+       the one of those lists that still shows markers. */
+    .no-results {
+      color: var(--text-dim);
+      font-style: italic;
+      list-style: none;
     }
 
     /* ---- Visually hidden utility (WCAG-compliant clip pattern) ---- */

@@ -973,8 +973,7 @@ function applyWhyState(s) {
   _lastWhyKey = key;
   if (!whyList) return;
   if (reasons.length === 0) {
-    whyList.innerHTML = `<li class="no-results"
-      style="color:var(--text-dim);font-style:italic;list-style:none;padding-left:0">
+    whyList.innerHTML = `<li class="no-results">
       No reasons yet — start playback to see why each track was picked.</li>`;
     return;
   }

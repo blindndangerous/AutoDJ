@@ -38,8 +38,7 @@ export function renderQueue(queue, { queueList, queueCount }) {
   _renderGeneration += 1;
   if (queue.length === 0) {
     queueList.innerHTML = `
-      <li class="no-results"
-          style="color:var(--text-dim);font-style:italic;list-style:none;padding-left:0">
+      <li class="no-results">
         Queue is empty.  Search and use "Next" to add a track.
       </li>`;
     return;
