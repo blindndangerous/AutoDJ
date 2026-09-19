@@ -29,6 +29,7 @@ import logging
 import os
 import shutil
 import sqlite3
+import time
 import uuid
 import warnings
 from collections import deque
@@ -509,12 +510,10 @@ def source_mtime(path: str | Path) -> float:
     Returns:
         The file's ``st_mtime``, or the local wall clock if it cannot be read.
     """
-    import time as _time
-
     try:
         return Path(path).stat().st_mtime
     except OSError:
-        return _time.time()
+        return time.time()
 
 
 # ---------------------------------------------------------------------------
@@ -919,13 +918,9 @@ def _write_faiss_chunked(index: faiss.Index, path: Path, chunk_size: int = 1 << 
         for i in range(0, len(mv), chunk_size):
             fh.write(mv[i : i + chunk_size])
         fh.flush()
-        try:
-            import os as _os
-
-            _os.fsync(fh.fileno())
-        except OSError:
-            # fsync may not be supported on every FS — best-effort
-            pass
+        # fsync may not be supported on every FS — best-effort
+        with contextlib.suppress(OSError):
+            os.fsync(fh.fileno())
 
 
 def _save_vectors(vectors: np.ndarray, index_dir: Path) -> None:
@@ -1384,7 +1379,6 @@ def _delete_index_files(
 
 
 def _maybe_migrate_paths(
-    loaded: faiss.IndexFlatIP,
     entries: list[IndexEntry],
     index_dir: Path,
     music_dir: Path | None,
@@ -1482,14 +1476,13 @@ def prune_index(
         f"[AutoDJ] Phase: Pruning — checking {len(entries)} indexed files on disk.",
         flush=True,
     )
-    import time as _time
 
     throttle_s = max(0.0, throttle_ms) / 1000.0
     pool_size = max(1, stat_workers)
 
     def _exists_throttled(e: IndexEntry) -> bool:
         if throttle_s:
-            _time.sleep(throttle_s)
+            time.sleep(throttle_s)
         return Path(e.path).exists()
 
     with ThreadPoolExecutor(max_workers=pool_size) as pool:
@@ -1513,7 +1506,6 @@ def prune_index(
 
     if removed == 0:
         _maybe_migrate_paths(
-            loaded,
             entries,
             index_dir,
             music_dir,
@@ -1968,10 +1960,6 @@ def _backfill_dj_meta(
         music_dir: Library root used to store DJ-meta keys portably.
         path_remap: Optional absolute-prefix swaps for legacy cache rows.
     """
-    import os
-    import time as _time
-    from concurrent.futures import ThreadPoolExecutor
-
     from autodj.dj_meta import get_cache
 
     cache = get_cache(index_dir, music_dir=music_dir, path_remap=path_remap)
@@ -2026,7 +2014,7 @@ def _backfill_dj_meta(
     def _update_throttle() -> (
         None
     ):  # pragma: no cover - NAS thermal-throttle controller, exercised on real hardware only
-        now = _time.monotonic()
+        now = time.monotonic()
         if _last_completion[0] > 0:
             _intervals.append(now - _last_completion[0])
         _last_completion[0] = now
@@ -2080,7 +2068,7 @@ def _backfill_dj_meta(
     def _sleep_before_submit() -> None:
         gap = max(manual_throttle_s, _adaptive_s[0])
         if gap > 0:
-            _time.sleep(gap)
+            time.sleep(gap)
 
     try:
         if workers == 1:
@@ -2155,14 +2143,12 @@ def _stat_mtimes(
     standalone prune path and the fused prune+stale-check in
     ``_load_existing_index``.
     """
-    import time as _time
-
     throttle_s = max(0.0, throttle_ms) / 1000.0
     pool_size = max(1, stat_workers)
 
     def _mtime(p: str) -> float | None:
         if throttle_s:
-            _time.sleep(throttle_s)
+            time.sleep(throttle_s)
         try:
             return Path(p).stat().st_mtime
         except OSError:
@@ -2511,11 +2497,8 @@ def _embed_new_tracks(  # pragma: no cover -- threaded indexer pipeline
     new_entries: list[IndexEntry] = []
     new_vectors: list[np.ndarray] = []
 
-    import os as _os
-    import time as _time
-
     if workers is None:
-        workers = min(8, max(1, (_os.cpu_count() or 2)))
+        workers = min(8, max(1, (os.cpu_count() or 2)))
     PREFETCH = max(1, workers)
     throttle_s = max(0.0, throttle_ms) / 1000.0
     track_iter = iter(new_tracks)
@@ -2527,7 +2510,7 @@ def _embed_new_tracks(  # pragma: no cover -- threaded indexer pipeline
             try:
                 t = next(track_iter)
                 if throttle_s:
-                    _time.sleep(throttle_s)
+                    time.sleep(throttle_s)
                 # Stat before decoding so a file edited mid-run is still seen
                 # as stale on the next pass.
                 pending.append(

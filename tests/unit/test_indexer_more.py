@@ -9,7 +9,7 @@ the error-rollback paths in ``save_index``.
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -350,12 +350,12 @@ class TestMaybeMigratePaths:
     def test_skip_when_music_dir_none(self) -> None:
         # Should not touch the tracks DB
         with patch("autodj.indexer._replace_tracks_rows") as rep:
-            _maybe_migrate_paths(MagicMock(), [], Path("/idx"), None, already_relative=False)
+            _maybe_migrate_paths([], Path("/idx"), None, already_relative=False)
         rep.assert_not_called()
 
     def test_skip_when_already_relative(self) -> None:
         with patch("autodj.indexer._replace_tracks_rows") as rep:
-            _maybe_migrate_paths(MagicMock(), [], Path("/idx"), Path("/m"), already_relative=True)
+            _maybe_migrate_paths([], Path("/idx"), Path("/m"), already_relative=True)
         rep.assert_not_called()
 
     def test_relativises_tracks_db_when_migration_needed(self, tmp_path: Path) -> None:
@@ -368,8 +368,7 @@ class TestMaybeMigratePaths:
         # Save without music_dir so paths stay absolute
         save_index(entries, vectors, index_dir)
 
-        # No FAISS read needed any more; pass a placeholder.
-        _maybe_migrate_paths(MagicMock(), entries, index_dir, tmp_path, already_relative=False)
+        _maybe_migrate_paths(entries, index_dir, tmp_path, already_relative=False)
 
         import sqlite3 as _sql
 
