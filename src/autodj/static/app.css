@@ -875,12 +875,6 @@
         flex: none;
       }
 
-      /* Settings card — collapse by default on mobile via [open] state */
-      details.settings-card > summary {
-        padding: 0.75rem;
-        font-size: 1rem;
-      }
-
       /* The time and duration columns stop refusing to wrap once there is
          no room for them; the table is clamped by table-layout: fixed, so
          nowrap would only clip. */
@@ -938,17 +932,6 @@
         width: 96px;
         height: 96px;
       }
-
-      /* Queue items — taller rows for finger taps */
-      .queue-item {
-        padding: 0.5rem 0.5rem;
-      }
-      .queue-item button {
-        padding: 0.4rem 0.6rem;
-      }
-
-      /* Hide the keyboard-hint footer on phone — irrelevant */
-      .keyboard-hint { display: none; }
     }
 
     /* Phone-tight rules (≤ 480 px) — extra-small */
@@ -957,7 +940,6 @@
       header { padding: 0.5rem 0.75rem; }
       #cover-art { width: 80px; height: 80px; }
       h1 { font-size: 1.1rem; }
-      .now-playing-title { font-size: 1rem; }
     }
 
     /* ----------------------------------------------------------------
