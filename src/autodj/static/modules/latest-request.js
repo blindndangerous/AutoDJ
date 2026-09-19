@@ -1,12 +1,10 @@
 export function createLatestRequestOwner() {
-  let generation = 0;
   let active = null;
 
   function begin() {
     if (active) active.controller.abort();
     const request = {
       controller: new AbortController(),
-      generation: ++generation,
     };
     request.signal = request.controller.signal;
     active = request;
@@ -22,7 +20,6 @@ export function createLatestRequestOwner() {
   }
 
   function cancel() {
-    generation += 1;
     if (active) active.controller.abort();
     active = null;
   }
