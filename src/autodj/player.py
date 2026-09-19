@@ -1221,25 +1221,28 @@ class Player:
         harmonic_mode = getattr(self._cfg.djmix, "harmonic_mode", "compatible")
         query_path = self._resolve_query_path(current.path)
 
+        search: dict[str, Any] = {
+            "current_path": query_path,
+            "n_candidates": n_candidates,
+            "target_bpm": target_bpm,
+            "bpm_weight": bpm_weight,
+            "bpm_range": self._bpm_range,
+            "genre_filter": genre_filter,
+            "invert": self._smart_shuffle,
+            "harmonic_only": harmonic_only,
+            "harmonic_mode": harmonic_mode,
+            "target_energy": target_energy,
+            "excluded_artists": set(self._state.recently_played_artists),
+            "excluded_albums": set(self._state.recently_played_albums),
+            "excluded_titles": set(self._state.recently_played_titles),
+            "pick_top_k": self._cfg.playback.pick_top_k,
+            "pick_temperature": self._cfg.playback.pick_temperature,
+        }
+
         # --- Normal similarity search ---
         try:
             return self._sim.find_next_for_path(
-                current_path=query_path,
-                recently_played=self._state.recently_played,
-                n_candidates=n_candidates,
-                target_bpm=target_bpm,
-                bpm_weight=bpm_weight,
-                bpm_range=self._bpm_range,
-                genre_filter=genre_filter,
-                invert=self._smart_shuffle,
-                harmonic_only=harmonic_only,
-                harmonic_mode=harmonic_mode,
-                target_energy=target_energy,
-                excluded_artists=set(self._state.recently_played_artists),
-                excluded_albums=set(self._state.recently_played_albums),
-                excluded_titles=set(self._state.recently_played_titles),
-                pick_top_k=self._cfg.playback.pick_top_k,
-                pick_temperature=self._cfg.playback.pick_temperature,
+                recently_played=self._state.recently_played, **search
             )
         except SimilarityError:
             # The repeat window is >= index size — relax it to just the
@@ -1249,24 +1252,7 @@ class Player:
                 "relaxing to avoid only the current track.",
                 len(self._state.recently_played),
             )
-            return self._sim.find_next_for_path(
-                current_path=query_path,
-                recently_played=deque([current.path]),
-                n_candidates=n_candidates,
-                target_bpm=target_bpm,
-                bpm_weight=bpm_weight,
-                bpm_range=self._bpm_range,
-                genre_filter=genre_filter,
-                invert=self._smart_shuffle,
-                harmonic_only=harmonic_only,
-                harmonic_mode=harmonic_mode,
-                target_energy=target_energy,
-                excluded_artists=set(self._state.recently_played_artists),
-                excluded_albums=set(self._state.recently_played_albums),
-                excluded_titles=set(self._state.recently_played_titles),
-                pick_top_k=self._cfg.playback.pick_top_k,
-                pick_temperature=self._cfg.playback.pick_temperature,
-            )
+            return self._sim.find_next_for_path(recently_played=deque([current.path]), **search)
 
     # ------------------------------------------------------------------
     # _play_with_crossfade helpers — broken out so the orchestrator stays
