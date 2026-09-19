@@ -11,18 +11,14 @@ import pytest
 
 import autodj
 from autodj.server import _validated_bundle_version, _version_info
-from autodj.version import _project_version, _source_pyproject, current_version
+from autodj.version import (
+    REQUIRED_BUILT_ASSETS,
+    _project_version,
+    _source_pyproject,
+    current_version,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
-REQUIRED_BUILT_ASSETS = (
-    "index.html",
-    "app.js",
-    "app.css",
-    "bitcrusher-worklet.js",
-    "stutter-worklet.js",
-    "freeze-worklet.js",
-    "glitch-worklet.js",
-)
 
 
 def run_isolated_import(site: Path) -> subprocess.CompletedProcess[str]:

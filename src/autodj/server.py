@@ -80,7 +80,7 @@ from autodj.security import (
     emit_audit,
     new_request_id,
 )
-from autodj.version import current_version
+from autodj.version import REQUIRED_BUILT_ASSETS, current_version
 
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig
@@ -92,15 +92,6 @@ logger = logging.getLogger(__name__)
 _WS_SEND_TIMEOUT_SECONDS = 2.0
 _ALAC_PREFETCH_TIMEOUT_SECONDS = 5.0
 _PACKAGE_DIR = Path(__file__).parent
-_REQUIRED_BUILT_ASSETS = (
-    "index.html",
-    "app.js",
-    "app.css",
-    "bitcrusher-worklet.js",
-    "stutter-worklet.js",
-    "freeze-worklet.js",
-    "glitch-worklet.js",
-)
 _BUILD_INFO_NAME = "build-info.json"
 
 
@@ -311,14 +302,14 @@ def _advertised_server_origin(policy: SecurityPolicy) -> str:
 def _selected_static_dir(package_dir: Path) -> Path:
     """Select a complete built bundle, otherwise source assets."""
     static_built = package_dir / "static_dist"
-    if all((static_built / name).is_file() for name in (*_REQUIRED_BUILT_ASSETS, _BUILD_INFO_NAME)):
+    if all((static_built / name).is_file() for name in (*REQUIRED_BUILT_ASSETS, _BUILD_INFO_NAME)):
         return static_built
     return package_dir / "static"
 
 
 def _validated_bundle_version(static_built: Path, runtime_version: str) -> str | None:
     """Validate metadata for a built bundle; source assets have no stamp."""
-    if not all((static_built / name).is_file() for name in _REQUIRED_BUILT_ASSETS):
+    if not all((static_built / name).is_file() for name in REQUIRED_BUILT_ASSETS):
         return None
     stamp = static_built / _BUILD_INFO_NAME
     if not stamp.is_file():

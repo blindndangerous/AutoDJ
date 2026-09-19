@@ -7,6 +7,17 @@ import tomllib
 from functools import cache
 from pathlib import Path
 
+#: Files a complete frontend bundle must contain; shared by doctor and server.
+REQUIRED_BUILT_ASSETS = (
+    "index.html",
+    "app.js",
+    "app.css",
+    "bitcrusher-worklet.js",
+    "stutter-worklet.js",
+    "freeze-worklet.js",
+    "glitch-worklet.js",
+)
+
 
 def _source_pyproject() -> Path | None:
     """Return this module's checkout pyproject, excluding installed layouts."""

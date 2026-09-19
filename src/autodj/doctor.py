@@ -25,22 +25,13 @@ from autodj.index_manifest import (
     read_manifest,
     sha256_file,
 )
-from autodj.version import current_version
+from autodj.version import REQUIRED_BUILT_ASSETS, current_version
 
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig, IndexConfig, ModelConfig
     from autodj.model import ModelCacheStatus
 
 
-REQUIRED_BUILT_ASSETS = (
-    "index.html",
-    "app.js",
-    "app.css",
-    "bitcrusher-worklet.js",
-    "stutter-worklet.js",
-    "freeze-worklet.js",
-    "glitch-worklet.js",
-)
 _TRACKS_SCHEMA_SIGNATURE = (
     ("vec_row", "INTEGER", 1, None, 0),
     ("path", "TEXT", 1, None, 0),
