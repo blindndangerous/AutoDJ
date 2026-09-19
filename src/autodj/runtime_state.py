@@ -23,7 +23,7 @@ import logging
 import math
 import os
 from pathlib import Path
-from typing import Any, NotRequired, TypedDict, TypeGuard, cast
+from typing import Any, TypedDict, TypeGuard
 
 from autodj.transitions import TRANSITION_EFFECT_NAMES
 
@@ -37,17 +37,6 @@ LINER_PICK_MODES = frozenset({"random", "sequential", "weighted"})
 TRANSITION_EFFECTS = TRANSITION_EFFECT_NAMES
 SESSION_ONLY_PLAYBACK_FIELDS = frozenset({"no_repeat_window", "library_size"})
 CONFIG_ONLY_PLAYBACK_FIELDS = frozenset({"liners_folder"})
-
-
-class DJMixState(TypedDict, total=False):
-    """Persisted DJ-mix options restored from browser-owned state."""
-
-    harmonic_mixing: bool
-    harmonic_mode: str
-    beatmatch: bool
-    phrase_align: bool
-    outro_intro_align: bool
-    filter_sweep: bool
 
 
 class PlaybackState(TypedDict, total=False):
@@ -81,18 +70,6 @@ class PlaybackState(TypedDict, total=False):
     liners_random_max_minutes: float | None
     liners_pick_mode: str
     liners_duck_db: float
-
-
-class PersistedState(TypedDict):
-    """Top-level schema for browser-owned settings stored on disk."""
-
-    schema_version: int
-    preset: NotRequired[str | None]
-    transition: NotRequired[str]
-    djmix: NotRequired[DJMixState]
-    playback: NotRequired[PlaybackState]
-    bpm_range: NotRequired[dict[str, float | None] | None]
-    discovery_every: NotRequired[int | None]
 
 
 DJMIX_BOOL_FIELDS = (
@@ -485,12 +462,12 @@ def save_from_player(settings: dict, index_dir: Path | None) -> None:
         if isinstance(playback, dict)
         else {}
     )
-    payload: PersistedState = {
+    payload: dict[str, Any] = {
         "schema_version": STATE_VERSION,
         "preset": settings.get("preset"),
         "transition": settings.get("transition", "none"),
         "djmix": settings.get("djmix", {}),
-        "playback": cast("PlaybackState", persisted_playback),
+        "playback": persisted_playback,
         "bpm_range": settings.get("bpm_range", {"lo": None, "hi": None}),
         "discovery_every": settings.get("discovery_every"),
     }
