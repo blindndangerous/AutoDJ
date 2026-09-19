@@ -814,25 +814,29 @@ class TestDjMetaInternalHelpers:
 
 
 # ---------------------------------------------------------------------------
-# autodj.dj_meta — _hm_energy_boost harmonic mode branches
+# autodj.dj_meta — energy_boost harmonic mode branches
 # ---------------------------------------------------------------------------
+
+
+def _key_for(number: int, side: str) -> tuple[int, int]:
+    """Return the ``(key, mode)`` whose Camelot position is ``number``/``side``."""
+    mode = 1 if side == "B" else 0
+    for key in range(12):
+        if camelot_position(key, mode) == (number, side):
+            return key, mode
+    raise AssertionError(f"no key maps to {number}{side}")
 
 
 class TestDjMetaHarmonic:
     def test_energy_boost_different_sides_returns_false(self) -> None:
-        from autodj.dj_meta import _hm_energy_boost
-
-        # pos_a side 'A', pos_b side 'B' — must short-circuit to False
-        assert _hm_energy_boost((1, "A"), (1, "B")) is False
+        # Side 'A' against side 'B' is never an energy boost.
+        args = _key_for(1, "A") + _key_for(1, "B")
+        assert harmonic_compatible(*args, "energy_boost") is False
 
     def test_energy_boost_same_side_within_range(self) -> None:
-        from autodj.dj_meta import _hm_energy_boost
-
-        assert _hm_energy_boost((1, "A"), (3, "A")) is True
+        assert harmonic_compatible(*_key_for(1, "A"), *_key_for(3, "A"), "energy_boost") is True
         # diff == 10 wraps
-        assert _hm_energy_boost((1, "A"), (11, "A")) is True
+        assert harmonic_compatible(*_key_for(1, "A"), *_key_for(11, "A"), "energy_boost") is True
 
     def test_energy_boost_same_side_too_far(self) -> None:
-        from autodj.dj_meta import _hm_energy_boost
-
-        assert _hm_energy_boost((1, "A"), (5, "A")) is False
+        assert harmonic_compatible(*_key_for(1, "A"), *_key_for(5, "A"), "energy_boost") is False

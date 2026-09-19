@@ -343,43 +343,20 @@ HARMONIC_MODES: tuple[str, ...] = (
 )
 
 
-def _hm_strict(pos_a: tuple[int, str], pos_b: tuple[int, str]) -> bool:
-    """``strict`` rule: identical Camelot position."""
-    return pos_a == pos_b
-
-
-def _hm_mood_change(pos_a: tuple[int, str], pos_b: tuple[int, str]) -> bool:
-    """``mood_change`` rule: relative major/minor (same number, opposite side)."""
-    return pos_a[0] == pos_b[0] and pos_a[1] != pos_b[1]
-
-
-def _hm_neighbour(pos_a: tuple[int, str], pos_b: tuple[int, str]) -> bool:
-    """``neighbour`` rule: same side, ±1 around the wheel."""
-    if pos_a[1] != pos_b[1]:
-        return False
-    diff = abs(pos_a[0] - pos_b[0])
-    return diff in (1, 11)
-
-
-def _hm_energy_boost(pos_a: tuple[int, str], pos_b: tuple[int, str]) -> bool:
-    """``energy_boost`` rule: same side, ±2 around the wheel."""
-    if pos_a[1] != pos_b[1]:
-        return False
-    diff = abs(pos_a[0] - pos_b[0])
-    return diff in (2, 10)
-
-
-def _hm_compatible(pos_a: tuple[int, str], pos_b: tuple[int, str]) -> bool:
-    """``compatible`` rule: union of strict + mood_change + neighbour."""
-    return _hm_strict(pos_a, pos_b) or _hm_mood_change(pos_a, pos_b) or _hm_neighbour(pos_a, pos_b)
-
-
-_HARMONIC_RULES = {
-    "strict": _hm_strict,
-    "mood_change": _hm_mood_change,
-    "neighbour": _hm_neighbour,
-    "energy_boost": _hm_energy_boost,
-    "compatible": _hm_compatible,
+# Each harmonic mode is the set of ``(same Camelot side, wheel distance)``
+# pairs it accepts.  Camelot numbers run 1-12, so ``abs(a - b)`` is 0-11 and
+# a ±1 step shows up as either 1 or 11.
+#   strict       — identical position.
+#   mood_change  — relative major/minor: same number, opposite side.
+#   neighbour    — same side, ±1 around the wheel.
+#   energy_boost — same side, ±2 around the wheel.
+#   compatible   — union of strict + mood_change + neighbour.
+_HARMONIC_RULES: dict[str, frozenset[tuple[bool, int]]] = {
+    "strict": frozenset({(True, 0)}),
+    "mood_change": frozenset({(False, 0)}),
+    "neighbour": frozenset({(True, 1), (True, 11)}),
+    "energy_boost": frozenset({(True, 2), (True, 10)}),
+    "compatible": frozenset({(True, 0), (False, 0), (True, 1), (True, 11)}),
 }
 
 
@@ -401,8 +378,8 @@ def harmonic_compatible(
         pos_a is None or pos_b is None
     ):  # pragma: no cover — pre-validated keys always map to Camelot
         return True
-    rule = _HARMONIC_RULES.get(mode, _hm_compatible)
-    return rule(pos_a, pos_b)
+    allowed = _HARMONIC_RULES.get(mode, _HARMONIC_RULES["compatible"])
+    return (pos_a[1] == pos_b[1], abs(pos_a[0] - pos_b[0])) in allowed
 
 
 def camelot_label(key: int, mode: int) -> str:
