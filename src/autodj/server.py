@@ -1799,44 +1799,31 @@ def create_app(
         request_policy: SecurityPolicy = websocket.app.state.security_policy
         host_values = _raw_header_values(websocket.scope, b"host")
         origin_values = _raw_header_values(websocket.scope, b"origin")
-        if len(host_values) != 1 or not request_policy.host_allowed(host_values[0]):
+
+        async def reject(status: int, close_code: int) -> None:
+            """Audit the rejection and close the handshake with *close_code*."""
             emit_audit(
                 request_id,
                 route,
                 "rejected",
                 method="WS",
                 route=route,
-                status=403,
+                status=status,
                 level=logging.WARNING,
             )
-            await websocket.close(code=4403)
+            await websocket.close(code=close_code)
+
+        if len(host_values) != 1 or not request_policy.host_allowed(host_values[0]):
+            await reject(403, 4403)
             return
         if len(origin_values) != 1 or not request_policy.origin_allowed(origin_values[0]):
-            emit_audit(
-                request_id,
-                route,
-                "rejected",
-                method="WS",
-                route=route,
-                status=403,
-                level=logging.WARNING,
-            )
-            await websocket.close(code=4403)
+            await reject(403, 4403)
             return
         session_cookie = websocket.cookies.get(COOKIE_NAME)
         if request_policy.authentication_required and not request_policy.verify_session(
             session_cookie
         ):
-            emit_audit(
-                request_id,
-                route,
-                "rejected",
-                method="WS",
-                route=route,
-                status=401,
-                level=logging.WARNING,
-            )
-            await websocket.close(code=4401)
+            await reject(401, 4401)
             return
 
         await websocket.accept()
