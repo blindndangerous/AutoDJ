@@ -20,22 +20,14 @@
 
 import { defineConfig } from "vite";
 import {
-  closeSync,
   copyFileSync,
   existsSync,
-  fchmodSync,
-  fsyncSync,
   mkdirSync,
-  openSync,
   readFileSync,
-  renameSync,
-  rmSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import process from "node:process";
-import { randomUUID } from "node:crypto";
 import { parse } from "smol-toml";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -66,63 +58,13 @@ export function readProjectVersion(source) {
   return version;
 }
 
-function syncDirectory(path) {
-  let directory;
-  try {
-    directory = openSync(path, "r");
-    fsyncSync(directory);
-  } catch (error) {
-    if (process.platform !== "win32" || !["EACCES", "EINVAL", "EPERM"].includes(error.code)) {
-      throw error;
-    }
-  } finally {
-    if (directory !== undefined) closeSync(directory);
-  }
-}
-
-export function writeBuildInfo(
-  out,
-  version,
-  replaceFile = renameSync,
-  setMode = fchmodSync,
-  closeFile = closeSync,
-) {
+export function writeBuildInfo(out, version) {
   if (!existsSync(out)) mkdirSync(out, { recursive: true });
-  const target = resolve(out, "build-info.json");
-  const temporary = resolve(
-    out,
-    `.build-info.json.${process.pid}.${randomUUID()}.tmp`,
+  writeFileSync(
+    resolve(out, "build-info.json"),
+    `${JSON.stringify({ version }, null, 2)}\n`,
+    "utf8",
   );
-  let file;
-  try {
-    file = openSync(temporary, "wx", 0o644);
-    writeFileSync(file, `${JSON.stringify({ version }, null, 2)}\n`, "utf8");
-    setMode(file, 0o644);
-    fsyncSync(file);
-    try {
-      closeFile(file);
-    } catch (error) {
-      try {
-        closeSync(file);
-      } catch {
-        // Preserve the original close failure; cleanup below still runs.
-      }
-      file = undefined;
-      throw error;
-    }
-    file = undefined;
-    replaceFile(temporary, target);
-    syncDirectory(out);
-  } finally {
-    if (file !== undefined) {
-      try {
-        closeSync(file);
-      } catch {
-        // Preserve the operation failure while still attempting temp cleanup.
-      }
-    }
-    rmSync(temporary, { force: true });
-  }
 }
 
 const PRODUCT_VERSION = readProjectVersion(pyproject);

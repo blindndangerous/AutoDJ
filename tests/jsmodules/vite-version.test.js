@@ -1,13 +1,4 @@
-import {
-  closeSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  renameSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -38,70 +29,16 @@ describe("product version build metadata", () => {
     expect(() => readProjectVersion(source)).toThrow(/project\.version.*pyproject\.toml/i);
   });
 
-  it("atomically replaces a stale build stamp", () => {
+  it("replaces a stale build stamp", () => {
     const out = mkdtempSync(join(tmpdir(), "autodj-vite-version-"));
     try {
       writeFileSync(join(out, "build-info.json"), '{"version":"0.14.0"}\n');
 
       writeBuildInfo(out, "0.15.0");
 
-      expect(JSON.parse(readFileSync(join(out, "build-info.json"), "utf8"))).toEqual({
-        version: "0.15.0",
-      });
-      expect(readdirSync(out).filter(name => name.endsWith(".tmp"))).toEqual([]);
-      if (process.platform !== "win32") {
-        expect(statSync(join(out, "build-info.json")).mode & 0o777).toBe(0o644);
-      }
-    } finally {
-      rmSync(out, { recursive: true, force: true });
-    }
-  });
-
-  it("sets a runtime-readable mode before publishing the stamp", () => {
-    const out = mkdtempSync(join(tmpdir(), "autodj-vite-version-"));
-    const requestedModes = [];
-    try {
-      writeBuildInfo(out, "0.15.0", renameSync, (_file, mode) => {
-        requestedModes.push(mode);
-      });
-
-      expect(requestedModes).toEqual([0o644]);
-      expect(readFileSync(join(out, "build-info.json"), "utf8")).toContain("0.15.0");
-    } finally {
-      rmSync(out, { recursive: true, force: true });
-    }
-  });
-
-  it("cleans up its temporary file when replacement fails", () => {
-    const out = mkdtempSync(join(tmpdir(), "autodj-vite-version-"));
-    const target = join(out, "build-info.json");
-    try {
-      writeFileSync(target, '{"version":"0.14.0"}\n');
-
-      expect(() => writeBuildInfo(out, "0.15.0", () => {
-        throw new Error("injected rename failure");
-      })).toThrow("injected rename failure");
-      expect(readFileSync(target, "utf8")).toContain("0.14.0");
-      expect(readdirSync(out).filter(name => name.endsWith(".tmp"))).toEqual([]);
-    } finally {
-      rmSync(out, { recursive: true, force: true });
-    }
-  });
-
-  it("cleans up its temporary file when closing it reports failure", () => {
-    const out = mkdtempSync(join(tmpdir(), "autodj-vite-version-"));
-    try {
-      expect(() => writeBuildInfo(
-        out,
-        "0.15.0",
-        renameSync,
-        undefined,
-        file => {
-          closeSync(file);
-          throw new Error("injected close failure");
-        },
-      )).toThrow("injected close failure");
-      expect(readdirSync(out).filter(name => name.endsWith(".tmp"))).toEqual([]);
+      expect(readFileSync(join(out, "build-info.json"), "utf8")).toBe(
+        '{\n  "version": "0.15.0"\n}\n',
+      );
     } finally {
       rmSync(out, { recursive: true, force: true });
     }
