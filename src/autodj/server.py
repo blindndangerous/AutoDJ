@@ -30,7 +30,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
-import json as _json
+import json
 import logging
 import mimetypes
 import shutil
@@ -315,8 +315,8 @@ def _validated_bundle_version(static_built: Path, runtime_version: str) -> str |
     if not stamp.is_file():
         raise RuntimeError(f"Built static bundle is missing build-info.json: {stamp}")
     try:
-        payload = _json.loads(stamp.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, _json.JSONDecodeError) as exc:
+        payload = json.loads(stamp.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"Built static bundle has invalid build-info.json: {exc}") from exc
     version = payload.get("version") if isinstance(payload, dict) else None
     if not isinstance(version, str) or not version:
@@ -338,8 +338,8 @@ def _version_info() -> dict[str, str]:
     Commit is the short SHA from `git rev-parse` when the source tree
     is a git checkout, else "unknown".
     """
-    import datetime as _dt
-    import subprocess as _sp  # nosec B404 - trusted invocation (git, fixed argv)
+    import datetime
+    import subprocess  # nosec B404 - trusted invocation (git, fixed argv)
 
     here = _PACKAGE_DIR
     version = current_version()
@@ -349,26 +349,26 @@ def _version_info() -> dict[str, str]:
         # Static argv, no shell, no untrusted input.  git on PATH is a
         # build-environment expectation; absence falls through to the
         # "unknown" placeholder.
-        out = _sp.check_output(  # nosec B603 B607
+        out = subprocess.check_output(  # nosec B603 B607
             ["git", "rev-parse", "--short", "HEAD"],
             cwd=here,
-            stderr=_sp.DEVNULL,
+            stderr=subprocess.DEVNULL,
             text=True,
             timeout=2,
         ).strip()
         if out:
             commit = out
-    except (OSError, _sp.SubprocessError):
+    except (OSError, subprocess.SubprocessError):
         pass
 
     candidate = _selected_static_dir(here) / "app.js"
     built_at: str | None = None
     if candidate.exists():
-        built_at = _dt.datetime.fromtimestamp(candidate.stat().st_mtime, _dt.UTC).isoformat(
-            timespec="seconds"
-        )
+        built_at = datetime.datetime.fromtimestamp(
+            candidate.stat().st_mtime, datetime.UTC
+        ).isoformat(timespec="seconds")
     if built_at is None:
-        built_at = _dt.datetime.now(_dt.UTC).isoformat(timespec="seconds")
+        built_at = datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
 
     return {"version": version, "commit": commit, "built_at": built_at}
 
@@ -1092,14 +1092,12 @@ def create_app(
 
     def _profile_store() -> Any:
         """Return a ProfileStore anchored under the active index dir."""
-        from pathlib import Path as _P
-
         from autodj.profiles import ProfileStore
 
         cfg = bridge.player._cfg
         # Default location: <index_dir>/../profiles to keep host config
         # local but adjacent to indexes.
-        root = _P(cfg.index.active_dir).parent / "profiles"
+        root = Path(cfg.index.active_dir).parent / "profiles"
         return ProfileStore(root)
 
     @app.get("/api/profiles")
@@ -1239,13 +1237,11 @@ def create_app(
 
     def _resolve_liner_folder() -> Path:
         """Return the configured liner folder, defaulting under index_dir."""
-        from pathlib import Path as _P
-
         cfg = bridge.player._cfg
         folder_str = cfg.playback.liners_folder
         if not folder_str:
-            folder_str = str(_P(cfg.index.active_dir) / "liners")
-        return _P(folder_str)
+            folder_str = str(Path(cfg.index.active_dir) / "liners")
+        return Path(folder_str)
 
     @app.post("/api/liners/upload")
     async def api_liner_upload(
@@ -1869,7 +1865,7 @@ def create_app(
                     return
                 # Handle incoming control commands from the client
                 try:
-                    msg = _json.loads(text)
+                    msg = json.loads(text)
                     if isinstance(msg, dict) and msg.get("type") == "toggle_discovery":
                         try:
                             bridge.toggle_discovery()
@@ -1899,7 +1895,7 @@ def create_app(
                             route=route,
                             status=200,
                         )
-                except (_json.JSONDecodeError, AttributeError):
+                except (json.JSONDecodeError, AttributeError):
                     pass
         except WebSocketDisconnect as exc:
             disconnect_code = exc.code
@@ -1933,7 +1929,7 @@ def create_app(
             await asyncio.sleep(1)
             if not _ws_clients:
                 continue
-            payload = _json.dumps(bridge.get_state())
+            payload = json.dumps(bridge.get_state())
             await _broadcast_and_prune(_ws_clients, _ws_lock, payload)
 
     async def _index_watcher_loop() -> None:  # pragma: no cover — long-running task

@@ -315,7 +315,7 @@ def _scan_index_rows(
     base: Path, active_name: str
 ) -> list[tuple[str, int, str]]:  # pragma: no cover
     """Walk *base* for indexed-library directories; return display rows."""
-    import sqlite3 as _sql
+    import sqlite3
 
     rows: list[tuple[str, int, str]] = []
     for entry in sorted(base.iterdir()):
@@ -325,12 +325,12 @@ def _scan_index_rows(
         if not db_path.exists():
             continue
         try:
-            conn = _sql.connect(db_path)
+            conn = sqlite3.connect(db_path)
             try:
                 count = int(conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0])
             finally:
                 conn.close()
-        except _sql.DatabaseError:
+        except sqlite3.DatabaseError:
             count = -1
         active_marker = "  *" if entry.name == active_name else "   "
         rows.append((active_marker + entry.name, count, str(entry)))
