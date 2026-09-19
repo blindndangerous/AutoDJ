@@ -857,11 +857,6 @@ class PlayerBridge:
         }
 
     # ------------------------------------------------------------------
-    # Settings (mirror of CLI flags) — preset, transition, djmix toggles,
-    # crossfade seconds, BPM range, discovery, smart-shuffle, ReplayGain
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
     # Persistence — settings survive serve restarts
     # ------------------------------------------------------------------
 
