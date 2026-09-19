@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import os
 import stat
-from collections.abc import AsyncGenerator, Generator, Iterator
+from collections.abc import AsyncGenerator, Generator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
-from starlette.concurrency import run_in_threadpool
+from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 
 
 class RangeNotSatisfiable(ValueError):
@@ -122,14 +122,6 @@ def iter_file_chunks(
         source.close()
 
 
-def _next_chunk(iterator: Iterator[bytes]) -> bytes | None:
-    """Return the next chunk or None when iteration finishes."""
-    try:
-        return next(iterator)
-    except StopIteration:
-        return None
-
-
 def _close_owned(iterator: Generator[bytes], source: OpenedMediaFile) -> None:
     """Close a chunk iterator and its owned media source."""
     try:
@@ -146,7 +138,7 @@ async def stream_file_chunks(
     """Stream file chunks without running blocking reads on event loop."""
     iterator = iter_file_chunks(source, byte_range, chunk_size)
     try:
-        while (chunk := await run_in_threadpool(_next_chunk, iterator)) is not None:
+        async for chunk in iterate_in_threadpool(iterator):
             yield chunk
     finally:
         await run_in_threadpool(_close_owned, iterator, source)

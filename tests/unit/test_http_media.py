@@ -118,21 +118,20 @@ def test_truncated_file_raises_and_closes_without_spinning() -> None:
     assert handle.closed is True
 
 
-async def test_stream_file_chunks_runs_each_next_in_threadpool(monkeypatch) -> None:
-    calls: list[str] = []
+async def test_stream_file_chunks_reads_off_the_event_loop() -> None:
+    read_threads: set[int] = set()
 
-    async def fake_threadpool(function, *args):
-        calls.append(function.__name__)
-        await asyncio.sleep(0)
-        return function(*args)
+    class _RecordingHandle(BytesIO):
+        def read(self, amount: int = -1) -> bytes:
+            read_threads.add(threading.get_ident())
+            return super().read(amount)
 
-    monkeypatch.setattr("autodj.http_media.run_in_threadpool", fake_threadpool)
-    handle = BytesIO(b"abcdef")
+    handle = _RecordingHandle(b"abcdef")
 
     chunks = [chunk async for chunk in stream_file_chunks(OpenedMediaFile(handle, 6), chunk_size=3)]
 
     assert chunks == [b"abc", b"def"]
-    assert calls == ["_next_chunk", "_next_chunk", "_next_chunk", "_close_owned"]
+    assert read_threads and threading.get_ident() not in read_threads
     assert handle.closed is True
 
 
