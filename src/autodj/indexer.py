@@ -39,7 +39,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import faiss
+import librosa
 import numpy as np
+from tqdm import tqdm
 
 from autodj.beets import BeetsNotFoundError, Track, get_all_tracks
 from autodj.config import AutoDJConfig
@@ -65,54 +67,15 @@ from autodj.index_manifest import (
 )
 from autodj.sqlite_utils import immediate_transaction
 
-# Heavy audio deps imported with graceful None fallback so the lighter
-# commands (`enrich`, `prune`, `stats`, `playlist`) work on minimal
-# installs that omit them.  build_index() guards against None at runtime.
-try:
-    import librosa as _librosa_mod
-
-    librosa: Any = _librosa_mod
-except ImportError:  # pragma: no cover — minimal install path
-    librosa = None
+# soundfile is an optional extra, so the lighter commands (`enrich`,
+# `prune`, `stats`, `playlist`) work on minimal installs that omit it.
+# _load_audio() guards against None at runtime and falls back to librosa.
 try:
     import soundfile as _sf_mod
 
     sf: Any = _sf_mod
 except ImportError:  # pragma: no cover
     sf = None
-try:
-    from tqdm import tqdm as _tqdm_real
-
-    tqdm: Any = _tqdm_real
-except ImportError:  # pragma: no cover
-
-    class _TqdmFallback:
-        """No-op stand-in for tqdm when the package is missing."""
-
-        def __init__(self, it: Any = None, **_kw: Any) -> None:
-            self._it = it
-
-        def __iter__(self) -> Any:
-            """Iterate over the wrapped input when one was supplied."""
-            return iter(self._it) if self._it is not None else iter(())
-
-        def update(self, _n: int = 1) -> None:
-            """Accept progress updates without displaying them."""
-            return None
-
-        def close(self) -> None:
-            """Finish the no-op progress display."""
-            return None
-
-        def __enter__(self) -> _TqdmFallback:
-            """Return this progress display for context manager use."""
-            return self
-
-        def __exit__(self, *_a: Any) -> None:
-            """Leave the no-op progress context."""
-            return None
-
-    tqdm = _TqdmFallback
 
 
 if TYPE_CHECKING:
