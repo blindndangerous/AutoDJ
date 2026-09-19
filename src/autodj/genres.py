@@ -33,6 +33,8 @@ Example:
 
 from __future__ import annotations
 
+import re
+
 # Canonical token → list of substrings that map to it.  Each substring
 # is matched case-insensitively against the raw genre.  First match
 # wins, so order from most-specific to least-specific.
@@ -190,12 +192,12 @@ def matches(entry_genre: str | None, allowed: list[str]) -> bool:
 # ---------------------------------------------------------------------------
 
 
+_SEPARATORS = re.compile(r"[/;,|]")
+
+
 def _split_chunks(genre: str) -> list[str]:
     """Split *genre* on common multi-genre separators."""
-    out = [genre]
-    for sep in ("/", ";", ",", "|"):
-        out = [p for chunk in out for p in chunk.split(sep)]
-    return [p.strip() for p in out if p.strip()]
+    return [p.strip() for p in _SEPARATORS.split(genre) if p.strip()]
 
 
 def _match_chunk(chunk: str) -> str:
