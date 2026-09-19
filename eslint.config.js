@@ -98,11 +98,13 @@ export default [
       // logs to console for browser-side debug -- see ?debug=1 flag).
       "no-console": "off",
       // All browser HTTP goes through modules/api-client.js so auth,
-      // error shaping, and media-type checks stay in one place.
-      "no-restricted-globals": [
+      // error shaping, and media-type checks stay in one place.  Matched
+      // on the call, not the reference, so auth.js can keep forwarding
+      // the global as its `fetchImpl = fetch` default parameter.
+      "no-restricted-syntax": [
         "error",
         {
-          name: "fetch",
+          selector: "CallExpression[callee.name='fetch']",
           message:
             "Route HTTP through modules/api-client.js instead of calling fetch directly.",
         },
@@ -120,13 +122,9 @@ export default [
     },
   },
   {
-    // api-client.js owns the raw transport; auth.js only forwards the
-    // global as the `fetchImpl = fetch` default its callers override.
-    files: [
-      "src/autodj/static/modules/api-client.js",
-      "src/autodj/static/modules/auth.js",
-    ],
-    rules: { "no-restricted-globals": "off" },
+    // The one module allowed to call the raw transport.
+    files: ["src/autodj/static/modules/api-client.js"],
+    rules: { "no-restricted-syntax": "off" },
   },
   {
     files: [
