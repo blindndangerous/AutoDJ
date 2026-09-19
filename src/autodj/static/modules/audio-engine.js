@@ -170,10 +170,6 @@ const _workletReady = {
   freeze: false,
   glitch: false,
 };
-function _anyWorkletReady() {
-  return _workletReady.bitcrusher || _workletReady.stutter
-       || _workletReady.freeze || _workletReady.glitch;
-}
 
 export function ensureAudioGraph() {
   if (_ctx) return _ctx;
@@ -2173,7 +2169,6 @@ export let _beatmatchOnSkip = false;
 export let _outBpmCache = 0;
 export let _inBpmCache = 0;
 let _outDownbeatsCache = [];
-let _inDownbeatsCache = [];
 let _outKeyHzCache = null;
 let _inKeyHzCache = null;
 
@@ -2278,8 +2273,6 @@ export function applyBrowserPlaybackState(s) {
     ? s.next_track.bpm : 0;
   _outDownbeatsCache = (s.current_track && Array.isArray(s.current_track.downbeats_outro))
     ? s.current_track.downbeats_outro : [];
-  _inDownbeatsCache = (s.next_track && Array.isArray(s.next_track.downbeats_intro))
-    ? s.next_track.downbeats_intro : [];
   _outKeyHzCache = (s.current_track && typeof s.current_track.key_hz === "number")
     ? s.current_track.key_hz : null;
   _inKeyHzCache = (s.next_track && typeof s.next_track.key_hz === "number")
