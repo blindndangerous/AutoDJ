@@ -32,6 +32,7 @@ import sys
 import threading
 import time
 from collections import deque
+from functools import cache
 from typing import ClassVar
 
 logger = logging.getLogger(__name__)
@@ -254,15 +255,9 @@ class JobManager:
 
 
 # Process-wide singleton — the web server attaches its bridge to this
-# instance on startup.
-_MANAGER: JobManager | None = None
-_MANAGER_LOCK = threading.Lock()
-
-
+# instance on startup.  functools.cache holds its own lock, so concurrent
+# first calls still build exactly one manager.
+@cache
 def get_manager() -> JobManager:
     """Return the process-wide :class:`JobManager` singleton."""
-    global _MANAGER
-    with _MANAGER_LOCK:
-        if _MANAGER is None:
-            _MANAGER = JobManager()
-        return _MANAGER
+    return JobManager()
