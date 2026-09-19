@@ -140,29 +140,13 @@ def _is_reparse(metadata: os.stat_result) -> bool:
 def _same_file_identity(left: os.stat_result, right: os.stat_result) -> bool:
     """Compare file identity, type, size, and modification time."""
 
-    return (
-        left.st_dev,
-        left.st_ino,
-        left.st_mode,
-        left.st_size,
-        left.st_mtime_ns,
-    ) == (
-        right.st_dev,
-        right.st_ino,
-        right.st_mode,
-        right.st_size,
-        right.st_mtime_ns,
-    )
+    return _file_identity(left) == _file_identity(right)
 
 
 def _same_object_identity(left: os.stat_result, right: os.stat_result) -> bool:
     """Compare identity/type while permitting content changes by a live writer."""
 
-    return (left.st_dev, left.st_ino, left.st_mode) == (
-        right.st_dev,
-        right.st_ino,
-        right.st_mode,
-    )
+    return _object_identity(left) == _object_identity(right)
 
 
 def _object_identity(metadata: os.stat_result) -> tuple[int, int, int]:
@@ -571,13 +555,7 @@ def _capture_stopped_state(active: Path) -> dict[str, tuple[int, int, int, int, 
             continue
         except OSError as exc:
             raise BackupError(f"unable to inspect stopped SQLite state {path}: {exc}") from exc
-        state[relative.as_posix()] = (
-            metadata.st_dev,
-            metadata.st_ino,
-            metadata.st_mode,
-            metadata.st_size,
-            metadata.st_mtime_ns,
-        )
+        state[relative.as_posix()] = _file_identity(metadata)
     return state
 
 
