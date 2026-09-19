@@ -122,10 +122,10 @@ def _parse_camelot_key(raw: str) -> tuple[int, int] | None:
     from autodj.dj_meta import _CAMELOT_MAJOR, _CAMELOT_MINOR
 
     table = _CAMELOT_MAJOR if side == "B" else _CAMELOT_MINOR
-    for chromatic, n in table.items():
-        if n == num:
-            return (chromatic, 1 if side == "B" else 0)
-    return None
+    # Both tables cover Camelot 1-12 exactly once, so the reverse lookup
+    # always hits for the numbers accepted above.
+    by_number = {n: chromatic for chromatic, n in table.items()}
+    return (by_number[num], 1 if side == "B" else 0)
 
 
 def _split_note_and_mode(raw: str) -> tuple[str, int]:
