@@ -38,6 +38,7 @@ import click
 from rich.console import Console
 from rich.panel import Panel
 
+from autodj.config import TRANSITION_MODES
 from autodj.transitions import TRANSITION_EFFECT_NAMES
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,9 @@ logger = logging.getLogger(__name__)
 # Sorted so `--help` lists the effects in a stable order.  Derived from the
 # enum so the CLI can never offer fewer effects than the web UI.
 _TRANSITION_CHOICES = sorted(TRANSITION_EFFECT_NAMES)
+# Declaration order, not sorted: --help must keep listing the modes in the
+# order config.TRANSITION_MODES declares them.
+_TRANSITION_MODE_CHOICES = list(TRANSITION_MODES)
 
 
 def _deprecated_no_playback(ctx: click.Context, param: click.Parameter, value: bool) -> bool:
@@ -1472,10 +1476,7 @@ def cmd_analyse(
     "--transition-mode",
     "transition_mode",
     default=None,
-    type=click.Choice(
-        ["full_intro_outro", "outro_fade", "fixed_skip_silence", "fixed"],
-        case_sensitive=False,
-    ),
+    type=click.Choice(_TRANSITION_MODE_CHOICES, case_sensitive=False),
     help=(
         "How the crossfade aligns with each track's intro/outro markers. "
         "Mirrors Mixxx's AutoDJ TransitionMode.  Overrides [playback] "
@@ -1752,10 +1753,7 @@ def cmd_play(  # pragma: no cover -- end-to-end orchestrator, exercised by smoke
     "--transition-mode",
     "transition_mode",
     default=None,
-    type=click.Choice(
-        ["full_intro_outro", "outro_fade", "fixed_skip_silence", "fixed"],
-        case_sensitive=False,
-    ),
+    type=click.Choice(_TRANSITION_MODE_CHOICES, case_sensitive=False),
     help="Crossfade alignment mode for the web-UI auto-DJ.",
 )
 @click.option(
