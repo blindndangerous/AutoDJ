@@ -12,7 +12,7 @@ from io import StringIO
 from rich.console import Console
 
 from autodj.indexer import IndexEntry
-from autodj.stats import _bar, _fmt_duration, _print_decades, print_stats
+from autodj.stats import _bar, _decade_rows, _fmt_duration, _print_histogram, print_stats
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -46,7 +46,7 @@ def _make_entry(**kwargs) -> IndexEntry:
 def test_empty_decade_histogram_produces_no_output() -> None:
     console = _console()
 
-    _print_decades([], console)
+    _print_histogram(console, "By Decade", "Decade", _decade_rows([]))
 
     assert console.file.getvalue() == ""
 

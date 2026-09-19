@@ -16,6 +16,7 @@ Example:
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 from rich.console import Console
@@ -34,6 +35,15 @@ _BAR_WIDTH = 18
 _FILLED = "█"
 _EMPTY = "░"
 _KEY_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+_BPM_LABELS = [f"{lo}–{lo + 9}" for lo in range(60, 190, 10)] + ["180+", "Unknown"]
+_LENGTH_LABELS = ["< 2 min", "2–5 min", "5–10 min", "> 10 min"]
+_ENERGY_LABELS = [
+    "0.00–0.05 (silence)",
+    "0.05–0.15 (quiet)",
+    "0.15–0.30 (medium)",
+    "0.30–0.50 (loud)",
+    "0.50+ (very loud)",
+]
 
 
 def _bar(count: int, max_count: int, width: int = _BAR_WIDTH) -> str:
@@ -58,8 +68,27 @@ def _fmt_duration(total_seconds: float) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _make_table(title: str, label_col: str, min_width: int = 0) -> Table:
-    """Build a 3-column histogram table (label, bar, count)."""
+def _print_histogram(
+    console: Console,
+    title: str,
+    label_col: str,
+    rows: list[tuple[str, int]],
+    min_width: int = 0,
+    denom: int | None = None,
+) -> None:
+    """Render one label/bar/count table; prints nothing when *rows* is empty.
+
+    Args:
+        console: Rich console to print to.
+        title: Table title.
+        label_col: Name of the (header-less) label column.
+        rows: ``(label, count)`` pairs in display order.
+        min_width: Minimum width of the label column, 0 for automatic.
+        denom: Count that maps to a full bar.  Defaults to the largest count.
+    """
+    if not rows:
+        return
+    top = denom if denom is not None else max(c for _, c in rows)
     tbl = Table(title=title, show_header=False, box=None, padding=(0, 1))
     if min_width:
         tbl.add_column(label_col, style="dim", min_width=min_width)
@@ -67,7 +96,9 @@ def _make_table(title: str, label_col: str, min_width: int = 0) -> Table:
         tbl.add_column(label_col, style="dim")
     tbl.add_column("Bar")
     tbl.add_column("Count", justify="right", style="cyan")
-    return tbl
+    for label, count in rows:
+        tbl.add_row(label, _bar(count, top), str(count))
+    console.print(tbl)
 
 
 def _bpm_bucket(bpm: float) -> str:
@@ -118,131 +149,54 @@ def _print_summary(entries: list[IndexEntry], console: Console) -> None:
     )
 
 
-def _print_bpm(entries: list[IndexEntry], console: Console) -> None:
-    """Render the BPM-distribution histogram."""
-    buckets: dict[str, int] = {f"{lo}–{lo + 9}": 0 for lo in range(60, 190, 10)}
-    buckets["180+"] = 0
-    buckets["Unknown"] = 0
-    for e in entries:
-        key = _bpm_bucket(e.bpm)
-        buckets[key] = buckets.get(key, 0) + 1
-    max_bpm = max(buckets.values(), default=1)
-    tbl = _make_table("BPM Distribution", "Range", min_width=8)
-    for label, count in buckets.items():
-        if count or label != "Unknown":
-            tbl.add_row(label, _bar(count, max_bpm), str(count))
-    console.print(tbl)
+def _bucket_rows(labels: list[str], keys: Iterable[str]) -> list[tuple[str, int]]:
+    """Count *keys* into *labels* order, dropping ``Unknown`` when it is empty.
+
+    Args:
+        labels: Every bucket label, in display order.
+        keys: One bucket label per entry.
+
+    Returns:
+        ``(label, count)`` rows in *labels* order.
+    """
+    counts = Counter(keys)
+    return [(lb, counts[lb]) for lb in labels if counts[lb] or lb != "Unknown"]
 
 
-def _print_genres(entries: list[IndexEntry], console: Console) -> None:
-    """Render the top-10 genre histogram (skipped when no genre tags)."""
-    counts: Counter[str] = Counter(e.genre.strip() for e in entries if e.genre and e.genre.strip())
-    if not counts:
-        return
-    tbl = _make_table("Top Genres", "Genre")
-    top = counts.most_common(1)[0][1]
-    for genre, count in counts.most_common(10):
-        tbl.add_row(genre, _bar(count, top), str(count))
-    console.print(tbl)
+def _top_rows(values: Iterable[str]) -> list[tuple[str, int]]:
+    """Return the ten most common non-blank *values* as ``(value, count)`` rows."""
+    counts = Counter(v.strip() for v in values if v and v.strip())
+    return counts.most_common(10)
 
 
-def _print_decades(entries: list[IndexEntry], console: Console) -> None:
-    """Render the by-decade histogram (skipped when no year tags)."""
-    counts: dict[str, int] = {}
-    unknown = 0
-    for e in entries:
-        if not e.year or e.year < 1900:
-            unknown += 1
-        else:
-            label = f"{(e.year // 10) * 10}s"
-            counts[label] = counts.get(label, 0) + 1
-    if unknown:
-        counts["Unknown"] = unknown
-    if not counts:
-        return
-    max_dec = max(counts.values(), default=1)
-    tbl = _make_table("By Decade", "Decade", min_width=8)
-    ordered = sorted(k for k in counts if k != "Unknown")
-    if "Unknown" in counts:
-        ordered.append("Unknown")
-    for label in ordered:
-        tbl.add_row(label, _bar(counts[label], max_dec), str(counts[label]))
-    console.print(tbl)
-
-
-def _print_lengths(entries: list[IndexEntry], console: Console) -> None:
-    """Render the track-length-bucket histogram."""
-    buckets = {"< 2 min": 0, "2–5 min": 0, "5–10 min": 0, "> 10 min": 0}
-    for e in entries:
-        buckets[_length_bucket(e.length)] += 1
-    max_len = max(buckets.values(), default=1)
-    tbl = _make_table("Track Lengths", "Bucket")
-    for label, count in buckets.items():
-        tbl.add_row(label, _bar(count, max_len), str(count))
-    console.print(tbl)
-
-
-def _print_artists(entries: list[IndexEntry], console: Console) -> None:
-    """Render the top-10 artists histogram (skipped when no artist tags)."""
-    counts: Counter[str] = Counter(
-        e.artist.strip() for e in entries if e.artist and e.artist.strip()
+def _decade_rows(entries: list[IndexEntry]) -> list[tuple[str, int]]:
+    """Return ``(decade, count)`` rows, oldest first, with ``Unknown`` last."""
+    counts = Counter(
+        f"{(e.year // 10) * 10}s" if e.year and e.year >= 1900 else "Unknown" for e in entries
     )
+    labels = sorted(k for k in counts if k != "Unknown")
+    if "Unknown" in counts:
+        labels.append("Unknown")
+    return [(lb, counts[lb]) for lb in labels]
+
+
+def _key_rows(entries: list[IndexEntry]) -> list[tuple[str, int]]:
+    """Return one row per chromatic key, or nothing when no key was detected."""
+    counts = Counter(e.key for e in entries if e.key >= 0)
     if not counts:
-        return
-    tbl = _make_table("Top Artists", "Artist")
-    top = counts.most_common(1)[0][1]
-    for artist, count in counts.most_common(10):
-        tbl.add_row(artist, _bar(count, top), str(count))
-    console.print(tbl)
+        return []
+    return [(_KEY_NAMES[k], counts[k]) for k in range(12)]
 
 
-def _print_keys(entries: list[IndexEntry], console: Console) -> None:
-    """Render the chromatic-key histogram (skipped when no detected keys)."""
-    counts: dict[int, int] = {}
-    for e in entries:
-        if e.key >= 0:
-            counts[e.key] = counts.get(e.key, 0) + 1
-    if not counts:
-        return
-    max_key = max(counts.values(), default=1)
-    tbl = _make_table("Key Distribution", "Key", min_width=3)
-    for k in range(12):
-        count = counts.get(k, 0)
-        tbl.add_row(_KEY_NAMES[k], _bar(count, max_key), str(count))
-    console.print(tbl)
-
-
-def _print_modes(entries: list[IndexEntry], console: Console) -> None:
-    """Render the major/minor split (skipped when no mode tags)."""
+def _mode_rows(entries: list[IndexEntry]) -> list[tuple[str, int]]:
+    """Return the major/minor rows with percentages baked into the labels."""
     major = sum(1 for e in entries if e.mode == 1)
     minor = sum(1 for e in entries if e.mode == 0)
     total = major + minor
     if not total:
-        return
+        return []
     major_pct = round(major * 100 / total)
-    minor_pct = 100 - major_pct
-    tbl = _make_table("Mode Split", "Mode")
-    tbl.add_row(f"Major ({major_pct}%)", _bar(major, total), str(major))
-    tbl.add_row(f"Minor ({minor_pct}%)", _bar(minor, total), str(minor))
-    console.print(tbl)
-
-
-def _print_energy(entries: list[IndexEntry], console: Console) -> None:
-    """Render the energy-bucket histogram."""
-    buckets = {
-        "0.00–0.05 (silence)": 0,
-        "0.05–0.15 (quiet)": 0,
-        "0.15–0.30 (medium)": 0,
-        "0.30–0.50 (loud)": 0,
-        "0.50+ (very loud)": 0,
-    }
-    for e in entries:
-        buckets[_energy_bucket(e.energy)] += 1
-    max_eng = max(buckets.values(), default=1)
-    tbl = _make_table("Energy Distribution", "Range")
-    for label, count in buckets.items():
-        tbl.add_row(label, _bar(count, max_eng), str(count))
-    console.print(tbl)
+    return [(f"Major ({major_pct}%)", major), (f"Minor ({100 - major_pct}%)", minor)]
 
 
 def print_stats(entries: list[IndexEntry], console: Console) -> None:
@@ -251,11 +205,28 @@ def print_stats(entries: list[IndexEntry], console: Console) -> None:
         console.print("[yellow]No tracks in index.[/yellow]")
         return
     _print_summary(entries, console)
-    _print_bpm(entries, console)
-    _print_genres(entries, console)
-    _print_decades(entries, console)
-    _print_lengths(entries, console)
-    _print_artists(entries, console)
-    _print_keys(entries, console)
-    _print_modes(entries, console)
-    _print_energy(entries, console)
+    _print_histogram(
+        console,
+        "BPM Distribution",
+        "Range",
+        _bucket_rows(_BPM_LABELS, (_bpm_bucket(e.bpm) for e in entries)),
+        min_width=8,
+    )
+    _print_histogram(console, "Top Genres", "Genre", _top_rows(e.genre for e in entries))
+    _print_histogram(console, "By Decade", "Decade", _decade_rows(entries), min_width=8)
+    _print_histogram(
+        console,
+        "Track Lengths",
+        "Bucket",
+        _bucket_rows(_LENGTH_LABELS, (_length_bucket(e.length) for e in entries)),
+    )
+    _print_histogram(console, "Top Artists", "Artist", _top_rows(e.artist for e in entries))
+    _print_histogram(console, "Key Distribution", "Key", _key_rows(entries), min_width=3)
+    mode_rows = _mode_rows(entries)
+    _print_histogram(console, "Mode Split", "Mode", mode_rows, denom=sum(c for _, c in mode_rows))
+    _print_histogram(
+        console,
+        "Energy Distribution",
+        "Range",
+        _bucket_rows(_ENERGY_LABELS, (_energy_bucket(e.energy) for e in entries)),
+    )
