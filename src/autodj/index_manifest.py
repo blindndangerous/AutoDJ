@@ -212,6 +212,19 @@ def _write_publication_state(index_dir: Path, state: _PublicationState) -> None:
     _atomic_json_write(index_dir / PUBLICATION_STATE_NAME, asdict(state))
 
 
+def _next_revision(state: _PublicationState, manifest: IndexManifest | None) -> int:
+    """Return the next never-reused publication revision for *index_dir*'s state."""
+    return (
+        max(
+            state.high_water,
+            state.tombstone_revision,
+            0 if manifest is None else manifest.generation,
+            0 if manifest is None else manifest.state_revision,
+        )
+        + 1
+    )
+
+
 def _state_for_manifest(index_dir: Path, manifest: IndexManifest | None) -> _PublicationState:
     """Return stored publication state or derive its initial counters."""
     state = _read_publication_state(index_dir)
@@ -292,15 +305,7 @@ def tombstone_publication(index_dir: Path) -> None:
         state = _state_for_manifest(index_dir, manifest)
         if manifest is None and state.tombstone_revision:
             return
-        revision = (
-            max(
-                state.high_water,
-                state.tombstone_revision,
-                0 if manifest is None else manifest.generation,
-                0 if manifest is None else manifest.state_revision,
-            )
-            + 1
-        )
+        revision = _next_revision(state, manifest)
         _write_publication_state(
             index_dir,
             _PublicationState(
@@ -546,15 +551,7 @@ def publish_manifest(index_dir: Path, vector_count: int) -> IndexManifest:
     with publication_lock(index_dir):
         previous = read_manifest(index_dir)
         state = _state_for_manifest(index_dir, previous)
-        revision = (
-            max(
-                state.high_water,
-                state.tombstone_revision,
-                0 if previous is None else previous.generation,
-                0 if previous is None else previous.state_revision,
-            )
-            + 1
-        )
+        revision = _next_revision(state, previous)
         state = _PublicationState(
             high_water=revision,
             tombstone_revision=state.tombstone_revision,
