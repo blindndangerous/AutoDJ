@@ -35,8 +35,6 @@ HARMONIC_MODES = frozenset(
 )
 LINER_PICK_MODES = frozenset({"random", "sequential", "weighted"})
 TRANSITION_EFFECTS = TRANSITION_EFFECT_NAMES
-SESSION_ONLY_PLAYBACK_FIELDS = frozenset({"no_repeat_window", "library_size"})
-CONFIG_ONLY_PLAYBACK_FIELDS = frozenset({"liners_folder"})
 
 
 class PlaybackState(TypedDict, total=False):
