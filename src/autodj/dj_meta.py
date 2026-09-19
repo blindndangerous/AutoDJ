@@ -750,6 +750,32 @@ class DjMetaCache:
             self._mem_cache[key] = meta
             self._dirty += 1
 
+    def _write_buffer_locked(self) -> None:
+        """UPSERT every buffered row.  Caller holds the lock and a transaction.
+
+        The buffer itself is cleared by the caller once its transaction
+        has committed, so a failed write leaves the pending rows intact.
+        """
+        assert self._conn is not None
+        rows = [
+            (
+                path,
+                float(meta.intro_end_s),
+                float(meta.outro_start_s),
+                int(bool(meta.analysed)),
+                json.dumps([float(beat) for beat in meta.beats]),
+                json.dumps([asdict(cue) for cue in meta.cues]),
+            )
+            for path, meta in self._buf.items()
+        ]
+        if rows:
+            self._conn.executemany(
+                "INSERT OR REPLACE INTO dj_meta "
+                "(path, intro_end_s, outro_start_s, analysed, beats, cues) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+
     def flush(self, force: bool = False, batch: int = 25) -> None:
         """Persist pending writes if at least *batch* entries are dirty.
 
@@ -765,25 +791,9 @@ class DjMetaCache:
             if not self._buf:
                 self._dirty = 0
                 return
-            rows = [
-                (
-                    p,
-                    float(m.intro_end_s),
-                    float(m.outro_start_s),
-                    int(bool(m.analysed)),
-                    json.dumps([float(b) for b in m.beats]),
-                    json.dumps([asdict(c) for c in m.cues]),
-                )
-                for p, m in self._buf.items()
-            ]
             assert self._conn is not None
             with immediate_transaction(self._conn):
-                self._conn.executemany(
-                    "INSERT OR REPLACE INTO dj_meta "
-                    "(path, intro_end_s, outro_start_s, analysed, beats, cues) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    rows,
-                )
+                self._write_buffer_locked()
             self._buf.clear()
             self._dirty = 0
 
@@ -796,25 +806,8 @@ class DjMetaCache:
         valid_keys = {self._key(path) for path in valid_paths}
         with self._lock:
             assert self._conn is not None
-            rows = [
-                (
-                    path,
-                    float(meta.intro_end_s),
-                    float(meta.outro_start_s),
-                    int(bool(meta.analysed)),
-                    json.dumps([float(beat) for beat in meta.beats]),
-                    json.dumps([asdict(cue) for cue in meta.cues]),
-                )
-                for path, meta in self._buf.items()
-            ]
             with immediate_transaction(self._conn):
-                if rows:
-                    self._conn.executemany(
-                        "INSERT OR REPLACE INTO dj_meta "
-                        "(path, intro_end_s, outro_start_s, analysed, beats, cues) "
-                        "VALUES (?, ?, ?, ?, ?, ?)",
-                        rows,
-                    )
+                self._write_buffer_locked()
                 existing = [str(row[0]) for row in self._conn.execute("SELECT path FROM dj_meta")]
                 stale = [path for path in existing if path not in valid_keys]
                 if stale:
