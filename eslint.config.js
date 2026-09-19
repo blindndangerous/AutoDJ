@@ -97,6 +97,16 @@ export default [
       // Allow console for in-browser diagnostics (project intentionally
       // logs to console for browser-side debug -- see ?debug=1 flag).
       "no-console": "off",
+      // All browser HTTP goes through modules/api-client.js so auth,
+      // error shaping, and media-type checks stay in one place.
+      "no-restricted-globals": [
+        "error",
+        {
+          name: "fetch",
+          message:
+            "Route HTTP through modules/api-client.js instead of calling fetch directly.",
+        },
+      ],
       // Style.
       "prefer-const": "error",
       "no-var": "error",
@@ -108,6 +118,15 @@ export default [
       "no-empty": ["error", { allowEmptyCatch: true }],
       "no-useless-assignment": "off",
     },
+  },
+  {
+    // api-client.js owns the raw transport; auth.js only forwards the
+    // global as the `fetchImpl = fetch` default its callers override.
+    files: [
+      "src/autodj/static/modules/api-client.js",
+      "src/autodj/static/modules/auth.js",
+    ],
+    rules: { "no-restricted-globals": "off" },
   },
   {
     files: [
