@@ -1215,19 +1215,15 @@ def create_app(
         from autodj.liners import LinerLibrary
 
         cfg = bridge.player._cfg
-        folder_str = cfg.playback.liners_folder
-        if not folder_str:
-            from pathlib import Path as _P
-
-            folder_str = str(_P(cfg.index.active_dir) / "liners")
-        from pathlib import Path as _P
-
+        folder = _resolve_liner_folder()
         # from_folder walks the configured directory with rglob.  That
         # directory is operator-controlled and may live on a slow mount, so
         # keep the walk off the event loop.
-        lib = await asyncio.to_thread(LinerLibrary.from_folder, _P(folder_str))
+        lib = await asyncio.to_thread(LinerLibrary.from_folder, folder)
         return {
-            "folder": str(folder_str),
+            # Echo the operator's configured string verbatim; only the derived
+            # default is rendered from a Path.
+            "folder": cfg.playback.liners_folder or str(folder),
             "files": [f.name for f in lib.files],
             "count": len(lib.files),
             "config": {
