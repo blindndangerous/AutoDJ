@@ -2270,17 +2270,9 @@ def _load_existing_artifacts(
         vectors_exist = (index_dir / "vectors.index").is_file()
         if not db_exists and not vectors_exist:
             return [], [], False, snapshot
-        if publication_is_tombstoned(index_dir):
-            for path in (
-                index_dir / "tracks.db",
-                index_dir / "tracks.db-wal",
-                index_dir / "tracks.db-shm",
-                index_dir / "vectors.index",
-            ):
-                path.unlink(missing_ok=True)
-            fsync_directory(index_dir)
-            return [], [], False, current_snapshot_token(index_dir)
-        if publication_has_uncommitted_reservation(index_dir):
+        if publication_is_tombstoned(index_dir) or publication_has_uncommitted_reservation(
+            index_dir
+        ):
             for path in (
                 index_dir / "tracks.db",
                 index_dir / "tracks.db-wal",
