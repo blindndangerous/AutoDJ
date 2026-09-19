@@ -685,11 +685,6 @@ def _canonicalize_host(
     return ascii_hostname
 
 
-def _deduplicate(values: list[str]) -> list[str]:
-    """Return values in first-seen order with duplicates removed."""
-    return list(dict.fromkeys(values))
-
-
 def validate_access_token(token: str | None) -> None:
     """Reject configured access tokens shorter than the required byte length."""
     if token is None:
@@ -756,15 +751,15 @@ def _canonicalize_allowed_hosts(values: object) -> list[str] | None:
         return None
     if not isinstance(values, list):
         raise TypeError("server.allowed_hosts must be a list of strings")
-    return _deduplicate(
-        [
+    return list(
+        dict.fromkeys(
             _canonicalize_host(
                 value,
                 field_name="server.allowed_hosts",
                 allow_unspecified=False,
             )
             for value in values
-        ]
+        )
     )
 
 
@@ -774,7 +769,7 @@ def _canonicalize_allowed_origins(values: object) -> list[str] | None:
         return None
     if not isinstance(values, list):
         raise TypeError("server.allowed_origins must be a list of strings")
-    return _deduplicate([canonicalize_allowed_origin(value) for value in values])
+    return list(dict.fromkeys(canonicalize_allowed_origin(value) for value in values))
 
 
 @dataclass
