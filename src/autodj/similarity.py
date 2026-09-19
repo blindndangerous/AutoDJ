@@ -27,7 +27,6 @@ import threading
 from collections import deque
 from collections.abc import Callable
 from dataclasses import FrozenInstanceError, dataclass, fields
-from functools import wraps
 from pathlib import Path
 from typing import cast
 
@@ -145,17 +144,6 @@ class _FrozenIndexEntry(IndexEntry):
         return isinstance(other, IndexEntry) and all(
             getattr(self, field.name) == getattr(other, field.name) for field in fields(IndexEntry)
         )
-
-
-def _locked(method: Callable) -> Callable:
-    """Run a SimilarityIndex operation against one coherent in-memory generation."""
-
-    @wraps(method)
-    def wrapped(self: SimilarityIndex, *args: object, **kwargs: object) -> object:
-        with self._reload_lock:
-            return method(self, *args, **kwargs)
-
-    return wrapped
 
 
 # ---------------------------------------------------------------------------
@@ -364,20 +352,6 @@ class SimilarityIndex:
     # Core query
     # ------------------------------------------------------------------
 
-    def _fetch_size(
-        self,
-        n_candidates: int,
-        invert: bool,
-        target_bpm: float | None,
-        bpm_range: tuple[float, float] | None,
-    ) -> int:
-        """Return the FAISS over-fetch size for the requested mode."""
-        if invert:
-            return max(200, n_candidates)
-        if target_bpm is not None or bpm_range is not None:
-            return max(25, n_candidates)
-        return n_candidates
-
     def _build_predicate(
         self,
         excluded: set[str],
@@ -496,7 +470,6 @@ class SimilarityIndex:
         out.sort(key=lambda x: x[0], reverse=True)
         return out
 
-    @_locked
     def find_next(
         self,
         query_vector: np.ndarray,
@@ -541,111 +514,111 @@ class SimilarityIndex:
             ValueError: If *n_candidates* is not positive.
             SimilarityError: If all retrieved candidates were excluded.
         """
-        if isinstance(n_candidates, bool) or not isinstance(n_candidates, int):
-            raise TypeError("n_candidates must be a positive integer.")
-        if n_candidates <= 0:
-            raise ValueError("n_candidates must be a positive integer.")
+        with self._reload_lock:
+            if isinstance(n_candidates, bool) or not isinstance(n_candidates, int):
+                raise TypeError("n_candidates must be a positive integer.")
+            if n_candidates <= 0:
+                raise ValueError("n_candidates must be a positive integer.")
 
-        excluded = set(recently_played)
-        query = query_vector.reshape(1, -1).astype(np.float32)
-        query64 = query.astype(np.float64)
-        norm = float(np.linalg.norm(query64))
-        if not np.isfinite(norm) or norm <= 0.0:
-            raise SimilarityError("Query vector is empty or non-finite.")
-        query = (query64 / norm).astype(np.float32)
-        if invert:
-            query = -query
+            excluded = set(recently_played)
+            query = query_vector.reshape(1, -1).astype(np.float32)
+            query64 = query.astype(np.float64)
+            norm = float(np.linalg.norm(query64))
+            if not np.isfinite(norm) or norm <= 0.0:
+                raise SimilarityError("Query vector is empty or non-finite.")
+            query = (query64 / norm).astype(np.float32)
+            if invert:
+                query = -query
 
-        initial_k = (
-            self.ntotal
-            if invert
-            else min(
-                self.ntotal,
-                self._fetch_size(n_candidates, invert, target_bpm, bpm_range) + len(excluded) + 1,
+            # Over-fetch so the post-filters still have candidates left.  The
+            # invert branch already queries the whole index above.
+            fetch = (
+                max(25, n_candidates)
+                if (target_bpm is not None or bpm_range is not None)
+                else n_candidates
             )
-        )
-        predicate = self._build_predicate(
-            excluded,
-            bpm_range,
-            genre_filter,
-            harmonic_from,
-            harmonic_mode,
-            excluded_artists,
-            excluded_albums,
-            excluded_titles,
-        )
-        candidates = self._search_with_expansion(query, predicate, initial_k, n_candidates)
-
-        if not candidates and any((excluded_artists, excluded_albums, excluded_titles)):
-            logger.warning(
-                "No candidates after full-index preference search; "
-                "relaxing artist/album/title exclusions"
-            )
+            initial_k = self.ntotal if invert else min(self.ntotal, fetch + len(excluded) + 1)
             predicate = self._build_predicate(
                 excluded,
                 bpm_range,
                 genre_filter,
                 harmonic_from,
                 harmonic_mode,
-                None,
-                None,
-                None,
+                excluded_artists,
+                excluded_albums,
+                excluded_titles,
             )
-            candidates = self._search_with_expansion(
-                query,
-                predicate,
-                self.ntotal,
-                n_candidates,
-            )
+            candidates = self._search_with_expansion(query, predicate, initial_k, n_candidates)
 
-        if not candidates:
-            active = []
-            if bpm_range is not None:
-                active.append(f"BPM {bpm_range[0]:g}-{bpm_range[1]:g}, known values only")
-            if genre_filter:
-                active.append("genre " + ", ".join(genre_filter))
-            if harmonic_from is not None:
-                active.append("harmonic mode " + harmonic_mode)
-            detail = "; ".join(active) or "recent-track exclusion"
-            raise SimilarityError(f"No candidates satisfy hard filters: {detail}.")
+            if not candidates and any((excluded_artists, excluded_albums, excluded_titles)):
+                logger.warning(
+                    "No candidates after full-index preference search; "
+                    "relaxing artist/album/title exclusions"
+                )
+                predicate = self._build_predicate(
+                    excluded,
+                    bpm_range,
+                    genre_filter,
+                    harmonic_from,
+                    harmonic_mode,
+                    None,
+                    None,
+                    None,
+                )
+                candidates = self._search_with_expansion(
+                    query,
+                    predicate,
+                    self.ntotal,
+                    n_candidates,
+                )
 
-        if invert:
-            candidates.sort(key=lambda item: item[0], reverse=True)
-            best = candidates[0][1]
-            logger.debug("Smart-shuffle next: %s", best.display_name)
-            return self._public_entry(best)
+            if not candidates:
+                active = []
+                if bpm_range is not None:
+                    active.append(f"BPM {bpm_range[0]:g}-{bpm_range[1]:g}, known values only")
+                if genre_filter:
+                    active.append("genre " + ", ".join(genre_filter))
+                if harmonic_from is not None:
+                    active.append("harmonic mode " + harmonic_mode)
+                detail = "; ".join(active) or "recent-track exclusion"
+                raise SimilarityError(f"No candidates satisfy hard filters: {detail}.")
 
-        if target_bpm is None and target_energy is None:
-            candidates.sort(key=lambda x: x[0], reverse=True)
-            best = _softmax_pick(candidates, pick_top_k, pick_temperature)
-            logger.debug("Next track: %s", best.display_name)
-            return self._public_entry(best)
+            if invert:
+                candidates.sort(key=lambda item: item[0], reverse=True)
+                best = candidates[0][1]
+                logger.debug("Smart-shuffle next: %s", best.display_name)
+                return self._public_entry(best)
 
-        reranked = self._rerank(
-            candidates,
-            target_bpm,
-            bpm_weight,
-            target_energy,
-            energy_weight,
-        )
-        best = _softmax_pick(reranked, pick_top_k, pick_temperature)
-        if target_bpm is not None:
-            logger.debug(
-                "Next track (BPM re-ranked): %s (bpm=%.0f, target=%.0f)",
-                best.display_name,
-                best.bpm,
+            if target_bpm is None and target_energy is None:
+                candidates.sort(key=lambda x: x[0], reverse=True)
+                best = _softmax_pick(candidates, pick_top_k, pick_temperature)
+                logger.debug("Next track: %s", best.display_name)
+                return self._public_entry(best)
+
+            reranked = self._rerank(
+                candidates,
                 target_bpm,
-            )
-        else:
-            logger.debug(
-                "Next track (energy re-ranked): %s (energy=%.2f, target=%.2f)",
-                best.display_name,
-                best.energy,
+                bpm_weight,
                 target_energy,
+                energy_weight,
             )
-        return self._public_entry(best)
+            best = _softmax_pick(reranked, pick_top_k, pick_temperature)
+            if target_bpm is not None:
+                logger.debug(
+                    "Next track (BPM re-ranked): %s (bpm=%.0f, target=%.0f)",
+                    best.display_name,
+                    best.bpm,
+                    target_bpm,
+                )
+            else:
+                logger.debug(
+                    "Next track (energy re-ranked): %s (energy=%.2f, target=%.2f)",
+                    best.display_name,
+                    best.energy,
+                    target_energy,
+                )
+            return self._public_entry(best)
 
-    @_locked
     def find_next_for_path(
         self,
         current_path: str,
@@ -696,40 +669,40 @@ class SimilarityIndex:
             ...     recently_played=deque(),
             ... )
         """
-        idx = self._path_to_idx.get(current_path)
-        if idx is None:
-            raise SimilarityError(
-                f"Track not in index: {current_path}\nRun 'autodj index' to add it, then retry."
+        with self._reload_lock:
+            idx = self._path_to_idx.get(current_path)
+            if idx is None:
+                raise SimilarityError(
+                    f"Track not in index: {current_path}\nRun 'autodj index' to add it, then retry."
+                )
+            # faiss-cpu >=1.14 stubs pick the torch.Tensor reconstruct() overload;
+            # the C++ impl returns a float32 ndarray, so narrow back for find_next.
+            query_vector = cast(npt.NDArray[np.float32], self.faiss_index.reconstruct(idx))
+            # Resolve harmonic_from from the current entry's key/mode if requested
+            harmonic_from: tuple[int, int] | None = None
+            if harmonic_only:
+                cur = self.entries[idx]
+                harmonic_from = (cur.key, cur.mode)
+            return self.find_next(
+                query_vector,
+                recently_played,
+                n_candidates,
+                target_bpm=target_bpm,
+                bpm_weight=bpm_weight,
+                bpm_range=bpm_range,
+                genre_filter=genre_filter,
+                invert=invert,
+                harmonic_from=harmonic_from,
+                harmonic_mode=harmonic_mode,
+                target_energy=target_energy,
+                energy_weight=energy_weight,
+                excluded_artists=excluded_artists,
+                excluded_albums=excluded_albums,
+                excluded_titles=excluded_titles,
+                pick_top_k=pick_top_k,
+                pick_temperature=pick_temperature,
             )
-        # faiss-cpu >=1.14 stubs pick the torch.Tensor reconstruct() overload;
-        # the C++ impl returns a float32 ndarray, so narrow back for find_next.
-        query_vector = cast(npt.NDArray[np.float32], self.faiss_index.reconstruct(idx))
-        # Resolve harmonic_from from the current entry's key/mode if requested
-        harmonic_from: tuple[int, int] | None = None
-        if harmonic_only:
-            cur = self.entries[idx]
-            harmonic_from = (cur.key, cur.mode)
-        return self.find_next(
-            query_vector,
-            recently_played,
-            n_candidates,
-            target_bpm=target_bpm,
-            bpm_weight=bpm_weight,
-            bpm_range=bpm_range,
-            genre_filter=genre_filter,
-            invert=invert,
-            harmonic_from=harmonic_from,
-            harmonic_mode=harmonic_mode,
-            target_energy=target_energy,
-            energy_weight=energy_weight,
-            excluded_artists=excluded_artists,
-            excluded_albums=excluded_albums,
-            excluded_titles=excluded_titles,
-            pick_top_k=pick_top_k,
-            pick_temperature=pick_temperature,
-        )
 
-    @_locked
     def find_distant(
         self,
         current_path: str,
@@ -753,50 +726,51 @@ class SimilarityIndex:
             SimilarityError: If *current_path* is not in the index or if no
                 non-excluded track exists.
         """
-        excluded = set(recently_played)
+        with self._reload_lock:
+            excluded = set(recently_played)
 
-        idx = self._path_to_idx.get(current_path)
-        if idx is None:
-            raise SimilarityError(f"Track not in index: {current_path}")
+            idx = self._path_to_idx.get(current_path)
+            if idx is None:
+                raise SimilarityError(f"Track not in index: {current_path}")
 
-        query_vector = (
-            cast(npt.NDArray[np.float32], self.faiss_index.reconstruct(idx))
-            .reshape(1, -1)
-            .astype(np.float32)
-        )
-        scores_2d, indices_2d = self.faiss_index.search(query_vector, self.ntotal)
-        raw_scores = scores_2d[0]
-        raw_indices = indices_2d[0]
+            query_vector = (
+                cast(npt.NDArray[np.float32], self.faiss_index.reconstruct(idx))
+                .reshape(1, -1)
+                .astype(np.float32)
+            )
+            scores_2d, indices_2d = self.faiss_index.search(query_vector, self.ntotal)
+            raw_scores = scores_2d[0]
+            raw_indices = indices_2d[0]
 
-        # Results come back highest-similarity first; reverse for most-distant-first
-        # Skip invalid padding indices (-1)
-        all_valid = [
-            (float(raw_scores[j]), int(raw_indices[j]))
-            for j in range(len(raw_indices))
-            if raw_indices[j] >= 0
-        ]
+            # Results come back highest-similarity first; reverse for most-distant-first
+            # Skip invalid padding indices (-1)
+            all_valid = [
+                (float(raw_scores[j]), int(raw_indices[j]))
+                for j in range(len(raw_indices))
+                if raw_indices[j] >= 0
+            ]
 
-        # Bottom quartile = last 25% of the sorted-by-similarity list
-        n_total = len(all_valid)
-        bottom_start = max(0, int(n_total * 0.75))
-        bottom_quartile = all_valid[bottom_start:]
+            # Bottom quartile = last 25% of the sorted-by-similarity list
+            n_total = len(all_valid)
+            bottom_start = max(0, int(n_total * 0.75))
+            bottom_quartile = all_valid[bottom_start:]
 
-        distant_candidates = [
-            self.entries[i] for _, i in bottom_quartile if self.entries[i].path not in excluded
-        ]
+            distant_candidates = [
+                self.entries[i] for _, i in bottom_quartile if self.entries[i].path not in excluded
+            ]
 
-        if distant_candidates:
-            # Non-security discovery pick — random.choice is fine here.
-            chosen = random.choice(distant_candidates)  # nosec B311
-            logger.debug("Discovery track: %s", chosen.display_name)
-            return self._public_entry(chosen)
+            if distant_candidates:
+                # Non-security discovery pick — random.choice is fine here.
+                chosen = random.choice(distant_candidates)  # nosec B311
+                logger.debug("Discovery track: %s", chosen.display_name)
+                return self._public_entry(chosen)
 
-        # Fallback: any non-excluded track (full library)
-        fallback = [e for e in self.entries if e.path not in excluded]
-        if fallback:
-            # Non-security fallback pick.
-            return self._public_entry(random.choice(fallback))  # nosec B311
+            # Fallback: any non-excluded track (full library)
+            fallback = [e for e in self.entries if e.path not in excluded]
+            if fallback:
+                # Non-security fallback pick.
+                return self._public_entry(random.choice(fallback))  # nosec B311
 
-        raise SimilarityError(
-            "No candidates available for discovery — all tracks are in recently_played."
-        )
+            raise SimilarityError(
+                "No candidates available for discovery — all tracks are in recently_played."
+            )
