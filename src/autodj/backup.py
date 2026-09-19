@@ -739,36 +739,20 @@ def _unlink_quietly(path: Path) -> None:
         path.unlink(missing_ok=True)
 
 
-def _new_backup_recovery(destination: Path) -> Path:
-    """Reserve a same-directory path for the replaced backup archive."""
+def _reserve_sibling(destination: Path, prefix: str) -> Path:
+    """Reserve an empty same-directory path for *destination* under *prefix*."""
 
     descriptor, name = tempfile.mkstemp(
-        prefix=f".{destination.name}.backup-old-",
+        prefix=f".{destination.name}.{prefix}",
         dir=destination.parent,
     )
-    recovery = Path(name)
+    reserved = Path(name)
     try:
         os.close(descriptor)
     except BaseException:
-        _unlink_quietly(recovery)
+        _unlink_quietly(reserved)
         raise
-    return recovery
-
-
-def _new_failed_backup_path(destination: Path) -> Path:
-    """Reserve a same-directory path for a failed new backup archive."""
-
-    descriptor, name = tempfile.mkstemp(
-        prefix=f".{destination.name}.backup-failed-",
-        dir=destination.parent,
-    )
-    failed = Path(name)
-    try:
-        os.close(descriptor)
-    except BaseException:
-        _unlink_quietly(failed)
-        raise
-    return failed
+    return reserved
 
 
 def _cleanup_empty_reservation(path: Path, *, purpose: str) -> str | None:
@@ -800,7 +784,7 @@ def _recover_backup_destination(
         except OSError as exc:
             retained: Path | None = None
             try:
-                retained = _new_failed_backup_path(destination)
+                retained = _reserve_sibling(destination, "backup-failed-")
                 os.replace(destination, retained)
             except OSError as move_exc:
                 cleanup_error = (
@@ -850,7 +834,7 @@ def _publish_backup_destination(state: _BackupPublication, *, force: bool) -> No
         )
         if existing_now:
             state.recovery_expected_identity = _observed_regular_identity(state.destination)
-            state.recovery = _new_backup_recovery(state.destination)
+            state.recovery = _reserve_sibling(state.destination, "backup-old-")
             state.recovery_placeholder_identity = _observed_regular_identity(state.recovery)
             try:
                 os.replace(state.destination, state.recovery)

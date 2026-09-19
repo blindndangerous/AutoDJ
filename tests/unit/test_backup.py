@@ -29,11 +29,10 @@ from autodj.backup import (
     MAX_MANIFEST_BYTES,
     BackupError,
     RestoreResult,
-    _new_backup_recovery,
-    _new_failed_backup_path,
     _open_regular_source,
     _preflight_zip_metadata,
     _required_free_space,
+    _reserve_sibling,
     _revalidate_ancestor_identities,
     _sqlite_snapshot,
     _validate_member_info,
@@ -729,10 +728,10 @@ def test_backup_recovery_cleanup_and_rollback_failure_reports_retained_old_copy(
         assert "manifest.json" in zf.namelist()
 
 
-@pytest.mark.parametrize("factory", [_new_backup_recovery, _new_failed_backup_path])
+@pytest.mark.parametrize("prefix", ["backup-old-", "backup-failed-"])
 def test_backup_reservation_close_failure_cleans_placeholder(
     tmp_path: Path,
-    factory: object,
+    prefix: str,
 ) -> None:
     destination = tmp_path / "backup.zip"
     real_close = os.close
@@ -745,7 +744,7 @@ def test_backup_reservation_close_failure_cleans_placeholder(
         patch("autodj.backup.os.close", side_effect=close_then_fail),
         pytest.raises(OSError, match="close failed"),
     ):
-        factory(destination)  # type: ignore[operator]
+        _reserve_sibling(destination, prefix)
 
     assert not list(tmp_path.glob(".backup.zip.backup-*-*"))
 
