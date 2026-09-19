@@ -1,9 +1,9 @@
 """Additional indexer unit tests targeting previously-uncovered branches.
 
-Focus on the small pure-function helpers (``_apply_text_fields``,
-``_apply_numeric_fields``, ``_apply_beets_row``, ``_resolve_for_runtime``
-remap branch, ``_maybe_migrate_paths``, ``_check_prune_safety`` happy
-paths) and on the error-rollback paths in ``save_index``.
+Focus on the small pure-function helpers (``_apply_beets_row``,
+``_find_beets_row``, ``_resolve_for_runtime`` remap branch,
+``_maybe_migrate_paths``, ``_check_prune_safety`` happy paths) and on
+the error-rollback paths in ``save_index``.
 """
 
 from __future__ import annotations
@@ -19,9 +19,6 @@ from autodj.indexer import (
     IndexEntry,
     PruneSafetyError,
     _apply_beets_row,
-    _apply_key_field,
-    _apply_numeric_fields,
-    _apply_text_fields,
     _check_prune_safety,
     _delete_index_files,
     _find_beets_row,
@@ -52,198 +49,152 @@ def _entry(**kw) -> IndexEntry:
     return IndexEntry(**base)
 
 
+_TEXT_COLS = ("title", "artist", "album", "genre")
+
+
+def _row(**kw) -> dict:
+    """Return a beets row with every selected column present and neutral."""
+    base = {
+        "title": "",
+        "artist": "",
+        "album": "",
+        "genre": "",
+        "bpm": 0,
+        "year": 0,
+        "length": 0,
+        "initial_key": "",
+    }
+    base.update(kw)
+    return base
+
+
+_NO_KEY = (False, lambda _s: None)
+
+
 # ---------------------------------------------------------------------------
-# _apply_text_fields
+# _apply_beets_row — text columns
 # ---------------------------------------------------------------------------
 
 
-class TestApplyTextFields:
+class TestApplyBeetsRowText:
     def test_empty_value_is_skipped(self) -> None:
         e = _entry(title="orig")
-        row = {"title": "", "artist": "", "album": "", "genre": ""}
-        assert _apply_text_fields(e, row, ("title", "artist", "album", "genre")) is False
+        assert _apply_beets_row(e, _row(), _TEXT_COLS, *_NO_KEY) is False
         assert e.title == "orig"
 
     def test_same_value_no_change(self) -> None:
         e = _entry(title="same")
-        row = {"title": "same", "artist": "a", "album": "al", "genre": "g"}
-        assert _apply_text_fields(e, row, ("title", "artist", "album", "genre")) is False
+        row = _row(title="same", artist="a", album="al", genre="g")
+        assert _apply_beets_row(e, row, _TEXT_COLS, *_NO_KEY) is False
 
     def test_changed_value_returns_true(self) -> None:
         e = _entry(title="orig")
-        row = {"title": "new", "artist": "a", "album": "al", "genre": "g"}
-        assert _apply_text_fields(e, row, ("title", "artist", "album", "genre")) is True
+        row = _row(title="new", artist="a", album="al", genre="g")
+        assert _apply_beets_row(e, row, _TEXT_COLS, *_NO_KEY) is True
         assert e.title == "new"
 
     def test_none_value_treated_as_empty(self) -> None:
         e = _entry(title="orig")
-        row = {"title": None, "artist": None, "album": None, "genre": None}
-        assert _apply_text_fields(e, row, ("title", "artist", "album", "genre")) is False
+        row = _row(title=None, artist=None, album=None, genre=None)
+        assert _apply_beets_row(e, row, _TEXT_COLS, *_NO_KEY) is False
         assert e.title == "orig"
 
 
 # ---------------------------------------------------------------------------
-# _apply_numeric_fields
+# _apply_beets_row — numeric columns
 # ---------------------------------------------------------------------------
 
 
-class TestApplyNumericFields:
+class TestApplyBeetsRowNumeric:
     def test_zero_values_skipped(self) -> None:
         e = _entry(bpm=120.0, year=2020, length=180.0)
-        row = {"bpm": 0, "year": 0, "length": 0}
-        assert _apply_numeric_fields(e, row) is False
+        assert _apply_beets_row(e, _row(), (), *_NO_KEY) is False
         assert e.bpm == 120.0
 
     def test_none_values_skipped(self) -> None:
         e = _entry()
-        row = {"bpm": None, "year": None, "length": None}
-        assert _apply_numeric_fields(e, row) is False
+        row = _row(bpm=None, year=None, length=None)
+        assert _apply_beets_row(e, row, (), *_NO_KEY) is False
 
     def test_bpm_change_only(self) -> None:
         e = _entry(bpm=120.0)
-        row = {"bpm": 130.0, "year": 0, "length": 0}
-        assert _apply_numeric_fields(e, row) is True
+        assert _apply_beets_row(e, _row(bpm=130.0), (), *_NO_KEY) is True
         assert e.bpm == 130.0
 
     def test_year_change_only(self) -> None:
         e = _entry(year=2000)
-        row = {"bpm": 0, "year": 2024, "length": 0}
-        assert _apply_numeric_fields(e, row) is True
+        assert _apply_beets_row(e, _row(year=2024), (), *_NO_KEY) is True
         assert e.year == 2024
 
     def test_length_change_only(self) -> None:
         e = _entry(length=180.0)
-        row = {"bpm": 0, "year": 0, "length": 240.5}
-        assert _apply_numeric_fields(e, row) is True
+        assert _apply_beets_row(e, _row(length=240.5), (), *_NO_KEY) is True
         assert e.length == pytest.approx(240.5)
 
     def test_bpm_within_epsilon_no_change(self) -> None:
         e = _entry(bpm=120.0)
-        row = {"bpm": 120.0001, "year": 0, "length": 0}
-        assert _apply_numeric_fields(e, row) is False
+        assert _apply_beets_row(e, _row(bpm=120.0001), (), *_NO_KEY) is False
 
 
 # ---------------------------------------------------------------------------
-# _apply_key_field
+# _apply_beets_row — initial_key column
 # ---------------------------------------------------------------------------
 
 
-class TestApplyKeyField:
+class TestApplyBeetsRowKey:
     def test_unparseable_returns_false(self) -> None:
         e = _entry(key=0, mode=1)
-        row = {"initial_key": "garbage"}
-        assert _apply_key_field(e, row, lambda _s: None) is False
+        row = _row(initial_key="garbage")
+        assert _apply_beets_row(e, row, (), True, lambda _s: None) is False
 
     def test_same_key_no_change(self) -> None:
         e = _entry(key=5, mode=0)
-        row = {"initial_key": "anything"}
-        assert _apply_key_field(e, row, lambda _s: (5, 0)) is False
+        row = _row(initial_key="anything")
+        assert _apply_beets_row(e, row, (), True, lambda _s: (5, 0)) is False
 
     def test_change_returns_true(self) -> None:
         e = _entry(key=0, mode=1)
-        row = {"initial_key": "anything"}
-        assert _apply_key_field(e, row, lambda _s: (7, 0)) is True
+        row = _row(initial_key="anything")
+        assert _apply_beets_row(e, row, (), True, lambda _s: (7, 0)) is True
         assert (e.key, e.mode) == (7, 0)
 
     def test_none_initial_key_handled(self) -> None:
         e = _entry()
-        row = {"initial_key": None}
-        # parser receives "" and may return None or a real value -- exercises str()-coerce branch
-        assert _apply_key_field(e, row, lambda _s: None) is False
+        row = _row(initial_key=None)
+        # Parser receives "" -- exercises the str()-coerce branch.
+        assert _apply_beets_row(e, row, (), True, lambda _s: None) is False
 
 
 # ---------------------------------------------------------------------------
-# _apply_beets_row
+# _apply_beets_row — combined
 # ---------------------------------------------------------------------------
 
 
 class TestApplyBeetsRow:
     def test_no_change_returns_false(self) -> None:
         e = _entry(title="t", bpm=120.0, key=0, mode=1)
-        row = {
-            "title": "",
-            "artist": "",
-            "album": "",
-            "genre": "",
-            "bpm": 0,
-            "year": 0,
-            "length": 0,
-            "initial_key": "",
-        }
-        assert (
-            _apply_beets_row(e, row, ("title", "artist", "album", "genre"), True, lambda _s: None)
-            is False
-        )
+        assert _apply_beets_row(e, _row(), _TEXT_COLS, True, lambda _s: None) is False
 
     def test_text_change_only(self) -> None:
         e = _entry(title="old")
-        row = {
-            "title": "new",
-            "artist": "a",
-            "album": "al",
-            "genre": "g",
-            "bpm": 0,
-            "year": 0,
-            "length": 0,
-            "initial_key": "",
-        }
-        assert (
-            _apply_beets_row(e, row, ("title", "artist", "album", "genre"), False, lambda _s: None)
-            is True
-        )
+        row = _row(title="new", artist="a", album="al", genre="g")
+        assert _apply_beets_row(e, row, _TEXT_COLS, *_NO_KEY) is True
 
     def test_numeric_change_only(self) -> None:
         e = _entry(bpm=100.0)
-        row = {
-            "title": "",
-            "artist": "",
-            "album": "",
-            "genre": "",
-            "bpm": 130.0,
-            "year": 0,
-            "length": 0,
-            "initial_key": "",
-        }
-        assert (
-            _apply_beets_row(e, row, ("title", "artist", "album", "genre"), False, lambda _s: None)
-            is True
-        )
+        assert _apply_beets_row(e, _row(bpm=130.0), _TEXT_COLS, *_NO_KEY) is True
 
     def test_initial_key_change_only(self) -> None:
         e = _entry(key=0, mode=1)
-        row = {
-            "title": "",
-            "artist": "",
-            "album": "",
-            "genre": "",
-            "bpm": 0,
-            "year": 0,
-            "length": 0,
-            "initial_key": "Cm",
-        }
-        assert (
-            _apply_beets_row(e, row, ("title", "artist", "album", "genre"), True, lambda _s: (0, 0))
-            is True
-        )
+        row = _row(initial_key="Cm")
+        assert _apply_beets_row(e, row, _TEXT_COLS, True, lambda _s: (0, 0)) is True
 
     def test_initial_key_disabled_when_column_absent(self) -> None:
         e = _entry(key=0, mode=1)
-        row = {
-            "title": "",
-            "artist": "",
-            "album": "",
-            "genre": "",
-            "bpm": 0,
-            "year": 0,
-            "length": 0,
-        }
-        # has_initial_key=False, so parse_initial_key never called -- no row["initial_key"] key needed
-        assert (
-            _apply_beets_row(
-                e, row, ("title", "artist", "album", "genre"), False, lambda _s: (0, 0)
-            )
-            is False
-        )
+        row = _row()
+        del row["initial_key"]
+        # has_initial_key=False, so row["initial_key"] is never read.
+        assert _apply_beets_row(e, row, _TEXT_COLS, False, lambda _s: (0, 0)) is False
 
 
 # ---------------------------------------------------------------------------

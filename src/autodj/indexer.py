@@ -1146,44 +1146,6 @@ def _find_beets_row(
     return None
 
 
-def _apply_text_fields(entry: IndexEntry, row: dict, text_cols: tuple[str, ...]) -> bool:
-    """Overwrite entry text fields with non-empty beets values; return True on any change."""
-    changed = False
-    for col in text_cols:
-        v = str(row[col] or "")
-        if v and getattr(entry, col) != v:
-            setattr(entry, col, v)
-            changed = True
-    return changed
-
-
-def _apply_numeric_fields(entry: IndexEntry, row: dict) -> bool:
-    """Overwrite entry numeric fields (bpm/year/length) with positive beets values."""
-    changed = False
-    bpm_v = float(row["bpm"] or 0.0)
-    if bpm_v > 0 and abs(entry.bpm - bpm_v) > 1e-3:
-        entry.bpm = bpm_v
-        changed = True
-    year_v = int(row["year"] or 0)
-    if year_v > 0 and entry.year != year_v:
-        entry.year = year_v
-        changed = True
-    length_v = float(row["length"] or 0.0)
-    if length_v > 0 and abs(entry.length - length_v) > 1e-3:
-        entry.length = length_v
-        changed = True
-    return changed
-
-
-def _apply_key_field(entry: IndexEntry, row: dict, parse_initial_key: Any) -> bool:
-    """Overwrite entry key/mode from beets `initial_key`; return True when changed."""
-    parsed = parse_initial_key(str(row["initial_key"] or ""))
-    if parsed is None or (entry.key, entry.mode) == parsed:
-        return False
-    entry.key, entry.mode = parsed
-    return True
-
-
 def _apply_beets_row(
     entry: IndexEntry,
     row: dict,
@@ -1191,12 +1153,45 @@ def _apply_beets_row(
     has_initial_key: bool,
     parse_initial_key: Any,
 ) -> bool:
-    """Apply every overwrite rule for one entry; return True when something changed."""
-    changed = _apply_text_fields(entry, row, text_cols)
-    if _apply_numeric_fields(entry, row):
+    """Apply every overwrite rule for one entry; return True when something changed.
+
+    Text columns win when beets has a non-empty value, numeric columns when
+    beets has a positive one, and key/mode when ``initial_key`` parses to
+    something different.
+
+    Args:
+        entry: Index entry mutated in place.
+        row: Beets row for this entry.
+        text_cols: Text columns to copy across.
+        has_initial_key: Whether the beets schema carries ``initial_key``.
+        parse_initial_key: Callable turning a key string into ``(key, mode)``.
+
+    Returns:
+        True when any field was overwritten.
+    """
+    changed = False
+    for col in text_cols:
+        text = str(row[col] or "")
+        if text and getattr(entry, col) != text:
+            setattr(entry, col, text)
+            changed = True
+    bpm = float(row["bpm"] or 0.0)
+    if bpm > 0 and abs(entry.bpm - bpm) > 1e-3:
+        entry.bpm = bpm
         changed = True
-    if has_initial_key and _apply_key_field(entry, row, parse_initial_key):
+    year = int(row["year"] or 0)
+    if year > 0 and entry.year != year:
+        entry.year = year
         changed = True
+    length = float(row["length"] or 0.0)
+    if length > 0 and abs(entry.length - length) > 1e-3:
+        entry.length = length
+        changed = True
+    if has_initial_key:
+        parsed = parse_initial_key(str(row["initial_key"] or ""))
+        if parsed is not None and (entry.key, entry.mode) != parsed:
+            entry.key, entry.mode = parsed
+            changed = True
     return changed
 
 
