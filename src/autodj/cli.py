@@ -1207,12 +1207,7 @@ def cmd_analyse(
       uv run autodj analyse --name workout
       uv run autodj analyse --limit 100   # smoke-test on a small batch
     """
-    missing = []
-    for name in ("librosa", "soundfile"):
-        try:
-            __import__(name)
-        except ImportError:
-            missing.append(name)
+    missing = [name for name in ("librosa", "soundfile") if not _can_import(name)]
     if missing:
         console.print(
             f"[bold red]Cannot analyse — missing packages: {', '.join(missing)}[/]\n"
