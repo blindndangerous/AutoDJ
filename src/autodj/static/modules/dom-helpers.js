@@ -21,20 +21,17 @@ import { showVisibleStatus } from "./live-region.js";
 let _debugCached = null;
 export function isDebug() {
   if (_debugCached !== null) return _debugCached;
+  // Reading `globalThis.localStorage` throws SecurityError outright when
+  // the browser blocks storage, so `?.` alone is not a guard.  The URL
+  // check runs first, so `?debug=1` short-circuits before storage is
+  // touched at all.
   try {
-    const params = new URLSearchParams(location.search);
-    if (params.get("debug") === "1") { _debugCached = true; return true; }
-  } catch (_) {}
-  try {
-    if (typeof globalThis !== "undefined" &&
-        globalThis.localStorage &&
-        globalThis.localStorage.getItem("autodjDebug") === "1") {
-      _debugCached = true;
-      return true;
-    }
-  } catch (_) {}
-  _debugCached = false;
-  return false;
+    _debugCached = new URLSearchParams(location.search).get("debug") === "1"
+      || globalThis.localStorage?.getItem("autodjDebug") === "1";
+  } catch (_) {
+    _debugCached = false;
+  }
+  return _debugCached;
 }
 
 export function dbg(...args) {
