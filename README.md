@@ -293,12 +293,10 @@ src/autodj/
         index.html
         app.css
     static_dist/        # built output (gitignored; produced by `npm run build`)
-tests/
-    unit/               # pytest unit tests
-    integration/        # pytest integration tests with FastAPI TestClient
-    jsmodules/          # vitest unit tests for the JS modules
-    playwright/         # cross-browser audits against a running server
 ```
+
+The test suites are listed under "Where things live" in
+[Contributing](CONTRIBUTING.md).
 
 ## Development
 
