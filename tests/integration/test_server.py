@@ -1969,7 +1969,7 @@ class TestLibraryEndpoints:
         # Reset shared singleton so other tests don't bleed in.
         from autodj import jobs as _jobs
 
-        _jobs.get_manager.cache_clear()
+        _jobs._MANAGER = None
         resp = client.get("/api/library/job")
         assert resp.status_code == 200
         data = resp.json()
@@ -1985,7 +1985,7 @@ class TestLibraryEndpoints:
     def test_post_library_stop_idle(self, client) -> None:
         from autodj import jobs as _jobs
 
-        _jobs.get_manager.cache_clear()
+        _jobs._MANAGER = None
         resp = client.post("/api/library/stop")
         assert resp.status_code == 200
         assert resp.json() == {"stopped": False}
@@ -1993,7 +1993,7 @@ class TestLibraryEndpoints:
     def test_state_includes_library_job_field(self, client) -> None:
         from autodj import jobs as _jobs
 
-        _jobs.get_manager.cache_clear()
+        _jobs._MANAGER = None
         data = client.get("/api/status").json()
         assert "library_job" in data
         assert data["library_job"]["running"] is False
