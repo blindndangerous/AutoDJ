@@ -19,6 +19,7 @@ import tomllib
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
@@ -181,54 +182,38 @@ KEY_NOTATIONS: tuple[str, ...] = (
 )
 
 
-def _validate_key_notation(value: str) -> str:
-    """Return *value* unchanged if it is a known key notation, else raise.
-
-    Raises:
-        ValueError: If *value* is not in :data:`KEY_NOTATIONS`.
-    """
-    if value not in KEY_NOTATIONS:
-        raise ValueError(
-            f"playback.key_notation must be one of {KEY_NOTATIONS}, got {value!r}",
-        )
-    return value
-
-
 POST_QUEUE_SEED_MODES = ("last_queued", "pre_queue")
 
 
-def _validate_post_queue_seed(value: str) -> str:
-    """Return *value* unchanged if known, else raise.
-
-    ``last_queued`` (default) seeds similarity from the final queued
-    track once the queue empties.  ``pre_queue`` rewinds and seeds
-    from the track that was playing when the queue was first added,
-    so the queue acts as a detour.
-    """
-    if value not in POST_QUEUE_SEED_MODES:
-        raise ValueError(
-            f"playback.post_queue_seed must be one of {POST_QUEUE_SEED_MODES}, got {value!r}",
-        )
-    return value
-
-
-def _validate_transition_mode(value: str) -> str:
-    """Return *value* unchanged if it is a known transition mode, else raise.
+def _one_of(value: str, options: tuple[str, ...], field_name: str) -> str:
+    """Return *value* unchanged if it is one of *options*, else raise.
 
     Args:
-        value: Mode string from ``[playback] transition_mode``.
+        value: Candidate string from configuration or runtime state.
+        options: Allowed values.
+        field_name: Dotted config field name used in the error message.
 
     Returns:
-        The validated mode string.
+        The validated string.
 
     Raises:
-        ValueError: If *value* is not in :data:`TRANSITION_MODES`.
+        ValueError: If *value* is not in *options*.
     """
-    if value not in TRANSITION_MODES:
-        raise ValueError(
-            f"playback.transition_mode must be one of {TRANSITION_MODES}, got {value!r}",
-        )
+    if value not in options:
+        raise ValueError(f"{field_name} must be one of {options}, got {value!r}")
     return value
+
+
+#: ``post_queue_seed`` picks how similarity restarts once a queue empties:
+#: ``last_queued`` (default) seeds from the final queued track, ``pre_queue``
+#: rewinds to the track playing when the queue was added, so it acts as a detour.
+_validate_key_notation = partial(_one_of, options=KEY_NOTATIONS, field_name="playback.key_notation")
+_validate_post_queue_seed = partial(
+    _one_of, options=POST_QUEUE_SEED_MODES, field_name="playback.post_queue_seed"
+)
+_validate_transition_mode = partial(
+    _one_of, options=TRANSITION_MODES, field_name="playback.transition_mode"
+)
 
 
 @dataclass
