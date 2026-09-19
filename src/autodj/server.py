@@ -148,14 +148,16 @@ async def _close_websocket_client(
     return True
 
 
-async def _close_failed_websocket(client: _WebSocketClient, timeout_seconds: float) -> None:
-    """Close and cancel a client whose WebSocket send operation failed."""
+async def _close_and_cancel_websocket(
+    client: _WebSocketClient, timeout_seconds: float, code: int, failure_action: str
+) -> None:
+    """Close a client with *code* and cancel its handler task."""
     try:
         await _close_websocket_client(
             client,
-            code=1013,
+            code=code,
             timeout_seconds=timeout_seconds,
-            failure_action="broadcast",
+            failure_action=failure_action,
         )
     finally:
         task = client.handler_task
@@ -173,27 +175,12 @@ def _websocket_session_is_valid(client: _WebSocketClient) -> bool:
         return False
 
 
-async def _close_expired_websocket(client: _WebSocketClient, timeout_seconds: float) -> None:
-    """Close and cancel a client whose WebSocket session is no longer valid."""
-    try:
-        await _close_websocket_client(
-            client,
-            code=4401,
-            timeout_seconds=timeout_seconds,
-            failure_action="websocket_session",
-        )
-    finally:
-        task = client.handler_task
-        if task is not None and not task.done():
-            task.cancel()
-
-
 async def _send_websocket_payload(
     client: _WebSocketClient, payload: str, timeout_seconds: float
 ) -> bool:
     """Send one payload or close the client after a send or session failure."""
     if not _websocket_session_is_valid(client):
-        await _close_expired_websocket(client, timeout_seconds)
+        await _close_and_cancel_websocket(client, timeout_seconds, 4401, "websocket_session")
         return False
     expired = False
     try:
@@ -206,10 +193,10 @@ async def _send_websocket_payload(
                 else:
                     await client.websocket.send_text(payload)
     except Exception:
-        await _close_failed_websocket(client, timeout_seconds)
+        await _close_and_cancel_websocket(client, timeout_seconds, 1013, "broadcast")
         return False
     if expired:
-        await _close_expired_websocket(client, timeout_seconds)
+        await _close_and_cancel_websocket(client, timeout_seconds, 4401, "websocket_session")
         return False
     return True
 

@@ -12,7 +12,7 @@ from autodj.http_media import OpenedMediaFile
 from autodj.index_manifest import IndexSnapshotToken
 from autodj.server import (
     _close_alac_stream,
-    _close_failed_websocket,
+    _close_and_cancel_websocket,
     _close_websocket_client,
     _is_alac,
     _kill_and_wait,
@@ -65,7 +65,7 @@ async def test_failed_websocket_close_cancels_handler(
     client = _WebSocketClient(websocket=MagicMock(), handler_task=handler)
     monkeypatch.setattr(server, "_close_websocket_client", AsyncMock(return_value=False))
 
-    await _close_failed_websocket(client, 1)
+    await _close_and_cancel_websocket(client, 1, 1013, "broadcast")
 
     handler.cancel.assert_called_once()
 
