@@ -10,6 +10,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- A repository-wide simplification pass removed about 1,900 net lines of
+  duplicated or unused code across the Python backend, the browser frontend,
+  the build scripts and the test suite, with no change in behaviour. Every cut
+  is one commit with its reason in the message.
+- The `dev` extra in `pyproject.toml` is gone; the same packages live in the
+  `dev` dependency group that `uv sync` installs by default. `pip install .[dev]`
+  no longer works, use `uv sync`.
+- `.containerignore` was removed. It was a byte-for-byte copy of `.dockerignore`,
+  which Podman reads when `.containerignore` is absent.
+
 - Setup documentation now includes container-only indexing, native Windows backup and restore,
   and checking out a release before upgrading. It corrects offline and dependency claims and
   explains which model changes require a new index. MuQ remains the default model.

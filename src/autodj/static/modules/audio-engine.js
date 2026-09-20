@@ -651,7 +651,7 @@ const _OUTRO_FRACTION = {
 const _MAX_FX_DURATION_S = 12.0;
 const _ABS_MIN_FX_DURATION_S = 1.0;
 
-// --- FX bar-length table (mirrors autodj.beat_sync.FX_BAR_TABLE in Python) ---
+// --- FX bar-length table (the browser owns this; there is no Python copy) ---
 //
 // Each entry is [bars, snapToDownbeat]:
 //   bars              integer bar count used by _effectDurationFor when
