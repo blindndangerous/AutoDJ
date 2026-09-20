@@ -161,7 +161,7 @@ Rotation modes: random, sequential, and weighted.  Weighted is accepted but ever
 
 ## How well does this work?
 
-It works well when your library has the genre clustering you expect.  Pop tracks pick more pop, jazz picks more jazz, an acoustic intro picks acoustic, a heavy drop picks something else heavy.
+It works well when your library has the genre clustering you expect.  Pop tracks pick more pop, jazz picks more jazz, an acoustic intro picks acoustic, a heavy drop picks something else heavy.  For what the picker actually computes, from the 1040-number track vector to the final softmax draw, see [How AutoDJ picks the next track](docs/track-selection.md).
 
 It does not work well when:
 
