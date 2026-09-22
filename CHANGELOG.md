@@ -33,6 +33,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- MuQ model setup downloaded both safetensors and duplicate PyTorch weights,
+  then rejected the cache because it contained two weight formats. Automatic
+  downloads now keep only the safetensors checkpoint that MuQ loads by default.
 - Music imports failed during MuQ inference with current Transformers, even when
   model loading and doctor checks passed. Adapt MuQ's Conformer configuration and
   final-layer output while retaining current, patched Transformers dependencies.

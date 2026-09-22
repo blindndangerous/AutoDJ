@@ -100,7 +100,13 @@ class ModelLoadError(RuntimeError):
 
 _MARKER_NAME = ".autodj-complete"
 _ETAG_TIMEOUT_SECONDS = 10
-_IGNORE_PATTERNS = ["*.msgpack", "flax_model*", "tf_model*", "rust_model*"]
+_IGNORE_PATTERNS = [
+    "*.msgpack",
+    "flax_model*",
+    "tf_model*",
+    "rust_model*",
+    "pytorch_model.bin",
+]
 _SAFE_SHARD_PATTERNS = {
     ".safetensors": re.compile(r"model-(\d{5})-of-(\d{5})\.safetensors$"),
     ".bin": re.compile(r"pytorch_model-(\d{5})-of-(\d{5})\.bin$"),

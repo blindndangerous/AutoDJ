@@ -148,6 +148,7 @@ class TestDownloadModelIfNeeded:
         marker = json.loads((result / ".autodj-complete").read_text(encoding="utf-8"))
         assert marker == {"repo_id": model_config_auto.name, "revision": "main"}
         assert mock_dl.call_args.kwargs["revision"] == "main"
+        assert "pytorch_model.bin" in mock_dl.call_args.kwargs["ignore_patterns"]
 
     def test_raises_model_load_error_on_download_failure(
         self, model_config_auto: ModelConfig, index_config: IndexConfig, tmp_path: Path
