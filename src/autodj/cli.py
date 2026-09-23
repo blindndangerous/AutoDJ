@@ -795,8 +795,9 @@ def cmd_restore(ctx: click.Context, archive: Path, force: bool) -> None:
     type=int,
     help=(
         "Audio-loader prefetch threads for the embed pass "
-        "(default: min(8, cpu_count())).  Pass 1 for serial.  Passed "
-        "through to the analyse phase too."
+        "(default: 1 to bound full-track analysis memory).  Higher values "
+        "require enough RAM for multiple decoded tracks.  Passed through "
+        "to the analyse phase too."
     ),
 )
 @click.option(
@@ -1175,10 +1176,9 @@ def cmd_enrich(ctx: click.Context, index_name: str | None) -> None:
     default=None,
     type=int,
     help=(
-        "Parallel worker threads (default: min(8, cpu_count)).  Pass 1 "
-        "to force serial.  librosa + soundfile release the GIL during "
-        "BLAS / decoder calls so threads scale near-linearly until the "
-        "NAS I/O ceiling kicks in."
+        "Parallel worker threads (default: 1 to bound full-track analysis "
+        "memory).  Higher values require enough RAM for each concurrent "
+        "decode and librosa transform."
     ),
 )
 @click.pass_context

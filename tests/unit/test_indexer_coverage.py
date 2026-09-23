@@ -67,6 +67,78 @@ def test_load_audio_downmixes_stereo_soundfile_result() -> None:
     assert np.array_equal(audio, np.array([2.0, 6.0], dtype=np.float32))
 
 
+def test_load_audio_decodes_m4a_with_ffmpeg() -> None:
+    stereo = np.array([[1.0, 3.0], [5.0, 7.0]], dtype=np.float32)
+    completed = MagicMock(returncode=0, stderr=b"")
+
+    with (
+        patch.object(indexer.shutil, "which", return_value="/usr/bin/ffmpeg"),
+        patch.object(indexer.subprocess, "run", return_value=completed) as run,
+        patch.object(indexer.sf, "read", return_value=(stereo, 44_100)) as read,
+    ):
+        audio, sample_rate = indexer._load_audio(Path("song.m4a"))
+
+    command = run.call_args.args[0]
+    assert command[0] == "/usr/bin/ffmpeg"
+    assert command[command.index("-i") + 1] == "song.m4a"
+    assert command[-2:] == ["wav", "pipe:1"]
+    assert read.call_args.kwargs == {"dtype": "float32", "always_2d": False}
+    assert sample_rate == 44_100
+    assert np.array_equal(audio, np.array([2.0, 6.0], dtype=np.float32))
+
+
+def test_load_audio_ffmpeg_reports_missing_binary() -> None:
+    with (
+        patch.object(indexer.shutil, "which", return_value=None),
+        pytest.raises(RuntimeError, match=r"FFmpeg is required to decode \.m4a"),
+    ):
+        indexer._load_audio_ffmpeg(Path("song.m4a"))
+
+
+@pytest.mark.parametrize(
+    ("stderr", "message"),
+    [(b"invalid data", "invalid data"), (b"", "unknown error")],
+)
+def test_load_audio_ffmpeg_reports_decoder_failure(stderr: bytes, message: str) -> None:
+    completed = MagicMock(returncode=1, stderr=stderr)
+
+    with (
+        patch.object(indexer.shutil, "which", return_value="/usr/bin/ffmpeg"),
+        patch.object(indexer.subprocess, "run", return_value=completed),
+        pytest.raises(RuntimeError, match=message),
+    ):
+        indexer._load_audio_ffmpeg(Path("song.m4a"))
+
+
+def test_load_audio_falls_back_to_ffmpeg_after_librosa_decoder_error() -> None:
+    error = indexer.sf.LibsndfileError("lost sync")
+    expected = (np.zeros(4, dtype=np.float32), 48_000)
+
+    with (
+        patch.object(indexer.sf, "read", side_effect=error),
+        patch.object(indexer.librosa, "load", side_effect=error),
+        patch.object(indexer, "_load_audio_ffmpeg", return_value=expected) as ffmpeg,
+    ):
+        result = indexer._load_audio(Path("song.flac"))
+
+    assert result == expected
+    ffmpeg.assert_called_once_with(Path("song.flac"))
+
+
+def test_load_audio_requires_soundfile() -> None:
+    with (
+        patch.object(indexer, "sf", None),
+        pytest.raises(RuntimeError, match="soundfile is required for audio indexing"),
+    ):
+        indexer._load_audio(Path("song.flac"))
+
+    with (
+        patch.object(indexer, "sf", None),
+        pytest.raises(RuntimeError, match="soundfile is required to read FFmpeg"),
+    ):
+        indexer._load_audio_ffmpeg(Path("song.m4a"))
+
+
 def test_key_estimation_rejects_ambiguous_chroma() -> None:
     ambiguous = np.array(
         [1.00, 0.99, 1.01, 1.00, 0.98, 1.02, 1.00, 0.99, 1.01, 1.00, 0.98, 1.02],

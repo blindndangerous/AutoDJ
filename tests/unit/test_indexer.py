@@ -2416,7 +2416,7 @@ class TestBackfillDjMeta:
             _backfill_dj_meta(entries, tmp_path, workers=2)
         assert len(stored) == 4
 
-    def test_workers_default_none_uses_cpu_count(self, tmp_path: Path) -> None:
+    def test_workers_default_none_uses_serial_path(self, tmp_path: Path) -> None:
         from autodj.dj_meta import DjMeta
         from autodj.indexer import _backfill_dj_meta
 

@@ -29,6 +29,8 @@ import logging
 import os
 import shutil
 import sqlite3
+import subprocess  # nosec B404 -- FFmpeg uses fixed argv without a shell
+import tempfile
 import time
 import uuid
 import warnings
@@ -70,7 +72,8 @@ from autodj.sqlite_utils import immediate_transaction
 
 # soundfile is an optional extra, so the lighter commands (`enrich`,
 # `prune`, `stats`, `playlist`) work on minimal installs that omit it.
-# _load_audio() guards against None at runtime and falls back to librosa.
+# _load_audio() guards against None at runtime so minimal commands can still
+# import this module without the playback/indexing extra.
 try:
     import soundfile as _sf_mod
 
@@ -644,16 +647,63 @@ def walk_music_dir(music_dir: Path, formats: list[str]) -> list[Path]:
 # ---------------------------------------------------------------------------
 
 # Formats handled natively by soundfile (fast C library, no Python overhead).
-# Everything else falls back to librosa (handles MP3, M4A via audioread).
 _SOUNDFILE_FORMATS = {".flac", ".wav", ".ogg", ".aif", ".aiff"}
+_FFMPEG_FORMATS = {".aac", ".m4a", ".mp4"}
+
+
+def _load_audio_ffmpeg(path: Path) -> tuple[np.ndarray, int]:
+    """Decode *path* through FFmpeg into a mono float32 array."""
+    if sf is None:
+        raise RuntimeError("soundfile is required to read FFmpeg decoder output")
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise RuntimeError(
+            f"FFmpeg is required to decode {path.suffix or 'this audio format'} files"
+        )
+
+    # Spool larger decodes to disk so the WAV byte stream does not duplicate a
+    # full track in RAM alongside the numpy array.  The returned array remains
+    # valid after the temporary file closes.
+    with tempfile.SpooledTemporaryFile(max_size=16 * 1024 * 1024) as decoded:
+        result = subprocess.run(  # nosec B603 -- fixed argv, no shell
+            [
+                ffmpeg,
+                "-v",
+                "error",
+                "-nostdin",
+                "-i",
+                str(path),
+                "-map",
+                "0:a:0",
+                "-ac",
+                "1",
+                "-c:a",
+                "pcm_f32le",
+                "-f",
+                "wav",
+                "pipe:1",
+            ],
+            stdout=decoded,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if result.returncode != 0:
+            detail = result.stderr.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(f"FFmpeg could not decode {path}: {detail or 'unknown error'}")
+        decoded.seek(0)
+        audio, sr = sf.read(decoded, dtype="float32", always_2d=False)
+
+    if audio.ndim == 2:
+        audio = audio.mean(axis=1)
+    return audio, int(sr)
 
 
 def _load_audio(path: Path) -> tuple[np.ndarray, int]:
     """Load an audio file to a mono float32 array at its native sample rate.
 
-    Uses soundfile for FLAC/WAV (significantly faster than librosa for these
-    formats).  Falls back to librosa for MP3, M4A, and other formats that
-    soundfile does not support.
+    Uses soundfile for FLAC/WAV, FFmpeg for MP4-container audio such as ALAC,
+    and librosa for other formats.  FFmpeg is also the final fallback when
+    libsndfile rejects an otherwise valid file.
 
     Args:
         path: Path to the audio file.
@@ -661,7 +711,14 @@ def _load_audio(path: Path) -> tuple[np.ndarray, int]:
     Returns:
         ``(audio, sample_rate)`` where *audio* is a 1-D float32 mono array.
     """
-    if path.suffix.lower() in _SOUNDFILE_FORMATS:
+    if sf is None:
+        raise RuntimeError("soundfile is required for audio indexing")
+
+    suffix = path.suffix.lower()
+    if suffix in _FFMPEG_FORMATS:
+        return _load_audio_ffmpeg(path)
+
+    if suffix in _SOUNDFILE_FORMATS:
         try:
             audio, sr = sf.read(str(path), dtype="float32", always_2d=False)
             if audio.ndim == 2:
@@ -669,17 +726,19 @@ def _load_audio(path: Path) -> tuple[np.ndarray, int]:
             return audio, sr
         except sf.LibsndfileError as exc:
             # libsndfile chokes on some valid FLACs over NFS ("flac decoder lost
-            # sync") and on streams it can't seek through cleanly.  librosa's
-            # audioread/ffmpeg path decodes them fine — fall through.
+            # sync") and on streams it can't seek through cleanly.  Try
+            # librosa, then FFmpeg below.
             logger.debug("soundfile failed on %s, falling back to librosa: %s", path, exc)
-    # Fallback: librosa handles MP3, M4A, and FLACs that libsndfile rejected.
-    # Suppress the noisy "PySoundFile failed. Trying audioread instead." warning
-    # that fires for every MP3/M4A — it's expected and harmless.
+
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=".*PySoundFile failed.*", category=UserWarning)
         warnings.filterwarnings("ignore", message=".*audioread.*", category=UserWarning)
-        audio, sr = librosa.load(str(path), sr=None, mono=True)
-        return audio, int(sr)
+        try:
+            audio, sr = librosa.load(str(path), sr=None, mono=True)
+            return audio, int(sr)
+        except (OSError, sf.LibsndfileError) as exc:
+            logger.debug("librosa failed on %s, falling back to FFmpeg: %s", path, exc)
+            return _load_audio_ffmpeg(path)
 
 
 # ---------------------------------------------------------------------------
@@ -1948,9 +2007,9 @@ def _backfill_dj_meta(
         entries: Indexed track entries (with absolute paths already
             resolved by the caller).
         index_dir: Active index directory — receives ``dj_meta.db``.
-        workers: Thread-pool size.  ``None`` = ``os.cpu_count()`` capped
-            at 8 (more workers thrash NAS I/O without speeding the BLAS
-            stages).  Pass ``1`` to force serial execution.
+        workers: Thread-pool size.  ``None`` uses one worker because long
+            full-track transforms can consume many GiB of RAM.  Higher values
+            require enough memory for each concurrent decode and analysis.
         throttle_ms: Optional idle gap (milliseconds) inserted before each
             new task submission / serial step.  ``0`` = no throttle.
             Use to give NAS spindles cool-down breathing room on long
@@ -1975,11 +2034,9 @@ def _backfill_dj_meta(
         print("[AutoDJ] DJ-meta cache already covers every indexed track.")
         return
     if workers is None:
-        # NAS-friendly default: two concurrent decoders keep one librosa
-        # thread busy in BLAS while the other waits on the next read.
-        # Eight workers (the earlier default) saturated NAS spindles and
-        # caused drive thermal shutdowns on long sustained passes.
-        workers = min(2, max(1, (os.cpu_count() or 2)))
+        # One 76-minute mix can peak above 14 GiB during librosa transforms;
+        # even two concurrent analyses can exhaust a 32 GiB indexing host.
+        workers = 1
     total = len(pending)
     print(
         f"[AutoDJ] Phase: Analysing — DJ-meta backfill for {total} tracks ({workers} workers).",
@@ -2498,7 +2555,10 @@ def _embed_new_tracks(  # pragma: no cover -- threaded indexer pipeline
     new_vectors: list[np.ndarray] = []
 
     if workers is None:
-        workers = min(8, max(1, (os.cpu_count() or 2)))
+        # Full-track spectral analysis can consume several GiB for long mixes
+        # and high-rate masters.  Parallel decoding caused the kernel OOM
+        # killer to terminate otherwise healthy full-library runs.
+        workers = 1
     PREFETCH = max(1, workers)
     throttle_s = max(0.0, throttle_ms) / 1000.0
     track_iter = iter(new_tracks)
@@ -2583,11 +2643,10 @@ def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integr
         wrapper: A loaded :class:`~autodj.model.MuqWrapper` for embedding.
         limit: Maximum number of *new* tracks to embed. ``None`` means no limit.
         force: If ``True``, ignore any existing index and re-embed everything.
-        workers: Audio-loader prefetch pool size.  ``None`` =
-            ``min(8, cpu_count())``.  Pass ``1`` to force serial loading.
-            More workers hide audio-decode latency behind GPU embed work
-            on the indexing host; pin lower on slow NAS-mounted libraries
-            to avoid thrashing the SMB pipe.
+        workers: Audio-loader prefetch pool size.  ``None`` uses one worker
+            because full-track spectral analysis is memory intensive.  More
+            workers can hide decode latency behind GPU embedding, but require
+            enough RAM for multiple decoded tracks and feature matrices.
 
     Raises:
         FileNotFoundError: If the music directory does not exist and no beets
