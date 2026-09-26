@@ -510,6 +510,10 @@ class PlayerState:
             Incremented after each track transition.
         discovery_enabled: Runtime toggle for discovery mode.  Must be ``True``
             AND ``Player._discovery_every`` must be set for discovery to fire.
+        queue_lock: Guards ``queue`` and ``queued_next``.  The web thread
+            edits them while the server-audio thread pops from them, so
+            every read-modify-write of either must hold this lock.
+            Reentrant because some holders call into others.
     """
 
     current_track: IndexEntry | None = None
@@ -534,6 +538,7 @@ class PlayerState:
     is_muted: bool = False
     track_number: int = 0
     discovery_enabled: bool = False
+    queue_lock: threading.RLock = field(default_factory=threading.RLock, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         """Initialise the bounded recently-played deques."""
@@ -1060,18 +1065,19 @@ class Player:
 
     def _pop_user_queue(self) -> IndexEntry | None:
         """Pop a queued / drag-reorder track from state, or return None."""
-        if self._state.queued_next is not None:
-            entry = self._state.queued_next
-            self._state.queued_next = None
-            self._last_pick_mode = "queue"
-            logger.info("Playing queued track: %s", entry.display_name)
-            return entry
-        if self._state.queue:
-            entry = self._state.queue.pop(0)
-            self._last_pick_mode = "queue"
-            logger.info("Playing from queue: %s", entry.display_name)
-            return entry
-        return None
+        with self._state.queue_lock:
+            if self._state.queued_next is not None:
+                entry = self._state.queued_next
+                self._state.queued_next = None
+                source = "Playing queued track: %s"
+            elif self._state.queue:
+                entry = self._state.queue.pop(0)
+                source = "Playing from queue: %s"
+            else:
+                return None
+        self._last_pick_mode = "queue"
+        logger.info(source, entry.display_name)
+        return entry
 
     def _pick_pure_shuffle(self) -> IndexEntry:
         """Random pick from non-recent tracks without violating hard BPM eligibility."""

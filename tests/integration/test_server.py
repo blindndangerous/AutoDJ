@@ -2436,6 +2436,35 @@ class TestQueueEndpoints:
         assert [e.path for e in bridge.player._state.queue] == [e2.path, e1.path, e0.path]
         assert seen_lengths == [3]
 
+    def test_queue_reorder_and_audio_thread_pop_cannot_interleave(self, bridge) -> None:
+        """A pop landing mid-reorder must not be written back and play twice."""
+        from autodj.player import Player
+
+        e0, e1, e2 = bridge.sim.entries[:3]
+        popped: list[object] = []
+        popper: list[threading.Thread] = []
+
+        class _PopsDuringRead(list):
+            def __iter__(self):
+                if not popper:
+                    # The server-audio thread reaches for the head while the
+                    # reorder is reading the queue.
+                    thread = threading.Thread(
+                        target=lambda: popped.append(Player._pop_user_queue(bridge.player))
+                    )
+                    popper.append(thread)
+                    thread.start()
+                    thread.join(timeout=0.2)
+                return super().__iter__()
+
+        bridge.player._state.queue = _PopsDuringRead([e0, e1, e2])
+        bridge.queue_reorder([e2.path, e1.path, e0.path])
+        popper[0].join(timeout=5)
+
+        # The pop waited for the reorder, then took the new head.
+        assert popped == [e2]
+        assert [e.path for e in bridge.player._state.queue] == [e1.path, e0.path]
+
     def test_queue_reorder_drops_unknown(self, bridge) -> None:
         from fastapi.testclient import TestClient
 

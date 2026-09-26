@@ -223,12 +223,16 @@ class PlayerBridge:
         state = p._state
         cur = state.current_track
 
-        if state.queued_next is not None:
-            nxt = state.queued_next
-            state.queued_next = None
-            p._last_pick_mode = "queue"
-        elif state.queue:
-            nxt = state.queue.pop(0)
+        with state.queue_lock:
+            if state.queued_next is not None:
+                queued: IndexEntry | None = state.queued_next
+                state.queued_next = None
+            elif state.queue:
+                queued = state.queue.pop(0)
+            else:
+                queued = None
+        if queued is not None:
+            nxt = queued
             p._last_pick_mode = "queue"
         elif state.next_track is not None:
             nxt = state.next_track
@@ -624,7 +628,7 @@ class PlayerBridge:
         return {
             "current_track": _track_dict(state.current_track),
             "next_track": _track_dict(state.next_track),
-            "queue": [_track_dict(e) for e in state.queue],
+            "queue": [_track_dict(e) for e in self._queue_snapshot()],
             "is_paused": state.is_paused,
             "volume": round(state.volume, 2),
             "is_muted": state.is_muted,
@@ -772,9 +776,10 @@ class PlayerBridge:
         entry = similarity.entry_for_path(path)
         if entry is None:
             return False
-        self._capture_pre_queue_seed()
-        self.player._state.queued_next = entry
-        self._sync_next_for_prefetch()
+        with self.player._state.queue_lock:
+            self._capture_pre_queue_seed()
+            self.player._state.queued_next = entry
+            self._sync_next_for_prefetch()
         if now:
             self.skip()
         return True
@@ -798,7 +803,8 @@ class PlayerBridge:
         if not entries:
             return False
         chosen = _random.choice(entries)  # nosec B311 — non-security
-        self.player._state.queued_next = chosen
+        with self.player._state.queue_lock:
+            self.player._state.queued_next = chosen
         self.skip()
         return True
 
@@ -808,22 +814,30 @@ class PlayerBridge:
         entry = similarity.entry_for_path(path)
         if entry is None:
             return False
-        self._capture_pre_queue_seed()
-        self.player._state.queue.append(entry)
-        self._sync_next_for_prefetch()
+        with self.player._state.queue_lock:
+            self._capture_pre_queue_seed()
+            self.player._state.queue.append(entry)
+            self._sync_next_for_prefetch()
         return True
+
+    def _queue_snapshot(self) -> list[IndexEntry]:
+        """Copy the user queue under its lock for read-only use."""
+        state = self.player._state
+        with state.queue_lock:
+            return list(state.queue)
 
     def queue_remove(self, path: str) -> bool:
         """Remove the first matching path from the queue."""
         state = self.player._state
-        q = state.queue
-        for i, e in enumerate(q):
-            if e.path == path:
-                del q[i]
-                if not q and state.queued_next is None:
-                    state.pre_queue_seed = None
-                self._sync_next_for_prefetch()
-                return True
+        with state.queue_lock:
+            q = state.queue
+            for i, e in enumerate(q):
+                if e.path == path:
+                    del q[i]
+                    if not q and state.queued_next is None:
+                        state.pre_queue_seed = None
+                    self._sync_next_for_prefetch()
+                    return True
         return False
 
     def queue_reorder(self, paths: list[str]) -> bool:
@@ -836,18 +850,19 @@ class PlayerBridge:
         was queued.
         """
         state = self.player._state
-        q = state.queue
-        by_path: dict[str, deque[IndexEntry]] = {}
-        for entry in q:
-            by_path.setdefault(entry.path, deque()).append(entry)
-        new_q = [by_path[p].popleft() for p in paths if by_path.get(p)]
-        # One slice assignment swaps the contents in a single step, so the
-        # server-audio thread popping the head never sees the empty list a
-        # clear() followed by extend() would expose in between.
-        q[:] = new_q
-        if not q and state.queued_next is None:
-            state.pre_queue_seed = None
-        self._sync_next_for_prefetch()
+        # Read, rebuild and write back under the queue lock.  Without it the
+        # server-audio thread could pop the head between the read and the
+        # write, and the write would put the popped entry back so it played
+        # twice.
+        with state.queue_lock:
+            q = state.queue
+            by_path: dict[str, deque[IndexEntry]] = {}
+            for entry in q:
+                by_path.setdefault(entry.path, deque()).append(entry)
+            q[:] = [by_path[p].popleft() for p in paths if by_path.get(p)]
+            if not q and state.queued_next is None:
+                state.pre_queue_seed = None
+            self._sync_next_for_prefetch()
         return True
 
     # ------------------------------------------------------------------
