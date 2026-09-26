@@ -193,6 +193,7 @@ class TestSeek:
         from autodj.player import Player
 
         p = Player.__new__(Player)
+        p.bus = None  # no server mix bus
         p._current_sr = 1000
         p._playback_len = 60_000  # 60 s
         p._playback_pos = [0]
@@ -205,6 +206,7 @@ class TestSeek:
         from autodj.player import Player
 
         p = Player.__new__(Player)
+        p.bus = None  # no server mix bus
         p._current_sr = 1000
         p._playback_len = 60_000
         p._playback_pos = [5_000]
@@ -216,6 +218,7 @@ class TestSeek:
         from autodj.player import Player
 
         p = Player.__new__(Player)
+        p.bus = None  # no server mix bus
         p._current_sr = 1000
         p._playback_len = 60_000
         p._playback_pos = [10_000]  # 10 s

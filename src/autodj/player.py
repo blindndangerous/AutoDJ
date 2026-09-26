@@ -1,9 +1,10 @@
 """Crossfade audio player with keyboard controls and Rich terminal display.
 
-Plays tracks in a continuous loop using two threads: one for playback and
-one for pre-loading the next track.  When the current track has fewer than
-``crossfade_seconds`` remaining, the player mixes in the start of the next
-track with a linear fade (fade-out on the current track, fade-in on the next).
+Server audio plays through a :class:`~autodj.mixbus.MixBus` fed by a
+render-ahead worker thread (:class:`~autodj.render_ahead.RenderAhead`): each
+track is rendered in stereo with the head of the next track crossfaded into
+its tail, and the bus streams the result to the sound card
+(:class:`~autodj.sound_output.SoundDeviceOutput`) in 20 ms blocks.
 
 Keyboard controls (via ``pynput``):
 - ``Space`` — pause / resume
@@ -28,6 +29,7 @@ import logging
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -48,16 +50,17 @@ try:
     sf: Any = _sf_mod
 except ImportError:  # pragma: no cover — minimal install path
     sf = None
-try:
-    import sounddevice as _sd_mod
+# sounddevice is imported only by autodj.sound_output, lazily, when server
+# audio actually opens a device.
 
-    sd: Any = _sd_mod
-except (ImportError, OSError):  # pragma: no cover -- missing PortAudio/minimal host
-    sd = None
-
-from autodj.eq import apply_eq, make_eq_filters, make_eq_state, reset_eq_state
+# Re-exported so existing ``from autodj.player import apply_eq`` (etc.) keep working.
+from autodj.eq import apply_eq as apply_eq
+from autodj.eq import make_eq_filters as make_eq_filters
+from autodj.eq import make_eq_state as make_eq_state
+from autodj.eq import reset_eq_state as reset_eq_state
 from autodj.indexer import IndexEntry
-from autodj.mixbus import RenderedTrack
+from autodj.mixbus import BusEvents, MixBus, RenderedTrack
+from autodj.render_ahead import RenderAhead
 from autodj.stereo import SAMPLE_RATE, envelope, load_stereo, mono, per_channel, to_stereo
 
 if TYPE_CHECKING:
@@ -647,11 +650,6 @@ class Player:
         self._eq_low: float = 1.0
         self._eq_mid: float = 1.0
         self._eq_high: float = 1.0
-        self._eq_filters: dict[str, Any] | None = None
-        # Per-band biquad memory for the active stream, and whether the last
-        # output block actually ran through it.  Both are rebuilt per stream.
-        self._eq_state: dict[str, np.ndarray] | None = None
-        self._eq_engaged: bool = False
         # Energy ramp target for the current pick (None = disabled)
         self._target_energy: float | None = None
         # Mood-arc state.  Lazy-init: set when the user enables the
@@ -738,6 +736,21 @@ class Player:
         self._current_sr: int = _DEFAULT_SR
         # Rich Live display — set inside run(), None between sessions
         self._live: Live | None = None
+        # Server audio: the mix bus that plays rendered tracks (created in
+        # run() when not dry-run, or supplied by the stream station), and a
+        # hook the bridge sets to hear about each track the bus starts.
+        self.bus: MixBus | None = None
+        self.on_track_started: Callable[[IndexEntry], None] | None = None
+        # Render cursor for the bus: the next track to render and how many
+        # of its samples the previous track's overlap already played.
+        self._pending_entry: IndexEntry | None = None
+        self._pending_offset: int = 0
+        # Keeps one rendered track ready so the bus never waits on a render.
+        # (Late-bound so a replaced _next_rendered is honoured.)
+        self._render_ahead = RenderAhead(lambda: self._next_rendered())
+        # The seed, recorded by run() before the bus starts it; its first
+        # _on_track_start must not record it a second time.
+        self._seed_awaiting_start: IndexEntry | None = None
 
     def _build_status(self) -> Panel:
         """Build the Rich Panel rendered in the bottom status bar.
@@ -797,6 +810,7 @@ class Player:
         """Wake and stop the playback loop, including empty-library waiting."""
         self._state.should_stop = True
         self._skip_event.set()
+        self._render_ahead.stop(timeout=0)
 
     def run(self, seed_entry: IndexEntry | None) -> None:  # pragma: no cover -- end-to-end loop
         """Start the playback loop.
@@ -841,16 +855,8 @@ class Player:
         self._ensure_dj_cache()
         self._ensure_external_cues()
 
-        # --- M3U / history: write seed track ---
-        if self._export_m3u:
-            _write_m3u_header(self._export_m3u)
-            _append_m3u_entry(self._export_m3u, seed_entry)
-        if self._history_file:
-            _append_history_entry(self._history_file, seed_entry, datetime.now())
-
+        self._record_seed(seed_entry)
         current = seed_entry
-        self._state.current_track = current
-        self._state.record_played(current)
 
         # Headless / browser-driven mode: skip the Rich Live transport
         # panel entirely.  In headless serve, the only useful output is
@@ -861,10 +867,38 @@ class Player:
             self._run_headless(current)
             return
 
-        # Interactive Rich Live + audio-out loop — not exercised in CI
-        # because it owns the terminal and a real sounddevice.  Headless
-        # variant above is fully tested.
-        with Live(  # pragma: no cover
+        self._run_server_audio(current)
+
+    def _run_server_audio(self, current: IndexEntry) -> None:  # pragma: no cover -- sound card
+        """Play the set from *current* through the sound card on the mix bus.
+
+        A render-ahead worker keeps the next rendered track ready; the bus
+        pulls it when the playing one ends.  Blocks until the player stops.
+        Not exercised in CI because it owns the terminal and a real sound
+        device; its parts (the worker, the bus, the output, the callbacks)
+        are tested on their own.
+        """
+        from autodj.sound_output import SoundDeviceOutput
+
+        self._pending_entry = current
+        self._pending_offset = 0
+        self.bus = MixBus(
+            BusEvents(
+                on_track_start=self._on_track_start,
+                on_position=self._on_position,
+                on_need_track=self._render_ahead.pop,
+            ),
+            eq_gains=lambda: (self._eq_low, self._eq_mid, self._eq_high),
+        )
+        output = SoundDeviceOutput(
+            self._state, getattr(self._cfg.playback, "audio_device", None) or None
+        )
+        self.bus.add_output(output)
+        stop = threading.Event()
+        watcher = threading.Thread(
+            target=self._stop_when_requested, args=(stop,), name="autodj-bus-stop", daemon=True
+        )
+        with Live(
             self._build_status(),
             console=_CONSOLE,
             refresh_per_second=2,
@@ -872,35 +906,127 @@ class Player:
         ) as live:
             self._live = live
             try:
-                while not self._state.should_stop:
-                    self._state.current_track = current
-                    self._skip_event.clear()
-
-                    next_entry = self._pick_next(current)
-                    next_from_queue = self._last_pick_mode == "queue"
-                    self._state.next_track = next_entry
-                    self._refresh_status()
-
-                    self._play_with_crossfade(current, next_entry)
-
+                self._render_ahead.start()
+                deadline = time.monotonic() + 30.0
+                while not self._render_ahead.wait_ready(0.25):
                     if self._state.should_stop:
+                        return
+                    if time.monotonic() >= deadline:
+                        logger.warning("No track rendered within 30 s; starting on silence")
                         break
-
-                    next_entry = self._honour_late_queued_next(next_entry, next_from_queue)
-
-                    self._state.record_played(next_entry)
-                    self._state.track_number += 1
-
-                    # --- M3U / history: write each new track as it starts ---
-                    if self._export_m3u:
-                        _append_m3u_entry(self._export_m3u, next_entry)
-                    if self._history_file:
-                        _append_history_entry(self._history_file, next_entry, datetime.now())
-
-                    self._previous_track = current
-                    current = next_entry
+                self.bus.start_set()
+                watcher.start()
+                self.bus.run(stop)
             finally:
+                self._render_ahead.stop()
+                output.close()
                 self._live = None
+
+    def _record_seed(self, seed: IndexEntry) -> None:
+        """Make *seed* the current track and record it as played.
+
+        Writes the M3U header and the seed's M3U / history lines.  The
+        mix bus later announces the seed through :meth:`_on_track_start`,
+        which skips recording it again.
+        """
+        if self._export_m3u:
+            _write_m3u_header(self._export_m3u)
+            _append_m3u_entry(self._export_m3u, seed)
+        if self._history_file:
+            _append_history_entry(self._history_file, seed, datetime.now())
+        self._state.current_track = seed
+        self._state.record_played(seed)
+        self._seed_awaiting_start = seed
+
+    def _stop_when_requested(self, stop: threading.Event) -> None:
+        """Set *stop* once the player is asked to stop.
+
+        Until then, mirror ``PlayerState.is_paused`` onto the bus every
+        100 ms, so the keyboard and web pause toggles (which only flip that
+        flag) pause server audio too.
+        """
+        while not self._state.should_stop:
+            if self.bus is not None:
+                self.bus.pause(self._state.is_paused)
+            stop.wait(0.1)
+        stop.set()
+
+    def _next_rendered(self) -> RenderedTrack | None:
+        """Pick and render the next track for the mix bus.
+
+        Renders the pending track from the carried offset into a freshly
+        picked successor (a late "play next" wins), then moves the cursor
+        on.  Runs on the render-ahead worker thread.
+
+        Returns:
+            The rendered track, or ``None`` when nothing could be rendered.
+        """
+        for _attempt in range(5):
+            current = self._pending_entry
+            if current is None:
+                return None
+            next_entry = self._pick_next(current)
+            from_queue = self._last_pick_mode == "queue"
+            next_entry = self._honour_late_queued_next(next_entry, from_queue)
+            rendered = self._render_track(current, next_entry, self._pending_offset)
+            self._pending_entry = next_entry
+            self._pending_offset = rendered.next_start_offset if rendered else 0
+            if rendered is not None:
+                return rendered
+        return None
+
+    def reset_render_ahead(self, entry: IndexEntry, offset: int = 0) -> None:
+        """Restart rendering from *entry*, discarding any ready track.
+
+        Used when a new set starts.  Safe while a render is in flight:
+        that render's result is dropped and the cursor moves before the
+        next render begins.
+
+        Args:
+            entry: First track to render.
+            offset: Samples of *entry* to skip (already played).
+        """
+
+        def prepare() -> None:
+            self._pending_entry = entry
+            self._pending_offset = offset
+
+        self._render_ahead.reset(prepare)
+
+    def _on_track_start(self, rendered: RenderedTrack) -> None:
+        """Update state when the mix bus starts playing *rendered*.
+
+        Everything the UI shows about the playing track -- including the
+        transition effect and beat-match ratio -- is set here, from the
+        render, never while that render was being prepared ahead of time.
+        """
+        entry = rendered.entry
+        if entry is not self._state.current_track:
+            self._previous_track = self._state.current_track
+        self._state.current_track = entry
+        self._state.next_track = rendered.next_entry
+        self._current_sr = SAMPLE_RATE
+        self._playback_pos[0] = 0
+        self._playback_len = len(rendered.audio)
+        self._last_transition_fx = rendered.transition_fx
+        self._beatmatch_ratio = rendered.beatmatch_ratio
+        if entry is self._seed_awaiting_start:
+            self._seed_awaiting_start = None  # run() already recorded it
+        else:
+            self._state.record_played(entry)
+            self._state.track_number += 1
+            if self._export_m3u:
+                _append_m3u_entry(self._export_m3u, entry)
+            if self._history_file:
+                _append_history_entry(self._history_file, entry, datetime.now())
+        self.load_lyrics_in_background(entry.path)
+        self._refresh_status()
+        if self.on_track_started is not None:
+            self.on_track_started(entry)
+
+    def _on_position(self, frames: int) -> None:
+        """Record mix-bus progress through the current track."""
+        self._playback_pos[0] = frames
 
     def _run_headless(self, current: IndexEntry) -> None:
         """Track-picking loop with no audio output and no terminal UI.
@@ -1140,8 +1266,8 @@ class Player:
             return self._sim.find_next_for_path(recently_played=deque([current.path]), **search)
 
     # ------------------------------------------------------------------
-    # _play_with_crossfade helpers — broken out so the orchestrator stays
-    # readable.  Each helper owns one phase of the crossfade pipeline.
+    # _render_track helpers — broken out so the renderer stays readable.
+    # Each helper owns one phase of the crossfade pipeline.
     # ------------------------------------------------------------------
 
     def _apply_replaygain(self, audio: np.ndarray, path: str) -> np.ndarray:
@@ -1161,7 +1287,18 @@ class Player:
         return (audio * gain).astype(np.float32)
 
     def _read_lyrics_for_path(self, path: str) -> tuple[list, str]:
-        """Return timestamped/plain lyrics for *path* without mutating state."""
+        """Return ``(timestamped, plain)`` lyrics for *path* without mutating state.
+
+        Resolution order:
+        1. Sibling ``.lrc`` file (timestamped, scrolls in the web UI).
+        2. Beets DB ``lyrics`` field.
+        3. Embedded ID3/Vorbis/MP4 lyric tags (USLT, LYRICS, ©lyr).
+
+        Sources 2 and 3 are parsed as LRC too: taggers routinely put the
+        synced text in the tag rather than a sidecar.  Whichever source
+        wins, timestamped text lands in the first element and untimed text
+        in the second -- never both.
+        """
         from autodj.audio_meta import (
             load_lrc_for,
             parse_embedded_lyrics,
@@ -1213,24 +1350,12 @@ class Player:
         # of leading stamps, and cleans the plain branch instead.
         return parse_embedded_lyrics(plain)
 
-    def _load_lyrics(self, path: str) -> None:
-        """Populate ``_current_lyrics`` + ``_current_lyrics_plain`` for *path*.
+    def _print_lyrics_panel(self) -> None:
+        """Print the current lyrics as a terminal panel, once per track.
 
-        Resolution order:
-        1. Sibling ``.lrc`` file (timestamped, scrolls in the web UI).
-        2. Beets DB ``lyrics`` field.
-        3. Embedded ID3/Vorbis/MP4 lyric tags (USLT, LYRICS, ©lyr).
-
-        Sources 2 and 3 are parsed as LRC too: taggers routinely put the
-        synced text in the tag rather than a sidecar.  Whichever source
-        wins, timestamped text lands in ``_current_lyrics`` and untimed
-        text in ``_current_lyrics_plain`` -- never both.
+        The web UI renders them below the now-playing card; this shows
+        them in the terminal too.  Skipped in dry-run / headless serve mode.
         """
-        self._current_lyrics, self._current_lyrics_plain = self._read_lyrics_for_path(path)
-
-        # CLI: print the lyrics block once per track so the user can see
-        # them in the terminal too (web UI already renders them below the
-        # now-playing card).  Skipped in dry-run / headless serve mode.
         block = self._current_lyrics_plain or "\n".join(
             line.text for line in self._current_lyrics if line.text
         )
@@ -1269,6 +1394,7 @@ class Player:
                 if current is not None and current.path == path:
                     self._current_lyrics = lyrics
                     self._current_lyrics_plain = plain
+                    self._print_lyrics_panel()
             except Exception as exc:  # pragma: no cover -- defensive thread guard
                 logger.debug("Background lyric load failed for %s: %s", path, exc)
             finally:
@@ -1592,14 +1718,17 @@ class Player:
         Clamps to ``[0, length - 0.1 s]`` so the seek can never overshoot
         the buffer and trigger an end-of-track event.  Returns the
         actual clamped position in seconds so the caller can report it.
-        Safe to call from any thread — only mutates ``_playback_pos[0]``
-        which the audio callback reads atomically each frame.
+        Safe to call from any thread: it writes ``_playback_pos[0]`` and,
+        when server audio is playing, moves the mix bus (which takes its
+        own lock).
         """
         sr = max(1, self._current_sr)
         max_samples = max(0, self._playback_len - int(0.1 * sr))
         target_samples = int(max(0.0, seconds) * sr)
         target_samples = min(target_samples, max_samples)
         self._playback_pos[0] = target_samples
+        if self.bus is not None:
+            self.bus.seek(target_samples)
         return target_samples / sr
 
     def seek_relative(self, delta_seconds: float) -> float:
@@ -1618,18 +1747,21 @@ class Player:
         current: IndexEntry,
         next_entry: IndexEntry,
     ) -> np.ndarray:
-        """Pitch-stretch audio_b to match the outgoing BPM (if configured)."""
+        """Pitch-stretch audio_b to match the outgoing BPM (if configured).
+
+        Leaves ``self._beatmatch_ratio`` alone: this runs while rendering
+        ahead, and that attribute describes the *playing* track (see
+        :meth:`_on_track_start`).
+        """
         cfg_dj = self._cfg.djmix
-        self._beatmatch_ratio = 1.0
         if not (cfg_dj.beatmatch and current.bpm > 0 and next_entry.bpm > 0):
             return audio_b
-        audio_b, ratio = beatmatch_incoming(
+        audio_b, _ratio = beatmatch_incoming(
             audio_b,
             bpm_a=current.bpm,
             bpm_b=next_entry.bpm,
             max_stretch=cfg_dj.beatmatch_max_stretch,
         )
-        self._beatmatch_ratio = ratio
         return audio_b
 
     def _skip_incoming_intro_samples(  # pragma: no cover -- audio analysis, exercised by integration
@@ -1658,19 +1790,6 @@ class Player:
         if meta_b.intro_end_s <= 0.5:
             return 0
         return min(int(meta_b.intro_end_s * sr_a), len(audio_b) // 2)
-
-    def _skip_incoming_intro(  # pragma: no cover -- audio analysis, exercised by integration
-        self,
-        audio_b: np.ndarray,
-        sr_a: int,
-        next_entry: IndexEntry,
-    ) -> np.ndarray:
-        """Drop the incoming track's intro so we mix into the first downbeat.
-
-        Thin wrapper over :meth:`_skip_incoming_intro_samples` kept for the
-        dry-run / browser-mode callers that still work on a plain array.
-        """
-        return audio_b[self._skip_incoming_intro_samples(audio_b, sr_a, next_entry) :]
 
     def _apply_outgoing_filter_sweep(
         self,
@@ -1734,8 +1853,16 @@ class Player:
         b_head: np.ndarray,
         sr_a: int,
         crossfade_samples: int,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Apply the configured transition effect; return (a_trimmed, b_head, extra)."""
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, str]:
+        """Apply the configured transition effect.
+
+        Returns the effect's name instead of storing it, because this runs
+        while rendering ahead and ``self._last_transition_fx`` describes
+        the playing track.
+
+        Returns:
+            ``(a_trimmed, b_head, extra_layer, effect_name)``.
+        """
         from autodj.transitions import TransitionFx, apply_transition, pick_effect
 
         extra_shape = (0,) if audio_a_trimmed.ndim == 1 else (0, 2)
@@ -1746,9 +1873,8 @@ class Player:
         except ValueError:
             fx_mode = TransitionFx.NONE
         chosen_fx = pick_effect(fx_mode)
-        self._last_transition_fx = chosen_fx.value
         if chosen_fx == TransitionFx.NONE:
-            return audio_a_trimmed, b_head, extra_layer
+            return audio_a_trimmed, b_head, extra_layer, chosen_fx.value
 
         min_seconds = self._MIN_FX_DURATION_S.get(chosen_fx.value, 0.0)
         if min_seconds > 0:
@@ -1777,7 +1903,7 @@ class Player:
         ).astype(np.float32)
         if len(head_fx) >= crossfade_samples:
             b_head = head_fx[:crossfade_samples].astype(np.float32)
-        return audio_a_trimmed, b_head, extra_layer
+        return audio_a_trimmed, b_head, extra_layer, chosen_fx.value
 
     def _mix_overlap(  # pragma: no cover -- crossfade engine, exercised by integration runs
         self,
@@ -1845,7 +1971,8 @@ class Player:
         audio_a_full = self._apply_replaygain(audio_a_full, current.path)
         if start_offset >= len(audio_a_full):
             return None
-        self._load_lyrics(current.path)
+        # No lyrics here: this runs ahead of time, and the lyrics shown must
+        # be the playing track's (_on_track_start loads them).
         self._ensure_dj_cache()
         meta_a = self._outgoing_meta(audio_a_full, SAMPLE_RATE, current.path)
         audio_a = audio_a_full[start_offset:]
@@ -1867,7 +1994,7 @@ class Player:
         audio_b = self._maybe_beatmatch(audio_b_loaded, current, next_entry)
         post_stretch_len = len(audio_b)
         # Measure the actual stretch from the buffer lengths rather than
-        # trusting self._beatmatch_ratio -- beatmatch_incoming can report a
+        # trusting the reported ratio -- beatmatch_incoming can report a
         # non-1.0 ratio even when it left the audio untouched (stretch below
         # its no-op threshold, or a failed time-stretch falling back to the
         # original).  Sample counts below are in audio_b's (possibly
@@ -1896,7 +2023,7 @@ class Player:
             )
         b_head = audio_b[:crossfade]
         a_trimmed = self._apply_outgoing_filter_sweep(a_trimmed, SAMPLE_RATE, crossfade)
-        a_trimmed, b_head, extra = self._apply_transition_effect(
+        a_trimmed, b_head, extra, fx_name = self._apply_transition_effect(
             a_trimmed, audio_b, b_head, SAMPLE_RATE, crossfade
         )
         mixed = self._mix_overlap(a_trimmed, b_head, crossfade, SAMPLE_RATE, extra)
@@ -1905,181 +2032,9 @@ class Player:
             to_stereo(mixed),
             next_entry,
             _to_unstretched(intro + crossfade),
-            str(self._last_transition_fx),
+            fx_name,
             measured_ratio,
         )
-
-    def _play_with_crossfade(  # pragma: no cover -- end-to-end audio path
-        self,
-        current: IndexEntry,
-        next_entry: IndexEntry,
-    ) -> None:
-        """Load, crossfade, and play *current* into *next_entry*.
-
-        Blocks until the track finishes (or a skip is requested).  Heavy
-        lifting happens in the helper methods above; this method is the
-        orchestrator that wires the phases together.
-
-        Args:
-            current: The outgoing track.
-            next_entry: The incoming track (used only for the crossfade tail).
-        """
-        try:
-            audio_a, sr_a = load_audio(str(current.path))
-        except (OSError, ValueError, RuntimeError) as exc:
-            logger.error("Cannot load %s: %s — skipping.", current.path, exc)
-            return
-
-        audio_a = self._apply_replaygain(audio_a, current.path)
-        self._load_lyrics(current.path)
-        self._ensure_dj_cache()
-        meta_a = self._outgoing_meta(audio_a, sr_a, current.path)
-
-        # Mixxx-style transition_mode resolution.  Derives the effective
-        # crossfade length from the mode + DJ-meta markers; falls back to
-        # cfg.playback.crossfade_seconds when markers are missing.
-        meta_b = self._peek_incoming_meta(next_entry)
-        eff_crossfade_s = self._effective_crossfade_seconds(
-            meta_a,
-            meta_b,
-            current.length,
-        )
-        crossfade_samples = int(eff_crossfade_s * sr_a)
-        a_crossfade_start = self._crossfade_start_in_a(
-            audio_a,
-            sr_a,
-            meta_a,
-            crossfade_samples,
-        )
-
-        # _load_incoming now always returns stereo (it backs the stereo
-        # _render_track path too); this whole method is still mono end to
-        # end, so drop back to mono right after loading.
-        audio_b = mono(self._load_incoming(next_entry, sr_a, crossfade_samples))
-        audio_b = self._maybe_beatmatch(audio_b, current, next_entry)
-        audio_b = self._skip_incoming_intro(audio_b, sr_a, next_entry)
-
-        # Trim audio_a so its tail begins at a_crossfade_start.
-        if a_crossfade_start + crossfade_samples > len(audio_a):
-            crossfade_samples = max(0, len(audio_a) - a_crossfade_start)
-        audio_a_trimmed = audio_a[: a_crossfade_start + crossfade_samples]
-
-        if crossfade_samples > 0 and len(audio_b) >= crossfade_samples:
-            b_head = audio_b[:crossfade_samples]
-            audio_a_trimmed = self._apply_outgoing_filter_sweep(
-                audio_a_trimmed,
-                sr_a,
-                crossfade_samples,
-            )
-            audio_a_trimmed, b_head, extra_layer = self._apply_transition_effect(
-                audio_a_trimmed,
-                audio_b,
-                b_head,
-                sr_a,
-                crossfade_samples,
-            )
-            mixed = self._mix_overlap(
-                audio_a_trimmed,
-                b_head,
-                crossfade_samples,
-                sr_a,
-                extra_layer,
-            )
-        else:
-            mixed = audio_a_trimmed
-
-        self._stream_audio(mixed, sr_a)
-
-    def _stream_audio(
-        self, audio: np.ndarray, sr: int
-    ) -> None:  # pragma: no cover -- sounddevice hardware
-        """Stream a mono float32 audio array through sounddevice.
-
-        Blocks until playback finishes, is skipped, or stopped.
-        Volume, mute, and seek are applied in real time via shared state.
-
-        Args:
-            audio: Mono float32 audio array.
-            sr: Sample rate of *audio* in Hz.
-        """
-        self._current_sr = sr
-        self._playback_len = len(audio)
-        pos = self._playback_pos
-        pos[0] = 0
-
-        # Build EQ filters for this sample rate (cheap; cached per-stream).
-        # Skipped entirely when all 3 bands are at unity (the common case).
-        # Filter memory is per-stream: a new track starts from silence.
-        self._eq_filters = make_eq_filters(sr)
-        self._eq_state = make_eq_state(self._eq_filters)
-        self._eq_engaged = False
-
-        finished = threading.Event()
-
-        def callback(outdata, frames, _time_info, status) -> None:  # type: ignore[no-untyped-def]
-            if self._state.is_paused or self._skip_event.is_set() or self._state.should_stop:
-                outdata[:] = 0
-                if self._skip_event.is_set() or self._state.should_stop:
-                    raise sd.CallbackStop()
-                return
-
-            chunk = audio[pos[0] : pos[0] + frames]
-
-            # 3-band EQ — skip when all bands at unity (no allocation, no filtering)
-            engaged = (
-                self._eq_filters is not None
-                and (self._eq_low != 1.0 or self._eq_mid != 1.0 or self._eq_high != 1.0)
-                and len(chunk) > 0
-            )
-            if engaged and not self._eq_engaged:
-                # Coming back from bypass: the memory is from wherever the EQ
-                # was last active, which is not where playback is now.
-                reset_eq_state(self._eq_state)
-            self._eq_engaged = engaged
-            if engaged:
-                chunk = apply_eq(
-                    chunk,
-                    self._eq_filters,
-                    self._eq_low,
-                    self._eq_mid,
-                    self._eq_high,
-                    state=self._eq_state,
-                )
-
-            if len(chunk) < frames:
-                outdata[: len(chunk), 0] = chunk
-                outdata[len(chunk) :] = 0
-            else:
-                outdata[:, 0] = chunk
-
-            # Apply volume / mute
-            if self._state.is_muted:
-                outdata[:] = 0
-            elif self._state.volume < 1.0:
-                outdata[:] *= self._state.volume
-
-            pos[0] += frames
-            if len(chunk) < frames:
-                raise sd.CallbackStop()
-
-        # Resolve the configured output device.  None = system default.
-        device = getattr(self._cfg.playback, "audio_device", None) or None
-        try:
-            with sd.OutputStream(
-                samplerate=sr,
-                channels=1,
-                dtype="float32",
-                callback=callback,
-                finished_callback=finished.set,
-                device=device,
-            ):
-                while not finished.is_set():
-                    if self._state.is_paused:
-                        time.sleep(0.05)
-                    else:
-                        finished.wait(timeout=0.1)
-        except Exception as exc:
-            logger.error("Playback error: %s", exc)
 
     def _setup_keyboard(self) -> None:  # pragma: no cover -- pynput hardware listener
         """Start the pynput keyboard listener in a background thread."""
@@ -2098,7 +2053,10 @@ class Player:
 
                 elif char == "n":
                     _CONSOLE.print("  [dim]→ Skip[/dim]")
-                    self._skip_event.set()
+                    if self.bus is not None:
+                        self.bus.skip()
+                    else:
+                        self._skip_event.set()
 
                 elif char == "q":
                     _CONSOLE.print("  [dim]Quit[/dim]")
@@ -2106,16 +2064,11 @@ class Player:
                     self._skip_event.set()
 
                 elif key == keyboard.Key.right:
-                    seek = _SEEK_SECONDS * self._current_sr
-                    self._playback_pos[0] = min(
-                        self._playback_len - 1,
-                        self._playback_pos[0] + seek,
-                    )
+                    self.seek_relative(_SEEK_SECONDS)
                     _CONSOLE.print(f"  [dim]Seek +{_SEEK_SECONDS}s[/dim]")
 
                 elif key == keyboard.Key.left:
-                    seek = _SEEK_SECONDS * self._current_sr
-                    self._playback_pos[0] = max(0, self._playback_pos[0] - seek)
+                    self.seek_relative(-_SEEK_SECONDS)
                     _CONSOLE.print(f"  [dim]Seek -{_SEEK_SECONDS}s[/dim]")
 
                 elif key == keyboard.Key.up:

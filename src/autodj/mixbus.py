@@ -135,7 +135,7 @@ class MixBus:
 
     Thread-safety: in production, :meth:`run` is the only caller of
     :meth:`render_block`, and it runs on a single dedicated thread. The
-    control methods (:meth:`pause`, :meth:`skip`, :meth:`play_liner`,
+    control methods (:meth:`pause`, :meth:`skip`, :meth:`seek`, :meth:`play_liner`,
     :meth:`start_set`, :meth:`stop_set`, :meth:`add_output`,
     :meth:`remove_output`) are safe to call from other threads; they take
     a plain (non-reentrant) internal lock shared with ``render_block``.
@@ -209,6 +209,18 @@ class MixBus:
         with self._lock:
             if self._current is not None and self._skip_fade == 0:
                 self._skip_fade = _SKIP_FADE_FRAMES
+
+    def seek(self, frames: int) -> None:
+        """Jump to *frames* into the current track.
+
+        Clamped to the track, stopping one frame short of its end so a
+        seek never ends the track by itself.  Ignored when nothing is
+        playing.
+        """
+        with self._lock:
+            if self._current is not None:
+                last = len(self._current.audio) - 1
+                self._pos = max(0, min(int(frames), last))
 
     def play_liner(self, audio: np.ndarray, duck_db: float) -> None:
         """Mix *audio* over the music, ducking the music by *duck_db* dB.

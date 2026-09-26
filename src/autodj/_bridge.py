@@ -164,11 +164,14 @@ class PlayerBridge:
         In headless / browser-driven mode (``player._dry_run``) the
         bridge mutates state synchronously via :meth:`advance_now` so
         callers (REST endpoints, WS clients) can read the new state
-        on the same request.  In server-audio mode the audio loop owns
-        track sequencing, so we just signal it.
+        on the same request.  In server-audio mode the mix bus owns
+        track sequencing, so we ask it to fade out and move on (or, with
+        no bus, signal the audio loop).
         """
         if getattr(self.player, "_dry_run", False):
             self.advance_now()
+        elif getattr(self.player, "bus", None) is not None:
+            self.player.bus.skip()
         else:
             self.player._skip_event.set()
 

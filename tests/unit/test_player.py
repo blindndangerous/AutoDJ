@@ -66,8 +66,9 @@ class Finder(importlib.abc.MetaPathFinder):
         return None
 
 sys.meta_path.insert(0, Finder())
-import autodj.player as player
-assert player.sd is None
+import autodj.player
+import autodj.sound_output
+assert 'sounddevice' not in sys.modules
 """
     env = {**os.environ, "PYTHONPATH": str(source_root)}
     result = subprocess.run([sys.executable, "-c", probe], env=env, capture_output=True, text=True)
@@ -830,21 +831,17 @@ class TestPlayerPickNext:
 
 
 class TestLoadLyricsToggle:
-    """Player._load_lyrics honours the show_lyrics toggle."""
+    """Lyric loading honours the show_lyrics toggle."""
 
     def _make(self):
         return Player(_make_cfg_mock(), _make_sim_index(2))
 
-    def test_show_lyrics_off_clears_buffers(self, tmp_path) -> None:
-        from autodj.audio_meta import LyricLine
-
+    def test_show_lyrics_off_reads_nothing(self, tmp_path) -> None:
         player = self._make()
         player._cfg.playback.show_lyrics = False
-        player._current_lyrics = [LyricLine(0.0, "x")]
-        player._current_lyrics_plain = "stuff"
-        player._load_lyrics(str(tmp_path / "no_such.flac"))
-        assert player._current_lyrics == []
-        assert player._current_lyrics_plain == ""
+        with patch("autodj.audio_meta.load_lrc_for") as load_lrc:
+            assert player._read_lyrics_for_path(str(tmp_path / "no_such.flac")) == ([], "")
+        load_lrc.assert_not_called()
 
     def test_show_lyrics_on_attempts_load(self, tmp_path) -> None:
         # Path doesn't exist → both LRC and plain reads return empty.
@@ -852,9 +849,7 @@ class TestLoadLyricsToggle:
         player = self._make()
         player._cfg.playback.show_lyrics = True
         player._cfg.library.beets_db = None
-        player._load_lyrics(str(tmp_path / "no_such.flac"))
-        assert player._current_lyrics == []
-        assert player._current_lyrics_plain == ""
+        assert player._read_lyrics_for_path(str(tmp_path / "no_such.flac")) == ([], "")
 
     def test_background_loader_publishes_for_current_track(self) -> None:
         import threading
@@ -1175,169 +1170,6 @@ class TestRunHeadlessSeedHooks:
         pick_next.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# _stream_audio
-# ---------------------------------------------------------------------------
-
-
-class _FakeOutputStream:
-    """Fake sd.OutputStream that immediately calls finished_callback on enter."""
-
-    def __init__(self, *args, finished_callback=None, **kwargs):
-        self._fc = finished_callback
-
-    def __enter__(self):
-        if self._fc:
-            self._fc()
-        return self
-
-    def __exit__(self, *args):
-        return False
-
-
-class _ErrorOutputStream:
-    """Fake sd.OutputStream that raises on enter (tests error handling path)."""
-
-    def __init__(self, *args, **kwargs):
-        pass
-
-    def __enter__(self):
-        raise RuntimeError("audio device unavailable")
-
-    def __exit__(self, *args):
-        return False
-
-
-class TestStreamAudio:
-    def _make_player(self) -> Player:
-        return Player(_make_cfg_mock(), _make_sim_index())
-
-    def test_stream_audio_completes_normally(self) -> None:
-        player = self._make_player()
-        audio = np.ones(44100, dtype=np.float32)
-        with patch("sounddevice.OutputStream", _FakeOutputStream):
-            player._stream_audio(audio, 44100)
-        # Should not hang or raise
-
-    def test_stream_audio_sets_current_sr(self) -> None:
-        player = self._make_player()
-        audio = np.ones(22050, dtype=np.float32)
-        with patch("sounddevice.OutputStream", _FakeOutputStream):
-            player._stream_audio(audio, 22050)
-        assert player._current_sr == 22050
-
-    def test_stream_audio_resets_playback_pos(self) -> None:
-        player = self._make_player()
-        player._playback_pos[0] = 99999
-        audio = np.ones(44100, dtype=np.float32)
-        with patch("sounddevice.OutputStream", _FakeOutputStream):
-            player._stream_audio(audio, 44100)
-        assert player._playback_pos[0] == 0
-
-    def test_stream_audio_error_caught(self) -> None:
-        """An OutputStream failure should be caught and not propagate."""
-        player = self._make_player()
-        audio = np.ones(100, dtype=np.float32)
-        with patch("sounddevice.OutputStream", _ErrorOutputStream):
-            player._stream_audio(audio, 44100)  # should not raise
-
-    def test_stream_audio_skip_event_stops_playback(self) -> None:
-        """Setting skip_event before streaming causes immediate exit via callback."""
-        player = self._make_player()
-        player._skip_event.set()
-        audio = np.ones(44100, dtype=np.float32)
-        with patch("sounddevice.OutputStream", _FakeOutputStream):
-            player._stream_audio(audio, 44100)
-
-
-class _CapturingStream:
-    """Capture the callback so tests can drive it manually."""
-
-    captured_callback = None
-    captured_finished_callback = None
-
-    def __init__(self, *args, callback=None, finished_callback=None, **kwargs):
-        type(self).captured_callback = callback
-        type(self).captured_finished_callback = finished_callback
-
-    def __enter__(self):
-        # Fire finished_callback so the wait loop exits cleanly
-        if type(self).captured_finished_callback:
-            type(self).captured_finished_callback()
-        return self
-
-    def __exit__(self, *args):
-        return False
-
-
-class TestStreamAudioCallback:
-    def _make_player(self) -> Player:
-        return Player(_make_cfg_mock(), _make_sim_index())
-
-    def test_callback_writes_audio_to_outdata(self) -> None:
-        import sounddevice as sd
-
-        player = self._make_player()
-        player._eq_filters = None
-        audio = np.linspace(-1.0, 1.0, 22050, dtype=np.float32)
-        with patch("sounddevice.OutputStream", _CapturingStream):
-            player._stream_audio(audio, 22050)
-
-        cb = _CapturingStream.captured_callback
-        assert cb is not None
-        outdata = np.zeros((1024, 1), dtype=np.float32)
-        try:
-            cb(outdata, 1024, None, sd.CallbackFlags() if hasattr(sd, "CallbackFlags") else None)
-        except TypeError:
-            cb(outdata, 1024, None, None)
-        assert outdata[:, 0].max() != 0.0
-
-    def test_callback_silences_when_muted(self) -> None:
-        player = self._make_player()
-        player._eq_filters = None
-        player._state.is_muted = True
-        audio = np.ones(22050, dtype=np.float32) * 0.5
-        with patch("sounddevice.OutputStream", _CapturingStream):
-            player._stream_audio(audio, 22050)
-
-        cb = _CapturingStream.captured_callback
-        outdata = np.zeros((1024, 1), dtype=np.float32)
-        try:
-            cb(outdata, 1024, None, None)
-        except TypeError:
-            cb(outdata, 1024, None, 0)
-        np.testing.assert_array_equal(outdata, 0)
-
-    def test_callback_attenuates_volume(self) -> None:
-        player = self._make_player()
-        player._eq_filters = None
-        player._state.volume = 0.5
-        audio = np.ones(22050, dtype=np.float32)
-        with patch("sounddevice.OutputStream", _CapturingStream):
-            player._stream_audio(audio, 22050)
-        cb = _CapturingStream.captured_callback
-        outdata = np.zeros((1024, 1), dtype=np.float32)
-        try:
-            cb(outdata, 1024, None, None)
-        except TypeError:
-            cb(outdata, 1024, None, 0)
-        np.testing.assert_allclose(outdata[:, 0], 0.5, atol=1e-6)
-
-    def test_callback_pause_writes_silence(self) -> None:
-        player = self._make_player()
-        player._state.is_paused = True
-        audio = np.ones(22050, dtype=np.float32)
-        with patch("sounddevice.OutputStream", _CapturingStream):
-            player._stream_audio(audio, 22050)
-        cb = _CapturingStream.captured_callback
-        outdata = np.ones((1024, 1), dtype=np.float32)
-        try:
-            cb(outdata, 1024, None, None)
-        except TypeError:
-            cb(outdata, 1024, None, 0)
-        np.testing.assert_array_equal(outdata, 0)
-
-
 class TestKeyboardHandler:
     """Exercise the on_press inner closure of _setup_keyboard via a mock keyboard module."""
 
@@ -1391,6 +1223,18 @@ class TestKeyboardHandler:
             char_key.char = "n"
             captured["on_press"](char_key)
             assert player._skip_event.is_set()
+
+    def test_n_skips_through_the_bus_when_playing(self) -> None:
+        captured, _kb_mock, sysmod = self._setup()
+        with sysmod:
+            player = Player(_make_cfg_mock(), _make_sim_index())
+            player.bus = MagicMock()
+            player._setup_keyboard()
+            char_key = MagicMock()
+            char_key.char = "n"
+            captured["on_press"](char_key)
+            player.bus.skip.assert_called_once_with()
+            assert not player._skip_event.is_set()
 
     def test_q_stops(self) -> None:
         captured, _kb_mock, sysmod = self._setup()
@@ -1471,89 +1315,55 @@ class TestKeyboardHandler:
 
 
 # ---------------------------------------------------------------------------
-# _play_with_crossfade
+# _render_track: loading edge cases
 # ---------------------------------------------------------------------------
 
 
-class TestPlayWithCrossfade:
+class TestRenderTrackLoading:
     def _make_player(self) -> Player:
         cfg = _make_cfg_mock()
         cfg.playback.crossfade_seconds = 2.0
+        cfg.index.active_dir = MagicMock()
         return Player(cfg, _make_sim_index())
 
-    def test_streams_audio_for_normal_tracks(self) -> None:
+    def test_renders_normal_tracks_with_an_overlap(self) -> None:
         player = self._make_player()
-        current = player._sim.entries[0]
-        nxt = player._sim.entries[1]
-        # 3 s audio at 44100 — long enough for a 2 s crossfade
-        fake_audio = np.ones((3 * 44100), dtype=np.float32)
-
-        with (
-            patch("autodj.player.load_audio", return_value=(fake_audio, 44100)),
-            patch.object(player, "_stream_audio") as mock_stream,
-        ):
-            player._play_with_crossfade(current, nxt)
-
-        mock_stream.assert_called_once()
-
-    def test_load_failure_on_current_skips_silently(self) -> None:
-        """If the current track can't be loaded, _play_with_crossfade returns without playing."""
-        player = self._make_player()
-        current = player._sim.entries[0]
-        nxt = player._sim.entries[1]
-
-        with (
-            patch("autodj.player.load_audio", side_effect=OSError("not found")),
-            patch.object(player, "_stream_audio") as mock_stream,
-        ):
-            player._play_with_crossfade(current, nxt)
-
-        mock_stream.assert_not_called()
+        current, nxt = player._sim.entries[0], player._sim.entries[1]
+        fake_audio = np.ones((3 * 44100, 2), dtype=np.float32)
+        with patch("autodj.player.load_stereo", return_value=fake_audio):
+            rendered = player._render_track(current, nxt, 0)
+        assert rendered is not None
+        assert rendered.next_entry is nxt
+        assert rendered.next_start_offset == 2 * 44100
 
     def test_load_failure_on_next_uses_silence(self) -> None:
-        """If next track can't be loaded, crossfade uses a silence buffer."""
+        """If the next track can't be loaded, the overlap mixes into silence."""
         player = self._make_player()
-        current = player._sim.entries[0]
-        nxt = player._sim.entries[1]
-        good_audio = np.ones((3 * 44100), dtype=np.float32)
+        current, nxt = player._sim.entries[0], player._sim.entries[1]
+        good_audio = np.ones((3 * 44100, 2), dtype=np.float32)
+        loads = iter([good_audio])
 
-        call_count = [0]
+        def fake_load(_path, _sr=44100):
+            try:
+                return next(loads)
+            except StopIteration:
+                raise OSError("next track missing") from None
 
-        def fake_load(path, **kw):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                return good_audio, 44100
-            raise OSError("next track missing")
-
-        with (
-            patch("autodj.player.load_audio", side_effect=fake_load),
-            patch.object(player, "_stream_audio") as mock_stream,
-        ):
-            player._play_with_crossfade(current, nxt)
-
-        mock_stream.assert_called_once()
+        with patch("autodj.player.load_stereo", side_effect=fake_load):
+            rendered = player._render_track(current, nxt, 0)
+        assert rendered is not None
+        assert rendered.audio.shape == (3 * 44100, 2)
 
     def test_short_next_track_skips_crossfade(self) -> None:
-        """When audio_b is shorter than crossfade_samples, falls back to audio_a alone."""
+        """When the next track is shorter than the crossfade, the render is a plain cut."""
         player = self._make_player()
-        current = player._sim.entries[0]
-        nxt = player._sim.entries[1]
-        long_audio = np.ones((3 * 44100), dtype=np.float32)
-        short_audio = np.ones(100, dtype=np.float32)  # far shorter than 2 s crossfade
-
-        call_count = [0]
-
-        def fake_load(path, **kw):
-            call_count[0] += 1
-            return (long_audio, 44100) if call_count[0] == 1 else (short_audio, 44100)
-
-        with (
-            patch("autodj.player.load_audio", side_effect=fake_load),
-            patch.object(player, "_stream_audio") as mock_stream,
-        ):
-            player._play_with_crossfade(current, nxt)
-
-        mock_stream.assert_called_once()
+        current, nxt = player._sim.entries[0], player._sim.entries[1]
+        loads = iter([np.ones((3 * 44100, 2), np.float32), np.ones((100, 2), np.float32)])
+        with patch("autodj.player.load_stereo", side_effect=lambda *_a: next(loads)):
+            rendered = player._render_track(current, nxt, 0)
+        assert rendered is not None
+        assert rendered.transition_fx == ""
+        assert rendered.next_start_offset == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1847,11 +1657,6 @@ class TestEq:
         fresh = apply_eq(audio, sos, 1.6, 0.4, 1.2, state=make_eq_state(sos))
         np.testing.assert_allclose(after_reset, fresh, atol=1e-6)
 
-    def test_player_starts_with_no_eq_memory(self) -> None:
-        player = Player(_make_cfg_mock(), _make_sim_index())
-        assert player._eq_state is None
-        assert player._eq_engaged is False
-
     def test_stateless_blocks_still_differ_from_one_shot(self) -> None:
         sos = make_eq_filters(44100)
         audio = _sine_audio(0.2)
@@ -1953,13 +1758,13 @@ class TestRecordPlayedExtended:
 
 
 # ---------------------------------------------------------------------------
-# _play_with_crossfade — branch coverage for DJ-mix flags + transitions
+# _render_track -- branch coverage for DJ-mix flags + transitions
 # ---------------------------------------------------------------------------
 
 
-class TestPlayWithCrossfadeFeatures:
+class TestRenderTrackFeatures:
     def _make_player_with_audio(self, **cfg_overrides):
-        """Player wired so load_audio returns 4 s of silence at 44.1 kHz."""
+        """Player whose tracks all load as silence at 44.1 kHz."""
         cfg = _make_cfg_mock()
         cfg.playback.crossfade_seconds = cfg_overrides.get("crossfade_seconds", 2.0)
         cfg.playback.crossfade_eq_duck = cfg_overrides.get("crossfade_eq_duck", False)
@@ -1979,114 +1784,54 @@ class TestPlayWithCrossfadeFeatures:
         cfg.replaygain.max_clip_safe_gain = 1.0
         cfg.library.beets_db = None
         cfg.library.music_dir = None
-        cfg.index.active_dir = MagicMock()  # not a Path → DJ cache lazy init bails
+        cfg.index.active_dir = MagicMock()  # not a Path -> DJ cache lazy init bails
         return Player(cfg, _make_sim_index(n=3))
 
-    def _stub_audio(self, seconds: float = 4.0, sr: int = 44100) -> tuple:
-        return np.zeros(int(seconds * sr), dtype=np.float32), sr
+    def _render(self, player: Player, seconds: float = 4.0):
+        cur, nxt = player._sim.entries[0], player._sim.entries[1]
+        audio = np.zeros((int(seconds * 44100), 2), dtype=np.float32)
+        with patch("autodj.player.load_stereo", return_value=audio):
+            rendered = player._render_track(cur, nxt, 0)
+        assert rendered is not None
+        return rendered
 
     def test_replaygain_enabled_path(self) -> None:
         from autodj.audio_meta import ReplayGain
 
         player = self._make_player_with_audio(replaygain=True)
-        cur, nxt = player._sim.entries[0], player._sim.entries[1]
-        with (
-            patch("autodj.player.load_audio", return_value=self._stub_audio()),
-            patch(
-                "autodj.audio_meta.read_replaygain",
-                return_value=ReplayGain(track_gain_db=-3.0, track_peak=0.5),
-            ),
-            patch.object(player, "_stream_audio") as mock_stream,
+        with patch(
+            "autodj.audio_meta.read_replaygain",
+            return_value=ReplayGain(track_gain_db=-3.0, track_peak=0.5),
         ):
-            player._play_with_crossfade(cur, nxt)
-        mock_stream.assert_called_once()
+            self._render(player)
 
     def test_filter_sweep_path(self) -> None:
-        player = self._make_player_with_audio(filter_sweep=True)
-        cur, nxt = player._sim.entries[0], player._sim.entries[1]
-        with (
-            patch("autodj.player.load_audio", return_value=self._stub_audio()),
-            patch.object(player, "_stream_audio") as mock_stream,
-        ):
-            player._play_with_crossfade(cur, nxt)
-        mock_stream.assert_called_once()
+        self._render(self._make_player_with_audio(filter_sweep=True))
 
     def test_beatmatch_path(self) -> None:
         player = self._make_player_with_audio(beatmatch=True)
         cur, nxt = player._sim.entries[0], player._sim.entries[1]
         cur.bpm, nxt.bpm = 120.0, 124.0  # within max_stretch
-        with (
-            patch("autodj.player.load_audio", return_value=self._stub_audio()),
-            patch.object(player, "_stream_audio") as mock_stream,
-        ):
-            player._play_with_crossfade(cur, nxt)
-        mock_stream.assert_called_once()
-        # Beatmatch ratio is set (1.0 = no stretch / librosa fallback, otherwise = bpm_b/bpm_a)
-        assert isinstance(player._beatmatch_ratio, float)
+        rendered = self._render(player)
+        # The measured stretch rides on the render (1.0 when librosa leaves it alone).
+        assert isinstance(rendered.beatmatch_ratio, float)
 
     def test_crossfade_eq_duck_path(self) -> None:
-        player = self._make_player_with_audio(crossfade_eq_duck=True)
-        cur, nxt = player._sim.entries[0], player._sim.entries[1]
-        with (
-            patch("autodj.player.load_audio", return_value=self._stub_audio()),
-            patch.object(player, "_stream_audio") as mock_stream,
-        ):
-            player._play_with_crossfade(cur, nxt)
-        mock_stream.assert_called_once()
+        self._render(self._make_player_with_audio(crossfade_eq_duck=True))
 
     def test_transition_fx_echo_out(self) -> None:
-        player = self._make_player_with_audio(transition_effect="echo_out")
-        cur, nxt = player._sim.entries[0], player._sim.entries[1]
-        with (
-            patch("autodj.player.load_audio", return_value=self._stub_audio()),
-            patch.object(player, "_stream_audio") as mock_stream,
-        ):
-            player._play_with_crossfade(cur, nxt)
-        mock_stream.assert_called_once()
-        assert player._last_transition_fx == "echo_out"
+        rendered = self._render(self._make_player_with_audio(transition_effect="echo_out"))
+        assert rendered.transition_fx == "echo_out"
 
     def test_transition_fx_long_tail_extends(self) -> None:
         """Long-tail effects (tape_stop) extend tail length to >= 4s."""
         player = self._make_player_with_audio(transition_effect="tape_stop")
-        cur, nxt = player._sim.entries[0], player._sim.entries[1]
-        with (
-            patch("autodj.player.load_audio", return_value=self._stub_audio(seconds=10.0)),
-            patch.object(player, "_stream_audio") as mock_stream,
-        ):
-            player._play_with_crossfade(cur, nxt)
-        mock_stream.assert_called_once()
-        assert player._last_transition_fx == "tape_stop"
+        rendered = self._render(player, seconds=10.0)
+        assert rendered.transition_fx == "tape_stop"
 
     def test_transition_fx_unknown_falls_back_to_none(self) -> None:
-        player = self._make_player_with_audio(transition_effect="banana")
-        cur, nxt = player._sim.entries[0], player._sim.entries[1]
-        with (
-            patch("autodj.player.load_audio", return_value=self._stub_audio()),
-            patch.object(player, "_stream_audio") as mock_stream,
-        ):
-            player._play_with_crossfade(cur, nxt)
-        mock_stream.assert_called_once()
-        assert player._last_transition_fx == "none"
-
-    def test_sr_mismatch_resamples(self) -> None:
-        player = self._make_player_with_audio()
-        cur, nxt = player._sim.entries[0], player._sim.entries[1]
-
-        call_idx = [0]
-
-        def fake_load(_path):
-            call_idx[0] += 1
-            # First load: 44.1 kHz; second: 48 kHz (forces resample)
-            if call_idx[0] == 1:
-                return np.zeros(4 * 44100, dtype=np.float32), 44100
-            return np.zeros(4 * 48000, dtype=np.float32), 48000
-
-        with (
-            patch("autodj.player.load_audio", side_effect=fake_load),
-            patch.object(player, "_stream_audio") as mock_stream,
-        ):
-            player._play_with_crossfade(cur, nxt)
-        mock_stream.assert_called_once()
+        rendered = self._render(self._make_player_with_audio(transition_effect="banana"))
+        assert rendered.transition_fx == "none"
 
 
 class TestEffectiveCrossfadeSeconds:
@@ -2356,9 +2101,9 @@ class TestLoadLyricsBeetsBranch:
             "autodj.beets.get_lyrics_for_path",
             _fake_get_lyrics_for_path,
         )
-        player._load_lyrics(str(tmp_path / "song.flac"))
+        _lyrics, plain = player._read_lyrics_for_path(str(tmp_path / "song.flac"))
         assert captured["path"].endswith("song.flac")
-        assert player._current_lyrics_plain == "verse one\nverse two"
+        assert plain == "verse one\nverse two"
 
     def test_lrc_present_short_circuits_beets(self, tmp_path, monkeypatch) -> None:
         from autodj.audio_meta import LyricLine
@@ -2378,8 +2123,8 @@ class TestLoadLyricsBeetsBranch:
             return ""
 
         monkeypatch.setattr("autodj.beets.get_lyrics_for_path", _shouldnt_run)
-        player._load_lyrics(str(tmp_path / "song.flac"))
-        assert player._current_lyrics
+        lyrics, _plain = player._read_lyrics_for_path(str(tmp_path / "song.flac"))
+        assert lyrics
         assert called["beets"] == 0
 
     def test_beets_db_oserror_swallowed(self, tmp_path, monkeypatch) -> None:
@@ -2391,8 +2136,8 @@ class TestLoadLyricsBeetsBranch:
             raise OSError("db locked")
 
         monkeypatch.setattr("autodj.beets.get_lyrics_for_path", _raise)
-        player._load_lyrics(str(tmp_path / "song.flac"))
-        assert player._current_lyrics_plain == ""
+        _lyrics, plain = player._read_lyrics_for_path(str(tmp_path / "song.flac"))
+        assert plain == ""
 
 
 class TestEnsureDjCache:
@@ -2527,13 +2272,14 @@ class TestApplyTransitionEffectWetMix:
         # Small crossfade so min_seconds path dominates.
         crossfade = sr // 2
         b_head = audio_b[:crossfade].copy()
-        result_a, result_head, _extra = player._apply_transition_effect(
+        result_a, result_head, _extra, fx = player._apply_transition_effect(
             audio_a_trimmed=audio_a,
             audio_b=audio_b,
             b_head=b_head,
             crossfade_samples=crossfade,
             sr_a=sr,
         )
+        assert fx == "echo_out"
         assert result_a.shape == audio_a.shape
         assert result_head.shape == b_head.shape
         assert np.all(np.isfinite(result_a))
@@ -2548,13 +2294,14 @@ class TestApplyTransitionEffectWetMix:
         audio_a = np.zeros(sr * 4, dtype=np.float32)
         audio_b = np.zeros(sr * 4, dtype=np.float32)
         b_head = audio_b[: sr * 2].copy()
-        result_a, _result_head, _extra = player._apply_transition_effect(
+        result_a, _result_head, _extra, fx = player._apply_transition_effect(
             audio_a_trimmed=audio_a,
             audio_b=audio_b,
             b_head=b_head,
             crossfade_samples=sr * 2,
             sr_a=sr,
         )
+        assert fx == "bitcrusher"
         assert result_a.shape == audio_a.shape
 
 
@@ -2714,3 +2461,285 @@ def test_player_docs_do_not_point_at_the_retired_no_playback_flag() -> None:
     import autodj.player as player_module
 
     assert "--no-playback" not in inspect.getsource(player_module)
+
+
+# ---------------------------------------------------------------------------
+# Server audio on the mix bus: render-ahead cursor and track-start state
+# ---------------------------------------------------------------------------
+
+
+def test_next_rendered_carries_offset_between_tracks(monkeypatch):
+    from autodj import player as player_mod
+    from autodj.mixbus import RenderedTrack
+
+    p = player_mod.Player.__new__(player_mod.Player)
+    p._state = player_mod.PlayerState()
+    first, second, third = MagicMock(), MagicMock(), MagicMock()
+    picks = iter([second, third])
+    p._pick_next = lambda _current: next(picks)
+    p._last_pick_mode = "similar"
+    p._honour_late_queued_next = lambda picked, _q: picked
+    calls = []
+
+    def fake_render(current, nxt, offset):
+        calls.append((current, nxt, offset))
+        return RenderedTrack(current, np.zeros((10, 2), np.float32), nxt, 99, "")
+
+    p._render_track = fake_render
+    p._pending_entry = first
+    p._pending_offset = 0
+    p._next_rendered()
+    p._next_rendered()
+    assert calls == [(first, second, 0), (second, third, 99)]
+
+
+def test_next_rendered_skips_unrenderable_tracks_and_stops_without_a_cursor() -> None:
+    from autodj.mixbus import RenderedTrack
+
+    p = Player.__new__(Player)
+    p._state = PlayerState()
+    bad, good, after = MagicMock(), MagicMock(), MagicMock()
+    picks = iter([good, after])
+    p._pick_next = lambda _current: next(picks)
+    p._last_pick_mode = "queue"
+    seen_from_queue = []
+
+    def honour(picked, from_queue):
+        seen_from_queue.append(from_queue)
+        return picked
+
+    p._honour_late_queued_next = honour
+
+    def fake_render(current, nxt, _offset):
+        if current is bad:
+            return None
+        return RenderedTrack(current, np.zeros((10, 2), np.float32), nxt, 7, "")
+
+    p._render_track = fake_render
+    p._pending_entry = bad
+    p._pending_offset = 55
+    rendered = p._next_rendered()
+    assert rendered is not None and rendered.entry is good
+    assert seen_from_queue == [True, True]
+    assert (p._pending_entry, p._pending_offset) == (after, 7)
+
+    p._pending_entry = None
+    assert p._next_rendered() is None
+
+
+def test_next_rendered_gives_up_after_five_failed_renders() -> None:
+    p = Player.__new__(Player)
+    p._state = PlayerState()
+    p._pick_next = lambda _current: MagicMock()
+    p._last_pick_mode = "similarity"
+    p._honour_late_queued_next = lambda picked, _q: picked
+    attempts = []
+    p._render_track = lambda current, _nxt, _offset: attempts.append(current)
+    p._pending_entry = MagicMock()
+    p._pending_offset = 0
+    assert p._next_rendered() is None
+    assert len(attempts) == 5
+
+
+def _rendered(entry, next_entry=None, frames=44100, fx="echo_out", ratio=0.97):
+    from autodj.mixbus import RenderedTrack
+
+    return RenderedTrack(entry, np.zeros((frames, 2), np.float32), next_entry, 0, fx, ratio)
+
+
+class TestOnTrackStart:
+    def _player(self, tmp_path: Path | None = None) -> Player:
+        kwargs = {}
+        if tmp_path is not None:
+            kwargs = {
+                "export_m3u": tmp_path / "set.m3u",
+                "history_file": tmp_path / "history.jsonl",
+            }
+        player = Player(_make_cfg_mock(), _make_sim_index(4), **kwargs)
+        player.load_lyrics_in_background = MagicMock()  # type: ignore[method-assign]
+        return player
+
+    def test_state_describes_the_track_that_started(self, tmp_path) -> None:
+        player = self._player(tmp_path)
+        (tmp_path / "set.m3u").write_text("#EXTM3U\n", encoding="utf-8")
+        before, entry, nxt = player._sim.entries[:3]
+        player._state.current_track = before
+        player._current_sr = 22050
+        player._playback_pos[0] = 12345
+        started = []
+        player.on_track_started = started.append
+
+        player._on_track_start(_rendered(entry, nxt, frames=4410))
+
+        assert player._state.current_track is entry
+        assert player._state.next_track is nxt
+        assert player._previous_track is before
+        assert player._current_sr == 44100
+        assert player._playback_pos[0] == 0
+        assert player._playback_len == 4410
+        assert player._last_transition_fx == "echo_out"
+        assert player._beatmatch_ratio == pytest.approx(0.97)
+        assert player._state.track_number == 1
+        assert entry.path in player._state.recently_played
+        assert entry.path in (tmp_path / "set.m3u").read_text(encoding="utf-8")
+        assert entry.path in (tmp_path / "history.jsonl").read_text(encoding="utf-8")
+        player.load_lyrics_in_background.assert_called_once_with(entry.path)
+        assert started == [entry]
+
+    def test_without_callback_or_exports(self) -> None:
+        player = self._player()
+        entry = player._sim.entries[0]
+        player._on_track_start(_rendered(entry, None, fx=""))
+        assert player._state.current_track is entry
+        assert player._state.next_track is None
+        assert player._last_transition_fx == ""
+
+    def test_seed_recorded_once(self, tmp_path) -> None:
+        player = self._player(tmp_path)
+        seed, second = player._sim.entries[:2]
+        recorded = []
+        original = player._state.record_played
+
+        def spy(entry):
+            recorded.append(entry)
+            original(entry)
+
+        player._state.record_played = spy  # type: ignore[method-assign]
+
+        player._record_seed(seed)
+        player._on_track_start(_rendered(seed, second))
+        player._on_track_start(_rendered(second, None))
+
+        assert recorded == [seed, second]
+        assert player._state.track_number == 1
+        assert player._previous_track is seed
+        m3u = (tmp_path / "set.m3u").read_text(encoding="utf-8")
+        assert m3u.count(seed.path) == 1
+        history = (tmp_path / "history.jsonl").read_text(encoding="utf-8")
+        assert history.count(seed.path) == 1
+
+    def test_on_position_tracks_bus_progress(self) -> None:
+        player = self._player()
+        player._on_position(8820)
+        assert player._playback_pos[0] == 8820
+
+
+def test_rendering_ahead_leaves_the_playing_tracks_state_alone() -> None:
+    """The bus renders the next track while this one plays.
+
+    The UI's transition effect and beat-match ratio must keep describing
+    the playing track until the next one actually starts.
+    """
+    cfg = _make_cfg_mock()
+    cfg.playback.crossfade_seconds = 2.0
+    cfg.djmix.beatmatch = True
+    cfg.transitions.effect = "echo_out"
+    cfg.index.active_dir = MagicMock()
+    player = Player(cfg, _make_sim_index(3))
+    cur, nxt = player._sim.entries[0], player._sim.entries[1]
+    cur.bpm, nxt.bpm = 120.0, 124.0
+    player._last_transition_fx = "playing-fx"
+    player._beatmatch_ratio = 0.5
+
+    with (
+        patch("autodj.player.load_stereo", return_value=np.zeros((10 * 44100, 2), np.float32)),
+        patch("autodj.player.beatmatch_incoming", side_effect=lambda a, **_k: (a, 1.03)),
+    ):
+        rendered = player._render_track(cur, nxt, 0)
+
+    assert rendered is not None
+    assert rendered.transition_fx == "echo_out"
+    assert player._last_transition_fx == "playing-fx"
+    assert player._beatmatch_ratio == 0.5
+
+
+def test_render_track_does_not_load_lyrics_ahead_of_time() -> None:
+    cfg = _make_cfg_mock()
+    cfg.index.active_dir = MagicMock()
+    player = Player(cfg, _make_sim_index(3))
+    player._current_lyrics_plain = "playing song words"
+    with (
+        patch("autodj.player.load_stereo", return_value=np.zeros((44100, 2), np.float32)),
+        patch.object(player, "_read_lyrics_for_path") as read,
+    ):
+        player._render_track(player._sim.entries[0], None, 0)
+    read.assert_not_called()
+    assert player._current_lyrics_plain == "playing song words"
+
+
+def test_reset_render_ahead_moves_the_cursor() -> None:
+    player = Player(_make_cfg_mock(), _make_sim_index(3))
+    entry = player._sim.entries[2]
+    player.reset_render_ahead(entry, offset=123)
+    assert player._pending_entry is entry
+    assert player._pending_offset == 123
+    player.reset_render_ahead(player._sim.entries[0])
+    assert player._pending_offset == 0
+
+
+def test_render_ahead_worker_uses_next_rendered() -> None:
+    from autodj.mixbus import RenderedTrack
+
+    player = Player(_make_cfg_mock(), _make_sim_index(3))
+    track = RenderedTrack(player._sim.entries[0], np.zeros((10, 2), np.float32), None, 0, "")
+    worker = player._render_ahead
+    with patch.object(player, "_next_rendered", return_value=track):
+        try:
+            worker.start()
+            assert worker.wait_ready(2.0)
+            assert worker.pop() is track
+        finally:
+            worker.stop(timeout=2.0)
+
+
+def test_stop_signals_the_render_ahead_worker() -> None:
+    player = Player(_make_cfg_mock(), _make_sim_index(3))
+    player._render_ahead = MagicMock()
+    player.stop()
+    player._render_ahead.stop.assert_called_once_with(timeout=0)
+    assert player._state.should_stop is True
+
+
+class TestSeekWithBus:
+    def test_seek_to_moves_the_bus(self) -> None:
+        player = Player(_make_cfg_mock(), _make_sim_index(3))
+        player.bus = MagicMock()
+        player._current_sr = 44100
+        player._playback_len = 44100 * 60
+        assert player.seek_to(10.0) == pytest.approx(10.0)
+        player.bus.seek.assert_called_once_with(441000)
+
+    def test_seek_relative_moves_the_bus(self) -> None:
+        player = Player(_make_cfg_mock(), _make_sim_index(3))
+        player.bus = MagicMock()
+        player._current_sr = 44100
+        player._playback_len = 44100 * 60
+        player._playback_pos[0] = 44100 * 20
+        player.seek_relative(-5.0)
+        player.bus.seek.assert_called_once_with(44100 * 15)
+
+    def test_seek_without_bus_only_moves_position(self) -> None:
+        player = Player(_make_cfg_mock(), _make_sim_index(3))
+        player._current_sr = 44100
+        player._playback_len = 44100 * 60
+        player.seek_to(3.0)
+        assert player._playback_pos[0] == 3 * 44100
+
+
+class TestBusControlWatcher:
+    def test_mirrors_pause_and_sets_stop_once_the_player_stops(self) -> None:
+        player = Player(_make_cfg_mock(), _make_sim_index(3))
+        player.bus = MagicMock()
+        player._state.is_paused = True
+        stop = MagicMock()
+        stop.wait.side_effect = lambda _timeout: setattr(player._state, "should_stop", True)
+        player._stop_when_requested(stop)
+        player.bus.pause.assert_called_once_with(True)
+        stop.set.assert_called_once_with()
+
+    def test_without_a_bus_only_waits_for_stop(self) -> None:
+        player = Player(_make_cfg_mock(), _make_sim_index(3))
+        stop = MagicMock()
+        stop.wait.side_effect = lambda _timeout: setattr(player._state, "should_stop", True)
+        player._stop_when_requested(stop)
+        stop.set.assert_called_once_with()

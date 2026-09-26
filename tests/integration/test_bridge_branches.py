@@ -271,3 +271,20 @@ class TestQueueReorderPreQueueClear:
         # Reorder with an empty list (or path list that doesn't match anything)
         bridge.queue_reorder([])
         assert bridge.player._state.pre_queue_seed is None
+
+
+class TestServerAudioSkip:
+    def test_skip_uses_bus_when_present(self, bridge) -> None:
+        from unittest.mock import MagicMock
+
+        bridge.player._dry_run = False
+        bridge.player.bus = MagicMock()
+        bridge.skip()
+        bridge.player.bus.skip.assert_called_once_with()
+        bridge.player._skip_event.set.assert_not_called()
+
+    def test_skip_without_bus_signals_the_audio_loop(self, bridge) -> None:
+        bridge.player._dry_run = False
+        bridge.player.bus = None
+        bridge.skip()
+        bridge.player._skip_event.set.assert_called_once_with()

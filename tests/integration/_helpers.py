@@ -60,6 +60,7 @@ def _make_player_mock(entry: IndexEntry | None = None) -> MagicMock:
     player._playback_pos = [44100 * 30]  # 30 s into the track
     player._current_sr = 44100
     player._skip_event = MagicMock()
+    player.bus = None  # browser / legacy mode: no server mix bus
     # Fields exposed via get_state / get_settings on the bridge API.
     player._eq_low = 1.0
     player._eq_mid = 1.0

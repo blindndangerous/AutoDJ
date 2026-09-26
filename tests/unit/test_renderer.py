@@ -36,7 +36,6 @@ def renderer(monkeypatch: pytest.MonkeyPatch) -> player_mod.Player:
     p._cfg = MagicMock()
     p._cfg.playback.crossfade_seconds = 2.0
     p._apply_replaygain = lambda audio_in, _path: audio_in
-    p._load_lyrics = lambda _path: None
     p._ensure_dj_cache = lambda: None
     p._outgoing_meta = lambda *_a: None
     p._peek_incoming_meta = lambda _e: None
@@ -45,7 +44,12 @@ def renderer(monkeypatch: pytest.MonkeyPatch) -> player_mod.Player:
     p._maybe_beatmatch = lambda audio_b, *_a: audio_b
     p._skip_incoming_intro_samples = lambda _audio_b, _sr, _e: 0
     p._apply_outgoing_filter_sweep = lambda a, *_a: a
-    p._apply_transition_effect = lambda a, _b, head, *_a: (a, head, np.zeros((0, 2), np.float32))
+    p._apply_transition_effect = lambda a, _b, head, *_a: (
+        a,
+        head,
+        np.zeros((0, 2), np.float32),
+        "none",
+    )
     p._mix_overlap = lambda a, head, cf, _sr, _extra: player_mod._apply_crossfade(a, head, cf)
     p._last_transition_fx = ""
     p._beatmatch_ratio = 1.0

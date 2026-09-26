@@ -312,3 +312,22 @@ def test_system_clock_now_is_monotonic_and_sleep_returns() -> None:
     clock.sleep(0)
     second = clock.now()
     assert second >= first
+
+
+def test_seek_clamps_within_track() -> None:
+    first = _track(0.5, 10_000, "a")
+    bus, _, positions = _bus([first, _track(0.25, 10_000, "b")])
+    bus.seek(500)  # nothing playing yet: ignored
+    assert bus._pos == 0
+    bus.start_set()
+    bus.render_block()
+    bus.seek(5_000)
+    assert bus._pos == 5_000
+    bus.seek(-10)
+    assert bus._pos == 0
+    bus.seek(50_000)
+    assert bus._pos == 9_999
+    assert bus._current is first
+    bus.seek(2_000)
+    bus.render_block()
+    assert positions[-1] == 2_000 + 882
