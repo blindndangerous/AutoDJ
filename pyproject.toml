@@ -14,61 +14,55 @@ classifiers = [
     "Operating System :: OS Independent",
     "Topic :: Multimedia :: Sound/Audio :: Players",
 ]
-# Core dependencies — minimum needed for the lighter commands
-# (`enrich`, `prune`, `stats`, `playlist`).  Index + play + serve add
-# heavier deps via optional groups below.  This split lets a NAS or
-# headless host run `autodj enrich` against a shared index without
-# installing torch, librosa, or audio libs.
+# Core dependencies cover indexing, the browser UI and tag reading, so a plain
+# install (and the container image, which installs no extras) can index and
+# serve.  MuQ already pulls in torch, torchaudio and transformers, and librosa
+# pulls in scipy and soundfile; the ones AutoDJ imports directly are declared
+# here so they do not depend on another package's requirements.
 dependencies = [
     "faiss-cpu>=1.8.0", # nearest-neighbor vector search
     "numpy>=1.26.0", # vector math
     "click>=8.1.0", # CLI framework
     "rich>=13.0.0", # terminal UI (panels, tables)
-    "python-multipart>=0.0.27",
-    "librosa>=0.11.0",
-    "tqdm>=4.67.3",
-    "fastapi>=0.136.3",
-    "starlette==1.6.0",
-    "uvicorn[standard]>=0.29.0",
-    "muq>=0.1.0",
+    "python-multipart>=0.0.27", # form uploads (liners)
+    "librosa>=0.11.0", # spectral / chroma feature extraction
+    "tqdm>=4.67.3", # progress bars
+    "fastapi>=0.136.3", # web UI
+    "starlette~=1.6.0", # imported by the security middleware; patch releases only
+    "pydantic>=2.0.0", # request/response models in server.py
+    "uvicorn[standard]>=0.29.0", # ASGI server
+    "muq>=0.1.0", # MuQ embedding model (24 kHz, 1024-dim)
     "transformers>=5.16.1", # MuQ compatibility is handled at model load.
+    "huggingface_hub>=0.23.0", # model checkpoint download
+    "mutagen>=1.47.0", # tags, ReplayGain, cover art, embedded lyrics, ALAC detection
+    "scipy>=1.13.0", # biquad filters (EQ duck, sweeps, transitions)
 ]
 
 [project.optional-dependencies]
-# `uv pip install -e ".[index]"` — build the FAISS index from audio files
+# Extras only add what the core set does not already provide.
+# `index` pins floors for the torch stack MuQ runs on (CPU or CUDA).
 index = [
-    "muq>=0.1.0",                # MuQ embedding model (24 kHz, 1024-dim)
     "torch>=2.2.0",              # MuQ inference (CPU or CUDA)
     "torchaudio>=2.2.0",         # GPU mel-spec for beat-grid (optional fast path)
-    "huggingface_hub>=0.23.0",   # model checkpoint download
-    "librosa>=0.10.0",           # spectral / chroma feature extraction
     "soundfile>=0.12.0",         # audio file decoding
-    "tqdm>=4.66.0",              # progress bars
 ]
 
-# `uv pip install -e ".[play]"` — playback (terminal player)
+# `play` adds local audio output and the terminal keyboard listener.  pynput
+# needs evdev (built from source) on Linux, so the container leaves it out.
 play = [
-    "librosa>=0.10.0",           # resample at play time
     "soundfile>=0.12.0",         # decode FLAC / WAV
     "sounddevice>=0.4.6",        # cross-platform audio output
     "pynput>=1.7.6",             # keyboard listener
-    "mutagen>=1.47.0",           # ReplayGain tags, cover art, LRC sidecar
-    "scipy>=1.13.0",             # biquad filters (EQ duck, sweeps, transitions)
 ]
 
-# `uv pip install -e ".[web]"` — browser UI on top of `play`
-web = [
-    "fastapi>=0.111.0",
-    "uvicorn[standard]>=0.29.0",
-    "pydantic>=2.0.0",            # request/response models in server.py
-]
+# `web` is kept so `autodj[web]` still resolves; the browser UI's
+# dependencies are all in the core set now.
+web = []
 
-# Convenience meta-group — install everything (Linux GPU box, full Windows install)
+# Convenience meta-group: every extra above.
 all = [
-    "muq>=0.1.0", "torch>=2.2.0", "torchaudio>=2.2.0", "huggingface_hub>=0.23.0",
-    "librosa>=0.10.0", "soundfile>=0.12.0", "tqdm>=4.66.0",
-    "sounddevice>=0.4.6", "pynput>=1.7.6", "mutagen>=1.47.0", "scipy>=1.13.0",
-    "fastapi>=0.111.0", "uvicorn[standard]>=0.29.0", "pydantic>=2.0.0",
+    "torch>=2.2.0", "torchaudio>=2.2.0", "soundfile>=0.12.0",
+    "sounddevice>=0.4.6", "pynput>=1.7.6",
 ]
 
 [project.scripts]

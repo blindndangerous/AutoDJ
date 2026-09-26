@@ -329,9 +329,10 @@ AutoDJ is not on PyPI. To install a tagged wheel:
 uv pip install "autodj[all] @ https://github.com/blindndangerous/AutoDJ/releases/download/v0.16.1/autodj-0.16.1-py3-none-any.whl"
 ```
 
-Keep `[all]` for the full application. The base dependency set also includes MuQ, librosa, and
-the web server, so omitting extras does not produce a lightweight installation without model
-or analysis dependencies.
+Keep `[all]` for the full application. The base dependency set also includes MuQ, librosa,
+mutagen, and the web server, so omitting extras does not produce a lightweight installation
+without model or analysis dependencies. The extras add local audio output (`play`) and explicit
+torch floors (`index`).
 
 Installing a wheel resolves dependencies fresh from PyPI instead of from `uv.lock`, so you give up
 the exact versions CI tested. The clone plus `uv sync --frozen --all-extras` above stays the
@@ -347,11 +348,11 @@ supported path; reach for the wheel only when you want AutoDJ without a source t
   Commercial use needs permission from the publisher or a separately licensed compatible model.
   Changing `[model] name` does not add
   support for another architecture. See [Model selection](docs/model-selection.md).
-- Dependencies have their own licenses. The `play` and `all` extras include `mutagen`
-  under GPL-2.0-or-later and `pynput` under LGPL-3.0. The base installation includes `librosa`
-  and its `soxr` dependency. Omitting extras does not make every dependency permissively licensed.
-  CI logs a dependency license
-  inventory, and container images include their installed dependencies.
+- Dependencies have their own licenses. The base installation, and therefore the container
+  image, includes `mutagen` under GPL-2.0-or-later and `librosa` with its LGPL-licensed `soxr`
+  dependency. The `play` and `all` extras add `pynput` under LGPL-3.0. Omitting extras does not
+  make every dependency permissively licensed. CI logs a dependency license inventory, and
+  container images include their installed dependencies.
 - Audio analysis uses [librosa](https://librosa.org/) (ISC).
 - Vector search uses [FAISS](https://github.com/facebookresearch/faiss) (MIT).
 - The web UI uses [FastAPI](https://fastapi.tiangolo.com/) and a hand-written ES module front end (no React, no Vue, no framework).

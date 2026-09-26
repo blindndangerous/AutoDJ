@@ -88,11 +88,14 @@ def _assert_starlette_dependency_contract(root: Path, project_text: str) -> None
         if canonicalize_name(package["name"]) == "starlette"
     ]
     assert locked_versions == [EXPECTED_STARLETTE_VERSION]
-    assert str(requirement.specifier) == f"=={EXPECTED_STARLETTE_VERSION}"
+    # Compatible-release pin: the security middleware leans on Starlette routing
+    # internals, so published metadata admits patch releases of the reviewed
+    # minor version and nothing newer.
+    assert str(requirement.specifier) == f"~={EXPECTED_STARLETTE_VERSION}"
 
 
-def test_starlette_imports_have_exact_direct_dependency() -> None:
-    """Direct Starlette imports must match the exact locked dependency."""
+def test_starlette_imports_have_pinned_direct_dependency() -> None:
+    """Direct Starlette imports must pin the locked minor version."""
     root = Path(__file__).resolve().parents[2]
     project_text = (root / "pyproject.toml").read_text(encoding="utf-8")
 
@@ -104,7 +107,7 @@ def test_starlette_dependency_contract_rejects_missing_declaration() -> None:
     root = Path(__file__).resolve().parents[2]
     project_text = (root / "pyproject.toml").read_text(encoding="utf-8")
     mutated_text = project_text.replace(
-        f'    "starlette=={EXPECTED_STARLETTE_VERSION}",\n',
+        f'"starlette~={EXPECTED_STARLETTE_VERSION}",',
         "",
     )
     assert mutated_text != project_text
@@ -118,8 +121,8 @@ def test_starlette_dependency_contract_rejects_conditional_declaration() -> None
     root = Path(__file__).resolve().parents[2]
     project_text = (root / "pyproject.toml").read_text(encoding="utf-8")
     mutated_text = project_text.replace(
-        f'"starlette=={EXPECTED_STARLETTE_VERSION}"',
-        f"\"starlette=={EXPECTED_STARLETTE_VERSION}; python_version < '3.0'\"",
+        f'"starlette~={EXPECTED_STARLETTE_VERSION}"',
+        f"\"starlette~={EXPECTED_STARLETTE_VERSION}; python_version < '3.0'\"",
     )
     assert mutated_text != project_text
 
