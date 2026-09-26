@@ -312,6 +312,21 @@ class TestLiners:
         resp = tc.get("/api/liners/file/..%2Fsecret.txt")
         assert resp.status_code == 400
 
+    @pytest.mark.parametrize("name", ["config.toml", "tracks.db", "notes", "clip.mp3.bak"])
+    def test_liner_file_routes_refuse_non_audio_names(self, bridge, tmp_path, name) -> None:
+        """A plain name in the liner root is still refused unless it is a liner clip."""
+        from fastapi.testclient import TestClient
+
+        folder = tmp_path / "liners"
+        folder.mkdir()
+        (folder / name).write_bytes(b"secret")
+        bridge.player._cfg.playback.liners_folder = str(folder)
+
+        tc = TestClient(create_app(bridge))
+        assert tc.get(f"/api/liners/file/{name}").status_code == 400
+        assert tc.delete(f"/api/liners/file/{name}").status_code == 400
+        assert (folder / name).read_bytes() == b"secret"
+
     def test_liner_settings_round_trip(self, bridge) -> None:
         from fastapi.testclient import TestClient
 
