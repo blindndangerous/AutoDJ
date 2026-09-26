@@ -832,6 +832,22 @@ describe("app request behavior", () => {
     expect(seek.getAttribute("aria-valuetext")).toBe("1:30 of 3:20");
   });
 
+  it("saves key notation without announcing into the hidden Now Playing panel", async () => {
+    const { fetchImpl } = await setupApp({ onRequest: () => jsonResponse({ ok: true }) });
+    const notation = document.querySelector("#key-notation");
+    notation.value = "musical";
+    notation.dispatchEvent(new Event("change"));
+    const flats = document.querySelector("#key-prefer-flats");
+    flats.checked = true;
+    flats.dispatchEvent(new Event("change"));
+
+    await vi.waitFor(() => expect(fetchImpl.mock.calls
+      .filter(([url]) => url === "/api/playback-settings")).toHaveLength(2));
+    const nowPanel = document.querySelector("#panel-now").textContent;
+    expect(nowPanel).not.toContain("Key notation");
+    expect(nowPanel).not.toContain("key spelling");
+  });
+
   it("keeps pointer previews local and sends only the final absolute seek", async () => {
     let resolveSeek;
     const deckAudio = { currentTime: 10, duration: 100 };

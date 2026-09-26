@@ -622,25 +622,14 @@ if (pbPostQueueSeed) {
     void postSettings("/api/playback-settings", { post_queue_seed: pbPostQueueSeed.value }, event.currentTarget);
   });
 }
+// No extra announcement: the select and checkbox already speak their new
+// value, and the region these used to write sits inside the hidden Now
+// Playing panel while the user is on Settings.
 keyNotation.addEventListener("change", (event) => {
   void postSettings("/api/playback-settings", { key_notation: keyNotation.value }, event.currentTarget);
-  // Polite live-region announce so screen-reader users hear the
-  // change without having to navigate back to the now-playing card.
-  // Reuses #badges-announce -- already polite + already owns key events.
-  const announce = document.getElementById("badges-announce");
-  if (announce) {
-    const labelMap = { camelot: "Camelot", musical: "Musical letter names" };
-    announce.textContent = `Key notation: ${labelMap[keyNotation.value] || keyNotation.value}.`;
-  }
 });
 keyPreferFlats.addEventListener("change", (event) => {
   void postSettings("/api/playback-settings", { key_prefer_flats: keyPreferFlats.checked }, event.currentTarget);
-  const announce = document.getElementById("badges-announce");
-  if (announce) {
-    announce.textContent = keyPreferFlats.checked
-      ? "Musical key spelling: flats."
-      : "Musical key spelling: sharps.";
-  }
 });
 
 // ----------------------------------------------------------------
