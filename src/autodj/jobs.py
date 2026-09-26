@@ -41,6 +41,10 @@ logger = logging.getLogger(__name__)
 # payload from growing unbounded over an overnight indexing run.
 _MAX_LINES = 500
 
+# How long start() waits for the previous job's reader to finish draining
+# output after its process has exited.
+_READER_JOIN_SECONDS = 1.0
+
 
 class JobManager:
     """Single-slot background job runner.
@@ -141,8 +145,8 @@ class JobManager:
                 return False
         return True
 
-    def _spawn_proc(self, name: str, args: list[str]) -> bool:
-        """Start the subprocess; populate `_proc` or return False on failure."""
+    def _spawn_proc(self, name: str, args: list[str]) -> subprocess.Popen | None:
+        """Start the subprocess and return it (also kept as `_proc`), or None."""
         cmd = self._child_argv(name, args)
         self._lines.append(f"[autodj-jobs] $ {' '.join(shlex.quote(c) for c in cmd)}")
         try:
@@ -165,8 +169,8 @@ class JobManager:
             self._exit_code = -1
             self._finished_at = time.time()
             self._proc = None
-            return False
-        return True
+            return None
+        return self._proc
 
     def start(self, name: str, args: list[str] | None = None) -> bool:
         """Spawn ``autodj <name> [args]`` as a subprocess."""
@@ -175,38 +179,50 @@ class JobManager:
         with self._lock:
             if self._proc and self._proc.poll() is None:
                 return False
+            # A process that has exited can leave its reader still draining
+            # the pipe.  Starting now would let that reader append the old
+            # job's lines, and record its exit, onto the new job.
+            previous = self._thread
+            if previous is not None and previous.is_alive():
+                previous.join(timeout=_READER_JOIN_SECONDS)
+                if previous.is_alive():
+                    return False
             self._lines.clear()
             self._name = name
             self._args = list(args or [])
             self._exit_code = None
             self._started_at = time.time()
             self._finished_at = None
-            if not self._spawn_proc(name, self._args):
+            proc = self._spawn_proc(name, self._args)
+            if proc is None:
                 return False
-        self._thread = threading.Thread(
-            target=self._read_loop,
-            name=f"autodj-job-{name}",
-            daemon=True,
-        )
-        self._thread.start()
+            # The reader gets its own process handle rather than reading
+            # self._proc, so it can never wait on a later job's process.
+            self._thread = threading.Thread(
+                target=self._read_loop,
+                args=(proc,),
+                name=f"autodj-job-{name}",
+                daemon=True,
+            )
+            self._thread.start()
         return True
 
-    def _read_loop(self) -> None:
-        """Pump subprocess stdout into the ring buffer until exit."""
-        if self._proc is None or self._proc.stdout is None:
+    def _read_loop(self, proc: subprocess.Popen) -> None:
+        """Pump *proc*'s stdout into the ring buffer until it exits."""
+        if proc.stdout is None:
             return
         try:
-            for line in self._proc.stdout:
+            for line in proc.stdout:
                 self._lines.append(line.rstrip("\n"))
         except (OSError, ValueError) as exc:
             self._lines.append(f"[autodj-jobs] read error: {exc}")
             # The pipe is no longer being drained; terminate before waiting so
             # a child blocked on write cannot hold the job slot open.
             with contextlib.suppress(OSError):
-                self._proc.terminate()
+                proc.terminate()
         finally:
             try:
-                self._exit_code = self._proc.wait(timeout=5)
+                self._exit_code = proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 self._exit_code = -2
             self._finished_at = time.time()
