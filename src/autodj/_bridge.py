@@ -1085,8 +1085,6 @@ class PlayerBridge:
         cfg = self.player._cfg
         if (v := kw.get("liners_enabled")) is not None:
             cfg.playback.liners_enabled = bool(v)
-        if (v := kw.get("liners_folder")) is not None:
-            cfg.playback.liners_folder = str(v) or None
         if (v := kw.get("liners_every_n_songs")) is not None:
             cfg.playback.liners_every_n_songs = int(v) if v > 0 else None
         if (v := _finite(kw.get("liners_every_minutes"))) is not None:
@@ -1125,7 +1123,6 @@ class PlayerBridge:
         key_sync_fx: bool | None = None,
         beatmatch_on_skip: bool | None = None,
         liners_enabled: bool | None = None,
-        liners_folder: str | None = None,
         liners_every_n_songs: int | None = None,
         liners_every_minutes: float | None = None,
         liners_random_min_minutes: float | None = None,

@@ -208,12 +208,10 @@ class TestApplySessionEnvelopeExtras:
 
 
 class TestApplyLiners:
-    def test_liners_folder_set_and_clear(self, bridge) -> None:
-        bridge.set_playback_settings(liners_folder="some/dir")
-        assert bridge.player._cfg.playback.liners_folder == "some/dir"
-        # Empty string → folder cleared to None.
-        bridge.set_playback_settings(liners_folder="")
-        assert bridge.player._cfg.playback.liners_folder is None
+    def test_liners_folder_is_not_a_runtime_setting(self, bridge) -> None:
+        # The liner root is configuration-only; the bridge has no knob for it.
+        with pytest.raises(TypeError):
+            bridge.set_playback_settings(liners_folder="some/dir")
 
     def test_liners_every_minutes_disable_when_zero(self, bridge) -> None:
         bridge.set_playback_settings(liners_every_minutes=5.0)

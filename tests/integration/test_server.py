@@ -347,6 +347,32 @@ class TestLiners:
         assert cfg.liners_pick_mode == "sequential"
         assert cfg.liners_duck_db == pytest.approx(-8.0)
 
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"liners_folder": "/etc/autodj"},
+            {"liners_enabled": True, "liners_folder": "../config"},
+            {"bogus_field": 1},
+        ],
+    )
+    def test_playback_settings_reject_liner_root_and_unknown_fields(
+        self, bridge, tmp_path, payload
+    ) -> None:
+        """The liner root is config-only; a request cannot move it or half-apply."""
+        from fastapi.testclient import TestClient
+
+        folder = str(tmp_path / "liners")
+        bridge.player._cfg.playback.liners_folder = folder
+        bridge.player._cfg.playback.liners_enabled = False
+        bridge.save_persistent_state = MagicMock()
+
+        tc = TestClient(create_app(bridge))
+        resp = tc.post("/api/playback-settings", json=payload)
+        assert resp.status_code == 422
+        assert bridge.player._cfg.playback.liners_folder == folder
+        assert bridge.player._cfg.playback.liners_enabled is False
+        bridge.save_persistent_state.assert_not_called()
+
     def test_liner_pick_mode_validates(self, bridge) -> None:
         from fastapi.testclient import TestClient
 

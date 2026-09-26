@@ -64,11 +64,10 @@ endpoints use indexed or validated plain-file allowlists rather than arbitrary f
 The liner fetch and delete endpoints accept only one plain filename with a liner audio extension
 (`.mp3`, `.wav`, `.ogg`, `.m4a`, `.flac`, or `.aac`), so they cannot read or remove configuration,
 databases, or other non-audio files even when those share the liner root.
-The liner *root directory* is a configuration value that a paired browser can still change
-through the settings API, so it can point the liner list, fetch, and delete endpoints at
-another directory. That change is session-only: `liners_folder` is not part of the
-`PlaybackState` schema that `PERSISTED_PLAYBACK_FIELDS` derives from, so it is never written
-to `web_state.json` and a restart returns the root to whatever the configuration says. Treat a paired browser as trusted.
+The liner *root directory* comes only from configuration. `/api/playback-settings` rejects
+`liners_folder`, like any other unknown field, with 422 before applying anything, and
+`liners_folder` is not part of the `PlaybackState` schema that `PERSISTED_PLAYBACK_FIELDS`
+derives from, so `web_state.json` never stores it. Treat a paired browser as trusted.
 
 ## Request and audit records
 

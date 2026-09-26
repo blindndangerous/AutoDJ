@@ -55,7 +55,7 @@ from fastapi import (
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.background import BackgroundTask
 
 # PlayerBridge lives in autodj._bridge so neither file balloons over
@@ -488,7 +488,16 @@ class DjMixBody(BaseModel):
 
 
 class PlaybackSettingsBody(BaseModel):
-    """Request body for POST /api/playback-settings."""
+    """Request body for POST /api/playback-settings.
+
+    Unknown fields are rejected rather than ignored.  In particular the liner
+    root (``playback.liners_folder``) is configuration-only: the liner fetch
+    and delete routes resolve names under it, so letting a request move it
+    would let any client that can reach this route point those routes at the
+    config or index directory.
+    """
+
+    model_config = ConfigDict(extra="forbid")
 
     crossfade_seconds: FiniteFloat | None = None
     fade_in_seconds: FiniteFloat | None = None
@@ -510,7 +519,6 @@ class PlaybackSettingsBody(BaseModel):
     key_sync_fx: bool | None = None
     beatmatch_on_skip: bool | None = None
     liners_enabled: bool | None = None
-    liners_folder: str | None = None
     liners_every_n_songs: int | None = None
     liners_every_minutes: FiniteFloat | None = None
     liners_random_min_minutes: FiniteFloat | None = None
