@@ -230,10 +230,20 @@ def test_operator_docs_require_end_to_end_tls_for_untrusted_networks() -> None:
         "--allowed-origin https://radio.local:8080 --ssl-certfile radio.pem "
         "--ssl-keyfile radio-key.pem" in normalized_operations
     )
-    assert "leave `AUTODJ_ACCESS_TOKEN` exported" in operations
+    assert "only Compose reads `.env` on its own" in normalized_operations
+    assert "set -a; . ./.env; set +a" in operations
+    assert 'Set-Item -Path "Env:$name" -Value $value' in operations
     assert "AutoDJ does not support TLS termination in front of its server" in normalized_operations
     assert "This supports private LAN access, not public Internet hosting" in normalized_operations
-    assert "Public Internet hosting, including end-to-end TLS deployments" in security
+    assert "Public Internet hosting, even with AutoDJ's own TLS enabled" in security
+    assert "Deployments behind a TLS-terminating reverse proxy" in security
+
+
+def test_threat_model_agrees_that_tls_terminates_in_autodj() -> None:
+    threat = " ".join((ROOT / "THREAT_MODEL.md").read_text(encoding="utf-8").split())
+
+    assert "reverse proxy is not supported" in threat
+    assert "place AutoDJ behind a trusted TLS reverse proxy" not in threat
 
 
 def test_operator_docs_keep_security_and_quality_commands_exact() -> None:
