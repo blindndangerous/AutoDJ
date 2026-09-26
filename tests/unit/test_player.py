@@ -2672,3 +2672,12 @@ class TestPlayerCoverageErrorPaths:
 
         assert player.wait_for_background_analysis() is True
         worker.join.assert_called_once_with()
+
+
+def test_player_docs_do_not_point_at_the_retired_no_playback_flag() -> None:
+    """``serve --no-playback`` is a deprecated no-op; browser mode is the default."""
+    import inspect
+
+    import autodj.player as player_module
+
+    assert "--no-playback" not in inspect.getsource(player_module)

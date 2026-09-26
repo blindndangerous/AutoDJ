@@ -39,7 +39,7 @@ from rich.live import Live
 from rich.panel import Panel
 
 # Heavy / platform-specific audio deps are imported with graceful None
-# fallback so hosts without them (a NAS running `serve --no-playback`)
+# fallback so hosts without them (a NAS running browser-driven `serve`)
 # can still construct a `Player` for track-picking.  Functions that
 # need real audio import lazily on first use.
 try:
@@ -1018,8 +1018,9 @@ class Player:
     def _run_headless(self, current: IndexEntry) -> None:
         """Track-picking loop with no audio output and no terminal UI.
 
-        Used by ``serve --no-playback`` (and auto-enabled when audio
-        deps are missing).  Browser is responsible for actual playback;
+        Used by browser-driven ``serve`` (the default unless
+        ``--server-audio`` is passed, and forced when audio deps are
+        missing).  Browser is responsible for actual playback;
         this loop just advances ``state.current_track`` /
         ``state.next_track`` so the WebSocket pushes stay accurate, and
         waits for the browser to POST ``/api/advance`` (which sets
@@ -1462,7 +1463,7 @@ class Player:
     def analyse_track_in_background(self, path: str) -> None:
         """Run analyse_audio + detect_cues for *path* on a background thread.
 
-        Browser-driven mode (``serve --no-playback``, the default) never
+        Browser-driven mode (``serve`` without ``--server-audio``) never
         enters :meth:`_play_track`, so without this hook the DJ-meta
         cache for the playing track stays at ``analysed=False`` and the
         web UI's cue strip + screen-reader cue summary stay empty.
