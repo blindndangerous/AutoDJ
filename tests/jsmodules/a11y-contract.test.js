@@ -1367,6 +1367,16 @@ describe("static accessibility contracts", () => {
     expect(lastValue("#progress-track::before", "background", media))
       .toBe("CanvasText");
     expect(lastValue("#progress-fill", "background", media)).toBe("Highlight");
+    // Selected tab and pressed toggles must stay distinguishable once the
+    // author fills are forced away.
+    for (const selector of [
+      '#view-nav [role="tab"][aria-selected="true"]',
+      'button[aria-pressed="true"]',
+    ]) {
+      expect(lastValue(selector, "background", media), selector).toBe("Highlight");
+      expect(lastValue(selector, "color", media), selector).toBe("HighlightText");
+      expect(lastValue(selector, "border", media), selector).toBe("3px solid CanvasText");
+    }
     expect(lastValue(":focus-visible", "outline-color", media)).toBe("Highlight");
     expect(lastValue(":focus-visible", "outline", media)).not.toMatch(
       /\b(?:none|0)\b/,

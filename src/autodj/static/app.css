@@ -1101,6 +1101,16 @@
       section[data-view] h2:focus-visible {
         outline-color: Highlight;
       }
+      /* Forced colours flatten the orange pressed fill and the accent
+         tab fill to Canvas, which made the selected tab and a pressed
+         toggle identical to their neighbours.  System highlight colours
+         and a heavier border bring the state back. */
+      #view-nav [role="tab"][aria-selected="true"],
+      button[aria-pressed="true"] {
+        background: Highlight;
+        color: HighlightText;
+        border: 3px solid CanvasText;
+      }
     }
 
 /* Hotkey help modal -------------------------------------------------- */
