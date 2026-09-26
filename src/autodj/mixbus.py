@@ -24,8 +24,13 @@ class RenderedTrack:
         next_start_offset: Samples of *next_entry*'s audio already played in
             the overlap (including any skipped intro), so the following
             render call knows where to continue without replaying them.
+            Expressed in *next_entry*'s own, as-loaded-fresh timeline (i.e.
+            already converted back out of any beat-match stretch).
         transition_fx: Name of the effect used for the overlap, or ``""``
             when no effect was applied.
+        beatmatch_ratio: Measured stretch ratio applied to *next_entry*'s
+            audio for the overlap (``len(stretched) / len(original)``), or
+            ``1.0`` when it was not stretched (or there is no overlap).
     """
 
     entry: IndexEntry
@@ -33,3 +38,4 @@ class RenderedTrack:
     next_entry: IndexEntry | None
     next_start_offset: int
     transition_fx: str
+    beatmatch_ratio: float = 1.0

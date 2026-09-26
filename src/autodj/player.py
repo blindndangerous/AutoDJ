@@ -1838,17 +1838,17 @@ class Player:
             has no audio left after *start_offset*.
         """
         try:
-            audio_a = load_stereo(str(current.path), SAMPLE_RATE)
+            audio_a_full = load_stereo(str(current.path), SAMPLE_RATE)
         except (OSError, ValueError, RuntimeError) as exc:
             logger.error("Cannot load %s: %s — skipping.", current.path, exc)
             return None
-        audio_a = self._apply_replaygain(audio_a, current.path)
-        if start_offset >= len(audio_a):
+        audio_a_full = self._apply_replaygain(audio_a_full, current.path)
+        if start_offset >= len(audio_a_full):
             return None
         self._load_lyrics(current.path)
         self._ensure_dj_cache()
-        meta_a = self._outgoing_meta(audio_a, SAMPLE_RATE, current.path)
-        audio_a = audio_a[start_offset:]
+        meta_a = self._outgoing_meta(audio_a_full, SAMPLE_RATE, current.path)
+        audio_a = audio_a_full[start_offset:]
         if next_entry is None:
             return RenderedTrack(current, audio_a, None, 0, "")
         meta_b = self._peek_incoming_meta(next_entry)
@@ -1856,31 +1856,57 @@ class Player:
         crossfade = int(eff_s * SAMPLE_RATE)
         if crossfade >= len(audio_a):
             return RenderedTrack(current, audio_a, next_entry, 0, "")
-        a_start = self._crossfade_start_in_a(audio_a, SAMPLE_RATE, meta_a, crossfade)
-        audio_b = self._load_incoming(next_entry, SAMPLE_RATE, crossfade)
-        audio_b = self._maybe_beatmatch(audio_b, current, next_entry)
+        # meta_a's outro/beat markers are absolute positions in the FULL
+        # track, so the crossfade start must be located there too -- not in
+        # audio_a, which already had start_offset samples cut off the
+        # front.  Re-express the result in audio_a's own coordinates after.
+        a_start_full = self._crossfade_start_in_a(audio_a_full, SAMPLE_RATE, meta_a, crossfade)
+        a_start = max(0, a_start_full - start_offset)
+        audio_b_loaded = self._load_incoming(next_entry, SAMPLE_RATE, crossfade)
+        pre_stretch_len = len(audio_b_loaded)
+        audio_b = self._maybe_beatmatch(audio_b_loaded, current, next_entry)
+        post_stretch_len = len(audio_b)
+        # Measure the actual stretch from the buffer lengths rather than
+        # trusting self._beatmatch_ratio -- beatmatch_incoming can report a
+        # non-1.0 ratio even when it left the audio untouched (stretch below
+        # its no-op threshold, or a failed time-stretch falling back to the
+        # original).  Sample counts below are in audio_b's (possibly
+        # stretched) timeline; next_entry is loaded fresh next call, so they
+        # must be converted back to its own, unstretched sample count.
+        measured_ratio = post_stretch_len / pre_stretch_len if pre_stretch_len else 1.0
+
+        def _to_unstretched(n: int) -> int:
+            if post_stretch_len == 0 or pre_stretch_len == post_stretch_len:
+                return n
+            return int(n * pre_stretch_len / post_stretch_len)
+
         intro = self._skip_incoming_intro_samples(audio_b, SAMPLE_RATE, next_entry)
         audio_b = audio_b[intro:]
         if a_start + crossfade > len(audio_a):
             crossfade = max(0, len(audio_a) - a_start)
         a_trimmed = audio_a[: a_start + crossfade]
         if crossfade == 0 or len(audio_b) < crossfade:
-            return RenderedTrack(current, a_trimmed, next_entry, intro, "")
+            return RenderedTrack(
+                current,
+                a_trimmed,
+                next_entry,
+                _to_unstretched(intro),
+                "",
+                measured_ratio,
+            )
         b_head = audio_b[:crossfade]
         a_trimmed = self._apply_outgoing_filter_sweep(a_trimmed, SAMPLE_RATE, crossfade)
         a_trimmed, b_head, extra = self._apply_transition_effect(
             a_trimmed, audio_b, b_head, SAMPLE_RATE, crossfade
         )
         mixed = self._mix_overlap(a_trimmed, b_head, crossfade, SAMPLE_RATE, extra)
-        # The beat-match stretch (if any) changed audio_b's timeline, so
-        # `intro + crossfade` is measured in stretched samples.  The next
-        # render call loads next_entry fresh (unstretched), so convert back
-        # to that track's own sample count before returning the offset.
-        next_offset = intro + crossfade
-        if self._beatmatch_ratio != 1.0:
-            next_offset = int(next_offset / self._beatmatch_ratio)
         return RenderedTrack(
-            current, to_stereo(mixed), next_entry, next_offset, str(self._last_transition_fx)
+            current,
+            to_stereo(mixed),
+            next_entry,
+            _to_unstretched(intro + crossfade),
+            str(self._last_transition_fx),
+            measured_ratio,
         )
 
     def _play_with_crossfade(  # pragma: no cover -- end-to-end audio path
