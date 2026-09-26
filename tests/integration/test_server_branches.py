@@ -1572,6 +1572,27 @@ def test_lyrics_revalidates_snapshot_and_membership(
 
 
 class TestLibraryJobRunSnapshot:
+    def test_run_starts_the_job_off_the_event_loop(self, client, monkeypatch) -> None:
+        from unittest.mock import MagicMock
+
+        mgr = MagicMock()
+        mgr.start.return_value = True
+        mgr.snapshot.return_value = {"running": True, "name": "stats"}
+        offloaded: list[object] = []
+
+        async def recording_to_thread(function, *args, **kwargs):
+            offloaded.append(function)
+            return function(*args, **kwargs)
+
+        monkeypatch.setattr("autodj.jobs.get_manager", lambda: mgr)
+        monkeypatch.setattr("autodj.server.asyncio.to_thread", recording_to_thread)
+
+        resp = client.post("/api/library/run", json={"name": "stats", "args": []})
+
+        assert resp.status_code == 200
+        assert mgr.start in offloaded
+        mgr.start.assert_called_once_with("stats", [])
+
     def test_run_returns_snapshot_when_started(self, client, monkeypatch) -> None:
         from unittest.mock import MagicMock
 

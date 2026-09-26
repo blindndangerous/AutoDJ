@@ -1778,7 +1778,9 @@ def create_app(
             index_dir=getattr(index_cfg, "index_dir", None),
             index_name=getattr(index_cfg, "name", None),
         )
-        ok = mgr.start(body.name, body.args)
+        # start() may wait up to a second for the previous job's output reader
+        # and spawns a process, so keep it off the event loop.
+        ok = await asyncio.to_thread(mgr.start, body.name, body.args)
         if not ok:
             raise HTTPException(
                 status_code=409,
