@@ -1038,7 +1038,11 @@ describe("app request behavior", () => {
   });
 
   it("loads history on a direct #history visit and pages without losing focus", async () => {
+    // App instances left by earlier tests still listen for hashchange;
+    // let them react against an inert fetch rather than the network.
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
     window.location.hash = "#history";
+    await new Promise((resolve) => setTimeout(resolve, 0));
     const pageOf = (url) => Number(new URL(url, "http://x").searchParams.get("page"));
     try {
       const { fetchImpl } = await setupApp({
@@ -1073,6 +1077,7 @@ describe("app request behavior", () => {
       expect(historyCalls().some(([url]) => pageOf(url) === 3)).toBe(false);
     } finally {
       window.location.hash = "";
+      await new Promise((resolve) => setTimeout(resolve, 0));
     }
   });
 
