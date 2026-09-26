@@ -496,7 +496,7 @@ function reducedMotionMeetsContract(rules = cssRules) {
 function forcedColorsMeetsContract(rules = cssRules) {
   installCascadeContractDocument();
   const focusElements = focusContractControls();
-  for (const selector of ["details.card > summary", "section[data-view] h2"]) {
+  for (const selector of ["details.card > summary", "section[data-view] > h2"]) {
     focusElements.push(document.querySelector(selector));
   }
   for (const element of focusElements) element.classList.add("a11y-focus-visible");
@@ -901,7 +901,7 @@ function focusOutlinesMeetContract(css = cssSource) {
   const controls = focusContractControls().filter((control) => !control.disabled);
   const expectedOutlines = new Map([
     ["details.card > summary", 3],
-    ["section[data-view] h2", 2],
+    ["section[data-view] > h2", 2],
   ]);
   for (const control of controls) control.classList.add("a11y-focus-visible");
   const controlsPass = controls.every((control) => {
@@ -938,7 +938,9 @@ function libraryLogOwnershipIsScoped(html = htmlSource) {
     && liveOwners.has(status)
     && log?.tagName === "PRE"
     && !log.hasAttribute("aria-live")
-    && !log.hasAttribute("role");
+    // Named region (a bare <pre> cannot carry a name), never a live role.
+    && log.getAttribute("role") === "region"
+    && log.getAttribute("aria-labelledby") === "library-log-heading";
 }
 
 function functionBody(source, name) {
@@ -1367,6 +1369,16 @@ describe("static accessibility contracts", () => {
     expect(lastValue("#progress-track::before", "background", media))
       .toBe("CanvasText");
     expect(lastValue("#progress-fill", "background", media)).toBe("Highlight");
+    // Selected tab and pressed toggles must stay distinguishable once the
+    // author fills are forced away.
+    for (const selector of [
+      '#view-nav [role="tab"][aria-selected="true"]',
+      'button[aria-pressed="true"]',
+    ]) {
+      expect(lastValue(selector, "background", media), selector).toBe("Highlight");
+      expect(lastValue(selector, "color", media), selector).toBe("HighlightText");
+      expect(lastValue(selector, "border", media), selector).toBe("3px solid CanvasText");
+    }
     expect(lastValue(":focus-visible", "outline-color", media)).toBe("Highlight");
     expect(lastValue(":focus-visible", "outline", media)).not.toMatch(
       /\b(?:none|0)\b/,
@@ -1472,6 +1484,10 @@ describe("static accessibility contracts", () => {
     expect(libraryLogOwnershipIsScoped(htmlSource.replace(
       '<pre id="library-log"',
       '<pre id="library-log" aria-live="polite"',
+    ))).toBe(false);
+    expect(libraryLogOwnershipIsScoped(htmlSource.replace(
+      ' role="region"',
+      ' role="log"',
     ))).toBe(false);
 
     installDocument();

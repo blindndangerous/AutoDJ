@@ -235,7 +235,10 @@
       background: #e67e22;
       color: #000;
     }
-    button:disabled {
+    /* aria-disabled: a focused button busy with a request keeps focus
+       (see withDisabled in modules/api-client.js) but must look busy. */
+    button:disabled,
+    button[aria-disabled="true"] {
       opacity: 0.45;
       cursor: not-allowed;
     }
@@ -684,13 +687,23 @@
       padding: 1rem 1.25rem;
       user-select: none;
       position: relative;
-      /* Heading appearance — replaces the removed <h2> inside <summary>.
-         Prevents double-announcement (button + heading) in NVDA/VoiceOver. */
+      /* Heading appearance for the card title (an <h2> inside the
+         summary, styled below). */
       font-size: 1.1rem;
       font-weight: 600;
       text-transform: uppercase;
       letter-spacing: 0.1em;
       color: var(--text-dim);
+    }
+    /* The card title is an <h2> inside the summary so heading navigation
+       reaches every card.  It takes the summary's look, not .card h2. */
+    details.card > summary > h2 {
+      display: inline;
+      margin: 0;
+      font: inherit;
+      letter-spacing: inherit;
+      text-transform: inherit;
+      color: inherit;
     }
     details.card > summary::-webkit-details-marker { display: none; }
     details.card > summary::after {
@@ -752,6 +765,12 @@
       font-size: 0.9rem;
       line-height: 1.4;
       pointer-events: none;
+    }
+    /* Moved out of the way when the focused control sits where the toast
+       would be (WCAG 2.4.11); see placeVisibleStatus in live-region.js. */
+    #status-toast.at-top {
+      top: 1rem;
+      bottom: auto;
     }
     /* Failures carry the same red edge as the stale-playback banner, so a
        confirmation and an error are not the same bordered box. */
@@ -987,7 +1006,7 @@
 
     /* ----------------------------------------------------------------
        Camelot wheel — decorative visual aid for harmonic mixing.
-       Hidden from AT (#badges-announce already conveys the key).
+       Hidden from AT (#now-playing-announce already conveys the key).
        ---------------------------------------------------------------- */
     #camelot-wheel {
       display: block;
@@ -1097,6 +1116,16 @@
       details.card > summary:focus-visible,
       section[data-view] h2:focus-visible {
         outline-color: Highlight;
+      }
+      /* Forced colours flatten the orange pressed fill and the accent
+         tab fill to Canvas, which made the selected tab and a pressed
+         toggle identical to their neighbours.  System highlight colours
+         and a heavier border bring the state back. */
+      #view-nav [role="tab"][aria-selected="true"],
+      button[aria-pressed="true"] {
+        background: Highlight;
+        color: HighlightText;
+        border: 3px solid CanvasText;
       }
     }
 

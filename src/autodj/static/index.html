@@ -17,10 +17,14 @@
     <input id="auth-token" name="code" type="text"
            autocomplete="one-time-code" inputmode="numeric"
            pattern="[0-9]{8}" maxlength="8" required
-           aria-describedby="auth-help auth-error">
+           aria-describedby="auth-help">
     <label for="auth-device-name">Device name <span class="visually-hidden">(optional)</span></label>
     <input id="auth-device-name" name="device_name" type="text"
            autocomplete="off" maxlength="64" placeholder="Kitchen tablet">
+    <!-- The alert is the one announcement path for a pairing error.  It
+         is deliberately not in the field's aria-describedby: focus
+         returns to the field straight after, and the description read
+         the same sentence a second time.  aria-invalid still marks it. -->
     <p id="auth-error" role="alert" aria-live="assertive"
        aria-atomic="true"></p>
     <button type="submit">Pair browser</button>
@@ -71,9 +75,11 @@
        ============================================================ -->
   <section data-view="now" id="panel-now" role="tabpanel" aria-labelledby="tab-now">
 
-  <!-- Now Playing -->
+  <!-- Now Playing.  Every card title is an <h2> inside its <summary>
+       (valid HTML) so the H key can reach Up Next, Lyrics and the rest;
+       the summary is still the disclosure button. -->
   <details class="card" id="now-playing-card" open>
-    <summary>Now Playing</summary>
+    <summary><h2>Now Playing</h2></summary>
 
     <!-- Shown when the websocket drops.  aria-hidden: #conn-status is the
          single announcement path for transport state, so this note exists
@@ -88,7 +94,9 @@
       <img id="cover-art" alt="" aria-hidden="true" hidden>
 
       <div class="now-playing-text">
-        <!-- aria-live region: screen reader announces track changes automatically -->
+        <!-- aria-live region: the single track-change announcement (title,
+             BPM, key, beatmatch).  Key and beatmatch sit in a visually
+             hidden span; the metadata line shows them. -->
         <div id="now-playing-announce"
              aria-live="polite"
              aria-atomic="true">
@@ -96,11 +104,11 @@
         </div>
         <div id="now-playing-meta"></div>
         <!-- Visual-only badge row: BPM / Camelot key / energy / beatmatch ratio.
-             aria-hidden because a separate live region announces the same
-             info on track change to avoid stepping on the title announcement. -->
+             aria-hidden because the track-change announcement above already
+             speaks BPM, key and beatmatch. -->
         <div id="now-playing-badges" aria-hidden="true" class="badges-row"></div>
         <!-- Camelot wheel: decorative visual aid only.  Current key + harmonic
-             compatibility are already announced via #badges-announce, so this
+             compatibility are already announced via #now-playing-announce, so this
              SVG is hidden from assistive tech (aria-hidden="true").  Sectors
              distinguish active / compatible / idle by stroke width AND fill
              so colour is not the sole indicator (WCAG 1.4.1). -->
@@ -116,14 +124,11 @@
         </svg>
         <!-- The ring key lives outside the SVG: inside it, 8 viewBox units
              rendered at 7.3 px, which made the wheel's only legend
-             unreadable.  aria-hidden with the wheel -- #badges-announce
+             unreadable.  aria-hidden with the wheel -- #now-playing-announce
              already says the key. -->
         <p id="camelot-legend" aria-hidden="true">Outer ring B (major) · inner ring A (minor)</p>
       </div>
     </div>
-    <!-- Independent polite region for badge announcements (key + beatmatch,
-         only on track change) so it never collides with the title above. -->
-    <div id="badges-announce" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
 
     <!-- Fix 3: removed role="img" which suppresses inner aria-live regions -->
     <!-- A11y C1 (v5.4.0 audit): progress bar exposes valuenow/valuetext
@@ -161,16 +166,18 @@
 
   <!-- Controls -->
   <details class="card" open>
-    <summary>Controls</summary>
+    <summary><h2>Controls</h2></summary>
 
-    <!-- Fix 5: role="toolbar" instead of <nav> — nav is for navigation, not action toolbars -->
-    <div role="toolbar" aria-label="Playback controls">
+    <!-- A labelled group, not a toolbar: a toolbar promises arrow-key
+         movement between its buttons, and five buttons are simpler to
+         reach with Tab than with a roving tabindex. -->
+    <div role="group" aria-label="Playback controls">
       <div class="controls-row">
         <!-- Fix 2: emoji wrapped in aria-hidden so screen readers don't double-announce -->
-        <!-- A11y C2 (v5.4.0 audit): aria-pressed exposes toggle state.
-             JS must update aria-pressed atomically with glyph + label. -->
+        <!-- Play / Pause / Resume: the label names the next action, so no
+             aria-pressed.  Mute and Discovery are the other pattern: a
+             fixed name plus aria-pressed. -->
         <button id="btn-pause"
-                aria-pressed="false"
                 disabled
                 title="Pause or resume playback">
           <span aria-hidden="true">▶</span> Play
@@ -203,7 +210,8 @@
       <input type="range"
              id="vol"
              min="0" max="100" value="100"
-             aria-label="Volume">
+             aria-label="Volume"
+             aria-valuetext="100%">
       <span id="vol-pct" aria-hidden="true">100%</span>
       <!-- Fix 2: emoji wrapped in aria-hidden -->
       <button id="btn-mute"
@@ -216,7 +224,7 @@
 
   <!-- 3-band EQ -->
   <details class="card">
-    <summary id="eq-heading">EQ</summary>
+    <summary id="eq-heading"><h2>EQ</h2></summary>
     <div role="group" aria-labelledby="eq-heading">
       <div class="eq-row">
         <label for="eq-low">Low</label>
@@ -252,6 +260,7 @@
   <dialog id="hotkey-help-modal" aria-labelledby="hotkey-help-title">
     <h2 id="hotkey-help-title" style="margin-top:0">Keyboard shortcuts</h2>
     <p>Transport keys work on the Now Playing tab. Status keys (Shift+letter) and <kbd>?</kbd> work from any tab. Letter and punctuation shortcuts work on focused buttons and sliders, but not while typing or using dropdown typeahead. Space activates a focused button; arrow keys operate the focused slider or tab.</p>
+    <p>If these single-key shortcuts get in your way, turn them all off with the <strong>Enable keyboard shortcuts</strong> checkbox under Settings, Keyboard. The choice is saved in this browser. This list stays available from the Keyboard shortcuts button.</p>
     <dl style="display:grid;grid-template-columns:max-content 1fr;column-gap:1rem;row-gap:0.25rem;margin:0">
       <dt><kbd>Space</kbd> / <kbd>k</kbd></dt><dd>Play / Pause / Resume</dd>
       <dt><kbd>n</kbd></dt><dd>Skip to next track</dd>
@@ -277,7 +286,7 @@
 
   <!-- Why this track? — plain-English explanation of the picker's choice -->
   <details class="card">
-    <summary>Why this track?</summary>
+    <summary><h2>Why this track?</h2></summary>
     <ul id="why-list" role="list" aria-live="polite" aria-atomic="true">
       <li class="no-results">
         No reasons yet — start playback to see why each track was picked.
@@ -287,8 +296,10 @@
 
   <!-- Up Next -->
   <details class="card" open>
-    <summary>Up Next</summary>
-    <p id="next-track-text" aria-live="polite" aria-atomic="true">—</p>
+    <summary><h2>Up Next</h2></summary>
+    <!-- Not live: it changes in the same tick as the track title, which
+         is the one track-change announcement.  Shift+N speaks it. -->
+    <p id="next-track-text">—</p>
   </details>
 
   <!-- Lyrics — collapsed by default; expands when the current track has
@@ -296,7 +307,7 @@
        polite #lyric-announce region below; pattern verified by
        accessibility-lead. -->
   <details id="lyrics-card" class="card" hidden>
-    <summary>Lyrics</summary>
+    <summary><h2>Lyrics</h2></summary>
     <ol id="lyrics-list" role="list" aria-label="Lyric lines"></ol>
     <!-- Visually hidden live region: announces only the active line, only on
          change (not on every WS tick).  aria-atomic so the full new line reads. -->
@@ -349,7 +360,7 @@
 
   <!-- Settings — full mirror of CLI flags -->
   <details class="card" open>
-    <summary>Settings</summary>
+    <summary><h2>Settings</h2></summary>
 
     <!-- Single shared status region for failures (success is silent — checkbox
          state already announced by the AT). -->
@@ -714,11 +725,22 @@
         Periodically injects a sonically <em>distant</em> track to break the auto-DJ out of a similarity loop, picking at random from the bottom quartile of cosine similarity.
       </span>
     </fieldset>
+
+    <fieldset>
+      <legend>Keyboard</legend>
+      <div class="settings-check">
+        <input type="checkbox" id="hotkeys-enabled" checked aria-describedby="hotkeys-enabled-desc">
+        <label for="hotkeys-enabled">Enable keyboard shortcuts</label>
+      </div>
+      <span class="setting-desc" id="hotkeys-enabled-desc">
+        Single-key shortcuts such as Space, N, M, the arrow keys and the question mark.  Turn this off if they clash with your screen reader or other keys you use; buttons and sliders keep working as usual.  Saved in this browser only.
+      </span>
+    </fieldset>
   </details>
 
   <!-- Voice liners -->
   <details class="card">
-    <summary>Voice liners</summary>
+    <summary><h2>Voice liners</h2></summary>
     <p class="card-desc">
       Drop-in spoken clips that play over the live mix every so often, like a real station ID.  Drop audio files (mp3, wav, ogg, m4a, flac, aac) into the configured folder, then set how often to fire and which rotation to use.
     </p>
@@ -795,10 +817,10 @@
 
   <!-- Queue -->
   <details class="card" open>
-    <summary>
+    <summary><h2>
       Queue
       <span id="queue-count" aria-hidden="true" style="color:var(--text-dim);font-weight:normal"></span>
-    </summary>
+    </h2></summary>
     <!-- Visually hidden announce region for queue mutations: "Added X", "Moved X up", "Removed X" -->
     <div id="queue-announce"
          role="status"
@@ -816,7 +838,7 @@
        user to "Search and use Next to add a track", so the field it
        refers to must not be hidden behind a disclosure. -->
   <details class="card" open>
-    <summary>Search Library</summary>
+    <summary><h2>Search Library</h2></summary>
     <div class="search-row">
       <!-- Fix 6: label provides accessible name; removed duplicate aria-label -->
       <label for="search-input"
@@ -841,7 +863,7 @@
 
   <!-- History -->
   <details class="card">
-    <summary>Recently Played</summary>
+    <summary><h2>Recently Played</h2></summary>
     <ul id="history-list" role="list" aria-label="Recently played tracks">
       <li><span class="no-results">Nothing played yet.</span></li>
     </ul>
@@ -854,7 +876,7 @@
        ============================================================ -->
   <section data-view="library" id="panel-library" role="tabpanel" hidden aria-labelledby="tab-library">
     <details class="card" open>
-      <summary>Library tools</summary>
+      <summary><h2>Library tools</h2></summary>
 
       <p>
         Run library-maintenance commands without dropping to a terminal.
@@ -913,7 +935,11 @@
            plus no role means NVDA never speaks it, so a two-hour index
            run produces one announcement, not one every ten seconds. -->
       <p id="lib-job-elapsed" aria-live="off" aria-hidden="true"></p>
+      <!-- Region role: a bare <pre> maps to the generic role, which may
+           not be named, so aria-labelledby was ignored and the focusable
+           log had no name.  A region is named, not live. -->
       <pre id="library-log"
+           role="region"
            aria-labelledby="library-log-heading"
            tabindex="0"
            style="display:block;margin:0;background:#0f1626;color:#cce0ff;

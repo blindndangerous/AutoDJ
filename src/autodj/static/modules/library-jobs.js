@@ -18,6 +18,7 @@ import {
   requestJson,
   withDisabled,
 } from "./api-client.js";
+import { announceStatus } from "./live-region.js";
 
 const _jobStatusState = new WeakMap();
 const _logState = new WeakMap();
@@ -206,6 +207,14 @@ async function refreshLibStats(els, control = null) {
     statWithKey.textContent     = s.tracks_with_key;
     statWithGenre.textContent   = s.tracks_with_genre;
     statWithEnergy.textContent  = s.tracks_with_energy;
+    // Pressing Refresh stats when nothing changed rewrote identical
+    // numbers, which is silent and looks like a dead button.  Confirm
+    // every press (force), through the page-wide status region so the
+    // job-phase region above keeps its own contract.
+    if (control) {
+      announceStatus(control.ownerDocument.getElementById("sr-status"),
+        "Stats refreshed.", { dwellMs: 3000, force: true });
+    }
   } catch (errorValue) {
     if (!isAuthenticatedRequestCurrent(epoch)) return;
     reportJobError(

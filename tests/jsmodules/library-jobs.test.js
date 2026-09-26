@@ -287,4 +287,45 @@ describe("library job controls", () => {
     expect(statCount.textContent).toBe("");
     vi.unstubAllGlobals();
   });
+
+  it("confirms every Refresh stats press, even when the numbers are unchanged", async () => {
+    document.body.innerHTML = `
+      <button id="refresh">Refresh stats</button>
+      <p id="status"></p><div id="sr-status"></div>
+      <span id="count"></span><span id="average"></span><span id="key"></span>
+      <span id="genre"></span><span id="energy"></span>`;
+    const stats = {
+      average_bpm: 120, track_count: 99, tracks_with_bpm: 80,
+      tracks_with_energy: 60, tracks_with_genre: 70, tracks_with_key: 50,
+    };
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new globalThis.Response(
+      JSON.stringify(stats), { headers: { "Content-Type": "application/json" } },
+    ))));
+    const region = document.querySelector("#sr-status");
+    installLibraryJobs({
+      jobStatus: document.querySelector("#status"),
+      statsRefresh: document.querySelector("#refresh"),
+      statCount: document.querySelector("#count"),
+      statAvgBpm: document.querySelector("#average"),
+      statWithKey: document.querySelector("#key"),
+      statWithGenre: document.querySelector("#genre"),
+      statWithEnergy: document.querySelector("#energy"),
+    });
+    // The automatic load on install is not announced.
+    await vi.waitFor(() => expect(document.querySelector("#count").textContent).toBe("99"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(region.textContent).toBe("");
+
+    const landed = [];
+    new window.MutationObserver((records) => {
+      for (const record of records) if (region.textContent) landed.push(record);
+    }).observe(region, { childList: true, characterData: true, subtree: true });
+    for (const expected of [1, 2]) {
+      document.querySelector("#refresh").click();
+      await vi.waitFor(() => expect(landed).toHaveLength(expected));
+    }
+    expect(region.textContent).toBe("Stats refreshed.");
+    expect(document.querySelector("#status").textContent).toBe("");
+    vi.unstubAllGlobals();
+  });
 });
