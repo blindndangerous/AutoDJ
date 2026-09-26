@@ -1595,7 +1595,7 @@ function _fmtTime(iso) {
   } catch (_) { return iso; }
 }
 
-async function fetchHistory(page) {
+async function fetchHistory(page, { announce = false } = {}) {
   _histPage = page;
   const request = historyRequestOwner.begin();
   try {
@@ -1623,11 +1623,23 @@ async function fetchHistory(page) {
       <td>${escHtml(it.artist)}</td>
       <td>${_fmtDuration(it.duration)}</td>
     </tr>`).join("");
-    info.textContent = `Page ${data.page} of ${data.pages}`;
+    const pageText = `Page ${data.page} of ${data.pages}`;
+    info.textContent = pageText;
     if (goto) goto.value = data.page;
-    document.getElementById("hist-prev").disabled = data.page <= 1;
-    document.getElementById("hist-next").disabled = data.page >= data.pages;
+    // aria-disabled, not disabled: Next is usually the focused control
+    // when the last page arrives, and disabling it would drop focus to
+    // the top of the page.  The click handlers honour the attribute.
+    document.getElementById("hist-prev")
+      .setAttribute("aria-disabled", String(data.page <= 1));
+    document.getElementById("hist-next")
+      .setAttribute("aria-disabled", String(data.page >= data.pages));
     pag.removeAttribute("hidden");
+    // Prev / Next / Go leave focus where it was, so say where they landed.
+    // The page label is already on screen, hence no visible mirror.
+    if (announce) {
+      announceStatus(document.getElementById("sr-status"), pageText,
+        { dwellMs: 3000, force: true, mirror: false });
+    }
   } catch (err) {
     if (!historyRequestOwner.isCurrent(request)) return;
     const tbody = document.getElementById("history-tbody");
@@ -1646,23 +1658,33 @@ async function fetchHistory(page) {
   }
 }
 
+function historyViewShown() {
+  return (location.hash || "").replace(/^#/, "") === "history";
+}
+
 document.addEventListener("DOMContentLoaded", () => {
-  document.getElementById("hist-prev").addEventListener("click", () => fetchHistory(_histPage - 1));
-  document.getElementById("hist-next").addEventListener("click", () => fetchHistory(_histPage + 1));
+  const stepPage = (button, delta) => {
+    if (button.getAttribute("aria-disabled") === "true") return;
+    void fetchHistory(_histPage + delta, { announce: true });
+  };
+  const prev = document.getElementById("hist-prev");
+  const next = document.getElementById("hist-next");
+  prev.addEventListener("click", () => stepPage(prev, -1));
+  next.addEventListener("click", () => stepPage(next, 1));
   document.getElementById("hist-go").addEventListener("click", () => {
     const v = parseInt(document.getElementById("hist-goto").value, 10);
-    if (v > 0) fetchHistory(v);
+    if (v > 0) void fetchHistory(v, { announce: true });
   });
   document.getElementById("hist-goto").addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       const v = parseInt(e.target.value, 10);
-      if (v > 0) fetchHistory(v);
+      if (v > 0) void fetchHistory(v, { announce: true });
     }
   });
 });
 
 window.addEventListener("hashchange", () => {
-  if ((location.hash || "").replace(/^#/, "") === "history") fetchHistory(1);
+  if (historyViewShown()) fetchHistory(1);
 });
 
 // Tab router moved to ./modules/tabs.js.
@@ -1757,6 +1779,9 @@ function startAuthenticatedApp(initialState) {
   });
   applyState(initialState);
   connectWS();
+  // Opening the page straight at #history fires no hashchange, so the
+  // table would sit empty until the user left the tab and came back.
+  if (historyViewShown()) void fetchHistory(1);
 }
 
 void bootstrapAuthenticatedApp({

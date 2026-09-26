@@ -945,6 +945,45 @@ describe("app request behavior", () => {
     expect(fetchImpl.mock.calls.some(([url]) => url === "/api/seek")).toBe(false);
   });
 
+  it("loads history on a direct #history visit and pages without losing focus", async () => {
+    window.location.hash = "#history";
+    const pageOf = (url) => Number(new URL(url, "http://x").searchParams.get("page"));
+    try {
+      const { fetchImpl } = await setupApp({
+        onRequest: (url) => url.startsWith("/api/history")
+          ? jsonResponse({
+            total: 60, page: pageOf(url), pages: 2,
+            items: [{ played_at: "2026-01-01T00:00:00Z", title: `T${pageOf(url)}`, artist: "A", duration: 60 }],
+          })
+          : jsonResponse({ ok: true }),
+      });
+      const historyCalls = () => fetchImpl.mock.calls
+        .filter(([url]) => url.startsWith("/api/history"));
+      await vi.waitFor(() => expect(historyCalls()).toHaveLength(1));
+      document.dispatchEvent(new Event("DOMContentLoaded"));
+      const prev = document.querySelector("#hist-prev");
+      const next = document.querySelector("#hist-next");
+      const status = document.querySelector("#sr-status");
+      await vi.waitFor(() => expect(prev.getAttribute("aria-disabled")).toBe("true"));
+      // The automatic first load is not announced; only user paging is.
+      expect(status.textContent).toBe("");
+
+      next.focus();
+      next.click();
+      await vi.waitFor(() => expect(status.textContent).toBe("Page 2 of 2"));
+      expect(next.getAttribute("aria-disabled")).toBe("true");
+      expect(next.disabled).toBe(false);
+      expect(document.activeElement).toBe(next);
+
+      // Next is unavailable on the last page, so nothing asks for page 3.
+      next.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(historyCalls().some(([url]) => pageOf(url) === 3)).toBe(false);
+    } finally {
+      window.location.hash = "";
+    }
+  });
+
   it("clears stale history and exposes a current load failure", async () => {
     await setupApp({
       onRequest: (url) => url.startsWith("/api/history")
