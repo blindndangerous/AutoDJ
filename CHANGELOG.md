@@ -29,9 +29,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the Now Playing button disagree.
 - `autodj serve --no-playback` is deprecated. It could never be turned off, so it never did
   anything: server-side audio is opted into with `--server-audio`, which is unchanged. The flag
-  still parses, is hidden from `--help`, and logs one informational line, because the container
-  image, both compose services and three workflows still pass it. A test now checks every flag
-  those files use against the options the CLI actually declares.
+  still parses so existing deployments keep starting, is hidden from `--help`, and logs one
+  informational line. The container image, the compose services and the workflows no longer pass
+  it, and a test checks every flag those files use against the options the CLI actually declares.
 - `pre-commit` now runs the same locked `ruff` and `mypy` that CI runs, instead of separately
   pinned mirrors that could disagree with it.
 - Dependencies moved to their current releases. Direct ones are all minor or patch.
