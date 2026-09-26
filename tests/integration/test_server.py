@@ -587,6 +587,23 @@ class TestProfiles:
         assert bridge.player._cfg.playback.key_sync_fx is False
         assert bridge.player._cfg.playback.crossfade_seconds == pytest.approx(5.0)
 
+    def test_profile_apply_persists_across_restart(self, bridge, tmp_path) -> None:
+        """Applied settings must reach web_state.json like every other settings route."""
+        import json
+
+        from fastapi.testclient import TestClient
+
+        idx = tmp_path / "idx"
+        idx.mkdir()
+        bridge.player._cfg.index.active_dir = str(idx)
+        tc = TestClient(create_app(bridge))
+        tc.post("/api/profiles", json={"name": "Loud", "crossfade_seconds": 7.5})
+
+        assert tc.post("/api/profiles/Loud/apply").status_code == 200
+
+        saved = json.loads((idx / "web_state.json").read_text(encoding="utf-8"))
+        assert saved["playback"]["crossfade_seconds"] == pytest.approx(7.5)
+
     def test_profile_get_bad_name_400(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 

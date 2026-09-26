@@ -1209,6 +1209,7 @@ def create_app(
             with contextlib.suppress(Exception):
                 bridge.set_preset(snap.preset)
                 applied.append("preset")
+        bridge.save_persistent_state()
         return {"applied": applied, "name": name}
 
     @app.get("/api/liners")
