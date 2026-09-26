@@ -235,7 +235,10 @@
       background: #e67e22;
       color: #000;
     }
-    button:disabled {
+    /* aria-disabled: a focused button busy with a request keeps focus
+       (see withDisabled in modules/api-client.js) but must look busy. */
+    button:disabled,
+    button[aria-disabled="true"] {
       opacity: 0.45;
       cursor: not-allowed;
     }

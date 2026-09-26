@@ -235,21 +235,72 @@ export function makeSingleFlight(operation) {
 
 const disabledOwners = new WeakMap();
 
+function holdsFocus(control) {
+  const active = control.ownerDocument?.activeElement;
+  return Boolean(active) && (active === control || Boolean(control.contains?.(active)));
+}
+
+function isButtonLike(control) {
+  if (control.tagName === "BUTTON") return true;
+  return control.tagName === "INPUT"
+    && ["button", "submit", "reset"].includes(control.type);
+}
+
+// Setting `disabled` on the focused control throws focus to <body> in
+// Chromium, and a closed <select> loses the arrow key that follows, so a
+// control that holds focus is never really disabled:
+//   - a focused button is marked aria-disabled and a capture-phase guard
+//     swallows its clicks until the request settles, so a double press
+//     still sends one request and focus never moves;
+//   - any other focused field keeps working, and its requests run one
+//     after another so the server sees the changes in the order made.
+// An unfocused control is disabled as before.
+function startHold(control) {
+  if (!holdsFocus(control)) {
+    const wasDisabled = control.disabled;
+    control.disabled = true;
+    return { count: 0, mode: "disabled", restore: () => { control.disabled = wasDisabled; } };
+  }
+  if (!isButtonLike(control)) {
+    return { count: 0, mode: "serial", tail: Promise.resolve(), restore: () => {} };
+  }
+  const doc = control.ownerDocument;
+  const wasAriaDisabled = control.getAttribute("aria-disabled");
+  const guard = (event) => {
+    if (!control.contains(event.target)) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  };
+  control.setAttribute("aria-disabled", "true");
+  doc.addEventListener("click", guard, true);
+  return {
+    count: 0,
+    mode: "aria",
+    restore: () => {
+      doc.removeEventListener("click", guard, true);
+      if (wasAriaDisabled === null) control.removeAttribute("aria-disabled");
+      else control.setAttribute("aria-disabled", wasAriaDisabled);
+    },
+  };
+}
+
 export async function withDisabled(control, operation) {
   if (!control) return operation();
-  let ownership = disabledOwners.get(control);
-  if (!ownership) {
-    ownership = { count: 0, wasDisabled: control.disabled };
-    disabledOwners.set(control, ownership);
+  let hold = disabledOwners.get(control);
+  if (!hold) {
+    hold = startHold(control);
+    disabledOwners.set(control, hold);
   }
-  ownership.count += 1;
-  control.disabled = true;
+  hold.count += 1;
   try {
-    return await operation();
+    if (hold.mode !== "serial") return await operation();
+    const run = hold.tail.then(() => operation());
+    hold.tail = run.catch(() => {});
+    return await run;
   } finally {
-    ownership.count -= 1;
-    if (ownership.count === 0) {
-      control.disabled = ownership.wasDisabled;
+    hold.count -= 1;
+    if (hold.count === 0) {
+      hold.restore();
       disabledOwners.delete(control);
     }
   }
