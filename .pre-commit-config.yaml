@@ -30,13 +30,6 @@ repos:
     hooks:
       - id: actionlint
 
-  - repo: https://github.com/PyCQA/bandit
-    rev: 1.9.4
-    hooks:
-      - id: bandit
-        args: [-c, pyproject.toml]
-        files: ^src/
-
   # Conventional Commits enforcement on commit-msg.
   - repo: https://github.com/alessandrojcm/commitlint-pre-commit-hook
     rev: v9.20.0
@@ -45,18 +38,14 @@ repos:
         stages: [commit-msg]
         additional_dependencies: ["@commitlint/config-conventional"]
 
-  # Dead-code scan -- catches unused module-level functions, classes,
-  # imports, and variables that ruff F401/F841 do not flag.
-  - repo: https://github.com/jendrikseipp/vulture
-    rev: v2.16
-    hooks:
-      - id: vulture
-        files: ^src/
-
   # Local hooks, all driven through uv.
   #
-  # ruff and mypy run this way so their versions come from uv.lock, and
-  # therefore match CI, instead of drifting behind separately pinned mirrors.
+  # ruff, mypy, bandit and vulture run this way so their versions come from
+  # uv.lock, and therefore match CI, instead of drifting behind separately
+  # pinned mirrors.  vulture reads its paths and allowlist from pyproject.toml
+  # and catches unused functions, classes, imports and variables that ruff
+  # F401/F841 do not flag.
+  #
   # deptry resolves against the project's own uv env (where pyproject.toml and
   # the dependency tree live); the published repo hook does not bundle the
   # project deps for resolution.  It checks that imports match
@@ -85,6 +74,20 @@ repos:
       - id: mypy
         name: mypy
         entry: uv run --frozen mypy src/autodj/
+        language: system
+        pass_filenames: false
+        files: ^(src/|pyproject\.toml$)
+
+      - id: bandit
+        name: bandit
+        entry: uv run --frozen bandit -r src/ -c pyproject.toml
+        language: system
+        pass_filenames: false
+        files: ^(src/|pyproject\.toml$)
+
+      - id: vulture
+        name: vulture
+        entry: uv run --frozen vulture
         language: system
         pass_filenames: false
         files: ^(src/|pyproject\.toml$)
