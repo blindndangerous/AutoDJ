@@ -57,7 +57,8 @@ except (ImportError, OSError):  # pragma: no cover -- missing PortAudio/minimal 
 
 from autodj.eq import apply_eq, make_eq_filters, make_eq_state, reset_eq_state
 from autodj.indexer import IndexEntry
-from autodj.stereo import envelope, per_channel
+from autodj.mixbus import RenderedTrack
+from autodj.stereo import SAMPLE_RATE, envelope, load_stereo, mono, per_channel, to_stereo
 
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig
@@ -684,6 +685,9 @@ class Player:
         self._beatmatch_ratio: float = 1.0
         # Last transition effect applied (string name) — exposed via state
         self._last_transition_fx: str = "none"
+        # Shared RNG for transition effects that use randomness, so a single
+        # seed drives both stereo channels identically (see apply_transition).
+        self._rng: np.random.Generator = np.random.default_rng()
         # Pick provenance — set by _pick_next describing HOW the current
         # track was selected.  Read by the bridge to build the
         # "why this track" sentence list shown in the web UI.
@@ -1358,7 +1362,7 @@ class Player:
             return None
         meta = self._dj_cache.get(path)
         if not meta.analysed:
-            meta = analyse_audio(audio_a, sr_a)
+            meta = analyse_audio(mono(audio_a), sr_a)
             self._merge_external_cues_into(meta, path)
             self._dj_cache.set(path, meta)
             self._dj_cache.flush(batch=10)
@@ -1576,15 +1580,11 @@ class Player:
     ) -> np.ndarray:
         """Load incoming track, resample to sr_a, ReplayGain — silence on failure."""
         try:
-            audio_b, sr_b = load_audio(str(next_entry.path))
-            if sr_b != sr_a:
-                import librosa as _librosa
-
-                audio_b = _librosa.resample(audio_b, orig_sr=sr_b, target_sr=sr_a)
+            audio_b = load_stereo(str(next_entry.path), sr_a)
             return self._apply_replaygain(audio_b, next_entry.path)
         except (OSError, ValueError, RuntimeError) as exc:
             logger.warning("Cannot pre-load next track (%s): %s", next_entry.path, exc)
-            return np.zeros(crossfade_samples, dtype=np.float32)
+            return np.zeros((crossfade_samples, 2), dtype=np.float32)
 
     def seek_to(self, seconds: float) -> float:
         """Seek the active track to *seconds* (absolute, from track start).
@@ -1632,13 +1632,13 @@ class Player:
         self._beatmatch_ratio = ratio
         return audio_b
 
-    def _skip_incoming_intro(  # pragma: no cover -- audio analysis, exercised by integration
+    def _skip_incoming_intro_samples(  # pragma: no cover -- audio analysis, exercised by integration
         self,
         audio_b: np.ndarray,
         sr_a: int,
         next_entry: IndexEntry,
-    ) -> np.ndarray:
-        """Drop the incoming track's intro so we mix into the first downbeat.
+    ) -> int:
+        """Return how many of *audio_b*'s leading samples to drop as intro.
 
         Triggered by either ``djmix.outro_intro_align`` or any marker-aware
         transition_mode (``full_intro_outro`` / ``fixed_skip_silence``).
@@ -1648,17 +1648,29 @@ class Player:
         mode = self._cfg.playback.transition_mode
         marker_skip = mode in ("full_intro_outro", "fixed_skip_silence")
         if self._dj_cache is None or not (self._cfg.djmix.outro_intro_align or marker_skip):
-            return audio_b
+            return 0
         meta_b = self._dj_cache.get(next_entry.path)
         if not meta_b.analysed:
-            meta_b = analyse_audio(audio_b, sr_a)
+            meta_b = analyse_audio(mono(audio_b), sr_a)
             self._merge_external_cues_into(meta_b, next_entry.path)
             self._dj_cache.set(next_entry.path, meta_b)
             self._dj_cache.flush(batch=10)
         if meta_b.intro_end_s <= 0.5:
-            return audio_b
-        skip = min(int(meta_b.intro_end_s * sr_a), len(audio_b) // 2)
-        return audio_b[skip:]
+            return 0
+        return min(int(meta_b.intro_end_s * sr_a), len(audio_b) // 2)
+
+    def _skip_incoming_intro(  # pragma: no cover -- audio analysis, exercised by integration
+        self,
+        audio_b: np.ndarray,
+        sr_a: int,
+        next_entry: IndexEntry,
+    ) -> np.ndarray:
+        """Drop the incoming track's intro so we mix into the first downbeat.
+
+        Thin wrapper over :meth:`_skip_incoming_intro_samples` kept for the
+        dry-run / browser-mode callers that still work on a plain array.
+        """
+        return audio_b[self._skip_incoming_intro_samples(audio_b, sr_a, next_entry) :]
 
     def _apply_outgoing_filter_sweep(
         self,
@@ -1726,7 +1738,8 @@ class Player:
         """Apply the configured transition effect; return (a_trimmed, b_head, extra)."""
         from autodj.transitions import TransitionFx, apply_transition, pick_effect
 
-        extra_layer = np.zeros(0, dtype=np.float32)
+        extra_shape = (0,) if audio_a_trimmed.ndim == 1 else (0, 2)
+        extra_layer = np.zeros(extra_shape, dtype=np.float32)
         fx_name = self._cfg.transitions.effect
         try:
             fx_mode = TransitionFx(fx_name)
@@ -1751,6 +1764,7 @@ class Player:
             head_for_fx,
             sr_a,
             chosen_fx,
+            seed=int(self._rng.integers(2**31)),
         )
 
         wet = max(0.0, min(1.0, self._cfg.transitions.wet_mix))
@@ -1801,6 +1815,74 @@ class Player:
                 )
         return mixed
 
+    def _render_track(
+        self,
+        current: IndexEntry,
+        next_entry: IndexEntry | None,
+        start_offset: int,
+    ) -> RenderedTrack | None:
+        """Render *current* from *start_offset* into the head of *next_entry*.
+
+        The overlap with *next_entry* is mixed in, and the returned
+        ``next_start_offset`` tells the next call where the incoming track's
+        audio continues, so no sample plays twice.
+
+        Args:
+            current: Track to render.
+            next_entry: Track mixed into the tail, or ``None`` for no overlap.
+            start_offset: Samples of *current* already played by the previous
+                overlap (including any skipped intro).
+
+        Returns:
+            The rendered track, or ``None`` when *current* cannot be loaded or
+            has no audio left after *start_offset*.
+        """
+        try:
+            audio_a = load_stereo(str(current.path), SAMPLE_RATE)
+        except (OSError, ValueError, RuntimeError) as exc:
+            logger.error("Cannot load %s: %s — skipping.", current.path, exc)
+            return None
+        audio_a = self._apply_replaygain(audio_a, current.path)
+        if start_offset >= len(audio_a):
+            return None
+        self._load_lyrics(current.path)
+        self._ensure_dj_cache()
+        meta_a = self._outgoing_meta(audio_a, SAMPLE_RATE, current.path)
+        audio_a = audio_a[start_offset:]
+        if next_entry is None:
+            return RenderedTrack(current, audio_a, None, 0, "")
+        meta_b = self._peek_incoming_meta(next_entry)
+        eff_s = self._effective_crossfade_seconds(meta_a, meta_b, current.length)
+        crossfade = int(eff_s * SAMPLE_RATE)
+        if crossfade >= len(audio_a):
+            return RenderedTrack(current, audio_a, next_entry, 0, "")
+        a_start = self._crossfade_start_in_a(audio_a, SAMPLE_RATE, meta_a, crossfade)
+        audio_b = self._load_incoming(next_entry, SAMPLE_RATE, crossfade)
+        audio_b = self._maybe_beatmatch(audio_b, current, next_entry)
+        intro = self._skip_incoming_intro_samples(audio_b, SAMPLE_RATE, next_entry)
+        audio_b = audio_b[intro:]
+        if a_start + crossfade > len(audio_a):
+            crossfade = max(0, len(audio_a) - a_start)
+        a_trimmed = audio_a[: a_start + crossfade]
+        if crossfade == 0 or len(audio_b) < crossfade:
+            return RenderedTrack(current, a_trimmed, next_entry, intro, "")
+        b_head = audio_b[:crossfade]
+        a_trimmed = self._apply_outgoing_filter_sweep(a_trimmed, SAMPLE_RATE, crossfade)
+        a_trimmed, b_head, extra = self._apply_transition_effect(
+            a_trimmed, audio_b, b_head, SAMPLE_RATE, crossfade
+        )
+        mixed = self._mix_overlap(a_trimmed, b_head, crossfade, SAMPLE_RATE, extra)
+        # The beat-match stretch (if any) changed audio_b's timeline, so
+        # `intro + crossfade` is measured in stretched samples.  The next
+        # render call loads next_entry fresh (unstretched), so convert back
+        # to that track's own sample count before returning the offset.
+        next_offset = intro + crossfade
+        if self._beatmatch_ratio != 1.0:
+            next_offset = int(next_offset / self._beatmatch_ratio)
+        return RenderedTrack(
+            current, to_stereo(mixed), next_entry, next_offset, str(self._last_transition_fx)
+        )
+
     def _play_with_crossfade(  # pragma: no cover -- end-to-end audio path
         self,
         current: IndexEntry,
@@ -1844,7 +1926,10 @@ class Player:
             crossfade_samples,
         )
 
-        audio_b = self._load_incoming(next_entry, sr_a, crossfade_samples)
+        # _load_incoming now always returns stereo (it backs the stereo
+        # _render_track path too); this whole method is still mono end to
+        # end, so drop back to mono right after loading.
+        audio_b = mono(self._load_incoming(next_entry, sr_a, crossfade_samples))
         audio_b = self._maybe_beatmatch(audio_b, current, next_entry)
         audio_b = self._skip_incoming_intro(audio_b, sr_a, next_entry)
 
