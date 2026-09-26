@@ -8,6 +8,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- The voice-liner endpoints could read or delete any file, not just liners. The settings API let
+  a client move the liner folder anywhere, for example to the folder holding `config.toml`, and
+  the liner download and delete routes only checked that the name was a plain file name. A paired
+  browser, or anyone on the LAN under `--insecure-lan`, could then download the config file with
+  its access token or delete the track database. Liner download and delete now accept only audio
+  file names, and the liner folder can only be set in the config file.
+- Pairing codes are harder to guess. A device that enters ten wrong codes within one five-minute
+  code window is refused until the window ends, and is told how long to wait; other devices can
+  keep pairing with the same code. If fifty wrong codes arrive from all devices in one window,
+  pairing pauses until the next code, and the pairing dialog says so. `autodj devices
+  pairing-code` now also says how many seconds the code has left.
+- Library jobs started from the web page now accept only the options the page itself sends
+  (`index --limit N`). Anything else, such as `prune --force`, is refused. This replaces a check
+  for shell characters that protected nothing, because jobs never run through a shell.
+- The automatic API pages at `/docs`, `/redoc` and `/openapi.json` are no longer served. On
+  loopback and under `--insecure-lan` they were open to anyone who could reach the server.
+- Every GitHub Actions step is pinned to an exact commit instead of a movable tag, and the
+  container's CPU-only PyTorch wheels are checked against recorded hashes before installing.
+
 ### Changed
 
 - A repository-wide simplification pass removed about 1,900 net lines of
@@ -44,14 +65,92 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   wheel carries its own local version on top (a Windows CPU install reports 2.14.0+cpu).
 - `config.toml.example` now lists every `[playback]` and `[model]` setting the loader accepts,
   including the liner triggers, the FX sync toggles and `dayparts_dir`.
+- `POST /api/playback-settings` now rejects unknown fields and invalid choices with a 422 and
+  changes nothing. It used to apply the valid part and then fail. An invalid liner pick mode, which
+  used to be ignored silently, is now rejected too. Profiles are checked the same way when they are
+  saved, and a stored profile with an invalid choice is refused with a 400 before anything changes.
+- `mutagen` and `scipy` are now part of the base install instead of the `play` extra, because
+  tag reading, album art, embedded lyrics and ReplayGain need them on every install. `pydantic`
+  and `huggingface_hub`, which AutoDJ imports directly, are now declared rather than arriving by
+  chance. The extras no longer repeat base packages, and Starlette may now take patch releases.
+- The container image installs the CPU-only build of PyTorch, so it no longer downloads several
+  gigabytes of CUDA libraries it cannot use. Native installs are unchanged and still pick up a GPU.
+- The TLS guidance now agrees everywhere: AutoDJ terminates TLS itself with `--ssl-certfile` and
+  `--ssl-keyfile`. A reverse proxy that terminates TLS in front of it is not supported, because
+  the session cookie's `Secure` flag follows AutoDJ's own TLS setting. The operations guide now
+  explains where `AUTODJ_ACCESS_TOKEN` comes from on a native install, since only Compose reads
+  `.env`.
+- The README lists every command, explains how to uninstall, and points to
+  `presets.toml.example`. CONTRIBUTING describes how to cut a release.
+- CI now lints and format-checks `scripts/`, runs the secret scan once over full history instead
+  of twice, and pre-commit takes `bandit` and `vulture` from the lock file like CI does. The slow
+  hooks (the full test suite, Trivy, the dependency audits and the code-quality scans) now run once
+  per `git push` instead of on every commit, and `uv run pre-commit install` sets up all three hook
+  types in one step.
 
 ### Added
 
 - A tested Windows AMD ROCm setup guide and launcher for GPU indexing and web
   library jobs, with model-kernel caches kept inside the project.
+- Keyboard shortcuts can be turned off under Settings, Keyboard. Single-key shortcuts can clash
+  with a screen reader or with typing habits, and WCAG asks that they can be switched off. The
+  choice is saved in the browser.
 
 ### Fixed
 
+- The container image had no `mutagen`, so under Docker there was no album art, no embedded
+  lyrics, no ReplayGain and no ALAC detection, and nothing said so.
+- Applying a saved profile changed the settings but never saved them, so a restart put the old
+  settings back.
+- With `--server-audio`, adding a track to the queue during a song made Up Next name it, but it
+  played one track later. The same edit could also pick a track from the web request while the
+  audio thread was picking one, so the two disagreed.
+- Reordering the queue kept only one copy of a track that was queued twice, and with
+  `--server-audio` a track change landing in the middle of a reorder could play a track twice.
+- With `--server-audio`, pressing "Play next" late in a song threw away the queued track that had
+  already been lined up. It now plays straight after the new one.
+- Starting a library job just after another finished could mark the new job as finished with exit
+  code -2 and mix the old job's last lines into its log.
+- On a slow disk or network share, deleting or playing a liner, saving a profile, or pairing a
+  device stalled every other request and the live updates until it finished.
+- Changing a setting, or pressing Pause, Mute, Shuffle, Search, a Library tools button or a liner
+  button, threw keyboard focus to the top of the page while the request ran, because the control
+  was disabled while it had focus. On a dropdown, the next arrow key went nowhere. Controls now
+  keep focus and ignore repeat presses until the request finishes.
+- A queue update from the server, such as the next queued track starting, threw focus off the
+  Up, Down or Remove button you were on. Focus now returns to the same button, or the nearest one.
+- Arrow keys on the seek slider jumped back to where the track was when the slider got focus,
+  because they read a position that deliberately stops updating while the slider has focus. They
+  now start from the real playback position, in exact seconds.
+- A playback error replaced the track title on screen and never reached the status line, and an
+  aborted load, which is harmless, was announced as an error. Errors now go to the status line and
+  the title stays put.
+- Changing the key notation announced into the Now Playing panel, which is hidden while you are on
+  Settings, so nothing was heard. The dropdown already speaks its own value, so the extra message
+  is gone.
+- History paging lost focus at the first and last page, never said which page you were on, and
+  showed "No tracks played yet" when the page was opened or reloaded straight onto the History tab.
+- Pause had a changing label and a pressed state, so NVDA said "Pause, toggle button, pressed";
+  Mute said "Unmute, pressed". Pause now just changes its label, and Mute keeps the name "Mute"
+  with a pressed state.
+- A track change was spoken as three separate messages in a confusing order: the new track, a bare
+  next track, then the previous track's key. It is now one announcement, "Artist — Title, 128 BPM,
+  key 8A", and Up Next is read on request with Shift+N.
+- In Windows High Contrast the selected tab and pressed buttons looked like all the others. They
+  are now drawn in the highlight colour with a thicker border.
+- The volume was spoken twice after each change, once as the slider value and once as "Volume 95%".
+  The slider now reads "95%" itself and the extra message only plays for the arrow-key shortcut.
+- A server update arriving just after you moved an EQ slider could undo the change.
+- Now Playing had no headings, so the H key could not reach Up Next or Lyrics. Every card title is
+  now a heading.
+- The Library tools output log had no name a screen reader would read.
+- A pairing error was read twice.
+- The playback buttons claimed to be a toolbar without supporting toolbar arrow keys; they are now
+  a labelled group.
+- The status message at the foot of the page could cover the control that had focus.
+- Refresh stats gave no confirmation when the numbers had not changed.
+- Pause, Mute and Discovery were rewritten every second even when nothing changed, which could
+  make a screen reader re-read the focused button.
 - MuQ model setup downloaded both safetensors and duplicate PyTorch weights,
   then rejected the cache because it contained two weight formats. Automatic
   downloads now keep only the safetensors checkpoint that MuQ loads by default.

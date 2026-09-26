@@ -159,6 +159,12 @@ and `?` work on every tab. Letter and punctuation shortcuts also work when a but
 focus. Text fields and dropdown typeahead keep their keys; Space activates a focused button and
 arrow keys operate the focused slider or tab. Open dialogs keep playback shortcuts inactive.
 
+To turn the shortcuts off, clear **Enable keyboard shortcuts** under Settings, Keyboard. The
+setting is on by default and is saved in this browser only, not on the server. With it off, no
+single-key shortcut fires; buttons, sliders, tabs and dialogs keep their normal keys, and the
+Keyboard shortcuts button still opens the list. If the browser blocks site storage, shortcuts stay
+on and the choice lasts only until the page is reloaded.
+
 ### Browser and server audio
 
 The default `serve` mode is browser-driven: the server picks tracks; the browser plays them.  This means the volume in the browser is independent of any CLI volume, and switching audio output devices in the browser only affects the browser.
