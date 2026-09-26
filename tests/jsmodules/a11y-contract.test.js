@@ -938,7 +938,9 @@ function libraryLogOwnershipIsScoped(html = htmlSource) {
     && liveOwners.has(status)
     && log?.tagName === "PRE"
     && !log.hasAttribute("aria-live")
-    && !log.hasAttribute("role");
+    // Named region (a bare <pre> cannot carry a name), never a live role.
+    && log.getAttribute("role") === "region"
+    && log.getAttribute("aria-labelledby") === "library-log-heading";
 }
 
 function functionBody(source, name) {
@@ -1482,6 +1484,10 @@ describe("static accessibility contracts", () => {
     expect(libraryLogOwnershipIsScoped(htmlSource.replace(
       '<pre id="library-log"',
       '<pre id="library-log" aria-live="polite"',
+    ))).toBe(false);
+    expect(libraryLogOwnershipIsScoped(htmlSource.replace(
+      ' role="region"',
+      ' role="log"',
     ))).toBe(false);
 
     installDocument();

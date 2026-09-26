@@ -929,7 +929,11 @@
            plus no role means NVDA never speaks it, so a two-hour index
            run produces one announcement, not one every ten seconds. -->
       <p id="lib-job-elapsed" aria-live="off" aria-hidden="true"></p>
+      <!-- Region role: a bare <pre> maps to the generic role, which may
+           not be named, so aria-labelledby was ignored and the focusable
+           log had no name.  A region is named, not live. -->
       <pre id="library-log"
+           role="region"
            aria-labelledby="library-log-heading"
            tabindex="0"
            style="display:block;margin:0;background:#0f1626;color:#cce0ff;
