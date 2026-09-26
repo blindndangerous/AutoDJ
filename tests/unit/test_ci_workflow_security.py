@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import pytest
@@ -5,6 +6,10 @@ import yaml
 
 ROOT = Path(__file__).parents[2]
 WORKFLOW_PATH = ROOT / ".github" / "workflows" / "ci.yml"
+WORKFLOWS = sorted((ROOT / ".github" / "workflows").glob("*.yml"))
+_USES = re.compile(r"^\s*(?:-\s+)?uses:\s+(?P<ref>\S+)(?P<rest>.*)$")
+_PINNED = re.compile(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}")
+_VERSION_COMMENT = re.compile(r"\s+# v\d+\.\d+\.\d+")
 GITLEAKS_VERSION = "8.21.2"
 GITLEAKS_LINUX_X64_SHA256 = "5bc41815076e6ed6ef8fbecc9d9b75bcae31f39029ceb55da08086315316e3ba"
 
@@ -41,7 +46,7 @@ def _codecov_uses_oidc(workflow: dict) -> bool:
     codecov_steps = [
         step
         for step in workflow["jobs"]["test"]["steps"]
-        if step.get("uses") == "codecov/codecov-action@v6"
+        if step.get("uses", "").startswith("codecov/codecov-action@")
     ]
     return len(codecov_steps) == 1 and codecov_steps[0].get("with", {}).get("use_oidc") == "true"
 
@@ -98,14 +103,14 @@ def test_codecov_oidc_permission_is_scoped_to_test_job() -> None:
 
     workflow = _workflow()
     for step in workflow["jobs"]["test"]["steps"]:
-        if step.get("uses") == "codecov/codecov-action@v6":
+        if step.get("uses", "").startswith("codecov/codecov-action@"):
             del step["with"]["use_oidc"]
             break
     assert not _oidc_permissions_are_least_privilege(workflow)
 
     workflow = _workflow()
     for step in workflow["jobs"]["test"]["steps"]:
-        if step.get("uses") == "codecov/codecov-action@v6":
+        if step.get("uses", "").startswith("codecov/codecov-action@"):
             step["with"]["use_oidc"] = "false"
             break
     assert not _oidc_permissions_are_least_privilege(workflow)
@@ -165,3 +170,33 @@ def test_container_scan_has_explicit_bounded_timeout() -> None:
     )
     del scan_step["with"]["timeout"]
     assert not _container_scan_has_bounded_timeout(workflow)
+
+
+def _unpinned_uses(text: str) -> list[str]:
+    """Return every external ``uses:`` line not pinned to a commit SHA with a version comment."""
+    bad = []
+    for line in text.splitlines():
+        match = _USES.match(line)
+        if match is None or match.group("ref").startswith("./"):
+            continue
+        if not (
+            _PINNED.fullmatch(match.group("ref"))
+            and _VERSION_COMMENT.fullmatch(match.group("rest"))
+        ):
+            bad.append(line.strip())
+    return bad
+
+
+@pytest.mark.parametrize("workflow", WORKFLOWS, ids=lambda path: path.name)
+def test_every_external_action_is_pinned_to_a_commit_sha(workflow: Path) -> None:
+    assert _unpinned_uses(workflow.read_text(encoding="utf-8")) == []
+
+
+def test_action_pin_check_rejects_tags_and_missing_version_comments() -> None:
+    sha = "0" * 40
+    assert _unpinned_uses("      - uses: actions/checkout@v6") != []
+    assert _unpinned_uses(f"      - uses: actions/checkout@{sha}") != []
+    assert _unpinned_uses(f"      - uses: actions/checkout@{sha} # v6") != []
+    assert _unpinned_uses(f"      - uses: actions/checkout@{sha[:39]} # v6.1.0") != []
+    assert _unpinned_uses(f"      - uses: actions/checkout@{sha} # v6.1.0") == []
+    assert _unpinned_uses("    uses: ./.github/workflows/ci.yml") == []

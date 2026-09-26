@@ -1,6 +1,6 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:best-practices", "docker:pinDigests"],
+  "extends": ["config:best-practices", "docker:pinDigests", "helpers:pinGitHubActionDigestsToSemver"],
   "packageRules": [
     {"matchDepTypes": ["devDependencies"], "automerge": true},
     {"matchDatasources": ["docker"], "groupName": "container base images"}
