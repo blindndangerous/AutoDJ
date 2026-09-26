@@ -19,12 +19,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   no longer works, use `uv sync`.
 - `.containerignore` was removed. It was a byte-for-byte copy of `.dockerignore`,
   which Podman reads when `.containerignore` is absent.
-
 - Setup documentation now includes container-only indexing, native Windows backup and restore,
   and checking out a release before upgrading. It corrects offline and dependency claims and
   explains which model changes require a new index. MuQ remains the default model.
 - Accessibility documentation identifies the missing published screen-reader sampling record
   for v0.16.1 and explains what must be recorded for the next release.
+- `POST /api/discovery` with a rate now starts discovery immediately rather than only configuring
+  it. Setting a rate while leaving the feature switched off is what made the Settings checkbox and
+  the Now Playing button disagree.
+- `autodj serve --no-playback` is deprecated. It could never be turned off, so it never did
+  anything: server-side audio is opted into with `--server-audio`, which is unchanged. The flag
+  still parses, is hidden from `--help`, and logs one informational line, because the container
+  image, both compose services and three workflows still pass it. A test now checks every flag
+  those files use against the options the CLI actually declares.
+- `pre-commit` now runs the same locked `ruff` and `mypy` that CI runs, instead of separately
+  pinned mirrors that could disagree with it.
+- Dependencies moved to their current releases. Direct ones are all minor or patch.
+  Transitively the lock moved `torchvision` 0.28 to 0.29 (it arrives through MuQ's `x-clip`
+  dependency), a 0.x minor that may change anything, and `evdev` 1.9.3 to 2.0.0 — a major; it is
+  Linux-only, arrives as an sdist and is compiled on the machine that installs it, so Windows and
+  macOS never see it and CI is what proves it — and the 0.x packages `tokenizers` 0.22.2 to 0.23.2, `numba` 0.66 to 0.67,
+  `llvmlite` 0.48 to 0.49 and `ast-serialize` 0.8 to 0.10. `cloudpickle` is a new transitive
+  dependency and `uc-micro-py` is no longer resolved. The lock pins `torch` 2.14.0; each platform
+  wheel carries its own local version on top (a Windows CPU install reports 2.14.0+cpu).
+- `config.toml.example` now lists every `[playback]` and `[model]` setting the loader accepts,
+  including the liner triggers, the FX sync toggles and `dayparts_dir`.
 
 ### Added
 
@@ -41,7 +60,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   final-layer output while retaining current, patched Transformers dependencies.
 - Update Vitest to 4.1.11 to address GHSA-82fw-gwwq-j7x9.
 - Refresh the container's PCRE2 runtime package to include Debian security fixes.
-
 - Restore web keyboard shortcuts from focused buttons and sliders, including next track and
   measure seeking. Keep native control keys intact, allow status shortcuts on every tab, and
   let `?` close the shortcuts dialog from its focused Close button.
@@ -79,10 +97,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - NVDA re-read the Library-tools status roughly every ten seconds for the whole life of a job,
   because the elapsed-seconds counter was inside the announcing region. The status now speaks once
   when a job starts and once when it finishes, whatever its length; the counter ticks on silently
-  beside it. Three more places had the same shape: a lost connection re-announced itself on every
-  three-second reconnect attempt, the seek slider read out its new position once a second while it
-  held focus, and a repeatedly failing background request repeated the same sentence every four
-  seconds.
+  beside it. Two more places had the same shape: the seek slider read out its new position once a
+  second while it held focus, and a repeatedly failing background request repeated the same
+  sentence every four seconds.
 - Every error and status message was invisible to sighted users — nine live regions were the only
   place a failure was reported, and all nine were clipped to one pixel. Clicking "Next" on a track
   that had been deleted from disk produced no visible response at all. The same message a screen
@@ -148,29 +165,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `.lrc` sidecars (common from Windows tools) decoded to nonsense.
 - The library search box carried `aria-expanded`, so screen readers announced "collapsed" and
   "expanded" on a plain search field with no popup. The result count still announces normally.
-
-### Changed
-
-- `POST /api/discovery` with a rate now starts discovery immediately rather than only configuring
-  it. Setting a rate while leaving the feature switched off is what made the Settings checkbox and
-  the Now Playing button disagree.
-- `autodj serve --no-playback` is deprecated. It could never be turned off, so it never did
-  anything: server-side audio is opted into with `--server-audio`, which is unchanged. The flag
-  still parses, is hidden from `--help`, and logs one informational line, because the container
-  image, both compose services and three workflows still pass it. A test now checks every flag
-  those files use against the options the CLI actually declares.
-- `pre-commit` now runs the same locked `ruff` and `mypy` that CI runs, instead of separately
-  pinned mirrors that could disagree with it.
-- Dependencies moved to their current releases. Direct ones are all minor or patch, except
-  `torchvision` 0.28 to 0.29, which is a 0.x minor and so may change anything. Transitively the
-  lock also moved `evdev` 1.9.3 to 2.0.0 — a major; it is Linux-only, arrives as an sdist and is
-  compiled on the machine that installs it, so Windows and macOS never see it and CI is what
-  proves it — and the 0.x packages `tokenizers` 0.22.2 to 0.23.2, `numba` 0.66 to 0.67,
-  `llvmlite` 0.48 to 0.49 and `ast-serialize` 0.8 to 0.10. `cloudpickle` is a new transitive
-  dependency and `uc-micro-py` is no longer resolved. The lock pins `torch` 2.14.0; each platform
-  wheel carries its own local version on top (a Windows CPU install reports 2.14.0+cpu).
-- `config.toml.example` now lists every `[playback]` and `[model]` setting the loader accepts,
-  including the liner triggers, the FX sync toggles and `dayparts_dir`.
 
 ## [0.16.1] - 2026-08-16
 
