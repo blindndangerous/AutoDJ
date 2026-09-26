@@ -374,6 +374,7 @@ function applyState(s) {
   // the current duration in seconds even when no deck is unlocked yet
   // (server-audio mode, pre-Play state).
   _lastDuration = dur;
+  _lastElapsed = elapsed;
   // Suppress live progress updates while the user is actively
   // dragging the seek slider so the UI doesn't yo-yo between the
   // drag position and a stale server-broadcast position.
@@ -1231,6 +1232,27 @@ btnSkip.addEventListener("click", async () => {
 const _seekTrack = document.getElementById("progress-track");
 let _seekLastAriaUpdate = 0;
 let _lastDuration = 0;
+// The arrow keys need the real playback position.  aria-valuenow is the
+// wrong source: it is frozen while the slider has focus (see
+// flushProgressValue) and it is a rounded percentage, so every press
+// restarted from wherever the slider stood when it was focused.
+let _lastElapsed = 0;
+let _keyboardSeek = null;
+
+function _currentPositionSeconds() {
+  if (_lastBrowserPlayback && playbackEnabled) {
+    try {
+      const t = decks[activeIdx].audio.currentTime;
+      if (isFinite(t)) return t;
+    } catch (_) {}
+  }
+  // Server audio: the pushed clock trails a seek by up to a tick, so a
+  // press straight after another builds on the position just requested.
+  if (_keyboardSeek && performance.now() - _keyboardSeek.at < 1500) {
+    return _keyboardSeek.seconds;
+  }
+  return _lastElapsed;
+}
 
 function _seekTrackDuration() {
   // Active deck's duration when known (browser-playback mode); falls
@@ -1311,7 +1333,7 @@ if (_seekTrack) {
   _seekTrack.addEventListener("keydown", (e) => {
     const dur = _seekTrackDuration();
     if (!(dur > 0)) return;
-    const cur = (parseFloat(_seekTrack.getAttribute("aria-valuenow")) || 0) / 100 * dur;
+    const cur = _currentPositionSeconds();
     let next = cur;
     let handled = true;
     switch (e.key) {
@@ -1325,7 +1347,11 @@ if (_seekTrack) {
     }
     if (handled) {
       e.preventDefault();
-      _seekToFrac(Math.max(0, Math.min(dur, next)) / dur, { force: true });
+      const target = Math.max(0, Math.min(dur, next));
+      _keyboardSeek = { seconds: target, at: performance.now() };
+      // force: the focused slider's value text is rewritten at once, so
+      // NVDA reads the new position exactly once per press.
+      _seekToFrac(target / dur, { force: true });
     }
   });
 }

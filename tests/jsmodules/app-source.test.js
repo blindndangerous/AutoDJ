@@ -800,6 +800,38 @@ describe("app request behavior", () => {
     expect(JSON.parse(options.body)).toEqual({ seconds: 99 });
   });
 
+  it("steps the focused seek slider from the real position, not its frozen value", async () => {
+    const baseState = {
+      current_track: { path: "a.mp3", title: "A" }, duration: 200, elapsed: 50,
+    };
+    const { fetchImpl, webSocket } = await setupApp({
+      initialState: baseState,
+      onRequest: () => jsonResponse({ ok: true }),
+    });
+    const seek = document.querySelector("#progress-track");
+    seek.focus();
+    const seeks = () => fetchImpl.mock.calls
+      .filter(([url]) => url === "/api/seek")
+      .map(([, options]) => JSON.parse(options.body).seconds);
+    const press = (key) => seek.dispatchEvent(new KeyboardEvent("keydown", {
+      key, bubbles: true, cancelable: true,
+    }));
+
+    // The playhead moved on while the slider held focus; its attribute did not.
+    webSocket.onmessage({ data: JSON.stringify({ ...baseState, elapsed: 80 }) });
+    expect(seek.getAttribute("aria-valuetext")).toBe("0:50 of 3:20");
+    press("ArrowRight");
+    await vi.waitFor(() => expect(seeks()).toEqual([85]));
+    expect(seek.getAttribute("aria-valuetext")).toBe("1:25 of 3:20");
+
+    // A stale tick lands before the server applies the seek; the next
+    // press still builds on the position just requested.
+    webSocket.onmessage({ data: JSON.stringify({ ...baseState, elapsed: 81 }) });
+    press("ArrowRight");
+    await vi.waitFor(() => expect(seeks()).toEqual([85, 90]));
+    expect(seek.getAttribute("aria-valuetext")).toBe("1:30 of 3:20");
+  });
+
   it("keeps pointer previews local and sends only the final absolute seek", async () => {
     let resolveSeek;
     const deckAudio = { currentTime: 10, duration: 100 };
