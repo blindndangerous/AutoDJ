@@ -61,6 +61,7 @@ def _make_player_mock(entry: IndexEntry | None = None) -> MagicMock:
     player._current_sr = 44100
     player._skip_event = MagicMock()
     player.bus = None  # browser / legacy mode: no server mix bus
+    player._peek_queue = False  # queue picks pop (no render-ahead peek)
     # Fields exposed via get_state / get_settings on the bridge API.
     player._eq_low = 1.0
     player._eq_mid = 1.0

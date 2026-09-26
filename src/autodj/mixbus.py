@@ -48,9 +48,11 @@ class RenderedTrack:
             elapsed time and seeks can be shown in the track's timeline.
         pick_mode: How *entry* was chosen (``"seed"``, ``"queue"``,
             ``"similarity"``...), for the "why this track" explanation.
+        from_queue: Whether *entry* was peeked from the user queue; it is
+            removed from the queue when this render starts playing.
         next_pick_mode: How *next_entry* was chosen.
-        next_from_queue: Whether *next_entry* was taken from the user
-            queue, so a discarded render can give it back.
+        next_from_queue: Whether *next_entry* was peeked from the user
+            queue (it stays queued until it starts).
     """
 
     entry: IndexEntry
@@ -61,6 +63,7 @@ class RenderedTrack:
     beatmatch_ratio: float = 1.0
     start_offset: int = 0
     pick_mode: str = "similarity"
+    from_queue: bool = False
     next_pick_mode: str = "similarity"
     next_from_queue: bool = False
 

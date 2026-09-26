@@ -2018,39 +2018,6 @@ class TestPickNextBranches:
         assert player._state.queue == []
         assert player._last_pick_mode == "queue"
 
-    def test_late_play_next_puts_the_displaced_queue_pick_back_in_front(self) -> None:
-        player = self._make_player()
-        entries = player._sim.entries
-        player._state.queue.extend([entries[2], entries[3]])
-        picked = player._pick_next(entries[0])  # pops entries[2] at track start
-        assert player._last_pick_mode == "queue"
-        player._state.queued_next = entries[4]  # "play next" mid-track
-
-        started = player._honour_late_queued_next(picked, picked_from_queue=True)
-
-        assert started is entries[4]
-        assert player._state.queued_next is None
-        assert player._state.queue == [entries[2], entries[3]]
-
-    def test_late_play_next_discards_a_displaced_similarity_pick(self) -> None:
-        player = self._make_player()
-        entries = player._sim.entries
-        player._state.queued_next = entries[4]
-
-        started = player._honour_late_queued_next(entries[1], picked_from_queue=False)
-
-        assert started is entries[4]
-        assert player._state.queue == []
-        assert player._last_pick_mode == "queue"
-
-    def test_transition_without_late_play_next_keeps_the_pick(self) -> None:
-        player = self._make_player()
-        entries = player._sim.entries
-        player._state.queue.append(entries[3])
-
-        assert player._honour_late_queued_next(entries[2], picked_from_queue=True) is entries[2]
-        assert player._state.queue == [entries[3]]
-
     def test_pure_shuffle_pool_empty_fallback(self) -> None:
         from collections import deque
 
@@ -2479,11 +2446,13 @@ def test_next_rendered_carries_offset_between_tracks(monkeypatch):
     p._pick_lock = threading.Lock()
     p._pending_pick_mode = "seed"
     p._pick_exclude = None
+    p._pending_from_queue = False
+    p._peek_queue = False
+    p._queue_reserved = None
     first, second, third = MagicMock(), MagicMock(), MagicMock()
     picks = iter([second, third])
     p._pick_next = lambda _current: next(picks)
     p._last_pick_mode = "similar"
-    p._honour_late_queued_next = lambda picked, _q: picked
     calls = []
 
     def fake_render(current, nxt, offset):
@@ -2508,17 +2477,13 @@ def test_next_rendered_skips_unrenderable_tracks_and_stops_without_a_cursor() ->
     p._pick_lock = threading.Lock()
     p._pending_pick_mode = "seed"
     p._pick_exclude = None
+    p._pending_from_queue = False
+    p._peek_queue = False
+    p._queue_reserved = None
     bad, good, after = MagicMock(), MagicMock(), MagicMock()
     picks = iter([good, after])
     p._pick_next = lambda _current: next(picks)
-    p._last_pick_mode = "queue"
-    seen_from_queue = []
-
-    def honour(picked, from_queue):
-        seen_from_queue.append(from_queue)
-        return picked
-
-    p._honour_late_queued_next = honour
+    p._last_pick_mode = "similarity"
 
     def fake_render(current, nxt, _offset):
         if current is bad:
@@ -2530,7 +2495,6 @@ def test_next_rendered_skips_unrenderable_tracks_and_stops_without_a_cursor() ->
     p._pending_offset = 55
     rendered = p._next_rendered()
     assert rendered is not None and rendered.entry is good
-    assert seen_from_queue == [True, True]
     assert (p._pending_entry, p._pending_offset) == (after, 7)
 
     p._pending_entry = None
@@ -2545,9 +2509,11 @@ def test_next_rendered_gives_up_after_five_failed_renders() -> None:
     p._pick_lock = threading.Lock()
     p._pending_pick_mode = "seed"
     p._pick_exclude = None
+    p._pending_from_queue = False
+    p._peek_queue = False
+    p._queue_reserved = None
     p._pick_next = lambda _current: MagicMock()
     p._last_pick_mode = "similarity"
-    p._honour_late_queued_next = lambda picked, _q: picked
     attempts = []
     p._render_track = lambda current, _nxt, _offset: attempts.append(current)
     p._pending_entry = MagicMock()
@@ -2816,6 +2782,8 @@ class TestNextRenderedProvenance:
         assert rendered.next_entry is queued
         assert rendered.next_pick_mode == "queue"
         assert rendered.next_from_queue is True
+        assert player._state.queue == [queued]  # peeked, not taken
+        assert player._pending_from_queue is True
 
     def test_track_start_shows_the_render_pick_mode(self) -> None:
         player = _bus_player()
@@ -2963,35 +2931,168 @@ class TestTrackStartRobustness:
         assert entry.path in player._state.recently_played
 
 
-class TestDiscardedRenders:
-    def test_queue_pick_returns_to_the_queue_front(self) -> None:
-        player = _bus_player()
-        a, b, c = player._sim.entries[1:4]
-        player._state.queue.append(c)
-        from dataclasses import replace
+class TestPeekThenCommit:
+    """Queue picks are peeked when rendered and removed only when they start."""
 
-        track = replace(_rendered_with(a, b), next_from_queue=True)
-        player._restore_discarded_pick(track)
-        assert player._state.queue == [b, c]
-
-    def test_similarity_pick_is_not_queued(self) -> None:
+    def test_render_ahead_peek_skips_the_reserved_upcoming_track(self) -> None:
         player = _bus_player()
-        a, b = player._sim.entries[1:3]
-        player._restore_discarded_pick(_rendered_with(a, b))
+        a, b = player._sim.entries[2:4]
+        player._state.queue.extend([a, b])
+        player._render_track = _stub_render  # type: ignore[method-assign]
+        player._set_render_cursor(a, 0, "queue", from_queue=True)  # A is on its way
+        rendered = player._next_rendered()
+        assert rendered is not None
+        assert rendered.from_queue is True
+        assert rendered.next_entry is b
+        assert player._state.queue == [a, b]
+        assert player._peek_queue is False and player._queue_reserved is None
+
+    def test_queued_next_is_peeked_before_the_queue(self) -> None:
+        player = _bus_player()
+        first, x, a = player._sim.entries[1], player._sim.entries[4], player._sim.entries[2]
+        player._state.queue.append(a)
+        player._state.queued_next = x
+        player._render_track = _stub_render  # type: ignore[method-assign]
+        player.reset_render_ahead(first, 0)
+        rendered = player._next_rendered()
+        assert rendered is not None and rendered.next_entry is x
+        assert player._state.queued_next is x
+
+    def test_browser_mode_pick_still_pops(self) -> None:
+        player = _bus_player()
+        a = player._sim.entries[2]
+        player._state.queue.append(a)
+        assert player._pick_next(player._sim.entries[0]) is a
         assert player._state.queue == []
 
-    def test_refresh_rewinds_to_the_discarded_upcoming_track(self) -> None:
+    def test_render_error_keeps_the_queue_head_for_the_retry(self) -> None:
         player = _bus_player()
-        upcoming = player._sim.entries[2]
-        player._pending_entry = player._sim.entries[4]  # cursor already past it
-        player._render_ahead._ready = _rendered_with(
-            upcoming, start_offset=99, pick_mode="anchored"
+        first, a = player._sim.entries[1], player._sim.entries[2]
+        player._state.queue.append(a)
+        calls = []
+
+        def flaky(current, nxt, offset):
+            calls.append(nxt)
+            if len(calls) == 1:
+                raise RuntimeError("decoder hiccup")
+            return _stub_render(current, nxt, offset)
+
+        player._render_track = flaky  # type: ignore[method-assign]
+        player.reset_render_ahead(first, 0)
+        with pytest.raises(RuntimeError):
+            player._next_rendered()
+        assert player._pending_entry is first  # cursor untouched
+        assert player._state.queue == [a]
+        rendered = player._next_rendered()
+        assert rendered is not None and rendered.next_entry is a
+        assert calls == [a, a]
+
+    def test_unplayable_queue_pick_is_dropped_so_it_is_not_peeked_again(self) -> None:
+        player = _bus_player()
+        bad, a = player._sim.entries[2], player._sim.entries[3]
+        player._state.queue.extend([bad, a])
+
+        def render(current, nxt, offset):
+            return None if current is bad else _stub_render(current, nxt, offset)
+
+        player._render_track = render  # type: ignore[method-assign]
+        player._set_render_cursor(bad, 0, "queue", from_queue=True)
+        rendered = player._next_rendered()
+        assert rendered is not None and rendered.entry is a
+        assert player._state.queue == [a]  # BAD removed; A waits until it starts
+
+    def test_commit_clears_a_matching_queued_next_first(self) -> None:
+        player = _bus_player()
+        x = player._sim.entries[4]
+        player._state.queued_next = x
+        player._state.queue.append(x)
+        player._commit_queue_pick(x)
+        assert player._state.queued_next is None
+        assert player._state.queue == [x]
+
+    def test_commit_removes_exactly_one_occurrence(self) -> None:
+        player = _bus_player()
+        a, b = player._sim.entries[2:4]
+        player._state.queue.extend([b, a, a])
+        player._commit_queue_pick(a)
+        assert player._state.queue == [b, a]
+
+    def test_commit_of_a_removed_pick_does_nothing(self) -> None:
+        player = _bus_player()
+        a, b = player._sim.entries[2:4]
+        player._state.queue.append(b)
+        player._commit_queue_pick(a)
+        assert player._state.queue == [b]
+
+    def test_take_render_commits_only_queue_picks(self) -> None:
+        from dataclasses import replace
+
+        player = _bus_player()
+        a, b = player._sim.entries[2:4]
+        player._state.queue.extend([a, b])
+        player._render_ahead._ready = replace(_rendered_with(a), from_queue=True)
+        taken = player._take_render()
+        assert taken is not None and taken.entry is a
+        assert player._state.queue == [b]
+        player._render_ahead._ready = _rendered_with(b)  # a similarity pick
+        player._take_render()
+        assert player._state.queue == [b]
+        assert player._take_render() is None
+
+
+def _queued_render(entry, next_entry, from_queue=False, next_from_queue=False):
+    from dataclasses import replace
+
+    return replace(
+        _rendered_with(entry, next_entry), from_queue=from_queue, next_from_queue=next_from_queue
+    )
+
+
+class TestQueuePickStaleness:
+    def test_similarity_pick_goes_stale_once_the_queue_has_a_head(self) -> None:
+        player = _bus_player()
+        u, n, a = player._sim.entries[1:4]
+        track = _queued_render(u, n)
+        assert player._queue_pick_is_stale(track) is False
+        player._state.queue.append(a)
+        assert player._queue_pick_is_stale(track) is True
+
+    def test_queue_pick_goes_stale_when_the_head_changes_or_is_removed(self) -> None:
+        player = _bus_player()
+        u, a, b = player._sim.entries[1:4]
+        track = _queued_render(u, a, next_from_queue=True)
+        player._state.queue.extend([a, b])
+        assert player._queue_pick_is_stale(track) is False
+        player._state.queue[:] = [b, a]
+        assert player._queue_pick_is_stale(track) is True
+        player._state.queue[:] = []
+        assert player._queue_pick_is_stale(track) is True
+
+    def test_the_track_itself_is_skipped_when_it_came_from_the_queue(self) -> None:
+        player = _bus_player()
+        u, a = player._sim.entries[1:3]
+        track = _queued_render(u, a, from_queue=True, next_from_queue=True)
+        player._state.queue.extend([u, a])
+        assert player._queue_pick_is_stale(track) is False
+
+    def test_rewind_and_skip_past_move_the_cursor(self) -> None:
+        from dataclasses import replace
+
+        player = _bus_player()
+        u, a = player._sim.entries[1:3]
+        track = replace(
+            _queued_render(u, a, from_queue=True, next_from_queue=True),
+            start_offset=11,
+            next_start_offset=22,
+            pick_mode="queue",
+            next_pick_mode="queue",
         )
-        player.refresh_render_ahead()
-        assert player._render_ahead._ready is None
-        assert player._pending_entry is upcoming
-        assert player._pending_offset == 99
-        assert player._pending_pick_mode == "anchored"
+        player._rewind_render_cursor(track)
+        assert (player._pending_entry, player._pending_offset) == (u, 11)
+        assert player._pending_from_queue is True
+        player._skip_past_render(track)
+        assert (player._pending_entry, player._pending_offset) == (a, 22)
+        assert (player._pending_pick_mode, player._pending_from_queue) == ("queue", True)
 
     def test_refresh_without_a_ready_track_keeps_the_cursor(self) -> None:
         player = _bus_player()
@@ -3000,6 +3101,8 @@ class TestDiscardedRenders:
         player.refresh_render_ahead()
         assert player._pending_entry is cursor
 
+
+class TestPlayNow:
     def test_play_now_moves_the_cursor_announces_and_skips(self) -> None:
         player = _bus_player()
         player.bus = MagicMock()
@@ -3007,6 +3110,7 @@ class TestDiscardedRenders:
         player.play_now(x)
         assert (player._pending_entry, player._pending_offset) == (x, 0)
         assert player._pending_pick_mode == "queue"
+        assert player._pending_from_queue is False  # a jump, not a queue peek
         assert player._state.next_track is x
         player.bus.skip.assert_called_once_with()
 

@@ -14,51 +14,94 @@ from autodj.render_ahead import RenderAhead
 WAIT = 2.0  # generous upper bound; every wait below returns as soon as it can
 
 
-def _track(name: str) -> RenderedTrack:
+def _track(name: str, count: int = 0) -> RenderedTrack:
+    """A tiny render; ``start_offset`` stores the cursor position it began at."""
     entry = MagicMock()
-    entry.path = name
-    return RenderedTrack(entry, np.zeros((10, 2), np.float32), None, 0, "")
+    entry.path = f"{name}{count}"
+    return RenderedTrack(entry, np.zeros((10, 2), np.float32), None, 0, "", start_offset=count)
 
 
 class _Cursor:
-    """Fake ``Player._next_rendered``: renders ``name0``, ``name1``... in order."""
+    """Fake ``Player._next_rendered`` with rewind / skip-past hooks.
+
+    Renders ``name0``, ``name1``... in order.  An optional gate blocks
+    renders (when cleared) so tests can hold one in flight.
+    """
 
     def __init__(self, name: str = "t") -> None:
         self.name = name
         self.count = 0
         self.calls = 0
         self.called = threading.Event()
+        self.rendering = threading.Event()
+        self.gate = threading.Event()
+        self.gate.set()
+        self.stale: set[str] = set()
+        self.rewound: list[str] = []
+        self.skipped_past: list[str] = []
 
     def __call__(self) -> RenderedTrack | None:
         self.calls += 1
         self.called.set()
-        track = _track(f"{self.name}{self.count}")
+        self.rendering.set()
+        assert self.gate.wait(WAIT)
+        track = _track(self.name, self.count)
         self.count += 1
         return track
+
+    def is_stale(self, track: RenderedTrack) -> bool:
+        return track.entry.path in self.stale
+
+    def rewind(self, track: RenderedTrack) -> None:
+        self.rewound.append(track.entry.path)
+        self.count = track.start_offset
+
+    def skip_past(self, track: RenderedTrack) -> None:
+        self.skipped_past.append(track.entry.path)
+        self.count = track.start_offset + 1
 
 
 @pytest.fixture
 def worker_factory():
     workers: list[RenderAhead] = []
+    cursors: list[_Cursor] = []
 
-    def make(render, retry_seconds: float = 0.01) -> RenderAhead:
-        worker = RenderAhead(render, retry_seconds=retry_seconds)
+    def make(render=None, retry_seconds: float = 0.01) -> tuple[RenderAhead, _Cursor]:
+        cursor = _Cursor()
+        worker = RenderAhead(
+            render or cursor,
+            retry_seconds=retry_seconds,
+            is_stale=cursor.is_stale,
+            rewind=cursor.rewind,
+            skip_past=cursor.skip_past,
+        )
         workers.append(worker)
-        return worker
+        cursors.append(cursor)
+        return worker, cursor
 
     yield make
+    for cursor in cursors:
+        cursor.gate.set()
     for worker in workers:
         worker.stop(timeout=WAIT)
 
 
+def _wait_for_ready(worker: RenderAhead) -> RenderedTrack:
+    """Wait for a freshly rendered track (not just a fallback) and peek it."""
+    with worker._cond:
+        assert worker._cond.wait_for(lambda: worker._ready is not None, WAIT)
+        ready = worker._ready
+    assert ready is not None
+    return ready
+
+
 def test_pop_returns_none_before_anything_is_ready(worker_factory) -> None:
-    worker = worker_factory(_Cursor())
+    worker, _ = worker_factory()
     assert worker.pop() is None
 
 
 def test_renders_one_track_ahead_and_pops_it(worker_factory) -> None:
-    cursor = _Cursor()
-    worker = worker_factory(cursor)
+    worker, _ = worker_factory()
     worker.start()
     assert worker.wait_ready(WAIT)
     track = worker.pop()
@@ -67,8 +110,7 @@ def test_renders_one_track_ahead_and_pops_it(worker_factory) -> None:
 
 
 def test_keeps_at_most_one_track_ready(worker_factory) -> None:
-    cursor = _Cursor()
-    worker = worker_factory(cursor)
+    worker, cursor = worker_factory()
     worker.start()
     assert worker.wait_ready(WAIT)
     # With a track waiting, the worker must not render another one.
@@ -78,7 +120,7 @@ def test_keeps_at_most_one_track_ready(worker_factory) -> None:
 
 
 def test_pop_triggers_the_next_render(worker_factory) -> None:
-    worker = worker_factory(_Cursor())
+    worker, _ = worker_factory()
     worker.start()
     assert worker.wait_ready(WAIT)
     first = worker.pop()
@@ -99,7 +141,7 @@ def test_nothing_renderable_retries_without_a_ready_track(worker_factory) -> Non
             retried.set()
         return None
 
-    worker = worker_factory(render)
+    worker, _ = worker_factory(render)
     worker.start()
     assert retried.wait(WAIT)
     assert worker.pop() is None
@@ -115,33 +157,28 @@ def test_render_exception_is_logged_and_retried(worker_factory, caplog) -> None:
             raise outcome
         return outcome  # type: ignore[return-value]
 
-    worker = worker_factory(render)
+    worker, _ = worker_factory(render)
     with caplog.at_level("ERROR", logger="autodj.render_ahead"):
         worker.start()
         assert worker.wait_ready(WAIT)
     track = worker.pop()
-    assert track is not None and track.entry.path == "ok"
+    assert track is not None and track.entry.path == "ok0"
     assert "decode failed" in caplog.text
 
 
+# --- hard reset (new set, play now) ---------------------------------------
+
+
 def test_reset_while_idle_applies_immediately_and_discards_ready(worker_factory) -> None:
-    cursor = _Cursor()
-    discards: list[RenderedTrack] = []
-    worker = worker_factory(cursor)
-    worker._on_discard = discards.append
+    worker, cursor = worker_factory()
     worker.start()
     assert worker.wait_ready(WAIT)
     prepared = []
-    worker.reset(lambda discarded: prepared.append((cursor.count, discarded)))
-    # The ready "t0" is thrown away and handed to both prepare and on_discard;
-    # the prepare step ran right away.
-    assert len(prepared) == 1
-    count, discarded = prepared[0]
-    assert count == 1
-    assert discarded is not None and discarded.entry.path == "t0"
-    assert discards == [discarded]
+    worker.reset(lambda: prepared.append(cursor.count))
+    assert prepared == [1]  # ran right away; the ready "t0" is gone
+    assert worker.pop() is None
 
-    def rename(_discarded: RenderedTrack | None) -> None:
+    def rename() -> None:
         cursor.name, cursor.count = "new", 0
 
     worker.reset(rename)
@@ -151,90 +188,180 @@ def test_reset_while_idle_applies_immediately_and_discards_ready(worker_factory)
 
 
 def test_reset_before_start_prepares_first_render(worker_factory) -> None:
-    cursor = _Cursor()
-    worker = worker_factory(cursor)
-    seen = []
-
-    def prepare(discarded: RenderedTrack | None) -> None:
-        seen.append(discarded)
-        cursor.name = "seed"
-
-    worker.reset(prepare)
+    worker, cursor = worker_factory()
+    worker.reset(lambda: setattr(cursor, "name", "seed"))
     assert cursor.name == "seed"
-    assert seen == [None]
     worker.start()
     assert worker.wait_ready(WAIT)
     track = worker.pop()
     assert track is not None and track.entry.path == "seed0"
 
 
-def _gated_render(state: dict, gate: threading.Event, rendering: threading.Event):
-    def render() -> RenderedTrack | None:
-        name = state["name"]
-        if name == "old":
-            rendering.set()
-            assert gate.wait(WAIT)
-        track = _track(f"{name}{state['count']}")
-        state["count"] += 1  # the render advances its cursor, like _next_rendered
-        return track
-
-    return render
-
-
 def test_reset_during_a_render_discards_it_and_defers_prepare(worker_factory) -> None:
-    gate, rendering = threading.Event(), threading.Event()
-    state = {"name": "old", "count": 0}
-    prepared: list[RenderedTrack | None] = []
-    discards: list[RenderedTrack] = []
-
-    def prepare(discarded: RenderedTrack | None) -> None:
-        prepared.append(discarded)
-        state["name"], state["count"] = "new", 0
-
-    worker = worker_factory(_gated_render(state, gate, rendering))
-    worker._on_discard = discards.append
+    worker, cursor = worker_factory()
+    cursor.gate.clear()
     worker.start()
-    assert rendering.wait(WAIT)
+    assert cursor.rendering.wait(WAIT)
+    prepared = threading.Event()
+
+    def prepare() -> None:
+        cursor.name, cursor.count = "new", 0
+        prepared.set()
+
     worker.reset(prepare)
     # Deferred: applying it now would be overwritten by the in-flight render.
-    assert prepared == []
-    gate.set()
-    assert worker.wait_ready(WAIT)
-    track = worker.pop()
-    assert track is not None and track.entry.path == "new0"
-    # The stale in-flight render went to on_discard and to the prepare.
-    assert len(prepared) == 1 and prepared[0] is not None
-    assert prepared[0].entry.path == "old0"
-    assert discards == [prepared[0]]
+    assert not prepared.is_set()
+    cursor.gate.set()
+    track = _wait_for_ready(worker)
+    assert prepared.is_set()
+    assert track.entry.path == "new0"
 
 
 def test_resets_queued_behind_a_render_run_in_order(worker_factory) -> None:
-    gate, rendering = threading.Event(), threading.Event()
-    state = {"name": "old", "count": 0}
-    calls: list[tuple[str, str | None]] = []
+    worker, cursor = worker_factory()
+    cursor.gate.clear()
+    worker.start()
+    assert cursor.rendering.wait(WAIT)
+    order: list[str] = []
 
     def move_to(name: str):
-        def prepare(discarded: RenderedTrack | None) -> None:
-            calls.append((name, discarded.entry.path if discarded else None))
-            state["name"], state["count"] = name, 0
+        def prepare() -> None:
+            order.append(name)
+            cursor.name, cursor.count = name, 0
 
         return prepare
 
-    worker = worker_factory(_gated_render(state, gate, rendering))
-    worker.start()
-    assert rendering.wait(WAIT)
     worker.reset(move_to("first"))
     worker.reset(move_to("second"))
-    gate.set()
-    assert worker.wait_ready(WAIT)
-    track = worker.pop()
-    assert track is not None and track.entry.path == "second0"
-    # Only the first queued prepare sees the discarded render.
-    assert calls == [("first", "old0"), ("second", None)]
+    cursor.gate.set()
+    assert _wait_for_ready(worker).entry.path == "second0"
+    assert order == ["first", "second"]
+
+
+def test_reset_drops_a_fallback_too(worker_factory) -> None:
+    worker, cursor = worker_factory()
+    worker.start()
+    ready = _wait_for_ready(worker)
+    cursor.stale.add(ready.entry.path)
+    cursor.gate.clear()
+    worker.refresh()
+    assert worker._fallback is ready
+    worker.reset(lambda: setattr(cursor, "name", "jump"))
+    assert worker._fallback is None
+    cursor.gate.set()
+    assert _wait_for_ready(worker).entry.path.startswith("jump")
+
+
+# --- soft refresh (queue edits): never dead air -----------------------------
+
+
+def test_refresh_leaves_a_ready_track_that_is_still_valid(worker_factory) -> None:
+    worker, cursor = worker_factory()
+    worker.start()
+    ready = _wait_for_ready(worker)
+    worker.refresh()
+    assert worker._ready is ready
+    assert cursor.rewound == []
+    assert cursor.calls == 1
+
+
+def test_refresh_replaces_a_stale_ready_track(worker_factory) -> None:
+    worker, cursor = worker_factory()
+    worker.start()
+    ready = _wait_for_ready(worker)  # "t0"
+    cursor.stale.add("t0")
+    worker.refresh()
+    assert cursor.rewound == ["t0"]
+    replacement = _wait_for_ready(worker)
+    assert replacement is not ready
+    assert worker._fallback is None  # dropped once its replacement is ready
+    assert worker.pop() is replacement
+
+
+def test_stale_ready_track_stays_available_until_replaced(worker_factory) -> None:
+    worker, cursor = worker_factory()
+    worker.start()
+    ready = _wait_for_ready(worker)  # "t0"
+    cursor.stale.add("t0")
+    cursor.gate.clear()  # the replacement render is slow
+    worker.refresh()
+    assert cursor.rendering.wait(WAIT)
+    assert worker.wait_ready(0)  # something to play right now: the old render
+    # The bus needs a track before the replacement is done: it gets the old one.
+    assert worker.pop() is ready
+    cursor.gate.set()
+    # The replacement (of "t0", which is now playing) is thrown away and the
+    # next render continues after the old one.
+    after = _wait_for_ready(worker)
+    assert cursor.skipped_past == ["t0"]
+    assert after.entry.path == "t1"
+
+
+def test_refresh_during_a_render_revalidates_it_on_completion(worker_factory) -> None:
+    worker, cursor = worker_factory()
+    cursor.gate.clear()
+    worker.start()
+    assert cursor.rendering.wait(WAIT)
+    cursor.stale.add("t0")
+    worker.refresh()  # can't judge "t0" until it exists
+    cursor.gate.set()
+    replacement = _wait_for_ready(worker)
+    assert cursor.rewound == ["t0"]  # judged stale: rewound and rendered again
+    assert replacement.entry.path == "t0"
+    assert cursor.calls == 2
+
+
+def test_refresh_during_a_render_keeps_a_valid_result(worker_factory) -> None:
+    worker, cursor = worker_factory()
+    cursor.gate.clear()
+    worker.start()
+    assert cursor.rendering.wait(WAIT)
+    worker.refresh()
+    cursor.gate.set()
+    assert _wait_for_ready(worker).entry.path == "t0"
+    assert cursor.rewound == []
+    assert cursor.calls == 1
+
+
+def test_refresh_when_idle_with_nothing_ready_does_nothing(worker_factory) -> None:
+    worker, cursor = worker_factory()
+    worker.refresh()
+    assert cursor.rewound == [] and worker._fallback is None
+
+
+def test_ready_popped_while_being_judged_is_left_alone(worker_factory) -> None:
+    worker, cursor = worker_factory()
+    worker.start()
+    ready = _wait_for_ready(worker)
+
+    def judge(track: RenderedTrack) -> bool:
+        assert worker.pop() is track  # the bus takes it mid-judgement
+        return True
+
+    worker._is_stale = judge
+    worker.refresh()
+    assert worker._fallback is None
+    assert cursor.rewound == []
+    assert ready is not None
+
+
+def test_worker_without_hooks_never_goes_stale() -> None:
+    worker = RenderAhead(lambda: _track("plain"))
+    try:
+        worker.start()
+        assert worker.wait_ready(WAIT)
+        worker.refresh()
+        track = worker.pop()
+        assert track is not None and track.entry.path == "plain0"
+    finally:
+        worker.stop(timeout=WAIT)
+
+
+# --- lifecycle ---------------------------------------------------------------
 
 
 def test_stop_ends_the_worker_thread(worker_factory) -> None:
-    worker = worker_factory(_Cursor())
+    worker, _ = worker_factory()
     worker.start()
     assert worker.wait_ready(WAIT)
     thread = worker._thread
@@ -244,7 +371,7 @@ def test_stop_ends_the_worker_thread(worker_factory) -> None:
 
 
 def test_stop_without_start_and_start_twice_are_safe(worker_factory) -> None:
-    worker = worker_factory(_Cursor())
+    worker, _ = worker_factory()
     worker.stop(timeout=WAIT)  # never started: nothing to join
     worker.start()
     first_thread = worker._thread
@@ -253,20 +380,13 @@ def test_stop_without_start_and_start_twice_are_safe(worker_factory) -> None:
 
 
 def test_stop_can_be_signalled_without_waiting(worker_factory) -> None:
-    gate = threading.Event()
-    rendering = threading.Event()
-
-    def render() -> RenderedTrack | None:
-        rendering.set()
-        gate.wait(WAIT)
-        return _track("late")
-
-    worker = worker_factory(render)
+    worker, cursor = worker_factory()
+    cursor.gate.clear()
     worker.start()
-    assert rendering.wait(WAIT)
+    assert cursor.rendering.wait(WAIT)
     worker.stop(timeout=0)  # returns at once even though a render is in flight
     thread = worker._thread
-    gate.set()
+    cursor.gate.set()
     assert thread is not None
     thread.join(WAIT)
     assert not thread.is_alive()
@@ -279,7 +399,7 @@ def test_empty_render_during_stop_exits_without_retry_wait(worker_factory) -> No
         holder["worker"].stop(timeout=0)  # stop arrives while this render runs
         return None
 
-    worker = worker_factory(render, retry_seconds=60.0)
+    worker, _ = worker_factory(render, retry_seconds=60.0)
     holder["worker"] = worker
     worker.start()
     thread = worker._thread
@@ -289,7 +409,7 @@ def test_empty_render_during_stop_exits_without_retry_wait(worker_factory) -> No
 
 
 def test_restart_after_a_full_stop_starts_a_fresh_worker(worker_factory) -> None:
-    worker = worker_factory(_Cursor())
+    worker, _ = worker_factory()
     worker.start()
     assert worker.wait_ready(WAIT)
     old = worker._thread
@@ -303,19 +423,53 @@ def test_restart_after_a_full_stop_starts_a_fresh_worker(worker_factory) -> None
 
 
 def test_restart_while_the_old_render_is_in_flight_keeps_one_worker(worker_factory) -> None:
-    gate, rendering = threading.Event(), threading.Event()
-    state = {"name": "old", "count": 0}
-    worker = worker_factory(_gated_render(state, gate, rendering))
+    worker, cursor = worker_factory()
+    cursor.gate.clear()
     worker.start()
-    assert rendering.wait(WAIT)
+    assert cursor.rendering.wait(WAIT)
     old = worker._thread
     worker.stop(timeout=0)
     worker.start()  # the old worker has not exited yet: it simply carries on
     assert worker._thread is old
-    gate.set()
+    cursor.gate.set()
     assert worker.wait_ready(WAIT)
     assert worker.pop() is not None
-    state["name"] = "later"
     assert worker.wait_ready(WAIT)  # still rendering after the restart
     track = worker.pop()
-    assert track is not None and track.entry.path.startswith("later")
+    assert track is not None and track.entry.path == "t1"
+
+
+def test_default_hooks_leave_the_cursor_alone() -> None:
+    count = {"n": 0}
+
+    def render() -> RenderedTrack | None:
+        count["n"] += 1
+        return _track("plain", count["n"])
+
+    worker = RenderAhead(render, is_stale=lambda _track: True)  # no rewind / skip_past
+    try:
+        worker.start()
+        assert worker.wait_ready(WAIT)
+        worker.refresh()  # stale: kept as fallback, default rewind does nothing
+        assert worker.wait_ready(WAIT)
+        assert worker.pop() is not None
+    finally:
+        worker.stop(timeout=WAIT)
+
+
+def test_reset_while_a_finished_render_is_judged_wins(worker_factory) -> None:
+    worker, cursor = worker_factory()
+    cursor.gate.clear()
+    worker.start()
+    assert cursor.rendering.wait(WAIT)
+
+    def judge_then_jump(_track: RenderedTrack) -> bool:
+        worker.reset(lambda: setattr(cursor, "name", "jump"))  # lands mid-judgement
+        return True
+
+    worker._is_stale = judge_then_jump
+    worker.refresh()  # flags the in-flight render for judging
+    cursor.gate.set()
+    assert _wait_for_ready(worker).entry.path.startswith("jump")
+    assert worker._fallback is None  # the judged render was dropped, not kept
+    assert cursor.rewound == []

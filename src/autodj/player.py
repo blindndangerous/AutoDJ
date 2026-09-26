@@ -747,10 +747,23 @@ class Player:
         self._pending_entry: IndexEntry | None = None
         self._pending_offset: int = 0
         self._pending_pick_mode: str = "seed"
+        # Whether the pending track was peeked from the user queue.  Queue
+        # picks are peeked when rendered and removed from the queue only
+        # when the track starts (see _take_render), so the queue the
+        # listener sees stays true; until then this pending track reserves
+        # its queue slot and the next peek skips it.
+        self._pending_from_queue: bool = False
+        # Set by _next_rendered around its pick: peek instead of pop, and
+        # which pending queue pick to skip.
+        self._peek_queue: bool = False
+        self._queue_reserved: IndexEntry | None = None
         # Keeps one rendered track ready so the bus never waits on a render.
         # (Late-bound so a replaced _next_rendered is honoured.)
         self._render_ahead = RenderAhead(
-            lambda: self._next_rendered(), on_discard=self._restore_discarded_pick
+            lambda: self._next_rendered(),
+            is_stale=self._queue_pick_is_stale,
+            rewind=self._rewind_render_cursor,
+            skip_past=self._skip_past_render,
         )
         # The render the bus is playing (set when it starts).
         self._playing_render: RenderedTrack | None = None
@@ -898,7 +911,7 @@ class Player:
             BusEvents(
                 on_track_start=self._on_track_start,
                 on_position=self._on_position,
-                on_need_track=self._render_ahead.pop,
+                on_need_track=self._take_render,
             ),
             eq_gains=lambda: (self._eq_low, self._eq_mid, self._eq_high),
         )
@@ -967,14 +980,21 @@ class Player:
         """Pick and render the next track for the mix bus.
 
         Renders the pending track from the carried offset into a freshly
-        picked successor (a late "play next" wins), then moves the cursor
-        on.  Runs on the render-ahead worker thread.
+        picked successor, then moves the cursor on.  Runs on the
+        render-ahead worker thread.
 
         The pick runs under ``_pick_lock`` and leaves ``_last_pick_mode``
         as it found it -- that attribute describes the *playing* track --
-        carrying the modes on the render instead.  It also treats the
-        pending track as already played (``_pick_exclude``), because it
-        only gets recorded when it starts, after this pick.
+        carrying the modes on the render instead.  It treats the pending
+        track as already played (``_pick_exclude``), because it only gets
+        recorded when it starts.  A queue pick is *peeked*, not taken
+        (``_peek_queue``), skipping the pending track's own queue slot
+        when it came from the queue; it leaves the queue when it starts.
+
+        If rendering raises, the cursor is untouched and nothing was taken
+        from the queue, so a retry renders the same thing.  A queue pick
+        that cannot be rendered at all is dropped from the queue, since it
+        will never start.
 
         Returns:
             The rendered track, or ``None`` when nothing could be rendered.
@@ -984,96 +1004,166 @@ class Player:
             if current is None:
                 return None
             offset, pick_mode = self._pending_offset, self._pending_pick_mode
+            current_from_queue = self._pending_from_queue
             with self._pick_lock:
                 shown_mode = self._last_pick_mode
                 self._pick_exclude = current
+                self._peek_queue = True
+                self._queue_reserved = current if current_from_queue else None
                 try:
                     next_entry = self._pick_next(current)
-                    from_queue = self._last_pick_mode == "queue"
-                    next_entry = self._honour_late_queued_next(next_entry, from_queue)
                     next_mode = self._last_pick_mode
                 finally:
                     self._last_pick_mode = shown_mode
                     self._pick_exclude = None
+                    self._peek_queue = False
+                    self._queue_reserved = None
             rendered = self._render_track(current, next_entry, offset)
-            self._pending_entry = next_entry
-            self._pending_offset = rendered.next_start_offset if rendered else 0
-            self._pending_pick_mode = next_mode
+            if rendered is None and current_from_queue:
+                with self._state.queue_lock:
+                    self._commit_queue_pick(current)  # it will never start
+            self._set_render_cursor(
+                next_entry,
+                rendered.next_start_offset if rendered else 0,
+                next_mode,
+                from_queue=next_mode == "queue",
+            )
             if rendered is not None:
                 return replace(
                     rendered,
                     start_offset=offset,
                     pick_mode=pick_mode,
+                    from_queue=current_from_queue,
                     next_pick_mode=next_mode,
                     next_from_queue=next_mode == "queue",
                 )
         return None
 
-    def _set_render_cursor(self, entry: IndexEntry, offset: int, pick_mode: str) -> None:
+    def _set_render_cursor(
+        self, entry: IndexEntry | None, offset: int, pick_mode: str, from_queue: bool = False
+    ) -> None:
         """Point the render-ahead cursor at *entry* (worker idle or queued)."""
         self._pending_entry = entry
         self._pending_offset = offset
         self._pending_pick_mode = pick_mode
+        self._pending_from_queue = from_queue
+
+    def _rewind_render_cursor(self, track: RenderedTrack) -> None:
+        """Point the cursor back at *track*'s own start (to re-render it)."""
+        self._set_render_cursor(track.entry, track.start_offset, track.pick_mode, track.from_queue)
+
+    def _skip_past_render(self, track: RenderedTrack) -> None:
+        """Point the cursor just after *track* (the bus took it as a fallback)."""
+        self._set_render_cursor(
+            track.next_entry, track.next_start_offset, track.next_pick_mode, track.next_from_queue
+        )
 
     def reset_render_ahead(
         self, entry: IndexEntry, offset: int = 0, pick_mode: str = "queue"
     ) -> None:
-        """Restart rendering from *entry*, discarding any ready track.
+        """Restart rendering from *entry*, discarding everything rendered.
 
         Used when a new set starts or the user picks a track to play now.
         Safe while a render is in flight: that render's result is dropped
-        and the cursor moves before the next render begins.  A queue pick
-        a discarded render had consumed goes back to the queue front.
+        and the cursor moves before the next render begins.  Nothing is
+        lost from the queue: renders only ever peek at it.
 
         Args:
             entry: First track to render.
             offset: Samples of *entry* to skip (already played).
             pick_mode: How *entry* was chosen, for "why this track".
         """
-
-        def prepare(_discarded: RenderedTrack | None) -> None:
-            self._set_render_cursor(entry, offset, pick_mode)
-
-        # Holding the queue lock makes the queue restore (on_discard) land
-        # before the worker can pick from the queue again.
         with self._state.queue_lock:
-            self._render_ahead.reset(prepare)
+            self._render_ahead.reset(lambda: self._set_render_cursor(entry, offset, pick_mode))
 
     def refresh_render_ahead(self) -> None:
-        """Re-pick what follows the upcoming track after a queue edit.
+        """Re-check the rendered next track after a queue edit.
 
-        The upcoming track itself cannot change -- its head is already
-        mixed into the playing track's tail -- but the track after it was
-        picked from the queue as it was.  Discards the ready (or
-        in-flight) render and renders the upcoming track again from the
-        same start, with a fresh pick of its successor.
+        Only a render whose queue pick the edit changed is re-rendered
+        (see :meth:`_queue_pick_is_stale`), and the old render stays
+        playable until its replacement is ready, so an edit never causes
+        dead air; if the bus needs it first, the edit lands a track later.
+        Call after editing the queue.
         """
-
-        def prepare(discarded: RenderedTrack | None) -> None:
-            if discarded is not None:
-                self._set_render_cursor(
-                    discarded.entry, discarded.start_offset, discarded.pick_mode
-                )
-
         with self._state.queue_lock:
-            self._render_ahead.reset(prepare)
+            self._render_ahead.refresh()
 
     def play_now(self, entry: IndexEntry, pick_mode: str = "queue") -> None:
         """Fade out the playing track and play *entry* next, from its start.
 
-        If *entry* is not rendered by the time the fade ends, the bus plays
-        silence briefly until it is.
+        Queued tracks stay queued (renders only peek at the queue), so the
+        track that was coming up plays after *entry*.  If *entry* is not
+        rendered by the time the fade ends, the bus plays silence briefly
+        until it is -- acceptable for an explicit jump.
         """
         self.reset_render_ahead(entry, 0, pick_mode)
         self._state.next_track = entry
         if self.bus is not None:
             self.bus.skip()
 
-    def _restore_discarded_pick(self, track: RenderedTrack) -> None:
-        """Give a discarded render's queue pick back to the queue front."""
-        if track.next_from_queue and track.next_entry is not None:
-            with self._state.queue_lock:
-                self._state.queue.insert(0, track.next_entry)
+    def _take_render(self) -> RenderedTrack | None:
+        """Hand the bus its next track and commit a queue pick as it starts.
+
+        The mix bus's ``on_need_track``.  Popping and committing happen
+        together under ``queue_lock``, so the render-ahead worker (woken by
+        the pop) cannot peek the queue before the starting track has left
+        it.  Lock order is bus lock, then queue lock, then the worker's
+        lock; nothing takes the bus lock while holding the queue lock.
+        """
+        with self._state.queue_lock:
+            track = self._render_ahead.pop()
+            if track is not None and track.from_queue:
+                self._commit_queue_pick(track.entry)
+        return track
+
+    def _commit_queue_pick(self, entry: IndexEntry) -> None:
+        """Remove one queued occurrence of *entry* now that it starts.
+
+        ``queued_next`` is checked first (it is peeked first), then the
+        first queue entry with the same path.  If the listener already
+        removed it, there is nothing to do: it plays anyway only because
+        it was already mixed into the previous track's tail.  Hold
+        ``queue_lock``.
+        """
+        state = self._state
+        if state.queued_next is not None and state.queued_next.path == entry.path:
+            state.queued_next = None
+            return
+        for index, queued in enumerate(state.queue):
+            if queued.path == entry.path:
+                del state.queue[index]
+                return
+
+    def _peek_user_queue(self, reserved: IndexEntry | None) -> IndexEntry | None:
+        """The queue head a render would pick, skipping *reserved*'s slot.
+
+        *reserved* is a pending track that was itself peeked from the
+        queue and has not started yet, so it still occupies a slot.  Hold
+        ``queue_lock``.
+        """
+        state = self._state
+        waiting = [state.queued_next] if state.queued_next is not None else []
+        waiting.extend(state.queue)
+        if reserved is not None:
+            for index, queued in enumerate(waiting):
+                if queued.path == reserved.path:
+                    del waiting[index]
+                    break
+        return waiting[0] if waiting else None
+
+    def _queue_pick_is_stale(self, track: RenderedTrack) -> bool:
+        """Whether a queue edit changed what *track* should be followed by.
+
+        A render that took its successor from the queue is stale when the
+        queue head (skipping *track*'s own slot) is now something else or
+        gone; a render that picked by similarity is stale once the queue
+        has anything, because the queue takes priority.
+        """
+        with self._state.queue_lock:
+            head = self._peek_user_queue(track.entry if track.from_queue else None)
+        if track.next_from_queue:
+            return head is None or track.next_entry is None or head.path != track.next_entry.path
+        return head is not None
 
     def _record_track_files(self, entry: IndexEntry) -> None:
         """Append *entry* to the M3U export and history file, if enabled.
@@ -1174,30 +1264,19 @@ class Player:
             self._skip_event.wait(timeout=1.0)
             self._skip_event.clear()
 
-    def _honour_late_queued_next(self, picked: IndexEntry, picked_from_queue: bool) -> IndexEntry:
-        """Return the track to start at this transition.
+    def _pop_user_queue(self) -> IndexEntry | None:
+        """Pop a queued / drag-reorder track from state, or return None.
 
-        The audio loop picks, and pops, *picked* when the current track
-        starts.  If the user chose "play next" while it was playing, that
-        ``queued_next`` wins.  A displaced *picked* that came from the user
-        queue goes back to its front, so it plays right after instead of
-        being silently dropped; a displaced similarity pick is just
-        discarded.
+        While rendering ahead (``_peek_queue``) the track is only peeked:
+        it leaves the queue when it starts playing.
         """
         with self._state.queue_lock:
-            late = self._state.queued_next
-            if late is None:
-                return picked
-            self._state.queued_next = None
-            if picked_from_queue:
-                self._state.queue.insert(0, picked)
-        self._last_pick_mode = "queue"
-        return late
-
-    def _pop_user_queue(self) -> IndexEntry | None:
-        """Pop a queued / drag-reorder track from state, or return None."""
-        with self._state.queue_lock:
-            if self._state.queued_next is not None:
+            if self._peek_queue:
+                entry = self._peek_user_queue(self._queue_reserved)
+                if entry is None:
+                    return None
+                source = "Next from queue: %s"
+            elif self._state.queued_next is not None:
                 entry = self._state.queued_next
                 self._state.queued_next = None
                 source = "Playing queued track: %s"

@@ -716,11 +716,10 @@ class PlayerBridge:
     def _refresh_bus_queue(self) -> None:
         """Hand a queue edit to the mix bus's render-ahead worker.
 
-        Call while holding ``queue_lock`` and *before* editing the queue:
-        the ready (or in-flight) render already took its successor from the
-        queue, and discarding it puts that pick back at the queue front so
-        the edit sees it.  The upcoming track is then re-rendered with a
-        fresh pick from the edited queue.
+        Call while holding ``queue_lock``, *after* editing the queue.  The
+        rendered next track only peeked at the queue, so nothing needs
+        giving back; it is re-rendered only if the edit changed the queue
+        head it picked, and stays playable until the replacement is ready.
         """
         if self._bus_mode():
             self.player.refresh_render_ahead()
@@ -808,15 +807,16 @@ class PlayerBridge:
         if now and self._bus_mode():
             # Play now on the mix bus: render *entry* from its start and fade
             # the playing track out.  queued_next is left alone so the track
-            # does not also play a second time later.
+            # does not also play a second time later, and anything queued
+            # (including the track that was coming up) plays after it.
             with self.player._state.queue_lock:
                 self._capture_pre_queue_seed()
             self.player.play_now(entry)
             return True
         with self.player._state.queue_lock:
-            self._refresh_bus_queue()
             self._capture_pre_queue_seed()
             self.player._state.queued_next = entry
+            self._refresh_bus_queue()
             self._sync_next_for_prefetch()
         if now:
             self.skip()
@@ -856,9 +856,9 @@ class PlayerBridge:
         if entry is None:
             return False
         with self.player._state.queue_lock:
-            self._refresh_bus_queue()
             self._capture_pre_queue_seed()
             self.player._state.queue.append(entry)
+            self._refresh_bus_queue()
             self._sync_next_for_prefetch()
         return True
 
@@ -872,13 +872,13 @@ class PlayerBridge:
         """Remove the first matching path from the queue."""
         state = self.player._state
         with state.queue_lock:
-            self._refresh_bus_queue()
             q = state.queue
             for i, e in enumerate(q):
                 if e.path == path:
                     del q[i]
                     if not q and state.queued_next is None:
                         state.pre_queue_seed = None
+                    self._refresh_bus_queue()
                     self._sync_next_for_prefetch()
                     return True
         return False
@@ -898,7 +898,6 @@ class PlayerBridge:
         # write, and the write would put the popped entry back so it played
         # twice.
         with state.queue_lock:
-            self._refresh_bus_queue()
             q = state.queue
             by_path: dict[str, deque[IndexEntry]] = {}
             for entry in q:
@@ -906,6 +905,7 @@ class PlayerBridge:
             q[:] = [by_path[p].popleft() for p in paths if by_path.get(p)]
             if not q and state.queued_next is None:
                 state.pre_queue_seed = None
+            self._refresh_bus_queue()
             self._sync_next_for_prefetch()
         return True
 
