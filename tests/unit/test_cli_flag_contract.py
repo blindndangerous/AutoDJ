@@ -3,7 +3,8 @@
 Removing ``serve --no-playback`` from cli.py left six deployment call sites
 (the container CMD, both compose services and three workflows) invoking a flag
 Click no longer knew, which makes ``autodj serve`` exit 2 before it starts.
-Nothing in the suite noticed, because nothing compared the two.
+Nothing in the suite noticed, because nothing compared the two.  The flag is
+now a hidden no-op and the deployment files no longer pass it.
 """
 
 from __future__ import annotations
@@ -72,9 +73,14 @@ def _declared_flags(subcommand: str) -> set[str]:
 
 def test_extraction_actually_finds_the_deployment_invocations() -> None:
     """Guard the guard: an extractor that finds nothing would pass vacuously."""
-    invocations = _invocations()
-    assert len(invocations) >= 6
-    assert any("--no-playback" in argv for argv in invocations)
+    assert _container_invocations() == [["serve"]]
+    assert len(_compose_invocations()) == 2
+    assert len(_workflow_invocations()) >= 3
+    assert any("--insecure-lan" in argv for argv in _compose_invocations())
+
+
+def test_deployments_no_longer_pass_the_deprecated_no_playback_flag() -> None:
+    assert not any("--no-playback" in argv for argv in _invocations())
 
 
 @pytest.mark.parametrize("argv", _invocations(), ids=lambda argv: " ".join(argv))

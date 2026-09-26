@@ -25,7 +25,6 @@ services:
     # Acknowledge only the container-internal 0.0.0.0 bind; host publication stays loopback-only.
     command:
       - serve
-      - --no-playback
       - --insecure-lan
       - --allowed-host
       - 127.0.0.1
@@ -48,7 +47,6 @@ services:
       AUTODJ_ACCESS_TOKEN: ${AUTODJ_ACCESS_TOKEN:-}
     command:
       - serve
-      - --no-playback
       # The image healthcheck probes the container-local IPv4 listener. Keep this
       # exact loopback Host alongside, never instead of, the operator's LAN Host.
       - --allowed-host

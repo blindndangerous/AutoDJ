@@ -89,7 +89,7 @@ jobs:
           trap cleanup EXIT
           mkdir -p "$RUNNER_TEMP/music" "$RUNNER_TEMP/index" "$RUNNER_TEMP/models"
           AUTODJ_LIBRARY_MUSIC_DIR="$RUNNER_TEMP/music" AUTODJ_INDEX_DIR="$RUNNER_TEMP/index" AUTODJ_MODEL_DIR="$RUNNER_TEMP/models" \
-            .release-venv/bin/autodj serve --no-playback >"$server_log" 2>&1 &
+            .release-venv/bin/autodj serve >"$server_log" 2>&1 &
           server_pid=$!
           response=""
           ready=false

@@ -51,4 +51,4 @@ EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=6 \
     CMD ["/opt/venv/bin/python", "-c", "import ipaddress, os, re, urllib.request; raw = os.environ['AUTODJ_HOST'].strip(); host = raw[1:-1] if raw.startswith('[') and raw.endswith(']') else raw; port = int(os.environ['AUTODJ_PORT']); assert 1 <= port <= 65535; ipv6 = ':' in host; assert (ipv6 and ipaddress.ip_address(host).version == 6) or (not ipv6 and re.fullmatch(r'(?!-)(?:[A-Za-z0-9-]{1,63}\\.)*[A-Za-z0-9-]{1,63}', host) and all(not label.endswith('-') for label in host.split('.'))); probe = '[::1]' if ipv6 else '127.0.0.1'; urllib.request.build_opener(urllib.request.ProxyHandler({})).open(f'http://{probe}:{port}/healthz', timeout=2).read()"]
 ENTRYPOINT ["/opt/venv/bin/autodj"]
-CMD ["serve", "--no-playback"]
+CMD ["serve"]

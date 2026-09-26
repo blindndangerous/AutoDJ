@@ -228,7 +228,7 @@ jobs:
           AUTODJ_LIBRARY_MUSIC_DIR="$RUNNER_TEMP/music" \
           AUTODJ_INDEX_DIR="$RUNNER_TEMP/index" \
           AUTODJ_MODEL_DIR="$RUNNER_TEMP/models" \
-          uv run autodj serve --no-playback >"$RUNNER_TEMP/autodj.log" 2>&1 &
+          uv run autodj serve >"$RUNNER_TEMP/autodj.log" 2>&1 &
           server_pid=$!
           printf '%s\n' "$server_pid" >"$RUNNER_TEMP/autodj.pid"
           for _attempt in $(seq 1 30); do
