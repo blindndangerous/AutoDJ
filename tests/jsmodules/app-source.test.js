@@ -848,6 +848,33 @@ describe("app request behavior", () => {
     expect(nowPanel).not.toContain("key spelling");
   });
 
+  it("gives Pause a changing label and Mute a fixed label with pressed state", async () => {
+    const { webSocket } = await setupApp({
+      initialState: { current_track: { path: "a.mp3", title: "A" } },
+    });
+    const pause = document.querySelector("#btn-pause");
+    const mute = document.querySelector("#btn-mute");
+    const label = (button) => button.textContent.replace(/[^A-Za-z]/g, "");
+
+    webSocket.onmessage({ data: JSON.stringify({
+      current_track: { path: "a.mp3", title: "A" }, is_paused: true, is_muted: true,
+      queue: [], eq: {}, volume: 1,
+    }) });
+    expect(label(pause)).toBe("Resume");
+    expect(pause.hasAttribute("aria-pressed")).toBe(false);
+    expect(label(mute)).toBe("Mute");
+    expect(mute.getAttribute("aria-pressed")).toBe("true");
+
+    webSocket.onmessage({ data: JSON.stringify({
+      current_track: { path: "a.mp3", title: "A" }, is_paused: false, is_muted: false,
+      queue: [], eq: {}, volume: 1,
+    }) });
+    expect(label(pause)).toBe("Pause");
+    expect(pause.hasAttribute("aria-pressed")).toBe(false);
+    expect(label(mute)).toBe("Mute");
+    expect(mute.getAttribute("aria-pressed")).toBe("false");
+  });
+
   it("keeps pointer previews local and sends only the final absolute seek", async () => {
     let resolveSeek;
     const deckAudio = { currentTime: 10, duration: 100 };

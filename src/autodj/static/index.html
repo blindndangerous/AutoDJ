@@ -167,10 +167,10 @@
     <div role="toolbar" aria-label="Playback controls">
       <div class="controls-row">
         <!-- Fix 2: emoji wrapped in aria-hidden so screen readers don't double-announce -->
-        <!-- A11y C2 (v5.4.0 audit): aria-pressed exposes toggle state.
-             JS must update aria-pressed atomically with glyph + label. -->
+        <!-- Play / Pause / Resume: the label names the next action, so no
+             aria-pressed.  Mute and Discovery are the other pattern: a
+             fixed name plus aria-pressed. -->
         <button id="btn-pause"
-                aria-pressed="false"
                 disabled
                 title="Pause or resume playback">
           <span aria-hidden="true">▶</span> Play

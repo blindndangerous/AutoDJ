@@ -150,7 +150,6 @@ function clearProtectedSessionData() {
   badgesRow.replaceChildren();
   badgesAnnounce.textContent = "";
   btnPause.innerHTML = '<span aria-hidden="true">▶</span> Play';
-  btnPause.setAttribute("aria-pressed", "false");
   btnMute.innerHTML = '<span aria-hidden="true">🔊</span> Mute';
   btnMute.setAttribute("aria-pressed", "false");
   btnDiscovery.style.display = "none";
@@ -399,24 +398,21 @@ function applyState(s) {
   //   2. Browser-playback mode, audio not yet unlocked \u2192 "Play", enabled
   //      (clicking unlocks AudioContext + starts deck)
   //   3. Playing or paused \u2192 "Pause" / "Resume" toggle
-  // A11y C2 (v5.4.0 audit): aria-pressed updates atomically with the
-  // glyph + label so NVDA never reads stale state when one of the three
-  // attributes lags.  pressed=true means "currently playing".
+  // The label names the action the button will take, so it carries no
+  // aria-pressed: "Pause, pressed" contradicts itself.  Mute is the
+  // other pattern (fixed label plus aria-pressed), below.
   const hasTrack = s.current_track != null;
   if (!hasTrack) {
     btnPause.disabled = true;
     btnPause.innerHTML = '<span aria-hidden="true">\u25B6</span> Play';
-    btnPause.setAttribute("aria-pressed", "false");
   } else if (s.browser_playback && !playbackEnabled) {
     btnPause.disabled = false;
     btnPause.innerHTML = '<span aria-hidden="true">\u25B6</span> Play';
-    btnPause.setAttribute("aria-pressed", "false");
   } else {
     btnPause.disabled = false;
     btnPause.innerHTML = s.is_paused
       ? '<span aria-hidden="true">\u25B6</span> Resume'
       : '<span aria-hidden="true">\u23F8</span> Pause';
-    btnPause.setAttribute("aria-pressed", s.is_paused ? "false" : "true");
   }
 
   // Volume — server stores the perceptual *gain* (post-curve), so invert
@@ -432,11 +428,13 @@ function applyState(s) {
     volPct.textContent = volInt + "%";
   }
 
-  // Mute
+  // Mute is a toggle with a fixed name, so NVDA says "Mute, toggle
+  // button, pressed" instead of the contradictory "Unmute, pressed".
+  // Only the hidden glyph changes.
   const isMuted = s.is_muted;
   btnMute.setAttribute("aria-pressed", isMuted ? "true" : "false");
   btnMute.innerHTML = isMuted
-    ? '<span aria-hidden="true">\uD83D\uDD07</span> Unmute'
+    ? '<span aria-hidden="true">\uD83D\uDD07</span> Mute'
     : '<span aria-hidden="true">\uD83D\uDD0A</span> Mute';
 
   // Up Next — only mutate textContent when value actually changes so the
@@ -1158,11 +1156,9 @@ btnPause.addEventListener("click", async () => {
     );
     if (!isAuthenticatedRequestCurrent(epoch)) return;
     const isPaused = data.paused;
-    // A11y C2: glyph + label + aria-pressed updated together.
     btnPause.innerHTML = isPaused
       ? '<span aria-hidden="true">\u25B6</span> Resume'
       : '<span aria-hidden="true">\u23F8</span> Pause';
-    btnPause.setAttribute("aria-pressed", isPaused ? "false" : "true");
   } catch (errorValue) {
     if (!isAuthenticatedRequestCurrent(epoch)) return;
     reportBackgroundRequestError(errorValue);
@@ -1384,7 +1380,7 @@ btnMute.addEventListener("click", async () => {
   const muted = data.muted;
   btnMute.setAttribute("aria-pressed", muted ? "true" : "false");
   btnMute.innerHTML = muted
-    ? '<span aria-hidden="true">\uD83D\uDD07</span> Unmute'
+    ? '<span aria-hidden="true">\uD83D\uDD07</span> Mute'
     : '<span aria-hidden="true">\uD83D\uDD0A</span> Mute';
 });
 
