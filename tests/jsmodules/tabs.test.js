@@ -13,6 +13,15 @@ function installIndex() {
   document.body.replaceChildren(template.content.cloneNode(true));
 }
 
+describe("playback controls grouping", () => {
+  it("uses a labelled group rather than a toolbar without arrow keys", () => {
+    installIndex();
+    expect(document.querySelector('[role="toolbar"]')).toBeNull();
+    const group = document.querySelector("#btn-pause").closest('[role="group"]');
+    expect(group?.getAttribute("aria-label")).toBe("Playback controls");
+  });
+});
+
 describe("card headings", () => {
   it("gives every card a level-two heading inside its disclosure summary", () => {
     installIndex();

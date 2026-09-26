@@ -168,8 +168,10 @@
   <details class="card" open>
     <summary><h2>Controls</h2></summary>
 
-    <!-- Fix 5: role="toolbar" instead of <nav> — nav is for navigation, not action toolbars -->
-    <div role="toolbar" aria-label="Playback controls">
+    <!-- A labelled group, not a toolbar: a toolbar promises arrow-key
+         movement between its buttons, and five buttons are simpler to
+         reach with Tab than with a roving tabindex. -->
+    <div role="group" aria-label="Playback controls">
       <div class="controls-row">
         <!-- Fix 2: emoji wrapped in aria-hidden so screen readers don't double-announce -->
         <!-- Play / Pause / Resume: the label names the next action, so no
