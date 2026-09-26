@@ -368,6 +368,23 @@ describe("audio engine request recovery", () => {
     expect(applyState).not.toHaveBeenCalled();
   });
 
+  it("does not let a websocket echo undo an EQ slider change in flight", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ ok: true })));
+    const { engine } = await importEngine();
+    const low = document.querySelector("#eq-low");
+
+    low.value = "80";
+    low.dispatchEvent(new Event("input"));
+    // A push carrying the old value lands before the debounced POST.
+    engine.applyEqState({ low: 1, mid: 1, high: 1 });
+    expect(low.value).toBe("80");
+
+    await vi.advanceTimersByTimeAsync(700);
+    engine.applyEqState({ low: 0.8, mid: 1, high: 0.5 });
+    expect(document.querySelector("#eq-high").value).toBe("50");
+  });
+
   it("reports rejected EQ updates", async () => {
     vi.useFakeTimers();
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(

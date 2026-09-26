@@ -50,8 +50,16 @@ function eqValueLabel(v100) {
   return `${sign}${db.toFixed(1)} dB`;
 }
 
+// Last user change to an EQ slider or Reset (ms epoch).  The slider
+// posts 120 ms after input, so a websocket push landing in that gap
+// carried the old value and threw the slider (and an arrow press) back.
+// Same 600 ms guard the volume slider uses.
+let _lastUserEqTs = 0;
+const EQ_ECHO_GUARD_MS = 600;
+
 export function applyEqState(eq) {
   if (!eq) return;
+  if (Date.now() - _lastUserEqTs < EQ_ECHO_GUARD_MS) return;
   // Server gives 0.0–2.0 floats; convert to 0–200 ints for the slider.
   const map = [
     [eqLow, eqLowVal, Math.round(eq.low * 100)],
@@ -63,8 +71,10 @@ export function applyEqState(eq) {
       slider.value = value;
     }
     const label = eqValueLabel(value);
-    slider.setAttribute("aria-valuetext", label);
-    span.textContent = label;
+    if (slider.getAttribute("aria-valuetext") !== label) {
+      slider.setAttribute("aria-valuetext", label);
+    }
+    if (span.textContent !== label) span.textContent = label;
   }
 }
 
@@ -97,6 +107,7 @@ export function postEq() {
 [eqLow, eqMid, eqHigh].forEach((slider, i) => {
   const span = [eqLowVal, eqMidVal, eqHighVal][i];
   slider.addEventListener("input", () => {
+    _lastUserEqTs = Date.now();
     const label = eqValueLabel(parseInt(slider.value, 10));
     slider.setAttribute("aria-valuetext", label);
     span.textContent = label;
@@ -105,6 +116,7 @@ export function postEq() {
 });
 
 btnEqReset.addEventListener("click", () => {
+  _lastUserEqTs = Date.now();
   eqLow.value = eqMid.value = eqHigh.value = "100";
   for (const [s, sp] of [[eqLow, eqLowVal], [eqMid, eqMidVal], [eqHigh, eqHighVal]]) {
     s.setAttribute("aria-valuetext", "Unity");
