@@ -71,9 +71,11 @@
        ============================================================ -->
   <section data-view="now" id="panel-now" role="tabpanel" aria-labelledby="tab-now">
 
-  <!-- Now Playing -->
+  <!-- Now Playing.  Every card title is an <h2> inside its <summary>
+       (valid HTML) so the H key can reach Up Next, Lyrics and the rest;
+       the summary is still the disclosure button. -->
   <details class="card" id="now-playing-card" open>
-    <summary>Now Playing</summary>
+    <summary><h2>Now Playing</h2></summary>
 
     <!-- Shown when the websocket drops.  aria-hidden: #conn-status is the
          single announcement path for transport state, so this note exists
@@ -160,7 +162,7 @@
 
   <!-- Controls -->
   <details class="card" open>
-    <summary>Controls</summary>
+    <summary><h2>Controls</h2></summary>
 
     <!-- Fix 5: role="toolbar" instead of <nav> — nav is for navigation, not action toolbars -->
     <div role="toolbar" aria-label="Playback controls">
@@ -216,7 +218,7 @@
 
   <!-- 3-band EQ -->
   <details class="card">
-    <summary id="eq-heading">EQ</summary>
+    <summary id="eq-heading"><h2>EQ</h2></summary>
     <div role="group" aria-labelledby="eq-heading">
       <div class="eq-row">
         <label for="eq-low">Low</label>
@@ -278,7 +280,7 @@
 
   <!-- Why this track? — plain-English explanation of the picker's choice -->
   <details class="card">
-    <summary>Why this track?</summary>
+    <summary><h2>Why this track?</h2></summary>
     <ul id="why-list" role="list" aria-live="polite" aria-atomic="true">
       <li class="no-results">
         No reasons yet — start playback to see why each track was picked.
@@ -288,7 +290,7 @@
 
   <!-- Up Next -->
   <details class="card" open>
-    <summary>Up Next</summary>
+    <summary><h2>Up Next</h2></summary>
     <!-- Not live: it changes in the same tick as the track title, which
          is the one track-change announcement.  Shift+N speaks it. -->
     <p id="next-track-text">—</p>
@@ -299,7 +301,7 @@
        polite #lyric-announce region below; pattern verified by
        accessibility-lead. -->
   <details id="lyrics-card" class="card" hidden>
-    <summary>Lyrics</summary>
+    <summary><h2>Lyrics</h2></summary>
     <ol id="lyrics-list" role="list" aria-label="Lyric lines"></ol>
     <!-- Visually hidden live region: announces only the active line, only on
          change (not on every WS tick).  aria-atomic so the full new line reads. -->
@@ -352,7 +354,7 @@
 
   <!-- Settings — full mirror of CLI flags -->
   <details class="card" open>
-    <summary>Settings</summary>
+    <summary><h2>Settings</h2></summary>
 
     <!-- Single shared status region for failures (success is silent — checkbox
          state already announced by the AT). -->
@@ -732,7 +734,7 @@
 
   <!-- Voice liners -->
   <details class="card">
-    <summary>Voice liners</summary>
+    <summary><h2>Voice liners</h2></summary>
     <p class="card-desc">
       Drop-in spoken clips that play over the live mix every so often, like a real station ID.  Drop audio files (mp3, wav, ogg, m4a, flac, aac) into the configured folder, then set how often to fire and which rotation to use.
     </p>
@@ -809,10 +811,10 @@
 
   <!-- Queue -->
   <details class="card" open>
-    <summary>
+    <summary><h2>
       Queue
       <span id="queue-count" aria-hidden="true" style="color:var(--text-dim);font-weight:normal"></span>
-    </summary>
+    </h2></summary>
     <!-- Visually hidden announce region for queue mutations: "Added X", "Moved X up", "Removed X" -->
     <div id="queue-announce"
          role="status"
@@ -830,7 +832,7 @@
        user to "Search and use Next to add a track", so the field it
        refers to must not be hidden behind a disclosure. -->
   <details class="card" open>
-    <summary>Search Library</summary>
+    <summary><h2>Search Library</h2></summary>
     <div class="search-row">
       <!-- Fix 6: label provides accessible name; removed duplicate aria-label -->
       <label for="search-input"
@@ -855,7 +857,7 @@
 
   <!-- History -->
   <details class="card">
-    <summary>Recently Played</summary>
+    <summary><h2>Recently Played</h2></summary>
     <ul id="history-list" role="list" aria-label="Recently played tracks">
       <li><span class="no-results">Nothing played yet.</span></li>
     </ul>
@@ -868,7 +870,7 @@
        ============================================================ -->
   <section data-view="library" id="panel-library" role="tabpanel" hidden aria-labelledby="tab-library">
     <details class="card" open>
-      <summary>Library tools</summary>
+      <summary><h2>Library tools</h2></summary>
 
       <p>
         Run library-maintenance commands without dropping to a terminal.

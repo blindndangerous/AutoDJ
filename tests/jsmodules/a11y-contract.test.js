@@ -496,7 +496,7 @@ function reducedMotionMeetsContract(rules = cssRules) {
 function forcedColorsMeetsContract(rules = cssRules) {
   installCascadeContractDocument();
   const focusElements = focusContractControls();
-  for (const selector of ["details.card > summary", "section[data-view] h2"]) {
+  for (const selector of ["details.card > summary", "section[data-view] > h2"]) {
     focusElements.push(document.querySelector(selector));
   }
   for (const element of focusElements) element.classList.add("a11y-focus-visible");
@@ -901,7 +901,7 @@ function focusOutlinesMeetContract(css = cssSource) {
   const controls = focusContractControls().filter((control) => !control.disabled);
   const expectedOutlines = new Map([
     ["details.card > summary", 3],
-    ["section[data-view] h2", 2],
+    ["section[data-view] > h2", 2],
   ]);
   for (const control of controls) control.classList.add("a11y-focus-visible");
   const controlsPass = controls.every((control) => {

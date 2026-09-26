@@ -687,13 +687,23 @@
       padding: 1rem 1.25rem;
       user-select: none;
       position: relative;
-      /* Heading appearance — replaces the removed <h2> inside <summary>.
-         Prevents double-announcement (button + heading) in NVDA/VoiceOver. */
+      /* Heading appearance for the card title (an <h2> inside the
+         summary, styled below). */
       font-size: 1.1rem;
       font-weight: 600;
       text-transform: uppercase;
       letter-spacing: 0.1em;
       color: var(--text-dim);
+    }
+    /* The card title is an <h2> inside the summary so heading navigation
+       reaches every card.  It takes the summary's look, not .card h2. */
+    details.card > summary > h2 {
+      display: inline;
+      margin: 0;
+      font: inherit;
+      letter-spacing: inherit;
+      text-transform: inherit;
+      color: inherit;
     }
     details.card > summary::-webkit-details-marker { display: none; }
     details.card > summary::after {
