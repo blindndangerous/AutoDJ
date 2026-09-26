@@ -179,3 +179,26 @@ def test_legacy_login_endpoint_is_removed(bridge, tmp_path) -> None:
     assert paired.status_code == 200
     assert response.status_code == 404
     assert [device.name for device in registry.list_devices()] == ["Current browser"]
+
+
+def test_pairing_and_auth_status_keep_sqlite_off_the_event_loop(
+    bridge, tmp_path, monkeypatch
+) -> None:
+    import asyncio
+
+    client, _registry = _paired_client(bridge, tmp_path)
+    offloaded: list[str] = []
+    real_to_thread = asyncio.to_thread
+
+    async def recording_to_thread(function, *args, **kwargs):
+        offloaded.append(getattr(function, "__name__", repr(function)))
+        return await real_to_thread(function, *args, **kwargs)
+
+    monkeypatch.setattr("autodj.server.asyncio.to_thread", recording_to_thread)
+    code = client.app.state.security_policy.current_pairing_code()
+
+    assert client.post("/api/pair", json={"code": code, "device_name": "Den"}).status_code == 200
+    assert client.get("/api/auth/status").json()["authenticated"] is True
+    # registry.pair, the active-device check behind issuing the session, and
+    # the touch + verify pair in /api/auth/status all hit SQLite.
+    assert {"pair", "issue_device_session", "_status"} <= set(offloaded)

@@ -1001,17 +1001,27 @@ def create_app(
         request_policy: SecurityPolicy = request.app.state.security_policy
         device_id = request_policy.session_device_id(request.cookies.get(COOKIE_NAME))
         registry: DeviceRegistry | None = request.app.state.device_registry
-        if device_id is not None and registry is not None:
-            registry.touch(device_id)
-        return {
-            "required": request_policy.authentication_required,
-            "authenticated": (
-                not request_policy.authentication_required
-                or request_policy.verify_session(request.cookies.get(COOKIE_NAME))
-            ),
-            "pairing": request_policy.authentication_required,
-            "device_id": device_id,
-        }
+        cookie = request.cookies.get(COOKIE_NAME)
+
+        def _status() -> dict[str, object]:
+            """Touch the device and build the status off the event loop.
+
+            touch() writes and verify_session() reads the device SQLite
+            database.
+            """
+            if device_id is not None and registry is not None:
+                registry.touch(device_id)
+            return {
+                "required": request_policy.authentication_required,
+                "authenticated": (
+                    not request_policy.authentication_required
+                    or request_policy.verify_session(cookie)
+                ),
+                "pairing": request_policy.authentication_required,
+                "device_id": device_id,
+            }
+
+        return await asyncio.to_thread(_status)
 
     @app.post("/api/pair")
     async def api_pair(body: PairBody, request: Request) -> Response:
@@ -1023,15 +1033,17 @@ def create_app(
         if not request_policy.verify_pairing_code(body.code):
             raise HTTPException(status_code=401, detail="Invalid or expired pairing code")
         try:
-            device = registry.pair(body.device_name)
+            device = await asyncio.to_thread(registry.pair, body.device_name)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        # Issuing checks the device is still active, another SQLite read.
+        session = await asyncio.to_thread(request_policy.issue_device_session, device.device_id)
         response = JSONResponse(
             {"authenticated": True, "device_id": device.device_id, "device_name": device.name}
         )
         response.set_cookie(
             COOKIE_NAME,
-            request_policy.issue_device_session(device.device_id),
+            session,
             httponly=True,
             samesite="strict",
             secure=request_policy.secure_cookie,
@@ -1124,7 +1136,7 @@ def create_app(
     async def api_profiles() -> dict:
         """List saved profile bundles."""
         store = _profile_store()
-        return {"profiles": store.list_names(), "root": str(store.root)}
+        return {"profiles": await asyncio.to_thread(store.list_names), "root": str(store.root)}
 
     @app.get("/api/profiles/{name}")
     async def api_profile_get(name: str) -> dict:
@@ -1136,7 +1148,7 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         try:
-            snap = _profile_store().load(name)
+            snap = await asyncio.to_thread(_profile_store().load, name)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return snap.to_dict()
@@ -1151,7 +1163,7 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         snap = ProfileSnapshot(**body.model_dump())
-        target = _profile_store().save(snap)
+        target = await asyncio.to_thread(_profile_store().save, snap)
         return {"saved": snap.name, "path": str(target)}
 
     @app.delete("/api/profiles/{name}")
@@ -1163,7 +1175,7 @@ def create_app(
             validate_name(name)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        ok = _profile_store().delete(name)
+        ok = await asyncio.to_thread(_profile_store().delete, name)
         if not ok:
             raise HTTPException(status_code=404, detail="Profile not found")
         return {"deleted": name}
@@ -1178,7 +1190,7 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         try:
-            snap = _profile_store().load(name)
+            snap = await asyncio.to_thread(_profile_store().load, name)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -1288,7 +1300,7 @@ def create_app(
         name = file.filename or ""
         folder = _resolve_liner_folder()
         try:
-            parsed_target = resolve_liner_path(folder, name)
+            parsed_target = await asyncio.to_thread(resolve_liner_path, folder, name)
         except InvalidLinerName as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         extension = parsed_target.suffix.lower()
@@ -1325,7 +1337,7 @@ def create_app(
         )
 
         try:
-            delete_liner_file(_resolve_liner_folder(), name)
+            await asyncio.to_thread(delete_liner_file, _resolve_liner_folder(), name)
         except InvalidLinerName as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except FileNotFoundError as exc:
@@ -1350,7 +1362,7 @@ def create_app(
         )
 
         try:
-            opened = open_liner_file(_resolve_liner_folder(), name)
+            opened = await asyncio.to_thread(open_liner_file, _resolve_liner_folder(), name)
         except InvalidLinerName as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except FileNotFoundError as exc:

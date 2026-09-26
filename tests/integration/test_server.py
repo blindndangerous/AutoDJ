@@ -706,6 +706,49 @@ class TestProfiles:
         resp = tc.post("/api/profiles/..%2Fescape/apply")
         assert resp.status_code in (400, 404)
 
+    def test_profile_and_liner_file_io_runs_off_the_event_loop(
+        self, bridge, tmp_path, monkeypatch
+    ) -> None:
+        from fastapi.testclient import TestClient
+
+        offloaded: list[str] = []
+        real_to_thread = asyncio.to_thread
+
+        async def recording_to_thread(function, *args, **kwargs):
+            offloaded.append(getattr(function, "__name__", repr(function)))
+            return await real_to_thread(function, *args, **kwargs)
+
+        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
+        (tmp_path / "idx").mkdir()
+        folder = tmp_path / "liners"
+        folder.mkdir()
+        (folder / "a.mp3").write_bytes(b"x")
+        bridge.player._cfg.playback.liners_folder = str(folder)
+        bridge.save_persistent_state = MagicMock()
+        monkeypatch.setattr("autodj.server.asyncio.to_thread", recording_to_thread)
+        tc = TestClient(create_app(bridge))
+
+        assert tc.post("/api/profiles", json={"name": "Io"}).status_code == 200
+        assert tc.get("/api/profiles").status_code == 200
+        assert tc.get("/api/profiles/Io").status_code == 200
+        assert tc.post("/api/profiles/Io/apply").status_code == 200
+        assert tc.delete("/api/profiles/Io").status_code == 200
+        files = {"file": ("b.mp3", b"y", "audio/mpeg")}
+        assert tc.post("/api/liners/upload", files=files).status_code == 200
+        assert tc.get("/api/liners/file/a.mp3").status_code == 200
+        assert tc.delete("/api/liners/file/a.mp3").status_code == 200
+
+        for name in (
+            "save",
+            "list_names",
+            "load",
+            "delete",
+            "resolve_liner_path",
+            "open_liner_file",
+            "delete_liner_file",
+        ):
+            assert name in offloaded, name
+
     def test_profile_apply_missing_404(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
