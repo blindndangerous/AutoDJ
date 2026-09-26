@@ -151,6 +151,15 @@ test "$(docker compose exec -T autodj stat -c '%u:%g:%a' /index)" = "10001:10001
 test "$(docker compose exec -T autodj stat -c '%u:%g:%a' /models)" = "10001:10001:755"
 docker compose exec -T autodj sh -ceu 'touch /index/.write-test; rm /index/.write-test'
 docker compose exec -T autodj sh -ceu 'touch /models/.write-test; rm /models/.write-test'
+# Tag reading needs mutagen in the image; torch must be the CPU build with no CUDA wheels.
+docker compose exec -T autodj /opt/venv/bin/python -c '
+import importlib.metadata
+import mutagen, scipy, torch, torchaudio
+assert torch.version.cuda is None, torch.version.cuda
+names = [dist.metadata["Name"].lower() for dist in importlib.metadata.distributions()]
+cuda = [name for name in names if name.startswith(("nvidia-", "cuda-")) or name == "triton"]
+assert not cuda, cuda
+'
 
 host_ip="$(docker inspect autodj --format '{{(index (index .NetworkSettings.Ports "8080/tcp") 0).HostIp}}')"
 test "$host_ip" = "127.0.0.1"

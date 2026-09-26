@@ -101,8 +101,8 @@ loopback only. See [Operations](docs/operations.md) for WSL2, bind mounts, and a
 startup.
 
 Put your audio files in `music/` before running the indexing command. This setup needs no host
-Python installation. The default container indexes on CPU and does not index automatically when
-the server starts. For a large library, you can instead build the index on a GPU-equipped host
+Python installation. The image ships the CPU-only PyTorch build, so the container indexes on CPU,
+and it does not index automatically when the server starts. For a large library, you can instead build the index on a GPU-equipped host
 and copy it to the mounted index directory before starting Compose.
 
 ## How to use the web UI
