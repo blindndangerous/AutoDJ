@@ -27,6 +27,7 @@ from autodj.config import ServerConfig, canonicalize_allowed_origin
 
 COOKIE_NAME = "autodj_session"
 
+logger = logging.getLogger(__name__)
 _AUDIT_LOGGER = logging.getLogger("autodj.audit")
 _UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _PUBLIC_FILES = frozenset(
@@ -54,6 +55,10 @@ _BRACKETED_HOST = re.compile(r"\[([^\]]+)\](?::([0-9]+))?\Z")
 _DEVICE_ID = re.compile(r"[0-9a-f]{32}\Z")
 PAIRING_BODY_MAX_BYTES = 4096
 PAIRING_CODE_WINDOW_SECONDS = 300
+# Wrong well-formed codes tolerated per code window before every code issued
+# so far stops working.  The rate limiter alone still allowed 100 guesses a
+# minute against a 10^8 space with two live codes.
+PAIRING_MAX_FAILURES_PER_WINDOW = 10
 
 
 @dataclass(frozen=True)
@@ -246,6 +251,13 @@ class SecurityPolicy:
     secure_cookie: bool = False
     now: Callable[[], float] = time.time
     device_is_active: Callable[[str], bool] | None = field(default=None, repr=False)
+    _pairing_lock: threading.Lock = field(
+        default_factory=threading.Lock, init=False, repr=False, compare=False
+    )
+    _pairing_failure_window: int = field(default=-1, init=False, repr=False, compare=False)
+    _pairing_failures: int = field(default=0, init=False, repr=False, compare=False)
+    # Codes for windows below this number are refused even while still fresh.
+    _pairing_first_valid_window: int = field(default=0, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         """Detach policy decisions from caller-owned mutable configuration."""
@@ -285,15 +297,47 @@ class SecurityPolicy:
         if token is None:
             return False
         try:
-            window = _clock_timestamp(self.now) // PAIRING_CODE_WINDOW_SECONDS
+            timestamp = _clock_timestamp(self.now)
         except (RuntimeError, ValueError):
             return False
+        window = timestamp // PAIRING_CODE_WINDOW_SECONDS
         candidate_bytes = candidate.encode("ascii")
+        previous_window = max(0, window - 1)
         current = self._pairing_code(token, window).encode("ascii")
-        previous = self._pairing_code(token, max(0, window - 1)).encode("ascii")
+        previous = self._pairing_code(token, previous_window).encode("ascii")
         current_valid = secrets.compare_digest(candidate_bytes, current)
         previous_valid = secrets.compare_digest(candidate_bytes, previous)
-        return current_valid | previous_valid
+        with self._pairing_lock:
+            first_valid = self._pairing_first_valid_window
+            if (current_valid and window >= first_valid) or (
+                previous_valid and previous_window >= first_valid
+            ):
+                return True
+            self._record_pairing_failure(timestamp)
+        return False
+
+    def _record_pairing_failure(self, timestamp: int) -> None:
+        """Count one wrong code and burn every live code once too many pile up.
+
+        Caller holds ``_pairing_lock``.  Burning moves the first accepted
+        window past the current one, so the operator's next code is the one
+        ``autodj devices pairing-code`` prints once the window turns over.
+        """
+        window = timestamp // PAIRING_CODE_WINDOW_SECONDS
+        if self._pairing_failure_window != window:
+            self._pairing_failure_window = window
+            self._pairing_failures = 0
+        self._pairing_failures += 1
+        if self._pairing_failures < PAIRING_MAX_FAILURES_PER_WINDOW:
+            return
+        self._pairing_failures = 0
+        self._pairing_first_valid_window = window + 1
+        logger.warning(
+            "Pairing codes invalidated after %d wrong attempts; someone may be guessing. "
+            "Run `autodj devices pairing-code` again in about %d seconds for a fresh code.",
+            PAIRING_MAX_FAILURES_PER_WINDOW,
+            (window + 1) * PAIRING_CODE_WINDOW_SECONDS - timestamp,
+        )
 
     def issue_device_session(self, device_id: str) -> str:
         """Create signed session bound to one active paired device."""

@@ -157,3 +157,67 @@ def test_pairing_policy_rejects_missing_token_clock_and_device(tmp_path) -> None
         _policy(registry).issue_device_session("invalid")
     with pytest.raises(ValueError, match="not active"):
         _policy(registry).issue_device_session("f" * 32)
+
+
+class _Clock:
+    def __init__(self, value: float) -> None:
+        self.value = value
+
+    def __call__(self) -> float:
+        return self.value
+
+
+def _wrong_codes(code: str, count: int) -> list[str]:
+    wrong = [f"{n:08d}" for n in range(count + 2)]
+    return [candidate for candidate in wrong if candidate != code][:count]
+
+
+def test_repeated_wrong_codes_burn_every_live_code(caplog) -> None:
+    from autodj.security import PAIRING_MAX_FAILURES_PER_WINDOW
+
+    clock = _Clock(1_000.0)
+    policy = SecurityPolicy(ServerConfig(access_token=_SECRET), now=clock)
+    code = policy.current_pairing_code()
+    wrong = _wrong_codes(code, PAIRING_MAX_FAILURES_PER_WINDOW)
+
+    for candidate in wrong[:-1]:
+        assert not policy.verify_pairing_code(candidate)
+    assert policy.verify_pairing_code(code)  # still one guess below the limit
+    with caplog.at_level("WARNING", logger="autodj.security"):
+        assert not policy.verify_pairing_code(wrong[-1])
+    assert not policy.verify_pairing_code(code)
+    assert "autodj devices pairing-code" in caplog.text
+    assert code not in caplog.text
+
+    # Next window: the freshly printed code works, the burned one stays dead
+    # even though it would normally still be inside its grace window.
+    clock.value = 1_200.0
+    fresh = policy.current_pairing_code()
+    assert fresh != code
+    assert policy.verify_pairing_code(fresh)
+    assert not policy.verify_pairing_code(code)
+
+
+def test_wrong_code_count_resets_each_window() -> None:
+    from autodj.security import PAIRING_MAX_FAILURES_PER_WINDOW
+
+    clock = _Clock(1_000.0)
+    policy = SecurityPolicy(ServerConfig(access_token=_SECRET), now=clock)
+    code = policy.current_pairing_code()
+    wrong = _wrong_codes(code, PAIRING_MAX_FAILURES_PER_WINDOW - 1)
+
+    for candidate in wrong:
+        assert not policy.verify_pairing_code(candidate)
+    clock.value = 1_200.0  # next window; code is still in its grace period
+    for candidate in wrong:
+        assert not policy.verify_pairing_code(candidate)
+    assert policy.verify_pairing_code(code)
+
+
+def test_malformed_codes_do_not_count_toward_the_burn() -> None:
+    from autodj.security import PAIRING_MAX_FAILURES_PER_WINDOW
+
+    policy = SecurityPolicy(ServerConfig(access_token=_SECRET), now=lambda: 1_000)
+    for _ in range(PAIRING_MAX_FAILURES_PER_WINDOW * 2):
+        assert not policy.verify_pairing_code("not-a-code")
+    assert policy.verify_pairing_code(policy.current_pairing_code())
