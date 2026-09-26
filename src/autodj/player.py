@@ -55,7 +55,9 @@ try:
 except (ImportError, OSError):  # pragma: no cover -- missing PortAudio/minimal host
     sd = None
 
+from autodj.eq import apply_eq, make_eq_filters, make_eq_state, reset_eq_state
 from autodj.indexer import IndexEntry
+from autodj.stereo import envelope, per_channel
 
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig
@@ -106,8 +108,8 @@ def _apply_crossfade(
     to 1.0.  The two faded signals are summed in the overlap.
 
     Args:
-        audio_a: Mono float32 audio array for the outgoing track.
-        audio_b: Mono float32 audio array for the incoming track.
+        audio_a: Mono or stereo float32 audio array for the outgoing track.
+        audio_b: Mono or stereo float32 audio array for the incoming track.
         crossfade_samples: Length of the overlap region in samples.
             Pass ``0`` for an instant cut (equivalent to concatenation).
 
@@ -136,7 +138,7 @@ def _apply_crossfade(
     b_head = audio_b[:crossfade_samples]
     b_body = audio_b[crossfade_samples:]
 
-    overlap = (a_tail * fade_out) + (b_head * fade_in)
+    overlap = (a_tail * envelope(fade_out, a_tail)) + (b_head * envelope(fade_in, b_head))
 
     return np.concatenate([a_body, overlap, b_body]).astype(np.float32)
 
@@ -167,8 +169,8 @@ def _apply_crossfade_ducked(
     or the crossfade region is too short for filter design.
 
     Args:
-        audio_a: Mono float32 audio array for the outgoing track.
-        audio_b: Mono float32 audio array for the incoming track.
+        audio_a: Mono or stereo float32 audio array for the outgoing track.
+        audio_b: Mono or stereo float32 audio array for the incoming track.
         crossfade_samples: Length of the overlap region in samples.
         sample_rate: Sample rate of both audio arrays in Hz.
         bass_cutoff_hz: Frequency below which the outgoing track is
@@ -200,7 +202,7 @@ def _apply_crossfade_ducked(
     cutoff_norm = max(1e-4, min(0.99, bass_cutoff_hz / nyquist))
     try:
         sos = butter(4, cutoff_norm, btype="high", output="sos")
-        a_tail_hp = cast(np.ndarray, sosfilt(sos, a_tail)).astype(np.float32)
+        a_tail_hp = cast(np.ndarray, sosfilt(sos, a_tail, axis=0)).astype(np.float32)
     except (ValueError, RuntimeError):  # pragma: no cover — degenerate sample rate
         return _apply_crossfade(audio_a, audio_b, crossfade_samples)
 
@@ -210,13 +212,14 @@ def _apply_crossfade_ducked(
     bass_remove = np.sin(t * (np.pi / 2.0)).astype(np.float32)
 
     # Mix unfiltered tail with fully-bass-cut tail by the duck envelope
-    a_ducked = a_tail * (1.0 - bass_remove) + a_tail_hp * bass_remove
+    duck = envelope(bass_remove, a_tail)
+    a_ducked = a_tail * (1.0 - duck) + a_tail_hp * duck
 
     # Standard amplitude fades on top of the ducking
     fade_out = np.linspace(1.0, 0.0, crossfade_samples, dtype=np.float32)
     fade_in = np.linspace(0.0, 1.0, crossfade_samples, dtype=np.float32)
 
-    overlap = (a_ducked * fade_out) + (b_head * fade_in)
+    overlap = (a_ducked * envelope(fade_out, a_ducked)) + (b_head * envelope(fade_in, b_head))
     # Hard-limit to ±1.0 — even with bass-ducking, two bright tracks can sum
     # above full scale during the overlap on densely arranged music.
     np.clip(overlap, -1.0, 1.0, out=overlap)
@@ -232,7 +235,7 @@ def _time_stretch(audio: np.ndarray, ratio: float) -> np.ndarray:
     """Pitch-preserving time-stretch via librosa.
 
     Args:
-        audio: Mono float32 audio array.
+        audio: Mono or stereo float32 audio array.
         ratio: Output_duration / input_duration.  Values >1 slow the
             track down (longer); values <1 speed it up (shorter).
 
@@ -246,7 +249,10 @@ def _time_stretch(audio: np.ndarray, ratio: float) -> np.ndarray:
         import librosa
 
         # librosa's parameter is "rate" = playback speed = 1/ratio
-        return librosa.effects.time_stretch(y=audio, rate=1.0 / ratio).astype(np.float32)
+        return per_channel(
+            lambda channel: librosa.effects.time_stretch(y=channel, rate=1.0 / ratio),
+            audio,
+        ).astype(np.float32)
     except Exception as exc:
         logger.debug("Time-stretch failed (ratio=%.3f): %s", ratio, exc)
         return audio
@@ -307,7 +313,7 @@ def apply_filter_sweep(
     cutoff range is invalid.
 
     Args:
-        audio: Mono float32 audio array.
+        audio: Mono or stereo float32 audio array.
         sample_rate: Sample rate in Hz.
         start_hz: Cutoff at sample 0.
         end_hz: Cutoff at the last sample.
@@ -342,13 +348,13 @@ def apply_filter_sweep(
         cutoff_norm = max(1e-4, min(0.99, cutoff / nyquist))
         try:
             sos = butter(4, cutoff_norm, btype=filter_type, output="sos")
-            filt = cast(np.ndarray, sosfilt(sos, chunk)).astype(np.float32)
+            filt = cast(np.ndarray, sosfilt(sos, chunk, axis=0)).astype(np.float32)
         except (ValueError, RuntimeError):
             filt = chunk
 
         # Smooth the boundary between the previous filter pass and this one
         if prev_tail is not None and blend > 0 and len(filt) >= blend:
-            fade = np.linspace(0.0, 1.0, blend, dtype=np.float32)
+            fade = envelope(np.linspace(0.0, 1.0, blend, dtype=np.float32), filt)
             filt[:blend] = prev_tail * (1.0 - fade) + filt[:blend] * fade
 
         out[start_idx:end_idx] = filt
@@ -359,134 +365,11 @@ def apply_filter_sweep(
 
 # ---------------------------------------------------------------------------
 # 3-band EQ (real-time, applied per output chunk)
+#
+# Moved to autodj.eq so autodj.stereo (imported above) has no import-time
+# dependency on player.py.  Re-exported here so every existing
+# `from autodj.player import apply_eq` (etc.) call site keeps working.
 # ---------------------------------------------------------------------------
-
-
-def make_eq_filters(
-    sample_rate: int,
-    low_crossover_hz: float = 250.0,
-    high_crossover_hz: float = 4000.0,
-) -> dict[str, Any] | None:
-    """Return SOS filter coefficients for a 3-band split (low / mid / high).
-
-    The returned object is a dict ``{"low": sos, "mid_lp": sos, "mid_hp": sos,
-    "high": sos}`` — band-pass for mid is built from a serial low-pass +
-    high-pass pair (cheaper than designing a true band-pass).
-
-    Args:
-        sample_rate: Sample rate in Hz.
-        low_crossover_hz: Boundary between low and mid bands.
-        high_crossover_hz: Boundary between mid and high bands.
-
-    Returns:
-        Dict of SOS coefficients, or ``None`` when scipy is unavailable.
-    """
-    try:
-        from scipy.signal import butter
-    except ImportError:  # pragma: no cover — scipy required by full install
-        return None
-
-    nyquist = sample_rate / 2.0
-    low_norm = max(1e-4, min(0.99, low_crossover_hz / nyquist))
-    high_norm = max(1e-4, min(0.99, high_crossover_hz / nyquist))
-    return {
-        "low": butter(2, low_norm, btype="low", output="sos"),
-        "mid_lp": butter(2, high_norm, btype="low", output="sos"),
-        "mid_hp": butter(2, low_norm, btype="high", output="sos"),
-        "high": butter(2, high_norm, btype="high", output="sos"),
-    }
-
-
-def make_eq_state(sos_filters: dict[str, Any] | None) -> dict[str, np.ndarray] | None:
-    """Return zero-initialised filter memory for :func:`apply_eq`.
-
-    One ``zi`` array per band, shaped for the second-order sections that
-    :func:`make_eq_filters` produced.  Zeros mean "the stream starts from
-    silence", which is what a fresh track does.
-
-    Args:
-        sos_filters: Dict from :func:`make_eq_filters`, or ``None``.
-
-    Returns:
-        Dict of per-band state arrays, or ``None`` when there are no filters.
-    """
-    if sos_filters is None:
-        return None
-    return {
-        name: np.zeros((np.asarray(sos).shape[0], 2), dtype=np.float64)
-        for name, sos in sos_filters.items()
-    }
-
-
-def reset_eq_state(state: dict[str, np.ndarray] | None) -> None:
-    """Zero the filter memory in *state*, in place.
-
-    Call this whenever the EQ starts filtering again after a stretch of
-    bypassed blocks: the memory still holds the tail of whatever was filtered
-    before the bypass, and splicing that into a later part of the track is a
-    click.  Starting from zeros is the same assumption a new stream makes.
-
-    Args:
-        state: Dict from :func:`make_eq_state`, or ``None``.
-    """
-    if state is None:
-        return
-    for band in state.values():
-        band.fill(0.0)
-
-
-def apply_eq(
-    chunk: np.ndarray,
-    sos_filters: dict[str, Any] | None,
-    low_gain: float,
-    mid_gain: float,
-    high_gain: float,
-    state: dict[str, np.ndarray] | None = None,
-) -> np.ndarray:
-    """Apply a 3-band gain-only EQ to a short audio chunk.
-
-    Splits *chunk* into low / mid / high bands via the filters returned
-    by :func:`make_eq_filters`, scales each by its gain, and sums them
-    back together.  Designed to be called from a sounddevice output
-    callback.
-
-    Pass *state* from :func:`make_eq_state` when filtering a stream one
-    block at a time.  Without it every block restarts each biquad from
-    zero, which puts a step discontinuity — an audible zipper — at every
-    block boundary as soon as a band leaves unity gain.
-
-    Args:
-        chunk: Mono float32 audio chunk.
-        sos_filters: Dict from :func:`make_eq_filters`.
-        low_gain: Multiplier for the low band (1.0 = unity, 0.0 = kill).
-        mid_gain: Multiplier for the mid band.
-        high_gain: Multiplier for the high band.
-        state: Per-band filter memory, updated in place.  ``None`` filters
-            the chunk as a standalone signal.
-
-    Returns:
-        EQ-processed float32 chunk (same length, hard-clipped to ±1.0).
-    """
-    if sos_filters is None:
-        return chunk
-    try:
-        from scipy.signal import sosfilt
-    except ImportError:  # pragma: no cover — scipy required by full install
-        return chunk
-
-    def _filter(band: str, signal: np.ndarray) -> np.ndarray:
-        if state is None or band not in state:
-            return cast(np.ndarray, sosfilt(sos_filters[band], signal))
-        filtered, state[band] = sosfilt(sos_filters[band], signal, zi=state[band])
-        return cast(np.ndarray, filtered)
-
-    low = _filter("low", chunk)
-    high = _filter("high", chunk)
-    mid = _filter("mid_lp", _filter("mid_hp", chunk))
-
-    out = (low * low_gain + mid * mid_gain + high * high_gain).astype(np.float32)
-    np.clip(out, -1.0, 1.0, out=out)
-    return out
 
 
 # ---------------------------------------------------------------------------

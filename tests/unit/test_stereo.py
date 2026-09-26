@@ -1,0 +1,133 @@
+"""Tests for stereo helpers and stereo-safe DSP primitives."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from unittest.mock import patch
+
+import numpy as np
+import pytest
+import soundfile as sf
+
+from autodj import player, stereo
+
+
+def _tone(n: int = 4410, hz: float = 440.0, sr: int = 44100) -> np.ndarray:
+    t = np.arange(n, dtype=np.float32) / sr
+    return (0.5 * np.sin(2 * np.pi * hz * t)).astype(np.float32)
+
+
+def test_to_stereo_duplicates_mono_and_keeps_stereo() -> None:
+    mono = _tone(10)
+    out = stereo.to_stereo(mono)
+    assert out.shape == (10, 2)
+    assert out.dtype == np.float32
+    np.testing.assert_array_equal(out[:, 0], out[:, 1])
+    both = np.stack([mono, -mono], axis=1)
+    np.testing.assert_array_equal(stereo.to_stereo(both), both)
+    many = np.stack([mono, -mono, mono * 0], axis=1)
+    np.testing.assert_array_equal(stereo.to_stereo(many), both)
+
+
+def test_per_channel_matches_mono_for_identical_channels() -> None:
+    mono = _tone()
+    out = stereo.per_channel(lambda ch: ch * 2.0, stereo.to_stereo(mono))
+    np.testing.assert_allclose(out[:, 0], mono * 2.0)
+    np.testing.assert_allclose(out[:, 1], mono * 2.0)
+    np.testing.assert_array_equal(stereo.per_channel(lambda ch: ch + 1, mono), mono + 1)
+
+
+def test_per_channel_equalises_column_lengths() -> None:
+    two = stereo.to_stereo(_tone(10))
+    calls = iter([np.ones(10, np.float32), np.ones(12, np.float32)])
+    out = stereo.per_channel(lambda _ch: next(calls), two)
+    assert out.shape == (10, 2)
+    calls = iter([np.ones(10, np.float32), np.ones(7, np.float32)])
+    out = stereo.per_channel(lambda _ch: next(calls), two)
+    assert out.shape == (10, 2)
+    assert out[9, 1] == 0.0
+
+
+def test_envelope_broadcasts_for_stereo() -> None:
+    env = np.linspace(0, 1, 5, dtype=np.float32)
+    assert stereo.envelope(env, np.zeros(5)).shape == (5,)
+    assert stereo.envelope(env, np.zeros((5, 2))).shape == (5, 1)
+
+
+def test_load_stereo_resamples_and_duplicates(tmp_path: Path) -> None:
+    path = tmp_path / "mono48k.wav"
+    sf.write(path, _tone(4800, sr=48000), 48000)
+    out = stereo.load_stereo(str(path))
+    assert out.ndim == 2 and out.shape[1] == 2
+    assert abs(out.shape[0] - 4410) <= 2
+    np.testing.assert_array_equal(out[:, 0], out[:, 1])
+
+
+def test_load_stereo_keeps_two_channels(tmp_path: Path) -> None:
+    path = tmp_path / "st.wav"
+    left, right = _tone(441), -_tone(441)
+    sf.write(path, np.stack([left, right], axis=1), 44100)
+    out = stereo.load_stereo(str(path))
+    np.testing.assert_allclose(out[:, 0], left, atol=1e-4)
+    np.testing.assert_allclose(out[:, 1], right, atol=1e-4)
+
+
+@pytest.mark.parametrize("ducked", [False, True])
+def test_crossfades_accept_stereo(ducked: bool) -> None:
+    a, b = _tone(8820), _tone(8820, hz=220.0)
+    cf = 4410
+    if ducked:
+        mono_out = player._apply_crossfade_ducked(a, b, cf, 44100)
+        st_out = player._apply_crossfade_ducked(stereo.to_stereo(a), stereo.to_stereo(b), cf, 44100)
+    else:
+        mono_out = player._apply_crossfade(a, b, cf)
+        st_out = player._apply_crossfade(stereo.to_stereo(a), stereo.to_stereo(b), cf)
+    assert st_out.shape == (len(mono_out), 2)
+    np.testing.assert_allclose(st_out[:, 0], mono_out, atol=1e-5)
+    np.testing.assert_allclose(st_out[:, 1], mono_out, atol=1e-5)
+
+
+def test_filter_sweep_accepts_stereo() -> None:
+    a = _tone(8820)
+    mono_out = player.apply_filter_sweep(a, 44100, 8000.0, 400.0)
+    st_out = player.apply_filter_sweep(stereo.to_stereo(a), 44100, 8000.0, 400.0)
+    np.testing.assert_allclose(st_out[:, 0], mono_out, atol=1e-5)
+    np.testing.assert_allclose(st_out[:, 1], mono_out, atol=1e-5)
+
+
+def test_time_stretch_accepts_stereo() -> None:
+    a = _tone(22050)
+    out = player._time_stretch(stereo.to_stereo(a), 1.05)
+    assert out.ndim == 2 and out.shape[1] == 2
+    np.testing.assert_allclose(out[:, 0], out[:, 1], atol=1e-6)
+
+
+def test_eq_stateful_stereo_matches_mono() -> None:
+    filters = player.make_eq_filters(44100)
+    a = _tone(1764)
+    mono_state = player.make_eq_state(filters)
+    st_state = player.make_eq_state(filters, channels=2)
+    st = stereo.to_stereo(a)
+    for start in (0, 882):
+        m = player.apply_eq(a[start : start + 882], filters, 0.5, 1.0, 1.5, state=mono_state)
+        s = player.apply_eq(st[start : start + 882], filters, 0.5, 1.0, 1.5, state=st_state)
+        np.testing.assert_allclose(s[:, 0], m, atol=1e-5)
+        np.testing.assert_allclose(s[:, 1], m, atol=1e-5)
+
+
+def test_load_stereo_falls_back_to_librosa_on_soundfile_failure() -> None:
+    fake_mono = np.ones(22050, dtype=np.float32)
+    with (
+        patch("autodj.stereo.sf.read", side_effect=Exception("unsupported format")),
+        patch("librosa.load", return_value=(fake_mono, 22050)),
+        patch("librosa.resample", side_effect=lambda audio, orig_sr, target_sr, axis: audio),
+    ):
+        out = stereo.load_stereo("fake.opus", target_sr=22050)
+    assert out.shape == (22050, 2)
+    np.testing.assert_array_equal(out[:, 0], out[:, 1])
+
+
+def test_mono_helper() -> None:
+    st = np.stack([np.ones(3), np.zeros(3)], axis=1).astype(np.float32)
+    np.testing.assert_allclose(stereo.mono(st), 0.5)
+    np.testing.assert_array_equal(stereo.mono(np.ones(3)), np.ones(3))
