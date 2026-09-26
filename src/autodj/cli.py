@@ -702,7 +702,14 @@ def cmd_devices_pairing_code(ctx: click.Context) -> None:
         code = policy.current_pairing_code()
     except RuntimeError as exc:
         raise click.ClickException("Configure LAN access before requesting a code.") from exc
+    valid_for, next_code_in = policy.pairing_code_seconds_left()
     click.echo(code)
+    # stderr keeps stdout to the bare code for scripts such as container_smoke.sh.
+    click.echo(
+        f"Valid for about {valid_for} more seconds. A new code starts in {next_code_in} "
+        "seconds; if the server says pairing is paused, use that one.",
+        err=True,
+    )
 
 
 # ---------------------------------------------------------------------------

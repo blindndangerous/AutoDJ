@@ -208,7 +208,9 @@ def test_devices_pairing_code_and_reset_manage_all_browsers() -> None:
         devices = registry.list_devices()
 
     assert code.exit_code == 0
-    assert re.fullmatch(r"[0-9]{8}\n", code.output)
+    # stdout stays the bare code for scripts; the validity note goes to stderr.
+    assert re.fullmatch(r"[0-9]{8}\n", code.stdout)
+    assert re.search(r"Valid for about \d+ more seconds\. A new code starts in \d+", code.stderr)
     assert _SECRET not in code.output
     assert reset.exit_code == 0
     assert "Revoked 2 paired browser(s)." in reset.output

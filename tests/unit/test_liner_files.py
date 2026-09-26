@@ -264,6 +264,29 @@ def test_resolve_liner_path_accepts_plain_unicode_filename(tmp_path: Path) -> No
     assert resolve_liner_path(root, "statión-音.mp3") == root.resolve() / "statión-音.mp3"
 
 
+@pytest.mark.parametrize("name", ["config.toml", "tracks.db", "README", "clip.mp3.bak"])
+def test_open_and_delete_refuse_non_audio_names(tmp_path: Path, name: str) -> None:
+    root = tmp_path / "liners"
+    root.mkdir()
+    (root / name).write_bytes(b"secret")
+    with pytest.raises(InvalidLinerName):
+        open_liner_file(root, name)
+    with pytest.raises(InvalidLinerName):
+        delete_liner_file(root, name)
+    assert (root / name).read_bytes() == b"secret"
+
+
+def test_open_accepts_uppercase_audio_extension(tmp_path: Path) -> None:
+    root = tmp_path / "liners"
+    root.mkdir()
+    (root / "ID.WAV").write_bytes(b"riff")
+    opened = open_liner_file(root, "ID.WAV")
+    try:
+        assert opened.file.read() == b"riff"
+    finally:
+        opened.file.close()
+
+
 def test_resolve_liner_path_requires_regular_file(tmp_path: Path) -> None:
     root = tmp_path / "liners"
     root.mkdir()

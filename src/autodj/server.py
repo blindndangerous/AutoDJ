@@ -55,13 +55,13 @@ from fastapi import (
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.background import BackgroundTask
 
 # PlayerBridge lives in autodj._bridge so neither file balloons over
 # the 2000-line working budget.  Re-export here so the external API
 # (``from autodj.server import PlayerBridge``) keeps working unchanged.
-from autodj._bridge import PlayerBridge
+from autodj._bridge import PlayerBridge, validate_playback_choices
 from autodj.http_media import (
     OpenedMediaFile,
     RangeNotSatisfiable,
@@ -79,6 +79,7 @@ from autodj.security import (
     _raw_header_values,
     emit_audit,
     new_request_id,
+    peer_address,
 )
 from autodj.version import REQUIRED_BUILT_ASSETS, current_version
 
@@ -421,6 +422,12 @@ class ProfileSaveBody(BaseModel):
     liners_enabled: bool | None = None
     liners_pick_mode: str | None = None
 
+    @model_validator(mode="after")
+    def _check_choices(self) -> ProfileSaveBody:
+        """Refuse to store a profile that could never be applied."""
+        validate_playback_choices(self.model_dump())
+        return self
+
 
 class SeekBody(BaseModel):
     """Request body for POST /api/seek.
@@ -488,7 +495,16 @@ class DjMixBody(BaseModel):
 
 
 class PlaybackSettingsBody(BaseModel):
-    """Request body for POST /api/playback-settings."""
+    """Request body for POST /api/playback-settings.
+
+    Unknown fields are rejected rather than ignored.  In particular the liner
+    root (``playback.liners_folder``) is configuration-only: the liner fetch
+    and delete routes resolve names under it, so letting a request move it
+    would let any client that can reach this route point those routes at the
+    config or index directory.
+    """
+
+    model_config = ConfigDict(extra="forbid")
 
     crossfade_seconds: FiniteFloat | None = None
     fade_in_seconds: FiniteFloat | None = None
@@ -510,13 +526,18 @@ class PlaybackSettingsBody(BaseModel):
     key_sync_fx: bool | None = None
     beatmatch_on_skip: bool | None = None
     liners_enabled: bool | None = None
-    liners_folder: str | None = None
     liners_every_n_songs: int | None = None
     liners_every_minutes: FiniteFloat | None = None
     liners_random_min_minutes: FiniteFloat | None = None
     liners_random_max_minutes: FiniteFloat | None = None
     liners_pick_mode: str | None = None
     liners_duck_db: FiniteFloat | None = None
+
+    @model_validator(mode="after")
+    def _check_choices(self) -> PlaybackSettingsBody:
+        """Reject an unknown choice before any field is applied."""
+        validate_playback_choices(self.model_dump())
+        return self
 
 
 class BpmRangeBody(BaseModel):
@@ -811,7 +832,17 @@ def create_app(
                     "Server shutdown completed in degraded mode: DJ-meta cache could not be closed."
                 )
 
-    app = FastAPI(title="AutoDJ", version=current_version(), lifespan=lifespan)
+    # No /docs, /redoc or /openapi.json: the web UI does not use them, and
+    # a full map of every route and body schema is reconnaissance material
+    # for anyone who reaches the port.
+    app = FastAPI(
+        title="AutoDJ",
+        version=current_version(),
+        lifespan=lifespan,
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+    )
 
     @app.exception_handler(RequestValidationError)
     async def _validation_error(_request: Request, exc: RequestValidationError) -> JSONResponse:
@@ -981,17 +1012,27 @@ def create_app(
         request_policy: SecurityPolicy = request.app.state.security_policy
         device_id = request_policy.session_device_id(request.cookies.get(COOKIE_NAME))
         registry: DeviceRegistry | None = request.app.state.device_registry
-        if device_id is not None and registry is not None:
-            registry.touch(device_id)
-        return {
-            "required": request_policy.authentication_required,
-            "authenticated": (
-                not request_policy.authentication_required
-                or request_policy.verify_session(request.cookies.get(COOKIE_NAME))
-            ),
-            "pairing": request_policy.authentication_required,
-            "device_id": device_id,
-        }
+        cookie = request.cookies.get(COOKIE_NAME)
+
+        def _status() -> dict[str, object]:
+            """Touch the device and build the status off the event loop.
+
+            touch() writes and verify_session() reads the device SQLite
+            database.
+            """
+            if device_id is not None and registry is not None:
+                registry.touch(device_id)
+            return {
+                "required": request_policy.authentication_required,
+                "authenticated": (
+                    not request_policy.authentication_required
+                    or request_policy.verify_session(cookie)
+                ),
+                "pairing": request_policy.authentication_required,
+                "device_id": device_id,
+            }
+
+        return await asyncio.to_thread(_status)
 
     @app.post("/api/pair")
     async def api_pair(body: PairBody, request: Request) -> Response:
@@ -1000,18 +1041,28 @@ def create_app(
         registry: DeviceRegistry | None = request.app.state.device_registry
         if registry is None or not request_policy.authentication_required:
             raise HTTPException(status_code=409, detail="Pairing is not enabled")
-        if not request_policy.verify_pairing_code(body.code):
+        client = peer_address(request.scope)
+        block = request_policy.pairing_block(client)
+        if block is not None:
+            raise HTTPException(
+                status_code=429,
+                detail=block.detail,
+                headers={"Retry-After": str(block.retry_after)},
+            )
+        if not request_policy.verify_pairing_code(body.code, client):
             raise HTTPException(status_code=401, detail="Invalid or expired pairing code")
         try:
-            device = registry.pair(body.device_name)
+            device = await asyncio.to_thread(registry.pair, body.device_name)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        # Issuing checks the device is still active, another SQLite read.
+        session = await asyncio.to_thread(request_policy.issue_device_session, device.device_id)
         response = JSONResponse(
             {"authenticated": True, "device_id": device.device_id, "device_name": device.name}
         )
         response.set_cookie(
             COOKIE_NAME,
-            request_policy.issue_device_session(device.device_id),
+            session,
             httponly=True,
             samesite="strict",
             secure=request_policy.secure_cookie,
@@ -1104,7 +1155,7 @@ def create_app(
     async def api_profiles() -> dict:
         """List saved profile bundles."""
         store = _profile_store()
-        return {"profiles": store.list_names(), "root": str(store.root)}
+        return {"profiles": await asyncio.to_thread(store.list_names), "root": str(store.root)}
 
     @app.get("/api/profiles/{name}")
     async def api_profile_get(name: str) -> dict:
@@ -1116,7 +1167,7 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         try:
-            snap = _profile_store().load(name)
+            snap = await asyncio.to_thread(_profile_store().load, name)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return snap.to_dict()
@@ -1131,7 +1182,7 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         snap = ProfileSnapshot(**body.model_dump())
-        target = _profile_store().save(snap)
+        target = await asyncio.to_thread(_profile_store().save, snap)
         return {"saved": snap.name, "path": str(target)}
 
     @app.delete("/api/profiles/{name}")
@@ -1143,7 +1194,7 @@ def create_app(
             validate_name(name)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        ok = _profile_store().delete(name)
+        ok = await asyncio.to_thread(_profile_store().delete, name)
         if not ok:
             raise HTTPException(status_code=404, detail="Profile not found")
         return {"deleted": name}
@@ -1158,7 +1209,7 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         try:
-            snap = _profile_store().load(name)
+            snap = await asyncio.to_thread(_profile_store().load, name)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -1186,8 +1237,14 @@ def create_app(
             if v is not None:
                 kw[fld] = v
                 applied.append(fld)
-        if kw:
+        # A profile saved before its fields were validated, or edited by hand,
+        # can hold a bad choice.  set_playback_settings checks every field
+        # before changing any, and it runs before the other setters below, so
+        # a rejected profile leaves the session untouched.
+        try:
             bridge.set_playback_settings(**kw)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         # BPM range
         if snap.bpm_lo is not None and snap.bpm_hi is not None:
             bridge.set_bpm_range(snap.bpm_lo, snap.bpm_hi)
@@ -1201,6 +1258,7 @@ def create_app(
             with contextlib.suppress(Exception):
                 bridge.set_preset(snap.preset)
                 applied.append("preset")
+        bridge.save_persistent_state()
         return {"applied": applied, "name": name}
 
     @app.get("/api/liners")
@@ -1261,7 +1319,7 @@ def create_app(
         name = file.filename or ""
         folder = _resolve_liner_folder()
         try:
-            parsed_target = resolve_liner_path(folder, name)
+            parsed_target = await asyncio.to_thread(resolve_liner_path, folder, name)
         except InvalidLinerName as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         extension = parsed_target.suffix.lower()
@@ -1298,7 +1356,7 @@ def create_app(
         )
 
         try:
-            delete_liner_file(_resolve_liner_folder(), name)
+            await asyncio.to_thread(delete_liner_file, _resolve_liner_folder(), name)
         except InvalidLinerName as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except FileNotFoundError as exc:
@@ -1323,7 +1381,7 @@ def create_app(
         )
 
         try:
-            opened = open_liner_file(_resolve_liner_folder(), name)
+            opened = await asyncio.to_thread(open_liner_file, _resolve_liner_folder(), name)
         except InvalidLinerName as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except FileNotFoundError as exc:
@@ -1720,7 +1778,9 @@ def create_app(
             index_dir=getattr(index_cfg, "index_dir", None),
             index_name=getattr(index_cfg, "name", None),
         )
-        ok = mgr.start(body.name, body.args)
+        # start() may wait up to a second for the previous job's output reader
+        # and spawns a process, so keep it off the event loop.
+        ok = await asyncio.to_thread(mgr.start, body.name, body.args)
         if not ok:
             raise HTTPException(
                 status_code=409,
