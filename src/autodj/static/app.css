@@ -766,6 +766,12 @@
       line-height: 1.4;
       pointer-events: none;
     }
+    /* Moved out of the way when the focused control sits where the toast
+       would be (WCAG 2.4.11); see placeVisibleStatus in live-region.js. */
+    #status-toast.at-top {
+      top: 1rem;
+      bottom: auto;
+    }
     /* Failures carry the same red edge as the stale-playback banner, so a
        confirmation and an error are not the same bordered box. */
     #status-toast.is-error {

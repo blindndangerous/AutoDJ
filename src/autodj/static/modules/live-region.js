@@ -41,7 +41,27 @@ export function clearLiveRegionLater(el, dwellMs = 3000) {
 // ----------------------------------------------------------------
 
 const VISIBLE_STATUS_DWELL_MS = 8000;
+// Matches the 1rem inset in app.css.
+const VISIBLE_STATUS_GAP_PX = 16;
 let _visibleStatusTimer = null;
+
+// WCAG 2.4.11: the toast is fixed to the foot of the viewport, so it
+// could sit on top of the control that has focus (a Save button, the
+// last queue row, the Refresh stats button).  When the focused element
+// reaches into the strip the toast would cover, the toast moves to the
+// top of the viewport instead.
+function placeVisibleStatus(toast, doc) {
+  const view = doc.defaultView;
+  const active = doc.activeElement;
+  let atTop = false;
+  if (view && active && active !== doc.body
+      && typeof active.getBoundingClientRect === "function") {
+    const focused = active.getBoundingClientRect();
+    const strip = view.innerHeight - toast.offsetHeight - 2 * VISIBLE_STATUS_GAP_PX;
+    atTop = focused.bottom > strip && focused.top < view.innerHeight;
+  }
+  toast.classList.toggle("at-top", atTop);
+}
 
 export function showVisibleStatus(
   message,
@@ -65,6 +85,7 @@ export function showVisibleStatus(
   // A failure and a confirmation must not be the same bordered box.
   toast.classList.toggle("is-error", tone === "error");
   toast.hidden = false;
+  placeVisibleStatus(toast, doc);
   _visibleStatusTimer = setTimeout(() => {
     toast.textContent = "";
     toast.hidden = true;
@@ -110,9 +131,14 @@ export function announceStatus(
 
 // Escape dismisses the visible mirror.  It never moves focus, so a
 // keyboard user does not lose their place, and it defers to an open
-// <dialog>, whose own Escape handling must win.
-export function installVisibleStatusDismiss(doc = globalThis.document) {
+// <dialog>, whose own Escape handling must win.  Every focus change while
+// the mirror is showing re-checks that it is not covering the new focus.
+export function installVisibleStatusBehaviour(doc = globalThis.document) {
   if (!doc?.addEventListener) return;
+  doc.addEventListener("focusin", () => {
+    const toast = doc.getElementById("status-toast");
+    if (toast && !toast.hidden) placeVisibleStatus(toast, doc);
+  });
   doc.addEventListener("keydown", (event) => {
     if (event.key !== "Escape" || event.defaultPrevented) return;
     const toast = doc.getElementById("status-toast");

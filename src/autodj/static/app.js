@@ -1438,11 +1438,11 @@ let volAnnounceTimer = null;
 import {
   announceStatus,
   clearLiveRegionLater,
-  installVisibleStatusDismiss,
+  installVisibleStatusBehaviour,
   showVisibleStatus,
 } from "./modules/live-region.js";
 
-installVisibleStatusDismiss();
+installVisibleStatusBehaviour();
 // Logarithmic (perceptual) volume curve — humans hear loudness as
 // log of amplitude, so a linear slider feels backwards: 0-50 % barely
 // changes, 80-100 % feels too loud.  Map slider 0-100 → gain via
