@@ -990,6 +990,7 @@ class Player:
                     self._skip_event.clear()
 
                     next_entry = self._pick_next(current)
+                    next_from_queue = self._last_pick_mode == "queue"
                     self._state.next_track = next_entry
                     self._refresh_status()
 
@@ -998,13 +999,7 @@ class Player:
                     if self._state.should_stop:
                         break
 
-                    # If the user queued a specific track WHILE the
-                    # current one was playing (search → Now), honour
-                    # that pick — _pick_next had already chosen
-                    # next_entry before queued_next was set.
-                    if self._state.queued_next is not None:
-                        next_entry = self._state.queued_next
-                        self._state.queued_next = None
+                    next_entry = self._honour_late_queued_next(next_entry, next_from_queue)
 
                     self._state.record_played(next_entry)
                     self._state.track_number += 1
@@ -1062,6 +1057,26 @@ class Player:
         while not self._state.should_stop:  # pragma: no cover
             self._skip_event.wait(timeout=1.0)
             self._skip_event.clear()
+
+    def _honour_late_queued_next(self, picked: IndexEntry, picked_from_queue: bool) -> IndexEntry:
+        """Return the track to start at this transition.
+
+        The audio loop picks, and pops, *picked* when the current track
+        starts.  If the user chose "play next" while it was playing, that
+        ``queued_next`` wins.  A displaced *picked* that came from the user
+        queue goes back to its front, so it plays right after instead of
+        being silently dropped; a displaced similarity pick is just
+        discarded.
+        """
+        with self._state.queue_lock:
+            late = self._state.queued_next
+            if late is None:
+                return picked
+            self._state.queued_next = None
+            if picked_from_queue:
+                self._state.queue.insert(0, picked)
+        self._last_pick_mode = "queue"
+        return late
 
     def _pop_user_queue(self) -> IndexEntry | None:
         """Pop a queued / drag-reorder track from state, or return None."""
