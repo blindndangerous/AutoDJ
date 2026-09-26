@@ -76,7 +76,7 @@ repos:
 
       - id: ruff-format
         name: ruff-format
-        entry: uv run --frozen ruff format src/ tests/
+        entry: uv run --frozen ruff format src/ tests/ scripts/
         language: system
         pass_filenames: false
         files: \.py$
