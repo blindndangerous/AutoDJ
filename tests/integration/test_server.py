@@ -2355,6 +2355,12 @@ class TestEqEndpoint:
 # ---------------------------------------------------------------------------
 
 
+class TestApiDocsDisabled:
+    @pytest.mark.parametrize("path", ["/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"])
+    def test_interactive_docs_and_schema_are_not_served(self, client, path) -> None:
+        assert client.get(path).status_code == 404
+
+
 class TestQueueEndpoints:
     def test_queue_add(self, bridge) -> None:
         from fastapi.testclient import TestClient

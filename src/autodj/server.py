@@ -831,7 +831,17 @@ def create_app(
                     "Server shutdown completed in degraded mode: DJ-meta cache could not be closed."
                 )
 
-    app = FastAPI(title="AutoDJ", version=current_version(), lifespan=lifespan)
+    # No /docs, /redoc or /openapi.json: the web UI does not use them, and
+    # a full map of every route and body schema is reconnaissance material
+    # for anyone who reaches the port.
+    app = FastAPI(
+        title="AutoDJ",
+        version=current_version(),
+        lifespan=lifespan,
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+    )
 
     @app.exception_handler(RequestValidationError)
     async def _validation_error(_request: Request, exc: RequestValidationError) -> JSONResponse:
