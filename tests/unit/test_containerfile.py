@@ -7,6 +7,7 @@ import stat
 import subprocess
 import sys
 import threading
+import tomllib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -378,6 +379,79 @@ def test_image_contract_accepts_internal_run_mount_stage() -> None:
     content = (ROOT / "Containerfile").read_text(encoding="utf-8")
 
     _assert_reviewed_images(f"{content}\nRUN --mount=type=bind,from=python-base,target=/x true\n")
+
+
+CPU_TORCH_PACKAGES = ("torch", "torchaudio", "torchvision")
+
+
+def _cpu_torch_pins(text: str) -> dict[str, tuple[str, list[str]]]:
+    """Parse container/torch-cpu.txt into ``{name: (version, sha256 hashes)}``."""
+    logical = re.sub(r"\\\s*\n", " ", text)
+    pins: dict[str, tuple[str, list[str]]] = {}
+    for line in logical.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        match = re.fullmatch(r"([a-z]+)==(\S+)((?:\s+--hash=sha256:\S+)*)", line)
+        assert match is not None, f"unexpected requirement line: {line!r}"
+        name, version, hash_options = match.groups()
+        assert name not in pins, f"{name} is listed twice"
+        pins[name] = (version, re.findall(r"--hash=sha256:(\S+)", hash_options))
+    return pins
+
+
+def _assert_cpu_torch_pins_are_hashed_and_locked(text: str) -> None:
+    lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
+    locked = {package["name"]: package["version"] for package in lock["package"]}
+    pins = _cpu_torch_pins(text)
+    assert set(pins) == set(CPU_TORCH_PACKAGES)
+    for name, (version, hashes) in pins.items():
+        assert version == f"{locked[name]}+cpu", f"{name} {version} != uv.lock {locked[name]}"
+        # One wheel per image architecture: x86_64 and aarch64.
+        assert len(hashes) == 2, f"{name} needs an x86_64 and an aarch64 hash"
+        assert len(set(hashes)) == 2
+        assert all(re.fullmatch(r"[0-9a-f]{64}", digest) for digest in hashes)
+
+
+def test_container_cpu_torch_is_hash_pinned_to_locked_versions() -> None:
+    _assert_cpu_torch_pins_are_hashed_and_locked(
+        (ROOT / "container" / "torch-cpu.txt").read_text(encoding="utf-8")
+    )
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ("torch==2.14.0+cpu", "torch==2.13.0+cpu"),
+        ("\\\n    --hash=sha256:27b34640", "\n    # sha256:27b34640"),
+        ("--hash=sha256:f152f41d", "--hash=sha256:F152F41D"),
+    ],
+)
+def test_cpu_torch_pin_check_rejects_mutation(old: str, new: str) -> None:
+    text = (ROOT / "container" / "torch-cpu.txt").read_text(encoding="utf-8")
+    assert old in text
+    with pytest.raises(AssertionError):
+        _assert_cpu_torch_pins_are_hashed_and_locked(text.replace(old, new, 1))
+
+
+def test_container_installs_cpu_torch_with_required_hashes() -> None:
+    content = (ROOT / "Containerfile").read_text(encoding="utf-8")
+    logical = re.sub(r"\\\s*\n\s*", " ", content)
+
+    assert "COPY container/torch-cpu.txt ./container/" in content
+    installs = [line for line in logical.splitlines() if "download.pytorch.org" in line]
+    assert len(installs) == 1
+    install = installs[0].split("uv pip install", 1)[1]
+    for option in (
+        "--no-deps",
+        "--require-hashes",
+        "--index-url https://download.pytorch.org/whl/cpu",
+        "-r container/torch-cpu.txt",
+    ):
+        assert option in install
+    # The locked sync must skip the CUDA torch family the CPU wheels replace.
+    assert "--no-install-project $skipped" in logical
+    assert "(nvidia|cuda)-.+|triton|torch|torchaudio|torchvision" in logical
 
 
 def test_build_context_excludes_sensitive_files() -> None:
