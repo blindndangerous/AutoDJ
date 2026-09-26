@@ -17,6 +17,11 @@
 //
 // Key conflicts: lowercase k = pause, uppercase K (Shift+K) = speak key.
 // Lowercase n = skip, uppercase N (Shift+N) = speak next track.
+//
+// WCAG 2.1.4: single-key shortcuts can be switched off with the
+// Settings > Keyboard checkbox.  The choice is kept per browser in
+// localStorage and defaults to on; storage that is blocked or throws
+// simply means "on" and an unsaved choice.
 
 import { isTypingTarget, srSpeak } from "./dom-helpers.js";
 
@@ -143,6 +148,37 @@ export function toggleShortcutsModal() {
   return true;
 }
 
+const SHORTCUTS_STORAGE_KEY = "autodj.keyboardShortcuts";
+let _shortcutsOn = null;
+
+// Read lazily, never at import: touching localStorage at module load is
+// what dom-helpers.js avoids too.
+function shortcutsEnabled() {
+  if (_shortcutsOn === null) {
+    try {
+      _shortcutsOn = globalThis.localStorage?.getItem(SHORTCUTS_STORAGE_KEY) !== "off";
+    } catch (_) {
+      _shortcutsOn = true;
+    }
+  }
+  return _shortcutsOn;
+}
+
+function setShortcutsEnabled(on) {
+  _shortcutsOn = Boolean(on);
+  try {
+    globalThis.localStorage?.setItem(SHORTCUTS_STORAGE_KEY, on ? "on" : "off");
+  } catch (_) {
+    // Still honoured for this page load; it just will not be remembered.
+  }
+}
+
+function installShortcutToggle(checkbox) {
+  if (!checkbox) return;
+  checkbox.checked = shortcutsEnabled();
+  checkbox.addEventListener("change", () => setShortcutsEnabled(checkbox.checked));
+}
+
 const _pressed = new Set();
 
 export function installHotkeys({
@@ -150,7 +186,10 @@ export function installHotkeys({
   seekDelta, getBpm,
   getTrack, getNextTrack, getRemaining,
   isEnabled = () => true,
+  shortcutToggle = null,
 }) {
+  installShortcutToggle(shortcutToggle);
+  const active = () => isEnabled() && shortcutsEnabled();
   window.addEventListener("keyup", (e) => {
     _pressed.delete(e.key);
     // Modifier-aware aliases -- e.g. Shift held on "?" produces "?",
@@ -175,7 +214,7 @@ export function installHotkeys({
     const modal = document.getElementById("hotkey-help-modal");
     if (modal && modal.open && _eventIsWithin(e, modal)) {
       if (e.key === "?" && !e.ctrlKey && !e.metaKey && !e.altKey
-          && !_pressed.has(e.key) && isEnabled()) {
+          && !_pressed.has(e.key) && active()) {
         _pressed.add(e.key);
         e.preventDefault();
         toggleShortcutsModal();
@@ -186,7 +225,7 @@ export function installHotkeys({
     if (_shouldDeferToNativeKeyboard(e)) return;
     if (_pressed.has(e.key)) return;
     _pressed.add(e.key);
-    if (!isEnabled()) return;
+    if (!active()) return;
 
     const nowPanel = document.getElementById("panel-now");
     const nowVisible = nowPanel && !nowPanel.hasAttribute("hidden");

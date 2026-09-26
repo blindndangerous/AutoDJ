@@ -252,6 +252,7 @@
   <dialog id="hotkey-help-modal" aria-labelledby="hotkey-help-title">
     <h2 id="hotkey-help-title" style="margin-top:0">Keyboard shortcuts</h2>
     <p>Transport keys work on the Now Playing tab. Status keys (Shift+letter) and <kbd>?</kbd> work from any tab. Letter and punctuation shortcuts work on focused buttons and sliders, but not while typing or using dropdown typeahead. Space activates a focused button; arrow keys operate the focused slider or tab.</p>
+    <p>If these single-key shortcuts get in your way, turn them all off with the <strong>Enable keyboard shortcuts</strong> checkbox under Settings, Keyboard. The choice is saved in this browser. This list stays available from the Keyboard shortcuts button.</p>
     <dl style="display:grid;grid-template-columns:max-content 1fr;column-gap:1rem;row-gap:0.25rem;margin:0">
       <dt><kbd>Space</kbd> / <kbd>k</kbd></dt><dd>Play / Pause / Resume</dd>
       <dt><kbd>n</kbd></dt><dd>Skip to next track</dd>
@@ -714,6 +715,17 @@
       </div>
       <span class="setting-desc" id="disc-desc">
         Periodically injects a sonically <em>distant</em> track to break the auto-DJ out of a similarity loop, picking at random from the bottom quartile of cosine similarity.
+      </span>
+    </fieldset>
+
+    <fieldset>
+      <legend>Keyboard</legend>
+      <div class="settings-check">
+        <input type="checkbox" id="hotkeys-enabled" checked aria-describedby="hotkeys-enabled-desc">
+        <label for="hotkeys-enabled">Enable keyboard shortcuts</label>
+      </div>
+      <span class="setting-desc" id="hotkeys-enabled-desc">
+        Single-key shortcuts such as Space, N, M, the arrow keys and the question mark.  Turn this off if they clash with your screen reader or other keys you use; buttons and sliders keep working as usual.  Saved in this browser only.
       </span>
     </fieldset>
   </details>

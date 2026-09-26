@@ -1531,6 +1531,7 @@ installHotkeys({
     try { return Math.max(0, dur - decks[activeIdx].audio.currentTime); } catch (_) { return null; }
   },
   isEnabled: authenticatedInteractionEnabled,
+  shortcutToggle: document.getElementById("hotkeys-enabled"),
 });
 
 // Media Session API moved to ./modules/media-session.js.
