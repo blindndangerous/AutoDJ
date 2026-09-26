@@ -831,15 +831,20 @@ class PlayerBridge:
 
         Tracks present in the queue but missing from *paths* are dropped.
         Paths not found in the current queue are ignored (re-add via
-        :meth:`queue_add`).
+        :meth:`queue_add`).  A track queued more than once keeps one slot
+        per occurrence of its path in *paths*, up to the number of times it
+        was queued.
         """
         state = self.player._state
         q = state.queue
-        by_path = {e.path: e for e in q}
-        new_q = [by_path[p] for p in paths if p in by_path]
-        # Replace contents in place so any concurrent reads see consistent state
-        q.clear()
-        q.extend(new_q)
+        by_path: dict[str, deque[IndexEntry]] = {}
+        for entry in q:
+            by_path.setdefault(entry.path, deque()).append(entry)
+        new_q = [by_path[p].popleft() for p in paths if by_path.get(p)]
+        # One slice assignment swaps the contents in a single step, so the
+        # server-audio thread popping the head never sees the empty list a
+        # clear() followed by extend() would expose in between.
+        q[:] = new_q
         if not q and state.queued_next is None:
             state.pre_queue_seed = None
         self._sync_next_for_prefetch()

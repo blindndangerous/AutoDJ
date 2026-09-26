@@ -2399,6 +2399,37 @@ class TestQueueEndpoints:
         order = [e.path for e in bridge.player._state.queue]
         assert order == [e2.path, e0.path, e1.path]
 
+    def test_queue_reorder_keeps_duplicate_entries(self, bridge) -> None:
+        from fastapi.testclient import TestClient
+
+        e0, e1 = bridge.sim.entries[:2]
+        bridge.player._state.queue.extend([e0, e1, e0])
+        tc = TestClient(create_app(bridge))
+        tc.post("/api/queue/reorder", json={"paths": [e0.path, e0.path, e1.path]})
+        assert [e.path for e in bridge.player._state.queue] == [e0.path, e0.path, e1.path]
+        # A path listed more often than it was queued adds nothing.
+        tc.post("/api/queue/reorder", json={"paths": [e1.path, e1.path, e0.path]})
+        assert [e.path for e in bridge.player._state.queue] == [e1.path, e0.path]
+
+    def test_queue_reorder_never_exposes_an_empty_queue(self, bridge) -> None:
+        """A reader on another thread must not see the queue empty mid-reorder."""
+        e0, e1, e2 = bridge.sim.entries[:3]
+        seen_lengths: list[int] = []
+
+        class _Watched(list):
+            def clear(self) -> None:
+                super().clear()
+                seen_lengths.append(len(self))
+
+            def __setitem__(self, key, value) -> None:
+                super().__setitem__(key, value)
+                seen_lengths.append(len(self))
+
+        bridge.player._state.queue = _Watched([e0, e1, e2])
+        bridge.queue_reorder([e2.path, e1.path, e0.path])
+        assert [e.path for e in bridge.player._state.queue] == [e2.path, e1.path, e0.path]
+        assert seen_lengths == [3]
+
     def test_queue_reorder_drops_unknown(self, bridge) -> None:
         from fastapi.testclient import TestClient
 
