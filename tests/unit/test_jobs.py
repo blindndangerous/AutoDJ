@@ -5,6 +5,8 @@ from __future__ import annotations
 import time
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from autodj.jobs import JobManager
 
 
@@ -13,16 +15,40 @@ class TestJobManagerStart:
         mgr = JobManager()
         assert mgr.start("rm", ["-rf", "/"]) is False
 
-    def test_rejects_shell_metacharacters(self) -> None:
+    @pytest.mark.parametrize(
+        ("name", "args"),
+        [
+            ("prune", ["--force"]),
+            ("prune", ["foo;bar"]),
+            ("stats", ["--name", "other"]),
+            ("index", ["--force"]),
+            ("index", ["--workers", "8"]),
+            ("index", ["--config", "elsewhere.toml"]),
+            ("index", ["--limit"]),
+            ("index", ["--limit", "0"]),
+            ("index", ["--limit", "-5"]),
+            ("index", ["--limit", "abc"]),
+            ("index", ["--limit", "\uff15"]),
+            ("index", ["--limit=5"]),
+            ("index", ["--limit", "5", "--limit", "6"]),
+            ("index", ["--limit", "5", "--force", "x"]),
+        ],
+    )
+    def test_rejects_flags_the_web_ui_never_sends(self, name, args) -> None:
         mgr = JobManager()
-        assert mgr.start("prune", ["foo;bar"]) is False
-        assert mgr.start("prune", ["a|b"]) is False
-        assert mgr.start("prune", ["x&y"]) is False
+        with patch("autodj.jobs.subprocess.Popen") as popen:
+            assert mgr.start(name, args) is False
+        popen.assert_not_called()
 
-    def test_rejects_forbidden_argument_after_safe_argument(self) -> None:
+    def test_accepts_index_limit_exactly_as_the_web_ui_sends_it(self) -> None:
         mgr = JobManager()
-
-        assert mgr.start("prune", ["safe", "bad;arg"]) is False
+        with patch("autodj.jobs.subprocess.Popen") as popen:
+            fake = MagicMock(stdout=iter([]))
+            fake.wait.return_value = 0
+            popen.return_value = fake
+            assert mgr.start("index", ["--limit", "20"]) is True
+            mgr._thread.join(timeout=5)
+        assert popen.call_args.args[0][-3:] == ["index", "--limit", "20"]
 
     def test_starts_allowed_subcommand(self) -> None:
         """Spawn a python subprocess that exits immediately so the test

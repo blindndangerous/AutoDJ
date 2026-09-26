@@ -16,9 +16,9 @@ the web UI polls this via the standard WebSocket state push.
 Example:
     >>> from autodj.jobs import get_manager
     >>> mgr = get_manager()
-    >>> mgr.start("prune", ["--force"])
+    >>> mgr.start("index", ["--limit", "20"])
     >>> mgr.snapshot()
-    {'name': 'prune', 'running': True, 'lines': [...], 'exit_code': None}
+    {'name': 'index', 'running': True, 'lines': [...], 'exit_code': None}
 """
 
 from __future__ import annotations
@@ -32,6 +32,7 @@ import sys
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from typing import ClassVar
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,11 @@ _MAX_LINES = 500
 _READER_JOIN_SECONDS = 1.0
 
 
+def _is_positive_int(value: str) -> bool:
+    """Return whether *value* is a plain positive decimal integer."""
+    return value.isascii() and value.isdecimal() and int(value) > 0
+
+
 class JobManager:
     """Single-slot background job runner.
 
@@ -54,15 +60,18 @@ class JobManager:
     final state (lines + exit_code) is preserved until the next ``start``.
     """
 
-    # Allowlist of CLI subcommands the web UI is allowed to spawn.  Keeps
-    # the API surface tight — no arbitrary command injection via the
-    # `name` parameter.
-    _ALLOWED: ClassVar[set[str]] = {
-        "index",
-        "enrich",
-        "prune",
-        "stats",
-        "list-indexes",
+    # Subcommands the web UI may spawn, each mapped to the flags it may pass
+    # and a check for that flag's value.  The child runs with shell=False, so
+    # shell metacharacters are inert; the real exposure is extra flags.  The
+    # UI only ever sends ``index --limit N``.  Anything else, such as
+    # ``--force`` (re-embed or over-prune), ``--workers``, or a second
+    # ``--config`` / ``--name`` that re-targets another index, is refused.
+    _ALLOWED_FLAGS: ClassVar[dict[str, dict[str, Callable[[str], bool]]]] = {
+        "index": {"--limit": _is_positive_int},
+        "enrich": {},
+        "prune": {},
+        "stats": {},
+        "list-indexes": {},
     }
 
     # Subcommands that accept ``--name``.  ``list-indexes`` reports on every
@@ -134,15 +143,26 @@ class JobManager:
     # ------------------------------------------------------------------
 
     def _validate_request(self, name: str, args: list[str] | None) -> bool:
-        """Reject disallowed subcommand names and shell-metachar arguments."""
-        if name not in self._ALLOWED:
+        """Reject unknown subcommands and any flag the subcommand may not take.
+
+        *args* must be ``flag value`` pairs, each flag allowed for *name*,
+        given at most once, with a value its check accepts.
+        """
+        allowed = self._ALLOWED_FLAGS.get(name)
+        if allowed is None:
             logger.warning("Refused job: subcommand %r not allowed", name)
             return False
-        forbidden = {"&", "|", ";", "`", "\n", "\r"}
-        for a in args or []:
-            if any(c in a for c in forbidden):
-                logger.warning("Refused job: forbidden char in arg %r", a)
+        tokens = list(args or [])
+        if len(tokens) % 2:
+            logger.warning("Refused job: %s arguments are not flag/value pairs", name)
+            return False
+        seen: set[str] = set()
+        for flag, value in zip(tokens[::2], tokens[1::2], strict=True):
+            check = allowed.get(flag)
+            if check is None or flag in seen or not check(value):
+                logger.warning("Refused job: %s does not accept %r here", name, flag)
                 return False
+            seen.add(flag)
         return True
 
     def _spawn_proc(self, name: str, args: list[str]) -> subprocess.Popen | None:
@@ -151,8 +171,8 @@ class JobManager:
         self._lines.append(f"[autodj-jobs] $ {' '.join(shlex.quote(c) for c in cmd)}")
         try:
             # nosec B603 -- `cmd` is built from a hard-coded subcommand
-            # allowlist + arg tokens already screened for shell metacharacters.
-            # shell=False so no shell parsing happens regardless.
+            # allowlist plus flags and values checked against that
+            # subcommand's own allowlist.  shell=False, so no shell parsing.
             child_env = self._child_env()
             self._proc = subprocess.Popen(  # nosec B603
                 cmd,
