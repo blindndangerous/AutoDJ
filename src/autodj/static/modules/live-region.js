@@ -1,7 +1,7 @@
 // Transient live-region helper.
 //
 // Many polite aria-live regions on the page (vol-announce, eq-announce,
-// settings-status, ln-status, search-count, badges-announce) are
+// settings-status, ln-status, search-count) are
 // visually-hidden so sighted users never see them.  AT users running a
 // Speech Viewer, or any user with a stylesheet override that reveals
 // .visually-hidden, would otherwise see a growing pile of stale

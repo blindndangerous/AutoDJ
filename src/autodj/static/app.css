@@ -990,7 +990,7 @@
 
     /* ----------------------------------------------------------------
        Camelot wheel — decorative visual aid for harmonic mixing.
-       Hidden from AT (#badges-announce already conveys the key).
+       Hidden from AT (#now-playing-announce already conveys the key).
        ---------------------------------------------------------------- */
     #camelot-wheel {
       display: block;

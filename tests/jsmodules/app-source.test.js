@@ -901,6 +901,25 @@ describe("app request behavior", () => {
     observer.disconnect();
   });
 
+  it("announces a track change once, key included, with Up Next silent", async () => {
+    const { webSocket } = await setupApp();
+    webSocket.onmessage({ data: JSON.stringify({
+      current_track: { path: "a.mp3", artist: "Artist", title: "Song", bpm: 128, key_label: "8A" },
+      next_track: { path: "b.mp3", artist: "Other", title: "Next" },
+      queue: [], eq: {}, volume: 1,
+    }) });
+
+    const title = document.querySelector("#now-playing-announce");
+    expect(title.getAttribute("aria-live")).toBe("polite");
+    expect(title.textContent).toBe("Artist — Song, 128 BPM, key 8A");
+    expect(title.querySelector(".visually-hidden").textContent).toBe(", key 8A");
+    const upNext = document.querySelector("#next-track-text");
+    expect(upNext.textContent).toBe("Other — Next");
+    expect(upNext.hasAttribute("aria-live")).toBe(false);
+    expect(upNext.closest("[aria-live]")).toBeNull();
+    expect(document.querySelector("#badges-announce")).toBeNull();
+  });
+
   it("keeps pointer previews local and sends only the final absolute seek", async () => {
     let resolveSeek;
     const deckAudio = { currentTime: 10, duration: 100 };

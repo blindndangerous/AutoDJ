@@ -88,7 +88,9 @@
       <img id="cover-art" alt="" aria-hidden="true" hidden>
 
       <div class="now-playing-text">
-        <!-- aria-live region: screen reader announces track changes automatically -->
+        <!-- aria-live region: the single track-change announcement (title,
+             BPM, key, beatmatch).  Key and beatmatch sit in a visually
+             hidden span; the metadata line shows them. -->
         <div id="now-playing-announce"
              aria-live="polite"
              aria-atomic="true">
@@ -96,11 +98,11 @@
         </div>
         <div id="now-playing-meta"></div>
         <!-- Visual-only badge row: BPM / Camelot key / energy / beatmatch ratio.
-             aria-hidden because a separate live region announces the same
-             info on track change to avoid stepping on the title announcement. -->
+             aria-hidden because the track-change announcement above already
+             speaks BPM, key and beatmatch. -->
         <div id="now-playing-badges" aria-hidden="true" class="badges-row"></div>
         <!-- Camelot wheel: decorative visual aid only.  Current key + harmonic
-             compatibility are already announced via #badges-announce, so this
+             compatibility are already announced via #now-playing-announce, so this
              SVG is hidden from assistive tech (aria-hidden="true").  Sectors
              distinguish active / compatible / idle by stroke width AND fill
              so colour is not the sole indicator (WCAG 1.4.1). -->
@@ -116,14 +118,11 @@
         </svg>
         <!-- The ring key lives outside the SVG: inside it, 8 viewBox units
              rendered at 7.3 px, which made the wheel's only legend
-             unreadable.  aria-hidden with the wheel -- #badges-announce
+             unreadable.  aria-hidden with the wheel -- #now-playing-announce
              already says the key. -->
         <p id="camelot-legend" aria-hidden="true">Outer ring B (major) · inner ring A (minor)</p>
       </div>
     </div>
-    <!-- Independent polite region for badge announcements (key + beatmatch,
-         only on track change) so it never collides with the title above. -->
-    <div id="badges-announce" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
 
     <!-- Fix 3: removed role="img" which suppresses inner aria-live regions -->
     <!-- A11y C1 (v5.4.0 audit): progress bar exposes valuenow/valuetext
@@ -288,7 +287,9 @@
   <!-- Up Next -->
   <details class="card" open>
     <summary>Up Next</summary>
-    <p id="next-track-text" aria-live="polite" aria-atomic="true">—</p>
+    <!-- Not live: it changes in the same tick as the track title, which
+         is the one track-change announcement.  Shift+N speaks it. -->
+    <p id="next-track-text">—</p>
   </details>
 
   <!-- Lyrics — collapsed by default; expands when the current track has

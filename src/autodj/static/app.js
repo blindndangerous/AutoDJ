@@ -64,7 +64,6 @@ const queueList    = document.getElementById("queue-list");
 const queueCount   = document.getElementById("queue-count");
 const queueAnnounce= document.getElementById("queue-announce");
 const badgesRow    = document.getElementById("now-playing-badges");
-const badgesAnnounce = document.getElementById("badges-announce");
 const eqLow        = document.getElementById("eq-low");
 const eqMid        = document.getElementById("eq-mid");
 const eqHigh       = document.getElementById("eq-high");
@@ -148,7 +147,6 @@ function clearProtectedSessionData() {
     progressTrack.setAttribute("aria-valuetext", "0:00 of 0:00");
   }
   badgesRow.replaceChildren();
-  badgesAnnounce.textContent = "";
   btnPause.innerHTML = '<span aria-hidden="true">▶</span> Play';
   btnMute.innerHTML = '<span aria-hidden="true">🔊</span> Mute';
   btnMute.setAttribute("aria-pressed", "false");
@@ -307,15 +305,18 @@ function applyState(s) {
 
   if (!trackKey || trackKey !== lastTrackKey) _seekController?.cancel();
   if (trackKey !== lastTrackKey) {
-    // Track changed -- update aria-live region so screen readers
-    // announce it.  Include BPM in the same announcement as the title
-    // so NVDA reads "<artist> -- <title>, 128 BPM" in one breath.  Key
-    // is already announced via #badges-announce 800 ms later
-    // (badges.js); doing both here would double-speak it.
-    const _bpmTail = s.current_track && s.current_track.bpm
+    // Track changed -- one announcement carries everything, so NVDA
+    // reads "<artist> -- <title>, 128 BPM, key 8A" in one breath.  BPM
+    // stays visible in the title as before; the rest of the tail is
+    // visually hidden because the metadata line already shows it.
+    const details = trackChangeDetails(s);
+    const bpmTail = s.current_track && s.current_track.bpm
       ? `, ${Math.round(s.current_track.bpm)} BPM`
       : "";
-    npAnnounce.textContent = trackLabel + _bpmTail;
+    const spokenOnly = document.createElement("span");
+    spokenOnly.className = "visually-hidden";
+    spokenOnly.textContent = details.slice(bpmTail.length);
+    npAnnounce.replaceChildren(trackLabel + bpmTail, spokenOnly);
     lastTrackKey = trackKey;
     // Update browser titlebar: "AutoDJ - Artist - Title - Album"
     const t = s.current_track;
@@ -350,9 +351,8 @@ function applyState(s) {
   const metadata = formatPersistentMetadata(s.current_track);
   if (npMeta.textContent !== metadata) npMeta.textContent = metadata;
 
-  // Badges + announce on track change.  Module needs the els bag and
-  // a couple of dispatcher-owned values (lastTrackKey, renderCueStrip).
-  applyBadges(s, { badgesRow, badgesAnnounce }, { lastTrackKey, renderCueStrip });
+  // Visible badge row (aria-hidden) and cue strip.
+  applyBadges(s, { badgesRow }, { renderCueStrip });
 
   // Camelot wheel — decorative only.  Pull harmonic_mode from settings
   // so the highlighted "compatible" set matches what the picker uses.
@@ -449,8 +449,9 @@ function applyState(s) {
     ? '<span aria-hidden="true">\uD83D\uDD07</span> Mute'
     : '<span aria-hidden="true">\uD83D\uDD0A</span> Mute');
 
-  // Up Next — only mutate textContent when value actually changes so the
-  // aria-live region doesn't re-announce on every per-second WS tick.
+  // Up Next is not a live region: it changes in the same tick as the
+  // title, and announcing both read two bare track names back to back.
+  // Shift+N speaks it on demand.  Still written only on a real change.
   const nextKey = s.next_track ? s.next_track.path : "";
   if (nextKey !== lastNextKey) {
     lastNextKey = nextKey;
@@ -891,7 +892,9 @@ discEvery.addEventListener("change", (event) => {
 });
 
 // Badges moved to ./modules/badges.js.
-import { applyBadges, formatPersistentMetadata } from "./modules/badges.js";
+import {
+  applyBadges, formatPersistentMetadata, trackChangeDetails,
+} from "./modules/badges.js";
 
 // ----------------------------------------------------------------
 // Cue strip — decorative markers on the progress bar.
