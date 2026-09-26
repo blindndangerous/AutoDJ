@@ -6,6 +6,7 @@ import yaml
 
 ROOT = Path(__file__).parents[2]
 WORKFLOW_PATH = ROOT / ".github" / "workflows" / "ci.yml"
+SECURITY_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "security.yml"
 WORKFLOWS = sorted((ROOT / ".github" / "workflows").glob("*.yml"))
 _USES = re.compile(r"^\s*(?:-\s+)?uses:\s+(?P<ref>\S+)(?P<rest>.*)$")
 _PINNED = re.compile(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}")
@@ -23,6 +24,10 @@ def _close_global_dj_cache_between_tests():
 def _workflow(text: str | None = None) -> dict:
     source = text if text is not None else WORKFLOW_PATH.read_text(encoding="utf-8")
     return yaml.load(source, Loader=yaml.BaseLoader)
+
+
+def _security_workflow() -> dict:
+    return yaml.load(SECURITY_WORKFLOW_PATH.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
 
 
 def _oidc_permissions_are_least_privilege(workflow: dict) -> bool:
@@ -52,10 +57,10 @@ def _codecov_uses_oidc(workflow: dict) -> bool:
 
 
 def _gitleaks_script(workflow: dict) -> str:
-    for step in workflow["jobs"]["quality"]["steps"]:
+    for step in workflow["jobs"]["gitleaks"]["steps"]:
         if step.get("name") == "Gitleaks — secret scan":
             return step["run"]
-    raise AssertionError("Gitleaks quality step is missing")
+    raise AssertionError("Gitleaks security step is missing")
 
 
 def _gitleaks_install_is_verified(workflow: dict) -> bool:
@@ -116,8 +121,18 @@ def test_codecov_oidc_permission_is_scoped_to_test_job() -> None:
     assert not _oidc_permissions_are_least_privilege(workflow)
 
 
+def test_gitleaks_runs_once_in_ci_over_full_history() -> None:
+    ci = WORKFLOW_PATH.read_text(encoding="utf-8")
+    security = _security_workflow()
+    assert "gitleaks" not in ci.lower()
+    job = security["jobs"]["gitleaks"]
+    assert job["permissions"] == {"contents": "read"}
+    assert job["steps"][0]["with"]["fetch-depth"] == "0"
+    assert not any("gitleaks-action" in step.get("uses", "") for step in job["steps"])
+
+
 def test_gitleaks_archive_is_pinned_verified_then_extracted() -> None:
-    workflow = _workflow()
+    workflow = _security_workflow()
     assert _gitleaks_install_is_verified(workflow)
 
     script = _gitleaks_script(workflow)
@@ -151,8 +166,8 @@ def test_gitleaks_archive_is_pinned_verified_then_extracted() -> None:
         f"{script}\nwget --https-only https://example.invalid/install\n",
     )
     for mutation in mutations:
-        changed = _workflow()
-        for step in changed["jobs"]["quality"]["steps"]:
+        changed = _security_workflow()
+        for step in changed["jobs"]["gitleaks"]["steps"]:
             if step.get("name") == "Gitleaks — secret scan":
                 step["run"] = mutation
                 break
