@@ -208,6 +208,46 @@ describe("initAuthDialog", () => {
       expect(els.error.textContent).not.toContain("never-echo-this");
     });
 
+  it.each([
+    ["Too many wrong pairing codes from this device. Try again in 42 seconds.",
+      "Too many wrong pairing codes from this device. Try again in 42 seconds."],
+    ["Pairing is paused after too many wrong codes. Try again in 60 seconds with a new code.",
+      "Pairing is paused after too many wrong codes. Try again in 60 seconds with a new code."],
+    // The limiter's generic detail keeps the Retry-After wording.
+    ["Too many pairing attempts",
+      "Too many pairing attempts. Wait about 17 seconds before trying again."],
+    ["x".repeat(201), "Too many pairing attempts. Wait about 17 seconds before trying again."],
+    [42, "Too many pairing attempts. Wait about 17 seconds before trying again."],
+  ])("uses the server's lockout detail for HTTP 429 when it is specific (%#)",
+    async (detail, expected) => {
+      const els = installDialogMarkup();
+      const auth = initAuthDialog({
+        document,
+        fetchImpl: vi.fn().mockResolvedValue(
+          response({ ok: false, status: 429, retryAfter: "17", json: { detail } }),
+        ),
+      });
+      els.token.value = "12345678";
+
+      await auth.submit();
+
+      expect(els.error.textContent).toBe(expected);
+      expect(document.activeElement).toBe(els.token);
+    });
+
+  it("falls back to Retry-After when a 429 body is not JSON", async () => {
+    const els = installDialogMarkup();
+    const failing = response({ ok: false, status: 429, retryAfter: "5" });
+    failing.json = vi.fn().mockRejectedValue(new SyntaxError("not json"));
+    const auth = initAuthDialog({ document, fetchImpl: vi.fn().mockResolvedValue(failing) });
+    els.token.value = "12345678";
+
+    await auth.submit();
+
+    expect(els.error.textContent)
+      .toBe("Too many pairing attempts. Wait about 5 seconds before trying again.");
+  });
+
   it("reports network failure without leaking thrown details", async () => {
     const els = installDialogMarkup();
     const auth = initAuthDialog({
