@@ -255,7 +255,7 @@ def test_concurrent_pairing_guesses_reserve_capacity_before_comparison(
     compare_calls = 0
     compare_lock = threading.Lock()
 
-    def compare(_candidate: str) -> bool:
+    def compare(_candidate: str, _client: str = "") -> bool:
         nonlocal compare_calls
         with compare_lock:
             compare_calls += 1

@@ -172,52 +172,91 @@ def _wrong_codes(code: str, count: int) -> list[str]:
     return [candidate for candidate in wrong if candidate != code][:count]
 
 
-def test_repeated_wrong_codes_burn_every_live_code(caplog) -> None:
+def test_one_client_is_locked_out_without_burning_codes_for_others(caplog) -> None:
+    from autodj.security import PAIRING_MAX_FAILURES_PER_CLIENT
+
+    policy = SecurityPolicy(ServerConfig(access_token=_SECRET), now=lambda: 1_000)
+    code = policy.current_pairing_code()
+
+    for candidate in _wrong_codes(code, PAIRING_MAX_FAILURES_PER_CLIENT - 1):
+        assert not policy.verify_pairing_code(candidate, "10.0.0.9")
+    assert policy.pairing_block("10.0.0.9") is None
+    with caplog.at_level("WARNING", logger="autodj.security"):
+        assert not policy.verify_pairing_code("99999999", "10.0.0.9")
+
+    block = policy.pairing_block("10.0.0.9")
+    assert block is not None
+    assert block.retry_after == 200  # to the end of the 900..1200 window
+    assert "200 seconds" in block.detail
+    assert "10.0.0.9" in caplog.text
+    # Everyone else still pairs with the same code.
+    assert policy.pairing_block("10.0.0.10") is None
+    assert policy.verify_pairing_code(code, "10.0.0.10")
+
+
+def test_server_wide_limit_pauses_pairing_and_burns_live_codes(caplog) -> None:
     from autodj.security import PAIRING_MAX_FAILURES_PER_WINDOW
 
     clock = _Clock(1_000.0)
     policy = SecurityPolicy(ServerConfig(access_token=_SECRET), now=clock)
     code = policy.current_pairing_code()
-    wrong = _wrong_codes(code, PAIRING_MAX_FAILURES_PER_WINDOW)
+    wrong = _wrong_codes(code, 1)[0]
 
-    for candidate in wrong[:-1]:
-        assert not policy.verify_pairing_code(candidate)
-    assert policy.verify_pairing_code(code)  # still one guess below the limit
     with caplog.at_level("WARNING", logger="autodj.security"):
-        assert not policy.verify_pairing_code(wrong[-1])
-    assert not policy.verify_pairing_code(code)
+        for attempt in range(PAIRING_MAX_FAILURES_PER_WINDOW):
+            assert not policy.verify_pairing_code(wrong, f"10.0.1.{attempt}")
+
+    block = policy.pairing_block("10.0.2.1")
+    assert block is not None
+    assert block.retry_after == 200
+    assert "paused" in block.detail
+    assert "new code" in block.detail
+    assert not policy.verify_pairing_code(code, "10.0.2.1")
     assert "autodj devices pairing-code" in caplog.text
     assert code not in caplog.text
 
-    # Next window: the freshly printed code works, the burned one stays dead
-    # even though it would normally still be inside its grace window.
+    # Next window: the new code works, the burned one stays dead even though
+    # it would normally still be inside its grace window.
     clock.value = 1_200.0
+    assert policy.pairing_block("10.0.2.1") is None
     fresh = policy.current_pairing_code()
     assert fresh != code
-    assert policy.verify_pairing_code(fresh)
-    assert not policy.verify_pairing_code(code)
+    assert policy.verify_pairing_code(fresh, "10.0.2.1")
+    assert not policy.verify_pairing_code(code, "10.0.2.1")
 
 
-def test_wrong_code_count_resets_each_window() -> None:
-    from autodj.security import PAIRING_MAX_FAILURES_PER_WINDOW
+def test_wrong_code_counts_reset_each_window() -> None:
+    from autodj.security import PAIRING_MAX_FAILURES_PER_CLIENT
 
     clock = _Clock(1_000.0)
     policy = SecurityPolicy(ServerConfig(access_token=_SECRET), now=clock)
     code = policy.current_pairing_code()
-    wrong = _wrong_codes(code, PAIRING_MAX_FAILURES_PER_WINDOW - 1)
+    for candidate in _wrong_codes(code, PAIRING_MAX_FAILURES_PER_CLIENT):
+        assert not policy.verify_pairing_code(candidate, "10.0.0.9")
+    assert policy.pairing_block("10.0.0.9") is not None
 
-    for candidate in wrong:
-        assert not policy.verify_pairing_code(candidate)
     clock.value = 1_200.0  # next window; code is still in its grace period
-    for candidate in wrong:
-        assert not policy.verify_pairing_code(candidate)
-    assert policy.verify_pairing_code(code)
+    assert policy.pairing_block("10.0.0.9") is None
+    assert policy.verify_pairing_code(code, "10.0.0.9")
 
 
-def test_malformed_codes_do_not_count_toward_the_burn() -> None:
+def test_malformed_codes_do_not_count_toward_any_limit() -> None:
     from autodj.security import PAIRING_MAX_FAILURES_PER_WINDOW
 
     policy = SecurityPolicy(ServerConfig(access_token=_SECRET), now=lambda: 1_000)
     for _ in range(PAIRING_MAX_FAILURES_PER_WINDOW * 2):
-        assert not policy.verify_pairing_code("not-a-code")
-    assert policy.verify_pairing_code(policy.current_pairing_code())
+        assert not policy.verify_pairing_code("not-a-code", "10.0.0.9")
+    assert policy.pairing_block("10.0.0.9") is None
+    assert policy.verify_pairing_code(policy.current_pairing_code(), "10.0.0.9")
+
+
+def test_pairing_block_fails_open_on_a_broken_clock() -> None:
+    # verify_pairing_code already refuses every code when the clock is bad.
+    policy = SecurityPolicy(ServerConfig(access_token=_SECRET), now=lambda: float("nan"))
+    assert policy.pairing_block("10.0.0.9") is None
+
+
+def test_pairing_code_seconds_left_covers_the_grace_window() -> None:
+    policy = SecurityPolicy(ServerConfig(access_token=_SECRET), now=lambda: 1_000)
+    # Window 900..1200 plus the following grace window to 1500.
+    assert policy.pairing_code_seconds_left() == (500, 200)

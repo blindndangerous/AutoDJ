@@ -55,12 +55,19 @@ When `server.access_token` or `AUTODJ_ACCESS_TOKEN` is set:
 - The pairing body is limited to 4096 bytes before downstream parsing.
 - A fixed-window limiter permits five attempts per client and 100 total attempts per 60 seconds,
   with bounded state for 1024 clients.
-- Ten wrong, well-formed codes inside one 300-second code window make the server refuse every code
-  issued so far and log a warning. The operator gets a working code from
-  `autodj devices pairing-code` once the window turns over, at most five minutes later. This caps
-  useful guesses at about ten per window, roughly a 2 percent chance per year of nonstop guessing
-  instead of about 65 percent under the limiter alone. A LAN attacker can keep pairing locked this
-  way, but already paired devices keep working.
+- Wrong, well-formed codes are counted per client address within each 300-second code window. A
+  client that sends ten is locked out until the window ends: `/api/pair` answers 429 with
+  `Retry-After` for right and wrong codes alike, and the server logs a warning naming the address.
+  Other clients keep pairing with the same code.
+- Fifty wrong codes in one window across all clients pause pairing for everyone as a last resort:
+  every code issued so far stops working, `/api/pair` answers 429 with `Retry-After` and a detail
+  saying to try again with a new code, and the server logs a warning. `autodj devices pairing-code`
+  prints how long its code stays valid and when the next one starts, which is the one to use after
+  a pause.
+- These limits cap one address at about ten guesses per window, roughly a 2 percent chance per
+  year of nonstop guessing, and many addresses together at about fifty per window, roughly 10
+  percent per year, instead of about 65 percent under the request limiter alone. An attacker with
+  many LAN addresses can keep pairing paused, but already paired devices keep working.
 - Rotating the token invalidates every outstanding pairing code and every existing session at once.
 - The HTTP API and WebSocket both enforce session, Host, and Origin policy.
 

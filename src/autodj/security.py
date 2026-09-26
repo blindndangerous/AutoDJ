@@ -55,10 +55,21 @@ _BRACKETED_HOST = re.compile(r"\[([^\]]+)\](?::([0-9]+))?\Z")
 _DEVICE_ID = re.compile(r"[0-9a-f]{32}\Z")
 PAIRING_BODY_MAX_BYTES = 4096
 PAIRING_CODE_WINDOW_SECONDS = 300
-# Wrong well-formed codes tolerated per code window before every code issued
-# so far stops working.  The rate limiter alone still allowed 100 guesses a
-# minute against a 10^8 space with two live codes.
-PAIRING_MAX_FAILURES_PER_WINDOW = 10
+# Wrong well-formed codes tolerated per code window.  The rate limiter alone
+# still allowed 100 guesses a minute against a 10^8 space with two live codes.
+# One client address that reaches the per-client limit is locked out until the
+# window ends; only when all clients together reach the global limit are the
+# live codes burned for everyone, as a last resort against many addresses.
+PAIRING_MAX_FAILURES_PER_CLIENT = 10
+PAIRING_MAX_FAILURES_PER_WINDOW = 50
+
+
+@dataclass(frozen=True)
+class PairingBlock:
+    """Why pairing is refused before a code is even compared."""
+
+    retry_after: int
+    detail: str
 
 
 @dataclass(frozen=True)
@@ -256,6 +267,11 @@ class SecurityPolicy:
     )
     _pairing_failure_window: int = field(default=-1, init=False, repr=False, compare=False)
     _pairing_failures: int = field(default=0, init=False, repr=False, compare=False)
+    # Bounded in practice: after PAIRING_MAX_FAILURES_PER_WINDOW failures the
+    # window is paused and nothing more is recorded until it resets.
+    _pairing_client_failures: dict[str, int] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
     # Codes for windows below this number are refused even while still fresh.
     _pairing_first_valid_window: int = field(default=0, init=False, repr=False, compare=False)
 
@@ -276,6 +292,54 @@ class SecurityPolicy:
         window = _clock_timestamp(self.now) // PAIRING_CODE_WINDOW_SECONDS
         return self._pairing_code(token, window)
 
+    def pairing_code_seconds_left(self) -> tuple[int, int]:
+        """Return seconds until the current code expires and until the next one starts.
+
+        A code is accepted for its own window and the one after it, so it
+        outlives the start of its successor by one full window.
+        """
+        timestamp = _clock_timestamp(self.now)
+        next_start = (timestamp // PAIRING_CODE_WINDOW_SECONDS + 1) * PAIRING_CODE_WINDOW_SECONDS
+        return next_start + PAIRING_CODE_WINDOW_SECONDS - timestamp, next_start - timestamp
+
+    def pairing_block(self, client: str) -> PairingBlock | None:
+        """Return why *client* may not try a code right now, or ``None``.
+
+        Checked before comparing, so a locked-out client or a paused server
+        answers the same way for right and wrong codes.
+        """
+        try:
+            timestamp = _clock_timestamp(self.now)
+        except (RuntimeError, ValueError):
+            return None
+        window = timestamp // PAIRING_CODE_WINDOW_SECONDS
+        retry_after = (window + 1) * PAIRING_CODE_WINDOW_SECONDS - timestamp
+        with self._pairing_lock:
+            self._reset_pairing_failures_if_new_window(window)
+            if self._pairing_first_valid_window > window:
+                return PairingBlock(
+                    retry_after,
+                    "Pairing is paused after too many wrong codes. "
+                    f"Try again in {retry_after} seconds with a new code.",
+                )
+            if self._pairing_client_failures.get(client, 0) >= PAIRING_MAX_FAILURES_PER_CLIENT:
+                return PairingBlock(
+                    retry_after,
+                    "Too many wrong pairing codes from this device. "
+                    f"Try again in {retry_after} seconds.",
+                )
+        return None
+
+    def _reset_pairing_failures_if_new_window(self, window: int) -> None:
+        """Start fresh failure counts when the code window changes.
+
+        Caller holds ``_pairing_lock``.
+        """
+        if self._pairing_failure_window != window:
+            self._pairing_failure_window = window
+            self._pairing_failures = 0
+            self._pairing_client_failures.clear()
+
     @staticmethod
     def _pairing_code(token: str, window: int) -> str:
         """Derive one pairing code from server secret and numbered time window."""
@@ -284,8 +348,12 @@ class SecurityPolicy:
         ).digest()
         return f"{int.from_bytes(digest[:8], 'big') % 100_000_000:08d}"
 
-    def verify_pairing_code(self, candidate: str) -> bool:
-        """Compare a candidate with current short-lived pairing code safely."""
+    def verify_pairing_code(self, candidate: str, client: str = "<unknown>") -> bool:
+        """Compare a candidate with current short-lived pairing code safely.
+
+        A wrong, well-formed code counts against *client* and toward the
+        server-wide limit; see :meth:`pairing_block`.
+        """
         if (
             not isinstance(candidate, str)
             or len(candidate) != 8
@@ -313,30 +381,39 @@ class SecurityPolicy:
                 previous_valid and previous_window >= first_valid
             ):
                 return True
-            self._record_pairing_failure(timestamp)
+            self._record_pairing_failure(timestamp, client)
         return False
 
-    def _record_pairing_failure(self, timestamp: int) -> None:
-        """Count one wrong code and burn every live code once too many pile up.
+    def _record_pairing_failure(self, timestamp: int, client: str) -> None:
+        """Count one wrong code against *client* and the server-wide total.
 
-        Caller holds ``_pairing_lock``.  Burning moves the first accepted
-        window past the current one, so the operator's next code is the one
-        ``autodj devices pairing-code`` prints once the window turns over.
+        Caller holds ``_pairing_lock``.  A client reaching its limit is locked
+        out for the rest of the window.  Reaching the server-wide limit burns
+        every live code: the first accepted window moves past the current
+        one, so the next working code is the one ``autodj devices
+        pairing-code`` prints once the window turns over.
         """
         window = timestamp // PAIRING_CODE_WINDOW_SECONDS
-        if self._pairing_failure_window != window:
-            self._pairing_failure_window = window
-            self._pairing_failures = 0
+        seconds_left = (window + 1) * PAIRING_CODE_WINDOW_SECONDS - timestamp
+        self._reset_pairing_failures_if_new_window(window)
+        client_failures = self._pairing_client_failures.get(client, 0) + 1
+        self._pairing_client_failures[client] = client_failures
         self._pairing_failures += 1
+        if client_failures == PAIRING_MAX_FAILURES_PER_CLIENT:
+            logger.warning(
+                "Pairing locked for client %s for %d seconds after %d wrong codes.",
+                client,
+                seconds_left,
+                PAIRING_MAX_FAILURES_PER_CLIENT,
+            )
         if self._pairing_failures < PAIRING_MAX_FAILURES_PER_WINDOW:
             return
-        self._pairing_failures = 0
         self._pairing_first_valid_window = window + 1
         logger.warning(
             "Pairing codes invalidated after %d wrong attempts; someone may be guessing. "
             "Run `autodj devices pairing-code` again in about %d seconds for a fresh code.",
             PAIRING_MAX_FAILURES_PER_WINDOW,
-            (window + 1) * PAIRING_CODE_WINDOW_SECONDS - timestamp,
+            seconds_left,
         )
 
     def issue_device_session(self, device_id: str) -> str:
@@ -533,6 +610,14 @@ def _raw_header_values(scope: Scope, name: bytes) -> list[str]:
     ]
 
 
+def peer_address(scope: Scope) -> str:
+    """Return a bounded client address string for pairing attempt tracking."""
+    client = scope.get("client")
+    if isinstance(client, (tuple, list)) and client:
+        return str(client[0])[:128]
+    return "<unknown>"
+
+
 class SecurityMiddleware:
     """Enforce HTTP request policy before any downstream body consumer."""
 
@@ -557,10 +642,7 @@ class SecurityMiddleware:
     @staticmethod
     def _peer(scope: Scope) -> str:
         """Return a bounded client address string for rate-limit tracking."""
-        client = scope.get("client")
-        if isinstance(client, (tuple, list)) and client:
-            return str(client[0])[:128]
-        return "<unknown>"
+        return peer_address(scope)
 
     @staticmethod
     def _declared_pairing_body_too_large(scope: Scope) -> bool:

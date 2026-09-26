@@ -79,6 +79,7 @@ from autodj.security import (
     _raw_header_values,
     emit_audit,
     new_request_id,
+    peer_address,
 )
 from autodj.version import REQUIRED_BUILT_ASSETS, current_version
 
@@ -1040,7 +1041,15 @@ def create_app(
         registry: DeviceRegistry | None = request.app.state.device_registry
         if registry is None or not request_policy.authentication_required:
             raise HTTPException(status_code=409, detail="Pairing is not enabled")
-        if not request_policy.verify_pairing_code(body.code):
+        client = peer_address(request.scope)
+        block = request_policy.pairing_block(client)
+        if block is not None:
+            raise HTTPException(
+                status_code=429,
+                detail=block.detail,
+                headers={"Retry-After": str(block.retry_after)},
+            )
+        if not request_policy.verify_pairing_code(body.code, client):
             raise HTTPException(status_code=401, detail="Invalid or expired pairing code")
         try:
             device = await asyncio.to_thread(registry.pair, body.device_name)
