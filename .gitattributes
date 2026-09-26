@@ -1,6 +1,11 @@
 # Normalize line endings to LF in the repo, checkout as-is on all platforms
 * text=auto eol=lf
 
+# cmd.exe misparses labels and multi-line blocks in LF-only batch files, so
+# check Windows batch scripts out with CRLF.  The repository still stores LF.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
 # Binary files — never touch line endings
 *.index binary
 *.pt    binary
