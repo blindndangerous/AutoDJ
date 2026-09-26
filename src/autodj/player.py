@@ -30,7 +30,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
@@ -741,13 +741,26 @@ class Player:
         # hook the bridge sets to hear about each track the bus starts.
         self.bus: MixBus | None = None
         self.on_track_started: Callable[[IndexEntry], None] | None = None
-        # Render cursor for the bus: the next track to render and how many
-        # of its samples the previous track's overlap already played.
+        # Render cursor for the bus: the next track to render, how many of
+        # its samples the previous track's overlap already played, and how
+        # it was picked (for "why this track" once it starts).
         self._pending_entry: IndexEntry | None = None
         self._pending_offset: int = 0
+        self._pending_pick_mode: str = "seed"
         # Keeps one rendered track ready so the bus never waits on a render.
         # (Late-bound so a replaced _next_rendered is honoured.)
-        self._render_ahead = RenderAhead(lambda: self._next_rendered())
+        self._render_ahead = RenderAhead(
+            lambda: self._next_rendered(), on_discard=self._restore_discarded_pick
+        )
+        # The render the bus is playing (set when it starts).
+        self._playing_render: RenderedTrack | None = None
+        # Serialises the render-ahead pick with track-start bookkeeping: the
+        # pick reads the recently-played history and borrows
+        # _last_pick_mode, both of which _on_track_start (bus thread) writes.
+        self._pick_lock = threading.Lock()
+        # While rendering ahead, the track the pick follows has not started
+        # yet; _pick_next treats it as already played (see _recent_exclusions).
+        self._pick_exclude: IndexEntry | None = None
         # The seed, recorded by run() before the bus starts it; its first
         # _on_track_start must not record it a second time.
         self._seed_awaiting_start: IndexEntry | None = None
@@ -880,8 +893,7 @@ class Player:
         """
         from autodj.sound_output import SoundDeviceOutput
 
-        self._pending_entry = current
-        self._pending_offset = 0
+        self.reset_render_ahead(current, 0, pick_mode="seed")
         self.bus = MixBus(
             BusEvents(
                 on_track_start=self._on_track_start,
@@ -958,6 +970,12 @@ class Player:
         picked successor (a late "play next" wins), then moves the cursor
         on.  Runs on the render-ahead worker thread.
 
+        The pick runs under ``_pick_lock`` and leaves ``_last_pick_mode``
+        as it found it -- that attribute describes the *playing* track --
+        carrying the modes on the render instead.  It also treats the
+        pending track as already played (``_pick_exclude``), because it
+        only gets recorded when it starts, after this pick.
+
         Returns:
             The rendered track, or ``None`` when nothing could be rendered.
         """
@@ -965,68 +983,153 @@ class Player:
             current = self._pending_entry
             if current is None:
                 return None
-            next_entry = self._pick_next(current)
-            from_queue = self._last_pick_mode == "queue"
-            next_entry = self._honour_late_queued_next(next_entry, from_queue)
-            rendered = self._render_track(current, next_entry, self._pending_offset)
+            offset, pick_mode = self._pending_offset, self._pending_pick_mode
+            with self._pick_lock:
+                shown_mode = self._last_pick_mode
+                self._pick_exclude = current
+                try:
+                    next_entry = self._pick_next(current)
+                    from_queue = self._last_pick_mode == "queue"
+                    next_entry = self._honour_late_queued_next(next_entry, from_queue)
+                    next_mode = self._last_pick_mode
+                finally:
+                    self._last_pick_mode = shown_mode
+                    self._pick_exclude = None
+            rendered = self._render_track(current, next_entry, offset)
             self._pending_entry = next_entry
             self._pending_offset = rendered.next_start_offset if rendered else 0
+            self._pending_pick_mode = next_mode
             if rendered is not None:
-                return rendered
+                return replace(
+                    rendered,
+                    start_offset=offset,
+                    pick_mode=pick_mode,
+                    next_pick_mode=next_mode,
+                    next_from_queue=next_mode == "queue",
+                )
         return None
 
-    def reset_render_ahead(self, entry: IndexEntry, offset: int = 0) -> None:
+    def _set_render_cursor(self, entry: IndexEntry, offset: int, pick_mode: str) -> None:
+        """Point the render-ahead cursor at *entry* (worker idle or queued)."""
+        self._pending_entry = entry
+        self._pending_offset = offset
+        self._pending_pick_mode = pick_mode
+
+    def reset_render_ahead(
+        self, entry: IndexEntry, offset: int = 0, pick_mode: str = "queue"
+    ) -> None:
         """Restart rendering from *entry*, discarding any ready track.
 
-        Used when a new set starts.  Safe while a render is in flight:
-        that render's result is dropped and the cursor moves before the
-        next render begins.
+        Used when a new set starts or the user picks a track to play now.
+        Safe while a render is in flight: that render's result is dropped
+        and the cursor moves before the next render begins.  A queue pick
+        a discarded render had consumed goes back to the queue front.
 
         Args:
             entry: First track to render.
             offset: Samples of *entry* to skip (already played).
+            pick_mode: How *entry* was chosen, for "why this track".
         """
 
-        def prepare() -> None:
-            self._pending_entry = entry
-            self._pending_offset = offset
+        def prepare(_discarded: RenderedTrack | None) -> None:
+            self._set_render_cursor(entry, offset, pick_mode)
 
-        self._render_ahead.reset(prepare)
+        # Holding the queue lock makes the queue restore (on_discard) land
+        # before the worker can pick from the queue again.
+        with self._state.queue_lock:
+            self._render_ahead.reset(prepare)
+
+    def refresh_render_ahead(self) -> None:
+        """Re-pick what follows the upcoming track after a queue edit.
+
+        The upcoming track itself cannot change -- its head is already
+        mixed into the playing track's tail -- but the track after it was
+        picked from the queue as it was.  Discards the ready (or
+        in-flight) render and renders the upcoming track again from the
+        same start, with a fresh pick of its successor.
+        """
+
+        def prepare(discarded: RenderedTrack | None) -> None:
+            if discarded is not None:
+                self._set_render_cursor(
+                    discarded.entry, discarded.start_offset, discarded.pick_mode
+                )
+
+        with self._state.queue_lock:
+            self._render_ahead.reset(prepare)
+
+    def play_now(self, entry: IndexEntry, pick_mode: str = "queue") -> None:
+        """Fade out the playing track and play *entry* next, from its start.
+
+        If *entry* is not rendered by the time the fade ends, the bus plays
+        silence briefly until it is.
+        """
+        self.reset_render_ahead(entry, 0, pick_mode)
+        self._state.next_track = entry
+        if self.bus is not None:
+            self.bus.skip()
+
+    def _restore_discarded_pick(self, track: RenderedTrack) -> None:
+        """Give a discarded render's queue pick back to the queue front."""
+        if track.next_from_queue and track.next_entry is not None:
+            with self._state.queue_lock:
+                self._state.queue.insert(0, track.next_entry)
+
+    def _record_track_files(self, entry: IndexEntry) -> None:
+        """Append *entry* to the M3U export and history file, if enabled.
+
+        A write failure is logged, never raised: it must not stop the rest
+        of the track-start bookkeeping (or the mix bus block it runs in).
+        """
+        try:
+            if self._export_m3u:
+                _append_m3u_entry(self._export_m3u, entry)
+            if self._history_file:
+                _append_history_entry(self._history_file, entry, datetime.now())
+        except OSError:
+            logger.exception("Recording %s to the M3U / history file failed", entry.path)
 
     def _on_track_start(self, rendered: RenderedTrack) -> None:
         """Update state when the mix bus starts playing *rendered*.
 
-        Everything the UI shows about the playing track -- including the
+        Everything the UI shows about the playing track -- the pick mode,
         transition effect and beat-match ratio -- is set here, from the
         render, never while that render was being prepared ahead of time.
+        Positions are in the track's own timeline: the render's audio
+        begins ``rendered.start_offset`` samples into the file.
         """
         entry = rendered.entry
+        self._playing_render = rendered
         if entry is not self._state.current_track:
             self._previous_track = self._state.current_track
         self._state.current_track = entry
         self._state.next_track = rendered.next_entry
         self._current_sr = SAMPLE_RATE
-        self._playback_pos[0] = 0
-        self._playback_len = len(rendered.audio)
+        self._playback_pos[0] = rendered.start_offset
+        self._playback_len = rendered.start_offset + len(rendered.audio)
         self._last_transition_fx = rendered.transition_fx
         self._beatmatch_ratio = rendered.beatmatch_ratio
-        if entry is self._seed_awaiting_start:
-            self._seed_awaiting_start = None  # run() already recorded it
-        else:
-            self._state.record_played(entry)
-            self._state.track_number += 1
-            if self._export_m3u:
-                _append_m3u_entry(self._export_m3u, entry)
-            if self._history_file:
-                _append_history_entry(self._history_file, entry, datetime.now())
+        seed_start = entry is self._seed_awaiting_start
+        with self._pick_lock:
+            self._last_pick_mode = rendered.pick_mode
+            if seed_start:
+                self._seed_awaiting_start = None  # run() already recorded it
+            else:
+                self._state.record_played(entry)
+                self._state.track_number += 1
+        if not seed_start:
+            self._record_track_files(entry)
+        self._current_lyrics = []
+        self._current_lyrics_plain = ""
         self.load_lyrics_in_background(entry.path)
         self._refresh_status()
         if self.on_track_started is not None:
             self.on_track_started(entry)
 
     def _on_position(self, frames: int) -> None:
-        """Record mix-bus progress through the current track."""
-        self._playback_pos[0] = frames
+        """Record mix-bus progress, in the playing track's own timeline."""
+        playing = self._playing_render
+        self._playback_pos[0] = frames + (playing.start_offset if playing else 0)
 
     def _run_headless(self, current: IndexEntry) -> None:
         """Track-picking loop with no audio output and no terminal UI.
@@ -1107,13 +1210,43 @@ class Player:
         logger.info(source, entry.display_name)
         return entry
 
+    def _recent_exclusions(self) -> tuple[deque, set[str], set[str], set[str]]:
+        """Copy the recently-played history the picker must avoid.
+
+        Returns ``(paths, artists, albums, titles)``.  While rendering
+        ahead, ``_pick_exclude`` (the track the pick follows, which has not
+        started yet) is added as if it had just been recorded -- pushed
+        through the same bounded windows, so the oldest entry drops out
+        exactly as :meth:`PlayerState.record_played` would do it.
+        """
+        state = self._state
+
+        def window(history: deque, value: str | None) -> deque:
+            copy = deque(history, maxlen=history.maxlen)
+            if value:
+                copy.append(value)
+            return copy
+
+        pending = self._pick_exclude
+        paths = window(state.recently_played, pending.path if pending else None)
+
+        def lowered(history: deque, value: str | None) -> set[str]:
+            return set(window(history, value.lower() if (pending and value) else None))
+
+        return (
+            paths,
+            lowered(state.recently_played_artists, pending.artist if pending else None),
+            lowered(state.recently_played_albums, pending.album if pending else None),
+            lowered(state.recently_played_titles, pending.title if pending else None),
+        )
+
     def _pick_pure_shuffle(self) -> IndexEntry:
         """Random pick from non-recent tracks without violating hard BPM eligibility."""
         import random as _rnd
 
         from autodj.similarity import SimilarityError
 
-        excluded = set(self._state.recently_played)
+        excluded = set(self._recent_exclusions()[0])
 
         def eligible(entry: IndexEntry) -> bool:
             if self._bpm_range is None:
@@ -1149,7 +1282,7 @@ class Player:
         ):
             return None
         try:
-            entry = self._sim.find_distant(current.path, self._state.recently_played)
+            entry = self._sim.find_distant(current.path, self._recent_exclusions()[0])
             _CONSOLE.print("  [bold cyan]◈ Discovery track[/bold cyan]")
             self._last_pick_mode = "discovery"
             return entry
@@ -1231,6 +1364,7 @@ class Player:
         harmonic_only = self._cfg.djmix.harmonic_mixing
         harmonic_mode = getattr(self._cfg.djmix, "harmonic_mode", "compatible")
         query_path = self._resolve_query_path(current.path)
+        recent, recent_artists, recent_albums, recent_titles = self._recent_exclusions()
 
         search: dict[str, Any] = {
             "current_path": query_path,
@@ -1243,25 +1377,23 @@ class Player:
             "harmonic_only": harmonic_only,
             "harmonic_mode": harmonic_mode,
             "target_energy": target_energy,
-            "excluded_artists": set(self._state.recently_played_artists),
-            "excluded_albums": set(self._state.recently_played_albums),
-            "excluded_titles": set(self._state.recently_played_titles),
+            "excluded_artists": recent_artists,
+            "excluded_albums": recent_albums,
+            "excluded_titles": recent_titles,
             "pick_top_k": self._cfg.playback.pick_top_k,
             "pick_temperature": self._cfg.playback.pick_temperature,
         }
 
         # --- Normal similarity search ---
         try:
-            return self._sim.find_next_for_path(
-                recently_played=self._state.recently_played, **search
-            )
+            return self._sim.find_next_for_path(recently_played=recent, **search)
         except SimilarityError:
             # The repeat window is >= index size — relax it to just the
             # current track so we can keep playing.
             logger.info(
                 "No candidates after applying repeat window (%d tracks) — "
                 "relaxing to avoid only the current track.",
-                len(self._state.recently_played),
+                len(recent),
             )
             return self._sim.find_next_for_path(recently_played=deque([current.path]), **search)
 
@@ -1723,12 +1855,17 @@ class Player:
         own lock).
         """
         sr = max(1, self._current_sr)
-        max_samples = max(0, self._playback_len - int(0.1 * sr))
+        # On the mix bus the render starts partway into the file (the part
+        # the previous crossfade already played); positions are in the
+        # file's timeline, so the earliest reachable point is that offset.
+        playing = self._playing_render if self.bus is not None else None
+        start = playing.start_offset if playing is not None else 0
+        max_samples = max(start, self._playback_len - int(0.1 * sr))
         target_samples = int(max(0.0, seconds) * sr)
-        target_samples = min(target_samples, max_samples)
+        target_samples = max(start, min(target_samples, max_samples))
         self._playback_pos[0] = target_samples
         if self.bus is not None:
-            self.bus.seek(target_samples)
+            self.bus.seek(target_samples - start)
         return target_samples / sr
 
     def seek_relative(self, delta_seconds: float) -> float:
@@ -1977,12 +2114,12 @@ class Player:
         meta_a = self._outgoing_meta(audio_a_full, SAMPLE_RATE, current.path)
         audio_a = audio_a_full[start_offset:]
         if next_entry is None:
-            return RenderedTrack(current, audio_a, None, 0, "")
+            return RenderedTrack(current, audio_a, None, 0, "", start_offset=start_offset)
         meta_b = self._peek_incoming_meta(next_entry)
         eff_s = self._effective_crossfade_seconds(meta_a, meta_b, current.length)
         crossfade = int(eff_s * SAMPLE_RATE)
         if crossfade >= len(audio_a):
-            return RenderedTrack(current, audio_a, next_entry, 0, "")
+            return RenderedTrack(current, audio_a, next_entry, 0, "", start_offset=start_offset)
         # meta_a's outro/beat markers are absolute positions in the FULL
         # track, so the crossfade start must be located there too -- not in
         # audio_a, which already had start_offset samples cut off the
@@ -2020,6 +2157,7 @@ class Player:
                 _to_unstretched(intro),
                 "",
                 measured_ratio,
+                start_offset=start_offset,
             )
         b_head = audio_b[:crossfade]
         a_trimmed = self._apply_outgoing_filter_sweep(a_trimmed, SAMPLE_RATE, crossfade)
@@ -2034,6 +2172,7 @@ class Player:
             _to_unstretched(intro + crossfade),
             fx_name,
             measured_ratio,
+            start_offset=start_offset,
         )
 
     def _setup_keyboard(self) -> None:  # pragma: no cover -- pynput hardware listener

@@ -2469,11 +2469,16 @@ def test_player_docs_do_not_point_at_the_retired_no_playback_flag() -> None:
 
 
 def test_next_rendered_carries_offset_between_tracks(monkeypatch):
+    import threading
+
     from autodj import player as player_mod
     from autodj.mixbus import RenderedTrack
 
     p = player_mod.Player.__new__(player_mod.Player)
     p._state = player_mod.PlayerState()
+    p._pick_lock = threading.Lock()
+    p._pending_pick_mode = "seed"
+    p._pick_exclude = None
     first, second, third = MagicMock(), MagicMock(), MagicMock()
     picks = iter([second, third])
     p._pick_next = lambda _current: next(picks)
@@ -2494,10 +2499,15 @@ def test_next_rendered_carries_offset_between_tracks(monkeypatch):
 
 
 def test_next_rendered_skips_unrenderable_tracks_and_stops_without_a_cursor() -> None:
+    import threading
+
     from autodj.mixbus import RenderedTrack
 
     p = Player.__new__(Player)
     p._state = PlayerState()
+    p._pick_lock = threading.Lock()
+    p._pending_pick_mode = "seed"
+    p._pick_exclude = None
     bad, good, after = MagicMock(), MagicMock(), MagicMock()
     picks = iter([good, after])
     p._pick_next = lambda _current: next(picks)
@@ -2528,8 +2538,13 @@ def test_next_rendered_skips_unrenderable_tracks_and_stops_without_a_cursor() ->
 
 
 def test_next_rendered_gives_up_after_five_failed_renders() -> None:
+    import threading
+
     p = Player.__new__(Player)
     p._state = PlayerState()
+    p._pick_lock = threading.Lock()
+    p._pending_pick_mode = "seed"
+    p._pick_exclude = None
     p._pick_next = lambda _current: MagicMock()
     p._last_pick_mode = "similarity"
     p._honour_late_queued_next = lambda picked, _q: picked
@@ -2743,3 +2758,262 @@ class TestBusControlWatcher:
         stop.wait.side_effect = lambda _timeout: setattr(player._state, "should_stop", True)
         player._stop_when_requested(stop)
         stop.set.assert_called_once_with()
+
+
+# ---------------------------------------------------------------------------
+# Review fixes: pick provenance, repeat avoidance, file-timeline positions
+# ---------------------------------------------------------------------------
+
+
+def _bus_player(n: int = 6) -> Player:
+    sim = _make_sim_index(n)
+    for i, entry in enumerate(sim.entries):
+        entry.artist, entry.album, entry.title = f"Artist {i}", f"Album {i}", f"Title {i}"
+    player = Player(_make_cfg_mock(), sim)
+    player.load_lyrics_in_background = MagicMock()  # type: ignore[method-assign]
+    return player
+
+
+def _stub_render(current, nxt, offset):
+    from autodj.mixbus import RenderedTrack
+
+    return RenderedTrack(current, np.zeros((10, 2), np.float32), nxt, 33, "", start_offset=offset)
+
+
+class TestNextRenderedProvenance:
+    def test_pick_modes_ride_on_the_render_not_the_ui_attribute(self) -> None:
+        player = _bus_player()
+        first, second = player._sim.entries[:2]
+        player._render_track = _stub_render  # type: ignore[method-assign]
+
+        def pick(_current):
+            player._last_pick_mode = "discovery"
+            return second
+
+        player._pick_next = pick  # type: ignore[method-assign]
+        player._last_pick_mode = "what the UI shows"
+        player.reset_render_ahead(first, 7, pick_mode="seed")
+
+        rendered = player._next_rendered()
+
+        assert rendered is not None
+        assert player._last_pick_mode == "what the UI shows"
+        assert rendered.pick_mode == "seed"
+        assert rendered.next_pick_mode == "discovery"
+        assert rendered.next_from_queue is False
+        assert rendered.start_offset == 7
+        assert player._pending_pick_mode == "discovery"
+
+    def test_queue_pick_is_flagged(self) -> None:
+        player = _bus_player()
+        first, queued = player._sim.entries[0], player._sim.entries[4]
+        player._render_track = _stub_render  # type: ignore[method-assign]
+        player._state.queue.append(queued)
+        player.reset_render_ahead(first, 0)
+        rendered = player._next_rendered()
+        assert rendered is not None
+        assert rendered.pick_mode == "queue"  # reset_render_ahead's default
+        assert rendered.next_entry is queued
+        assert rendered.next_pick_mode == "queue"
+        assert rendered.next_from_queue is True
+
+    def test_track_start_shows_the_render_pick_mode(self) -> None:
+        player = _bus_player()
+        entry = player._sim.entries[1]
+        player._on_track_start(_rendered_with(entry, pick_mode="anchored"))
+        assert player._last_pick_mode == "anchored"
+        assert player._playing_render is not None
+        assert player._playing_render.entry is entry
+
+
+def _rendered_with(entry, next_entry=None, frames=4410, start_offset=0, pick_mode="similarity"):
+    from autodj.mixbus import RenderedTrack
+
+    return RenderedTrack(
+        entry,
+        np.zeros((frames, 2), np.float32),
+        next_entry,
+        0,
+        "",
+        start_offset=start_offset,
+        pick_mode=pick_mode,
+    )
+
+
+class TestRenderAheadRepeatAvoidance:
+    """N+2 is picked before N+1 has started, so N+1 is not recorded yet."""
+
+    def test_similarity_pick_excludes_the_track_it_follows(self) -> None:
+        player = _bus_player()
+        played, current, pick = (
+            player._sim.entries[0],
+            player._sim.entries[1],
+            player._sim.entries[3],
+        )
+        player._state.record_played(played)
+        player._render_track = _stub_render  # type: ignore[method-assign]
+        find = MagicMock(return_value=pick)
+        player._sim.find_next_for_path = find  # type: ignore[method-assign]
+        player.reset_render_ahead(current, 0)
+
+        player._next_rendered()
+
+        kwargs = find.call_args.kwargs
+        assert {"artist 0", "artist 1"} <= kwargs["excluded_artists"]
+        assert {"album 0", "album 1"} <= kwargs["excluded_albums"]
+        assert {"title 0", "title 1"} <= kwargs["excluded_titles"]
+        assert list(kwargs["recently_played"]) == [played.path, current.path]
+        # The real history is untouched until the track actually starts.
+        assert list(player._state.recently_played) == [played.path]
+        assert list(player._state.recently_played_artists) == ["artist 0"]
+        assert player._pick_exclude is None
+
+    def test_exclusion_window_slides_like_a_recorded_track(self) -> None:
+        player = _bus_player()
+        player._state = PlayerState(no_repeat_window=2, artist_repeat_window=1)
+        a, b, current = player._sim.entries[:3]
+        player._state.record_played(a)
+        player._state.record_played(b)
+        player._pick_exclude = current
+        paths, artists, _albums, _titles = player._recent_exclusions()
+        assert list(paths) == [b.path, current.path]
+        assert artists == {"artist 2"}
+
+    def test_pure_shuffle_never_repeats_the_track_it_follows(self) -> None:
+        player = _bus_player(3)
+        player._pure_shuffle = True
+        current = player._sim.entries[0]
+        player._render_track = _stub_render  # type: ignore[method-assign]
+        for _ in range(10):
+            player.reset_render_ahead(current, 0)
+            rendered = player._next_rendered()
+            assert rendered is not None and rendered.next_entry is not current
+
+
+class TestFileTimelinePositions:
+    def test_track_start_and_position_use_the_file_timeline(self) -> None:
+        player = _bus_player()
+        entry = player._sim.entries[1]
+        player._on_track_start(_rendered_with(entry, frames=4410, start_offset=1000))
+        assert player._playback_pos[0] == 1000
+        assert player._playback_len == 5410
+        player._on_position(882)
+        assert player._playback_pos[0] == 1882
+
+    def test_seek_converts_to_the_bus_timeline_and_clamps_at_the_offset(self) -> None:
+        player = _bus_player()
+        player.bus = MagicMock()
+        player._on_track_start(
+            _rendered_with(player._sim.entries[1], frames=44100 * 60, start_offset=44100 * 5)
+        )
+        assert player.seek_to(10.0) == pytest.approx(10.0)
+        player.bus.seek.assert_called_with(44100 * 5)
+        # Before the part the crossfade already played: clamp to where audio begins.
+        assert player.seek_to(2.0) == pytest.approx(5.0)
+        player.bus.seek.assert_called_with(0)
+        assert player._playback_pos[0] == 44100 * 5
+
+
+class TestTrackStartRobustness:
+    def test_previous_lyrics_are_cleared_at_track_start(self) -> None:
+        player = _bus_player()
+        player._current_lyrics = ["old line"]
+        player._current_lyrics_plain = "old words"
+        player._on_track_start(_rendered_with(player._sim.entries[1]))
+        assert player._current_lyrics == []
+        assert player._current_lyrics_plain == ""
+
+    def test_export_failure_still_updates_state_and_calls_hook(self, tmp_path, caplog) -> None:
+        sim = _make_sim_index(3)
+        player = Player(
+            _make_cfg_mock(),
+            sim,
+            export_m3u=tmp_path,  # a directory: appending to it fails
+            history_file=tmp_path,
+        )
+        player.load_lyrics_in_background = MagicMock()  # type: ignore[method-assign]
+        started = []
+        player.on_track_started = started.append
+        entry = sim.entries[1]
+        with caplog.at_level("ERROR", logger="autodj.player"):
+            player._on_track_start(_rendered_with(entry))
+        assert player._state.current_track is entry
+        assert entry.path in player._state.recently_played
+        assert started == [entry]
+        assert "Recording" in caplog.text
+
+    def test_track_start_waits_for_an_in_progress_pick(self) -> None:
+        import threading
+
+        player = _bus_player()
+        entry = player._sim.entries[2]
+        done = threading.Event()
+
+        def start() -> None:
+            player._on_track_start(_rendered_with(entry))
+            done.set()
+
+        with player._pick_lock:
+            worker = threading.Thread(target=start)
+            worker.start()
+            assert not done.wait(0.05)  # blocked: the picker is reading the history
+            assert entry.path not in player._state.recently_played
+        assert done.wait(2.0)
+        worker.join(2.0)
+        assert entry.path in player._state.recently_played
+
+
+class TestDiscardedRenders:
+    def test_queue_pick_returns_to_the_queue_front(self) -> None:
+        player = _bus_player()
+        a, b, c = player._sim.entries[1:4]
+        player._state.queue.append(c)
+        from dataclasses import replace
+
+        track = replace(_rendered_with(a, b), next_from_queue=True)
+        player._restore_discarded_pick(track)
+        assert player._state.queue == [b, c]
+
+    def test_similarity_pick_is_not_queued(self) -> None:
+        player = _bus_player()
+        a, b = player._sim.entries[1:3]
+        player._restore_discarded_pick(_rendered_with(a, b))
+        assert player._state.queue == []
+
+    def test_refresh_rewinds_to_the_discarded_upcoming_track(self) -> None:
+        player = _bus_player()
+        upcoming = player._sim.entries[2]
+        player._pending_entry = player._sim.entries[4]  # cursor already past it
+        player._render_ahead._ready = _rendered_with(
+            upcoming, start_offset=99, pick_mode="anchored"
+        )
+        player.refresh_render_ahead()
+        assert player._render_ahead._ready is None
+        assert player._pending_entry is upcoming
+        assert player._pending_offset == 99
+        assert player._pending_pick_mode == "anchored"
+
+    def test_refresh_without_a_ready_track_keeps_the_cursor(self) -> None:
+        player = _bus_player()
+        cursor = player._sim.entries[4]
+        player._pending_entry = cursor
+        player.refresh_render_ahead()
+        assert player._pending_entry is cursor
+
+    def test_play_now_moves_the_cursor_announces_and_skips(self) -> None:
+        player = _bus_player()
+        player.bus = MagicMock()
+        x = player._sim.entries[5]
+        player.play_now(x)
+        assert (player._pending_entry, player._pending_offset) == (x, 0)
+        assert player._pending_pick_mode == "queue"
+        assert player._state.next_track is x
+        player.bus.skip.assert_called_once_with()
+
+
+def test_play_now_without_a_bus_only_moves_the_cursor() -> None:
+    player = _bus_player()
+    x = player._sim.entries[3]
+    player.play_now(x, pick_mode="seed")
+    assert (player._pending_entry, player._pending_pick_mode) == (x, "seed")
+    assert player._state.next_track is x

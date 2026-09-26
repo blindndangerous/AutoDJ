@@ -43,6 +43,14 @@ class RenderedTrack:
         beatmatch_ratio: Measured stretch ratio applied to *next_entry*'s
             audio for the overlap (``len(stretched) / len(original)``), or
             ``1.0`` when it was not stretched (or there is no overlap).
+        start_offset: Samples into *entry*'s own file where *audio*
+            begins (the part the previous overlap already played), so
+            elapsed time and seeks can be shown in the track's timeline.
+        pick_mode: How *entry* was chosen (``"seed"``, ``"queue"``,
+            ``"similarity"``...), for the "why this track" explanation.
+        next_pick_mode: How *next_entry* was chosen.
+        next_from_queue: Whether *next_entry* was taken from the user
+            queue, so a discarded render can give it back.
     """
 
     entry: IndexEntry
@@ -51,6 +59,10 @@ class RenderedTrack:
     next_start_offset: int
     transition_fx: str
     beatmatch_ratio: float = 1.0
+    start_offset: int = 0
+    pick_mode: str = "similarity"
+    next_pick_mode: str = "similarity"
+    next_from_queue: bool = False
 
 
 class Output(Protocol):

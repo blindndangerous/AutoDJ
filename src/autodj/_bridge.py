@@ -709,6 +709,22 @@ class PlayerBridge:
     # Queue control
     # ------------------------------------------------------------------
 
+    def _bus_mode(self) -> bool:
+        """Whether server audio is playing through the mix bus."""
+        return getattr(self.player, "bus", None) is not None
+
+    def _refresh_bus_queue(self) -> None:
+        """Hand a queue edit to the mix bus's render-ahead worker.
+
+        Call while holding ``queue_lock`` and *before* editing the queue:
+        the ready (or in-flight) render already took its successor from the
+        queue, and discarding it puts that pick back at the queue front so
+        the edit sees it.  The upcoming track is then re-rendered with a
+        fresh pick from the edited queue.
+        """
+        if self._bus_mode():
+            self.player.refresh_render_ahead()
+
     def _capture_pre_queue_seed(self) -> None:
         """Capture the currently playing track as the pre-queue seed.
 
@@ -744,8 +760,18 @@ class PlayerBridge:
         calling ``_pick_next`` here raced the audio thread's own pick.  The
         one exception is ``queued_next``, which that loop does honour at the
         transition.
+
+        On the mix bus the next track is already mixed into the playing
+        track's tail, so queue edits (including ``queued_next``) only ever
+        affect the track after it: Up Next is the playing render's
+        ``next_entry``, whatever the queue says.
         """
         state = self.player._state
+        if self._bus_mode():
+            playing = getattr(self.player, "_playing_render", None)
+            if playing is not None:
+                state.next_track = playing.next_entry
+            return
         if state.queued_next is not None:
             state.next_track = state.queued_next
             return
@@ -779,7 +805,16 @@ class PlayerBridge:
         entry = similarity.entry_for_path(path)
         if entry is None:
             return False
+        if now and self._bus_mode():
+            # Play now on the mix bus: render *entry* from its start and fade
+            # the playing track out.  queued_next is left alone so the track
+            # does not also play a second time later.
+            with self.player._state.queue_lock:
+                self._capture_pre_queue_seed()
+            self.player.play_now(entry)
+            return True
         with self.player._state.queue_lock:
+            self._refresh_bus_queue()
             self._capture_pre_queue_seed()
             self.player._state.queued_next = entry
             self._sync_next_for_prefetch()
@@ -806,6 +841,9 @@ class PlayerBridge:
         if not entries:
             return False
         chosen = _random.choice(entries)  # nosec B311 — non-security
+        if self._bus_mode():
+            self.player.play_now(chosen, pick_mode="seed")
+            return True
         with self.player._state.queue_lock:
             self.player._state.queued_next = chosen
         self.skip()
@@ -818,6 +856,7 @@ class PlayerBridge:
         if entry is None:
             return False
         with self.player._state.queue_lock:
+            self._refresh_bus_queue()
             self._capture_pre_queue_seed()
             self.player._state.queue.append(entry)
             self._sync_next_for_prefetch()
@@ -833,6 +872,7 @@ class PlayerBridge:
         """Remove the first matching path from the queue."""
         state = self.player._state
         with state.queue_lock:
+            self._refresh_bus_queue()
             q = state.queue
             for i, e in enumerate(q):
                 if e.path == path:
@@ -858,6 +898,7 @@ class PlayerBridge:
         # write, and the write would put the popped entry back so it played
         # twice.
         with state.queue_lock:
+            self._refresh_bus_queue()
             q = state.queue
             by_path: dict[str, deque[IndexEntry]] = {}
             for entry in q:

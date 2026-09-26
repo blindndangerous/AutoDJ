@@ -288,3 +288,26 @@ class TestServerAudioSkip:
         bridge.player.bus = None
         bridge.skip()
         bridge.player._skip_event.set.assert_called_once_with()
+
+
+class TestServerAudioUpNext:
+    def test_bus_mode_announces_the_track_baked_into_the_playing_tail(self, bridge) -> None:
+        from unittest.mock import MagicMock
+
+        state = bridge.player._state
+        upcoming, queued = _entry(path="Z:/m/up.flac"), _entry(path="Z:/m/q.flac")
+        bridge.player.bus = MagicMock()
+        bridge.player._playing_render = MagicMock(next_entry=upcoming)
+        state.queued_next = queued
+        bridge._sync_next_for_prefetch()
+        assert state.next_track is upcoming
+
+    def test_bus_mode_before_any_track_starts_leaves_up_next(self, bridge) -> None:
+        from unittest.mock import MagicMock
+
+        state = bridge.player._state
+        before = state.next_track
+        bridge.player.bus = MagicMock()
+        bridge.player._playing_render = None
+        bridge._sync_next_for_prefetch()
+        assert state.next_track is before

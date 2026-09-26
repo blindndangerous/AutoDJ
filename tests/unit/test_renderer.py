@@ -170,3 +170,12 @@ def test_crossfade_start_uses_full_track_position_after_start_offset(
     # sliced buffer -- not at the naive "last 2 s" fallback (7.5 s).
     expected_a_start = int(7.5 * 44100) - start_offset
     assert len(out.audio) == expected_a_start + 2 * 44100
+
+
+def test_render_records_where_its_audio_starts_in_the_file(renderer: player_mod.Player) -> None:
+    with_next = renderer._render_track(_entry("a"), _entry("b"), start_offset=44100)
+    alone = renderer._render_track(_entry("b"), None, start_offset=2 * 44100)
+    short = renderer._render_track(_entry("short"), _entry("b"), start_offset=10)
+    assert with_next is not None and with_next.start_offset == 44100
+    assert alone is not None and alone.start_offset == 2 * 44100
+    assert short is not None and short.start_offset == 10
