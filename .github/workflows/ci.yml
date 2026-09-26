@@ -21,24 +21,24 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: Build and smoke-test unprivileged image
         run: bash scripts/container_smoke.sh
       - name: Generate image SBOM
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           image: autodj:local
           format: cyclonedx-json
           output-file: container-sbom.cdx.json
       - name: Scan built image
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: autodj:local
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: "1"
           timeout: 15m0s
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: container-sbom
@@ -50,8 +50,8 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: "24.6.0"
           cache: npm
@@ -68,15 +68,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           enable-cache: true
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.14"
 
@@ -87,13 +87,13 @@ jobs:
         run: uv sync --frozen --all-extras
 
       - name: Ruff — lint
-        run: uv run ruff check src/ tests/
+        run: uv run ruff check src/ tests/ scripts/
 
       - name: Coverage exclusion policy
         run: uv run python scripts/check_coverage_policy.py
 
       - name: Ruff — format check
-        run: uv run ruff format --check src/ tests/
+        run: uv run ruff format --check src/ tests/ scripts/
 
       - name: Mypy — type check
         run: uv run mypy src/autodj/
@@ -130,35 +130,21 @@ jobs:
         continue-on-error: true     # advisory; bandit is the hard gate
         run: uvx semgrep --error --config p/python --config p/owasp-top-ten src/
 
-      - name: Gitleaks — secret scan
-        # Direct CLI install: gitleaks-action v2 needs GITLEAKS_LICENSE
-        # for private repos; the binary is free under MIT.
-        run: |
-          set -euo pipefail
-          GITLEAKS_VERSION="8.21.2"
-          GITLEAKS_SHA256="5bc41815076e6ed6ef8fbecc9d9b75bcae31f39029ceb55da08086315316e3ba"
-          GITLEAKS_ARCHIVE="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          curl --fail --silent --show-error --location --proto "=https" \
-            --output "$GITLEAKS_ARCHIVE" \
-            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${GITLEAKS_ARCHIVE}"
-          printf '%s  %s\n' "$GITLEAKS_SHA256" "$GITLEAKS_ARCHIVE" | sha256sum --check --strict -
-          tar -xzf "$GITLEAKS_ARCHIVE" gitleaks
-          ./gitleaks detect --source . --no-banner --redact --exit-code 1
-
       - name: pip-licenses — license inventory
         run: uv run pip-licenses --format=markdown --order=license
 
       # AGPL is the class that would actually change AutoDJ's obligations as a
-      # network service. The known GPL-2.0/LGPL dependencies live in optional
-      # extras and are disclosed in README; this gate exists to catch a new
-      # copyleft dependency arriving unnoticed.
+      # network service. The known copyleft dependencies are disclosed in README:
+      # mutagen (GPL-2.0-or-later) and soxr (LGPL, via librosa) are in the base
+      # install, and pynput (LGPL-3.0) is in the play extra. This gate exists to
+      # catch a new AGPL dependency arriving unnoticed.
       - name: pip-licenses — reject AGPL dependencies
         run: >-
           uv run pip-licenses
           --fail-on="GNU Affero General Public License v3;GNU Affero General Public License v3 or later (AGPLv3+);AGPL-3.0;AGPL-3.0-only;AGPL-3.0-or-later"
 
       - name: Syft — generate SBOM
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           format: cyclonedx-json
           output-file: sbom.json
@@ -175,15 +161,15 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           enable-cache: true
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.14"
 
@@ -194,7 +180,7 @@ jobs:
         run: uv run python scripts/ci_pytest.py
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v6.0.2
         with:
           files: coverage.xml
           fail_ci_if_error: false
@@ -208,12 +194,12 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v8.1.0
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.14"
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: "24.6.0"
           cache: npm
@@ -228,7 +214,7 @@ jobs:
           AUTODJ_LIBRARY_MUSIC_DIR="$RUNNER_TEMP/music" \
           AUTODJ_INDEX_DIR="$RUNNER_TEMP/index" \
           AUTODJ_MODEL_DIR="$RUNNER_TEMP/models" \
-          uv run autodj serve --no-playback >"$RUNNER_TEMP/autodj.log" 2>&1 &
+          uv run autodj serve >"$RUNNER_TEMP/autodj.log" 2>&1 &
           server_pid=$!
           printf '%s\n' "$server_pid" >"$RUNNER_TEMP/autodj.pid"
           for _attempt in $(seq 1 30); do
@@ -264,7 +250,7 @@ jobs:
             done
             kill -KILL "$server_pid" 2>/dev/null || true
           fi
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: playwright-audit-reports

@@ -16,9 +16,12 @@ AutoDJ is a single-user local music player with these exposed surfaces:
 - Backup and restore trust configured source and destination roots after applying path, type,
   identity, size, digest, and free-space checks.
 
-Cloud sync, multi-user roles, billing, and direct public Internet hosting are out of scope. Use TLS
-for any network where observers could read HTTP traffic. For remote access, place AutoDJ behind a
-trusted TLS reverse proxy, mTLS, or a private overlay network.
+Cloud sync, multi-user roles, billing, and public Internet hosting are out of scope. Use TLS for any
+network where observers could read HTTP traffic, and terminate it in AutoDJ itself with
+`--ssl-certfile` and `--ssl-keyfile`. A TLS-terminating reverse proxy is not supported: the
+`Secure` cookie flag and the advertised-origin check follow AutoDJ's own TLS setting, so a proxy in
+front of plain HTTP leaves session cookies without `Secure`. For remote access, reach the LAN
+through a private overlay network such as a VPN rather than publishing the port.
 
 ## CLI risks
 

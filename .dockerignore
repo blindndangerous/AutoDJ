@@ -19,6 +19,7 @@ models
 liners
 profiles
 dayparts
+backups
 tmp
 debug
 .benchmarks

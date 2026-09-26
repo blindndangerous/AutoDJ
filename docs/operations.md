@@ -57,7 +57,29 @@ HTTP does not protect the pairing code or session cookie from network observers.
 profile only on a trusted private network. For browser or LAN access on an untrusted network, use
 end-to-end TLS: run `autodj serve` directly with both `--ssl-certfile` and `--ssl-keyfile` and a
 certificate trusted by every browser. AutoDJ does not support TLS termination in front of its
-server. For a private LAN that needs TLS, leave `AUTODJ_ACCESS_TOKEN` exported and run:
+server: its `Secure` cookie flag and origin checks follow its own TLS setting.
+
+The native server needs the same server secret, but only Compose reads `.env` on its own;
+`uv run autodj` does not. Either copy the secret into gitignored `config.local.toml` as
+`[server] access_token`, or load `.env` into the shell that starts the server so
+`AUTODJ_ACCESS_TOKEN` is set. In Bash:
+
+```bash
+set -a; . ./.env; set +a
+```
+
+In Windows PowerShell:
+
+```powershell
+Get-Content .env | ForEach-Object {
+  $name, $value = $_ -split '=', 2
+  Set-Item -Path "Env:$name" -Value $value
+}
+```
+
+Only Compose reads `AUTODJ_LAN_HOST` and `AUTODJ_LAN_ORIGIN`, and that origin uses `http://`, so
+pass the HTTPS host and origin as flags. With `AUTODJ_ACCESS_TOKEN` set in the same shell, start a
+private LAN server with TLS:
 
 ```bash
 uv run autodj serve --host 0.0.0.0 \

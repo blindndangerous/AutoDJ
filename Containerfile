@@ -14,7 +14,19 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY pyproject.toml uv.lock README.md LICENSE ./
-RUN uv sync --frozen --no-dev --no-install-project
+COPY container/torch-cpu.txt ./container/
+# uv.lock resolves Linux torch from PyPI, which is the CUDA build and pulls in several GB of
+# nvidia-*, cuda-* and triton wheels. The image has no GPU, so the locked sync skips the torch
+# family and those wheels, then the CPU builds of the same locked torch, torchaudio and
+# torchvision versions come from PyTorch's CPU index, hash-checked against container/torch-cpu.txt.
+# The build stops if that file's versions drift from uv.lock. Bare-metal installs are unaffected
+# and keep the locked PyPI builds.
+RUN set -eu; \
+    python -c 'import re, tomllib; lock = {p["name"]: p["version"] for p in tomllib.load(open("uv.lock", "rb"))["package"]}; pins = dict(re.findall(r"^(torch|torchaudio|torchvision)==(\S+)\+cpu ", open("container/torch-cpu.txt").read(), re.M)); want = {n: lock[n] for n in ("torch", "torchaudio", "torchvision")}; assert pins == want, f"container/torch-cpu.txt {pins} != uv.lock {want}"'; \
+    skipped="$(python -c 'import re, tomllib; names = sorted(p["name"] for p in tomllib.load(open("uv.lock", "rb"))["package"]); print(" ".join(f"--no-install-package {n}" for n in names if re.fullmatch(r"(nvidia|cuda)-.+|triton|torch|torchaudio|torchvision", n)))')"; \
+    uv sync --frozen --no-dev --no-install-project $skipped; \
+    uv pip install --python /opt/venv/bin/python --no-deps --require-hashes \
+        --index-url https://download.pytorch.org/whl/cpu -r container/torch-cpu.txt
 
 FROM node:24.6.0-bookworm-slim@sha256:9b741b28148b0195d62fa456ed84dd6c953c1f17a3761f3e6e6797a754d9edff AS frontend
 WORKDIR /build
@@ -51,4 +63,4 @@ EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=6 \
     CMD ["/opt/venv/bin/python", "-c", "import ipaddress, os, re, urllib.request; raw = os.environ['AUTODJ_HOST'].strip(); host = raw[1:-1] if raw.startswith('[') and raw.endswith(']') else raw; port = int(os.environ['AUTODJ_PORT']); assert 1 <= port <= 65535; ipv6 = ':' in host; assert (ipv6 and ipaddress.ip_address(host).version == 6) or (not ipv6 and re.fullmatch(r'(?!-)(?:[A-Za-z0-9-]{1,63}\\.)*[A-Za-z0-9-]{1,63}', host) and all(not label.endswith('-') for label in host.split('.'))); probe = '[::1]' if ipv6 else '127.0.0.1'; urllib.request.build_opener(urllib.request.ProxyHandler({})).open(f'http://{probe}:{port}/healthz', timeout=2).read()"]
 ENTRYPOINT ["/opt/venv/bin/autodj"]
-CMD ["serve", "--no-playback"]
+CMD ["serve"]
