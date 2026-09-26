@@ -44,6 +44,8 @@ export function initAuthDialog({
     token.removeAttribute("aria-invalid");
   }
 
+  // The role=alert region speaks the message; the field is focused
+  // afterwards but does not also reference it, or NVDA reads it twice.
   async function announceError(message) {
     error.textContent = "";
     await Promise.resolve();

@@ -19,7 +19,7 @@ function installDialogMarkup() {
       <p id="auth-help">Enter the pairing code shown by the server.</p>
       <label for="auth-token">Pairing code</label>
       <input id="auth-token" name="code" required
-             aria-describedby="auth-help auth-error">
+             aria-describedby="auth-help">
       <label for="auth-device-name">Device name</label>
       <input id="auth-device-name" name="device_name">
       <p id="auth-error" role="alert" aria-live="assertive"
@@ -175,7 +175,8 @@ describe("initAuthDialog", () => {
     expect(els.error.textContent).toBe("That pairing code is invalid or expired.");
     expect(mutations).toContain("");
     expect(els.token.getAttribute("aria-invalid")).toBe("true");
-    expect(els.token.getAttribute("aria-describedby")).toContain("auth-error");
+    // Spoken once, by the alert; the refocused field does not repeat it.
+    expect(els.token.getAttribute("aria-describedby")).not.toContain("auth-error");
     expect(els.form.getAttribute("aria-busy")).toBe("false");
     expect(els.status.textContent).toBe("");
     expect(els.token.readOnly).toBe(false);
@@ -883,9 +884,7 @@ describe("pairing dialog markup", () => {
     expect(input?.autocomplete).toBe("one-time-code");
     expect(input?.inputMode).toBe("numeric");
     expect(input?.maxLength).toBe(8);
-    expect(input?.getAttribute("aria-describedby")).toBe(
-      "auth-help auth-error",
-    );
+    expect(input?.getAttribute("aria-describedby")).toBe("auth-help");
     expect(error?.getAttribute("role")).toBe("alert");
     expect(error?.getAttribute("aria-live")).toBe("assertive");
     expect(error?.getAttribute("aria-atomic")).toBe("true");

@@ -17,10 +17,14 @@
     <input id="auth-token" name="code" type="text"
            autocomplete="one-time-code" inputmode="numeric"
            pattern="[0-9]{8}" maxlength="8" required
-           aria-describedby="auth-help auth-error">
+           aria-describedby="auth-help">
     <label for="auth-device-name">Device name <span class="visually-hidden">(optional)</span></label>
     <input id="auth-device-name" name="device_name" type="text"
            autocomplete="off" maxlength="64" placeholder="Kitchen tablet">
+    <!-- The alert is the one announcement path for a pairing error.  It
+         is deliberately not in the field's aria-describedby: focus
+         returns to the field straight after, and the description read
+         the same sentence a second time.  aria-invalid still marks it. -->
     <p id="auth-error" role="alert" aria-live="assertive"
        aria-atomic="true"></p>
     <button type="submit">Pair browser</button>
