@@ -47,7 +47,8 @@ function installDom() {
     <div class="volume-row"><input id="vol" type="range" value="100"></div>
     <button id="btn-pause"></button>
     <img id="cover-art">
-    <div id="now-playing-announce"></div>
+    <div id="now-playing-announce">Artist — Title</div>
+    <div id="sr-status"></div>
     <audio id="browser-player"></audio>
     <audio id="browser-player-b"></audio>
   `;
@@ -160,11 +161,31 @@ describe("audio engine request recovery", () => {
     engine.decks[0].audio.dispatchEvent(new Event("ended"));
     await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce());
     first.resolve(jsonResponse({ detail: "Advance failed" }, 503));
-    await vi.waitFor(() => expect(document.querySelector("#now-playing-announce").textContent)
+    await vi.waitFor(() => expect(document.querySelector("#sr-status").textContent)
       .toContain("Advance failed"));
 
     engine.decks[0].audio.dispatchEvent(new Event("ended"));
     await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(2));
+  });
+
+  it("reports a deck error on the status region and ignores aborts", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ ok: true })));
+    const { engine } = await importEngine();
+    const standby = engine.decks[1];
+    const error = { code: 1 };
+    Object.defineProperty(standby.audio, "error", { configurable: true, get: () => error });
+    standby.path = "torn-down.mp3";
+
+    standby.audio.dispatchEvent(new Event("error"));
+    expect(document.querySelector("#sr-status").textContent).toBe("");
+
+    error.code = 3;
+    standby.path = "broken.mp3";
+    standby.audio.dispatchEvent(new Event("error"));
+    expect(document.querySelector("#sr-status").textContent)
+      .toContain("Playback error: decode. (broken.mp3)");
+    expect(document.querySelector("#now-playing-announce").textContent)
+      .toBe("Artist — Title");
   });
 
   it("retries repick after failure and clears its pending owner", async () => {
@@ -186,7 +207,7 @@ describe("audio engine request recovery", () => {
     standby.audio.dispatchEvent(new Event("error"));
     await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce());
     first.resolve(jsonResponse({ detail: "Repick failed" }, 503));
-    await vi.waitFor(() => expect(document.querySelector("#now-playing-announce").textContent)
+    await vi.waitFor(() => expect(document.querySelector("#sr-status").textContent)
       .toContain("Repick failed"));
 
     standby.path = "bad-again.mp3";
@@ -357,7 +378,7 @@ describe("audio engine request recovery", () => {
     engine.postEq();
     await vi.advanceTimersByTimeAsync(121);
     await flushPromises();
-    expect(document.querySelector("#now-playing-announce").textContent)
+    expect(document.querySelector("#sr-status").textContent)
       .toContain("EQ unavailable");
   });
 
@@ -368,7 +389,7 @@ describe("audio engine request recovery", () => {
     engine.ensureAudioGraph();
 
     startDecodedTransition(engine, "bad.mp3");
-    await vi.waitFor(() => expect(document.querySelector("#now-playing-announce").textContent)
+    await vi.waitFor(() => expect(document.querySelector("#sr-status").textContent)
       .toContain("unexpected content type"));
     await vi.waitFor(() => expect(engine.decks[0].audio.muted).toBe(false));
     expect(decodeAudioData).not.toHaveBeenCalled();
@@ -382,8 +403,11 @@ describe("audio engine request recovery", () => {
     const { engine } = await importEngine();
 
     await expect(engine.unlockAndPlay()).rejects.toThrow("Status unavailable");
+    await vi.waitFor(() => expect(document.querySelector("#sr-status").textContent)
+      .toContain("Status unavailable"));
+    // The visible track title is not overwritten with the error.
     expect(document.querySelector("#now-playing-announce").textContent)
-      .toContain("Status unavailable");
+      .toBe("Artist — Title");
   });
 
   it("aborts stale art probes and reports a current non-image response", async () => {
@@ -409,7 +433,7 @@ describe("audio engine request recovery", () => {
 
     engine.loadCoverArt("invalid.mp3");
     invalidRequest.resolve(binaryResponse("application/json"));
-    await vi.waitFor(() => expect(document.querySelector("#now-playing-announce").textContent)
+    await vi.waitFor(() => expect(document.querySelector("#sr-status").textContent)
       .toContain("unexpected content type"));
     // The box stays in the layout as a placeholder rather than being
     // removed, so the title and wheel do not jump sideways.

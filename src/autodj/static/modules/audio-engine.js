@@ -11,7 +11,7 @@
 // that previously inlined three direct assignments.
 
 import { dbg } from "./dom-helpers.js";
-import { clearLiveRegionLater } from "./live-region.js";
+import { announceStatus, clearLiveRegionLater } from "./live-region.js";
 import {
   captureAuthenticatedRequestEpoch,
   isAuthenticatedRequestCurrent,
@@ -35,7 +35,6 @@ const eqAnnounce = document.getElementById("eq-announce");
 const btnEqReset = document.getElementById("btn-eq-reset");
 const volSlider  = document.getElementById("vol");
 const coverArt   = document.getElementById("cover-art");
-const npAnnounce = document.getElementById("now-playing-announce");
 
 // ----------------------------------------------------------------
 // 3-band EQ
@@ -70,8 +69,18 @@ export function applyEqState(eq) {
 }
 
 let eqDebounceTimer = null;
+// Engine failures go to the shared status region, never into
+// #now-playing-announce: that node is the visible track title, so writing
+// an error there replaced the song name on screen and bypassed the
+// visible status line.  `force` is for failures of something the user
+// just did, which must be reported again if it fails again.
+function announceEngineError(message, { force = false } = {}) {
+  announceStatus(document.getElementById("sr-status"), message,
+    { dwellMs: 8000, force, tone: "error" });
+}
+
 function announceRequestError(errorValue) {
-  npAnnounce.textContent = `Request failed: ${errorValue.message || errorValue}`;
+  announceEngineError(`Request failed: ${errorValue.message || errorValue}`);
 }
 
 export function postEq() {
@@ -2057,10 +2066,7 @@ for (const d of decks) {
     if (name) msg += ` (${name})`;
     // Aborted (code 1) is usually triggered by us tearing down a deck, so
     // ignore those entirely — they don't represent a real playback failure.
-    if (e && e.code === 1) {
-      npAnnounce.textContent = msg;
-      return;
-    }
+    if (e && e.code === 1) return;
     const isActive = d === deckActive();
     if (isActive) {
       // Active deck failed mid-playback — auto-advance.
@@ -2083,7 +2089,7 @@ for (const d of decks) {
       } catch (_) {}
       d.path = null;
     }
-    npAnnounce.textContent = msg;
+    announceEngineError(msg);
   });
   // Watch active deck's currentTime for crossfade trigger.
   d.audio.addEventListener("timeupdate", () => {
@@ -2211,13 +2217,13 @@ export async function unlockAndPlay() {
     state = await requestJson("/api/status");
   } catch (err) {
     if (!isAuthenticatedRequestCurrent(epoch)) return false;
-    npAnnounce.textContent = "Cannot reach server: " + (err.message || err);
+    announceEngineError("Cannot reach server: " + (err.message || err), { force: true });
     throw err;
   }
   if (!isAuthenticatedRequestCurrent(epoch)) return false;
   const path = state.current_track ? state.current_track.path : null;
   if (!path) {
-    npAnnounce.textContent = "No current track on server.";
+    announceEngineError("No current track on server.", { force: true });
     throw new Error("no current track");
   }
   setSrcOnDeck(deckActive(), path);
