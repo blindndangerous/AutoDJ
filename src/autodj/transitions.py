@@ -624,6 +624,7 @@ def noise_riser(
     cutoff_start_hz: float = 200.0,
     cutoff_end_hz: float = 16000.0,
     peak_amplitude: float = 0.35,
+    seed: int | None = None,
 ) -> np.ndarray:
     """Generate a synthesised white-noise riser of *n_samples* length.
 
@@ -638,13 +639,14 @@ def noise_riser(
         cutoff_start_hz: Low-pass cutoff at sample 0.
         cutoff_end_hz: Low-pass cutoff at the last sample.
         peak_amplitude: Maximum amplitude reached at the end (0.0–1.0).
+        seed: Optional RNG seed for reproducibility.
 
     Returns:
         Synthesised float32 array of length *n_samples*.
     """
     if n_samples <= 0:
         return np.zeros(0, dtype=np.float32)
-    rng = np.random.default_rng()
+    rng = np.random.default_rng(seed)
     noise = rng.standard_normal(n_samples).astype(np.float32) * 0.5
     # Sweep band-pass via the sweeping low-pass helper
     from autodj.player import apply_filter_sweep
@@ -1550,11 +1552,20 @@ def halftime(
 # ---------------------------------------------------------------------------
 
 
-def _noise_drop_extra(tail: np.ndarray, sample_rate: int) -> np.ndarray:
-    """Build the synthesised noise layer for ``NOISE_DROP``."""
+def _noise_drop_extra(tail: np.ndarray, sample_rate: int, seed: int | None = None) -> np.ndarray:
+    """Build the synthesised noise layer for ``NOISE_DROP``.
+
+    Args:
+        tail: Outgoing tail; only its length and dtype matter.
+        sample_rate: Sample rate in Hz.
+        seed: Optional RNG seed for reproducibility.
+
+    Returns:
+        Synthesised float32 noise layer, the same length as *tail*.
+    """
     if len(tail) == 0:
         return np.zeros(0, dtype=np.float32)
-    rng = np.random.default_rng()
+    rng = np.random.default_rng(seed)
     noise = rng.standard_normal(len(tail)).astype(np.float32) * 0.5
     from autodj.player import apply_filter_sweep
 
@@ -1610,16 +1621,31 @@ _TAIL_EFFECTS: dict[TransitionFx, Callable[[np.ndarray, int], np.ndarray]] = {
 }
 
 
-def apply_transition(
+def _apply_transition_mono(
     tail: np.ndarray,
     head: np.ndarray,
     sample_rate: int,
     effect: TransitionFx,
+    seed: int | None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Apply *effect* to the (tail, head) overlap and return processed buffers."""
+    """Apply *effect* to a mono (tail, head) overlap and return processed buffers.
+
+    Args:
+        tail: Outgoing tail, ``(n,)``.
+        head: Incoming head, ``(n,)``.
+        sample_rate: Sample rate in Hz.
+        effect: Concrete effect to apply.
+        seed: Seed forwarded to effects that use randomness.
+
+    Returns:
+        ``(tail, head, extra_layer)``, all mono.
+    """
     empty_extra = np.zeros(0, dtype=np.float32)
     if effect == TransitionFx.NONE:
         return tail, head, empty_extra
+
+    if effect == TransitionFx.GLITCH:
+        return glitch(tail, sample_rate, seed=seed), head, empty_extra
 
     fn = _TAIL_EFFECTS.get(effect)
     if fn is not None:
@@ -1628,11 +1654,11 @@ def apply_transition(
     if effect == TransitionFx.HIGHPASS_SWEEP:
         return tail, highpass_sweep(head, sample_rate), empty_extra
     if effect == TransitionFx.NOISE_DROP:
-        return tail, head, _noise_drop_extra(tail, sample_rate)
+        return tail, head, _noise_drop_extra(tail, sample_rate, seed=seed)
     if effect == TransitionFx.FORWARD_SPIN:
         return _forward_spin_tail(tail), head, empty_extra
     if effect == TransitionFx.NOISE_RISER:
-        return tail, head, noise_riser(len(tail), sample_rate)
+        return tail, head, noise_riser(len(tail), sample_rate, seed=seed)
     if effect == TransitionFx.CROSS_EQ_SWAP:
         t, h = cross_eq_swap(tail, head, sample_rate)
         return t, h, empty_extra
@@ -1641,6 +1667,52 @@ def apply_transition(
         head,
         empty_extra,
     )  # pragma: no cover — every TransitionFx case handled above; defensive fallthrough
+
+
+def apply_transition(
+    tail: np.ndarray,
+    head: np.ndarray,
+    sample_rate: int,
+    effect: TransitionFx,
+    *,
+    seed: int | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Apply *effect* to a crossfade, for mono or stereo audio.
+
+    Stereo input is processed one channel at a time with the same *seed*,
+    so effects that use randomness treat both channels identically.
+
+    Args:
+        tail: Outgoing tail, ``(n,)`` or ``(n, 2)``.
+        head: Incoming head, same channel layout as *tail*.
+        sample_rate: Sample rate in Hz.
+        effect: Concrete effect to apply.
+        seed: Seed for effects that use randomness.  ``None`` draws a fresh
+            seed, which is then shared by both channels.
+
+    Returns:
+        ``(tail, head, extra_layer)`` in the input's channel layout.  The
+        extra layer is empty (length 0) when the effect adds none.
+    """
+    if tail.ndim == 1:
+        return _apply_transition_mono(tail, head, sample_rate, effect, seed)
+    shared_seed = seed if seed is not None else int(np.random.default_rng().integers(2**31))
+    results = [
+        _apply_transition_mono(
+            np.ascontiguousarray(tail[:, c]),
+            np.ascontiguousarray(head[:, c]),
+            sample_rate,
+            effect,
+            shared_seed,
+        )
+        for c in range(tail.shape[1])
+    ]
+    stacked = []
+    for part in range(3):
+        columns = [result[part] for result in results]
+        length = min(len(column) for column in columns)
+        stacked.append(np.stack([column[:length] for column in columns], axis=1).astype(np.float32))
+    return stacked[0], stacked[1], stacked[2]
 
 
 # Process-local rotation cursor for ROTATE mode
