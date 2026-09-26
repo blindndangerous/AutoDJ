@@ -604,6 +604,63 @@ class TestProfiles:
         saved = json.loads((idx / "web_state.json").read_text(encoding="utf-8"))
         assert saved["playback"]["crossfade_seconds"] == pytest.approx(7.5)
 
+    @pytest.mark.parametrize(
+        "field",
+        ["transition_mode", "post_queue_seed", "key_notation", "liners_pick_mode"],
+    )
+    def test_playback_settings_bad_choice_changes_nothing(self, bridge, field) -> None:
+        """One bad choice must not half-apply the fields that come before it."""
+        from fastapi.testclient import TestClient
+
+        pb = bridge.player._cfg.playback
+        pb.crossfade_seconds = 3.0
+        before = getattr(pb, field)
+        bridge.save_persistent_state = MagicMock()
+        tc = TestClient(create_app(bridge))
+
+        resp = tc.post("/api/playback-settings", json={"crossfade_seconds": 9.0, field: "bogus"})
+
+        assert resp.status_code == 422
+        assert pb.crossfade_seconds == pytest.approx(3.0)
+        assert getattr(pb, field) == before
+        bridge.save_persistent_state.assert_not_called()
+
+    def test_profile_save_rejects_bad_choice(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
+        (tmp_path / "idx").mkdir()
+        tc = TestClient(create_app(bridge))
+
+        resp = tc.post("/api/profiles", json={"name": "Bad", "post_queue_seed": "bogus"})
+
+        assert resp.status_code == 422
+        assert "Bad" not in tc.get("/api/profiles").json()["profiles"]
+
+    def test_profile_apply_stored_bad_choice_is_400_and_changes_nothing(
+        self, bridge, tmp_path
+    ) -> None:
+        """A hand-edited profile with a bad choice is refused before anything applies."""
+        from fastapi.testclient import TestClient
+
+        from autodj.profiles import ProfileSnapshot, ProfileStore
+
+        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
+        (tmp_path / "idx").mkdir()
+        ProfileStore(tmp_path / "profiles").save(
+            ProfileSnapshot(name="Broken", crossfade_seconds=9.0, transition_mode="bogus")
+        )
+        pb = bridge.player._cfg.playback
+        pb.crossfade_seconds = 3.0
+        bridge.save_persistent_state = MagicMock()
+        tc = TestClient(create_app(bridge))
+
+        resp = tc.post("/api/profiles/Broken/apply")
+
+        assert resp.status_code == 400
+        assert pb.crossfade_seconds == pytest.approx(3.0)
+        bridge.save_persistent_state.assert_not_called()
+
     def test_profile_get_bad_name_400(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 

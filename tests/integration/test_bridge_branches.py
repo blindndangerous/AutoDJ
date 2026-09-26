@@ -207,6 +207,23 @@ class TestApplySessionEnvelopeExtras:
         assert bridge.player._cfg.playback.beatmatch_on_skip is True
 
 
+class TestPlaybackChoiceValidation:
+    @pytest.mark.parametrize(
+        "field",
+        ["transition_mode", "post_queue_seed", "key_notation", "liners_pick_mode"],
+    )
+    def test_bad_choice_raises_before_any_field_applies(self, bridge, field) -> None:
+        pb = bridge.player._cfg.playback
+        pb.crossfade_seconds = 3.0
+        pb.liners_enabled = False
+        with pytest.raises(ValueError, match=field):
+            bridge.set_playback_settings(
+                crossfade_seconds=9.0, liners_enabled=True, **{field: "bogus"}
+            )
+        assert pb.crossfade_seconds == pytest.approx(3.0)
+        assert pb.liners_enabled is False
+
+
 class TestApplyLiners:
     def test_liners_folder_is_not_a_runtime_setting(self, bridge) -> None:
         # The liner root is configuration-only; the bridge has no knob for it.

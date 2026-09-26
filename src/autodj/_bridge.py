@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import math
 from collections import deque
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -42,6 +43,36 @@ def _finite(value: Any) -> float | None:
         logger.warning("ignoring non-finite setting value: %r", value)
         return None
     return number
+
+
+def validate_playback_choices(values: Mapping[str, Any]) -> None:
+    """Raise ``ValueError`` if any choice field in *values* is not allowed.
+
+    The playback setters apply one field at a time, so a check made inside
+    them let a request with one bad choice change every field ahead of it and
+    then fail.  Callers run this first so a bad request changes nothing.
+    ``None`` means "leave unchanged" and is skipped.
+    """
+    from autodj.config import (
+        _validate_key_notation,
+        _validate_post_queue_seed,
+        _validate_transition_mode,
+    )
+    from autodj.liners import LINER_PICK_MODES
+
+    checks: tuple[tuple[str, Callable[[str], str]], ...] = (
+        ("transition_mode", _validate_transition_mode),
+        ("post_queue_seed", _validate_post_queue_seed),
+        ("key_notation", _validate_key_notation),
+    )
+    for key, check in checks:
+        if (value := values.get(key)) is not None:
+            check(str(value))
+    pick_mode = values.get("liners_pick_mode")
+    if pick_mode is not None and str(pick_mode) not in LINER_PICK_MODES:
+        raise ValueError(
+            f"playback.liners_pick_mode must be one of {LINER_PICK_MODES}, got {pick_mode!r}"
+        )
 
 
 def _build_why(player: Any) -> list[str]:
@@ -1017,22 +1048,19 @@ class PlayerBridge:
                 self.player._seed_path = self.player._state.current_track.path
 
     def _apply_validators(self, kw: dict) -> None:
-        """Apply transition_mode / post_queue_seed / key_notation overrides."""
+        """Apply transition_mode / post_queue_seed / key_notation overrides.
+
+        Values were already checked by :func:`validate_playback_choices`.
+        """
         cfg = self.player._cfg
         if (v := kw.get("transition_mode")) is not None:
-            from autodj.config import _validate_transition_mode
-
-            cfg.playback.transition_mode = _validate_transition_mode(str(v))
+            cfg.playback.transition_mode = str(v)
         if (v := kw.get("post_queue_seed")) is not None:
-            from autodj.config import _validate_post_queue_seed
-
-            cfg.playback.post_queue_seed = _validate_post_queue_seed(str(v))
+            cfg.playback.post_queue_seed = str(v)
             if cfg.playback.post_queue_seed != "pre_queue":
                 self.player._state.pre_queue_seed = None
         if (v := kw.get("key_notation")) is not None:
-            from autodj.config import _validate_key_notation
-
-            cfg.playback.key_notation = _validate_key_notation(str(v))
+            cfg.playback.key_notation = str(v)
         if (v := kw.get("key_prefer_flats")) is not None:
             cfg.playback.key_prefer_flats = bool(v)
 
@@ -1093,11 +1121,7 @@ class PlayerBridge:
             cfg.playback.liners_random_min_minutes = v if v > 0 else None
         if (v := _finite(kw.get("liners_random_max_minutes"))) is not None:
             cfg.playback.liners_random_max_minutes = v if v > 0 else None
-        if (v := kw.get("liners_pick_mode")) is not None and str(v) in {
-            "random",
-            "sequential",
-            "weighted",
-        }:
+        if (v := kw.get("liners_pick_mode")) is not None:
             cfg.playback.liners_pick_mode = str(v)
         if (v := _finite(kw.get("liners_duck_db"))) is not None:
             cfg.playback.liners_duck_db = v
@@ -1131,8 +1155,14 @@ class PlayerBridge:
         liners_duck_db: float | None = None,
         post_queue_seed: str | None = None,
     ) -> None:
-        """Apply playback-related settings; only non-null fields take effect."""
+        """Apply playback-related settings; only non-null fields take effect.
+
+        Raises:
+            ValueError: A choice field holds an unknown value.  Nothing has
+                been applied when this is raised.
+        """
         kw = {k: v for k, v in locals().items() if k != "self" and v is not None}
+        validate_playback_choices(kw)
         cfg = self.player._cfg
         self._apply_crossfade(kw)
         self._apply_picker_modes(kw)

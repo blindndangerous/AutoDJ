@@ -55,13 +55,13 @@ from fastapi import (
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.background import BackgroundTask
 
 # PlayerBridge lives in autodj._bridge so neither file balloons over
 # the 2000-line working budget.  Re-export here so the external API
 # (``from autodj.server import PlayerBridge``) keeps working unchanged.
-from autodj._bridge import PlayerBridge
+from autodj._bridge import PlayerBridge, validate_playback_choices
 from autodj.http_media import (
     OpenedMediaFile,
     RangeNotSatisfiable,
@@ -421,6 +421,12 @@ class ProfileSaveBody(BaseModel):
     liners_enabled: bool | None = None
     liners_pick_mode: str | None = None
 
+    @model_validator(mode="after")
+    def _check_choices(self) -> ProfileSaveBody:
+        """Refuse to store a profile that could never be applied."""
+        validate_playback_choices(self.model_dump())
+        return self
+
 
 class SeekBody(BaseModel):
     """Request body for POST /api/seek.
@@ -525,6 +531,12 @@ class PlaybackSettingsBody(BaseModel):
     liners_random_max_minutes: FiniteFloat | None = None
     liners_pick_mode: str | None = None
     liners_duck_db: FiniteFloat | None = None
+
+    @model_validator(mode="after")
+    def _check_choices(self) -> PlaybackSettingsBody:
+        """Reject an unknown choice before any field is applied."""
+        validate_playback_choices(self.model_dump())
+        return self
 
 
 class BpmRangeBody(BaseModel):
@@ -1194,8 +1206,14 @@ def create_app(
             if v is not None:
                 kw[fld] = v
                 applied.append(fld)
-        if kw:
+        # A profile saved before its fields were validated, or edited by hand,
+        # can hold a bad choice.  set_playback_settings checks every field
+        # before changing any, and it runs before the other setters below, so
+        # a rejected profile leaves the session untouched.
+        try:
             bridge.set_playback_settings(**kw)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         # BPM range
         if snap.bpm_lo is not None and snap.bpm_hi is not None:
             bridge.set_bpm_range(snap.bpm_lo, snap.bpm_hi)
