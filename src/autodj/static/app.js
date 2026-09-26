@@ -154,6 +154,7 @@ function clearProtectedSessionData() {
   btnDiscovery.setAttribute("aria-pressed", "false");
   volSlider.value = volSlider.defaultValue;
   volPct.textContent = `${volSlider.value}%`;
+  volSlider.setAttribute("aria-valuetext", `${volSlider.value}%`);
   volAnnounce.textContent = "";
   for (const [slider, value] of [
     [eqLow, eqLowVal], [eqMid, eqMidVal], [eqHigh, eqHighVal],
@@ -438,6 +439,7 @@ function applyState(s) {
     const volInt = _gainToSlider(s.volume);
     volSlider.value = volInt;
     volPct.textContent = volInt + "%";
+    setAttributeIfChanged(volSlider, "aria-valuetext", `${volInt}%`);
   }
 
   // Mute is a toggle with a fixed name, so NVDA says "Mute, toggle
@@ -1470,6 +1472,11 @@ let _lastUserVolTs = 0;
 volSlider.addEventListener("input", () => {
   const val = parseInt(volSlider.value, 10);
   volPct.textContent = val + "%";
+  // The focused slider speaks its own value ("95%"), so the live region
+  // below is only for changes made while focus is elsewhere (the Up and
+  // Down arrow shortcuts); otherwise NVDA said the volume twice.
+  volSlider.setAttribute("aria-valuetext", `${val}%`);
+  const spokenBySlider = document.activeElement === volSlider;
   _lastUserVolTs = Date.now();
   // Drive the Web Audio gain immediately so the change is audible
   // without waiting on the server round-trip.
@@ -1484,13 +1491,14 @@ volSlider.addEventListener("input", () => {
       body: JSON.stringify({ volume: _sliderToGain(val) }),
     }, reportBackgroundRequestError);
   }, 120);
-  // Polite announce, debounced — fires only after user stops moving
-  // the slider so screen readers don't read every intermediate step.
+  // Polite announce for shortcut presses, debounced so holding the key
+  // does not read every intermediate step.
   // Cleared 3 s after the announcement so AT users running with a
   // Speech Viewer (or sighted users with a CSS override that reveals
   // visually-hidden regions) don't see a stale "Volume 90%" parked at
   // the bottom of the page after the announcer has already spoken it.
   clearTimeout(volAnnounceTimer);
+  if (spokenBySlider) return;
   volAnnounceTimer = setTimeout(() => {
     if (volAnnounce) {
       volAnnounce.textContent = `Volume ${val}%.`;

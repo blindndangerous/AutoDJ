@@ -920,6 +920,26 @@ describe("app request behavior", () => {
     expect(document.querySelector("#badges-announce")).toBeNull();
   });
 
+  it("speaks volume once: from the slider when focused, the region otherwise", async () => {
+    await setupApp({ onRequest: () => jsonResponse({ ok: true }) });
+    const slider = document.querySelector("#vol");
+    const region = document.querySelector("#vol-announce");
+
+    slider.focus();
+    slider.value = "95";
+    slider.dispatchEvent(new Event("input"));
+    expect(slider.getAttribute("aria-valuetext")).toBe("95%");
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    expect(region.textContent).toBe("");
+
+    // A shortcut press while focus is elsewhere still gets spoken.
+    slider.blur();
+    slider.value = "90";
+    slider.dispatchEvent(new Event("input"));
+    expect(slider.getAttribute("aria-valuetext")).toBe("90%");
+    await vi.waitFor(() => expect(region.textContent).toBe("Volume 90%."));
+  });
+
   it("keeps pointer previews local and sends only the final absolute seek", async () => {
     let resolveSeek;
     const deckAudio = { currentTime: 10, duration: 100 };
