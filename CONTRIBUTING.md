@@ -13,9 +13,8 @@ cd autodj
 uv sync --frozen --all-extras
 npm ci
 
-# 3. Wire pre-commit
+# 3. Wire pre-commit (installs the pre-commit, commit-msg and pre-push hooks)
 uv run pre-commit install
-uv run pre-commit install --hook-type commit-msg
 
 # 4. Run reproducible Python and frontend gates
 uv run python scripts/ci_pytest.py
@@ -51,8 +50,10 @@ The PR template auto-renders this list. Tick the boxes:
 
 - Tests added or updated for the new behaviour.
 - `CHANGELOG.md` updated under `[Unreleased]`.
-- `ruff`, `mypy`, `bandit`, `vulture`, `deptry`, ESLint, and all tests pass locally. You can run
-  their overlapping hooks with `uv run pre-commit run --all-files`.
+- `ruff`, `mypy`, `bandit`, `vulture`, `deptry`, ESLint, and all tests pass locally. Commits run
+  only the quick hooks; the full test suite and the slower scans run when you `git push`. Run
+  every hook by hand with `uv run pre-commit run --all-files` followed by
+  `uv run pre-commit run --all-files --hook-stage pre-push`.
 - `uv run pyright src/autodj/` remains required; pre-commit does not run Pyright.
 - Run `uv run autodj doctor` against intended local configuration.
 - For web UI changes, start AutoDJ and run Playwright Chromium audit with

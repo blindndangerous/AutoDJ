@@ -325,3 +325,26 @@ def test_operator_docs_keep_security_and_quality_commands_exact() -> None:
     for identity in ("tag", "project", "changelog", "wheel"):
         assert identity in release_entry.lower()
         assert identity in verify_step.lower()
+
+
+def test_slow_precommit_hooks_run_on_push_and_are_installed() -> None:
+    config = yaml.safe_load((ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8"))
+    assert set(config["default_install_hook_types"]) == {"pre-commit", "commit-msg", "pre-push"}
+    assert config["default_stages"] == ["pre-commit"]
+    hooks = {hook["id"]: hook for repository in config["repos"] for hook in repository["hooks"]}
+    slow = {
+        "bandit",
+        "vulture",
+        "deptry",
+        "interrogate",
+        "xenon",
+        "pip-audit",
+        "pip-licenses",
+        "osv-scanner",
+        "trivy-fs",
+        "pytest",
+    }
+    for hook_id in slow:
+        assert hooks[hook_id].get("stages") == ["pre-push"], hook_id
+    for hook_id in ("ruff", "ruff-format", "mypy", "eslint", "gitleaks"):
+        assert "stages" not in hooks[hook_id], hook_id
