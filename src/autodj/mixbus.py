@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _SKIP_FADE_FRAMES = int(0.15 * SAMPLE_RATE)
+_DUCK_RAMP_FRAMES = int(0.04 * SAMPLE_RATE)
 
 
 @dataclass(frozen=True)
@@ -53,15 +54,19 @@ class RenderedTrack:
 
 
 class Output(Protocol):
-    """Destination for mixed blocks (e.g. an MP3 encoder or sounddevice sink)."""
+    """Destination for mixed blocks (e.g. an MP3 encoder or sounddevice sink).
+
+    ``write`` must not block: :meth:`MixBus.run` calls every registered
+    output's ``write`` in sequence, on its single pacing thread, so one
+    slow or blocked output stalls delivery to every other output and
+    delays the bus's own pacing.
+    """
 
     def write(self, block: np.ndarray) -> None:
-        """Receive one ``(882, 2)`` float32 block."""
-        ...
+        """Receive one ``(882, 2)`` float32 block. Must not block."""
 
     def close(self) -> None:
         """Release resources held by this output."""
-        ...
 
 
 class Clock(Protocol):
@@ -69,11 +74,10 @@ class Clock(Protocol):
 
     def now(self) -> float:
         """Return the current time in monotonic seconds."""
-        ...
+        raise NotImplementedError
 
     def sleep(self, seconds: float) -> None:
         """Block the caller for *seconds*."""
-        ...
 
 
 class SystemClock:
@@ -92,14 +96,28 @@ class SystemClock:
 class BusEvents:
     """Callbacks the mix bus makes while playing.
 
+    ``on_need_track`` runs *while the bus's internal lock is held*, as
+    part of producing the current block, so it must return immediately —
+    a track that is already rendered and waiting (e.g. popped off a
+    queue a worker thread fills in the background), or ``None`` when
+    none is ready yet. It must never block or call back into the bus:
+    doing either would stall every block the bus produces, and calling
+    back into the bus would deadlock on its non-reentrant lock.
+
+    ``on_track_start`` and ``on_position`` are collected while producing
+    a block and invoked only after the lock has been released, but they
+    must still not call back into the bus — ``MixBus`` does not support
+    reentrant calls from any callback.
+
     Attributes:
         on_track_start: Called with a track the first time one of its
             blocks is emitted.
         on_position: Called after each non-silent, non-paused block with
             the number of frames played so far in the current track.
-        on_need_track: Called when the bus needs the next track to play;
-            returns ``None`` when none is available yet, in which case
-            the bus emits silence instead of stalling.
+        on_need_track: Called, while the bus's lock is held, when the bus
+            needs the next track to play. Must return immediately — a
+            pre-rendered track or ``None`` — never block or call back
+            into the bus.
     """
 
     on_track_start: Callable[[RenderedTrack], None]
@@ -120,9 +138,13 @@ class MixBus:
     control methods (:meth:`pause`, :meth:`skip`, :meth:`play_liner`,
     :meth:`start_set`, :meth:`stop_set`, :meth:`add_output`,
     :meth:`remove_output`) are safe to call from other threads; they take
-    an internal lock shared with ``render_block``. ``BusEvents`` callbacks
-    are invoked while that lock is held, so a callback must never call back
-    into the bus (e.g. from ``on_need_track``) — doing so would deadlock.
+    a plain (non-reentrant) internal lock shared with ``render_block``.
+    ``on_need_track`` runs while that lock is held; ``on_track_start`` and
+    ``on_position`` are collected while producing a block and invoked
+    after the lock is released (see ``BusEvents``). No callback may call
+    back into the bus — from ``on_need_track`` that would deadlock
+    outright, and from the other two it would reenter ``render_block`` or
+    a control method in ways this class does not support.
     """
 
     BLOCK = 882
@@ -144,7 +166,7 @@ class MixBus:
         self._events = events
         self._eq_gains = eq_gains
         self._clock: Clock = clock or SystemClock()
-        self._lock = threading.RLock()
+        self._lock = threading.Lock()
         self._outputs: list[Output] = []
         self._current: RenderedTrack | None = None
         self._pos = 0
@@ -153,7 +175,10 @@ class MixBus:
         self._skip_fade = 0
         self._liner: np.ndarray | None = None
         self._liner_pos = 0
-        self._duck = 1.0
+        self._duck_gain = 1.0
+        self._duck_target = 1.0
+        self._duck_step = 0.0
+        self._duck_remaining = 0
         self._eq_filters = make_eq_filters(SAMPLE_RATE)
         self._eq_state = make_eq_state(self._eq_filters, channels=2)
         self._eq_engaged = False
@@ -188,16 +213,20 @@ class MixBus:
     def play_liner(self, audio: np.ndarray, duck_db: float) -> None:
         """Mix *audio* over the music, ducking the music by *duck_db* dB.
 
+        The music ramps to the duck level — and, once the liner ends,
+        back up to full — over 40 ms rather than stepping, so neither
+        transition clicks.
+
         Args:
-            audio: ``(n, 2)`` float32 liner audio to mix in starting on the
-                next rendered block.
-            duck_db: Decibel attenuation applied to the music bed while the
-                liner plays (negative values quiet the music).
+            audio: ``(n, 2)`` float32 liner audio to mix in starting on
+                the next rendered block.
+            duck_db: Decibel attenuation applied to the music bed while
+                the liner plays (negative values quiet the music).
         """
         with self._lock:
             self._liner = audio.astype(np.float32, copy=False)
             self._liner_pos = 0
-            self._duck = float(10 ** (duck_db / 20.0))
+            self._start_duck_ramp(float(10 ** (duck_db / 20.0)))
 
     def start_set(self) -> None:
         """Begin (or resume) pulling tracks from ``on_need_track``."""
@@ -213,43 +242,82 @@ class MixBus:
             self._pos = 0
             self._skip_fade = 0
             self._liner = None
+            self._duck_gain = 1.0
+            self._duck_target = 1.0
+            self._duck_step = 0.0
+            self._duck_remaining = 0
 
-    def _advance(self) -> None:
-        """Pull the next track and announce it, holding the bus lock."""
+    def _advance(self, pending: list[Callable[[], None]]) -> None:
+        """Pull the next track and queue announcing it, holding the bus lock."""
         self._current = self._events.on_need_track()
         self._pos = 0
         self._skip_fade = 0
         if self._current is not None:
-            self._events.on_track_start(self._current)
+            track = self._current
+            pending.append(lambda: self._events.on_track_start(track))
 
-    def _music(self, frames: int) -> np.ndarray:
+    def _music(self, frames: int, pending: list[Callable[[], None]]) -> np.ndarray:
         """Fill *frames* of music from the current (and subsequent) tracks."""
         out = np.zeros((frames, 2), np.float32)
         filled = 0
         while filled < frames and self._playing:
             if self._current is None:
-                self._advance()
+                self._advance(pending)
                 if self._current is None:
                     break
             audio = self._current.audio
             take = min(frames - filled, len(audio) - self._pos)
-            if take > 0:
-                chunk = audio[self._pos : self._pos + take]
-                if self._skip_fade:
-                    remaining = self._skip_fade
-                    ramp = np.clip(
-                        (remaining - np.arange(take)) / _SKIP_FADE_FRAMES, 0.0, 1.0
-                    ).astype(np.float32)
-                    chunk = chunk * ramp[:, None]
-                    self._skip_fade = max(0, remaining - take)
-                    if self._skip_fade == 0:
-                        self._pos = len(audio)
-                out[filled : filled + take] = chunk
-                self._pos += take
-                filled += take
-            if self._pos >= len(audio):
+            fading = self._skip_fade > 0
+            if fading:
+                take = min(take, self._skip_fade)
+            chunk = audio[self._pos : self._pos + take]
+            if fading:
+                ramp = np.clip(
+                    (self._skip_fade - np.arange(take)) / _SKIP_FADE_FRAMES, 0.0, 1.0
+                ).astype(np.float32)
+                chunk = chunk * ramp[:, None]
+                self._skip_fade -= take
+            out[filled : filled + take] = chunk
+            self._pos += take
+            filled += take
+            if fading and self._skip_fade == 0:
+                # Fade just completed: abandon the rest of this track now,
+                # in the same block, so the next track's audio starts right
+                # where the fade left off instead of leaving a silent gap.
+                self._current = None
+            elif self._pos >= len(audio):
                 self._current = None
         return out
+
+    def _start_duck_ramp(self, target: float) -> None:
+        """(Re)start a linear duck-gain ramp from the current gain to *target*.
+
+        Fixes the per-sample step once, at the moment the target changes,
+        so the full swing always takes exactly ``_DUCK_RAMP_FRAMES``
+        (40 ms) regardless of how many blocks it is consumed across.
+        """
+        self._duck_target = target
+        self._duck_step = (target - self._duck_gain) / _DUCK_RAMP_FRAMES
+        self._duck_remaining = _DUCK_RAMP_FRAMES
+
+    def _duck_ramp(self, frames: int) -> np.ndarray:
+        """Return the next ``(frames,)`` samples of the duck-gain ramp.
+
+        Moves linearly at the fixed rate :meth:`_start_duck_ramp` set, then
+        holds at the target once the ramp is spent — never stepping
+        instantly and clicking. Assumes *frames* never exceeds the ramp
+        frames remaining while the ramp is still in progress, which holds
+        here because ``_DUCK_RAMP_FRAMES`` is a whole multiple of
+        ``MixBus.BLOCK`` and every call passes exactly one block.
+        """
+        if self._duck_remaining <= 0:
+            return np.full(frames, self._duck_target, np.float32)
+        steps = self._duck_gain + self._duck_step * np.arange(1, frames + 1, dtype=np.float64)
+        self._duck_gain = float(steps[-1])
+        self._duck_remaining -= frames
+        if self._duck_remaining <= 0:
+            self._duck_gain = self._duck_target  # ramp complete: eliminate float drift
+        return steps.astype(np.float32)
 
     def render_block(self) -> np.ndarray:
         """Return the next ``(882, 2)`` block without pacing.
@@ -257,10 +325,11 @@ class MixBus:
         Pure with respect to wall-clock time: advances internal state by
         exactly one block. Used by :meth:`run` and directly by tests.
         """
+        pending: list[Callable[[], None]] = []
         with self._lock:
             if self._paused or not self._playing:
                 return np.zeros((self.BLOCK, 2), np.float32)
-            block = self._music(self.BLOCK)
+            block = self._music(self.BLOCK, pending)
             low, mid, high = self._eq_gains()
             engaged = self._eq_filters is not None and (low, mid, high) != (1.0, 1.0, 1.0)
             if engaged and not self._eq_engaged:
@@ -268,25 +337,34 @@ class MixBus:
             self._eq_engaged = engaged
             if engaged:
                 block = apply_eq(block, self._eq_filters, low, mid, high, state=self._eq_state)
+            duck = self._duck_ramp(len(block))
+            block = block * duck[:, None]
             if self._liner is not None:
                 piece = self._liner[self._liner_pos : self._liner_pos + self.BLOCK]
-                block = block * self._duck
                 block[: len(piece)] += piece
                 self._liner_pos += self.BLOCK
                 if self._liner_pos >= len(self._liner):
                     self._liner = None
+                    self._start_duck_ramp(1.0)
             np.clip(block, -1.0, 1.0, out=block)
             if self._current is not None:
-                self._events.on_position(self._pos)
-            return block.astype(np.float32, copy=False)
+                pos = self._pos
+                pending.append(lambda: self._events.on_position(pos))
+            result = block.astype(np.float32, copy=False)
+        for callback in pending:
+            callback()
+        return result
 
     def run(self, stop: threading.Event) -> None:
         """Emit blocks in real time until *stop* is set.
 
         Calls :meth:`render_block` once per 20 ms period, paced by the
-        bus's clock, and writes the result to every registered output. An
-        output whose ``write`` raises is logged and removed so the rest of
-        the run keeps going.
+        bus's clock, and writes the result to every registered output.
+        If ``render_block`` itself raises — from a callback,
+        ``on_need_track``, or the EQ path — the failure is logged and a
+        silent block is substituted so pacing continues. An output whose
+        ``write`` raises is logged and removed so the rest of the run
+        keeps going.
 
         Args:
             stop: Set by another thread to end the loop.
@@ -294,7 +372,11 @@ class MixBus:
         period = self.BLOCK / SAMPLE_RATE
         next_due = self._clock.now()
         while not stop.is_set():
-            block = self.render_block()
+            try:
+                block = self.render_block()
+            except Exception:
+                logger.exception("Mix bus render_block failed; emitting silence")
+                block = np.zeros((self.BLOCK, 2), np.float32)
             with self._lock:
                 outputs = list(self._outputs)
             for output in outputs:
