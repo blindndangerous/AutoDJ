@@ -350,10 +350,12 @@ signature bundle beside each file. They exist so a build can be verified and arc
 AutoDJ can be installed without a checkout — the wheel already carries the minified web UI, so it
 needs no Node toolchain.
 
-AutoDJ is not on PyPI. To install a tagged wheel:
+AutoDJ is not on PyPI. To install a tagged wheel, pick a version from the
+[releases page](https://github.com/blindndangerous/AutoDJ/releases) and replace both `X.Y.Z`
+placeholders with it:
 
 ```bash
-uv pip install "autodj[all] @ https://github.com/blindndangerous/AutoDJ/releases/download/v0.16.1/autodj-0.16.1-py3-none-any.whl"
+uv pip install "autodj[all] @ https://github.com/blindndangerous/AutoDJ/releases/download/vX.Y.Z/autodj-X.Y.Z-py3-none-any.whl"
 ```
 
 Keep `[all]` for the full application. The base dependency set also includes MuQ, librosa,

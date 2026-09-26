@@ -419,3 +419,8 @@ The "make it feel like a real radio station" release.
 ## A note on accessibility
 
 AutoDJ is built and maintained by a blind developer.  Every change to the web UI runs through an accessibility review before it ships.  If you find a screen-reader bug or a keyboard trap, please file an issue.
+
+[Unreleased]: https://github.com/blindndangerous/AutoDJ/compare/v0.16.1...HEAD
+[0.16.1]: https://github.com/blindndangerous/AutoDJ/compare/v0.16.0...v0.16.1
+[0.16.0]: https://github.com/blindndangerous/AutoDJ/compare/v0.12.0...v0.16.0
+[0.12.0]: https://github.com/blindndangerous/AutoDJ/releases/tag/v0.12.0

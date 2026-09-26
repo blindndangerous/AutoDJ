@@ -187,14 +187,13 @@ def test_release_workflow_grants_every_nested_job_permission() -> None:
     assert checked >= 8
 
 
-def test_readme_release_install_matches_project_version() -> None:
-    """The install command pins a URL, so a version bump must update it too."""
+def test_readme_release_install_does_not_hard_code_a_version() -> None:
+    """A hard-coded wheel URL goes stale on every release, so the README uses placeholders."""
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
-    version = project["version"]
 
-    assert f"autodj-{version}-py3-none-any.whl" in readme
-    assert f"/download/v{version}/" in readme
+    assert "/download/vX.Y.Z/autodj-X.Y.Z-py3-none-any.whl" in readme
+    assert re.search(r"/download/v\d+\.\d+\.\d+/", readme) is None
+    assert re.search(r"autodj-\d+\.\d+\.\d+-py3-none-any\.whl", readme) is None
 
 
 def test_readme_discloses_non_commercial_model_weights() -> None:
