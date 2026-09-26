@@ -13,7 +13,9 @@ uploaded to a cloud service.
 - Automatic track selection with configurable repeat avoidance and discovery.
 - Crossfades with optional EQ ducking and transition effects.
 - A browser interface for playback, album art, lyrics, search, and queue management.
-- Mood presets that adjust tempo targets during a set.
+- Mood presets that adjust tempo targets during a set. To define your own, copy
+  `presets.toml.example` to `presets.toml` next to your `config.toml` (or in the working
+  directory when you have no config file).
 - Voice liners that play spoken clips over the music on a schedule.
 - Lyrics from sidecar files or tags, with scrolling and highlighting when timestamps are available.
 - Offline use after installing dependencies and downloading the model. The first indexing run
@@ -78,6 +80,28 @@ uv run autodj serve
 Future runs of `autodj index` embed new files and refresh the post-processing cache. See
 [Operations](docs/operations.md) for diagnosis, `autodj backup`, `autodj restore`, container
 ownership, and upgrades.
+
+## Commands
+
+Every command takes `--help`, for example `uv run autodj serve --help`. The global options
+`--config FILE` and `-v` go before the command name.
+
+- `autodj index` builds or updates the index from your music folder, then runs the enrich and
+  analyse passes unless you skip them.
+- `autodj analyse` fills in intro, outro, beat grid, and cue points for indexed tracks.
+- `autodj enrich` refreshes key and mode from your beets database.
+- `autodj prune` removes index entries whose audio files no longer exist.
+- `autodj stats` prints an overview of the indexed library.
+- `autodj list-indexes` lists the named indexes under `[index] index_dir`.
+- `autodj serve` starts the browser interface.
+- `autodj play` starts terminal playback with server-side audio. It needs the `play` extra.
+- `autodj playlist` writes an offline M3U playlist from the similarity picker.
+- `autodj list-devices` lists the audio output devices available to `play` and `serve
+  --server-audio`.
+- `autodj doctor` checks configuration, paths, dependencies, the model, and security settings.
+- `autodj backup` and `autodj restore` archive and restore index and user data.
+- `autodj setup-lan` writes a `.env` for the authenticated Compose LAN service.
+- `autodj devices list`, `revoke`, `reset`, and `pairing-code` manage paired browsers.
 
 ## Containers
 
@@ -229,6 +253,9 @@ uv run autodj serve --host 0.0.0.0 --insecure-lan \
 
 `--insecure-lan` disables authentication; use it only on a trusted private network.  Multi-user accounts, roles, cloud identity, and public Internet hosting are not supported.
 
+The server does not expose FastAPI's generated API documentation pages (`/docs`, `/redoc`, and
+`/openapi.json`).
+
 Index generation manifests are the only publication signal used by live reload. A partially
 written generation is not activated. Incomplete model directories are ignored instead of being
 treated as usable caches.
@@ -337,6 +364,34 @@ torch floors (`index`).
 Installing a wheel resolves dependencies fresh from PyPI instead of from `uv.lock`, so you give up
 the exact versions CI tested. The clone plus `uv sync --frozen --all-extras` above stays the
 supported path; reach for the wheel only when you want AutoDJ without a source tree.
+
+## Uninstall
+
+AutoDJ keeps everything in directories you chose; it installs no system service. To remove a
+source checkout, stop AutoDJ, run `autodj backup` first if you want to keep profiles, liners, or
+history, then delete what you no longer want:
+
+- `.venv/` and `node_modules/` hold the Python and Node dependencies.
+- `index/` (or your `[index] index_dir`) holds the index, DJ metadata, profiles, liners, and saved
+  web state.
+- `models/` (or your `[index] model_dir`) holds the downloaded model weights. Hugging Face can
+  also keep files in its own cache, `~/.cache/huggingface` or the directory named by `HF_HOME`.
+- `config.toml`, `config.local.toml`, `presets.toml`, and `.env` hold your settings and the LAN
+  server secret.
+- `music/` holds whatever audio you copied there. Keep it if it is your only copy.
+
+Then delete the checkout itself. For Compose, remove the containers and the named volumes
+`autodj-index` and `autodj-models` (Compose prefixes them with the project name, usually the
+directory name), then the image:
+
+```bash
+docker compose --profile lan down --volumes
+docker image rm autodj:local
+```
+
+Bind-mounted directories you passed through `AUTODJ_MUSIC_DIR`, `AUTODJ_INDEX_DIR`, or
+`AUTODJ_MODEL_DIR` are not removed by Compose; delete them by hand. A wheel install is removed
+with `uv pip uninstall autodj`.
 
 ## Credits and licensing
 
