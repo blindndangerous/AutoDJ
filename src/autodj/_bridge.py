@@ -728,10 +728,21 @@ class PlayerBridge:
         Without this, queue mutations leave the browser prefetching the
         pre-queue similarity pick (computed when the previous track
         started) so the crossfade lands on the wrong audio.
+
+        Only browser-driven mode recomputes from the queue.  With
+        ``--server-audio`` the audio thread picks (and pops) the next entry
+        when the current track starts and plays it regardless of later queue
+        edits, so ``next_track`` already names what plays next; rewriting it
+        to ``queue[0]`` announced a track that actually plays one later, and
+        calling ``_pick_next`` here raced the audio thread's own pick.  The
+        one exception is ``queued_next``, which that loop does honour at the
+        transition.
         """
         state = self.player._state
         if state.queued_next is not None:
             state.next_track = state.queued_next
+            return
+        if not getattr(self.player, "_dry_run", False):
             return
         if state.queue:
             state.next_track = state.queue[0]

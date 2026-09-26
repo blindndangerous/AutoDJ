@@ -2375,6 +2375,7 @@ class TestQueueSyncsPrefetch:
     def test_queue_add_overrides_next_track(self, bridge) -> None:
         from fastapi.testclient import TestClient
 
+        bridge.player._dry_run = True
         prev_next = _make_entry(900)
         bridge.player._state.next_track = prev_next
         bridge.player._pick_next.return_value = _make_entry(901)
@@ -2396,6 +2397,7 @@ class TestQueueSyncsPrefetch:
     def test_queue_remove_resyncs_next_track(self, bridge) -> None:
         from fastapi.testclient import TestClient
 
+        bridge.player._dry_run = True
         e0, e1 = bridge.sim.entries[:2]
         bridge.player._state.queue.extend([e0, e1])
         bridge.player._state.next_track = e0
@@ -2408,12 +2410,61 @@ class TestQueueSyncsPrefetch:
     def test_queue_reorder_resyncs_next_track(self, bridge) -> None:
         from fastapi.testclient import TestClient
 
+        bridge.player._dry_run = True
         e0, e1, e2 = bridge.sim.entries[:3]
         bridge.player._state.queue.extend([e0, e1, e2])
         bridge.player._state.next_track = e0
         tc = TestClient(create_app(bridge))
         tc.post("/api/queue/reorder", json={"paths": [e2.path, e1.path]})
         assert bridge.player._state.next_track.path == e2.path
+
+
+class TestServerAudioNextTrack:
+    """With --server-audio the audio thread owns the next pick.
+
+    It pops the next entry when the current track starts and plays it no
+    matter what the queue does afterwards, so queue edits must leave
+    ``next_track`` alone and must not call ``_pick_next`` from the request
+    thread.
+    """
+
+    def test_queue_add_keeps_already_chosen_next_track(self, bridge) -> None:
+        chosen = _make_entry(900)
+        bridge.player._dry_run = False
+        bridge.player._state.next_track = chosen
+        bridge.player._pick_next.reset_mock()
+
+        assert bridge.queue_add(bridge.sim.entries[2].path) is True
+
+        assert bridge.player._state.next_track is chosen
+        assert [e.path for e in bridge.player._state.queue] == [bridge.sim.entries[2].path]
+        bridge.player._pick_next.assert_not_called()
+
+    def test_queue_remove_and_reorder_do_not_repick(self, bridge) -> None:
+        chosen = _make_entry(901)
+        e0, e1 = bridge.sim.entries[:2]
+        bridge.player._dry_run = False
+        bridge.player._state.next_track = chosen
+        bridge.player._state.queue.extend([e0, e1])
+        bridge.player._pick_next.reset_mock()
+
+        bridge.queue_reorder([e1.path, e0.path])
+        bridge.queue_remove(e1.path)
+        bridge.queue_remove(e0.path)
+
+        assert bridge.player._state.next_track is chosen
+        bridge.player._pick_next.assert_not_called()
+
+    def test_play_next_still_announces_queued_next(self, bridge) -> None:
+        # The audio loop honours queued_next at the transition, so it is
+        # what really plays next.
+        bridge.player._dry_run = False
+        bridge.player._state.next_track = _make_entry(902)
+        target = bridge.sim.entries[1]
+
+        assert bridge.play_next(target.path) is True
+
+        assert bridge.player._state.next_track.path == target.path
 
 
 class TestPostQueueSeed:
@@ -2487,12 +2538,14 @@ class TestPostQueueSeed:
         assert bridge.player._state.pre_queue_seed is None
 
     def test_sync_next_for_prefetch_clears_when_no_current(self, bridge) -> None:
+        bridge.player._dry_run = True
         bridge.player._state.current_track = None
         bridge.player._state.next_track = bridge.sim.entries[0]
         bridge._sync_next_for_prefetch()
         assert bridge.player._state.next_track is None
 
     def test_sync_next_for_prefetch_swallows_pick_failure(self, bridge) -> None:
+        bridge.player._dry_run = True
         bridge.player._pick_next.side_effect = RuntimeError("boom")
         bridge.player._state.queue.clear()
         bridge.player._state.queued_next = None
