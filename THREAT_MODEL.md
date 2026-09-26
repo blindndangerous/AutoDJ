@@ -27,8 +27,10 @@ trusted TLS reverse proxy, mTLS, or a private overlay network.
   indexing work.
 - Error and diagnostic output must not expose access tokens or Hugging Face tokens. `autodj doctor`
   serializes secret fields as `<redacted>` and does not write index state.
-- Background jobs accept a fixed subcommand allowlist, and argument tokens are screened for
-  shell metacharacters. They run with `shell=False` and a UTF-8 child pipe.
+- Background jobs accept a fixed subcommand allowlist, and each subcommand accepts only the flags
+  the web UI sends: currently `index --limit <positive integer>`, and no flags for `enrich`,
+  `prune`, `stats`, or `list-indexes`. Anything else, such as `--force` or a second `--config`
+  or `--name`, is refused. They run with `shell=False` and a UTF-8 child pipe.
 
 ## Web request policy
 
