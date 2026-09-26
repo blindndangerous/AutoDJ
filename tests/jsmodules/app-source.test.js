@@ -875,6 +875,32 @@ describe("app request behavior", () => {
     expect(mute.getAttribute("aria-pressed")).toBe("false");
   });
 
+  it("leaves unchanged transport buttons untouched on a repeated push", async () => {
+    const tick = {
+      current_track: { path: "a.mp3", title: "A" }, is_paused: false, is_muted: true,
+      discovery_available: true, discovery_enabled: true,
+      queue: [], eq: {}, volume: 1,
+    };
+    const { webSocket } = await setupApp({ initialState: tick });
+    webSocket.onmessage({ data: JSON.stringify(tick) });
+    const records = [];
+    const observer = new window.MutationObserver((batch) => records.push(...batch));
+    for (const id of ["#btn-pause", "#btn-mute", "#btn-discovery"]) {
+      observer.observe(document.querySelector(id), {
+        attributes: true, childList: true, characterData: true, subtree: true,
+      });
+    }
+
+    webSocket.onmessage({ data: JSON.stringify(tick) });
+    await Promise.resolve();
+    expect(records).toHaveLength(0);
+
+    webSocket.onmessage({ data: JSON.stringify({ ...tick, is_paused: true }) });
+    await Promise.resolve();
+    expect(records.length).toBeGreaterThan(0);
+    observer.disconnect();
+  });
+
   it("keeps pointer previews local and sends only the final absolute seek", async () => {
     let resolveSeek;
     const deckAudio = { currentTime: 10, duration: 100 };

@@ -284,6 +284,18 @@ function flushProgressValue(track) {
   }
 }
 
+// The websocket pushes state every second.  Rewriting a button with the
+// markup it already has still replaces its child nodes, which NVDA hears
+// as a name change on the focused button and reads out again, so the
+// transport buttons are only touched when their content really changes.
+function setButtonContent(button, html) {
+  if (button.innerHTML !== html) button.innerHTML = html;
+}
+
+function setAttributeIfChanged(element, name, value) {
+  if (element.getAttribute(name) !== value) element.setAttribute(name, value);
+}
+
 function applyState(s) {
   _stateApplicationGeneration += 1;
   _lastState = s;
@@ -404,15 +416,15 @@ function applyState(s) {
   const hasTrack = s.current_track != null;
   if (!hasTrack) {
     btnPause.disabled = true;
-    btnPause.innerHTML = '<span aria-hidden="true">\u25B6</span> Play';
+    setButtonContent(btnPause, '<span aria-hidden="true">\u25B6</span> Play');
   } else if (s.browser_playback && !playbackEnabled) {
     btnPause.disabled = false;
-    btnPause.innerHTML = '<span aria-hidden="true">\u25B6</span> Play';
+    setButtonContent(btnPause, '<span aria-hidden="true">\u25B6</span> Play');
   } else {
     btnPause.disabled = false;
-    btnPause.innerHTML = s.is_paused
+    setButtonContent(btnPause, s.is_paused
       ? '<span aria-hidden="true">\u25B6</span> Resume'
-      : '<span aria-hidden="true">\u23F8</span> Pause';
+      : '<span aria-hidden="true">\u23F8</span> Pause');
   }
 
   // Volume — server stores the perceptual *gain* (post-curve), so invert
@@ -432,10 +444,10 @@ function applyState(s) {
   // button, pressed" instead of the contradictory "Unmute, pressed".
   // Only the hidden glyph changes.
   const isMuted = s.is_muted;
-  btnMute.setAttribute("aria-pressed", isMuted ? "true" : "false");
-  btnMute.innerHTML = isMuted
+  setAttributeIfChanged(btnMute, "aria-pressed", isMuted ? "true" : "false");
+  setButtonContent(btnMute, isMuted
     ? '<span aria-hidden="true">\uD83D\uDD07</span> Mute'
-    : '<span aria-hidden="true">\uD83D\uDD0A</span> Mute';
+    : '<span aria-hidden="true">\uD83D\uDD0A</span> Mute');
 
   // Up Next — only mutate textContent when value actually changes so the
   // aria-live region doesn't re-announce on every per-second WS tick.
@@ -447,14 +459,14 @@ function applyState(s) {
 
   // Discovery button — show only when discovery is configured
   if (s.discovery_available) {
-    btnDiscovery.style.display = "";
+    if (btnDiscovery.style.display !== "") btnDiscovery.style.display = "";
     const isOn = s.discovery_enabled;
-    btnDiscovery.setAttribute("aria-pressed", isOn ? "true" : "false");
-    btnDiscovery.innerHTML = isOn
+    setAttributeIfChanged(btnDiscovery, "aria-pressed", isOn ? "true" : "false");
+    setButtonContent(btnDiscovery, isOn
       ? '<span aria-hidden="true">\u25c8</span> Discovery <small>ON</small>'
-      : '<span aria-hidden="true">\u25c8</span> Discovery';
+      : '<span aria-hidden="true">\u25c8</span> Discovery');
   } else {
-    btnDiscovery.style.display = "none";
+    if (btnDiscovery.style.display !== "none") btnDiscovery.style.display = "none";
   }
 
   // Lyrics \u2014 visible list highlight + announce only on line change
