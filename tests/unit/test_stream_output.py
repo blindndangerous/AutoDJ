@@ -344,9 +344,13 @@ async def test_burst_buffer_is_trimmed_to_limit() -> None:
     out = StreamOutput(1, 8, encoder_factory=FakeEncoder, loop=asyncio.get_running_loop())
     for _ in range(20):
         out.write(_block())
-    _wait_until(lambda: len(out._burst) > 0)
+    # Wait for every chunk to be processed (not just the first one) so the
+    # trim loop has definitely run its steady-state number of times; a
+    # wait keyed on "the burst is non-empty" can be satisfied by the very
+    # first chunk, before any trimming has happened at all.
+    _wait_until(lambda: out._mp3_out >= 20 * 64)
     burst_limit = int(out._bitrate * 1000 / 8 * 2.0)
-    _wait_until(lambda: out._burst_size - len(out._burst[0]) < burst_limit if out._burst else True)
+    assert out._burst_size - len(out._burst[0]) < burst_limit
     assert out._burst_size < burst_limit + 64
     out.close()
 
@@ -533,13 +537,137 @@ async def test_close_joins_writer_and_reader_threads() -> None:
     assert not reader.is_alive()
 
 
-async def test_stale_notify_sequence_numbers_are_dropped(output: StreamOutput) -> None:
-    counts: list[int] = []
-    output.on_listener_change = counts.append
-    output._notify(2, 5)
-    output._notify(1, 99)  # stale/out-of-order: must be dropped
-    output._notify(3, 7)
-    assert counts == [5, 7]
+class ForeverBlockingEncoder(FakeEncoder):
+    """Both write() and read() block until released; never notice close()."""
+
+    def __init__(self, bitrate: int) -> None:
+        super().__init__(bitrate)
+        self._release = threading.Event()
+        self.write_started = threading.Event()
+
+    def write(self, pcm: bytes) -> None:
+        self.write_started.set()
+        self._release.wait()
+
+    def read(self, n: int) -> bytes:
+        self._release.wait()
+        return b""
+
+    def release(self) -> None:
+        self._release.set()
+
+
+async def test_close_logs_when_a_thread_outlives_the_join_timeout(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    out = StreamOutput(
+        320, 8, encoder_factory=ForeverBlockingEncoder, loop=asyncio.get_running_loop()
+    )
+    encoder: ForeverBlockingEncoder = out._encoder
+    out.write(_block())
+    assert encoder.write_started.wait(1.0)
+    try:
+        with caplog.at_level("DEBUG", logger="autodj.stream"):
+            out.close()  # both threads are stuck; each 5s join times out
+        messages = [r.message for r in caplog.records]
+        assert any("Stream writer thread did not stop" in m for m in messages)
+        assert any("Stream reader thread did not stop" in m for m in messages)
+    finally:
+        encoder.release()
+        out._writer.join(timeout=2)
+        out._reader.join(timeout=2)
+
+
+async def test_notifications_never_overlap_and_final_count_is_correct() -> None:
+    out = StreamOutput(320, 100, encoder_factory=FakeEncoder, loop=asyncio.get_running_loop())
+    calls: list[int] = []
+    active = 0
+    max_concurrent = 0
+    guard = threading.Lock()
+
+    def on_change(count: int) -> None:
+        nonlocal active, max_concurrent
+        with guard:
+            active += 1
+            max_concurrent = max(max_concurrent, active)
+        time.sleep(0.005)  # give a genuinely concurrent call a chance to overlap
+        with guard:
+            active -= 1
+        calls.append(count)
+
+    out.on_listener_change = on_change
+
+    def add_and_remove() -> None:
+        listener = out.add_listener(icy=False)
+        out.remove_listener(listener)
+
+    threads = [threading.Thread(target=add_and_remove) for _ in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5)
+
+    assert max_concurrent == 1  # callbacks never ran concurrently
+    assert calls  # at least one delivery happened
+    assert calls[-1] == out.listener_count == 0  # the last delivery reflects true final state
+    out.close()
+
+
+async def test_restart_set_bitrate_close_notify_without_holding_the_lock() -> None:
+    out = StreamOutput(320, 8, encoder_factory=FakeEncoder, loop=asyncio.get_running_loop())
+    lock_was_free: list[bool] = []
+
+    def on_change(count: int) -> None:
+        results: list[bool] = []
+
+        def try_from_another_thread() -> None:
+            got = out._lock.acquire(blocking=False)
+            if got:
+                out._lock.release()
+            results.append(got)
+
+        checker = threading.Thread(target=try_from_another_thread)
+        checker.start()
+        checker.join(timeout=1)
+        lock_was_free.append(bool(results) and results[0])
+
+    out.on_listener_change = on_change
+
+    out.set_bitrate(192)
+    out._restart_encoder()
+    out.close()
+
+    # set_bitrate, _restart_encoder and close each notify at least once
+    # (disconnect_all always notifies), and none of them may still be
+    # holding self._lock while the callback runs.
+    assert len(lock_was_free) == 3
+    assert all(lock_was_free)
+
+
+async def test_set_bitrate_factory_failure_leaves_state_untouched() -> None:
+    class RaisingFactory:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def __call__(self, bitrate: int) -> FakeEncoder:
+            self.calls += 1
+            if self.calls == 1:
+                return FakeEncoder(bitrate)
+            raise RuntimeError("ffmpeg missing")
+
+    factory = RaisingFactory()
+    out = StreamOutput(320, 8, encoder_factory=factory, loop=asyncio.get_running_loop())
+    listener = out.add_listener(icy=False)
+    original_encoder = out._encoder
+
+    with pytest.raises(EncoderUnavailableError):
+        out.set_bitrate(192)
+
+    assert out._bitrate == 320
+    assert out._encoder is original_encoder
+    assert out.listener_count == 1
+    assert not listener.closed
+    out.close()
 
 
 def test_requires_a_loop_outside_a_running_event_loop() -> None:
