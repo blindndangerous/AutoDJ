@@ -171,7 +171,7 @@ def _assert_bounded_smoke_lifecycle(content: str) -> None:
     assert "docker compose --profile lan logs --no-color --tail 200 autodj-lan" in logs
     assert "|| true" in logs
     assert "timeout --signal=TERM --kill-after=5s 30s" in down
-    assert "docker compose --profile lan down --volumes --remove-orphans" in down
+    assert "docker compose --profile lan --profile stream down --volumes --remove-orphans" in down
     assert "bounded_compose_down || cleanup_exit_code=$?" in cleanup
     assert "reclaim_smoke_root ||" in cleanup
     assert '"$smoke_root" != "$temp_parent"/autodj-smoke.*' in reclaim
@@ -291,7 +291,10 @@ case "$*" in
   "compose exec -T autodj stat -c %u:%g:%a "*) echo 10001:10001:755 ;;
   "compose --profile lan up -d autodj-lan") printf running > "$FAKE_LAN_STATE" ;;
   "compose --profile lan exec -T autodj-lan autodj devices pairing-code") echo 12345678 ;;
-  "compose --profile lan down --volumes --remove-orphans") printf stopped > "$FAKE_LAN_STATE" ;;
+  "compose --profile lan --profile stream down --volumes --remove-orphans")
+    printf stopped > "$FAKE_LAN_STATE"
+    printf stopped > "$FAKE_STREAM_STATE"
+    ;;
   "compose --profile stream up -d autodj-stream") printf running > "$FAKE_STREAM_STATE" ;;
   "compose --profile stream exec -T autodj-stream cat /index/.stream-secret") echo fake-stream-secret ;;
   "compose logs --no-color --tail 200") echo default-log ;;
@@ -699,7 +702,7 @@ def test_container_smoke_reports_terminal_default_readiness_before_teardown(
     inspect = commands.index("docker inspect --format {{json .State}} autodj", logs)
     cleanup = commands.index(
         "timeout --signal=TERM --kill-after=5s 30s "
-        "docker compose --profile lan down --volumes --remove-orphans",
+        "docker compose --profile lan --profile stream down --volumes --remove-orphans",
         inspect,
     )
     assert failure < logs < inspect < cleanup
@@ -712,8 +715,8 @@ def test_container_smoke_reports_terminal_default_readiness_before_teardown(
         ("--tail 200 autodj-lan", "autodj-lan"),
         ("timeout --signal=TERM --kill-after=5s 30s", "timeout 30s"),
         (
+            "docker compose --profile lan --profile stream down --volumes --remove-orphans",
             "docker compose --profile lan down --volumes --remove-orphans",
-            "docker compose down --volumes --remove-orphans",
         ),
         ("    bounded_compose_down || cleanup_exit_code=$?\n", ""),
         (
@@ -757,14 +760,14 @@ def test_container_smoke_routes_lan_request_failure_through_bounded_trap(
     )
     cleanup = commands.index(
         "timeout --signal=TERM --kill-after=5s 30s "
-        "docker compose --profile lan down --volumes --remove-orphans",
+        "docker compose --profile lan --profile stream down --volumes --remove-orphans",
         logs,
     )
     assert failure < logs < cleanup
     assert (
         len(
             re.findall(
-                r"^docker compose --profile lan down --volumes --remove-orphans$",
+                r"^docker compose --profile lan --profile stream down --volumes --remove-orphans$",
                 commands,
                 re.MULTILINE,
             )

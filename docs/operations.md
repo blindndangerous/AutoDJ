@@ -159,8 +159,17 @@ the container only sees container addresses, so the operator's host and origin s
 merge with them, the same as the `lan` profile. Only one of the `lan` and `stream` profiles can
 run at a time; both publish host port 8080.
 
-`uv run autodj doctor` fails a required check if stream mode is on but the server only listens on
-loopback, since no other device could reach it.
+Stopping one profile does not stop the other: `docker compose --profile lan down` only removes
+the `lan` profile's container, so it leaves `autodj-stream` running if that is the one you
+started. Pass both profiles to stop whichever is actually running, whether that is one or the
+other:
+
+```bash
+docker compose --profile lan --profile stream down --volumes --remove-orphans
+```
+
+`uv run autodj doctor` warns, without failing, if stream mode is on but the server only listens
+on loopback, since no other device could reach it.
 
 ### Finding the stream address
 
@@ -268,7 +277,7 @@ A full archive contains available data from both classifications and labels ever
 
 ```bash
 # Linux/WSL2 Bash
-docker compose --profile lan down
+docker compose --profile lan --profile stream down
 uv run autodj backup backups/autodj-$(date +%F).zip
 ```
 
@@ -293,7 +302,7 @@ continuous index churn instead of mixing generations.
 
 ```bash
 # Linux/WSL2 Bash
-docker compose --profile lan down
+docker compose --profile lan --profile stream down
 uv run autodj restore --force backups/autodj-2026-08-02.zip
 uv run autodj doctor
 docker compose up

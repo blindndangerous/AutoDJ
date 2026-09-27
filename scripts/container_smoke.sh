@@ -30,8 +30,11 @@ emit_failure_diagnostics() {
 }
 
 bounded_compose_down() {
+  # Both profile flags are required: Compose only tears down a profiled service's containers
+  # when its profile is passed to `down`, so passing only --profile lan would leave a running
+  # autodj-stream (and its port 8080 binding) behind.
   timeout --signal=TERM --kill-after=5s 30s \
-    docker compose --profile lan down --volumes --remove-orphans
+    docker compose --profile lan --profile stream down --volumes --remove-orphans
 }
 
 reclaim_smoke_root() {

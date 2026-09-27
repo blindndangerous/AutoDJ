@@ -425,7 +425,7 @@ Then delete the checkout itself. For Compose, remove the containers and the name
 directory name), then the image:
 
 ```bash
-docker compose --profile lan down --volumes
+docker compose --profile lan --profile stream down --volumes
 docker image rm autodj:local
 ```
 

@@ -140,8 +140,9 @@ one-line playlist naming the same URL. The secret is a bearer credential for lis
   cookie check for that reason, but every other check in `SecurityMiddleware` still applies,
   including the Host allowlist, so the name typed into the player must be one this AutoDJ
   instance is configured to accept.
-- A wrong secret returns 404, is compared in constant time, and counts toward the same rate
-  limiter that guards pairing-code guesses.
+- A wrong secret returns 404, is compared in constant time, and counts toward its own rate
+  limiter of the same kind that guards pairing-code guesses. It is a separate instance with its
+  own independent budget: wrong stream secrets do not consume pairing attempts, or the reverse.
 - "Make new link" (`POST /api/stream/rotate`, authenticated, from the Settings, Stream section)
   replaces the secret, disconnects every current listener, and makes the old URL 404
   immediately. Rotation is the revocation mechanism: use it if the link is shared somewhere it
