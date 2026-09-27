@@ -364,6 +364,26 @@ class TestSaveLoadIndex:
         with pytest.raises(IndexConsistencyError, match="tracks SHA-256"):
             load_index(tmp_path, music_dir=tmp_path)
 
+    def test_load_refuses_absolute_track_path(self, tmp_path: Path) -> None:
+        import sqlite3
+
+        from autodj.index_manifest import UnsupportedIndexError, publish_manifest
+        from autodj.indexer import _save_vectors
+
+        entries, vectors = self._make_entries(1)
+        save_index(entries, vectors, tmp_path)
+        conn = sqlite3.connect(tmp_path / "tracks.db")
+        try:
+            conn.execute("UPDATE tracks SET path = 'Z:/Music/song_0.flac'")
+            conn.commit()
+        finally:
+            conn.close()
+        _save_vectors(vectors, tmp_path)
+        publish_manifest(tmp_path, 1)
+
+        with pytest.raises(UnsupportedIndexError, match=r"absolute path Z:/Music/song_0.flac"):
+            load_index(tmp_path, music_dir=tmp_path)
+
     def test_failed_second_save_does_not_publish_generation(self, tmp_path: Path) -> None:
         from autodj.index_manifest import read_manifest
 

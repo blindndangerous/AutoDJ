@@ -1208,6 +1208,40 @@ def test_dj_meta_schema_mismatch_fails(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("original", "replacement"),
     [
+        ("vec_row INTEGER NOT NULL UNIQUE", "vec_row TEXT NOT NULL UNIQUE"),
+        ("title TEXT NOT NULL DEFAULT ''", "title TEXT DEFAULT ''"),
+        ("path TEXT NOT NULL UNIQUE", "path TEXT NOT NULL"),
+    ],
+    ids=["wrong-type", "nullable", "missing-unique"],
+)
+def test_tracks_db_rejects_runtime_schema_contract_drift(
+    tmp_path: Path,
+    original: str,
+    replacement: str,
+) -> None:
+    from autodj.indexer import _TRACKS_SCHEMA
+
+    cfg = _config(tmp_path)
+    _write_index(cfg)
+    manifest_path = cfg.index.active_dir / "index-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    tracks = cfg.index.active_dir / manifest["tracks_file"]
+    tracks.unlink()
+    with closing(sqlite3.connect(tracks)) as conn:
+        conn.executescript(_TRACKS_SCHEMA.replace(original, replacement))
+        conn.commit()
+    manifest["tracks_sha256"] = sha256_file(tracks)
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
+
+    check = doctor._tracks_database_check(cfg)
+
+    assert check.status is doctor.CheckStatus.FAIL
+    assert "schema" in check.summary
+
+
+@pytest.mark.parametrize(
+    ("original", "replacement"),
+    [
         ("path TEXT PRIMARY KEY", "path INTEGER PRIMARY KEY"),
         ("path TEXT PRIMARY KEY", "path TEXT"),
         ("intro_end_s REAL NOT NULL DEFAULT 0", "intro_end_s REAL DEFAULT 0"),
