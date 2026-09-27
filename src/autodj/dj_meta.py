@@ -42,7 +42,11 @@ from types import TracebackType
 
 import numpy as np
 
-from autodj.index_manifest import relative_storage_path
+from autodj.index_manifest import (
+    OldDjMetaCacheError,
+    first_absolute_path,
+    relative_storage_path,
+)
 from autodj.sqlite_utils import immediate_transaction
 
 logger = logging.getLogger(__name__)
@@ -632,17 +636,11 @@ class DjMetaCache:
             self._conn.execute("PRAGMA synchronous=NORMAL")
 
         if not first_init:
-            absolute = self._conn.execute(
-                "SELECT path FROM dj_meta WHERE path LIKE '/%' OR substr(path, 2, 1) = ':' LIMIT 1"
-            ).fetchone()
+            absolute = first_absolute_path(self._conn, "dj_meta")
             if absolute is not None:
                 self._conn.close()
                 self._conn = None
-                raise ValueError(
-                    f"The DJ metadata cache {self._path} was made by an older AutoDJ "
-                    f"(it stores the absolute path {absolute[0]}). "
-                    "Delete it and run `autodj analyse` to rebuild it."
-                )
+                raise OldDjMetaCacheError(self._path, absolute)
             count = self._conn.execute("SELECT COUNT(*) FROM dj_meta").fetchone()[0]
             if count:
                 logger.info("Loaded DJ meta cache: %d entries", count)

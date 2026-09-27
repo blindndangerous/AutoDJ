@@ -131,6 +131,43 @@ class UnsupportedIndexError(IndexConsistencyError):
         )
 
 
+class OldDjMetaCacheError(ValueError):
+    """Raised when ``dj_meta.db`` stores absolute track paths, as releases before relative keys did."""
+
+    def __init__(self, cache_path: Path, absolute: str) -> None:
+        """Build the message telling the user to delete and rebuild the cache.
+
+        Args:
+            cache_path: The ``dj_meta.db`` file.
+            absolute: One absolute path found in it.
+        """
+        super().__init__(
+            f"The DJ metadata cache {cache_path} was made by an older AutoDJ "
+            f"(it stores the absolute path {absolute}). "
+            "Delete it and run `autodj analyse` to rebuild it."
+        )
+
+
+def first_absolute_path(conn: sqlite3.Connection, table: str) -> str | None:
+    """Return one absolute path stored in *table*, or ``None`` when all are relative.
+
+    Args:
+        conn: Open connection to ``tracks.db`` or ``dj_meta.db``.
+        table: ``"tracks"`` or ``"dj_meta"``; both keep the path in a ``path`` column.
+
+    Returns:
+        The first absolute path found, matching :func:`is_absolute_storage`.
+    """
+    query = {
+        "tracks": "SELECT path FROM tracks",
+        "dj_meta": "SELECT path FROM dj_meta",
+    }[table]
+    row = conn.execute(
+        query + " WHERE substr(path, 1, 1) IN ('/', '\\') OR substr(path, 2, 1) = ':' LIMIT 1"
+    ).fetchone()
+    return None if row is None else str(row[0])
+
+
 def is_absolute_storage(path: str) -> bool:
     """Whether a stored *path* is absolute: a POSIX root, a UNC share, or a drive letter.
 

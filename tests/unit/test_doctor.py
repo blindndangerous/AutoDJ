@@ -438,6 +438,36 @@ def test_corrupt_dj_meta_fails_without_touching_file(tmp_path: Path) -> None:
     assert db.stat().st_mtime_ns == before
 
 
+def test_published_absolute_track_path_fails_like_serve(tmp_path: Path) -> None:
+    """Serve refuses a tracks.db with absolute paths, so doctor must not pass it."""
+    cfg = _config(tmp_path)
+    _write_index(cfg)
+    _mutate_published_track(cfg, "path", "C:/Music/song.flac")
+
+    for check in (doctor._index_check(cfg), doctor._tracks_database_check(cfg)):
+        assert check.status is doctor.CheckStatus.FAIL
+        assert check.summary == "old index format"
+        assert "absolute path C:/Music/song.flac" in check.detail
+        assert "autodj index --force" in check.detail
+
+
+def test_dj_meta_with_absolute_key_fails_like_serve(tmp_path: Path) -> None:
+    """A dj_meta.db keyed by absolute paths is refused at load, so doctor must fail it."""
+    cfg = _config(tmp_path)
+    cfg.index.active_dir.mkdir()
+    db = cfg.index.active_dir / "dj_meta.db"
+    _write_dj_meta(db)
+    with closing(sqlite3.connect(db)) as conn:
+        conn.execute("INSERT INTO dj_meta (path) VALUES ('\\\\nas\\music\\song.flac')")
+        conn.commit()
+
+    check = doctor._dj_meta_database_check(cfg)
+
+    assert check.status is doctor.CheckStatus.FAIL
+    assert check.summary == "old DJ metadata cache"
+    assert "Delete it and run `autodj analyse`" in check.detail
+
+
 def test_sqlite_checks_close_read_only_connections(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     cfg.index.active_dir.mkdir()

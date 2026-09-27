@@ -19,8 +19,11 @@ from autodj.config import is_loopback_bind
 from autodj.index_manifest import (
     IndexConsistencyError,
     IndexManifest,
+    OldDjMetaCacheError,
     UnsupportedIndexError,
     current_snapshot_token,
+    first_absolute_path,
+    is_absolute_storage,
     publication_is_tombstoned,
     read_manifest,
     require_current_format,
@@ -292,6 +295,10 @@ def _published_index_counts(index_dir: Path, manifest: IndexManifest) -> tuple[i
                 )
         if values[0] != expected_row:
             raise IndexConsistencyError("tracks vec_row identity is not canonical")
+        if is_absolute_storage(values[1]):
+            raise UnsupportedIndexError(
+                index_dir, f"tracks.db stores the absolute path {values[1]}"
+            )
         for position in _TRACK_REAL_POSITIONS:
             if not math.isfinite(values[position]):
                 raise ValueError(f"{_TRACK_ROW_COLUMNS[position]} must be finite")
@@ -489,7 +496,13 @@ def _validate_sqlite(
     table: str,
     required: frozenset[str],
 ) -> int:
-    """Validate an unchanged SQLite file and return its row count."""
+    """Validate an unchanged SQLite file and return its row count.
+
+    Raises:
+        sqlite3.DatabaseError: The file is damaged, has the wrong schema, or changed.
+        UnsupportedIndexError: ``tracks`` stores an absolute path.
+        OldDjMetaCacheError: ``dj_meta`` stores an absolute path.
+    """
     count_query = {
         "tracks": "SELECT COUNT(*) FROM tracks",
         "dj_meta": "SELECT COUNT(*) FROM dj_meta",
@@ -507,11 +520,19 @@ def _validate_sqlite(
             raise sqlite3.DatabaseError("integrity_check: " + "; ".join(integrity))
         _validate_schema(conn, table, required)
         count = int(conn.execute(count_query).fetchone()[0])
+        # Serve and index refuse stored absolute paths; report them the same way.
+        absolute = first_absolute_path(conn, table)
     after_sidecars = _sidecar_snapshots(path)
     if any(snapshot[0] for snapshot in after_sidecars):
         raise sqlite3.DatabaseError("SQLite files changed during validation; retry when idle")
     if _file_snapshot(path) != before_database or after_sidecars != before_sidecars:
         raise sqlite3.DatabaseError("SQLite files changed during validation; retry when idle")
+    if absolute is not None:
+        if table == "tracks":
+            raise UnsupportedIndexError(
+                path.parent, f"tracks.db stores the absolute path {absolute}"
+            )
+        raise OldDjMetaCacheError(path, absolute)
     return count
 
 
@@ -551,6 +572,8 @@ def _tracks_database_check(cfg: AutoDJConfig) -> DoctorCheck:
         )
     try:
         count = _validate_sqlite(path, "tracks", _TRACKS_COLUMNS)
+    except UnsupportedIndexError as exc:
+        return DoctorCheck("tracks-db", CheckStatus.FAIL, "old index format", str(exc))
     except (OSError, sqlite3.DatabaseError) as exc:
         return DoctorCheck(
             "tracks-db",
@@ -575,6 +598,8 @@ def _dj_meta_database_check(cfg: AutoDJConfig) -> DoctorCheck:
         )
     try:
         count = _validate_sqlite(path, "dj_meta", _DJ_META_COLUMNS)
+    except OldDjMetaCacheError as exc:
+        return DoctorCheck("dj-meta-db", CheckStatus.FAIL, "old DJ metadata cache", str(exc))
     except (OSError, sqlite3.DatabaseError) as exc:
         return DoctorCheck(
             "dj-meta-db",
