@@ -419,6 +419,21 @@ def _apply_serve_overrides(
     return changed
 
 
+def _require_ffmpeg_for_stream(cfg: AutoDJConfig) -> None:
+    """Refuse to start stream mode when ffmpeg is not on the PATH.
+
+    Args:
+        cfg: Staged application configuration.
+
+    Raises:
+        click.ClickException: If ``cfg.stream.enabled`` and ffmpeg is missing.
+    """
+    if cfg.stream.enabled and shutil.which("ffmpeg") is None:
+        raise click.ClickException(
+            "Stream mode needs ffmpeg on the PATH. Install ffmpeg, or start without --stream."
+        )
+
+
 def _print_serve_banner(
     console_: Console,
     *,
@@ -1997,10 +2012,7 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
     _apply_index_name(cfg, index_name)
     if general_cli_override or server_cli_override:
         _append_cli_source(cfg)
-    if cfg.stream.enabled and shutil.which("ffmpeg") is None:
-        raise click.ClickException(
-            "Stream mode needs ffmpeg on the PATH. Install ffmpeg, or start without --stream."
-        )
+    _require_ffmpeg_for_stream(cfg)
     if open_browser:
         import threading
         import webbrowser

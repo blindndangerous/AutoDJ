@@ -2079,12 +2079,10 @@ def serve(
         discovery_every: Discovery injection rate (forwarded to Player).
         bpm_range: Hard BPM filter ``(lo, hi)`` (forwarded to Player).
         no_playback: Skip server-side audio playback (browser drives audio).
-            Forced off when *stream* is set, since the radio stream mixes
-            server-side and needs the Player to actually render audio.
-        stream: Serve the live mix as an MP3 radio stream.  Wiring the
-            stream output itself is not implemented yet (tracked
-            separately); this only records the intent and disables
-            dry-run playback.
+        stream: Serve the live mix as an MP3 radio stream.  Not wired up
+            yet (tracked separately); accepted and forwarded only, so a
+            later task can build the stream output and decide how it
+            interacts with ``no_playback``.
     """
     from dataclasses import replace
 
@@ -2128,11 +2126,6 @@ def serve(
                 "Open the web UI from any device on your network.",
             )
             no_playback = True
-
-    # Stream mode mixes server-side, so the Player must actually render
-    # audio (StreamOutput wiring itself lands in a later task).
-    if stream:
-        no_playback = False
 
     player = Player(
         cfg,

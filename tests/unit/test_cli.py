@@ -10,11 +10,19 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import click
 import pytest
 from click.testing import CliRunner
 
-from autodj.cli import _apply_serve_overrides, _parse_bpm_range, _resolve_seed, cli
-from autodj.config import ENVIRONMENT_OVERLAY, ServerConfig
+import autodj.cli as cli_module
+from autodj.cli import (
+    _apply_serve_overrides,
+    _parse_bpm_range,
+    _require_ffmpeg_for_stream,
+    _resolve_seed,
+    cli,
+)
+from autodj.config import ENVIRONMENT_OVERLAY, ServerConfig, StreamConfig
 from autodj.indexer import IndexEntry
 
 # ---------------------------------------------------------------------------
@@ -703,6 +711,41 @@ class TestResolveSeedBeets:
         result = _resolve_seed(sim, cfg, "Portishead", MagicMock(), interactive=False)
         assert result is not None
         assert "Portishead" in result.path
+
+
+# ---------------------------------------------------------------------------
+# _require_ffmpeg_for_stream
+# ---------------------------------------------------------------------------
+
+
+class TestRequireFfmpegForStream:
+    def test_passes_when_stream_disabled_even_without_ffmpeg(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _make_cfg()
+        cfg.stream = StreamConfig(enabled=False)
+        monkeypatch.setattr(cli_module.shutil, "which", lambda _n: None)
+
+        _require_ffmpeg_for_stream(cfg)  # must not raise
+
+    def test_raises_when_stream_enabled_without_ffmpeg(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _make_cfg()
+        cfg.stream = StreamConfig(enabled=True)
+        monkeypatch.setattr(cli_module.shutil, "which", lambda _n: None)
+
+        with pytest.raises(click.ClickException, match="ffmpeg"):
+            _require_ffmpeg_for_stream(cfg)
+
+    def test_passes_when_stream_enabled_and_ffmpeg_present(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _make_cfg()
+        cfg.stream = StreamConfig(enabled=True)
+        monkeypatch.setattr(cli_module.shutil, "which", lambda _n: "/usr/bin/ffmpeg")
+
+        _require_ffmpeg_for_stream(cfg)  # must not raise
 
 
 # ---------------------------------------------------------------------------

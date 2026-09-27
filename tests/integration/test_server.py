@@ -1668,8 +1668,13 @@ class TestServeFunction:
         started.wait(timeout=2.0)
         assert started.is_set(), "Player thread should have started"
 
-    def test_serve_stream_forces_player_off_dry_run(self) -> None:
-        """Stream mode mixes server-side, so the Player must not be dry-run."""
+    def test_serve_stream_flag_does_not_change_player_dry_run(self) -> None:
+        """`stream` is accepted/forwarded only; it must not itself flip dry_run.
+
+        Task 11 wires dry_run/stream_mode/SoundDeviceOutput together; until
+        then, passing --stream without --server-audio must still leave the
+        browser driving audio (dry_run stays True), same as today.
+        """
         from unittest.mock import MagicMock, patch
 
         from autodj.player import Player
@@ -1696,7 +1701,7 @@ class TestServeFunction:
         ):
             serve(cfg=cfg_mock, sim=sim, seed_entry=None, no_playback=True, stream=True)
 
-        assert captured["dry_run"] is False
+        assert captured["dry_run"] is True
 
     def test_serve_uses_server_config_host_and_port_by_default(self) -> None:
         from unittest.mock import MagicMock, patch
