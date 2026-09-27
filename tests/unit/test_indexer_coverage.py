@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import sqlite3
 import time
 from pathlib import Path
@@ -308,195 +307,9 @@ def test_prune_applies_requested_stat_throttle(tmp_path: Path) -> None:
     assert sleeps == [0.005]
 
 
-@pytest.mark.parametrize(
-    "contents, message",
-    [
-        ("{", "invalid flat migration marker:"),
-        (json.dumps({"staging": "../outside"}), "invalid flat migration marker"),
-    ],
-)
-def test_flat_migration_marker_rejects_malformed_state(
-    tmp_path: Path, contents: str, message: str
-) -> None:
-    (tmp_path / indexer._FLAT_MIGRATION_MARKER).write_text(contents, encoding="utf-8")
-
-    with pytest.raises(IndexConsistencyError, match=message):
-        indexer._read_flat_migration_staging(tmp_path)
-
-
-def test_flat_migration_rejects_mismatched_database_and_vector_counts(tmp_path: Path) -> None:
-    staged_db = tmp_path / "tracks.db"
-    connection = sqlite3.connect(staged_db)
-    try:
-        connection.execute("CREATE TABLE tracks (path TEXT NOT NULL)")
-        connection.executemany(
-            "INSERT INTO tracks(path) VALUES (?)", [("one.flac",), ("two.flac",)]
-        )
-        connection.commit()
-    finally:
-        connection.close()
-
-    staged_vectors = tmp_path / "vectors.index"
-    faiss.write_index(indexer.build_faiss_index(_vector()), str(staged_vectors))
-
-    with pytest.raises(IndexConsistencyError, match="sqlite=2, faiss=1"):
-        indexer._validate_flat_migration_staging(staged_db, staged_vectors)
-
-
-def test_tombstoned_migration_logs_cleanup_failure(tmp_path: Path, caplog) -> None:
-    target = tmp_path / "default"
-    target.mkdir()
-    staging = target / f"{indexer._FLAT_MIGRATION_STAGING_PREFIX}owned"
-    staging.mkdir()
-    (target / indexer._FLAT_MIGRATION_MARKER).write_text(
-        json.dumps({"staging": staging.name}), encoding="utf-8"
-    )
-
-    with (
-        patch.object(indexer, "publication_is_tombstoned", return_value=True),
-        patch.object(indexer, "_clear_flat_migration_state", side_effect=OSError("busy")),
-        caplog.at_level("WARNING"),
-    ):
-        indexer._migrate_flat_index_if_needed(target)
-
-    assert "Could not clean stale flat migration state for tombstoned target" in caplog.text
-
-
-def test_historical_split_failure_preserves_existing_vector(tmp_path: Path) -> None:
-    target = tmp_path / "default"
-    target.mkdir()
-    target_vector = target / "vectors.index"
-    target_vector.write_bytes(b"existing vector")
-    source_db = tmp_path / "tracks.db"
-    sqlite3.connect(source_db).close()
-
-    with (
-        patch.object(indexer, "_migrate_staged_legacy_tracks_db", side_effect=RuntimeError("bad")),
-        pytest.raises(RuntimeError, match="bad"),
-    ):
-        indexer._migrate_flat_index_if_needed(target)
-
-    assert target_vector.read_bytes() == b"existing vector"
-    assert not (target / "tracks.db").exists()
-    assert not (target / indexer._FLAT_MIGRATION_MARKER).exists()
-    assert not any(
-        path.name.startswith(indexer._FLAT_MIGRATION_STAGING_PREFIX) for path in target.iterdir()
-    )
-
-
-def test_historical_split_logs_best_effort_cleanup_failures(tmp_path: Path, caplog) -> None:
-    target = tmp_path / "default"
-    target.mkdir()
-    _create_legacy_cores(tmp_path, vector_in=target / "vectors.index")
-    source_db = tmp_path / "tracks.db"
-    real_unlink = Path.unlink
-
-    def fail_source_cleanup(path: Path, *args, **kwargs):
-        if path == source_db:
-            raise OSError("busy source")
-        return real_unlink(path, *args, **kwargs)
-
-    with (
-        patch.object(Path, "unlink", fail_source_cleanup),
-        patch.object(indexer, "_clear_flat_migration_state", side_effect=OSError("busy marker")),
-        caplog.at_level("WARNING"),
-    ):
-        indexer._migrate_flat_index_if_needed(target)
-
-    loaded, vectors = indexer.load_index(target, _migrate_flat=False)
-    assert [entry.title for entry in loaded] == ["Song"]
-    assert vectors.ntotal == 1
-    assert "Could not remove migrated legacy artifact" in caplog.text
-    assert "Could not clean flat migration marker" in caplog.text
-
-
-def test_owned_stale_migration_is_cleared_when_sources_are_gone(tmp_path: Path) -> None:
-    target = tmp_path / "default"
-    target.mkdir()
-    staging = target / f"{indexer._FLAT_MIGRATION_STAGING_PREFIX}owned"
-    staging.mkdir()
-    (target / indexer._FLAT_MIGRATION_MARKER).write_text(
-        json.dumps({"staging": staging.name}), encoding="utf-8"
-    )
-
-    indexer._migrate_flat_index_if_needed(target)
-
-    assert not staging.exists()
-    assert not (target / indexer._FLAT_MIGRATION_MARKER).exists()
-
-
-def test_flat_migration_does_not_overwrite_existing_target_core(tmp_path: Path) -> None:
-    target = tmp_path / "default"
-    target.mkdir()
-    _create_legacy_cores(tmp_path)
-    existing = target / "vectors.index"
-    existing.write_bytes(b"target wins")
-
-    indexer._migrate_flat_index_if_needed(target)
-
-    assert existing.read_bytes() == b"target wins"
-    assert (tmp_path / "tracks.db").exists()
-    assert (tmp_path / "vectors.index").exists()
-
-
-def test_new_flat_migration_rolls_back_unexpected_failure(tmp_path: Path) -> None:
-    target = tmp_path / "default"
-    target.mkdir()
-    _create_legacy_cores(tmp_path)
-
-    with (
-        patch.object(indexer, "_migrate_staged_legacy_tracks_db", side_effect=RuntimeError("bad")),
-        pytest.raises(RuntimeError, match="bad"),
-    ):
-        indexer._migrate_flat_index_if_needed(target)
-
-    assert not (target / "tracks.db").exists()
-    assert not (target / "vectors.index").exists()
-    assert not (target / indexer._FLAT_MIGRATION_MARKER).exists()
-
-
-def test_successful_flat_migration_logs_best_effort_cleanup_failures(
-    tmp_path: Path, caplog
-) -> None:
-    target = tmp_path / "default"
-    target.mkdir()
-    _create_legacy_cores(tmp_path)
-    sidecar = tmp_path / "web_state.json"
-    sidecar.write_text("{}", encoding="utf-8")
-    source_db = tmp_path / "tracks.db"
-    source_vector = tmp_path / "vectors.index"
-    real_unlink = Path.unlink
-    real_replace = Path.replace
-
-    def fail_source_cleanup(path: Path, *args, **kwargs):
-        if path in {source_db, source_vector}:
-            raise OSError("busy source")
-        return real_unlink(path, *args, **kwargs)
-
-    def fail_sidecar_move(path: Path, target_path: Path):
-        if path == sidecar:
-            raise OSError("busy sidecar")
-        return real_replace(path, target_path)
-
-    with (
-        patch.object(Path, "unlink", fail_source_cleanup),
-        patch.object(Path, "replace", fail_sidecar_move),
-        patch.object(indexer, "_clear_flat_migration_state", side_effect=OSError("busy marker")),
-        caplog.at_level("WARNING"),
-    ):
-        indexer._migrate_flat_index_if_needed(target)
-
-    loaded, vectors = indexer.load_index(target, _migrate_flat=False)
-    assert [entry.title for entry in loaded] == ["Song"]
-    assert vectors.ntotal == 1
-    assert "Could not remove migrated legacy artifact" in caplog.text
-    assert "Could not migrate sidecar" in caplog.text
-    assert "Could not clean flat migration marker" in caplog.text
-
-
 def test_load_rejects_wrong_expected_generation(tmp_path: Path) -> None:
     with pytest.raises(IndexConsistencyError, match="expected generation 1, got None"):
-        indexer.load_index(tmp_path, expected_generation=1, _migrate_flat=False)
+        indexer.load_index(tmp_path, expected_generation=1)
 
 
 def test_load_detects_artifact_changed_during_read(tmp_path: Path) -> None:
@@ -512,7 +325,7 @@ def test_load_detects_artifact_changed_during_read(tmp_path: Path) -> None:
         ),
         pytest.raises(IndexConsistencyError, match="artifact changed during load"),
     ):
-        indexer.load_index(tmp_path, _migrate_flat=False)
+        indexer.load_index(tmp_path)
 
 
 def test_load_rejects_faiss_count_mismatch(tmp_path: Path) -> None:
@@ -523,7 +336,7 @@ def test_load_rejects_faiss_count_mismatch(tmp_path: Path) -> None:
         patch.object(indexer.faiss, "read_index", return_value=empty_index),
         pytest.raises(IndexConsistencyError, match="index count mismatch"),
     ):
-        indexer.load_index(tmp_path, _migrate_flat=False)
+        indexer.load_index(tmp_path)
 
 
 def test_stat_mtimes_throttles_existing_and_missing_files(tmp_path: Path) -> None:

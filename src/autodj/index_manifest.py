@@ -30,7 +30,6 @@ _PUBLICATION_TEMP_RE = re.compile(
     r"^\.(?:index-manifest\.json|\.index-publication-state\.json|"
     r"tracks\.g\d{20}\.db|vectors\.g\d{20}\.index)\.[0-9a-f]{32}\.tmp$"
 )
-_FLAT_MIGRATION_STAGING_RE = re.compile(r"^\.flat-migration-[0-9a-f]{32}$")
 _WORKING_ARTIFACT_NAMES = frozenset(
     {
         MANIFEST_NAME,
@@ -268,7 +267,6 @@ def publication_is_pristine(index_dir: Path) -> bool:
             path.name in _WORKING_ARTIFACT_NAMES
             or _GENERATION_RE.fullmatch(path.name) is not None
             or _PUBLICATION_TEMP_RE.fullmatch(path.name) is not None
-            or _FLAT_MIGRATION_STAGING_RE.fullmatch(path.name) is not None
             for path in index_dir.iterdir()
         )
 

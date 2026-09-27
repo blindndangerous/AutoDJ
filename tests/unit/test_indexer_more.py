@@ -478,30 +478,6 @@ class TestLoadIndexMissingFiles:
 
 
 # ---------------------------------------------------------------------------
-# Auto-migrate failure (line 1002-1003)
-# ---------------------------------------------------------------------------
-
-
-class TestMigrateFlatIndexFailure:
-    def test_migration_oserror_swallowed_logged(self, tmp_path: Path, caplog) -> None:
-        from autodj.indexer import _migrate_flat_index_if_needed
-
-        # Old layout: parent has tracks.db + vectors.index
-        parent = tmp_path
-        target = parent / "default"
-        (parent / "tracks.db").write_bytes(b"")
-        (parent / "vectors.index").write_bytes(b"")
-        # Force replace to fail
-        with (
-            patch("pathlib.Path.replace", side_effect=OSError("denied")),
-            caplog.at_level("WARNING"),
-        ):
-            _migrate_flat_index_if_needed(target)
-        # Should log a warning, not raise
-        assert any("Auto-migration failed" in rec.message for rec in caplog.records)
-
-
-# ---------------------------------------------------------------------------
 # autodj.indexer — minor-key branch + tempo confidence fallback
 # ---------------------------------------------------------------------------
 

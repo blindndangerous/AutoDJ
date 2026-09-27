@@ -24,7 +24,6 @@ Example:
 from __future__ import annotations
 
 import contextlib
-import json
 import logging
 import os
 import shutil
@@ -32,7 +31,6 @@ import sqlite3
 import subprocess  # nosec B404 -- FFmpeg uses fixed argv without a shell
 import tempfile
 import time
-import uuid
 import warnings
 from collections import deque
 from collections.abc import Callable
@@ -106,8 +104,6 @@ FEATURE_DIM = EMBEDDING_DIM + _LIBROSA_DIM
 # aligned.  On startup, ``_load_existing_index`` defensively clamps either
 # file to their common prefix after an interrupted write.
 FAISS_CHECKPOINT_EVERY: int = 100
-_FLAT_MIGRATION_MARKER = ".flat-migration.json"
-_FLAT_MIGRATION_STAGING_PREFIX = ".flat-migration-"
 
 # ---------------------------------------------------------------------------
 # Tracks SQLite store
@@ -1590,276 +1586,12 @@ def prune_index(
     return (removed, len(surviving_entries))
 
 
-def _write_flat_migration_marker(
-    target_dir: Path,
-    staging: Path,
-    *,
-    preserve_target_vector: bool = False,
-) -> None:
-    """Durably mark one owned in-progress flat-index migration."""
-    marker = target_dir / _FLAT_MIGRATION_MARKER
-    temporary = marker.with_name(f".{marker.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        with temporary.open("x", encoding="utf-8", newline="\n") as handle:
-            json.dump(
-                {"staging": staging.name, "preserve_target_vector": preserve_target_vector},
-                handle,
-            )
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        temporary.replace(marker)
-        fsync_directory(target_dir)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def _read_flat_migration_staging(target_dir: Path) -> tuple[Path, bool] | None:
-    """Return owned migration staging directory, rejecting malformed markers."""
-    marker = target_dir / _FLAT_MIGRATION_MARKER
-    if not marker.exists():
-        return None
-    try:
-        raw = json.loads(marker.read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
-        raise IndexConsistencyError(f"invalid flat migration marker: {exc}") from exc
-    if (
-        type(raw) is not dict
-        or set(raw) not in ({"staging"}, {"staging", "preserve_target_vector"})
-        or type(raw["staging"]) is not str
-        or ("preserve_target_vector" in raw and type(raw["preserve_target_vector"]) is not bool)
-        or Path(raw["staging"]).name != raw["staging"]
-        or not raw["staging"].startswith(_FLAT_MIGRATION_STAGING_PREFIX)
-    ):
-        raise IndexConsistencyError("invalid flat migration marker")
-    return target_dir / raw["staging"], bool(raw.get("preserve_target_vector", False))
-
-
-def _clear_flat_migration_state(
-    target_dir: Path,
-    staging: Path,
-    *,
-    remove_cores: bool,
-    preserve_target_vector: bool = False,
-) -> None:
-    """Remove marker-owned staging and, after an incomplete install, cores."""
-    if remove_cores:
-        if not preserve_target_vector:
-            (target_dir / "vectors.index").unlink(missing_ok=True)
-        (target_dir / "tracks.db").unlink(missing_ok=True)
-    if staging.exists():
-        shutil.rmtree(staging)
-    (target_dir / _FLAT_MIGRATION_MARKER).unlink(missing_ok=True)
-
-
-def _backup_legacy_tracks_db(source: Path, destination: Path) -> None:
-    """Create a SQLite snapshot that includes committed source WAL pages."""
-    source_conn = sqlite3.connect(source)
-    destination_conn = sqlite3.connect(destination)
-    try:
-        source_conn.backup(destination_conn)
-    finally:
-        destination_conn.close()
-        source_conn.close()
-
-
-def _migrate_staged_legacy_tracks_db(staged_db: Path) -> None:
-    """Upgrade a copied legacy tracks table before target promotion."""
-    conn = sqlite3.connect(staged_db, isolation_level=None)
-    try:
-        _ensure_vec_row_schema(conn)
-        conn.execute("PRAGMA journal_mode=WAL")
-    finally:
-        conn.close()
-
-
-def _validate_flat_migration_staging(staged_db: Path, staged_vectors: Path) -> int:
-    """Reject staged legacy cores whose SQLite and FAISS row counts differ."""
-    conn = sqlite3.connect(_immutable_sqlite_uri(staged_db), uri=True)
-    try:
-        sqlite_count = int(conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0])
-    finally:
-        conn.close()
-    vector_count = int(faiss.read_index(str(staged_vectors)).ntotal)
-    if sqlite_count != vector_count:
-        raise IndexConsistencyError(
-            f"flat migration count mismatch: sqlite={sqlite_count}, faiss={vector_count}"
-        )
-    return vector_count
-
-
-def _migrate_flat_index_if_needed(target_dir: Path) -> None:
-    """Auto-migrate a pre-0.9 flat index into the named-index layout.
-
-    Pre-0.9 builds wrote ``<index_dir>/vectors.index`` and
-    ``<index_dir>/tracks.db`` directly.  Post-0.9 expects
-    ``<index_dir>/<name>/...`` instead.  If *target_dir* doesn't have
-    the new files but its parent has the old ones, move them across
-    in-place so the user doesn't have to re-index after upgrading.
-
-    Silent no-op when the migration doesn't apply.
-
-    Args:
-        target_dir: The named-index sub-directory (e.g. ``index/default``).
-    """
-    parent = target_dir.parent
-    src_vec = parent / "vectors.index"
-    src_db = parent / "tracks.db"
-    marker = target_dir / _FLAT_MIGRATION_MARKER
-    historical_split = (
-        (target_dir / "vectors.index").is_file()
-        and not (target_dir / "tracks.db").exists()
-        and not src_vec.exists()
-        and src_db.is_file()
-    )
-    if (
-        (not src_vec.exists() or not src_db.exists())
-        and not marker.exists()
-        and not historical_split
-    ):
-        return
-    # Every source/target operation takes locks in parent-before-target order.
-    with publication_lock(parent), publication_lock(target_dir):
-        migration_state = _read_flat_migration_staging(target_dir)
-        manifest = read_manifest(target_dir)
-        if publication_is_tombstoned(target_dir):
-            if migration_state is not None:
-                staging, _preserve_target_vector = migration_state
-                try:
-                    _clear_flat_migration_state(target_dir, staging, remove_cores=False)
-                except OSError as exc:
-                    logger.warning(
-                        "Could not clean stale flat migration state for tombstoned target %s: %s",
-                        target_dir,
-                        exc,
-                    )
-            return
-        if migration_state is not None:
-            staging, preserve_target_vector = migration_state
-            if manifest is not None:
-                try:
-                    _clear_flat_migration_state(target_dir, staging, remove_cores=False)
-                except OSError as exc:
-                    logger.warning(
-                        "Could not clean stale flat migration state for published target %s: %s",
-                        target_dir,
-                        exc,
-                    )
-                return
-            _clear_flat_migration_state(
-                target_dir,
-                staging,
-                remove_cores=True,
-                preserve_target_vector=preserve_target_vector,
-            )
-
-        # Only an owned marker may resume a transaction with publication
-        # history.  Otherwise both sides must be pristine legacy state;
-        # stale canonical cores must never seed a new target snapshot.
-        if migration_state is None and (
-            not legacy_artifacts_allowed(parent) or not legacy_artifacts_allowed(target_dir)
-        ):
-            return
-
-        target_vec = target_dir / "vectors.index"
-        target_db = target_dir / "tracks.db"
-        historical_split = (
-            target_vec.is_file()
-            and not target_db.exists()
-            and not src_vec.exists()
-            and src_db.is_file()
-        )
-        if historical_split:
-            staging = target_dir / f"{_FLAT_MIGRATION_STAGING_PREFIX}{uuid.uuid4().hex}"
-            staging.mkdir()
-            staged_vec = staging / target_vec.name
-            staged_db = staging / target_db.name
-            try:
-                _write_flat_migration_marker(target_dir, staging, preserve_target_vector=True)
-                shutil.copyfile(target_vec, staged_vec)
-                _backup_legacy_tracks_db(src_db, staged_db)
-                _migrate_staged_legacy_tracks_db(staged_db)
-                vector_count = _validate_flat_migration_staging(staged_db, staged_vec)
-                staged_db.replace(target_db)
-                publish_manifest(target_dir, vector_count)
-            except Exception:
-                _clear_flat_migration_state(
-                    target_dir,
-                    staging,
-                    remove_cores=True,
-                    preserve_target_vector=True,
-                )
-                raise
-            try:
-                src_db.unlink()
-            except OSError as exc:
-                logger.warning("Could not remove migrated legacy artifact %s: %s", src_db, exc)
-            try:
-                _clear_flat_migration_state(target_dir, staging, remove_cores=False)
-            except OSError as exc:
-                logger.warning("Could not clean flat migration marker for %s: %s", target_dir, exc)
-            logger.info("Resumed split flat index migration → %s", target_dir)
-            return
-
-        if not src_vec.exists() or not src_db.exists():
-            return
-        if manifest is not None or target_vec.exists() or target_db.exists():
-            return
-
-        staging = target_dir / f"{_FLAT_MIGRATION_STAGING_PREFIX}{uuid.uuid4().hex}"
-        staging.mkdir()
-        staged_vec = staging / target_vec.name
-        staged_db = staging / target_db.name
-        try:
-            _write_flat_migration_marker(target_dir, staging)
-            shutil.copyfile(src_vec, staged_vec)
-            _backup_legacy_tracks_db(src_db, staged_db)
-            _migrate_staged_legacy_tracks_db(staged_db)
-            vector_count = _validate_flat_migration_staging(staged_db, staged_vec)
-            staged_vec.replace(target_vec)
-            staged_db.replace(target_db)
-            publish_manifest(target_dir, vector_count)
-        except OSError as exc:
-            _clear_flat_migration_state(target_dir, staging, remove_cores=True)
-            logger.warning(
-                "Auto-migration failed (%s); move manually:\n  mv %s %s\n  (and tracks.db alongside)",
-                exc,
-                src_vec,
-                target_vec,
-            )
-            return
-        except Exception:
-            _clear_flat_migration_state(target_dir, staging, remove_cores=True)
-            raise
-
-        for source in (src_vec, src_db):
-            try:
-                source.unlink()
-            except OSError as exc:
-                logger.warning("Could not remove migrated legacy artifact %s: %s", source, exc)
-        # Move only non-SQLite sidecars after the coherent core snapshot publishes.
-        for sidecar in ("dj_meta.db", "web_state.json", "runtime_state.json"):
-            old = parent / sidecar
-            new = target_dir / sidecar
-            if old.exists() and not new.exists():
-                try:
-                    old.replace(new)
-                except OSError as exc:
-                    logger.warning("Could not migrate sidecar %s: %s", old, exc)
-        try:
-            _clear_flat_migration_state(target_dir, staging, remove_cores=False)
-        except OSError as exc:
-            logger.warning("Could not clean flat migration marker for %s: %s", target_dir, exc)
-        logger.info("Migrated flat index → %s (named-index layout)", target_dir)
-
-
 def load_index(
     index_dir: Path,
     music_dir: Path | None = None,
     path_remap: list[tuple[str, str]] | None = None,
     *,
     expected_generation: int | None = None,
-    _migrate_flat: bool = True,
 ) -> tuple[list[IndexEntry], faiss.IndexFlatIP]:
     """Load the FAISS index and metadata from *index_dir*.
 
@@ -1879,14 +1611,6 @@ def load_index(
     Raises:
         FileNotFoundError: If *index_dir* or its required files are missing.
     """
-    # Auto-migrate flat-layout indexes to the named-index layout.
-    # Pre-0.9 builds wrote `<index_dir>/vectors.index` directly; the
-    # named-index refactor moves them under `<index_dir>/<name>/`.  If
-    # the old files are sitting at the parent dir AND the new dir is
-    # empty, slide them across so the user doesn't have to re-index.
-    if _migrate_flat:
-        _migrate_flat_index_if_needed(index_dir)
-
     with publication_lock(index_dir):
         before = read_manifest(index_dir)
         if expected_generation is not None and (

@@ -44,7 +44,7 @@ from autodj.index_manifest import (
     publication_lock,
     read_manifest,
 )
-from autodj.indexer import IndexEntry, _migrate_flat_index_if_needed, load_index
+from autodj.indexer import IndexEntry, load_index
 
 logger = logging.getLogger(__name__)
 
@@ -256,7 +256,6 @@ class SimilarityIndex:
         # Lock order is always publication then reload.  Keep both through
         # candidate construction and swap so an older candidate cannot win
         # after a newer publication has already reloaded.
-        _migrate_flat_index_if_needed(index_dir)
         with publication_lock(index_dir):
             snapshot = current_snapshot_token(index_dir)
             if expected_snapshot is not None and snapshot != expected_snapshot:
@@ -283,7 +282,6 @@ class SimilarityIndex:
                     music_dir=music_dir,
                     path_remap=path_remap,
                     expected_generation=snapshot.generation if snapshot.generation else None,
-                    _migrate_flat=False,
                 )
                 candidate = SimilarityIndex(faiss_index=faiss_index, entries=entries)
             with self._reload_lock:
@@ -301,8 +299,6 @@ class SimilarityIndex:
         index_dir: Path,
         music_dir: Path | None = None,
         path_remap: list[tuple[str, str]] | None = None,
-        *,
-        _migrate_flat: bool = True,
     ) -> SimilarityIndex:
         """Load a :class:`SimilarityIndex` from the index directory on disk.
 
@@ -329,8 +325,6 @@ class SimilarityIndex:
         Example:
             >>> sim = SimilarityIndex.from_index_dir(Path("index"))
         """
-        if _migrate_flat:
-            _migrate_flat_index_if_needed(index_dir)
         with publication_lock(index_dir):
             manifest = read_manifest(index_dir)
             expected_generation = manifest.generation if manifest is not None else None
@@ -339,7 +333,6 @@ class SimilarityIndex:
                 music_dir=music_dir,
                 path_remap=path_remap,
                 expected_generation=expected_generation,
-                _migrate_flat=False,
             )
             snapshot = current_snapshot_token(index_dir)
             generation = snapshot.generation

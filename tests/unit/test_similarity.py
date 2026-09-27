@@ -398,22 +398,6 @@ class TestFromIndexDir:
 
         assert sim._generation == manifest.generation
 
-    def test_flat_legacy_migration_records_published_generation(self, tmp_path: Path) -> None:
-        from autodj.index_manifest import read_manifest
-        from autodj.indexer import _save_tracks_metadata, _save_vectors
-
-        entries = [_make_entry(0)]
-        vectors = np.array([_unit_vec(seed=0)], dtype=np.float32)
-        _save_vectors(vectors, tmp_path)
-        _save_tracks_metadata(entries, tmp_path, music_dir=None)
-
-        target = tmp_path / "default"
-        sim = SimilarityIndex.from_index_dir(target)
-        manifest = read_manifest(target)
-
-        assert manifest is not None
-        assert sim._generation == manifest.generation > 0
-
     def test_legacy_named_load_records_generation_zero(self, tmp_path: Path) -> None:
         from autodj.indexer import _save_tracks_metadata, _save_vectors
 
@@ -478,95 +462,6 @@ class TestFromIndexDir:
         assert not publisher.is_alive()
         assert result[0]._generation == initial_manifest.generation
         assert result[0].ntotal == 1
-
-    def test_load_index_can_skip_flat_migration(self, tmp_path: Path) -> None:
-        from autodj.indexer import _save_tracks_metadata, _save_vectors, load_index
-
-        entries = [_make_entry(0)]
-        vectors = np.array([_unit_vec(seed=0)], dtype=np.float32)
-        _save_vectors(vectors, tmp_path)
-        _save_tracks_metadata(entries, tmp_path, music_dir=None)
-
-        with pytest.raises(FileNotFoundError):
-            load_index(tmp_path / "default", _migrate_flat=False)
-
-        assert (tmp_path / "tracks.db").is_file()
-        assert (tmp_path / "vectors.index").is_file()
-
-    def test_flat_migration_keeps_parent_before_target_lock_order(
-        self, monkeypatch, tmp_path: Path
-    ) -> None:
-        from contextlib import contextmanager
-
-        import autodj.indexer as indexer_module
-        import autodj.similarity as similarity_module
-        from autodj.index_manifest import read_manifest
-        from autodj.indexer import _save_tracks_metadata, _save_vectors, load_index
-
-        entries = [_make_entry(0)]
-        vectors = np.array([_unit_vec(seed=0)], dtype=np.float32)
-        _save_vectors(vectors, tmp_path)
-        _save_tracks_metadata(entries, tmp_path, music_dir=None)
-        target = tmp_path / "default"
-        parent_held = threading.Event()
-        release_parent = threading.Event()
-        target_locked = threading.Event()
-        errors: list[BaseException] = []
-        direct_result: list[tuple[list[IndexEntry], faiss.IndexFlatIP]] = []
-        from_result: list[SimilarityIndex] = []
-        real_indexer_lock = indexer_module.publication_lock
-        real_similarity_lock = similarity_module.publication_lock
-
-        @contextmanager
-        def gated_indexer_lock(path: Path):
-            with real_indexer_lock(path):
-                if (
-                    path.resolve() == tmp_path.resolve()
-                    and threading.current_thread().name == "direct"
-                ):
-                    parent_held.set()
-                    assert release_parent.wait(timeout=1)
-                yield
-
-        @contextmanager
-        def observing_similarity_lock(path: Path):
-            if path.resolve() == target.resolve():
-                target_locked.set()
-            with real_similarity_lock(path):
-                yield
-
-        def direct() -> None:
-            try:
-                direct_result.append(load_index(target))
-            except BaseException as exc:
-                errors.append(exc)
-
-        def from_index() -> None:
-            try:
-                from_result.append(SimilarityIndex.from_index_dir(target))
-            except BaseException as exc:
-                errors.append(exc)
-
-        monkeypatch.setattr(indexer_module, "publication_lock", gated_indexer_lock)
-        monkeypatch.setattr(similarity_module, "publication_lock", observing_similarity_lock)
-        direct_thread = threading.Thread(target=direct, name="direct")
-        direct_thread.start()
-        assert parent_held.wait(timeout=1)
-        from_thread = threading.Thread(target=from_index, name="from-index")
-        from_thread.start()
-        time.sleep(0.05)
-        assert not target_locked.is_set()
-        release_parent.set()
-        direct_thread.join(timeout=10)
-        from_thread.join(timeout=10)
-
-        assert errors == []
-        assert not direct_thread.is_alive()
-        assert not from_thread.is_alive()
-        manifest = read_manifest(target)
-        assert manifest is not None
-        assert len(direct_result[0][0]) == 1
-        assert from_result[0]._generation == manifest.generation
 
     def test_raises_if_index_missing(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError):
@@ -665,36 +560,6 @@ class TestReloadFromDisk:
         assert sim.reload_from_disk(tmp_path) == 1
         assert sim.snapshot_token == IndexSnapshotToken(0, 0)
         assert sim.entry_for_path(entries[0].path) is not None
-
-    def test_reload_captures_first_publish_after_flat_migration(
-        self, monkeypatch, tmp_path: Path
-    ) -> None:
-        from autodj.index_manifest import current_snapshot_token
-        from autodj.indexer import _save_tracks_metadata, _save_vectors, save_index
-
-        legacy_entries = [_make_entry(0)]
-        legacy_vectors = np.array([_unit_vec(seed=0)], dtype=np.float32)
-        _save_vectors(legacy_vectors, tmp_path)
-        _save_tracks_metadata(legacy_entries, tmp_path, music_dir=None)
-        target = tmp_path / "default"
-        sim, _ = _make_similarity_index(1)
-        published_entries = [_make_entry(1)]
-        published_vectors = np.array([_unit_vec(seed=1)], dtype=np.float32)
-        original_migrate = __import__(
-            "autodj.similarity", fromlist=["_migrate_flat_index_if_needed"]
-        )._migrate_flat_index_if_needed
-
-        def migrate_then_publish(index_dir: Path) -> None:
-            original_migrate(index_dir)
-            save_index(published_entries, published_vectors, index_dir)
-
-        monkeypatch.setattr("autodj.similarity._migrate_flat_index_if_needed", migrate_then_publish)
-
-        sim.reload_from_disk(target)
-
-        assert sim.snapshot_token == current_snapshot_token(target)
-        assert sim.snapshot_token.generation > 0
-        assert sim.entry_for_path(published_entries[0].path) is not None
 
     def test_tombstone_reload_clears_live_entries_atomically(self, tmp_path: Path) -> None:
         from autodj.index_manifest import current_snapshot_token, tombstone_publication

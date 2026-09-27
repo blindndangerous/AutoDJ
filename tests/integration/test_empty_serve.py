@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from autodj.cli import _load_index_for_serve, cli
 from autodj.config import ServerConfig, load_config
 from autodj.index_manifest import IndexConsistencyError, read_manifest, tombstone_publication
-from autodj.indexer import FEATURE_DIM, IndexEntry, _save_tracks_metadata, _save_vectors, save_index
+from autodj.indexer import FEATURE_DIM, IndexEntry, save_index
 from autodj.player import Player
 from autodj.server import PlayerBridge, create_app
 from autodj.similarity import SimilarityIndex
@@ -124,7 +124,6 @@ def test_serve_loader_accepts_tombstoned_index(tmp_path: Path) -> None:
         ".index-manifest.json.0123456789abcdef0123456789abcdef.tmp",
         "..index-publication-state.json.0123456789abcdef0123456789abcdef.tmp",
         ".tracks.g00000000000000000001.db.0123456789abcdef0123456789abcdef.tmp",
-        ".flat-migration-0123456789abcdef0123456789abcdef",
         "tracks.db-wal",
         "vectors.index.tmp",
     ],
@@ -140,13 +139,6 @@ def test_serve_loader_rejects_orphan_publication_artifact(
         _load_index_for_serve(cfg, active_dir=tmp_path)
 
 
-def test_serve_loader_ignores_near_match_flat_migration_name(tmp_path: Path) -> None:
-    cfg = load_config(None, environ={})
-    (tmp_path / ".flat-migration-0123456789abcdef0123456789abcdeg").mkdir()
-
-    assert _load_index_for_serve(cfg, active_dir=tmp_path).ntotal == 0
-
-
 def test_serve_loader_rejects_uncommitted_generation_reservation(tmp_path: Path) -> None:
     cfg = load_config(None, environ={})
     (tmp_path / ".index-publication-state.json").write_text(
@@ -156,32 +148,6 @@ def test_serve_loader_rejects_uncommitted_generation_reservation(tmp_path: Path)
 
     with pytest.raises(IndexConsistencyError, match="publication history"):
         _load_index_for_serve(cfg, active_dir=tmp_path)
-
-
-def test_serve_loader_preserves_flat_legacy_migration(tmp_path: Path) -> None:
-    cfg = load_config(None, environ={})
-    entry = IndexEntry(
-        path="song.flac",
-        title="Song",
-        artist="Artist",
-        album="",
-        genre="",
-        bpm=0.0,
-        year=0,
-        length=1.0,
-        energy=0.0,
-        key=-1,
-        mode=-1,
-        tempo_confidence=0.0,
-    )
-    _save_vectors(np.zeros((1, FEATURE_DIM), dtype=np.float32), tmp_path)
-    _save_tracks_metadata([entry], tmp_path, music_dir=None)
-
-    sim = _load_index_for_serve(cfg, active_dir=tmp_path / "default")
-
-    assert sim.ntotal == 1
-    assert sim.entries_snapshot()[0].title == entry.title
-    assert read_manifest(tmp_path / "default") is not None
 
 
 def test_serve_loader_serializes_tombstone_between_check_and_load(

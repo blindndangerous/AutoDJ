@@ -255,7 +255,6 @@ def _load_index_for_serve(
         publication_is_tombstoned,
         publication_lock,
     )
-    from autodj.indexer import _migrate_flat_index_if_needed
     from autodj.similarity import SimilarityIndex as _SI
 
     index_dir = cfg.index.active_dir if active_dir is None else active_dir
@@ -266,7 +265,6 @@ def _load_index_for_serve(
             path_remap=cfg.library.path_remap,
         )
 
-    _migrate_flat_index_if_needed(index_dir)
     with publication_lock(index_dir):
         if publication_is_tombstoned(index_dir):
             console.print(
@@ -278,7 +276,6 @@ def _load_index_for_serve(
                 index_dir,
                 music_dir=cfg.library.music_dir,
                 path_remap=cfg.library.path_remap,
-                _migrate_flat=False,
             )
         except (FileNotFoundError, IndexConsistencyError):
             tombstoned = publication_is_tombstoned(index_dir)
