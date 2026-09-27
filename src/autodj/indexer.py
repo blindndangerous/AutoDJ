@@ -5,8 +5,12 @@ and librosa audio features per track, combines them into a single
 L2-normalized vector, and stores the result in a FAISS nearest-neighbor index.
 
 Index files written to ``index_dir``:
-- ``vectors.index``  — FAISS binary index (``IndexFlatIP``, cosine similarity)
-- ``tracks.db``      — SQLite metadata, one row per indexed track
+- ``index-manifest.json`` — names the live generation and its checksums
+- ``tracks.gNNN.db`` / ``vectors.gNNN.index`` — the published generation
+  (SQLite metadata, one row per track; FAISS ``IndexFlatIP`` vectors).
+  Every reader loads these.
+- ``tracks.db`` / ``vectors.index`` — working copies the indexer edits and
+  then publishes as the next generation.
 
 Subsequent runs are **incremental**: tracks already present in
 ``tracks.db`` are skipped.  Pass ``force=True`` to rebuild from scratch.
@@ -371,7 +375,7 @@ class IndexEntry:
     """Serialisable metadata record stored alongside each FAISS vector.
 
     Attributes:
-        path: String path to the audio file (stored as string for JSON compat).
+        path: String path to the audio file.
         title: Track title.
         artist: Artist name.
         album: Album name.
@@ -984,14 +988,11 @@ def save_index(
     The FAISS file is written to a ``*.tmp`` sibling and renamed over the
     original.  The tracks DB is updated inside a single SQLite transaction
     (``DELETE FROM tracks`` then bulk ``INSERT``), so a crash mid-write
-    leaves the existing on-disk DB intact instead of corrupting it.  Same
-    crash-safety guarantee as the older JSON sidecar, with no whole-file
-    rewrite.
+    leaves the existing on-disk DB intact instead of corrupting it.
 
-    When *music_dir* is provided, paths under it are stored RELATIVE to
-    *music_dir* (forward-slashed) — making the index portable across
-    machines that mount the library at a different absolute path.  Paths
-    outside *music_dir* are stored as forward-slashed absolute strings.
+    Paths are stored relative to *music_dir* (forward-slashed), making the
+    index portable across machines that mount the library at a different
+    absolute path.  A path outside *music_dir* raises ``ValueError``.
     Runtime ``entry.path`` values are not mutated.
 
     The row order of *entries* must match the row order of *vectors*.
@@ -1199,11 +1200,8 @@ def enrich_from_beets(
         logger.info("Enrich: no changes from beets")
         return (0, len(entries))
 
-    # Metadata-only update — no FAISS rewrite needed (vectors unchanged).
-    # SQLite replacement inside a single transaction is far
-    # cheaper than the legacy "reconstruct every vector + full save_index"
-    # round-trip, which paid O(N) vector reconstruct cost just to re-emit
-    # JSON. No vector reconstruction or rewrite is required.
+    # Metadata-only update: the vectors are unchanged, so only tracks.db is
+    # replaced (in one transaction) and republished.
     _publish_metadata_snapshot(
         entries,
         index_dir,

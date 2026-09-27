@@ -439,7 +439,7 @@ def key_label(key: int, mode: int, notation: str = "camelot", *, prefer_flats: b
 
 
 # ---------------------------------------------------------------------------
-# Cache (JSON sidecar) — keyed by track path
+# Cache (SQLite) — keyed by track path relative to music_dir
 # ---------------------------------------------------------------------------
 
 

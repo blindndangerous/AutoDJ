@@ -34,6 +34,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `--server-audio` now plays in stereo and gapless between tracks, using the same mix bus that
   drives stream mode instead of a fresh sound-card connection per track.
 
+### Removed
+
+- Upgrade note: an index made before the index manifest format (a folder with `tracks.db`
+  and `vectors.index` but no `index-manifest.json`), or one that stores absolute track paths,
+  must be rebuilt. AutoDJ stops with a message that names the folder and tells you to run
+  `autodj index --force`. A DJ metadata cache (`dj_meta.db`) that stores absolute paths must
+  be deleted; `autodj analyse` builds a new one.
+- AutoDJ no longer moves an index from before 0.9 out of the index folder into
+  `index/default/`, and no longer moves its `dj_meta.db`, `web_state.json` and
+  `runtime_state.json` along with it.
+- AutoDJ no longer reads an index folder that has no `index-manifest.json`. `autodj doctor`
+  reports such a folder as an old index format instead of counting its "legacy vectors and
+  rows".
+- The `[library] path_remap` setting is gone. Track paths in `tracks.db` and `dj_meta.db`
+  are always stored relative to `music_dir`, and `autodj index` skips beets tracks that sit
+  outside `music_dir`, with a warning. A leftover `path_remap` line is ignored.
+- AutoDJ no longer rewrites absolute paths in `tracks.db` and `dj_meta.db` into relative
+  ones, and no longer upgrades an older `tracks` table layout to the current one.
+- Index rows with no `embedded_at` time are no longer stamped with the file's current time.
+  The next `autodj index` run re-embeds them.
+
 ### Fixed
 
 - With `--server-audio`, each incoming track restarted from its very beginning on the sound
