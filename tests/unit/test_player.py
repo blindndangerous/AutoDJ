@@ -2900,27 +2900,69 @@ class TestPeekThenCommit:
         assert player._pick_next(player._sim.entries[0]) is a
         assert player._state.queue == []
 
-    def test_render_error_keeps_the_queue_head_for_the_retry(self) -> None:
+    def test_render_error_skips_the_track_and_renders_the_next(self) -> None:
+        # A render that raises something load_stereo does not catch (librosa
+        # ParameterError, sqlite errors, MemoryError...) would fail the same
+        # way on every retry, leaving the station silent for good.
         player = _bus_player()
-        first, a = player._sim.entries[1], player._sim.entries[2]
+        bad, a = player._sim.entries[1], player._sim.entries[2]
         player._state.queue.append(a)
         calls = []
 
-        def flaky(current, nxt, offset):
-            calls.append(nxt)
-            if len(calls) == 1:
-                raise RuntimeError("decoder hiccup")
+        def render(current, nxt, offset):
+            calls.append(current)
+            if current is bad:
+                raise MemoryError("analysis blew up")
             return _stub_render(current, nxt, offset)
 
-        player._render_track = flaky  # type: ignore[method-assign]
-        player.reset_render_ahead(first, 0)
-        with pytest.raises(RuntimeError):
-            player._next_rendered()
-        assert player._pending_entry is first  # cursor untouched
-        assert player._state.queue == [a]
+        player._render_track = render  # type: ignore[method-assign]
+        player.reset_render_ahead(bad, 0)
+        with patch("autodj.player.logger") as log:
+            rendered = player._next_rendered()
+        assert rendered is not None and rendered.entry is a
+        assert calls == [bad, a]
+        assert rendered.from_queue is True
+        assert player._state.queue == [a]  # still peeked; it leaves when it starts
+        assert str(bad.path) in str(log.exception.call_args)
+
+    def test_raising_queue_pick_is_dropped_so_it_is_not_peeked_again(self) -> None:
+        player = _bus_player()
+        bad, a = player._sim.entries[2], player._sim.entries[3]
+        player._state.queue.extend([bad, a])
+
+        def render(current, nxt, offset):
+            if current is bad:
+                raise ValueError("n_fft is too large")  # e.g. librosa ParameterError
+            return _stub_render(current, nxt, offset)
+
+        player._render_track = render  # type: ignore[method-assign]
+        player._set_render_cursor(bad, 0, "queue", from_queue=True)
         rendered = player._next_rendered()
-        assert rendered is not None and rendered.next_entry is a
-        assert calls == [a, a]
+        assert rendered is not None and rendered.entry is a
+        assert player._state.queue == [a]  # BAD removed for good
+
+    def test_render_ahead_worker_moves_past_a_track_that_keeps_raising(self) -> None:
+        import sqlite3
+
+        player = _bus_player()
+        bad, good = player._sim.entries[1], player._sim.entries[2]
+
+        def render(current, nxt, offset):
+            if current is bad:
+                raise sqlite3.OperationalError("database is locked")
+            return _stub_render(current, nxt, offset)
+
+        player._render_track = render  # type: ignore[method-assign]
+        player._pick_next = lambda _current: good  # type: ignore[method-assign]
+        player.reset_render_ahead(bad, 0)
+        worker = player._render_ahead
+        try:
+            worker.start()
+            assert worker.wait_ready(5.0)
+            track = worker.pop()
+        finally:
+            worker.stop(timeout=2.0)
+        assert track is not None and track.entry is good
 
     def test_unplayable_queue_pick_is_dropped_so_it_is_not_peeked_again(self) -> None:
         player = _bus_player()

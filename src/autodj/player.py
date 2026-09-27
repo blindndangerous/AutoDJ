@@ -1064,10 +1064,12 @@ class Player:
         (``_peek_queue``), skipping the pending track's own queue slot
         when it came from the queue; it leaves the queue when it starts.
 
-        If rendering raises, the cursor is untouched and nothing was taken
-        from the queue, so a retry renders the same thing.  A queue pick
-        that cannot be rendered at all is dropped from the queue, since it
-        will never start.
+        A track whose render raises (a decoder, analysis or cache error
+        that ``load_stereo`` does not catch) is logged and skipped like
+        one that cannot be loaded, so one bad file never stalls the
+        station: retrying it would fail the same way forever.  A queue
+        pick that cannot be rendered at all is dropped from the queue,
+        since it will never start.
 
         Returns:
             The rendered track, or ``None`` when nothing could be rendered.
@@ -1095,7 +1097,11 @@ class Player:
                     self._pick_exclude = None
                     self._peek_queue = False
                     self._queue_reserved = None
-            rendered = self._render_track(current, next_entry, offset)
+            try:
+                rendered = self._render_track(current, next_entry, offset)
+            except Exception:
+                logger.exception("Rendering %s failed; skipping it.", current.path)
+                rendered = None
             if rendered is None and current_from_queue:
                 with self._state.queue_lock:
                     self._commit_queue_pick(current)  # it will never start
