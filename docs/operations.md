@@ -176,7 +176,10 @@ on loopback, since no other device could reach it.
 Open the web page and go to Settings, Stream. The "Stream address" field holds the full URL;
 "Copy address" copies it. A "Download playlist file (.m3u)" link gives the same address as a
 one-line playlist, for players that prefer to open a file rather than type a URL. The listener
-count is shown below the address.
+count is shown below the address. The address is built from the address the page was opened
+with, so a page opened as `localhost` or `127.0.0.1` gives a link only that computer can use (the
+page says so); open AutoDJ by the network address in its start-up message before copying a link
+for a speaker.
 
 ### Adding the station to Sonos
 

@@ -469,6 +469,7 @@ function settingsDom() {
       <input id="stream-url" type="text" readonly>
       <button type="button" id="stream-copy">Copy address</button>
       <p id="stream-url-note" hidden></p>
+      <p id="stream-loopback-note" hidden>This address only works on this computer.</p>
       <a id="stream-m3u" download="autodj.m3u">Download playlist file (.m3u)</a>
       <label for="stream-bitrate">Quality</label>
       <select id="stream-bitrate"><option value="128">128 kbps</option><option value="192">192 kbps</option><option value="256">256 kbps</option><option value="320">320 kbps</option></select>
@@ -511,6 +512,34 @@ describe("stream settings", () => {
     vi.useRealTimers();
     delete navigator.clipboard;
     delete document.execCommand;
+  });
+
+  it.each(["localhost", "LOCALHOST", "app.localhost", "127.0.0.1", "127.1.2.3", "[::1]", "::1"])(
+    "warns that a page opened as %s copies a link only this computer can use",
+    (hostname) => {
+      settingsDom();
+      const note = byId("stream-loopback-note");
+      makeSettings({ hostname });
+      expect(note.hidden).toBe(false);
+      expect(note.hasAttribute("aria-live")).toBe(false);
+      expect(note.hasAttribute("role")).toBe(false);
+    },
+  );
+
+  it.each(["192.168.1.20", "autodj.local", "10.0.0.5", "[fe80::1]", "127.example.com"])(
+    "shows no loopback warning on %s",
+    (hostname) => {
+      settingsDom();
+      makeSettings({ hostname });
+      expect(byId("stream-loopback-note").hidden).toBe(true);
+    },
+  );
+
+  it("reads the hostname from the page by default", () => {
+    settingsDom();
+    makeSettings();
+    const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
+    expect(byId("stream-loopback-note").hidden).toBe(!loopback);
   });
 
   it("stays hidden and fetches nothing outside stream mode", () => {

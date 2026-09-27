@@ -242,6 +242,8 @@ export function createStreamMode({ audio, button, idleNote, srStatus, fetchInfo 
 // Speech rules:
 //   - The listener count and the "not loaded yet" note are plain text,
 //     never live regions, and are only rewritten when they change.
+//   - The "only works on this computer" note is fixed plain text, shown
+//     once at start-up when the page was opened on a loopback address.
 //   - Copy and "Make new link" are user actions, so their confirmations
 //     are forced: pressing Copy twice is heard twice.
 //   - Copy never moves focus through the address field on success: NVDA
@@ -265,6 +267,14 @@ export const ADDRESS_RETRY_MS = 10000;
 // A claimed link_changed that has not arrived by then never will.
 export const LINK_CLAIM_TIMEOUT_MS = 10000;
 
+// The copied address is built from this page's origin, so a page opened
+// as localhost copies a link that a speaker on the network cannot reach.
+function isLoopbackHost(hostname) {
+  const host = String(hostname || "").toLowerCase().replace(/^\[|\]$/g, "");
+  return host === "localhost" || host.endsWith(".localhost")
+    || host === "::1" || /^127\.\d+\.\d+\.\d+$/.test(host);
+}
+
 function listenerText(count) {
   return `${count} listener${count === 1 ? "" : "s"}`;
 }
@@ -287,8 +297,11 @@ export function createStreamSettings({
   claimLinkChange = () => () => {},
   srStatus,
   settingsStatus,
+  hostname = doc.location.hostname,
 }) {
   const fieldset = doc.getElementById("stream-settings");
+  const loopbackNote = doc.getElementById("stream-loopback-note");
+  if (loopbackNote) loopbackNote.hidden = !isLoopbackHost(hostname);
   const url = doc.getElementById("stream-url");
   const note = doc.getElementById("stream-url-note");
   const copy = doc.getElementById("stream-copy");

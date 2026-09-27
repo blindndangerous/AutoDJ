@@ -736,6 +736,10 @@
       </span>
       <!-- Plain text while the address lookup has not succeeded; not live. -->
       <p class="stream-detail" id="stream-url-note" hidden></p>
+      <!-- Shown when the page was opened as localhost / 127.x / ::1: the
+           copied address would then only work on this machine.  Plain
+           text, not live. -->
+      <p class="stream-detail" id="stream-loopback-note" hidden>This address only works on this computer. Open AutoDJ using its network address (see the start-up message) to copy a link for speakers.</p>
       <p class="stream-detail"><a id="stream-m3u" download="autodj.m3u">Download playlist file (.m3u)</a></p>
       <p class="stream-detail" id="stream-listeners"></p>
       <div class="settings-row">
