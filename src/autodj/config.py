@@ -1083,6 +1083,7 @@ ENVIRONMENT_OVERLAY: dict[str, tuple[str, str, Callable[[str], object]]] = {
     "AUTODJ_HOST": ("server", "host", str),
     "AUTODJ_PORT": ("server", "port", int),
     "AUTODJ_ACCESS_TOKEN": ("server", "access_token", str),
+    "AUTODJ_LAN": ("server", "lan", parse_env_bool),
     "AUTODJ_HUGGINGFACE_TOKEN": ("huggingface", "token", str),
     "AUTODJ_STREAM_ENABLED": ("stream", "enabled", parse_env_bool),
     "AUTODJ_STREAM_BITRATE": ("stream", "bitrate", int),

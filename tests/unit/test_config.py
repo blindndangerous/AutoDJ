@@ -222,6 +222,7 @@ class TestDefaultAndEnvironmentConfig:
             "AUTODJ_HOST",
             "AUTODJ_PORT",
             "AUTODJ_ACCESS_TOKEN",
+            "AUTODJ_LAN",
             "AUTODJ_HUGGINGFACE_TOKEN",
             "AUTODJ_STREAM_ENABLED",
             "AUTODJ_STREAM_BITRATE",

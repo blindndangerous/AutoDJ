@@ -36,6 +36,7 @@
 #   AUTODJ_HOST
 #   AUTODJ_PORT
 #   AUTODJ_ACCESS_TOKEN
+#   AUTODJ_LAN
 #   AUTODJ_HUGGINGFACE_TOKEN
 #   AUTODJ_STREAM_ENABLED
 #   AUTODJ_STREAM_BITRATE
@@ -87,6 +88,10 @@ model_dir = "models"
 host = "127.0.0.1"
 port = 8080
 # access_token = "generate-at-least-32-random-bytes"  # Internal pairing/session secret.
+# Serve on your local network (same as `autodj serve --lan`): listen on all
+# interfaces, allow this machine's detected names and addresses, and require
+# pairing.  Without access_token, a token is created in index_dir/.access-token.
+lan = false
 insecure_lan = false
 # LAN and wildcard binds must set both lists, for example:
 # allowed_hosts = ["radio.local"]

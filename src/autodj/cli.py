@@ -81,7 +81,7 @@ def _deprecated_no_playback(ctx: click.Context, param: click.Parameter, value: b
 
 if TYPE_CHECKING:
     from autodj.beets import Track
-    from autodj.config import AutoDJConfig
+    from autodj.config import AutoDJConfig, ServerConfig
     from autodj.indexer import IndexEntry
     from autodj.pairing import DeviceRegistry
     from autodj.similarity import SimilarityIndex
@@ -435,6 +435,69 @@ def _require_ffmpeg_for_stream(cfg: AutoDJConfig) -> None:
         )
 
 
+def _stage_serve_server(
+    cfg: AutoDJConfig,
+    *,
+    host: str | None,
+    port: int | None,
+    access_token: str | None,
+    insecure_lan: bool | None,
+    allowed_hosts: tuple[str, ...],
+    allowed_origins: tuple[str, ...],
+    lan: bool | None,
+    tls: bool,
+) -> ServerConfig:
+    """Return the server settings ``serve`` will use, after CLI overrides and ``--lan``.
+
+    CLI values replace config values; with LAN mode on, detected hosts and
+    their origins are added and the saved access token is used when no token
+    is configured.  The result has passed :func:`validate_server_exposure`.
+
+    Args:
+        cfg: Loaded configuration (not modified).
+        host: ``--host``, or ``None``.
+        port: ``--port``, or ``None``.
+        access_token: ``--access-token``, or ``None``.
+        insecure_lan: ``--insecure-lan``, or ``None``.
+        allowed_hosts: ``--allowed-host`` values; empty keeps the config list.
+        allowed_origins: ``--allowed-origin`` values; empty keeps the config list.
+        lan: ``--lan``, or ``None`` to use ``[server] lan``.
+        tls: Both TLS files were given.
+
+    Raises:
+        click.ClickException: The settings are invalid or unsafe, or the saved
+            access token cannot be read or written.
+    """
+    from dataclasses import replace
+
+    from autodj.config import validate_server_exposure
+    from autodj.lan import AccessTokenError, lan_server_config
+    from autodj.stream_secret import access_token_path
+
+    server = cfg.server
+    try:
+        staged = replace(
+            server,
+            host=server.host if host is None else host,
+            port=server.port if port is None else port,
+            access_token=server.access_token if access_token is None else access_token,
+            insecure_lan=server.insecure_lan if insecure_lan is None else insecure_lan,
+            lan=server.lan if lan is None else lan,
+            allowed_hosts=server.allowed_hosts if not allowed_hosts else list(allowed_hosts),
+            allowed_origins=(
+                server.allowed_origins if not allowed_origins else list(allowed_origins)
+            ),
+        )
+        if staged.lan:
+            staged = lan_server_config(staged, tls=tls, token_path=access_token_path(cfg))
+        validate_server_exposure(staged)
+    except AccessTokenError as exc:
+        raise click.ClickException(f"LAN mode cannot start: {exc}") from exc
+    except (TypeError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    return staged
+
+
 def _print_serve_banner(
     console_: Console,
     *,
@@ -707,6 +770,26 @@ def cmd_devices_reset(ctx: click.Context) -> None:
     click.echo(f"Revoked {registry.reset()} paired browser(s).")
 
 
+def _server_with_saved_token(cfg: AutoDJConfig) -> ServerConfig:
+    """Return ``cfg.server``, using the token ``serve --lan`` saved when none is configured.
+
+    Raises:
+        click.ClickException: The saved token file cannot be read.
+    """
+    from dataclasses import replace
+
+    from autodj.lan import AccessTokenError, read_access_token
+    from autodj.stream_secret import access_token_path
+
+    if cfg.server.access_token is not None:
+        return cfg.server
+    try:
+        saved = read_access_token(access_token_path(cfg))
+    except AccessTokenError as exc:
+        raise click.ClickException(str(exc)) from exc
+    return cfg.server if saved is None else replace(cfg.server, access_token=saved)
+
+
 @devices_group.command("pairing-code")
 @click.pass_context
 def cmd_devices_pairing_code(ctx: click.Context) -> None:
@@ -714,7 +797,7 @@ def cmd_devices_pairing_code(ctx: click.Context) -> None:
     from autodj.security import SecurityPolicy
 
     cfg, registry = _device_registry(ctx)
-    policy = SecurityPolicy(cfg.server, device_is_active=registry.is_active)
+    policy = SecurityPolicy(_server_with_saved_token(cfg), device_is_active=registry.is_active)
     try:
         code = policy.current_pairing_code()
     except RuntimeError as exc:
@@ -1641,10 +1724,20 @@ def cmd_play(  # pragma: no cover -- end-to-end orchestrator, exercised by smoke
     ),
 )
 @click.option(
+    "--lan",
+    is_flag=True,
+    default=None,
+    help=(
+        "Use AutoDJ from other devices on your network: listen on all interfaces, "
+        "allow this machine's names and addresses, and require pairing.  Startup "
+        "prints the addresses to open and a pairing code."
+    ),
+)
+@click.option(
     "--host",
     default=None,
     type=str,
-    help="Interface to bind; defaults to [server].host.",
+    help="Interface to bind; defaults to [server].host (all interfaces with --lan).",
 )
 @click.option(
     "--port",
@@ -1656,25 +1749,28 @@ def cmd_play(  # pragma: no cover -- end-to-end orchestrator, exercised by smoke
     "--access-token",
     default=None,
     type=str,
-    help="Token required for LAN clients.",
+    hidden=True,
+    help="Advanced: server secret for LAN pairing (prefer AUTODJ_ACCESS_TOKEN).",
 )
 @click.option(
     "--insecure-lan",
     is_flag=True,
     default=None,
-    help="Acknowledge unauthenticated LAN exposure.",
+    help="Skip pairing on the network (trusted networks only); use with --lan.",
 )
 @click.option(
     "--allowed-host",
     "allowed_hosts",
     multiple=True,
-    help="Allowed HTTP Host name.",
+    hidden=True,
+    help="Advanced: extra allowed HTTP Host name (custom DNS name, reverse proxy).",
 )
 @click.option(
     "--allowed-origin",
     "allowed_origins",
     multiple=True,
-    help="Allowed browser origin including scheme and port.",
+    hidden=True,
+    help="Advanced: extra allowed browser origin including scheme and port.",
 )
 @click.option(
     "--open",
@@ -1884,6 +1980,7 @@ def cmd_play(  # pragma: no cover -- end-to-end orchestrator, exercised by smoke
 def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smoke tests
     ctx: click.Context,
     seed: str | None,
+    lan: bool | None,
     host: str | None,
     port: int | None,
     access_token: str | None,
@@ -1930,20 +2027,18 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
     Examples:
       uv run autodj serve
       uv run autodj serve --seed "Portishead" --open
-      uv run autodj serve --host 0.0.0.0 --insecure-lan \
-        --allowed-host radio.local --allowed-origin http://radio.local:8080
+      uv run autodj serve --lan
       uv run autodj serve --preset wakeup --discovery-every 10
     """
     from autodj.server import serve
 
     cfg = _load_cfg_or_exit(ctx.obj["config_path"])
-    from dataclasses import replace
-
-    from autodj.config import is_loopback_bind, validate_server_exposure
+    from autodj.config import is_loopback_bind
 
     original_server = cfg.server
     security_cli_requested = any(
         (
+            lan is not None,
             host is not None,
             port is not None,
             access_token is not None,
@@ -1952,21 +2047,17 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
             bool(allowed_origins),
         )
     )
-    try:
-        staged_server = replace(
-            cfg.server,
-            host=cfg.server.host if host is None else host,
-            port=cfg.server.port if port is None else port,
-            access_token=cfg.server.access_token if access_token is None else access_token,
-            insecure_lan=(cfg.server.insecure_lan if insecure_lan is None else insecure_lan),
-            allowed_hosts=(cfg.server.allowed_hosts if not allowed_hosts else list(allowed_hosts)),
-            allowed_origins=(
-                cfg.server.allowed_origins if not allowed_origins else list(allowed_origins)
-            ),
-        )
-        validate_server_exposure(staged_server)
-    except (TypeError, ValueError) as exc:
-        raise click.ClickException(str(exc)) from exc
+    staged_server = _stage_serve_server(
+        cfg,
+        host=host,
+        port=port,
+        access_token=access_token,
+        insecure_lan=insecure_lan,
+        allowed_hosts=allowed_hosts,
+        allowed_origins=allowed_origins,
+        lan=lan,
+        tls=bool(ssl_certfile and ssl_keyfile),
+    )
     server_cli_override = security_cli_requested and staged_server != original_server
     host = staged_server.host
     port = staged_server.port

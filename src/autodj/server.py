@@ -82,6 +82,7 @@ from autodj.http_media import (
 )
 from autodj.icy import METAINT
 from autodj.index_manifest import IndexConsistencyError, IndexSnapshotToken, current_snapshot_token
+from autodj.lan import format_lan_banner, lan_urls
 from autodj.pairing import DeviceRegistry
 from autodj.security import (
     COOKIE_NAME,
@@ -2493,10 +2494,17 @@ def serve(
         stream_first_track=seed_entry if stream else None,
     )
 
-    if app.state.security_policy.authentication_required:
+    startup_policy: SecurityPolicy = app.state.security_policy
+    if cfg.server.lan:
+        pairing = None
+        if startup_policy.authentication_required:
+            valid_for, _next_code_in = startup_policy.pairing_code_seconds_left()
+            pairing = (startup_policy.current_pairing_code(), valid_for)
+        logger.info("%s", format_lan_banner(lan_urls(cfg.server, tls=secure_cookie), pairing))
+    elif startup_policy.authentication_required:
         logger.info(
             "Pair this browser within five minutes using code: %s",
-            app.state.security_policy.current_pairing_code(),
+            startup_policy.current_pairing_code(),
         )
 
     if stream:
