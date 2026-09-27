@@ -172,6 +172,7 @@ describe("stream mode", () => {
     button.focus();
     await mode.toggleListen();
     expect(fetchInfo).toHaveBeenCalledTimes(1);
+    audio.dispatchEvent(new Event("playing"));
 
     audio.dispatchEvent(new Event("error"));
     await tick();
@@ -186,10 +187,29 @@ describe("stream mode", () => {
     expect(audio.getAttribute("src")).toBeNull();
   });
 
+  it("reports a failed reconnect as a lost connection", async () => {
+    let calls = 0;
+    const fetchInfo = vi.fn(async () => {
+      calls += 1;
+      if (calls > 1) throw new Error("Failed to fetch");
+      return { path: "/stream/SECRET.mp3" };
+    });
+    const { mode, audio, button, sr } = setup({ fetchInfo });
+    mode.apply({ stream_mode: true, stream_state: "playing" });
+    button.focus();
+    await mode.toggleListen();
+    audio.dispatchEvent(new Event("playing"));
+    audio.dispatchEvent(new Event("error"));
+    await tick();
+    expect(button.getAttribute("aria-pressed")).toBe("false");
+    expect(sr.textContent).toBe("Listening stopped: the stream connection was lost.");
+  });
+
   it("allows a fresh reconnect after the stream played again", async () => {
     const { mode, audio, fetchInfo, button } = setup();
     mode.apply({ stream_mode: true, stream_state: "playing" });
     await mode.toggleListen();
+    audio.dispatchEvent(new Event("playing"));
     audio.dispatchEvent(new Event("error"));
     await tick();
     audio.dispatchEvent(new Event("playing"));
@@ -197,6 +217,18 @@ describe("stream mode", () => {
     await tick();
     expect(fetchInfo).toHaveBeenCalledTimes(3);
     expect(button.getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("reports a stream that never played without retrying", async () => {
+    const { mode, audio, button, fetchInfo, sr } = setup();
+    mode.apply({ stream_mode: true, stream_state: "idle" });
+    button.focus();
+    await mode.toggleListen();
+    audio.dispatchEvent(new Event("error"));
+    await tick();
+    expect(fetchInfo).toHaveBeenCalledOnce();
+    expect(button.getAttribute("aria-pressed")).toBe("false");
+    expect(sr.textContent).toBe("Could not start listening: the stream did not load.");
   });
 
   it("ignores media errors while not listening", async () => {

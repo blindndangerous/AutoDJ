@@ -32,6 +32,7 @@ export function createStreamMode({ doc, audio, button, idleNote, srStatus, fetch
   // lookup can tell that the user has pressed the button again since.
   let generation = 0;
   let retried = false;
+  let hasPlayed = false;
   let seenFirstApply = false;
   let lastEventKey = null;
 
@@ -66,7 +67,8 @@ export function createStreamMode({ doc, audio, button, idleNote, srStatus, fetch
   }
 
   // Always asks for the link again: "Make new link" retires the old one.
-  async function connect() {
+  // A failed silent retry is reported as the lost connection it follows.
+  async function connect({ retry = false } = {}) {
     const mine = ++generation;
     setListening(true);
     try {
@@ -76,24 +78,33 @@ export function createStreamMode({ doc, audio, button, idleNote, srStatus, fetch
       await audio.play();
     } catch (err) {
       if (mine !== generation) return;
-      fail(`Could not start listening: ${err?.message || err}`);
+      fail(retry ? LOST_TEXT : `Could not start listening: ${err?.message || err}`);
     }
   }
 
-  // A dropped connection gets one silent retry (it may be a link change
-  // or a blip); a second drop before audio plays again is reported.
+  // A stream that never played is a failed start (for example the
+  // listener limit).  Once it has played, a drop gets one silent retry
+  // (a link change or a blip); a second drop before audio plays again is
+  // reported.
   function onDropped() {
     if (!listening) return;
+    if (!hasPlayed) {
+      fail("Could not start listening: the stream did not load.");
+      return;
+    }
     if (retried) {
       fail(LOST_TEXT);
       return;
     }
     retried = true;
-    void connect();
+    void connect({ retry: true });
   }
   audio.addEventListener("error", onDropped);
   audio.addEventListener("ended", onDropped);
-  audio.addEventListener("playing", () => { retried = false; });
+  audio.addEventListener("playing", () => {
+    hasPlayed = true;
+    retried = false;
+  });
 
   async function toggleListen() {
     const spoken = doc.activeElement !== button;
@@ -103,6 +114,7 @@ export function createStreamMode({ doc, audio, button, idleNote, srStatus, fetch
       return;
     }
     retried = false;
+    hasPlayed = false;
     const started = connect();
     if (spoken) say("Listen here on.");
     await started;
