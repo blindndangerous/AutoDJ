@@ -292,6 +292,7 @@ class StreamOutput:
 
         self._notify_lock = threading.Lock()
         self._notify_due = False
+        self._delivering = threading.local()
 
         self._pcm_queue_max = max(1, int(_PCM_QUEUE_SECONDS / _BLOCK_SECONDS))
         self._pcm_queue: collections.deque[bytes] = collections.deque()
@@ -328,12 +329,9 @@ class StreamOutput:
             yield
         finally:
             self._lock_depth.n = depth
-            due = False
-            if depth == 0 and self._notify_due:
-                due = True
-                self._notify_due = False
+            deliver = depth == 0 and self._notify_due
             self._lock.release()
-            if due:
+            if deliver:
                 self._deliver_notification()
 
     def _deliver_notification(self) -> None:
@@ -341,19 +339,62 @@ class StreamOutput:
 
         Runs serialized under ``self._notify_lock`` — never while holding
         ``self._lock`` — so two deliveries can never interleave or run
-        concurrently. Each call re-reads the count fresh, under
+        concurrently. Each iteration re-reads the count fresh, under
         ``self._lock``, from inside the notify lock (the acquisition order
         is always notify lock then main lock, never the reverse), so
-        whichever delivery actually executes last always reports the true
+        whichever iteration actually runs last always reports the true
         state as of that moment — there is no stale value to accidentally
         deliver out of order.
+
+        The callback itself can safely call ``add_listener``/
+        ``remove_listener``/``disconnect_all`` (e.g. to react to its own
+        notification) without deadlocking: ``self._notify_lock`` is a
+        plain, non-reentrant ``Lock``, so a naive reentrant call would
+        block forever on itself. A thread-local "delivering" flag detects
+        that case — the nested change just marks another notification due
+        and returns immediately instead of trying to acquire the lock
+        again — and the loop below picks it up once the in-flight callback
+        returns, re-reading the count fresh and calling the callback
+        again, until nothing is left due. This bounds the recursion to
+        this method's own loop; it does not help a callback that blocks
+        waiting on a *different* thread which itself needs to change the
+        listener set (for example, calling
+        ``asyncio.run_coroutine_threadsafe(coro, loop).result()`` and
+        having that coroutine call back into ``add_listener``/
+        ``remove_listener`` on the event loop) — that is a genuine
+        cross-thread deadlock this method cannot detect, so callbacks must
+        not block on another thread that might be adding or removing
+        listeners.
+
+        A callback that raises is logged and otherwise ignored: letting it
+        propagate from here would surface it from whichever unrelated
+        ``_locked()`` call happened to trigger delivery, potentially
+        masking an exception that call itself was already raising, and
+        would also skip releasing ``self._notify_lock``.
         """
-        with self._notify_lock:
-            with self._lock:
-                count = len(self._listeners)
-            callback = self.on_listener_change
-            if callback is not None:
-                callback(count)
+        if getattr(self._delivering, "active", False):
+            return
+        self._notify_lock.acquire()
+        try:
+            self._delivering.active = True
+            try:
+                while True:
+                    with self._lock:
+                        if not self._notify_due:
+                            break
+                        self._notify_due = False
+                        count = len(self._listeners)
+                    callback = self.on_listener_change
+                    if callback is None:
+                        continue
+                    try:
+                        callback(count)
+                    except Exception:
+                        logger.exception("Stream listener-count callback raised")
+            finally:
+                self._delivering.active = False
+        finally:
+            self._notify_lock.release()
 
     # -- encoder lifecycle -------------------------------------------------
 
