@@ -84,6 +84,7 @@ sudo chown 10001:10001 "$AUTODJ_MUSIC_DIR" "$AUTODJ_INDEX_DIR" "$AUTODJ_MODEL_DI
 unset AUTODJ_ACCESS_TOKEN AUTODJ_LAN_HOST AUTODJ_LAN_ORIGIN
 docker compose config >/dev/null
 docker compose --profile lan config >/dev/null
+docker compose --profile stream config >/dev/null
 docker compose build --pull
 lan_negative_log="$smoke_root/autodj-lan-negative.log"
 compose_touched=true
@@ -217,3 +218,48 @@ curl --fail --silent --show-error \
   --header "Host: $AUTODJ_LAN_HOST" \
   --cookie "$lan_cookie_jar" \
   http://127.0.0.1:8080/api/status >/dev/null
+
+# Radio stream: docker compose --profile stream up autodj-stream runs serve --lan --stream on
+# the same authenticated LAN setup as autodj-lan. Stop autodj-lan first; both publish host
+# port 8080.
+bounded_compose_down
+docker compose --profile stream up -d autodj-stream
+
+stream_health_status=""
+for _attempt in $(seq 1 30); do
+  stream_health_status="$(
+    docker inspect autodj-stream --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' \
+      2>/dev/null || true
+  )"
+  case "$stream_health_status" in
+    healthy) break ;;
+    unhealthy)
+      exit 1
+      ;;
+  esac
+  sleep 1
+done
+if [[ "$stream_health_status" != healthy ]]; then
+  echo "Stream container did not become healthy (status: $stream_health_status)" >&2
+  exit 1
+fi
+
+stream_secret="$(
+  docker compose --profile stream exec -T autodj-stream cat /index/.stream-secret
+)"
+
+# The smoke library has no tracks ("tracks": 0 above), so no set can ever start and the
+# stream never emits real MP3 frames; requiring some would mean bundling audio fixtures just
+# for this script. Instead assert that the route, secret and encoder wiring answer correctly:
+# 200, the audio/mpeg content type, and ICY metadata headers, all within a few seconds. A real
+# frame-level check is left to manual verification against a real library.
+stream_headers="$smoke_root/autodj-stream-headers.txt"
+curl --silent --show-error --max-time 5 \
+  --dump-header "$stream_headers" --output /dev/null \
+  --header "Host: $AUTODJ_LAN_HOST" \
+  --header "Icy-MetaData: 1" \
+  "http://127.0.0.1:8080/stream/${stream_secret}.mp3" || true
+grep -Eiq '^HTTP/[0-9.]+ 200' "$stream_headers"
+grep -Eiq '^content-type: *audio/mpeg' "$stream_headers"
+grep -Eiq '^icy-name:' "$stream_headers"
+grep -Eiq '^icy-metaint:' "$stream_headers"

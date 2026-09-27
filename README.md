@@ -102,6 +102,15 @@ it gets the index folder's permissions, and if the index folder is on a network 
 can read the share can read the token. For HTTPS, add `--ssl-certfile` and `--ssl-keyfile`. See [Operations](docs/operations.md) for containers, custom DNS names and other
 advanced overrides.
 
+## Play on Sonos or any network player
+
+`autodj serve --lan --stream` also serves the live mix as an MP3 radio station, with AutoDJ's
+own crossfades, EQ and voice liners already mixed in, that Sonos, VLC and other network players
+can open directly. Find the address, and a downloadable `.m3u` playlist, under Settings, Stream
+on the web page. See [Operations](docs/operations.md#radio-stream-sonos-vlc-and-other-players)
+for adding the station to Sonos and VLC, what the playback controls do while streaming, and
+troubleshooting.
+
 ## Commands
 
 Every command takes `--help`, for example `uv run autodj serve --help`. The global options
@@ -115,7 +124,7 @@ Every command takes `--help`, for example `uv run autodj serve --help`. The glob
 - `autodj stats` prints an overview of the indexed library.
 - `autodj list-indexes` lists the named indexes under `[index] index_dir`.
 - `autodj serve` starts the browser interface; `autodj serve --lan` opens it to your local
-  network.
+  network; `autodj serve --stream` also serves the live mix as an MP3 radio station.
 - `autodj play` starts terminal playback with server-side audio. It needs the `play` extra.
 - `autodj playlist` writes an offline M3U playlist from the similarity picker.
 - `autodj list-devices` lists the audio output devices available to `play` and `serve

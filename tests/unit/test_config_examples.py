@@ -148,6 +148,9 @@ def test_operator_docs_cover_reproducible_workflows() -> None:
     assert "host `127.0.0.1`" in operations
     assert "Windows PowerShell" in operations
     assert "Get-Date -Format yyyy-MM-dd" in operations
+    assert "autodj serve --stream" in operations
+    assert "My Radio Stations" in operations
+    assert "stream" in threat.lower() and "listen" in threat.lower()
 
 
 def test_release_workflow_grants_every_nested_job_permission() -> None:

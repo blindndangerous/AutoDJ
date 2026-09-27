@@ -132,6 +132,105 @@ uv run autodj serve --host 0.0.0.0 \
 The certificate and key are local files on the AutoDJ server. This supports private LAN access,
 not public Internet hosting. Do not publish the loopback service directly to the internet.
 
+## Radio stream (Sonos, VLC and other players)
+
+Stream mode serves the live AutoDJ mix as an MP3 radio station that any network audio player can
+open, with AutoDJ's own crossfades, EQ, transition effects and voice liners already mixed in.
+Speakers hear exactly what the web page would play in server-audio mode; there is only one mix.
+
+Turn it on at startup with `autodj serve --stream`, combined with `--lan` so other devices on
+the network can reach it:
+
+```bash
+uv run autodj serve --lan --stream
+```
+
+`[stream] enabled = true` in `config.toml`, or `AUTODJ_STREAM_ENABLED=1`, does the same without
+the flag. For Compose, run the `stream` profile instead of `lan`, after the same one-time
+`setup-lan` step described under "Container ownership and exposure" above:
+
+```bash
+docker compose --profile stream up autodj-stream
+```
+
+`autodj-stream` reuses the same `.env` that `setup-lan` wrote (`AUTODJ_ACCESS_TOKEN`,
+`AUTODJ_LAN_HOST`, `AUTODJ_LAN_ORIGIN`) and runs `serve --lan --stream`; auto-detection inside
+the container only sees container addresses, so the operator's host and origin stay explicit and
+merge with them, the same as the `lan` profile. Only one of the `lan` and `stream` profiles can
+run at a time; both publish host port 8080.
+
+`uv run autodj doctor` fails a required check if stream mode is on but the server only listens on
+loopback, since no other device could reach it.
+
+### Finding the stream address
+
+Open the web page and go to Settings, Stream. The "Stream address" field holds the full URL;
+"Copy address" copies it. A "Download playlist file (.m3u)" link gives the same address as a
+one-line playlist, for players that prefer to open a file rather than type a URL. The listener
+count is shown below the address.
+
+### Adding the station to Sonos
+
+In the Sonos app: Browse, then TuneIn, then My Radio Stations, then Add New Radio Station. Paste
+the stream address and give the station a name. Sonos app versions vary, and some do not offer
+Add New Radio Station directly. If yours does not:
+
+- Add the station through the TuneIn app or the TuneIn website instead, then find it from Sonos
+  under My Radio Stations, or
+- Open the downloaded `.m3u` file with a player or file manager that can hand it to Sonos.
+
+### Adding the station to VLC
+
+Media, then Open Network Stream, then paste the stream address (or point VLC at the downloaded
+`.m3u` file) and press Play.
+
+### Controls while streaming
+
+- **Skip** takes effect immediately on the server with a short fade. A speaker hears it a few
+  seconds later, once its own playback buffer catches up.
+- **Pause** holds the stream for everyone; it plays silence rather than disconnecting, so
+  speakers stay connected and resume from the same spot. It also keeps the set alive past the
+  idle timeout below.
+- **Seek** is not available while streaming. The seek slider is hidden on the page, and the comma
+  and full-stop keyboard shortcuts announce "Seeking is not available while streaming."
+- **EQ** is applied once, on the server, so every listener hears the same shaped sound.
+- **Page volume and mute** affect only the page's own "Listen here" playback in the browser.
+  Each speaker keeps its own volume, set on the speaker or in its own app.
+- Quality (bitrate) is chosen under Settings, Stream: 128, 192, 256 or 320 kbps, default 320.
+  Changing it restarts the encoder; every listener, including speakers, reconnects on its own a
+  moment later.
+
+### Idle sets and "Make new link"
+
+The stream starts idle: nothing plays until a listener connects. The first listener to connect
+starts a new set from the beginning of a track. While at least one listener stays connected the
+set keeps playing; a listener that disconnects and reconnects within 30 seconds
+(`[stream] idle_grace_seconds`) finds the same set still going. After 30 seconds with nobody
+connected, the set stops; the next listener to connect starts a fresh set from the start of a
+track, never mid-song.
+
+"Make new link" (Settings, Stream) replaces the stream secret. Every current listener,
+including any connected speaker, is disconnected at once, and the old address stops working.
+Use it if the address was shared somewhere it should not have been.
+
+### Troubleshooting
+
+- **"Stream mode needs ffmpeg on the PATH"** — install ffmpeg and make sure it is on the PATH
+  for the account running AutoDJ, then start again. `autodj doctor` reports this too, and the
+  container image already includes ffmpeg. AutoDJ never falls back to browser-only mode
+  silently; it refuses to start until ffmpeg is available or `--stream` is dropped.
+- **The stream address gives a 403 or the player cannot connect** — the host name in the address
+  is not in the allowed list. Start with `--lan` so this machine's own names and addresses are
+  allowed automatically, or add the exact name the player uses with `--allowed-host` (and its
+  origin with `--allowed-origin`) if it is a name `--lan` cannot detect, such as a router DNS
+  entry.
+- **A player gets a 503 "Stream listener limit reached"** — `max_listeners` (default 8) is full.
+  Raise `[stream] max_listeners` (or `AUTODJ_STREAM_MAX_LISTENERS`) if you regularly have more
+  simultaneous listeners.
+- **A player gets a 503 "stream encoder failed"** — ffmpeg crashed repeatedly (five times within
+  a minute) and the encoder is cooling down for 60 seconds before it tries again. Check that
+  ffmpeg is present and working (`ffmpeg -version`), then try the address again after a minute.
+
 ## Windows PowerShell setup
 
 For native no-container operation, create paths and run diagnostics as follows:

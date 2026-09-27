@@ -185,7 +185,7 @@ def _assert_bounded_smoke_lifecycle(content: str) -> None:
                 re.MULTILINE,
             )
         )
-        == 2
+        == 3
     )
 
     lan_phase = content.index("lan_phase_active=true")
@@ -292,12 +292,15 @@ case "$*" in
   "compose --profile lan up -d autodj-lan") printf running > "$FAKE_LAN_STATE" ;;
   "compose --profile lan exec -T autodj-lan autodj devices pairing-code") echo 12345678 ;;
   "compose --profile lan down --volumes --remove-orphans") printf stopped > "$FAKE_LAN_STATE" ;;
+  "compose --profile stream up -d autodj-stream") printf running > "$FAKE_STREAM_STATE" ;;
+  "compose --profile stream exec -T autodj-stream cat /index/.stream-secret") echo fake-stream-secret ;;
   "compose logs --no-color --tail 200") echo default-log ;;
   "compose --profile lan logs --no-color --tail 200 autodj-lan") echo lan-log ;;
   "inspect autodj --format {{.State.Status}}") echo "$FAKE_DEFAULT_STATE" ;;
   "inspect autodj --format {{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}") echo "$FAKE_DEFAULT_HEALTH" ;;
   "inspect autodj --format {{json .State}}") echo '{"Status":"failed"}' ;;
   "inspect autodj-lan --format "*) echo healthy ;;
+  "inspect autodj-stream --format "*) echo healthy ;;
   "inspect autodj --format "*) echo 127.0.0.1 ;;
 esac
 exit 0
@@ -309,6 +312,16 @@ exit 0
 printf 'curl %s\\n' "$*" >> "$FAKE_SMOKE_LOG"
 if [[ "$FAKE_CURL_FAILURE" == pairing && "$*" == *'/api/pair'* ]]; then exit 22; fi
 if [[ "$FAKE_CURL_FAILURE" == status && "$*" == *'/api/status'* ]]; then exit 22; fi
+if [[ "$*" == *'/stream/'* ]]; then
+  args=("$@")
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    if [[ "${args[i]}" == "--dump-header" ]]; then
+      printf 'HTTP/1.1 200 OK\\r\\ncontent-type: audio/mpeg\\r\\nicy-name: Test\\r\\nicy-metaint: 16000\\r\\nicy-br: 320\\r\\n\\r\\n' \\
+        > "${args[i+1]}"
+    fi
+  done
+  exit 0
+fi
 if [[ "$*" == *'/healthz'* ]]; then
   attempts="$(cat "$FAKE_HEALTH_ATTEMPTS" 2>/dev/null || printf 0)"
   if (( attempts < FAKE_TRANSIENT_HEALTH_FAILURES )); then
@@ -329,6 +342,7 @@ exit 0
             "FAKE_HEALTH_ATTEMPTS": _bash_path(bash, tmp_path / "health-attempts"),
             "FAKE_TRANSIENT_HEALTH_FAILURES": str(transient_health_failures),
             "FAKE_LAN_STATE": _bash_path(bash, tmp_path / "lan.state"),
+            "FAKE_STREAM_STATE": _bash_path(bash, tmp_path / "stream.state"),
             "FAKE_RM_FAILURE": str(fail_rm).lower(),
             "FAKE_SMOKE_LOG": _bash_path(bash, log),
             "RUNNER_TEMP": _bash_path(bash, tmp_path),
@@ -818,3 +832,39 @@ def test_compose_lan_profile_uses_lan_switch_with_explicit_values() -> None:
     assert _option_values(lan, "--allowed-host") == ["127.0.0.1", "radio.local"]
     assert _option_values(lan, "--allowed-origin") == ["http://radio.local:8080"]
     assert "--lan" not in default
+
+
+def test_compose_has_stream_profile_on_lan() -> None:
+    compose = yaml.safe_load((ROOT / "compose.yaml").read_text(encoding="utf-8"))
+    services = compose["services"]
+    stream = next(s for s in services.values() if "stream" in s.get("profiles", []))
+    command = (
+        " ".join(stream["command"]) if isinstance(stream["command"], list) else stream["command"]
+    )
+
+    assert "--stream" in command
+    assert "AUTODJ_ACCESS_TOKEN" in str(stream.get("environment", {})) or "env_file" in stream
+
+
+def test_compose_stream_profile_uses_lan_and_stream_switches_with_explicit_values() -> None:
+    stream = _compose_command(
+        "autodj-stream",
+        {"AUTODJ_LAN_HOST": "radio.local", "AUTODJ_LAN_ORIGIN": "http://radio.local:8080"},
+    )
+
+    # Auto-detection inside the container only sees container addresses, so the stream
+    # profile needs the same explicit host/origin merge as the lan profile, plus --stream so
+    # Sonos and other players can reach the live mix.
+    assert stream[:2] == ["serve", "--lan"]
+    assert "--stream" in stream
+    assert _option_values(stream, "--allowed-host") == ["127.0.0.1", "radio.local"]
+    assert _option_values(stream, "--allowed-origin") == ["http://radio.local:8080"]
+
+
+def test_container_smoke_fetches_stream() -> None:
+    script = (ROOT / "scripts" / "container_smoke.sh").read_text(encoding="utf-8")
+
+    assert "/stream/" in script
+    assert "--stream" in script
+    assert "--profile stream" in script
+    assert ".stream-secret" in script

@@ -125,6 +125,34 @@ reverse-DNS zone (`in-addr.arpa` or `ip6.arpa`), so ISP reverse-DNS names are no
 skipped. Inside a container the start-up block prints only the explicitly configured hosts,
 because container addresses are not reachable from the network; they are still allowed.
 
+## Stream URL, secret and security
+
+Stream mode (`autodj serve --stream`, `[stream] enabled = true`, or the Compose `stream`
+profile) serves the live mix as MP3 at `/stream/<secret>.mp3`, plus `/stream/<secret>.m3u`, a
+one-line playlist naming the same URL. The secret is a bearer credential for listening only:
+
+- It is 32 random bytes, URL-safe base64, created on first start in stream mode and stored in
+  `<index_dir>/.stream-secret`, beside the paired-devices database, never in `config.toml` and
+  never equal to the access token. It gets the same file permissions as the access token: mode
+  0600 on Linux and macOS, the index folder's permissions on Windows.
+- Anyone who has the URL can listen; it carries no control surface and cannot pair a browser,
+  change settings, or reach any other endpoint. The stream route is exempt from the session
+  cookie check for that reason, but every other check in `SecurityMiddleware` still applies,
+  including the Host allowlist, so the name typed into the player must be one this AutoDJ
+  instance is configured to accept.
+- A wrong secret returns 404, is compared in constant time, and counts toward the same rate
+  limiter that guards pairing-code guesses.
+- "Make new link" (`POST /api/stream/rotate`, authenticated, from the Settings, Stream section)
+  replaces the secret, disconnects every current listener, and makes the old URL 404
+  immediately. Rotation is the revocation mechanism: use it if the link is shared somewhere it
+  should not be.
+- `max_listeners` (default 8) bounds concurrent connections; a listener beyond it gets 503
+  without affecting anyone already connected. This limits resource use, not who can connect: any
+  device that can reach the port and has the current URL may take one of those slots.
+- The stream carries the operator's own library and voice liners to whoever holds the link. Treat
+  the URL the same way as a paired browser: do not publish it outside the LAN it was generated
+  for, and use "Make new link" if it leaks.
+
 ## Request and audit records
 
 HTTP responses receive `X-Request-ID`. WebSocket connections also receive an internal request ID.

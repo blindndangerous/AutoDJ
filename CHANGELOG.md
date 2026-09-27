@@ -19,6 +19,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   shows the detected hosts, and `autodj devices pairing-code` works with the saved token. The
   Compose `lan` profile now uses it too. `--allowed-host`, `--allowed-origin` and
   `--access-token` still work but are hidden from `--help` as advanced overrides.
+- `autodj serve --stream` (or `[stream] enabled = true`) turns AutoDJ into a radio station.
+  Sonos, VLC and other network players can open the live mix directly, with AutoDJ's own
+  crossfades, EQ, transition effects and voice liners already mixed in, and the artist and
+  title shown on the player. The web page grows a "Listen here" button to play the same stream
+  in the browser, and a Settings, Stream section with the stream address, a downloadable `.m3u`
+  playlist, a "Make new link" button, a quality (bitrate) choice, and the listener count. The
+  set starts when the first listener connects and stops 30 seconds after the last one
+  disconnects. Combine it with `--lan` (`serve --lan --stream`) so other devices can reach it,
+  or run the new Compose `stream` profile. See [Operations](docs/operations.md#radio-stream-sonos-vlc-and-other-players).
+
+### Changed
+
+- `--server-audio` now plays in stereo and gapless between tracks, using the same mix bus that
+  drives stream mode instead of a fresh sound-card connection per track.
+
+### Fixed
+
+- With `--server-audio`, each incoming track restarted from its very beginning on the sound
+  card, replaying the few seconds of the outgoing track's crossfade and the incoming track's own
+  skipped intro that had already played during the overlap.
+- `/api/history` stayed empty for the whole session with `--server-audio`, because tracks were
+  never recorded as played through that output path.
 
 ## [0.17.0] - 2026-09-26
 

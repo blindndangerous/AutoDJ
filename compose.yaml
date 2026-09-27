@@ -2,6 +2,8 @@
 # --insecure-lan acknowledges that internal bind; it does not authorize host LAN exposure.
 # Authenticated LAN startup: docker compose --profile lan up autodj-lan
 # Targeting autodj-lan prevents the default service from competing for host port 8080.
+# Radio stream startup: docker compose --profile stream up autodj-stream (same .env, adds
+# --stream). Only one of the lan and stream profiles can run at a time; both use host port 8080.
 
 x-autodj-common: &autodj-common
   build:
@@ -53,6 +55,28 @@ services:
       - --lan
       # The image healthcheck probes the container-local IPv4 listener. Keep this
       # exact loopback Host alongside, never instead of, the operator's LAN Host.
+      - --allowed-host
+      - 127.0.0.1
+      - --allowed-host
+      - "${AUTODJ_LAN_HOST:-}"
+      - --allowed-origin
+      - "${AUTODJ_LAN_ORIGIN:-}"
+
+  # Radio stream: the same authenticated LAN setup as autodj-lan, plus --stream so Sonos, VLC
+  # and other network players can open the live mix. Reuses setup-lan's .env; run
+  # `docker compose --profile stream up autodj-stream` instead of the lan profile.
+  autodj-stream:
+    <<: *autodj-common
+    profiles: [stream]
+    container_name: autodj-stream
+    ports:
+      - "${AUTODJ_LAN_BIND_ADDRESS:-0.0.0.0}:8080:8080"
+    environment:
+      AUTODJ_ACCESS_TOKEN: ${AUTODJ_ACCESS_TOKEN:-}
+    command:
+      - serve
+      - --lan
+      - --stream
       - --allowed-host
       - 127.0.0.1
       - --allowed-host
