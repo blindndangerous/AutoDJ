@@ -188,7 +188,12 @@ def _restore_djmix(cfg: Any, data: dict) -> None:
             setattr(cfg.djmix, field, value)
     if "harmonic_mode" in djmix:
         value = djmix["harmonic_mode"]
-        if isinstance(value, str) and value in HARMONIC_MODES:
+        if isinstance(value, bool):
+            # Older versions stored this setting as a Boolean on/off toggle.
+            migrated = "compatible" if value else "off"
+            logger.debug("migrating legacy Boolean harmonic_mode %r to %r", value, migrated)
+            cfg.djmix.harmonic_mode = migrated
+        elif isinstance(value, str) and value in HARMONIC_MODES:
             cfg.djmix.harmonic_mode = value
         else:
             _warn("harmonic_mode", value)

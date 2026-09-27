@@ -264,36 +264,6 @@
     </div>
   </details>
 
-  <!-- Hotkey help dialog — opened via "?" or the toolbar button.
-       <dialog>+showModal() gives native focus trap, ESC-to-close, and
-       focus-restore on close.  No role=dialog needed (native).  -->
-  <dialog id="hotkey-help-modal" aria-labelledby="hotkey-help-title">
-    <h2 id="hotkey-help-title" style="margin-top:0">Keyboard shortcuts</h2>
-    <p>Transport keys work on the Now Playing tab. Status keys (Shift+letter) and <kbd>?</kbd> work from any tab. Letter and punctuation shortcuts work on focused buttons and sliders, but not while typing or using dropdown typeahead. Space activates a focused button; arrow keys operate the focused slider or tab.</p>
-    <p>If these single-key shortcuts get in your way, turn them all off with the <strong>Enable keyboard shortcuts</strong> checkbox under Settings, Keyboard. The choice is saved in this browser. This list stays available from the Keyboard shortcuts button.</p>
-    <dl style="display:grid;grid-template-columns:max-content 1fr;column-gap:1rem;row-gap:0.25rem;margin:0">
-      <dt><kbd>Space</kbd> / <kbd>k</kbd></dt><dd>Play or pause. In stream mode, start or stop listening on this page.</dd>
-      <dt><kbd>n</kbd></dt><dd>Skip to next track</dd>
-      <dt><kbd>S</kbd></dt><dd>Shuffle (fresh random track)</dd>
-      <dt><kbd>M</kbd></dt><dd>Mute / unmute</dd>
-      <dt><kbd>↑</kbd> / <kbd>↓</kbd></dt><dd>Volume up / down (5%)</dd>
-      <dt><kbd>,</kbd> / <kbd>.</kbd></dt><dd>Seek back / forward 1 measure (BPM-derived; falls back to 5 s). Not available in stream mode.</dd>
-      <dt><kbd>?</kbd></dt><dd>Open / close this dialog</dd>
-      <dt><kbd>Esc</kbd></dt><dd>Close this dialog</dd>
-      <dt style="margin-top:0.5rem"><kbd>Shift+T</kbd></dt><dd style="margin-top:0.5rem">Speak current track (artist – title)</dd>
-      <dt><kbd>Shift+N</kbd></dt><dd>Speak next track (artist, title, BPM)</dd>
-      <dt><kbd>Shift+R</kbd></dt><dd>Speak time remaining</dd>
-      <dt><kbd>Shift+B</kbd></dt><dd>Speak current BPM</dd>
-      <dt><kbd>Shift+K</kbd></dt><dd>Speak current key</dd>
-    </dl>
-    <p style="margin-top:1rem;color:var(--text-dim);font-size:0.9em">
-      NVDA users: shortcuts work in focus mode (NVDA+Space to toggle).  In browse mode, NVDA intercepts the letter keys; switch to focus mode first.
-    </p>
-    <div style="margin-top:1rem;text-align:right">
-      <button id="btn-shortcuts-close" type="button">Close</button>
-    </div>
-  </dialog>
-
   <!-- Why this track? — plain-English explanation of the picker's choice -->
   <details class="card">
     <summary><h2>Why this track?</h2></summary>
@@ -1017,6 +987,40 @@
       <button type="submit" value="confirm">Make new link</button>
     </div>
   </form>
+</dialog>
+
+<!-- Hotkey help dialog — opened via "?" or the toolbar button, from any
+     tab.  <dialog>+showModal() gives native focus trap, ESC-to-close, and
+     focus-restore on close.  No role=dialog needed (native).  Lives at
+     body level, outside every [role="tabpanel"]: it used to sit inside
+     #panel-now, so opening it from another tab opened it inside a
+     `hidden` subtree — not rendered, and not in the accessibility tree,
+     while showModal() still made the rest of the page inert. -->
+<dialog id="hotkey-help-modal" aria-labelledby="hotkey-help-title">
+  <h2 id="hotkey-help-title" style="margin-top:0">Keyboard shortcuts</h2>
+  <p>Transport keys work on the Now Playing tab. Status keys (Shift+letter) and <kbd>?</kbd> work from any tab. Letter and punctuation shortcuts work on focused buttons and sliders, but not while typing or using dropdown typeahead. Space activates a focused button; arrow keys operate the focused slider or tab.</p>
+  <p>If these single-key shortcuts get in your way, turn them all off with the <strong>Enable keyboard shortcuts</strong> checkbox under Settings, Keyboard. The choice is saved in this browser. This list stays available from the Keyboard shortcuts button.</p>
+  <dl style="display:grid;grid-template-columns:max-content 1fr;column-gap:1rem;row-gap:0.25rem;margin:0">
+    <dt><kbd>Space</kbd> / <kbd>k</kbd></dt><dd>Play or pause. In stream mode, start or stop listening on this page.</dd>
+    <dt><kbd>n</kbd></dt><dd>Skip to next track</dd>
+    <dt><kbd>S</kbd></dt><dd>Shuffle (fresh random track)</dd>
+    <dt><kbd>M</kbd></dt><dd>Mute / unmute</dd>
+    <dt><kbd>↑</kbd> / <kbd>↓</kbd></dt><dd>Volume up / down (5%)</dd>
+    <dt><kbd>,</kbd> / <kbd>.</kbd></dt><dd>Seek back / forward 1 measure (BPM-derived; falls back to 5 s). Not available in stream mode.</dd>
+    <dt><kbd>?</kbd></dt><dd>Open / close this dialog</dd>
+    <dt><kbd>Esc</kbd></dt><dd>Close this dialog</dd>
+    <dt style="margin-top:0.5rem"><kbd>Shift+T</kbd></dt><dd style="margin-top:0.5rem">Speak current track (artist – title)</dd>
+    <dt><kbd>Shift+N</kbd></dt><dd>Speak next track (artist, title, BPM)</dd>
+    <dt><kbd>Shift+R</kbd></dt><dd>Speak time remaining</dd>
+    <dt><kbd>Shift+B</kbd></dt><dd>Speak current BPM</dd>
+    <dt><kbd>Shift+K</kbd></dt><dd>Speak current key</dd>
+  </dl>
+  <p style="margin-top:1rem;color:var(--text-dim);font-size:0.9em">
+    NVDA users: shortcuts work in focus mode (NVDA+Space to toggle).  In browse mode, NVDA intercepts the letter keys; switch to focus mode first.
+  </p>
+  <div style="margin-top:1rem;text-align:right">
+    <button id="btn-shortcuts-close" type="button">Close</button>
+  </div>
 </dialog>
 
 <!--
