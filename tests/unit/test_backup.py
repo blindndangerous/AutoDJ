@@ -2526,10 +2526,14 @@ def test_snapshot_reports_invalid_or_unpublished_index(tmp_path: Path) -> None:
         backup._snapshot_derived(cfg, destination, online=False)
 
     (cfg.index.active_dir / "tracks.db").write_bytes(b"unpublished")
-    with (
-        patch("autodj.backup.read_manifest", return_value=None),
-        pytest.raises(BackupError, match="has no published manifest"),
-    ):
+    with pytest.raises(BackupError, match=r"older AutoDJ.*`autodj index --force`"):
+        backup._snapshot_derived(cfg, destination, online=False)
+
+    # A first build that stopped before publishing is current format, not old.
+    (cfg.index.active_dir / ".index-publication-state.json").write_text(
+        '{"high_water": 0, "tombstone_revision": 0}', encoding="utf-8"
+    )
+    with pytest.raises(BackupError, match=r"has no published manifest.*autodj index --force"):
         backup._snapshot_derived(cfg, destination, online=False)
 
 
@@ -3218,6 +3222,16 @@ def test_staged_index_manifest_wraps_invalid_inner_manifest(tmp_path: Path) -> N
         backup._staged_index_manifest(record)
 
     assert isinstance(raised.value.__cause__, IndexConsistencyError)
+
+
+def test_staged_index_manifest_names_an_old_backup_index(tmp_path: Path) -> None:
+    record = _restore_record(tmp_path, stage_data=b'{"schema_version": 1}')
+
+    with pytest.raises(
+        BackupError,
+        match=r"The index in this backup was made by an older AutoDJ.*`autodj index --force`",
+    ):
+        backup._staged_index_manifest(record)
 
 
 def test_staged_index_manifest_reads_valid_written_manifest(tmp_path: Path) -> None:

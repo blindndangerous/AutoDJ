@@ -25,11 +25,14 @@ from autodj import index_manifest as index_publication
 from autodj.index_manifest import (
     MANIFEST_NAME,
     PUBLICATION_STATE_NAME,
+    REBUILD_COMMAND,
     IndexConsistencyError,
     IndexManifest,
+    UnsupportedIndexError,
     copy_published_snapshot,
     publication_lock,
     read_manifest,
+    require_current_format,
 )
 from autodj.index_manifest import SCHEMA_VERSION as INDEX_MANIFEST_SCHEMA_VERSION
 from autodj.version import current_version
@@ -600,13 +603,17 @@ def _snapshot_derived(cfg: AutoDJConfig, destination: Path, *, online: bool) -> 
     stopped_state = None if online else _begin_stopped_snapshot(active)
     try:
         manifest = read_manifest(active)
+        if manifest is None:
+            require_current_format(active)
+    except UnsupportedIndexError as exc:
+        raise BackupError(str(exc)) from exc
     except IndexConsistencyError as exc:
         raise BackupError(f"published index manifest is invalid: {exc}") from exc
     has_index = any((active / name).exists() for name in ("vectors.index", "tracks.db"))
     if manifest is None and has_index:
         raise BackupError(
-            "index has no published manifest; rebuild it before backup so one coherent "
-            "generation can be selected"
+            f"index has no published manifest; rebuild it with `{REBUILD_COMMAND}` before "
+            "backup so one coherent generation can be selected"
         )
     if manifest is not None:
         attempts = 3 if online else 1
@@ -1895,6 +1902,9 @@ def _staged_index_manifest(record: _StagedRestore) -> IndexManifest:
             root = Path(temp_name)
             (root / MANIFEST_NAME).write_bytes(payload)
             manifest = read_manifest(root)
+    except UnsupportedIndexError as exc:
+        # The temporary folder name would only confuse; name the backup instead.
+        raise BackupError(str(UnsupportedIndexError("this backup", exc.reason))) from exc
     except IndexConsistencyError as exc:
         raise BackupError(f"backup index manifest is invalid: {exc}") from exc
     return cast(IndexManifest, manifest)
