@@ -5,8 +5,12 @@ and librosa audio features per track, combines them into a single
 L2-normalized vector, and stores the result in a FAISS nearest-neighbor index.
 
 Index files written to ``index_dir``:
-- ``vectors.index``  — FAISS binary index (``IndexFlatIP``, cosine similarity)
-- ``tracks.db``      — SQLite metadata, one row per indexed track
+- ``index-manifest.json`` — names the live generation and its checksums
+- ``tracks.gNNN.db`` / ``vectors.gNNN.index`` — the published generation
+  (SQLite metadata, one row per track; FAISS ``IndexFlatIP`` vectors).
+  Every reader loads these.
+- ``tracks.db`` / ``vectors.index`` — working copies the indexer edits and
+  then publishes as the next generation.
 
 Subsequent runs are **incremental**: tracks already present in
 ``tracks.db`` are skipped.  Pass ``force=True`` to rebuild from scratch.
@@ -24,7 +28,6 @@ Example:
 from __future__ import annotations
 
 import contextlib
-import json
 import logging
 import os
 import shutil
@@ -32,7 +35,6 @@ import sqlite3
 import subprocess  # nosec B404 -- FFmpeg uses fixed argv without a shell
 import tempfile
 import time
-import uuid
 import warnings
 from collections import deque
 from collections.abc import Callable
@@ -53,15 +55,14 @@ from autodj.index_manifest import (
     IndexConsistencyError,
     IndexManifest,
     IndexSnapshotToken,
+    UnsupportedIndexError,
     _immutable_sqlite_uri,
     current_snapshot_token,
     fsync_directory,
-    legacy_artifacts_allowed,
-    publication_has_uncommitted_reservation,
-    publication_is_tombstoned,
     publication_lock,
     publish_manifest,
     read_manifest,
+    require_current_format,
     require_snapshot_token,
     restore_working_snapshot,
     sha256_file,
@@ -106,8 +107,6 @@ FEATURE_DIM = EMBEDDING_DIM + _LIBROSA_DIM
 # aligned.  On startup, ``_load_existing_index`` defensively clamps either
 # file to their common prefix after an interrupted write.
 FAISS_CHECKPOINT_EVERY: int = 100
-_FLAT_MIGRATION_MARKER = ".flat-migration.json"
-_FLAT_MIGRATION_STAGING_PREFIX = ".flat-migration-"
 
 # ---------------------------------------------------------------------------
 # Tracks SQLite store
@@ -145,24 +144,6 @@ _TRACKS_SELECT_SQL = (
     "key, mode, tempo_confidence, embedded_at FROM tracks ORDER BY vec_row ASC"
 )
 
-_TRACKS_SCHEMA_SIGNATURE = (
-    ("vec_row", "INTEGER", 1, None, 0),
-    ("path", "TEXT", 1, None, 0),
-    ("title", "TEXT", 1, "''", 0),
-    ("artist", "TEXT", 1, "''", 0),
-    ("album", "TEXT", 1, "''", 0),
-    ("genre", "TEXT", 1, "''", 0),
-    ("bpm", "REAL", 1, "0", 0),
-    ("year", "INTEGER", 1, "0", 0),
-    ("length", "REAL", 1, "0", 0),
-    ("energy", "REAL", 1, "0", 0),
-    ("key", "INTEGER", 1, "-1", 0),
-    ("mode", "INTEGER", 1, "-1", 0),
-    ("tempo_confidence", "REAL", 1, "0", 0),
-    ("embedded_at", "REAL", 1, "0", 0),
-)
-_TRACKS_REQUIRED_COLUMNS = tuple(column[0] for column in _TRACKS_SCHEMA_SIGNATURE)
-
 # Fixed SQL fragment; all row values remain parameter-bound.
 _TRACKS_UPSERT_SQL = _TRACKS_INSERT_SQL + (
     " ON CONFLICT(vec_row) DO UPDATE SET path=excluded.path, "  # nosec B608
@@ -191,7 +172,6 @@ def _open_tracks_db(index_dir: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, isolation_level=None, check_same_thread=False)
     try:
         conn.executescript(_TRACKS_SCHEMA)
-        _ensure_vec_row_schema(conn)
     except BaseException:
         conn.close()
         raise
@@ -201,106 +181,11 @@ def _open_tracks_db(index_dir: Path) -> sqlite3.Connection:
     return conn
 
 
-def _ensure_vec_row_schema(conn: sqlite3.Connection) -> None:
-    """Migrate legacy tracks tables to stable FAISS vector-row identities."""
-    info = {str(row[1]): row for row in conn.execute("PRAGMA table_info(tracks)")}
-    actual_signature = tuple(
-        (
-            str(row[1]),
-            str(row[2]).strip().upper(),
-            int(row[3]),
-            None if row[4] is None else str(row[4]),
-            int(row[5]),
-        )
-        for row in info.values()
-    )
-    unique_single_columns: set[str] = set()
-    for index_row in conn.execute("PRAGMA index_list(tracks)"):
-        if int(index_row[2]) != 1 or (len(index_row) > 4 and int(index_row[4]) != 0):
-            continue
-        index_name = str(index_row[1]).replace('"', '""')
-        index_columns = [
-            str(row[2])
-            for row in conn.execute(  # nosec B608 -- SQLite-owned identifier
-                f'PRAGMA index_info("{index_name}")'
-            )
-        ]
-        if len(index_columns) == 1:
-            unique_single_columns.add(index_columns[0])
-    if actual_signature == _TRACKS_SCHEMA_SIGNATURE and {"vec_row", "path"}.issubset(
-        unique_single_columns
-    ):
-        return
-
-    names = set(info)
-    if "vec_row" in names:
-        vec_row_order = (
-            "vec_row"
-            if str(info["vec_row"][2]).strip().upper() == "INTEGER"
-            else "CAST(vec_row AS INTEGER)"
-        )
-        order_by = f"CASE WHEN vec_row IS NULL THEN 1 ELSE 0 END, {vec_row_order}, rowid"
-    else:
-        order_by = "id, rowid" if "id" in names else "rowid"
-    defaults = {
-        "title": "''",
-        "artist": "''",
-        "album": "''",
-        "genre": "''",
-        "bpm": "0",
-        "year": "0",
-        "length": "0",
-        "energy": "0",
-        "key": "-1",
-        "mode": "-1",
-        "tempo_confidence": "0",
-        "embedded_at": "0",
-    }
-    value_sql = [
-        f"ROW_NUMBER() OVER (ORDER BY {order_by}) - 1",
-        "path",
-        *(name if name in names else default for name, default in defaults.items()),
-    ]
-    with immediate_transaction(conn):
-        duplicate_path = conn.execute(
-            "SELECT path FROM tracks GROUP BY path HAVING COUNT(*) > 1 LIMIT 1"
-        ).fetchone()
-        if duplicate_path is not None:
-            raise sqlite3.IntegrityError(
-                "cannot migrate tracks schema: duplicate paths would break vector identity"
-            )
-        conn.execute(
-            """CREATE TABLE tracks_new (
-                vec_row INTEGER NOT NULL UNIQUE, path TEXT NOT NULL UNIQUE,
-                title TEXT NOT NULL DEFAULT '', artist TEXT NOT NULL DEFAULT '',
-                album TEXT NOT NULL DEFAULT '', genre TEXT NOT NULL DEFAULT '',
-                bpm REAL NOT NULL DEFAULT 0, year INTEGER NOT NULL DEFAULT 0,
-                length REAL NOT NULL DEFAULT 0, energy REAL NOT NULL DEFAULT 0,
-                key INTEGER NOT NULL DEFAULT -1, mode INTEGER NOT NULL DEFAULT -1,
-                tempo_confidence REAL NOT NULL DEFAULT 0,
-                embedded_at REAL NOT NULL DEFAULT 0
-            )"""
-        )
-        columns = (
-            "vec_row, path, title, artist, album, genre, bpm, year, length, "
-            "energy, key, mode, tempo_confidence, embedded_at"
-        )
-        # Identifiers and expressions come only from fixed schema definitions above.
-        conn.execute(
-            f"INSERT INTO tracks_new ({columns}) "  # nosec B608
-            f"SELECT {', '.join(value_sql)} FROM tracks ORDER BY {order_by}"
-        )
-        conn.execute("DROP TABLE tracks")
-        conn.execute("ALTER TABLE tracks_new RENAME TO tracks")
-
-
 def _entry_to_row(entry: IndexEntry, music_dir: Path | None, vec_row: int) -> dict[str, object]:
     """Convert an :class:`IndexEntry` to a SQLite-bound row dict.
 
-    Stored ``path`` is relativised against *music_dir* the same way the
-    legacy JSON sidecar did so that an index built on one host stays
-    portable to any other host that mounts the library at a different
-    absolute path.
+    Stored ``path`` is relative to *music_dir*, so an index built on one host
+    works on any host that mounts the library somewhere else.
     """
     return {
         "vec_row": vec_row,
@@ -394,86 +279,48 @@ def _load_tracks_rows(conn: sqlite3.Connection) -> list[IndexEntry]:
     return [_row_to_entry(r) for r in cur.fetchall()]
 
 
+def _is_absolute_storage(path: str) -> bool:
+    """Whether *path* is absolute: a POSIX root, a UNC share, or a drive letter."""
+    return path.startswith(("/", "\\")) or path[1:2] == ":"
+
+
 def _relativize_for_storage(abs_path: str, music_dir: Path | None) -> str:
-    """Convert an absolute path to a forward-slashed string for ``tracks.db``.
+    """Return *abs_path* as a forward-slashed path relative to *music_dir*.
 
-    If *abs_path* lives under *music_dir*, the returned string is RELATIVE
-    to *music_dir* — making the index portable across machines that mount
-    the library at a different absolute path.  Otherwise the absolute path
-    is returned (forward-slashed for cross-OS readability).
+    ``tracks.db`` stores only relative paths, which keeps an index usable on
+    any host that mounts the library at a different place.
 
     Args:
-        abs_path: Absolute path string from an :class:`IndexEntry` at runtime.
-        music_dir: Library root.  ``None`` disables relativization.
+        abs_path: Runtime path from an :class:`IndexEntry`.
+        music_dir: Library root.  ``None`` stores already-relative paths as-is.
 
     Returns:
-        A forward-slashed path string suitable for SQLite storage.
+        A forward-slashed relative path string for SQLite storage.
+
+    Raises:
+        ValueError: If *abs_path* is absolute and not under *music_dir*.
     """
-    # Pure string-prefix match — never call Path.resolve() here.  resolve()
-    # stat()s the file (and follows symlinks); for libraries on NFS/SMB this
-    # turns the per-checkpoint loop over 70k+ entries into ~150 s of stat()
-    # RPCs and dominates total indexing time.  Paths reaching this function
-    # are already absolute (set by _resolve_for_runtime at startup) so the
-    # only job left is to lop off the music_dir prefix.
-    p = Path(abs_path)
+    # Pure string-prefix match; never call Path.resolve() here.  resolve()
+    # stat()s the file, and on NFS/SMB libraries that turns the per-checkpoint
+    # loop over 70k+ entries into minutes of stat() round trips.
+    path = Path(abs_path).as_posix()
     if music_dir is not None:
-        md_str = music_dir.as_posix().rstrip("/") + "/"
-        p_str = p.as_posix()
-        if p_str.startswith(md_str):
-            return p_str[len(md_str) :]
-    return p.as_posix()
-
-
-def _resolve_for_runtime(
-    stored: str,
-    music_dir: Path | None,
-    path_remap: list[tuple[str, str]] | None,
-) -> str:
-    """Convert a stored path string into an absolute runtime path.
-
-    Resolution order:
-    1. If *stored* is absolute and *path_remap* matches a prefix, swap it.
-    2. If *stored* is absolute, return as-is (with native separators).
-    3. If *stored* is relative, join with *music_dir*.
-
-    Args:
-        stored: Path string as written in ``tracks.db`` (relative,
-            absolute POSIX, or absolute Windows).
-        music_dir: Library root for resolving relative paths.
-        path_remap: Optional ``(from_prefix, to_prefix)`` swaps for absolute
-            paths whose mount point differs on this machine.
-
-    Returns:
-        An absolute path string using native separators.
-    """
-    s = stored.replace("\\", "/")
-    is_abs = s.startswith("/") or (len(s) >= 2 and s[1] == ":")
-
-    if is_abs and path_remap:
-        for from_pre, to_pre in path_remap:
-            from_norm = from_pre.replace("\\", "/")
-            if s.startswith(from_norm):
-                s = to_pre.replace("\\", "/") + s[len(from_norm) :]
-                break
-
-    if is_abs:
-        return str(Path(s))
-
-    base = music_dir if music_dir is not None else Path()
-    return str(base / s)
+        prefix = music_dir.as_posix().rstrip("/") + "/"
+        if path.startswith(prefix):
+            return path[len(prefix) :]
+    if _is_absolute_storage(path):
+        raise ValueError(f"{abs_path} is not under music_dir {music_dir}")
+    return path
 
 
 def _resolve_beets_path(path: Path, music_dir: Path) -> Path:
     """Resolve a beets-stored path to an absolute local path.
 
-    Recent beets versions store track paths *relative* to the library
-    ``directory`` setting (the ``relative_path`` migration).  For relative
-    paths we prepend *music_dir* — which must be the local mount point of
-    that beets ``directory`` — so the file can be opened on this machine.
-
-    Absolute paths are returned unchanged: they are typically tracks living
-    outside the main library tree (e.g. an extra mount), and the user is
-    expected to have them reachable as-is.
+    Beets stores track paths relative to its library ``directory``, or
+    absolute on setups without its ``relative_path`` option.  Relative paths
+    are joined to *music_dir*, the local mount point of that ``directory``.
+    Absolute paths are returned unchanged; the indexer skips any that fall
+    outside *music_dir*.
 
     Args:
         path: Original path from the beets database (may be relative or absolute).
@@ -501,11 +348,10 @@ def source_mtime(path: str | Path) -> float:
 
     The ``OSError`` fallback covers a file that vanished or became unreadable
     between the scan and this call.  The local clock is the wrong clock, but
-    the alternatives are worse: ``0.0`` is the sentinel
-    :func:`_detect_stale_entries` reads as "legacy entry, snapshot the file's
-    mtime on first sight", so returning it here would silently re-stamp a real
-    entry, and raising would abort a whole indexing run over one bad file.  A
-    local-clock stamp at worst makes that single track look stale once.
+    the alternatives are worse: ``0.0`` means "never stamped", which
+    :func:`_detect_stale_entries` re-embeds on every run, and raising would
+    abort a whole indexing run over one bad file.  A local-clock stamp at worst
+    makes that single track look stale once.
 
     Args:
         path: Path to the source audio file.
@@ -529,7 +375,7 @@ class IndexEntry:
     """Serialisable metadata record stored alongside each FAISS vector.
 
     Attributes:
-        path: String path to the audio file (stored as string for JSON compat).
+        path: String path to the audio file.
         title: Track title.
         artist: Artist name.
         album: Album name.
@@ -545,9 +391,7 @@ class IndexEntry:
         embedded_at: Unix timestamp when this entry was embedded.  Used to
             detect replaced files: if ``file.mtime > embedded_at`` on the
             next ``index`` run the entry is dropped and re-embedded.
-            ``0.0`` = legacy entry written before this field existed; on
-            first encounter the indexer snapshots it to the file's current
-            mtime so future replacements are detectable.
+            ``0.0`` = never stamped; the next ``index`` run re-embeds it.
     """
 
     path: str
@@ -1144,14 +988,11 @@ def save_index(
     The FAISS file is written to a ``*.tmp`` sibling and renamed over the
     original.  The tracks DB is updated inside a single SQLite transaction
     (``DELETE FROM tracks`` then bulk ``INSERT``), so a crash mid-write
-    leaves the existing on-disk DB intact instead of corrupting it.  Same
-    crash-safety guarantee as the older JSON sidecar, with no whole-file
-    rewrite.
+    leaves the existing on-disk DB intact instead of corrupting it.
 
-    When *music_dir* is provided, paths under it are stored RELATIVE to
-    *music_dir* (forward-slashed) — making the index portable across
-    machines that mount the library at a different absolute path.  Paths
-    outside *music_dir* are stored as forward-slashed absolute strings.
+    Paths are stored relative to *music_dir* (forward-slashed), making the
+    index portable across machines that mount the library at a different
+    absolute path.  A path outside *music_dir* raises ``ValueError``.
     Runtime ``entry.path`` values are not mutated.
 
     The row order of *entries* must match the row order of *vectors*.
@@ -1175,8 +1016,8 @@ def save_index(
 class PruneSafetyError(RuntimeError):
     """Raised when prune would remove a suspiciously large fraction of entries.
 
-    Almost always indicates a misconfigured ``music_dir`` / ``path_remap``
-    rather than genuine library cleanup — refusing the operation prevents
+    Almost always indicates a misconfigured ``music_dir`` rather than
+    genuine library cleanup — refusing the operation prevents
     data loss.
     """
 
@@ -1253,7 +1094,6 @@ def enrich_from_beets(
     index_dir: Path,
     music_dir: Path | None,
     beets_db: Path,
-    path_remap: list[tuple[str, str]] | None = None,
 ) -> tuple[int, int]:
     """Refresh existing index entries with whatever beets has on each track.
 
@@ -1282,7 +1122,6 @@ def enrich_from_beets(
         index_dir: Directory containing ``vectors.index`` + ``tracks.db``.
         music_dir: Library root (used to resolve relative stored paths).
         beets_db: Path to the beets ``library.db``.
-        path_remap: Optional cross-OS prefix swaps for legacy absolute paths.
 
     Returns:
         ``(updated, total)`` — count of entries with at least one field
@@ -1300,25 +1139,12 @@ def enrich_from_beets(
     with publication_lock(index_dir):
         current = read_manifest(index_dir)
         source_snapshot = current_snapshot_token(index_dir)
-        if current is not None:
-            entries, _loaded = load_index(
-                index_dir,
-                expected_generation=current.generation,
-            )
-        else:
-            if not legacy_artifacts_allowed(index_dir):
-                raise IndexConsistencyError("manifest-free artifacts have publication history")
-            db_path = _tracks_db_path(index_dir)
-            faiss_file = index_dir / "vectors.index"
-            if not db_path.exists() or not faiss_file.exists():
-                return (0, 0)
-            conn_db = _open_tracks_db(index_dir)
-            try:
-                entries = _load_tracks_rows(conn_db)
-            finally:
-                conn_db.close()
-    for e in entries:
-        e.path = _resolve_for_runtime(e.path, music_dir, path_remap)
+        if current is None:
+            require_current_format(index_dir)
+            return (0, 0)
+        entries, _loaded = load_index(
+            index_dir, music_dir=music_dir, expected_generation=current.generation
+        )
 
     try:
         conn = _open_db(beets_db)
@@ -1374,11 +1200,8 @@ def enrich_from_beets(
         logger.info("Enrich: no changes from beets")
         return (0, len(entries))
 
-    # Metadata-only update — no FAISS rewrite needed (vectors unchanged).
-    # SQLite replacement inside a single transaction is far
-    # cheaper than the legacy "reconstruct every vector + full save_index"
-    # round-trip, which paid O(N) vector reconstruct cost just to re-emit
-    # JSON. No vector reconstruction or rewrite is required.
+    # Metadata-only update: the vectors are unchanged, so only tracks.db is
+    # replaced (in one transaction) and republished.
     _publish_metadata_snapshot(
         entries,
         index_dir,
@@ -1389,11 +1212,6 @@ def enrich_from_beets(
     return (updated, len(entries))
 
 
-def _is_relative_storage(paths: list[str]) -> bool:
-    """True when every stored path string is already in relative form."""
-    return all(not (p.startswith("/") or (len(p) >= 2 and p[1] == ":") or "\\" in p) for p in paths)
-
-
 def _check_prune_safety(removed: int, total: int, allow_mass_prune: bool) -> None:
     """Raise PruneSafetyError when the prune ratio would cross the threshold."""
     if allow_mass_prune or total == 0 or removed / total <= PRUNE_SAFETY_THRESHOLD:
@@ -1401,8 +1219,8 @@ def _check_prune_safety(removed: int, total: int, allow_mass_prune: bool) -> Non
     raise PruneSafetyError(
         f"Refusing to prune {removed}/{total} tracks "
         f"({removed / total:.0%} > {PRUNE_SAFETY_THRESHOLD:.0%} threshold).\n"
-        "This usually means [library] music_dir or path_remap in your "
-        "config does not match where the indexed files actually live.\n"
+        "This usually means [library] music_dir in your config does not "
+        "match where the indexed files actually live.\n"
         "Fix the config first, then re-run.  If you really did delete "
         "this many tracks, pass allow_mass_prune=True (or "
         "`autodj prune --force` from the CLI)."
@@ -1437,35 +1255,9 @@ def _delete_index_files(
         fsync_directory(index_dir)
 
 
-def _maybe_migrate_paths(
-    entries: list[IndexEntry],
-    index_dir: Path,
-    music_dir: Path | None,
-    already_relative: bool,
-    *,
-    expected_snapshot: IndexSnapshotToken | None = None,
-) -> None:
-    """Re-save tracks DB in relative path form when storage is still absolute.
-
-    With the SQLite tracks store we can rewrite just the rows we care
-    about; no need to reconstruct vectors or touch the FAISS file.  The
-    legacy code path used save_index() here, which required a full
-    O(N) vector reconstruct just to flip path strings — wasted work.
-    """
-    if music_dir is None or already_relative:
-        return
-    _publish_metadata_snapshot(
-        entries,
-        index_dir,
-        music_dir,
-        expected_snapshot=expected_snapshot,
-    )
-
-
 def prune_index(
     index_dir: Path,
     music_dir: Path | None = None,
-    path_remap: list[tuple[str, str]] | None = None,
     allow_mass_prune: bool = False,
     throttle_ms: float = 0.0,
     stat_workers: int = 8,
@@ -1473,13 +1265,10 @@ def prune_index(
     """Remove index entries whose audio files no longer exist on disk.
 
     Loads ``tracks.db`` and ``vectors.index``, resolves each stored
-    path against *music_dir* + *path_remap*, drops every row whose audio
-    file is missing, and rewrites both files via :func:`save_index`.  If
-    every track is gone, the index files are deleted instead.
-
-    Always rewrites ``tracks.db`` if any rows were stored as absolute
-    paths under *music_dir* — converting them to portable relative paths.
-    No-op when no index exists or no rewrite is needed.
+    path against *music_dir*, drops every row whose audio file is
+    missing, and publishes the rest as a new generation.  If every track
+    is gone, the index files are deleted instead.  No-op when no index
+    exists or nothing is missing.
 
     Safety: if more than :data:`PRUNE_SAFETY_THRESHOLD` of the entries
     would be removed, raises :class:`PruneSafetyError` instead of touching
@@ -1489,7 +1278,6 @@ def prune_index(
     Args:
         index_dir: Directory containing ``vectors.index`` and ``tracks.db``.
         music_dir: Library root for resolving relative paths.
-        path_remap: Optional cross-OS prefix swaps for legacy absolute paths.
         allow_mass_prune: If ``True``, skip the safety check and prune
             even if it would remove most of the index.
 
@@ -1504,29 +1292,12 @@ def prune_index(
     with publication_lock(index_dir):
         current = read_manifest(index_dir)
         source_snapshot = current_snapshot_token(index_dir)
-        if current is not None:
-            entries, loaded = load_index(
-                index_dir,
-                expected_generation=current.generation,
-            )
-        else:
-            if not legacy_artifacts_allowed(index_dir):
-                raise IndexConsistencyError("manifest-free artifacts have publication history")
-            db_path = _tracks_db_path(index_dir)
-            faiss_file = index_dir / "vectors.index"
-            if not db_path.exists() or not faiss_file.exists():
-                return (0, 0)
-            conn = _open_tracks_db(index_dir)
-            try:
-                entries = _load_tracks_rows(conn)
-            finally:
-                conn.close()
-            loaded = cast("faiss.IndexFlatIP", faiss.read_index(str(faiss_file)))
-    already_relative = music_dir is not None and _is_relative_storage(
-        [entry.path for entry in entries]
-    )
-    for e in entries:
-        e.path = _resolve_for_runtime(e.path, music_dir, path_remap)
+        if current is None:
+            require_current_format(index_dir)
+            return (0, 0)
+        entries, loaded = load_index(
+            index_dir, music_dir=music_dir, expected_generation=current.generation
+        )
 
     # Existence check is RTT-bound on NFS/SMB libraries — at 70k+ tracks the
     # serial loop dominates the whole `index` command.  Fan out across a
@@ -1564,13 +1335,6 @@ def prune_index(
         return (removed, 0)
 
     if removed == 0:
-        _maybe_migrate_paths(
-            entries,
-            index_dir,
-            music_dir,
-            already_relative,
-            expected_snapshot=source_snapshot,
-        )
         return (0, len(entries))
 
     # Batch reconstruct: one FAISS call returns the whole (N, dim) array,
@@ -1590,287 +1354,20 @@ def prune_index(
     return (removed, len(surviving_entries))
 
 
-def _write_flat_migration_marker(
-    target_dir: Path,
-    staging: Path,
-    *,
-    preserve_target_vector: bool = False,
-) -> None:
-    """Durably mark one owned in-progress flat-index migration."""
-    marker = target_dir / _FLAT_MIGRATION_MARKER
-    temporary = marker.with_name(f".{marker.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        with temporary.open("x", encoding="utf-8", newline="\n") as handle:
-            json.dump(
-                {"staging": staging.name, "preserve_target_vector": preserve_target_vector},
-                handle,
-            )
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        temporary.replace(marker)
-        fsync_directory(target_dir)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def _read_flat_migration_staging(target_dir: Path) -> tuple[Path, bool] | None:
-    """Return owned migration staging directory, rejecting malformed markers."""
-    marker = target_dir / _FLAT_MIGRATION_MARKER
-    if not marker.exists():
-        return None
-    try:
-        raw = json.loads(marker.read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
-        raise IndexConsistencyError(f"invalid flat migration marker: {exc}") from exc
-    if (
-        type(raw) is not dict
-        or set(raw) not in ({"staging"}, {"staging", "preserve_target_vector"})
-        or type(raw["staging"]) is not str
-        or ("preserve_target_vector" in raw and type(raw["preserve_target_vector"]) is not bool)
-        or Path(raw["staging"]).name != raw["staging"]
-        or not raw["staging"].startswith(_FLAT_MIGRATION_STAGING_PREFIX)
-    ):
-        raise IndexConsistencyError("invalid flat migration marker")
-    return target_dir / raw["staging"], bool(raw.get("preserve_target_vector", False))
-
-
-def _clear_flat_migration_state(
-    target_dir: Path,
-    staging: Path,
-    *,
-    remove_cores: bool,
-    preserve_target_vector: bool = False,
-) -> None:
-    """Remove marker-owned staging and, after an incomplete install, cores."""
-    if remove_cores:
-        if not preserve_target_vector:
-            (target_dir / "vectors.index").unlink(missing_ok=True)
-        (target_dir / "tracks.db").unlink(missing_ok=True)
-    if staging.exists():
-        shutil.rmtree(staging)
-    (target_dir / _FLAT_MIGRATION_MARKER).unlink(missing_ok=True)
-
-
-def _backup_legacy_tracks_db(source: Path, destination: Path) -> None:
-    """Create a SQLite snapshot that includes committed source WAL pages."""
-    source_conn = sqlite3.connect(source)
-    destination_conn = sqlite3.connect(destination)
-    try:
-        source_conn.backup(destination_conn)
-    finally:
-        destination_conn.close()
-        source_conn.close()
-
-
-def _migrate_staged_legacy_tracks_db(staged_db: Path) -> None:
-    """Upgrade a copied legacy tracks table before target promotion."""
-    conn = sqlite3.connect(staged_db, isolation_level=None)
-    try:
-        _ensure_vec_row_schema(conn)
-        conn.execute("PRAGMA journal_mode=WAL")
-    finally:
-        conn.close()
-
-
-def _validate_flat_migration_staging(staged_db: Path, staged_vectors: Path) -> int:
-    """Reject staged legacy cores whose SQLite and FAISS row counts differ."""
-    conn = sqlite3.connect(_immutable_sqlite_uri(staged_db), uri=True)
-    try:
-        sqlite_count = int(conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0])
-    finally:
-        conn.close()
-    vector_count = int(faiss.read_index(str(staged_vectors)).ntotal)
-    if sqlite_count != vector_count:
-        raise IndexConsistencyError(
-            f"flat migration count mismatch: sqlite={sqlite_count}, faiss={vector_count}"
-        )
-    return vector_count
-
-
-def _migrate_flat_index_if_needed(target_dir: Path) -> None:
-    """Auto-migrate a pre-0.9 flat index into the named-index layout.
-
-    Pre-0.9 builds wrote ``<index_dir>/vectors.index`` and
-    ``<index_dir>/tracks.db`` directly.  Post-0.9 expects
-    ``<index_dir>/<name>/...`` instead.  If *target_dir* doesn't have
-    the new files but its parent has the old ones, move them across
-    in-place so the user doesn't have to re-index after upgrading.
-
-    Silent no-op when the migration doesn't apply.
-
-    Args:
-        target_dir: The named-index sub-directory (e.g. ``index/default``).
-    """
-    parent = target_dir.parent
-    src_vec = parent / "vectors.index"
-    src_db = parent / "tracks.db"
-    marker = target_dir / _FLAT_MIGRATION_MARKER
-    historical_split = (
-        (target_dir / "vectors.index").is_file()
-        and not (target_dir / "tracks.db").exists()
-        and not src_vec.exists()
-        and src_db.is_file()
-    )
-    if (
-        (not src_vec.exists() or not src_db.exists())
-        and not marker.exists()
-        and not historical_split
-    ):
-        return
-    # Every source/target operation takes locks in parent-before-target order.
-    with publication_lock(parent), publication_lock(target_dir):
-        migration_state = _read_flat_migration_staging(target_dir)
-        manifest = read_manifest(target_dir)
-        if publication_is_tombstoned(target_dir):
-            if migration_state is not None:
-                staging, _preserve_target_vector = migration_state
-                try:
-                    _clear_flat_migration_state(target_dir, staging, remove_cores=False)
-                except OSError as exc:
-                    logger.warning(
-                        "Could not clean stale flat migration state for tombstoned target %s: %s",
-                        target_dir,
-                        exc,
-                    )
-            return
-        if migration_state is not None:
-            staging, preserve_target_vector = migration_state
-            if manifest is not None:
-                try:
-                    _clear_flat_migration_state(target_dir, staging, remove_cores=False)
-                except OSError as exc:
-                    logger.warning(
-                        "Could not clean stale flat migration state for published target %s: %s",
-                        target_dir,
-                        exc,
-                    )
-                return
-            _clear_flat_migration_state(
-                target_dir,
-                staging,
-                remove_cores=True,
-                preserve_target_vector=preserve_target_vector,
-            )
-
-        # Only an owned marker may resume a transaction with publication
-        # history.  Otherwise both sides must be pristine legacy state;
-        # stale canonical cores must never seed a new target snapshot.
-        if migration_state is None and (
-            not legacy_artifacts_allowed(parent) or not legacy_artifacts_allowed(target_dir)
-        ):
-            return
-
-        target_vec = target_dir / "vectors.index"
-        target_db = target_dir / "tracks.db"
-        historical_split = (
-            target_vec.is_file()
-            and not target_db.exists()
-            and not src_vec.exists()
-            and src_db.is_file()
-        )
-        if historical_split:
-            staging = target_dir / f"{_FLAT_MIGRATION_STAGING_PREFIX}{uuid.uuid4().hex}"
-            staging.mkdir()
-            staged_vec = staging / target_vec.name
-            staged_db = staging / target_db.name
-            try:
-                _write_flat_migration_marker(target_dir, staging, preserve_target_vector=True)
-                shutil.copyfile(target_vec, staged_vec)
-                _backup_legacy_tracks_db(src_db, staged_db)
-                _migrate_staged_legacy_tracks_db(staged_db)
-                vector_count = _validate_flat_migration_staging(staged_db, staged_vec)
-                staged_db.replace(target_db)
-                publish_manifest(target_dir, vector_count)
-            except Exception:
-                _clear_flat_migration_state(
-                    target_dir,
-                    staging,
-                    remove_cores=True,
-                    preserve_target_vector=True,
-                )
-                raise
-            try:
-                src_db.unlink()
-            except OSError as exc:
-                logger.warning("Could not remove migrated legacy artifact %s: %s", src_db, exc)
-            try:
-                _clear_flat_migration_state(target_dir, staging, remove_cores=False)
-            except OSError as exc:
-                logger.warning("Could not clean flat migration marker for %s: %s", target_dir, exc)
-            logger.info("Resumed split flat index migration → %s", target_dir)
-            return
-
-        if not src_vec.exists() or not src_db.exists():
-            return
-        if manifest is not None or target_vec.exists() or target_db.exists():
-            return
-
-        staging = target_dir / f"{_FLAT_MIGRATION_STAGING_PREFIX}{uuid.uuid4().hex}"
-        staging.mkdir()
-        staged_vec = staging / target_vec.name
-        staged_db = staging / target_db.name
-        try:
-            _write_flat_migration_marker(target_dir, staging)
-            shutil.copyfile(src_vec, staged_vec)
-            _backup_legacy_tracks_db(src_db, staged_db)
-            _migrate_staged_legacy_tracks_db(staged_db)
-            vector_count = _validate_flat_migration_staging(staged_db, staged_vec)
-            staged_vec.replace(target_vec)
-            staged_db.replace(target_db)
-            publish_manifest(target_dir, vector_count)
-        except OSError as exc:
-            _clear_flat_migration_state(target_dir, staging, remove_cores=True)
-            logger.warning(
-                "Auto-migration failed (%s); move manually:\n  mv %s %s\n  (and tracks.db alongside)",
-                exc,
-                src_vec,
-                target_vec,
-            )
-            return
-        except Exception:
-            _clear_flat_migration_state(target_dir, staging, remove_cores=True)
-            raise
-
-        for source in (src_vec, src_db):
-            try:
-                source.unlink()
-            except OSError as exc:
-                logger.warning("Could not remove migrated legacy artifact %s: %s", source, exc)
-        # Move only non-SQLite sidecars after the coherent core snapshot publishes.
-        for sidecar in ("dj_meta.db", "web_state.json", "runtime_state.json"):
-            old = parent / sidecar
-            new = target_dir / sidecar
-            if old.exists() and not new.exists():
-                try:
-                    old.replace(new)
-                except OSError as exc:
-                    logger.warning("Could not migrate sidecar %s: %s", old, exc)
-        try:
-            _clear_flat_migration_state(target_dir, staging, remove_cores=False)
-        except OSError as exc:
-            logger.warning("Could not clean flat migration marker for %s: %s", target_dir, exc)
-        logger.info("Migrated flat index → %s (named-index layout)", target_dir)
-
-
 def load_index(
     index_dir: Path,
     music_dir: Path | None = None,
-    path_remap: list[tuple[str, str]] | None = None,
     *,
     expected_generation: int | None = None,
-    _migrate_flat: bool = True,
 ) -> tuple[list[IndexEntry], faiss.IndexFlatIP]:
     """Load the FAISS index and metadata from *index_dir*.
 
-    When *music_dir* is provided, relative stored paths are resolved
-    against it and absolute paths optionally remapped via *path_remap*,
-    so ``entry.path`` is always an absolute runtime path on return.
+    When *music_dir* is provided, the relative stored paths are joined to
+    it, so ``entry.path`` is an absolute runtime path on return.
 
     Args:
         index_dir: Directory containing ``vectors.index`` and ``tracks.db``.
         music_dir: Library root for resolving relative paths.
-        path_remap: Optional cross-OS prefix swaps for legacy absolute paths.
 
     Returns:
         A tuple of ``(entries, faiss_index)`` where *entries* is a list of
@@ -1879,14 +1376,6 @@ def load_index(
     Raises:
         FileNotFoundError: If *index_dir* or its required files are missing.
     """
-    # Auto-migrate flat-layout indexes to the named-index layout.
-    # Pre-0.9 builds wrote `<index_dir>/vectors.index` directly; the
-    # named-index refactor moves them under `<index_dir>/<name>/`.  If
-    # the old files are sitting at the parent dir AND the new dir is
-    # empty, slide them across so the user doesn't have to re-index.
-    if _migrate_flat:
-        _migrate_flat_index_if_needed(index_dir)
-
     with publication_lock(index_dir):
         before = read_manifest(index_dir)
         if expected_generation is not None and (
@@ -1896,38 +1385,25 @@ def load_index(
                 f"expected generation {expected_generation}, got "
                 f"{getattr(before, 'generation', None)}"
             )
-        tracks_path = (
-            index_dir / before.tracks_file if before is not None else index_dir / "tracks.db"
-        )
-        vectors_path = (
-            index_dir / before.vectors_file if before is not None else index_dir / "vectors.index"
-        )
-        if before is None and not legacy_artifacts_allowed(index_dir):
-            raise IndexConsistencyError("manifest-free artifacts have publication history")
+        if before is None:
+            require_current_format(index_dir)
+            raise FileNotFoundError(f"No published index in {index_dir}; run `autodj index`")
+        tracks_path = index_dir / before.tracks_file
+        vectors_path = index_dir / before.vectors_file
         if not tracks_path.is_file() or not vectors_path.is_file():
             raise FileNotFoundError(
                 f"Index files missing: {tracks_path.name} + {vectors_path.name}"
             )
-        pre_hashes = (
-            (sha256_file(tracks_path), sha256_file(vectors_path)) if before is not None else None
-        )
+        pre_hashes = (sha256_file(tracks_path), sha256_file(vectors_path))
 
         faiss_index = cast("faiss.IndexFlatIP", faiss.read_index(str(vectors_path)))
-        if before is None:
-            conn = _open_tracks_db(index_dir)
-        else:
-            conn = sqlite3.connect(_immutable_sqlite_uri(tracks_path), uri=True)
+        conn = sqlite3.connect(_immutable_sqlite_uri(tracks_path), uri=True)
         try:
             entries = _load_tracks_rows(conn)
         finally:
             conn.close()
-        if music_dir is not None or path_remap:
-            for entry in entries:
-                entry.path = _resolve_for_runtime(entry.path, music_dir, path_remap)
 
-        post_hashes = (
-            (sha256_file(tracks_path), sha256_file(vectors_path)) if before is not None else None
-        )
+        post_hashes = (sha256_file(tracks_path), sha256_file(vectors_path))
         after = read_manifest(index_dir)
         if after != before:
             raise IndexConsistencyError("manifest changed during load; retry generation")
@@ -1936,25 +1412,26 @@ def load_index(
 
         sqlite_count = len(entries)
         faiss_count = int(faiss_index.ntotal)
-        expected_count = before.vector_count if before is not None else sqlite_count
-        if sqlite_count != expected_count or faiss_count != expected_count:
+        if sqlite_count != before.vector_count or faiss_count != before.vector_count:
             raise IndexConsistencyError(
-                f"index count mismatch: manifest={getattr(before, 'vector_count', None)}, "
+                f"index count mismatch: manifest={before.vector_count}, "
                 f"sqlite={sqlite_count}, faiss={faiss_count}"
             )
-        if before is not None and pre_hashes != (
-            before.tracks_sha256,
-            before.vectors_sha256,
-        ):
-            assert pre_hashes is not None
+        if pre_hashes != (before.tracks_sha256, before.vectors_sha256):
             tracks_hash, vectors_hash = pre_hashes
             if tracks_hash != before.tracks_sha256:
                 raise IndexConsistencyError("tracks SHA-256 mismatch")
             if vectors_hash != before.vectors_sha256:
                 raise IndexConsistencyError("vectors SHA-256 mismatch")
+        absolute = next((e.path for e in entries if _is_absolute_storage(e.path)), None)
+        if absolute is not None:
+            raise UnsupportedIndexError(index_dir, f"tracks.db stores the absolute path {absolute}")
+        if music_dir is not None:
+            for entry in entries:
+                entry.path = str(music_dir / entry.path)
         logger.info(
             "Loaded index generation %s with %d tracks from %s",
-            0 if before is None else before.generation,
+            before.generation,
             len(entries),
             index_dir,
         )
@@ -1991,7 +1468,6 @@ def _backfill_dj_meta(
     workers: int | None = None,
     throttle_ms: float = 0.0,
     music_dir: Path | None = None,
-    path_remap: list[tuple[str, str]] | None = None,
 ) -> None:
     """Fill in DJ-meta for already-indexed tracks that have no sidecar entry.
 
@@ -2017,11 +1493,10 @@ def _backfill_dj_meta(
             sharply with little wall-clock cost when paired with a low
             worker count.
         music_dir: Library root used to store DJ-meta keys portably.
-        path_remap: Optional absolute-prefix swaps for legacy cache rows.
     """
     from autodj.dj_meta import get_cache
 
-    cache = get_cache(index_dir, music_dir=music_dir, path_remap=path_remap)
+    cache = get_cache(index_dir, music_dir=music_dir)
     if cache is None:
         return
     prune_to_paths = getattr(cache, "prune_to_paths", None)
@@ -2229,37 +1704,31 @@ def _detect_stale_entries(
     throttle_ms: float = 0.0,
     stat_workers: int = 8,
     mtimes: list[float | None] | None = None,
-) -> tuple[set[str], int]:
+) -> set[str]:
     """Find indexed entries whose audio file has been replaced on disk.
 
     For every entry whose file still exists, compare its mtime against the
     stored ``embedded_at``.  An entry is considered stale (the user replaced
     the file with a different version since indexing) when:
 
-    * ``embedded_at > 0`` and ``file_mtime > embedded_at + 1.0`` (1 s margin
-      absorbs filesystem timestamp granularity), OR
+    * ``embedded_at`` is not a positive stamp: without one, a replaced file
+      cannot be told apart from the embedded one, so it is re-embedded, OR
+    * ``file_mtime > embedded_at + 1.0`` (1 s margin absorbs filesystem
+      timestamp granularity), OR
     * ``reindex_modified_since`` is set and ``file_mtime > that timestamp``.
-
-    Legacy entries (``embedded_at == 0`` from before the field existed) are
-    snapshotted IN PLACE to their current file mtime so future replacements
-    are detectable, but are not themselves marked stale (we cannot know
-    when they were originally embedded).
 
     Stat() calls are fanned out across a 32-thread pool because the typical
     case is an NFS/SMB-mounted library where each call costs an RTT.
 
     Args:
         entries: Existing index entries (with absolute paths already
-            resolved by the caller).  Mutated in place: legacy entries get
-            their ``embedded_at`` set to the file's current mtime.
+            resolved by the caller).
         reindex_modified_since: Optional one-shot epoch timestamp.  Any
             entry whose file mtime exceeds this is marked stale regardless
-            of ``embedded_at`` — useful as a backfill mechanism for files
-            replaced before ``embedded_at`` was being tracked.
+            of ``embedded_at``.
 
     Returns:
-        ``(stale_paths, migrated)`` — set of entry paths to drop and the
-        number of legacy entries that received a fresh snapshot.
+        The set of entry paths to drop and re-embed.
     """
 
     if mtimes is None:
@@ -2271,25 +1740,29 @@ def _detect_stale_entries(
         )
 
     stale: set[str] = set()
-    migrated = 0
     for e, mt in zip(entries, mtimes, strict=False):
         if mt is None:
             continue  # missing file — prune handles it
-        if e.embedded_at == 0.0:
-            e.embedded_at = mt
-            migrated += 1
-        elif mt > e.embedded_at + 1.0:
+        if (
+            not e.embedded_at > 0.0
+            or mt > e.embedded_at + 1.0
+            or (reindex_modified_since is not None and mt > reindex_modified_since)
+        ):
             stale.add(e.path)
-        if reindex_modified_since is not None and mt > reindex_modified_since:
-            stale.add(e.path)
-    return stale, migrated
+    return stale
+
+
+def _discard_working_files(index_dir: Path) -> None:
+    """Remove unpublished working files so the next publication starts clean."""
+    for name in ("tracks.db", "tracks.db-wal", "tracks.db-shm", "vectors.index"):
+        (index_dir / name).unlink(missing_ok=True)
+    fsync_directory(index_dir)
 
 
 def _load_existing_artifacts(
     index_dir: Path,
     music_dir: Path,
-    path_remap: list[tuple[str, str]] | None,
-) -> tuple[list[IndexEntry], list[np.ndarray], bool, IndexSnapshotToken]:
+) -> tuple[list[IndexEntry], list[np.ndarray], IndexSnapshotToken]:
     """Load one coherent baseline and restore its canonical working files."""
     with publication_lock(index_dir):
         manifest = read_manifest(index_dir)
@@ -2297,86 +1770,26 @@ def _load_existing_artifacts(
         if manifest is not None:
             manifest_entries, manifest_index = load_index(
                 index_dir,
+                music_dir=music_dir,
                 expected_generation=manifest.generation,
             )
-            already_relative = _is_relative_storage([entry.path for entry in manifest_entries])
-            for entry in manifest_entries:
-                entry.path = _resolve_for_runtime(entry.path, music_dir, path_remap)
             vectors = [
                 np.asarray(row, dtype=np.float32)
                 for row in manifest_index.reconstruct_n(0, manifest_index.ntotal)
             ]
             restore_working_snapshot(index_dir, expected_generation=manifest.generation)
-            return manifest_entries, vectors, already_relative, snapshot
+            return manifest_entries, vectors, snapshot
 
-        db_exists = (index_dir / "tracks.db").is_file()
-        vectors_exist = (index_dir / "vectors.index").is_file()
-        if not db_exists and not vectors_exist:
-            return [], [], False, snapshot
-        if publication_is_tombstoned(index_dir) or publication_has_uncommitted_reservation(
-            index_dir
-        ):
-            for path in (
-                index_dir / "tracks.db",
-                index_dir / "tracks.db-wal",
-                index_dir / "tracks.db-shm",
-                index_dir / "vectors.index",
-            ):
-                path.unlink(missing_ok=True)
-            fsync_directory(index_dir)
-            return [], [], False, current_snapshot_token(index_dir)
-        if not legacy_artifacts_allowed(index_dir):
-            raise IndexConsistencyError("manifest-free artifacts have publication history")
-
-        entries: list[IndexEntry] = []
-        already_relative = True
-        if db_exists:
-            conn = _open_tracks_db(index_dir)
-            try:
-                entries = _load_tracks_rows(conn)
-            finally:
-                conn.close()
-            already_relative = _is_relative_storage([entry.path for entry in entries])
-
-        loaded: faiss.IndexFlatIP | None = None
-        if vectors_exist:
-            loaded = cast(
-                "faiss.IndexFlatIP",
-                faiss.read_index(str(index_dir / "vectors.index")),
-            )
-        entry_count = len(entries)
-        vector_count = 0 if loaded is None else int(loaded.ntotal)
-        common = min(entry_count, vector_count)
-        entries = entries[:common]
-        vectors = (
-            []
-            if loaded is None or common == 0
-            else [np.asarray(row, dtype=np.float32) for row in loaded.reconstruct_n(0, common)]
-        )
-        for entry in entries:
-            entry.path = _resolve_for_runtime(entry.path, music_dir, path_remap)
-        if common != entry_count or common != vector_count:
-            dimension = FEATURE_DIM if loaded is None else int(loaded.d)
-            aligned_vectors = (
-                np.asarray(vectors, dtype=np.float32)
-                if vectors
-                else np.empty((0, dimension), dtype=np.float32)
-            )
-            published = _publish_full_snapshot(
-                entries,
-                aligned_vectors,
-                index_dir,
-                music_dir,
-                expected_snapshot=snapshot,
-            )
-            snapshot = snapshot_token_for_manifest(published)
-        return entries, vectors, already_relative, snapshot
+        # A manifest-free directory is empty, or holds leftovers of a prune
+        # that emptied the index or of a first publication that never committed.
+        require_current_format(index_dir)
+        _discard_working_files(index_dir)
+        return [], [], snapshot
 
 
 def _load_existing_index(  # pragma: no cover -- exercised via build_index integration runs
     index_dir: Path,
     music_dir: Path,
-    path_remap: list[tuple[str, str]] | None,
     force: bool,
     reindex_modified_since: float | None,
     throttle_ms: float = 0.0,
@@ -2386,24 +1799,17 @@ def _load_existing_index(  # pragma: no cover -- exercised via build_index integ
 
     Fused single-pass: one stat() per entry returns both existence (None
     means missing -> prune) and mtime (compared against ``embedded_at``
-    -> stale).  Halves NAS RTT vs. the legacy two-pass design that ran
-    ``prune_index`` then ``_detect_stale_entries`` back-to-back.
+    -> stale).  Halves NAS RTT compared with running ``prune_index`` and
+    then ``_detect_stale_entries`` back-to-back.
     """
     if force:
         with publication_lock(index_dir):
+            if read_manifest(index_dir) is None:
+                _discard_working_files(index_dir)
             snapshot = current_snapshot_token(index_dir)
         return [], [], set(), True, snapshot
 
-    (
-        existing_entries,
-        existing_vectors,
-        already_relative,
-        snapshot,
-    ) = _load_existing_artifacts(
-        index_dir,
-        music_dir,
-        path_remap,
-    )
+    existing_entries, existing_vectors, snapshot = _load_existing_artifacts(index_dir, music_dir)
     if not existing_entries:
         return [], [], set(), False, snapshot
     logger.info("Incremental mode: %d tracks already indexed", len(existing_entries))
@@ -2425,13 +1831,11 @@ def _load_existing_index(  # pragma: no cover -- exercised via build_index integ
         print(f"[AutoDJ] Skipping auto-prune (safety check): {exc}")
         missing_paths = set()  # keep everything; safety failure means user config is wrong
 
-    stale, migrated = _detect_stale_entries(
+    stale = _detect_stale_entries(
         existing_entries,
         reindex_modified_since=reindex_modified_since,
         mtimes=mtimes,
     )
-    if migrated:
-        logger.info("Snapshotted embedded_at for %d legacy entries", migrated)
 
     drop_paths = missing_paths | stale
     if drop_paths:
@@ -2472,16 +1876,6 @@ def _load_existing_index(  # pragma: no cover -- exercised via build_index integ
                     expected_snapshot=snapshot,
                 )
                 snapshot = snapshot_token_for_manifest(published)
-    elif not already_relative and existing_entries:
-        # Legacy absolute-path storage detected; rewrite tracks.db in
-        # portable relative form without touching FAISS.
-        published = _publish_metadata_snapshot(
-            existing_entries,
-            index_dir,
-            music_dir,
-            expected_snapshot=snapshot,
-        )
-        snapshot = snapshot_token_for_manifest(published)
 
     return (
         existing_entries,
@@ -2519,7 +1913,16 @@ def _collect_tracks_to_index(  # pragma: no cover -- exercised via build_index i
             for t in tracks
         ]
         logger.info("Resolved beets paths against music_dir '%s'", cfg.library.music_dir)
-        return tracks
+        prefix = cfg.library.music_dir.as_posix().rstrip("/") + "/"
+        inside = [t for t in tracks if t.path.as_posix().startswith(prefix)]
+        if len(inside) < len(tracks):
+            logger.warning(
+                "Skipping %d beets tracks outside music_dir %s; the index stores "
+                "paths relative to music_dir",
+                len(tracks) - len(inside),
+                cfg.library.music_dir,
+            )
+        return inside
 
     # No beets database — fall back to filesystem scan + ID3/Vorbis tag reads.
     from autodj.audio_meta import read_file_tags
@@ -2655,7 +2058,6 @@ def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integr
     index_dir = cfg.index.active_dir
     index_dir.mkdir(parents=True, exist_ok=True)
     music_dir = cfg.library.music_dir
-    path_remap = cfg.library.path_remap
 
     (
         existing_entries,
@@ -2666,7 +2068,6 @@ def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integr
     ) = _load_existing_index(
         index_dir,
         music_dir,
-        path_remap,
         force,
         reindex_modified_since,
         throttle_ms=throttle_ms,

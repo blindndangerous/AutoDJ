@@ -637,41 +637,6 @@ class TestPlaybackTransitionMode:
             assert p.transition_mode == mode
 
 
-# ---------------------------------------------------------------------------
-# autodj.config  (path_remap validation branches)
-# ---------------------------------------------------------------------------
-
-
-class TestConfigPathRemapValidation:
-    def test_invalid_path_remap_entry_not_list_raises(self) -> None:
-        import pytest
-
-        from autodj.config import LibraryConfig
-
-        with pytest.raises(ValueError, match="path_remap"):
-            LibraryConfig.from_dict(
-                {"music_dir": "/x", "path_remap": ["not-a-pair"]},
-            )
-
-    def test_invalid_path_remap_wrong_length_raises(self) -> None:
-        import pytest
-
-        from autodj.config import LibraryConfig
-
-        with pytest.raises(ValueError, match="path_remap"):
-            LibraryConfig.from_dict(
-                {"music_dir": "/x", "path_remap": [["only-one"]]},
-            )
-
-    def test_valid_path_remap_passes_through(self) -> None:
-        from autodj.config import LibraryConfig
-
-        cfg = LibraryConfig.from_dict(
-            {"music_dir": "/x", "path_remap": [["/a", "/b"]]},
-        )
-        assert cfg.path_remap == [("/a", "/b")]
-
-
 class TestServerConfig:
     def test_defaults_to_loopback_and_derives_policy(self) -> None:
         cfg = ServerConfig.from_dict({})

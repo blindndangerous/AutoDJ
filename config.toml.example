@@ -61,17 +61,6 @@ beets_db = "C:/Users/you/.config/beets/library.db"
 # Audio formats to scan for
 supported_formats = ["mp3", "flac", "m4a"]
 
-# Optional — cross-OS path remapping for a shared index built on another
-# machine. Each entry is a [from_prefix, to_prefix] pair applied to absolute
-# paths stored in tracks.db. Useful when the same library is mounted at
-# different locations on different hosts (e.g. Linux /mnt/music vs Windows Z:/Music).
-# Once you re-run `autodj prune` (or `autodj index`), absolute paths are
-# rewritten as relative-to-music_dir and remap is no longer needed.
-# path_remap = [
-#     ["/mnt/music/", "Z:/Music/"],
-#     ["/srv/audio/", "Z:/Music/"],
-# ]
-
 [index]
 # Each named index directory may contain vectors.index, tracks.db (SQLite),
 # dj_meta.db (SQLite), web_state.json, and liner files.

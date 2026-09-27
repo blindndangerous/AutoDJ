@@ -4551,14 +4551,12 @@ class TestReloadIndexFromDisk:
         cfg = MagicMock()
         cfg.index.active_dir = tmp_path
         cfg.library.music_dir = None
-        cfg.library.path_remap = None
         bridge = PlayerBridge(player=MagicMock(_cfg=cfg), sim=sim)
         result = bridge.reload_index_from_disk(expected_generation=7)
         assert result == 42
         sim.reload_from_disk.assert_called_once_with(
             tmp_path,
             music_dir=None,
-            path_remap=None,
             expected_generation=7,
         )
 

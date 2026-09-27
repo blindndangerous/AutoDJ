@@ -46,7 +46,7 @@ def _create_beets_db(path: Path, n_tracks: int) -> Path:
             "INSERT INTO items VALUES (?,?,?,?,?,?,?,?,?)",
             (
                 i,
-                f"Z:/Music/song_{i}.flac".encode(),
+                f"song_{i}.flac".encode(),
                 f"Song {i}",
                 f"Artist {i % 3}",
                 "Album",

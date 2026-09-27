@@ -316,7 +316,7 @@ transition_mode         = "full_intro_outro"
 
 ### Multi-machine / NAS setups
 
-The index is portable.  Build it on a fast machine (one with a GPU is best), then copy `index/` to another machine that mounts the music library at any path.  AutoDJ stores music files and DJ metadata relative to a configurable root, so the same index works on Windows, Linux, and macOS as long as `music_dir` points at the right place on each machine.  Legacy DJ-meta rows with absolute paths are migrated to relative keys on the next `autodj index` or `autodj analyse` run.
+The index is portable.  Build it on a fast machine (one with a GPU is best), then copy `index/` to another machine that mounts the music library at any path.  AutoDJ stores music files and DJ metadata relative to a configurable root, so the same index works on Windows, Linux, and macOS as long as `music_dir` points at the right place on each machine.  Only tracks under `music_dir` are indexed.
 
 Per-machine file overrides go in `config.local.toml` next to loaded base configuration. Environment
 variables and CLI flags still take precedence.

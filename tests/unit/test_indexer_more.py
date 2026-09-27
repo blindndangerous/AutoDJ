@@ -1,9 +1,8 @@
 """Additional indexer unit tests targeting previously-uncovered branches.
 
 Focus on the small pure-function helpers (``_apply_beets_row``,
-``_find_beets_row``, ``_resolve_for_runtime`` remap branch,
-``_maybe_migrate_paths``, ``_check_prune_safety`` happy paths) and on
-the error-rollback paths in ``save_index``.
+``_find_beets_row``, ``_check_prune_safety`` happy paths) and on the
+error-rollback paths in ``save_index``.
 """
 
 from __future__ import annotations
@@ -22,9 +21,6 @@ from autodj.indexer import (
     _check_prune_safety,
     _delete_index_files,
     _find_beets_row,
-    _is_relative_storage,
-    _maybe_migrate_paths,
-    _resolve_for_runtime,
     load_index,
     save_index,
 )
@@ -231,69 +227,6 @@ class TestFindBeetsRow:
 
 
 # ---------------------------------------------------------------------------
-# _resolve_for_runtime — path_remap branch
-# ---------------------------------------------------------------------------
-
-
-class TestResolveForRuntimeRemap:
-    def test_remap_swaps_prefix(self) -> None:
-        result = _resolve_for_runtime(
-            "/volume1/music/song.flac", None, [("/volume1/music", "Z:/Music")]
-        )
-        assert "Z:" in result.replace("\\", "/")
-        assert "song.flac" in result.replace("\\", "/")
-
-    def test_remap_only_first_match_wins(self) -> None:
-        result = _resolve_for_runtime(
-            "/a/b/song.flac",
-            None,
-            [("/a", "/X"), ("/a/b", "/Y")],
-        )
-        # First match wins per implementation
-        assert result.replace("\\", "/").startswith("/X")
-
-    def test_remap_no_match_passes_through(self) -> None:
-        result = _resolve_for_runtime("/somewhere/song.flac", None, [("/elsewhere", "/X")])
-        assert "song.flac" in result.replace("\\", "/")
-        # Did not get remapped
-        assert "/X" not in result.replace("\\", "/")
-
-    def test_relative_path_uses_music_dir(self) -> None:
-        result = _resolve_for_runtime("song.flac", Path("Z:/Music"), None)
-        rs = result.replace("\\", "/")
-        assert rs.startswith("Z:/Music")
-        assert rs.endswith("song.flac")
-
-    def test_relative_with_no_music_dir(self) -> None:
-        # base = Path() empty
-        result = _resolve_for_runtime("song.flac", None, None)
-        assert "song.flac" in result.replace("\\", "/")
-
-
-# ---------------------------------------------------------------------------
-# _is_relative_storage
-# ---------------------------------------------------------------------------
-
-
-class TestIsRelativeStorage:
-    def test_all_relative(self) -> None:
-        assert _is_relative_storage(["a/b.flac", "c.flac"])
-
-    def test_one_absolute_posix(self) -> None:
-        assert not _is_relative_storage(["a/b.flac", "/c.flac"])
-
-    def test_one_absolute_windows_drive(self) -> None:
-        assert not _is_relative_storage(["Z:/a/b.flac"])
-
-    def test_one_with_backslash(self) -> None:
-        assert not _is_relative_storage(["a\\b.flac"])
-
-    def test_empty_list_is_relative(self) -> None:
-        # all([]) is True
-        assert _is_relative_storage([]) is True
-
-
-# ---------------------------------------------------------------------------
 # _check_prune_safety
 # ---------------------------------------------------------------------------
 
@@ -342,53 +275,13 @@ class TestDeleteIndexFiles:
 
 
 # ---------------------------------------------------------------------------
-# _maybe_migrate_paths
-# ---------------------------------------------------------------------------
-
-
-class TestMaybeMigratePaths:
-    def test_skip_when_music_dir_none(self) -> None:
-        # Should not touch the tracks DB
-        with patch("autodj.indexer._replace_tracks_rows") as rep:
-            _maybe_migrate_paths([], Path("/idx"), None, already_relative=False)
-        rep.assert_not_called()
-
-    def test_skip_when_already_relative(self) -> None:
-        with patch("autodj.indexer._replace_tracks_rows") as rep:
-            _maybe_migrate_paths([], Path("/idx"), Path("/m"), already_relative=True)
-        rep.assert_not_called()
-
-    def test_relativises_tracks_db_when_migration_needed(self, tmp_path: Path) -> None:
-        # Build a real save_index round-trip with absolute paths and trigger migration
-        entries = [_entry(path=str(tmp_path / "song0.flac"))]
-        vectors = np.random.randn(1, FEATURE_DIM).astype(np.float32)
-        vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
-        index_dir = tmp_path / "idx"
-        index_dir.mkdir()
-        # Save without music_dir so paths stay absolute
-        save_index(entries, vectors, index_dir)
-
-        _maybe_migrate_paths(entries, index_dir, tmp_path, already_relative=False)
-
-        import sqlite3 as _sql
-
-        conn = _sql.connect(index_dir / "tracks.db")
-        try:
-            p = conn.execute("SELECT path FROM tracks ORDER BY vec_row ASC LIMIT 1").fetchone()[0]
-        finally:
-            conn.close()
-        # After migration, path should be relative (no drive, no leading slash)
-        assert not (p.startswith("/") or (len(p) >= 2 and p[1] == ":"))
-
-
-# ---------------------------------------------------------------------------
 # save_index error rollback paths
 # ---------------------------------------------------------------------------
 
 
 class TestSaveIndexErrorPaths:
     def _entries_vectors(self, n: int = 2) -> tuple[list[IndexEntry], np.ndarray]:
-        entries = [_entry(path=f"Z:/x{i}.flac") for i in range(n)]
+        entries = [_entry(path=f"x{i}.flac") for i in range(n)]
         v = np.random.randn(n, FEATURE_DIM).astype(np.float32)
         v /= np.linalg.norm(v, axis=1, keepdims=True)
         return entries, v
@@ -442,13 +335,13 @@ class TestSaveIndexErrorPaths:
 
         original, _ = self._entries_vectors(2)
         replacement, _ = self._entries_vectors(3)
-        replacement[1].path = "Z:/explode.flac"
+        replacement[1].path = "explode.flac"
         conn = _open_tracks_db(tmp_path)
         try:
             _replace_tracks_rows(conn, original, music_dir=None)
             conn.execute(
                 "CREATE TRIGGER reject_explode BEFORE INSERT ON tracks "
-                "WHEN NEW.path = 'Z:/explode.flac' BEGIN "
+                "WHEN NEW.path = 'explode.flac' BEGIN "
                 "SELECT RAISE(ABORT, 'injected'); END"
             )
             with pytest.raises(sqlite3.IntegrityError, match="injected"):
@@ -475,30 +368,6 @@ class TestLoadIndexMissingFiles:
     def test_dir_missing_raises(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError):
             load_index(tmp_path / "no-such-dir")
-
-
-# ---------------------------------------------------------------------------
-# Auto-migrate failure (line 1002-1003)
-# ---------------------------------------------------------------------------
-
-
-class TestMigrateFlatIndexFailure:
-    def test_migration_oserror_swallowed_logged(self, tmp_path: Path, caplog) -> None:
-        from autodj.indexer import _migrate_flat_index_if_needed
-
-        # Old layout: parent has tracks.db + vectors.index
-        parent = tmp_path
-        target = parent / "default"
-        (parent / "tracks.db").write_bytes(b"")
-        (parent / "vectors.index").write_bytes(b"")
-        # Force replace to fail
-        with (
-            patch("pathlib.Path.replace", side_effect=OSError("denied")),
-            caplog.at_level("WARNING"),
-        ):
-            _migrate_flat_index_if_needed(target)
-        # Should log a warning, not raise
-        assert any("Auto-migration failed" in rec.message for rec in caplog.records)
 
 
 # ---------------------------------------------------------------------------

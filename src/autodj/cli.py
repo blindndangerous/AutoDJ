@@ -204,17 +204,20 @@ def _apply_index_name(cfg: AutoDJConfig, index_name: str | None) -> bool:  # pra
 def _load_index_or_exit(
     cfg: AutoDJConfig, *, active_dir: Path | None = None
 ) -> SimilarityIndex:  # pragma: no cover
-    """Load the similarity index for *cfg*, exiting on FileNotFoundError."""
+    """Load the similarity index for *cfg*, exiting when it is missing or too old."""
+    from autodj.index_manifest import UnsupportedIndexError
     from autodj.similarity import SimilarityIndex as _SI
 
     try:
         return _SI.from_index_dir(
             cfg.index.active_dir if active_dir is None else active_dir,
             music_dir=cfg.library.music_dir,
-            path_remap=cfg.library.path_remap,
         )
     except FileNotFoundError as exc:
         console.print(f"[bold red]Index not found:[/] {exc}")
+        sys.exit(1)
+    except UnsupportedIndexError as exc:
+        console.print(f"[bold red]{exc}[/]")
         sys.exit(1)
 
 
@@ -228,7 +231,6 @@ def _load_index_for_serve(
         publication_is_tombstoned,
         publication_lock,
     )
-    from autodj.indexer import _migrate_flat_index_if_needed
     from autodj.similarity import SimilarityIndex as _SI
 
     index_dir = cfg.index.active_dir if active_dir is None else active_dir
@@ -236,10 +238,8 @@ def _load_index_for_serve(
         return _SI.from_index_dir(
             index_dir,
             music_dir=cfg.library.music_dir,
-            path_remap=cfg.library.path_remap,
         )
 
-    _migrate_flat_index_if_needed(index_dir)
     with publication_lock(index_dir):
         if publication_is_tombstoned(index_dir):
             console.print(
@@ -250,8 +250,6 @@ def _load_index_for_serve(
             return _SI.from_index_dir(
                 index_dir,
                 music_dir=cfg.library.music_dir,
-                path_remap=cfg.library.path_remap,
-                _migrate_flat=False,
             )
         except (FileNotFoundError, IndexConsistencyError):
             tombstoned = publication_is_tombstoned(index_dir)
@@ -949,10 +947,9 @@ def cmd_restore(ctx: click.Context, archive: Path, force: bool) -> None:
     default=None,
     type=str,
     help=(
-        "One-shot stale backfill: drop and re-embed any indexed entry whose "
-        "audio file has an mtime newer than this timestamp.  Useful when you "
-        "replaced files BEFORE the indexer started tracking embedded_at "
-        "(otherwise the per-entry mtime check covers replacements automatically). "
+        "One-shot re-embed: drop and re-embed any indexed entry whose audio "
+        "file has an mtime newer than this timestamp, even when its stored "
+        "embedded_at says it is current.  "
         "Format: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS (local time)."
     ),
 )
@@ -1080,41 +1077,27 @@ def cmd_index(
                     cfg.index.active_dir,
                     music_dir=cfg.library.music_dir,
                     beets_db=cfg.library.beets_db,
-                    path_remap=cfg.library.path_remap,
                 )
                 console.print(f"[green]Enrich:[/] {updated} of {total} tracks updated.")
             except Exception as exc:
                 console.print(f"[bold red]Enrich failed:[/] {exc}")
 
     if do_analyse:
-        from autodj.indexer import (
-            _backfill_dj_meta,
-            _load_tracks_rows,
-            _open_tracks_db,
-            _resolve_for_runtime,
-            _tracks_db_path,
-        )
+        from autodj.indexer import _backfill_dj_meta, load_index
 
         try:
-            if not _tracks_db_path(cfg.index.active_dir).exists():
-                console.print("[yellow]--analyse skipped: no index found.[/]")
-            else:
-                conn = _open_tracks_db(cfg.index.active_dir)
-                try:
-                    entries = _load_tracks_rows(conn)
-                finally:
-                    conn.close()
-                for e in entries:
-                    e.path = _resolve_for_runtime(
-                        e.path, cfg.library.music_dir, cfg.library.path_remap
-                    )
-                _backfill_dj_meta(
-                    entries,
-                    cfg.index.active_dir,
-                    workers=workers,
-                    music_dir=cfg.library.music_dir,
-                    path_remap=cfg.library.path_remap,
-                )
+            entries, _ = load_index(
+                cfg.index.active_dir,
+                music_dir=cfg.library.music_dir,
+            )
+            _backfill_dj_meta(
+                entries,
+                cfg.index.active_dir,
+                workers=workers,
+                music_dir=cfg.library.music_dir,
+            )
+        except FileNotFoundError:
+            console.print("[yellow]--analyse skipped: no index found.[/]")
         except Exception as exc:
             console.print(f"[bold red]Analyse failed:[/] {exc}")
 
@@ -1132,8 +1115,8 @@ def cmd_index(
     help=(
         "Bypass the safety check that refuses to prune more than 20% of the "
         "index in a single pass. Use only when you really did delete that "
-        "much of your library — otherwise fix [library] music_dir / "
-        "path_remap in config first."
+        "much of your library — otherwise fix [library] music_dir in "
+        "config first."
     ),
 )
 @click.option(
@@ -1170,7 +1153,6 @@ def cmd_prune(
         removed, kept = prune_index(
             cfg.index.active_dir,
             music_dir=cfg.library.music_dir,
-            path_remap=cfg.library.path_remap,
             allow_mass_prune=force,
         )
     except PruneSafetyError as exc:
@@ -1234,7 +1216,6 @@ def cmd_enrich(ctx: click.Context, index_name: str | None) -> None:
             cfg.index.active_dir,
             music_dir=cfg.library.music_dir,
             beets_db=cfg.library.beets_db,
-            path_remap=cfg.library.path_remap,
         )
     except Exception as exc:
         console.print(f"[bold red]Enrich failed:[/] {exc}")
@@ -1318,27 +1299,22 @@ def cmd_analyse(
 
     _apply_index_name(cfg, index_name)
 
-    from autodj.indexer import (
-        _backfill_dj_meta,
-        _load_tracks_rows,
-        _open_tracks_db,
-        _resolve_for_runtime,
-        _tracks_db_path,
-    )
+    from autodj.index_manifest import UnsupportedIndexError
+    from autodj.indexer import _backfill_dj_meta, load_index
 
-    if not _tracks_db_path(cfg.index.active_dir).exists():
+    try:
+        entries, _ = load_index(
+            cfg.index.active_dir,
+            music_dir=cfg.library.music_dir,
+        )
+    except FileNotFoundError:
         console.print(
             f"[bold red]No index at {cfg.index.active_dir}.[/]  Run `autodj index` first."
         )
         sys.exit(1)
-
-    conn = _open_tracks_db(cfg.index.active_dir)
-    try:
-        entries = _load_tracks_rows(conn)
-    finally:
-        conn.close()
-    for e in entries:
-        e.path = _resolve_for_runtime(e.path, cfg.library.music_dir, cfg.library.path_remap)
+    except UnsupportedIndexError as exc:
+        console.print(f"[bold red]{exc}[/]")
+        sys.exit(1)
     if limit is not None:
         entries = entries[:limit]
 
@@ -1353,7 +1329,6 @@ def cmd_analyse(
             cfg.index.active_dir,
             workers=workers,
             music_dir=cfg.library.music_dir,
-            path_remap=cfg.library.path_remap,
         )
     except Exception as exc:
         console.print(f"[bold red]Analyse failed:[/] {exc}")
@@ -2062,10 +2037,13 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
     general_cli_override = _apply_serve_overrides(staged_override_cfg, locals())
     resolved_preset = _resolve_preset_or_exit(cfg, preset)
     parsed_bpm_range = _parse_bpm_range_or_exit(bpm_range)
-    sim = _load_index_for_serve(
-        cfg,
-        active_dir=cfg.index.index_dir / selected_index_name,
-    )
+    from autodj.index_manifest import UnsupportedIndexError
+
+    try:
+        sim = _load_index_for_serve(cfg, active_dir=cfg.index.index_dir / selected_index_name)
+    except UnsupportedIndexError as exc:
+        console.print(f"[bold red]{exc}[/]")
+        sys.exit(1)
     if (
         staged_server.insecure_lan
         and staged_server.access_token is None
@@ -2376,6 +2354,7 @@ def cmd_stats(ctx: click.Context, index_name: str | None) -> None:
     Examples:
       uv run autodj stats
     """
+    from autodj.index_manifest import UnsupportedIndexError
     from autodj.indexer import load_index
     from autodj.stats import print_stats
 
@@ -2387,10 +2366,12 @@ def cmd_stats(ctx: click.Context, index_name: str | None) -> None:
         entries, _ = load_index(
             cfg.index.active_dir,
             music_dir=cfg.library.music_dir,
-            path_remap=cfg.library.path_remap,
         )
     except FileNotFoundError as exc:
         console.print(f"[bold red]Index not found:[/] {exc}")
+        sys.exit(1)
+    except UnsupportedIndexError as exc:
+        console.print(f"[bold red]{exc}[/]")
         sys.exit(1)
 
     print_stats(entries, console)

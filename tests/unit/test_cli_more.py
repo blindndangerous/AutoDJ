@@ -6,11 +6,18 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import click
+import numpy as np
 from click.testing import CliRunner
 
 from autodj.backup import BackupError
 from autodj.cli import _can_import, _coerce_audio_device, _resolve_seed, cli
-from autodj.indexer import IndexEntry
+from autodj.indexer import FEATURE_DIM, IndexEntry, save_index
+
+
+def _publish_one_entry(index_dir: Path) -> None:
+    entry = _entry(0)
+    entry.path = "song_0.flac"
+    save_index([entry], np.zeros((1, FEATURE_DIM), dtype=np.float32), index_dir)
 
 
 def _entry(i: int = 0) -> IndexEntry:
@@ -44,7 +51,6 @@ def _cfg() -> MagicMock:
     cfg = MagicMock()
     cfg.library.beets_db = None
     cfg.library.music_dir = Path("Z:/Music")
-    cfg.library.path_remap = []
     cfg.playback.no_repeat_window = 50
     cfg.playback.artist_repeat_window = 3
     cfg.playback.crossfade_seconds = 3.0
@@ -254,13 +260,7 @@ class TestIndexCommand:
         active = tmp_path / "idx"
         active.mkdir()
         cfg_mock.index.active_dir = active
-        from autodj.indexer import _open_tracks_db, _replace_tracks_rows
-
-        conn = _open_tracks_db(active)
-        try:
-            _replace_tracks_rows(conn, [_entry(0)], music_dir=None)
-        finally:
-            conn.close()
+        _publish_one_entry(active)
 
         with (
             patch("autodj.cli._can_import", return_value=True),
@@ -299,13 +299,7 @@ class TestIndexCommand:
         active = tmp_path / "idx"
         active.mkdir()
         cfg_mock.index.active_dir = active
-        from autodj.indexer import _open_tracks_db, _replace_tracks_rows
-
-        conn = _open_tracks_db(active)
-        try:
-            _replace_tracks_rows(conn, [_entry(0)], music_dir=None)
-        finally:
-            conn.close()
+        _publish_one_entry(active)
 
         with (
             patch("autodj.cli._can_import", return_value=True),
@@ -325,13 +319,7 @@ class TestIndexCommand:
         active = tmp_path / "idx"
         active.mkdir()
         cfg_mock.index.active_dir = active
-        from autodj.indexer import _open_tracks_db, _replace_tracks_rows
-
-        conn = _open_tracks_db(active)
-        try:
-            _replace_tracks_rows(conn, [_entry(0)], music_dir=None)
-        finally:
-            conn.close()
+        _publish_one_entry(active)
         with (
             patch("autodj.cli._can_import", return_value=True),
             patch("autodj.cli._load_cfg_or_exit", return_value=cfg_mock),

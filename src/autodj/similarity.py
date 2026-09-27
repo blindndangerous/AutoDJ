@@ -38,13 +38,11 @@ from autodj.index_manifest import (
     IndexConsistencyError,
     IndexSnapshotToken,
     current_snapshot_token,
-    legacy_artifacts_allowed,
-    publication_has_uncommitted_reservation,
     publication_is_tombstoned,
     publication_lock,
     read_manifest,
 )
-from autodj.indexer import IndexEntry, _migrate_flat_index_if_needed, load_index
+from autodj.indexer import IndexEntry, load_index
 
 logger = logging.getLogger(__name__)
 
@@ -231,7 +229,6 @@ class SimilarityIndex:
         self,
         index_dir: Path,
         music_dir: Path | None = None,
-        path_remap: list[tuple[str, str]] | None = None,
         *,
         expected_generation: int | None = None,
         expected_snapshot: IndexSnapshotToken | None = None,
@@ -248,7 +245,6 @@ class SimilarityIndex:
             index_dir: Directory containing ``vectors.index`` and
                 ``tracks.db``.
             music_dir: Library root for resolving relative paths.
-            path_remap: Cross-OS prefix swaps for legacy absolute paths.
 
         Returns:
             New track count after reload.
@@ -256,7 +252,6 @@ class SimilarityIndex:
         # Lock order is always publication then reload.  Keep both through
         # candidate construction and swap so an older candidate cannot win
         # after a newer publication has already reloaded.
-        _migrate_flat_index_if_needed(index_dir)
         with publication_lock(index_dir):
             snapshot = current_snapshot_token(index_dir)
             if expected_snapshot is not None and snapshot != expected_snapshot:
@@ -273,17 +268,11 @@ class SimilarityIndex:
                 with self._reload_lock:
                     dimension = self.faiss_index.d
                 candidate = SimilarityIndex(faiss.IndexFlatIP(dimension), [])
-            elif snapshot.generation == 0 and not legacy_artifacts_allowed(index_dir):
-                if publication_has_uncommitted_reservation(index_dir):
-                    raise IndexConsistencyError("publication reserved without a committed snapshot")
-                raise IndexConsistencyError("manifest-free index is not a pristine legacy snapshot")
             else:
                 entries, faiss_index = load_index(
                     index_dir,
                     music_dir=music_dir,
-                    path_remap=path_remap,
-                    expected_generation=snapshot.generation if snapshot.generation else None,
-                    _migrate_flat=False,
+                    expected_generation=snapshot.generation or None,
                 )
                 candidate = SimilarityIndex(faiss_index=faiss_index, entries=entries)
             with self._reload_lock:
@@ -300,25 +289,18 @@ class SimilarityIndex:
         cls,
         index_dir: Path,
         music_dir: Path | None = None,
-        path_remap: list[tuple[str, str]] | None = None,
-        *,
-        _migrate_flat: bool = True,
     ) -> SimilarityIndex:
         """Load a :class:`SimilarityIndex` from the index directory on disk.
 
-        When *music_dir* is provided, relative paths stored in
-        ``tracks.db`` are resolved against it; *path_remap* applies
-        cross-OS prefix swaps to absolute paths.  This makes a single
-        index portable across machines that mount the library at
-        different absolute locations.
+        When *music_dir* is provided, the relative paths stored in
+        ``tracks.db`` are resolved against it, so one index works on any
+        machine that mounts the library at a different location.
 
         Args:
             index_dir: Directory containing ``vectors.index`` and
                 ``tracks.db`` as written by
                 :func:`autodj.indexer.save_index`.
             music_dir: Library root for resolving relative paths.
-            path_remap: Optional ``(from_prefix, to_prefix)`` swaps for
-                legacy absolute paths from another host.
 
         Returns:
             A fully populated :class:`SimilarityIndex`.
@@ -329,17 +311,13 @@ class SimilarityIndex:
         Example:
             >>> sim = SimilarityIndex.from_index_dir(Path("index"))
         """
-        if _migrate_flat:
-            _migrate_flat_index_if_needed(index_dir)
         with publication_lock(index_dir):
             manifest = read_manifest(index_dir)
             expected_generation = manifest.generation if manifest is not None else None
             entries, faiss_index = load_index(
                 index_dir,
                 music_dir=music_dir,
-                path_remap=path_remap,
                 expected_generation=expected_generation,
-                _migrate_flat=False,
             )
             snapshot = current_snapshot_token(index_dir)
             generation = snapshot.generation
