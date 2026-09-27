@@ -415,8 +415,7 @@ function applyState(s) {
 
   // Camelot wheel — decorative only.  Pull harmonic_mode from settings
   // so the highlighted "compatible" set matches what the picker uses.
-  const _hm = (s.settings && s.settings.djmix && s.settings.djmix.harmonic_mode)
-              || "compatible";
+  const _hm = s.settings?.djmix.harmonic_mode;
   // Wheel is Camelot-shaped regardless of display notation, so it
   // always reads the dedicated camelot_cell field, never key_label.
   const _cell = s.current_track ? s.current_track.camelot_cell : null;

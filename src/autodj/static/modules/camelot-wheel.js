@@ -109,17 +109,19 @@ function _compatibleSet(current, mode) {
     out.add(`${wrap(num + 2)}${side}`);
     return out;
   }
-  // default: "compatible" -- adjacent same side plus relative major/minor.
-  out.add(`${wrap(num - 1)}${side}`);
-  out.add(`${wrap(num + 1)}${side}`);
-  out.add(`${num}${side === "A" ? "B" : "A"}`);
+  if (mode === "compatible") {
+    // Adjacent same side plus relative major/minor.
+    out.add(`${wrap(num - 1)}${side}`);
+    out.add(`${wrap(num + 1)}${side}`);
+    out.add(`${num}${side === "A" ? "B" : "A"}`);
+  }
   return out;
 }
 
 export function applyCamelotWheel(currentCell, harmonicMode, { sectorsEl, labelsEl }) {
   if (!sectorsEl) return;
   _build(sectorsEl, labelsEl);
-  const compat = _compatibleSet(currentCell, harmonicMode || "compatible");
+  const compat = _compatibleSet(currentCell, harmonicMode);
   for (const sec of sectorsEl.querySelectorAll(".sector")) {
     const cell = sec.getAttribute("data-cell");
     const isActive = cell === currentCell;

@@ -254,3 +254,25 @@ ${minorRule}
     expect(fillOf(active)).toBe("#000");
   });
 });
+
+describe("camelot wheel compatible highlight", () => {
+  const lit = (els) =>
+    [...els.sectorsEl.querySelectorAll(".sector.compat")]
+      .map((s) => s.getAttribute("data-cell")).sort();
+
+  it("lights the classic neighbours only in compatible mode", () => {
+    const els = wheel();
+    applyCamelotWheel("8A", "compatible", els);
+    expect(lit(els)).toEqual(["7A", "8B", "9A"]);
+  });
+
+  it("lights nothing when harmonic mixing is off or no mode is known yet", () => {
+    // Settings arrive with the first state push; until then there is no
+    // mode, and falling back to "compatible" would show a filter that is off.
+    for (const mode of ["off", undefined]) {
+      const els = wheel();
+      applyCamelotWheel("8A", mode, els);
+      expect(lit(els), String(mode)).toEqual([]);
+    }
+  });
+});
