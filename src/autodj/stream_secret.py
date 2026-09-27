@@ -86,20 +86,30 @@ class StreamSecret:
         Raises:
             StreamSecretError: If the file cannot be written.
         """
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=self._path.parent, prefix=".stream-secret.")
+        tmp = None
         try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=self._path.parent, prefix=".stream-secret.")
             with os.fdopen(fd, "w", encoding="ascii") as handle:
                 handle.write(self.value + "\n")
             os.chmod(tmp, 0o600)
             os.replace(tmp, self._path)
         except OSError as exc:
-            Path(tmp).unlink(missing_ok=True)
+            if tmp is not None:
+                Path(tmp).unlink(missing_ok=True)
             raise StreamSecretError(f"cannot write stream secret at {self._path}: {exc}") from exc
 
     def matches(self, candidate: str) -> bool:
-        """Return whether *candidate* equals the secret, in constant time."""
-        return hmac.compare_digest(candidate.encode("utf-8"), self.value.encode("ascii"))
+        """Return whether *candidate* equals the secret, in constant time.
+
+        Returns False if *candidate* cannot be encoded as UTF-8 (e.g., contains
+        lone surrogates), preventing UnicodeEncodeError on untrusted input.
+        """
+        try:
+            candidate_bytes = candidate.encode("utf-8")
+        except UnicodeEncodeError:
+            return False
+        return hmac.compare_digest(candidate_bytes, self.value.encode("ascii"))
 
     def rotate(self) -> str:
         """Replace the secret with a new one and return it."""

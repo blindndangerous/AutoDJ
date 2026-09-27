@@ -5,10 +5,16 @@ from __future__ import annotations
 import os
 import stat
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
-from autodj.stream_secret import StreamSecret, StreamSecretError
+from autodj.stream_secret import (
+    StreamSecret,
+    StreamSecretError,
+    paired_devices_path,
+    stream_secret_path,
+)
 
 
 def test_created_on_first_load(tmp_path: Path) -> None:
@@ -70,3 +76,81 @@ def test_unreadable_file_fails_clearly(tmp_path: Path) -> None:
     path.mkdir()
     with pytest.raises(StreamSecretError):
         StreamSecret.load_or_create(path)
+
+
+def test_matches_rejects_lone_surrogate(tmp_path: Path) -> None:
+    """Test that matches() returns False for untrusted input with lone surrogates."""
+    secret = StreamSecret.load_or_create(tmp_path / ".stream-secret")
+    assert not secret.matches("\ud800")
+
+
+def test_matches_accepts_non_ascii(tmp_path: Path) -> None:
+    """Test that matches() works with non-ASCII but valid UTF-8 strings."""
+    secret = StreamSecret.load_or_create(tmp_path / ".stream-secret")
+    assert not secret.matches("ñoño")
+
+
+def test_write_cleanup_on_replace_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that write failure cleans up the temp file."""
+    path = tmp_path / ".stream-secret"
+    secret = StreamSecret.load_or_create(path)
+
+    def failing_replace(src: str, dst: str) -> None:
+        raise OSError("simulated write failure")
+
+    monkeypatch.setattr("os.replace", failing_replace)
+
+    with pytest.raises(StreamSecretError):
+        secret._write()
+
+    # Verify no temp files left behind
+    temp_files = list(tmp_path.glob(".stream-secret.*"))
+    assert len(temp_files) == 0
+
+
+def test_write_mkdir_failure_is_stream_secret_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test that mkdir failure during write raises StreamSecretError."""
+    path = tmp_path / ".stream-secret"
+    secret = StreamSecret(path, "test" * 11)  # 44 chars, will be normalized to 43
+
+    def failing_mkdir(self: Path, parents: bool = False, exist_ok: bool = False) -> None:
+        raise OSError("simulated mkdir failure")
+
+    monkeypatch.setattr("pathlib.Path.mkdir", failing_mkdir)
+
+    with pytest.raises(StreamSecretError, match="cannot write stream secret"):
+        secret._write()
+
+
+def test_write_mkstemp_failure_is_stream_secret_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test that mkstemp failure during write raises StreamSecretError."""
+    path = tmp_path / ".stream-secret"
+    secret = StreamSecret(path, "test" * 11)
+
+    def failing_mkstemp(dir: str, prefix: str) -> tuple[int, str]:
+        raise OSError("simulated mkstemp failure")
+
+    monkeypatch.setattr("tempfile.mkstemp", failing_mkstemp)
+
+    with pytest.raises(StreamSecretError, match="cannot write stream secret"):
+        secret._write()
+
+
+def test_paired_devices_path_with_minimal_config() -> None:
+    """Test paired_devices_path with a minimal mock config."""
+    cfg = MagicMock()
+    cfg.index.index_dir = "/path/to/index"
+    result = paired_devices_path(cfg)
+    assert result == Path("/path/to/index") / ".paired-devices.sqlite3"
+
+
+def test_stream_secret_path_with_minimal_config() -> None:
+    """Test stream_secret_path with a minimal mock config."""
+    cfg = MagicMock()
+    cfg.index.index_dir = "/path/to/index"
+    result = stream_secret_path(cfg)
+    assert result == Path("/path/to/index") / ".stream-secret"
