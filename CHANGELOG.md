@@ -45,7 +45,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `autodj play` and `autodj serve` take `--harmonic-mode MODE` instead of
   `--harmonic` / `--no-harmonic`.
 - A `harmonic_mode` in `config.toml` that is not one of those names, including `true` or
-  `false`, and any unknown key in `[djmix]`, now stop AutoDJ with an error naming the setting.
+  `false`, now stops AutoDJ with an error naming the setting.
+- `config.toml` and `config.local.toml` now reject unknown keys in every section, and unknown
+  sections. A removed or misspelled setting, such as a leftover `harmonic_mixing` in `[djmix]`
+  or `path_remap` in `[library]`, stops AutoDJ with an error naming the section and key instead
+  of being ignored. Preset names under `[presets.NAME]` are still free-form; the keys inside
+  each preset are checked by the preset loader as before.
 - Saved web settings (`web_state.json`) from earlier versions are ignored, with one warning in the
   log. Your web settings return to their defaults until you change one in the web page, which
   saves a new file. Earlier files stored a harmonic mode even when harmonic mixing was off, and
@@ -83,7 +88,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rows".
 - The `[library] path_remap` setting is gone. Track paths in `tracks.db` and `dj_meta.db`
   are always stored relative to `music_dir`, and `autodj index` skips beets tracks that sit
-  outside `music_dir`, with a warning. A leftover `path_remap` line is ignored.
+  outside `music_dir`, with a warning. A leftover `path_remap` line is an unknown key and
+  stops AutoDJ; delete it.
 - AutoDJ no longer rewrites absolute paths in `tracks.db` and `dj_meta.db` into relative
   ones, and no longer upgrades an older `tracks` table layout to the current one.
 - Index rows with no `embedded_at` time are no longer stamped with the file's current time.

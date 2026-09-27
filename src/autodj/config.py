@@ -16,7 +16,7 @@ import ipaddress
 import os
 import re
 import tomllib
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field, fields
 from functools import partial
@@ -62,7 +62,9 @@ class LibraryConfig:
 
         Raises:
             KeyError: If ``music_dir`` is not present.
+            ValueError: On an unknown key.
         """
+        _reject_unknown_keys("library", data, _field_names(cls))
         if "music_dir" not in data:
             raise KeyError("config.toml [library] section is missing 'music_dir'")
         beets_raw = data.get("beets_db")
@@ -112,9 +114,11 @@ class IndexConfig:
             A populated IndexConfig instance with defaults applied for missing keys.
 
         Raises:
-            ValueError: If ``name`` contains path separators / traversal /
-                leading dot — names are bare identifiers, not paths.
+            ValueError: On an unknown key, or if ``name`` contains path
+                separators / traversal / leading dot — names are bare
+                identifiers, not paths.
         """
+        _reject_unknown_keys("index", data, _field_names(cls))
         name = str(data.get("name", "default")).strip() or "default"
         validate_index_name(name)
         return cls(
@@ -186,6 +190,29 @@ def _one_of(value: str, options: tuple[str, ...], field_name: str) -> str:
     if value not in options:
         raise ValueError(f"{field_name} must be one of {options}, got {value!r}")
     return value
+
+
+def _reject_unknown_keys(section: str, data: Mapping[str, Any], known: Iterable[str]) -> None:
+    """Raise if a config section holds a key outside *known*.
+
+    Removed and misspelled options must fail loudly rather than be ignored.
+
+    Args:
+        section: Section name used in the error message, e.g. ``"library"``.
+        data: Raw keys of that section.
+        known: Accepted key names.
+
+    Raises:
+        ValueError: If *data* has any key not in *known*.
+    """
+    unknown = set(data) - set(known)
+    if unknown:
+        raise ValueError(f"unknown [{section}] keys: {sorted(unknown)}")
+
+
+def _field_names(cls: Any) -> set[str]:
+    """Return the dataclass field names of *cls*, which double as its TOML keys."""
+    return {f.name for f in fields(cls)}
 
 
 #: ``post_queue_seed`` picks how similarity restarts once a queue empties:
@@ -365,9 +392,10 @@ class PlaybackConfig:
             A populated PlaybackConfig instance.
 
         Raises:
-            ValueError: If ``crossfade_seconds`` is negative or
+            ValueError: On an unknown key, or if ``crossfade_seconds`` or
                 ``no_repeat_window`` is negative.
         """
+        _reject_unknown_keys("playback", data, _field_names(cls))
         crossfade = float(data.get("crossfade_seconds", 3.0))
         no_repeat = int(data.get("no_repeat_window", 500))
         artist_repeat = int(data.get("artist_repeat_window", 3))
@@ -496,9 +524,7 @@ class DjMixConfig:
             ValueError: On an unknown key, or if ``harmonic_mode`` is not one
                 of :data:`autodj.dj_meta.HARMONIC_MODES`.
         """
-        unknown = set(data) - {f.name for f in fields(cls)}
-        if unknown:
-            raise ValueError(f"unknown [djmix] keys: {sorted(unknown)}")
+        _reject_unknown_keys("djmix", data, _field_names(cls))
         harmonic_mode = data.get("harmonic_mode", "off")
         if isinstance(harmonic_mode, str):
             harmonic_mode = harmonic_mode.lower()
@@ -546,7 +572,12 @@ class TransitionsConfig:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> TransitionsConfig:
-        """Construct a TransitionsConfig from a raw TOML section dict."""
+        """Construct a TransitionsConfig from a raw TOML section dict.
+
+        Raises:
+            ValueError: On an unknown key.
+        """
+        _reject_unknown_keys("transitions", data, _field_names(cls))
         return cls(
             effect=str(data.get("effect", "none")).lower(),
             wet_mix=float(data.get("wet_mix", 1.0)),
@@ -575,7 +606,12 @@ class ReplayGainConfig:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ReplayGainConfig:
-        """Construct a ReplayGainConfig from a raw TOML section dict."""
+        """Construct a ReplayGainConfig from a raw TOML section dict.
+
+        Raises:
+            ValueError: On an unknown key.
+        """
+        _reject_unknown_keys("replaygain", data, _field_names(cls))
         return cls(
             enabled=bool(data.get("enabled", False)),
             target_db=float(data.get("target_db", -14.0)),
@@ -618,7 +654,11 @@ class ModelConfig:
 
         Returns:
             A populated ModelConfig instance.
+
+        Raises:
+            ValueError: On an unknown key.
         """
+        _reject_unknown_keys("model", data, _field_names(cls))
         manual_raw = data.get("manual_path")
         return cls(
             name=data.get("name", "OpenMuQ/MuQ-large-msd-iter"),
@@ -852,9 +892,20 @@ class ServerConfig:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ServerConfig:
-        """Construct server settings from a raw configuration section."""
+        """Construct server settings from a raw configuration section.
+
+        Raises:
+            TypeError: If *data* is not a table.
+            ValueError: On an unknown key or an out-of-range value.
+        """
         if not isinstance(data, dict):
             raise TypeError("server section must be a table")
+        # The upload cap is written in MiB but stored in bytes.
+        _reject_unknown_keys(
+            "server",
+            data,
+            (_field_names(cls) - {"liner_upload_max_bytes"}) | {"liner_upload_max_mib"},
+        )
         max_mib = _require_int(data.get("liner_upload_max_mib", 50), "server.liner_upload_max_mib")
         if not 1 <= max_mib <= MAX_LINER_UPLOAD_MIB:
             raise ValueError("server.liner_upload_max_mib must be between 1 and 1024")
@@ -930,14 +981,15 @@ class HuggingFaceConfig:
 
         Returns:
             A populated HuggingFaceConfig instance.
+
+        Raises:
+            ValueError: On an unknown key.
         """
+        _reject_unknown_keys("huggingface", data, _field_names(cls))
         return cls(token=data.get("token") or None)
 
 
 STREAM_BITRATES = (128, 192, 256, 320)
-_STREAM_KEYS = frozenset(
-    {"enabled", "bitrate", "idle_grace_seconds", "max_listeners", "station_name"}
-)
 
 
 def parse_env_bool(value: str) -> bool:
@@ -1017,9 +1069,7 @@ class StreamConfig:
             ValueError: On an unknown key or invalid value.
             TypeError: On a wrongly typed value.
         """
-        unknown = set(data) - _STREAM_KEYS
-        if unknown:
-            raise ValueError(f"unknown [stream] keys: {sorted(unknown)}")
+        _reject_unknown_keys("stream", data, _field_names(cls))
         return cls(**data)
 
 
@@ -1119,6 +1169,20 @@ def _environment_overlay(environ: Mapping[str, str]) -> dict[str, Any]:
     return overlay
 
 
+_SECTIONS = (
+    "library",
+    "index",
+    "playback",
+    "model",
+    "huggingface",
+    "replaygain",
+    "djmix",
+    "transitions",
+    "server",
+    "stream",
+)
+
+
 def _build_config(
     raw: dict[str, Any],
     *,
@@ -1132,18 +1196,10 @@ def _build_config(
     if not isinstance(presets_raw, Mapping):
         raise TypeError("presets section must be a table")
 
-    for section in (
-        "library",
-        "index",
-        "playback",
-        "model",
-        "huggingface",
-        "replaygain",
-        "djmix",
-        "transitions",
-        "server",
-        "stream",
-    ):
+    unknown_sections = set(raw) - {*_SECTIONS, "presets"}
+    if unknown_sections:
+        raise ValueError(f"unknown config sections: {sorted(unknown_sections)}")
+    for section in _SECTIONS:
         if not isinstance(raw.get(section, {}), Mapping):
             raise TypeError(f"{section} section must be a table")
 

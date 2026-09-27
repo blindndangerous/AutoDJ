@@ -500,6 +500,24 @@ class TestDeepMergeAndOverlays:
         assert str(cfg.library.music_dir).replace("\\", "/").endswith("/srv/music")
         assert cfg.playback.crossfade_seconds == 5.0
 
+    @pytest.mark.parametrize(
+        ("overlay", "message"),
+        [
+            ("[library]\npath_remap = {}\n", r"unknown \[library\] keys: \['path_remap'\]"),
+            ("[playback]\ncrossfade = 3.0\n", r"unknown \[playback\] keys: \['crossfade'\]"),
+            ("[lyrics]\nenabled = true\n", r"unknown config sections: \['lyrics'\]"),
+        ],
+    )
+    def test_local_overlay_unknown_key_is_rejected(
+        self, tmp_path: Path, overlay: str, message: str
+    ) -> None:
+        """A removed or misspelled option in any section fails the load, naming it."""
+        base = tmp_path / "config.toml"
+        base.write_text('[library]\nmusic_dir = "Z:/Music"\n', encoding="utf-8")
+        (tmp_path / "config.local.toml").write_text(overlay, encoding="utf-8")
+        with pytest.raises(ValueError, match=message):
+            load_config(base)
+
     def test_presets_sidecar_loaded(self, tmp_path: Path) -> None:
         base = tmp_path / "config.toml"
         base.write_text(
