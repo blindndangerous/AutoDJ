@@ -179,6 +179,18 @@ def test_serve_lan_reaches_the_server_without_printing_the_token(tmp_path: Path)
     assert cfg.server.lan is True
     assert cfg.server.access_token == token
     assert cfg.config_sources == ("defaults", "cli")
+    assert serve_mock.call_args.kwargs["lan_configured_hosts"] is None
+
+
+def test_serve_passes_the_hosts_configured_before_detection(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path, ServerConfig(allowed_hosts=["from-config.lan"]))
+
+    _result, from_config = _invoke_serve(cfg, "--lan")
+    cfg = _cfg(tmp_path, ServerConfig(allowed_hosts=["from-config.lan"]))
+    _result, from_flag = _invoke_serve(cfg, "--lan", "--allowed-host", "Radio.Local")
+
+    assert from_config.call_args.kwargs["lan_configured_hosts"] == ["from-config.lan"]
+    assert from_flag.call_args.kwargs["lan_configured_hosts"] == ["Radio.Local"]
 
 
 def test_serve_lan_insecure_warns(tmp_path: Path) -> None:
@@ -231,7 +243,14 @@ def test_autodj_lan_environment_variable(tmp_path: Path, monkeypatch: pytest.Mon
 # ---------------------------------------------------------------------------
 
 
-def _run_serve(server: ServerConfig, caplog: pytest.LogCaptureFixture, tmp_path: Path) -> str:
+def _run_serve(
+    server: ServerConfig,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+    *,
+    in_container: bool = False,
+    configured_hosts: list[str] | None = None,
+) -> str:
     from autodj.server import serve
 
     cfg = MagicMock()
@@ -246,9 +265,10 @@ def _run_serve(server: ServerConfig, caplog: pytest.LogCaptureFixture, tmp_path:
     with (
         patch("autodj.player.Player.run"),
         patch("uvicorn.run"),
+        patch("autodj.server.running_in_container", return_value=in_container),
         caplog.at_level(logging.INFO, logger="autodj.server"),
     ):
-        serve(cfg=cfg, sim=sim, seed_entry=None)
+        serve(cfg=cfg, sim=sim, seed_entry=None, lan_configured_hosts=configured_hosts)
     return caplog.text
 
 
@@ -338,3 +358,49 @@ def test_pairing_code_reports_an_unreadable_token_file(project: Path) -> None:
 
     assert result.exit_code == 1
     assert "cannot read access token" in result.output
+
+
+def test_pairing_code_notes_that_it_comes_from_the_saved_token(project: Path) -> None:
+    load_or_create_access_token(project / "index" / ".access-token")
+
+    result = CliRunner().invoke(cli, ["devices", "pairing-code"])
+
+    assert result.exit_code == 0, result.output
+    assert "comes from the token `autodj serve --lan` saved" in result.stderr
+    assert "comes from the token" not in result.stdout
+
+
+def test_pairing_code_with_configured_token_has_no_saved_token_note(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AUTODJ_ACCESS_TOKEN", _TOKEN)
+    load_or_create_access_token(project / "index" / ".access-token")
+
+    result = CliRunner().invoke(cli, ["devices", "pairing-code"])
+
+    assert result.exit_code == 0, result.output
+    assert "comes from the token" not in result.stderr
+
+
+def test_container_serve_lists_the_configured_address_first(
+    caplog: pytest.LogCaptureFixture, tmp_path: Path
+) -> None:
+    server = _lan_server(
+        allowed_hosts=[*_DETECTED, "radio.local", "172.17.0.2"],
+        allowed_origins=["http://radio.local:8080"],
+    )
+
+    text = _run_serve(
+        server,
+        caplog,
+        tmp_path,
+        in_container=True,
+        configured_hosts=["127.0.0.1", "radio.local"],
+    )
+    block = text.split("Open AutoDJ from another device on your network:", 1)[1]
+    lines = block.splitlines()
+
+    assert lines[1].strip() == "http://radio.local:8080"
+    assert lines[2] == "Container addresses are not reachable from your network."
+    assert "172.17.0.2" not in block
+    assert "http://nas:8080" not in block

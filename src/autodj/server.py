@@ -82,7 +82,7 @@ from autodj.http_media import (
 )
 from autodj.icy import METAINT
 from autodj.index_manifest import IndexConsistencyError, IndexSnapshotToken, current_snapshot_token
-from autodj.lan import format_lan_banner, lan_urls
+from autodj.lan import format_lan_banner, lan_urls, running_in_container
 from autodj.pairing import DeviceRegistry
 from autodj.security import (
     COOKIE_NAME,
@@ -2373,6 +2373,7 @@ def serve(
     stream: bool = False,
     ssl_certfile: str | None = None,
     ssl_keyfile: str | None = None,
+    lan_configured_hosts: list[str] | None = None,
 ) -> None:
     """Start the Player thread and the FastAPI/uvicorn web server.
 
@@ -2396,6 +2397,9 @@ def serve(
             a station starts a set on the first listener, and the page is a
             remote.  *seed_entry* starts the first set; later sets start
             from the queue or a shuffle pick.
+        lan_configured_hosts: In LAN mode, the allowed hosts configured before
+            detection was merged in; inside a container these are the only
+            addresses printed, because container addresses are unreachable.
 
     Raises:
         SystemExit: *stream* is set and the stream secret file cannot be
@@ -2500,7 +2504,14 @@ def serve(
         if startup_policy.authentication_required:
             valid_for, _next_code_in = startup_policy.pairing_code_seconds_left()
             pairing = (startup_policy.current_pairing_code(), valid_for)
-        logger.info("%s", format_lan_banner(lan_urls(cfg.server, tls=secure_cookie), pairing))
+        in_container = running_in_container()
+        urls = lan_urls(
+            cfg.server,
+            tls=secure_cookie,
+            in_container=in_container,
+            configured_hosts=lan_configured_hosts or (),
+        )
+        logger.info("%s", format_lan_banner(urls, pairing, in_container=in_container))
     elif startup_policy.authentication_required:
         logger.info(
             "Pair this browser within five minutes using code: %s",

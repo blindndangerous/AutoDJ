@@ -408,3 +408,128 @@ def test_access_token_path_sits_beside_paired_devices(tmp_path: Path) -> None:
 
     assert access_token_path(cfg) == tmp_path / ".access-token"
     assert access_token_path(cfg).parent == paired_devices_path(cfg).parent
+
+
+# ---------------------------------------------------------------------------
+# Review fixes: bounded lookups, FQDN filter, containers, bind rule
+# ---------------------------------------------------------------------------
+
+
+def test_isp_reverse_name_is_not_taken_as_fqdn(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_socket(monkeypatch, hostname="nas", fqdn="host-10-0-0-7.isp.example")
+
+    assert detect_lan_hosts() == sorted(["nas", "nas.local", *_LOOPBACK])
+
+
+def test_arpa_fqdn_is_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_socket(monkeypatch, hostname="nas", fqdn="nas.7.0.0.10.in-addr.arpa.")
+
+    assert detect_lan_hosts() == sorted(["nas", "nas.local", *_LOOPBACK])
+
+
+def test_valid_fqdn_with_trailing_dot_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_socket(monkeypatch, hostname="Host", fqdn="host.example.lan.")
+
+    assert detect_lan_hosts() == sorted(["host", "host.local", "host.example.lan", *_LOOPBACK])
+
+
+@pytest.mark.parametrize("hostname", ["localhost.localdomain", "localhost"])
+def test_names_starting_with_localhost_are_skipped(
+    monkeypatch: pytest.MonkeyPatch, hostname: str
+) -> None:
+    _patch_socket(monkeypatch, hostname=hostname, fqdn="localhost.localdomain")
+
+    assert detect_lan_hosts() == sorted(_LOOPBACK)
+
+
+@pytest.mark.parametrize("slow", ["getaddrinfo", "getfqdn"])
+def test_slow_lookups_are_abandoned_after_the_timeout(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, slow: str
+) -> None:
+    import logging
+    import threading
+    import time
+
+    release = threading.Event()
+    _patch_socket(
+        monkeypatch,
+        hostname="nas",
+        fqdn="nas.example.lan",
+        addresses=("192.168.1.20",),
+        udp=_FakeUdpSocket("10.0.0.7"),
+    )
+    original = getattr(socket, slow)
+
+    def stuck(*args: Any) -> Any:
+        release.wait(10)
+        return original(*args)
+
+    monkeypatch.setattr(socket, slow, stuck)
+    started = time.monotonic()
+    try:
+        with caplog.at_level(logging.INFO, logger="autodj.lan"):
+            hosts = detect_lan_hosts(timeout=0.05)
+    finally:
+        release.set()
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 2
+    # What is known without the resolver is kept.
+    assert hosts == sorted(["10.0.0.7", "nas", "nas.local", *_LOOPBACK])
+    assert caplog.text.count("took longer than") == 1
+
+
+def test_fast_lookups_finish_within_the_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_socket(monkeypatch, hostname="nas", addresses=("192.168.1.20",))
+
+    assert "192.168.1.20" in detect_lan_hosts(timeout=5)
+
+
+def test_container_markers_are_checked(tmp_path: Path) -> None:
+    from autodj.lan import CONTAINER_MARKERS, running_in_container
+
+    marker = tmp_path / ".dockerenv"
+    assert running_in_container([marker]) is False
+    marker.write_text("", encoding="utf-8")
+    assert running_in_container([tmp_path / "absent", marker]) is True
+    assert Path("/.dockerenv") in CONTAINER_MARKERS
+    assert Path("/run/.containerenv") in CONTAINER_MARKERS
+
+
+def test_lan_bind_host_rule() -> None:
+    from autodj.lan import lan_bind_host
+
+    assert lan_bind_host("127.0.0.1") == "0.0.0.0"
+    assert lan_bind_host("localhost") == "0.0.0.0"
+    assert lan_bind_host("::1") == "0.0.0.0"
+    assert lan_bind_host("192.168.1.20") == "192.168.1.20"
+    assert lan_bind_host("0.0.0.0") == "0.0.0.0"
+
+
+def test_container_urls_list_only_configured_hosts_in_order() -> None:
+    server = ServerConfig(
+        host="0.0.0.0",
+        lan=True,
+        access_token="t" * 32,
+        allowed_hosts=[*_DETECTED, "radio.local", "172.17.0.2"],
+        allowed_origins=["http://radio.local:8080"],
+    )
+
+    urls = lan_urls(
+        server,
+        tls=False,
+        in_container=True,
+        configured_hosts=["127.0.0.1", "Radio.Local", "radio.local", "fe80::1", "bad_name"],
+    )
+
+    assert urls == ["http://radio.local:8080", "http://[fe80::1]:8080"]
+    assert lan_urls(server, tls=False, in_container=True) == []
+
+
+def test_container_banner_puts_the_working_address_first() -> None:
+    text = format_lan_banner(["http://radio.local:8080"], ("12345678", 60), in_container=True)
+    lines = text.splitlines()
+
+    assert lines[1] == "  http://radio.local:8080"
+    assert lines[2] == "Container addresses are not reachable from your network."
+    assert "Container addresses" not in format_lan_banner(["http://nas:8080"], None)

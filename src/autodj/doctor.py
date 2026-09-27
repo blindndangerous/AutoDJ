@@ -691,13 +691,12 @@ def _lan_network_check(cfg: AutoDJConfig) -> DoctorCheck:
         PASS with a configured, saved or to-be-created token; WARN without
         pairing (``insecure_lan``); FAIL when the saved token cannot be read.
     """
-    from autodj.lan import AccessTokenError, detect_lan_hosts, read_access_token
+    from autodj.lan import AccessTokenError, detect_lan_hosts, lan_bind_host, read_access_token
     from autodj.stream_secret import access_token_path
 
     server = cfg.server
-    bind = "0.0.0.0" if is_loopback_bind(server.host) else server.host  # nosec B104
     detail: dict[str, Any] = {
-        "bind": f"{bind}:{server.port}",
+        "bind": f"{lan_bind_host(server.host)}:{server.port}",
         "detected_hosts": detect_lan_hosts(),
     }
     if server.access_token:

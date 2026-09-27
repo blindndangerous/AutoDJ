@@ -435,6 +435,18 @@ def _require_ffmpeg_for_stream(cfg: AutoDJConfig) -> None:
         )
 
 
+def _configured_allowed_hosts(
+    cfg: AutoDJConfig, allowed_hosts: tuple[str, ...]
+) -> list[str] | None:
+    """Return the allowed hosts before LAN detection: ``--allowed-host`` values, else config.
+
+    Args:
+        cfg: Loaded configuration.
+        allowed_hosts: ``--allowed-host`` values; empty keeps the config list.
+    """
+    return list(allowed_hosts) if allowed_hosts else cfg.server.allowed_hosts
+
+
 def _stage_serve_server(
     cfg: AutoDJConfig,
     *,
@@ -483,7 +495,7 @@ def _stage_serve_server(
             access_token=server.access_token if access_token is None else access_token,
             insecure_lan=server.insecure_lan if insecure_lan is None else insecure_lan,
             lan=server.lan if lan is None else lan,
-            allowed_hosts=server.allowed_hosts if not allowed_hosts else list(allowed_hosts),
+            allowed_hosts=_configured_allowed_hosts(cfg, allowed_hosts),
             allowed_origins=(
                 server.allowed_origins if not allowed_origins else list(allowed_origins)
             ),
@@ -787,7 +799,14 @@ def _server_with_saved_token(cfg: AutoDJConfig) -> ServerConfig:
         saved = read_access_token(access_token_path(cfg))
     except AccessTokenError as exc:
         raise click.ClickException(str(exc)) from exc
-    return cfg.server if saved is None else replace(cfg.server, access_token=saved)
+    if saved is None:
+        return cfg.server
+    click.echo(
+        "This code comes from the token `autodj serve --lan` saved; it only works while "
+        "the server uses that token.",
+        err=True,
+    )
+    return replace(cfg.server, access_token=saved)
 
 
 @devices_group.command("pairing-code")
@@ -2058,6 +2077,8 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
         lan=lan,
         tls=bool(ssl_certfile and ssl_keyfile),
     )
+    # Captured before cfg.server is replaced by the merged, detected lists.
+    lan_configured_hosts = _configured_allowed_hosts(cfg, allowed_hosts)
     server_cli_override = security_cli_requested and staged_server != original_server
     host = staged_server.host
     port = staged_server.port
@@ -2133,6 +2154,7 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
             stream=cfg.stream.enabled,
             ssl_certfile=ssl_certfile,
             ssl_keyfile=ssl_keyfile,
+            lan_configured_hosts=lan_configured_hosts,
         )
     except KeyboardInterrupt:
         console.print("\n[yellow]Stopped.[/]")
