@@ -745,6 +745,21 @@ def canonicalize_allowed_origin(value: str) -> str:
     return f"{scheme}://{rendered_host}{suffix}"
 
 
+def canonicalize_allowed_host(value: str) -> str:
+    """Validate and normalize one allowed Host name the way the Host check compares it.
+
+    Args:
+        value: A DNS name or IP address, without brackets or port.
+
+    Returns:
+        The lower-case name, or the compressed IP address.
+
+    Raises:
+        ValueError: *value* is not a valid, non-wildcard host.
+    """
+    return _canonicalize_host(value, field_name="server.allowed_hosts", allow_unspecified=False)
+
+
 def _canonicalize_allowed_hosts(values: object) -> list[str] | None:
     """Validate, normalize, and deduplicate an optional host allowlist."""
     if values is None:
@@ -780,6 +795,7 @@ class ServerConfig:
     port: int = 8080
     access_token: str | None = field(default=None, repr=False)
     insecure_lan: bool = False
+    lan: bool = False
     allowed_hosts: list[str] | None = None
     allowed_origins: list[str] | None = None
     session_ttl_seconds: int = 90 * 24 * 60 * 60
@@ -798,6 +814,8 @@ class ServerConfig:
         validate_access_token(self.access_token)
         if not isinstance(self.insecure_lan, bool):
             raise TypeError("server.insecure_lan must be a boolean")
+        if not isinstance(self.lan, bool):
+            raise TypeError("server.lan must be a boolean")
         self.allowed_hosts = _canonicalize_allowed_hosts(self.allowed_hosts)
         self.allowed_origins = _canonicalize_allowed_origins(self.allowed_origins)
         self.session_ttl_seconds = _require_int(
@@ -843,6 +861,7 @@ class ServerConfig:
             port=data.get("port", 8080),
             access_token=data.get("access_token"),
             insecure_lan=data.get("insecure_lan", False),
+            lan=data.get("lan", False),
             allowed_hosts=data.get("allowed_hosts"),
             allowed_origins=data.get("allowed_origins"),
             session_ttl_seconds=data.get("session_ttl_seconds", 90 * 24 * 60 * 60),
