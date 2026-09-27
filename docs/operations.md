@@ -208,6 +208,9 @@ Media, then Open Network Stream, then paste the stream address (or point VLC at 
 - **EQ** is applied once, on the server, so every listener hears the same shaped sound.
 - **Page volume and mute** affect only the page's own "Listen here" playback in the browser.
   Each speaker keeps its own volume, set on the speaker or in its own app.
+- **With `--server-audio` as well**, the machine's own speakers keep the server volume, because
+  the page's volume and Mute only change the page's own listening. Set that volume before
+  starting stream mode, or run `--server-audio` without `--stream` to change it from the page.
 - Quality (bitrate) is chosen under Settings, Stream: 128, 192, 256 or 320 kbps, default 320.
   Changing it restarts the encoder; every listener, including speakers, reconnects on its own a
   moment later.

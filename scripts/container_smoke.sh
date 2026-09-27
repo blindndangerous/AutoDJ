@@ -251,11 +251,12 @@ stream_secret="$(
   docker compose --profile stream exec -T autodj-stream cat /index/.stream-secret
 )"
 
-# The smoke library has no tracks ("tracks": 0 above), so no set can ever start and the
-# stream never emits real MP3 frames; requiring some would mean bundling audio fixtures just
-# for this script. Instead assert that the route, secret and encoder wiring answer correctly:
-# 200, the audio/mpeg content type, and ICY metadata headers, all within a few seconds. A real
-# frame-level check is left to manual verification against a real library.
+# The smoke library has no tracks ("tracks": 0 above), so no set can ever start: the stream
+# only carries the encoded silence the bus sends while idle. Checking music would mean bundling
+# audio fixtures just for this script. Instead assert that the route, secret and encoder wiring
+# answer correctly: 200, the audio/mpeg content type, and ICY metadata headers, all within a
+# few seconds. A check of real music frames is left to manual verification against a real
+# library.
 stream_headers="$smoke_root/autodj-stream-headers.txt"
 curl --silent --show-error --max-time 5 \
   --dump-header "$stream_headers" --output /dev/null \

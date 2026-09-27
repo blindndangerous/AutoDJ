@@ -102,14 +102,18 @@ liner_upload_max_mib = 50
 # ---------------------------------------------------------------------------
 # Radio-style MP3 stream — server mixes the set and serves it as a live
 # MP3 feed, so any player (car head unit, another room's speaker) can tune
-# in as a remote, not just a browser tab.  Off by default; toggle at
-# runtime with `autodj serve --stream` / `--no-stream`.  Requires ffmpeg
-# on the PATH (checked by `autodj doctor` and refused at startup).
+# in as a remote, not just a browser tab.  Off by default.  Stream mode is
+# chosen at start-up (`autodj serve --stream` / `--no-stream` override
+# `enabled` below); it cannot be switched while the server runs.  Requires
+# ffmpeg on the PATH (checked by `autodj doctor` and refused at startup).
 # ---------------------------------------------------------------------------
 [stream]
 enabled = false
 
-# MP3 bitrate in kbps.  One of 128, 192, 256, 320.
+# MP3 bitrate in kbps.  One of 128, 192, 256, 320.  The quality chosen on
+# the Settings page is saved (web_state.json) and, like the other playback
+# settings saved there, overrides this value and AUTODJ_STREAM_BITRATE on
+# the next start.
 bitrate = 320
 
 # Seconds without a connected listener before the stream mix stops.
