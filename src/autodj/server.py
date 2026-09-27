@@ -81,6 +81,7 @@ from autodj.security import (
     new_request_id,
     peer_address,
 )
+from autodj.stream_secret import paired_devices_path
 from autodj.version import REQUIRED_BUILT_ASSETS, current_version
 
 if TYPE_CHECKING:
@@ -893,7 +894,7 @@ def create_app(
 
     server_config = bridge.player._cfg.server
     if device_registry is None and isinstance(server_config.access_token, str):
-        registry_path = Path(bridge.player._cfg.index.index_dir) / ".paired-devices.sqlite3"
+        registry_path = paired_devices_path(bridge.player._cfg)
         device_registry = DeviceRegistry(registry_path)
     policy = SecurityPolicy(
         server_config,

@@ -40,6 +40,7 @@ from rich.console import Console
 from rich.panel import Panel
 
 from autodj.config import TRANSITION_MODES
+from autodj.stream_secret import paired_devices_path
 from autodj.transitions import TRANSITION_EFFECT_NAMES
 
 logger = logging.getLogger(__name__)
@@ -669,7 +670,7 @@ def _device_registry(ctx: click.Context) -> tuple[AutoDJConfig, DeviceRegistry]:
     from autodj.pairing import DeviceRegistry
 
     cfg = _load_cfg_or_exit(ctx.obj["config_path"])
-    return cfg, DeviceRegistry(cfg.index.index_dir / ".paired-devices.sqlite3")
+    return cfg, DeviceRegistry(paired_devices_path(cfg))
 
 
 @devices_group.command("list")
