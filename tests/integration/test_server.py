@@ -2087,6 +2087,15 @@ class TestSettingsEndpoints:
         tc.post("/api/djmix", json={"harmonic_mode": "strict"})  # beatmatch absent
         assert bridge.player._cfg.djmix.beatmatch is True  # untouched
 
+    def test_post_djmix_rejects_removed_harmonic_mixing(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        bridge.player._cfg.index.active_dir = tmp_path
+        tc = TestClient(create_app(bridge))
+        response = tc.post("/api/djmix", json={"harmonic_mixing": True})
+        assert response.status_code == 422
+        assert bridge.player._cfg.djmix.harmonic_mode == "off"
+
     def test_post_playback_settings(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 

@@ -18,7 +18,7 @@ import re
 import tomllib
 from collections.abc import Callable, Mapping
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -509,9 +509,12 @@ class DjMixConfig:
         """Construct a DjMixConfig from a raw TOML section dict.
 
         Raises:
-            ValueError: If ``harmonic_mode`` is not one of
-                :data:`autodj.dj_meta.HARMONIC_MODES`.
+            ValueError: On an unknown key, or if ``harmonic_mode`` is not one
+                of :data:`autodj.dj_meta.HARMONIC_MODES`.
         """
+        unknown = set(data) - {f.name for f in fields(cls)}
+        if unknown:
+            raise ValueError(f"unknown [djmix] keys: {sorted(unknown)}")
         harmonic_mode = data.get("harmonic_mode", "off")
         if isinstance(harmonic_mode, str):
             harmonic_mode = harmonic_mode.lower()

@@ -589,6 +589,13 @@ class TestDjMixConfig:
         with pytest.raises(ValueError, match=r"djmix\.harmonic_mode"):
             DjMixConfig.from_dict({"harmonic_mode": value})
 
+    def test_leftover_harmonic_mixing_key_is_rejected(self) -> None:
+        """The removed on/off switch must fail loudly, not be silently ignored."""
+        from autodj.config import DjMixConfig
+
+        with pytest.raises(ValueError, match=r"unknown \[djmix\] keys: \['harmonic_mixing'\]"):
+            DjMixConfig.from_dict({"harmonic_mixing": False, "harmonic_mode": "off"})
+
 
 # ---------------------------------------------------------------------------
 # PlaybackConfig.transition_mode (Mixxx-style crossfade alignment)

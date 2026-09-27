@@ -528,7 +528,13 @@ class TransitionBody(BaseModel):
 
 
 class DjMixBody(BaseModel):
-    """Request body for POST /api/djmix — only set fields are applied."""
+    """Request body for POST /api/djmix — only set fields are applied.
+
+    Unknown fields are rejected, so a stale client still sending the removed
+    ``harmonic_mixing`` switch gets a 422 instead of being silently ignored.
+    """
+
+    model_config = ConfigDict(extra="forbid")
 
     harmonic_mode: str | None = None
     beatmatch: bool | None = None
