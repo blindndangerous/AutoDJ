@@ -38,6 +38,8 @@ _ROUTE_PROBE = ("192.0.2.1", 9)
 _WILDCARD_BINDS = frozenset({"0.0.0.0", "::"})  # nosec B104 - comparison only
 # Resolver calls can each hang for ~30 s on broken DNS; start-up waits this long at most.
 LOOKUP_TIMEOUT_SECONDS = 2.0
+# Reverse-DNS zones: names here describe addresses, not hosts browsers use.
+_REVERSE_DNS_ZONES = (".in-addr.arpa", ".ip6.arpa")
 # Files Docker and Podman create inside every container.
 CONTAINER_MARKERS = (Path("/.dockerenv"), Path("/run/.containerenv"))
 
@@ -58,10 +60,12 @@ def _is_own_fqdn(fqdn: str, hostname: str) -> bool:
     """Return whether *fqdn* is a longer form of *hostname*, not a reverse-DNS name.
 
     A resolver may answer with an ISP name ("host-1-2-3-4.isp.example") or a
-    reverse zone ("4.3.2.1.in-addr.arpa"); neither is a name browsers use.
+    reverse zone ("4.3.2.1.in-addr.arpa", "...ip6.arpa"); neither is a name
+    browsers use. Other ``.arpa`` names stay: ``home.arpa`` is the standard
+    home-network domain (RFC 8375).
     """
     name = fqdn.strip().lower().removesuffix(".")
-    return name.startswith(f"{hostname.lower()}.") and not name.endswith(".arpa")
+    return name.startswith(f"{hostname.lower()}.") and not name.endswith(_REVERSE_DNS_ZONES)
 
 
 def _resolver_names(hostname: str) -> list[str]:
@@ -118,8 +122,8 @@ def detect_lan_hosts(*, timeout: float = LOOKUP_TIMEOUT_SECONDS) -> list[str]:
     """Return the names and addresses other devices may use to reach this machine.
 
     Covers the hostname, ``<hostname>.local`` for a hostname without a dot, the
-    fully qualified name when it extends the hostname (not a reverse-DNS or
-    ``.arpa`` name), every non-loopback address the resolver gives the
+    fully qualified name when it extends the hostname (not a reverse-DNS
+    ``in-addr.arpa``/``ip6.arpa`` name), every non-loopback address the resolver gives the
     hostname, the outbound IPv4 address, and ``localhost``/``127.0.0.1``/``::1``.
     Lookup failures are skipped, and names that are not valid DNS names (for
     example Windows hostnames with underscores) or whose first label is

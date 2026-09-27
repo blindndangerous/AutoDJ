@@ -421,10 +421,25 @@ def test_isp_reverse_name_is_not_taken_as_fqdn(monkeypatch: pytest.MonkeyPatch) 
     assert detect_lan_hosts() == sorted(["nas", "nas.local", *_LOOPBACK])
 
 
-def test_arpa_fqdn_is_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
-    _patch_socket(monkeypatch, hostname="nas", fqdn="nas.7.0.0.10.in-addr.arpa.")
+@pytest.mark.parametrize(
+    "fqdn",
+    [
+        "4.3.2.1.in-addr.arpa",
+        "nas.7.0.0.10.in-addr.arpa.",
+        "nas.1.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.IP6.ARPA",
+    ],
+)
+def test_reverse_dns_fqdn_is_ignored(monkeypatch: pytest.MonkeyPatch, fqdn: str) -> None:
+    _patch_socket(monkeypatch, hostname="nas", fqdn=fqdn)
 
     assert detect_lan_hosts() == sorted(["nas", "nas.local", *_LOOPBACK])
+
+
+def test_home_arpa_fqdn_is_kept(monkeypatch: pytest.MonkeyPatch) -> None:
+    # RFC 8375: home.arpa is the standard home-network domain many routers use.
+    _patch_socket(monkeypatch, hostname="nas", fqdn="NAS.home.arpa.")
+
+    assert detect_lan_hosts() == sorted(["nas", "nas.local", "nas.home.arpa", *_LOOPBACK])
 
 
 def test_valid_fqdn_with_trailing_dot_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:

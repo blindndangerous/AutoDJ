@@ -119,8 +119,9 @@ automatic allowlists without any token.
 
 Name lookups for detection (the fully qualified name and the resolver addresses) run in a
 background thread that start-up waits on for at most two seconds, so broken DNS cannot stall
-startup. A fully qualified name is used only when it extends the hostname and does not end in
-`.arpa`, so ISP reverse-DNS names are not allowed. Names whose first label is `localhost` are
+startup. A fully qualified name is used only when it extends the hostname and is not in a
+reverse-DNS zone (`in-addr.arpa` or `ip6.arpa`), so ISP reverse-DNS names are not allowed;
+`<hostname>.home.arpa` (RFC 8375) is kept. Names whose first label is `localhost` are
 skipped. Inside a container the start-up block prints only the explicitly configured hosts,
 because container addresses are not reachable from the network; they are still allowed.
 
