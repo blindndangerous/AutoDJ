@@ -9,6 +9,7 @@ as long as the walk took.
 from __future__ import annotations
 
 import threading
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -56,3 +57,27 @@ class TestLinerListingRunsOffTheEventLoop:
         # asyncio's default executor names its workers "asyncio_N"; the thread
         # running the event loop never carries that prefix.
         assert recorded and all(name.startswith("asyncio_") for name in recorded)
+
+
+class TestLinerTestRoute:
+    def test_fires_the_scheduler_when_one_is_set(self, bridge) -> None:
+        """Server-mixed modes wire a LinerScheduler; the route delegates to it."""
+        bridge.liner_scheduler = MagicMock()
+        bridge.liner_scheduler.fire.return_value = "station-id.mp3"
+
+        resp = TestClient(create_app(bridge)).post(
+            "/api/liners/test", json={"name": "station-id.mp3"}
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"played": "station-id.mp3"}
+        bridge.liner_scheduler.fire.assert_called_once_with("station-id.mp3")
+
+    def test_no_scheduler_is_a_no_op(self, bridge) -> None:
+        """Browser-driven mode leaves ``liner_scheduler`` unset; the route no-ops."""
+        assert bridge.liner_scheduler is None
+
+        resp = TestClient(create_app(bridge)).post("/api/liners/test", json={})
+
+        assert resp.status_code == 200
+        assert resp.json() == {"played": None}

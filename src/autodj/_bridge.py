@@ -134,6 +134,10 @@ class PlayerBridge:
         default_factory=lambda: deque(maxlen=500),
         init=False,
     )
+    # Set by the server in server-mixed modes (``--server-audio``); ``None``
+    # in browser-driven mode, where the browser evaluates liner triggers
+    # itself and the "Test liner" route below is a no-op.
+    liner_scheduler: Any = None
 
     # ------------------------------------------------------------------
     # Controls

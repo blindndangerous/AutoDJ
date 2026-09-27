@@ -477,6 +477,16 @@ class PresetBody(BaseModel):
     name: str | None = None
 
 
+class LinerTestBody(BaseModel):
+    """Request body for POST /api/liners/test.
+
+    ``name`` names a specific clip; omitted, the scheduler's configured
+    rotation mode picks the next one.
+    """
+
+    name: str | None = None
+
+
 class TransitionBody(BaseModel):
     """Request body for POST /api/transition."""
 
@@ -1434,6 +1444,21 @@ def create_app(
         """Reject liner deletion requests whose path is not a plain filename."""
         del escaped
         raise HTTPException(status_code=400, detail="liner name must be one plain filename")
+
+    @app.post("/api/liners/test")
+    async def api_liner_test(body: LinerTestBody) -> dict[str, str | None]:
+        """Fire a liner through the server mix bus, in server-mixed modes.
+
+        Browser-driven mode has no server-side mix bus to fire into —
+        ``bridge.liner_scheduler`` is ``None`` there and the browser's
+        "Test liner" button already plays the clip itself by fetching
+        ``GET /api/liners/file/<name>`` directly, so this is a no-op.
+        """
+        scheduler = bridge.liner_scheduler
+        if scheduler is None:
+            return {"played": None}
+        played = await asyncio.to_thread(scheduler.fire, body.name)
+        return {"played": played}
 
     @app.post("/api/pause")
     async def api_pause() -> dict[str, bool]:
