@@ -1,10 +1,9 @@
 """Deployment files may only pass flags the CLI actually defines.
 
-Removing ``serve --no-playback`` from cli.py left six deployment call sites
-(the container CMD, both compose services and three workflows) invoking a flag
-Click no longer knew, which makes ``autodj serve`` exit 2 before it starts.
-Nothing in the suite noticed, because nothing compared the two.  The flag is
-now a hidden no-op and the deployment files no longer pass it.
+The container CMD, the compose services and the workflows all invoke
+``autodj``.  If one of them passes a flag Click does not know, ``autodj serve``
+exits 2 before it starts, so every flag they use is checked against the options
+the CLI declares.
 """
 
 from __future__ import annotations
@@ -15,7 +14,6 @@ from pathlib import Path
 
 import pytest
 import yaml
-from click.testing import CliRunner
 
 from autodj.cli import cli
 
@@ -79,10 +77,6 @@ def test_extraction_actually_finds_the_deployment_invocations() -> None:
     assert any("--insecure-lan" in argv for argv in _compose_invocations())
 
 
-def test_deployments_no_longer_pass_the_deprecated_no_playback_flag() -> None:
-    assert not any("--no-playback" in argv for argv in _invocations())
-
-
 @pytest.mark.parametrize("argv", _invocations(), ids=lambda argv: " ".join(argv))
 def test_deployment_flags_exist_on_the_invoked_command(argv: list[str]) -> None:
     subcommand, *rest = argv
@@ -90,14 +84,3 @@ def test_deployment_flags_exist_on_the_invoked_command(argv: list[str]) -> None:
     declared = _declared_flags(subcommand)
     used = {token for token in rest if token.startswith("--")}
     assert used <= declared, f"{subcommand} does not accept {sorted(used - declared)}"
-
-
-def test_serve_still_accepts_the_deprecated_no_playback_flag() -> None:
-    result = CliRunner().invoke(cli, ["serve", "--no-playback", "--help"])
-    assert result.exit_code == 0, result.output
-
-
-def test_deprecated_no_playback_stays_out_of_the_help_text() -> None:
-    result = CliRunner().invoke(cli, ["serve", "--help"])
-    assert result.exit_code == 0
-    assert "--no-playback" not in result.output

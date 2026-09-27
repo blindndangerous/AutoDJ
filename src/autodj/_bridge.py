@@ -825,7 +825,7 @@ class PlayerBridge:
             "why_this_track": _build_why(self.player),
             "library_job": _library_job_snapshot(),
             # Browser-side audio drives playback only when the server is
-            # headless (dry_run / --no-playback / missing audio deps) and
+            # headless (dry_run: no --server-audio, or missing audio deps) and
             # not serving a stream.
             "browser_playback": bool(getattr(self.player, "_dry_run", False))
             and not self.stream_mode,
