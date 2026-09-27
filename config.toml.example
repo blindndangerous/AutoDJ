@@ -28,6 +28,10 @@
 # Configuration precedence:
 # defaults < config.toml < config.local.toml < environment < CLI
 #
+# Both files accept only the sections and keys shown in this file.  An unknown
+# section or key (for example a setting a newer AutoDJ removed) stops AutoDJ
+# with an error that names it; delete the line.
+#
 # Supported environment overrides:
 # BEGIN ENVIRONMENT OVERRIDES
 #   AUTODJ_LIBRARY_MUSIC_DIR

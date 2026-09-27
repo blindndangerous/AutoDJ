@@ -73,8 +73,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `autodj.player` no longer re-exports `apply_eq`, `make_eq_filters`, `make_eq_state` and
   `reset_eq_state`. Import them from `autodj.eq`.
 
-### Removed
-
 - Upgrade note: an index made before the index manifest format (a folder with `tracks.db`
   and `vectors.index` but no `index-manifest.json`), or one that stores absolute track paths,
   must be rebuilt. AutoDJ stops with a message that names the folder and tells you to run

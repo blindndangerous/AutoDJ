@@ -3,8 +3,8 @@
 
 # Personal config (contains local paths) — use config.toml.example as the template
 config.toml
-# Per-machine overlay applied on top of config.toml (paths, music_dir,
-# path_remap differ between hosts). Never shared between machines.
+# Per-machine overlay applied on top of config.toml (paths such as
+# music_dir and beets_db differ between hosts). Never shared between machines.
 # The .example variants ARE committed (templates); the deployed copies
 # (with real paths) are not.
 config.local.toml

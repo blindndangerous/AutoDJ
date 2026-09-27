@@ -8,7 +8,8 @@ the repository on a WSL filesystem so UID 10001 and POSIX modes have their docum
 
 AutoDJ resolves defaults, `config.toml`, sibling `config.local.toml`, environment variables, then
 explicit CLI flags. Omitting `--config` is valid. Explicitly naming a missing file is an error. Put
-access tokens only in ignored local configuration or `AUTODJ_ACCESS_TOKEN`.
+access tokens only in ignored local configuration or `AUTODJ_ACCESS_TOKEN`. An unknown section or
+key in either file, such as a setting a newer AutoDJ removed, is an error that names it.
 
 ## Diagnose before serving
 

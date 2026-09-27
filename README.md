@@ -236,7 +236,9 @@ AutoDJ starts with validated defaults. If `config.toml` exists in the working di
 loads it, then loads sibling `config.local.toml`. Environment variables override files, and
 explicit CLI flags override all other sources. Omitting `--config` is valid. Passing
 `--config /path/to/config.toml` makes that file explicit, so a missing path is an error. Shipped
-`config.toml.example` lists supported environment variables and settings.
+`config.toml.example` lists supported environment variables and settings. Every key and section
+in `config.toml` and `config.local.toml` must be one AutoDJ knows: a removed or misspelled setting
+stops AutoDJ with an error naming the section and key, so delete it rather than leave it in place.
 
 ### Secure server operation
 
