@@ -1340,3 +1340,137 @@ describe("app request behavior", () => {
     expect(bumpLinerTrackCount).toHaveBeenLastCalledWith(shuffledState);
   });
 });
+
+describe("stream mode", () => {
+  const streamState = {
+    browser_playback: false,
+    current_track: { path: "a.mp3", artist: "Artist", title: "Song", bpm: 128 },
+    duration: 200,
+    elapsed: 50,
+    stream_event: { id: "boot", seq: 1, name: "set_started" },
+    stream_listeners: 1,
+    stream_mode: true,
+    stream_state: "playing",
+  };
+  const lyricsFor = (path) => jsonResponse({
+    path,
+    lyrics: [
+      { time_s: 0, text: "One" },
+      { time_s: 46, text: "Two" },
+      { time_s: 49, text: "Three" },
+    ],
+  });
+  const hotkeyOptions = async () => {
+    const hotkeys = await import("../../src/autodj/static/modules/hotkeys.js");
+    return hotkeys.installHotkeys.mock.calls[0][0];
+  };
+
+  it("never starts the deck engine in stream mode and hides seek", async () => {
+    const applyBrowserPlaybackState = vi.fn();
+    // browser_playback is false in stream mode; true here proves stream wins.
+    const app = await setupApp({
+      audio: { applyBrowserPlaybackState },
+      initialState: {
+        ...streamState, browser_playback: true, current_track: null, stream_state: "idle",
+      },
+    });
+    expect(app.unlockAndPlay).not.toHaveBeenCalled();
+    expect(applyBrowserPlaybackState).not.toHaveBeenCalled();
+    expect(app.setLastBrowserPlayback).toHaveBeenLastCalledWith(false);
+    expect(document.getElementById("progress-track").hidden).toBe(true);
+    expect(document.getElementById("btn-listen").hidden).toBe(false);
+    expect(document.getElementById("stream-idle-note").hidden).toBe(false);
+    // The slider is gone, so the visible clock becomes the readable one.
+    expect(document.getElementById("progress-bar-label").hasAttribute("aria-hidden"))
+      .toBe(false);
+  });
+
+  it("leaves browser mode unchanged", async () => {
+    await setupApp();
+    expect(document.getElementById("btn-listen").hidden).toBe(true);
+    expect(document.getElementById("stream-idle-note").hidden).toBe(true);
+    expect(document.getElementById("progress-track").hidden).toBe(false);
+    expect(document.getElementById("progress-bar-label").getAttribute("aria-hidden"))
+      .toBe("true");
+  });
+
+  it("shows the server clock minus the stream delay, lyrics included", async () => {
+    const { webSocket } = await setupApp({
+      initialState: streamState,
+      onRequest: () => lyricsFor("a.mp3"),
+    });
+    await vi.waitFor(() => expect(
+      document.querySelectorAll("#lyrics-list li"),
+    ).toHaveLength(3));
+    webSocket.onmessage({ data: JSON.stringify({
+      ...streamState, has_lyrics: true, lyric_index: 2, lyric_text: "Three",
+    }) });
+    expect(document.getElementById("progress-bar-label").textContent).toBe("0:47 / 3:20");
+    expect(document.getElementById("lyric-announce").textContent).toBe("Two");
+  });
+
+  it("starts and stops listening from the button with a fresh link", async () => {
+    const { fetchImpl } = await setupApp({
+      initialState: streamState,
+      onRequest: (url) => url === "/api/stream"
+        ? jsonResponse({ path: "/stream/SECRET.mp3", m3u_path: "/stream/SECRET.m3u" })
+        : lyricsFor("a.mp3"),
+    });
+    const audio = document.getElementById("stream-audio");
+    audio.play = vi.fn().mockResolvedValue();
+    audio.pause = vi.fn();
+    const listen = document.getElementById("btn-listen");
+
+    listen.click();
+    await vi.waitFor(() => expect(audio.play).toHaveBeenCalledOnce());
+    expect(audio.getAttribute("src")).toBe("/stream/SECRET.mp3");
+    expect(listen.getAttribute("aria-pressed")).toBe("true");
+    expect(fetchImpl.mock.calls.filter(([url]) => url === "/api/stream")).toHaveLength(1);
+
+    listen.click();
+    expect(listen.getAttribute("aria-pressed")).toBe("false");
+    expect(audio.getAttribute("src")).toBeNull();
+  });
+
+  it("refuses seeking and answers status keys from the server clock", async () => {
+    const { fetchImpl } = await setupApp({
+      initialState: streamState,
+      onRequest: () => lyricsFor("a.mp3"),
+    });
+    const options = await hotkeyOptions();
+
+    options.seekDelta(5);
+    await vi.waitFor(() => expect(document.getElementById("sr-status").textContent)
+      .toBe("Seeking is not available while streaming."));
+    expect(fetchImpl.mock.calls.some(([url]) => url === "/api/seek")).toBe(false);
+
+    expect(options.getBpm()).toBe(128);
+    expect(options.getRemaining()).toBe(153);
+  });
+
+  it("stops listening when the session expires", async () => {
+    let expire = false;
+    await setupApp({
+      initialState: streamState,
+      onRequest: (url) => {
+        if (expire) return jsonResponse({ detail: "Authentication required" }, 401);
+        return url === "/api/stream"
+          ? jsonResponse({ path: "/stream/SECRET.mp3" })
+          : lyricsFor("a.mp3");
+      },
+    });
+    const audio = document.getElementById("stream-audio");
+    audio.play = vi.fn().mockResolvedValue();
+    audio.pause = vi.fn();
+    const listen = document.getElementById("btn-listen");
+    listen.click();
+    await vi.waitFor(() => expect(audio.play).toHaveBeenCalledOnce());
+
+    expire = true;
+    document.getElementById("btn-skip").click();
+    await vi.waitFor(() => expect(document.getElementById("conn-status").textContent)
+      .toBe("Authentication required"));
+    expect(listen.getAttribute("aria-pressed")).toBe("false");
+    expect(audio.getAttribute("src")).toBeNull();
+  });
+});

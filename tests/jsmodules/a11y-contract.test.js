@@ -1553,6 +1553,44 @@ describe("static accessibility contracts", () => {
       expect(libraryLogStyle[property], property).toBe("0px");
     }
   });
+
+  it("gives stream mode a fixed-name toggle and a silent idle note", () => {
+    installDocument();
+    // Text a screen reader would use for the name: aria-hidden subtrees
+    // (the glyph) contribute nothing.
+    const spokenText = (node) => {
+      if (node.nodeType === 3) return node.textContent;
+      if (node.nodeType !== 1 || node.getAttribute("aria-hidden") === "true") return "";
+      return [...node.childNodes].map(spokenText).join("");
+    };
+
+    const listen = document.querySelector("#btn-listen");
+    expect(listen.tagName).toBe("BUTTON");
+    expect(listen.getAttribute("type")).toBe("button");
+    expect(listen.getAttribute("aria-pressed")).toBe("false");
+    expect(listen.hasAttribute("aria-label")).toBe(false);
+    expect(spokenText(listen).replace(/\s+/g, " ").trim()).toBe("Listen here");
+    expect(listen.querySelector('[aria-hidden="true"]')).not.toBeNull();
+    // Browser mode renders no Listen here button until stream mode shows it.
+    expect(listen.hidden).toBe(true);
+    // Sits in the transport group straight after Play / Pause.
+    expect(listen.previousElementSibling.id).toBe("btn-pause");
+    expect(listen.closest('[role="group"]').getAttribute("aria-label"))
+      .toBe("Playback controls");
+
+    const note = document.querySelector("#stream-idle-note");
+    expect(note.hidden).toBe(true);
+    expect(note.hasAttribute("role")).toBe(false);
+    expect(note.hasAttribute("aria-live")).toBe(false);
+    expect(note.closest("[aria-live], [role=status], [role=alert]")).toBeNull();
+    expect(note.closest("#now-playing-card")).not.toBeNull();
+
+    const audio = document.querySelector("#stream-audio");
+    expect(audio.tagName).toBe("AUDIO");
+    expect(audio.hidden).toBe(true);
+    expect(audio.hasAttribute("controls")).toBe(false);
+    expect(audio.getAttribute("preload")).toBe("none");
+  });
 });
 
 describe("frontend CI gate", () => {

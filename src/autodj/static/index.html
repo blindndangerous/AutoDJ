@@ -43,6 +43,9 @@
      produce, not the browser's default hard cut at end-of-track. -->
 <audio id="browser-player"   preload="auto" hidden></audio>
 <audio id="browser-player-b" preload="auto" hidden></audio>
+<!-- Stream mode only: "Listen here" plays the server's MP3 stream in this
+     plain element.  The decks above are never started in stream mode. -->
+<audio id="stream-audio" preload="none" hidden></audio>
 
 <header role="banner">
   <h1>AutoDJ</h1>
@@ -102,6 +105,9 @@
              aria-atomic="true">
           Loading…
         </div>
+        <!-- Stream mode, idle.  Plain text, not a live region: the
+             "Set stopped" station event is the one spoken report. -->
+        <p id="stream-idle-note" class="stream-idle-note" hidden></p>
         <div id="now-playing-meta"></div>
         <!-- Visual-only badge row: BPM / Camelot key / energy / beatmatch ratio.
              aria-hidden because the track-change announcement above already
@@ -182,6 +188,10 @@
                 title="Pause or resume playback">
           <span aria-hidden="true">▶</span> Play
         </button>
+        <!-- Stream mode only.  Fixed name plus aria-pressed, like Mute:
+             it plays the station in this browser, while Play / Pause
+             pauses the station for every listener. -->
+        <button type="button" id="btn-listen" aria-pressed="false" hidden><span aria-hidden="true">🔊</span> Listen here</button>
         <button id="btn-skip"
                 title="Skip to the next sonically similar track">
           <span aria-hidden="true">⏭</span> Skip
@@ -262,12 +272,12 @@
     <p>Transport keys work on the Now Playing tab. Status keys (Shift+letter) and <kbd>?</kbd> work from any tab. Letter and punctuation shortcuts work on focused buttons and sliders, but not while typing or using dropdown typeahead. Space activates a focused button; arrow keys operate the focused slider or tab.</p>
     <p>If these single-key shortcuts get in your way, turn them all off with the <strong>Enable keyboard shortcuts</strong> checkbox under Settings, Keyboard. The choice is saved in this browser. This list stays available from the Keyboard shortcuts button.</p>
     <dl style="display:grid;grid-template-columns:max-content 1fr;column-gap:1rem;row-gap:0.25rem;margin:0">
-      <dt><kbd>Space</kbd> / <kbd>k</kbd></dt><dd>Play / Pause / Resume</dd>
+      <dt><kbd>Space</kbd> / <kbd>k</kbd></dt><dd>Play or pause. In stream mode, start or stop listening on this page.</dd>
       <dt><kbd>n</kbd></dt><dd>Skip to next track</dd>
       <dt><kbd>S</kbd></dt><dd>Shuffle (fresh random track)</dd>
       <dt><kbd>M</kbd></dt><dd>Mute / unmute</dd>
       <dt><kbd>↑</kbd> / <kbd>↓</kbd></dt><dd>Volume up / down (5%)</dd>
-      <dt><kbd>,</kbd> / <kbd>.</kbd></dt><dd>Seek back / forward 1 measure (BPM-derived; falls back to 5 s)</dd>
+      <dt><kbd>,</kbd> / <kbd>.</kbd></dt><dd>Seek back / forward 1 measure (BPM-derived; falls back to 5 s). Not available in stream mode.</dd>
       <dt><kbd>?</kbd></dt><dd>Open / close this dialog</dd>
       <dt><kbd>Esc</kbd></dt><dd>Close this dialog</dd>
       <dt style="margin-top:0.5rem"><kbd>Shift+T</kbd></dt><dd style="margin-top:0.5rem">Speak current track (artist – title)</dd>

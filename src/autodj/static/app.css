@@ -146,6 +146,12 @@
       font-size: 0.875rem;
       color: var(--text-dim);
     }
+    /* Stream mode, nobody listening.  Full-contrast text: it explains why
+       nothing is moving, so it must not read as dim secondary metadata. */
+    .stream-idle-note {
+      margin: 0.5rem 0;
+      color: var(--text);
+    }
     #progress-bar-wrap {
       margin-top: 0.75rem;
     }

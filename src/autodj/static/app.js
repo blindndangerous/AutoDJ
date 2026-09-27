@@ -7,6 +7,7 @@ import {
   fmtTime,
   fmtTrack,
   escHtml,
+  srSpeak,
 } from "./modules/dom-helpers.js";
 import {
   bootstrapAuthenticatedApp,
@@ -26,6 +27,7 @@ import {
 } from "./modules/api-client.js";
 import { createLatestRequestOwner } from "./modules/latest-request.js";
 import { installSeekController } from "./modules/seek-controller.js";
+import { createStreamMode } from "./modules/stream-mode.js";
 
 if (isDebug()) {
   console.log("[autodj] debug logging ENABLED " +
@@ -103,6 +105,21 @@ const discEnabled     = document.getElementById("disc-enabled");
 const discEvery       = document.getElementById("disc-every");
 const settingsStatus  = document.getElementById("settings-status");
 const volAnnounce     = document.getElementById("vol-announce");
+const btnListen       = document.getElementById("btn-listen");
+
+// Stream mode (`autodj serve --stream`): the server mixes, so this page is
+// a remote plus an optional listener.  See modules/stream-mode.js.
+const streamMode = createStreamMode({
+  doc: document,
+  audio: document.getElementById("stream-audio"),
+  button: btnListen,
+  idleNote: document.getElementById("stream-idle-note"),
+  srStatus: document.getElementById("sr-status"),
+  fetchInfo: () => requestJson("/api/stream"),
+});
+btnListen.addEventListener("click", () => void streamMode.toggleListen());
+// Last pushed stream_mode, for the handlers that run between pushes.
+let _lastStreamMode = false;
 
 const auth = initAuthDialog({ document });
 let authExpiryHandled = false;
@@ -125,6 +142,7 @@ function stopProtectedPlayback() {
 
 function clearProtectedSessionData() {
   _seekController?.cancel();
+  streamMode.stop();
   resetTrackCaches();
   historyRequestOwner.cancel();
   resetLyricState();
@@ -300,6 +318,13 @@ function applyState(s) {
   _lastState = s;
   bumpLinerTrackCount(s);
 
+  // Stream mode never starts the deck engine, whatever browser_playback
+  // says, so every browser-playback branch below reads browserMode.
+  const inStream = Boolean(s.stream_mode);
+  _lastStreamMode = inStream;
+  streamMode.apply(s);
+  const browserMode = Boolean(s.browser_playback) && !inStream;
+
   // Now Playing
   const trackKey   = s.current_track ? s.current_track.path : null;
   const trackLabel = fmtTrack(s.current_track);
@@ -369,10 +394,14 @@ function applyState(s) {
 
   // Progress bar — in browser-playback mode the deck is the real audio
   // clock, so read elapsed/duration from there.  Server's elapsed is
-  // 0 in headless mode (deliberate — see Player._run_headless).
+  // 0 in headless mode (deliberate — see Player._run_headless).  In
+  // stream mode the listener hears the mix a few seconds late, so the
+  // clock (and the lyrics that follow it) runs that far behind.
   let elapsed = s.elapsed || 0;
   let dur = s.duration || 0;
-  if (s.browser_playback && playbackEnabled && _ctx) {
+  if (inStream) {
+    elapsed = Math.max(0, elapsed - streamMode.delaySeconds());
+  } else if (browserMode && playbackEnabled && _ctx) {
     const a = decks[activeIdx].audio;
     if (a && isFinite(a.duration) && a.duration > 0) {
       elapsed = a.currentTime;
@@ -382,6 +411,18 @@ function applyState(s) {
     }
   }
   const pct = dur > 0 ? Math.min(100, (elapsed / dur) * 100) : 0;
+  // Nothing can seek a live stream, so the slider goes and the visible
+  // clock (normally aria-hidden beside it) becomes the readable position.
+  // It is plain text, never a live region, so the 1 Hz tick stays silent.
+  const progressTrackEl = document.getElementById("progress-track");
+  if (progressTrackEl && progressTrackEl.hidden !== inStream) {
+    progressTrackEl.hidden = inStream;
+  }
+  if (inStream) {
+    if (progressLbl.hasAttribute("aria-hidden")) progressLbl.removeAttribute("aria-hidden");
+  } else {
+    setAttributeIfChanged(progressLbl, "aria-hidden", "true");
+  }
   // Cache for the seek slider — its keyboard / pointer handlers need
   // the current duration in seconds even when no deck is unlocked yet
   // (server-audio mode, pre-Play state).
@@ -404,7 +445,7 @@ function applyState(s) {
   }
 
   // Snapshot for first-click unlock branch in btnPause handler
-  setLastBrowserPlayback(s.browser_playback);
+  setLastBrowserPlayback(browserMode);
 
   // Unified Play / Pause / Resume button.  Three states:
   //   1. No track yet \u2192 "Play", disabled
@@ -418,7 +459,7 @@ function applyState(s) {
   if (!hasTrack) {
     btnPause.disabled = true;
     setButtonContent(btnPause, '<span aria-hidden="true">\u25B6</span> Play');
-  } else if (s.browser_playback && !playbackEnabled) {
+  } else if (browserMode && !playbackEnabled) {
     btnPause.disabled = false;
     setButtonContent(btnPause, '<span aria-hidden="true">\u25B6</span> Play');
   } else {
@@ -475,10 +516,11 @@ function applyState(s) {
   // Lyrics \u2014 visible list highlight + announce only on line change
   // Under browser-driven playback the server's own clock never moves, so
   // hand the lyrics module the position the deck is actually at.
-  // `elapsed` above is already the deck's currentTime in that mode.
+  // `elapsed` above is already the deck's currentTime in that mode, and
+  // the delayed server clock in stream mode.
   applyLyricsState(s, _lyricEls, {
     elapsed,
-    localClock: Boolean(s.browser_playback),
+    localClock: browserMode || inStream,
   });
 
   // Why this track? \u2014 refresh only on track change to avoid pointless WS churn
@@ -491,7 +533,7 @@ function applyState(s) {
   applyQueueState(s.queue || [], _queueEls);
 
   // Browser-side audio (when server runs headless / no_playback)
-  applyBrowserPlaybackState(s);
+  if (browserMode) applyBrowserPlaybackState(s);
 
   // OS media-keys / lock-screen integration
   updateMediaSession(s);
@@ -1270,6 +1312,11 @@ function _seekTrackDuration() {
 }
 
 function _seekByDelta(deltaSec) {
+  // The server refuses too (409); saying so here is faster and clearer.
+  if (_lastStreamMode) {
+    srSpeak("Seeking is not available while streaming.");
+    return;
+  }
   const dur = _seekTrackDuration();
   if (_lastBrowserPlayback && dur > 0) {
     try {
@@ -1522,12 +1569,17 @@ installHotkeys({
   btnMute,
   volSlider,
   seekDelta:   _seekByDelta,
-  getBpm:      () => _outBpmCache,
+  // The deck caches exist only in browser mode; elsewhere the server's
+  // track carries the tempo and the (stream-delayed) clock.
+  getBpm:      () => (_lastBrowserPlayback
+    ? _outBpmCache
+    : (_lastState && _lastState.current_track && _lastState.current_track.bpm) || 0),
   getTrack:    () => _lastState && _lastState.current_track,
   getNextTrack:() => _lastState && _lastState.next_track,
   getRemaining:() => {
     const dur = _seekTrackDuration();
     if (!dur) return null;
+    if (!_lastBrowserPlayback) return Math.max(0, dur - _lastElapsed);
     try { return Math.max(0, dur - decks[activeIdx].audio.currentTime); } catch (_) { return null; }
   },
   isEnabled: authenticatedInteractionEnabled,
