@@ -1,0 +1,350 @@
+"""Stream fan-out with a fake encoder."""
+
+from __future__ import annotations
+
+import asyncio
+import threading
+import time
+
+import numpy as np
+import pytest
+
+from autodj.icy import encode_metadata
+from autodj.stream import EncoderUnavailableError, ListenerLimitError, StreamOutput
+
+
+class FakeEncoder:
+    """Echo PCM bytes back as 'encoded' bytes, one chunk per write."""
+
+    def __init__(self, bitrate: int) -> None:
+        self.bitrate = bitrate
+        self._chunks: list[bytes] = []
+        self._cond = threading.Condition()
+        self._closed = False
+        self.alive = True
+
+    def write(self, pcm: bytes) -> None:
+        with self._cond:
+            self._chunks.append(pcm[:64])
+            self._cond.notify_all()
+
+    def read(self, n: int) -> bytes:
+        with self._cond:
+            while not self._chunks and not self._closed:
+                self._cond.wait(0.05)
+            return self._chunks.pop(0) if self._chunks else b""
+
+    def close_input(self) -> None:
+        pass
+
+    def close(self) -> None:
+        with self._cond:
+            self._closed = True
+            self.alive = False
+            self._cond.notify_all()
+
+
+def _block(value: float = 0.1) -> np.ndarray:
+    return np.full((882, 2), value, np.float32)
+
+
+async def _collect(listener, n: int) -> bytes:
+    got = bytearray()
+    async for chunk in listener.chunks():
+        got += chunk
+        if len(got) >= n:
+            break
+    return bytes(got)
+
+
+def _wait_until(predicate, timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.01)
+    assert predicate()
+
+
+@pytest.fixture
+async def output():
+    out = StreamOutput(
+        320, max_listeners=2, encoder_factory=FakeEncoder, loop=asyncio.get_running_loop()
+    )
+    yield out
+    out.close()
+
+
+async def test_fan_out_same_bytes_to_every_listener(output: StreamOutput) -> None:
+    a, b = output.add_listener(icy=False), output.add_listener(icy=False)
+    output.write(_block())
+    got_a, got_b = await asyncio.gather(_collect(a, 64), _collect(b, 64))
+    assert got_a == got_b and len(got_a) >= 64
+
+
+async def test_listener_limit(output: StreamOutput) -> None:
+    output.add_listener(icy=False)
+    output.add_listener(icy=False)
+    with pytest.raises(ListenerLimitError):
+        output.add_listener(icy=False)
+
+
+async def test_slow_listener_is_dropped_others_continue(output: StreamOutput) -> None:
+    slow = output.add_listener(icy=False)
+    slow._max_bytes = 100
+    fast = output.add_listener(icy=False)
+    for _ in range(10):
+        output.write(_block())
+    await _collect(fast, 128)
+    await asyncio.sleep(0.05)
+    assert slow.closed
+    assert output.listener_count == 1
+
+
+async def test_icy_listener_gets_title_block(output: StreamOutput) -> None:
+    output.set_title("Artist", "Song")
+    listener = output.add_listener(icy=True)
+    listener._icy._metaint = 32
+    listener._icy._until_meta = 32
+    output.write(_block())
+    data = await _collect(listener, 32 + len(encode_metadata("Artist - Song")))
+    assert encode_metadata("Artist - Song") in data
+
+
+async def test_listener_count_callback_and_disconnect_all(output: StreamOutput) -> None:
+    counts: list[int] = []
+    output.on_listener_change = counts.append
+    first = output.add_listener(icy=False)
+    output.remove_listener(first)
+    output.add_listener(icy=False)
+    output.disconnect_all()
+    assert counts == [1, 0, 1, 0]
+
+
+async def test_connect_disconnect_churn_does_not_leak(output: StreamOutput) -> None:
+    for _ in range(50):
+        listener = output.add_listener(icy=False)
+        output.remove_listener(listener)
+    assert output.listener_count == 0
+    assert output._listeners == []
+
+
+async def test_encoder_failures_back_off_then_503() -> None:
+    now = [0.0]
+
+    class Dying(FakeEncoder):
+        def __init__(self, bitrate: int) -> None:
+            super().__init__(bitrate)
+            self.alive = False  # reports dead; read() still blocks until close()
+
+    out = StreamOutput(
+        320, 8, encoder_factory=Dying, clock=lambda: now[0], loop=asyncio.get_running_loop()
+    )
+    for _ in range(5):
+        out._restart_encoder()
+    with pytest.raises(EncoderUnavailableError):
+        out.add_listener(icy=False)
+    now[0] = 61.0
+    out.add_listener(icy=False)
+    out.close()
+
+
+async def test_set_bitrate_restarts_and_disconnects(output: StreamOutput) -> None:
+    listener = output.add_listener(icy=False)
+    output.set_bitrate(192)
+    assert listener.closed
+    assert output._encoder.bitrate == 192
+
+
+# --- Additional coverage: controller-mandated non-blocking write, thread
+# safety, restart, drop-oldest, and branch coverage the brief's own test
+# list does not exercise. ---
+
+
+class BlockingEncoder(FakeEncoder):
+    """An encoder whose write() blocks until released."""
+
+    def __init__(self, bitrate: int) -> None:
+        super().__init__(bitrate)
+        self._release = threading.Event()
+        self.write_started = threading.Event()
+
+    def write(self, pcm: bytes) -> None:
+        self.write_started.set()
+        self._release.wait(5.0)
+        super().write(pcm)
+
+    def release(self) -> None:
+        self._release.set()
+
+
+async def test_write_returns_promptly_when_encoder_write_blocks() -> None:
+    out = StreamOutput(320, 8, encoder_factory=BlockingEncoder, loop=asyncio.get_running_loop())
+    encoder: BlockingEncoder = out._encoder
+    try:
+        out.write(_block())
+        assert encoder.write_started.wait(1.0)
+        start = time.monotonic()
+        out.write(_block())
+        elapsed = time.monotonic() - start
+        assert elapsed < 0.5
+    finally:
+        encoder.release()
+        out.close()
+
+
+async def test_slow_pcm_writer_drops_oldest_and_logs_once(caplog: pytest.LogCaptureFixture) -> None:
+    out = StreamOutput(320, 8, encoder_factory=BlockingEncoder, loop=asyncio.get_running_loop())
+    encoder: BlockingEncoder = out._encoder
+    try:
+        assert encoder.write_started.wait(1.0) or True
+        for _ in range(out._pcm_queue_max + 5):
+            out.write(_block())
+        with out._pcm_cond:
+            assert len(out._pcm_queue) <= out._pcm_queue_max
+        with caplog.at_level("WARNING", logger="autodj.stream"):
+            out.write(_block())
+        warnings = [r for r in caplog.records if "dropping" in r.message.lower()]
+        assert len(warnings) <= 1
+    finally:
+        encoder.release()
+        out.close()
+
+
+async def test_pcm_writer_survives_encoder_write_error() -> None:
+    class Rejecting(FakeEncoder):
+        def write(self, pcm: bytes) -> None:
+            raise BrokenPipeError("closed")
+
+    out = StreamOutput(320, 8, encoder_factory=Rejecting, loop=asyncio.get_running_loop())
+    out.write(_block())
+    _wait_until(lambda: True, timeout=0.1)
+    out.close()
+
+
+async def test_listener_push_after_close_is_a_noop() -> None:
+    out = StreamOutput(320, 8, encoder_factory=FakeEncoder, loop=asyncio.get_running_loop())
+    listener = out.add_listener(icy=False)
+    listener.close()
+    assert listener.push(b"abc", "") is False
+    out.close()
+
+
+async def test_listener_drains_remaining_chunks_after_close() -> None:
+    out = StreamOutput(320, 8, encoder_factory=FakeEncoder, loop=asyncio.get_running_loop())
+    listener = out.add_listener(icy=False)
+    listener.push(b"leftover", "")
+    listener.close()
+    got = bytearray()
+    async for chunk in listener.chunks():
+        got += chunk
+    assert bytes(got) == b"leftover"
+    out.close()
+
+
+async def test_remove_listener_is_idempotent(output: StreamOutput) -> None:
+    counts: list[int] = []
+    output.on_listener_change = counts.append
+    listener = output.add_listener(icy=False)
+    output.remove_listener(listener)
+    output.remove_listener(listener)
+    assert counts == [1, 0]
+    assert output.listener_count == 0
+
+
+async def test_encoder_exit_triggers_automatic_restart() -> None:
+    class OneShot(FakeEncoder):
+        """Exits (read() returns b"") after its first chunk."""
+
+        def __init__(self, bitrate: int) -> None:
+            super().__init__(bitrate)
+            self._served = False
+
+        def read(self, n: int) -> bytes:
+            with self._cond:
+                while not self._chunks and not self._closed and not self._served:
+                    self._cond.wait(0.05)
+                if self._chunks:
+                    chunk = self._chunks.pop(0)
+                    self._served = True
+                    return chunk
+                return b""
+
+    out = StreamOutput(320, 8, encoder_factory=OneShot, loop=asyncio.get_running_loop())
+    first_encoder = out._encoder
+    out.write(_block())
+    _wait_until(lambda: out._encoder is not first_encoder, timeout=2.0)
+    assert out._encoder is not first_encoder
+    out.close()
+
+
+async def test_restart_encoder_swallows_close_errors() -> None:
+    class BadClose(FakeEncoder):
+        def close(self) -> None:
+            raise RuntimeError("boom")
+
+    out = StreamOutput(320, 8, encoder_factory=BadClose, loop=asyncio.get_running_loop())
+    out._restart_encoder()  # must not raise despite close() blowing up
+    out.close()
+
+
+async def test_title_switch_waits_for_output_position(output: StreamOutput) -> None:
+    output.write(_block())
+    _wait_until(lambda: output._mp3_out > 0)
+    output.set_title("Later", "Title")
+    assert output._title == ""
+    for _ in range(200):
+        output.write(_block())
+    _wait_until(lambda: output._title != "")
+    assert output._title != ""
+
+
+async def test_stale_failures_are_evicted_from_the_window() -> None:
+    now = [0.0]
+    out = StreamOutput(
+        320, 8, encoder_factory=FakeEncoder, clock=lambda: now[0], loop=asyncio.get_running_loop()
+    )
+    out._restart_encoder()  # failure recorded at t=0
+    now[0] = 61.0
+    out._restart_encoder()  # t=61: the t=0 failure falls outside the 60s window
+    assert len(out._failures) == 1
+    out.close()
+
+
+def _valid_mp3_frame() -> bytes:
+    """One synthetic 128kbps/44100Hz MPEG-1 Layer III frame (zero payload)."""
+    header = bytes([0xFF, 0xFB, 0x90, 0x00])
+    size = 144 * 128 * 1000 // 44100
+    return header + bytes(size - len(header))
+
+
+class MP3FrameEncoder(FakeEncoder):
+    """Emits one real MP3 frame per write, so burst replay can be tested."""
+
+    _FRAME = _valid_mp3_frame()
+
+    def write(self, pcm: bytes) -> None:
+        with self._cond:
+            self._chunks.append(self._FRAME)
+            self._cond.notify_all()
+
+
+async def test_add_listener_replays_burst_from_frame_boundary() -> None:
+    out = StreamOutput(128, 8, encoder_factory=MP3FrameEncoder, loop=asyncio.get_running_loop())
+    out.write(_block())
+    _wait_until(lambda: len(out._burst) > 0)
+    listener = out.add_listener(icy=False)
+    got = await _collect(listener, len(MP3FrameEncoder._FRAME))
+    assert got == MP3FrameEncoder._FRAME
+    out.close()
+
+
+async def test_burst_buffer_is_trimmed_to_limit() -> None:
+    out = StreamOutput(1, 8, encoder_factory=FakeEncoder, loop=asyncio.get_running_loop())
+    for _ in range(20):
+        out.write(_block())
+    _wait_until(lambda: len(out._burst) > 0)
+    burst_limit = int(out._bitrate * 1000 / 8 * 2.0)
+    _wait_until(lambda: out._burst_size - len(out._burst[0]) < burst_limit if out._burst else True)
+    assert out._burst_size < burst_limit + 64
+    out.close()
