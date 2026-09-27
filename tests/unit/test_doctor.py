@@ -83,7 +83,7 @@ def _write_index(cfg: AutoDJConfig) -> None:
     )
     vector = np.ones((1, FEATURE_DIM), dtype=np.float32)
     vector /= np.linalg.norm(vector, axis=1, keepdims=True)
-    save_index([entry], vector, cfg.index.active_dir)
+    save_index([entry], vector, cfg.index.active_dir, music_dir=cfg.library.music_dir)
 
 
 def _mutate_published_track(cfg: AutoDJConfig, column: str, value: object) -> None:

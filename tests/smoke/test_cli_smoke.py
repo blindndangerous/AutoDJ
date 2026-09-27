@@ -69,7 +69,7 @@ def project_dir(tmp_path: Path) -> Path:
     index_dir.mkdir(parents=True)
     entries = [
         IndexEntry(
-            path=f"Z:/Music/song_{i}.flac",
+            path=f"song_{i}.flac",
             title=f"Song {i}",
             artist="Artist",
             album="Album",
@@ -209,7 +209,7 @@ class TestPlayCommand:
         index_dir.mkdir(parents=True, exist_ok=True)
         entries = [
             IndexEntry(
-                path=f"Z:/Music/song_{i}.flac",
+                path=f"song_{i}.flac",
                 title=f"Song {i}",
                 artist="Artist",
                 album="Album",

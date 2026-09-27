@@ -543,7 +543,7 @@ def test_manifested_sqlite_reads_ignore_committed_wal_sidecar(tmp_path: Path) ->
     )
     from autodj.indexer import FEATURE_DIM, IndexEntry, load_index, save_index
 
-    paths = [str(tmp_path / "first.flac"), str(tmp_path / "second.flac")]
+    paths = ["first.flac", "second.flac"]
     stored_paths = [path.replace("\\", "/") for path in paths]
     entries = [
         IndexEntry(

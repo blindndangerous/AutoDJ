@@ -44,17 +44,11 @@ class LibraryConfig:
             database are resolved against ``music_dir``.
         beets_db: Optional path to the beets SQLite library database.
         supported_formats: List of audio file extensions to index (without dots).
-        path_remap: Optional list of ``(from_prefix, to_prefix)`` pairs applied
-            to absolute paths stored in the index when the current machine
-            mounts the library at a different location.  Useful for cross-OS
-            shared indexes built on another host.  Each entry is a two-element
-            list in TOML, e.g. ``path_remap = [["/mnt/music/", "Z:/Music/"]]``.
     """
 
     music_dir: Path
     beets_db: Path | None
     supported_formats: list[str]
-    path_remap: list[tuple[str, str]] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> LibraryConfig:
@@ -68,24 +62,14 @@ class LibraryConfig:
 
         Raises:
             KeyError: If ``music_dir`` is not present.
-            ValueError: If ``path_remap`` is malformed.
         """
         if "music_dir" not in data:
             raise KeyError("config.toml [library] section is missing 'music_dir'")
         beets_raw = data.get("beets_db")
-        remap_raw = data.get("path_remap", [])
-        remap: list[tuple[str, str]] = []
-        for pair in remap_raw:
-            if not isinstance(pair, list) or len(pair) != 2:
-                raise ValueError(
-                    f"library.path_remap entries must be [from, to] pairs, got: {pair!r}"
-                )
-            remap.append((str(pair[0]), str(pair[1])))
         return cls(
             music_dir=Path(data["music_dir"]).expanduser(),
             beets_db=Path(beets_raw).expanduser() if beets_raw else None,
             supported_formats=data.get("supported_formats", ["mp3", "flac", "m4a"]),
-            path_remap=remap,
         )
 
 

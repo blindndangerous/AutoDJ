@@ -559,7 +559,6 @@ class DjMetaCache:
         self,
         sidecar_path: Path,
         music_dir: Path | None = None,
-        path_remap: list[tuple[str, str]] | None = None,
     ) -> None:
         """Initialise the cache, opening or creating the SQLite store.
 
@@ -567,11 +566,13 @@ class DjMetaCache:
             sidecar_path: Path to the SQLite database (``*.db``).
             music_dir: Optional library root used to store cache keys as
                 portable relative paths.
-            path_remap: Optional absolute-prefix swaps for legacy cache rows.
+
+        Raises:
+            ValueError: If the cache stores an absolute track path, which only
+                AutoDJ releases before relative keys wrote.
         """
         self._path = sidecar_path
         self._music_dir = music_dir
-        self._path_remap = path_remap or []
         self._lock = threading.Lock()
         self._dirty = 0
         # Pending writes — flushed in a single transaction by `flush()`.
@@ -604,24 +605,20 @@ class DjMetaCache:
         """Return the canonical SQLite key for *path*.
 
         Runtime paths are absolute so audio can be opened directly, but cache
-        identity should be portable.  When a path lives under ``music_dir`` we
-        store it relative to that root, matching ``tracks.db``.  Legacy absolute
-        rows from another machine can be normalized through ``path_remap``.
-        """
-        s = path.replace("\\", "/")
-        is_abs = s.startswith("/") or (len(s) >= 2 and s[1] == ":")
-        if is_abs:
-            for from_pre, to_pre in self._path_remap:
-                from_norm = from_pre.replace("\\", "/")
-                if s.startswith(from_norm):
-                    s = to_pre.replace("\\", "/") + s[len(from_norm) :]
-                    break
+        identity is portable: keys are relative to ``music_dir``, matching
+        ``tracks.db``.
 
-        if is_abs and self._music_dir is not None:
-            md = self._music_dir.as_posix().rstrip("/") + "/"
-            if s.startswith(md):
-                return s[len(md) :]
-        return s if is_abs else Path(s).as_posix()
+        Raises:
+            ValueError: If *path* is absolute and not under ``music_dir``.
+        """
+        key = Path(path).as_posix()
+        if self._music_dir is not None:
+            prefix = self._music_dir.as_posix().rstrip("/") + "/"
+            if key.startswith(prefix):
+                return key[len(prefix) :]
+        if key.startswith("/") or key[1:2] == ":":
+            raise ValueError(f"{path} is not under music_dir {self._music_dir}")
+        return key
 
     def _open(self) -> None:
         """Open the SQLite connection and run the schema."""
@@ -640,49 +637,21 @@ class DjMetaCache:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA synchronous=NORMAL")
 
-        if not first_init and self._music_dir is not None:
-            self._migrate_legacy_keys()
-
         if not first_init:
+            absolute = self._conn.execute(
+                "SELECT path FROM dj_meta WHERE path LIKE '/%' OR substr(path, 2, 1) = ':' LIMIT 1"
+            ).fetchone()
+            if absolute is not None:
+                self._conn.close()
+                self._conn = None
+                raise ValueError(
+                    f"The DJ metadata cache {self._path} was made by an older AutoDJ "
+                    f"(it stores the absolute path {absolute[0]}). "
+                    "Delete it and run `autodj analyse` to rebuild it."
+                )
             count = self._conn.execute("SELECT COUNT(*) FROM dj_meta").fetchone()[0]
             if count:
                 logger.info("Loaded DJ meta cache: %d entries", count)
-
-    def _migrate_legacy_keys(self) -> None:
-        """Rewrite legacy absolute cache keys to portable relative keys."""
-        assert self._conn is not None
-        rows = self._conn.execute(
-            "SELECT path, intro_end_s, outro_start_s, analysed, beats, cues FROM dj_meta"
-        ).fetchall()
-        moved = 0
-        removed = 0
-        with immediate_transaction(self._conn):
-            for row in rows:
-                old = str(row[0])
-                new = self._key(old)
-                if new == old:
-                    continue
-                target_row = self._conn.execute(
-                    "SELECT analysed FROM dj_meta WHERE path = ?", (new,)
-                ).fetchone()
-                if target_row is None:
-                    self._conn.execute("UPDATE dj_meta SET path = ? WHERE path = ?", (new, old))
-                    moved += 1
-                    continue
-                if not bool(target_row[0]) and bool(row[3]):
-                    self._conn.execute(
-                        "UPDATE dj_meta SET intro_end_s = ?, outro_start_s = ?, "
-                        "analysed = ?, beats = ?, cues = ? WHERE path = ?",
-                        (row[1], row[2], row[3], row[4], row[5], new),
-                    )
-                self._conn.execute("DELETE FROM dj_meta WHERE path = ?", (old,))
-                removed += 1
-        if moved or removed:
-            logger.info(
-                "Migrated DJ meta cache to portable keys: %d moved, %d duplicates removed",
-                moved,
-                removed,
-            )
 
     def _row_to_meta(self, row: tuple) -> DjMeta:
         """Decode one SQLite row into DJ metadata."""
@@ -756,9 +725,8 @@ class DjMetaCache:
     def flush(self, force: bool = False, batch: int = 25) -> None:
         """Persist pending writes if at least *batch* entries are dirty.
 
-        UPSERT each pending row inside a single transaction.  Per-row
-        writes mean a flush at 70k tracks costs O(dirty) instead of the
-        legacy JSON sidecar's O(total) whole-file rewrite.
+        UPSERT each pending row inside a single transaction, so a flush
+        costs O(dirty) rather than O(total).
 
         Set *force* to flush regardless of pending count.
         """
@@ -819,7 +787,6 @@ _CACHE_LOCK = threading.Lock()
 def get_cache(
     index_dir: Path | None = None,
     music_dir: Path | None = None,
-    path_remap: list[tuple[str, str]] | None = None,
 ) -> DjMetaCache | None:
     """Return the process-wide :class:`DjMetaCache` instance.
 
@@ -830,7 +797,6 @@ def get_cache(
         index_dir: Directory containing the FAISS index (the cache lives
             at ``<index_dir>/dj_meta.db``).  Required on first call.
         music_dir: Optional library root for portable relative cache keys.
-        path_remap: Optional absolute-prefix swaps for legacy cache keys.
 
     Returns:
         The shared cache, or ``None`` if uninitialised and no *index_dir*
@@ -839,7 +805,7 @@ def get_cache(
     global _CACHE
     with _CACHE_LOCK:
         if _CACHE is None and index_dir is not None:
-            _CACHE = DjMetaCache(index_dir / "dj_meta.db", music_dir, path_remap)
+            _CACHE = DjMetaCache(index_dir / "dj_meta.db", music_dir)
         return _CACHE
 
 

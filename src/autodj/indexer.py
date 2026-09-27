@@ -51,6 +51,7 @@ from autodj.index_manifest import (
     IndexConsistencyError,
     IndexManifest,
     IndexSnapshotToken,
+    UnsupportedIndexError,
     _immutable_sqlite_uri,
     current_snapshot_token,
     fsync_directory,
@@ -179,10 +180,8 @@ def _open_tracks_db(index_dir: Path) -> sqlite3.Connection:
 def _entry_to_row(entry: IndexEntry, music_dir: Path | None, vec_row: int) -> dict[str, object]:
     """Convert an :class:`IndexEntry` to a SQLite-bound row dict.
 
-    Stored ``path`` is relativised against *music_dir* the same way the
-    legacy JSON sidecar did so that an index built on one host stays
-    portable to any other host that mounts the library at a different
-    absolute path.
+    Stored ``path`` is relative to *music_dir*, so an index built on one host
+    works on any host that mounts the library somewhere else.
     """
     return {
         "vec_row": vec_row,
@@ -276,86 +275,48 @@ def _load_tracks_rows(conn: sqlite3.Connection) -> list[IndexEntry]:
     return [_row_to_entry(r) for r in cur.fetchall()]
 
 
+def _is_absolute_storage(path: str) -> bool:
+    """Whether *path* is absolute: a POSIX root, a UNC share, or a drive letter."""
+    return path.startswith(("/", "\\")) or path[1:2] == ":"
+
+
 def _relativize_for_storage(abs_path: str, music_dir: Path | None) -> str:
-    """Convert an absolute path to a forward-slashed string for ``tracks.db``.
+    """Return *abs_path* as a forward-slashed path relative to *music_dir*.
 
-    If *abs_path* lives under *music_dir*, the returned string is RELATIVE
-    to *music_dir* — making the index portable across machines that mount
-    the library at a different absolute path.  Otherwise the absolute path
-    is returned (forward-slashed for cross-OS readability).
+    ``tracks.db`` stores only relative paths, which keeps an index usable on
+    any host that mounts the library at a different place.
 
     Args:
-        abs_path: Absolute path string from an :class:`IndexEntry` at runtime.
-        music_dir: Library root.  ``None`` disables relativization.
+        abs_path: Runtime path from an :class:`IndexEntry`.
+        music_dir: Library root.  ``None`` stores already-relative paths as-is.
 
     Returns:
-        A forward-slashed path string suitable for SQLite storage.
+        A forward-slashed relative path string for SQLite storage.
+
+    Raises:
+        ValueError: If *abs_path* is absolute and not under *music_dir*.
     """
-    # Pure string-prefix match — never call Path.resolve() here.  resolve()
-    # stat()s the file (and follows symlinks); for libraries on NFS/SMB this
-    # turns the per-checkpoint loop over 70k+ entries into ~150 s of stat()
-    # RPCs and dominates total indexing time.  Paths reaching this function
-    # are already absolute (set by _resolve_for_runtime at startup) so the
-    # only job left is to lop off the music_dir prefix.
-    p = Path(abs_path)
+    # Pure string-prefix match; never call Path.resolve() here.  resolve()
+    # stat()s the file, and on NFS/SMB libraries that turns the per-checkpoint
+    # loop over 70k+ entries into minutes of stat() round trips.
+    path = Path(abs_path).as_posix()
     if music_dir is not None:
-        md_str = music_dir.as_posix().rstrip("/") + "/"
-        p_str = p.as_posix()
-        if p_str.startswith(md_str):
-            return p_str[len(md_str) :]
-    return p.as_posix()
-
-
-def _resolve_for_runtime(
-    stored: str,
-    music_dir: Path | None,
-    path_remap: list[tuple[str, str]] | None,
-) -> str:
-    """Convert a stored path string into an absolute runtime path.
-
-    Resolution order:
-    1. If *stored* is absolute and *path_remap* matches a prefix, swap it.
-    2. If *stored* is absolute, return as-is (with native separators).
-    3. If *stored* is relative, join with *music_dir*.
-
-    Args:
-        stored: Path string as written in ``tracks.db`` (relative,
-            absolute POSIX, or absolute Windows).
-        music_dir: Library root for resolving relative paths.
-        path_remap: Optional ``(from_prefix, to_prefix)`` swaps for absolute
-            paths whose mount point differs on this machine.
-
-    Returns:
-        An absolute path string using native separators.
-    """
-    s = stored.replace("\\", "/")
-    is_abs = s.startswith("/") or (len(s) >= 2 and s[1] == ":")
-
-    if is_abs and path_remap:
-        for from_pre, to_pre in path_remap:
-            from_norm = from_pre.replace("\\", "/")
-            if s.startswith(from_norm):
-                s = to_pre.replace("\\", "/") + s[len(from_norm) :]
-                break
-
-    if is_abs:
-        return str(Path(s))
-
-    base = music_dir if music_dir is not None else Path()
-    return str(base / s)
+        prefix = music_dir.as_posix().rstrip("/") + "/"
+        if path.startswith(prefix):
+            return path[len(prefix) :]
+    if _is_absolute_storage(path):
+        raise ValueError(f"{abs_path} is not under music_dir {music_dir}")
+    return path
 
 
 def _resolve_beets_path(path: Path, music_dir: Path) -> Path:
     """Resolve a beets-stored path to an absolute local path.
 
-    Recent beets versions store track paths *relative* to the library
-    ``directory`` setting (the ``relative_path`` migration).  For relative
-    paths we prepend *music_dir* — which must be the local mount point of
-    that beets ``directory`` — so the file can be opened on this machine.
-
-    Absolute paths are returned unchanged: they are typically tracks living
-    outside the main library tree (e.g. an extra mount), and the user is
-    expected to have them reachable as-is.
+    Beets stores track paths relative to its library ``directory``, or
+    absolute on setups without its ``relative_path`` option.  Relative paths
+    are joined to *music_dir*, the local mount point of that ``directory``.
+    Absolute paths are returned unchanged; the indexer skips any that fall
+    outside *music_dir*.
 
     Args:
         path: Original path from the beets database (may be relative or absolute).
@@ -1057,8 +1018,8 @@ def save_index(
 class PruneSafetyError(RuntimeError):
     """Raised when prune would remove a suspiciously large fraction of entries.
 
-    Almost always indicates a misconfigured ``music_dir`` / ``path_remap``
-    rather than genuine library cleanup — refusing the operation prevents
+    Almost always indicates a misconfigured ``music_dir`` rather than
+    genuine library cleanup — refusing the operation prevents
     data loss.
     """
 
@@ -1135,7 +1096,6 @@ def enrich_from_beets(
     index_dir: Path,
     music_dir: Path | None,
     beets_db: Path,
-    path_remap: list[tuple[str, str]] | None = None,
 ) -> tuple[int, int]:
     """Refresh existing index entries with whatever beets has on each track.
 
@@ -1164,7 +1124,6 @@ def enrich_from_beets(
         index_dir: Directory containing ``vectors.index`` + ``tracks.db``.
         music_dir: Library root (used to resolve relative stored paths).
         beets_db: Path to the beets ``library.db``.
-        path_remap: Optional cross-OS prefix swaps for legacy absolute paths.
 
     Returns:
         ``(updated, total)`` — count of entries with at least one field
@@ -1185,9 +1144,9 @@ def enrich_from_beets(
         if current is None:
             require_current_format(index_dir)
             return (0, 0)
-        entries, _loaded = load_index(index_dir, expected_generation=current.generation)
-    for e in entries:
-        e.path = _resolve_for_runtime(e.path, music_dir, path_remap)
+        entries, _loaded = load_index(
+            index_dir, music_dir=music_dir, expected_generation=current.generation
+        )
 
     try:
         conn = _open_db(beets_db)
@@ -1258,11 +1217,6 @@ def enrich_from_beets(
     return (updated, len(entries))
 
 
-def _is_relative_storage(paths: list[str]) -> bool:
-    """True when every stored path string is already in relative form."""
-    return all(not (p.startswith("/") or (len(p) >= 2 and p[1] == ":") or "\\" in p) for p in paths)
-
-
 def _check_prune_safety(removed: int, total: int, allow_mass_prune: bool) -> None:
     """Raise PruneSafetyError when the prune ratio would cross the threshold."""
     if allow_mass_prune or total == 0 or removed / total <= PRUNE_SAFETY_THRESHOLD:
@@ -1270,8 +1224,8 @@ def _check_prune_safety(removed: int, total: int, allow_mass_prune: bool) -> Non
     raise PruneSafetyError(
         f"Refusing to prune {removed}/{total} tracks "
         f"({removed / total:.0%} > {PRUNE_SAFETY_THRESHOLD:.0%} threshold).\n"
-        "This usually means [library] music_dir or path_remap in your "
-        "config does not match where the indexed files actually live.\n"
+        "This usually means [library] music_dir in your config does not "
+        "match where the indexed files actually live.\n"
         "Fix the config first, then re-run.  If you really did delete "
         "this many tracks, pass allow_mass_prune=True (or "
         "`autodj prune --force` from the CLI)."
@@ -1306,35 +1260,9 @@ def _delete_index_files(
         fsync_directory(index_dir)
 
 
-def _maybe_migrate_paths(
-    entries: list[IndexEntry],
-    index_dir: Path,
-    music_dir: Path | None,
-    already_relative: bool,
-    *,
-    expected_snapshot: IndexSnapshotToken | None = None,
-) -> None:
-    """Re-save tracks DB in relative path form when storage is still absolute.
-
-    With the SQLite tracks store we can rewrite just the rows we care
-    about; no need to reconstruct vectors or touch the FAISS file.  The
-    legacy code path used save_index() here, which required a full
-    O(N) vector reconstruct just to flip path strings — wasted work.
-    """
-    if music_dir is None or already_relative:
-        return
-    _publish_metadata_snapshot(
-        entries,
-        index_dir,
-        music_dir,
-        expected_snapshot=expected_snapshot,
-    )
-
-
 def prune_index(
     index_dir: Path,
     music_dir: Path | None = None,
-    path_remap: list[tuple[str, str]] | None = None,
     allow_mass_prune: bool = False,
     throttle_ms: float = 0.0,
     stat_workers: int = 8,
@@ -1342,13 +1270,10 @@ def prune_index(
     """Remove index entries whose audio files no longer exist on disk.
 
     Loads ``tracks.db`` and ``vectors.index``, resolves each stored
-    path against *music_dir* + *path_remap*, drops every row whose audio
-    file is missing, and rewrites both files via :func:`save_index`.  If
-    every track is gone, the index files are deleted instead.
-
-    Always rewrites ``tracks.db`` if any rows were stored as absolute
-    paths under *music_dir* — converting them to portable relative paths.
-    No-op when no index exists or no rewrite is needed.
+    path against *music_dir*, drops every row whose audio file is
+    missing, and publishes the rest as a new generation.  If every track
+    is gone, the index files are deleted instead.  No-op when no index
+    exists or nothing is missing.
 
     Safety: if more than :data:`PRUNE_SAFETY_THRESHOLD` of the entries
     would be removed, raises :class:`PruneSafetyError` instead of touching
@@ -1358,7 +1283,6 @@ def prune_index(
     Args:
         index_dir: Directory containing ``vectors.index`` and ``tracks.db``.
         music_dir: Library root for resolving relative paths.
-        path_remap: Optional cross-OS prefix swaps for legacy absolute paths.
         allow_mass_prune: If ``True``, skip the safety check and prune
             even if it would remove most of the index.
 
@@ -1376,12 +1300,9 @@ def prune_index(
         if current is None:
             require_current_format(index_dir)
             return (0, 0)
-        entries, loaded = load_index(index_dir, expected_generation=current.generation)
-    already_relative = music_dir is not None and _is_relative_storage(
-        [entry.path for entry in entries]
-    )
-    for e in entries:
-        e.path = _resolve_for_runtime(e.path, music_dir, path_remap)
+        entries, loaded = load_index(
+            index_dir, music_dir=music_dir, expected_generation=current.generation
+        )
 
     # Existence check is RTT-bound on NFS/SMB libraries — at 70k+ tracks the
     # serial loop dominates the whole `index` command.  Fan out across a
@@ -1419,13 +1340,6 @@ def prune_index(
         return (removed, 0)
 
     if removed == 0:
-        _maybe_migrate_paths(
-            entries,
-            index_dir,
-            music_dir,
-            already_relative,
-            expected_snapshot=source_snapshot,
-        )
         return (0, len(entries))
 
     # Batch reconstruct: one FAISS call returns the whole (N, dim) array,
@@ -1448,20 +1362,17 @@ def prune_index(
 def load_index(
     index_dir: Path,
     music_dir: Path | None = None,
-    path_remap: list[tuple[str, str]] | None = None,
     *,
     expected_generation: int | None = None,
 ) -> tuple[list[IndexEntry], faiss.IndexFlatIP]:
     """Load the FAISS index and metadata from *index_dir*.
 
-    When *music_dir* is provided, relative stored paths are resolved
-    against it and absolute paths optionally remapped via *path_remap*,
-    so ``entry.path`` is always an absolute runtime path on return.
+    When *music_dir* is provided, the relative stored paths are joined to
+    it, so ``entry.path`` is an absolute runtime path on return.
 
     Args:
         index_dir: Directory containing ``vectors.index`` and ``tracks.db``.
         music_dir: Library root for resolving relative paths.
-        path_remap: Optional cross-OS prefix swaps for legacy absolute paths.
 
     Returns:
         A tuple of ``(entries, faiss_index)`` where *entries* is a list of
@@ -1496,9 +1407,6 @@ def load_index(
             entries = _load_tracks_rows(conn)
         finally:
             conn.close()
-        if music_dir is not None or path_remap:
-            for entry in entries:
-                entry.path = _resolve_for_runtime(entry.path, music_dir, path_remap)
 
         post_hashes = (sha256_file(tracks_path), sha256_file(vectors_path))
         after = read_manifest(index_dir)
@@ -1520,6 +1428,12 @@ def load_index(
                 raise IndexConsistencyError("tracks SHA-256 mismatch")
             if vectors_hash != before.vectors_sha256:
                 raise IndexConsistencyError("vectors SHA-256 mismatch")
+        absolute = next((e.path for e in entries if _is_absolute_storage(e.path)), None)
+        if absolute is not None:
+            raise UnsupportedIndexError(index_dir, f"tracks.db stores the absolute path {absolute}")
+        if music_dir is not None:
+            for entry in entries:
+                entry.path = str(music_dir / entry.path)
         logger.info(
             "Loaded index generation %s with %d tracks from %s",
             before.generation,
@@ -1559,7 +1473,6 @@ def _backfill_dj_meta(
     workers: int | None = None,
     throttle_ms: float = 0.0,
     music_dir: Path | None = None,
-    path_remap: list[tuple[str, str]] | None = None,
 ) -> None:
     """Fill in DJ-meta for already-indexed tracks that have no sidecar entry.
 
@@ -1585,11 +1498,10 @@ def _backfill_dj_meta(
             sharply with little wall-clock cost when paired with a low
             worker count.
         music_dir: Library root used to store DJ-meta keys portably.
-        path_remap: Optional absolute-prefix swaps for legacy cache rows.
     """
     from autodj.dj_meta import get_cache
 
-    cache = get_cache(index_dir, music_dir=music_dir, path_remap=path_remap)
+    cache = get_cache(index_dir, music_dir=music_dir)
     if cache is None:
         return
     prune_to_paths = getattr(cache, "prune_to_paths", None)
@@ -1863,8 +1775,7 @@ def _discard_working_files(index_dir: Path) -> None:
 def _load_existing_artifacts(
     index_dir: Path,
     music_dir: Path,
-    path_remap: list[tuple[str, str]] | None,
-) -> tuple[list[IndexEntry], list[np.ndarray], bool, IndexSnapshotToken]:
+) -> tuple[list[IndexEntry], list[np.ndarray], IndexSnapshotToken]:
     """Load one coherent baseline and restore its canonical working files."""
     with publication_lock(index_dir):
         manifest = read_manifest(index_dir)
@@ -1872,29 +1783,26 @@ def _load_existing_artifacts(
         if manifest is not None:
             manifest_entries, manifest_index = load_index(
                 index_dir,
+                music_dir=music_dir,
                 expected_generation=manifest.generation,
             )
-            already_relative = _is_relative_storage([entry.path for entry in manifest_entries])
-            for entry in manifest_entries:
-                entry.path = _resolve_for_runtime(entry.path, music_dir, path_remap)
             vectors = [
                 np.asarray(row, dtype=np.float32)
                 for row in manifest_index.reconstruct_n(0, manifest_index.ntotal)
             ]
             restore_working_snapshot(index_dir, expected_generation=manifest.generation)
-            return manifest_entries, vectors, already_relative, snapshot
+            return manifest_entries, vectors, snapshot
 
         # A manifest-free directory is empty, or holds leftovers of a prune
         # that emptied the index or of a first publication that never committed.
         require_current_format(index_dir)
         _discard_working_files(index_dir)
-        return [], [], False, snapshot
+        return [], [], snapshot
 
 
 def _load_existing_index(  # pragma: no cover -- exercised via build_index integration runs
     index_dir: Path,
     music_dir: Path,
-    path_remap: list[tuple[str, str]] | None,
     force: bool,
     reindex_modified_since: float | None,
     throttle_ms: float = 0.0,
@@ -1914,16 +1822,7 @@ def _load_existing_index(  # pragma: no cover -- exercised via build_index integ
             snapshot = current_snapshot_token(index_dir)
         return [], [], set(), True, snapshot
 
-    (
-        existing_entries,
-        existing_vectors,
-        already_relative,
-        snapshot,
-    ) = _load_existing_artifacts(
-        index_dir,
-        music_dir,
-        path_remap,
-    )
+    existing_entries, existing_vectors, snapshot = _load_existing_artifacts(index_dir, music_dir)
     if not existing_entries:
         return [], [], set(), False, snapshot
     logger.info("Incremental mode: %d tracks already indexed", len(existing_entries))
@@ -1992,16 +1891,6 @@ def _load_existing_index(  # pragma: no cover -- exercised via build_index integ
                     expected_snapshot=snapshot,
                 )
                 snapshot = snapshot_token_for_manifest(published)
-    elif not already_relative and existing_entries:
-        # Legacy absolute-path storage detected; rewrite tracks.db in
-        # portable relative form without touching FAISS.
-        published = _publish_metadata_snapshot(
-            existing_entries,
-            index_dir,
-            music_dir,
-            expected_snapshot=snapshot,
-        )
-        snapshot = snapshot_token_for_manifest(published)
 
     return (
         existing_entries,
@@ -2039,7 +1928,16 @@ def _collect_tracks_to_index(  # pragma: no cover -- exercised via build_index i
             for t in tracks
         ]
         logger.info("Resolved beets paths against music_dir '%s'", cfg.library.music_dir)
-        return tracks
+        prefix = cfg.library.music_dir.as_posix().rstrip("/") + "/"
+        inside = [t for t in tracks if t.path.as_posix().startswith(prefix)]
+        if len(inside) < len(tracks):
+            logger.warning(
+                "Skipping %d beets tracks outside music_dir %s; the index stores "
+                "paths relative to music_dir",
+                len(tracks) - len(inside),
+                cfg.library.music_dir,
+            )
+        return inside
 
     # No beets database — fall back to filesystem scan + ID3/Vorbis tag reads.
     from autodj.audio_meta import read_file_tags
@@ -2175,7 +2073,6 @@ def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integr
     index_dir = cfg.index.active_dir
     index_dir.mkdir(parents=True, exist_ok=True)
     music_dir = cfg.library.music_dir
-    path_remap = cfg.library.path_remap
 
     (
         existing_entries,
@@ -2186,7 +2083,6 @@ def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integr
     ) = _load_existing_index(
         index_dir,
         music_dir,
-        path_remap,
         force,
         reindex_modified_since,
         throttle_ms=throttle_ms,

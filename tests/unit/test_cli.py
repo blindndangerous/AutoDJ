@@ -1802,7 +1802,6 @@ class TestCmdAnalyse:
         cfg.index.active_dir = idx_dir
         cfg.index.name = "default"
         cfg.library.music_dir = tmp_path
-        cfg.library.path_remap = []
         return cfg
 
     def test_config_missing(self) -> None:
@@ -1835,12 +1834,10 @@ class TestCmdAnalyse:
             index_dir,
             workers=None,
             music_dir=None,
-            path_remap=None,
         ):
             captured["entries"] = list(entries)
             captured["workers"] = workers
             captured["music_dir"] = music_dir
-            captured["path_remap"] = path_remap
 
         with (
             patch("autodj.config.load_config", return_value=cfg),
@@ -1851,7 +1848,6 @@ class TestCmdAnalyse:
         assert len(captured["entries"]) == 2
         assert captured["workers"] == 1
         assert captured["music_dir"] == cfg.library.music_dir
-        assert captured["path_remap"] == cfg.library.path_remap
 
     def test_backfill_exception_exits_one(self, tmp_path: Path) -> None:
         cfg = self._cfg_with_index(tmp_path)

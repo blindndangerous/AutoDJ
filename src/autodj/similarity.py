@@ -229,7 +229,6 @@ class SimilarityIndex:
         self,
         index_dir: Path,
         music_dir: Path | None = None,
-        path_remap: list[tuple[str, str]] | None = None,
         *,
         expected_generation: int | None = None,
         expected_snapshot: IndexSnapshotToken | None = None,
@@ -246,7 +245,6 @@ class SimilarityIndex:
             index_dir: Directory containing ``vectors.index`` and
                 ``tracks.db``.
             music_dir: Library root for resolving relative paths.
-            path_remap: Cross-OS prefix swaps for legacy absolute paths.
 
         Returns:
             New track count after reload.
@@ -274,7 +272,6 @@ class SimilarityIndex:
                 entries, faiss_index = load_index(
                     index_dir,
                     music_dir=music_dir,
-                    path_remap=path_remap,
                     expected_generation=snapshot.generation or None,
                 )
                 candidate = SimilarityIndex(faiss_index=faiss_index, entries=entries)
@@ -292,23 +289,18 @@ class SimilarityIndex:
         cls,
         index_dir: Path,
         music_dir: Path | None = None,
-        path_remap: list[tuple[str, str]] | None = None,
     ) -> SimilarityIndex:
         """Load a :class:`SimilarityIndex` from the index directory on disk.
 
-        When *music_dir* is provided, relative paths stored in
-        ``tracks.db`` are resolved against it; *path_remap* applies
-        cross-OS prefix swaps to absolute paths.  This makes a single
-        index portable across machines that mount the library at
-        different absolute locations.
+        When *music_dir* is provided, the relative paths stored in
+        ``tracks.db`` are resolved against it, so one index works on any
+        machine that mounts the library at a different location.
 
         Args:
             index_dir: Directory containing ``vectors.index`` and
                 ``tracks.db`` as written by
                 :func:`autodj.indexer.save_index`.
             music_dir: Library root for resolving relative paths.
-            path_remap: Optional ``(from_prefix, to_prefix)`` swaps for
-                legacy absolute paths from another host.
 
         Returns:
             A fully populated :class:`SimilarityIndex`.
@@ -325,7 +317,6 @@ class SimilarityIndex:
             entries, faiss_index = load_index(
                 index_dir,
                 music_dir=music_dir,
-                path_remap=path_remap,
                 expected_generation=expected_generation,
             )
             snapshot = current_snapshot_token(index_dir)

@@ -31,7 +31,7 @@ def _unit_vec(dim: int = FEATURE_DIM, seed: int = 0) -> np.ndarray:
 
 def _make_entry(i: int, bpm: float = 120.0) -> IndexEntry:
     return IndexEntry(
-        path=f"Z:/Music/song_{i}.flac",
+        path=f"song_{i}.flac",
         title=f"Song {i}",
         artist=f"Artist {i % 3}",
         album="Album",
@@ -87,12 +87,12 @@ class TestSimilarityIndexConstruction:
         for entry in (snapshot_entry, lookup_entry, result, by_path_result, distant_result):
             assert entry is not None
             with pytest.raises(FrozenInstanceError):
-                entry.path = "Z:/Music/mutated.flac"
+                entry.path = "mutated.flac"
             with pytest.raises(FrozenInstanceError):
                 del entry.path
 
-        assert sim.entry_for_path("Z:/Music/song_0.flac") is snapshot_entry
-        assert sim.entry_for_path("Z:/Music/mutated.flac") is None
+        assert sim.entry_for_path("song_0.flac") is snapshot_entry
+        assert sim.entry_for_path("mutated.flac") is None
 
     def test_ntotal_matches_entries(self) -> None:
         sim, _ = _make_similarity_index(10)
@@ -342,7 +342,7 @@ class TestFindNextForPath:
         sim, _ = _make_similarity_index(5)
         with pytest.raises(SimilarityError, match="not in index"):
             sim.find_next_for_path(
-                current_path="Z:/Music/unknown.flac",
+                current_path="unknown.flac",
                 recently_played=deque(),
             )
 
@@ -573,7 +573,7 @@ class TestReloadFromDisk:
         save_index(e2, v2, tmp_path)
         sim.reload_from_disk(tmp_path)
         # _path_to_idx should now know about song_99
-        assert "Z:/Music/song_99.flac" in sim._path_to_idx
+        assert "song_99.flac" in sim._path_to_idx
 
     def test_failed_expected_generation_keeps_live_state(self, tmp_path: Path) -> None:
         from autodj.index_manifest import IndexConsistencyError
@@ -1117,7 +1117,7 @@ class TestFindDistant:
         sim, _ = _make_similarity_index(5)
         with pytest.raises(SimilarityError, match="not in index"):
             sim.find_distant(
-                current_path="Z:/Music/unknown.flac",
+                current_path="unknown.flac",
                 recently_played=deque(),
             )
 

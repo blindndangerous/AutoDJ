@@ -15,7 +15,9 @@ from autodj.indexer import FEATURE_DIM, IndexEntry, save_index
 
 
 def _publish_one_entry(index_dir: Path) -> None:
-    save_index([_entry(0)], np.zeros((1, FEATURE_DIM), dtype=np.float32), index_dir)
+    entry = _entry(0)
+    entry.path = "song_0.flac"
+    save_index([entry], np.zeros((1, FEATURE_DIM), dtype=np.float32), index_dir)
 
 
 def _entry(i: int = 0) -> IndexEntry:
@@ -49,7 +51,6 @@ def _cfg() -> MagicMock:
     cfg = MagicMock()
     cfg.library.beets_db = None
     cfg.library.music_dir = Path("Z:/Music")
-    cfg.library.path_remap = []
     cfg.playback.no_repeat_window = 50
     cfg.playback.artist_repeat_window = 3
     cfg.playback.crossfade_seconds = 3.0

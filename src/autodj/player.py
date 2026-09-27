@@ -1773,10 +1773,9 @@ class Player:
                     music_dir=self._cfg.library.music_dir
                     if isinstance(self._cfg.library.music_dir, Path)
                     else None,
-                    path_remap=self._cfg.library.path_remap,
                 )
         except (OSError, ValueError) as exc:
-            logger.debug("DJ cache unavailable: %s", exc)
+            logger.warning("DJ cache unavailable: %s", exc)
             self._dj_cache = None
 
     def _ensure_external_cues(self) -> None:

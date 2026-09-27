@@ -67,7 +67,6 @@ def make_cfg_mock() -> MagicMock:
     cfg.transitions.wet_mix = 1.0
     cfg.library.beets_db = None
     cfg.library.music_dir = None
-    cfg.library.path_remap = []
     cfg.index.active_dir = None
     return cfg
 

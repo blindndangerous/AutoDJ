@@ -232,7 +232,7 @@ def test_failed_first_checkpoint_refreshes_retry_token(tmp_path: Path) -> None:
 def test_enrich_skips_index_entries_absent_from_beets(tmp_path: Path) -> None:
     index_dir = tmp_path / "index"
     entry = _entry(str(tmp_path / "indexed.flac"))
-    indexer.save_index([entry], _vector(), index_dir)
+    indexer.save_index([entry], _vector(), index_dir, music_dir=tmp_path)
     beets_db = tmp_path / "beets.db"
     connection = sqlite3.connect(beets_db)
     try:
@@ -251,18 +251,18 @@ def test_enrich_skips_index_entries_absent_from_beets(tmp_path: Path) -> None:
     finally:
         connection.close()
 
-    assert indexer.enrich_from_beets(index_dir, music_dir=None, beets_db=beets_db) == (0, 1)
+    assert indexer.enrich_from_beets(index_dir, music_dir=tmp_path, beets_db=beets_db) == (0, 1)
 
 
 def test_prune_applies_requested_stat_throttle(tmp_path: Path) -> None:
     track = tmp_path / "song.flac"
     track.touch()
     index_dir = tmp_path / "index"
-    indexer.save_index([_entry(str(track))], _vector(), index_dir)
+    indexer.save_index([_entry(str(track))], _vector(), index_dir, music_dir=tmp_path)
     sleeps: list[float] = []
 
     with patch.object(time, "sleep", side_effect=sleeps.append):
-        result = indexer.prune_index(index_dir, throttle_ms=5.0, stat_workers=1)
+        result = indexer.prune_index(index_dir, throttle_ms=5.0, stat_workers=1, music_dir=tmp_path)
 
     assert result == (0, 1)
     assert sleeps == [0.005]

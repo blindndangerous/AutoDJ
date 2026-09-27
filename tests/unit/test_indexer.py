@@ -217,7 +217,7 @@ class TestSaveLoadIndex:
     def _make_entries(self, n: int) -> tuple[list[IndexEntry], np.ndarray]:
         entries = [
             IndexEntry(
-                path=f"Z:/Music/song_{i}.flac",
+                path=f"song_{i}.flac",
                 title=f"Song {i}",
                 artist="Artist",
                 album="Album",
@@ -278,7 +278,7 @@ class TestSaveLoadIndex:
         finally:
             conn.close()
         assert len(rows) == 3
-        assert rows[0][0] == "Z:/Music/song_0.flac"
+        assert rows[0][0] == "song_0.flac"
 
     def test_faiss_index_file_written(self, tmp_path: Path) -> None:
         entries, vectors = self._make_entries(3)
@@ -319,11 +319,11 @@ class TestSaveLoadIndex:
         from autodj.indexer import _load_existing_artifacts, _save_vectors
 
         entries, vectors = self._make_entries(3)
-        save_index(entries, vectors, tmp_path)
+        save_index(entries, vectors, tmp_path, music_dir=tmp_path)
         manifest = read_manifest(tmp_path)
         assert manifest is not None
         _save_vectors(np.flip(vectors, axis=0).copy(), tmp_path)
-        _load_existing_artifacts(tmp_path, tmp_path, None)
+        _load_existing_artifacts(tmp_path, tmp_path)
         assert sha256_file(tmp_path / "tracks.db") == manifest.tracks_sha256
         assert sha256_file(tmp_path / "vectors.index") == manifest.vectors_sha256
         assert not (tmp_path / "tracks.db-wal").exists()
@@ -348,13 +348,13 @@ class TestSaveLoadIndex:
         from autodj.indexer import _save_tracks_metadata
 
         old_entries, vectors = self._make_entries(3)
-        save_index(old_entries, vectors, tmp_path)
+        save_index(old_entries, vectors, tmp_path, music_dir=tmp_path)
         manifest = read_manifest(tmp_path)
         assert manifest is not None
         mixed_entries, _ = self._make_entries(3)
         for index, entry in enumerate(mixed_entries):
-            entry.path = f"Z:/Other/song_{index}.flac"
-        _save_tracks_metadata(mixed_entries, tmp_path, music_dir=None)
+            entry.path = f"other/song_{index}.flac"
+        _save_tracks_metadata(mixed_entries, tmp_path, music_dir=tmp_path)
         conn = sqlite3.connect(tmp_path / "tracks.db", isolation_level=None)
         try:
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -362,7 +362,7 @@ class TestSaveLoadIndex:
             conn.close()
         (tmp_path / manifest.tracks_file).write_bytes((tmp_path / "tracks.db").read_bytes())
         with pytest.raises(IndexConsistencyError, match="tracks SHA-256"):
-            load_index(tmp_path)
+            load_index(tmp_path, music_dir=tmp_path)
 
     def test_failed_second_save_does_not_publish_generation(self, tmp_path: Path) -> None:
         from autodj.index_manifest import read_manifest
@@ -412,7 +412,7 @@ class TestSaveLoadIndex:
         save_index(entries, vectors, index_dir)
         loaded_entries, _ = load_index(index_dir)
 
-        assert loaded_entries[0].path == "Z:/Music/song_0.flac"
+        assert loaded_entries[0].path == "song_0.flac"
 
 
 # ---------------------------------------------------------------------------
@@ -557,7 +557,7 @@ class TestPruneIndex:
         vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
         index_dir = tmp_path / "idx"
         index_dir.mkdir()
-        save_index(entries, vectors, index_dir)
+        save_index(entries, vectors, index_dir, music_dir=tmp_path)
         return index_dir
 
     def test_no_index_returns_zero(self, tmp_path: Path) -> None:
@@ -569,7 +569,7 @@ class TestPruneIndex:
         from autodj.indexer import prune_index
 
         idx = self._save_with_files(tmp_path, n_present=10, n_missing=2)
-        removed, kept = prune_index(idx)
+        removed, kept = prune_index(idx, music_dir=tmp_path)
         assert removed == 2
         assert kept == 10
 
@@ -577,7 +577,7 @@ class TestPruneIndex:
         from autodj.indexer import prune_index
 
         idx = self._save_with_files(tmp_path, n_present=5, n_missing=0)
-        removed, kept = prune_index(idx)
+        removed, kept = prune_index(idx, music_dir=tmp_path)
         assert removed == 0
         assert kept == 5
 
@@ -594,12 +594,12 @@ class TestPruneIndex:
 
         entries, vectors = self._distinctive_entries(tmp_path, missing_rows={1})
         idx = tmp_path / "idx"
-        save_index(entries, vectors, idx)
+        save_index(entries, vectors, idx, music_dir=tmp_path)
         dirty_entries = [entries[1], entries[0], entries[2]]
-        _save_tracks_metadata(dirty_entries, idx, music_dir=None)
+        _save_tracks_metadata(dirty_entries, idx, music_dir=tmp_path)
 
-        assert prune_index(idx, allow_mass_prune=True) == (1, 2)
-        loaded, loaded_vectors = load_index(idx)
+        assert prune_index(idx, allow_mass_prune=True, music_dir=tmp_path) == (1, 2)
+        loaded, loaded_vectors = load_index(idx, music_dir=tmp_path)
         assert [Path(entry.path).name for entry in loaded] == ["song_0.flac", "song_2.flac"]
         assert [int(np.argmax(loaded_vectors.reconstruct(row))) for row in range(2)] == [3, 11]
 
@@ -615,7 +615,7 @@ class TestPruneIndex:
 
         entries, vectors = self._distinctive_entries(tmp_path, missing_rows={2})
         idx = tmp_path / "idx"
-        save_index(entries, vectors, idx)
+        save_index(entries, vectors, idx, music_dir=tmp_path)
         first = read_manifest(idx)
         assert first is not None
         concurrent_entries = [
@@ -633,7 +633,7 @@ class TestPruneIndex:
             real_check(*args, **kwargs)
             if not raced:
                 raced = True
-                save_index(concurrent_entries, concurrent_vectors, idx)
+                save_index(concurrent_entries, concurrent_vectors, idx, music_dir=tmp_path)
 
         with (
             patch(
@@ -642,12 +642,12 @@ class TestPruneIndex:
             ),
             pytest.raises(IndexConsistencyError, match="expected generation"),
         ):
-            prune_index(idx, allow_mass_prune=True)
+            prune_index(idx, allow_mass_prune=True, music_dir=tmp_path)
 
         current = read_manifest(idx)
         assert current is not None
         assert current.generation == first.generation + 1
-        loaded, loaded_vectors = load_index(idx)
+        loaded, loaded_vectors = load_index(idx, music_dir=tmp_path)
         assert [entry.title for entry in loaded] == [
             "Concurrent 0",
             "Concurrent 1",
@@ -664,7 +664,7 @@ class TestPruneIndex:
 
         entries, vectors = self._distinctive_entries(tmp_path, missing_rows={0, 1, 2})
         idx = tmp_path / "idx"
-        save_index(entries, vectors, idx)
+        save_index(entries, vectors, idx, music_dir=tmp_path)
         replacement_path = tmp_path / "replacement.flac"
         replacement_path.write_bytes(b"")
         replacement = [
@@ -687,7 +687,7 @@ class TestPruneIndex:
         replacement_vectors[0, 23] = 1.0
 
         def publish_replacement(*_args, **_kwargs) -> None:
-            save_index(replacement, replacement_vectors, idx)
+            save_index(replacement, replacement_vectors, idx, music_dir=tmp_path)
 
         with (
             patch(
@@ -696,51 +696,11 @@ class TestPruneIndex:
             ),
             pytest.raises(IndexConsistencyError, match="expected generation"),
         ):
-            prune_index(idx, allow_mass_prune=True)
+            prune_index(idx, allow_mass_prune=True, music_dir=tmp_path)
 
-        loaded, loaded_vectors = load_index(idx)
+        loaded, loaded_vectors = load_index(idx, music_dir=tmp_path)
         assert [entry.title for entry in loaded] == ["Concurrent replacement"]
         assert int(np.argmax(loaded_vectors.reconstruct(0))) == 23
-
-    def test_prune_path_migration_rejects_generation_race(
-        self,
-        tmp_path: Path,
-    ) -> None:
-        from dataclasses import replace
-
-        from autodj.index_manifest import IndexConsistencyError
-        from autodj.indexer import load_index, prune_index, save_index
-
-        entries, vectors = self._distinctive_entries(tmp_path)
-        idx = tmp_path / "idx"
-        save_index(entries, vectors, idx, music_dir=None)
-        concurrent_entries = [
-            replace(entry, title=f"Concurrent {row}") for row, entry in enumerate(entries)
-        ]
-        concurrent_vectors = np.zeros_like(vectors)
-        concurrent_vectors[0, 29] = 1.0
-        concurrent_vectors[1, 31] = 1.0
-        concurrent_vectors[2, 37] = 1.0
-
-        def publish_concurrent(*_args, **_kwargs) -> None:
-            save_index(concurrent_entries, concurrent_vectors, idx, music_dir=None)
-
-        with (
-            patch(
-                "autodj.indexer._check_prune_safety",
-                side_effect=publish_concurrent,
-            ),
-            pytest.raises(IndexConsistencyError, match="expected generation"),
-        ):
-            prune_index(idx, music_dir=tmp_path)
-
-        loaded, loaded_vectors = load_index(idx)
-        assert [entry.title for entry in loaded] == [
-            "Concurrent 0",
-            "Concurrent 1",
-            "Concurrent 2",
-        ]
-        assert [int(np.argmax(loaded_vectors.reconstruct(row))) for row in range(3)] == [29, 31, 37]
 
     def test_load_audio_falls_back_to_librosa_when_soundfile_errors(self, tmp_path: Path) -> None:
         # Some FLACs over NFS make libsndfile raise "flac decoder lost sync"
@@ -768,7 +728,7 @@ class TestPruneIndex:
         from autodj.indexer import prune_index
 
         idx = self._save_with_files(tmp_path, n_present=3, n_missing=0)
-        prune_index(idx)
+        prune_index(idx, music_dir=tmp_path)
         out = capsys.readouterr().out
         assert "Phase: Pruning" in out
         assert "checking 3 indexed files" in out
@@ -778,13 +738,13 @@ class TestPruneIndex:
 
         idx = self._save_with_files(tmp_path, n_present=2, n_missing=10)
         with pytest.raises(PruneSafetyError):
-            prune_index(idx)
+            prune_index(idx, music_dir=tmp_path)
 
     def test_force_bypasses_safety(self, tmp_path: Path) -> None:
         from autodj.indexer import prune_index
 
         idx = self._save_with_files(tmp_path, n_present=2, n_missing=10)
-        removed, kept = prune_index(idx, allow_mass_prune=True)
+        removed, kept = prune_index(idx, allow_mass_prune=True, music_dir=tmp_path)
         assert removed == 10
         assert kept == 2
 
@@ -792,7 +752,7 @@ class TestPruneIndex:
         from autodj.indexer import prune_index
 
         idx = self._save_with_files(tmp_path, n_present=0, n_missing=3)
-        removed, kept = prune_index(idx, allow_mass_prune=True)
+        removed, kept = prune_index(idx, allow_mass_prune=True, music_dir=tmp_path)
         assert removed == 3
         assert kept == 0
         assert not (idx / "vectors.index").exists()
@@ -824,7 +784,7 @@ class TestPruneIndex:
 
         monkeypatch.setattr(Path, "unlink", refuse_vectors)
         with pytest.raises(PermissionError, match="vectors locked"):
-            prune_index(idx, allow_mass_prune=True)
+            prune_index(idx, allow_mass_prune=True, music_dir=tmp_path)
 
         assert read_manifest(idx) is None
         assert current_snapshot_token(idx).generation == 0
@@ -837,10 +797,10 @@ class TestPruneIndex:
 
         entries, vectors = self._distinctive_entries(tmp_path)
         idx = tmp_path / "idx"
-        save_index(entries, vectors, idx)
+        save_index(entries, vectors, idx, music_dir=tmp_path)
         tombstone_publication(idx)
 
-        loaded, loaded_vectors, _relative, token = _load_existing_artifacts(idx, tmp_path, None)
+        loaded, loaded_vectors, token = _load_existing_artifacts(idx, tmp_path)
 
         assert loaded == []
         assert loaded_vectors == []
@@ -863,9 +823,9 @@ class TestPruneIndex:
             lambda _index_dir: (_ for _ in ()).throw(OSError("checkpoint failed")),
         )
         with pytest.raises(OSError, match="checkpoint failed"):
-            save_index(entries, vectors, idx)
+            save_index(entries, vectors, idx, music_dir=tmp_path)
 
-        loaded, loaded_vectors, _relative, token = _load_existing_artifacts(idx, tmp_path, None)
+        loaded, loaded_vectors, token = _load_existing_artifacts(idx, tmp_path)
 
         assert loaded == []
         assert loaded_vectors == []
@@ -875,8 +835,8 @@ class TestPruneIndex:
         assert not (idx / "vectors.index").exists()
 
         monkeypatch.undo()
-        save_index(entries, vectors, idx, expected_snapshot=token)
-        rebuilt, rebuilt_vectors = load_index(idx)
+        save_index(entries, vectors, idx, expected_snapshot=token, music_dir=tmp_path)
+        rebuilt, rebuilt_vectors = load_index(idx, music_dir=tmp_path)
         assert [Path(entry.path).name for entry in rebuilt] == [
             Path(entry.path).name for entry in entries
         ]
@@ -963,16 +923,16 @@ class TestEnrichFromBeets:
 
         entries, vectors = self._make_distinctive_index(tmp_path)
         idx = tmp_path / "idx"
-        save_index(entries, vectors, idx)
-        _save_tracks_metadata(list(reversed(entries)), idx, music_dir=None)
+        save_index(entries, vectors, idx, music_dir=tmp_path)
+        _save_tracks_metadata(list(reversed(entries)), idx, music_dir=tmp_path)
         beets = tmp_path / "library.db"
         self._make_beets(
             beets,
             [{"path": entry.path, "title": f"Enriched {row}"} for row, entry in enumerate(entries)],
         )
 
-        assert enrich_from_beets(idx, music_dir=None, beets_db=beets) == (2, 2)
-        loaded, loaded_vectors = load_index(idx)
+        assert enrich_from_beets(idx, music_dir=tmp_path, beets_db=beets) == (2, 2)
+        loaded, loaded_vectors = load_index(idx, music_dir=tmp_path)
         assert [Path(entry.path).name for entry in loaded] == ["song_0.flac", "song_1.flac"]
         assert [entry.title for entry in loaded] == ["Enriched 0", "Enriched 1"]
         assert [int(np.argmax(loaded_vectors.reconstruct(row))) for row in range(2)] == [3, 7]
@@ -989,7 +949,7 @@ class TestEnrichFromBeets:
 
         entries, vectors = self._make_distinctive_index(tmp_path)
         idx = tmp_path / "idx"
-        save_index(entries, vectors, idx)
+        save_index(entries, vectors, idx, music_dir=tmp_path)
         first = read_manifest(idx)
         assert first is not None
         beets = tmp_path / "library.db"
@@ -1010,7 +970,7 @@ class TestEnrichFromBeets:
             nonlocal raced
             if not raced:
                 raced = True
-                save_index(concurrent_entries, concurrent_vectors, idx)
+                save_index(concurrent_entries, concurrent_vectors, idx, music_dir=tmp_path)
             return real_apply(*args, **kwargs)
 
         with (
@@ -1020,12 +980,12 @@ class TestEnrichFromBeets:
             ),
             pytest.raises(IndexConsistencyError, match="expected generation"),
         ):
-            enrich_from_beets(idx, music_dir=None, beets_db=beets)
+            enrich_from_beets(idx, music_dir=tmp_path, beets_db=beets)
 
         current = read_manifest(idx)
         assert current is not None
         assert current.generation == first.generation + 1
-        loaded, loaded_vectors = load_index(idx)
+        loaded, loaded_vectors = load_index(idx, music_dir=tmp_path)
         assert [entry.title for entry in loaded] == ["Concurrent 0", "Concurrent 1"]
         assert [int(np.argmax(loaded_vectors.reconstruct(row))) for row in range(2)] == [11, 13]
 
@@ -1055,18 +1015,18 @@ class TestEnrichFromBeets:
         vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
         idx = tmp_path / "idx"
         idx.mkdir()
-        save_index(entries, vectors, idx)
+        save_index(entries, vectors, idx, music_dir=tmp_path)
         # Set up beets DB with a key
         beets = tmp_path / "library.db"
         self._make_beets(beets, [{"path": str(path), "initial_key": "Am"}])
 
-        updated, total = enrich_from_beets(idx, music_dir=None, beets_db=beets)
+        updated, total = enrich_from_beets(idx, music_dir=tmp_path, beets_db=beets)
         assert updated == 1
         assert total == 1
         # Reload and verify
         from autodj.indexer import load_index
 
-        loaded, _ = load_index(idx)
+        loaded, _ = load_index(idx, music_dir=tmp_path)
         assert loaded[0].mode == 0  # minor
         assert loaded[0].key == 9  # A
 
@@ -1095,11 +1055,11 @@ class TestEnrichFromBeets:
         vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
         idx = tmp_path / "idx"
         idx.mkdir()
-        save_index(entries, vectors, idx)
+        save_index(entries, vectors, idx, music_dir=tmp_path)
         beets = tmp_path / "library.db"
         self._make_beets(beets, [{"path": str(path), "initial_key": "Am"}])
 
-        updated, total = enrich_from_beets(idx, music_dir=None, beets_db=beets)
+        updated, total = enrich_from_beets(idx, music_dir=tmp_path, beets_db=beets)
         assert updated == 0
         assert total == 1
 
@@ -1128,8 +1088,10 @@ class TestEnrichFromBeets:
         vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
         idx = tmp_path / "idx"
         idx.mkdir()
-        save_index(entries, vectors, idx)
-        updated, total = enrich_from_beets(idx, music_dir=None, beets_db=tmp_path / "missing.db")
+        save_index(entries, vectors, idx, music_dir=tmp_path)
+        updated, total = enrich_from_beets(
+            idx, music_dir=tmp_path, beets_db=tmp_path / "missing.db"
+        )
         assert updated == 0
         assert total == 1
 
@@ -1294,14 +1256,13 @@ class TestRelativizeForStorage:
         md.mkdir()
         assert _relativize_for_storage(str(md / "Artist" / "song.flac"), md) == "Artist/song.flac"
 
-    def test_returns_posix_absolute_when_outside_music_dir(self, tmp_path: Path) -> None:
+    def test_rejects_path_outside_music_dir(self, tmp_path: Path) -> None:
         from autodj.indexer import _relativize_for_storage
 
         md = tmp_path / "Music"
         md.mkdir()
-        outside = tmp_path / "elsewhere" / "song.flac"
-        result = _relativize_for_storage(str(outside), md)
-        assert result == outside.as_posix()
+        with pytest.raises(ValueError, match="not under music_dir"):
+            _relativize_for_storage(str(tmp_path / "elsewhere" / "song.flac"), md)
 
     def test_does_not_stat_filesystem(self, tmp_path: Path) -> None:
         # Resolve() / is_relative_to() on real Paths used to dominate save_index
@@ -1313,10 +1274,10 @@ class TestRelativizeForStorage:
         fake = md / "Artist" / "song.flac"
         assert _relativize_for_storage(str(fake), md) == "Artist/song.flac"
 
-    def test_no_music_dir_returns_posix(self) -> None:
+    def test_no_music_dir_keeps_relative_path(self) -> None:
         from autodj.indexer import _relativize_for_storage
 
-        assert _relativize_for_storage("/abs/path/song.flac", None) == "/abs/path/song.flac"
+        assert _relativize_for_storage("Artist/song.flac", None) == "Artist/song.flac"
 
 
 class TestPathPortability:
@@ -1650,7 +1611,7 @@ class TestThrottledFaissCheckpoint:
     def _make_entries(n: int) -> tuple[list[IndexEntry], np.ndarray]:
         entries = [
             IndexEntry(
-                path=f"Z:/Music/song_{i}.flac",
+                path=f"song_{i}.flac",
                 title=f"Song {i}",
                 artist="Artist",
                 album="Album",
@@ -2010,7 +1971,6 @@ class TestThrottledFaissCheckpoint:
         ) = _load_existing_index(
             index_dir,
             music_dir=tmp_path,
-            path_remap=None,
             force=False,
             reindex_modified_since=None,
         )
@@ -2045,54 +2005,6 @@ class TestThrottledFaissCheckpoint:
         assert [
             int(np.argmax(loaded_index.reconstruct(row))) for row in range(loaded_index.ntotal)
         ] == [3, 11, 19]
-
-    def test_fused_path_migration_rejects_generation_published_during_stat(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        from dataclasses import replace
-
-        import autodj.indexer as indexer
-        from autodj.index_manifest import IndexConsistencyError
-        from autodj.indexer import _load_existing_index, load_index, save_index
-
-        entries, vectors = self._make_entries(3)
-        for row, entry in enumerate(entries):
-            path = tmp_path / f"song_{row}.flac"
-            path.write_bytes(b"")
-            entry.path = str(path)
-        index_dir = tmp_path / "idx"
-        save_index(entries, vectors, index_dir, music_dir=None)
-        concurrent_entries = [
-            replace(entry, title=f"Concurrent {row}") for row, entry in enumerate(entries)
-        ]
-        concurrent_vectors = np.zeros_like(vectors)
-        concurrent_vectors[0, 41] = 1.0
-        concurrent_vectors[1, 43] = 1.0
-        concurrent_vectors[2, 47] = 1.0
-
-        def stat_after_concurrent_publish(*_args, **_kwargs):
-            save_index(concurrent_entries, concurrent_vectors, index_dir, music_dir=None)
-            return [Path(entry.path).stat().st_mtime for entry in entries]
-
-        monkeypatch.setattr(indexer, "_stat_mtimes", stat_after_concurrent_publish)
-        with pytest.raises(IndexConsistencyError, match="expected generation"):
-            _load_existing_index(
-                index_dir,
-                music_dir=tmp_path,
-                path_remap=None,
-                force=False,
-                reindex_modified_since=None,
-            )
-
-        loaded, loaded_vectors = load_index(index_dir)
-        assert [entry.title for entry in loaded] == [
-            "Concurrent 0",
-            "Concurrent 1",
-            "Concurrent 2",
-        ]
-        assert [int(np.argmax(loaded_vectors.reconstruct(row))) for row in range(3)] == [41, 43, 47]
 
     def test_fused_missing_prune_rejects_generation_published_during_stat(
         self,
@@ -2139,7 +2051,6 @@ class TestThrottledFaissCheckpoint:
             _load_existing_index(
                 index_dir,
                 music_dir=tmp_path,
-                path_remap=None,
                 force=False,
                 reindex_modified_since=None,
             )
@@ -2170,7 +2081,7 @@ class TestThrottledFaissCheckpoint:
 
         entries, vectors = self._make_entries(2)
         index_dir = tmp_path / "idx"
-        save_index(entries, vectors, index_dir)
+        save_index(entries, vectors, index_dir, music_dir=tmp_path)
         (
             existing_entries,
             existing_vectors,
@@ -2180,7 +2091,6 @@ class TestThrottledFaissCheckpoint:
         ) = _load_existing_index(
             index_dir,
             music_dir=tmp_path,
-            path_remap=None,
             force=True,
             reindex_modified_since=None,
         )
@@ -2195,10 +2105,10 @@ class TestThrottledFaissCheckpoint:
         concurrent_vectors = np.zeros_like(vectors)
         concurrent_vectors[0, 73] = 1.0
         concurrent_vectors[1, 79] = 1.0
-        save_index(concurrent_entries, concurrent_vectors, index_dir)
+        save_index(concurrent_entries, concurrent_vectors, index_dir, music_dir=tmp_path)
         checkpoint = IncrementalCheckpoint(
             index_dir=index_dir,
-            music_dir=None,
+            music_dir=tmp_path,
             existing_entries=[],
             existing_vectors=[],
             total_new=1,
@@ -2210,7 +2120,7 @@ class TestThrottledFaissCheckpoint:
         with pytest.raises(IndexConsistencyError, match="expected generation"):
             checkpoint.write([replacement], [vectors[0]])
 
-        loaded, loaded_vectors = load_index(index_dir)
+        loaded, loaded_vectors = load_index(index_dir, music_dir=tmp_path)
         assert [entry.title for entry in loaded] == ["Concurrent 0", "Concurrent 1"]
         assert [int(np.argmax(loaded_vectors.reconstruct(row))) for row in range(2)] == [73, 79]
 

@@ -239,7 +239,6 @@ def _load_index_or_exit(
         return _SI.from_index_dir(
             cfg.index.active_dir if active_dir is None else active_dir,
             music_dir=cfg.library.music_dir,
-            path_remap=cfg.library.path_remap,
         )
     except FileNotFoundError as exc:
         console.print(f"[bold red]Index not found:[/] {exc}")
@@ -266,7 +265,6 @@ def _load_index_for_serve(
         return _SI.from_index_dir(
             index_dir,
             music_dir=cfg.library.music_dir,
-            path_remap=cfg.library.path_remap,
         )
 
     with publication_lock(index_dir):
@@ -279,7 +277,6 @@ def _load_index_for_serve(
             return _SI.from_index_dir(
                 index_dir,
                 music_dir=cfg.library.music_dir,
-                path_remap=cfg.library.path_remap,
             )
         except (FileNotFoundError, IndexConsistencyError):
             tombstoned = publication_is_tombstoned(index_dir)
@@ -1108,7 +1105,6 @@ def cmd_index(
                     cfg.index.active_dir,
                     music_dir=cfg.library.music_dir,
                     beets_db=cfg.library.beets_db,
-                    path_remap=cfg.library.path_remap,
                 )
                 console.print(f"[green]Enrich:[/] {updated} of {total} tracks updated.")
             except Exception as exc:
@@ -1121,14 +1117,12 @@ def cmd_index(
             entries, _ = load_index(
                 cfg.index.active_dir,
                 music_dir=cfg.library.music_dir,
-                path_remap=cfg.library.path_remap,
             )
             _backfill_dj_meta(
                 entries,
                 cfg.index.active_dir,
                 workers=workers,
                 music_dir=cfg.library.music_dir,
-                path_remap=cfg.library.path_remap,
             )
         except FileNotFoundError:
             console.print("[yellow]--analyse skipped: no index found.[/]")
@@ -1149,8 +1143,8 @@ def cmd_index(
     help=(
         "Bypass the safety check that refuses to prune more than 20% of the "
         "index in a single pass. Use only when you really did delete that "
-        "much of your library — otherwise fix [library] music_dir / "
-        "path_remap in config first."
+        "much of your library — otherwise fix [library] music_dir in "
+        "config first."
     ),
 )
 @click.option(
@@ -1187,7 +1181,6 @@ def cmd_prune(
         removed, kept = prune_index(
             cfg.index.active_dir,
             music_dir=cfg.library.music_dir,
-            path_remap=cfg.library.path_remap,
             allow_mass_prune=force,
         )
     except PruneSafetyError as exc:
@@ -1251,7 +1244,6 @@ def cmd_enrich(ctx: click.Context, index_name: str | None) -> None:
             cfg.index.active_dir,
             music_dir=cfg.library.music_dir,
             beets_db=cfg.library.beets_db,
-            path_remap=cfg.library.path_remap,
         )
     except Exception as exc:
         console.print(f"[bold red]Enrich failed:[/] {exc}")
@@ -1342,7 +1334,6 @@ def cmd_analyse(
         entries, _ = load_index(
             cfg.index.active_dir,
             music_dir=cfg.library.music_dir,
-            path_remap=cfg.library.path_remap,
         )
     except FileNotFoundError:
         console.print(
@@ -1366,7 +1357,6 @@ def cmd_analyse(
             cfg.index.active_dir,
             workers=workers,
             music_dir=cfg.library.music_dir,
-            path_remap=cfg.library.path_remap,
         )
     except Exception as exc:
         console.print(f"[bold red]Analyse failed:[/] {exc}")
@@ -2411,7 +2401,6 @@ def cmd_stats(ctx: click.Context, index_name: str | None) -> None:
         entries, _ = load_index(
             cfg.index.active_dir,
             music_dir=cfg.library.music_dir,
-            path_remap=cfg.library.path_remap,
         )
     except FileNotFoundError as exc:
         console.print(f"[bold red]Index not found:[/] {exc}")

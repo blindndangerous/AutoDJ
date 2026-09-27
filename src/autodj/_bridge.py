@@ -1490,7 +1490,6 @@ class PlayerBridge:
         return self.sim.reload_from_disk(
             cfg.index.active_dir,
             music_dir=cfg.library.music_dir,
-            path_remap=cfg.library.path_remap,
             **kwargs,
         )
 

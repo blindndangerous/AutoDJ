@@ -44,7 +44,7 @@ def test_empty_similarity_index_has_feature_dimension() -> None:
 def test_empty_similarity_index_reloads_a_published_generation(tmp_path: Path) -> None:
     sim = SimilarityIndex.empty()
     entry = IndexEntry(
-        path=(tmp_path / "song.flac").as_posix(),
+        path="song.flac",
         title="Song",
         artist="Artist",
         album="",
