@@ -2200,7 +2200,7 @@ let _inKeyHzCache = null;
 // - outro_fade: fade length = outroLen (clamped); ignore nextIntroEnd.
 // - fixed_skip_silence: baseFade as-is; the leading-silence skip is
 //   applied to the standby deck in startCrossfade().
-// - fixed (and fallback): legacy fixed-length crossfade.
+// - fixed (and fallback): plain fixed-length crossfade.
 function _resolveFadeSec(mode, baseFade, outroLen, nextIntroEnd) {
   const clamp = (v) => Math.max(1.0, Math.min(12.0, v));
   if (mode === "full_intro_outro"

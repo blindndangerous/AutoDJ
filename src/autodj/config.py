@@ -262,7 +262,7 @@ class PlaybackConfig:
     #     Ignores intro_end.
     #   - "fixed_skip_silence": fixed crossfade_seconds, but trim
     #     leading silence on incoming + trailing silence on outgoing.
-    #   - "fixed": legacy behaviour — fixed crossfade_seconds at the
+    #   - "fixed": plain fixed crossfade_seconds at the
     #     end of the outgoing track.  No marker alignment.
     transition_mode: str = "full_intro_outro"
     # Where the similarity engine seeds from after a user-built queue
@@ -332,7 +332,7 @@ class PlaybackConfig:
     # downbeat and size their internal events to whole bars at a BPM
     # blended from outgoing -> incoming track tempo.  Envelope FX
     # (sweeps, risers) bar-round their length but don't snap start.
-    # Falls back to seconds-based legacy timing when no beat grid /
+    # Falls back to seconds-based timing when no beat grid /
     # tempo is known.  Default ON.
     beat_sync_fx: bool = True
     # Key-sync pitched FX: oscillator-based effects (pitch_swell,
@@ -345,7 +345,7 @@ class PlaybackConfig:
     # incoming_bpm to the standby deck (preservesPitch=true) so the new
     # track joins the existing groove instead of cold-cutting at its
     # native tempo.  Reverts at fade-out.  Off by default — keeps the
-    # legacy "skip = clean break" behaviour for users who want it.
+    # "skip = clean break" behaviour for users who want it.
     # CLI server-audio skip path cannot pitch-stretch on the fly so
     # it cold-cuts regardless of this flag.
     beatmatch_on_skip: bool = False

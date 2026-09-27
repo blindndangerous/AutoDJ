@@ -181,7 +181,7 @@ fade_in_seconds = 3.0
 #   "outro_fade"         fade begins at outro_start, lasts the outro
 #   "fixed_skip_silence" fixed crossfade_seconds, but trims leading and
 #                        trailing silence
-#   "fixed"              legacy: fixed crossfade_seconds at the track end
+#   "fixed"              plain fixed crossfade_seconds at the track end
 transition_mode = "full_intro_outro"
 
 # Where the picker seeds from once a user-built queue empties.
