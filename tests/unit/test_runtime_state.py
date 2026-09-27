@@ -11,6 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from autodj.runtime_state import (
+    STATE_VERSION,
     _is_finite_number,
     load_into_player,
     save_from_player,
@@ -74,6 +75,8 @@ def _make_player() -> SimpleNamespace:
 
 
 def _write_state(index_dir: Path, payload: object) -> None:
+    if isinstance(payload, dict):
+        payload = {"schema_version": STATE_VERSION, **payload}
     (index_dir / "web_state.json").write_text(json.dumps(payload), encoding="utf-8")
 
 
@@ -95,7 +98,6 @@ def test_huge_integer_is_not_a_finite_runtime_number() -> None:
         {"playback": {"stream_bitrate": 320.0}},
         {"bpm_range": "invalid"},
         {"discovery_every": "invalid"},
-        {"schema_version": "invalid"},
     ],
 )
 def test_invalid_state_field_is_warned_and_ignored(tmp_path: Path, caplog, payload) -> None:
@@ -105,6 +107,23 @@ def test_invalid_state_field_is_warned_and_ignored(tmp_path: Path, caplog, paylo
     load_into_player(player, tmp_path)
 
     assert "ignoring invalid" in caplog.text
+
+
+@pytest.mark.parametrize("version", [None, 0, "invalid", True])
+def test_state_without_the_current_schema_version_is_ignored(
+    tmp_path: Path, caplog, version
+) -> None:
+    """A file from before schema versioning (or a bad version) restores nothing."""
+    state: dict = {"transition": "echo_out"}
+    if version is not None:
+        state["schema_version"] = version
+    (tmp_path / "web_state.json").write_text(json.dumps(state), encoding="utf-8")
+    player = _make_player()
+
+    load_into_player(player, tmp_path)
+
+    assert player._cfg.transitions.effect == "none"
+    assert "ignoring web_state.json: schema_version" in caplog.text
 
 
 def test_non_object_state_root_is_warned_and_ignored(tmp_path: Path, caplog) -> None:
@@ -205,7 +224,7 @@ class TestLoadInto:
 
     def test_loads_transition(self, tmp_path) -> None:
         (tmp_path / "web_state.json").write_text(
-            json.dumps({"transition": "echo_out"}),
+            json.dumps({"schema_version": 1, "transition": "echo_out"}),
             encoding="utf-8",
         )
         p = _make_player()
@@ -214,7 +233,9 @@ class TestLoadInto:
 
     def test_loads_djmix_toggles(self, tmp_path) -> None:
         (tmp_path / "web_state.json").write_text(
-            json.dumps({"djmix": {"harmonic_mode": "strict", "beatmatch": True}}),
+            json.dumps(
+                {"schema_version": 1, "djmix": {"harmonic_mode": "strict", "beatmatch": True}}
+            ),
             encoding="utf-8",
         )
         p = _make_player()
@@ -227,6 +248,7 @@ class TestLoadInto:
         (tmp_path / "web_state.json").write_text(
             json.dumps(
                 {
+                    "schema_version": 1,
                     "playback": {
                         "crossfade_seconds": 4.5,
                         "crossfade_eq_duck": True,
@@ -253,6 +275,7 @@ class TestLoadInto:
         (tmp_path / "web_state.json").write_text(
             json.dumps(
                 {
+                    "schema_version": 1,
                     "playback": {
                         "enable_daypart": True,
                         "enable_mood_arc": True,
@@ -289,7 +312,7 @@ class TestLoadInto:
 
     def test_loads_bpm_range(self, tmp_path) -> None:
         (tmp_path / "web_state.json").write_text(
-            json.dumps({"bpm_range": {"lo": 90, "hi": 140}}),
+            json.dumps({"schema_version": 1, "bpm_range": {"lo": 90, "hi": 140}}),
             encoding="utf-8",
         )
         p = _make_player()
@@ -298,7 +321,7 @@ class TestLoadInto:
 
     def test_clears_bpm_range_on_null(self, tmp_path) -> None:
         (tmp_path / "web_state.json").write_text(
-            json.dumps({"bpm_range": {"lo": None, "hi": None}}),
+            json.dumps({"schema_version": 1, "bpm_range": {"lo": None, "hi": None}}),
             encoding="utf-8",
         )
         p = _make_player()
@@ -308,7 +331,7 @@ class TestLoadInto:
 
     def test_loads_discovery(self, tmp_path) -> None:
         (tmp_path / "web_state.json").write_text(
-            json.dumps({"discovery_every": 25}),
+            json.dumps({"schema_version": 1, "discovery_every": 25}),
             encoding="utf-8",
         )
         p = _make_player()
@@ -317,7 +340,7 @@ class TestLoadInto:
 
     def test_clears_discovery_on_zero(self, tmp_path) -> None:
         (tmp_path / "web_state.json").write_text(
-            json.dumps({"discovery_every": 0}),
+            json.dumps({"schema_version": 1, "discovery_every": 0}),
             encoding="utf-8",
         )
         p = _make_player()
@@ -544,7 +567,7 @@ class TestSaveFrom:
         from autodj.runtime_state import load_into_player
 
         (tmp_path / "web_state.json").write_text(
-            '{"preset": "nosuchpreset_xyz"}',
+            '{"schema_version": 1, "preset": "nosuchpreset_xyz"}',
             encoding="utf-8",
         )
         p = _make_player()
@@ -675,10 +698,6 @@ class TestRoundTrip:
         assert {key: restored["playback"][key] for key in expected_playback} == expected_playback
         assert restored["bpm_range"] == saved["bpm_range"]
         assert restored["discovery_every"] == saved["discovery_every"]
-
-
-def _write_state(tmp_path, data: dict) -> None:
-    (tmp_path / "web_state.json").write_text(json.dumps(data), encoding="utf-8")
 
 
 def test_string_false_is_rejected_instead_of_coerced(tmp_path, caplog) -> None:

@@ -407,7 +407,8 @@ def _restore_discovery(player: Any, data: dict) -> None:
 def load_into_player(player: Any, index_dir: Path | None) -> None:
     """Restore previously-saved settings into *player*.
 
-    No-op when no state file exists or it's unreadable.
+    No-op when no state file exists, it's unreadable, or it lacks an
+    integer ``schema_version`` of at least :data:`STATE_VERSION`.
 
     Args:
         player: A live :class:`autodj.player.Player` instance.
@@ -425,9 +426,13 @@ def load_into_player(player: Any, index_dir: Path | None) -> None:
     if not isinstance(data, dict):
         logger.warning("web_state.json root is not an object, ignoring")
         return
-    version = data.get("schema_version", 0)
-    if type(version) is not int or version < 0:
-        _warn("schema_version", version)
+    version = data.get("schema_version")
+    if type(version) is not int or version < STATE_VERSION:
+        logger.warning(
+            "ignoring web_state.json: schema_version must be an integer of at least %d, got %r",
+            STATE_VERSION,
+            version,
+        )
         return
     if version > STATE_VERSION:
         logger.warning(
