@@ -1668,15 +1668,9 @@ class TestServeFunction:
         started.wait(timeout=2.0)
         assert started.is_set(), "Player thread should have started"
 
-    def test_serve_stream_flag_does_not_change_player_dry_run(self) -> None:
-        """`stream` is accepted/forwarded only; it must not itself flip dry_run.
-
-        Task 11 wires dry_run/stream_mode/SoundDeviceOutput together; until
-        then, passing --stream without --server-audio must still leave the
-        browser driving audio (dry_run stays True), same as today.
-        """
-        from unittest.mock import MagicMock, patch
-
+    @staticmethod
+    def _serve_capturing_player(tmp_path, **serve_kwargs):
+        """Run serve() with uvicorn and Player.run patched; return what it built."""
         from autodj.player import Player
         from autodj.server import serve
 
@@ -1685,23 +1679,74 @@ class TestServeFunction:
         cfg_mock.playback.artist_repeat_window = 3
         cfg_mock.playback.crossfade_seconds = 3.0
         cfg_mock.server = ServerConfig()
+        cfg_mock.index.index_dir = tmp_path
         sim = _make_sim_mock()
-
         captured: dict[str, object] = {}
         original_init = Player.__init__
 
         def spy_init(self, *args, **kwargs):
-            captured["dry_run"] = kwargs.get("dry_run")
+            captured.update(kwargs)
+            captured["player"] = self
             original_init(self, *args, **kwargs)
 
         with (
             patch.object(Player, "__init__", spy_init),
             patch("autodj.player.Player.run"),
-            patch("uvicorn.run"),
+            patch("autodj.server.create_app", wraps=create_app) as app_spy,
+            patch("uvicorn.run") as mock_uvicorn,
         ):
-            serve(cfg=cfg_mock, sim=sim, seed_entry=None, no_playback=True, stream=True)
+            serve(cfg=cfg_mock, sim=sim, seed_entry=_make_entry(0), **serve_kwargs)
+        captured["create_app_kwargs"] = app_spy.call_args.kwargs
+        captured["uvicorn_kwargs"] = mock_uvicorn.call_args.kwargs
+        return captured
 
+    def test_serve_stream_builds_a_stream_mode_player(self, tmp_path) -> None:
+        """--stream alone: the server mixes, but never opens the sound card."""
+        captured = self._serve_capturing_player(tmp_path, no_playback=True, stream=True)
+        assert captured["dry_run"] is False
+        assert captured["stream_mode"] is True
+        assert captured["server_audio_too"] is False
+        secret = captured["create_app_kwargs"]["stream_secret"]
+        assert secret is not None
+        assert (tmp_path / ".stream-secret").read_text(encoding="utf-8").strip() == secret.value
+        assert captured["uvicorn_kwargs"]["timeout_graceful_shutdown"] == 3
+        player = captured["player"]
+        assert player.on_track_started is not None
+
+    def test_serve_stream_with_server_audio_also_plays_locally(self, tmp_path) -> None:
+        captured = self._serve_capturing_player(tmp_path, no_playback=False, stream=True)
+        assert captured["dry_run"] is False
+        assert captured["stream_mode"] is True
+        assert captured["server_audio_too"] is True
+
+    def test_serve_without_stream_is_unchanged(self, tmp_path) -> None:
+        captured = self._serve_capturing_player(tmp_path, no_playback=True)
         assert captured["dry_run"] is True
+        assert captured["stream_mode"] is False
+        assert captured["server_audio_too"] is False
+        assert captured["create_app_kwargs"]["stream_secret"] is None
+        assert "timeout_graceful_shutdown" not in captured["uvicorn_kwargs"]
+        assert not (tmp_path / ".stream-secret").exists()
+
+    def test_serve_stream_exits_when_the_secret_cannot_be_stored(self, tmp_path) -> None:
+        from autodj.stream_secret import StreamSecretError
+
+        with (
+            patch(
+                "autodj.server.StreamSecret.load_or_create",
+                side_effect=StreamSecretError("cannot write stream secret at x: denied"),
+            ),
+            pytest.raises(SystemExit, match="Stream mode cannot start: cannot write"),
+        ):
+            self._serve_capturing_player(tmp_path, stream=True)
+
+    def test_serve_records_the_seed_only_in_browser_mode(self, tmp_path) -> None:
+        with patch("autodj.server.PlayerBridge.record_seed") as record:
+            self._serve_capturing_player(tmp_path, no_playback=True)
+        record.assert_called_once()
+        with patch("autodj.server.PlayerBridge.record_seed") as record:
+            self._serve_capturing_player(tmp_path, no_playback=False)
+        record.assert_not_called()
 
     def test_serve_uses_server_config_host_and_port_by_default(self) -> None:
         from unittest.mock import MagicMock, patch

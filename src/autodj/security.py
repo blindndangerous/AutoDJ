@@ -582,11 +582,16 @@ def _safe_public_prefix(path: str, prefix: str) -> bool:
 
 
 def _is_public_path(path: str) -> bool:
-    """Return whether a request path is accessible without authentication."""
+    """Return whether a request path is accessible without authentication.
+
+    ``/stream/`` is public because speakers such as Sonos cannot pair: the
+    secret in the stream URL is the credential (checked by the route).
+    """
     return (
         path in _PUBLIC_FILES
         or _safe_public_prefix(path, "/static/")
         or _safe_public_prefix(path, "/modules/")
+        or _safe_public_prefix(path, "/stream/")
     )
 
 
