@@ -10,8 +10,10 @@ from unittest.mock import MagicMock
 import pytest
 
 from autodj.stream_secret import (
+    _MAX_GENERATION_ATTEMPTS,
     StreamSecret,
     StreamSecretError,
+    _new_value,
     paired_devices_path,
     stream_secret_path,
 )
@@ -154,3 +156,35 @@ def test_stream_secret_path_with_minimal_config() -> None:
     cfg.index.index_dir = "/path/to/index"
     result = stream_secret_path(cfg)
     assert result == Path("/path/to/index") / ".stream-secret"
+
+
+def test_new_value_bounded_and_raises_when_always_forbidden(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A generator that always returns the forbidden value must not spin forever."""
+    forbidden = "x" * 43
+    calls = 0
+
+    def fake_token_urlsafe(nbytes: int) -> str:
+        nonlocal calls
+        calls += 1
+        return forbidden
+
+    monkeypatch.setattr("autodj.stream_secret.secrets.token_urlsafe", fake_token_urlsafe)
+
+    with pytest.raises(StreamSecretError, match="could not generate a stream secret"):
+        _new_value(forbidden)
+    assert calls == _MAX_GENERATION_ATTEMPTS
+
+
+def test_new_value_retries_once_after_a_forbidden_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One forbidden draw is retried and a later good value is accepted."""
+    forbidden = "x" * 43
+    good = "y" * 43
+    responses = iter([forbidden, good])
+
+    monkeypatch.setattr(
+        "autodj.stream_secret.secrets.token_urlsafe", lambda nbytes: next(responses)
+    )
+
+    assert _new_value(forbidden) == good

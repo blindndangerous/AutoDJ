@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from autodj.config import AutoDJConfig
 
 _VALID = re.compile(r"^[A-Za-z0-9_-]{43}$")
+_MAX_GENERATION_ATTEMPTS = 8
 
 
 class StreamSecretError(Exception):
@@ -38,11 +39,20 @@ def _new_value(forbidden: str | None) -> str:
 
     Returns:
         A 43-character URL-safe random string.
+
+    Raises:
+        StreamSecretError: No acceptable value was generated within a
+            bounded number of attempts. In practice a fresh
+            :func:`secrets.token_urlsafe` value always matches ``_VALID``
+            and only collides with *forbidden* with astronomically low
+            probability, so this only guards against this loop ever
+            spinning forever (e.g. a broken CSPRNG).
     """
-    while True:
+    for _ in range(_MAX_GENERATION_ATTEMPTS):
         value = secrets.token_urlsafe(32)
         if _VALID.match(value) and value != forbidden:
             return value
+    raise StreamSecretError("could not generate a stream secret")
 
 
 class StreamSecret:
