@@ -1553,6 +1553,30 @@ describe("static accessibility contracts", () => {
       expect(libraryLogStyle[property], property).toBe("0px");
     }
   });
+
+  it("never nests a dialog inside a tab panel", () => {
+    // A <dialog> inside a `[role="tabpanel"]` that is `hidden` on every
+    // other tab is not rendered and is invisible to the accessibility
+    // tree, yet dialog.showModal() still makes the rest of the page
+    // inert -- a screen-reader user opening it from another tab is left
+    // with nothing to read.  Every dialog must live outside all panels.
+    installDocument();
+    const dialogs = [...document.querySelectorAll("dialog")];
+    expect(dialogs.length).toBeGreaterThan(0);
+    for (const dialog of dialogs) {
+      expect(dialog.closest('[role="tabpanel"]'), dialog.id).toBeNull();
+    }
+
+    const regressed = htmlSource.replace(
+      '<section data-view="history" id="panel-history" role="tabpanel" hidden aria-labelledby="tab-history">',
+      '<section data-view="history" id="panel-history" role="tabpanel" hidden aria-labelledby="tab-history">'
+        + '<dialog id="a11y-regression-modal"></dialog>',
+    );
+    installDocument({ html: regressed });
+    const regressedDialog = document.querySelector("#a11y-regression-modal");
+    expect(regressedDialog).not.toBeNull();
+    expect(regressedDialog.closest('[role="tabpanel"]')).not.toBeNull();
+  });
 });
 
 describe("frontend CI gate", () => {
