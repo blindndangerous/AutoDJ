@@ -40,6 +40,7 @@ from rich.console import Console
 from rich.panel import Panel
 
 from autodj.config import TRANSITION_MODES
+from autodj.dj_meta import HARMONIC_MODES
 from autodj.stream_secret import paired_devices_path
 from autodj.transitions import TRANSITION_EFFECT_NAMES
 
@@ -371,7 +372,7 @@ def _apply_serve_overrides(
     every key matches a click option name.
     """
     djmix_keys = (
-        "harmonic_mixing",
+        "harmonic_mode",
         "beatmatch",
         "phrase_align",
         "outro_intro_align",
@@ -1560,10 +1561,11 @@ def cmd_analyse(
     ),
 )
 @click.option(
-    "--harmonic/--no-harmonic",
-    "harmonic_mixing",
+    "--harmonic-mode",
+    "harmonic_mode",
     default=None,
-    help="Restrict picks to Camelot-compatible keys (overrides config).",
+    type=click.Choice(HARMONIC_MODES, case_sensitive=False),
+    help="Harmonic-mixing rule for next-track picks; 'off' disables it (overrides config).",
 )
 @click.option(
     "--beatmatch/--no-beatmatch",
@@ -1645,7 +1647,7 @@ def cmd_play(  # pragma: no cover -- end-to-end orchestrator, exercised by smoke
     import_external_cues: bool | None,
     beat_sync_fx: bool | None,
     key_sync_fx: bool | None,
-    harmonic_mixing: bool | None,
+    harmonic_mode: str | None,
     beatmatch: bool | None,
     phrase_align: bool | None,
     outro_intro_align: bool | None,
@@ -1878,10 +1880,11 @@ def cmd_play(  # pragma: no cover -- end-to-end orchestrator, exercised by smoke
     help="Tune oscillator FX (pitch_swell, dub_siren, ...) to song root note.",
 )
 @click.option(
-    "--harmonic/--no-harmonic",
-    "harmonic_mixing",
+    "--harmonic-mode",
+    "harmonic_mode",
     default=None,
-    help="Restrict picks to Camelot-compatible keys.",
+    type=click.Choice(HARMONIC_MODES, case_sensitive=False),
+    help="Harmonic-mixing rule for next-track picks; 'off' disables it.",
 )
 @click.option(
     "--transition-mode",
@@ -2022,7 +2025,7 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
     import_external_cues: bool | None,
     beat_sync_fx: bool | None,
     key_sync_fx: bool | None,
-    harmonic_mixing: bool | None,
+    harmonic_mode: str | None,
     beatmatch: bool | None,
     phrase_align: bool | None,
     outro_intro_align: bool | None,

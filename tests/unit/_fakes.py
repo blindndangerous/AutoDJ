@@ -54,8 +54,7 @@ def make_cfg_mock() -> MagicMock:
     cfg.replaygain.enabled = False
     cfg.replaygain.target_db = -14.0
     cfg.replaygain.max_clip_safe_gain = 1.0
-    cfg.djmix.harmonic_mixing = False
-    cfg.djmix.harmonic_mode = "compatible"
+    cfg.djmix.harmonic_mode = "off"
     cfg.djmix.beatmatch = False
     cfg.djmix.beatmatch_max_stretch = 0.08
     cfg.djmix.outro_intro_align = False

@@ -1186,7 +1186,6 @@ class PlayerBridge:
             "available_presets": names,
             "transition": cfg.transitions.effect,
             "djmix": {
-                "harmonic_mixing": cfg.djmix.harmonic_mixing,
                 "harmonic_mode": cfg.djmix.harmonic_mode,
                 "beatmatch": cfg.djmix.beatmatch,
                 "phrase_align": cfg.djmix.phrase_align,
@@ -1281,8 +1280,6 @@ class PlayerBridge:
                 mode = str(v).lower()
                 if mode in HARMONIC_MODES:
                     cfg.djmix.harmonic_mode = mode
-                    # Auto-toggle harmonic_mixing on/off based on mode
-                    cfg.djmix.harmonic_mixing = mode != "off"
                 continue
             if hasattr(cfg.djmix, k):
                 setattr(cfg.djmix, k, bool(v))

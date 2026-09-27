@@ -568,12 +568,11 @@ class TestModelConfigRevision:
 
 
 class TestDjMixConfig:
-    def test_default_harmonic_mode_compatible(self) -> None:
+    def test_default_harmonic_mode_off(self) -> None:
         from autodj.config import DjMixConfig
 
         d = DjMixConfig.from_dict({})
-        assert d.harmonic_mode == "compatible"
-        assert d.harmonic_mixing is False
+        assert d.harmonic_mode == "off"
 
     def test_explicit_harmonic_mode(self) -> None:
         from autodj.config import DjMixConfig
@@ -582,13 +581,13 @@ class TestDjMixConfig:
         # Lowercased on load
         assert d.harmonic_mode == "strict"
 
-    def test_legacy_harmonic_mixing_bool_still_loads(self) -> None:
+    @pytest.mark.parametrize("value", [True, False, "same_key"])
+    def test_invalid_harmonic_mode_is_rejected(self, value: object) -> None:
+        """A Boolean left over from the old on/off setting must not load as a mode."""
         from autodj.config import DjMixConfig
 
-        d = DjMixConfig.from_dict({"harmonic_mixing": True})
-        assert d.harmonic_mixing is True
-        # Mode unspecified → default to compatible
-        assert d.harmonic_mode == "compatible"
+        with pytest.raises(ValueError, match=r"djmix\.harmonic_mode"):
+            DjMixConfig.from_dict({"harmonic_mode": value})
 
 
 # ---------------------------------------------------------------------------

@@ -374,20 +374,20 @@ class TestCliConfigSelection:
 
     def test_invalid_transition_does_not_partially_apply_general_overrides(self) -> None:
         cfg = _make_cfg()
-        cfg.djmix.harmonic_mixing = False
+        cfg.djmix.harmonic_mode = "off"
 
         with pytest.raises(SystemExit):
             _apply_serve_overrides(
                 cfg,
-                {"harmonic_mixing": True, "transition_mode": "invalid"},
+                {"harmonic_mode": "strict", "transition_mode": "invalid"},
             )
 
-        assert cfg.djmix.harmonic_mixing is False
+        assert cfg.djmix.harmonic_mode == "off"
 
     def test_failed_late_serve_validation_does_not_mutate_effective_config(self) -> None:
         cfg = _make_cfg()
         original_server = cfg.server
-        cfg.djmix.harmonic_mixing = False
+        cfg.djmix.harmonic_mode = "off"
         with (
             patch("autodj.config.load_config", return_value=cfg),
             patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=_make_sim()),
@@ -401,7 +401,8 @@ class TestCliConfigSelection:
                     "127.0.0.2",
                     "--name",
                     "alternate",
-                    "--harmonic",
+                    "--harmonic-mode",
+                    "strict",
                     "--preset",
                     "missing",
                 ],
@@ -410,7 +411,7 @@ class TestCliConfigSelection:
         assert result.exit_code == 1
         assert cfg.server is original_server
         assert cfg.index.name == "default"
-        assert cfg.djmix.harmonic_mixing is False
+        assert cfg.djmix.harmonic_mode == "off"
         assert cfg.config_sources == ("defaults",)
 
     def test_transition_validation_precedes_serve_startup_side_effects(self) -> None:
@@ -1409,20 +1410,20 @@ class TestCmdPlayOverrides:
             patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
             patch("autodj.player.Player.run"),
         ):
-            CliRunner().invoke(cli, ["play", "--harmonic"])
-        assert cfg_mock.djmix.harmonic_mixing is True
+            CliRunner().invoke(cli, ["play", "--harmonic-mode", "strict"])
+        assert cfg_mock.djmix.harmonic_mode == "strict"
 
-    def test_play_no_harmonic_override(self) -> None:
+    def test_play_harmonic_mode_off_override(self) -> None:
         cfg_mock = _make_cfg()
-        cfg_mock.djmix.harmonic_mixing = True
+        cfg_mock.djmix.harmonic_mode = "compatible"
         sim_mock = _make_sim()
         with (
             patch("autodj.config.load_config", return_value=cfg_mock),
             patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
             patch("autodj.player.Player.run"),
         ):
-            CliRunner().invoke(cli, ["play", "--no-harmonic"])
-        assert cfg_mock.djmix.harmonic_mixing is False
+            CliRunner().invoke(cli, ["play", "--harmonic-mode", "off"])
+        assert cfg_mock.djmix.harmonic_mode == "off"
 
     def test_play_beatmatch_override(self) -> None:
         cfg_mock = _make_cfg()
@@ -1640,8 +1641,8 @@ class TestCmdServeOverrides:
             patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
             patch("autodj.server.serve"),
         ):
-            CliRunner().invoke(cli, ["serve", "--harmonic"])
-        assert cfg_mock.djmix.harmonic_mixing is True
+            CliRunner().invoke(cli, ["serve", "--harmonic-mode", "neighbour"])
+        assert cfg_mock.djmix.harmonic_mode == "neighbour"
 
     def test_serve_transition_override(self) -> None:
         cfg_mock = _make_cfg()

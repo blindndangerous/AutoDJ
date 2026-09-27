@@ -531,7 +531,6 @@ class TransitionBody(BaseModel):
 class DjMixBody(BaseModel):
     """Request body for POST /api/djmix — only set fields are applied."""
 
-    harmonic_mixing: bool | None = None
     harmonic_mode: str | None = None
     beatmatch: bool | None = None
     phrase_align: bool | None = None

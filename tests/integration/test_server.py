@@ -2074,9 +2074,9 @@ class TestSettingsEndpoints:
 
         bridge.player._cfg.index.active_dir = tmp_path
         tc = TestClient(create_app(bridge))
-        tc.post("/api/djmix", json={"beatmatch": True, "harmonic_mixing": True})
+        tc.post("/api/djmix", json={"beatmatch": True, "harmonic_mode": "strict"})
         assert bridge.player._cfg.djmix.beatmatch is True
-        assert bridge.player._cfg.djmix.harmonic_mixing is True
+        assert bridge.player._cfg.djmix.harmonic_mode == "strict"
 
     def test_post_djmix_skips_none_fields(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
@@ -2084,7 +2084,7 @@ class TestSettingsEndpoints:
         bridge.player._cfg.index.active_dir = tmp_path
         bridge.player._cfg.djmix.beatmatch = True
         tc = TestClient(create_app(bridge))
-        tc.post("/api/djmix", json={"harmonic_mixing": True})  # beatmatch absent
+        tc.post("/api/djmix", json={"harmonic_mode": "strict"})  # beatmatch absent
         assert bridge.player._cfg.djmix.beatmatch is True  # untouched
 
     def test_post_playback_settings(self, bridge, tmp_path) -> None:
@@ -2170,17 +2170,14 @@ class TestSettingsEndpoints:
         assert bridge.player._current_lyrics_plain == ""
 
     def test_post_djmix_harmonic_mode(self, bridge, tmp_path) -> None:
-        """Setting harmonic_mode flips harmonic_mixing on/off automatically."""
         from fastapi.testclient import TestClient
 
         bridge.player._cfg.index.active_dir = tmp_path
         tc = TestClient(create_app(bridge))
         tc.post("/api/djmix", json={"harmonic_mode": "strict"})
         assert bridge.player._cfg.djmix.harmonic_mode == "strict"
-        assert bridge.player._cfg.djmix.harmonic_mixing is True
         tc.post("/api/djmix", json={"harmonic_mode": "off"})
         assert bridge.player._cfg.djmix.harmonic_mode == "off"
-        assert bridge.player._cfg.djmix.harmonic_mixing is False
 
     def test_post_djmix_invalid_harmonic_mode_ignored(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient

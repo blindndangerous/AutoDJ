@@ -275,16 +275,15 @@ max_clip_safe_gain = 1.0
 [djmix]
 # Restrict next-track candidates to harmonically-compatible keys.  Tracks
 # with unknown key always pass.  Reuses key/mode already in the index.
-# `harmonic_mode` selects how strict the filter is:
+# `harmonic_mode` turns the filter on and selects how strict it is:
+#   "off"          no harmonic filter.  Default.
 #   "compatible"   classic Camelot rule (same pos, ±1 around wheel, or
-#                  relative major/minor) — broadest pool.  Default.
+#                  relative major/minor) — broadest pool.
 #   "strict"       only the exact same Camelot position.
 #   "neighbour"    same side of the wheel, ±1 only (no mode flips).
 #   "mood_change"  relative major/minor only (same number, opposite side).
 #   "energy_boost" same side, +2 around the wheel — set lifts over time.
-#   "off"          no harmonic filter (same as harmonic_mixing = false).
-harmonic_mixing = false
-harmonic_mode   = "compatible"
+harmonic_mode = "off"
 
 # Pitch-stretch the incoming track so its BPM matches the outgoing track
 # during the crossfade.  Refuses to stretch beyond ±beatmatch_max_stretch.

@@ -1701,7 +1701,6 @@ class TestRenderTrackFeatures:
         cfg.playback.crossfade_seconds = cfg_overrides.get("crossfade_seconds", 2.0)
         cfg.playback.crossfade_eq_duck = cfg_overrides.get("crossfade_eq_duck", False)
         cfg.playback.crossfade_bass_cutoff_hz = 120.0
-        cfg.djmix.harmonic_mixing = cfg_overrides.get("harmonic_mixing", False)
         cfg.djmix.beatmatch = cfg_overrides.get("beatmatch", False)
         cfg.djmix.beatmatch_max_stretch = 0.08
         cfg.djmix.phrase_align = cfg_overrides.get("phrase_align", False)

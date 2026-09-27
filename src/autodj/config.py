@@ -489,8 +489,10 @@ class DjMixConfig:
             ``filter_sweep_floor_hz``) during the crossfade — adds the
             classic "filter-out" energy lift.
         filter_sweep_floor_hz: Floor cutoff for the sweep.
-        harmonic_mixing: When ``True``, similarity candidates are filtered
-            to only Camelot-compatible keys.
+        harmonic_mode: Harmonic-mixing rule for similarity candidates, one
+            of :data:`autodj.dj_meta.HARMONIC_MODES`.  ``"off"`` (the
+            default) applies no key filter; see
+            :func:`autodj.dj_meta.harmonic_compatible` for the others.
     """
 
     beatmatch: bool = False
@@ -500,15 +502,23 @@ class DjMixConfig:
     phrase_bars: int = 8
     filter_sweep: bool = False
     filter_sweep_floor_hz: float = 250.0
-    harmonic_mixing: bool = False
-    # Harmonic-mixing rule when ``harmonic_mixing`` is enabled.  See
-    # :func:`autodj.dj_meta.harmonic_compatible` for the full rule list.
-    # Default ``"compatible"`` keeps the long-standing AutoDJ behaviour.
-    harmonic_mode: str = "compatible"
+    harmonic_mode: str = "off"
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> DjMixConfig:
-        """Construct a DjMixConfig from a raw TOML section dict."""
+        """Construct a DjMixConfig from a raw TOML section dict.
+
+        Raises:
+            ValueError: If ``harmonic_mode`` is not one of
+                :data:`autodj.dj_meta.HARMONIC_MODES`.
+        """
+        from autodj.dj_meta import HARMONIC_MODES
+
+        harmonic_mode = data.get("harmonic_mode", "off")
+        if not isinstance(harmonic_mode, str):
+            raise ValueError(
+                f"djmix.harmonic_mode must be one of {HARMONIC_MODES}, got {harmonic_mode!r}"
+            )
         return cls(
             beatmatch=bool(data.get("beatmatch", False)),
             beatmatch_max_stretch=float(data.get("beatmatch_max_stretch", 0.08)),
@@ -517,8 +527,7 @@ class DjMixConfig:
             phrase_bars=int(data.get("phrase_bars", 8)),
             filter_sweep=bool(data.get("filter_sweep", False)),
             filter_sweep_floor_hz=float(data.get("filter_sweep_floor_hz", 250.0)),
-            harmonic_mixing=bool(data.get("harmonic_mixing", False)),
-            harmonic_mode=str(data.get("harmonic_mode", "compatible")).lower(),
+            harmonic_mode=_one_of(harmonic_mode.lower(), HARMONIC_MODES, "djmix.harmonic_mode"),
         )
 
 

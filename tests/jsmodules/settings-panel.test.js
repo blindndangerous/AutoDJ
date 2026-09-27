@@ -78,7 +78,6 @@ describe("applySettingsState", () => {
       preset: "chill",
       transition: "echo_out",
       djmix: {
-        harmonic_mixing: true,
         harmonic_mode: "compatible",
         beatmatch: true,
         phrase_align: false,

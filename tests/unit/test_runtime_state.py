@@ -48,8 +48,7 @@ def _make_player() -> SimpleNamespace:
     cfg = SimpleNamespace(
         transitions=SimpleNamespace(effect="none"),
         djmix=SimpleNamespace(
-            harmonic_mixing=False,
-            harmonic_mode="compatible",
+            harmonic_mode="off",
             beatmatch=False,
             phrase_align=False,
             outro_intro_align=False,
@@ -215,12 +214,12 @@ class TestLoadInto:
 
     def test_loads_djmix_toggles(self, tmp_path) -> None:
         (tmp_path / "web_state.json").write_text(
-            json.dumps({"djmix": {"harmonic_mixing": True, "beatmatch": True}}),
+            json.dumps({"djmix": {"harmonic_mode": "strict", "beatmatch": True}}),
             encoding="utf-8",
         )
         p = _make_player()
         load_into_player(p, tmp_path)
-        assert p._cfg.djmix.harmonic_mixing is True
+        assert p._cfg.djmix.harmonic_mode == "strict"
         assert p._cfg.djmix.beatmatch is True
         assert p._cfg.djmix.phrase_align is False  # untouched
 
@@ -561,7 +560,6 @@ class TestRoundTrip:
         from autodj._bridge import PlayerBridge
 
         p1 = _make_player()
-        p1._cfg.djmix.harmonic_mixing = True
         p1._cfg.djmix.harmonic_mode = "strict"
         p1._cfg.djmix.beatmatch = True
         p1._cfg.djmix.phrase_align = True
@@ -613,7 +611,6 @@ class TestRoundTrip:
             "discovery_every",
         }
         assert set(saved["djmix"]) == {
-            "harmonic_mixing",
             "harmonic_mode",
             "beatmatch",
             "phrase_align",
@@ -698,51 +695,21 @@ def test_string_false_is_rejected_instead_of_coerced(tmp_path, caplog) -> None:
     assert [record for record in caplog.records if "prefetch_next_track" in record.message]
 
 
-def test_invalid_harmonic_mode_warns_once_and_keeps_default(tmp_path, caplog) -> None:
+@pytest.mark.parametrize("value", ["same_key", True, False])
+def test_invalid_harmonic_mode_warns_once_and_keeps_default(tmp_path, caplog, value) -> None:
+    """A Boolean from the old on/off setting is as invalid as an unknown mode name."""
     _write_state(
         tmp_path,
-        {"schema_version": 1, "djmix": {"harmonic_mode": "same_key"}},
+        {"schema_version": 1, "djmix": {"harmonic_mode": value}},
     )
     player = _make_player()
+    player._cfg.djmix.harmonic_mode = "strict"
 
     with caplog.at_level("WARNING"):
         load_into_player(player, tmp_path)
 
-    assert player._cfg.djmix.harmonic_mode == "compatible"
+    assert player._cfg.djmix.harmonic_mode == "strict"
     assert len([record for record in caplog.records if "harmonic_mode" in record.message]) == 1
-
-
-def test_legacy_true_harmonic_mode_migrates_to_compatible(tmp_path, caplog) -> None:
-    """Older versions stored harmonic_mode as a Boolean toggle.  A saved
-    ``true`` should be carried over as "compatible" instead of being
-    rejected and warned about on every start.
-    """
-    _write_state(
-        tmp_path,
-        {"schema_version": 1, "djmix": {"harmonic_mode": True}},
-    )
-    player = _make_player()
-
-    with caplog.at_level("WARNING"):
-        load_into_player(player, tmp_path)
-
-    assert player._cfg.djmix.harmonic_mode == "compatible"
-    assert not [record for record in caplog.records if "harmonic_mode" in record.message]
-
-
-def test_legacy_false_harmonic_mode_migrates_to_off(tmp_path, caplog) -> None:
-    """A saved legacy ``false`` should be carried over as "off"."""
-    _write_state(
-        tmp_path,
-        {"schema_version": 1, "djmix": {"harmonic_mode": False}},
-    )
-    player = _make_player()
-
-    with caplog.at_level("WARNING"):
-        load_into_player(player, tmp_path)
-
-    assert player._cfg.djmix.harmonic_mode == "off"
-    assert not [record for record in caplog.records if "harmonic_mode" in record.message]
 
 
 def test_invalid_enable_mood_arc_warns_once_and_keeps_default(tmp_path, caplog) -> None:

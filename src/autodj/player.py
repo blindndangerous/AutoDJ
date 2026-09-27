@@ -1574,8 +1574,8 @@ class Player:
         target_bpm, bpm_weight, target_energy = self._resolve_bpm_target()
         n_candidates = 50 if (target_bpm is not None or self._bpm_range is not None) else 30
         genre_filter = self._preset.genres if self._preset and self._preset.genres else None
-        harmonic_only = self._cfg.djmix.harmonic_mixing
-        harmonic_mode = getattr(self._cfg.djmix, "harmonic_mode", "compatible")
+        harmonic_mode = self._cfg.djmix.harmonic_mode
+        harmonic_only = harmonic_mode != "off"
         query_path = self._resolve_query_path(current.path)
         recent, recent_artists, recent_albums, recent_titles = self._recent_exclusions()
 

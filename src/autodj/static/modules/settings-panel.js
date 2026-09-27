@@ -111,9 +111,7 @@ export function applySettingsState(st, els) {
   }
 
   if (st.djmix) {
-    const mode = st.djmix.harmonic_mixing
-      ? (st.djmix.harmonic_mode || "compatible")
-      : "off";
+    const mode = st.djmix.harmonic_mode;
     if (harmonicMode.value !== mode) harmonicMode.value = mode;
   }
   djBeatmatch.checked   = !!(st.djmix && st.djmix.beatmatch);

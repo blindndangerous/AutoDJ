@@ -25,14 +25,12 @@ import os
 from pathlib import Path
 from typing import Any, TypedDict, TypeGuard
 
+from autodj.dj_meta import HARMONIC_MODES
 from autodj.transitions import TRANSITION_EFFECT_NAMES
 
 logger = logging.getLogger(__name__)
 
 STATE_VERSION = 1
-HARMONIC_MODES = frozenset(
-    {"off", "compatible", "strict", "energy_boost", "mood_change", "neighbour"}
-)
 LINER_PICK_MODES = frozenset({"random", "sequential", "weighted"})
 TRANSITION_EFFECTS = TRANSITION_EFFECT_NAMES
 
@@ -72,7 +70,6 @@ class PlaybackState(TypedDict, total=False):
 
 
 DJMIX_BOOL_FIELDS = (
-    "harmonic_mixing",
     "beatmatch",
     "phrase_align",
     "outro_intro_align",
@@ -188,12 +185,7 @@ def _restore_djmix(cfg: Any, data: dict) -> None:
             setattr(cfg.djmix, field, value)
     if "harmonic_mode" in djmix:
         value = djmix["harmonic_mode"]
-        if isinstance(value, bool):
-            # Older versions stored this setting as a Boolean on/off toggle.
-            migrated = "compatible" if value else "off"
-            logger.debug("migrating legacy Boolean harmonic_mode %r to %r", value, migrated)
-            cfg.djmix.harmonic_mode = migrated
-        elif isinstance(value, str) and value in HARMONIC_MODES:
+        if isinstance(value, str) and value in HARMONIC_MODES:
             cfg.djmix.harmonic_mode = value
         else:
             _warn("harmonic_mode", value)

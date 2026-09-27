@@ -59,7 +59,9 @@ any scoring. In order:
 2. If a hard `bpm_range` is set: `entry.bpm` is known (greater than 0) and
    inside the range. Unknown tempo is rejected.
 3. If a `genre_filter` is set: genre matches.
-4. If `harmonic_only` is on: `dj_meta.harmonic_compatible` accepts the pair.
+4. If `harmonic_mode` is not `"off"` (the player then passes
+   `harmonic_only=True`): `dj_meta.harmonic_compatible` accepts the pair under
+   that mode.
    Unknown key or mode (-1) is accepted, not rejected.
 5. Artist, album, and title are not in their exclusion sets.
 
