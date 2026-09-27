@@ -42,7 +42,7 @@ import re
 import shutil
 import threading
 import time
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal
@@ -762,11 +762,42 @@ async def _close_file_media_stream(
 # ---------------------------------------------------------------------------
 
 
+class _ListenerResponse(StreamingResponse):
+    """A streaming response that frees its stream listener however it ends.
+
+    ``on_close`` runs once the response is over: finished, cancelled, the
+    client gone, or sending failed before the body even started (which a
+    generator's ``finally`` or a background task would miss).
+    """
+
+    def __init__(self, content: Any, *, on_close: Callable[[], None], **kwargs: Any) -> None:
+        """Wrap *content* like :class:`StreamingResponse`; call *on_close* at the end."""
+        super().__init__(content, **kwargs)
+        self._on_close = on_close
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        """Send the response, then always release the listener."""
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self._on_close()
+
+
+def _header_text(value: str) -> str:
+    """Carry *value*'s UTF-8 bytes through the latin-1 HTTP header transport.
+
+    Icecast does the same with ``icy-name``: players that expect UTF-8
+    decode it, and a non-Latin-1 name no longer breaks the response.
+    """
+    return value.encode("utf-8").decode("latin-1")
+
+
 def _start_stream_station(
     bridge: PlayerBridge,
     secret: StreamSecret,
     liner_folder: Path,
     loop: asyncio.AbstractEventLoop,
+    first_track: IndexEntry | None = None,
 ) -> StreamOutput:
     """Build the stream output, liner scheduler and station; attach them.
 
@@ -779,6 +810,7 @@ def _start_stream_station(
         secret: The stream secret.
         liner_folder: Where liners are read from.
         loop: The event loop listeners are served on.
+        first_track: The first set's first track (``--seed``), if given.
 
     Returns:
         The stream output (closed by :func:`_stop_stream_station`).
@@ -805,6 +837,8 @@ def _start_stream_station(
         on_event=bridge.announce_station_event,
         forget_track=bridge.forget_track,
     )
+    if first_track is not None:
+        station.start_with(first_track, "seed")
     bridge.attach_stream(stream=stream_out, secret=secret, station=station, scheduler=scheduler)
     stream_out.on_listener_change = station.listener_changed
     bus.add_output(stream_out)
@@ -812,10 +846,21 @@ def _start_stream_station(
 
 
 async def _stop_stream_station(bridge: PlayerBridge, stream_out: StreamOutput) -> None:
-    """Disconnect listeners, stop the encoder and the liner worker."""
-    bridge.player.bus.remove_output(stream_out)
-    await asyncio.to_thread(stream_out.close)
-    await asyncio.to_thread(bridge.shutdown_stream_workers)
+    """Disconnect listeners, stop the encoder and the liner worker.
+
+    Each step is attempted even if an earlier one fails, and nothing is
+    raised: the rest of shutdown (player stop, cache flush) must still run.
+    """
+    steps: tuple[tuple[str, Callable[[], None]], ...] = (
+        ("detaching", functools.partial(bridge.player.bus.remove_output, stream_out)),
+        ("closing", stream_out.close),
+        ("stopping the liner worker for", bridge.shutdown_stream_workers),
+    )
+    for what, step in steps:
+        try:
+            await asyncio.to_thread(step)
+        except Exception:
+            logger.exception("Stopping the stream: %s it failed", what)
 
 
 async def _tick_stream_workers(bridge: PlayerBridge) -> None:
@@ -842,6 +887,7 @@ def create_app(
     pairing_rate_limiter: PairingRateLimiter | None = None,
     device_registry: DeviceRegistry | None = None,
     stream_secret: StreamSecret | None = None,
+    stream_first_track: IndexEntry | None = None,
 ) -> FastAPI:
     """Create and return the FastAPI application.
 
@@ -852,6 +898,8 @@ def create_app(
         stream_secret: In stream mode, the stream secret; the app then
             starts the stream output and station when it starts up (the
             bridge's player must have been built in stream mode).
+        stream_first_track: In stream mode, the track the first set
+            starts with (``--seed``).
 
     Returns:
         A configured :class:`fastapi.FastAPI` instance.
@@ -896,6 +944,7 @@ def create_app(
                 stream_secret,
                 _resolve_liner_folder(),
                 asyncio.get_running_loop(),
+                stream_first_track,
             )
             stream_ticker = asyncio.create_task(_stream_tick_loop())
         broadcast = asyncio.create_task(_broadcast_loop())
@@ -1312,18 +1361,38 @@ def create_app(
         if not bridge.stream_mode:
             raise HTTPException(status_code=404, detail="Not Found")
 
-    @app.get("/stream/{name}")
+    @app.api_route("/stream/{name}", methods=["GET", "HEAD"])
     async def api_stream_audio(name: str, request: Request) -> Response:
-        """Serve the MP3 stream, or a one-line playlist pointing at it."""
+        """Serve the MP3 stream, or a one-line playlist pointing at it.
+
+        ``HEAD`` answers with the same checks and headers but no body and
+        without becoming a listener.
+        """
         ext = _stream_name(request, name)
+        head = request.method == "HEAD"
+        headers = {"Cache-Control": "no-store"}
         if ext == "m3u":
             scheme = "https" if request.url.scheme == "https" else "http"
             host = request.headers.get("host", "")
-            body = f"{scheme}://{host}/stream/{bridge.stream_secret.value}.mp3\n"
-            return Response(
-                body, media_type="audio/x-mpegurl", headers={"Cache-Control": "no-store"}
-            )
+            body = f"{scheme}://{host}/stream/{bridge.stream_secret.value}.mp3\n".encode()
+            if head:
+                headers["Content-Length"] = str(len(body))
+                body = b""
+            return Response(body, media_type="audio/x-mpegurl", headers=headers)
         icy = request.headers.get("icy-metadata", "").strip() == "1"
+        if icy:
+            stream_cfg = bridge.player._cfg.stream
+            headers.update(
+                {
+                    "icy-metaint": str(METAINT),
+                    "icy-name": _header_text(stream_cfg.station_name),
+                    "icy-br": str(stream_cfg.bitrate),
+                }
+            )
+        if head:
+            response = Response(media_type="audio/mpeg", headers=headers)
+            del response.headers["content-length"]  # a live stream has no length
+            return response
         stream = bridge.stream
         try:
             # Off the loop: a dead encoder is replaced here (spawns ffmpeg).
@@ -1332,33 +1401,16 @@ def create_app(
             raise HTTPException(status_code=503, detail="Stream listener limit reached") from exc
         except EncoderUnavailableError as exc:
             raise HTTPException(status_code=503, detail="stream encoder failed") from exc
-        headers = {"Cache-Control": "no-store"}
-        if icy:
-            stream_cfg = bridge.player._cfg.stream
-            headers.update(
-                {
-                    "icy-metaint": str(METAINT),
-                    "icy-name": stream_cfg.station_name,
-                    "icy-br": str(stream_cfg.bitrate),
-                }
+        try:
+            return _ListenerResponse(
+                listener.chunks(),
+                on_close=functools.partial(stream.remove_listener, listener),
+                media_type="audio/mpeg",
+                headers=headers,
             )
-
-        async def audio() -> AsyncIterator[bytes]:
-            """Relay the listener's bytes until it is closed or hangs up."""
-            try:
-                async for chunk in listener.chunks():
-                    yield chunk
-            finally:
-                stream.remove_listener(listener)
-
-        # remove_listener is idempotent: the background task covers a
-        # response that ends before the generator ever starts.
-        return StreamingResponse(
-            audio(),
-            media_type="audio/mpeg",
-            headers=headers,
-            background=BackgroundTask(stream.remove_listener, listener),
-        )
+        except BaseException:
+            stream.remove_listener(listener)  # never leak a listener slot
+            raise
 
     @app.get("/api/stream")
     async def api_stream_info() -> dict:
@@ -1370,7 +1422,13 @@ def create_app(
     async def api_stream_rotate() -> dict:
         """Make a new stream link; the old one stops working at once."""
         _require_stream_mode()
-        await asyncio.to_thread(bridge.rotate_stream_secret)
+        try:
+            await asyncio.to_thread(bridge.rotate_stream_secret)
+        except StreamSecretError as exc:
+            logger.error("Could not rotate the stream secret: %s", exc)
+            raise HTTPException(
+                status_code=500, detail="Could not save the new stream link"
+            ) from exc
         return bridge.stream_info()
 
     @app.post("/api/stream/settings")
@@ -2280,6 +2338,22 @@ def create_app(
 # ---------------------------------------------------------------------------
 
 
+def _missing_audio_modules() -> list[str]:
+    """Return the sound-card libraries (soundfile, sounddevice) not installed."""
+    import importlib.util
+
+    missing: list[str] = []
+    for name in ("soundfile", "sounddevice"):
+        try:
+            if importlib.util.find_spec(name) is None:  # pragma: no cover — present in CI
+                missing.append(name)
+        except (ImportError, ValueError):
+            # ValueError fires when the name is mocked / partially
+            # installed (e.g. during tests).  Treat as available.
+            pass
+    return missing
+
+
 def serve(
     cfg: AutoDJConfig,
     sim: SimilarityIndex,
@@ -2319,8 +2393,8 @@ def serve(
             With *stream*, ``False`` also plays the mix on the sound card.
         stream: Serve the live mix as an MP3 radio stream: the server mixes,
             a station starts a set on the first listener, and the page is a
-            remote.  *seed_entry* is not used; each set starts from the
-            queue or a shuffle pick.
+            remote.  *seed_entry* starts the first set; later sets start
+            from the queue or a shuffle pick.
 
     Raises:
         SystemExit: *stream* is set and the stream secret file cannot be
@@ -2342,32 +2416,24 @@ def serve(
     host = staged_server.host
     port = staged_server.port
 
-    import importlib.util as _import_util
-
     import uvicorn
 
     from autodj.player import Player
 
     # Auto-detect missing audio deps and flip to no-playback so headless
     # hosts (NAS, server) don't spam "module not found" per track.
-    if not no_playback:
-        missing: list[str] = []
-        for name in ("soundfile", "sounddevice"):
-            try:
-                if (
-                    _import_util.find_spec(name) is None
-                ):  # pragma: no cover — both audio deps present in CI test env
-                    missing.append(name)
-            except (ImportError, ValueError):
-                # ValueError fires when the name is mocked / partially
-                # installed (e.g. during tests).  Treat as available.
-                pass
-        if missing:  # pragma: no cover — minimal-install branch
+    if not no_playback and _missing_audio_modules():
+        if stream:
+            print(
+                "[AutoDJ] Audio libraries are missing, so nothing plays on this "
+                "machine's speakers. The radio stream still works.",
+            )
+        else:
             print(
                 "[AutoDJ] Headless mode — browser handles audio output. "
                 "Open the web UI from any device on your network.",
             )
-            no_playback = True
+        no_playback = True
 
     stream_secret: StreamSecret | None = None
     if stream:
@@ -2424,6 +2490,7 @@ def serve(
         player_thread=player_thread,
         secure_cookie=secure_cookie,
         stream_secret=stream_secret,
+        stream_first_track=seed_entry if stream else None,
     )
 
     if app.state.security_policy.authentication_required:

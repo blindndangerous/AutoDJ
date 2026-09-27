@@ -10,19 +10,7 @@ import numpy as np
 import pytest
 
 from autodj.mixbus import BusEvents, MixBus, RenderedTrack, SystemClock
-
-
-class FakeClock:
-    def __init__(self) -> None:
-        self.t = 0.0
-        self.slept: list[float] = []
-
-    def now(self) -> float:
-        return self.t
-
-    def sleep(self, seconds: float) -> None:
-        self.slept.append(seconds)
-        self.t += seconds
+from tests.unit._fakes import FakeClock
 
 
 class Recorder:

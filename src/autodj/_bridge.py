@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import math
+import secrets
 import threading
 from collections import deque
 from collections.abc import Callable, Mapping
@@ -159,6 +160,9 @@ class PlayerBridge:
     _liner_worker: ThreadPoolExecutor | None = field(default=None, init=False)
     _event_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
     _station_event: dict | None = field(default=None, init=False)
+    # Identifies this server process in ``stream_event`` so a page that
+    # outlives a restart does not mistake the new seq 1 for one it announced.
+    _event_nonce: str = field(default_factory=lambda: secrets.token_hex(8), init=False)
 
     # ------------------------------------------------------------------
     # Stream mode
@@ -191,20 +195,29 @@ class PlayerBridge:
             )
 
     def shutdown_stream_workers(self) -> None:
-        """Stop the liner worker; a check already running finishes first."""
+        """Stop the liner worker without waiting for a check in progress.
+
+        Queued checks are dropped; one already decoding a liner (up to
+        ~30 s) finishes on its own daemon-style thread instead of holding
+        up shutdown.
+        """
         worker, self._liner_worker = self._liner_worker, None
         if worker is not None:
-            worker.shutdown(wait=True, cancel_futures=True)
+            worker.shutdown(wait=False, cancel_futures=True)
 
     def announce_station_event(self, name: str) -> None:
         """Publish a station event for every open page to announce once.
+
+        ``get_state()["stream_event"]`` becomes ``{"id": <process nonce>,
+        "seq": <int, +1 per event>, "name": name}``; a page announces an
+        event whose ``(id, seq)`` it has not seen.
 
         Args:
             name: ``"set_started"``, ``"set_stopped"`` or ``"link_changed"``.
         """
         with self._event_lock:
             seq = self._station_event["seq"] + 1 if self._station_event else 1
-            self._station_event = {"seq": seq, "name": name}
+            self._station_event = {"id": self._event_nonce, "seq": seq, "name": name}
 
     def stream_info(self) -> dict:
         """Return the stream's paths, bitrate, listener count and state."""
@@ -245,9 +258,14 @@ class PlayerBridge:
         """Record a track the mix bus started; retitle the stream.
 
         Runs on the mix-bus thread, so it stays quick: the liner
-        scheduler's check (which may decode a clip) goes to a worker.
+        scheduler's check (which may decode a clip) goes to a worker.  In
+        stream mode a start whose set the station has already stopped
+        (``end_set`` cleared the current track) is ignored; checking under
+        the history lock orders it against :meth:`forget_track`.
         """
         with self._history_lock:
+            if self.stream_mode and self.player._state.current_track is not entry:
+                return
             self._play_history.append(_history_entry(entry))
         if self.stream is not None:
             self.stream.set_title(
@@ -971,6 +989,8 @@ class PlayerBridge:
         entry = similarity.entry_for_path(path)
         if entry is None:
             return False
+        if now and self.stream_mode and self.station.start_with(entry, "queue"):
+            return True  # idle station: the next set starts with it
         if now and self._bus_mode():
             # Play now on the mix bus: render *entry* from its start and fade
             # the playing track out.  queued_next is left alone so the track
@@ -1008,6 +1028,8 @@ class PlayerBridge:
         if not entries:
             return False
         chosen = _random.choice(entries)  # nosec B311 — non-security
+        if self.stream_mode and self.station.start_with(chosen, "seed"):
+            return True  # idle station: the next set starts with it
         if self._bus_mode():
             self.player.play_now(chosen, pick_mode="seed")
             return True

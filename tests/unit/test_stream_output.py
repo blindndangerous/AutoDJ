@@ -11,37 +11,7 @@ import pytest
 
 from autodj.icy import encode_metadata
 from autodj.stream import EncoderUnavailableError, ListenerLimitError, StreamOutput
-
-
-class FakeEncoder:
-    """Echo PCM bytes back as 'encoded' bytes, one chunk per write."""
-
-    def __init__(self, bitrate: int) -> None:
-        self.bitrate = bitrate
-        self._chunks: list[bytes] = []
-        self._cond = threading.Condition()
-        self._closed = False
-        self.alive = True
-
-    def write(self, pcm: bytes) -> None:
-        with self._cond:
-            self._chunks.append(pcm[:64])
-            self._cond.notify_all()
-
-    def read(self, n: int) -> bytes:
-        with self._cond:
-            while not self._chunks and not self._closed:
-                self._cond.wait(0.05)
-            return self._chunks.pop(0) if self._chunks else b""
-
-    def close_input(self) -> None:
-        pass
-
-    def close(self) -> None:
-        with self._cond:
-            self._closed = True
-            self.alive = False
-            self._cond.notify_all()
+from tests.unit._fakes import FakeEncoder
 
 
 def _block(value: float = 0.1) -> np.ndarray:

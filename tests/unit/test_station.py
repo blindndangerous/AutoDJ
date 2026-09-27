@@ -10,7 +10,7 @@ from autodj._bridge import PlayerBridge
 from autodj.mixbus import MixBus, RenderedTrack
 from autodj.player import Player, PlayerState
 from autodj.station import Station
-from tests.unit.test_player import _make_cfg_mock, _make_sim_index
+from tests.unit._fakes import make_cfg_mock, make_sim_index
 
 
 class _Rig:
@@ -30,6 +30,7 @@ class _Rig:
         self.player._state.queued_next = queued_next
         self.shuffle_pick = MagicMock(name="shuffle")
         self.player._random_start_entry.return_value = self.shuffle_pick if shuffle else None
+        self.player.end_set.return_value = None  # the track a stop cut short
         self.events: list[str] = []
         self.forget = MagicMock()
         self.station = Station(
@@ -135,7 +136,7 @@ def test_stops_after_grace_and_forgets_cut_short_track() -> None:
     rig = _Rig()
     rig.listeners(1)
     current = MagicMock(name="current")
-    rig.player._state.current_track = current
+    rig.player.end_set.return_value = current  # end_set reports what it cut short
     rig.now = 5.0
     rig.listeners(0)
     rig.now = 34.9
@@ -265,8 +266,8 @@ FRAMES = MixBus.BLOCK * 20
 
 
 def _real_rig():
-    sim = _make_sim_index(12)
-    player = Player(_make_cfg_mock(), sim, stream_mode=True)
+    sim = make_sim_index(12)
+    player = Player(make_cfg_mock(), sim, stream_mode=True)
 
     def fake_render(current, nxt, offset):
         return RenderedTrack(
@@ -342,3 +343,65 @@ def test_start_new_set_can_be_called_directly() -> None:
     rig.station.start_new_set()
     rig.player.begin_set.assert_called_once_with(rig.shuffle_pick, "seed")
     assert rig.station.state == "playing"
+
+
+def test_start_with_sets_the_next_sets_first_track_while_idle() -> None:
+    head, chosen = MagicMock(name="head"), MagicMock(name="chosen")
+    rig = _Rig(queue=[head], queued_next=MagicMock(name="play-next"))
+    assert rig.station.start_with(chosen, "seed") is True
+    rig.bus.start_set.assert_not_called()  # it waits for a listener
+    rig.listeners(1)
+    rig.player.begin_set.assert_called_once_with(chosen, "seed")
+    assert rig.player._state.queue == [head]  # the queue is left alone
+    assert rig.player._state.queued_next is not None
+
+
+def test_start_with_is_used_once() -> None:
+    rig = _Rig()
+    chosen = MagicMock(name="chosen")
+    rig.station.start_with(chosen, "queue")
+    rig.listeners(1)
+    rig.listeners(0)
+    rig.now = 31.0
+    rig.station.tick()
+    rig.listeners(1)
+    assert rig.player.begin_set.call_args_list[-1].args == (rig.shuffle_pick, "seed")
+
+
+def test_start_with_is_refused_while_a_set_plays() -> None:
+    rig = _Rig()
+    rig.listeners(1)
+    assert rig.station.start_with(MagicMock(name="late"), "queue") is False
+    rig.listeners(0)
+    rig.now = 31.0
+    rig.station.tick()
+    rig.listeners(1)
+    assert rig.player.begin_set.call_args_list[-1].args == (rig.shuffle_pick, "seed")
+
+
+def test_real_player_ignores_a_track_start_left_over_from_a_stopped_set(tmp_path) -> None:
+    player, bridge, stream, station, now, _sim = _real_rig()
+    export = tmp_path / "live.m3u"
+    export.write_text("#EXTM3U\n", encoding="utf-8")
+    player._export_m3u = export
+    player._render_ahead.start()
+    try:
+        stream.listener_count = 1
+        station.listener_changed(1)
+        _play_until_a_track_starts(player)
+        assert player._render_ahead.wait_ready(WAIT)
+        leftover = player._take_render()  # the bus took it just before stopping
+        assert leftover is not None
+        numbered = player._state.track_number
+        stream.listener_count = 0
+        station.listener_changed(0)
+        now[0] = 31.0
+        station.tick()
+        m3u_before = export.read_text(encoding="utf-8")
+        player._on_track_start(leftover)  # its callback runs after the stop
+        assert player._state.current_track is None
+        assert player._state.track_number == numbered
+        assert bridge.history_snapshot() == []
+        assert export.read_text(encoding="utf-8") == m3u_before
+    finally:
+        player._render_ahead.stop(timeout=WAIT)

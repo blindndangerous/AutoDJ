@@ -188,3 +188,19 @@ def test_new_value_retries_once_after_a_forbidden_value(monkeypatch: pytest.Monk
     )
 
     assert _new_value(forbidden) == good
+
+
+def test_rotate_keeps_the_old_secret_when_saving_fails(tmp_path) -> None:
+    from unittest.mock import patch
+
+    from autodj.stream_secret import StreamSecret, StreamSecretError
+
+    secret = StreamSecret.load_or_create(tmp_path / ".stream-secret")
+    old = secret.value
+    with (
+        patch("autodj.stream_secret.os.replace", side_effect=OSError("disk full")),
+        pytest.raises(StreamSecretError),
+    ):
+        secret.rotate()
+    assert secret.value == old
+    assert StreamSecret.load_or_create(tmp_path / ".stream-secret").value == old

@@ -9,13 +9,13 @@ import numpy as np
 
 from autodj.mixbus import MixBus, RenderedTrack
 from autodj.player import Player
-from tests.unit.test_player import _make_cfg_mock, _make_sim_index
+from tests.unit._fakes import make_cfg_mock, make_sim_index
 
 WAIT = 5.0
 
 
 def _player(**kwargs) -> Player:
-    return Player(_make_cfg_mock(), _make_sim_index(6), **kwargs)
+    return Player(make_cfg_mock(), make_sim_index(6), **kwargs)
 
 
 def test_stream_mode_builds_the_bus_up_front() -> None:
@@ -188,3 +188,39 @@ def test_run_stream_starts_a_fresh_m3u_export(tmp_path) -> None:
         thread.join(WAIT)
     assert not thread.is_alive()
     assert export.read_text(encoding="utf-8") == "#EXTM3U\n"
+
+
+def test_end_set_returns_the_track_it_cut_short() -> None:
+    player = _player(stream_mode=True)
+    entry = player._sim.entries[1]
+    player._state.current_track = entry
+    assert player.end_set() is entry
+    assert player.end_set() is None
+
+
+def test_each_set_gets_a_new_generation() -> None:
+    player = _player(stream_mode=True)
+    entry = player._sim.entries[0]
+    first = player._set_generation
+    player.begin_set(entry, "seed")
+    started = player._set_generation
+    player.end_set()
+    assert first < started < player._set_generation
+
+
+def test_render_is_stamped_with_the_set_generation() -> None:
+    player = _player(stream_mode=True)
+    player._render_track = lambda cur, nxt, off: RenderedTrack(  # type: ignore[method-assign]
+        cur, np.zeros((4, 2), np.float32), nxt, 0, "", start_offset=off
+    )
+    player.begin_set(player._sim.entries[0], "seed")
+    rendered = player._next_rendered()
+    assert rendered is not None
+    assert rendered.set_generation == player._set_generation
+    hook = MagicMock()
+    player.on_track_started = hook
+    player.load_lyrics_in_background = MagicMock()  # type: ignore[method-assign]
+    player.end_set()
+    player._on_track_start(rendered)  # a callback left over from the stopped set
+    hook.assert_not_called()
+    assert player._state.current_track is None

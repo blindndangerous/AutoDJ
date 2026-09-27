@@ -788,6 +788,12 @@ class Player:
         # The seed, recorded by run() before the bus starts it; its first
         # _on_track_start must not record it a second time.
         self._seed_awaiting_start: IndexEntry | None = None
+        # Stream sets: begin_set / end_set bump the generation, and a track
+        # start stamped with an older one is ignored.  The lock makes the
+        # track-start bookkeeping and end_set atomic with respect to each
+        # other.
+        self._set_generation = 0
+        self._set_lock = threading.Lock()
         # Stream mode: the bus exists from the start (the server registers
         # the stream output on it) and stays idle until the station starts
         # a set.
@@ -1067,6 +1073,10 @@ class Player:
             The rendered track, or ``None`` when nothing could be rendered.
         """
         for _attempt in range(5):
+            # The stream set this render belongs to.  A reset (new set or
+            # stop) discards a render in flight, so a render that survives
+            # to be played carries the generation of the set playing it.
+            generation = self._set_generation
             current = self._pending_entry
             if current is None:
                 return None
@@ -1103,6 +1113,7 @@ class Player:
                     from_queue=current_from_queue,
                     next_pick_mode=next_mode,
                     next_from_queue=next_mode == "queue",
+                    set_generation=generation,
                 )
         return None
 
@@ -1155,25 +1166,35 @@ class Player:
             entry: The set's first track.
             pick_mode: How it was chosen (``"queue"`` or ``"seed"``).
         """
-        self._seed_path = entry.path
-        self._state.is_paused = False
+        with self._set_lock:
+            self._set_generation += 1
+            self._seed_path = entry.path
+            self._state.is_paused = False
         self.reset_render_ahead(entry, 0, pick_mode)
 
-    def end_set(self) -> None:
+    def end_set(self) -> IndexEntry | None:
         """Park the render-ahead worker and clear the now-playing state.
 
         Called by the stream station after it stops the bus, so no stale
         render survives into the next set and the page shows nothing
-        playing while idle.
+        playing while idle.  A track-start callback still pending from the
+        stopped set is ignored (see :meth:`_on_track_start`).
+
+        Returns:
+            The track that was playing, which the stop cut short.
         """
+        with self._set_lock:
+            self._set_generation += 1
+            cut_short = self._state.current_track
+            self._playing_render = None
+            self._state.current_track = None
+            self._state.next_track = None
+            self._playback_pos[0] = 0
+            self._playback_len = 0
+            self._current_lyrics = []
+            self._current_lyrics_plain = ""
         self.reset_render_ahead(None)
-        self._playing_render = None
-        self._state.current_track = None
-        self._state.next_track = None
-        self._playback_pos[0] = 0
-        self._playback_len = 0
-        self._current_lyrics = []
-        self._current_lyrics_plain = ""
+        return cut_short
 
     def refresh_render_ahead(self) -> None:
         """Re-check the rendered next track after a queue edit.
@@ -1286,26 +1307,34 @@ class Player:
         render, never while that render was being prepared ahead of time.
         Positions are in the track's own timeline: the render's audio
         begins ``rendered.start_offset`` samples into the file.
+
+        A render taken for a stream set that has since stopped (its
+        callback ran after :meth:`end_set`) is ignored entirely.  The hook
+        is called with ``_set_lock`` released: it can reach the stream
+        output, whose listener notifications may start a set.
         """
         entry = rendered.entry
-        self._playing_render = rendered
-        if entry is not self._state.current_track:
-            self._previous_track = self._state.current_track
-        self._state.current_track = entry
-        self._state.next_track = rendered.next_entry
-        self._current_sr = SAMPLE_RATE
-        self._playback_pos[0] = rendered.start_offset
-        self._playback_len = rendered.start_offset + len(rendered.audio)
-        self._last_transition_fx = rendered.transition_fx
-        self._beatmatch_ratio = rendered.beatmatch_ratio
-        seed_start = entry is self._seed_awaiting_start
-        with self._pick_lock:
-            self._last_pick_mode = rendered.pick_mode
-            if seed_start:
-                self._seed_awaiting_start = None  # run() already recorded it
-            else:
-                self._state.record_played(entry)
-                self._state.track_number += 1
+        with self._set_lock:
+            if rendered.set_generation != self._set_generation:
+                return
+            self._playing_render = rendered
+            if entry is not self._state.current_track:
+                self._previous_track = self._state.current_track
+            self._state.current_track = entry
+            self._state.next_track = rendered.next_entry
+            self._current_sr = SAMPLE_RATE
+            self._playback_pos[0] = rendered.start_offset
+            self._playback_len = rendered.start_offset + len(rendered.audio)
+            self._last_transition_fx = rendered.transition_fx
+            self._beatmatch_ratio = rendered.beatmatch_ratio
+            seed_start = entry is self._seed_awaiting_start
+            with self._pick_lock:
+                self._last_pick_mode = rendered.pick_mode
+                if seed_start:
+                    self._seed_awaiting_start = None  # run() already recorded it
+                else:
+                    self._state.record_played(entry)
+                    self._state.track_number += 1
         if not seed_start:
             self._record_track_files(entry)
         self._current_lyrics = []

@@ -1748,6 +1748,38 @@ class TestServeFunction:
             self._serve_capturing_player(tmp_path, no_playback=False)
         record.assert_not_called()
 
+    def test_serve_stream_starts_the_first_set_with_the_seed(self, tmp_path) -> None:
+        captured = self._serve_capturing_player(tmp_path, no_playback=True, stream=True)
+        assert captured["create_app_kwargs"]["stream_first_track"] == _make_entry(0)
+        captured = self._serve_capturing_player(tmp_path, no_playback=True)
+        assert captured["create_app_kwargs"]["stream_first_track"] is None
+
+    def test_serve_stream_without_audio_libraries_says_the_stream_still_works(
+        self, tmp_path, capsys
+    ) -> None:
+        with patch("autodj.server._missing_audio_modules", return_value=["sounddevice"]):
+            captured = self._serve_capturing_player(tmp_path, no_playback=False, stream=True)
+        out = capsys.readouterr().out
+        assert "The radio stream still works" in out
+        assert "Headless mode" not in out
+        assert captured["stream_mode"] is True
+        assert captured["server_audio_too"] is False
+
+    def test_serve_without_audio_libraries_falls_back_to_the_browser(
+        self, tmp_path, capsys
+    ) -> None:
+        with patch("autodj.server._missing_audio_modules", return_value=["soundfile"]):
+            captured = self._serve_capturing_player(tmp_path, no_playback=False)
+        assert "Headless mode" in capsys.readouterr().out
+        assert captured["dry_run"] is True
+
+    def test_missing_audio_modules_treats_odd_specs_as_present(self) -> None:
+        from autodj.server import _missing_audio_modules
+
+        assert _missing_audio_modules() == []
+        with patch("importlib.util.find_spec", side_effect=ValueError("mocked")):
+            assert _missing_audio_modules() == []
+
     def test_serve_uses_server_config_host_and_port_by_default(self) -> None:
         from unittest.mock import MagicMock, patch
 

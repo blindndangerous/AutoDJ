@@ -977,6 +977,9 @@ class StreamConfig:
             raise ValueError("stream.max_listeners must be between 1 and 100")
         if not isinstance(self.station_name, str) or not self.station_name.strip():
             raise ValueError("stream.station_name must be a non-empty string")
+        if not self.station_name.isprintable():
+            # It is sent as an HTTP header (icy-name): no control characters.
+            raise ValueError("stream.station_name must not contain control characters")
         self.idle_grace_seconds = float(self.idle_grace_seconds)
 
     @classmethod

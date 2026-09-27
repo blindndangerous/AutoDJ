@@ -11,11 +11,10 @@ from collections import deque
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import faiss
 import numpy as np
 import pytest
 
-from autodj.indexer import FEATURE_DIM, IndexEntry
+from autodj.indexer import IndexEntry
 from autodj.player import (
     Player,
     PlayerState,
@@ -34,7 +33,10 @@ from autodj.player import (
     reset_eq_state,
     write_m3u,
 )
-from autodj.similarity import SimilarityError, SimilarityIndex
+from autodj.similarity import SimilarityError
+from tests.unit._fakes import make_cfg_mock as _make_cfg_mock
+from tests.unit._fakes import make_entry as _make_entry
+from tests.unit._fakes import make_sim_index as _make_sim_index
 
 # Note: Player no longer accepts a model wrapper — vectors are looked up
 # from the pre-built FAISS index at play time via SimilarityIndex.find_next_for_path
@@ -74,23 +76,6 @@ assert 'sounddevice' not in sys.modules
     result = subprocess.run([sys.executable, "-c", probe], env=env, capture_output=True, text=True)
 
     assert result.returncode == 0, result.stdout + result.stderr
-
-
-def _make_entry(i: int = 0) -> IndexEntry:
-    return IndexEntry(
-        path=f"Z:/Music/song_{i}.flac",
-        title=f"Song {i}",
-        artist="Artist",
-        album="Album",
-        genre="Rock",
-        bpm=120.0,
-        year=2000,
-        length=180.0,
-        energy=0.05,
-        key=0,
-        mode=1,
-        tempo_confidence=0.8,
-    )
 
 
 def _sine_audio(seconds: float = 1.0, sr: int = 44100) -> np.ndarray:
@@ -400,59 +385,6 @@ class TestLoadAudio:
 # ---------------------------------------------------------------------------
 # Player construction and _build_status
 # ---------------------------------------------------------------------------
-
-
-def _make_cfg_mock() -> MagicMock:
-    cfg = MagicMock()
-    cfg.playback.no_repeat_window = 50
-    cfg.playback.artist_repeat_window = 3
-    cfg.playback.crossfade_seconds = 3.0
-    cfg.playback.crossfade_eq_duck = False
-    cfg.playback.crossfade_bass_cutoff_hz = 180.0
-    cfg.playback.show_lyrics = True
-    cfg.playback.prefetch_next_track = True
-    cfg.playback.silence_trigger_crossfade = True
-    cfg.playback.enable_daypart = False
-    cfg.playback.enable_mood_arc = False
-    cfg.playback.mood_arc_hours = 3.0
-    cfg.playback.import_external_cues = False  # tests opt-in per-case
-    cfg.playback.pick_top_k = 1
-    cfg.playback.pick_temperature = 0.0
-    cfg.replaygain.enabled = False
-    cfg.replaygain.target_db = -14.0
-    cfg.replaygain.max_clip_safe_gain = 1.0
-    cfg.djmix.harmonic_mixing = False
-    cfg.djmix.harmonic_mode = "compatible"
-    cfg.djmix.beatmatch = False
-    cfg.djmix.beatmatch_max_stretch = 0.08
-    cfg.djmix.outro_intro_align = False
-    cfg.djmix.phrase_align = False
-    cfg.djmix.phrase_bars = 8
-    cfg.djmix.filter_sweep = False
-    cfg.djmix.filter_sweep_floor_hz = 250.0
-    cfg.transitions.effect = "none"
-    cfg.transitions.wet_mix = 1.0
-    cfg.library.beets_db = None
-    cfg.library.music_dir = None
-    cfg.library.path_remap = []
-    cfg.index.active_dir = None
-    return cfg
-
-
-def _make_sim_index(n: int = 10, *, bpms: list[float] | None = None) -> SimilarityIndex:
-    if bpms is not None and len(bpms) != n:
-        raise ValueError("bpms must contain one value per track")
-    rng = np.random.default_rng(42)
-    vectors = rng.standard_normal((n, FEATURE_DIM)).astype(np.float32)
-    norms = np.linalg.norm(vectors, axis=1, keepdims=True)
-    vectors /= norms
-    fi = faiss.IndexFlatIP(FEATURE_DIM)
-    fi.add(vectors)
-    entries = [_make_entry(i) for i in range(n)]
-    if bpms is not None:
-        for entry, bpm in zip(entries, bpms, strict=True):
-            entry.bpm = bpm
-    return SimilarityIndex(faiss_index=fi, entries=entries)
 
 
 class TestPlayerConstruction:
@@ -2444,6 +2376,7 @@ def test_next_rendered_carries_offset_between_tracks(monkeypatch):
     p = player_mod.Player.__new__(player_mod.Player)
     p._state = player_mod.PlayerState()
     p._pick_lock = threading.Lock()
+    p._set_generation = 0
     p._pending_pick_mode = "seed"
     p._pick_exclude = None
     p._pending_from_queue = False
@@ -2475,6 +2408,7 @@ def test_next_rendered_skips_unrenderable_tracks_and_stops_without_a_cursor() ->
     p = Player.__new__(Player)
     p._state = PlayerState()
     p._pick_lock = threading.Lock()
+    p._set_generation = 0
     p._pending_pick_mode = "seed"
     p._pick_exclude = None
     p._pending_from_queue = False
@@ -2507,6 +2441,7 @@ def test_next_rendered_gives_up_after_five_failed_renders() -> None:
     p = Player.__new__(Player)
     p._state = PlayerState()
     p._pick_lock = threading.Lock()
+    p._set_generation = 0
     p._pending_pick_mode = "seed"
     p._pick_exclude = None
     p._pending_from_queue = False

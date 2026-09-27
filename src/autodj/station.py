@@ -63,6 +63,10 @@ class Station:
         self._listeners = 0
         self._empty_since: float | None = None
         self._warned_empty = False
+        # Set while idle by "Play now", "Random" or --seed: the next set
+        # starts with it instead of the queue or a shuffle pick.
+        self._start_entry: Any = None
+        self._start_mode = "queue"
 
     @property
     def state(self) -> str:
@@ -106,6 +110,23 @@ class Station:
         with self._lock:
             self._start()
 
+    def start_with(self, entry: Any, pick_mode: str) -> bool:
+        """Make *entry* the first track of the next set, if the station is idle.
+
+        Args:
+            entry: The track the next set starts with (used once).
+            pick_mode: How it was chosen (``"queue"`` or ``"seed"``).
+
+        Returns:
+            ``False`` when a set is already playing (nothing is changed),
+            so the caller can play *entry* in that set instead.
+        """
+        with self._lock:
+            if self._bus.playing:
+                return False
+            self._start_entry, self._start_mode = entry, pick_mode
+            return True
+
     def _apply(self, count: int) -> None:
         """Record *count*; start a set for a listener, time an empty one (lock held)."""
         self._listeners = count
@@ -129,8 +150,9 @@ class Station:
 
     def _start(self) -> None:
         """Begin a new set (station lock held, queue lock not held)."""
-        entry = self._next_pick()
-        pick_mode = "queue"
+        entry, pick_mode = self._start_entry, self._start_mode
+        if entry is None:
+            entry, pick_mode = self._next_pick(), "queue"
         if entry is None:
             entry = self._player._random_start_entry()
             pick_mode = "seed"
@@ -140,6 +162,7 @@ class Station:
                 self._warned_empty = True
             return
         self._warned_empty = False
+        self._start_entry = None
         self._player.begin_set(entry, pick_mode)
         self._bus.start_set()
         logger.info("Stream set started with %s", getattr(entry, "display_name", entry))
@@ -147,9 +170,8 @@ class Station:
 
     def _stop(self) -> None:
         """End the set and forget the track it cut short (station lock held)."""
-        current = self._player._state.current_track
         self._bus.stop_set()
-        self._player.end_set()
+        current = self._player.end_set()
         if current is not None:
             self._forget(current)
         self._empty_since = None

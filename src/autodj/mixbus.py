@@ -53,6 +53,8 @@ class RenderedTrack:
         next_pick_mode: How *next_entry* was chosen.
         next_from_queue: Whether *next_entry* was peeked from the user
             queue (it stays queued until it starts).
+        set_generation: The stream set the bus took this track for; a
+            track start from a set that has since stopped is ignored.
     """
 
     entry: IndexEntry
@@ -66,6 +68,7 @@ class RenderedTrack:
     from_queue: bool = False
     next_pick_mode: str = "similarity"
     next_from_queue: bool = False
+    set_generation: int = 0
 
 
 class Output(Protocol):

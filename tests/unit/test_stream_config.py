@@ -71,3 +71,13 @@ def test_parse_env_bool(raw: str, expected: bool) -> None:
 def test_parse_env_bool_rejects_other() -> None:
     with pytest.raises(ValueError):
         parse_env_bool("maybe")
+
+
+@pytest.mark.parametrize("name", ["Radio\r\nX-Evil: 1", "Radio\x00", "Tab\there", "Bell\x07"])
+def test_station_name_rejects_control_characters(name: str) -> None:
+    with pytest.raises(ValueError, match="station_name"):
+        StreamConfig(station_name=name)
+
+
+def test_station_name_keeps_printable_unicode() -> None:
+    assert StreamConfig(station_name="Радио 🎵 Café").station_name == "Радио 🎵 Café"

@@ -122,7 +122,17 @@ class StreamSecret:
         return hmac.compare_digest(candidate_bytes, self.value.encode("ascii"))
 
     def rotate(self) -> str:
-        """Replace the secret with a new one and return it."""
-        self.value = _new_value(self.value)
-        self._write()
+        """Replace the secret with a new one and return it.
+
+        Raises:
+            StreamSecretError: The new secret could not be saved; the old
+                one stays in force (in memory and on disk).
+        """
+        old = self.value
+        self.value = _new_value(old)
+        try:
+            self._write()
+        except StreamSecretError:
+            self.value = old
+            raise
         return self.value

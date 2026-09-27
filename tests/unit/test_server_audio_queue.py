@@ -21,8 +21,9 @@ from autodj._bridge import PlayerBridge
 from autodj.indexer import IndexEntry
 from autodj.mixbus import BusEvents, MixBus, RenderedTrack
 from autodj.player import Player
-from tests.unit.test_mixbus import FakeClock
-from tests.unit.test_player import _make_cfg_mock, _make_sim_index
+from tests.unit._fakes import FakeClock
+from tests.unit._fakes import make_cfg_mock as _make_cfg_mock
+from tests.unit._fakes import make_sim_index as _make_sim_index
 
 WAIT = 2.0
 FRAMES = MixBus.BLOCK * 20  # long enough that a 150 ms skip fade is audible
