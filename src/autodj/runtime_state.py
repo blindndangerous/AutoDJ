@@ -30,7 +30,10 @@ from autodj.transitions import TRANSITION_EFFECT_NAMES
 
 logger = logging.getLogger(__name__)
 
-STATE_VERSION = 1
+#: Version 2 dropped ``harmonic_mixing``: ``harmonic_mode`` alone now turns
+#: harmonic mixing on, so a version 1 file (which stored "compatible" next to
+#: ``harmonic_mixing: false``) would silently switch key filtering on.
+STATE_VERSION = 2
 LINER_PICK_MODES = frozenset({"random", "sequential", "weighted"})
 TRANSITION_EFFECTS = TRANSITION_EFFECT_NAMES
 

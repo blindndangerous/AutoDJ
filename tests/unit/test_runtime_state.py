@@ -126,6 +126,24 @@ def test_state_without_the_current_schema_version_is_ignored(
     assert "ignoring web_state.json: schema_version" in caplog.text
 
 
+def test_version_1_state_does_not_switch_harmonic_mixing_on(tmp_path: Path, caplog) -> None:
+    """Version 1 stored "compatible" beside ``harmonic_mixing: false`` for users
+    who never enabled it; reading that mode now would turn key filtering on.
+    """
+    state = {
+        "schema_version": 1,
+        "djmix": {"harmonic_mixing": False, "harmonic_mode": "compatible"},
+    }
+    (tmp_path / "web_state.json").write_text(json.dumps(state), encoding="utf-8")
+    player = _make_player()
+
+    with caplog.at_level("WARNING"):
+        load_into_player(player, tmp_path)
+
+    assert player._cfg.djmix.harmonic_mode == "off"
+    assert len([r for r in caplog.records if "schema_version" in r.message]) == 1
+
+
 def test_non_object_state_root_is_warned_and_ignored(tmp_path: Path, caplog) -> None:
     _write_state(tmp_path, ["not", "an", "object"])
 
@@ -224,7 +242,7 @@ class TestLoadInto:
 
     def test_loads_transition(self, tmp_path) -> None:
         (tmp_path / "web_state.json").write_text(
-            json.dumps({"schema_version": 1, "transition": "echo_out"}),
+            json.dumps({"schema_version": STATE_VERSION, "transition": "echo_out"}),
             encoding="utf-8",
         )
         p = _make_player()
@@ -234,7 +252,10 @@ class TestLoadInto:
     def test_loads_djmix_toggles(self, tmp_path) -> None:
         (tmp_path / "web_state.json").write_text(
             json.dumps(
-                {"schema_version": 1, "djmix": {"harmonic_mode": "strict", "beatmatch": True}}
+                {
+                    "schema_version": STATE_VERSION,
+                    "djmix": {"harmonic_mode": "strict", "beatmatch": True},
+                }
             ),
             encoding="utf-8",
         )
@@ -248,7 +269,7 @@ class TestLoadInto:
         (tmp_path / "web_state.json").write_text(
             json.dumps(
                 {
-                    "schema_version": 1,
+                    "schema_version": STATE_VERSION,
                     "playback": {
                         "crossfade_seconds": 4.5,
                         "crossfade_eq_duck": True,
@@ -275,7 +296,7 @@ class TestLoadInto:
         (tmp_path / "web_state.json").write_text(
             json.dumps(
                 {
-                    "schema_version": 1,
+                    "schema_version": STATE_VERSION,
                     "playback": {
                         "enable_daypart": True,
                         "enable_mood_arc": True,
@@ -312,7 +333,7 @@ class TestLoadInto:
 
     def test_loads_bpm_range(self, tmp_path) -> None:
         (tmp_path / "web_state.json").write_text(
-            json.dumps({"schema_version": 1, "bpm_range": {"lo": 90, "hi": 140}}),
+            json.dumps({"schema_version": STATE_VERSION, "bpm_range": {"lo": 90, "hi": 140}}),
             encoding="utf-8",
         )
         p = _make_player()
@@ -321,7 +342,7 @@ class TestLoadInto:
 
     def test_clears_bpm_range_on_null(self, tmp_path) -> None:
         (tmp_path / "web_state.json").write_text(
-            json.dumps({"schema_version": 1, "bpm_range": {"lo": None, "hi": None}}),
+            json.dumps({"schema_version": STATE_VERSION, "bpm_range": {"lo": None, "hi": None}}),
             encoding="utf-8",
         )
         p = _make_player()
@@ -331,7 +352,7 @@ class TestLoadInto:
 
     def test_loads_discovery(self, tmp_path) -> None:
         (tmp_path / "web_state.json").write_text(
-            json.dumps({"schema_version": 1, "discovery_every": 25}),
+            json.dumps({"schema_version": STATE_VERSION, "discovery_every": 25}),
             encoding="utf-8",
         )
         p = _make_player()
@@ -340,7 +361,7 @@ class TestLoadInto:
 
     def test_clears_discovery_on_zero(self, tmp_path) -> None:
         (tmp_path / "web_state.json").write_text(
-            json.dumps({"schema_version": 1, "discovery_every": 0}),
+            json.dumps({"schema_version": STATE_VERSION, "discovery_every": 0}),
             encoding="utf-8",
         )
         p = _make_player()
@@ -567,7 +588,7 @@ class TestSaveFrom:
         from autodj.runtime_state import load_into_player
 
         (tmp_path / "web_state.json").write_text(
-            '{"schema_version": 1, "preset": "nosuchpreset_xyz"}',
+            '{"schema_version": STATE_VERSION, "preset": "nosuchpreset_xyz"}',
             encoding="utf-8",
         )
         p = _make_player()
@@ -679,7 +700,7 @@ class TestRoundTrip:
         saved["playback"]["liners_folder"] = p1._cfg.playback.liners_folder
         save_from_player(saved, tmp_path)
         stored = json.loads((tmp_path / "web_state.json").read_text(encoding="utf-8"))
-        assert stored["schema_version"] == 1
+        assert stored["schema_version"] == STATE_VERSION
         assert "available_presets" not in stored
         assert "no_repeat_window" not in stored["playback"]
         assert "library_size" not in stored["playback"]
@@ -703,7 +724,7 @@ class TestRoundTrip:
 def test_string_false_is_rejected_instead_of_coerced(tmp_path, caplog) -> None:
     _write_state(
         tmp_path,
-        {"schema_version": 1, "playback": {"prefetch_next_track": "false"}},
+        {"schema_version": STATE_VERSION, "playback": {"prefetch_next_track": "false"}},
     )
     player = _make_player()
 
@@ -719,7 +740,7 @@ def test_invalid_harmonic_mode_warns_once_and_keeps_default(tmp_path, caplog, va
     """A Boolean from the old on/off setting is as invalid as an unknown mode name."""
     _write_state(
         tmp_path,
-        {"schema_version": 1, "djmix": {"harmonic_mode": value}},
+        {"schema_version": STATE_VERSION, "djmix": {"harmonic_mode": value}},
     )
     player = _make_player()
     player._cfg.djmix.harmonic_mode = "strict"
@@ -734,7 +755,7 @@ def test_invalid_harmonic_mode_warns_once_and_keeps_default(tmp_path, caplog, va
 def test_invalid_enable_mood_arc_warns_once_and_keeps_default(tmp_path, caplog) -> None:
     _write_state(
         tmp_path,
-        {"schema_version": 1, "playback": {"enable_mood_arc": "false"}},
+        {"schema_version": STATE_VERSION, "playback": {"enable_mood_arc": "false"}},
     )
     player = _make_player()
 
@@ -762,7 +783,7 @@ def test_future_version_warns_but_restores_known_fields(tmp_path, caplog) -> Non
 def test_unknown_future_field_is_ignored(tmp_path) -> None:
     _write_state(
         tmp_path,
-        {"schema_version": 1, "playback": {"quantum_crossfade": True}},
+        {"schema_version": STATE_VERSION, "playback": {"quantum_crossfade": True}},
     )
     player = _make_player()
 
@@ -780,7 +801,7 @@ def test_null_clears_every_nullable_liner_cadence(tmp_path) -> None:
     _write_state(
         tmp_path,
         {
-            "schema_version": 1,
+            "schema_version": STATE_VERSION,
             "playback": {
                 "liners_every_n_songs": None,
                 "liners_every_minutes": None,
@@ -812,7 +833,7 @@ def test_reversed_random_liner_window_warns_and_leaves_pair_unchanged(
     _write_state(
         tmp_path,
         {
-            "schema_version": 1,
+            "schema_version": STATE_VERSION,
             "playback": {
                 "liners_random_min_minutes": 16.0,
                 "liners_random_max_minutes": 10.0,
@@ -849,7 +870,7 @@ def test_partial_random_liner_min_validates_against_current_max(
     _write_state(
         tmp_path,
         {
-            "schema_version": 1,
+            "schema_version": STATE_VERSION,
             "playback": {"liners_random_min_minutes": 15.0},
         },
     )
@@ -874,7 +895,7 @@ def test_partial_random_liner_max_validates_against_current_min(
     _write_state(
         tmp_path,
         {
-            "schema_version": 1,
+            "schema_version": STATE_VERSION,
             "playback": {"liners_random_max_minutes": 7.0},
         },
     )
@@ -896,7 +917,7 @@ def test_partial_valid_random_liner_bound_is_restored(tmp_path) -> None:
     _write_state(
         tmp_path,
         {
-            "schema_version": 1,
+            "schema_version": STATE_VERSION,
             "playback": {"liners_random_min_minutes": 10.0},
         },
     )
@@ -914,7 +935,7 @@ def test_null_random_liner_bound_clears_only_present_field(tmp_path) -> None:
     _write_state(
         tmp_path,
         {
-            "schema_version": 1,
+            "schema_version": STATE_VERSION,
             "playback": {"liners_random_min_minutes": None},
         },
     )
@@ -937,7 +958,7 @@ def test_invalid_random_liner_bound_leaves_both_values_unchanged(
     _write_state(
         tmp_path,
         {
-            "schema_version": 1,
+            "schema_version": STATE_VERSION,
             "playback": {
                 "liners_random_min_minutes": invalid,
                 "liners_random_max_minutes": 12.0,
@@ -959,7 +980,7 @@ def test_invalid_random_liner_bound_leaves_both_values_unchanged(
 def test_null_bpm_range_clears_an_existing_range(tmp_path) -> None:
     player = _make_player()
     player._bpm_range = (90.0, 130.0)
-    _write_state(tmp_path, {"schema_version": 1, "bpm_range": None})
+    _write_state(tmp_path, {"schema_version": STATE_VERSION, "bpm_range": None})
 
     load_into_player(player, tmp_path)
 
@@ -969,7 +990,7 @@ def test_null_bpm_range_clears_an_existing_range(tmp_path) -> None:
 def test_infinite_playback_number_warns_and_keeps_default(tmp_path, caplog) -> None:
     _write_state(
         tmp_path,
-        {"schema_version": 1, "playback": {"crossfade_seconds": float("inf")}},
+        {"schema_version": STATE_VERSION, "playback": {"crossfade_seconds": float("inf")}},
     )
     player = _make_player()
 
@@ -983,7 +1004,7 @@ def test_infinite_playback_number_warns_and_keeps_default(tmp_path, caplog) -> N
 def test_infinite_liner_cadence_warns_and_keeps_default(tmp_path, caplog) -> None:
     _write_state(
         tmp_path,
-        {"schema_version": 1, "playback": {"liners_every_minutes": float("inf")}},
+        {"schema_version": STATE_VERSION, "playback": {"liners_every_minutes": float("inf")}},
     )
     player = _make_player()
     player._cfg.playback.liners_every_minutes = 5.0
@@ -1000,7 +1021,7 @@ def test_infinite_liner_cadence_warns_and_keeps_default(tmp_path, caplog) -> Non
 def test_infinite_bpm_bound_warns_and_keeps_existing_range(tmp_path, caplog) -> None:
     _write_state(
         tmp_path,
-        {"schema_version": 1, "bpm_range": {"lo": 90.0, "hi": float("inf")}},
+        {"schema_version": STATE_VERSION, "bpm_range": {"lo": 90.0, "hi": float("inf")}},
     )
     player = _make_player()
     player._bpm_range = (100.0, 120.0)
