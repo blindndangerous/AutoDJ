@@ -1707,13 +1707,12 @@ def _detect_stale_entries(
     """Find indexed entries whose audio file has been replaced on disk.
 
     For every entry whose file still exists, compare its mtime against the
-    stored ``embedded_at``.  An entry is considered stale (the user replaced
-    the file with a different version since indexing) when:
-
-    * ``embedded_at`` is not a positive stamp: without one, a replaced file
-      cannot be told apart from the embedded one, so it is re-embedded, OR
-    * ``file_mtime > embedded_at + 1.0`` (1 s margin absorbs filesystem
-      timestamp granularity).
+    stored ``embedded_at``.  An entry is stale (the user replaced the file
+    with a different version since indexing) when ``file_mtime >
+    embedded_at + 1.0``; the 1 s margin absorbs filesystem timestamp
+    granularity.  An unstamped row (``embedded_at`` 0) is therefore
+    re-embedded, while a file whose own mtime is the epoch keeps the 0
+    stamp it was embedded with and is not re-embedded on every run.
 
     Stat() calls are fanned out across a 32-thread pool because the typical
     case is an NFS/SMB-mounted library where each call costs an RTT.
@@ -1738,7 +1737,7 @@ def _detect_stale_entries(
     for e, mt in zip(entries, mtimes, strict=False):
         if mt is None:
             continue  # missing file — prune handles it
-        if not e.embedded_at > 0.0 or mt > e.embedded_at + 1.0:
+        if mt > e.embedded_at + 1.0:
             stale.add(e.path)
     return stale
 

@@ -1159,6 +1159,16 @@ class TestDetectStaleEntries:
         e = self._entry(str(f), embedded_at=0.0)
         assert _detect_stale_entries([e]) == {e.path}
 
+    def test_epoch_mtime_file_is_not_re_embedded_every_run(self, tmp_path: Path) -> None:
+        """A file dated at the epoch is stamped 0 when embedded; that is current, not stale."""
+        from autodj.indexer import _detect_stale_entries
+
+        f = tmp_path / "song.flac"
+        f.write_bytes(b"x")
+        os.utime(f, (0, 0))
+        e = self._entry(str(f), embedded_at=0.0)
+        assert _detect_stale_entries([e]) == set()
+
     def test_unchanged_file_not_stale(self, tmp_path: Path) -> None:
         from autodj.indexer import _detect_stale_entries
 
