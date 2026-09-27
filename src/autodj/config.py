@@ -16,7 +16,7 @@ import ipaddress
 import os
 import re
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
 from functools import partial
@@ -913,6 +913,92 @@ class HuggingFaceConfig:
         return cls(token=data.get("token") or None)
 
 
+STREAM_BITRATES = (128, 192, 256, 320)
+_STREAM_KEYS = frozenset(
+    {"enabled", "bitrate", "idle_grace_seconds", "max_listeners", "station_name"}
+)
+
+
+def parse_env_bool(value: str) -> bool:
+    """Parse an environment boolean.
+
+    Args:
+        value: Raw environment text.
+
+    Returns:
+        The boolean it names.
+
+    Raises:
+        ValueError: If *value* is not a recognised boolean word.
+    """
+    text = value.strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"not a boolean: {value!r}")
+
+
+@dataclass
+class StreamConfig:
+    """Radio stream settings (``[stream]``).
+
+    Attributes:
+        enabled: Serve in stream mode.
+        bitrate: MP3 bitrate in kbps, one of :data:`STREAM_BITRATES`.
+        idle_grace_seconds: Seconds without listeners before the set stops.
+        max_listeners: Concurrent listener limit.
+        station_name: Name sent to players as ``icy-name``.
+    """
+
+    enabled: bool = False
+    bitrate: int = 320
+    idle_grace_seconds: float = 30.0
+    max_listeners: int = 8
+    station_name: str = "AutoDJ"
+
+    def __post_init__(self) -> None:
+        """Validate every field."""
+        if not isinstance(self.enabled, bool):
+            raise TypeError("stream.enabled must be true or false")
+        if isinstance(self.bitrate, bool) or not isinstance(self.bitrate, int):
+            raise TypeError("stream.bitrate must be an integer")
+        if self.bitrate not in STREAM_BITRATES:
+            raise ValueError(f"stream.bitrate must be one of {STREAM_BITRATES}, got {self.bitrate}")
+        if isinstance(self.idle_grace_seconds, bool) or not isinstance(
+            self.idle_grace_seconds, int | float
+        ):
+            raise TypeError("stream.idle_grace_seconds must be a number")
+        if not 0 < float(self.idle_grace_seconds) <= 3600:
+            raise ValueError("stream.idle_grace_seconds must be between 0 and 3600")
+        if isinstance(self.max_listeners, bool) or not isinstance(self.max_listeners, int):
+            raise TypeError("stream.max_listeners must be an integer")
+        if not 1 <= self.max_listeners <= 100:
+            raise ValueError("stream.max_listeners must be between 1 and 100")
+        if not isinstance(self.station_name, str) or not self.station_name.strip():
+            raise ValueError("stream.station_name must be a non-empty string")
+        self.idle_grace_seconds = float(self.idle_grace_seconds)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> StreamConfig:
+        """Build from the ``[stream]`` table.
+
+        Args:
+            data: Dictionary of keys from the ``[stream]`` TOML section.
+
+        Returns:
+            A populated StreamConfig instance.
+
+        Raises:
+            ValueError: On an unknown key or invalid value.
+            TypeError: On a wrongly typed value.
+        """
+        unknown = set(data) - _STREAM_KEYS
+        if unknown:
+            raise ValueError(f"unknown [stream] keys: {sorted(unknown)}")
+        return cls(**data)
+
+
 # ---------------------------------------------------------------------------
 # Root config dataclass
 # ---------------------------------------------------------------------------
@@ -943,6 +1029,7 @@ class AutoDJConfig:
     djmix: DjMixConfig = field(default_factory=lambda: DjMixConfig())
     transitions: TransitionsConfig = field(default_factory=lambda: TransitionsConfig())
     server: ServerConfig = field(default_factory=ServerConfig)
+    stream: StreamConfig = field(default_factory=StreamConfig)
     config_sources: tuple[str, ...] = ("defaults",)
 
 
@@ -967,7 +1054,7 @@ def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]
     return out
 
 
-ENVIRONMENT_OVERLAY: dict[str, tuple[str, str, type[str] | type[int]]] = {
+ENVIRONMENT_OVERLAY: dict[str, tuple[str, str, Callable[[str], object]]] = {
     "AUTODJ_LIBRARY_MUSIC_DIR": ("library", "music_dir", str),
     "AUTODJ_INDEX_DIR": ("index", "index_dir", str),
     "AUTODJ_MODEL_DIR": ("index", "model_dir", str),
@@ -975,6 +1062,11 @@ ENVIRONMENT_OVERLAY: dict[str, tuple[str, str, type[str] | type[int]]] = {
     "AUTODJ_PORT": ("server", "port", int),
     "AUTODJ_ACCESS_TOKEN": ("server", "access_token", str),
     "AUTODJ_HUGGINGFACE_TOKEN": ("huggingface", "token", str),
+    "AUTODJ_STREAM_ENABLED": ("stream", "enabled", parse_env_bool),
+    "AUTODJ_STREAM_BITRATE": ("stream", "bitrate", int),
+    "AUTODJ_STREAM_IDLE_GRACE_SECONDS": ("stream", "idle_grace_seconds", float),
+    "AUTODJ_STREAM_MAX_LISTENERS": ("stream", "max_listeners", int),
+    "AUTODJ_STREAM_STATION_NAME": ("stream", "station_name", str),
 }
 
 
@@ -1022,6 +1114,7 @@ def _build_config(
         "djmix",
         "transitions",
         "server",
+        "stream",
     ):
         if not isinstance(raw.get(section, {}), Mapping):
             raise TypeError(f"{section} section must be a table")
@@ -1036,6 +1129,7 @@ def _build_config(
         djmix=DjMixConfig.from_dict(raw.get("djmix", {})),
         transitions=TransitionsConfig.from_dict(raw.get("transitions", {})),
         server=ServerConfig.from_dict(raw.get("server", {})),
+        stream=StreamConfig.from_dict(raw.get("stream", {})),
         presets=load_user_presets(presets_raw),
         config_path=config_path,
         config_sources=tuple(sources),

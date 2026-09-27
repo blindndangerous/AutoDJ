@@ -1101,6 +1101,7 @@ def test_run_doctor_check_order(tmp_path: Path) -> None:
         "model-cache",
         "network-safety",
         "frontend-bundle",
+        "stream",
     ]
 
 
@@ -1555,6 +1556,7 @@ def test_run_doctor_uses_planned_stable_identifiers(tmp_path: Path) -> None:
         "model-cache",
         "network-safety",
         "frontend-bundle",
+        "stream",
     ]
 
 
@@ -1568,3 +1570,46 @@ def test_missing_rederivable_databases_warn_explicitly(tmp_path: Path) -> None:
     assert dj_meta.status is doctor.CheckStatus.WARN
     assert tracks.summary == "database absent"
     assert dj_meta.summary == "database absent"
+
+
+def test_stream_check_passes_when_disabled(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+
+    assert doctor._stream_check(cfg).status is doctor.CheckStatus.PASS
+
+
+def test_stream_check_fails_without_ffmpeg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _config(tmp_path)
+    cfg.stream.enabled = True
+    monkeypatch.setattr(doctor.shutil, "which", lambda _n: None)
+
+    result = doctor._stream_check(cfg)
+
+    assert result.status is doctor.CheckStatus.FAIL
+    assert "ffmpeg" in result.summary.lower()
+
+
+def test_stream_check_warns_on_loopback_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+
+    cfg = _config(tmp_path)
+    cfg.stream.enabled = True
+    monkeypatch.setattr(doctor.shutil, "which", lambda _n: "/usr/bin/ffmpeg")
+    cfg.server = replace(cfg.server, host="127.0.0.1")
+
+    assert doctor._stream_check(cfg).status is doctor.CheckStatus.WARN
+
+
+def test_stream_check_passes_enabled_with_ffmpeg_and_non_loopback_bind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _config(tmp_path, host="192.168.1.30")
+    cfg.stream.enabled = True
+    monkeypatch.setattr(doctor.shutil, "which", lambda _n: "/usr/bin/ffmpeg")
+
+    result = doctor._stream_check(cfg)
+
+    assert result.status is doctor.CheckStatus.PASS
+    assert str(cfg.stream.bitrate) in result.summary

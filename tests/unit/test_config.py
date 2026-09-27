@@ -223,6 +223,11 @@ class TestDefaultAndEnvironmentConfig:
             "AUTODJ_PORT",
             "AUTODJ_ACCESS_TOKEN",
             "AUTODJ_HUGGINGFACE_TOKEN",
+            "AUTODJ_STREAM_ENABLED",
+            "AUTODJ_STREAM_BITRATE",
+            "AUTODJ_STREAM_IDLE_GRACE_SECONDS",
+            "AUTODJ_STREAM_MAX_LISTENERS",
+            "AUTODJ_STREAM_STATION_NAME",
         }
 
 

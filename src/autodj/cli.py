@@ -17,6 +17,7 @@ import io
 import logging
 import os
 import secrets
+import shutil
 import socket
 import sys
 from copy import deepcopy
@@ -1840,6 +1841,12 @@ def cmd_play(  # pragma: no cover -- end-to-end orchestrator, exercised by smoke
     ),
 )
 @click.option(
+    "--stream/--no-stream",
+    "stream",
+    default=None,
+    help="Serve the live mix as an MP3 radio stream (server mixes; the page is a remote).",
+)
+@click.option(
     "--ssl-certfile",
     "ssl_certfile",
     default=None,
@@ -1892,6 +1899,7 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
     transition_mode: str | None,
     index_name: str | None,
     server_audio: bool,
+    stream: bool | None,
     ssl_certfile: str | None,
     ssl_keyfile: str | None,
 ) -> None:
@@ -1983,9 +1991,16 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
     cfg.playback = staged_override_cfg.playback
     cfg.transitions = staged_override_cfg.transitions
     cfg.server = staged_server
+    if stream is not None:
+        cfg.stream.enabled = stream
+        general_cli_override = True
     _apply_index_name(cfg, index_name)
     if general_cli_override or server_cli_override:
         _append_cli_source(cfg)
+    if cfg.stream.enabled and shutil.which("ffmpeg") is None:
+        raise click.ClickException(
+            "Stream mode needs ffmpeg on the PATH. Install ffmpeg, or start without --stream."
+        )
     if open_browser:
         import threading
         import webbrowser
@@ -2011,6 +2026,7 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
             pure_shuffle=pure_shuffle,
             anchor_to_seed=bool(anchor_to_seed),
             no_playback=not server_audio,
+            stream=cfg.stream.enabled,
             ssl_certfile=ssl_certfile,
             ssl_keyfile=ssl_keyfile,
         )

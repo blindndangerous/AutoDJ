@@ -1668,6 +1668,36 @@ class TestServeFunction:
         started.wait(timeout=2.0)
         assert started.is_set(), "Player thread should have started"
 
+    def test_serve_stream_forces_player_off_dry_run(self) -> None:
+        """Stream mode mixes server-side, so the Player must not be dry-run."""
+        from unittest.mock import MagicMock, patch
+
+        from autodj.player import Player
+        from autodj.server import serve
+
+        cfg_mock = MagicMock()
+        cfg_mock.playback.no_repeat_window = 50
+        cfg_mock.playback.artist_repeat_window = 3
+        cfg_mock.playback.crossfade_seconds = 3.0
+        cfg_mock.server = ServerConfig()
+        sim = _make_sim_mock()
+
+        captured: dict[str, object] = {}
+        original_init = Player.__init__
+
+        def spy_init(self, *args, **kwargs):
+            captured["dry_run"] = kwargs.get("dry_run")
+            original_init(self, *args, **kwargs)
+
+        with (
+            patch.object(Player, "__init__", spy_init),
+            patch("autodj.player.Player.run"),
+            patch("uvicorn.run"),
+        ):
+            serve(cfg=cfg_mock, sim=sim, seed_entry=None, no_playback=True, stream=True)
+
+        assert captured["dry_run"] is False
+
     def test_serve_uses_server_config_host_and_port_by_default(self) -> None:
         from unittest.mock import MagicMock, patch
 

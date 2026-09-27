@@ -766,6 +766,29 @@ def _bundle_check(package_dir: Path | None = None) -> DoctorCheck:
     )
 
 
+def _stream_check(cfg: AutoDJConfig) -> DoctorCheck:
+    """Check stream-mode prerequisites.
+
+    Args:
+        cfg: Loaded application configuration.
+
+    Returns:
+        A DoctorCheck describing stream-mode readiness.
+    """
+    if not cfg.stream.enabled:
+        return DoctorCheck("stream", CheckStatus.PASS, "stream mode off")
+    if shutil.which("ffmpeg") is None:
+        return DoctorCheck("stream", CheckStatus.FAIL, "FFmpeg missing; stream mode cannot start")
+    if is_loopback_bind(cfg.server.host):
+        return DoctorCheck(
+            "stream",
+            CheckStatus.WARN,
+            "stream mode on, but the server only listens on this machine",
+            "Speakers on your network cannot reach it. Use the LAN setup.",
+        )
+    return DoctorCheck("stream", CheckStatus.PASS, f"stream mode on at {cfg.stream.bitrate} kbps")
+
+
 def run_doctor(
     cfg: AutoDJConfig,
     *,
@@ -786,5 +809,6 @@ def run_doctor(
             _model_cache_check(cfg),
             _network_check(cfg),
             _bundle_check(),
+            _stream_check(cfg),
         )
     )

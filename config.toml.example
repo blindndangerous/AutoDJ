@@ -37,6 +37,11 @@
 #   AUTODJ_PORT
 #   AUTODJ_ACCESS_TOKEN
 #   AUTODJ_HUGGINGFACE_TOKEN
+#   AUTODJ_STREAM_ENABLED
+#   AUTODJ_STREAM_BITRATE
+#   AUTODJ_STREAM_IDLE_GRACE_SECONDS
+#   AUTODJ_STREAM_MAX_LISTENERS
+#   AUTODJ_STREAM_STATION_NAME
 # END ENVIRONMENT OVERRIDES
 
 [library]
@@ -88,6 +93,28 @@ insecure_lan = false
 # allowed_origins = ["https://radio.local:8080"]
 session_ttl_seconds = 7776000  # 90 days; revoke paired browsers with `autodj devices`.
 liner_upload_max_mib = 50
+
+# ---------------------------------------------------------------------------
+# Radio-style MP3 stream — server mixes the set and serves it as a live
+# MP3 feed, so any player (car head unit, another room's speaker) can tune
+# in as a remote, not just a browser tab.  Off by default; toggle at
+# runtime with `autodj serve --stream` / `--no-stream`.  Requires ffmpeg
+# on the PATH (checked by `autodj doctor` and refused at startup).
+# ---------------------------------------------------------------------------
+[stream]
+enabled = false
+
+# MP3 bitrate in kbps.  One of 128, 192, 256, 320.
+bitrate = 320
+
+# Seconds without a connected listener before the stream mix stops.
+idle_grace_seconds = 30.0
+
+# Maximum concurrent listener connections.
+max_listeners = 8
+
+# Station name announced to players via the icy-name header.
+station_name = "AutoDJ"
 
 [playback]
 # Duration of the crossfade between tracks, in seconds.
