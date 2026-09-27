@@ -512,13 +512,19 @@ class DjMixConfig:
             ValueError: If ``harmonic_mode`` is not one of
                 :data:`autodj.dj_meta.HARMONIC_MODES`.
         """
-        from autodj.dj_meta import HARMONIC_MODES
-
         harmonic_mode = data.get("harmonic_mode", "off")
-        if not isinstance(harmonic_mode, str):
-            raise ValueError(
-                f"djmix.harmonic_mode must be one of {HARMONIC_MODES}, got {harmonic_mode!r}"
-            )
+        if isinstance(harmonic_mode, str):
+            harmonic_mode = harmonic_mode.lower()
+        if harmonic_mode != "off":
+            # dj_meta pulls in numpy, so the default "off" is accepted
+            # without importing it; config loading stays light for doctor.
+            from autodj.dj_meta import HARMONIC_MODES
+
+            if not isinstance(harmonic_mode, str):
+                raise ValueError(
+                    f"djmix.harmonic_mode must be one of {HARMONIC_MODES}, got {harmonic_mode!r}"
+                )
+            _one_of(harmonic_mode, HARMONIC_MODES, "djmix.harmonic_mode")
         return cls(
             beatmatch=bool(data.get("beatmatch", False)),
             beatmatch_max_stretch=float(data.get("beatmatch_max_stretch", 0.08)),
@@ -527,7 +533,7 @@ class DjMixConfig:
             phrase_bars=int(data.get("phrase_bars", 8)),
             filter_sweep=bool(data.get("filter_sweep", False)),
             filter_sweep_floor_hz=float(data.get("filter_sweep_floor_hz", 250.0)),
-            harmonic_mode=_one_of(harmonic_mode.lower(), HARMONIC_MODES, "djmix.harmonic_mode"),
+            harmonic_mode=harmonic_mode,
         )
 
 
