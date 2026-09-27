@@ -73,6 +73,47 @@ describe("Media Session request fallbacks", () => {
     vi.unstubAllGlobals();
   });
 
+  it("lets the caller own pause, falling back to the server otherwise", async () => {
+    const handlers = {};
+    Object.defineProperty(navigator, "mediaSession", {
+      configurable: true,
+      value: { setActionHandler: (name, handler) => { handlers[name] = handler; } },
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new globalThis.Response(
+      JSON.stringify({ paused: true }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    )));
+    let handled = true;
+    const onPause = vi.fn(() => handled);
+    installMediaActionHandlers({ onPause, onRequestError: vi.fn() });
+
+    await handlers.pause();
+    expect(onPause).toHaveBeenCalledOnce();
+    expect(fetch).not.toHaveBeenCalled();
+
+    handled = false;
+    await handlers.pause();
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/pause", { method: "POST" }));
+    vi.unstubAllGlobals();
+  });
+
+  it("reports a rejected pause callback without calling the server", async () => {
+    const handlers = {};
+    Object.defineProperty(navigator, "mediaSession", {
+      configurable: true,
+      value: { setActionHandler: (name, handler) => { handlers[name] = handler; } },
+    });
+    const failure = new Error("toggle rejected");
+    const onRequestError = vi.fn();
+    vi.stubGlobal("fetch", vi.fn());
+    installMediaActionHandlers({ onPause: () => Promise.reject(failure), onRequestError });
+
+    await expect(handlers.pause()).resolves.toBeUndefined();
+    expect(onRequestError).toHaveBeenCalledWith(failure);
+    expect(fetch).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
   it("awaits and reports a rejected next-track callback", async () => {
     const handlers = {};
     Object.defineProperty(navigator, "mediaSession", {

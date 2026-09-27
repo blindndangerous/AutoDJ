@@ -33,12 +33,15 @@ export function updateMediaSession(s) {
   }
 }
 
-// Wire OS media-key actions.  Caller passes the play handler so this
-// module stays decoupled from playbackEnabled / unlockAndPlay state
-// owned by the audio-engine module.
+// Wire OS media-key actions.  Caller passes the play and pause handlers
+// so this module stays decoupled from playbackEnabled / unlockAndPlay
+// state owned by the audio-engine module.  Each returns true when it
+// handled the key (stream mode toggles Listen here); otherwise the
+// server's pause toggle runs.
 export function installMediaActionHandlers({
   isEnabled = () => true,
   onPlay,
+  onPause,
   onPauseOrSkipNext,
   onRequestError,
 } = {}) {
@@ -49,21 +52,19 @@ export function installMediaActionHandlers({
   const fallback = (url) => requestJsonBestEffort(
     url, { method: "POST" }, onRequestError,
   );
-  navigator.mediaSession.setActionHandler("play", async () => {
+  const pauseToggle = (callback) => async () => {
     if (!isEnabled()) return;
     let handled;
     try {
-      handled = typeof onPlay === "function" ? await onPlay() : false;
+      handled = typeof callback === "function" ? await callback() : false;
     } catch (errorValue) {
       onRequestError(errorValue);
       return;
     }
     if (handled !== true) void fallback("/api/pause");
-  });
-  navigator.mediaSession.setActionHandler("pause", () => {
-    if (!isEnabled()) return;
-    void fallback("/api/pause");
-  });
+  };
+  navigator.mediaSession.setActionHandler("play", pauseToggle(onPlay));
+  navigator.mediaSession.setActionHandler("pause", pauseToggle(onPause));
   navigator.mediaSession.setActionHandler("nexttrack", async () => {
     if (!isEnabled()) return;
     if (typeof onPauseOrSkipNext !== "function") {
