@@ -27,7 +27,7 @@ import {
 } from "./modules/api-client.js";
 import { createLatestRequestOwner } from "./modules/latest-request.js";
 import { installSeekController } from "./modules/seek-controller.js";
-import { createStreamMode } from "./modules/stream-mode.js";
+import { createStreamMode, createStreamSettings } from "./modules/stream-mode.js";
 
 if (isDebug()) {
   console.log("[autodj] debug logging ENABLED " +
@@ -118,6 +118,19 @@ const streamMode = createStreamMode({
   fetchInfo: () => requestJson("/api/stream"),
 });
 btnListen.addEventListener("click", () => void streamMode.toggleListen());
+// Settings > Stream.  This page speaks its own "Make new link"
+// confirmation, so it claims the station event that rotation causes.
+const streamSettings = createStreamSettings({
+  doc: document,
+  fetchInfo: () => requestJson("/api/stream"),
+  rotate: () => withDisabled(document.getElementById("stream-rotate"),
+    () => requestJson("/api/stream/rotate", { method: "POST" })),
+  saveBitrate: (value, control) =>
+    postSettings("/api/stream/settings", { bitrate: value }, control),
+  claimLinkChange: () => streamMode.claimLinkChange(),
+  srStatus: document.getElementById("sr-status"),
+  settingsStatus,
+});
 // Last pushed stream_mode, for the handlers that run between pushes.
 let _lastStreamMode = false;
 
@@ -143,6 +156,7 @@ function stopProtectedPlayback() {
 function clearProtectedSessionData() {
   _seekController?.cancel();
   streamMode.stop();
+  streamSettings.reset();
   resetTrackCaches();
   historyRequestOwner.cancel();
   resetLyricState();
@@ -329,6 +343,7 @@ function applyState(s) {
     || (inStream && focused && focused.id === "progress-track");
   _lastStreamMode = inStream;
   streamMode.apply(s);
+  streamSettings.apply(s);
   const browserMode = Boolean(s.browser_playback) && !inStream;
 
   // Now Playing

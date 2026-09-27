@@ -746,6 +746,40 @@
         Single-key shortcuts such as Space, N, M, the arrow keys and the question mark.  Turn this off if they clash with your screen reader or other keys you use; buttons and sliders keep working as usual.  Saved in this browser only.
       </span>
     </fieldset>
+
+    <!-- Stream mode only (autodj serve --stream); stream-mode.js shows it.
+         The listener count is plain text, not a live region. -->
+    <fieldset id="stream-settings" hidden>
+      <legend>Stream</legend>
+      <div class="settings-row">
+        <label for="stream-url">Stream address</label>
+        <input type="text" id="stream-url" readonly aria-describedby="stream-url-desc">
+        <button type="button" id="stream-copy">Copy address</button>
+      </div>
+      <span class="setting-desc" id="stream-url-desc">
+        Add this address to Sonos or any player as a radio station.  Anyone with it can listen.
+      </span>
+      <p class="stream-detail"><a id="stream-m3u" download="autodj.m3u">Playlist file (.m3u)</a></p>
+      <p class="stream-detail" id="stream-listeners"></p>
+      <div class="settings-row">
+        <label for="stream-bitrate">Quality</label>
+        <select id="stream-bitrate" aria-describedby="stream-bitrate-desc">
+          <option value="128">128 kbps</option>
+          <option value="192">192 kbps</option>
+          <option value="256">256 kbps</option>
+          <option value="320">320 kbps</option>
+        </select>
+      </div>
+      <span class="setting-desc" id="stream-bitrate-desc">
+        Higher sounds better and uses more network.  Changing it makes every speaker reconnect for a moment.
+      </span>
+      <div class="settings-row">
+        <button type="button" id="stream-rotate" aria-describedby="stream-rotate-desc">Make new link</button>
+      </div>
+      <span class="setting-desc" id="stream-rotate-desc">
+        Stops every speaker using the current address.
+      </span>
+    </fieldset>
   </details>
 
   <!-- Voice liners -->
@@ -966,6 +1000,22 @@
 <!-- Volume announcement region — only written on user-initiated volume changes -->
 <div id="vol-announce" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div>
 </main>
+
+<!-- "Make new link" confirmation.  A plain native modal: Escape and
+     Cancel both close it without changing anything, and focus goes back
+     to the Make new link button either way.  It lives outside <main>
+     because a modal inside a hidden tab panel is never rendered. -->
+<dialog id="stream-rotate-dialog" aria-labelledby="stream-rotate-title"
+        aria-describedby="stream-rotate-warning">
+  <form method="dialog">
+    <h2 id="stream-rotate-title">Make a new stream link?</h2>
+    <p id="stream-rotate-warning">Every speaker using the current link stops, and you will need to add the new link to them.</p>
+    <div class="dialog-actions">
+      <button type="submit" value="cancel">Cancel</button>
+      <button type="submit" value="confirm">Make new link</button>
+    </div>
+  </form>
+</dialog>
 
 <!--
   Footer build stamp -- so a user can verify which commit + bundle the

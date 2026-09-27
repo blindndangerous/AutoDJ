@@ -1420,12 +1420,16 @@ describe("stream mode", () => {
     audio.play = vi.fn().mockResolvedValue();
     audio.pause = vi.fn();
     const listen = document.getElementById("btn-listen");
+    const lookups = () => fetchImpl.mock.calls.filter(([url]) => url === "/api/stream").length;
+    await vi.waitFor(() => expect(document.getElementById("stream-url").value)
+      .toContain("/stream/SECRET.mp3"));
+    const before = lookups();
 
     listen.click();
     await vi.waitFor(() => expect(audio.play).toHaveBeenCalledOnce());
     expect(audio.getAttribute("src")).toBe("/stream/SECRET.mp3");
     expect(listen.getAttribute("aria-pressed")).toBe("true");
-    expect(fetchImpl.mock.calls.filter(([url]) => url === "/api/stream")).toHaveLength(1);
+    expect(lookups()).toBe(before + 1);
 
     listen.click();
     expect(listen.getAttribute("aria-pressed")).toBe("false");
@@ -1625,5 +1629,107 @@ describe("stream mode", () => {
       .toBe("Authentication required"));
     expect(listen.getAttribute("aria-pressed")).toBe("false");
     expect(audio.getAttribute("src")).toBeNull();
+    // The stream address is a secret: it leaves the page with the session.
+    expect(document.getElementById("stream-url").value).toBe("");
+    expect(document.getElementById("stream-m3u").hasAttribute("href")).toBe(false);
+  });
+
+  describe("stream settings", () => {
+    const oldInfo = {
+      path: "/stream/OLD.mp3", m3u_path: "/stream/OLD.m3u", bitrate: 320, listeners: 1, state: "playing",
+    };
+    const newInfo = { ...oldInfo, path: "/stream/NEW.mp3", m3u_path: "/stream/NEW.m3u" };
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+    const stationServer = (overrides = {}) => (url, options) => {
+      if (url in overrides) return overrides[url](options);
+      if (url === "/api/stream") return jsonResponse(oldInfo);
+      if (url === "/api/stream/rotate") return jsonResponse(newInfo);
+      return lyricsFor("a.mp3");
+    };
+
+    it("stays hidden in browser mode", async () => {
+      await setupApp();
+      expect(document.getElementById("stream-settings").hidden).toBe(true);
+      expect(document.getElementById("stream-url").value).toBe("");
+    });
+
+    it("shows the address, playlist link and listener count in stream mode", async () => {
+      await setupApp({ initialState: streamState, onRequest: stationServer() });
+      expect(document.getElementById("stream-settings").hidden).toBe(false);
+      await vi.waitFor(() => expect(document.getElementById("stream-url").value)
+        .toBe(`${location.origin}/stream/OLD.mp3`));
+      expect(document.getElementById("stream-m3u").getAttribute("href")).toBe("/stream/OLD.m3u");
+      expect(document.getElementById("stream-listeners").textContent).toBe("1 listener");
+    });
+
+    it("speaks its own new link once and skips the matching station event", async () => {
+      const { fetchImpl, webSocket } = await setupApp({
+        initialState: streamState, onRequest: stationServer(),
+      });
+      const url = document.getElementById("stream-url");
+      await vi.waitFor(() => expect(url.value).toContain("/stream/OLD.mp3"));
+      const rotate = document.getElementById("stream-rotate");
+      const dialog = document.getElementById("stream-rotate-dialog");
+      const sr = document.getElementById("sr-status");
+      rotate.focus();
+      rotate.click();
+      expect(dialog.open).toBe(true);
+      dialog.close("confirm");
+      await vi.waitFor(() => expect(sr.textContent)
+        .toBe("New stream link made. The old link no longer works."));
+      expect(url.value).toContain("/stream/NEW.mp3");
+      expect(document.activeElement).toBe(rotate);
+      const [, options] = fetchImpl.mock.calls.find(([called]) => called === "/api/stream/rotate");
+      expect(options.method).toBe("POST");
+
+      sr.textContent = "";
+      webSocket.onmessage({ data: JSON.stringify({
+        ...streamState, stream_event: { id: "boot", seq: 2, name: "link_changed" },
+      }) });
+      await settle();
+      expect(sr.textContent).toBe("");
+    });
+
+    it("reports a failed new link in the settings region", async () => {
+      await setupApp({
+        initialState: streamState,
+        onRequest: stationServer({
+          "/api/stream/rotate": () => jsonResponse({ detail: "Could not save the new stream link" }, 500),
+        }),
+      });
+      const url = document.getElementById("stream-url");
+      await vi.waitFor(() => expect(url.value).toContain("/stream/OLD.mp3"));
+      document.getElementById("stream-rotate").click();
+      document.getElementById("stream-rotate-dialog").close("confirm");
+      await vi.waitFor(() => expect(document.getElementById("settings-status").textContent)
+        .toBe("Could not make a new link: Could not save the new stream link"));
+      expect(url.value).toContain("/stream/OLD.mp3");
+    });
+
+    it("saves the quality and puts it back when the encoder cannot restart", async () => {
+      let bitrateReply = () => jsonResponse({ ...oldInfo, bitrate: 192 });
+      const { fetchImpl } = await setupApp({
+        initialState: streamState,
+        onRequest: stationServer({ "/api/stream/settings": () => bitrateReply() }),
+      });
+      const quality = document.getElementById("stream-bitrate");
+      await vi.waitFor(() => expect(quality.value).toBe("320"));
+      quality.value = "192";
+      quality.dispatchEvent(new Event("change"));
+      await vi.waitFor(() => expect(fetchImpl.mock.calls
+        .filter(([called]) => called === "/api/stream/settings")).toHaveLength(1));
+      const [, options] = fetchImpl.mock.calls.find(([called]) => called === "/api/stream/settings");
+      expect(options.method).toBe("POST");
+      expect(JSON.parse(options.body)).toEqual({ bitrate: 192 });
+      await settle();
+      expect(quality.value).toBe("192");
+
+      bitrateReply = () => jsonResponse({ detail: "stream encoder failed" }, 503);
+      quality.value = "128";
+      quality.dispatchEvent(new Event("change"));
+      await vi.waitFor(() => expect(document.getElementById("settings-status").textContent)
+        .toBe("Could not save: stream encoder failed"));
+      await vi.waitFor(() => expect(quality.value).toBe("192"));
+    });
   });
 });

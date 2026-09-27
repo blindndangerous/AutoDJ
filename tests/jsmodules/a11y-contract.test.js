@@ -1591,6 +1591,92 @@ describe("static accessibility contracts", () => {
     expect(audio.hasAttribute("controls")).toBe(false);
     expect(audio.getAttribute("preload")).toBe("none");
   });
+
+  it("gives the Stream settings labelled controls, a silent count and a titled dialog", () => {
+    installDocument();
+    const labelText = (id) => document.querySelector(`label[for="${id}"]`)
+      ?.textContent.replace(/\s+/g, " ").trim();
+    const describedBy = (element) => (element.getAttribute("aria-describedby") || "")
+      .split(/\s+/).filter(Boolean).map((id) => document.getElementById(id));
+
+    // One more fieldset inside the Settings card, straight after Keyboard,
+    // hidden until the server reports stream mode.
+    const fieldset = document.querySelector("#stream-settings");
+    expect(fieldset.tagName).toBe("FIELDSET");
+    expect(fieldset.hidden).toBe(true);
+    expect(fieldset.querySelector("legend").textContent.trim()).toBe("Stream");
+    expect(fieldset.parentElement.matches("#panel-settings > details.card")).toBe(true);
+    expect(fieldset.parentElement.querySelector("summary > h2").textContent)
+      .toBe("Settings");
+    expect(fieldset.previousElementSibling.querySelector("legend").textContent.trim())
+      .toBe("Keyboard");
+    expect(fieldset.querySelector("h1, h2, h3, h4, h5, h6")).toBeNull();
+
+    const address = document.querySelector("#stream-url");
+    expect(address.tagName).toBe("INPUT");
+    expect(address.getAttribute("type")).toBe("text");
+    expect(address.hasAttribute("readonly")).toBe(true);
+    expect(labelText("stream-url")).toBe("Stream address");
+    expect(describedBy(address).every(Boolean)).toBe(true);
+    expect(describedBy(address)).toHaveLength(1);
+
+    const copy = document.querySelector("#stream-copy");
+    expect(copy.tagName).toBe("BUTTON");
+    expect(copy.getAttribute("type")).toBe("button");
+    expect(copy.textContent.trim()).toBe("Copy address");
+
+    const playlist = document.querySelector("#stream-m3u");
+    expect(playlist.tagName).toBe("A");
+    expect(playlist.textContent.trim()).toBe("Playlist file (.m3u)");
+    // Downloads rather than navigating away from the remote.
+    expect(playlist.hasAttribute("download")).toBe(true);
+
+    const quality = document.querySelector("#stream-bitrate");
+    expect(quality.tagName).toBe("SELECT");
+    expect(labelText("stream-bitrate")).toBe("Quality");
+    expect([...quality.options].map((option) => option.value))
+      .toEqual(["128", "192", "256", "320"]);
+    expect(describedBy(quality).every(Boolean)).toBe(true);
+
+    const rotate = document.querySelector("#stream-rotate");
+    expect(rotate.tagName).toBe("BUTTON");
+    expect(rotate.getAttribute("type")).toBe("button");
+    expect(rotate.textContent.trim()).toBe("Make new link");
+    expect(describedBy(rotate)).toHaveLength(1);
+    expect(describedBy(rotate).every(Boolean)).toBe(true);
+
+    // Visible text only: a live count would speak every connect and drop.
+    const count = document.querySelector("#stream-listeners");
+    expect(count.hasAttribute("aria-live")).toBe(false);
+    expect(count.hasAttribute("role")).toBe(false);
+    expect(count.closest("[aria-live], [role=status], [role=alert], [role=log]")).toBeNull();
+    expect(fieldset.contains(count)).toBe(true);
+
+    // A plain native modal: named by its own heading, described by its
+    // warning, Escape cancels, and the buttons return cancel / confirm.
+    const dialog = document.querySelector("#stream-rotate-dialog");
+    expect(dialog.tagName).toBe("DIALOG");
+    // A modal inside a hidden tab panel (display: none) never renders,
+    // so the dialog sits outside every panel and card.
+    expect(dialog.closest("main, section, details, [hidden]")).toBeNull();
+    const title = document.getElementById(dialog.getAttribute("aria-labelledby"));
+    expect(title.tagName).toBe("H2");
+    expect(dialog.contains(title)).toBe(true);
+    expect(title.textContent.trim()).toBe("Make a new stream link?");
+    const warning = document.getElementById(dialog.getAttribute("aria-describedby"));
+    expect(dialog.contains(warning)).toBe(true);
+    expect(dialog.hasAttribute("role")).toBe(false);
+    expect(dialog.hasAttribute("closedby")).toBe(false);
+    const form = dialog.querySelector("form");
+    expect(form.getAttribute("method")).toBe("dialog");
+    const buttons = [...form.querySelectorAll("button")];
+    expect(buttons.map((button) => [
+      button.getAttribute("type"), button.value, button.textContent.trim(),
+    ])).toEqual([
+      ["submit", "cancel", "Cancel"],
+      ["submit", "confirm", "Make new link"],
+    ]);
+  });
 });
 
 describe("frontend CI gate", () => {
