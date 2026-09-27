@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import contextlib
 import io
 import logging
 import subprocess
@@ -127,14 +128,27 @@ class _FfmpegEncoder:  # pragma: no cover -- exercised by tests/integration/test
             self._proc.stdin.close()
 
     def close(self) -> None:
-        """Close ffmpeg's stdin and terminate the process."""
-        self.close_input()
+        """Terminate ffmpeg, then release its pipes once it is dead.
+
+        Closing stdin *before* the process is dead can hang: a writer
+        thread blocked inside ``stdin.write()`` on a stalled pipe holds
+        the ``BufferedWriter``'s internal lock, and ``stdin.close()``
+        waits on that same lock. Terminating (or killing) the process
+        first unblocks any such write with a broken pipe, so the pipes
+        can be closed safely afterwards.
+        """
         try:
             self._proc.terminate()
             self._proc.wait(timeout=5)
         except Exception:
-            self._proc.kill()
-            self._proc.wait(timeout=5)
+            with contextlib.suppress(Exception):
+                self._proc.kill()
+            with contextlib.suppress(Exception):
+                self._proc.wait(timeout=5)
+        for pipe in (self._proc.stdin, self._proc.stdout):
+            if pipe is not None:
+                with contextlib.suppress(Exception):
+                    pipe.close()
 
 
 def ffmpeg_encoder(bitrate: int) -> Encoder:
@@ -240,14 +254,28 @@ class StreamOutput:
             encoder_factory: Builds a fresh :class:`Encoder` for a given
                 bitrate; defaults to the real ffmpeg encoder.
             clock: Monotonic time source, overridable for tests.
-            loop: The asyncio event loop listeners run on; defaults to the
-                running loop.
+            loop: The asyncio event loop listeners run on. If omitted, the
+                currently running event loop is used.
+
+        Raises:
+            RuntimeError: *loop* was omitted and there is no running event
+                loop to fall back on.
         """
+        if loop is not None:
+            self._loop = loop
+        else:
+            try:
+                self._loop = asyncio.get_running_loop()
+            except RuntimeError as exc:
+                raise RuntimeError(
+                    "StreamOutput requires a running event loop; pass loop= "
+                    "explicitly or construct it from inside an async context"
+                ) from exc
+
         self._bitrate = bitrate
         self._max_listeners = max_listeners
         self._factory = encoder_factory
         self._clock = clock
-        self._loop = loop or asyncio.get_event_loop()
         self._lock = threading.RLock()
         self._listeners: list[Listener] = []
         self._burst: collections.deque[bytes] = collections.deque()
@@ -261,10 +289,15 @@ class StreamOutput:
         self._closed = False
         self.on_listener_change: Callable[[int], None] | None = None
 
+        self._notify_lock = threading.Lock()
+        self._notify_seq = 0
+        self._delivered_seq = 0
+
         self._pcm_queue_max = max(1, int(_PCM_QUEUE_SECONDS / _BLOCK_SECONDS))
         self._pcm_queue: collections.deque[bytes] = collections.deque()
         self._pcm_cond = threading.Condition()
         self._pcm_stall_logged = False
+        self._pcm_write_problem_logged = False
 
         self._encoder: Encoder = self._factory(bitrate)
         self._reader = self._start_reader(self._encoder)
@@ -296,9 +329,37 @@ class StreamOutput:
                 "Stream encoder failed %d times in a minute; pausing it for 60 s", _FAILURE_LIMIT
             )
 
-    def _restart_encoder(self) -> None:
-        """Replace a dead encoder, counting the failure."""
+    def _flush_pending_titles(self) -> None:
+        """Apply the latest pending title and drop the rest.
+
+        Pending title marks are positions in the *old* encoder's byte
+        stream. Once that encoder is replaced, ``_pcm_in``/``_mp3_out``
+        reset to 0, so a stale mark (usually far larger than anything the
+        fresh encoder will ever produce) would sit at the front of the
+        queue and block every later title from ever taking effect. The
+        most recently requested title is the one that should be showing
+        once the new encoder starts producing output, so apply it now.
+        """
+        if self._pending_titles:
+            self._title = self._pending_titles[-1][1]
+            self._pending_titles.clear()
+
+    def _restart_encoder(self, dead: Encoder | None = None) -> None:
+        """Replace *dead* with a fresh encoder, counting the failure.
+
+        Args:
+            dead: The encoder that exited or is being retired. Defaults to
+                whatever is currently active. If it is no longer the
+                current encoder (another restart already replaced it),
+                this is a no-op: acting on a stale reference here would
+                double-count the failure and could stomp a newer encoder.
+        """
         with self._lock:
+            current = self._encoder
+            if dead is None:
+                dead = current
+            if dead is not current:
+                return
             self._record_failure()
             self.disconnect_all()
             try:
@@ -307,7 +368,18 @@ class StreamOutput:
                 logger.debug("Closing the failed encoder raised", exc_info=True)
             if self._clock() < self._cooldown_until or self._closed:
                 return
-            self._encoder = self._factory(self._bitrate)
+            try:
+                new_encoder = self._factory(self._bitrate)
+            except Exception:
+                logger.error(
+                    "Stream encoder factory failed; will retry on the next "
+                    "restart or listener connection",
+                    exc_info=True,
+                )
+                self._record_failure()
+                return
+            self._encoder = new_encoder
+            self._flush_pending_titles()
             self._pcm_in = self._mp3_out = 0
             self._reader = self._start_reader(self._encoder)
 
@@ -317,10 +389,20 @@ class StreamOutput:
             data = encoder.read(4096)
             if not data:
                 break
-            self._on_encoded(data)
+            self._on_encoded(encoder, data)
         if not self._closed and encoder is self._encoder:
             logger.warning("Stream encoder exited; restarting")
-            self._restart_encoder()
+            self._restart_encoder(encoder)
+
+    def _log_write_problem_once(self, message: str) -> None:
+        """Log *message* once per stall episode, then stay quiet.
+
+        Args:
+            message: The warning to log the first time in an episode.
+        """
+        if not self._pcm_write_problem_logged:
+            logger.warning(message)
+            self._pcm_write_problem_logged = True
 
     def _write_loop(self) -> None:
         """Feed queued PCM to the current encoder, one block at a time."""
@@ -333,11 +415,15 @@ class StreamOutput:
                 pcm = self._pcm_queue.popleft()
             with self._lock:
                 encoder = self._encoder
+            if not encoder.alive:
+                self._log_write_problem_once("Stream encoder is not alive; dropping queued audio")
+                continue
             try:
                 encoder.write(pcm)
             except (BrokenPipeError, OSError, ValueError):
-                logger.warning("Stream encoder rejected a write; it may have exited")
+                self._log_write_problem_once("Stream encoder rejected a write; it may have exited")
                 continue
+            self._pcm_write_problem_logged = False
             with self._lock:
                 self._pcm_in += len(pcm)
 
@@ -346,9 +432,13 @@ class StreamOutput:
     def write(self, block: np.ndarray) -> None:
         """Queue one mix-bus block for the encoder without blocking.
 
+        A no-op once the stream is closed.
+
         Args:
             block: A ``(882, 2)`` float32 PCM block from the mix bus.
         """
+        if self._closed:
+            return
         pcm = np.ascontiguousarray(block, dtype=np.float32).tobytes()
         with self._pcm_cond:
             if len(self._pcm_queue) >= self._pcm_queue_max:
@@ -373,9 +463,21 @@ class StreamOutput:
         with self._lock:
             self._pending_titles.append((self._pcm_in, format_stream_title(artist, title)))
 
-    def _on_encoded(self, data: bytes) -> None:
-        """Advance the title cursor and burst buffer, then fan *data* out."""
+    def _on_encoded(self, encoder: Encoder, data: bytes) -> None:
+        """Advance the title cursor and burst buffer, then fan *data* out.
+
+        Args:
+            encoder: The encoder *data* came from. Dropped without effect
+                if it is no longer the current encoder: a superseded
+                encoder's reader thread can still be draining trailing
+                output after :meth:`set_bitrate` or a restart swapped in a
+                new one, and that stale data must not corrupt the new
+                encoder's byte-position bookkeeping.
+            data: The newly encoded MP3 bytes.
+        """
         with self._lock:
+            if encoder is not self._encoder:
+                return
             self._mp3_out += len(data)
             ratio = (self._bitrate * 1000 / 8) / (SAMPLE_RATE * 2 * 4)
             while self._pending_titles and self._mp3_out >= self._pending_titles[0][0] * ratio:
@@ -400,16 +502,47 @@ class StreamOutput:
         with self._lock:
             return len(self._listeners)
 
-    def _notify(self, count: int) -> None:
-        """Call ``on_listener_change`` with *count*, outside the lock.
+    def _next_seq(self) -> int:
+        """Allocate the next notification sequence number.
 
-        The callback must not call back into :class:`StreamOutput`: it
-        runs after the lock is released but while the caller is still
-        mid-operation, and re-entering would deadlock on the ``RLock``
-        held earlier in the same call stack in some paths.
+        Must be called while holding ``self._lock``, so concurrent callers
+        always get distinct, order-preserving numbers.
         """
-        if self.on_listener_change is not None:
-            self.on_listener_change(count)
+        self._notify_seq += 1
+        return self._notify_seq
+
+    def _notify(self, seq: int, count: int) -> None:
+        """Deliver a listener-count change, dropping stale deliveries.
+
+        ``add_listener``, ``remove_listener`` and ``disconnect_all`` can
+        run on different threads (an HTTP handler on the asyncio loop, a
+        drop triggered from the reader thread), so two notifications can
+        reach here in a different order than the operations that produced
+        them happened in. Each caller allocates its sequence number while
+        holding ``self._lock`` (via :meth:`_next_seq`), which fixes the
+        true order; delivering only strictly increasing sequence numbers,
+        serialized under a dedicated ``_notify_lock``, guarantees
+        ``on_listener_change`` never sees an update older than one it has
+        already seen, regardless of which thread's call gets here first.
+
+        This is called after ``self._lock`` has been released, not while
+        holding it: re-entering :class:`StreamOutput` from the callback on
+        the *same* thread would not deadlock (``self._lock`` is an
+        ``RLock``), but the real hazard is a callback that blocks waiting
+        on another thread that itself needs ``self._lock`` — releasing
+        first avoids that.
+
+        Args:
+            seq: This update's sequence number, from :meth:`_next_seq`.
+            count: The listener count as of that sequence number.
+        """
+        with self._notify_lock:
+            if seq <= self._delivered_seq:
+                return
+            self._delivered_seq = seq
+            callback = self.on_listener_change
+        if callback is not None:
+            callback(count)
 
     def add_listener(self, icy: bool) -> Listener:
         """Register a listener and give it the recent burst.
@@ -422,13 +555,27 @@ class StreamOutput:
 
         Raises:
             ListenerLimitError: At the listener limit.
-            EncoderUnavailableError: While the encoder is cooling down.
+            EncoderUnavailableError: The stream is closed, the encoder is
+                cooling down, or a dead encoder could not be replaced.
         """
         with self._lock:
+            if self._closed:
+                raise EncoderUnavailableError("stream output is closed")
             if self._clock() < self._cooldown_until:
                 raise EncoderUnavailableError("stream encoder failed")
             if not self._encoder.alive:
-                self._encoder = self._factory(self._bitrate)
+                dead = self._encoder
+                try:
+                    self._encoder = self._factory(self._bitrate)
+                except Exception as exc:
+                    self._record_failure()
+                    raise EncoderUnavailableError("stream encoder failed") from exc
+                try:
+                    dead.close()
+                except Exception:
+                    logger.debug("Closing the dead encoder raised", exc_info=True)
+                self._flush_pending_titles()
+                self._pcm_in = self._mp3_out = 0
                 self._reader = self._start_reader(self._encoder)
             if len(self._listeners) >= self._max_listeners:
                 raise ListenerLimitError("listener limit reached")
@@ -439,8 +586,9 @@ class StreamOutput:
             if start >= 0:
                 listener.push(burst[start:], self._title)
             self._listeners.append(listener)
+            seq = self._next_seq()
             count = len(self._listeners)
-        self._notify(count)
+        self._notify(seq, count)
         return listener
 
     def remove_listener(self, listener: Listener) -> None:
@@ -453,18 +601,20 @@ class StreamOutput:
             if listener not in self._listeners:
                 return
             self._listeners.remove(listener)
+            seq = self._next_seq()
             count = len(self._listeners)
         listener.close()
-        self._notify(count)
+        self._notify(seq, count)
 
     def disconnect_all(self) -> None:
         """Close every listener."""
         with self._lock:
             listeners = list(self._listeners)
             self._listeners.clear()
+            seq = self._next_seq()
         for listener in listeners:
             listener.close()
-        self._notify(0)
+        self._notify(seq, 0)
 
     def set_bitrate(self, bitrate: int) -> None:
         """Restart the encoder at *bitrate*; listeners reconnect on their own.
@@ -477,6 +627,7 @@ class StreamOutput:
             self.disconnect_all()
             old = self._encoder
             self._encoder = self._factory(bitrate)
+            self._flush_pending_titles()
             self._pcm_in = self._mp3_out = 0
             self._burst.clear()
             self._burst_size = 0
@@ -489,9 +640,12 @@ class StreamOutput:
             self._closed = True
             self.disconnect_all()
             encoder = self._encoder
+            reader = self._reader
         with self._pcm_cond:
             self._pcm_cond.notify_all()
         try:
             encoder.close()
         except Exception:
             logger.debug("Closing the stream encoder raised", exc_info=True)
+        self._writer.join(timeout=5)
+        reader.join(timeout=5)

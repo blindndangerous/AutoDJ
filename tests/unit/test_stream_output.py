@@ -197,7 +197,8 @@ async def test_slow_pcm_writer_drops_oldest_and_logs_once(caplog: pytest.LogCapt
     out = StreamOutput(320, 8, encoder_factory=BlockingEncoder, loop=asyncio.get_running_loop())
     encoder: BlockingEncoder = out._encoder
     try:
-        assert encoder.write_started.wait(1.0) or True
+        out.write(_block())  # picked up by the writer thread, which then blocks in write()
+        assert encoder.write_started.wait(1.0)
         for _ in range(out._pcm_queue_max + 5):
             out.write(_block())
         with out._pcm_cond:
@@ -205,7 +206,7 @@ async def test_slow_pcm_writer_drops_oldest_and_logs_once(caplog: pytest.LogCapt
         with caplog.at_level("WARNING", logger="autodj.stream"):
             out.write(_block())
         warnings = [r for r in caplog.records if "dropping" in r.message.lower()]
-        assert len(warnings) <= 1
+        assert len(warnings) == 1
     finally:
         encoder.release()
         out.close()
@@ -218,7 +219,7 @@ async def test_pcm_writer_survives_encoder_write_error() -> None:
 
     out = StreamOutput(320, 8, encoder_factory=Rejecting, loop=asyncio.get_running_loop())
     out.write(_block())
-    _wait_until(lambda: True, timeout=0.1)
+    _wait_until(lambda: len(out._pcm_queue) == 0)
     out.close()
 
 
@@ -347,4 +348,206 @@ async def test_burst_buffer_is_trimmed_to_limit() -> None:
     burst_limit = int(out._bitrate * 1000 / 8 * 2.0)
     _wait_until(lambda: out._burst_size - len(out._burst[0]) < burst_limit if out._burst else True)
     assert out._burst_size < burst_limit + 64
+    out.close()
+
+
+# --- Review round 1 fixes: stale pending titles, dead-encoder log floods,
+# factory failures, restart races, stale-encoder data, post-close behavior,
+# thread joins, notification ordering, and the deprecated event-loop
+# fallback. ---
+
+
+async def test_pending_titles_flushed_on_restart(output: StreamOutput) -> None:
+    output.write(_block())
+    _wait_until(lambda: output._mp3_out > 0)
+    output.set_title("First", "Title")
+    output.set_title("Second", "Title")
+    assert output._title == ""  # neither mark has been reached yet
+    output._restart_encoder()
+    assert output._title == "Second - Title"
+    assert list(output._pending_titles) == []
+
+
+async def test_pending_titles_flushed_on_set_bitrate(output: StreamOutput) -> None:
+    output.write(_block())
+    _wait_until(lambda: output._mp3_out > 0)
+    output.set_title("First", "Title")
+    output.set_title("Second", "Title")
+    output.set_bitrate(192)
+    assert output._title == "Second - Title"
+    assert list(output._pending_titles) == []
+
+
+async def test_writer_skips_dead_encoder_and_logs_once_per_episode(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    out = StreamOutput(320, 8, encoder_factory=FakeEncoder, loop=asyncio.get_running_loop())
+    encoder: FakeEncoder = out._encoder
+    encoder.alive = False
+    with caplog.at_level("WARNING", logger="autodj.stream"):
+        for _ in range(5):
+            out.write(_block())
+        _wait_until(lambda: len(out._pcm_queue) == 0)
+    dead_warnings = [r for r in caplog.records if "not alive" in r.message.lower()]
+    assert len(dead_warnings) == 1
+
+    caplog.clear()
+    encoder.alive = True
+    out.write(_block())
+    _wait_until(lambda: len(out._pcm_queue) == 0 and out._pcm_in > 0)
+    encoder.alive = False
+    with caplog.at_level("WARNING", logger="autodj.stream"):
+        for _ in range(5):
+            out.write(_block())
+        _wait_until(lambda: len(out._pcm_queue) == 0)
+    dead_warnings = [r for r in caplog.records if "not alive" in r.message.lower()]
+    assert len(dead_warnings) == 1  # a new episode logs again, but still just once
+    out.close()
+
+
+class _OnceThenRaiseFactory:
+    """Returns a working encoder once, then raises on every later call."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self, bitrate: int) -> FakeEncoder:
+        self.calls += 1
+        if self.calls == 1:
+            return FakeEncoder(bitrate)
+        raise RuntimeError("ffmpeg missing")
+
+
+async def test_restart_encoder_records_failure_when_factory_raises() -> None:
+    factory = _OnceThenRaiseFactory()
+    out = StreamOutput(320, 8, encoder_factory=factory, loop=asyncio.get_running_loop())
+    dead = out._encoder
+    out._restart_encoder(dead)
+    assert factory.calls == 2
+    assert len(out._failures) == 2  # the dead encoder, then the failed factory call
+    assert out._encoder is dead  # replacement failed; nothing to swap in
+    out.close()
+
+
+async def test_add_listener_raises_and_records_failure_when_factory_raises() -> None:
+    factory = _OnceThenRaiseFactory()
+    out = StreamOutput(320, 8, encoder_factory=factory, loop=asyncio.get_running_loop())
+    out._encoder.alive = False
+    with pytest.raises(EncoderUnavailableError):
+        out.add_listener(icy=False)
+    assert factory.calls == 2
+    assert len(out._failures) == 1
+    out.close()
+
+
+async def test_restart_encoder_ignores_a_superseded_dead_encoder() -> None:
+    out = StreamOutput(320, 8, encoder_factory=FakeEncoder, loop=asyncio.get_running_loop())
+    stale = out._encoder
+    out.set_bitrate(192)
+    current = out._encoder
+    out._restart_encoder(stale)
+    assert out._encoder is current
+    assert len(out._failures) == 0
+    out.close()
+
+
+async def test_add_listener_closes_the_dead_encoder_it_replaces() -> None:
+    out = StreamOutput(320, 8, encoder_factory=FakeEncoder, loop=asyncio.get_running_loop())
+    dead = out._encoder
+    dead.alive = False
+    out.add_listener(icy=False)
+    assert dead._closed is True
+    out.close()
+
+
+class _BadCloseThenGoodFactory:
+    """First encoder's close() raises; every later encoder is a plain FakeEncoder."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self, bitrate: int) -> FakeEncoder:
+        self.calls += 1
+        if self.calls == 1:
+
+            class BadClose(FakeEncoder):
+                def close(self) -> None:
+                    raise RuntimeError("boom")
+
+            return BadClose(bitrate)
+        return FakeEncoder(bitrate)
+
+
+async def test_add_listener_swallows_dead_encoder_close_errors() -> None:
+    factory = _BadCloseThenGoodFactory()
+    out = StreamOutput(320, 8, encoder_factory=factory, loop=asyncio.get_running_loop())
+    out._encoder.alive = False
+    out.add_listener(icy=False)  # must not raise despite the dead encoder's close() blowing up
+    assert out._encoder.alive is True
+    out.close()
+
+
+async def test_on_encoded_drops_data_from_a_superseded_encoder(output: StreamOutput) -> None:
+    stale_encoder = output._encoder
+    output.set_bitrate(192)
+    mp3_out_before = output._mp3_out
+    output._on_encoded(stale_encoder, b"x" * 64)
+    assert output._mp3_out == mp3_out_before
+    output._on_encoded(output._encoder, b"y" * 64)
+    assert output._mp3_out == mp3_out_before + 64
+
+
+class _CountingFactory:
+    """Records how many encoders it has been asked to build."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self, bitrate: int) -> FakeEncoder:
+        self.calls += 1
+        return FakeEncoder(bitrate)
+
+
+async def test_add_listener_after_close_raises_without_spawning_encoder() -> None:
+    factory = _CountingFactory()
+    out = StreamOutput(320, 8, encoder_factory=factory, loop=asyncio.get_running_loop())
+    out.close()
+    calls_before = factory.calls
+    with pytest.raises(EncoderUnavailableError):
+        out.add_listener(icy=False)
+    assert factory.calls == calls_before
+
+
+async def test_write_after_close_is_a_noop() -> None:
+    out = StreamOutput(320, 8, encoder_factory=FakeEncoder, loop=asyncio.get_running_loop())
+    out.close()
+    out.write(_block())
+    assert len(out._pcm_queue) == 0
+
+
+async def test_close_joins_writer_and_reader_threads() -> None:
+    out = StreamOutput(320, 8, encoder_factory=FakeEncoder, loop=asyncio.get_running_loop())
+    writer, reader = out._writer, out._reader
+    out.close()
+    assert not writer.is_alive()
+    assert not reader.is_alive()
+
+
+async def test_stale_notify_sequence_numbers_are_dropped(output: StreamOutput) -> None:
+    counts: list[int] = []
+    output.on_listener_change = counts.append
+    output._notify(2, 5)
+    output._notify(1, 99)  # stale/out-of-order: must be dropped
+    output._notify(3, 7)
+    assert counts == [5, 7]
+
+
+def test_requires_a_loop_outside_a_running_event_loop() -> None:
+    with pytest.raises(RuntimeError):
+        StreamOutput(320, 8, encoder_factory=FakeEncoder)
+
+
+async def test_loop_defaults_to_the_running_loop_when_omitted() -> None:
+    out = StreamOutput(320, 8, encoder_factory=FakeEncoder)
+    assert out._loop is asyncio.get_running_loop()
     out.close()
