@@ -12,7 +12,8 @@ AutoDJ is a single-user local music player with these exposed surfaces:
   The default Compose service listens on container-internal `0.0.0.0` but publishes only on host
   `127.0.0.1`.
 - LAN mode requires either an access token or explicit `--insecure-lan`, plus exact Host and Origin
-  allowlists. `AUTODJ_ACCESS_TOKEN` is supported for secret injection.
+  allowlists. `AUTODJ_ACCESS_TOKEN` is supported for secret injection. `serve --lan` fills in
+  both allowlists and the token automatically; see "Automatic LAN mode" below.
 - Backup and restore trust configured source and destination roots after applying path, type,
   identity, size, digest, and free-space checks.
 
@@ -86,6 +87,33 @@ The liner *root directory* comes only from configuration. `/api/playback-setting
 `liners_folder`, like any other unknown field, with 422 before applying anything, and
 `liners_folder` is not part of the `PlaybackState` schema that `PERSISTED_PLAYBACK_FIELDS`
 derives from, so `web_state.json` never stores it. Treat a paired browser as trusted.
+
+### Automatic LAN mode
+
+`autodj serve --lan` (or `[server] lan`) computes the Host allowlist from this machine's own
+names: the hostname, `<hostname>.local` for a hostname without a dot, the fully qualified name,
+the addresses the resolver gives the hostname, the outbound IPv4 address (found by connecting a
+UDP socket, which sends nothing), and `localhost`, `127.0.0.1` and `::1`. The Origin allowlist is
+`http://` (and with TLS `https://`) on the served port for each of those hosts, merged with any
+configured hosts and origins. The resulting configuration passes the same startup validation as
+a hand-written one.
+
+This keeps the DNS-rebinding defence: a page on an attacker-controlled name that resolves to
+this machine's address still sends its own name in the Host header, which is not in the list, so
+the request gets 403. It does not restrict which devices can connect; any device that can route to
+the port and uses one of the listed names or addresses reaches the pairing screen. Names the
+machine does not know about, such as a CNAME in router DNS, are refused until added with
+`--allowed-host`. If the resolver or the operating system reports an address that another network
+also uses, that address is allowed too; this widens the Host check but does not bypass pairing.
+
+When no token is configured, `--lan` stores a generated 43-character token in
+`<index_dir>/.access-token`, written atomically with mode 0600 and regenerated if the file is
+empty or too short. An unreadable file stops startup with an error instead of silently replacing
+the token. A configured `access_token` or `AUTODJ_ACCESS_TOKEN` always wins. Anyone who can read
+the index directory can derive pairing codes, the same as for a token in `config.local.toml`;
+deleting the file rotates the token and ends every paired session on the next start. Startup
+prints the addresses and pairing code, never the token. `--lan --insecure-lan` keeps the
+automatic allowlists without any token.
 
 ## Request and audit records
 

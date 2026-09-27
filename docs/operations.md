@@ -16,6 +16,31 @@ Run `uv run autodj doctor`. Use `uv run autodj doctor --json` for automation. A 
 check returns exit 1. Doctor does not write the index and redacts both server and Hugging Face
 tokens.
 
+## Local network access
+
+Start the native server for other devices on your network with one switch:
+
+```bash
+uv run autodj serve --lan
+```
+
+`--lan` (or `[server] lan = true`, or `AUTODJ_LAN=1`) binds `0.0.0.0` unless `--host` or
+`[server] host` names a specific non-loopback address. It allows the Host names and origins of
+this machine that it can detect: the hostname, `<hostname>.local`, the fully qualified name, every
+non-loopback address, and `localhost`, `127.0.0.1` and `::1`. With `--ssl-certfile` and
+`--ssl-keyfile` it allows the matching `https://` origins too. It uses a configured
+`access_token` or `AUTODJ_ACCESS_TOKEN` when there is one; otherwise it loads or creates
+`<index_dir>/.access-token` (mode 0600). Startup prints the addresses to open and the current
+pairing code with how long it stays valid; it never prints the token. `uv run autodj doctor`
+shows the detected hosts and whether the token will be created.
+
+```bash
+uv run autodj serve --lan --ssl-certfile radio.pem --ssl-keyfile radio-key.pem
+```
+
+`--lan --insecure-lan` keeps the detected allowlists but turns pairing off; use it only on a
+trusted network. `--insecure-lan` without `--lan` still needs explicit allowlists.
+
 ## Container ownership and exposure
 
 Create bind sources before startup:
@@ -34,7 +59,9 @@ The Compose `--insecure-lan` flag acknowledges only that internal wildcard bind.
 the port only on host `127.0.0.1` (`127.0.0.1:8080:8080`), so the default does not expose the
 service to the host LAN.
 
-Create fresh-clone LAN settings and start the authenticated service:
+Create fresh-clone LAN settings and start the authenticated service. The `lan` profile runs
+`serve --lan`; inside a container detection only finds container addresses, so the host and
+origin that setup writes to `.env` stay explicit and merge with them:
 
 ```bash
 uv run autodj setup-lan --host-name radio.local
@@ -59,7 +86,14 @@ end-to-end TLS: run `autodj serve` directly with both `--ssl-certfile` and `--ss
 certificate trusted by every browser. AutoDJ does not support TLS termination in front of its
 server: its `Secure` cookie flag and origin checks follow its own TLS setting.
 
-The native server needs the same server secret, but only Compose reads `.env` on its own;
+### Advanced overrides
+
+`--lan` covers names this machine knows about. For a DNS name it cannot detect, such as a name
+in your router's DNS or a CNAME, add it with `--allowed-host` and `--allowed-origin` (or
+`[server] allowed_hosts` and `allowed_origins`); with `--lan` these merge with the detected
+lists, and without it they replace them. These flags and `--access-token` are hidden from
+`autodj serve --help`. To share the Compose secret with a native server, note that the native
+server needs the same server secret, but only Compose reads `.env` on its own;
 `uv run autodj` does not. Either copy the secret into gitignored `config.local.toml` as
 `[server] access_token`, or load `.env` into the shell that starts the server so
 `AUTODJ_ACCESS_TOKEN` is set. In Bash:
@@ -79,7 +113,7 @@ Get-Content .env | ForEach-Object {
 
 Only Compose reads `AUTODJ_LAN_HOST` and `AUTODJ_LAN_ORIGIN`, and that origin uses `http://`, so
 pass the HTTPS host and origin as flags. With `AUTODJ_ACCESS_TOKEN` set in the same shell, start a
-private LAN server with TLS:
+private LAN server with TLS for a custom name without `--lan`:
 
 ```bash
 uv run autodj serve --host 0.0.0.0 \

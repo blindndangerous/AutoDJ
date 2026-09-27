@@ -81,6 +81,26 @@ Future runs of `autodj index` embed new files and refresh the post-processing ca
 [Operations](docs/operations.md) for diagnosis, `autodj backup`, `autodj restore`, container
 ownership, and upgrades.
 
+## Use it from other devices
+
+To open AutoDJ from a phone, tablet or another computer on your home network, start it with
+`--lan`:
+
+```bash
+uv run autodj serve --lan
+```
+
+Startup prints the addresses to open, such as `http://nas:8080` and `http://192.168.1.20:8080`,
+and an 8-digit pairing code. Open one of the addresses on the other device and enter the code once;
+that browser stays paired. Run `uv run autodj devices pairing-code` for a fresh code later. To make
+it permanent, set `[server] lan = true` in `config.toml` or `AUTODJ_LAN=1`.
+
+`--lan` listens on all interfaces, allows only this machine's own names and addresses in the
+browser's address bar, and keeps pairing on. It creates the pairing secret in
+`index/.access-token` the first time, readable only by you. For HTTPS, add `--ssl-certfile` and
+`--ssl-keyfile`. See [Operations](docs/operations.md) for containers, custom DNS names and other
+advanced overrides.
+
 ## Commands
 
 Every command takes `--help`, for example `uv run autodj serve --help`. The global options
@@ -93,7 +113,8 @@ Every command takes `--help`, for example `uv run autodj serve --help`. The glob
 - `autodj prune` removes index entries whose audio files no longer exist.
 - `autodj stats` prints an overview of the indexed library.
 - `autodj list-indexes` lists the named indexes under `[index] index_dir`.
-- `autodj serve` starts the browser interface.
+- `autodj serve` starts the browser interface; `autodj serve --lan` opens it to your local
+  network.
 - `autodj play` starts terminal playback with server-side audio. It needs the `play` extra.
 - `autodj playlist` writes an offline M3U playlist from the similarity picker.
 - `autodj list-devices` lists the audio output devices available to `play` and `serve
@@ -250,11 +271,10 @@ pairing codes from that secret and exchanges a valid code for a device-bound Htt
 Use `autodj devices list`, `revoke`, `reset`, and `pairing-code` to manage browsers. TLS protects
 pairing codes and session cookies on the wire.
 
-For non-loopback bindings, including LAN access, authentication can be disabled only with an explicit trusted-LAN acknowledgement.  This still enforces the configured Host and Origin allowlists:
+For non-loopback bindings, including LAN access, authentication can be disabled only with an explicit trusted-LAN acknowledgement.  This still enforces the Host and Origin allowlists that `--lan` detects:
 
 ```bash
-uv run autodj serve --host 0.0.0.0 --insecure-lan \
-  --allowed-host radio.local --allowed-origin http://radio.local:8080
+uv run autodj serve --lan --insecure-lan
 ```
 
 `--insecure-lan` disables authentication; use it only on a trusted private network.  Multi-user accounts, roles, cloud identity, and public Internet hosting are not supported.

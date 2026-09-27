@@ -803,3 +803,18 @@ def test_container_health_validator_rejects_nonempty_or_invalid_health(
     result = _validate_health(payload)
 
     assert result.returncode != 0
+
+
+def test_compose_lan_profile_uses_lan_switch_with_explicit_values() -> None:
+    lan = _compose_command(
+        "autodj-lan",
+        {"AUTODJ_LAN_HOST": "radio.local", "AUTODJ_LAN_ORIGIN": "http://radio.local:8080"},
+    )
+    default = _compose_command("autodj", {})
+
+    # Detection inside the container only sees container addresses, so the
+    # operator's host and origin from .env stay and merge with it.
+    assert lan[:2] == ["serve", "--lan"]
+    assert _option_values(lan, "--allowed-host") == ["127.0.0.1", "radio.local"]
+    assert _option_values(lan, "--allowed-origin") == ["http://radio.local:8080"]
+    assert "--lan" not in default

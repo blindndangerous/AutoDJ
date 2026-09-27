@@ -47,6 +47,10 @@ services:
       AUTODJ_ACCESS_TOKEN: ${AUTODJ_ACCESS_TOKEN:-}
     command:
       - serve
+      # --lan adds the names and addresses AutoDJ detects. Inside the container it only sees
+      # container addresses, so the operator's LAN host and origin from .env stay explicit and
+      # merge with them. AUTODJ_ACCESS_TOKEN from .env wins over a saved token file.
+      - --lan
       # The image healthcheck probes the container-local IPv4 listener. Keep this
       # exact loopback Host alongside, never instead of, the operator's LAN Host.
       - --allowed-host

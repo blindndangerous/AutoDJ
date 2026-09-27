@@ -546,7 +546,7 @@ def _print_serve_url_banner(
     if host in ("127.0.0.1", "localhost", "::1"):
         console_.print(
             "  [dim](Reachable from this machine only.  "
-            "Use [bold]--host 0.0.0.0[/] to expose on your LAN.)[/]",
+            "Use [bold]--lan[/] to open it to your local network.)[/]",
         )
     elif host == "0.0.0.0":  # nosec B104 -- explicit user intent for LAN bind
         console_.print(
