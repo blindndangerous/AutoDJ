@@ -484,6 +484,8 @@ class LinerTestBody(BaseModel):
     rotation mode picks the next one.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     name: str | None = None
 
 

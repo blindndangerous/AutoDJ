@@ -81,3 +81,11 @@ class TestLinerTestRoute:
 
         assert resp.status_code == 200
         assert resp.json() == {"played": None}
+
+    def test_rejects_unknown_fields(self, bridge) -> None:
+        """Extra body fields are refused rather than silently ignored."""
+        resp = TestClient(create_app(bridge)).post(
+            "/api/liners/test", json={"name": "a.wav", "bogus": True}
+        )
+
+        assert resp.status_code == 422

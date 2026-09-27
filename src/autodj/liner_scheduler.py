@@ -19,6 +19,7 @@ import io
 import logging
 import random
 import subprocess
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -106,16 +107,26 @@ def decode_liner(
 class LinerScheduler:
     """Fire voice liners into the mix bus on the configured triggers.
 
-    Owns a :class:`~autodj.liners.LinerLibrary` (refreshed from disk on
-    every automatic pick, so uploads/deletes take effect without a
-    restart) and rebuilds a :class:`~autodj.liners.LinerTrigger` from
-    the live config on every evaluation, so config changes applied
-    through the settings API take effect on the next track/tick without
-    recreating the scheduler.
+    Owns one :class:`~autodj.liners.LinerLibrary` for the process
+    lifetime — its file list is rescanned from disk before every
+    automatic pick (so uploads/deletes take effect without a restart)
+    but its sequential-rotation ``cursor`` is preserved across fires,
+    matching ``liners.js``'s persistent ``seqCursor``. Rebuilds a
+    :class:`~autodj.liners.LinerTrigger` from the live config on every
+    evaluation, so config changes applied through the settings API take
+    effect on the next track/tick without recreating the scheduler.
 
     A liner that fails to decode is logged and skipped — it never
     reaches :meth:`~autodj.mixbus.MixBus.play_liner`, so a bad or
     unreachable clip cannot interrupt the music.
+
+    Thread-safety: :meth:`on_track_start`, :meth:`tick` and :meth:`fire`
+    all take one internal lock covering the whole due-check-and-fire
+    sequence (including the decode and the ``play_liner`` call), so
+    concurrent calls from different threads — e.g. the broadcast/tick
+    thread and a ``POST /api/liners/test`` request handler — cannot both
+    observe the same trigger as due and double-fire, and a slow decode
+    on one thread cannot interleave with another thread's fire.
     """
 
     def __init__(
@@ -145,10 +156,16 @@ class LinerScheduler:
         self._clock = clock
         self._rng = rng or random.Random()
         self._decoder = decoder
+        self._lock = threading.Lock()
         self._tracks_since = 0
         self._last_fire = clock()
         self._library = LinerLibrary.from_folder(folder)
-        self._random_target = self._trigger().roll_random_target(rng=self._rng)
+        # Matches the browser (``liners.js``'s ``state.randomTarget``
+        # starting ``null``): the random window is not armed until the
+        # first liner actually plays, so a random-only config cannot
+        # auto-fire before one has played (by the test route, or by
+        # another trigger).
+        self._random_target: float | None = None
 
     def _trigger(self) -> LinerTrigger:
         """Build a :class:`LinerTrigger` from the current config values."""
@@ -160,39 +177,26 @@ class LinerScheduler:
             enabled=bool(self._cfg.liners_enabled),
         )
 
-    def _maybe_fire(self) -> None:
-        """Fire a liner when the current trigger config says it is due."""
-        minutes = (self._clock() - self._last_fire) / 60.0
-        if self._trigger().should_fire(
-            track_count=self._tracks_since,
-            minutes_since_last=minutes,
-            random_target_minutes=self._random_target,
-        ):
-            self.fire()
+    def _refresh_library(self) -> None:
+        """Rescan the liner folder in place, keeping the rotation cursor.
 
-    def on_track_start(self) -> None:
-        """Count a track advance and fire a liner if a trigger is due."""
-        self._tracks_since += 1
-        self._maybe_fire()
-
-    def tick(self) -> None:
-        """Check timed triggers; call about once a second."""
-        self._maybe_fire()
-
-    def fire(self, name: str | None = None) -> str | None:
-        """Play liner *name*, or the next library pick, into the mix bus.
-
-        Args:
-            name: Plain liner file name to play. ``None`` picks the next
-                clip from the liner folder using the configured rotation
-                mode (refreshed from disk first).
-
-        Returns:
-            The liner name played, or ``None`` when nothing played
-            (empty library, or the clip could not be decoded).
+        Replacing ``self._library`` outright (as opposed to updating its
+        ``files``/``weights``) would reset :attr:`LinerLibrary.cursor`
+        to 0 on every automatic pick, so ``"sequential"`` mode would
+        always replay the first file instead of rotating.
         """
+        fresh = LinerLibrary.from_folder(self._folder)
+        self._library.files = fresh.files
+        self._library.weights = fresh.weights
+        if self._library.files:
+            self._library.cursor %= len(self._library.files)
+        else:
+            self._library.cursor = 0
+
+    def _fire_locked(self, name: str | None) -> str | None:
+        """Play *name*, or the next pick, into the bus. Caller holds ``_lock``."""
         if name is None:
-            self._library = LinerLibrary.from_folder(self._folder)
+            self._refresh_library()
             picked = self._library.pick(self._cfg.liners_pick_mode, rng=self._rng)
             if picked is None:
                 return None
@@ -207,3 +211,39 @@ class LinerScheduler:
         self._last_fire = self._clock()
         self._random_target = self._trigger().roll_random_target(rng=self._rng)
         return name
+
+    def _maybe_fire_locked(self) -> None:
+        """Fire when the current trigger config says it is due. Caller holds ``_lock``."""
+        minutes = (self._clock() - self._last_fire) / 60.0
+        if self._trigger().should_fire(
+            track_count=self._tracks_since,
+            minutes_since_last=minutes,
+            random_target_minutes=self._random_target,
+        ):
+            self._fire_locked(None)
+
+    def on_track_start(self) -> None:
+        """Count a track advance and fire a liner if a trigger is due."""
+        with self._lock:
+            self._tracks_since += 1
+            self._maybe_fire_locked()
+
+    def tick(self) -> None:
+        """Check timed triggers; call about once a second."""
+        with self._lock:
+            self._maybe_fire_locked()
+
+    def fire(self, name: str | None = None) -> str | None:
+        """Play liner *name*, or the next library pick, into the mix bus.
+
+        Args:
+            name: Plain liner file name to play. ``None`` picks the next
+                clip from the liner folder using the configured rotation
+                mode (refreshed from disk first).
+
+        Returns:
+            The liner name played, or ``None`` when nothing played
+            (empty library, or the clip could not be decoded).
+        """
+        with self._lock:
+            return self._fire_locked(name)
