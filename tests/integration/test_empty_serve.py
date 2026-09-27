@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from autodj.cli import _load_index_for_serve, cli
 from autodj.config import ServerConfig, load_config
-from autodj.index_manifest import IndexConsistencyError, read_manifest, tombstone_publication
+from autodj.index_manifest import UnsupportedIndexError, read_manifest, tombstone_publication
 from autodj.indexer import FEATURE_DIM, IndexEntry, save_index
 from autodj.player import Player
 from autodj.server import PlayerBridge, create_app
@@ -67,13 +67,13 @@ def test_empty_similarity_index_reloads_a_published_generation(tmp_path: Path) -
     assert sim.entries_snapshot() == (entry,)
 
 
-def test_serve_loader_propagates_partial_legacy_index(tmp_path: Path) -> None:
+def test_serve_loader_refuses_index_without_manifest(tmp_path: Path) -> None:
     cfg = load_config(None, environ={})
-    index_dir = tmp_path / "partial-index"
+    index_dir = tmp_path / "old-index"
     index_dir.mkdir()
     (index_dir / "tracks.db").touch()
 
-    with pytest.raises(FileNotFoundError):
+    with pytest.raises(UnsupportedIndexError, match=r"Rebuild it with `autodj index --force`"):
         _load_index_for_serve(cfg, active_dir=index_dir)
 
 
@@ -146,7 +146,7 @@ def test_serve_loader_rejects_uncommitted_generation_reservation(tmp_path: Path)
         encoding="utf-8",
     )
 
-    with pytest.raises(IndexConsistencyError, match="publication history"):
+    with pytest.raises(FileNotFoundError, match="No published index"):
         _load_index_for_serve(cfg, active_dir=tmp_path)
 
 

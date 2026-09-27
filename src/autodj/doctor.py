@@ -19,9 +19,11 @@ from autodj.config import is_loopback_bind
 from autodj.index_manifest import (
     IndexConsistencyError,
     IndexManifest,
-    legacy_artifacts_allowed,
+    UnsupportedIndexError,
+    current_snapshot_token,
     publication_is_tombstoned,
     read_manifest,
+    require_current_format,
     sha256_file,
 )
 from autodj.sqlite_utils import readonly_uri
@@ -208,24 +210,6 @@ def _path_check(name: str, path: Path, *, writable: bool) -> DoctorCheck:
     return DoctorCheck(name, CheckStatus.FAIL, str(path), "path does not exist")
 
 
-def _legacy_artifacts(index_dir: Path) -> tuple[bool, bool, bool]:
-    """Report which legacy index artifacts exist."""
-    tracks = (index_dir / "tracks.db").is_file()
-    vectors = (index_dir / "vectors.index").is_file()
-    generations = any(index_dir.glob("tracks.g*.db")) or any(index_dir.glob("vectors.g*.index"))
-    return tracks, vectors, generations
-
-
-def _legacy_index_counts(index_dir: Path) -> tuple[int, int]:
-    """Read row and vector counts from a legacy index."""
-    import faiss
-
-    tracks_path = index_dir / "tracks.db"
-    entries = _validate_sqlite(tracks_path, "tracks", _TRACKS_COLUMNS)
-    vectors = int(faiss.read_index(str(index_dir / "vectors.index")).ntotal)
-    return entries, vectors
-
-
 def _validate_schema(
     conn: sqlite3.Connection,
     table: str,
@@ -376,48 +360,40 @@ def _index_check(cfg: AutoDJConfig) -> DoctorCheck:
                     "empty index",
                     "coherently tombstoned; run `autodj index` when music is available",
                 )
-            if not legacy_artifacts_allowed(index_dir):
+            require_current_format(index_dir)
+            if current_snapshot_token(index_dir).state_revision:
                 return DoctorCheck(
                     "index-coherence",
                     CheckStatus.FAIL,
                     "unreadable published generation",
                     "manifest missing despite publication history; run `autodj index --force`",
                 )
-            tracks, vectors, generations = _legacy_artifacts(index_dir)
-            if generations:
+            if any(index_dir.glob("tracks.g*.db")) or any(index_dir.glob("vectors.g*.index")):
                 return DoctorCheck(
                     "index-coherence",
                     CheckStatus.FAIL,
                     "partial published index",
                     "generation files lack a manifest; run `autodj index --force`",
                 )
-            if not tracks and not vectors:
-                return DoctorCheck(
-                    "index-coherence",
-                    CheckStatus.WARN,
-                    "empty index",
-                    f"{index_dir}; run `autodj index` before playback",
-                )
-            if not tracks or not vectors:
-                return DoctorCheck(
-                    "index-coherence",
-                    CheckStatus.FAIL,
-                    "partial published index",
-                    "tracks.db and vectors.index must both exist; run `autodj index --force`",
-                )
-            entry_count, vector_count = _legacy_index_counts(index_dir)
-        else:
-            lock_path = index_dir / ".index-publication.lock"
-            if not lock_path.is_file():
-                return DoctorCheck(
-                    "index-coherence",
-                    CheckStatus.FAIL,
-                    "unreadable published generation",
-                    "publication lock missing; run `autodj index` to restore it",
-                )
-            entry_count, vector_count = _published_index_counts(index_dir, manifest)
+            return DoctorCheck(
+                "index-coherence",
+                CheckStatus.WARN,
+                "empty index",
+                f"{index_dir}; run `autodj index` before playback",
+            )
+        lock_path = index_dir / ".index-publication.lock"
+        if not lock_path.is_file():
+            return DoctorCheck(
+                "index-coherence",
+                CheckStatus.FAIL,
+                "unreadable published generation",
+                "publication lock missing; run `autodj index` to restore it",
+            )
+        entry_count, vector_count = _published_index_counts(index_dir, manifest)
         if entry_count != vector_count:
             raise IndexConsistencyError(f"tracks={entry_count}, vectors={vector_count}")
+    except UnsupportedIndexError as exc:
+        return DoctorCheck("index-coherence", CheckStatus.FAIL, "old index format", str(exc))
     except ImportError:
         return DoctorCheck(
             "index-coherence",
@@ -445,13 +421,6 @@ def _index_check(cfg: AutoDJConfig) -> DoctorCheck:
             CheckStatus.WARN,
             "empty index",
             "run `autodj index` after adding music",
-        )
-    if manifest is None:
-        return DoctorCheck(
-            "index-coherence",
-            CheckStatus.WARN,
-            f"{entry_count} legacy vectors and rows",
-            "no generation manifest; run `autodj index` to publish one",
         )
     return DoctorCheck(
         "index-coherence",
@@ -552,7 +521,12 @@ def _tracks_database_check(cfg: AutoDJConfig) -> DoctorCheck:
     try:
         manifest = read_manifest(index_dir) if index_dir.is_dir() else None
         tombstoned = index_dir.is_dir() and publication_is_tombstoned(index_dir)
-        legacy_allowed = index_dir.is_dir() and legacy_artifacts_allowed(index_dir)
+        if manifest is None and index_dir.is_dir():
+            require_current_format(index_dir)
+            if not tombstoned and current_snapshot_token(index_dir).state_revision:
+                raise IndexConsistencyError("publication history has no active manifest")
+    except UnsupportedIndexError as exc:
+        return DoctorCheck("tracks-db", CheckStatus.FAIL, "old index format", str(exc))
     except (IndexConsistencyError, OSError) as exc:
         return DoctorCheck(
             "tracks-db",
@@ -568,14 +542,7 @@ def _tracks_database_check(cfg: AutoDJConfig) -> DoctorCheck:
             "database absent",
             f"{path}; run `autodj index` when music is available",
         )
-    if manifest is None and index_dir.is_dir() and not legacy_allowed:
-        return DoctorCheck(
-            "tracks-db",
-            CheckStatus.FAIL,
-            "integrity/schema check failed",
-            "publication history has no active manifest; run `autodj index --force`",
-        )
-    if not path.is_file():
+    if manifest is None or not path.is_file():
         return DoctorCheck(
             "tracks-db",
             CheckStatus.WARN,

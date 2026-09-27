@@ -54,12 +54,10 @@ from autodj.index_manifest import (
     _immutable_sqlite_uri,
     current_snapshot_token,
     fsync_directory,
-    legacy_artifacts_allowed,
-    publication_has_uncommitted_reservation,
-    publication_is_tombstoned,
     publication_lock,
     publish_manifest,
     read_manifest,
+    require_current_format,
     require_snapshot_token,
     restore_working_snapshot,
     sha256_file,
@@ -1296,23 +1294,10 @@ def enrich_from_beets(
     with publication_lock(index_dir):
         current = read_manifest(index_dir)
         source_snapshot = current_snapshot_token(index_dir)
-        if current is not None:
-            entries, _loaded = load_index(
-                index_dir,
-                expected_generation=current.generation,
-            )
-        else:
-            if not legacy_artifacts_allowed(index_dir):
-                raise IndexConsistencyError("manifest-free artifacts have publication history")
-            db_path = _tracks_db_path(index_dir)
-            faiss_file = index_dir / "vectors.index"
-            if not db_path.exists() or not faiss_file.exists():
-                return (0, 0)
-            conn_db = _open_tracks_db(index_dir)
-            try:
-                entries = _load_tracks_rows(conn_db)
-            finally:
-                conn_db.close()
+        if current is None:
+            require_current_format(index_dir)
+            return (0, 0)
+        entries, _loaded = load_index(index_dir, expected_generation=current.generation)
     for e in entries:
         e.path = _resolve_for_runtime(e.path, music_dir, path_remap)
 
@@ -1500,24 +1485,10 @@ def prune_index(
     with publication_lock(index_dir):
         current = read_manifest(index_dir)
         source_snapshot = current_snapshot_token(index_dir)
-        if current is not None:
-            entries, loaded = load_index(
-                index_dir,
-                expected_generation=current.generation,
-            )
-        else:
-            if not legacy_artifacts_allowed(index_dir):
-                raise IndexConsistencyError("manifest-free artifacts have publication history")
-            db_path = _tracks_db_path(index_dir)
-            faiss_file = index_dir / "vectors.index"
-            if not db_path.exists() or not faiss_file.exists():
-                return (0, 0)
-            conn = _open_tracks_db(index_dir)
-            try:
-                entries = _load_tracks_rows(conn)
-            finally:
-                conn.close()
-            loaded = cast("faiss.IndexFlatIP", faiss.read_index(str(faiss_file)))
+        if current is None:
+            require_current_format(index_dir)
+            return (0, 0)
+        entries, loaded = load_index(index_dir, expected_generation=current.generation)
     already_relative = music_dir is not None and _is_relative_storage(
         [entry.path for entry in entries]
     )
@@ -1620,27 +1591,19 @@ def load_index(
                 f"expected generation {expected_generation}, got "
                 f"{getattr(before, 'generation', None)}"
             )
-        tracks_path = (
-            index_dir / before.tracks_file if before is not None else index_dir / "tracks.db"
-        )
-        vectors_path = (
-            index_dir / before.vectors_file if before is not None else index_dir / "vectors.index"
-        )
-        if before is None and not legacy_artifacts_allowed(index_dir):
-            raise IndexConsistencyError("manifest-free artifacts have publication history")
+        if before is None:
+            require_current_format(index_dir)
+            raise FileNotFoundError(f"No published index in {index_dir}; run `autodj index`")
+        tracks_path = index_dir / before.tracks_file
+        vectors_path = index_dir / before.vectors_file
         if not tracks_path.is_file() or not vectors_path.is_file():
             raise FileNotFoundError(
                 f"Index files missing: {tracks_path.name} + {vectors_path.name}"
             )
-        pre_hashes = (
-            (sha256_file(tracks_path), sha256_file(vectors_path)) if before is not None else None
-        )
+        pre_hashes = (sha256_file(tracks_path), sha256_file(vectors_path))
 
         faiss_index = cast("faiss.IndexFlatIP", faiss.read_index(str(vectors_path)))
-        if before is None:
-            conn = _open_tracks_db(index_dir)
-        else:
-            conn = sqlite3.connect(_immutable_sqlite_uri(tracks_path), uri=True)
+        conn = sqlite3.connect(_immutable_sqlite_uri(tracks_path), uri=True)
         try:
             entries = _load_tracks_rows(conn)
         finally:
@@ -1649,9 +1612,7 @@ def load_index(
             for entry in entries:
                 entry.path = _resolve_for_runtime(entry.path, music_dir, path_remap)
 
-        post_hashes = (
-            (sha256_file(tracks_path), sha256_file(vectors_path)) if before is not None else None
-        )
+        post_hashes = (sha256_file(tracks_path), sha256_file(vectors_path))
         after = read_manifest(index_dir)
         if after != before:
             raise IndexConsistencyError("manifest changed during load; retry generation")
@@ -1660,17 +1621,12 @@ def load_index(
 
         sqlite_count = len(entries)
         faiss_count = int(faiss_index.ntotal)
-        expected_count = before.vector_count if before is not None else sqlite_count
-        if sqlite_count != expected_count or faiss_count != expected_count:
+        if sqlite_count != before.vector_count or faiss_count != before.vector_count:
             raise IndexConsistencyError(
-                f"index count mismatch: manifest={getattr(before, 'vector_count', None)}, "
+                f"index count mismatch: manifest={before.vector_count}, "
                 f"sqlite={sqlite_count}, faiss={faiss_count}"
             )
-        if before is not None and pre_hashes != (
-            before.tracks_sha256,
-            before.vectors_sha256,
-        ):
-            assert pre_hashes is not None
+        if pre_hashes != (before.tracks_sha256, before.vectors_sha256):
             tracks_hash, vectors_hash = pre_hashes
             if tracks_hash != before.tracks_sha256:
                 raise IndexConsistencyError("tracks SHA-256 mismatch")
@@ -1678,7 +1634,7 @@ def load_index(
                 raise IndexConsistencyError("vectors SHA-256 mismatch")
         logger.info(
             "Loaded index generation %s with %d tracks from %s",
-            0 if before is None else before.generation,
+            before.generation,
             len(entries),
             index_dir,
         )
@@ -2009,6 +1965,13 @@ def _detect_stale_entries(
     return stale, migrated
 
 
+def _discard_working_files(index_dir: Path) -> None:
+    """Remove unpublished working files so the next publication starts clean."""
+    for name in ("tracks.db", "tracks.db-wal", "tracks.db-shm", "vectors.index"):
+        (index_dir / name).unlink(missing_ok=True)
+    fsync_directory(index_dir)
+
+
 def _load_existing_artifacts(
     index_dir: Path,
     music_dir: Path,
@@ -2033,68 +1996,11 @@ def _load_existing_artifacts(
             restore_working_snapshot(index_dir, expected_generation=manifest.generation)
             return manifest_entries, vectors, already_relative, snapshot
 
-        db_exists = (index_dir / "tracks.db").is_file()
-        vectors_exist = (index_dir / "vectors.index").is_file()
-        if not db_exists and not vectors_exist:
-            return [], [], False, snapshot
-        if publication_is_tombstoned(index_dir) or publication_has_uncommitted_reservation(
-            index_dir
-        ):
-            for path in (
-                index_dir / "tracks.db",
-                index_dir / "tracks.db-wal",
-                index_dir / "tracks.db-shm",
-                index_dir / "vectors.index",
-            ):
-                path.unlink(missing_ok=True)
-            fsync_directory(index_dir)
-            return [], [], False, current_snapshot_token(index_dir)
-        if not legacy_artifacts_allowed(index_dir):
-            raise IndexConsistencyError("manifest-free artifacts have publication history")
-
-        entries: list[IndexEntry] = []
-        already_relative = True
-        if db_exists:
-            conn = _open_tracks_db(index_dir)
-            try:
-                entries = _load_tracks_rows(conn)
-            finally:
-                conn.close()
-            already_relative = _is_relative_storage([entry.path for entry in entries])
-
-        loaded: faiss.IndexFlatIP | None = None
-        if vectors_exist:
-            loaded = cast(
-                "faiss.IndexFlatIP",
-                faiss.read_index(str(index_dir / "vectors.index")),
-            )
-        entry_count = len(entries)
-        vector_count = 0 if loaded is None else int(loaded.ntotal)
-        common = min(entry_count, vector_count)
-        entries = entries[:common]
-        vectors = (
-            []
-            if loaded is None or common == 0
-            else [np.asarray(row, dtype=np.float32) for row in loaded.reconstruct_n(0, common)]
-        )
-        for entry in entries:
-            entry.path = _resolve_for_runtime(entry.path, music_dir, path_remap)
-        if common != entry_count or common != vector_count:
-            dimension = FEATURE_DIM if loaded is None else int(loaded.d)
-            aligned_vectors = (
-                np.asarray(vectors, dtype=np.float32)
-                if vectors
-                else np.empty((0, dimension), dtype=np.float32)
-            )
-            published = _publish_full_snapshot(
-                entries,
-                aligned_vectors,
-                index_dir,
-                music_dir,
-                expected_snapshot=snapshot,
-            )
-            snapshot = snapshot_token_for_manifest(published)
-        return entries, vectors, already_relative, snapshot
+        # A manifest-free directory is empty, or holds leftovers of a prune
+        # that emptied the index or of a first publication that never committed.
+        require_current_format(index_dir)
+        _discard_working_files(index_dir)
+        return [], [], False, snapshot
 
 
 def _load_existing_index(  # pragma: no cover -- exercised via build_index integration runs
@@ -2115,6 +2021,8 @@ def _load_existing_index(  # pragma: no cover -- exercised via build_index integ
     """
     if force:
         with publication_lock(index_dir):
+            if read_manifest(index_dir) is None:
+                _discard_working_files(index_dir)
             snapshot = current_snapshot_token(index_dir)
         return [], [], set(), True, snapshot
 

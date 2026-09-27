@@ -38,8 +38,6 @@ from autodj.index_manifest import (
     IndexConsistencyError,
     IndexSnapshotToken,
     current_snapshot_token,
-    legacy_artifacts_allowed,
-    publication_has_uncommitted_reservation,
     publication_is_tombstoned,
     publication_lock,
     read_manifest,
@@ -272,16 +270,12 @@ class SimilarityIndex:
                 with self._reload_lock:
                     dimension = self.faiss_index.d
                 candidate = SimilarityIndex(faiss.IndexFlatIP(dimension), [])
-            elif snapshot.generation == 0 and not legacy_artifacts_allowed(index_dir):
-                if publication_has_uncommitted_reservation(index_dir):
-                    raise IndexConsistencyError("publication reserved without a committed snapshot")
-                raise IndexConsistencyError("manifest-free index is not a pristine legacy snapshot")
             else:
                 entries, faiss_index = load_index(
                     index_dir,
                     music_dir=music_dir,
                     path_remap=path_remap,
-                    expected_generation=snapshot.generation if snapshot.generation else None,
+                    expected_generation=snapshot.generation or None,
                 )
                 candidate = SimilarityIndex(faiss_index=faiss_index, entries=entries)
             with self._reload_lock:

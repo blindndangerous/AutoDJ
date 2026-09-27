@@ -231,7 +231,8 @@ def _apply_index_name(cfg: AutoDJConfig, index_name: str | None) -> bool:  # pra
 def _load_index_or_exit(
     cfg: AutoDJConfig, *, active_dir: Path | None = None
 ) -> SimilarityIndex:  # pragma: no cover
-    """Load the similarity index for *cfg*, exiting on FileNotFoundError."""
+    """Load the similarity index for *cfg*, exiting when it is missing or too old."""
+    from autodj.index_manifest import UnsupportedIndexError
     from autodj.similarity import SimilarityIndex as _SI
 
     try:
@@ -242,6 +243,9 @@ def _load_index_or_exit(
         )
     except FileNotFoundError as exc:
         console.print(f"[bold red]Index not found:[/] {exc}")
+        sys.exit(1)
+    except UnsupportedIndexError as exc:
+        console.print(f"[bold red]{exc}[/]")
         sys.exit(1)
 
 
@@ -1111,34 +1115,23 @@ def cmd_index(
                 console.print(f"[bold red]Enrich failed:[/] {exc}")
 
     if do_analyse:
-        from autodj.indexer import (
-            _backfill_dj_meta,
-            _load_tracks_rows,
-            _open_tracks_db,
-            _resolve_for_runtime,
-            _tracks_db_path,
-        )
+        from autodj.indexer import _backfill_dj_meta, load_index
 
         try:
-            if not _tracks_db_path(cfg.index.active_dir).exists():
-                console.print("[yellow]--analyse skipped: no index found.[/]")
-            else:
-                conn = _open_tracks_db(cfg.index.active_dir)
-                try:
-                    entries = _load_tracks_rows(conn)
-                finally:
-                    conn.close()
-                for e in entries:
-                    e.path = _resolve_for_runtime(
-                        e.path, cfg.library.music_dir, cfg.library.path_remap
-                    )
-                _backfill_dj_meta(
-                    entries,
-                    cfg.index.active_dir,
-                    workers=workers,
-                    music_dir=cfg.library.music_dir,
-                    path_remap=cfg.library.path_remap,
-                )
+            entries, _ = load_index(
+                cfg.index.active_dir,
+                music_dir=cfg.library.music_dir,
+                path_remap=cfg.library.path_remap,
+            )
+            _backfill_dj_meta(
+                entries,
+                cfg.index.active_dir,
+                workers=workers,
+                music_dir=cfg.library.music_dir,
+                path_remap=cfg.library.path_remap,
+            )
+        except FileNotFoundError:
+            console.print("[yellow]--analyse skipped: no index found.[/]")
         except Exception as exc:
             console.print(f"[bold red]Analyse failed:[/] {exc}")
 
@@ -1342,27 +1335,23 @@ def cmd_analyse(
 
     _apply_index_name(cfg, index_name)
 
-    from autodj.indexer import (
-        _backfill_dj_meta,
-        _load_tracks_rows,
-        _open_tracks_db,
-        _resolve_for_runtime,
-        _tracks_db_path,
-    )
+    from autodj.index_manifest import UnsupportedIndexError
+    from autodj.indexer import _backfill_dj_meta, load_index
 
-    if not _tracks_db_path(cfg.index.active_dir).exists():
+    try:
+        entries, _ = load_index(
+            cfg.index.active_dir,
+            music_dir=cfg.library.music_dir,
+            path_remap=cfg.library.path_remap,
+        )
+    except FileNotFoundError:
         console.print(
             f"[bold red]No index at {cfg.index.active_dir}.[/]  Run `autodj index` first."
         )
         sys.exit(1)
-
-    conn = _open_tracks_db(cfg.index.active_dir)
-    try:
-        entries = _load_tracks_rows(conn)
-    finally:
-        conn.close()
-    for e in entries:
-        e.path = _resolve_for_runtime(e.path, cfg.library.music_dir, cfg.library.path_remap)
+    except UnsupportedIndexError as exc:
+        console.print(f"[bold red]{exc}[/]")
+        sys.exit(1)
     if limit is not None:
         entries = entries[:limit]
 
@@ -2093,10 +2082,13 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
     general_cli_override = _apply_serve_overrides(staged_override_cfg, locals())
     resolved_preset = _resolve_preset_or_exit(cfg, preset)
     parsed_bpm_range = _parse_bpm_range_or_exit(bpm_range)
-    sim = _load_index_for_serve(
-        cfg,
-        active_dir=cfg.index.index_dir / selected_index_name,
-    )
+    from autodj.index_manifest import UnsupportedIndexError
+
+    try:
+        sim = _load_index_for_serve(cfg, active_dir=cfg.index.index_dir / selected_index_name)
+    except UnsupportedIndexError as exc:
+        console.print(f"[bold red]{exc}[/]")
+        sys.exit(1)
     if (
         staged_server.insecure_lan
         and staged_server.access_token is None
@@ -2407,6 +2399,7 @@ def cmd_stats(ctx: click.Context, index_name: str | None) -> None:
     Examples:
       uv run autodj stats
     """
+    from autodj.index_manifest import UnsupportedIndexError
     from autodj.indexer import load_index
     from autodj.stats import print_stats
 
@@ -2422,6 +2415,9 @@ def cmd_stats(ctx: click.Context, index_name: str | None) -> None:
         )
     except FileNotFoundError as exc:
         console.print(f"[bold red]Index not found:[/] {exc}")
+        sys.exit(1)
+    except UnsupportedIndexError as exc:
+        console.print(f"[bold red]{exc}[/]")
         sys.exit(1)
 
     print_stats(entries, console)

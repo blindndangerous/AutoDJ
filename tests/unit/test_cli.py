@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import click
+import numpy as np
 import pytest
 from click.testing import CliRunner
 
@@ -1775,7 +1776,7 @@ class TestLoggingDefaults:
 
 class TestCmdAnalyse:
     def _cfg_with_index(self, tmp_path: Path, entries: int = 1) -> MagicMock:
-        from autodj.indexer import IndexEntry, _open_tracks_db, _replace_tracks_rows
+        from autodj.indexer import FEATURE_DIM, IndexEntry, save_index
 
         idx_dir = tmp_path / "idx"
         idx_dir.mkdir()
@@ -1796,11 +1797,7 @@ class TestCmdAnalyse:
             )
             for i in range(entries)
         ]
-        conn = _open_tracks_db(idx_dir)
-        try:
-            _replace_tracks_rows(conn, rows, music_dir=None)
-        finally:
-            conn.close()
+        save_index(rows, np.zeros((entries, FEATURE_DIM), dtype=np.float32), idx_dir)
         cfg = _make_cfg()
         cfg.index.active_dir = idx_dir
         cfg.index.name = "default"

@@ -112,6 +112,25 @@ class IndexConsistencyError(RuntimeError):
     """Raised when published index artifacts do not describe one snapshot."""
 
 
+REBUILD_COMMAND = "autodj index --force"
+
+
+class UnsupportedIndexError(IndexConsistencyError):
+    """Raised when index data was written in a format this release no longer reads."""
+
+    def __init__(self, index_dir: Path, reason: str) -> None:
+        """Build the one rebuild message shared by every old-format refusal.
+
+        Args:
+            index_dir: Index directory holding the old data.
+            reason: What marks the data as old, e.g. "it has no index-manifest.json".
+        """
+        super().__init__(
+            f"The index in {index_dir} was made by an older AutoDJ ({reason}). "
+            f"Rebuild it with `{REBUILD_COMMAND}`."
+        )
+
+
 @dataclass(frozen=True)
 class IndexManifest:
     """Identity and integrity metadata for one published index generation."""
@@ -124,7 +143,7 @@ class IndexManifest:
     vectors_file: str
     tracks_sha256: str
     vectors_sha256: str
-    state_revision: int = 0
+    state_revision: int
 
 
 @dataclass(frozen=True)
@@ -141,11 +160,8 @@ class IndexSnapshotToken:
 
 
 def snapshot_token_for_manifest(manifest: IndexManifest) -> IndexSnapshotToken:
-    """Return a live manifest's exact identity, including schema-v1 tokens."""
-    if manifest.generation < 1 or (
-        manifest.schema_version == SCHEMA_VERSION
-        and (manifest.state_revision < 1 or manifest.state_revision != manifest.generation)
-    ):
+    """Return a live manifest's exact identity."""
+    if manifest.generation < 1 or manifest.state_revision != manifest.generation:
         raise ValueError("published manifest token must be positive")
     return IndexSnapshotToken(manifest.generation, manifest.state_revision)
 
@@ -165,25 +181,14 @@ def _read_publication_state(index_dir: Path) -> _PublicationState | None:
         return None
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-        if type(raw) is not dict:
+        if (
+            type(raw) is not dict
+            or set(raw) != {"high_water", "tombstone_revision"}
+            or type(raw["high_water"]) is not int
+            or type(raw["tombstone_revision"]) is not int
+        ):
             raise ValueError("invalid publication state")
-        if set(raw) == {"high_water", "tombstone_revision"}:
-            if type(raw["high_water"]) is not int or type(raw["tombstone_revision"]) is not int:
-                raise ValueError("invalid publication state")
-            state = _PublicationState(**raw)
-        elif set(raw) == {"revision", "high_water_generation", "tombstone"}:
-            if (
-                type(raw["revision"]) is not int
-                or type(raw["high_water_generation"]) is not int
-                or type(raw["tombstone"]) is not bool
-            ):
-                raise ValueError("invalid publication state")
-            state = _PublicationState(
-                high_water=max(raw["revision"], raw["high_water_generation"]),
-                tombstone_revision=raw["revision"] if raw["tombstone"] else 0,
-            )
-        else:
-            raise ValueError("invalid publication state")
+        state = _PublicationState(**raw)
     except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
         raise IndexConsistencyError(f"invalid publication state: {exc}") from exc
     if not 0 <= state.tombstone_revision <= state.high_water:
@@ -244,12 +249,25 @@ def current_snapshot_token(index_dir: Path) -> IndexSnapshotToken:
     return IndexSnapshotToken(0, state.high_water)
 
 
-def legacy_artifacts_allowed(index_dir: Path) -> bool:
-    """Whether manifest-free canonical cores are an untouched legacy index."""
-    if read_manifest(index_dir) is not None:
-        return False
-    state = _state_for_manifest(index_dir, None)
-    return state.high_water == 0 and state.tombstone_revision == 0
+def _never_published(index_dir: Path) -> bool:
+    """Whether *index_dir* has neither a live manifest nor publication history."""
+    return read_manifest(index_dir) is None and _read_publication_state(index_dir) is None
+
+
+def require_current_format(index_dir: Path) -> None:
+    """Refuse working index files that no manifest publication ever produced.
+
+    AutoDJ releases before the manifest format wrote ``tracks.db`` and
+    ``vectors.index`` alone.  Those indexes are no longer read.
+
+    Raises:
+        UnsupportedIndexError: If ``tracks.db`` or ``vectors.index`` exists
+            in a directory that was never published.
+    """
+    if _never_published(index_dir) and any(
+        (index_dir / name).exists() for name in ("tracks.db", "vectors.index")
+    ):
+        raise UnsupportedIndexError(index_dir, "it has no index-manifest.json")
 
 
 def publication_is_tombstoned(index_dir: Path) -> bool:
@@ -261,7 +279,7 @@ def publication_is_tombstoned(index_dir: Path) -> bool:
 def publication_is_pristine(index_dir: Path) -> bool:
     """Return whether no committed, working, or interrupted publication exists."""
     with publication_lock(index_dir):
-        if not legacy_artifacts_allowed(index_dir):
+        if not _never_published(index_dir):
             return False
         return not any(
             path.name in _WORKING_ARTIFACT_NAMES
@@ -269,17 +287,6 @@ def publication_is_pristine(index_dir: Path) -> bool:
             or _PUBLICATION_TEMP_RE.fullmatch(path.name) is not None
             for path in index_dir.iterdir()
         )
-
-
-def publication_has_uncommitted_reservation(index_dir: Path) -> bool:
-    """Whether reservation history exists without a committed live snapshot."""
-    state = _read_publication_state(index_dir)
-    return (
-        state is not None
-        and state.high_water > 0
-        and state.tombstone_revision == 0
-        and read_manifest(index_dir) is None
-    )
 
 
 def require_snapshot_token(
@@ -329,18 +336,15 @@ def read_manifest(index_dir: Path) -> IndexManifest | None:
             "vectors_file",
             "tracks_sha256",
             "vectors_sha256",
+            "state_revision",
         }
         if type(raw) is not dict:
             raise IndexConsistencyError("invalid index manifest structure")
-        if raw.get("schema_version") not in {1, SCHEMA_VERSION}:
+        if raw.get("schema_version") != SCHEMA_VERSION:
             raise IndexConsistencyError("unsupported manifest schema")
-        if raw["schema_version"] == SCHEMA_VERSION:
-            fields.add("state_revision")
         if set(raw) != fields:
             raise IndexConsistencyError("invalid index manifest structure")
-        int_fields: tuple[str, ...] = ("schema_version", "generation", "vector_count")
-        if raw["schema_version"] == SCHEMA_VERSION:
-            int_fields += ("state_revision",)
+        int_fields = ("schema_version", "generation", "vector_count", "state_revision")
         string_fields = tuple(fields - set(int_fields))
         if any(type(raw[field]) is not int for field in int_fields) or any(
             type(raw[field]) is not str for field in string_fields
@@ -355,17 +359,14 @@ def read_manifest(index_dir: Path) -> IndexManifest | None:
             vectors_file=raw["vectors_file"],
             tracks_sha256=raw["tracks_sha256"],
             vectors_sha256=raw["vectors_sha256"],
-            state_revision=raw.get("state_revision", 0),
+            state_revision=raw["state_revision"],
         )
     except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
         raise IndexConsistencyError(f"invalid index manifest: {exc}") from exc
     if (
         manifest.generation < 1
         or manifest.vector_count < 0
-        or (
-            manifest.schema_version == SCHEMA_VERSION
-            and (manifest.state_revision <= 0 or manifest.state_revision != manifest.generation)
-        )
+        or manifest.state_revision != manifest.generation
     ):
         raise IndexConsistencyError("manifest generation/count must be non-negative")
     try:
@@ -672,8 +673,6 @@ def copy_published_snapshot(
             _durable_copy(index_dir / before.vectors_file, staging / "vectors.index")
             copied = replace(
                 before,
-                schema_version=SCHEMA_VERSION,
-                state_revision=before.generation,
                 tracks_file="tracks.db",
                 vectors_file="vectors.index",
             )

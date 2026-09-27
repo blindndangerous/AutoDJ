@@ -5,7 +5,6 @@ deterministic and require no model inference.
 """
 
 import ast
-import json
 import threading
 import time
 from collections import deque
@@ -375,10 +374,7 @@ class TestFromIndexDir:
         sim = SimilarityIndex.from_index_dir(tmp_path)
         assert sim.ntotal == 5
 
-    @pytest.mark.parametrize("schema_version", [1, 2])
-    def test_manifested_load_records_validated_generation(
-        self, tmp_path: Path, schema_version: int
-    ) -> None:
+    def test_manifested_load_records_validated_generation(self, tmp_path: Path) -> None:
         from autodj.index_manifest import read_manifest
         from autodj.indexer import save_index
 
@@ -387,30 +383,10 @@ class TestFromIndexDir:
         save_index(entries, vectors, tmp_path)
         manifest = read_manifest(tmp_path)
         assert manifest is not None
-        if schema_version == 1:
-            path = tmp_path / "index-manifest.json"
-            raw = json.loads(path.read_text(encoding="utf-8"))
-            raw["schema_version"] = 1
-            del raw["state_revision"]
-            path.write_text(json.dumps(raw), encoding="utf-8")
 
         sim = SimilarityIndex.from_index_dir(tmp_path)
 
         assert sim._generation == manifest.generation
-
-    def test_legacy_named_load_records_generation_zero(self, tmp_path: Path) -> None:
-        from autodj.indexer import _save_tracks_metadata, _save_vectors
-
-        target = tmp_path / "default"
-        target.mkdir()
-        entries = [_make_entry(0)]
-        vectors = np.array([_unit_vec(seed=0)], dtype=np.float32)
-        _save_vectors(vectors, target)
-        _save_tracks_metadata(entries, target, music_dir=None)
-
-        sim = SimilarityIndex.from_index_dir(target)
-
-        assert sim._generation == 0
 
     def test_concurrent_publish_waits_and_cannot_mislabel_loaded_generation(
         self, tmp_path: Path
@@ -519,7 +495,6 @@ class TestReloadFromDisk:
         self, tmp_path: Path
     ) -> None:
         from autodj.index_manifest import (
-            IndexConsistencyError,
             IndexSnapshotToken,
             _PublicationState,
             _write_publication_state,
@@ -533,7 +508,7 @@ class TestReloadFromDisk:
         _write_publication_state(index_dir, _PublicationState(high_water=1, tombstone_revision=0))
         pending = current_snapshot_token(index_dir)
 
-        with pytest.raises(IndexConsistencyError):
+        with pytest.raises(FileNotFoundError):
             sim.reload_from_disk(index_dir, expected_snapshot=pending)
 
         assert sim.ntotal == 1
@@ -545,20 +520,6 @@ class TestReloadFromDisk:
 
         assert sim.reload_from_disk(index_dir, expected_snapshot=published) == 1
         assert sim.snapshot_token == published
-        assert sim.entry_for_path(entries[0].path) is not None
-
-    def test_pristine_legacy_reload_keeps_generation_zero(self, tmp_path: Path) -> None:
-        from autodj.index_manifest import IndexSnapshotToken
-        from autodj.indexer import _save_tracks_metadata, _save_vectors
-
-        entries = [_make_entry(4)]
-        vectors = np.array([_unit_vec(seed=4)], dtype=np.float32)
-        _save_vectors(vectors, tmp_path)
-        _save_tracks_metadata(entries, tmp_path, music_dir=None)
-        sim, _ = _make_similarity_index(1)
-
-        assert sim.reload_from_disk(tmp_path) == 1
-        assert sim.snapshot_token == IndexSnapshotToken(0, 0)
         assert sim.entry_for_path(entries[0].path) is not None
 
     def test_tombstone_reload_clears_live_entries_atomically(self, tmp_path: Path) -> None:

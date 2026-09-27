@@ -62,17 +62,7 @@ def test_snapshot_token_rejects_negative_generation() -> None:
 
 def test_snapshot_token_for_manifest_requires_live_manifest() -> None:
     with pytest.raises(ValueError, match="positive"):
-        snapshot_token_for_manifest(IndexManifest(1, 0, 0, "", "", "", "", ""))
-
-
-def test_snapshot_token_for_live_v1_manifest_keeps_zero_revision(tmp_path: Path) -> None:
-    payload = _manifest_payload()
-    (tmp_path / "index-manifest.json").write_text(json.dumps(payload), encoding="utf-8")
-
-    manifest = read_manifest(tmp_path)
-
-    assert manifest is not None
-    assert snapshot_token_for_manifest(manifest) == IndexSnapshotToken(1, 0)
+        snapshot_token_for_manifest(IndexManifest(2, 0, 0, "", "", "", "", "", 0))
 
 
 def test_fork_reset_rebinds_inherited_lock_state_without_acquiring_guard(
@@ -95,7 +85,7 @@ def test_fork_reset_rebinds_inherited_lock_state_without_acquiring_guard(
 
 def _manifest_payload(**changes: object) -> dict[str, object]:
     payload: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "generation": 1,
         "vector_count": 2,
         "published_at": "2026-08-08T00:00:00+00:00",
@@ -103,6 +93,7 @@ def _manifest_payload(**changes: object) -> dict[str, object]:
         "vectors_file": "vectors.g00000000000000000001.index",
         "tracks_sha256": "0" * 64,
         "vectors_sha256": "1" * 64,
+        "state_revision": 1,
     }
     payload.update(changes)
     return payload
@@ -381,7 +372,7 @@ def test_tombstoned_stale_manifest_is_logically_empty_and_publish_recovers(tmp_p
     assert (tmp_path / "index-manifest.json").exists()
     assert read_manifest(tmp_path) is None
     assert current_snapshot_token(tmp_path).generation == 0
-    with pytest.raises(IndexConsistencyError, match="publication history"):
+    with pytest.raises(FileNotFoundError, match="No published index"):
         load_index(tmp_path)
 
     recovered = publish_manifest(tmp_path, 2)
@@ -405,27 +396,7 @@ def test_second_tombstone_supersedes_newer_live_manifest(tmp_path: Path) -> None
     assert second_empty.state_revision > first_empty.state_revision
 
 
-def test_v1_manifest_remains_live_with_initialized_non_tombstone_state(tmp_path: Path) -> None:
-    _write_working_artifacts(tmp_path, 1)
-    published = publish_manifest(tmp_path, 1)
-    path = tmp_path / "index-manifest.json"
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    raw["schema_version"] = 1
-    del raw["state_revision"]
-    path.write_text(json.dumps(raw), encoding="utf-8")
-
-    legacy = read_manifest(tmp_path)
-    assert legacy is not None
-    assert legacy.schema_version == 1
-    copied = copy_published_snapshot(tmp_path, tmp_path / "backup")
-    assert copied.schema_version == 2
-    assert read_manifest(tmp_path / "backup") == copied
-    upgraded = publish_manifest(tmp_path, 1)
-    assert upgraded.schema_version == 2
-    assert upgraded.generation > published.generation
-
-
-def test_manifest_free_cores_with_publication_history_are_not_legacy(
+def test_failed_first_publication_is_not_mistaken_for_an_old_index(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import autodj.index_manifest as manifest_module
@@ -440,7 +411,7 @@ def test_manifest_free_cores_with_publication_history_are_not_legacy(
     with pytest.raises(OSError, match="checkpoint failed"):
         publish_manifest(tmp_path, 1)
 
-    with pytest.raises(IndexConsistencyError, match="publication history"):
+    with pytest.raises(FileNotFoundError, match="No published index"):
         load_index(tmp_path)
 
 
@@ -661,26 +632,6 @@ def test_publication_state_rejects_invalid_shapes(tmp_path: Path, payload: objec
 
     with pytest.raises(IndexConsistencyError, match="invalid publication state"):
         manifest_module._read_publication_state(tmp_path)
-
-
-@pytest.mark.parametrize("tombstone", [False, True])
-def test_legacy_publication_state_is_migrated_in_memory(tmp_path: Path, tombstone: bool) -> None:
-    import autodj.index_manifest as manifest_module
-
-    (tmp_path / manifest_module.PUBLICATION_STATE_NAME).write_text(
-        json.dumps(
-            {
-                "revision": 3,
-                "high_water_generation": 5,
-                "tombstone": tombstone,
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    state = manifest_module._read_publication_state(tmp_path)
-
-    assert state == manifest_module._PublicationState(5, 3 if tombstone else 0)
 
 
 def test_publication_state_rejects_out_of_range_counters(tmp_path: Path) -> None:

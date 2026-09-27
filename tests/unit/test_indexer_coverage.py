@@ -250,24 +250,6 @@ def test_failed_first_checkpoint_refreshes_retry_token(tmp_path: Path) -> None:
     assert checkpoint.published_new_count == 0
 
 
-def test_enrich_rejects_manifest_free_artifacts_with_history(tmp_path: Path) -> None:
-    with (
-        patch.object(indexer, "read_manifest", return_value=None),
-        patch.object(indexer, "legacy_artifacts_allowed", return_value=False),
-        pytest.raises(IndexConsistencyError, match="publication history"),
-    ):
-        indexer.enrich_from_beets(tmp_path, music_dir=None, beets_db=tmp_path / "beets.db")
-
-
-def test_prune_rejects_manifest_free_artifacts_with_history(tmp_path: Path) -> None:
-    with (
-        patch.object(indexer, "read_manifest", return_value=None),
-        patch.object(indexer, "legacy_artifacts_allowed", return_value=False),
-        pytest.raises(IndexConsistencyError, match="publication history"),
-    ):
-        indexer.prune_index(tmp_path)
-
-
 def test_enrich_skips_index_entries_absent_from_beets(tmp_path: Path) -> None:
     index_dir = tmp_path / "index"
     entry = _entry(str(tmp_path / "indexed.flac"))
@@ -383,16 +365,3 @@ def test_backfill_flushes_a_durable_checkpoint_after_25_tracks(tmp_path: Path) -
 
     assert cache.stored == [entry.path for entry in entries]
     assert cache.flushes == [False, True]
-
-
-def test_existing_artifact_loader_rejects_publication_history(tmp_path: Path) -> None:
-    (tmp_path / "tracks.db").touch()
-
-    with (
-        patch.object(indexer, "read_manifest", return_value=None),
-        patch.object(indexer, "publication_is_tombstoned", return_value=False),
-        patch.object(indexer, "publication_has_uncommitted_reservation", return_value=False),
-        patch.object(indexer, "legacy_artifacts_allowed", return_value=False),
-        pytest.raises(IndexConsistencyError, match="publication history"),
-    ):
-        indexer._load_existing_artifacts(tmp_path, tmp_path, None)

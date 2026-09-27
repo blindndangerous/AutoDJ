@@ -187,7 +187,7 @@ def test_import_and_empty_index_check_do_not_import_heavy_runtimes() -> None:
 
 
 @pytest.mark.parametrize("remaining", ["tracks.db", "vectors.index"])
-def test_partial_legacy_index_fails_actionably(tmp_path: Path, remaining: str) -> None:
+def test_index_without_manifest_fails_actionably(tmp_path: Path, remaining: str) -> None:
     cfg = _config(tmp_path)
     cfg.index.active_dir.mkdir()
     (cfg.index.active_dir / remaining).write_bytes(b"partial")
@@ -195,7 +195,7 @@ def test_partial_legacy_index_fails_actionably(tmp_path: Path, remaining: str) -
     check = doctor._index_check(cfg)
 
     assert check.status is doctor.CheckStatus.FAIL
-    assert "autodj index" in check.detail
+    assert "autodj index --force" in check.detail
 
 
 def test_corrupt_published_index_fails(tmp_path: Path) -> None:
@@ -1048,7 +1048,7 @@ def test_tombstoned_publication_is_logically_empty_not_stale_legacy(tmp_path: Pa
     assert doctor._tracks_database_check(cfg).status is doctor.CheckStatus.WARN
 
 
-def test_manifest_free_artifacts_with_publication_history_are_not_legacy(tmp_path: Path) -> None:
+def test_missing_manifest_with_publication_history_fails(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     _write_index(cfg)
     (cfg.index.active_dir / "index-manifest.json").unlink()
@@ -1170,59 +1170,6 @@ def test_generation_artifacts_without_manifest_fail(tmp_path: Path) -> None:
     assert "manifest" in check.detail
 
 
-@pytest.mark.parametrize("count", [0, 1])
-def test_coherent_legacy_index_is_inspected_read_only(tmp_path: Path, count: int) -> None:
-    cfg = _config(tmp_path)
-    cfg.index.active_dir.mkdir()
-    if count:
-        _write_index(cfg)
-    else:
-        save_index([], np.empty((0, FEATURE_DIM), dtype=np.float32), cfg.index.active_dir)
-    for name in ("index-manifest.json", ".index-publication-state.json"):
-        (cfg.index.active_dir / name).unlink(missing_ok=True)
-    for pattern in ("tracks.g*.db", "vectors.g*.index"):
-        for generated in cfg.index.active_dir.glob(pattern):
-            generated.unlink()
-
-    check = doctor._index_check(cfg)
-
-    assert check.status is doctor.CheckStatus.WARN
-
-
-def test_coherent_legacy_index_does_not_create_sqlite_sidecars(tmp_path: Path) -> None:
-    cfg = _config(tmp_path)
-    _write_index(cfg)
-    for name in ("index-manifest.json", ".index-publication-state.json"):
-        (cfg.index.active_dir / name).unlink(missing_ok=True)
-    for pattern in ("tracks.g*.db", "vectors.g*.index"):
-        for generated in cfg.index.active_dir.glob(pattern):
-            generated.unlink()
-    before = _tree_snapshot(tmp_path)
-
-    check = doctor._index_check(cfg)
-
-    assert check.status is doctor.CheckStatus.WARN
-    assert before == _tree_snapshot(tmp_path)
-
-
-def test_legacy_entry_vector_count_mismatch_fails(tmp_path: Path) -> None:
-    import faiss
-
-    cfg = _config(tmp_path)
-    _write_index(cfg)
-    for name in ("index-manifest.json", ".index-publication-state.json"):
-        (cfg.index.active_dir / name).unlink(missing_ok=True)
-    for pattern in ("tracks.g*.db", "vectors.g*.index"):
-        for generated in cfg.index.active_dir.glob(pattern):
-            generated.unlink()
-    faiss.write_index(faiss.IndexFlatIP(FEATURE_DIM), str(cfg.index.active_dir / "vectors.index"))
-
-    check = doctor._index_check(cfg)
-
-    assert check.status is doctor.CheckStatus.FAIL
-    assert "tracks=1, vectors=0" in check.detail
-
-
 def test_readonly_sqlite_closes_connection_when_query_only_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1256,43 +1203,6 @@ def test_dj_meta_schema_mismatch_fails(tmp_path: Path) -> None:
 
     assert check.status is doctor.CheckStatus.FAIL
     assert "missing required columns" in check.detail
-
-
-@pytest.mark.parametrize(
-    ("original", "replacement"),
-    [
-        ("vec_row INTEGER NOT NULL UNIQUE", "vec_row TEXT NOT NULL UNIQUE"),
-        ("title TEXT NOT NULL DEFAULT ''", "title TEXT DEFAULT ''"),
-        ("path TEXT NOT NULL UNIQUE", "path TEXT NOT NULL"),
-    ],
-    ids=["wrong-type", "nullable", "missing-unique"],
-)
-def test_tracks_db_rejects_runtime_schema_contract_drift(
-    tmp_path: Path,
-    original: str,
-    replacement: str,
-) -> None:
-    cfg = _config(tmp_path)
-    cfg.index.active_dir.mkdir()
-    schema = """CREATE TABLE tracks (
-        vec_row INTEGER NOT NULL UNIQUE,
-        path TEXT NOT NULL UNIQUE,
-        title TEXT NOT NULL DEFAULT '', artist TEXT NOT NULL DEFAULT '',
-        album TEXT NOT NULL DEFAULT '', genre TEXT NOT NULL DEFAULT '',
-        bpm REAL NOT NULL DEFAULT 0, year INTEGER NOT NULL DEFAULT 0,
-        length REAL NOT NULL DEFAULT 0, energy REAL NOT NULL DEFAULT 0,
-        key INTEGER NOT NULL DEFAULT -1, mode INTEGER NOT NULL DEFAULT -1,
-        tempo_confidence REAL NOT NULL DEFAULT 0,
-        embedded_at REAL NOT NULL DEFAULT 0
-    )""".replace(original, replacement)
-    with closing(sqlite3.connect(cfg.index.active_dir / "tracks.db")) as conn:
-        conn.execute(schema)
-        conn.commit()
-
-    check = doctor._tracks_database_check(cfg)
-
-    assert check.status is doctor.CheckStatus.FAIL
-    assert "schema" in check.summary
 
 
 @pytest.mark.parametrize(

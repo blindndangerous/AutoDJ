@@ -364,15 +364,6 @@ class TestSaveLoadIndex:
         with pytest.raises(IndexConsistencyError, match="tracks SHA-256"):
             load_index(tmp_path)
 
-    def test_legacy_index_without_manifest_still_loads(self, tmp_path: Path) -> None:
-        entries, vectors = self._make_entries(3)
-        save_index(entries, vectors, tmp_path)
-        (tmp_path / "index-manifest.json").unlink()
-        (tmp_path / ".index-publication-state.json").unlink()
-        loaded, faiss_index = load_index(tmp_path)
-        assert len(loaded) == 3
-        assert faiss_index.ntotal == 3
-
     def test_failed_second_save_does_not_publish_generation(self, tmp_path: Path) -> None:
         from autodj.index_manifest import read_manifest
 
@@ -710,60 +701,6 @@ class TestSaveLoadIndex:
             11,
         ]
 
-    def test_open_tracks_db_rebuilds_text_vec_row_in_numeric_vector_order(
-        self, tmp_path: Path
-    ) -> None:
-        import sqlite3
-
-        from autodj.indexer import _load_existing_index, _save_vectors
-
-        vectors = np.zeros((2, FEATURE_DIM), dtype=np.float32)
-        vectors[0, 3] = 1.0
-        vectors[1, 7] = 1.0
-        _save_vectors(vectors, tmp_path)
-
-        conn = sqlite3.connect(tmp_path / "tracks.db")
-        conn.execute(
-            """CREATE TABLE tracks (
-                vec_row TEXT NOT NULL UNIQUE,
-                path TEXT NOT NULL UNIQUE,
-                title TEXT NOT NULL DEFAULT '', artist TEXT NOT NULL DEFAULT '',
-                album TEXT NOT NULL DEFAULT '', genre TEXT NOT NULL DEFAULT '',
-                bpm REAL NOT NULL DEFAULT 0, year INTEGER NOT NULL DEFAULT 0,
-                length REAL NOT NULL DEFAULT 0, energy REAL NOT NULL DEFAULT 0,
-                key INTEGER NOT NULL DEFAULT -1, mode INTEGER NOT NULL DEFAULT -1,
-                tempo_confidence REAL NOT NULL DEFAULT 0,
-                embedded_at REAL NOT NULL DEFAULT 0
-            )"""
-        )
-        conn.executemany(
-            "INSERT INTO tracks(vec_row, path, title) VALUES (?, ?, ?)",
-            [("2", "two.flac", "Two"), ("10", "ten.flac", "Ten")],
-        )
-        conn.commit()
-        conn.close()
-
-        entries, loaded_vectors, *_ = _load_existing_index(
-            tmp_path,
-            music_dir=tmp_path,
-            path_remap=None,
-            force=False,
-            reindex_modified_since=None,
-        )
-        migrated = sqlite3.connect(tmp_path / "tracks.db")
-        try:
-            vec_info = next(
-                row for row in migrated.execute("PRAGMA table_info(tracks)") if row[1] == "vec_row"
-            )
-            rows = migrated.execute("SELECT vec_row, path FROM tracks ORDER BY vec_row").fetchall()
-        finally:
-            migrated.close()
-
-        assert vec_info[2:6] == ("INTEGER", 1, None, 0)
-        assert rows == [(0, "two.flac"), (1, "ten.flac")]
-        assert [Path(entry.path).name for entry in entries] == ["two.flac", "ten.flac"]
-        assert [int(np.argmax(vector)) for vector in loaded_vectors] == [3, 7]
-
     def test_open_tracks_db_rebuilds_wrong_metadata_type_default_and_pk(
         self, tmp_path: Path
     ) -> None:
@@ -995,11 +932,9 @@ class TestPruneIndex:
         assert [Path(entry.path).name for entry in loaded] == ["song_0.flac", "song_2.flac"]
         assert [int(np.argmax(loaded_vectors.reconstruct(row))) for row in range(2)] == [3, 11]
 
-    @pytest.mark.parametrize("legacy_without_manifest", [False, True])
     def test_prune_rejects_generation_race_without_overwriting_newer_snapshot(
         self,
         tmp_path: Path,
-        legacy_without_manifest: bool,
     ) -> None:
         from dataclasses import replace
 
@@ -1012,9 +947,6 @@ class TestPruneIndex:
         save_index(entries, vectors, idx)
         first = read_manifest(idx)
         assert first is not None
-        if legacy_without_manifest:
-            (idx / "index-manifest.json").unlink()
-            (idx / ".index-publication-state.json").unlink()
         concurrent_entries = [
             replace(entry, title=f"Concurrent {row}") for row, entry in enumerate(entries)
         ]
@@ -1043,7 +975,7 @@ class TestPruneIndex:
 
         current = read_manifest(idx)
         assert current is not None
-        assert current.generation == (1 if legacy_without_manifest else first.generation + 1)
+        assert current.generation == first.generation + 1
         loaded, loaded_vectors = load_index(idx)
         assert [entry.title for entry in loaded] == [
             "Concurrent 0",
@@ -1052,11 +984,9 @@ class TestPruneIndex:
         ]
         assert [int(np.argmax(loaded_vectors.reconstruct(row))) for row in range(3)] == [13, 17, 19]
 
-    @pytest.mark.parametrize("legacy_without_manifest", [False, True])
     def test_prune_all_rejects_generation_race_without_deleting_newer_snapshot(
         self,
         tmp_path: Path,
-        legacy_without_manifest: bool,
     ) -> None:
         from autodj.index_manifest import IndexConsistencyError
         from autodj.indexer import load_index, prune_index, save_index
@@ -1064,9 +994,6 @@ class TestPruneIndex:
         entries, vectors = self._distinctive_entries(tmp_path, missing_rows={0, 1, 2})
         idx = tmp_path / "idx"
         save_index(entries, vectors, idx)
-        if legacy_without_manifest:
-            (idx / "index-manifest.json").unlink()
-            (idx / ".index-publication-state.json").unlink()
         replacement_path = tmp_path / "replacement.flac"
         replacement_path.write_bytes(b"")
         replacement = [
@@ -1104,11 +1031,9 @@ class TestPruneIndex:
         assert [entry.title for entry in loaded] == ["Concurrent replacement"]
         assert int(np.argmax(loaded_vectors.reconstruct(0))) == 23
 
-    @pytest.mark.parametrize("legacy_without_manifest", [False, True])
     def test_prune_path_migration_rejects_generation_race(
         self,
         tmp_path: Path,
-        legacy_without_manifest: bool,
     ) -> None:
         from dataclasses import replace
 
@@ -1118,9 +1043,6 @@ class TestPruneIndex:
         entries, vectors = self._distinctive_entries(tmp_path)
         idx = tmp_path / "idx"
         save_index(entries, vectors, idx, music_dir=None)
-        if legacy_without_manifest:
-            (idx / "index-manifest.json").unlink()
-            (idx / ".index-publication-state.json").unlink()
         concurrent_entries = [
             replace(entry, title=f"Concurrent {row}") for row, entry in enumerate(entries)
         ]
@@ -1384,11 +1306,9 @@ class TestEnrichFromBeets:
         assert [entry.title for entry in loaded] == ["Enriched 0", "Enriched 1"]
         assert [int(np.argmax(loaded_vectors.reconstruct(row))) for row in range(2)] == [3, 7]
 
-    @pytest.mark.parametrize("legacy_without_manifest", [False, True])
     def test_enrich_rejects_generation_race_without_overwriting_newer_snapshot(
         self,
         tmp_path: Path,
-        legacy_without_manifest: bool,
     ) -> None:
         from dataclasses import replace
 
@@ -1401,9 +1321,6 @@ class TestEnrichFromBeets:
         save_index(entries, vectors, idx)
         first = read_manifest(idx)
         assert first is not None
-        if legacy_without_manifest:
-            (idx / "index-manifest.json").unlink()
-            (idx / ".index-publication-state.json").unlink()
         beets = tmp_path / "library.db"
         self._make_beets(
             beets,
@@ -1436,7 +1353,7 @@ class TestEnrichFromBeets:
 
         current = read_manifest(idx)
         assert current is not None
-        assert current.generation == (1 if legacy_without_manifest else first.generation + 1)
+        assert current.generation == first.generation + 1
         loaded, loaded_vectors = load_index(idx)
         assert [entry.title for entry in loaded] == ["Concurrent 0", "Concurrent 1"]
         assert [int(np.argmax(loaded_vectors.reconstruct(row))) for row in range(2)] == [11, 13]
@@ -1570,7 +1487,6 @@ class TestDetectStaleEntries:
         )
 
     def test_detects_replaced_file(self, tmp_path: Path) -> None:
-        import os
 
         from autodj.indexer import _detect_stale_entries
 
@@ -1619,7 +1535,6 @@ class TestDetectStaleEntries:
         # The one-shot --reindex-modified-since flag should still flag
         # legacy entries (embedded_at == 0) when their file mtime is newer
         # than the cutoff.
-        import os
 
         from autodj.indexer import _detect_stale_entries
 
@@ -1654,7 +1569,6 @@ class TestDetectStaleEntries:
 
     def _future_track(self, tmp_path: Path, ahead_s: float):
         """Write a file whose mtime is *ahead_s* seconds in the future."""
-        import os
         import time
 
         from autodj.beets import Track
@@ -1690,7 +1604,6 @@ class TestDetectStaleEntries:
         assert migrated == 0
 
     def test_a_later_edit_is_still_stale(self, tmp_path: Path) -> None:
-        import os
 
         track = self._future_track(tmp_path, ahead_s=3600)
         entry = IndexEntry.from_track(track)
@@ -2629,115 +2542,6 @@ class TestThrottledFaissCheckpoint:
         loaded, loaded_vectors = load_index(index_dir)
         assert [entry.title for entry in loaded] == ["Concurrent 0", "Concurrent 1"]
         assert [int(np.argmax(loaded_vectors.reconstruct(row))) for row in range(2)] == [73, 79]
-
-    def test_load_existing_index_trims_unmatched_db_tail(self, tmp_path: Path) -> None:
-        """Legacy partial writes with extra DB rows are trimmed on reload."""
-        from autodj.indexer import _load_existing_index, save_index
-
-        entries, vectors = self._make_entries(5)
-        index_dir = tmp_path / "idx"
-        index_dir.mkdir()
-
-        # Healthy save first (3 entries + 3 vectors).
-        save_index(entries[:3], vectors[:3], index_dir)
-        # Exercise Task 3's legacy recovery path; manifested generations
-        # intentionally ignore unpublished canonical-file mutations.
-        (index_dir / "index-manifest.json").unlink()
-        (index_dir / ".index-publication-state.json").unlink()
-
-        # Simulate crash recovery: metadata wrote 5 rows but FAISS only
-        # got 3 vectors.
-        from autodj.indexer import _save_tracks_metadata
-
-        _save_tracks_metadata(entries, index_dir, music_dir=None)
-
-        existing_e, existing_v, paths, _, _snapshot = _load_existing_index(
-            index_dir,
-            music_dir=tmp_path,
-            path_remap=None,
-            force=False,
-            reindex_modified_since=None,
-        )
-        # Trimmed back to 3 (matching FAISS).
-        assert len(existing_e) == 3
-        assert len(existing_v) == 3
-        assert len(paths) == 3
-        # tracks.db rewritten to match.
-        import sqlite3 as _sql
-
-        conn = _sql.connect(index_dir / "tracks.db")
-        try:
-            db_count = conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
-        finally:
-            conn.close()
-        assert db_count == 3
-
-    def test_load_existing_index_trims_unmatched_faiss_tail(self, tmp_path: Path) -> None:
-        """A vector checkpoint interrupted before metadata stays aligned."""
-        import faiss
-
-        from autodj.indexer import (
-            _load_existing_index,
-            _save_tracks_metadata,
-            save_index,
-        )
-
-        entries, _ = self._make_entries(5)
-        vectors = np.zeros((5, FEATURE_DIM), dtype=np.float32)
-        vectors[np.arange(5), np.arange(5)] = 1.0
-        index_dir = tmp_path / "idx"
-        index_dir.mkdir()
-        save_index(entries, vectors, index_dir)
-        # Exercise Task 3's legacy recovery path; manifested generations
-        # intentionally ignore unpublished canonical-file mutations.
-        (index_dir / "index-manifest.json").unlink()
-        (index_dir / ".index-publication-state.json").unlink()
-        # Shrink tracks.db without rewriting FAISS.
-        _save_tracks_metadata(entries[:2], index_dir, music_dir=None)
-
-        existing_e, existing_v, _, _, _snapshot = _load_existing_index(
-            index_dir,
-            music_dir=tmp_path,
-            path_remap=None,
-            force=False,
-            reindex_modified_since=None,
-        )
-        assert [entry.path for entry in existing_e] == [
-            os.path.normpath(entries[0].path),
-            os.path.normpath(entries[1].path),
-        ]
-        assert [int(np.argmax(vector)) for vector in existing_v] == [0, 1]
-
-        recovered = faiss.read_index(str(index_dir / "vectors.index"))
-        assert recovered.ntotal == 2
-        assert [int(np.argmax(recovered.reconstruct(row))) for row in range(2)] == [0, 1]
-
-    def test_load_existing_index_persists_empty_metadata_prefix(self, tmp_path: Path) -> None:
-        import faiss
-
-        from autodj.indexer import (
-            _load_existing_index,
-            _save_vectors,
-        )
-
-        vectors = np.zeros((3, FEATURE_DIM), dtype=np.float32)
-        vectors[np.arange(3), np.arange(3)] = 1.0
-        _save_vectors(vectors, tmp_path)
-        assert not (tmp_path / "tracks.db").exists()
-
-        existing_entries, existing_vectors, paths, _, _snapshot = _load_existing_index(
-            tmp_path,
-            music_dir=tmp_path,
-            path_remap=None,
-            force=False,
-            reindex_modified_since=None,
-        )
-
-        assert existing_entries == []
-        assert existing_vectors == []
-        assert paths == set()
-        assert (tmp_path / "tracks.db").exists()
-        assert faiss.read_index(str(tmp_path / "vectors.index")).ntotal == 0
 
     def test_save_index_still_writes_both_files(self, tmp_path: Path) -> None:
         """Public save_index() API kept its both-files contract; the
