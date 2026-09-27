@@ -259,10 +259,15 @@ class MixBus:
             self._start_duck_ramp(float(10 ** (duck_db / 20.0)))
 
     def start_set(self) -> None:
-        """Begin (or resume) pulling tracks from ``on_need_track``."""
+        """Begin (or resume) pulling tracks from ``on_need_track``.
+
+        A liner still waiting from before (queued while nothing was
+        rendered) is dropped, so a new set never opens with a stale one.
+        """
         with self._lock:
             self._playing = True
             self._paused = False
+            self._drop_liner()
 
     def stop_set(self) -> None:
         """Drop the current and queued tracks; emit silence until restarted."""
@@ -271,11 +276,15 @@ class MixBus:
             self._current = None
             self._pos = 0
             self._skip_fade = 0
-            self._liner = None
-            self._duck_gain = 1.0
-            self._duck_target = 1.0
-            self._duck_step = 0.0
-            self._duck_remaining = 0
+            self._drop_liner()
+
+    def _drop_liner(self) -> None:
+        """Forget any liner and put the music back at full level (lock held)."""
+        self._liner = None
+        self._duck_gain = 1.0
+        self._duck_target = 1.0
+        self._duck_step = 0.0
+        self._duck_remaining = 0
 
     def _advance(self, pending: list[Callable[[], None]]) -> None:
         """Pull the next track and queue announcing it, holding the bus lock."""

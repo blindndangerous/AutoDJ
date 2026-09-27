@@ -94,6 +94,30 @@ def test_timed_trigger_fires_on_tick(tmp_path: Path) -> None:
     assert bus.play_liner.call_count == 1
 
 
+def test_automatic_triggers_wait_until_the_bus_can_play(tmp_path: Path) -> None:
+    now = [0.0]
+    playing = [False]
+    bus = MagicMock()
+    sched = LinerScheduler(
+        _cfg(liners_every_n_songs=1, liners_every_minutes=1.0),
+        _folder(tmp_path),
+        bus,
+        clock=lambda: now[0],
+        can_fire=lambda: playing[0],
+    )
+    now[0] = 120.0
+    sched.tick()
+    sched.on_track_start()
+    bus.play_liner.assert_not_called()
+    # A test fire by hand is not an automatic trigger: the route decides.
+    assert sched.fire("a.wav") == "a.wav"
+    bus.play_liner.reset_mock()
+    now[0] = 300.0
+    playing[0] = True
+    sched.tick()
+    bus.play_liner.assert_called_once()
+
+
 def test_bad_liner_is_skipped_and_music_carries_on(tmp_path: Path) -> None:
     bus = MagicMock()
 

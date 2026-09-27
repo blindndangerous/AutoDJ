@@ -220,7 +220,8 @@ async function _playByName(els, deps, name) {
 // Stream mode: the server mixes, so the liner has to go into the stream
 // (every listener hears it) instead of this browser's speakers.  The result
 // is forced: a second press of Test must be reported again, not silenced
-// because the region still holds the same sentence.
+// because the region still holds the same sentence.  When the server says
+// why nothing played (the station is idle or paused), that reason is shown.
 async function _testOnServer(els, name) {
   const epoch = captureAuthenticatedRequestEpoch();
   try {
@@ -232,7 +233,9 @@ async function _testOnServer(els, name) {
     if (!isAuthenticatedRequestCurrent(epoch)) return;
     _setStatus(
       els,
-      body && body.played ? `Liner playing: ${body.played}` : `Could not play ${name}.`,
+      body && body.played
+        ? `Liner playing: ${body.played}`
+        : (body && body.message) || `Could not play ${name}.`,
       { force: true },
     );
   } catch (err) {

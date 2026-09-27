@@ -397,6 +397,14 @@ def test_lifespan_starts_the_station_and_shuts_it_down_first(tmp_path: Path) -> 
             assert isinstance(stream, StreamOutput)
             assert isinstance(bridge.station, Station)
             assert bridge.liner_scheduler is not None
+            # Automatic liners only fire while a set is heard.
+            assert bridge.liner_scheduler._can_fire() is False
+            player._state.is_paused = False
+            player.bus.playing = True
+            assert bridge.liner_scheduler._can_fire() is True
+            player._state.is_paused = True
+            assert bridge.liner_scheduler._can_fire() is False
+            player.bus.playing = False
             assert stream.on_listener_change == bridge.station.listener_changed
             player.bus.add_output.assert_called_once_with(stream)
             info = client.get("/api/stream").json()

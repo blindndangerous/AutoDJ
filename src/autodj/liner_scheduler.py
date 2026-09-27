@@ -137,6 +137,7 @@ class LinerScheduler:
         clock: Callable[[], float] = time.monotonic,
         rng: random.Random | None = None,
         decoder: Callable[[Path, str], np.ndarray] = decode_liner,
+        can_fire: Callable[[], bool] = lambda: True,
     ) -> None:
         """Build a scheduler.
 
@@ -149,6 +150,11 @@ class LinerScheduler:
             rng: Random source for picks and random-window rolls;
                 defaults to a new :class:`random.Random`.
             decoder: Liner decoder; defaults to :func:`decode_liner`.
+            can_fire: Whether automatic triggers may fire now.  Stream
+                mode passes "a set is playing and not paused": the bus
+                renders nothing while idle or paused, so a liner fired
+                then would only wait and open the next set.  Like the
+                browser's ``canPlay`` check, a skipped trigger stays due.
         """
         self._cfg = playback_cfg
         self._folder = folder
@@ -156,6 +162,7 @@ class LinerScheduler:
         self._clock = clock
         self._rng = rng or random.Random()
         self._decoder = decoder
+        self._can_fire = can_fire
         self._lock = threading.Lock()
         self._tracks_since = 0
         self._last_fire = clock()
@@ -214,6 +221,8 @@ class LinerScheduler:
 
     def _maybe_fire_locked(self) -> None:
         """Fire when the current trigger config says it is due. Caller holds ``_lock``."""
+        if not self._can_fire():
+            return
         minutes = (self._clock() - self._last_fire) / 60.0
         if self._trigger().should_fire(
             track_count=self._tracks_since,

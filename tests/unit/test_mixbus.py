@@ -172,6 +172,15 @@ def test_stop_set_drops_tracks_and_goes_silent() -> None:
     np.testing.assert_array_equal(bus.render_block(), np.zeros((882, 2), np.float32))
 
 
+def test_start_set_drops_a_liner_left_waiting_while_idle() -> None:
+    # Fired while idle, the liner never rendered; the next set must not open with it.
+    bus, _, _ = _bus([_track(0.5, 50_000)])
+    bus.play_liner(np.full((882 * 50, 2), 0.2, np.float32), duck_db=-12.0)
+    bus.render_block()  # idle: returns silence without touching the liner
+    bus.start_set()
+    np.testing.assert_allclose(bus.render_block()[:, 0], 0.5, atol=1e-6)
+
+
 def test_no_next_track_means_silence_not_stall() -> None:
     bus, _, _ = _bus([_track(0.5, 100)])
     bus.start_set()

@@ -823,7 +823,6 @@ def _start_stream_station(
     player = bridge.player
     cfg = player._cfg
     bus = player.bus
-    scheduler = LinerScheduler(cfg.playback, liner_folder, bus)
     stream_out = stream_module.StreamOutput(
         cfg.stream.bitrate,
         cfg.stream.max_listeners,
@@ -837,6 +836,9 @@ def _start_stream_station(
         cfg.stream.idle_grace_seconds,
         on_event=bridge.announce_station_event,
         forget_track=bridge.forget_track,
+    )
+    scheduler = LinerScheduler(
+        cfg.playback, liner_folder, bus, can_fire=lambda: station.state == "playing"
     )
     if first_track is not None:
         station.start_with(first_track, "seed")
@@ -1745,10 +1747,20 @@ def create_app(
         ``bridge.liner_scheduler`` is ``None`` there and the browser's
         "Test liner" button already plays the clip itself by fetching
         ``GET /api/liners/file/<name>`` directly, so this is a no-op.
+
+        In stream mode the bus renders nothing while the station is idle
+        or paused, so the liner is refused with a ``message`` saying why
+        instead of waiting unheard to open the next set.
         """
         scheduler = bridge.liner_scheduler
         if scheduler is None:
             return {"played": None}
+        station = bridge.station
+        state = station.state if station is not None else "playing"
+        if state == "idle":
+            return {"played": None, "message": "Nobody is listening, so the liner was not played."}
+        if state == "paused":
+            return {"played": None, "message": "Playback is paused, so the liner was not played."}
         played = await asyncio.to_thread(scheduler.fire, body.name)
         return {"played": played}
 

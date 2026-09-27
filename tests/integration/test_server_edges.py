@@ -82,6 +82,34 @@ class TestLinerTestRoute:
         assert resp.status_code == 200
         assert resp.json() == {"played": None}
 
+    @pytest.mark.parametrize(
+        ("state", "message"),
+        [
+            ("idle", "Nobody is listening, so the liner was not played."),
+            ("paused", "Playback is paused, so the liner was not played."),
+        ],
+    )
+    def test_stream_station_not_playing_refuses_with_a_reason(
+        self, bridge, state: str, message: str
+    ) -> None:
+        """Nothing is rendered while idle or paused, so success would be a lie."""
+        bridge.liner_scheduler = MagicMock()
+        bridge.station = MagicMock(state=state)
+
+        resp = TestClient(create_app(bridge)).post("/api/liners/test", json={"name": "a.wav"})
+
+        assert resp.json() == {"played": None, "message": message}
+        bridge.liner_scheduler.fire.assert_not_called()
+
+    def test_stream_station_playing_fires(self, bridge) -> None:
+        bridge.liner_scheduler = MagicMock()
+        bridge.liner_scheduler.fire.return_value = "a.wav"
+        bridge.station = MagicMock(state="playing")
+
+        resp = TestClient(create_app(bridge)).post("/api/liners/test", json={"name": "a.wav"})
+
+        assert resp.json() == {"played": "a.wav"}
+
     def test_rejects_unknown_fields(self, bridge) -> None:
         """Extra body fields are refused rather than silently ignored."""
         resp = TestClient(create_app(bridge)).post(

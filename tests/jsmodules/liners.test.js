@@ -417,6 +417,21 @@ describe("Test liner in stream mode", () => {
     await vi.waitFor(() => expect(status.textContent).toBe("Could not play station-id.mp3."));
   });
 
+  it("says why when the station is idle", async () => {
+    const message = "Nobody is listening, so the liner was not played.";
+    const { status } = await install({ onTest: () => json({ played: null, message }) });
+    const button = document.querySelector("#liner-test");
+    button.click();
+    await vi.waitFor(() => expect(status.textContent).toBe(message));
+    const writes = [];
+    const observer = new window.MutationObserver((batch) => writes.push(...batch));
+    observer.observe(status, { childList: true, characterData: true, subtree: true });
+    button.click();
+    await vi.waitFor(() => expect(writes.length).toBeGreaterThanOrEqual(2));
+    await vi.waitFor(() => expect(status.textContent).toBe(message));
+    observer.disconnect();
+  });
+
   it("reports a failed request", async () => {
     const { status } = await install({
       onTest: () => json({ detail: "Liner folder is not readable" }, 500),
