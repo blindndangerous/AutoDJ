@@ -508,21 +508,27 @@ class TestDeepMergeAndOverlays:
         )
         sidecar = tmp_path / "presets.toml"
         sidecar.write_text(
-            "[presets.chill]\nbpm_target = 75\nbpm_weight = 0.2\n",
+            "[chill]\nbpm_target = 75\nbpm_weight = 0.2\n",
             encoding="utf-8",
         )
         cfg = load_config(base)
         assert "chill" in cfg.presets
 
-    def test_legacy_inline_presets_loaded(self, tmp_path: Path) -> None:
+    def test_non_table_presets_value_is_a_load_error(self, tmp_path: Path) -> None:
+        base = tmp_path / "config.toml"
+        base.write_text('presets = 5\n[library]\nmusic_dir = "Z:/Music"\n', encoding="utf-8")
+        with pytest.raises(TypeError, match="presets section must be a table"):
+            load_config(base)
+
+    def test_config_toml_presets_loaded(self, tmp_path: Path) -> None:
         base = tmp_path / "config.toml"
         base.write_text(
             '[library]\nmusic_dir = "Z:/Music"\n[index]\n[playback]\n'
-            "[presets.legacy]\nbpm_target = 100\nbpm_weight = 0.3\n",
+            "[presets.evening]\nbpm_target = 100\nbpm_weight = 0.3\n",
             encoding="utf-8",
         )
         cfg = load_config(base)
-        assert "legacy" in cfg.presets
+        assert "evening" in cfg.presets
 
 
 class TestAutoDJConfig:

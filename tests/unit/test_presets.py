@@ -201,45 +201,55 @@ class TestLoadUserPresets:
         result = load_user_presets({})
         assert result == {}
 
-    def test_no_presets_section_returns_empty_dict(self) -> None:
-        result = load_user_presets({"library": {"music_dir": "/music"}})
-        assert result == {}
-
     def test_loads_single_preset(self) -> None:
-        raw = {"presets": {"myjam": {"bpm_target": 95}}}
+        raw = {"myjam": {"bpm_target": 95}}
         result = load_user_presets(raw)
         assert "myjam" in result
         assert result["myjam"].target_bpm(0) == pytest.approx(95.0)
 
     def test_loads_multiple_presets(self) -> None:
         raw = {
-            "presets": {
-                "morning": {"bpm_start": 60, "bpm_end": 100},
-                "night": {"bpm_target": 75},
-            }
+            "morning": {"bpm_start": 60, "bpm_end": 100},
+            "night": {"bpm_target": 75},
         }
         result = load_user_presets(raw)
         assert "morning" in result
         assert "night" in result
 
     def test_discovery_every_in_user_preset(self) -> None:
-        raw = {"presets": {"party2": {"bpm_target": 130, "discovery_every": 8}}}
+        raw = {"party2": {"bpm_target": 130, "discovery_every": 8}}
         result = load_user_presets(raw)
         assert result["party2"].discovery_every == 8
 
     def test_non_dict_section_is_skipped(self) -> None:
-        """A preset section that is not a dict (e.g. a scalar) should be silently skipped."""
-        raw = {"presets": {"bad": "not a dict", "good": {"bpm_target": 100}}}
+        """A preset section that is not a table (e.g. a scalar) is skipped."""
+        raw = {"bad": "not a dict", "good": {"bpm_target": 100}}
         result = load_user_presets(raw)
         assert "bad" not in result
         assert "good" in result
 
     def test_invalid_section_is_skipped_with_warning(self) -> None:
         """A section that raises ValueError during parsing should be skipped."""
-        raw = {"presets": {"broken": {}, "ok": {"bpm_target": 90}}}
+        raw = {"broken": {}, "ok": {"bpm_target": 90}}
         result = load_user_presets(raw)
         assert "broken" not in result
         assert "ok" in result
+
+    def test_wrapped_form_in_the_sidecar_is_skipped_with_a_clear_warning(self, caplog) -> None:
+        """presets.toml takes bare tables only; [presets.name] there is not a preset."""
+        raw = {"presets": {"wakeup": {"bpm_target": 90}}}
+        with caplog.at_level("WARNING"):
+            result = load_user_presets(raw)
+        assert result == {}
+        assert "nested tables ['wakeup'] are not presets" in caplog.text
+
+    def test_removed_slide_keys_are_rejected(self, caplog) -> None:
+        """bpm_low / bpm_peak are gone; they must not silently fall back to 80-130."""
+        raw = {"arch": {"curve": "slide", "bpm_low": 90, "bpm_peak": 140}}
+        with caplog.at_level("WARNING"):
+            result = load_user_presets(raw)
+        assert result == {}
+        assert "unknown keys ['bpm_low', 'bpm_peak']" in caplog.text
 
 
 # ---------------------------------------------------------------------------

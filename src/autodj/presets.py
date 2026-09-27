@@ -4,8 +4,9 @@ A preset steers which tracks the DJ picks next by biasing the FAISS
 similarity search toward a target BPM that may evolve over time.
 
 Built-in presets cover common scenarios (wakeup, workout, etc.).
-Users can add their own in ``config.toml`` under ``[presets.*]`` sections —
-only one field is required, the rest are inferred:
+Users can add their own in ``config.toml`` under ``[presets.*]`` sections,
+or as bare ``[name]`` tables in a ``presets.toml`` sidecar.  Only one field
+is required, the rest are inferred:
 
 .. code-block:: toml
 
@@ -39,7 +40,7 @@ from __future__ import annotations
 
 import logging
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -223,6 +224,20 @@ BUILTIN_PRESETS: dict[str, Preset] = {
 # ---------------------------------------------------------------------------
 
 
+_PRESET_KEYS = frozenset(
+    {
+        "bpm_target",
+        "bpm_start",
+        "bpm_end",
+        "curve",
+        "bpm_weight",
+        "horizon_tracks",
+        "discovery_every",
+        "genres",
+    }
+)
+
+
 def preset_from_config(name: str, section: dict[str, Any]) -> Preset:
     """Build a :class:`Preset` from a ``[presets.NAME]`` TOML section dict.
 
@@ -242,8 +257,18 @@ def preset_from_config(name: str, section: dict[str, Any]) -> Preset:
         A :class:`Preset` instance.
 
     Raises:
-        ValueError: If required BPM fields are missing or the curve name is unknown.
+        ValueError: If the section holds an unknown key or a nested table,
+            or required BPM fields are missing.
     """
+    nested = sorted(key for key, value in section.items() if isinstance(value, dict))
+    if nested:
+        raise ValueError(
+            f"Preset '{name}': nested tables {nested} are not presets; presets.toml "
+            "takes bare [name] tables and config.toml takes [presets.name] tables."
+        )
+    unknown = sorted(set(section) - _PRESET_KEYS)
+    if unknown:
+        raise ValueError(f"Preset '{name}': unknown keys {unknown}")
     horizon: int = int(section.get("horizon_tracks", 30))
     discovery_every_raw = section.get("discovery_every")
     discovery_every: int | None = (
@@ -263,8 +288,8 @@ def preset_from_config(name: str, section: dict[str, Any]) -> Preset:
     bpm_end = section.get("bpm_end")
 
     if curve_name == "slide":
-        lo = float(bpm_start if bpm_start is not None else section.get("bpm_low", 80))
-        pk = float(bpm_end if bpm_end is not None else section.get("bpm_peak", bpm_target or 130))
+        lo = float(bpm_start if bpm_start is not None else 80)
+        pk = float(bpm_end if bpm_end is not None else (bpm_target or 130))
         curve: Callable[[int], float] = slide_curve(lo, pk, horizon=horizon)
         default_weight = 0.25
 
@@ -295,48 +320,26 @@ def preset_from_config(name: str, section: dict[str, Any]) -> Preset:
     )
 
 
-def load_user_presets(raw_config: dict[str, Any]) -> dict[str, Preset]:
-    """Load user-defined presets from a parsed TOML dict.
+def load_user_presets(sections: Mapping[str, Any]) -> dict[str, Preset]:
+    """Load user-defined presets from a mapping of preset name to table.
 
-    Accepts two layouts:
-
-    - **Sidecar / bare form** (``presets.toml``)::
-
-        [wakeup]
-        bpm_start = 85
-        bpm_end = 120
-        curve = "linear"
-
-      Top-level keys are preset names directly.
-
-    - **Legacy / inline form** (``config.toml``)::
-
-        [presets.wakeup]
-        bpm_start = 85
-        bpm_end = 120
-        curve = "linear"
-
-      Wrapped under a ``[presets]`` table.
+    Each file has one layout.  ``presets.toml`` holds bare ``[name]``
+    tables, so the whole parsed file is passed in; ``config.toml`` holds
+    ``[presets.name]`` tables, so its ``presets`` table is passed in.
 
     Sections that fail to parse are skipped with a warning so a typo
     in one preset doesn't kill the whole load.
 
     Args:
-        raw_config: The parsed TOML dict.
+        sections: Preset name → parsed TOML table.
 
     Returns:
-        Dict of preset name → :class:`Preset`.  Empty dict if neither
-        layout produces any valid preset.
+        Dict of preset name → :class:`Preset`.
     """
-    if "presets" in raw_config and isinstance(raw_config["presets"], dict):
-        presets_raw = raw_config["presets"]
-    else:
-        # Treat every top-level table as a preset entry.
-        presets_raw = {k: v for k, v in raw_config.items() if isinstance(v, dict)}
-
     result: dict[str, Preset] = {}
-    for name, section in presets_raw.items():
+    for name, section in sections.items():
         if not isinstance(section, dict):
+            logger.warning("Skipping invalid preset '%s': not a table", name)
             continue
         try:
             result[name] = preset_from_config(name, section)

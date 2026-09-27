@@ -1140,10 +1140,13 @@ def _build_config(
     *,
     config_path: Path | None,
     sources: list[str],
-    presets_raw: dict[str, Any],
+    presets_raw: Any,
 ) -> AutoDJConfig:
     """Validate raw sections and construct the typed application configuration."""
     from autodj.presets import load_user_presets
+
+    if not isinstance(presets_raw, Mapping):
+        raise TypeError("presets section must be a table")
 
     for section in (
         "library",
@@ -1218,7 +1221,7 @@ def load_config(
         with presets_path.open("rb") as fh:
             presets_raw = tomllib.load(fh)
     else:
-        presets_raw = {"presets": raw["presets"]} if "presets" in raw else {}
+        presets_raw = raw.get("presets", {})
     return _build_config(
         raw,
         config_path=loaded_path,

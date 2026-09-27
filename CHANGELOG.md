@@ -58,6 +58,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `autodj serve --no-playback`. It never did anything and was deprecated in 0.17.0; passing it
   is now an error. Browser audio is still the default and `--server-audio` still opts into
   server audio.
+- Presets have one layout per file. `presets.toml` takes only bare `[name]` tables, and
+  `config.toml` takes only `[presets.name]` tables. A `[presets.name]` table inside
+  `presets.toml` is no longer read as a preset; AutoDJ skips it with a warning, so rename it to
+  `[name]`.
+- The `bpm_low` and `bpm_peak` preset keys for `curve = "slide"`. Use `bpm_start` and
+  `bpm_end`. A preset with any key AutoDJ does not know is now skipped with a warning naming the
+  key, instead of loading with that key ignored.
 - `autodj.player` no longer re-exports `apply_eq`, `make_eq_filters`, `make_eq_state` and
   `reset_eq_state`. Import them from `autodj.eq`.
 

@@ -4,21 +4,18 @@
 # slide between two values, or sine arch.  Use it on the CLI with
 # `--preset NAME` or pick it from the Settings dropdown in the web UI.
 #
-# Each table heading is the preset name.  Two layouts are accepted:
-#
-# 1.  Bare top-level tables (recommended for this sidecar file):
+# Each table heading is the preset name, as a bare top-level table:
 #
 #       [wakeup]
 #       bpm_start = 85
 #       bpm_end   = 120
 #       curve     = "linear"
 #
-# 2.  Wrapped under [presets.*] (legacy, also works inside config.toml):
-#
-#       [presets.wakeup]
-#       bpm_start = 85
-#       bpm_end   = 120
-#       curve     = "linear"
+# Do not wrap them as [presets.wakeup] here; that form belongs in
+# config.toml, and when this file exists config.toml's presets are ignored.
+# Keys: bpm_target, bpm_start, bpm_end, curve ("linear" or "slide"),
+# bpm_weight, horizon_tracks, discovery_every, genres.  Any other key makes
+# AutoDJ skip that preset with a warning.
 #
 # Built-in presets (`wakeup`, `chill`, `party`, `workout`, etc.) are
 # always available — define names below to OVERRIDE a built-in or add
