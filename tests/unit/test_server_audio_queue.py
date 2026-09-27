@@ -153,6 +153,15 @@ def test_play_next_lands_right_after_the_upcoming_track(harness: Harness) -> Non
     x = harness.others(harness.entries[0], upcoming)[-1]
     assert harness.bridge.play_next(x.path)
     assert harness.next_track_path() == upcoming.path  # Up Next is still true
+    # play_next() only refreshes the *ready* render, which the worker may
+    # still be re-rendering (with X now baked in as its next) in the
+    # background.  Without waiting for that fresh render, the bus can take
+    # the *fallback* -- the old render for `upcoming`, whose own next is
+    # still whatever was picked before X was queued -- which is valid
+    # (RenderAhead's documented "one track later" behaviour) but makes the
+    # assertions below flaky under load.  Wait for the fresh render instead
+    # of racing it.
+    assert _next_path(harness.settle()) == x.path
     assert harness.play_next_track() == upcoming.path
     assert harness.next_track_path() == x.path
     assert harness.play_next_track() == x.path
