@@ -1822,6 +1822,8 @@ function startAuthenticatedApp(initialState) {
   installLiners(_linerEls, {
     postSettings: (url, body, control) => postSettings(url, body, control),
     canPlay: () => authenticatedActivityActive && !!_ctx && !!_lastBrowserPlayback,
+    // Stream mode: Test sends the liner into the stream via the server.
+    testOnServer: () => _lastStreamMode,
     playLiner: async (
       arrayBuf, duckDb, epoch = captureAuthenticatedRequestEpoch(),
     ) => {

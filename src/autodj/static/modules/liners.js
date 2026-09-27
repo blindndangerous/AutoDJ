@@ -45,10 +45,10 @@ function _floatOrNull(el) {
   return isNaN(n) ? null : n;
 }
 
-function _setStatus(els, msg) {
+function _setStatus(els, msg, { force = false } = {}) {
   if (!els.lnStatus) return;
   els.lnStatus.classList.remove("visually-hidden");
-  announceStatus(els.lnStatus, msg, { dwellMs: 4000 });
+  announceStatus(els.lnStatus, msg, { dwellMs: 4000, force });
 }
 
 export function renderLinerFileList(fileList, files, onDelete) {
@@ -217,6 +217,30 @@ async function _playByName(els, deps, name) {
   }
 }
 
+// Stream mode: the server mixes, so the liner has to go into the stream
+// (every listener hears it) instead of this browser's speakers.  The result
+// is forced: a second press of Test must be reported again, not silenced
+// because the region still holds the same sentence.
+async function _testOnServer(els, name) {
+  const epoch = captureAuthenticatedRequestEpoch();
+  try {
+    const body = await requestJson("/api/liners/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    if (!isAuthenticatedRequestCurrent(epoch)) return;
+    _setStatus(
+      els,
+      body && body.played ? `Liner playing: ${body.played}` : `Could not play ${name}.`,
+      { force: true },
+    );
+  } catch (err) {
+    if (!isAuthenticatedRequestCurrent(epoch)) return;
+    _setStatus(els, `Liner playback failed: ${err.message}`, { force: true });
+  }
+}
+
 export function installLiners(els, deps) {
   state.lastFireAt = _now();
   let scheduledPlayback = null;
@@ -264,7 +288,10 @@ export function installLiners(els, deps) {
         _setStatus(els, "No liner files in folder.");
         return;
       }
-      await withDisabled(event.currentTarget, () => _playByName(els, deps, name));
+      const onServer = typeof deps.testOnServer === "function" && deps.testOnServer();
+      await withDisabled(event.currentTarget, () => (onServer
+        ? _testOnServer(els, name)
+        : _playByName(els, deps, name)));
     });
   }
 

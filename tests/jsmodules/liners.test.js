@@ -366,3 +366,86 @@ describe("liner file controls", () => {
     expect(document.activeElement).toBe(upload);
   });
 });
+
+describe("Test liner in stream mode", () => {
+  const json = (body, status = 200) => new globalThis.Response(JSON.stringify(body), {
+    status, headers: { "Content-Type": "application/json" },
+  });
+
+  async function install({ testOnServer = () => true, onTest }) {
+    vi.resetModules();
+    document.body.innerHTML = `
+      <button id="liner-test">Test now</button>
+      <ul id="liner-files"></ul>
+      <div id="liner-status" role="status" aria-live="polite" aria-atomic="true"></div>`;
+    const fetchImpl = vi.fn((url, options) => {
+      if (url === "/api/liners") {
+        return Promise.resolve(json({ config: { duck_db: -12 }, files: ["station-id.mp3"] }));
+      }
+      if (url === "/api/liners/test") return Promise.resolve(onTest(options));
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchImpl);
+    const playLiner = vi.fn().mockResolvedValue(true);
+    const { installLiners } = await import("../../src/autodj/static/modules/liners.js");
+    const fileList = document.querySelector("#liner-files");
+    installLiners({
+      lnFileList: fileList,
+      lnStatus: document.querySelector("#liner-status"),
+      lnTestBtn: document.querySelector("#liner-test"),
+    }, { canPlay: () => false, playLiner, postSettings: vi.fn(), testOnServer });
+    await vi.waitFor(() => expect(fileList.textContent).toContain("station-id.mp3"));
+    return { fetchImpl, playLiner, status: document.querySelector("#liner-status") };
+  }
+
+  it("plays the liner into the stream through the server", async () => {
+    const { fetchImpl, playLiner, status } = await install({
+      onTest: () => json({ played: "station-id.mp3" }),
+    });
+    document.querySelector("#liner-test").click();
+    await vi.waitFor(() => expect(status.textContent).toBe("Liner playing: station-id.mp3"));
+    const [, options] = fetchImpl.mock.calls.find(([url]) => url === "/api/liners/test");
+    expect(options.method).toBe("POST");
+    expect(JSON.parse(options.body)).toEqual({ name: "station-id.mp3" });
+    expect(fetchImpl.mock.calls.some(([url]) => url.startsWith("/api/liners/file/"))).toBe(false);
+    expect(playLiner).not.toHaveBeenCalled();
+  });
+
+  it("says so when the server played nothing", async () => {
+    const { status } = await install({ onTest: () => json({ played: null }) });
+    document.querySelector("#liner-test").click();
+    await vi.waitFor(() => expect(status.textContent).toBe("Could not play station-id.mp3."));
+  });
+
+  it("reports a failed request", async () => {
+    const { status } = await install({
+      onTest: () => json({ detail: "Liner folder is not readable" }, 500),
+    });
+    document.querySelector("#liner-test").click();
+    await vi.waitFor(() => expect(status.textContent).toMatch(/^Liner playback failed: /));
+  });
+
+  it("reports a repeated press again rather than staying silent", async () => {
+    const { status } = await install({ onTest: () => json({ played: "station-id.mp3" }) });
+    const button = document.querySelector("#liner-test");
+    button.click();
+    await vi.waitFor(() => expect(status.textContent).toBe("Liner playing: station-id.mp3"));
+    const writes = [];
+    const observer = new window.MutationObserver((batch) => writes.push(...batch));
+    observer.observe(status, { childList: true, characterData: true, subtree: true });
+    button.click();
+    await vi.waitFor(() => expect(writes.length).toBeGreaterThanOrEqual(2));
+    await vi.waitFor(() => expect(status.textContent).toBe("Liner playing: station-id.mp3"));
+    observer.disconnect();
+  });
+
+  it("keeps local playback when the page is not in stream mode", async () => {
+    const { fetchImpl } = await install({
+      testOnServer: () => false,
+      onTest: () => json({ played: "station-id.mp3" }),
+    });
+    document.querySelector("#liner-test").click();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(fetchImpl.mock.calls.some(([url]) => url === "/api/liners/test")).toBe(false);
+  });
+});

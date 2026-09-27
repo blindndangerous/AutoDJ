@@ -1473,6 +1473,18 @@ describe("stream mode", () => {
     expect(pauseClick).toHaveBeenCalledOnce();
   });
 
+  it("tells the liner controls to test through the server only in stream mode", async () => {
+    let linerDeps;
+    const { webSocket } = await setupApp({
+      initialState: streamState,
+      onInstallLiners: (_els, deps) => { linerDeps = deps; },
+      onRequest: () => lyricsFor("a.mp3"),
+    });
+    expect(linerDeps.testOnServer()).toBe(true);
+    webSocket.onmessage({ data: JSON.stringify({ ...streamState, stream_mode: false }) });
+    expect(linerDeps.testOnServer()).toBe(false);
+  });
+
   it("stops listening when the session expires", async () => {
     let expire = false;
     await setupApp({
