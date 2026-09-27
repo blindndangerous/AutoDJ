@@ -42,6 +42,7 @@ from types import TracebackType
 
 import numpy as np
 
+from autodj.index_manifest import relative_storage_path
 from autodj.sqlite_utils import immediate_transaction
 
 logger = logging.getLogger(__name__)
@@ -611,14 +612,7 @@ class DjMetaCache:
         Raises:
             ValueError: If *path* is absolute and not under ``music_dir``.
         """
-        key = Path(path).as_posix()
-        if self._music_dir is not None:
-            prefix = self._music_dir.as_posix().rstrip("/") + "/"
-            if key.startswith(prefix):
-                return key[len(prefix) :]
-        if key.startswith("/") or key[1:2] == ":":
-            raise ValueError(f"{path} is not under music_dir {self._music_dir}")
-        return key
+        return relative_storage_path(path, self._music_dir)
 
     def _open(self) -> None:
         """Open the SQLite connection and run the schema."""

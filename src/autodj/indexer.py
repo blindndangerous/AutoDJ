@@ -59,9 +59,11 @@ from autodj.index_manifest import (
     _immutable_sqlite_uri,
     current_snapshot_token,
     fsync_directory,
+    is_absolute_storage,
     publication_lock,
     publish_manifest,
     read_manifest,
+    relative_storage_path,
     require_current_format,
     require_snapshot_token,
     restore_working_snapshot,
@@ -189,7 +191,7 @@ def _entry_to_row(entry: IndexEntry, music_dir: Path | None, vec_row: int) -> di
     """
     return {
         "vec_row": vec_row,
-        "path": _relativize_for_storage(entry.path, music_dir),
+        "path": relative_storage_path(entry.path, music_dir),
         "title": entry.title,
         "artist": entry.artist,
         "album": entry.album,
@@ -277,40 +279,6 @@ def _load_tracks_rows(conn: sqlite3.Connection) -> list[IndexEntry]:
     """SELECT every row from ``tracks`` in FAISS vector order."""
     cur = conn.execute(_TRACKS_SELECT_SQL)
     return [_row_to_entry(r) for r in cur.fetchall()]
-
-
-def _is_absolute_storage(path: str) -> bool:
-    """Whether *path* is absolute: a POSIX root, a UNC share, or a drive letter."""
-    return path.startswith(("/", "\\")) or path[1:2] == ":"
-
-
-def _relativize_for_storage(abs_path: str, music_dir: Path | None) -> str:
-    """Return *abs_path* as a forward-slashed path relative to *music_dir*.
-
-    ``tracks.db`` stores only relative paths, which keeps an index usable on
-    any host that mounts the library at a different place.
-
-    Args:
-        abs_path: Runtime path from an :class:`IndexEntry`.
-        music_dir: Library root.  ``None`` stores already-relative paths as-is.
-
-    Returns:
-        A forward-slashed relative path string for SQLite storage.
-
-    Raises:
-        ValueError: If *abs_path* is absolute and not under *music_dir*.
-    """
-    # Pure string-prefix match; never call Path.resolve() here.  resolve()
-    # stat()s the file, and on NFS/SMB libraries that turns the per-checkpoint
-    # loop over 70k+ entries into minutes of stat() round trips.
-    path = Path(abs_path).as_posix()
-    if music_dir is not None:
-        prefix = music_dir.as_posix().rstrip("/") + "/"
-        if path.startswith(prefix):
-            return path[len(prefix) :]
-    if _is_absolute_storage(path):
-        raise ValueError(f"{abs_path} is not under music_dir {music_dir}")
-    return path
 
 
 def _resolve_beets_path(path: Path, music_dir: Path) -> Path:
@@ -1423,7 +1391,7 @@ def load_index(
                 raise IndexConsistencyError("tracks SHA-256 mismatch")
             if vectors_hash != before.vectors_sha256:
                 raise IndexConsistencyError("vectors SHA-256 mismatch")
-        absolute = next((e.path for e in entries if _is_absolute_storage(e.path)), None)
+        absolute = next((e.path for e in entries if is_absolute_storage(e.path)), None)
         if absolute is not None:
             raise UnsupportedIndexError(index_dir, f"tracks.db stores the absolute path {absolute}")
         if music_dir is not None:
@@ -1898,13 +1866,17 @@ def _collect_tracks_to_index(  # pragma: no cover -- exercised via build_index i
             for t in tracks
         ]
         logger.info("Resolved beets paths against music_dir '%s'", cfg.library.music_dir)
-        prefix = cfg.library.music_dir.as_posix().rstrip("/") + "/"
-        inside = [t for t in tracks if t.path.as_posix().startswith(prefix)]
+        inside: list[Track] = []
+        for t in tracks:
+            with contextlib.suppress(ValueError):
+                relative_storage_path(t.path, cfg.library.music_dir)
+                inside.append(t)
         if len(inside) < len(tracks):
             logger.warning(
-                "Skipping %d beets tracks outside music_dir %s; the index stores "
-                "paths relative to music_dir",
+                "Skipping %d of %d beets tracks: they are outside music_dir %s, and the "
+                "index stores paths relative to music_dir",
                 len(tracks) - len(inside),
+                len(tracks),
                 cfg.library.music_dir,
             )
         return inside

@@ -1252,34 +1252,42 @@ class TestDetectStaleEntries:
 
 class TestRelativizeForStorage:
     def test_strips_music_dir_prefix(self, tmp_path: Path) -> None:
-        from autodj.indexer import _relativize_for_storage
+        from autodj.index_manifest import relative_storage_path
 
         md = tmp_path / "Music"
         md.mkdir()
-        assert _relativize_for_storage(str(md / "Artist" / "song.flac"), md) == "Artist/song.flac"
+        assert relative_storage_path(str(md / "Artist" / "song.flac"), md) == "Artist/song.flac"
 
     def test_rejects_path_outside_music_dir(self, tmp_path: Path) -> None:
-        from autodj.indexer import _relativize_for_storage
+        from autodj.index_manifest import relative_storage_path
 
         md = tmp_path / "Music"
         md.mkdir()
         with pytest.raises(ValueError, match="not under music_dir"):
-            _relativize_for_storage(str(tmp_path / "elsewhere" / "song.flac"), md)
+            relative_storage_path(str(tmp_path / "elsewhere" / "song.flac"), md)
 
     def test_does_not_stat_filesystem(self, tmp_path: Path) -> None:
         # Resolve() / is_relative_to() on real Paths used to dominate save_index
-        # for libraries on NFS — see indexer.py _relativize_for_storage docstring.
+        # for libraries on NFS — see index_manifest.relative_storage_path.
         # Must work on paths that don't exist.
-        from autodj.indexer import _relativize_for_storage
+        from autodj.index_manifest import relative_storage_path
 
         md = tmp_path / "Music"  # never created
         fake = md / "Artist" / "song.flac"
-        assert _relativize_for_storage(str(fake), md) == "Artist/song.flac"
+        assert relative_storage_path(str(fake), md) == "Artist/song.flac"
+
+    @pytest.mark.skipif(os.name != "nt", reason="case-insensitive paths are a Windows rule")
+    def test_case_and_separator_mismatch_is_under_music_dir(self) -> None:
+        """Beets may spell the drive or folders differently from music_dir on Windows."""
+        from autodj.index_manifest import relative_storage_path
+
+        md = Path("c:/music")
+        assert relative_storage_path(r"C:\Music\Artist/Song.flac", md) == "Artist/Song.flac"
 
     def test_no_music_dir_keeps_relative_path(self) -> None:
-        from autodj.indexer import _relativize_for_storage
+        from autodj.index_manifest import relative_storage_path
 
-        assert _relativize_for_storage("Artist/song.flac", None) == "Artist/song.flac"
+        assert relative_storage_path("Artist/song.flac", None) == "Artist/song.flac"
 
 
 class TestPathPortability:
