@@ -68,6 +68,7 @@ class PlaybackState(TypedDict, total=False):
     liners_random_max_minutes: float | None
     liners_pick_mode: str
     liners_duck_db: float
+    stream_bitrate: int
 
 
 DJMIX_BOOL_FIELDS = (
@@ -360,6 +361,19 @@ def _restore_liners(cfg: Any, pb: dict) -> None:
             _warn("liners_duck_db", value)
 
 
+def _restore_stream_bitrate(cfg: Any, pb: dict) -> None:
+    """Restore the radio-stream bitrate when it is one of the allowed values."""
+    if "stream_bitrate" not in pb:
+        return
+    from autodj.config import STREAM_BITRATES
+
+    value = pb["stream_bitrate"]
+    if type(value) is int and value in STREAM_BITRATES:
+        cfg.stream.bitrate = value
+    else:
+        _warn("stream_bitrate", value)
+
+
 def _restore_bpm_range(player: Any, data: dict) -> None:
     """Restore a valid BPM range or clear it when explicitly null."""
     if "bpm_range" not in data:
@@ -437,6 +451,7 @@ def load_into_player(player: Any, index_dir: Path | None) -> None:
         _restore_mood_arc(cfg, player, playback)
         _restore_validated_strings(cfg, playback)
         _restore_liners(cfg, playback)
+        _restore_stream_bitrate(cfg, playback)
     _restore_bpm_range(player, data)
     _restore_discovery(player, data)
 

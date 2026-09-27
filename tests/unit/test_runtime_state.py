@@ -57,6 +57,7 @@ def _make_player() -> SimpleNamespace:
         ),
         playback=playback,
         replaygain=SimpleNamespace(enabled=False),
+        stream=SimpleNamespace(bitrate=320),
         presets={},
     )
     return SimpleNamespace(
@@ -89,6 +90,10 @@ def test_huge_integer_is_not_a_finite_runtime_number() -> None:
         {"playback": {"transition_mode": 12}},
         {"playback": {"liners_pick_mode": "invalid"}},
         {"playback": {"liners_duck_db": 1.0}},
+        {"playback": {"stream_bitrate": 100}},
+        {"playback": {"stream_bitrate": "320"}},
+        {"playback": {"stream_bitrate": True}},
+        {"playback": {"stream_bitrate": 320.0}},
         {"bpm_range": "invalid"},
         {"discovery_every": "invalid"},
         {"schema_version": "invalid"},
@@ -592,6 +597,7 @@ class TestRoundTrip:
         p1._cfg.playback.liners_random_max_minutes = 14.0
         p1._cfg.playback.liners_pick_mode = "sequential"
         p1._cfg.playback.liners_duck_db = -9.0
+        p1._cfg.stream.bitrate = 192
         p1._bpm_range = (100.0, 132.0)
         p1._discovery_every = 9
 
@@ -643,6 +649,7 @@ class TestRoundTrip:
             "liners_random_max_minutes",
             "liners_pick_mode",
             "liners_duck_db",
+            "stream_bitrate",
             # Bridge-visible derived session values are never persisted.
             "no_repeat_window",
             "library_size",
@@ -1018,3 +1025,18 @@ class TestRuntimeStateValidation:
         cfg = MagicMock()
         _restore_validated_strings(cfg, {"transition_mode": "fixed"})
         assert cfg.playback.transition_mode == "fixed"
+
+
+def test_stream_bitrate_is_restored_into_the_stream_config(tmp_path) -> None:
+    player = _make_player()
+    _write_state(tmp_path, {"playback": {"stream_bitrate": 128}})
+    load_into_player(player, tmp_path)
+    assert player._cfg.stream.bitrate == 128
+
+
+def test_invalid_stream_bitrate_keeps_the_configured_one(tmp_path, caplog) -> None:
+    player = _make_player()
+    _write_state(tmp_path, {"playback": {"stream_bitrate": 64}})
+    load_into_player(player, tmp_path)
+    assert player._cfg.stream.bitrate == 320
+    assert "ignoring invalid stream_bitrate" in caplog.text

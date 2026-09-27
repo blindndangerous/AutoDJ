@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
 from collections import deque
 from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -26,6 +28,12 @@ if TYPE_CHECKING:
     from autodj.indexer import IndexEntry
 
 logger = logging.getLogger(__name__)
+
+STREAM_SEEK_UNAVAILABLE = "Seeking is not available while streaming."
+
+
+class StreamSeekUnavailable(Exception):
+    """Seeking was asked for while serving the mix as a radio stream."""
 
 
 def _finite(value: Any) -> float | None:
@@ -138,6 +146,141 @@ class PlayerBridge:
     # in browser-driven mode, where the browser evaluates liner triggers
     # itself and the "Test liner" route below is a no-op.
     liner_scheduler: Any = None
+    # Stream mode (``serve --stream``): the stream output, its secret and
+    # the station, set together by :meth:`attach_stream`.
+    stream: Any = None
+    stream_secret: Any = None
+    station: Any = None
+    # History is appended on the mix-bus thread, trimmed by the station's
+    # tick and read by request handlers.
+    _history_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
+    # Runs the liner scheduler's track-start check, which can decode a
+    # liner for seconds, off the mix-bus thread.
+    _liner_worker: ThreadPoolExecutor | None = field(default=None, init=False)
+    _event_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
+    _station_event: dict | None = field(default=None, init=False)
+
+    # ------------------------------------------------------------------
+    # Stream mode
+    # ------------------------------------------------------------------
+
+    @property
+    def stream_mode(self) -> bool:
+        """Whether the mix is served as a radio stream."""
+        return self.stream is not None
+
+    def attach_stream(
+        self, *, stream: Any, secret: Any, station: Any, scheduler: Any = None
+    ) -> None:
+        """Switch the bridge into stream mode.
+
+        Args:
+            stream: The :class:`~autodj.stream.StreamOutput`.
+            secret: The :class:`~autodj.stream_secret.StreamSecret`.
+            station: The :class:`~autodj.station.Station`.
+            scheduler: The :class:`~autodj.liner_scheduler.LinerScheduler`,
+                if liners play into the stream.
+        """
+        self.stream = stream
+        self.stream_secret = secret
+        self.station = station
+        self.liner_scheduler = scheduler
+        if scheduler is not None:
+            self._liner_worker = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="autodj-liner"
+            )
+
+    def shutdown_stream_workers(self) -> None:
+        """Stop the liner worker; a check already running finishes first."""
+        worker, self._liner_worker = self._liner_worker, None
+        if worker is not None:
+            worker.shutdown(wait=True, cancel_futures=True)
+
+    def announce_station_event(self, name: str) -> None:
+        """Publish a station event for every open page to announce once.
+
+        Args:
+            name: ``"set_started"``, ``"set_stopped"`` or ``"link_changed"``.
+        """
+        with self._event_lock:
+            seq = self._station_event["seq"] + 1 if self._station_event else 1
+            self._station_event = {"seq": seq, "name": name}
+
+    def stream_info(self) -> dict:
+        """Return the stream's paths, bitrate, listener count and state."""
+        secret = self.stream_secret.value
+        return {
+            "path": f"/stream/{secret}.mp3",
+            "m3u_path": f"/stream/{secret}.m3u",
+            "bitrate": int(self.player._cfg.stream.bitrate),
+            "listeners": int(self.stream.listener_count),
+            "state": self.station.state,
+        }
+
+    def rotate_stream_secret(self) -> None:
+        """Replace the stream secret and disconnect every listener."""
+        self.stream_secret.rotate()
+        self.stream.disconnect_all()
+        self.announce_station_event("link_changed")
+
+    def set_stream_bitrate(self, bitrate: int) -> None:
+        """Restart the stream encoder at *bitrate* and remember it.
+
+        Args:
+            bitrate: One of :data:`~autodj.config.STREAM_BITRATES`.
+
+        Raises:
+            ValueError: *bitrate* is not an allowed bitrate.
+            EncoderUnavailableError: The encoder could not be restarted;
+                nothing changed.
+        """
+        from autodj.config import STREAM_BITRATES
+
+        if bitrate not in STREAM_BITRATES:
+            raise ValueError(f"stream bitrate must be one of {STREAM_BITRATES}")
+        self.stream.set_bitrate(bitrate)
+        self.player._cfg.stream.bitrate = bitrate
+
+    def on_track_started(self, entry: Any) -> None:
+        """Record a track the mix bus started; retitle the stream.
+
+        Runs on the mix-bus thread, so it stays quick: the liner
+        scheduler's check (which may decode a clip) goes to a worker.
+        """
+        with self._history_lock:
+            self._play_history.append(_history_entry(entry))
+        if self.stream is not None:
+            self.stream.set_title(
+                getattr(entry, "artist", "") or "", getattr(entry, "title", "") or ""
+            )
+        worker = self._liner_worker
+        if worker is not None:
+            try:
+                worker.submit(self._liner_track_start)
+            except RuntimeError:
+                logger.debug("Liner worker is shut down; skipping the track-start check")
+
+    def _liner_track_start(self) -> None:
+        """Let the liner scheduler count a track start (liner worker thread)."""
+        try:
+            self.liner_scheduler.on_track_start()
+        except Exception:
+            logger.exception("Liner track-start check failed")
+
+    def forget_track(self, entry: Any) -> None:
+        """Remove the newest history row for *entry* (a track cut short)."""
+        row = _history_entry(entry)
+        keys = ("title", "artist", "duration")
+        with self._history_lock:
+            for index in range(len(self._play_history) - 1, -1, -1):
+                if all(self._play_history[index].get(k) == row[k] for k in keys):
+                    del self._play_history[index]
+                    return
+
+    def history_snapshot(self) -> list[dict]:
+        """Return a copy of the session history, oldest first."""
+        with self._history_lock:
+            return list(self._play_history)
 
     # ------------------------------------------------------------------
     # Controls
@@ -145,8 +288,9 @@ class PlayerBridge:
 
     def record_seed(self, entry: Any) -> None:
         """Append the seed track to history before the first advance fires."""
-        if entry is not None and not self._play_history:
-            self._play_history.append(_history_entry(entry))
+        with self._history_lock:
+            if entry is not None and not self._play_history:
+                self._play_history.append(_history_entry(entry))
 
     def seek(self, seconds: float | None = None, delta: float | None = None) -> float:
         """Seek the active track and return the resulting position in seconds.
@@ -155,7 +299,12 @@ class PlayerBridge:
         to the current playback position.  When both are provided
         ``seconds`` wins.  Clamps inside :meth:`Player.seek_to` so callers
         never overshoot the buffer.
+
+        Raises:
+            StreamSeekUnavailable: In stream mode, where seeking is off.
         """
+        if self.stream_mode:
+            raise StreamSeekUnavailable(STREAM_SEEK_UNAVAILABLE)
         if seconds is not None:
             return float(self.player.seek_to(float(seconds)))
         if delta is not None:
@@ -258,9 +407,10 @@ class PlayerBridge:
 
         state.current_track = nxt
         # Lazy-capture seed on first advance (seed never goes through advance_now as nxt).
-        if not self._play_history and cur is not None:
-            self._play_history.append(_history_entry(cur))
-        self._play_history.append(_history_entry(nxt))
+        with self._history_lock:
+            if not self._play_history and cur is not None:
+                self._play_history.append(_history_entry(cur))
+            self._play_history.append(_history_entry(nxt))
         # Browser-driven mode skips _play_track, so without an explicit
         # call here the lyric panel would stay frozen on the previous
         # track's words.  Lyric lookup can touch slow audio/tag storage,
@@ -392,6 +542,8 @@ class PlayerBridge:
         """
         state = self.player._state
         state.is_paused = not state.is_paused
+        if self._bus_mode():
+            self.player.bus.pause(state.is_paused)
         return state.is_paused
 
     def set_volume(self, volume: float) -> None:
@@ -655,10 +807,21 @@ class PlayerBridge:
             "why_this_track": _build_why(self.player),
             "library_job": _library_job_snapshot(),
             # Browser-side audio drives playback only when the server is
-            # headless (dry_run / --no-playback / missing audio deps).
-            "browser_playback": bool(getattr(self.player, "_dry_run", False)),
+            # headless (dry_run / --no-playback / missing audio deps) and
+            # not serving a stream.
+            "browser_playback": bool(getattr(self.player, "_dry_run", False))
+            and not self.stream_mode,
             "settings": self.get_settings(),
+            "stream_mode": self.stream_mode,
+            "stream_state": self.station.state if self.stream_mode else None,
+            "stream_listeners": int(self.stream.listener_count) if self.stream_mode else 0,
+            "stream_event": self._current_station_event(),
         }
+
+    def _current_station_event(self) -> dict | None:
+        """Return a copy of the latest station event, or ``None``."""
+        with self._event_lock:
+            return dict(self._station_event) if self._station_event else None
 
     # ------------------------------------------------------------------
     # Search
@@ -1039,6 +1202,7 @@ class PlayerBridge:
                 "liners_random_max_minutes": pb.liners_random_max_minutes,
                 "liners_pick_mode": pb.liners_pick_mode,
                 "liners_duck_db": pb.liners_duck_db,
+                "stream_bitrate": int(cfg.stream.bitrate),
             },
             "bpm_range": {
                 "lo": bpm_range[0] if bpm_range else None,

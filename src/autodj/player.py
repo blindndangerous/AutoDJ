@@ -584,6 +584,10 @@ class Player:
         discovery_every: Override discovery rate (tracks between injections).
             When ``None``, falls back to ``preset.discovery_every`` if set.
         bpm_range: Hard BPM filter ``(lo, hi)`` applied to every track pick.
+        stream_mode: Serve the mix as a radio stream: the mix bus is built
+            up front and a :class:`~autodj.station.Station` starts and stops
+            sets as listeners come and go.
+        server_audio_too: In stream mode, also play the mix on the sound card.
     """
 
     def __init__(
@@ -600,6 +604,8 @@ class Player:
         pure_shuffle: bool = False,
         anchor_to_seed: bool = False,
         no_keyboard: bool = False,
+        stream_mode: bool = False,
+        server_audio_too: bool = False,
     ) -> None:
         """Initialise the player with configuration and index.
 
@@ -616,10 +622,15 @@ class Player:
             discovery_every: Tracks between discovery injections.  Overrides
                 ``preset.discovery_every`` when both are set.
             bpm_range: Hard ``(lo, hi)`` BPM filter for every track pick.
+            stream_mode: Build the mix bus now and leave starting sets to
+                the stream station (see :meth:`begin_set`).
+            server_audio_too: In stream mode, also open the sound card.
         """
         self._cfg = cfg
         self._sim = sim_index
         self._dry_run = dry_run
+        self._stream_mode = stream_mode
+        self._server_audio_too = server_audio_too
         self._no_keyboard = no_keyboard
         self._preset = preset
         self._export_m3u = export_m3u
@@ -777,6 +788,11 @@ class Player:
         # The seed, recorded by run() before the bus starts it; its first
         # _on_track_start must not record it a second time.
         self._seed_awaiting_start: IndexEntry | None = None
+        # Stream mode: the bus exists from the start (the server registers
+        # the stream output on it) and stays idle until the station starts
+        # a set.
+        if stream_mode:
+            self._build_bus()
 
     def _build_status(self) -> Panel:
         """Build the Rich Panel rendered in the bottom status bar.
@@ -849,13 +865,14 @@ class Player:
             seed_entry: The track to start from.  ``None`` selects a random
                 track from the index.
         """
-        import random
-
+        if self._stream_mode:
+            # No seed: the station starts each set when a listener arrives.
+            self._run_stream()
+            return
         if seed_entry is None:
             while not self._state.should_stop:
-                entries = self._sim.entries_snapshot()
-                if entries:
-                    seed_entry = random.choice(entries)  # nosec B311
+                seed_entry = self._random_start_entry()
+                if seed_entry is not None:
                     break
                 self._skip_event.wait(timeout=0.25)
                 self._skip_event.clear()
@@ -895,6 +912,62 @@ class Player:
 
         self._run_server_audio(current)
 
+    def _random_start_entry(self) -> IndexEntry | None:
+        """Pick a starting track the way Shuffle does, or ``None`` if the library is empty."""
+        import random
+
+        entries = self._sim.entries_snapshot()
+        return random.choice(entries) if entries else None  # nosec B311
+
+    def _build_bus(self) -> MixBus:
+        """Create the mix bus, fed by the render-ahead worker, as :attr:`bus`."""
+        self.bus = MixBus(
+            BusEvents(
+                on_track_start=self._on_track_start,
+                on_position=self._on_position,
+                on_need_track=self._take_render,
+            ),
+            eq_gains=lambda: (self._eq_low, self._eq_mid, self._eq_high),
+        )
+        return self.bus
+
+    def _run_stream(self) -> None:
+        """Run the stream-mode mix bus until the player stops.
+
+        The bus starts idle, emitting silence; the station starts and stops
+        sets on it.  The render-ahead worker idles until a set gives it a
+        track.  With ``server_audio_too`` the mix also plays on the sound
+        card.  Blocks until :attr:`PlayerState.should_stop` is set.
+        """
+        from autodj.sound_output import SoundDeviceOutput
+
+        bus = self.bus
+        assert bus is not None  # built in __init__ for stream mode
+        if self._export_m3u:
+            # Every track, including each set's first, is appended as it starts.
+            _write_m3u_header(self._export_m3u)
+        self._ensure_dj_cache()
+        self._ensure_external_cues()
+        output = None
+        if self._server_audio_too:
+            output = SoundDeviceOutput(
+                self._state, getattr(self._cfg.playback, "audio_device", None) or None
+            )
+            bus.add_output(output)
+        stop = threading.Event()
+        watcher = threading.Thread(
+            target=self._stop_when_requested, args=(stop,), name="autodj-bus-stop", daemon=True
+        )
+        self._render_ahead.start()
+        watcher.start()
+        try:
+            bus.run(stop)
+        finally:
+            self._render_ahead.stop()
+            if output is not None:
+                bus.remove_output(output)
+                output.close()
+
     def _run_server_audio(self, current: IndexEntry) -> None:  # pragma: no cover -- sound card
         """Play the set from *current* through the sound card on the mix bus.
 
@@ -907,14 +980,8 @@ class Player:
         from autodj.sound_output import SoundDeviceOutput
 
         self.reset_render_ahead(current, 0, pick_mode="seed")
-        self.bus = MixBus(
-            BusEvents(
-                on_track_start=self._on_track_start,
-                on_position=self._on_position,
-                on_need_track=self._take_render,
-            ),
-            eq_gains=lambda: (self._eq_low, self._eq_mid, self._eq_high),
-        )
+        self._build_bus()
+        assert self.bus is not None
         output = SoundDeviceOutput(
             self._state, getattr(self._cfg.playback, "audio_device", None) or None
         )
@@ -1059,7 +1126,7 @@ class Player:
         )
 
     def reset_render_ahead(
-        self, entry: IndexEntry, offset: int = 0, pick_mode: str = "queue"
+        self, entry: IndexEntry | None, offset: int = 0, pick_mode: str = "queue"
     ) -> None:
         """Restart rendering from *entry*, discarding everything rendered.
 
@@ -1069,12 +1136,44 @@ class Player:
         lost from the queue: renders only ever peek at it.
 
         Args:
-            entry: First track to render.
+            entry: First track to render, or ``None`` to park the worker
+                (it renders nothing until the next reset).
             offset: Samples of *entry* to skip (already played).
             pick_mode: How *entry* was chosen, for "why this track".
         """
         with self._state.queue_lock:
             self._render_ahead.reset(lambda: self._set_render_cursor(entry, offset, pick_mode))
+
+    def begin_set(self, entry: IndexEntry, pick_mode: str) -> None:
+        """Point a new stream set at *entry*, from its first sample.
+
+        Called by the stream station just before it starts the bus.  The
+        set's first track becomes the anchor for anchored mode, and a new
+        set always starts unpaused.
+
+        Args:
+            entry: The set's first track.
+            pick_mode: How it was chosen (``"queue"`` or ``"seed"``).
+        """
+        self._seed_path = entry.path
+        self._state.is_paused = False
+        self.reset_render_ahead(entry, 0, pick_mode)
+
+    def end_set(self) -> None:
+        """Park the render-ahead worker and clear the now-playing state.
+
+        Called by the stream station after it stops the bus, so no stale
+        render survives into the next set and the page shows nothing
+        playing while idle.
+        """
+        self.reset_render_ahead(None)
+        self._playing_render = None
+        self._state.current_track = None
+        self._state.next_track = None
+        self._playback_pos[0] = 0
+        self._playback_len = 0
+        self._current_lyrics = []
+        self._current_lyrics_plain = ""
 
     def refresh_render_ahead(self) -> None:
         """Re-check the rendered next track after a queue edit.
