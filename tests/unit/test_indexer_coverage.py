@@ -176,27 +176,6 @@ def test_key_estimation_rejects_weak_profile_match() -> None:
     assert indexer._estimate_key_from_chroma(weak_match) == (-1, -1)
 
 
-def test_schema_migration_ignores_non_unique_indexes(tmp_path: Path) -> None:
-    database = tmp_path / "tracks.db"
-    connection = sqlite3.connect(database, isolation_level=None)
-    try:
-        connection.executescript(
-            """
-            CREATE TABLE tracks (path TEXT NOT NULL, title TEXT NOT NULL);
-            CREATE INDEX tracks_title_idx ON tracks(title);
-            INSERT INTO tracks(path, title) VALUES ('song.flac', 'Song');
-            """
-        )
-
-        indexer._ensure_vec_row_schema(connection)
-
-        assert connection.execute("SELECT vec_row, path, title FROM tracks").fetchall() == [
-            (0, "song.flac", "Song")
-        ]
-    finally:
-        connection.close()
-
-
 def test_chunked_faiss_write_survives_unsupported_fsync(tmp_path: Path) -> None:
     faiss_index = indexer.build_faiss_index(_vector())
     destination = tmp_path / "vectors.index"

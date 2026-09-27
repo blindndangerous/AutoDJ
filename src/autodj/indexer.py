@@ -139,24 +139,6 @@ _TRACKS_SELECT_SQL = (
     "key, mode, tempo_confidence, embedded_at FROM tracks ORDER BY vec_row ASC"
 )
 
-_TRACKS_SCHEMA_SIGNATURE = (
-    ("vec_row", "INTEGER", 1, None, 0),
-    ("path", "TEXT", 1, None, 0),
-    ("title", "TEXT", 1, "''", 0),
-    ("artist", "TEXT", 1, "''", 0),
-    ("album", "TEXT", 1, "''", 0),
-    ("genre", "TEXT", 1, "''", 0),
-    ("bpm", "REAL", 1, "0", 0),
-    ("year", "INTEGER", 1, "0", 0),
-    ("length", "REAL", 1, "0", 0),
-    ("energy", "REAL", 1, "0", 0),
-    ("key", "INTEGER", 1, "-1", 0),
-    ("mode", "INTEGER", 1, "-1", 0),
-    ("tempo_confidence", "REAL", 1, "0", 0),
-    ("embedded_at", "REAL", 1, "0", 0),
-)
-_TRACKS_REQUIRED_COLUMNS = tuple(column[0] for column in _TRACKS_SCHEMA_SIGNATURE)
-
 # Fixed SQL fragment; all row values remain parameter-bound.
 _TRACKS_UPSERT_SQL = _TRACKS_INSERT_SQL + (
     " ON CONFLICT(vec_row) DO UPDATE SET path=excluded.path, "  # nosec B608
@@ -185,7 +167,6 @@ def _open_tracks_db(index_dir: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, isolation_level=None, check_same_thread=False)
     try:
         conn.executescript(_TRACKS_SCHEMA)
-        _ensure_vec_row_schema(conn)
     except BaseException:
         conn.close()
         raise
@@ -193,99 +174,6 @@ def _open_tracks_db(index_dir: Path) -> sqlite3.Connection:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
     return conn
-
-
-def _ensure_vec_row_schema(conn: sqlite3.Connection) -> None:
-    """Migrate legacy tracks tables to stable FAISS vector-row identities."""
-    info = {str(row[1]): row for row in conn.execute("PRAGMA table_info(tracks)")}
-    actual_signature = tuple(
-        (
-            str(row[1]),
-            str(row[2]).strip().upper(),
-            int(row[3]),
-            None if row[4] is None else str(row[4]),
-            int(row[5]),
-        )
-        for row in info.values()
-    )
-    unique_single_columns: set[str] = set()
-    for index_row in conn.execute("PRAGMA index_list(tracks)"):
-        if int(index_row[2]) != 1 or (len(index_row) > 4 and int(index_row[4]) != 0):
-            continue
-        index_name = str(index_row[1]).replace('"', '""')
-        index_columns = [
-            str(row[2])
-            for row in conn.execute(  # nosec B608 -- SQLite-owned identifier
-                f'PRAGMA index_info("{index_name}")'
-            )
-        ]
-        if len(index_columns) == 1:
-            unique_single_columns.add(index_columns[0])
-    if actual_signature == _TRACKS_SCHEMA_SIGNATURE and {"vec_row", "path"}.issubset(
-        unique_single_columns
-    ):
-        return
-
-    names = set(info)
-    if "vec_row" in names:
-        vec_row_order = (
-            "vec_row"
-            if str(info["vec_row"][2]).strip().upper() == "INTEGER"
-            else "CAST(vec_row AS INTEGER)"
-        )
-        order_by = f"CASE WHEN vec_row IS NULL THEN 1 ELSE 0 END, {vec_row_order}, rowid"
-    else:
-        order_by = "id, rowid" if "id" in names else "rowid"
-    defaults = {
-        "title": "''",
-        "artist": "''",
-        "album": "''",
-        "genre": "''",
-        "bpm": "0",
-        "year": "0",
-        "length": "0",
-        "energy": "0",
-        "key": "-1",
-        "mode": "-1",
-        "tempo_confidence": "0",
-        "embedded_at": "0",
-    }
-    value_sql = [
-        f"ROW_NUMBER() OVER (ORDER BY {order_by}) - 1",
-        "path",
-        *(name if name in names else default for name, default in defaults.items()),
-    ]
-    with immediate_transaction(conn):
-        duplicate_path = conn.execute(
-            "SELECT path FROM tracks GROUP BY path HAVING COUNT(*) > 1 LIMIT 1"
-        ).fetchone()
-        if duplicate_path is not None:
-            raise sqlite3.IntegrityError(
-                "cannot migrate tracks schema: duplicate paths would break vector identity"
-            )
-        conn.execute(
-            """CREATE TABLE tracks_new (
-                vec_row INTEGER NOT NULL UNIQUE, path TEXT NOT NULL UNIQUE,
-                title TEXT NOT NULL DEFAULT '', artist TEXT NOT NULL DEFAULT '',
-                album TEXT NOT NULL DEFAULT '', genre TEXT NOT NULL DEFAULT '',
-                bpm REAL NOT NULL DEFAULT 0, year INTEGER NOT NULL DEFAULT 0,
-                length REAL NOT NULL DEFAULT 0, energy REAL NOT NULL DEFAULT 0,
-                key INTEGER NOT NULL DEFAULT -1, mode INTEGER NOT NULL DEFAULT -1,
-                tempo_confidence REAL NOT NULL DEFAULT 0,
-                embedded_at REAL NOT NULL DEFAULT 0
-            )"""
-        )
-        columns = (
-            "vec_row, path, title, artist, album, genre, bpm, year, length, "
-            "energy, key, mode, tempo_confidence, embedded_at"
-        )
-        # Identifiers and expressions come only from fixed schema definitions above.
-        conn.execute(
-            f"INSERT INTO tracks_new ({columns}) "  # nosec B608
-            f"SELECT {', '.join(value_sql)} FROM tracks ORDER BY {order_by}"
-        )
-        conn.execute("DROP TABLE tracks")
-        conn.execute("ALTER TABLE tracks_new RENAME TO tracks")
 
 
 def _entry_to_row(entry: IndexEntry, music_dir: Path | None, vec_row: int) -> dict[str, object]:
