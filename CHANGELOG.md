@@ -94,6 +94,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ones, and no longer upgrades an older `tracks` table layout to the current one.
 - Index rows with no `embedded_at` time are no longer stamped with the file's current time.
   The next `autodj index` run re-embeds them.
+- `autodj index --reindex-modified-since`. It existed to catch files replaced before index
+  rows had an `embedded_at` time; every row now has one, and `autodj index` already re-embeds
+  any file whose modification time is newer than that. Passing the option is now an error.
 
 ### Fixed
 

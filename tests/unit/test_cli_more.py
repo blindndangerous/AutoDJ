@@ -139,58 +139,13 @@ class TestStatsNameFlag:
 
 
 # ---------------------------------------------------------------------------
-# index command — config error path + --reindex-modified-since
+# index command — config error path
 # ---------------------------------------------------------------------------
 
 
 class TestIndexCommand:
     def test_import_probe_returns_false_for_missing_module(self) -> None:
         assert not _can_import("autodj_module_that_does_not_exist")
-
-    def test_index_with_reindex_modified_since_invalid(self, tmp_path: Path) -> None:
-        cfg = _write_min_cfg(tmp_path)
-        # Pretend deps are present + cfg loads, but build_index gets to the date parse.
-        with (
-            patch("autodj.cli._can_import", return_value=True),
-            patch("autodj.cli._load_cfg_or_exit", return_value=_cfg()),
-            patch("autodj.model.download_model_if_needed", return_value=tmp_path / "m"),
-            patch("autodj.model.load_model", return_value=MagicMock()),
-            patch("autodj.indexer.build_index"),
-        ):
-            result = CliRunner().invoke(
-                cli,
-                [
-                    "--config",
-                    str(cfg),
-                    "index",
-                    "--reindex-modified-since",
-                    "garbage-date",
-                ],
-            )
-        # ValueError on date parse -> sys.exit(1)
-        assert result.exit_code == 1
-        assert "Bad --reindex-modified-since" in result.output
-
-    def test_index_with_reindex_modified_since_valid(self, tmp_path: Path) -> None:
-        cfg = _write_min_cfg(tmp_path)
-        with (
-            patch("autodj.cli._can_import", return_value=True),
-            patch("autodj.cli._load_cfg_or_exit", return_value=_cfg()),
-            patch("autodj.model.download_model_if_needed", return_value=tmp_path / "m"),
-            patch("autodj.model.load_model", return_value=MagicMock()),
-            patch("autodj.indexer.build_index"),
-        ):
-            result = CliRunner().invoke(
-                cli,
-                [
-                    "--config",
-                    str(cfg),
-                    "index",
-                    "--reindex-modified-since",
-                    "2024-01-01",
-                ],
-            )
-        assert result.exit_code == 0
 
     def test_index_build_failure_exits_one(self, tmp_path: Path) -> None:
         cfg = _write_min_cfg(tmp_path)

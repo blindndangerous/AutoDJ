@@ -1700,7 +1700,6 @@ def _stat_mtimes(
 
 def _detect_stale_entries(
     entries: list[IndexEntry],
-    reindex_modified_since: float | None = None,
     throttle_ms: float = 0.0,
     stat_workers: int = 8,
     mtimes: list[float | None] | None = None,
@@ -1714,8 +1713,7 @@ def _detect_stale_entries(
     * ``embedded_at`` is not a positive stamp: without one, a replaced file
       cannot be told apart from the embedded one, so it is re-embedded, OR
     * ``file_mtime > embedded_at + 1.0`` (1 s margin absorbs filesystem
-      timestamp granularity), OR
-    * ``reindex_modified_since`` is set and ``file_mtime > that timestamp``.
+      timestamp granularity).
 
     Stat() calls are fanned out across a 32-thread pool because the typical
     case is an NFS/SMB-mounted library where each call costs an RTT.
@@ -1723,9 +1721,6 @@ def _detect_stale_entries(
     Args:
         entries: Existing index entries (with absolute paths already
             resolved by the caller).
-        reindex_modified_since: Optional one-shot epoch timestamp.  Any
-            entry whose file mtime exceeds this is marked stale regardless
-            of ``embedded_at``.
 
     Returns:
         The set of entry paths to drop and re-embed.
@@ -1743,11 +1738,7 @@ def _detect_stale_entries(
     for e, mt in zip(entries, mtimes, strict=False):
         if mt is None:
             continue  # missing file — prune handles it
-        if (
-            not e.embedded_at > 0.0
-            or mt > e.embedded_at + 1.0
-            or (reindex_modified_since is not None and mt > reindex_modified_since)
-        ):
+        if not e.embedded_at > 0.0 or mt > e.embedded_at + 1.0:
             stale.add(e.path)
     return stale
 
@@ -1791,7 +1782,6 @@ def _load_existing_index(  # pragma: no cover -- exercised via build_index integ
     index_dir: Path,
     music_dir: Path,
     force: bool,
-    reindex_modified_since: float | None,
     throttle_ms: float = 0.0,
     stat_workers: int = 8,
 ) -> tuple[list[IndexEntry], list[np.ndarray], set[str], bool, IndexSnapshotToken]:
@@ -1831,11 +1821,7 @@ def _load_existing_index(  # pragma: no cover -- exercised via build_index integ
         print(f"[AutoDJ] Skipping auto-prune (safety check): {exc}")
         missing_paths = set()  # keep everything; safety failure means user config is wrong
 
-    stale = _detect_stale_entries(
-        existing_entries,
-        reindex_modified_since=reindex_modified_since,
-        mtimes=mtimes,
-    )
+    stale = _detect_stale_entries(existing_entries, mtimes=mtimes)
 
     drop_paths = missing_paths | stale
     if drop_paths:
@@ -2031,7 +2017,6 @@ def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integr
     limit: int | None,
     force: bool,
     workers: int | None = None,
-    reindex_modified_since: float | None = None,
     throttle_ms: float = 0.0,
     stat_workers: int = 8,
 ) -> None:
@@ -2069,7 +2054,6 @@ def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integr
         index_dir,
         music_dir,
         force,
-        reindex_modified_since,
         throttle_ms=throttle_ms,
         stat_workers=stat_workers,
     )

@@ -1175,17 +1175,6 @@ class TestDetectStaleEntries:
         e = self._entry(str(tmp_path / "gone.flac"), embedded_at=1.0)
         assert _detect_stale_entries([e]) == set()
 
-    def test_reindex_modified_since_flags_fresh_entry(self, tmp_path: Path) -> None:
-        from autodj.indexer import _detect_stale_entries
-
-        f = tmp_path / "replaced.flac"
-        f.write_bytes(b"x")
-        mt = f.stat().st_mtime
-        os.utime(f, (mt, mt))
-        e = self._entry(str(f), embedded_at=mt + 60)
-        # Cutoff one hour BEFORE mtime → file is newer, must be flagged
-        assert e.path in _detect_stale_entries([e], reindex_modified_since=mt - 3600)
-
     def test_from_track_stamps_embedded_at(self) -> None:
         import time
 
@@ -1975,7 +1964,6 @@ class TestThrottledFaissCheckpoint:
             index_dir,
             music_dir=tmp_path,
             force=False,
-            reindex_modified_since=None,
         )
         assert [entry.path for entry in existing_entries] == [
             entries[0].path,
@@ -2055,7 +2043,6 @@ class TestThrottledFaissCheckpoint:
                 index_dir,
                 music_dir=tmp_path,
                 force=False,
-                reindex_modified_since=None,
             )
 
         loaded, loaded_vectors = load_index(index_dir, music_dir=tmp_path)
@@ -2095,7 +2082,6 @@ class TestThrottledFaissCheckpoint:
             index_dir,
             music_dir=tmp_path,
             force=True,
-            reindex_modified_since=None,
         )
         assert existing_entries == []
         assert existing_vectors == []
