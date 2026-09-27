@@ -1,4 +1,4 @@
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   installHotkeys,
@@ -393,4 +393,75 @@ describe("page shortcut scope", () => {
       expect(localSkipClick).toHaveBeenCalledOnce();
     },
   );
+});
+
+describe("keyboard shortcut toggle (WCAG 2.1.4)", () => {
+  const STORAGE_KEY = "autodj.keyboardShortcuts";
+  // Node's own experimental localStorage shadows happy-dom's here, so the
+  // tests supply a plain in-memory Storage.
+  function memoryStorage(initial = {}) {
+    const values = new Map(Object.entries(initial));
+    return {
+      getItem: vi.fn((key) => (values.has(key) ? values.get(key) : null)),
+      setItem: vi.fn((key, value) => values.set(key, String(value))),
+    };
+  }
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("turns every page shortcut off and back on, and saves the choice", async () => {
+    document.body.innerHTML = `
+      <section id="panel-now"></section>
+      <button id="toggle-pause">Pause</button>
+      <input type="checkbox" id="toggle" checked>
+      <div id="toggle-plain" tabindex="0">Plain</div>`;
+    const storage = memoryStorage();
+    vi.stubGlobal("localStorage", storage);
+    vi.resetModules();
+    const hotkeys = await import("../../src/autodj/static/modules/hotkeys.js");
+    const pause = document.querySelector("#toggle-pause");
+    const click = vi.spyOn(pause, "click");
+    const toggle = document.querySelector("#toggle");
+    const plain = document.querySelector("#toggle-plain");
+    const press = (key) => {
+      keyEvent(plain, key);
+      window.dispatchEvent(new window.KeyboardEvent("keyup", { key }));
+    };
+    hotkeys.installHotkeys({ btnPause: pause, shortcutToggle: toggle });
+    expect(toggle.checked).toBe(true);
+
+    toggle.checked = false;
+    toggle.dispatchEvent(new Event("change"));
+    expect(storage.setItem).toHaveBeenLastCalledWith(STORAGE_KEY, "off");
+    press("k");
+    expect(click).not.toHaveBeenCalled();
+
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event("change"));
+    expect(storage.setItem).toHaveBeenLastCalledWith(STORAGE_KEY, "on");
+    press("k");
+    expect(click).toHaveBeenCalledOnce();
+  });
+
+  it("starts with the saved choice and defaults on when storage throws", async () => {
+    vi.stubGlobal("localStorage", memoryStorage({ [STORAGE_KEY]: "off" }));
+    vi.resetModules();
+    const saved = await import("../../src/autodj/static/modules/hotkeys.js");
+    const offToggle = document.createElement("input");
+    offToggle.type = "checkbox";
+    saved.installHotkeys({ shortcutToggle: offToggle });
+    expect(offToggle.checked).toBe(false);
+
+    vi.stubGlobal("localStorage", {
+      getItem: () => { throw new Error("blocked"); },
+      setItem: () => { throw new Error("blocked"); },
+    });
+    vi.resetModules();
+    const blocked = await import("../../src/autodj/static/modules/hotkeys.js");
+    const onToggle = document.createElement("input");
+    onToggle.type = "checkbox";
+    blocked.installHotkeys({ shortcutToggle: onToggle });
+    expect(onToggle.checked).toBe(true);
+    onToggle.checked = false;
+    expect(() => onToggle.dispatchEvent(new Event("change"))).not.toThrow();
+  });
 });

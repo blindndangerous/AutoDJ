@@ -11,7 +11,7 @@
 // that previously inlined three direct assignments.
 
 import { dbg } from "./dom-helpers.js";
-import { clearLiveRegionLater } from "./live-region.js";
+import { announceStatus, clearLiveRegionLater } from "./live-region.js";
 import {
   captureAuthenticatedRequestEpoch,
   isAuthenticatedRequestCurrent,
@@ -35,7 +35,6 @@ const eqAnnounce = document.getElementById("eq-announce");
 const btnEqReset = document.getElementById("btn-eq-reset");
 const volSlider  = document.getElementById("vol");
 const coverArt   = document.getElementById("cover-art");
-const npAnnounce = document.getElementById("now-playing-announce");
 
 // ----------------------------------------------------------------
 // 3-band EQ
@@ -51,8 +50,16 @@ function eqValueLabel(v100) {
   return `${sign}${db.toFixed(1)} dB`;
 }
 
+// Last user change to an EQ slider or Reset (ms epoch).  The slider
+// posts 120 ms after input, so a websocket push landing in that gap
+// carried the old value and threw the slider (and an arrow press) back.
+// Same 600 ms guard the volume slider uses.
+let _lastUserEqTs = 0;
+const EQ_ECHO_GUARD_MS = 600;
+
 export function applyEqState(eq) {
   if (!eq) return;
+  if (Date.now() - _lastUserEqTs < EQ_ECHO_GUARD_MS) return;
   // Server gives 0.0–2.0 floats; convert to 0–200 ints for the slider.
   const map = [
     [eqLow, eqLowVal, Math.round(eq.low * 100)],
@@ -64,14 +71,26 @@ export function applyEqState(eq) {
       slider.value = value;
     }
     const label = eqValueLabel(value);
-    slider.setAttribute("aria-valuetext", label);
-    span.textContent = label;
+    if (slider.getAttribute("aria-valuetext") !== label) {
+      slider.setAttribute("aria-valuetext", label);
+    }
+    if (span.textContent !== label) span.textContent = label;
   }
 }
 
 let eqDebounceTimer = null;
+// Engine failures go to the shared status region, never into
+// #now-playing-announce: that node is the visible track title, so writing
+// an error there replaced the song name on screen and bypassed the
+// visible status line.  `force` is for failures of something the user
+// just did, which must be reported again if it fails again.
+function announceEngineError(message, { force = false } = {}) {
+  announceStatus(document.getElementById("sr-status"), message,
+    { dwellMs: 8000, force, tone: "error" });
+}
+
 function announceRequestError(errorValue) {
-  npAnnounce.textContent = `Request failed: ${errorValue.message || errorValue}`;
+  announceEngineError(`Request failed: ${errorValue.message || errorValue}`);
 }
 
 export function postEq() {
@@ -88,6 +107,7 @@ export function postEq() {
 [eqLow, eqMid, eqHigh].forEach((slider, i) => {
   const span = [eqLowVal, eqMidVal, eqHighVal][i];
   slider.addEventListener("input", () => {
+    _lastUserEqTs = Date.now();
     const label = eqValueLabel(parseInt(slider.value, 10));
     slider.setAttribute("aria-valuetext", label);
     span.textContent = label;
@@ -96,6 +116,7 @@ export function postEq() {
 });
 
 btnEqReset.addEventListener("click", () => {
+  _lastUserEqTs = Date.now();
   eqLow.value = eqMid.value = eqHigh.value = "100";
   for (const [s, sp] of [[eqLow, eqLowVal], [eqMid, eqMidVal], [eqHigh, eqHighVal]]) {
     s.setAttribute("aria-valuetext", "Unity");
@@ -2057,10 +2078,7 @@ for (const d of decks) {
     if (name) msg += ` (${name})`;
     // Aborted (code 1) is usually triggered by us tearing down a deck, so
     // ignore those entirely — they don't represent a real playback failure.
-    if (e && e.code === 1) {
-      npAnnounce.textContent = msg;
-      return;
-    }
+    if (e && e.code === 1) return;
     const isActive = d === deckActive();
     if (isActive) {
       // Active deck failed mid-playback — auto-advance.
@@ -2083,7 +2101,7 @@ for (const d of decks) {
       } catch (_) {}
       d.path = null;
     }
-    npAnnounce.textContent = msg;
+    announceEngineError(msg);
   });
   // Watch active deck's currentTime for crossfade trigger.
   d.audio.addEventListener("timeupdate", () => {
@@ -2211,13 +2229,13 @@ export async function unlockAndPlay() {
     state = await requestJson("/api/status");
   } catch (err) {
     if (!isAuthenticatedRequestCurrent(epoch)) return false;
-    npAnnounce.textContent = "Cannot reach server: " + (err.message || err);
+    announceEngineError("Cannot reach server: " + (err.message || err), { force: true });
     throw err;
   }
   if (!isAuthenticatedRequestCurrent(epoch)) return false;
   const path = state.current_track ? state.current_track.path : null;
   if (!path) {
-    npAnnounce.textContent = "No current track on server.";
+    announceEngineError("No current track on server.", { force: true });
     throw new Error("no current track");
   }
   setSrcOnDeck(deckActive(), path);

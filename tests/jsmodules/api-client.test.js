@@ -283,6 +283,59 @@ describe("request helpers", () => {
     expect(control.disabled).toBe(false);
   });
 
+  it("keeps a focused button focusable and swallows clicks while pending", async () => {
+    document.body.innerHTML = '<button id="b">Pause</button>';
+    const control = document.querySelector("#b");
+    const clicked = vi.fn();
+    control.addEventListener("click", clicked);
+    control.focus();
+    let finish;
+    const pending = withDisabled(control, () => new Promise((resolve) => {
+      finish = resolve;
+    }));
+
+    expect(control.disabled).toBe(false);
+    expect(control.getAttribute("aria-disabled")).toBe("true");
+    expect(document.activeElement).toBe(control);
+    control.click();
+    expect(clicked).not.toHaveBeenCalled();
+
+    finish("done");
+    await expect(pending).resolves.toBe("done");
+    expect(control.hasAttribute("aria-disabled")).toBe(false);
+    expect(document.activeElement).toBe(control);
+    control.click();
+    expect(clicked).toHaveBeenCalledOnce();
+    document.body.replaceChildren();
+  });
+
+  it("leaves a focused select usable and runs its requests in order", async () => {
+    document.body.innerHTML = "<select id=\"s\"><option>a</option><option>b</option></select>";
+    const control = document.querySelector("#s");
+    control.focus();
+    const order = [];
+    let finishFirst;
+    const first = withDisabled(control, () => new Promise((resolve) => {
+      order.push("first-start");
+      finishFirst = () => { order.push("first-end"); resolve(1); };
+    }));
+    const second = withDisabled(control, async () => {
+      order.push("second-start");
+      return 2;
+    });
+
+    expect(control.disabled).toBe(false);
+    expect(control.hasAttribute("aria-disabled")).toBe(false);
+    expect(document.activeElement).toBe(control);
+    await Promise.resolve();
+    expect(order).toEqual(["first-start"]);
+    finishFirst();
+    await expect(first).resolves.toBe(1);
+    await expect(second).resolves.toBe(2);
+    expect(order).toEqual(["first-start", "first-end", "second-start"]);
+    document.body.replaceChildren();
+  });
+
   it("uses the shared transport for valid JSON", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ value: 3 })));
     await expect(requestJson("/api/status")).resolves.toEqual({ value: 3 });

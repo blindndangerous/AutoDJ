@@ -800,6 +800,146 @@ describe("app request behavior", () => {
     expect(JSON.parse(options.body)).toEqual({ seconds: 99 });
   });
 
+  it("steps the focused seek slider from the real position, not its frozen value", async () => {
+    const baseState = {
+      current_track: { path: "a.mp3", title: "A" }, duration: 200, elapsed: 50,
+    };
+    const { fetchImpl, webSocket } = await setupApp({
+      initialState: baseState,
+      onRequest: () => jsonResponse({ ok: true }),
+    });
+    const seek = document.querySelector("#progress-track");
+    seek.focus();
+    const seeks = () => fetchImpl.mock.calls
+      .filter(([url]) => url === "/api/seek")
+      .map(([, options]) => JSON.parse(options.body).seconds);
+    const press = (key) => seek.dispatchEvent(new KeyboardEvent("keydown", {
+      key, bubbles: true, cancelable: true,
+    }));
+
+    // The playhead moved on while the slider held focus; its attribute did not.
+    webSocket.onmessage({ data: JSON.stringify({ ...baseState, elapsed: 80 }) });
+    expect(seek.getAttribute("aria-valuetext")).toBe("0:50 of 3:20");
+    press("ArrowRight");
+    await vi.waitFor(() => expect(seeks()).toEqual([85]));
+    expect(seek.getAttribute("aria-valuetext")).toBe("1:25 of 3:20");
+
+    // A stale tick lands before the server applies the seek; the next
+    // press still builds on the position just requested.
+    webSocket.onmessage({ data: JSON.stringify({ ...baseState, elapsed: 81 }) });
+    press("ArrowRight");
+    await vi.waitFor(() => expect(seeks()).toEqual([85, 90]));
+    expect(seek.getAttribute("aria-valuetext")).toBe("1:30 of 3:20");
+  });
+
+  it("saves key notation without announcing into the hidden Now Playing panel", async () => {
+    const { fetchImpl } = await setupApp({ onRequest: () => jsonResponse({ ok: true }) });
+    const notation = document.querySelector("#key-notation");
+    notation.value = "musical";
+    notation.dispatchEvent(new Event("change"));
+    const flats = document.querySelector("#key-prefer-flats");
+    flats.checked = true;
+    flats.dispatchEvent(new Event("change"));
+
+    await vi.waitFor(() => expect(fetchImpl.mock.calls
+      .filter(([url]) => url === "/api/playback-settings")).toHaveLength(2));
+    const nowPanel = document.querySelector("#panel-now").textContent;
+    expect(nowPanel).not.toContain("Key notation");
+    expect(nowPanel).not.toContain("key spelling");
+  });
+
+  it("gives Pause a changing label and Mute a fixed label with pressed state", async () => {
+    const { webSocket } = await setupApp({
+      initialState: { current_track: { path: "a.mp3", title: "A" } },
+    });
+    const pause = document.querySelector("#btn-pause");
+    const mute = document.querySelector("#btn-mute");
+    const label = (button) => button.textContent.replace(/[^A-Za-z]/g, "");
+
+    webSocket.onmessage({ data: JSON.stringify({
+      current_track: { path: "a.mp3", title: "A" }, is_paused: true, is_muted: true,
+      queue: [], eq: {}, volume: 1,
+    }) });
+    expect(label(pause)).toBe("Resume");
+    expect(pause.hasAttribute("aria-pressed")).toBe(false);
+    expect(label(mute)).toBe("Mute");
+    expect(mute.getAttribute("aria-pressed")).toBe("true");
+
+    webSocket.onmessage({ data: JSON.stringify({
+      current_track: { path: "a.mp3", title: "A" }, is_paused: false, is_muted: false,
+      queue: [], eq: {}, volume: 1,
+    }) });
+    expect(label(pause)).toBe("Pause");
+    expect(pause.hasAttribute("aria-pressed")).toBe(false);
+    expect(label(mute)).toBe("Mute");
+    expect(mute.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("leaves unchanged transport buttons untouched on a repeated push", async () => {
+    const tick = {
+      current_track: { path: "a.mp3", title: "A" }, is_paused: false, is_muted: true,
+      discovery_available: true, discovery_enabled: true,
+      queue: [], eq: {}, volume: 1,
+    };
+    const { webSocket } = await setupApp({ initialState: tick });
+    webSocket.onmessage({ data: JSON.stringify(tick) });
+    const records = [];
+    const observer = new window.MutationObserver((batch) => records.push(...batch));
+    for (const id of ["#btn-pause", "#btn-mute", "#btn-discovery"]) {
+      observer.observe(document.querySelector(id), {
+        attributes: true, childList: true, characterData: true, subtree: true,
+      });
+    }
+
+    webSocket.onmessage({ data: JSON.stringify(tick) });
+    await Promise.resolve();
+    expect(records).toHaveLength(0);
+
+    webSocket.onmessage({ data: JSON.stringify({ ...tick, is_paused: true }) });
+    await Promise.resolve();
+    expect(records.length).toBeGreaterThan(0);
+    observer.disconnect();
+  });
+
+  it("announces a track change once, key included, with Up Next silent", async () => {
+    const { webSocket } = await setupApp();
+    webSocket.onmessage({ data: JSON.stringify({
+      current_track: { path: "a.mp3", artist: "Artist", title: "Song", bpm: 128, key_label: "8A" },
+      next_track: { path: "b.mp3", artist: "Other", title: "Next" },
+      queue: [], eq: {}, volume: 1,
+    }) });
+
+    const title = document.querySelector("#now-playing-announce");
+    expect(title.getAttribute("aria-live")).toBe("polite");
+    expect(title.textContent).toBe("Artist — Song, 128 BPM, key 8A");
+    expect(title.querySelector(".visually-hidden").textContent).toBe(", key 8A");
+    const upNext = document.querySelector("#next-track-text");
+    expect(upNext.textContent).toBe("Other — Next");
+    expect(upNext.hasAttribute("aria-live")).toBe(false);
+    expect(upNext.closest("[aria-live]")).toBeNull();
+    expect(document.querySelector("#badges-announce")).toBeNull();
+  });
+
+  it("speaks volume once: from the slider when focused, the region otherwise", async () => {
+    await setupApp({ onRequest: () => jsonResponse({ ok: true }) });
+    const slider = document.querySelector("#vol");
+    const region = document.querySelector("#vol-announce");
+
+    slider.focus();
+    slider.value = "95";
+    slider.dispatchEvent(new Event("input"));
+    expect(slider.getAttribute("aria-valuetext")).toBe("95%");
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    expect(region.textContent).toBe("");
+
+    // A shortcut press while focus is elsewhere still gets spoken.
+    slider.blur();
+    slider.value = "90";
+    slider.dispatchEvent(new Event("input"));
+    expect(slider.getAttribute("aria-valuetext")).toBe("90%");
+    await vi.waitFor(() => expect(region.textContent).toBe("Volume 90%."));
+  });
+
   it("keeps pointer previews local and sends only the final absolute seek", async () => {
     let resolveSeek;
     const deckAudio = { currentTime: 10, duration: 100 };
@@ -895,6 +1035,50 @@ describe("app request behavior", () => {
       expect(deckAudio.currentTime).toBe(10);
     }
     expect(fetchImpl.mock.calls.some(([url]) => url === "/api/seek")).toBe(false);
+  });
+
+  it("loads history on a direct #history visit and pages without losing focus", async () => {
+    // App instances left by earlier tests still listen for hashchange;
+    // let them react against an inert fetch rather than the network.
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+    window.location.hash = "#history";
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const pageOf = (url) => Number(new URL(url, "http://x").searchParams.get("page"));
+    try {
+      const { fetchImpl } = await setupApp({
+        onRequest: (url) => url.startsWith("/api/history")
+          ? jsonResponse({
+            total: 60, page: pageOf(url), pages: 2,
+            items: [{ played_at: "2026-01-01T00:00:00Z", title: `T${pageOf(url)}`, artist: "A", duration: 60 }],
+          })
+          : jsonResponse({ ok: true }),
+      });
+      const historyCalls = () => fetchImpl.mock.calls
+        .filter(([url]) => url.startsWith("/api/history"));
+      await vi.waitFor(() => expect(historyCalls()).toHaveLength(1));
+      document.dispatchEvent(new Event("DOMContentLoaded"));
+      const prev = document.querySelector("#hist-prev");
+      const next = document.querySelector("#hist-next");
+      const status = document.querySelector("#sr-status");
+      await vi.waitFor(() => expect(prev.getAttribute("aria-disabled")).toBe("true"));
+      // The automatic first load is not announced; only user paging is.
+      expect(status.textContent).toBe("");
+
+      next.focus();
+      next.click();
+      await vi.waitFor(() => expect(status.textContent).toBe("Page 2 of 2"));
+      expect(next.getAttribute("aria-disabled")).toBe("true");
+      expect(next.disabled).toBe(false);
+      expect(document.activeElement).toBe(next);
+
+      // Next is unavailable on the last page, so nothing asks for page 3.
+      next.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(historyCalls().some(([url]) => pageOf(url) === 3)).toBe(false);
+    } finally {
+      window.location.hash = "";
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
   });
 
   it("clears stale history and exposes a current load failure", async () => {
