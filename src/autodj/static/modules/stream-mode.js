@@ -240,18 +240,30 @@ export function createStreamMode({ audio, button, idleNote, srStatus, fetchInfo 
 // "Make new link".
 //
 // Speech rules:
-//   - The listener count is plain text, never a live region, and is only
-//     rewritten when the number changes.
+//   - The listener count and the "not loaded yet" note are plain text,
+//     never live regions, and are only rewritten when they change.
 //   - Copy and "Make new link" are user actions, so their confirmations
 //     are forced: pressing Copy twice is heard twice.
+//   - Copy never moves focus through the address field on success: NVDA
+//     would read the whole secret address aloud.
 //   - Failures of a user action go to the settings region with the error
 //     tone, like every other settings failure.
-//   - The quality select is never rewritten while it has focus.
+//   - The quality select is never rewritten while it has focus or while
+//     a change of it is still being saved.
 // ----------------------------------------------------------------
 
 const LINK_MADE_TEXT = "New stream link made. The old link no longer works.";
 const COPIED_TEXT = "Stream address copied.";
 const COPY_FAILED_TEXT = "Could not copy. Select the address and copy it yourself.";
+export const NOT_LOADED_NOTE = "Stream address not loaded yet.";
+// Arrowing through a closed select fires change on every step, and each
+// save restarts the encoder and drops every speaker, so saves wait for
+// the choice to settle.
+export const BITRATE_SETTLE_MS = 600;
+// While the address is missing, a state push retries at most this often.
+export const ADDRESS_RETRY_MS = 10000;
+// A claimed link_changed that has not arrived by then never will.
+export const LINK_CLAIM_TIMEOUT_MS = 10000;
 
 function listenerText(count) {
   return `${count} listener${count === 1 ? "" : "s"}`;
@@ -278,6 +290,7 @@ export function createStreamSettings({
 }) {
   const fieldset = doc.getElementById("stream-settings");
   const url = doc.getElementById("stream-url");
+  const note = doc.getElementById("stream-url-note");
   const copy = doc.getElementById("stream-copy");
   const m3u = doc.getElementById("stream-m3u");
   const bitrate = doc.getElementById("stream-bitrate");
@@ -289,13 +302,38 @@ export function createStreamSettings({
   // Bumped by every source of stream details, so a slow lookup cannot
   // overwrite a newer link.
   let generation = 0;
-  // The quality the server last confirmed, for undoing a failed save.
+  // The lookup in flight, if any (fill() bumps the generation, so the
+  // generation cannot say when a lookup has finished).
+  let lookup = null;
+  let lastAttempt = -Infinity;
+  let failureSpoken = false;
+  // Set from "Make new link" until its link_changed event arrives, so
+  // that event does not fetch what the rotate reply already gave us.
+  let ownRotation = null;
+  // Quality saves: the value the server last confirmed, the newest
+  // choice not yet sent, the settle timer and whether a save is out.
   let savedBitrate = bitrate.value;
+  let pendingBitrate = null;
+  let settleTimer = null;
+  let saving = false;
+
+  function showNote(missing) {
+    if (!note) return;
+    if (missing && note.textContent !== NOT_LOADED_NOTE) note.textContent = NOT_LOADED_NOTE;
+    if (note.hidden === missing) note.hidden = !missing;
+  }
+
+  function bitrateBusy() {
+    return saving || settleTimer !== null || pendingBitrate !== null;
+  }
 
   function fill(info) {
     generation += 1;
     url.value = `${doc.location.origin}${info.path}`;
     m3u.setAttribute("href", info.m3u_path);
+    showNote(false);
+    failureSpoken = false;
+    if (bitrateBusy()) return;
     savedBitrate = String(info.bitrate);
     if (doc.activeElement !== bitrate) bitrate.value = savedBitrate;
   }
@@ -303,20 +341,45 @@ export function createStreamSettings({
   async function refresh() {
     if (!active) return;
     const mine = ++generation;
+    const token = {};
+    lookup = token;
+    lastAttempt = Date.now();
     try {
       const info = await fetchInfo();
       if (mine === generation && active) fill(info);
     } catch (err) {
       if (mine !== generation || !active || isAuthFailure(err)) return;
+      // Retries repeat every ten seconds; the failure is spoken once.
+      if (failureSpoken) return;
+      failureSpoken = true;
       announceStatus(settingsStatus, `Could not load the stream address: ${err.message}`,
         { dwellMs: 6000, tone: "error" });
+    } finally {
+      if (lookup === token) lookup = null;
     }
+  }
+
+  // The first lookup can fail while another tab shows, where the
+  // failure is not heard; a missing address is looked up again.
+  function retryIfMissing({ throttle = false } = {}) {
+    if (!active || lookup || url.value) return;
+    if (throttle && Date.now() - lastAttempt < ADDRESS_RETRY_MS) return;
+    void refresh();
+  }
+
+  function stopBitrateSaves() {
+    clearTimeout(settleTimer);
+    settleTimer = null;
+    pendingBitrate = null;
   }
 
   function hide() {
     active = false;
     generation += 1;
+    lookup = null;
     lastEventKey = null;
+    ownRotation = null;
+    stopBitrateSaves();
     if (dialog.open) dialog.close();
     fieldset.hidden = true;
   }
@@ -327,6 +390,17 @@ export function createStreamSettings({
     url.value = "";
     m3u.removeAttribute("href");
     listeners.textContent = "";
+    failureSpoken = false;
+    lastAttempt = -Infinity;
+  }
+
+  function applyPushedBitrate(state) {
+    const pushed = state.settings?.playback?.stream_bitrate;
+    if (pushed == null || bitrateBusy()) return;
+    savedBitrate = String(pushed);
+    if (doc.activeElement !== bitrate && bitrate.value !== savedBitrate) {
+      bitrate.value = savedBitrate;
+    }
   }
 
   function apply(state) {
@@ -342,28 +416,49 @@ export function createStreamSettings({
     if (fieldset.hidden) fieldset.hidden = false;
     const text = listenerText(Number(state.stream_listeners) || 0);
     if (listeners.textContent !== text) listeners.textContent = text;
+    applyPushedBitrate(state);
     const key = eventKey(state.stream_event);
     if (!active) {
       active = true;
       lastEventKey = key;
+      showNote(!url.value);
       void refresh();
       return;
     }
-    if (key === lastEventKey) return;
-    lastEventKey = key;
-    // Another page made a new link: the address shown here is dead.
-    if (state.stream_event?.name === "link_changed") void refresh();
+    if (key !== lastEventKey) {
+      lastEventKey = key;
+      if (state.stream_event?.name === "link_changed") {
+        // This page's own rotation already filled the new link.
+        if (ownRotation) {
+          ownRotation = null;
+          return;
+        }
+        // Another page made a new link: the address shown here is dead.
+        void refresh();
+        return;
+      }
+    }
+    retryIfMissing({ throttle: true });
   }
 
-  // Plain http is not a secure context, so it has no clipboard API; the
-  // older selection copy still works there.
-  function copyBySelection() {
-    url.focus();
-    url.select();
+  // Plain http is not a secure context, so it has no clipboard API.  The
+  // older copy command still works there; a one-off copy listener hands
+  // it the address, so nothing needs selecting and focus stays put.
+  function copyByCommand() {
+    let wrote = false;
+    const onCopy = (event) => {
+      if (!event.clipboardData) return;
+      event.clipboardData.setData("text/plain", url.value);
+      event.preventDefault();
+      wrote = true;
+    };
+    doc.addEventListener("copy", onCopy);
     try {
-      return typeof doc.execCommand === "function" && doc.execCommand("copy") === true;
+      return typeof doc.execCommand === "function" && doc.execCommand("copy") === true && wrote;
     } catch (_) {
       return false;
+    } finally {
+      doc.removeEventListener("copy", onCopy);
     }
   }
 
@@ -371,21 +466,47 @@ export function createStreamSettings({
     try {
       await navigator.clipboard.writeText(url.value);
     } catch (_err) {
-      if (!copyBySelection()) {
-        // Focus stays on the selected address, ready for Ctrl+C.
+      if (!copyByCommand()) {
+        // Focus moves to the selected address, ready for Ctrl+C.
+        url.focus();
+        url.select();
         announceStatus(srStatus, COPY_FAILED_TEXT, { dwellMs: 6000, force: true, tone: "error" });
         return;
       }
-      copy.focus();
     }
     announceStatus(srStatus, COPIED_TEXT, { dwellMs: 3000, force: true });
   });
 
-  bitrate.addEventListener("change", async () => {
-    const chosen = bitrate.value;
-    const ok = await saveBitrate(Number(chosen), bitrate);
+  // Sends the newest settled choice, one save at a time.  A choice made
+  // while a save is out waits for it, then goes only if it still differs
+  // from what the server has.
+  async function flushBitrate() {
+    settleTimer = null;
+    if (saving || pendingBitrate === null) return;
+    const chosen = pendingBitrate;
+    pendingBitrate = null;
+    if (chosen === savedBitrate) return;
+    saving = true;
+    let ok = false;
+    try {
+      ok = await saveBitrate(Number(chosen), bitrate);
+    } finally {
+      saving = false;
+    }
+    if (!active) return;
     if (ok) savedBitrate = chosen;
-    else if (bitrate.value === chosen) bitrate.value = savedBitrate;
+    if (pendingBitrate !== null) {
+      if (settleTimer === null) void flushBitrate();
+      return;
+    }
+    // postSettings has said why; the select shows what the server has.
+    if (!ok && bitrate.value === chosen) bitrate.value = savedBitrate;
+  }
+
+  bitrate.addEventListener("change", () => {
+    pendingBitrate = bitrate.value;
+    clearTimeout(settleTimer);
+    settleTimer = setTimeout(() => void flushBitrate(), BITRATE_SETTLE_MS);
   });
 
   rotateBtn.addEventListener("click", () => {
@@ -395,24 +516,46 @@ export function createStreamSettings({
     dialog.showModal();
   });
 
+  // Claims the link_changed event this rotation causes, both for speech
+  // (stream mode) and for the address lookup (here).
+  function claimOwnRotation() {
+    const releaseSpeech = claimLinkChange();
+    const token = {};
+    ownRotation = token;
+    return () => {
+      releaseSpeech();
+      if (ownRotation === token) ownRotation = null;
+    };
+  }
+
   dialog.addEventListener("close", async () => {
     if (!active) return;
     // Cancel, Escape and confirm all leave focus on the button.
     rotateBtn.focus();
     if (dialog.returnValue !== "confirm") return;
-    const release = claimLinkChange();
+    const release = claimOwnRotation();
+    let info;
     try {
-      const info = await rotate();
-      if (!active) return;
-      fill(info);
-      announceStatus(srStatus, LINK_MADE_TEXT, { dwellMs: 5000, force: true });
+      info = await rotate();
     } catch (err) {
       release();
       if (!active || isAuthFailure(err)) return;
       announceStatus(settingsStatus, `Could not make a new link: ${err.message}`,
         { dwellMs: 6000, force: true, tone: "error" });
+      return;
     }
+    // The event normally arrives within a push or two; a claim that
+    // outlives that would swallow a later change made elsewhere.
+    setTimeout(release, LINK_CLAIM_TIMEOUT_MS);
+    if (!active) return;
+    fill(info);
+    announceStatus(srStatus, LINK_MADE_TEXT, { dwellMs: 5000, force: true });
   });
 
-  return { apply, refresh, reset };
+  return {
+    apply,
+    refresh,
+    reset,
+    retryIfMissing: () => retryIfMissing(),
+  };
 }

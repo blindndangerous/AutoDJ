@@ -3,6 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createStreamMode,
   createStreamSettings,
+  ADDRESS_RETRY_MS,
+  BITRATE_SETTLE_MS,
+  LINK_CLAIM_TIMEOUT_MS,
+  NOT_LOADED_NOTE,
   STREAM_DELAY_ESTIMATE_S,
 } from "../../src/autodj/static/modules/stream-mode.js";
 
@@ -464,7 +468,8 @@ function settingsDom() {
       <label for="stream-url">Stream address</label>
       <input id="stream-url" type="text" readonly>
       <button type="button" id="stream-copy">Copy address</button>
-      <a id="stream-m3u">Playlist file (.m3u)</a>
+      <p id="stream-url-note" hidden></p>
+      <a id="stream-m3u" download="autodj.m3u">Download playlist file (.m3u)</a>
       <label for="stream-bitrate">Quality</label>
       <select id="stream-bitrate"><option value="128">128 kbps</option><option value="192">192 kbps</option><option value="256">256 kbps</option><option value="320">320 kbps</option></select>
       <button type="button" id="stream-rotate">Make new link</button>
@@ -503,6 +508,7 @@ function closeDialog(dialog, value) {
 describe("stream settings", () => {
   beforeEach(() => vi.useRealTimers());
   afterEach(() => {
+    vi.useRealTimers();
     delete navigator.clipboard;
     delete document.execCommand;
   });
@@ -729,21 +735,40 @@ describe("stream settings", () => {
     expect(sr.textContent).toBe("Stream address copied.");
   });
 
-  it("falls back to the selection copy where the clipboard API is missing", async () => {
+  it("copies through the copy command without touching the address field", async () => {
     settingsDom();
     Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
-    document.execCommand = vi.fn(() => true);
+    const setData = vi.fn();
+    let prevented = false;
+    document.execCommand = vi.fn(() => {
+      const event = new Event("copy", { cancelable: true });
+      event.clipboardData = { setData };
+      document.dispatchEvent(event);
+      prevented = event.defaultPrevented;
+      return true;
+    });
     const { ui } = makeSettings();
     ui.apply({ stream_mode: true });
     await ui.refresh();
+    const url = byId("stream-url");
+    const addressFocus = vi.fn();
+    url.addEventListener("focus", addressFocus);
     const copy = byId("stream-copy");
     copy.focus();
     copy.click();
     await tick();
     expect(document.execCommand).toHaveBeenCalledWith("copy");
+    expect(setData).toHaveBeenCalledWith("text/plain", `${location.origin}/stream/S.mp3`);
+    expect(prevented).toBe(true);
     expect(byId("sr-status").textContent).toBe("Stream address copied.");
-    // Focus goes back to the button the user pressed.
+    // NVDA would read the whole secret address on focusing the field.
+    expect(addressFocus).not.toHaveBeenCalled();
     expect(document.activeElement).toBe(copy);
+    // The one-off listener is gone: a later copy elsewhere is untouched.
+    const later = new Event("copy", { cancelable: true });
+    later.clipboardData = { setData: vi.fn() };
+    document.dispatchEvent(later);
+    expect(later.clipboardData.setData).not.toHaveBeenCalled();
   });
 
   it("asks the user to copy when every copy route fails", async () => {
@@ -756,19 +781,122 @@ describe("stream settings", () => {
     byId("stream-copy").click();
     await tick();
     expect(byId("sr-status").textContent).toBe(COPY_FAIL);
-    expect(document.activeElement).toBe(byId("stream-url"));
+    const url = byId("stream-url");
+    expect(document.activeElement).toBe(url);
+    expect(url.selectionEnd).toBe(url.value.length);
   });
 
-  it("saves the quality on change and says 1 listener correctly", async () => {
+  it("treats a copy command that never delivered the text as a failure", async () => {
+    settingsDom();
+    Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
+    // No copy event reaches the page (no user activation, for example).
+    document.execCommand = vi.fn(() => true);
+    const { ui } = makeSettings();
+    ui.apply({ stream_mode: true });
+    await ui.refresh();
+    byId("stream-copy").click();
+    await tick();
+    expect(byId("sr-status").textContent).toBe(COPY_FAIL);
+  });
+
+  it("saves the quality once the choice settles and says 1 listener correctly", async () => {
     settingsDom();
     const { ui, opts } = makeSettings({ fetchInfo: vi.fn(async () => ({ ...INFO, listeners: 1 })) });
     ui.apply({ stream_mode: true, stream_listeners: 1 });
     await ui.refresh();
     expect(byId("stream-listeners").textContent).toBe("1 listener");
+    vi.useFakeTimers();
     const select = byId("stream-bitrate");
     select.value = "192";
     select.dispatchEvent(new Event("change"));
+    expect(opts.saveBitrate).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(BITRATE_SETTLE_MS);
     expect(opts.saveBitrate).toHaveBeenCalledWith(192, select);
+  });
+
+  it("sends one save for quick arrow presses, with the last value", async () => {
+    settingsDom();
+    const { ui, opts } = makeSettings();
+    ui.apply({ stream_mode: true });
+    await ui.refresh();
+    vi.useFakeTimers();
+    const select = byId("stream-bitrate");
+    for (const value of ["256", "192", "128"]) {
+      select.value = value;
+      select.dispatchEvent(new Event("change"));
+      await vi.advanceTimersByTimeAsync(200);
+    }
+    expect(opts.saveBitrate).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(BITRATE_SETTLE_MS);
+    expect(opts.saveBitrate).toHaveBeenCalledOnce();
+    expect(opts.saveBitrate).toHaveBeenCalledWith(128, select);
+  });
+
+  it("sends nothing when the choice settles back on the saved quality", async () => {
+    settingsDom();
+    const { ui, opts } = makeSettings();
+    ui.apply({ stream_mode: true });
+    await ui.refresh();
+    vi.useFakeTimers();
+    const select = byId("stream-bitrate");
+    for (const value of ["256", "320"]) {
+      select.value = value;
+      select.dispatchEvent(new Event("change"));
+    }
+    await vi.advanceTimersByTimeAsync(BITRATE_SETTLE_MS * 2);
+    expect(opts.saveBitrate).not.toHaveBeenCalled();
+  });
+
+  it("follows a save in flight with exactly one save of the newest choice", async () => {
+    settingsDom();
+    const replies = [];
+    const saveBitrate = vi.fn(() => new Promise((resolve) => replies.push(resolve)));
+    const { ui } = makeSettings({ saveBitrate });
+    ui.apply({ stream_mode: true });
+    await ui.refresh();
+    vi.useFakeTimers();
+    const select = byId("stream-bitrate");
+    select.value = "256";
+    select.dispatchEvent(new Event("change"));
+    await vi.advanceTimersByTimeAsync(BITRATE_SETTLE_MS);
+    expect(saveBitrate).toHaveBeenCalledTimes(1);
+    for (const value of ["192", "128"]) {
+      select.value = value;
+      select.dispatchEvent(new Event("change"));
+      await vi.advanceTimersByTimeAsync(BITRATE_SETTLE_MS);
+    }
+    // Still one: the first save has not answered yet.
+    expect(saveBitrate).toHaveBeenCalledTimes(1);
+    replies[0](true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(saveBitrate).toHaveBeenCalledTimes(2);
+    expect(saveBitrate).toHaveBeenLastCalledWith(128, select);
+    replies[1](true);
+    await vi.advanceTimersByTimeAsync(BITRATE_SETTLE_MS * 2);
+    expect(saveBitrate).toHaveBeenCalledTimes(2);
+    expect(select.value).toBe("128");
+  });
+
+  it("skips the follow-up when the newest choice is what was just saved", async () => {
+    settingsDom();
+    const replies = [];
+    const saveBitrate = vi.fn(() => new Promise((resolve) => replies.push(resolve)));
+    const { ui } = makeSettings({ saveBitrate });
+    ui.apply({ stream_mode: true });
+    await ui.refresh();
+    vi.useFakeTimers();
+    const select = byId("stream-bitrate");
+    select.value = "256";
+    select.dispatchEvent(new Event("change"));
+    await vi.advanceTimersByTimeAsync(BITRATE_SETTLE_MS);
+    select.value = "192";
+    select.dispatchEvent(new Event("change"));
+    select.value = "256";
+    select.dispatchEvent(new Event("change"));
+    await vi.advanceTimersByTimeAsync(BITRATE_SETTLE_MS);
+    replies[0](true);
+    await vi.advanceTimersByTimeAsync(BITRATE_SETTLE_MS);
+    expect(saveBitrate).toHaveBeenCalledOnce();
   });
 
   it("puts the quality back when saving it fails", async () => {
@@ -776,10 +904,11 @@ describe("stream settings", () => {
     const { ui } = makeSettings({ saveBitrate: vi.fn(async () => false) });
     ui.apply({ stream_mode: true });
     await ui.refresh();
+    vi.useFakeTimers();
     const select = byId("stream-bitrate");
     select.value = "128";
     select.dispatchEvent(new Event("change"));
-    await tick();
+    await vi.advanceTimersByTimeAsync(BITRATE_SETTLE_MS);
     expect(select.value).toBe("320");
   });
 
@@ -789,15 +918,166 @@ describe("stream settings", () => {
     const { ui } = makeSettings({ saveBitrate });
     ui.apply({ stream_mode: true });
     await ui.refresh();
+    vi.useFakeTimers();
     const select = byId("stream-bitrate");
     select.value = "192";
     select.dispatchEvent(new Event("change"));
-    await tick();
+    await vi.advanceTimersByTimeAsync(BITRATE_SETTLE_MS);
     saveBitrate.mockResolvedValueOnce(false);
     select.value = "128";
     select.dispatchEvent(new Event("change"));
-    await tick();
+    await vi.advanceTimersByTimeAsync(BITRATE_SETTLE_MS);
     expect(select.value).toBe("192");
+  });
+
+  it("drops an unsent quality change when stream mode ends", async () => {
+    settingsDom();
+    const { ui, opts } = makeSettings();
+    ui.apply({ stream_mode: true });
+    await ui.refresh();
+    vi.useFakeTimers();
+    const select = byId("stream-bitrate");
+    select.value = "128";
+    select.dispatchEvent(new Event("change"));
+    ui.apply({ stream_mode: false });
+    await vi.advanceTimersByTimeAsync(BITRATE_SETTLE_MS);
+    expect(opts.saveBitrate).not.toHaveBeenCalled();
+  });
+
+  it("follows the quality the server pushes", async () => {
+    settingsDom();
+    const { ui } = makeSettings();
+    ui.apply({ stream_mode: true });
+    await ui.refresh();
+    const select = byId("stream-bitrate");
+    const pushed = (value) => ({
+      stream_mode: true, settings: { playback: { stream_bitrate: value } },
+    });
+    ui.apply(pushed(192));
+    expect(select.value).toBe("192");
+    // Never while it has focus...
+    select.focus();
+    ui.apply(pushed(256));
+    expect(select.value).toBe("192");
+    select.blur();
+    ui.apply(pushed(256));
+    expect(select.value).toBe("256");
+    // ...nor while a change of it is waiting to be saved.
+    vi.useFakeTimers();
+    select.value = "128";
+    select.dispatchEvent(new Event("change"));
+    ui.apply(pushed(256));
+    expect(select.value).toBe("128");
+    // A push without the key leaves it alone.
+    ui.apply({ stream_mode: true, settings: null });
+    expect(select.value).toBe("128");
+  });
+
+  it("treats a pushed quality as the value to undo a failed save to", async () => {
+    settingsDom();
+    const { ui } = makeSettings({ saveBitrate: vi.fn(async () => false) });
+    ui.apply({ stream_mode: true });
+    await ui.refresh();
+    ui.apply({ stream_mode: true, settings: { playback: { stream_bitrate: 192 } } });
+    vi.useFakeTimers();
+    const select = byId("stream-bitrate");
+    select.value = "128";
+    select.dispatchEvent(new Event("change"));
+    await vi.advanceTimersByTimeAsync(BITRATE_SETTLE_MS);
+    expect(select.value).toBe("192");
+  });
+
+  it("shows a plain note and retries while the address is missing", async () => {
+    settingsDom();
+    vi.useFakeTimers();
+    const err = Object.assign(new Error("stream encoder failed"), { status: 503 });
+    const fetchInfo = vi.fn(async () => { throw err; });
+    const { ui } = makeSettings({ fetchInfo });
+    const note = byId("stream-url-note");
+    ui.apply({ stream_mode: true });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(note.hidden).toBe(false);
+    expect(note.textContent).toBe(NOT_LOADED_NOTE);
+    expect(note.hasAttribute("aria-live")).toBe(false);
+    expect(byId("settings-status").textContent)
+      .toBe("Could not load the stream address: stream encoder failed");
+    // Pushes inside the ten seconds do not look again.
+    await vi.advanceTimersByTimeAsync(ADDRESS_RETRY_MS - 1000);
+    ui.apply({ stream_mode: true });
+    expect(fetchInfo).toHaveBeenCalledOnce();
+    // After ten seconds a push looks again; a second failure is silent.
+    await vi.advanceTimersByTimeAsync(1000);
+    ui.apply({ stream_mode: true });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchInfo).toHaveBeenCalledTimes(2);
+    expect(byId("settings-status").textContent).toBe("");
+    // Opening the Settings tab looks again at once.
+    fetchInfo.mockResolvedValue(INFO);
+    ui.retryIfMissing();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchInfo).toHaveBeenCalledTimes(3);
+    expect(byId("stream-url").value).toBe(`${location.origin}/stream/S.mp3`);
+    expect(note.hidden).toBe(true);
+    // Loaded: no more lookups on pushes or tab opens.
+    await vi.advanceTimersByTimeAsync(ADDRESS_RETRY_MS * 2);
+    ui.apply({ stream_mode: true });
+    ui.retryIfMissing();
+    expect(fetchInfo).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not look up the link again after its own rotation", async () => {
+    const dialog = settingsDom();
+    const { ui, opts } = makeSettings();
+    ui.apply({ stream_mode: true, stream_event: { id: "a", seq: 1, name: "set_started" } });
+    await tick();
+    expect(opts.fetchInfo).toHaveBeenCalledOnce();
+    byId("stream-rotate").click();
+    closeDialog(dialog, "confirm");
+    await tick();
+    ui.apply({ stream_mode: true, stream_event: { id: "a", seq: 2, name: "link_changed" } });
+    await tick();
+    expect(opts.fetchInfo).toHaveBeenCalledOnce();
+    expect(byId("stream-url").value).toContain("/stream/NEW.mp3");
+    // A later change from another page is looked up as usual.
+    ui.apply({ stream_mode: true, stream_event: { id: "a", seq: 3, name: "link_changed" } });
+    await tick();
+    expect(opts.fetchInfo).toHaveBeenCalledTimes(2);
+  });
+
+  it("skips the lookup when the event beats the rotate reply", async () => {
+    const dialog = settingsDom();
+    let reply;
+    const { ui, opts } = makeSettings({
+      rotate: vi.fn(() => new Promise((resolve) => { reply = resolve; })),
+    });
+    ui.apply({ stream_mode: true, stream_event: null });
+    await tick();
+    byId("stream-rotate").click();
+    closeDialog(dialog, "confirm");
+    ui.apply({ stream_mode: true, stream_event: { id: "a", seq: 1, name: "link_changed" } });
+    reply(NEW_INFO);
+    await tick();
+    expect(opts.fetchInfo).toHaveBeenCalledOnce();
+    expect(byId("stream-url").value).toContain("/stream/NEW.mp3");
+  });
+
+  it("gives up the link-change claim ten seconds after the rotate reply", async () => {
+    const dialog = settingsDom();
+    const release = vi.fn();
+    const { ui, opts } = makeSettings({ claimLinkChange: vi.fn(() => release) });
+    ui.apply({ stream_mode: true, stream_event: null });
+    await tick();
+    vi.useFakeTimers();
+    byId("stream-rotate").click();
+    closeDialog(dialog, "confirm");
+    await vi.advanceTimersByTimeAsync(LINK_CLAIM_TIMEOUT_MS - 1);
+    expect(release).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(release).toHaveBeenCalledOnce();
+    // The expired claim no longer stops another page's change being fetched.
+    ui.apply({ stream_mode: true, stream_event: { id: "a", seq: 1, name: "link_changed" } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(opts.fetchInfo).toHaveBeenCalledTimes(2);
   });
 
   it("hides the section and moves focus out when stream mode ends", async () => {
