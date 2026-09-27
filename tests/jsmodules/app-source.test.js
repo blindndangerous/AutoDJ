@@ -1683,11 +1683,74 @@ describe("stream mode", () => {
       expect(options.method).toBe("POST");
 
       sr.textContent = "";
+      const lookups = () => fetchImpl.mock.calls.filter(([called]) => called === "/api/stream").length;
+      const before = lookups();
       webSocket.onmessage({ data: JSON.stringify({
         ...streamState, stream_event: { id: "boot", seq: 2, name: "link_changed" },
       }) });
       await settle();
       expect(sr.textContent).toBe("");
+      // The rotate reply already filled the new link: no second lookup.
+      expect(lookups()).toBe(before);
+    });
+
+    it("sends one quality save for quick arrow presses", async () => {
+      const { fetchImpl } = await setupApp({
+        initialState: streamState,
+        onRequest: stationServer({
+          "/api/stream/settings": () => jsonResponse({ ...oldInfo, bitrate: 128 }),
+        }),
+      });
+      const quality = document.getElementById("stream-bitrate");
+      await vi.waitFor(() => expect(document.getElementById("stream-url").value)
+        .toContain("/stream/OLD.mp3"));
+      for (const value of ["256", "192", "128"]) {
+        quality.value = value;
+        quality.dispatchEvent(new Event("change"));
+      }
+      const saves = () => fetchImpl.mock.calls.filter(([called]) => called === "/api/stream/settings");
+      await vi.waitFor(() => expect(saves()).toHaveLength(1));
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      expect(saves()).toHaveLength(1);
+      expect(JSON.parse(saves()[0][1].body)).toEqual({ bitrate: 128 });
+    });
+
+    it("follows the quality pushed by the server", async () => {
+      const { webSocket } = await setupApp({ initialState: streamState, onRequest: stationServer() });
+      const quality = document.getElementById("stream-bitrate");
+      await vi.waitFor(() => expect(quality.value).toBe("320"));
+      webSocket.onmessage({ data: JSON.stringify({
+        ...streamState, settings: { playback: { stream_bitrate: 192 } },
+      }) });
+      expect(quality.value).toBe("192");
+    });
+
+    it("looks the address up again when the Settings tab opens", async () => {
+      let fail = true;
+      const { fetchImpl } = await setupApp({
+        initialState: streamState,
+        onRequest: stationServer({
+          "/api/stream": () => (fail
+            ? jsonResponse({ detail: "stream encoder failed" }, 503)
+            : jsonResponse(oldInfo)),
+        }),
+      });
+      const note = document.getElementById("stream-url-note");
+      await vi.waitFor(() => expect(fetchImpl.mock.calls
+        .filter(([called]) => called === "/api/stream")).toHaveLength(1));
+      await settle();
+      expect(note.hidden).toBe(false);
+      expect(note.textContent).toBe("Stream address not loaded yet.");
+      fail = false;
+      try {
+        location.hash = "#settings";
+        window.dispatchEvent(new Event("hashchange"));
+        await vi.waitFor(() => expect(document.getElementById("stream-url").value)
+          .toBe(`${location.origin}/stream/OLD.mp3`));
+        expect(note.hidden).toBe(true);
+      } finally {
+        location.hash = "";
+      }
     });
 
     it("reports a failed new link in the settings region", async () => {

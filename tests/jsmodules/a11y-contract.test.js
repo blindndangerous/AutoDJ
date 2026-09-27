@@ -1627,7 +1627,7 @@ describe("static accessibility contracts", () => {
 
     const playlist = document.querySelector("#stream-m3u");
     expect(playlist.tagName).toBe("A");
-    expect(playlist.textContent.trim()).toBe("Playlist file (.m3u)");
+    expect(playlist.textContent.trim()).toBe("Download playlist file (.m3u)");
     // Downloads rather than navigating away from the remote.
     expect(playlist.hasAttribute("download")).toBe(true);
 
@@ -1651,6 +1651,14 @@ describe("static accessibility contracts", () => {
     expect(count.hasAttribute("role")).toBe(false);
     expect(count.closest("[aria-live], [role=status], [role=alert], [role=log]")).toBeNull();
     expect(fieldset.contains(count)).toBe(true);
+
+    // The "not loaded yet" note is visible text, silent like the count.
+    const note = document.querySelector("#stream-url-note");
+    expect(fieldset.contains(note)).toBe(true);
+    expect(note.hidden).toBe(true);
+    expect(note.hasAttribute("aria-live")).toBe(false);
+    expect(note.hasAttribute("role")).toBe(false);
+    expect(note.hasAttribute("aria-hidden")).toBe(false);
 
     // A plain native modal: named by its own heading, described by its
     // warning, Escape cancels, and the buttons return cancel / confirm.

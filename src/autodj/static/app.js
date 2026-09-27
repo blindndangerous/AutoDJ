@@ -131,6 +131,11 @@ const streamSettings = createStreamSettings({
   srStatus: document.getElementById("sr-status"),
   settingsStatus,
 });
+// A lookup that failed while another tab showed was never heard; opening
+// Settings tries again.
+window.addEventListener("hashchange", () => {
+  if (location.hash === "#settings") streamSettings.retryIfMissing();
+});
 // Last pushed stream_mode, for the handlers that run between pushes.
 let _lastStreamMode = false;
 

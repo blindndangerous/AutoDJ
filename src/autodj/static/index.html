@@ -759,7 +759,9 @@
       <span class="setting-desc" id="stream-url-desc">
         Add this address to Sonos or any player as a radio station.  Anyone with it can listen.
       </span>
-      <p class="stream-detail"><a id="stream-m3u" download="autodj.m3u">Playlist file (.m3u)</a></p>
+      <!-- Plain text while the address lookup has not succeeded; not live. -->
+      <p class="stream-detail" id="stream-url-note" hidden></p>
+      <p class="stream-detail"><a id="stream-m3u" download="autodj.m3u">Download playlist file (.m3u)</a></p>
       <p class="stream-detail" id="stream-listeners"></p>
       <div class="settings-row">
         <label for="stream-bitrate">Quality</label>
