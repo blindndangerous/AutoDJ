@@ -266,6 +266,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `.lrc` sidecars (common from Windows tools) decoded to nonsense.
 - The library search box carried `aria-expanded`, so screen readers announced "collapsed" and
   "expanded" on a plain search field with no popup. The result count still announces normally.
+- A settings file saved by an older version, which stored the harmonic mixing mode as on/off
+  rather than today's named modes, logged "ignoring invalid harmonic_mode" on every start and
+  reset harmonic mixing to its default. The old on/off value is now carried over instead.
 
 ## [0.16.1] - 2026-08-16
 

@@ -705,6 +705,39 @@ def test_invalid_harmonic_mode_warns_once_and_keeps_default(tmp_path, caplog) ->
     assert len([record for record in caplog.records if "harmonic_mode" in record.message]) == 1
 
 
+def test_legacy_true_harmonic_mode_migrates_to_compatible(tmp_path, caplog) -> None:
+    """Older versions stored harmonic_mode as a Boolean toggle.  A saved
+    ``true`` should be carried over as "compatible" instead of being
+    rejected and warned about on every start.
+    """
+    _write_state(
+        tmp_path,
+        {"schema_version": 1, "djmix": {"harmonic_mode": True}},
+    )
+    player = _make_player()
+
+    with caplog.at_level("WARNING"):
+        load_into_player(player, tmp_path)
+
+    assert player._cfg.djmix.harmonic_mode == "compatible"
+    assert not [record for record in caplog.records if "harmonic_mode" in record.message]
+
+
+def test_legacy_false_harmonic_mode_migrates_to_off(tmp_path, caplog) -> None:
+    """A saved legacy ``false`` should be carried over as "off"."""
+    _write_state(
+        tmp_path,
+        {"schema_version": 1, "djmix": {"harmonic_mode": False}},
+    )
+    player = _make_player()
+
+    with caplog.at_level("WARNING"):
+        load_into_player(player, tmp_path)
+
+    assert player._cfg.djmix.harmonic_mode == "off"
+    assert not [record for record in caplog.records if "harmonic_mode" in record.message]
+
+
 def test_invalid_enable_mood_arc_warns_once_and_keeps_default(tmp_path, caplog) -> None:
     _write_state(
         tmp_path,
