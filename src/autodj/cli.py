@@ -974,10 +974,9 @@ def cmd_restore(ctx: click.Context, archive: Path, force: bool) -> None:
     default=None,
     type=str,
     help=(
-        "One-shot stale backfill: drop and re-embed any indexed entry whose "
-        "audio file has an mtime newer than this timestamp.  Useful when you "
-        "replaced files BEFORE the indexer started tracking embedded_at "
-        "(otherwise the per-entry mtime check covers replacements automatically). "
+        "One-shot re-embed: drop and re-embed any indexed entry whose audio "
+        "file has an mtime newer than this timestamp, even when its stored "
+        "embedded_at says it is current.  "
         "Format: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS (local time)."
     ),
 )

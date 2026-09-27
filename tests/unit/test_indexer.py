@@ -1129,21 +1129,15 @@ class TestDetectStaleEntries:
         # Embedded an hour ago, then file replaced now
         e = self._entry(str(f), embedded_at=original_mtime - 3600)
         os.utime(f, (original_mtime, original_mtime))
-        stale, migrated = _detect_stale_entries([e])
-        assert e.path in stale
-        assert migrated == 0
+        assert e.path in _detect_stale_entries([e])
 
-    def test_legacy_entry_snapshots_mtime(self, tmp_path: Path) -> None:
+    def test_unstamped_entry_is_re_embedded(self, tmp_path: Path) -> None:
         from autodj.indexer import _detect_stale_entries
 
         f = tmp_path / "song.flac"
         f.write_bytes(b"x")
-        mt = f.stat().st_mtime
         e = self._entry(str(f), embedded_at=0.0)
-        stale, migrated = _detect_stale_entries([e])
-        assert e.path not in stale
-        assert migrated == 1
-        assert e.embedded_at == pytest.approx(mt)
+        assert _detect_stale_entries([e]) == {e.path}
 
     def test_unchanged_file_not_stale(self, tmp_path: Path) -> None:
         from autodj.indexer import _detect_stale_entries
@@ -1152,33 +1146,25 @@ class TestDetectStaleEntries:
         f.write_bytes(b"x")
         # Embedded just after file creation
         e = self._entry(str(f), embedded_at=f.stat().st_mtime + 60)
-        stale, _ = _detect_stale_entries([e])
-        assert e.path not in stale
+        assert e.path not in _detect_stale_entries([e])
 
     def test_missing_file_skipped(self, tmp_path: Path) -> None:
         # prune handles missing files; stale detection ignores them
         from autodj.indexer import _detect_stale_entries
 
         e = self._entry(str(tmp_path / "gone.flac"), embedded_at=1.0)
-        stale, migrated = _detect_stale_entries([e])
-        assert stale == set()
-        assert migrated == 0
+        assert _detect_stale_entries([e]) == set()
 
-    def test_reindex_modified_since_overrides_legacy(self, tmp_path: Path) -> None:
-        # The one-shot --reindex-modified-since flag should still flag
-        # legacy entries (embedded_at == 0) when their file mtime is newer
-        # than the cutoff.
-
+    def test_reindex_modified_since_flags_fresh_entry(self, tmp_path: Path) -> None:
         from autodj.indexer import _detect_stale_entries
 
         f = tmp_path / "replaced.flac"
         f.write_bytes(b"x")
         mt = f.stat().st_mtime
         os.utime(f, (mt, mt))
-        e = self._entry(str(f), embedded_at=0.0)
+        e = self._entry(str(f), embedded_at=mt + 60)
         # Cutoff one hour BEFORE mtime → file is newer, must be flagged
-        stale, _ = _detect_stale_entries([e], reindex_modified_since=mt - 3600)
-        assert e.path in stale
+        assert e.path in _detect_stale_entries([e], reindex_modified_since=mt - 3600)
 
     def test_from_track_stamps_embedded_at(self) -> None:
         import time
@@ -1232,9 +1218,7 @@ class TestDetectStaleEntries:
         entry = IndexEntry.from_track(track)
         from autodj.indexer import _detect_stale_entries
 
-        stale, migrated = _detect_stale_entries([entry])
-        assert stale == set()
-        assert migrated == 0
+        assert _detect_stale_entries([entry]) == set()
 
     def test_a_later_edit_is_still_stale(self, tmp_path: Path) -> None:
 
@@ -1244,8 +1228,7 @@ class TestDetectStaleEntries:
         os.utime(track.path, (touched, touched))
         from autodj.indexer import _detect_stale_entries
 
-        stale, _ = _detect_stale_entries([entry])
-        assert stale == {entry.path}
+        assert _detect_stale_entries([entry]) == {entry.path}
 
 
 class TestRelativizeForStorage:

@@ -344,11 +344,10 @@ def source_mtime(path: str | Path) -> float:
 
     The ``OSError`` fallback covers a file that vanished or became unreadable
     between the scan and this call.  The local clock is the wrong clock, but
-    the alternatives are worse: ``0.0`` is the sentinel
-    :func:`_detect_stale_entries` reads as "legacy entry, snapshot the file's
-    mtime on first sight", so returning it here would silently re-stamp a real
-    entry, and raising would abort a whole indexing run over one bad file.  A
-    local-clock stamp at worst makes that single track look stale once.
+    the alternatives are worse: ``0.0`` means "never stamped", which
+    :func:`_detect_stale_entries` re-embeds on every run, and raising would
+    abort a whole indexing run over one bad file.  A local-clock stamp at worst
+    makes that single track look stale once.
 
     Args:
         path: Path to the source audio file.
@@ -388,9 +387,7 @@ class IndexEntry:
         embedded_at: Unix timestamp when this entry was embedded.  Used to
             detect replaced files: if ``file.mtime > embedded_at`` on the
             next ``index`` run the entry is dropped and re-embedded.
-            ``0.0`` = legacy entry written before this field existed; on
-            first encounter the indexer snapshots it to the file's current
-            mtime so future replacements are detectable.
+            ``0.0`` = never stamped; the next ``index`` run re-embeds it.
     """
 
     path: str
@@ -1709,37 +1706,31 @@ def _detect_stale_entries(
     throttle_ms: float = 0.0,
     stat_workers: int = 8,
     mtimes: list[float | None] | None = None,
-) -> tuple[set[str], int]:
+) -> set[str]:
     """Find indexed entries whose audio file has been replaced on disk.
 
     For every entry whose file still exists, compare its mtime against the
     stored ``embedded_at``.  An entry is considered stale (the user replaced
     the file with a different version since indexing) when:
 
-    * ``embedded_at > 0`` and ``file_mtime > embedded_at + 1.0`` (1 s margin
-      absorbs filesystem timestamp granularity), OR
+    * ``embedded_at`` is not a positive stamp: without one, a replaced file
+      cannot be told apart from the embedded one, so it is re-embedded, OR
+    * ``file_mtime > embedded_at + 1.0`` (1 s margin absorbs filesystem
+      timestamp granularity), OR
     * ``reindex_modified_since`` is set and ``file_mtime > that timestamp``.
-
-    Legacy entries (``embedded_at == 0`` from before the field existed) are
-    snapshotted IN PLACE to their current file mtime so future replacements
-    are detectable, but are not themselves marked stale (we cannot know
-    when they were originally embedded).
 
     Stat() calls are fanned out across a 32-thread pool because the typical
     case is an NFS/SMB-mounted library where each call costs an RTT.
 
     Args:
         entries: Existing index entries (with absolute paths already
-            resolved by the caller).  Mutated in place: legacy entries get
-            their ``embedded_at`` set to the file's current mtime.
+            resolved by the caller).
         reindex_modified_since: Optional one-shot epoch timestamp.  Any
             entry whose file mtime exceeds this is marked stale regardless
-            of ``embedded_at`` — useful as a backfill mechanism for files
-            replaced before ``embedded_at`` was being tracked.
+            of ``embedded_at``.
 
     Returns:
-        ``(stale_paths, migrated)`` — set of entry paths to drop and the
-        number of legacy entries that received a fresh snapshot.
+        The set of entry paths to drop and re-embed.
     """
 
     if mtimes is None:
@@ -1751,18 +1742,16 @@ def _detect_stale_entries(
         )
 
     stale: set[str] = set()
-    migrated = 0
     for e, mt in zip(entries, mtimes, strict=False):
         if mt is None:
             continue  # missing file — prune handles it
-        if e.embedded_at == 0.0:
-            e.embedded_at = mt
-            migrated += 1
-        elif mt > e.embedded_at + 1.0:
+        if (
+            not e.embedded_at > 0.0
+            or mt > e.embedded_at + 1.0
+            or (reindex_modified_since is not None and mt > reindex_modified_since)
+        ):
             stale.add(e.path)
-        if reindex_modified_since is not None and mt > reindex_modified_since:
-            stale.add(e.path)
-    return stale, migrated
+    return stale
 
 
 def _discard_working_files(index_dir: Path) -> None:
@@ -1812,8 +1801,8 @@ def _load_existing_index(  # pragma: no cover -- exercised via build_index integ
 
     Fused single-pass: one stat() per entry returns both existence (None
     means missing -> prune) and mtime (compared against ``embedded_at``
-    -> stale).  Halves NAS RTT vs. the legacy two-pass design that ran
-    ``prune_index`` then ``_detect_stale_entries`` back-to-back.
+    -> stale).  Halves NAS RTT compared with running ``prune_index`` and
+    then ``_detect_stale_entries`` back-to-back.
     """
     if force:
         with publication_lock(index_dir):
@@ -1844,13 +1833,11 @@ def _load_existing_index(  # pragma: no cover -- exercised via build_index integ
         print(f"[AutoDJ] Skipping auto-prune (safety check): {exc}")
         missing_paths = set()  # keep everything; safety failure means user config is wrong
 
-    stale, migrated = _detect_stale_entries(
+    stale = _detect_stale_entries(
         existing_entries,
         reindex_modified_since=reindex_modified_since,
         mtimes=mtimes,
     )
-    if migrated:
-        logger.info("Snapshotted embedded_at for %d legacy entries", migrated)
 
     drop_paths = missing_paths | stale
     if drop_paths:
