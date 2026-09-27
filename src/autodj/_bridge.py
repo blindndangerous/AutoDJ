@@ -1,8 +1,7 @@
 """PlayerBridge — thread-safe adapter between Player and FastAPI app.
 
-Extracted from ``autodj.server`` so neither file balloons over the 2000-
-line working budget.  Re-exported from :mod:`autodj.server` for API
-compatibility (``from autodj.server import PlayerBridge`` still works).
+Kept separate from ``autodj.server`` so neither file balloons over the
+2000-line working budget.
 
 Most attribute / module references inside the methods are deferred via
 local ``import`` statements; that keeps the minimal-install path light

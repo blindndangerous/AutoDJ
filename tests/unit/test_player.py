@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+from autodj.eq import apply_eq, make_eq_filters, make_eq_state, reset_eq_state
 from autodj.indexer import IndexEntry
 from autodj.player import (
     Player,
@@ -24,13 +25,9 @@ from autodj.player import (
     _apply_crossfade_ducked,
     _fmt_time,
     _time_stretch,
-    apply_eq,
     apply_filter_sweep,
     beatmatch_incoming,
     load_audio,
-    make_eq_filters,
-    make_eq_state,
-    reset_eq_state,
     write_m3u,
 )
 from autodj.similarity import SimilarityError

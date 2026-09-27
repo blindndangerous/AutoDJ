@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from autodj import player, stereo
+from autodj import eq, player, stereo
 
 
 def _tone(n: int = 4410, hz: float = 440.0, sr: int = 44100) -> np.ndarray:
@@ -103,14 +103,14 @@ def test_time_stretch_accepts_stereo() -> None:
 
 
 def test_eq_stateful_stereo_matches_mono() -> None:
-    filters = player.make_eq_filters(44100)
+    filters = eq.make_eq_filters(44100)
     a = _tone(1764)
-    mono_state = player.make_eq_state(filters)
-    st_state = player.make_eq_state(filters, channels=2)
+    mono_state = eq.make_eq_state(filters)
+    st_state = eq.make_eq_state(filters, channels=2)
     st = stereo.to_stereo(a)
     for start in (0, 882):
-        m = player.apply_eq(a[start : start + 882], filters, 0.5, 1.0, 1.5, state=mono_state)
-        s = player.apply_eq(st[start : start + 882], filters, 0.5, 1.0, 1.5, state=st_state)
+        m = eq.apply_eq(a[start : start + 882], filters, 0.5, 1.0, 1.5, state=mono_state)
+        s = eq.apply_eq(st[start : start + 882], filters, 0.5, 1.0, 1.5, state=st_state)
         np.testing.assert_allclose(s[:, 0], m, atol=1e-5)
         np.testing.assert_allclose(s[:, 1], m, atol=1e-5)
 

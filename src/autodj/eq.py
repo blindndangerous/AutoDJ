@@ -1,9 +1,7 @@
 """3-band gain-only EQ (real-time, applied per output chunk).
 
-Split out of :mod:`autodj.player` so :mod:`autodj.stereo` can be imported
-by ``player`` without a circular import: ``stereo`` needs no knowledge of
-EQ, and ``player`` re-exports these names so existing
-``from autodj.player import apply_eq`` (etc.) call sites keep working.
+Kept out of :mod:`autodj.player` so :mod:`autodj.mixbus` can use it
+without importing the player.
 """
 
 from __future__ import annotations

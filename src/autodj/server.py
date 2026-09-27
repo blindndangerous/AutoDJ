@@ -65,8 +65,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.background import BackgroundTask
 
 # PlayerBridge lives in autodj._bridge so neither file balloons over
-# the 2000-line working budget.  Re-export here so the external API
-# (``from autodj.server import PlayerBridge``) keeps working unchanged.
+# the 2000-line working budget.
 from autodj._bridge import (
     STREAM_SEEK_UNAVAILABLE,
     PlayerBridge,

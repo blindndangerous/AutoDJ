@@ -53,11 +53,6 @@ except ImportError:  # pragma: no cover — minimal install path
 # sounddevice is imported only by autodj.sound_output, lazily, when server
 # audio actually opens a device.
 
-# Re-exported so existing ``from autodj.player import apply_eq`` (etc.) keep working.
-from autodj.eq import apply_eq as apply_eq
-from autodj.eq import make_eq_filters as make_eq_filters
-from autodj.eq import make_eq_state as make_eq_state
-from autodj.eq import reset_eq_state as reset_eq_state
 from autodj.indexer import IndexEntry
 from autodj.mixbus import BusEvents, MixBus, RenderedTrack
 from autodj.render_ahead import RenderAhead
@@ -365,15 +360,6 @@ def apply_filter_sweep(
         prev_tail = filt[-blend:].copy() if len(filt) >= blend else None
 
     return out
-
-
-# ---------------------------------------------------------------------------
-# 3-band EQ (real-time, applied per output chunk)
-#
-# Moved to autodj.eq so autodj.stereo (imported above) has no import-time
-# dependency on player.py.  Re-exported here so every existing
-# `from autodj.player import apply_eq` (etc.) call site keeps working.
-# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
