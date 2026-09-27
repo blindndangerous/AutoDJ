@@ -17,6 +17,7 @@ from autodj.index_manifest import (
     IndexConsistencyError,
     IndexManifest,
     IndexSnapshotToken,
+    UnsupportedIndexError,
     copy_published_snapshot,
     current_snapshot_token,
     publish_manifest,
@@ -536,6 +537,14 @@ def test_manifest_rejects_wrong_schema(tmp_path: Path) -> None:
         read_manifest(tmp_path)
 
 
+def test_schema_one_manifest_names_the_rebuild(tmp_path: Path) -> None:
+    (tmp_path / "index-manifest.json").write_text(
+        json.dumps(_manifest_payload(schema_version=1)), encoding="utf-8"
+    )
+    with pytest.raises(UnsupportedIndexError, match=r"older AutoDJ.*autodj index --force"):
+        read_manifest(tmp_path)
+
+
 def test_manifested_sqlite_reads_ignore_committed_wal_sidecar(tmp_path: Path) -> None:
     from autodj.index_manifest import (
         _immutable_sqlite_uri,
@@ -620,7 +629,6 @@ def test_manifested_sqlite_reads_ignore_committed_wal_sidecar(tmp_path: Path) ->
         [],
         {"unexpected": 1},
         {"high_water": True, "tombstone_revision": 0},
-        {"revision": 1, "high_water_generation": 0, "tombstone": 1},
     ],
 )
 def test_publication_state_rejects_invalid_shapes(tmp_path: Path, payload: object) -> None:
@@ -631,6 +639,18 @@ def test_publication_state_rejects_invalid_shapes(tmp_path: Path, payload: objec
     )
 
     with pytest.raises(IndexConsistencyError, match="invalid publication state"):
+        manifest_module._read_publication_state(tmp_path)
+
+
+def test_old_publication_state_layout_names_the_rebuild(tmp_path: Path) -> None:
+    import autodj.index_manifest as manifest_module
+
+    (tmp_path / manifest_module.PUBLICATION_STATE_NAME).write_text(
+        json.dumps({"revision": 1, "high_water_generation": 1, "tombstone": False}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(UnsupportedIndexError, match=r"older AutoDJ.*autodj index --force"):
         manifest_module._read_publication_state(tmp_path)
 
 

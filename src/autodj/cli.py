@@ -205,7 +205,7 @@ def _load_index_or_exit(
     cfg: AutoDJConfig, *, active_dir: Path | None = None
 ) -> SimilarityIndex:  # pragma: no cover
     """Load the similarity index for *cfg*, exiting when it is missing or too old."""
-    from autodj.index_manifest import UnsupportedIndexError
+    from autodj.index_manifest import IndexConsistencyError
     from autodj.similarity import SimilarityIndex as _SI
 
     try:
@@ -216,7 +216,8 @@ def _load_index_or_exit(
     except FileNotFoundError as exc:
         console.print(f"[bold red]Index not found:[/] {exc}")
         sys.exit(1)
-    except UnsupportedIndexError as exc:
+    except IndexConsistencyError as exc:
+        # Covers UnsupportedIndexError, whose message already names the rebuild.
         console.print(f"[bold red]{exc}[/]")
         sys.exit(1)
 

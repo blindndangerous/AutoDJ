@@ -2140,3 +2140,116 @@ class TestThrottledFaissCheckpoint:
         save_index(entries, vectors, tmp_path)
         assert (tmp_path / "vectors.index").exists()
         assert (tmp_path / "tracks.db").exists()
+
+
+class TestIndexRecoveryPaths:
+    """Destructive --force handling and refusals for index folders that are not current."""
+
+    _WORKING = ("tracks.db", "tracks.db-wal", "tracks.db-shm", "vectors.index")
+    _KEPT = (
+        "dj_meta.db",
+        "web_state.json",
+        "tracks.g00000000000000000001.db",
+        "vectors.g00000000000000000001.index",
+    )
+
+    def _fill(self, index_dir: Path) -> None:
+        index_dir.mkdir()
+        for name in (*self._WORKING, *self._KEPT):
+            (index_dir / name).write_bytes(b"x")
+        (index_dir / "liners").mkdir()
+        (index_dir / "liners" / "drop.mp3").write_bytes(b"x")
+
+    def test_force_without_manifest_removes_only_working_files(self, tmp_path: Path) -> None:
+        from autodj.indexer import _load_existing_index
+
+        index_dir = tmp_path / "idx"
+        self._fill(index_dir)
+
+        entries, vectors, _paths, _reconcile, _token = _load_existing_index(
+            index_dir, music_dir=tmp_path, force=True
+        )
+
+        assert (entries, vectors) == ([], [])
+        assert not any((index_dir / name).exists() for name in self._WORKING)
+        assert all((index_dir / name).exists() for name in self._KEPT)
+        assert (index_dir / "liners" / "drop.mp3").exists()
+
+    def test_pre_manifest_index_is_refused_without_force(self, tmp_path: Path) -> None:
+        from autodj.index_manifest import UnsupportedIndexError
+        from autodj.indexer import _load_existing_index
+
+        index_dir = tmp_path / "idx"
+        index_dir.mkdir()
+        (index_dir / "tracks.db").write_bytes(b"x")
+        (index_dir / "vectors.index").write_bytes(b"x")
+
+        with pytest.raises(UnsupportedIndexError, match=r"no index-manifest\.json.*--force"):
+            _load_existing_index(index_dir, music_dir=tmp_path, force=False)
+        assert (index_dir / "tracks.db").exists()
+        assert (index_dir / "vectors.index").exists()
+
+    def test_force_replaces_an_old_manifest_and_publication_state(self, tmp_path: Path) -> None:
+        """--force is the rebuild path, so an unreadable old record must not stop it."""
+        import json
+
+        from autodj.index_manifest import MANIFEST_NAME, PUBLICATION_STATE_NAME
+        from autodj.indexer import _load_existing_index
+
+        index_dir = tmp_path / "idx"
+        self._fill(index_dir)
+        (index_dir / MANIFEST_NAME).write_text(json.dumps({"schema_version": 1}), "utf-8")
+        (index_dir / PUBLICATION_STATE_NAME).write_text(
+            json.dumps({"revision": 1, "high_water_generation": 1, "tombstone": False}), "utf-8"
+        )
+
+        entries, _vectors, _paths, _reconcile, token = _load_existing_index(
+            index_dir, music_dir=tmp_path, force=True
+        )
+
+        assert entries == []
+        assert (token.generation, token.state_revision) == (0, 0)
+        assert not (index_dir / MANIFEST_NAME).exists()
+        assert not (index_dir / PUBLICATION_STATE_NAME).exists()
+        assert not any((index_dir / name).exists() for name in self._WORKING)
+
+    def test_build_killed_before_first_publish_is_resumed_not_called_old(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import autodj.indexer as indexer
+        from autodj.indexer import _load_existing_index, save_index
+
+        entries, vectors = TestSaveLoadIndex()._make_entries(2)
+        index_dir = tmp_path / "idx"
+
+        def killed(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("killed before publication")
+
+        monkeypatch.setattr(indexer, "publish_manifest", killed)
+        with pytest.raises(RuntimeError, match="killed"):
+            save_index(entries, vectors, index_dir)
+        assert (index_dir / "tracks.db").exists()
+        monkeypatch.undo()
+
+        loaded, _vectors, _paths, _reconcile, _token = _load_existing_index(
+            index_dir, music_dir=tmp_path, force=False
+        )
+        assert loaded == []
+        assert not (index_dir / "tracks.db").exists()
+
+    @pytest.mark.parametrize("command", ["prune", "enrich"])
+    def test_generation_files_without_manifest_are_not_reported_as_no_index(
+        self, tmp_path: Path, command: str
+    ) -> None:
+        from autodj.index_manifest import IndexConsistencyError
+        from autodj.indexer import enrich_from_beets, prune_index
+
+        index_dir = tmp_path / "idx"
+        index_dir.mkdir()
+        (index_dir / "tracks.g00000000000000000003.db").write_bytes(b"x")
+
+        with pytest.raises(IndexConsistencyError, match=r"no index-manifest\.json.*--force"):
+            if command == "prune":
+                prune_index(index_dir, music_dir=tmp_path)
+            else:
+                enrich_from_beets(index_dir, music_dir=tmp_path, beets_db=tmp_path / "b.db")

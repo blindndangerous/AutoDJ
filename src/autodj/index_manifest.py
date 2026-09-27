@@ -118,13 +118,15 @@ REBUILD_COMMAND = "autodj index --force"
 class UnsupportedIndexError(IndexConsistencyError):
     """Raised when index data was written in a format this release no longer reads."""
 
-    def __init__(self, index_dir: Path, reason: str) -> None:
+    def __init__(self, index_dir: Path | str, reason: str) -> None:
         """Build the one rebuild message shared by every old-format refusal.
 
         Args:
-            index_dir: Index directory holding the old data.
+            index_dir: Index directory holding the old data, or a description
+                of where it is, such as "this backup".
             reason: What marks the data as old, e.g. "it has no index-manifest.json".
         """
+        self.reason = reason
         super().__init__(
             f"The index in {index_dir} was made by an older AutoDJ ({reason}). "
             f"Rebuild it with `{REBUILD_COMMAND}`."
@@ -252,6 +254,9 @@ def snapshot_token_for_manifest(manifest: IndexManifest) -> IndexSnapshotToken:
     return IndexSnapshotToken(manifest.generation, manifest.state_revision)
 
 
+_OLD_PUBLICATION_STATE_KEYS = frozenset({"revision", "high_water_generation", "tombstone"})
+
+
 @dataclass(frozen=True)
 class _PublicationState:
     """Store publication revision and tombstone counters."""
@@ -267,6 +272,8 @@ def _read_publication_state(index_dir: Path) -> _PublicationState | None:
         return None
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
+        if type(raw) is dict and set(raw) == _OLD_PUBLICATION_STATE_KEYS:
+            raise UnsupportedIndexError(index_dir, "its publication state uses the old layout")
         if (
             type(raw) is not dict
             or set(raw) != {"high_water", "tombstone_revision"}
@@ -356,6 +363,56 @@ def require_current_format(index_dir: Path) -> None:
         raise UnsupportedIndexError(index_dir, "it has no index-manifest.json")
 
 
+def require_no_orphan_generations(index_dir: Path) -> None:
+    """Refuse a manifest-free directory that still holds published generation files.
+
+    Such a directory is not empty: its manifest was lost.  Commands that
+    would otherwise report "no index" must say so instead.
+
+    Raises:
+        UnsupportedIndexError: If the directory holds a pre-manifest index.
+        IndexConsistencyError: If generation files exist without a live
+            manifest and the publication is not tombstoned.
+    """
+    require_current_format(index_dir)
+    if publication_is_tombstoned(index_dir):
+        return
+    if any(_GENERATION_RE.fullmatch(path.name) for path in index_dir.iterdir()):
+        raise IndexConsistencyError(
+            f"{index_dir} holds index generation files but no index-manifest.json; "
+            f"rebuild it with `{REBUILD_COMMAND}`"
+        )
+
+
+def reserve_first_publication(index_dir: Path) -> None:
+    """Record publication state before a never-published directory gets working files.
+
+    Without it, a build killed between its first working write and its
+    first publication leaves ``tracks.db`` and ``vectors.index`` with no
+    manifest or state, which :func:`require_current_format` cannot tell
+    from an index made before the manifest format.  With the state file
+    present the next run discards those working files and starts over.
+    """
+    with publication_lock(index_dir):
+        if _read_publication_state(index_dir) is None and read_manifest(index_dir) is None:
+            _write_publication_state(
+                index_dir, _PublicationState(high_water=0, tombstone_revision=0)
+            )
+
+
+def discard_publication_record(index_dir: Path) -> None:
+    """Delete an unreadable or old manifest and publication state for a forced rebuild.
+
+    ``autodj index --force`` is the recovery path for an index this release
+    cannot read, so it must not fail on the very files it replaces.  Old
+    generation files are left for the next publication's cleanup.
+    """
+    with publication_lock(index_dir):
+        for name in (MANIFEST_NAME, PUBLICATION_STATE_NAME):
+            (index_dir / name).unlink(missing_ok=True)
+        fsync_directory(index_dir)
+
+
 def publication_is_tombstoned(index_dir: Path) -> bool:
     """Whether a committed logical-empty state currently wins."""
     state = _read_publication_state(index_dir)
@@ -426,7 +483,10 @@ def read_manifest(index_dir: Path) -> IndexManifest | None:
         }
         if type(raw) is not dict:
             raise IndexConsistencyError("invalid index manifest structure")
-        if raw.get("schema_version") != SCHEMA_VERSION:
+        version = raw.get("schema_version")
+        if type(version) is int and version < SCHEMA_VERSION:
+            raise UnsupportedIndexError(index_dir, f"its manifest uses schema {version}")
+        if version != SCHEMA_VERSION:
             raise IndexConsistencyError("unsupported manifest schema")
         if set(raw) != fields:
             raise IndexConsistencyError("invalid index manifest structure")

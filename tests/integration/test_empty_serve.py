@@ -8,9 +8,14 @@ import pytest
 from click.testing import CliRunner
 from fastapi.testclient import TestClient
 
-from autodj.cli import _load_index_for_serve, cli
+from autodj.cli import _load_index_for_serve, _load_index_or_exit, cli
 from autodj.config import ServerConfig, load_config
-from autodj.index_manifest import UnsupportedIndexError, read_manifest, tombstone_publication
+from autodj.index_manifest import (
+    IndexConsistencyError,
+    UnsupportedIndexError,
+    read_manifest,
+    tombstone_publication,
+)
 from autodj.indexer import FEATURE_DIM, IndexEntry, save_index
 from autodj.player import Player
 from autodj.server import PlayerBridge, create_app
@@ -116,11 +121,38 @@ def test_serve_loader_accepts_tombstoned_index(tmp_path: Path) -> None:
     load_index.assert_not_called()
 
 
+def test_play_loader_prints_the_rebuild_message_for_an_old_manifest(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = load_config(None, environ={})
+    (tmp_path / "index-manifest.json").write_text('{"schema_version": 1}', encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exit_info:
+        _load_index_or_exit(cfg, active_dir=tmp_path)
+
+    assert exit_info.value.code == 1
+    assert "autodj index --force" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "orphan_name",
+    ["tracks.g00000000000000000001.db", "vectors.g00000000000000000001.index"],
+)
+def test_serve_loader_names_generation_files_without_manifest(
+    tmp_path: Path,
+    orphan_name: str,
+) -> None:
+    """A lost manifest is not an empty index: say so and name the rebuild."""
+    cfg = load_config(None, environ={})
+    (tmp_path / orphan_name).touch()
+
+    with pytest.raises(IndexConsistencyError, match=r"no index-manifest\.json.*index --force"):
+        _load_index_for_serve(cfg, active_dir=tmp_path)
+
+
 @pytest.mark.parametrize(
     "orphan_name",
     [
-        "tracks.g00000000000000000001.db",
-        "vectors.g00000000000000000001.index",
         ".index-manifest.json.0123456789abcdef0123456789abcdef.tmp",
         "..index-publication-state.json.0123456789abcdef0123456789abcdef.tmp",
         ".tracks.g00000000000000000001.db.0123456789abcdef0123456789abcdef.tmp",

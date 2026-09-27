@@ -58,6 +58,7 @@ from autodj.index_manifest import (
     UnsupportedIndexError,
     _immutable_sqlite_uri,
     current_snapshot_token,
+    discard_publication_record,
     fsync_directory,
     is_absolute_storage,
     publication_lock,
@@ -65,7 +66,9 @@ from autodj.index_manifest import (
     read_manifest,
     relative_storage_path,
     require_current_format,
+    require_no_orphan_generations,
     require_snapshot_token,
+    reserve_first_publication,
     restore_working_snapshot,
     sha256_file,
     snapshot_token_for_manifest,
@@ -844,6 +847,7 @@ def _publish_full_snapshot(
     with publication_lock(index_dir):
         if expected_snapshot is not None:
             require_snapshot_token(index_dir, expected_snapshot)
+        reserve_first_publication(index_dir)
         _save_vectors(vectors, index_dir)
         _save_tracks_metadata(entries, index_dir, music_dir)
         return publish_manifest(index_dir, len(entries))
@@ -863,6 +867,7 @@ def _publish_metadata_snapshot(
             current = require_snapshot_token(index_dir, expected_snapshot)
         if current is not None:
             restore_working_snapshot(index_dir, expected_generation=current.generation)
+        reserve_first_publication(index_dir)
         _save_tracks_metadata(entries, index_dir, music_dir)
         return publish_manifest(index_dir, len(entries))
 
@@ -908,6 +913,7 @@ class IncrementalCheckpoint:
                     self.index_dir,
                     expected_generation=self.expected_snapshot.generation,
                 )
+            reserve_first_publication(self.index_dir)
             _save_vectors(all_vectors, self.index_dir)
             _upsert_tracks_metadata(
                 pending,
@@ -1108,7 +1114,7 @@ def enrich_from_beets(
         current = read_manifest(index_dir)
         source_snapshot = current_snapshot_token(index_dir)
         if current is None:
-            require_current_format(index_dir)
+            require_no_orphan_generations(index_dir)
             return (0, 0)
         entries, _loaded = load_index(
             index_dir, music_dir=music_dir, expected_generation=current.generation
@@ -1261,7 +1267,7 @@ def prune_index(
         current = read_manifest(index_dir)
         source_snapshot = current_snapshot_token(index_dir)
         if current is None:
-            require_current_format(index_dir)
+            require_no_orphan_generations(index_dir)
             return (0, 0)
         entries, loaded = load_index(
             index_dir, music_dir=music_dir, expected_generation=current.generation
@@ -1354,7 +1360,7 @@ def load_index(
                 f"{getattr(before, 'generation', None)}"
             )
         if before is None:
-            require_current_format(index_dir)
+            require_no_orphan_generations(index_dir)
             raise FileNotFoundError(f"No published index in {index_dir}; run `autodj index`")
         tracks_path = index_dir / before.tracks_file
         vectors_path = index_dir / before.vectors_file
@@ -1761,9 +1767,18 @@ def _load_existing_index(  # pragma: no cover -- exercised via build_index integ
     """
     if force:
         with publication_lock(index_dir):
-            if read_manifest(index_dir) is None:
+            try:
+                manifest = read_manifest(index_dir)
+                snapshot = current_snapshot_token(index_dir)
+            except IndexConsistencyError as exc:
+                # --force is how an unreadable or old index is rebuilt, so the
+                # publication record it replaces must not stop it.
+                logger.warning("Discarding the unreadable index record in %s: %s", index_dir, exc)
+                discard_publication_record(index_dir)
+                manifest = None
+                snapshot = current_snapshot_token(index_dir)
+            if manifest is None:
                 _discard_working_files(index_dir)
-            snapshot = current_snapshot_token(index_dir)
         return [], [], set(), True, snapshot
 
     existing_entries, existing_vectors, snapshot = _load_existing_artifacts(index_dir, music_dir)
