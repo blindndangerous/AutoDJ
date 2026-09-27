@@ -144,6 +144,7 @@ def _configuration_check(cfg: AutoDJConfig) -> DoctorCheck:
         "sources": list(cfg.config_sources),
         "host": cfg.server.host,
         "port": cfg.server.port,
+        "lan": cfg.server.lan,
         "music_dir": str(cfg.library.music_dir),
         "index_dir": str(cfg.index.index_dir),
         "model_dir": str(cfg.index.model_dir),
@@ -678,9 +679,57 @@ def _model_cache_check(cfg: AutoDJConfig) -> DoctorCheck:
     )
 
 
+def _lan_network_check(cfg: AutoDJConfig) -> DoctorCheck:
+    """Report what ``serve`` in LAN mode will bind, allow and authenticate with.
+
+    Read-only: a missing access token file is reported, never created.
+
+    Args:
+        cfg: Loaded configuration with ``[server] lan`` on.
+
+    Returns:
+        PASS with a configured, saved or to-be-created token; WARN without
+        pairing (``insecure_lan``); FAIL when the saved token cannot be read.
+    """
+    from autodj.lan import AccessTokenError, detect_lan_hosts, read_access_token
+    from autodj.stream_secret import access_token_path
+
+    server = cfg.server
+    bind = "0.0.0.0" if is_loopback_bind(server.host) else server.host  # nosec B104
+    detail: dict[str, Any] = {
+        "bind": f"{bind}:{server.port}",
+        "detected_hosts": detect_lan_hosts(),
+    }
+    if server.access_token:
+        detail["access_token"] = "configured"
+        return DoctorCheck("network-safety", CheckStatus.PASS, "LAN mode", detail)
+    if server.insecure_lan:
+        detail["access_token"] = None
+        return DoctorCheck(
+            "network-safety",
+            CheckStatus.WARN,
+            "LAN mode without pairing (insecure_lan)",
+            detail,
+        )
+    path = access_token_path(cfg)
+    try:
+        saved = read_access_token(path)
+    except AccessTokenError as exc:
+        detail["access_token"] = str(exc)
+        return DoctorCheck(
+            "network-safety", CheckStatus.FAIL, "LAN mode cannot load its access token", detail
+        )
+    detail["access_token"] = (
+        f"saved in {path}" if saved is not None else f"created on first start at {path}"
+    )
+    return DoctorCheck("network-safety", CheckStatus.PASS, "LAN mode", detail)
+
+
 def _network_check(cfg: AutoDJConfig) -> DoctorCheck:
     """Classify configured bind exposure using the canonical loopback policy."""
     server = cfg.server
+    if server.lan:
+        return _lan_network_check(cfg)
     if is_loopback_bind(server.host):
         return DoctorCheck(
             "network-safety",
@@ -779,12 +828,12 @@ def _stream_check(cfg: AutoDJConfig) -> DoctorCheck:
         return DoctorCheck("stream", CheckStatus.PASS, "stream mode off")
     if shutil.which("ffmpeg") is None:
         return DoctorCheck("stream", CheckStatus.FAIL, "FFmpeg missing; stream mode cannot start")
-    if is_loopback_bind(cfg.server.host):
+    if is_loopback_bind(cfg.server.host) and not cfg.server.lan:
         return DoctorCheck(
             "stream",
             CheckStatus.WARN,
             "stream mode on, but the server only listens on this machine",
-            "Speakers on your network cannot reach it. Use the LAN setup.",
+            "Speakers on your network cannot reach it. Start with `autodj serve --lan`.",
         )
     return DoctorCheck("stream", CheckStatus.PASS, f"stream mode on at {cfg.stream.bitrate} kbps")
 

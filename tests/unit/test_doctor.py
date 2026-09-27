@@ -1528,6 +1528,7 @@ def test_configuration_detail_is_structured_and_redacted(tmp_path: Path) -> None
         "sources": list(cfg.config_sources),
         "host": cfg.server.host,
         "port": cfg.server.port,
+        "lan": False,
         "music_dir": str(cfg.library.music_dir),
         "index_dir": str(cfg.index.index_dir),
         "model_dir": str(cfg.index.model_dir),
@@ -1613,3 +1614,112 @@ def test_stream_check_passes_enabled_with_ffmpeg_and_non_loopback_bind(
 
     assert result.status is doctor.CheckStatus.PASS
     assert str(cfg.stream.bitrate) in result.summary
+
+
+# ---------------------------------------------------------------------------
+# LAN mode
+# ---------------------------------------------------------------------------
+
+_LAN_HOSTS = ["127.0.0.1", "192.168.1.20", "::1", "localhost", "nas"]
+
+
+def _lan_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **server: object) -> AutoDJConfig:
+    from dataclasses import replace
+
+    monkeypatch.setattr("autodj.lan.detect_lan_hosts", lambda: list(_LAN_HOSTS))
+    cfg = _config(tmp_path, host="127.0.0.1")
+    cfg.server = replace(cfg.server, lan=True, **server)  # type: ignore[arg-type]
+    return cfg
+
+
+def test_lan_network_check_reports_hosts_and_token_to_create(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _lan_config(tmp_path, monkeypatch, access_token=None)
+    before = _tree_snapshot(tmp_path)
+
+    check = doctor._network_check(cfg)
+
+    assert check.status is doctor.CheckStatus.PASS
+    assert check.summary == "LAN mode"
+    assert isinstance(check.detail, dict)
+    assert check.detail["bind"] == "0.0.0.0:8080"
+    assert check.detail["detected_hosts"] == _LAN_HOSTS
+    assert "created on first start" in check.detail["access_token"]
+    assert before == _tree_snapshot(tmp_path)  # doctor never creates the token
+
+
+def test_lan_network_check_reports_saved_token_without_revealing_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from autodj.lan import load_or_create_access_token
+
+    cfg = _lan_config(tmp_path, monkeypatch, access_token=None)
+    token = load_or_create_access_token(cfg.index.index_dir / ".access-token")
+
+    check = doctor._network_check(cfg)
+    text = doctor.render_text(doctor.DoctorReport((check,)))
+
+    assert check.status is doctor.CheckStatus.PASS
+    assert isinstance(check.detail, dict)
+    assert check.detail["access_token"].startswith("saved in ")
+    assert token not in text
+
+
+def test_lan_network_check_with_configured_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _lan_config(tmp_path, monkeypatch, host="192.168.1.20")
+
+    check = doctor._network_check(cfg)
+
+    assert check.status is doctor.CheckStatus.PASS
+    assert isinstance(check.detail, dict)
+    assert check.detail["bind"] == "192.168.1.20:8080"
+    assert check.detail["access_token"] == "configured"
+    assert "s" * 32 not in doctor.render_text(doctor.DoctorReport((check,)))
+
+
+def test_lan_network_check_warns_for_insecure_lan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _lan_config(tmp_path, monkeypatch, access_token=None, insecure_lan=True)
+
+    check = doctor._network_check(cfg)
+
+    assert check.status is doctor.CheckStatus.WARN
+    assert "without pairing" in check.summary
+    assert isinstance(check.detail, dict)
+    assert check.detail["access_token"] is None
+
+
+def test_lan_network_check_fails_for_unreadable_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _lan_config(tmp_path, monkeypatch, access_token=None)
+    (cfg.index.index_dir / ".access-token").mkdir()
+
+    check = doctor._network_check(cfg)
+
+    assert check.status is doctor.CheckStatus.FAIL
+    assert isinstance(check.detail, dict)
+    assert "cannot read access token" in check.detail["access_token"]
+
+
+def test_stream_check_accepts_loopback_config_in_lan_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _lan_config(tmp_path, monkeypatch)
+    cfg.stream.enabled = True
+    monkeypatch.setattr(doctor.shutil, "which", lambda _n: "/usr/bin/ffmpeg")
+
+    assert doctor._stream_check(cfg).status is doctor.CheckStatus.PASS
+
+
+def test_configuration_check_shows_lan_setting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    check = doctor._configuration_check(_lan_config(tmp_path, monkeypatch))
+
+    assert isinstance(check.detail, dict)
+    assert check.detail["lan"] is True
