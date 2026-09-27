@@ -2239,6 +2239,21 @@ class TestPlayerCoverageErrorPaths:
         assert find_next.call_count == 2
         assert list(find_next.call_args_list[1].kwargs["recently_played"]) == [current.path]
 
+    @pytest.mark.parametrize(("mode", "harmonic_only"), [("off", False), ("strict", True)])
+    def test_pick_next_filters_keys_only_when_harmonic_mode_is_not_off(
+        self, mode: str, harmonic_only: bool
+    ) -> None:
+        player = Player(_make_cfg_mock(), _make_sim_index(3))
+        player._cfg.djmix.harmonic_mode = mode
+        current = player._sim.entries[0]
+        with patch.object(
+            player._sim, "find_next_for_path", return_value=player._sim.entries[1]
+        ) as find_next:
+            player._pick_next(current)
+
+        assert find_next.call_args.kwargs["harmonic_only"] is harmonic_only
+        assert find_next.call_args.kwargs["harmonic_mode"] == mode
+
     def test_embedded_timestamped_lyrics_parse_as_synced_lines(self) -> None:
         """An LRC-format embedded tag must scroll, not print its timestamps."""
         player = Player(_make_cfg_mock(), _make_sim_index(2))
