@@ -1448,6 +1448,31 @@ describe("stream mode", () => {
     expect(options.getRemaining()).toBe(153);
   });
 
+  it("routes Space and K to Listen here in stream mode", async () => {
+    await setupApp({
+      initialState: streamState,
+      onRequest: () => lyricsFor("a.mp3"),
+    });
+    const options = await hotkeyOptions();
+    const listenClick = vi.spyOn(document.getElementById("btn-listen"), "click")
+      .mockImplementation(() => {});
+    const pauseClick = vi.spyOn(document.getElementById("btn-pause"), "click");
+
+    options.togglePlay();
+    expect(listenClick).toHaveBeenCalledOnce();
+    expect(pauseClick).not.toHaveBeenCalled();
+  });
+
+  it("keeps Space and K on Play / Pause outside stream mode", async () => {
+    await setupApp({ initialState: { current_track: { path: "a.mp3", title: "A" } },
+      onRequest: () => jsonResponse({ paused: true }) });
+    const options = await hotkeyOptions();
+    const pauseClick = vi.spyOn(document.getElementById("btn-pause"), "click")
+      .mockImplementation(() => {});
+    options.togglePlay();
+    expect(pauseClick).toHaveBeenCalledOnce();
+  });
+
   it("stops listening when the session expires", async () => {
     let expire = false;
     await setupApp({

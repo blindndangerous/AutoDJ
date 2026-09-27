@@ -187,6 +187,9 @@ export function installHotkeys({
   getTrack, getNextTrack, getRemaining,
   isEnabled = () => true,
   shortcutToggle = null,
+  // Optional: what Space / k do instead of pressing Play / Pause.  Stream
+  // mode uses it to start or stop listening on this page.
+  togglePlay = null,
 }) {
   installShortcutToggle(shortcutToggle);
   const active = () => isEnabled() && shortcutsEnabled();
@@ -240,7 +243,8 @@ export function installHotkeys({
       case " ":
       case "Spacebar":
       case "k":
-        if (btnPause) btnPause.click();
+        if (togglePlay) togglePlay();
+        else if (btnPause) btnPause.click();
         break;
       case "n":
         if (btnSkip) btnSkip.click();

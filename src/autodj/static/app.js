@@ -1584,6 +1584,9 @@ installHotkeys({
   },
   isEnabled: authenticatedInteractionEnabled,
   shortcutToggle: document.getElementById("hotkeys-enabled"),
+  // In stream mode Play / Pause stops the station for every listener, so
+  // Space and k toggle Listen here (this page only) instead.
+  togglePlay:  () => (_lastStreamMode ? btnListen : btnPause).click(),
 });
 
 // Media Session API moved to ./modules/media-session.js.

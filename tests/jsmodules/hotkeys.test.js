@@ -342,6 +342,37 @@ describe("page shortcut scope", () => {
     expect(localPauseClick).toHaveBeenCalledOnce();
   });
 
+  it("sends Space and k to togglePlay instead of Play / Pause when given", () => {
+    // Stream mode passes togglePlay so the keys start or stop listening on
+    // this page rather than pausing the station for every listener.
+    const localPause = document.createElement("button");
+    const localPauseClick = vi.spyOn(localPause, "click");
+    const togglePlay = vi.fn();
+    const addEventListener = vi.spyOn(window, "addEventListener");
+    installHotkeys({ btnPause: localPause, togglePlay });
+    const keydownHandler = addEventListener.mock.calls.find(
+      ([type]) => type === "keydown",
+    )[1];
+    addEventListener.mockRestore();
+    const plain = document.querySelector("#plain");
+
+    for (const key of [" ", "k"]) {
+      const event = {
+        key,
+        repeat: false,
+        target: plain,
+        composedPath: () => [plain, document.body, window],
+        preventDefault: vi.fn(),
+      };
+      keydownHandler(event);
+      window.dispatchEvent(new KeyboardEvent("keyup", { key }));
+      expect(event.preventDefault).toHaveBeenCalledOnce();
+    }
+
+    expect(togglePlay).toHaveBeenCalledTimes(2);
+    expect(localPauseClick).not.toHaveBeenCalled();
+  });
+
   it("registers the page keydown handler in capture phase", () => {
     const addEventListener = vi.spyOn(window, "addEventListener");
     installHotkeys({});
