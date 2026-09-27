@@ -187,14 +187,13 @@ def test_release_workflow_grants_every_nested_job_permission() -> None:
     assert checked >= 8
 
 
-def test_readme_release_install_matches_project_version() -> None:
-    """The install command pins a URL, so a version bump must update it too."""
+def test_readme_release_install_does_not_hard_code_a_version() -> None:
+    """A hard-coded wheel URL goes stale on every release, so the README uses placeholders."""
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
-    version = project["version"]
 
-    assert f"autodj-{version}-py3-none-any.whl" in readme
-    assert f"/download/v{version}/" in readme
+    assert "/download/vX.Y.Z/autodj-X.Y.Z-py3-none-any.whl" in readme
+    assert re.search(r"/download/v\d+\.\d+\.\d+/", readme) is None
+    assert re.search(r"autodj-\d+\.\d+\.\d+-py3-none-any\.whl", readme) is None
 
 
 def test_readme_discloses_non_commercial_model_weights() -> None:
@@ -230,10 +229,20 @@ def test_operator_docs_require_end_to_end_tls_for_untrusted_networks() -> None:
         "--allowed-origin https://radio.local:8080 --ssl-certfile radio.pem "
         "--ssl-keyfile radio-key.pem" in normalized_operations
     )
-    assert "leave `AUTODJ_ACCESS_TOKEN` exported" in operations
+    assert "only Compose reads `.env` on its own" in normalized_operations
+    assert "set -a; . ./.env; set +a" in operations
+    assert 'Set-Item -Path "Env:$name" -Value $value' in operations
     assert "AutoDJ does not support TLS termination in front of its server" in normalized_operations
     assert "This supports private LAN access, not public Internet hosting" in normalized_operations
-    assert "Public Internet hosting, including end-to-end TLS deployments" in security
+    assert "Public Internet hosting, even with AutoDJ's own TLS enabled" in security
+    assert "Deployments behind a TLS-terminating reverse proxy" in security
+
+
+def test_threat_model_agrees_that_tls_terminates_in_autodj() -> None:
+    threat = " ".join((ROOT / "THREAT_MODEL.md").read_text(encoding="utf-8").split())
+
+    assert "reverse proxy is not supported" in threat
+    assert "place AutoDJ behind a trusted TLS reverse proxy" not in threat
 
 
 def test_operator_docs_keep_security_and_quality_commands_exact() -> None:
@@ -316,3 +325,26 @@ def test_operator_docs_keep_security_and_quality_commands_exact() -> None:
     for identity in ("tag", "project", "changelog", "wheel"):
         assert identity in release_entry.lower()
         assert identity in verify_step.lower()
+
+
+def test_slow_precommit_hooks_run_on_push_and_are_installed() -> None:
+    config = yaml.safe_load((ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8"))
+    assert set(config["default_install_hook_types"]) == {"pre-commit", "commit-msg", "pre-push"}
+    assert config["default_stages"] == ["pre-commit"]
+    hooks = {hook["id"]: hook for repository in config["repos"] for hook in repository["hooks"]}
+    slow = {
+        "bandit",
+        "vulture",
+        "deptry",
+        "interrogate",
+        "xenon",
+        "pip-audit",
+        "pip-licenses",
+        "osv-scanner",
+        "trivy-fs",
+        "pytest",
+    }
+    for hook_id in slow:
+        assert hooks[hook_id].get("stages") == ["pre-push"], hook_id
+    for hook_id in ("ruff", "ruff-format", "mypy", "eslint", "gitleaks"):
+        assert "stages" not in hooks[hook_id], hook_id

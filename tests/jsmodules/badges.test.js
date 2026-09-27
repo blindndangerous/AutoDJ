@@ -43,28 +43,32 @@ describe("persistent playback metadata", () => {
   });
 });
 
-describe("badge announcements", () => {
-  it("does not repeat BPM after the comprehensive track-change announcement", () => {
-    vi.useFakeTimers();
-    const badgesAnnounce = document.createElement("div");
-    badges.applyBadges({
-      current_track: {
-        path: "no-duplicate-bpm.flac",
-        bpm: 128,
-        key_label: "8A",
-      },
+describe("track-change details", () => {
+  it("speaks BPM, key and beatmatch once, as the tail of the title", () => {
+    expect(badges.trackChangeDetails({
+      current_track: { path: "a.flac", bpm: 127.6, key_label: "8A" },
+      beatmatch_ratio: 1.02,
+    })).toBe(", 128 BPM, key 8A, beatmatched 1.02 times");
+  });
+
+  it("omits unknown key, missing BPM and a unity beatmatch", () => {
+    expect(badges.trackChangeDetails({
+      current_track: { path: "a.flac", key_label: " -- " },
       beatmatch_ratio: 1,
-    }, {
-      badgesAnnounce,
-      badgesRow: document.createElement("div"),
-    }, {
-      lastTrackKey: "no-duplicate-bpm.flac",
-      renderCueStrip: () => {},
-    });
+    })).toBe("");
+    expect(badges.trackChangeDetails({ current_track: null })).toBe("");
+  });
 
-    vi.advanceTimersByTime(800);
-
-    expect(badgesAnnounce.textContent).toBe("Key 8A");
-    expect(badgesAnnounce.textContent).not.toContain("BPM");
+  it("no longer writes a delayed second announcement", () => {
+    vi.useFakeTimers();
+    const badgesRow = document.createElement("div");
+    const spy = vi.spyOn(globalThis, "setTimeout");
+    badges.applyBadges({
+      current_track: { path: "a.flac", bpm: 128, key_label: "8A" },
+    }, { badgesRow }, { renderCueStrip: () => {} });
+    expect(spy).not.toHaveBeenCalled();
+    expect(badgesRow.textContent).toContain("Key 8A");
+    spy.mockRestore();
+    vi.useRealTimers();
   });
 });

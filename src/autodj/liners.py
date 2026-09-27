@@ -35,6 +35,9 @@ logger = logging.getLogger(__name__)
 # File extensions recognised as liner clips.
 LINER_EXTS: tuple[str, ...] = (".mp3", ".wav", ".ogg", ".m4a", ".flac", ".aac")
 
+# Rotation modes accepted by :meth:`LinerLibrary.pick`.
+LINER_PICK_MODES: tuple[str, ...] = ("random", "sequential", "weighted")
+
 
 @dataclass
 class LinerTrigger:
@@ -198,6 +201,7 @@ class LinerLibrary:
 
 __all__ = [
     "LINER_EXTS",
+    "LINER_PICK_MODES",
     "LinerLibrary",
     "LinerTrigger",
 ]

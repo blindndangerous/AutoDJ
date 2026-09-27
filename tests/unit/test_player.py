@@ -2273,6 +2273,39 @@ class TestPickNextBranches:
         assert player._state.queue == []
         assert player._last_pick_mode == "queue"
 
+    def test_late_play_next_puts_the_displaced_queue_pick_back_in_front(self) -> None:
+        player = self._make_player()
+        entries = player._sim.entries
+        player._state.queue.extend([entries[2], entries[3]])
+        picked = player._pick_next(entries[0])  # pops entries[2] at track start
+        assert player._last_pick_mode == "queue"
+        player._state.queued_next = entries[4]  # "play next" mid-track
+
+        started = player._honour_late_queued_next(picked, picked_from_queue=True)
+
+        assert started is entries[4]
+        assert player._state.queued_next is None
+        assert player._state.queue == [entries[2], entries[3]]
+
+    def test_late_play_next_discards_a_displaced_similarity_pick(self) -> None:
+        player = self._make_player()
+        entries = player._sim.entries
+        player._state.queued_next = entries[4]
+
+        started = player._honour_late_queued_next(entries[1], picked_from_queue=False)
+
+        assert started is entries[4]
+        assert player._state.queue == []
+        assert player._last_pick_mode == "queue"
+
+    def test_transition_without_late_play_next_keeps_the_pick(self) -> None:
+        player = self._make_player()
+        entries = player._sim.entries
+        player._state.queue.append(entries[3])
+
+        assert player._honour_late_queued_next(entries[2], picked_from_queue=True) is entries[2]
+        assert player._state.queue == [entries[3]]
+
     def test_pure_shuffle_pool_empty_fallback(self) -> None:
         from collections import deque
 
@@ -2672,3 +2705,12 @@ class TestPlayerCoverageErrorPaths:
 
         assert player.wait_for_background_analysis() is True
         worker.join.assert_called_once_with()
+
+
+def test_player_docs_do_not_point_at_the_retired_no_playback_flag() -> None:
+    """``serve --no-playback`` is a deprecated no-op; browser mode is the default."""
+    import inspect
+
+    import autodj.player as player_module
+
+    assert "--no-playback" not in inspect.getsource(player_module)

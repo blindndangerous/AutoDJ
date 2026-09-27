@@ -179,3 +179,68 @@ def test_legacy_login_endpoint_is_removed(bridge, tmp_path) -> None:
     assert paired.status_code == 200
     assert response.status_code == 404
     assert [device.name for device in registry.list_devices()] == ["Current browser"]
+
+
+def test_pairing_and_auth_status_keep_sqlite_off_the_event_loop(
+    bridge, tmp_path, monkeypatch
+) -> None:
+    import asyncio
+
+    client, _registry = _paired_client(bridge, tmp_path)
+    offloaded: list[str] = []
+    real_to_thread = asyncio.to_thread
+
+    async def recording_to_thread(function, *args, **kwargs):
+        offloaded.append(getattr(function, "__name__", repr(function)))
+        return await real_to_thread(function, *args, **kwargs)
+
+    monkeypatch.setattr("autodj.server.asyncio.to_thread", recording_to_thread)
+    code = client.app.state.security_policy.current_pairing_code()
+
+    assert client.post("/api/pair", json={"code": code, "device_name": "Den"}).status_code == 200
+    assert client.get("/api/auth/status").json()["authenticated"] is True
+    # registry.pair, the active-device check behind issuing the session, and
+    # the touch + verify pair in /api/auth/status all hit SQLite.
+    assert {"pair", "issue_device_session", "_status"} <= set(offloaded)
+
+
+def test_locked_out_client_gets_429_with_retry_after_even_for_the_right_code(
+    bridge, tmp_path
+) -> None:
+    from autodj.security import PAIRING_MAX_FAILURES_PER_CLIENT
+
+    client, registry = _paired_client(bridge, tmp_path)
+    # Only the per-client lockout is under test, not the request-rate limiter.
+    client.app.state.pairing_rate_limiter = PairingRateLimiter(per_client_limit=1_000)
+    policy = client.app.state.security_policy
+    code = policy.current_pairing_code()
+    wrong = "00000000" if code != "00000000" else "11111111"
+
+    for _ in range(PAIRING_MAX_FAILURES_PER_CLIENT):
+        assert client.post("/api/pair", json={"code": wrong, "device_name": "x"}).status_code == 401
+    response = client.post("/api/pair", json={"code": code, "device_name": "Real"})
+
+    assert response.status_code == 429
+    assert response.headers["Retry-After"] == "200"
+    assert "Try again in 200 seconds" in response.json()["detail"]
+    assert registry.list_devices() == []
+
+
+def test_paused_pairing_tells_the_user_to_wait_for_a_new_code(bridge, tmp_path) -> None:
+    from autodj.security import PAIRING_MAX_FAILURES_PER_WINDOW
+
+    client, _registry = _paired_client(bridge, tmp_path)
+    policy = client.app.state.security_policy
+    for attempt in range(PAIRING_MAX_FAILURES_PER_WINDOW):
+        policy.verify_pairing_code("00000000", f"10.9.0.{attempt}")
+
+    response = client.post(
+        "/api/pair",
+        json={"code": policy.current_pairing_code(), "device_name": "Real"},
+    )
+
+    assert response.status_code == 429
+    assert response.headers["Retry-After"] == "200"
+    assert response.json()["detail"] == (
+        "Pairing is paused after too many wrong codes. Try again in 200 seconds with a new code."
+    )

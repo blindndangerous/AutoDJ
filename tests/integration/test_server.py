@@ -312,6 +312,21 @@ class TestLiners:
         resp = tc.get("/api/liners/file/..%2Fsecret.txt")
         assert resp.status_code == 400
 
+    @pytest.mark.parametrize("name", ["config.toml", "tracks.db", "notes", "clip.mp3.bak"])
+    def test_liner_file_routes_refuse_non_audio_names(self, bridge, tmp_path, name) -> None:
+        """A plain name in the liner root is still refused unless it is a liner clip."""
+        from fastapi.testclient import TestClient
+
+        folder = tmp_path / "liners"
+        folder.mkdir()
+        (folder / name).write_bytes(b"secret")
+        bridge.player._cfg.playback.liners_folder = str(folder)
+
+        tc = TestClient(create_app(bridge))
+        assert tc.get(f"/api/liners/file/{name}").status_code == 400
+        assert tc.delete(f"/api/liners/file/{name}").status_code == 400
+        assert (folder / name).read_bytes() == b"secret"
+
     def test_liner_settings_round_trip(self, bridge) -> None:
         from fastapi.testclient import TestClient
 
@@ -331,6 +346,32 @@ class TestLiners:
         assert cfg.liners_every_n_songs == 5
         assert cfg.liners_pick_mode == "sequential"
         assert cfg.liners_duck_db == pytest.approx(-8.0)
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"liners_folder": "/etc/autodj"},
+            {"liners_enabled": True, "liners_folder": "../config"},
+            {"bogus_field": 1},
+        ],
+    )
+    def test_playback_settings_reject_liner_root_and_unknown_fields(
+        self, bridge, tmp_path, payload
+    ) -> None:
+        """The liner root is config-only; a request cannot move it or half-apply."""
+        from fastapi.testclient import TestClient
+
+        folder = str(tmp_path / "liners")
+        bridge.player._cfg.playback.liners_folder = folder
+        bridge.player._cfg.playback.liners_enabled = False
+        bridge.save_persistent_state = MagicMock()
+
+        tc = TestClient(create_app(bridge))
+        resp = tc.post("/api/playback-settings", json=payload)
+        assert resp.status_code == 422
+        assert bridge.player._cfg.playback.liners_folder == folder
+        assert bridge.player._cfg.playback.liners_enabled is False
+        bridge.save_persistent_state.assert_not_called()
 
     def test_liner_pick_mode_validates(self, bridge) -> None:
         from fastapi.testclient import TestClient
@@ -546,6 +587,80 @@ class TestProfiles:
         assert bridge.player._cfg.playback.key_sync_fx is False
         assert bridge.player._cfg.playback.crossfade_seconds == pytest.approx(5.0)
 
+    def test_profile_apply_persists_across_restart(self, bridge, tmp_path) -> None:
+        """Applied settings must reach web_state.json like every other settings route."""
+        import json
+
+        from fastapi.testclient import TestClient
+
+        idx = tmp_path / "idx"
+        idx.mkdir()
+        bridge.player._cfg.index.active_dir = str(idx)
+        tc = TestClient(create_app(bridge))
+        tc.post("/api/profiles", json={"name": "Loud", "crossfade_seconds": 7.5})
+
+        assert tc.post("/api/profiles/Loud/apply").status_code == 200
+
+        saved = json.loads((idx / "web_state.json").read_text(encoding="utf-8"))
+        assert saved["playback"]["crossfade_seconds"] == pytest.approx(7.5)
+
+    @pytest.mark.parametrize(
+        "field",
+        ["transition_mode", "post_queue_seed", "key_notation", "liners_pick_mode"],
+    )
+    def test_playback_settings_bad_choice_changes_nothing(self, bridge, field) -> None:
+        """One bad choice must not half-apply the fields that come before it."""
+        from fastapi.testclient import TestClient
+
+        pb = bridge.player._cfg.playback
+        pb.crossfade_seconds = 3.0
+        before = getattr(pb, field)
+        bridge.save_persistent_state = MagicMock()
+        tc = TestClient(create_app(bridge))
+
+        resp = tc.post("/api/playback-settings", json={"crossfade_seconds": 9.0, field: "bogus"})
+
+        assert resp.status_code == 422
+        assert pb.crossfade_seconds == pytest.approx(3.0)
+        assert getattr(pb, field) == before
+        bridge.save_persistent_state.assert_not_called()
+
+    def test_profile_save_rejects_bad_choice(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
+        (tmp_path / "idx").mkdir()
+        tc = TestClient(create_app(bridge))
+
+        resp = tc.post("/api/profiles", json={"name": "Bad", "post_queue_seed": "bogus"})
+
+        assert resp.status_code == 422
+        assert "Bad" not in tc.get("/api/profiles").json()["profiles"]
+
+    def test_profile_apply_stored_bad_choice_is_400_and_changes_nothing(
+        self, bridge, tmp_path
+    ) -> None:
+        """A hand-edited profile with a bad choice is refused before anything applies."""
+        from fastapi.testclient import TestClient
+
+        from autodj.profiles import ProfileSnapshot, ProfileStore
+
+        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
+        (tmp_path / "idx").mkdir()
+        ProfileStore(tmp_path / "profiles").save(
+            ProfileSnapshot(name="Broken", crossfade_seconds=9.0, transition_mode="bogus")
+        )
+        pb = bridge.player._cfg.playback
+        pb.crossfade_seconds = 3.0
+        bridge.save_persistent_state = MagicMock()
+        tc = TestClient(create_app(bridge))
+
+        resp = tc.post("/api/profiles/Broken/apply")
+
+        assert resp.status_code == 400
+        assert pb.crossfade_seconds == pytest.approx(3.0)
+        bridge.save_persistent_state.assert_not_called()
+
     def test_profile_get_bad_name_400(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
@@ -590,6 +705,49 @@ class TestProfiles:
         tc = TestClient(create_app(bridge))
         resp = tc.post("/api/profiles/..%2Fescape/apply")
         assert resp.status_code in (400, 404)
+
+    def test_profile_and_liner_file_io_runs_off_the_event_loop(
+        self, bridge, tmp_path, monkeypatch
+    ) -> None:
+        from fastapi.testclient import TestClient
+
+        offloaded: list[str] = []
+        real_to_thread = asyncio.to_thread
+
+        async def recording_to_thread(function, *args, **kwargs):
+            offloaded.append(getattr(function, "__name__", repr(function)))
+            return await real_to_thread(function, *args, **kwargs)
+
+        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
+        (tmp_path / "idx").mkdir()
+        folder = tmp_path / "liners"
+        folder.mkdir()
+        (folder / "a.mp3").write_bytes(b"x")
+        bridge.player._cfg.playback.liners_folder = str(folder)
+        bridge.save_persistent_state = MagicMock()
+        monkeypatch.setattr("autodj.server.asyncio.to_thread", recording_to_thread)
+        tc = TestClient(create_app(bridge))
+
+        assert tc.post("/api/profiles", json={"name": "Io"}).status_code == 200
+        assert tc.get("/api/profiles").status_code == 200
+        assert tc.get("/api/profiles/Io").status_code == 200
+        assert tc.post("/api/profiles/Io/apply").status_code == 200
+        assert tc.delete("/api/profiles/Io").status_code == 200
+        files = {"file": ("b.mp3", b"y", "audio/mpeg")}
+        assert tc.post("/api/liners/upload", files=files).status_code == 200
+        assert tc.get("/api/liners/file/a.mp3").status_code == 200
+        assert tc.delete("/api/liners/file/a.mp3").status_code == 200
+
+        for name in (
+            "save",
+            "list_names",
+            "load",
+            "delete",
+            "resolve_liner_path",
+            "open_liner_file",
+            "delete_liner_file",
+        ):
+            assert name in offloaded, name
 
     def test_profile_apply_missing_404(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
@@ -2197,6 +2355,12 @@ class TestEqEndpoint:
 # ---------------------------------------------------------------------------
 
 
+class TestApiDocsDisabled:
+    @pytest.mark.parametrize("path", ["/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"])
+    def test_interactive_docs_and_schema_are_not_served(self, client, path) -> None:
+        assert client.get(path).status_code == 404
+
+
 class TestQueueEndpoints:
     def test_queue_add(self, bridge) -> None:
         from fastapi.testclient import TestClient
@@ -2241,6 +2405,66 @@ class TestQueueEndpoints:
         order = [e.path for e in bridge.player._state.queue]
         assert order == [e2.path, e0.path, e1.path]
 
+    def test_queue_reorder_keeps_duplicate_entries(self, bridge) -> None:
+        from fastapi.testclient import TestClient
+
+        e0, e1 = bridge.sim.entries[:2]
+        bridge.player._state.queue.extend([e0, e1, e0])
+        tc = TestClient(create_app(bridge))
+        tc.post("/api/queue/reorder", json={"paths": [e0.path, e0.path, e1.path]})
+        assert [e.path for e in bridge.player._state.queue] == [e0.path, e0.path, e1.path]
+        # A path listed more often than it was queued adds nothing.
+        tc.post("/api/queue/reorder", json={"paths": [e1.path, e1.path, e0.path]})
+        assert [e.path for e in bridge.player._state.queue] == [e1.path, e0.path]
+
+    def test_queue_reorder_never_exposes_an_empty_queue(self, bridge) -> None:
+        """A reader on another thread must not see the queue empty mid-reorder."""
+        e0, e1, e2 = bridge.sim.entries[:3]
+        seen_lengths: list[int] = []
+
+        class _Watched(list):
+            def clear(self) -> None:
+                super().clear()
+                seen_lengths.append(len(self))
+
+            def __setitem__(self, key, value) -> None:
+                super().__setitem__(key, value)
+                seen_lengths.append(len(self))
+
+        bridge.player._state.queue = _Watched([e0, e1, e2])
+        bridge.queue_reorder([e2.path, e1.path, e0.path])
+        assert [e.path for e in bridge.player._state.queue] == [e2.path, e1.path, e0.path]
+        assert seen_lengths == [3]
+
+    def test_queue_reorder_and_audio_thread_pop_cannot_interleave(self, bridge) -> None:
+        """A pop landing mid-reorder must not be written back and play twice."""
+        from autodj.player import Player
+
+        e0, e1, e2 = bridge.sim.entries[:3]
+        popped: list[object] = []
+        popper: list[threading.Thread] = []
+
+        class _PopsDuringRead(list):
+            def __iter__(self):
+                if not popper:
+                    # The server-audio thread reaches for the head while the
+                    # reorder is reading the queue.
+                    thread = threading.Thread(
+                        target=lambda: popped.append(Player._pop_user_queue(bridge.player))
+                    )
+                    popper.append(thread)
+                    thread.start()
+                    thread.join(timeout=0.2)
+                return super().__iter__()
+
+        bridge.player._state.queue = _PopsDuringRead([e0, e1, e2])
+        bridge.queue_reorder([e2.path, e1.path, e0.path])
+        popper[0].join(timeout=5)
+
+        # The pop waited for the reorder, then took the new head.
+        assert popped == [e2]
+        assert [e.path for e in bridge.player._state.queue] == [e1.path, e0.path]
+
     def test_queue_reorder_drops_unknown(self, bridge) -> None:
         from fastapi.testclient import TestClient
 
@@ -2260,6 +2484,7 @@ class TestQueueSyncsPrefetch:
     def test_queue_add_overrides_next_track(self, bridge) -> None:
         from fastapi.testclient import TestClient
 
+        bridge.player._dry_run = True
         prev_next = _make_entry(900)
         bridge.player._state.next_track = prev_next
         bridge.player._pick_next.return_value = _make_entry(901)
@@ -2281,6 +2506,7 @@ class TestQueueSyncsPrefetch:
     def test_queue_remove_resyncs_next_track(self, bridge) -> None:
         from fastapi.testclient import TestClient
 
+        bridge.player._dry_run = True
         e0, e1 = bridge.sim.entries[:2]
         bridge.player._state.queue.extend([e0, e1])
         bridge.player._state.next_track = e0
@@ -2293,12 +2519,61 @@ class TestQueueSyncsPrefetch:
     def test_queue_reorder_resyncs_next_track(self, bridge) -> None:
         from fastapi.testclient import TestClient
 
+        bridge.player._dry_run = True
         e0, e1, e2 = bridge.sim.entries[:3]
         bridge.player._state.queue.extend([e0, e1, e2])
         bridge.player._state.next_track = e0
         tc = TestClient(create_app(bridge))
         tc.post("/api/queue/reorder", json={"paths": [e2.path, e1.path]})
         assert bridge.player._state.next_track.path == e2.path
+
+
+class TestServerAudioNextTrack:
+    """With --server-audio the audio thread owns the next pick.
+
+    It pops the next entry when the current track starts and plays it no
+    matter what the queue does afterwards, so queue edits must leave
+    ``next_track`` alone and must not call ``_pick_next`` from the request
+    thread.
+    """
+
+    def test_queue_add_keeps_already_chosen_next_track(self, bridge) -> None:
+        chosen = _make_entry(900)
+        bridge.player._dry_run = False
+        bridge.player._state.next_track = chosen
+        bridge.player._pick_next.reset_mock()
+
+        assert bridge.queue_add(bridge.sim.entries[2].path) is True
+
+        assert bridge.player._state.next_track is chosen
+        assert [e.path for e in bridge.player._state.queue] == [bridge.sim.entries[2].path]
+        bridge.player._pick_next.assert_not_called()
+
+    def test_queue_remove_and_reorder_do_not_repick(self, bridge) -> None:
+        chosen = _make_entry(901)
+        e0, e1 = bridge.sim.entries[:2]
+        bridge.player._dry_run = False
+        bridge.player._state.next_track = chosen
+        bridge.player._state.queue.extend([e0, e1])
+        bridge.player._pick_next.reset_mock()
+
+        bridge.queue_reorder([e1.path, e0.path])
+        bridge.queue_remove(e1.path)
+        bridge.queue_remove(e0.path)
+
+        assert bridge.player._state.next_track is chosen
+        bridge.player._pick_next.assert_not_called()
+
+    def test_play_next_still_announces_queued_next(self, bridge) -> None:
+        # The audio loop honours queued_next at the transition, so it is
+        # what really plays next.
+        bridge.player._dry_run = False
+        bridge.player._state.next_track = _make_entry(902)
+        target = bridge.sim.entries[1]
+
+        assert bridge.play_next(target.path) is True
+
+        assert bridge.player._state.next_track.path == target.path
 
 
 class TestPostQueueSeed:
@@ -2372,12 +2647,14 @@ class TestPostQueueSeed:
         assert bridge.player._state.pre_queue_seed is None
 
     def test_sync_next_for_prefetch_clears_when_no_current(self, bridge) -> None:
+        bridge.player._dry_run = True
         bridge.player._state.current_track = None
         bridge.player._state.next_track = bridge.sim.entries[0]
         bridge._sync_next_for_prefetch()
         assert bridge.player._state.next_track is None
 
     def test_sync_next_for_prefetch_swallows_pick_failure(self, bridge) -> None:
+        bridge.player._dry_run = True
         bridge.player._pick_next.side_effect = RuntimeError("boom")
         bridge.player._state.queue.clear()
         bridge.player._state.queued_next = None

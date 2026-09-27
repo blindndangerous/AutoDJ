@@ -1,0 +1,20 @@
+# CPU-only PyTorch for the container image, installed by the Containerfile with
+# `uv pip install --require-hashes --no-deps --index-url https://download.pytorch.org/whl/cpu`.
+#
+# Versions must equal the torch, torchaudio and torchvision versions in uv.lock;
+# the image build and tests/unit/test_containerfile.py both fail otherwise.
+# Each package lists the sha256 of its cp314 manylinux_2_28 wheel for x86_64 and
+# aarch64, copied from the #sha256= fragments on the download.pytorch.org/whl/cpu
+# index pages. When uv.lock moves any of these versions, update this file too.
+torch==2.14.0+cpu \
+    --hash=sha256:f152f41dc5dc462afe0de780e451ebb47ea8b4451f8f919f9537aa8e2cbe1d7e \
+    --hash=sha256:27b34640fea7268862961b734c723873e15b1c2657b1eb84bcfac053e5841527
+    # x86_64, then aarch64
+torchaudio==2.11.0+cpu \
+    --hash=sha256:34c5dcd704e17a2b01c097b4fe3b5f83c5cdbc42b9f2abd095e026c588f873d4 \
+    --hash=sha256:591ed8279f0170ef28933873f65e9f5f8c439287088ef6285cda65988b0ba614
+    # x86_64, then aarch64
+torchvision==0.29.0+cpu \
+    --hash=sha256:dd735995faf5d19ebf7dc729138bc39764044f62c31edc687036757e744005b7 \
+    --hash=sha256:9173ee20608718663483b8e29f3e07aaa4ebfa6cc8cb7939405acc5536a9b252
+    # x86_64, then aarch64

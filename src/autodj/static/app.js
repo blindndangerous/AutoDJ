@@ -64,7 +64,6 @@ const queueList    = document.getElementById("queue-list");
 const queueCount   = document.getElementById("queue-count");
 const queueAnnounce= document.getElementById("queue-announce");
 const badgesRow    = document.getElementById("now-playing-badges");
-const badgesAnnounce = document.getElementById("badges-announce");
 const eqLow        = document.getElementById("eq-low");
 const eqMid        = document.getElementById("eq-mid");
 const eqHigh       = document.getElementById("eq-high");
@@ -148,15 +147,14 @@ function clearProtectedSessionData() {
     progressTrack.setAttribute("aria-valuetext", "0:00 of 0:00");
   }
   badgesRow.replaceChildren();
-  badgesAnnounce.textContent = "";
   btnPause.innerHTML = '<span aria-hidden="true">▶</span> Play';
-  btnPause.setAttribute("aria-pressed", "false");
   btnMute.innerHTML = '<span aria-hidden="true">🔊</span> Mute';
   btnMute.setAttribute("aria-pressed", "false");
   btnDiscovery.style.display = "none";
   btnDiscovery.setAttribute("aria-pressed", "false");
   volSlider.value = volSlider.defaultValue;
   volPct.textContent = `${volSlider.value}%`;
+  volSlider.setAttribute("aria-valuetext", `${volSlider.value}%`);
   volAnnounce.textContent = "";
   for (const [slider, value] of [
     [eqLow, eqLowVal], [eqMid, eqMidVal], [eqHigh, eqHighVal],
@@ -285,6 +283,18 @@ function flushProgressValue(track) {
   }
 }
 
+// The websocket pushes state every second.  Rewriting a button with the
+// markup it already has still replaces its child nodes, which NVDA hears
+// as a name change on the focused button and reads out again, so the
+// transport buttons are only touched when their content really changes.
+function setButtonContent(button, html) {
+  if (button.innerHTML !== html) button.innerHTML = html;
+}
+
+function setAttributeIfChanged(element, name, value) {
+  if (element.getAttribute(name) !== value) element.setAttribute(name, value);
+}
+
 function applyState(s) {
   _stateApplicationGeneration += 1;
   _lastState = s;
@@ -296,15 +306,18 @@ function applyState(s) {
 
   if (!trackKey || trackKey !== lastTrackKey) _seekController?.cancel();
   if (trackKey !== lastTrackKey) {
-    // Track changed -- update aria-live region so screen readers
-    // announce it.  Include BPM in the same announcement as the title
-    // so NVDA reads "<artist> -- <title>, 128 BPM" in one breath.  Key
-    // is already announced via #badges-announce 800 ms later
-    // (badges.js); doing both here would double-speak it.
-    const _bpmTail = s.current_track && s.current_track.bpm
+    // Track changed -- one announcement carries everything, so NVDA
+    // reads "<artist> -- <title>, 128 BPM, key 8A" in one breath.  BPM
+    // stays visible in the title as before; the rest of the tail is
+    // visually hidden because the metadata line already shows it.
+    const details = trackChangeDetails(s);
+    const bpmTail = s.current_track && s.current_track.bpm
       ? `, ${Math.round(s.current_track.bpm)} BPM`
       : "";
-    npAnnounce.textContent = trackLabel + _bpmTail;
+    const spokenOnly = document.createElement("span");
+    spokenOnly.className = "visually-hidden";
+    spokenOnly.textContent = details.slice(bpmTail.length);
+    npAnnounce.replaceChildren(trackLabel + bpmTail, spokenOnly);
     lastTrackKey = trackKey;
     // Update browser titlebar: "AutoDJ - Artist - Title - Album"
     const t = s.current_track;
@@ -339,9 +352,8 @@ function applyState(s) {
   const metadata = formatPersistentMetadata(s.current_track);
   if (npMeta.textContent !== metadata) npMeta.textContent = metadata;
 
-  // Badges + announce on track change.  Module needs the els bag and
-  // a couple of dispatcher-owned values (lastTrackKey, renderCueStrip).
-  applyBadges(s, { badgesRow, badgesAnnounce }, { lastTrackKey, renderCueStrip });
+  // Visible badge row (aria-hidden) and cue strip.
+  applyBadges(s, { badgesRow }, { renderCueStrip });
 
   // Camelot wheel — decorative only.  Pull harmonic_mode from settings
   // so the highlighted "compatible" set matches what the picker uses.
@@ -374,6 +386,7 @@ function applyState(s) {
   // the current duration in seconds even when no deck is unlocked yet
   // (server-audio mode, pre-Play state).
   _lastDuration = dur;
+  _lastElapsed = elapsed;
   // Suppress live progress updates while the user is actively
   // dragging the seek slider so the UI doesn't yo-yo between the
   // drag position and a stale server-broadcast position.
@@ -398,24 +411,21 @@ function applyState(s) {
   //   2. Browser-playback mode, audio not yet unlocked \u2192 "Play", enabled
   //      (clicking unlocks AudioContext + starts deck)
   //   3. Playing or paused \u2192 "Pause" / "Resume" toggle
-  // A11y C2 (v5.4.0 audit): aria-pressed updates atomically with the
-  // glyph + label so NVDA never reads stale state when one of the three
-  // attributes lags.  pressed=true means "currently playing".
+  // The label names the action the button will take, so it carries no
+  // aria-pressed: "Pause, pressed" contradicts itself.  Mute is the
+  // other pattern (fixed label plus aria-pressed), below.
   const hasTrack = s.current_track != null;
   if (!hasTrack) {
     btnPause.disabled = true;
-    btnPause.innerHTML = '<span aria-hidden="true">\u25B6</span> Play';
-    btnPause.setAttribute("aria-pressed", "false");
+    setButtonContent(btnPause, '<span aria-hidden="true">\u25B6</span> Play');
   } else if (s.browser_playback && !playbackEnabled) {
     btnPause.disabled = false;
-    btnPause.innerHTML = '<span aria-hidden="true">\u25B6</span> Play';
-    btnPause.setAttribute("aria-pressed", "false");
+    setButtonContent(btnPause, '<span aria-hidden="true">\u25B6</span> Play');
   } else {
     btnPause.disabled = false;
-    btnPause.innerHTML = s.is_paused
+    setButtonContent(btnPause, s.is_paused
       ? '<span aria-hidden="true">\u25B6</span> Resume'
-      : '<span aria-hidden="true">\u23F8</span> Pause';
-    btnPause.setAttribute("aria-pressed", s.is_paused ? "false" : "true");
+      : '<span aria-hidden="true">\u23F8</span> Pause');
   }
 
   // Volume — server stores the perceptual *gain* (post-curve), so invert
@@ -429,17 +439,21 @@ function applyState(s) {
     const volInt = _gainToSlider(s.volume);
     volSlider.value = volInt;
     volPct.textContent = volInt + "%";
+    setAttributeIfChanged(volSlider, "aria-valuetext", `${volInt}%`);
   }
 
-  // Mute
+  // Mute is a toggle with a fixed name, so NVDA says "Mute, toggle
+  // button, pressed" instead of the contradictory "Unmute, pressed".
+  // Only the hidden glyph changes.
   const isMuted = s.is_muted;
-  btnMute.setAttribute("aria-pressed", isMuted ? "true" : "false");
-  btnMute.innerHTML = isMuted
-    ? '<span aria-hidden="true">\uD83D\uDD07</span> Unmute'
-    : '<span aria-hidden="true">\uD83D\uDD0A</span> Mute';
+  setAttributeIfChanged(btnMute, "aria-pressed", isMuted ? "true" : "false");
+  setButtonContent(btnMute, isMuted
+    ? '<span aria-hidden="true">\uD83D\uDD07</span> Mute'
+    : '<span aria-hidden="true">\uD83D\uDD0A</span> Mute');
 
-  // Up Next — only mutate textContent when value actually changes so the
-  // aria-live region doesn't re-announce on every per-second WS tick.
+  // Up Next is not a live region: it changes in the same tick as the
+  // title, and announcing both read two bare track names back to back.
+  // Shift+N speaks it on demand.  Still written only on a real change.
   const nextKey = s.next_track ? s.next_track.path : "";
   if (nextKey !== lastNextKey) {
     lastNextKey = nextKey;
@@ -448,14 +462,14 @@ function applyState(s) {
 
   // Discovery button — show only when discovery is configured
   if (s.discovery_available) {
-    btnDiscovery.style.display = "";
+    if (btnDiscovery.style.display !== "") btnDiscovery.style.display = "";
     const isOn = s.discovery_enabled;
-    btnDiscovery.setAttribute("aria-pressed", isOn ? "true" : "false");
-    btnDiscovery.innerHTML = isOn
+    setAttributeIfChanged(btnDiscovery, "aria-pressed", isOn ? "true" : "false");
+    setButtonContent(btnDiscovery, isOn
       ? '<span aria-hidden="true">\u25c8</span> Discovery <small>ON</small>'
-      : '<span aria-hidden="true">\u25c8</span> Discovery';
+      : '<span aria-hidden="true">\u25c8</span> Discovery');
   } else {
-    btnDiscovery.style.display = "none";
+    if (btnDiscovery.style.display !== "none") btnDiscovery.style.display = "none";
   }
 
   // Lyrics \u2014 visible list highlight + announce only on line change
@@ -621,25 +635,14 @@ if (pbPostQueueSeed) {
     void postSettings("/api/playback-settings", { post_queue_seed: pbPostQueueSeed.value }, event.currentTarget);
   });
 }
+// No extra announcement: the select and checkbox already speak their new
+// value, and the region these used to write sits inside the hidden Now
+// Playing panel while the user is on Settings.
 keyNotation.addEventListener("change", (event) => {
   void postSettings("/api/playback-settings", { key_notation: keyNotation.value }, event.currentTarget);
-  // Polite live-region announce so screen-reader users hear the
-  // change without having to navigate back to the now-playing card.
-  // Reuses #badges-announce -- already polite + already owns key events.
-  const announce = document.getElementById("badges-announce");
-  if (announce) {
-    const labelMap = { camelot: "Camelot", musical: "Musical letter names" };
-    announce.textContent = `Key notation: ${labelMap[keyNotation.value] || keyNotation.value}.`;
-  }
 });
 keyPreferFlats.addEventListener("change", (event) => {
   void postSettings("/api/playback-settings", { key_prefer_flats: keyPreferFlats.checked }, event.currentTarget);
-  const announce = document.getElementById("badges-announce");
-  if (announce) {
-    announce.textContent = keyPreferFlats.checked
-      ? "Musical key spelling: flats."
-      : "Musical key spelling: sharps.";
-  }
 });
 
 // ----------------------------------------------------------------
@@ -891,7 +894,9 @@ discEvery.addEventListener("change", (event) => {
 });
 
 // Badges moved to ./modules/badges.js.
-import { applyBadges, formatPersistentMetadata } from "./modules/badges.js";
+import {
+  applyBadges, formatPersistentMetadata, trackChangeDetails,
+} from "./modules/badges.js";
 
 // ----------------------------------------------------------------
 // Cue strip — decorative markers on the progress bar.
@@ -1168,11 +1173,9 @@ btnPause.addEventListener("click", async () => {
     );
     if (!isAuthenticatedRequestCurrent(epoch)) return;
     const isPaused = data.paused;
-    // A11y C2: glyph + label + aria-pressed updated together.
     btnPause.innerHTML = isPaused
       ? '<span aria-hidden="true">\u25B6</span> Resume'
       : '<span aria-hidden="true">\u23F8</span> Pause';
-    btnPause.setAttribute("aria-pressed", isPaused ? "false" : "true");
   } catch (errorValue) {
     if (!isAuthenticatedRequestCurrent(epoch)) return;
     reportBackgroundRequestError(errorValue);
@@ -1231,6 +1234,27 @@ btnSkip.addEventListener("click", async () => {
 const _seekTrack = document.getElementById("progress-track");
 let _seekLastAriaUpdate = 0;
 let _lastDuration = 0;
+// The arrow keys need the real playback position.  aria-valuenow is the
+// wrong source: it is frozen while the slider has focus (see
+// flushProgressValue) and it is a rounded percentage, so every press
+// restarted from wherever the slider stood when it was focused.
+let _lastElapsed = 0;
+let _keyboardSeek = null;
+
+function _currentPositionSeconds() {
+  if (_lastBrowserPlayback && playbackEnabled) {
+    try {
+      const t = decks[activeIdx].audio.currentTime;
+      if (isFinite(t)) return t;
+    } catch (_) {}
+  }
+  // Server audio: the pushed clock trails a seek by up to a tick, so a
+  // press straight after another builds on the position just requested.
+  if (_keyboardSeek && performance.now() - _keyboardSeek.at < 1500) {
+    return _keyboardSeek.seconds;
+  }
+  return _lastElapsed;
+}
 
 function _seekTrackDuration() {
   // Active deck's duration when known (browser-playback mode); falls
@@ -1311,7 +1335,7 @@ if (_seekTrack) {
   _seekTrack.addEventListener("keydown", (e) => {
     const dur = _seekTrackDuration();
     if (!(dur > 0)) return;
-    const cur = (parseFloat(_seekTrack.getAttribute("aria-valuenow")) || 0) / 100 * dur;
+    const cur = _currentPositionSeconds();
     let next = cur;
     let handled = true;
     switch (e.key) {
@@ -1325,7 +1349,11 @@ if (_seekTrack) {
     }
     if (handled) {
       e.preventDefault();
-      _seekToFrac(Math.max(0, Math.min(dur, next)) / dur, { force: true });
+      const target = Math.max(0, Math.min(dur, next));
+      _keyboardSeek = { seconds: target, at: performance.now() };
+      // force: the focused slider's value text is rewritten at once, so
+      // NVDA reads the new position exactly once per press.
+      _seekToFrac(target / dur, { force: true });
     }
   });
 }
@@ -1369,7 +1397,7 @@ btnMute.addEventListener("click", async () => {
   const muted = data.muted;
   btnMute.setAttribute("aria-pressed", muted ? "true" : "false");
   btnMute.innerHTML = muted
-    ? '<span aria-hidden="true">\uD83D\uDD07</span> Unmute'
+    ? '<span aria-hidden="true">\uD83D\uDD07</span> Mute'
     : '<span aria-hidden="true">\uD83D\uDD0A</span> Mute';
 });
 
@@ -1410,11 +1438,11 @@ let volAnnounceTimer = null;
 import {
   announceStatus,
   clearLiveRegionLater,
-  installVisibleStatusDismiss,
+  installVisibleStatusBehaviour,
   showVisibleStatus,
 } from "./modules/live-region.js";
 
-installVisibleStatusDismiss();
+installVisibleStatusBehaviour();
 // Logarithmic (perceptual) volume curve — humans hear loudness as
 // log of amplitude, so a linear slider feels backwards: 0-50 % barely
 // changes, 80-100 % feels too loud.  Map slider 0-100 → gain via
@@ -1444,6 +1472,11 @@ let _lastUserVolTs = 0;
 volSlider.addEventListener("input", () => {
   const val = parseInt(volSlider.value, 10);
   volPct.textContent = val + "%";
+  // The focused slider speaks its own value ("95%"), so the live region
+  // below is only for changes made while focus is elsewhere (the Up and
+  // Down arrow shortcuts); otherwise NVDA said the volume twice.
+  volSlider.setAttribute("aria-valuetext", `${val}%`);
+  const spokenBySlider = document.activeElement === volSlider;
   _lastUserVolTs = Date.now();
   // Drive the Web Audio gain immediately so the change is audible
   // without waiting on the server round-trip.
@@ -1458,13 +1491,14 @@ volSlider.addEventListener("input", () => {
       body: JSON.stringify({ volume: _sliderToGain(val) }),
     }, reportBackgroundRequestError);
   }, 120);
-  // Polite announce, debounced — fires only after user stops moving
-  // the slider so screen readers don't read every intermediate step.
+  // Polite announce for shortcut presses, debounced so holding the key
+  // does not read every intermediate step.
   // Cleared 3 s after the announcement so AT users running with a
   // Speech Viewer (or sighted users with a CSS override that reveals
   // visually-hidden regions) don't see a stale "Volume 90%" parked at
   // the bottom of the page after the announcer has already spoken it.
   clearTimeout(volAnnounceTimer);
+  if (spokenBySlider) return;
   volAnnounceTimer = setTimeout(() => {
     if (volAnnounce) {
       volAnnounce.textContent = `Volume ${val}%.`;
@@ -1497,6 +1531,7 @@ installHotkeys({
     try { return Math.max(0, dur - decks[activeIdx].audio.currentTime); } catch (_) { return null; }
   },
   isEnabled: authenticatedInteractionEnabled,
+  shortcutToggle: document.getElementById("hotkeys-enabled"),
 });
 
 // Media Session API moved to ./modules/media-session.js.
@@ -1580,7 +1615,7 @@ function _fmtTime(iso) {
   } catch (_) { return iso; }
 }
 
-async function fetchHistory(page) {
+async function fetchHistory(page, { announce = false } = {}) {
   _histPage = page;
   const request = historyRequestOwner.begin();
   try {
@@ -1608,11 +1643,23 @@ async function fetchHistory(page) {
       <td>${escHtml(it.artist)}</td>
       <td>${_fmtDuration(it.duration)}</td>
     </tr>`).join("");
-    info.textContent = `Page ${data.page} of ${data.pages}`;
+    const pageText = `Page ${data.page} of ${data.pages}`;
+    info.textContent = pageText;
     if (goto) goto.value = data.page;
-    document.getElementById("hist-prev").disabled = data.page <= 1;
-    document.getElementById("hist-next").disabled = data.page >= data.pages;
+    // aria-disabled, not disabled: Next is usually the focused control
+    // when the last page arrives, and disabling it would drop focus to
+    // the top of the page.  The click handlers honour the attribute.
+    document.getElementById("hist-prev")
+      .setAttribute("aria-disabled", String(data.page <= 1));
+    document.getElementById("hist-next")
+      .setAttribute("aria-disabled", String(data.page >= data.pages));
     pag.removeAttribute("hidden");
+    // Prev / Next / Go leave focus where it was, so say where they landed.
+    // The page label is already on screen, hence no visible mirror.
+    if (announce) {
+      announceStatus(document.getElementById("sr-status"), pageText,
+        { dwellMs: 3000, force: true, mirror: false });
+    }
   } catch (err) {
     if (!historyRequestOwner.isCurrent(request)) return;
     const tbody = document.getElementById("history-tbody");
@@ -1631,23 +1678,33 @@ async function fetchHistory(page) {
   }
 }
 
+function historyViewShown() {
+  return (location.hash || "").replace(/^#/, "") === "history";
+}
+
 document.addEventListener("DOMContentLoaded", () => {
-  document.getElementById("hist-prev").addEventListener("click", () => fetchHistory(_histPage - 1));
-  document.getElementById("hist-next").addEventListener("click", () => fetchHistory(_histPage + 1));
+  const stepPage = (button, delta) => {
+    if (button.getAttribute("aria-disabled") === "true") return;
+    void fetchHistory(_histPage + delta, { announce: true });
+  };
+  const prev = document.getElementById("hist-prev");
+  const next = document.getElementById("hist-next");
+  prev.addEventListener("click", () => stepPage(prev, -1));
+  next.addEventListener("click", () => stepPage(next, 1));
   document.getElementById("hist-go").addEventListener("click", () => {
     const v = parseInt(document.getElementById("hist-goto").value, 10);
-    if (v > 0) fetchHistory(v);
+    if (v > 0) void fetchHistory(v, { announce: true });
   });
   document.getElementById("hist-goto").addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       const v = parseInt(e.target.value, 10);
-      if (v > 0) fetchHistory(v);
+      if (v > 0) void fetchHistory(v, { announce: true });
     }
   });
 });
 
 window.addEventListener("hashchange", () => {
-  if ((location.hash || "").replace(/^#/, "") === "history") fetchHistory(1);
+  if (historyViewShown()) fetchHistory(1);
 });
 
 // Tab router moved to ./modules/tabs.js.
@@ -1742,6 +1799,9 @@ function startAuthenticatedApp(initialState) {
   });
   applyState(initialState);
   connectWS();
+  // Opening the page straight at #history fires no hashchange, so the
+  // table would sit empty until the user left the tab and came back.
+  if (historyViewShown()) void fetchHistory(1);
 }
 
 void bootstrapAuthenticatedApp({

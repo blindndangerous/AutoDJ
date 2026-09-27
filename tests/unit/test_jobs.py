@@ -5,6 +5,8 @@ from __future__ import annotations
 import time
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from autodj.jobs import JobManager
 
 
@@ -13,16 +15,40 @@ class TestJobManagerStart:
         mgr = JobManager()
         assert mgr.start("rm", ["-rf", "/"]) is False
 
-    def test_rejects_shell_metacharacters(self) -> None:
+    @pytest.mark.parametrize(
+        ("name", "args"),
+        [
+            ("prune", ["--force"]),
+            ("prune", ["foo;bar"]),
+            ("stats", ["--name", "other"]),
+            ("index", ["--force"]),
+            ("index", ["--workers", "8"]),
+            ("index", ["--config", "elsewhere.toml"]),
+            ("index", ["--limit"]),
+            ("index", ["--limit", "0"]),
+            ("index", ["--limit", "-5"]),
+            ("index", ["--limit", "abc"]),
+            ("index", ["--limit", "\uff15"]),
+            ("index", ["--limit=5"]),
+            ("index", ["--limit", "5", "--limit", "6"]),
+            ("index", ["--limit", "5", "--force", "x"]),
+        ],
+    )
+    def test_rejects_flags_the_web_ui_never_sends(self, name, args) -> None:
         mgr = JobManager()
-        assert mgr.start("prune", ["foo;bar"]) is False
-        assert mgr.start("prune", ["a|b"]) is False
-        assert mgr.start("prune", ["x&y"]) is False
+        with patch("autodj.jobs.subprocess.Popen") as popen:
+            assert mgr.start(name, args) is False
+        popen.assert_not_called()
 
-    def test_rejects_forbidden_argument_after_safe_argument(self) -> None:
+    def test_accepts_index_limit_exactly_as_the_web_ui_sends_it(self) -> None:
         mgr = JobManager()
-
-        assert mgr.start("prune", ["safe", "bad;arg"]) is False
+        with patch("autodj.jobs.subprocess.Popen") as popen:
+            fake = MagicMock(stdout=iter([]))
+            fake.wait.return_value = 0
+            popen.return_value = fake
+            assert mgr.start("index", ["--limit", "20"]) is True
+            mgr._thread.join(timeout=5)
+        assert popen.call_args.args[0][-3:] == ["index", "--limit", "20"]
 
     def test_starts_allowed_subcommand(self) -> None:
         """Spawn a python subprocess that exits immediately so the test
@@ -72,6 +98,67 @@ class TestJobManagerStart:
         assert mgr.stop() is False
 
 
+class TestPreviousReaderRace:
+    """A finished process can leave its reader thread still draining output."""
+
+    def test_old_reader_waits_on_its_own_process_not_the_new_one(self) -> None:
+        mgr = JobManager()
+        old = MagicMock(stdout=iter(["old line\n"]))
+        old.wait.return_value = 3
+        new = MagicMock()
+        mgr._proc = new  # a later job has already been spawned
+
+        mgr._read_loop(old)
+
+        old.wait.assert_called_once_with(timeout=5)
+        new.wait.assert_not_called()
+        assert mgr.snapshot()["exit_code"] == 3
+
+    def test_start_refuses_while_previous_reader_is_alive(self) -> None:
+        import threading
+
+        mgr = JobManager()
+        release = threading.Event()
+        reader = threading.Thread(target=release.wait, daemon=True)
+        reader.start()
+        mgr._thread = reader
+        mgr._proc = MagicMock(poll=MagicMock(return_value=0))  # process exited
+        try:
+            with (
+                patch("autodj.jobs._READER_JOIN_SECONDS", 0.01),
+                patch("autodj.jobs.subprocess.Popen") as popen,
+            ):
+                assert mgr.start("stats") is False
+                popen.assert_not_called()
+
+                release.set()
+                reader.join(timeout=5)
+                fake = MagicMock(stdout=iter([]))
+                fake.wait.return_value = 0
+                popen.return_value = fake
+                assert mgr.start("stats") is True
+                mgr._thread.join(timeout=5)
+        finally:
+            release.set()
+        assert mgr.snapshot()["name"] == "stats"
+
+    def test_start_waits_briefly_for_a_reader_that_is_finishing(self) -> None:
+        import threading
+
+        mgr = JobManager()
+        reader = threading.Thread(target=time.sleep, args=(0.05,), daemon=True)
+        reader.start()
+        mgr._thread = reader
+        mgr._proc = MagicMock(poll=MagicMock(return_value=0))
+        with patch("autodj.jobs.subprocess.Popen") as popen:
+            fake = MagicMock(stdout=iter([]))
+            fake.wait.return_value = 0
+            popen.return_value = fake
+            assert mgr.start("stats") is True
+            mgr._thread.join(timeout=5)
+        assert not reader.is_alive()
+
+
 class TestGetManager:
     def test_returns_singleton(self) -> None:
         from autodj.jobs import get_manager
@@ -94,7 +181,7 @@ class TestReadLoopAndStop:
     def test_read_loop_without_process_is_a_noop(self) -> None:
         mgr = JobManager()
 
-        mgr._read_loop()
+        mgr._read_loop(MagicMock(stdout=None))
 
         assert mgr.snapshot()["lines"] == []
 
@@ -115,7 +202,7 @@ class TestReadLoopAndStop:
 
         mgr._proc.stdout.__iter__ = _bad_iter
 
-        mgr._read_loop()
+        mgr._read_loop(mgr._proc)
         snap = mgr.snapshot()
         assert any("read error" in line for line in snap["lines"])
         assert snap["exit_code"] == 0
@@ -132,7 +219,7 @@ class TestReadLoopAndStop:
         mgr._proc.wait = MagicMock(side_effect=_sub.TimeoutExpired("x", 5))
         mgr._started_at = _time.time()
 
-        mgr._read_loop()
+        mgr._read_loop(mgr._proc)
         assert mgr.snapshot()["exit_code"] == -2
 
     def test_stop_terminates_running(self) -> None:

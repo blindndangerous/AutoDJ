@@ -13,9 +13,8 @@ cd autodj
 uv sync --frozen --all-extras
 npm ci
 
-# 3. Wire pre-commit
+# 3. Wire pre-commit (installs the pre-commit, commit-msg and pre-push hooks)
 uv run pre-commit install
-uv run pre-commit install --hook-type commit-msg
 
 # 4. Run reproducible Python and frontend gates
 uv run python scripts/ci_pytest.py
@@ -51,8 +50,10 @@ The PR template auto-renders this list. Tick the boxes:
 
 - Tests added or updated for the new behaviour.
 - `CHANGELOG.md` updated under `[Unreleased]`.
-- `ruff`, `mypy`, `bandit`, `vulture`, `deptry`, ESLint, and all tests pass locally. You can run
-  their overlapping hooks with `uv run pre-commit run --all-files`.
+- `ruff`, `mypy`, `bandit`, `vulture`, `deptry`, ESLint, and all tests pass locally. Commits run
+  only the quick hooks; the full test suite and the slower scans run when you `git push`. Run
+  every hook by hand with `uv run pre-commit run --all-files` followed by
+  `uv run pre-commit run --all-files --hook-stage pre-push`.
 - `uv run pyright src/autodj/` remains required; pre-commit does not run Pyright.
 - Run `uv run autodj doctor` against intended local configuration.
 - For web UI changes, start AutoDJ and run Playwright Chromium audit with
@@ -60,6 +61,33 @@ The PR template auto-renders this list. Tick the boxes:
 - For container changes on Linux or WSL2, run `bash scripts/container_smoke.sh`.
 
 See [Operations](docs/operations.md) for setup, diagnosis, backup, restore, and upgrade procedures.
+
+## Releasing
+
+The maintainer cuts releases from `master`. For version `X.Y.Z`:
+
+1. Set `version = "X.Y.Z"` in `pyproject.toml` and run `uv lock` so the lock records the new
+   project version.
+2. In `CHANGELOG.md`, rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`, add a fresh empty
+   `## [Unreleased]` above it, and update the link references at the bottom of the file.
+3. Record the manual screen-reader sample that
+   [Accessibility testing](docs/accessibility-testing.md) requires, and link it from the release
+   notes.
+4. Commit, then build and check the artifacts the way the release workflow does:
+
+   ```bash
+   npm ci && npm run build
+   uv build --sdist --wheel
+   uv run --frozen python scripts/verify_release.py --tag vX.Y.Z      --wheel dist/autodj-X.Y.Z-py3-none-any.whl --sdist dist/autodj-X.Y.Z.tar.gz
+   ```
+
+5. Tag and push the tag: `git tag vX.Y.Z`, then `git push origin vX.Y.Z`. The Release workflow
+   reruns CI and the security scans, verifies the tag against `pyproject.toml`, the changelog,
+   and the wheel, then publishes the signed artifacts.
+
+The README install command uses `X.Y.Z` placeholders, so it needs no edit per release. Only
+v0.12.0, v0.16.0, and v0.16.1 were tagged. The other versions from 0.1.0 through 0.15.0 exist only
+as changelog entries.
 
 ## Where things live
 

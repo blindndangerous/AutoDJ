@@ -8,6 +8,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- The voice-liner endpoints could read or delete any file, not just liners. The settings API let
+  a client move the liner folder anywhere, for example to the folder holding `config.toml`, and
+  the liner download and delete routes only checked that the name was a plain file name. A paired
+  browser, or anyone on the LAN under `--insecure-lan`, could then download the config file with
+  its access token or delete the track database. Liner download and delete now accept only audio
+  file names, and the liner folder can only be set in the config file.
+- Pairing codes are harder to guess. A device that enters ten wrong codes within one five-minute
+  code window is refused until the window ends, and is told how long to wait; other devices can
+  keep pairing with the same code. If fifty wrong codes arrive from all devices in one window,
+  pairing pauses until the next code, and the pairing dialog says so. `autodj devices
+  pairing-code` now also says how many seconds the code has left.
+- Library jobs started from the web page now accept only the options the page itself sends
+  (`index --limit N`). Anything else, such as `prune --force`, is refused. This replaces a check
+  for shell characters that protected nothing, because jobs never run through a shell.
+- The automatic API pages at `/docs`, `/redoc` and `/openapi.json` are no longer served. On
+  loopback and under `--insecure-lan` they were open to anyone who could reach the server.
+- Every GitHub Actions step is pinned to an exact commit instead of a movable tag, and the
+  container's CPU-only PyTorch wheels are checked against recorded hashes before installing.
+
 ### Changed
 
 - A repository-wide simplification pass removed about 1,900 net lines of
@@ -19,20 +40,117 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   no longer works, use `uv sync`.
 - `.containerignore` was removed. It was a byte-for-byte copy of `.dockerignore`,
   which Podman reads when `.containerignore` is absent.
-
 - Setup documentation now includes container-only indexing, native Windows backup and restore,
   and checking out a release before upgrading. It corrects offline and dependency claims and
   explains which model changes require a new index. MuQ remains the default model.
 - Accessibility documentation identifies the missing published screen-reader sampling record
   for v0.16.1 and explains what must be recorded for the next release.
+- `POST /api/discovery` with a rate now starts discovery immediately rather than only configuring
+  it. Setting a rate while leaving the feature switched off is what made the Settings checkbox and
+  the Now Playing button disagree.
+- `autodj serve --no-playback` is deprecated. It could never be turned off, so it never did
+  anything: server-side audio is opted into with `--server-audio`, which is unchanged. The flag
+  still parses so existing deployments keep starting, is hidden from `--help`, and logs one
+  informational line. The container image, the compose services and the workflows no longer pass
+  it, and a test checks every flag those files use against the options the CLI actually declares.
+- `pre-commit` now runs the same locked `ruff` and `mypy` that CI runs, instead of separately
+  pinned mirrors that could disagree with it.
+- Dependencies moved to their current releases. Direct ones are all minor or patch.
+  Transitively the lock moved `torchvision` 0.28 to 0.29 (it arrives through MuQ's `x-clip`
+  dependency), a 0.x minor that may change anything, and `evdev` 1.9.3 to 2.0.0 — a major; it is
+  Linux-only, arrives as an sdist and is compiled on the machine that installs it, so Windows and
+  macOS never see it and CI is what proves it — and the 0.x packages `tokenizers` 0.22.2 to 0.23.2, `numba` 0.66 to 0.67,
+  `llvmlite` 0.48 to 0.49 and `ast-serialize` 0.8 to 0.10. `cloudpickle` is a new transitive
+  dependency and `uc-micro-py` is no longer resolved. The lock pins `torch` 2.14.0; each platform
+  wheel carries its own local version on top (a Windows CPU install reports 2.14.0+cpu).
+- `config.toml.example` now lists every `[playback]` and `[model]` setting the loader accepts,
+  including the liner triggers, the FX sync toggles and `dayparts_dir`.
+- `POST /api/playback-settings` now rejects unknown fields and invalid choices with a 422 and
+  changes nothing. It used to apply the valid part and then fail. An invalid liner pick mode, which
+  used to be ignored silently, is now rejected too. Profiles are checked the same way when they are
+  saved, and a stored profile with an invalid choice is refused with a 400 before anything changes.
+- `mutagen` and `scipy` are now part of the base install instead of the `play` extra, because
+  tag reading, album art, embedded lyrics and ReplayGain need them on every install. `pydantic`
+  and `huggingface_hub`, which AutoDJ imports directly, are now declared rather than arriving by
+  chance. The extras no longer repeat base packages, and Starlette may now take patch releases.
+- The container image installs the CPU-only build of PyTorch, so it no longer downloads several
+  gigabytes of CUDA libraries it cannot use. Native installs are unchanged and still pick up a GPU.
+- The TLS guidance now agrees everywhere: AutoDJ terminates TLS itself with `--ssl-certfile` and
+  `--ssl-keyfile`. A reverse proxy that terminates TLS in front of it is not supported, because
+  the session cookie's `Secure` flag follows AutoDJ's own TLS setting. The operations guide now
+  explains where `AUTODJ_ACCESS_TOKEN` comes from on a native install, since only Compose reads
+  `.env`.
+- The README lists every command, explains how to uninstall, and points to
+  `presets.toml.example`. CONTRIBUTING describes how to cut a release.
+- CI now lints and format-checks `scripts/`, runs the secret scan once over full history instead
+  of twice, and pre-commit takes `bandit` and `vulture` from the lock file like CI does. The slow
+  hooks (the full test suite, Trivy, the dependency audits and the code-quality scans) now run once
+  per `git push` instead of on every commit, and `uv run pre-commit install` sets up all three hook
+  types in one step.
 
 ### Added
 
 - A tested Windows AMD ROCm setup guide and launcher for GPU indexing and web
   library jobs, with model-kernel caches kept inside the project.
+- Keyboard shortcuts can be turned off under Settings, Keyboard. Single-key shortcuts can clash
+  with a screen reader or with typing habits, and WCAG asks that they can be switched off. The
+  choice is saved in the browser.
 
 ### Fixed
 
+- The container image had no `mutagen`, so under Docker there was no album art, no embedded
+  lyrics, no ReplayGain and no ALAC detection, and nothing said so.
+- Applying a saved profile changed the settings but never saved them, so a restart put the old
+  settings back.
+- With `--server-audio`, adding a track to the queue during a song made Up Next name it, but it
+  played one track later. The same edit could also pick a track from the web request while the
+  audio thread was picking one, so the two disagreed.
+- Reordering the queue kept only one copy of a track that was queued twice, and with
+  `--server-audio` a track change landing in the middle of a reorder could play a track twice.
+- With `--server-audio`, pressing "Play next" late in a song threw away the queued track that had
+  already been lined up. It now plays straight after the new one.
+- Starting a library job just after another finished could mark the new job as finished with exit
+  code -2 and mix the old job's last lines into its log.
+- On a slow disk or network share, deleting or playing a liner, saving a profile, or pairing a
+  device stalled every other request and the live updates until it finished.
+- Changing a setting, or pressing Pause, Mute, Shuffle, Search, a Library tools button or a liner
+  button, threw keyboard focus to the top of the page while the request ran, because the control
+  was disabled while it had focus. On a dropdown, the next arrow key went nowhere. Controls now
+  keep focus and ignore repeat presses until the request finishes.
+- A queue update from the server, such as the next queued track starting, threw focus off the
+  Up, Down or Remove button you were on. Focus now returns to the same button, or the nearest one.
+- Arrow keys on the seek slider jumped back to where the track was when the slider got focus,
+  because they read a position that deliberately stops updating while the slider has focus. They
+  now start from the real playback position, in exact seconds.
+- A playback error replaced the track title on screen and never reached the status line, and an
+  aborted load, which is harmless, was announced as an error. Errors now go to the status line and
+  the title stays put.
+- Changing the key notation announced into the Now Playing panel, which is hidden while you are on
+  Settings, so nothing was heard. The dropdown already speaks its own value, so the extra message
+  is gone.
+- History paging lost focus at the first and last page, never said which page you were on, and
+  showed "No tracks played yet" when the page was opened or reloaded straight onto the History tab.
+- Pause had a changing label and a pressed state, so NVDA said "Pause, toggle button, pressed";
+  Mute said "Unmute, pressed". Pause now just changes its label, and Mute keeps the name "Mute"
+  with a pressed state.
+- A track change was spoken as three separate messages in a confusing order: the new track, a bare
+  next track, then the previous track's key. It is now one announcement, "Artist — Title, 128 BPM,
+  key 8A", and Up Next is read on request with Shift+N.
+- In Windows High Contrast the selected tab and pressed buttons looked like all the others. They
+  are now drawn in the highlight colour with a thicker border.
+- The volume was spoken twice after each change, once as the slider value and once as "Volume 95%".
+  The slider now reads "95%" itself and the extra message only plays for the arrow-key shortcut.
+- A server update arriving just after you moved an EQ slider could undo the change.
+- Now Playing had no headings, so the H key could not reach Up Next or Lyrics. Every card title is
+  now a heading.
+- The Library tools output log had no name a screen reader would read.
+- A pairing error was read twice.
+- The playback buttons claimed to be a toolbar without supporting toolbar arrow keys; they are now
+  a labelled group.
+- The status message at the foot of the page could cover the control that had focus.
+- Refresh stats gave no confirmation when the numbers had not changed.
+- Pause, Mute and Discovery were rewritten every second even when nothing changed, which could
+  make a screen reader re-read the focused button.
 - MuQ model setup downloaded both safetensors and duplicate PyTorch weights,
   then rejected the cache because it contained two weight formats. Automatic
   downloads now keep only the safetensors checkpoint that MuQ loads by default.
@@ -41,7 +159,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   final-layer output while retaining current, patched Transformers dependencies.
 - Update Vitest to 4.1.11 to address GHSA-82fw-gwwq-j7x9.
 - Refresh the container's PCRE2 runtime package to include Debian security fixes.
-
 - Restore web keyboard shortcuts from focused buttons and sliders, including next track and
   measure seeking. Keep native control keys intact, allow status shortcuts on every tab, and
   let `?` close the shortcuts dialog from its focused Close button.
@@ -79,10 +196,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - NVDA re-read the Library-tools status roughly every ten seconds for the whole life of a job,
   because the elapsed-seconds counter was inside the announcing region. The status now speaks once
   when a job starts and once when it finishes, whatever its length; the counter ticks on silently
-  beside it. Three more places had the same shape: a lost connection re-announced itself on every
-  three-second reconnect attempt, the seek slider read out its new position once a second while it
-  held focus, and a repeatedly failing background request repeated the same sentence every four
-  seconds.
+  beside it. Two more places had the same shape: the seek slider read out its new position once a
+  second while it held focus, and a repeatedly failing background request repeated the same
+  sentence every four seconds.
 - Every error and status message was invisible to sighted users — nine live regions were the only
   place a failure was reported, and all nine were clipped to one pixel. Clicking "Next" on a track
   that had been deleted from disk produced no visible response at all. The same message a screen
@@ -148,29 +264,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `.lrc` sidecars (common from Windows tools) decoded to nonsense.
 - The library search box carried `aria-expanded`, so screen readers announced "collapsed" and
   "expanded" on a plain search field with no popup. The result count still announces normally.
-
-### Changed
-
-- `POST /api/discovery` with a rate now starts discovery immediately rather than only configuring
-  it. Setting a rate while leaving the feature switched off is what made the Settings checkbox and
-  the Now Playing button disagree.
-- `autodj serve --no-playback` is deprecated. It could never be turned off, so it never did
-  anything: server-side audio is opted into with `--server-audio`, which is unchanged. The flag
-  still parses, is hidden from `--help`, and logs one informational line, because the container
-  image, both compose services and three workflows still pass it. A test now checks every flag
-  those files use against the options the CLI actually declares.
-- `pre-commit` now runs the same locked `ruff` and `mypy` that CI runs, instead of separately
-  pinned mirrors that could disagree with it.
-- Dependencies moved to their current releases. Direct ones are all minor or patch, except
-  `torchvision` 0.28 to 0.29, which is a 0.x minor and so may change anything. Transitively the
-  lock also moved `evdev` 1.9.3 to 2.0.0 — a major; it is Linux-only, arrives as an sdist and is
-  compiled on the machine that installs it, so Windows and macOS never see it and CI is what
-  proves it — and the 0.x packages `tokenizers` 0.22.2 to 0.23.2, `numba` 0.66 to 0.67,
-  `llvmlite` 0.48 to 0.49 and `ast-serialize` 0.8 to 0.10. `cloudpickle` is a new transitive
-  dependency and `uc-micro-py` is no longer resolved. The lock pins `torch` 2.14.0; each platform
-  wheel carries its own local version on top (a Windows CPU install reports 2.14.0+cpu).
-- `config.toml.example` now lists every `[playback]` and `[model]` setting the loader accepts,
-  including the liner triggers, the FX sync toggles and `dayparts_dir`.
 
 ## [0.16.1] - 2026-08-16
 
@@ -425,3 +518,8 @@ The "make it feel like a real radio station" release.
 ## A note on accessibility
 
 AutoDJ is built and maintained by a blind developer.  Every change to the web UI runs through an accessibility review before it ships.  If you find a screen-reader bug or a keyboard trap, please file an issue.
+
+[Unreleased]: https://github.com/blindndangerous/AutoDJ/compare/v0.16.1...HEAD
+[0.16.1]: https://github.com/blindndangerous/AutoDJ/compare/v0.16.0...v0.16.1
+[0.16.0]: https://github.com/blindndangerous/AutoDJ/compare/v0.12.0...v0.16.0
+[0.12.0]: https://github.com/blindndangerous/AutoDJ/releases/tag/v0.12.0

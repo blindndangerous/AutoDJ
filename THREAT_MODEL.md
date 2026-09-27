@@ -16,9 +16,12 @@ AutoDJ is a single-user local music player with these exposed surfaces:
 - Backup and restore trust configured source and destination roots after applying path, type,
   identity, size, digest, and free-space checks.
 
-Cloud sync, multi-user roles, billing, and direct public Internet hosting are out of scope. Use TLS
-for any network where observers could read HTTP traffic. For remote access, place AutoDJ behind a
-trusted TLS reverse proxy, mTLS, or a private overlay network.
+Cloud sync, multi-user roles, billing, and public Internet hosting are out of scope. Use TLS for any
+network where observers could read HTTP traffic, and terminate it in AutoDJ itself with
+`--ssl-certfile` and `--ssl-keyfile`. A TLS-terminating reverse proxy is not supported: the
+`Secure` cookie flag and the advertised-origin check follow AutoDJ's own TLS setting, so a proxy in
+front of plain HTTP leaves session cookies without `Secure`. For remote access, reach the LAN
+through a private overlay network such as a VPN rather than publishing the port.
 
 ## CLI risks
 
@@ -27,8 +30,10 @@ trusted TLS reverse proxy, mTLS, or a private overlay network.
   indexing work.
 - Error and diagnostic output must not expose access tokens or Hugging Face tokens. `autodj doctor`
   serializes secret fields as `<redacted>` and does not write index state.
-- Background jobs accept a fixed subcommand allowlist, and argument tokens are screened for
-  shell metacharacters. They run with `shell=False` and a UTF-8 child pipe.
+- Background jobs accept a fixed subcommand allowlist, and each subcommand accepts only the flags
+  the web UI sends: currently `index --limit <positive integer>`, and no flags for `enrich`,
+  `prune`, `stats`, or `list-indexes`. Anything else, such as `--force` or a second `--config`
+  or `--name`, is refused. They run with `shell=False` and a UTF-8 child pipe.
 
 ## Web request policy
 
@@ -55,17 +60,32 @@ When `server.access_token` or `AUTODJ_ACCESS_TOKEN` is set:
 - The pairing body is limited to 4096 bytes before downstream parsing.
 - A fixed-window limiter permits five attempts per client and 100 total attempts per 60 seconds,
   with bounded state for 1024 clients.
+- Wrong, well-formed codes are counted per client address within each 300-second code window. A
+  client that sends ten is locked out until the window ends: `/api/pair` answers 429 with
+  `Retry-After` for right and wrong codes alike, and the server logs a warning naming the address.
+  Other clients keep pairing with the same code.
+- Fifty wrong codes in one window across all clients pause pairing for everyone as a last resort:
+  every code issued so far stops working, `/api/pair` answers 429 with `Retry-After` and a detail
+  saying to try again with a new code, and the server logs a warning. `autodj devices pairing-code`
+  prints how long its code stays valid and when the next one starts, which is the one to use after
+  a pause.
+- These limits cap one address at about ten guesses per window, roughly a 2 percent chance per
+  year of nonstop guessing, and many addresses together at about fifty per window, roughly 10
+  percent per year, instead of about 65 percent under the request limiter alone. An attacker with
+  many LAN addresses can keep pairing paused, but already paired devices keep working.
 - Rotating the token invalidates every outstanding pairing code and every existing session at once.
 - The HTTP API and WebSocket both enforce session, Host, and Origin policy.
 
 Public assets, `/healthz`, `/api/version`, `/api/auth/status`, and `/api/pair` remain available
 without a session cookie. Unsafe HTTP methods require one allowed Origin. Audio and liner file
 endpoints use indexed or validated plain-file allowlists rather than arbitrary filesystem paths.
-The liner *root directory* is a configuration value that a paired browser can still change
-through the settings API, so it can point the liner list, fetch, and delete endpoints at
-another directory. That change is session-only: `liners_folder` is not part of the
-`PlaybackState` schema that `PERSISTED_PLAYBACK_FIELDS` derives from, so it is never written
-to `web_state.json` and a restart returns the root to whatever the configuration says. Treat a paired browser as trusted.
+The liner fetch and delete endpoints accept only one plain filename with a liner audio extension
+(`.mp3`, `.wav`, `.ogg`, `.m4a`, `.flac`, or `.aac`), so they cannot read or remove configuration,
+databases, or other non-audio files even when those share the liner root.
+The liner *root directory* comes only from configuration. `/api/playback-settings` rejects
+`liners_folder`, like any other unknown field, with 422 before applying anything, and
+`liners_folder` is not part of the `PlaybackState` schema that `PERSISTED_PLAYBACK_FIELDS`
+derives from, so `web_state.json` never stores it. Treat a paired browser as trusted.
 
 ## Request and audit records
 

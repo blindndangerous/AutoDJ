@@ -305,3 +305,66 @@ describe("repeated queue actions stay audible", () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe("websocket queue renders keep keyboard focus", () => {
+  function setup(queue) {
+    document.body.innerHTML = '<ol id="queue" tabindex="-1"></ol>';
+    const els = {
+      queueList: document.querySelector("#queue"),
+      queueCount: document.createElement("span"),
+    };
+    applyQueueState(queue, els);
+    return els;
+  }
+  const track = (path) => ({ path, display_name: path });
+
+  it("refocuses the same action on the same track after a rebuild", () => {
+    const els = setup([track("a.mp3"), track("b.mp3"), track("c.mp3")]);
+    els.queueList.querySelector('li[data-path="c.mp3"] [data-action="remove"]').focus();
+
+    // The head of the queue started playing, so every row moved up one.
+    applyQueueState([track("b.mp3"), track("c.mp3")], els);
+
+    const active = document.activeElement;
+    expect(active.dataset.action).toBe("remove");
+    expect(active.closest("li").dataset.path).toBe("c.mp3");
+  });
+
+  it("follows the same duplicate, and skips an action that became disabled", () => {
+    const els = setup([track("x.mp3"), track("dup.mp3"), track("dup.mp3")]);
+    els.queueList.querySelectorAll('li[data-path="dup.mp3"] [data-action="up"]')[1].focus();
+
+    applyQueueState([track("dup.mp3"), track("dup.mp3")], els);
+
+    const active = document.activeElement;
+    const rows = Array.from(els.queueList.querySelectorAll("li"));
+    expect(rows.indexOf(active.closest("li"))).toBe(1);
+    expect(active.dataset.action).toBe("up");
+
+    rows[0].querySelector('[data-action="down"]').focus();
+    applyQueueState([track("dup.mp3")], els);
+    // Only row: Up and Down are disabled, so Remove takes focus.
+    expect(document.activeElement.dataset.action).toBe("remove");
+  });
+
+  it("falls back to the same position, then to the list itself", () => {
+    const els = setup([track("a.mp3"), track("b.mp3")]);
+    els.queueList.querySelector('li[data-path="b.mp3"] [data-action="remove"]').focus();
+
+    applyQueueState([track("z.mp3")], els);
+    expect(document.activeElement.closest("li").dataset.path).toBe("z.mp3");
+
+    applyQueueState([], els);
+    expect(document.activeElement).toBe(els.queueList);
+  });
+
+  it("does not take focus when it was elsewhere on the page", () => {
+    const els = setup([track("a.mp3")]);
+    const outside = document.createElement("button");
+    document.body.appendChild(outside);
+    outside.focus();
+
+    applyQueueState([track("b.mp3")], els);
+    expect(document.activeElement).toBe(outside);
+  });
+});

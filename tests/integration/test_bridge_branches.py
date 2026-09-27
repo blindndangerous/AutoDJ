@@ -207,13 +207,28 @@ class TestApplySessionEnvelopeExtras:
         assert bridge.player._cfg.playback.beatmatch_on_skip is True
 
 
+class TestPlaybackChoiceValidation:
+    @pytest.mark.parametrize(
+        "field",
+        ["transition_mode", "post_queue_seed", "key_notation", "liners_pick_mode"],
+    )
+    def test_bad_choice_raises_before_any_field_applies(self, bridge, field) -> None:
+        pb = bridge.player._cfg.playback
+        pb.crossfade_seconds = 3.0
+        pb.liners_enabled = False
+        with pytest.raises(ValueError, match=field):
+            bridge.set_playback_settings(
+                crossfade_seconds=9.0, liners_enabled=True, **{field: "bogus"}
+            )
+        assert pb.crossfade_seconds == pytest.approx(3.0)
+        assert pb.liners_enabled is False
+
+
 class TestApplyLiners:
-    def test_liners_folder_set_and_clear(self, bridge) -> None:
-        bridge.set_playback_settings(liners_folder="some/dir")
-        assert bridge.player._cfg.playback.liners_folder == "some/dir"
-        # Empty string → folder cleared to None.
-        bridge.set_playback_settings(liners_folder="")
-        assert bridge.player._cfg.playback.liners_folder is None
+    def test_liners_folder_is_not_a_runtime_setting(self, bridge) -> None:
+        # The liner root is configuration-only; the bridge has no knob for it.
+        with pytest.raises(TypeError):
+            bridge.set_playback_settings(liners_folder="some/dir")
 
     def test_liners_every_minutes_disable_when_zero(self, bridge) -> None:
         bridge.set_playback_settings(liners_every_minutes=5.0)

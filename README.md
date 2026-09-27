@@ -13,7 +13,9 @@ uploaded to a cloud service.
 - Automatic track selection with configurable repeat avoidance and discovery.
 - Crossfades with optional EQ ducking and transition effects.
 - A browser interface for playback, album art, lyrics, search, and queue management.
-- Mood presets that adjust tempo targets during a set.
+- Mood presets that adjust tempo targets during a set. To define your own, copy
+  `presets.toml.example` to `presets.toml` next to your `config.toml` (or in the working
+  directory when you have no config file).
 - Voice liners that play spoken clips over the music on a schedule.
 - Lyrics from sidecar files or tags, with scrolling and highlighting when timestamps are available.
 - Offline use after installing dependencies and downloading the model. The first indexing run
@@ -79,6 +81,28 @@ Future runs of `autodj index` embed new files and refresh the post-processing ca
 [Operations](docs/operations.md) for diagnosis, `autodj backup`, `autodj restore`, container
 ownership, and upgrades.
 
+## Commands
+
+Every command takes `--help`, for example `uv run autodj serve --help`. The global options
+`--config FILE` and `-v` go before the command name.
+
+- `autodj index` builds or updates the index from your music folder, then runs the enrich and
+  analyse passes unless you skip them.
+- `autodj analyse` fills in intro, outro, beat grid, and cue points for indexed tracks.
+- `autodj enrich` refreshes key and mode from your beets database.
+- `autodj prune` removes index entries whose audio files no longer exist.
+- `autodj stats` prints an overview of the indexed library.
+- `autodj list-indexes` lists the named indexes under `[index] index_dir`.
+- `autodj serve` starts the browser interface.
+- `autodj play` starts terminal playback with server-side audio. It needs the `play` extra.
+- `autodj playlist` writes an offline M3U playlist from the similarity picker.
+- `autodj list-devices` lists the audio output devices available to `play` and `serve
+  --server-audio`.
+- `autodj doctor` checks configuration, paths, dependencies, the model, and security settings.
+- `autodj backup` and `autodj restore` archive and restore index and user data.
+- `autodj setup-lan` writes a `.env` for the authenticated Compose LAN service.
+- `autodj devices list`, `revoke`, `reset`, and `pairing-code` manage paired browsers.
+
 ## Containers
 
 If you have Docker Compose installed:
@@ -101,8 +125,8 @@ loopback only. See [Operations](docs/operations.md) for WSL2, bind mounts, and a
 startup.
 
 Put your audio files in `music/` before running the indexing command. This setup needs no host
-Python installation. The default container indexes on CPU and does not index automatically when
-the server starts. For a large library, you can instead build the index on a GPU-equipped host
+Python installation. The image ships the CPU-only PyTorch build, so the container indexes on CPU,
+and it does not index automatically when the server starts. For a large library, you can instead build the index on a GPU-equipped host
 and copy it to the mounted index directory before starting Compose.
 
 ## How to use the web UI
@@ -134,6 +158,12 @@ Playback, volume, and seek shortcuts work on the Now Playing tab. Status shortcu
 and `?` work on every tab. Letter and punctuation shortcuts also work when a button or slider has
 focus. Text fields and dropdown typeahead keep their keys; Space activates a focused button and
 arrow keys operate the focused slider or tab. Open dialogs keep playback shortcuts inactive.
+
+To turn the shortcuts off, clear **Enable keyboard shortcuts** under Settings, Keyboard. The
+setting is on by default and is saved in this browser only, not on the server. With it off, no
+single-key shortcut fires; buttons, sliders, tabs and dialogs keep their normal keys, and the
+Keyboard shortcuts button still opens the list. If the browser blocks site storage, shortcuts stay
+on and the choice lasts only until the page is reloaded.
 
 ### Browser and server audio
 
@@ -229,6 +259,9 @@ uv run autodj serve --host 0.0.0.0 --insecure-lan \
 
 `--insecure-lan` disables authentication; use it only on a trusted private network.  Multi-user accounts, roles, cloud identity, and public Internet hosting are not supported.
 
+The server does not expose FastAPI's generated API documentation pages (`/docs`, `/redoc`, and
+`/openapi.json`).
+
 Index generation manifests are the only publication signal used by live reload. A partially
 written generation is not activated. Incomplete model directories are ignored instead of being
 treated as usable caches.
@@ -309,7 +342,9 @@ Pre-commit runs these hooks: `trailing-whitespace`, `end-of-file-fixer`, `mixed-
 `detect-private-key`, `check-case-conflict`, `check-symlinks`, `gitleaks`, `actionlint`, `ruff`,
 `ruff-format`, `bandit`, `mypy`, `vulture`, `deptry`, `interrogate`, `xenon`, `pip-audit`,
 `pip-licenses`, `osv-scanner`, `trivy-fs`, `pytest`, `eslint`, and `commitlint`. Install them with
-`uv run pre-commit install` and `uv run pre-commit install --hook-type commit-msg`.
+`uv run pre-commit install`. The quick ones run on every commit. `bandit`, `vulture`, `deptry`,
+`interrogate`, `xenon`, the dependency audits, `trivy-fs` and `pytest` run once per `git push`,
+and CI runs everything on every push.
 
 Gates outside pre-commit include lock checks, the coverage-exclusion policy, Pyright, Vitest, the
 Vite build, the frontend dead-code scan, npm audit, Playwright audits, container smoke, and release
@@ -323,19 +358,50 @@ signature bundle beside each file. They exist so a build can be verified and arc
 AutoDJ can be installed without a checkout — the wheel already carries the minified web UI, so it
 needs no Node toolchain.
 
-AutoDJ is not on PyPI. To install a tagged wheel:
+AutoDJ is not on PyPI. To install a tagged wheel, pick a version from the
+[releases page](https://github.com/blindndangerous/AutoDJ/releases) and replace both `X.Y.Z`
+placeholders with it:
 
 ```bash
-uv pip install "autodj[all] @ https://github.com/blindndangerous/AutoDJ/releases/download/v0.16.1/autodj-0.16.1-py3-none-any.whl"
+uv pip install "autodj[all] @ https://github.com/blindndangerous/AutoDJ/releases/download/vX.Y.Z/autodj-X.Y.Z-py3-none-any.whl"
 ```
 
-Keep `[all]` for the full application. The base dependency set also includes MuQ, librosa, and
-the web server, so omitting extras does not produce a lightweight installation without model
-or analysis dependencies.
+Keep `[all]` for the full application. The base dependency set also includes MuQ, librosa,
+mutagen, and the web server, so omitting extras does not produce a lightweight installation
+without model or analysis dependencies. The extras add local audio output (`play`) and explicit
+torch floors (`index`).
 
 Installing a wheel resolves dependencies fresh from PyPI instead of from `uv.lock`, so you give up
 the exact versions CI tested. The clone plus `uv sync --frozen --all-extras` above stays the
 supported path; reach for the wheel only when you want AutoDJ without a source tree.
+
+## Uninstall
+
+AutoDJ keeps everything in directories you chose; it installs no system service. To remove a
+source checkout, stop AutoDJ, run `autodj backup` first if you want to keep profiles, liners, or
+history, then delete what you no longer want:
+
+- `.venv/` and `node_modules/` hold the Python and Node dependencies.
+- `index/` (or your `[index] index_dir`) holds the index, DJ metadata, profiles, liners, and saved
+  web state.
+- `models/` (or your `[index] model_dir`) holds the downloaded model weights. Hugging Face can
+  also keep files in its own cache, `~/.cache/huggingface` or the directory named by `HF_HOME`.
+- `config.toml`, `config.local.toml`, `presets.toml`, and `.env` hold your settings and the LAN
+  server secret.
+- `music/` holds whatever audio you copied there. Keep it if it is your only copy.
+
+Then delete the checkout itself. For Compose, remove the containers and the named volumes
+`autodj-index` and `autodj-models` (Compose prefixes them with the project name, usually the
+directory name), then the image:
+
+```bash
+docker compose --profile lan down --volumes
+docker image rm autodj:local
+```
+
+Bind-mounted directories you passed through `AUTODJ_MUSIC_DIR`, `AUTODJ_INDEX_DIR`, or
+`AUTODJ_MODEL_DIR` are not removed by Compose; delete them by hand. A wheel install is removed
+with `uv pip uninstall autodj`.
 
 ## Credits and licensing
 
@@ -347,11 +413,11 @@ supported path; reach for the wheel only when you want AutoDJ without a source t
   Commercial use needs permission from the publisher or a separately licensed compatible model.
   Changing `[model] name` does not add
   support for another architecture. See [Model selection](docs/model-selection.md).
-- Dependencies have their own licenses. The `play` and `all` extras include `mutagen`
-  under GPL-2.0-or-later and `pynput` under LGPL-3.0. The base installation includes `librosa`
-  and its `soxr` dependency. Omitting extras does not make every dependency permissively licensed.
-  CI logs a dependency license
-  inventory, and container images include their installed dependencies.
+- Dependencies have their own licenses. The base installation, and therefore the container
+  image, includes `mutagen` under GPL-2.0-or-later and `librosa` with its LGPL-licensed `soxr`
+  dependency. The `play` and `all` extras add `pynput` under LGPL-3.0. Omitting extras does not
+  make every dependency permissively licensed. CI logs a dependency license inventory, and
+  container images include their installed dependencies.
 - Audio analysis uses [librosa](https://librosa.org/) (ISC).
 - Vector search uses [FAISS](https://github.com/facebookresearch/faiss) (MIT).
 - The web UI uses [FastAPI](https://fastapi.tiangolo.com/) and a hand-written ES module front end (no React, no Vue, no framework).

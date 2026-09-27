@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import math
 from collections import deque
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -42,6 +43,36 @@ def _finite(value: Any) -> float | None:
         logger.warning("ignoring non-finite setting value: %r", value)
         return None
     return number
+
+
+def validate_playback_choices(values: Mapping[str, Any]) -> None:
+    """Raise ``ValueError`` if any choice field in *values* is not allowed.
+
+    The playback setters apply one field at a time, so a check made inside
+    them let a request with one bad choice change every field ahead of it and
+    then fail.  Callers run this first so a bad request changes nothing.
+    ``None`` means "leave unchanged" and is skipped.
+    """
+    from autodj.config import (
+        _validate_key_notation,
+        _validate_post_queue_seed,
+        _validate_transition_mode,
+    )
+    from autodj.liners import LINER_PICK_MODES
+
+    checks: tuple[tuple[str, Callable[[str], str]], ...] = (
+        ("transition_mode", _validate_transition_mode),
+        ("post_queue_seed", _validate_post_queue_seed),
+        ("key_notation", _validate_key_notation),
+    )
+    for key, check in checks:
+        if (value := values.get(key)) is not None:
+            check(str(value))
+    pick_mode = values.get("liners_pick_mode")
+    if pick_mode is not None and str(pick_mode) not in LINER_PICK_MODES:
+        raise ValueError(
+            f"playback.liners_pick_mode must be one of {LINER_PICK_MODES}, got {pick_mode!r}"
+        )
 
 
 def _build_why(player: Any) -> list[str]:
@@ -192,12 +223,16 @@ class PlayerBridge:
         state = p._state
         cur = state.current_track
 
-        if state.queued_next is not None:
-            nxt = state.queued_next
-            state.queued_next = None
-            p._last_pick_mode = "queue"
-        elif state.queue:
-            nxt = state.queue.pop(0)
+        with state.queue_lock:
+            if state.queued_next is not None:
+                queued: IndexEntry | None = state.queued_next
+                state.queued_next = None
+            elif state.queue:
+                queued = state.queue.pop(0)
+            else:
+                queued = None
+        if queued is not None:
+            nxt = queued
             p._last_pick_mode = "queue"
         elif state.next_track is not None:
             nxt = state.next_track
@@ -593,7 +628,7 @@ class PlayerBridge:
         return {
             "current_track": _track_dict(state.current_track),
             "next_track": _track_dict(state.next_track),
-            "queue": [_track_dict(e) for e in state.queue],
+            "queue": [_track_dict(e) for e in self._queue_snapshot()],
             "is_paused": state.is_paused,
             "volume": round(state.volume, 2),
             "is_muted": state.is_muted,
@@ -697,10 +732,21 @@ class PlayerBridge:
         Without this, queue mutations leave the browser prefetching the
         pre-queue similarity pick (computed when the previous track
         started) so the crossfade lands on the wrong audio.
+
+        Only browser-driven mode recomputes from the queue.  With
+        ``--server-audio`` the audio thread picks (and pops) the next entry
+        when the current track starts and plays it regardless of later queue
+        edits, so ``next_track`` already names what plays next; rewriting it
+        to ``queue[0]`` announced a track that actually plays one later, and
+        calling ``_pick_next`` here raced the audio thread's own pick.  The
+        one exception is ``queued_next``, which that loop does honour at the
+        transition.
         """
         state = self.player._state
         if state.queued_next is not None:
             state.next_track = state.queued_next
+            return
+        if not getattr(self.player, "_dry_run", False):
             return
         if state.queue:
             state.next_track = state.queue[0]
@@ -730,9 +776,10 @@ class PlayerBridge:
         entry = similarity.entry_for_path(path)
         if entry is None:
             return False
-        self._capture_pre_queue_seed()
-        self.player._state.queued_next = entry
-        self._sync_next_for_prefetch()
+        with self.player._state.queue_lock:
+            self._capture_pre_queue_seed()
+            self.player._state.queued_next = entry
+            self._sync_next_for_prefetch()
         if now:
             self.skip()
         return True
@@ -756,7 +803,8 @@ class PlayerBridge:
         if not entries:
             return False
         chosen = _random.choice(entries)  # nosec B311 — non-security
-        self.player._state.queued_next = chosen
+        with self.player._state.queue_lock:
+            self.player._state.queued_next = chosen
         self.skip()
         return True
 
@@ -766,22 +814,30 @@ class PlayerBridge:
         entry = similarity.entry_for_path(path)
         if entry is None:
             return False
-        self._capture_pre_queue_seed()
-        self.player._state.queue.append(entry)
-        self._sync_next_for_prefetch()
+        with self.player._state.queue_lock:
+            self._capture_pre_queue_seed()
+            self.player._state.queue.append(entry)
+            self._sync_next_for_prefetch()
         return True
+
+    def _queue_snapshot(self) -> list[IndexEntry]:
+        """Copy the user queue under its lock for read-only use."""
+        state = self.player._state
+        with state.queue_lock:
+            return list(state.queue)
 
     def queue_remove(self, path: str) -> bool:
         """Remove the first matching path from the queue."""
         state = self.player._state
-        q = state.queue
-        for i, e in enumerate(q):
-            if e.path == path:
-                del q[i]
-                if not q and state.queued_next is None:
-                    state.pre_queue_seed = None
-                self._sync_next_for_prefetch()
-                return True
+        with state.queue_lock:
+            q = state.queue
+            for i, e in enumerate(q):
+                if e.path == path:
+                    del q[i]
+                    if not q and state.queued_next is None:
+                        state.pre_queue_seed = None
+                    self._sync_next_for_prefetch()
+                    return True
         return False
 
     def queue_reorder(self, paths: list[str]) -> bool:
@@ -789,18 +845,24 @@ class PlayerBridge:
 
         Tracks present in the queue but missing from *paths* are dropped.
         Paths not found in the current queue are ignored (re-add via
-        :meth:`queue_add`).
+        :meth:`queue_add`).  A track queued more than once keeps one slot
+        per occurrence of its path in *paths*, up to the number of times it
+        was queued.
         """
         state = self.player._state
-        q = state.queue
-        by_path = {e.path: e for e in q}
-        new_q = [by_path[p] for p in paths if p in by_path]
-        # Replace contents in place so any concurrent reads see consistent state
-        q.clear()
-        q.extend(new_q)
-        if not q and state.queued_next is None:
-            state.pre_queue_seed = None
-        self._sync_next_for_prefetch()
+        # Read, rebuild and write back under the queue lock.  Without it the
+        # server-audio thread could pop the head between the read and the
+        # write, and the write would put the popped entry back so it played
+        # twice.
+        with state.queue_lock:
+            q = state.queue
+            by_path: dict[str, deque[IndexEntry]] = {}
+            for entry in q:
+                by_path.setdefault(entry.path, deque()).append(entry)
+            q[:] = [by_path[p].popleft() for p in paths if by_path.get(p)]
+            if not q and state.queued_next is None:
+                state.pre_queue_seed = None
+            self._sync_next_for_prefetch()
         return True
 
     # ------------------------------------------------------------------
@@ -1017,22 +1079,19 @@ class PlayerBridge:
                 self.player._seed_path = self.player._state.current_track.path
 
     def _apply_validators(self, kw: dict) -> None:
-        """Apply transition_mode / post_queue_seed / key_notation overrides."""
+        """Apply transition_mode / post_queue_seed / key_notation overrides.
+
+        Values were already checked by :func:`validate_playback_choices`.
+        """
         cfg = self.player._cfg
         if (v := kw.get("transition_mode")) is not None:
-            from autodj.config import _validate_transition_mode
-
-            cfg.playback.transition_mode = _validate_transition_mode(str(v))
+            cfg.playback.transition_mode = str(v)
         if (v := kw.get("post_queue_seed")) is not None:
-            from autodj.config import _validate_post_queue_seed
-
-            cfg.playback.post_queue_seed = _validate_post_queue_seed(str(v))
+            cfg.playback.post_queue_seed = str(v)
             if cfg.playback.post_queue_seed != "pre_queue":
                 self.player._state.pre_queue_seed = None
         if (v := kw.get("key_notation")) is not None:
-            from autodj.config import _validate_key_notation
-
-            cfg.playback.key_notation = _validate_key_notation(str(v))
+            cfg.playback.key_notation = str(v)
         if (v := kw.get("key_prefer_flats")) is not None:
             cfg.playback.key_prefer_flats = bool(v)
 
@@ -1085,8 +1144,6 @@ class PlayerBridge:
         cfg = self.player._cfg
         if (v := kw.get("liners_enabled")) is not None:
             cfg.playback.liners_enabled = bool(v)
-        if (v := kw.get("liners_folder")) is not None:
-            cfg.playback.liners_folder = str(v) or None
         if (v := kw.get("liners_every_n_songs")) is not None:
             cfg.playback.liners_every_n_songs = int(v) if v > 0 else None
         if (v := _finite(kw.get("liners_every_minutes"))) is not None:
@@ -1095,11 +1152,7 @@ class PlayerBridge:
             cfg.playback.liners_random_min_minutes = v if v > 0 else None
         if (v := _finite(kw.get("liners_random_max_minutes"))) is not None:
             cfg.playback.liners_random_max_minutes = v if v > 0 else None
-        if (v := kw.get("liners_pick_mode")) is not None and str(v) in {
-            "random",
-            "sequential",
-            "weighted",
-        }:
+        if (v := kw.get("liners_pick_mode")) is not None:
             cfg.playback.liners_pick_mode = str(v)
         if (v := _finite(kw.get("liners_duck_db"))) is not None:
             cfg.playback.liners_duck_db = v
@@ -1125,7 +1178,6 @@ class PlayerBridge:
         key_sync_fx: bool | None = None,
         beatmatch_on_skip: bool | None = None,
         liners_enabled: bool | None = None,
-        liners_folder: str | None = None,
         liners_every_n_songs: int | None = None,
         liners_every_minutes: float | None = None,
         liners_random_min_minutes: float | None = None,
@@ -1134,8 +1186,14 @@ class PlayerBridge:
         liners_duck_db: float | None = None,
         post_queue_seed: str | None = None,
     ) -> None:
-        """Apply playback-related settings; only non-null fields take effect."""
+        """Apply playback-related settings; only non-null fields take effect.
+
+        Raises:
+            ValueError: A choice field holds an unknown value.  Nothing has
+                been applied when this is raised.
+        """
         kw = {k: v for k, v in locals().items() if k != "self" and v is not None}
+        validate_playback_choices(kw)
         cfg = self.player._cfg
         self._apply_crossfade(kw)
         self._apply_picker_modes(kw)

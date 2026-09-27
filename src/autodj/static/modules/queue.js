@@ -19,11 +19,47 @@ function _queueKey(queue) {
   return JSON.stringify(queue.map((t) => t.path));
 }
 
+// A websocket push rebuilds every row, which destroys the button a
+// keyboard user is standing on and drops focus to the top of the page.
+// Remember which row (path plus which duplicate of it) and which action
+// held focus, then put focus back on the same control in the new list.
+function _focusedQueueSpot(queueList) {
+  const active = queueList.ownerDocument?.activeElement;
+  const button = active?.closest?.(".queue-btn");
+  const row = button?.closest("li[data-path]");
+  if (!row || !queueList.contains(row)) return null;
+  const rows = Array.from(queueList.querySelectorAll("li[data-path]"));
+  const index = rows.indexOf(row);
+  return {
+    path: row.dataset.path,
+    occurrence: rows.slice(0, index)
+      .filter((other) => other.dataset.path === row.dataset.path).length,
+    index,
+    action: button.dataset.action,
+  };
+}
+
+function _restoreQueueFocus(queueList, spot) {
+  const rows = Array.from(queueList.querySelectorAll("li[data-path]"));
+  if (rows.length === 0) {
+    queueList.focus();
+    return;
+  }
+  const samePath = rows.filter((row) => row.dataset.path === spot.path);
+  const row = samePath[spot.occurrence]
+    || rows[Math.min(spot.index, rows.length - 1)];
+  const target = row.querySelector(`.queue-btn[data-action="${spot.action}"]:not(:disabled)`)
+    || row.querySelector(".queue-btn:not(:disabled)");
+  target?.focus();
+}
+
 export function applyQueueState(queue, els) {
   const key = _queueKey(queue);
   if (key === _lastKey) return;
   _lastKey = key;
+  const spot = els.queueList ? _focusedQueueSpot(els.queueList) : null;
   renderQueue(queue, els);
+  if (spot) _restoreQueueFocus(els.queueList, spot);
 }
 
 export function resetQueueState(els) {

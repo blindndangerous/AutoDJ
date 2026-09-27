@@ -5,10 +5,34 @@ import {
 
 const bootstrapRuns = new WeakMap();
 
-function pairingFailureMessage(response) {
+// The request limiter's generic 429 detail.  It says less than the
+// Retry-After wording below, so it does not replace it.
+const GENERIC_RATE_LIMIT_DETAIL = "Too many pairing attempts";
+const MAX_SERVER_DETAIL_LENGTH = 200;
+
+// The pairing lockout explains itself ("Too many wrong pairing codes
+// from this device. Try again in 42 seconds."), which tells the user
+// whether to wait or fetch a new code.  Anything else falls back.
+async function pairingLockoutDetail(response) {
+  try {
+    const payload = await response.json();
+    const detail = payload && typeof payload === "object" ? payload.detail : null;
+    if (typeof detail !== "string") return null;
+    const text = detail.trim();
+    if (!text || text.length > MAX_SERVER_DETAIL_LENGTH) return null;
+    if (text === GENERIC_RATE_LIMIT_DETAIL) return null;
+    return text;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function pairingFailureMessage(response) {
   if (response.status === 401) return "That pairing code is invalid or expired.";
   if (response.status === 413) return "That pairing request is too large.";
   if (response.status === 429) {
+    const detail = await pairingLockoutDetail(response);
+    if (detail) return detail;
     const retryAfter = response.headers?.get?.("Retry-After");
     if (/^[1-9]\d*$/.test(retryAfter || "")) {
       const seconds = Number(retryAfter);
@@ -44,6 +68,8 @@ export function initAuthDialog({
     token.removeAttribute("aria-invalid");
   }
 
+  // The role=alert region speaks the message; the field is focused
+  // afterwards but does not also reference it, or NVDA reads it twice.
   async function announceError(message) {
     error.textContent = "";
     await Promise.resolve();
@@ -80,7 +106,7 @@ export function initAuthDialog({
           device_name: deviceName.value.trim() || "Paired browser",
         }),
       });
-      if (!response.ok) failureMessage = pairingFailureMessage(response);
+      if (!response.ok) failureMessage = await pairingFailureMessage(response);
     } catch (_errorValue) {
       failureMessage = "Pairing failed. Check the server and try again.";
     } finally {

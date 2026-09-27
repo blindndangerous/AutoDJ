@@ -39,7 +39,7 @@ from rich.live import Live
 from rich.panel import Panel
 
 # Heavy / platform-specific audio deps are imported with graceful None
-# fallback so hosts without them (a NAS running `serve --no-playback`)
+# fallback so hosts without them (a NAS running browser-driven `serve`)
 # can still construct a `Player` for track-picking.  Functions that
 # need real audio import lazily on first use.
 try:
@@ -510,6 +510,10 @@ class PlayerState:
             Incremented after each track transition.
         discovery_enabled: Runtime toggle for discovery mode.  Must be ``True``
             AND ``Player._discovery_every`` must be set for discovery to fire.
+        queue_lock: Guards ``queue`` and ``queued_next``.  The web thread
+            edits them while the server-audio thread pops from them, so
+            every read-modify-write of either must hold this lock.
+            Reentrant because some holders call into others.
     """
 
     current_track: IndexEntry | None = None
@@ -534,6 +538,7 @@ class PlayerState:
     is_muted: bool = False
     track_number: int = 0
     discovery_enabled: bool = False
+    queue_lock: threading.RLock = field(default_factory=threading.RLock, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         """Initialise the bounded recently-played deques."""
@@ -985,6 +990,7 @@ class Player:
                     self._skip_event.clear()
 
                     next_entry = self._pick_next(current)
+                    next_from_queue = self._last_pick_mode == "queue"
                     self._state.next_track = next_entry
                     self._refresh_status()
 
@@ -993,13 +999,7 @@ class Player:
                     if self._state.should_stop:
                         break
 
-                    # If the user queued a specific track WHILE the
-                    # current one was playing (search → Now), honour
-                    # that pick — _pick_next had already chosen
-                    # next_entry before queued_next was set.
-                    if self._state.queued_next is not None:
-                        next_entry = self._state.queued_next
-                        self._state.queued_next = None
+                    next_entry = self._honour_late_queued_next(next_entry, next_from_queue)
 
                     self._state.record_played(next_entry)
                     self._state.track_number += 1
@@ -1018,8 +1018,9 @@ class Player:
     def _run_headless(self, current: IndexEntry) -> None:
         """Track-picking loop with no audio output and no terminal UI.
 
-        Used by ``serve --no-playback`` (and auto-enabled when audio
-        deps are missing).  Browser is responsible for actual playback;
+        Used by browser-driven ``serve`` (the default unless
+        ``--server-audio`` is passed, and forced when audio deps are
+        missing).  Browser is responsible for actual playback;
         this loop just advances ``state.current_track`` /
         ``state.next_track`` so the WebSocket pushes stay accurate, and
         waits for the browser to POST ``/api/advance`` (which sets
@@ -1057,20 +1058,41 @@ class Player:
             self._skip_event.wait(timeout=1.0)
             self._skip_event.clear()
 
+    def _honour_late_queued_next(self, picked: IndexEntry, picked_from_queue: bool) -> IndexEntry:
+        """Return the track to start at this transition.
+
+        The audio loop picks, and pops, *picked* when the current track
+        starts.  If the user chose "play next" while it was playing, that
+        ``queued_next`` wins.  A displaced *picked* that came from the user
+        queue goes back to its front, so it plays right after instead of
+        being silently dropped; a displaced similarity pick is just
+        discarded.
+        """
+        with self._state.queue_lock:
+            late = self._state.queued_next
+            if late is None:
+                return picked
+            self._state.queued_next = None
+            if picked_from_queue:
+                self._state.queue.insert(0, picked)
+        self._last_pick_mode = "queue"
+        return late
+
     def _pop_user_queue(self) -> IndexEntry | None:
         """Pop a queued / drag-reorder track from state, or return None."""
-        if self._state.queued_next is not None:
-            entry = self._state.queued_next
-            self._state.queued_next = None
-            self._last_pick_mode = "queue"
-            logger.info("Playing queued track: %s", entry.display_name)
-            return entry
-        if self._state.queue:
-            entry = self._state.queue.pop(0)
-            self._last_pick_mode = "queue"
-            logger.info("Playing from queue: %s", entry.display_name)
-            return entry
-        return None
+        with self._state.queue_lock:
+            if self._state.queued_next is not None:
+                entry = self._state.queued_next
+                self._state.queued_next = None
+                source = "Playing queued track: %s"
+            elif self._state.queue:
+                entry = self._state.queue.pop(0)
+                source = "Playing from queue: %s"
+            else:
+                return None
+        self._last_pick_mode = "queue"
+        logger.info(source, entry.display_name)
+        return entry
 
     def _pick_pure_shuffle(self) -> IndexEntry:
         """Random pick from non-recent tracks without violating hard BPM eligibility."""
@@ -1462,7 +1484,7 @@ class Player:
     def analyse_track_in_background(self, path: str) -> None:
         """Run analyse_audio + detect_cues for *path* on a background thread.
 
-        Browser-driven mode (``serve --no-playback``, the default) never
+        Browser-driven mode (``serve`` without ``--server-audio``) never
         enters :meth:`_play_track`, so without this hook the DJ-meta
         cache for the playing track stays at ``analysed=False`` and the
         web UI's cue strip + screen-reader cue summary stay empty.

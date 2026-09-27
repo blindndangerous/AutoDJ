@@ -86,7 +86,10 @@ function applyView(name, userInitiated) {
     // Don't steal focus away from a focused tab during arrow-key nav
     // -- that defeats roving tabindex.
     if (sec && document.activeElement !== tab) {
-      const heading = sec.querySelector("h2");
+      // Only a heading of the panel itself.  Card titles are <h2>s inside
+      // <summary>, and focusing one of those would land inside the
+      // disclosure button instead of on it.
+      const heading = Array.from(sec.children).find((el) => el.tagName === "H2");
       if (heading) {
         heading.setAttribute("tabindex", "-1");
         heading.focus({ preventScroll: false });

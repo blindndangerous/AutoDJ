@@ -1,3 +1,12 @@
+# Quick checks run on every commit.  The slow ones (the full test suite with
+# its coverage gate, the dependency audits, the code-quality scans and the
+# Trivy scan) run once per `git push` instead, so a ten-commit branch pays for
+# one full test run rather than ten.  CI still runs everything on every push.
+# `uv run pre-commit install` wires all three hook types below; run the slow
+# set by hand with `uv run pre-commit run --all-files --hook-stage pre-push`.
+default_install_hook_types: [pre-commit, commit-msg, pre-push]
+default_stages: [pre-commit]
+
 repos:
   # Language-agnostic baseline — sanity checks every repo should run.
   - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -7,6 +16,7 @@ repos:
       - id: end-of-file-fixer
       - id: mixed-line-ending
         args: [--fix=lf]
+        exclude: \.(cmd|bat)$  # checked out as CRLF by .gitattributes
       - id: check-added-large-files
         args: [--maxkb=1024]
       - id: check-merge-conflict
@@ -29,13 +39,6 @@ repos:
     hooks:
       - id: actionlint
 
-  - repo: https://github.com/PyCQA/bandit
-    rev: 1.9.4
-    hooks:
-      - id: bandit
-        args: [-c, pyproject.toml]
-        files: ^src/
-
   # Conventional Commits enforcement on commit-msg.
   - repo: https://github.com/alessandrojcm/commitlint-pre-commit-hook
     rev: v9.20.0
@@ -44,18 +47,14 @@ repos:
         stages: [commit-msg]
         additional_dependencies: ["@commitlint/config-conventional"]
 
-  # Dead-code scan -- catches unused module-level functions, classes,
-  # imports, and variables that ruff F401/F841 do not flag.
-  - repo: https://github.com/jendrikseipp/vulture
-    rev: v2.16
-    hooks:
-      - id: vulture
-        files: ^src/
-
   # Local hooks, all driven through uv.
   #
-  # ruff and mypy run this way so their versions come from uv.lock, and
-  # therefore match CI, instead of drifting behind separately pinned mirrors.
+  # ruff, mypy, bandit and vulture run this way so their versions come from
+  # uv.lock, and therefore match CI, instead of drifting behind separately
+  # pinned mirrors.  vulture reads its paths and allowlist from pyproject.toml
+  # and catches unused functions, classes, imports and variables that ruff
+  # F401/F841 do not flag.
+  #
   # deptry resolves against the project's own uv env (where pyproject.toml and
   # the dependency tree live); the published repo hook does not bundle the
   # project deps for resolution.  It checks that imports match
@@ -76,7 +75,7 @@ repos:
 
       - id: ruff-format
         name: ruff-format
-        entry: uv run --frozen ruff format src/ tests/
+        entry: uv run --frozen ruff format src/ tests/ scripts/
         language: system
         pass_filenames: false
         files: \.py$
@@ -88,10 +87,27 @@ repos:
         pass_filenames: false
         files: ^(src/|pyproject\.toml$)
 
+      - id: bandit
+        name: bandit
+        entry: uv run --frozen bandit -r src/ -c pyproject.toml
+        language: system
+        stages: [pre-push]
+        pass_filenames: false
+        files: ^(src/|pyproject\.toml$)
+
+      - id: vulture
+        name: vulture
+        entry: uv run --frozen vulture
+        language: system
+        stages: [pre-push]
+        pass_filenames: false
+        files: ^(src/|pyproject\.toml$)
+
       - id: deptry
         name: deptry
         entry: uv run --frozen deptry src/autodj
         language: system
+        stages: [pre-push]
         pass_filenames: false
         files: ^(src/|pyproject\.toml$)
 
@@ -99,6 +115,7 @@ repos:
         name: interrogate
         entry: uv run --frozen interrogate -c pyproject.toml src/autodj
         language: system
+        stages: [pre-push]
         pass_filenames: false
         files: ^(src/|pyproject\.toml$)
 
@@ -106,6 +123,7 @@ repos:
         name: xenon
         entry: uv run --frozen xenon --max-absolute E --max-modules B --max-average B src/
         language: system
+        stages: [pre-push]
         pass_filenames: false
         files: ^src/
 
@@ -113,6 +131,7 @@ repos:
         name: pip-audit
         entry: uv run --frozen pip-audit --ignore-vuln PYSEC-2022-42969
         language: system
+        stages: [pre-push]
         pass_filenames: false
         files: ^(uv\.lock|pyproject\.toml)$
 
@@ -120,6 +139,7 @@ repos:
         name: pip-licenses
         entry: uv run --frozen pip-licenses --format=markdown --order=license
         language: system
+        stages: [pre-push]
         pass_filenames: false
         files: ^(uv\.lock|pyproject\.toml)$
 
@@ -127,6 +147,7 @@ repos:
         name: OSV-Scanner
         entry: osv-scanner --recursive --config=osv-scanner.toml ./
         language: system
+        stages: [pre-push]
         pass_filenames: false
         files: ^(uv\.lock|osv-scanner\.toml)$
 
@@ -134,6 +155,7 @@ repos:
         name: Trivy filesystem scan
         entry: trivy fs --format table --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 .
         language: system
+        stages: [pre-push]
         pass_filenames: false
         files: ^(uv\.lock|pyproject\.toml|src/|tests/)
 
@@ -141,6 +163,7 @@ repos:
         name: pytest
         entry: uv run --frozen python scripts/ci_pytest.py
         language: system
+        stages: [pre-push]
         pass_filenames: false
         files: ^(src/|tests/|scripts/ci_pytest\.py|pyproject\.toml|uv\.lock)
 

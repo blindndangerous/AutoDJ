@@ -1,6 +1,6 @@
 // Camelot wheel -- decorative visual aid for harmonic mixing.
 //
-// AT users get key info via #badges-announce; the SVG is aria-hidden.
+// AT users get key info via #now-playing-announce; the SVG is aria-hidden.
 // Layout: 12 sectors around a circle, each sector split into outer
 // (B = major) and inner (A = minor) ring.  Numbers 1..12 run clockwise
 // starting at 12 o'clock.  Each sector path has data-cell="<n><A|B>".

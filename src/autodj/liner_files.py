@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Protocol, cast
 
+from autodj.liners import LINER_EXTS
+
 logger = logging.getLogger(__name__)
 
 
@@ -143,6 +145,18 @@ def _validate_name(name: str) -> None:
     is_reserved = getattr(ntpath, "isreserved", lambda _name: False)
     if device_stem in _WINDOWS_DEVICES or is_reserved(name):
         raise InvalidLinerName("reserved device filename")
+
+
+def _validate_audio_name(name: str) -> None:
+    """Reject names that are not one plain filename with a liner audio extension.
+
+    Read and delete are limited to the clip types the library lists, so a
+    misconfigured or hostile liner root still cannot expose or remove
+    configuration, databases, or other non-audio files that share it.
+    """
+    _validate_name(name)
+    if os.path.splitext(name)[1].lower() not in LINER_EXTS:
+        raise InvalidLinerName("liner name must use a supported audio extension")
 
 
 def _is_reparse_point(path: Path) -> bool:
@@ -1289,7 +1303,7 @@ def _open_relative_file(root: _PinnedRoot, name: str) -> OpenedLiner:
 
 def open_liner_file(root: Path, name: str) -> OpenedLiner:
     """Open and retain one regular liner file relative to a pinned root."""
-    _validate_name(name)
+    _validate_audio_name(name)
     pinned = _open_pinned_root(Path(root), create=False, write=False, mutate=False)
     try:
         return _open_relative_file(pinned, name)
@@ -1484,7 +1498,7 @@ def _delete_opened_file(root: _PinnedRoot, name: str, handle: int) -> None:
 
 def delete_liner_file(root: Path, name: str) -> None:
     """Delete one regular liner file relative to a pinned root."""
-    _validate_name(name)
+    _validate_audio_name(name)
     pinned = _open_pinned_root(Path(root), create=False, write=False, mutate=True)
     committed = False
     try:

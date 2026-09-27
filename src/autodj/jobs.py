@@ -16,9 +16,9 @@ the web UI polls this via the standard WebSocket state push.
 Example:
     >>> from autodj.jobs import get_manager
     >>> mgr = get_manager()
-    >>> mgr.start("prune", ["--force"])
+    >>> mgr.start("index", ["--limit", "20"])
     >>> mgr.snapshot()
-    {'name': 'prune', 'running': True, 'lines': [...], 'exit_code': None}
+    {'name': 'index', 'running': True, 'lines': [...], 'exit_code': None}
 """
 
 from __future__ import annotations
@@ -32,6 +32,7 @@ import sys
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from typing import ClassVar
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,15 @@ logger = logging.getLogger(__name__)
 # Hard upper bound on retained log lines per job — protects the WS
 # payload from growing unbounded over an overnight indexing run.
 _MAX_LINES = 500
+
+# How long start() waits for the previous job's reader to finish draining
+# output after its process has exited.
+_READER_JOIN_SECONDS = 1.0
+
+
+def _is_positive_int(value: str) -> bool:
+    """Return whether *value* is a plain positive decimal integer."""
+    return value.isascii() and value.isdecimal() and int(value) > 0
 
 
 class JobManager:
@@ -50,15 +60,18 @@ class JobManager:
     final state (lines + exit_code) is preserved until the next ``start``.
     """
 
-    # Allowlist of CLI subcommands the web UI is allowed to spawn.  Keeps
-    # the API surface tight — no arbitrary command injection via the
-    # `name` parameter.
-    _ALLOWED: ClassVar[set[str]] = {
-        "index",
-        "enrich",
-        "prune",
-        "stats",
-        "list-indexes",
+    # Subcommands the web UI may spawn, each mapped to the flags it may pass
+    # and a check for that flag's value.  The child runs with shell=False, so
+    # shell metacharacters are inert; the real exposure is extra flags.  The
+    # UI only ever sends ``index --limit N``.  Anything else, such as
+    # ``--force`` (re-embed or over-prune), ``--workers``, or a second
+    # ``--config`` / ``--name`` that re-targets another index, is refused.
+    _ALLOWED_FLAGS: ClassVar[dict[str, dict[str, Callable[[str], bool]]]] = {
+        "index": {"--limit": _is_positive_int},
+        "enrich": {},
+        "prune": {},
+        "stats": {},
+        "list-indexes": {},
     }
 
     # Subcommands that accept ``--name``.  ``list-indexes`` reports on every
@@ -130,25 +143,36 @@ class JobManager:
     # ------------------------------------------------------------------
 
     def _validate_request(self, name: str, args: list[str] | None) -> bool:
-        """Reject disallowed subcommand names and shell-metachar arguments."""
-        if name not in self._ALLOWED:
+        """Reject unknown subcommands and any flag the subcommand may not take.
+
+        *args* must be ``flag value`` pairs, each flag allowed for *name*,
+        given at most once, with a value its check accepts.
+        """
+        allowed = self._ALLOWED_FLAGS.get(name)
+        if allowed is None:
             logger.warning("Refused job: subcommand %r not allowed", name)
             return False
-        forbidden = {"&", "|", ";", "`", "\n", "\r"}
-        for a in args or []:
-            if any(c in a for c in forbidden):
-                logger.warning("Refused job: forbidden char in arg %r", a)
+        tokens = list(args or [])
+        if len(tokens) % 2:
+            logger.warning("Refused job: %s arguments are not flag/value pairs", name)
+            return False
+        seen: set[str] = set()
+        for flag, value in zip(tokens[::2], tokens[1::2], strict=True):
+            check = allowed.get(flag)
+            if check is None or flag in seen or not check(value):
+                logger.warning("Refused job: %s does not accept %r here", name, flag)
                 return False
+            seen.add(flag)
         return True
 
-    def _spawn_proc(self, name: str, args: list[str]) -> bool:
-        """Start the subprocess; populate `_proc` or return False on failure."""
+    def _spawn_proc(self, name: str, args: list[str]) -> subprocess.Popen | None:
+        """Start the subprocess and return it (also kept as `_proc`), or None."""
         cmd = self._child_argv(name, args)
         self._lines.append(f"[autodj-jobs] $ {' '.join(shlex.quote(c) for c in cmd)}")
         try:
             # nosec B603 -- `cmd` is built from a hard-coded subcommand
-            # allowlist + arg tokens already screened for shell metacharacters.
-            # shell=False so no shell parsing happens regardless.
+            # allowlist plus flags and values checked against that
+            # subcommand's own allowlist.  shell=False, so no shell parsing.
             child_env = self._child_env()
             self._proc = subprocess.Popen(  # nosec B603
                 cmd,
@@ -165,8 +189,8 @@ class JobManager:
             self._exit_code = -1
             self._finished_at = time.time()
             self._proc = None
-            return False
-        return True
+            return None
+        return self._proc
 
     def start(self, name: str, args: list[str] | None = None) -> bool:
         """Spawn ``autodj <name> [args]`` as a subprocess."""
@@ -175,38 +199,50 @@ class JobManager:
         with self._lock:
             if self._proc and self._proc.poll() is None:
                 return False
+            # A process that has exited can leave its reader still draining
+            # the pipe.  Starting now would let that reader append the old
+            # job's lines, and record its exit, onto the new job.
+            previous = self._thread
+            if previous is not None and previous.is_alive():
+                previous.join(timeout=_READER_JOIN_SECONDS)
+                if previous.is_alive():
+                    return False
             self._lines.clear()
             self._name = name
             self._args = list(args or [])
             self._exit_code = None
             self._started_at = time.time()
             self._finished_at = None
-            if not self._spawn_proc(name, self._args):
+            proc = self._spawn_proc(name, self._args)
+            if proc is None:
                 return False
-        self._thread = threading.Thread(
-            target=self._read_loop,
-            name=f"autodj-job-{name}",
-            daemon=True,
-        )
-        self._thread.start()
+            # The reader gets its own process handle rather than reading
+            # self._proc, so it can never wait on a later job's process.
+            self._thread = threading.Thread(
+                target=self._read_loop,
+                args=(proc,),
+                name=f"autodj-job-{name}",
+                daemon=True,
+            )
+            self._thread.start()
         return True
 
-    def _read_loop(self) -> None:
-        """Pump subprocess stdout into the ring buffer until exit."""
-        if self._proc is None or self._proc.stdout is None:
+    def _read_loop(self, proc: subprocess.Popen) -> None:
+        """Pump *proc*'s stdout into the ring buffer until it exits."""
+        if proc.stdout is None:
             return
         try:
-            for line in self._proc.stdout:
+            for line in proc.stdout:
                 self._lines.append(line.rstrip("\n"))
         except (OSError, ValueError) as exc:
             self._lines.append(f"[autodj-jobs] read error: {exc}")
             # The pipe is no longer being drained; terminate before waiting so
             # a child blocked on write cannot hold the job slot open.
             with contextlib.suppress(OSError):
-                self._proc.terminate()
+                proc.terminate()
         finally:
             try:
-                self._exit_code = self._proc.wait(timeout=5)
+                self._exit_code = proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 self._exit_code = -2
             self._finished_at = time.time()

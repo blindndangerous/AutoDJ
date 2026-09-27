@@ -4,7 +4,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   announceStatus,
   clearLiveRegionLater,
-  installVisibleStatusDismiss,
+  installVisibleStatusBehaviour,
   showVisibleStatus,
 } from "../../src/autodj/static/modules/live-region.js";
 
@@ -191,7 +191,7 @@ describe("visible status mirror behaviour", () => {
   });
 
   it("dismisses on Escape without moving focus", () => {
-    installVisibleStatusDismiss(document);
+    installVisibleStatusBehaviour(document);
     const button = document.createElement("button");
     document.body.appendChild(button);
     button.focus();
@@ -209,7 +209,7 @@ describe("visible status mirror behaviour", () => {
   });
 
   it("leaves Escape to an open dialog", () => {
-    installVisibleStatusDismiss(document);
+    installVisibleStatusBehaviour(document);
     const dialog = document.createElement("dialog");
     dialog.setAttribute("open", "");
     document.body.appendChild(dialog);
@@ -220,5 +220,36 @@ describe("visible status mirror behaviour", () => {
     }));
 
     expect(document.querySelector("#status-toast").hidden).toBe(false);
+  });
+});
+
+describe("visible status never covers the focused control", () => {
+  function setup() {
+    document.body.innerHTML = '<button id="top">Top</button><button id="bottom">Bottom</button>'
+      + '<div id="status-toast" aria-hidden="true" hidden></div>';
+    const rect = (top) => () => ({ top, bottom: top + 40, left: 0, right: 100, width: 100, height: 40 });
+    document.querySelector("#top").getBoundingClientRect = rect(10);
+    document.querySelector("#bottom").getBoundingClientRect = rect(window.innerHeight - 45);
+    return document.querySelector("#status-toast");
+  }
+
+  it("moves to the top when focus sits where the toast would be", () => {
+    const toast = setup();
+    document.querySelector("#bottom").focus();
+    showVisibleStatus("Saved.");
+    expect(toast.classList.contains("at-top")).toBe(true);
+  });
+
+  it("stays at the foot otherwise, and follows focus while showing", () => {
+    installVisibleStatusBehaviour(document);
+    const toast = setup();
+    document.querySelector("#top").focus();
+    showVisibleStatus("Saved.");
+    expect(toast.classList.contains("at-top")).toBe(false);
+
+    document.querySelector("#bottom").focus();
+    expect(toast.classList.contains("at-top")).toBe(true);
+    document.querySelector("#top").focus();
+    expect(toast.classList.contains("at-top")).toBe(false);
   });
 });
