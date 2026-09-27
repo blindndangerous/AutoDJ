@@ -423,18 +423,62 @@ def test_lifespan_starts_the_station_and_shuts_it_down_first(tmp_path: Path) -> 
     assert player._state.should_stop is True
 
 
-def test_tick_stream_workers_ticks_both_and_survives_failures(caplog) -> None:
+async def _yield(_seconds: float) -> None:
+    """A tick-loop sleep that only yields, so tests run many ticks quickly."""
+    import asyncio
+
+    await asyncio.sleep(0.001)
+
+
+def _run_ticks_for(bridge: PlayerBridge, seconds: float, then=lambda: None) -> None:
+    """Run the stream tick loops for *seconds* of wall time, cancel them, call *then*.
+
+    *then* runs before the event loop closes, so it can release a tick
+    still blocked in a worker thread (``asyncio.run`` waits for those).
+    """
     import asyncio
 
     from autodj.server import _tick_stream_workers
 
+    async def main() -> None:
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(_tick_stream_workers(bridge, sleep=_yield), seconds)
+        then()
+
+    asyncio.run(main())
+
+
+def test_tick_stream_workers_ticks_both_and_survives_failures(caplog) -> None:
     bridge, _stream = _stream_bridge(MagicMock())
     bridge.station.tick.side_effect = RuntimeError("station broke")
-    asyncio.run(_tick_stream_workers(bridge))
-    bridge.station.tick.assert_called_once()
-    bridge.liner_scheduler.tick.assert_called_once()
+    _run_ticks_for(bridge, 0.2)
+    assert bridge.station.tick.call_count >= 2  # a failure does not end the loop
+    assert bridge.liner_scheduler.tick.call_count >= 2
     assert "station tick failed" in caplog.text
     bridge.shutdown_stream_workers()
+
+
+def test_slow_liner_tick_does_not_hold_up_the_station() -> None:
+    # A liner decode can take up to 30 s; the station's idle check must
+    # keep its once-a-second rhythm meanwhile.
+    decoding = threading.Event()
+    release = threading.Event()
+
+    def slow_liner_tick() -> None:
+        decoding.set()
+        release.wait(5)
+
+    scheduler = MagicMock()
+    scheduler.tick.side_effect = slow_liner_tick
+    bridge, _stream = _stream_bridge(scheduler)
+    try:
+        _run_ticks_for(bridge, 0.3, then=release.set)
+        assert decoding.is_set()
+        assert scheduler.tick.call_count == 1  # still stuck in its first decode
+        assert bridge.station.tick.call_count >= 3
+    finally:
+        release.set()
+        bridge.shutdown_stream_workers()
 
 
 def test_tick_stream_workers_skips_what_is_missing() -> None:
@@ -443,7 +487,9 @@ def test_tick_stream_workers_skips_what_is_missing() -> None:
     from autodj.server import _tick_stream_workers
 
     asyncio.run(
-        _tick_stream_workers(PlayerBridge(player=_make_player_mock(), sim=_make_sim_mock()))
+        _tick_stream_workers(
+            PlayerBridge(player=_make_player_mock(), sim=_make_sim_mock()), sleep=_yield
+        )
     )
 
 

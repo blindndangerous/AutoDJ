@@ -866,19 +866,39 @@ async def _stop_stream_station(bridge: PlayerBridge, stream_out: StreamOutput) -
             logger.exception("Stopping the stream: %s it failed", what)
 
 
-async def _tick_stream_workers(bridge: PlayerBridge) -> None:
-    """Run the station's and liner scheduler's once-a-second checks.
+async def _tick_every_second(
+    name: str, worker: Any, sleep: Callable[[float], Awaitable[None]]
+) -> None:
+    """Call ``worker.tick`` off the event loop about once a second, forever.
 
-    Both run off the event loop (a liner can take seconds to decode), and
-    a failure in one is logged without stopping the other.
+    A failed tick is logged and the next one still runs.
     """
-    for name, worker in (("station", bridge.station), ("liner scheduler", bridge.liner_scheduler)):
-        if worker is None:
-            continue
+    while True:
+        await sleep(1)
         try:
             await asyncio.to_thread(worker.tick)
         except Exception:
             logger.exception("Stream %s tick failed", name)
+
+
+async def _tick_stream_workers(
+    bridge: PlayerBridge, sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
+) -> None:
+    """Tick the station and the liner scheduler once a second, independently.
+
+    Each has its own loop, so a slow liner decode (up to 30 s through
+    ffmpeg) never holds up the station's idle check, and a failure in one
+    never stops the other.  Runs until cancelled.
+
+    Args:
+        bridge: The bridge holding the station and liner scheduler.
+        sleep: ``asyncio.sleep`` replacement for tests.
+    """
+    workers = (("station", bridge.station), ("liner scheduler", bridge.liner_scheduler))
+    async with asyncio.TaskGroup() as group:
+        for name, worker in workers:
+            if worker is not None:
+                group.create_task(_tick_every_second(name, worker, sleep))
 
 
 def create_app(
@@ -2323,9 +2343,7 @@ def create_app(
 
     async def _stream_tick_loop() -> None:  # pragma: no cover — long-running task
         """Tick the station and liner scheduler once a second (stream mode)."""
-        while True:
-            await asyncio.sleep(1)
-            await _tick_stream_workers(bridge)
+        await _tick_stream_workers(bridge)
 
     async def _index_watcher_loop() -> None:  # pragma: no cover — long-running task
         """Reload each newly published index generation every 10 seconds."""
