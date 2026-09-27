@@ -4,9 +4,9 @@
 //
 // Speech rules (docs/accessibility-testing.md, Announcement contract):
 //   - "Listen here" keeps a fixed name; only aria-pressed changes, so NVDA
-//     says "pressed" / "not pressed" on the focused button and nothing on
-//     the 1 Hz push.  A hotkey press with focus elsewhere gets one short
-//     spoken confirmation instead.
+//     says "pressed" / "not pressed" and nothing on the 1 Hz push.  The
+//     listen state is never also spoken through a live region.
+//   - Failures are spoken in plain words, never as raw browser error text.
 //   - The idle note is plain text, not a live region: the station event
 //     "Set stopped" already said it once.
 //   - A station event is spoken once per (id, seq).  The first event seen
@@ -24,15 +24,46 @@ const EVENT_TEXT = {
   set_stopped: "Set stopped. Nobody is listening.",
   link_changed: "Stream link changed. Speakers using the old link have stopped.",
 };
-const LOST_TEXT = "Listening stopped: the stream connection was lost.";
+const BLOCKED_TEXT = "The browser blocked playback. Press Listen here again.";
+const NOT_LOADED_TEXT = "The stream did not load. It may be full or not running.";
+const DROPPED_TEXT = "The stream connection dropped.";
+const STALLED_TEXT = "The stream stopped responding.";
+// A stalled or waiting stream that has not played again by then is dead.
+const STALL_TIMEOUT_MS = 15000;
+// MediaError codes (numeric so this works where MediaError is undefined).
+const MEDIA_ERR_NETWORK = 2;
 
-export function createStreamMode({ doc, audio, button, idleNote, srStatus, fetchInfo }) {
+// A failed start, from play() or the link lookup, in plain words.
+function startFailureText(err) {
+  const name = err && err.name;
+  if (name === "NotAllowedError") return BLOCKED_TEXT;
+  // An API refusal carries a status and a server-written reason.
+  if (err && typeof err.status === "number" && err.message) {
+    return `Could not get the stream link: ${err.message}`;
+  }
+  // fetch() rejects with a TypeError when the network is down.
+  if (name === "TypeError" || name === "NetworkError") return DROPPED_TEXT;
+  return NOT_LOADED_TEXT;
+}
+
+// A media element error or end, by MediaError code.  Without a code, a
+// stream that already played has dropped and one that never did failed
+// to load.
+function mediaFailureText(audio, hasPlayed) {
+  const code = audio.error && audio.error.code;
+  if (code === MEDIA_ERR_NETWORK) return DROPPED_TEXT;
+  if (code) return NOT_LOADED_TEXT;
+  return hasPlayed ? DROPPED_TEXT : NOT_LOADED_TEXT;
+}
+
+export function createStreamMode({ audio, button, idleNote, srStatus, fetchInfo }) {
   let listening = false;
   // Bumped by every start and stop, so a start still waiting on the link
   // lookup can tell that the user has pressed the button again since.
   let generation = 0;
   let retried = false;
   let hasPlayed = false;
+  let stallTimer = null;
   let seenFirstApply = false;
   let lastEventKey = null;
 
@@ -54,9 +85,18 @@ export function createStreamMode({ doc, audio, button, idleNote, srStatus, fetch
     audio.load?.();
   }
 
+  function clearStall() {
+    if (stallTimer === null) return;
+    clearTimeout(stallTimer);
+    stallTimer = null;
+  }
+
+  // Only a real listen is torn down; a browser-mode push is a no-op.
+  // Bumping the generation cancels a start still waiting on the link.
   function stop() {
-    generation += 1;
     if (!listening) return;
+    generation += 1;
+    clearStall();
     setListening(false);
     release();
   }
@@ -67,7 +107,7 @@ export function createStreamMode({ doc, audio, button, idleNote, srStatus, fetch
   }
 
   // Always asks for the link again: "Make new link" retires the old one.
-  // A failed silent retry is reported as the lost connection it follows.
+  // A failed silent retry is reported as the dropped connection it follows.
   async function connect({ retry = false } = {}) {
     const mine = ++generation;
     setListening(true);
@@ -78,7 +118,7 @@ export function createStreamMode({ doc, audio, button, idleNote, srStatus, fetch
       await audio.play();
     } catch (err) {
       if (mine !== generation) return;
-      fail(retry ? LOST_TEXT : `Could not start listening: ${err?.message || err}`);
+      fail(retry ? DROPPED_TEXT : startFailureText(err));
     }
   }
 
@@ -88,12 +128,8 @@ export function createStreamMode({ doc, audio, button, idleNote, srStatus, fetch
   // reported.
   function onDropped() {
     if (!listening) return;
-    if (!hasPlayed) {
-      fail("Could not start listening: the stream did not load.");
-      return;
-    }
-    if (retried) {
-      fail(LOST_TEXT);
+    if (!hasPlayed || retried) {
+      fail(mediaFailureText(audio, hasPlayed));
       return;
     }
     retried = true;
@@ -104,20 +140,28 @@ export function createStreamMode({ doc, audio, button, idleNote, srStatus, fetch
   audio.addEventListener("playing", () => {
     hasPlayed = true;
     retried = false;
+    clearStall();
   });
+  // A connection can hang without ever raising an error.  The first stall
+  // signal starts one countdown; audio playing again cancels it.
+  function onStalled() {
+    if (!listening || stallTimer !== null) return;
+    stallTimer = setTimeout(() => {
+      stallTimer = null;
+      if (listening) fail(STALLED_TEXT);
+    }, STALL_TIMEOUT_MS);
+  }
+  audio.addEventListener("stalled", onStalled);
+  audio.addEventListener("waiting", onStalled);
 
   async function toggleListen() {
-    const spoken = doc.activeElement !== button;
     if (listening) {
       stop();
-      if (spoken) say("Listen here off.");
       return;
     }
     retried = false;
     hasPlayed = false;
-    const started = connect();
-    if (spoken) say("Listen here on.");
-    await started;
+    await connect();
   }
 
   function announceEvent(event) {

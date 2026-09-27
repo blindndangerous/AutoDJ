@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   createStreamMode,
@@ -7,6 +7,13 @@ import {
 
 const IDLE_TEXT =
   "Waiting for a listener. Press Listen here, or start the AutoDJ station on a speaker.";
+const NOT_LOADED = "The stream did not load. It may be full or not running.";
+const DROPPED = "The stream connection dropped.";
+const STALLED = "The stream stopped responding.";
+
+function mediaError(audio, code) {
+  Object.defineProperty(audio, "error", { configurable: true, value: { code } });
+}
 
 function setup({ fetchInfo } = {}) {
   document.body.innerHTML = `
@@ -22,7 +29,6 @@ function setup({ fetchInfo } = {}) {
   const info = fetchInfo || vi.fn(async () => ({ path: "/stream/SECRET.mp3" }));
   const button = document.getElementById("btn-listen");
   const mode = createStreamMode({
-    doc: document,
     audio,
     button,
     idleNote: document.getElementById("stream-idle-note"),
@@ -123,47 +129,62 @@ describe("stream mode", () => {
     expect(audio.getAttribute("src")).toBeNull();
   });
 
-  it("reports a failed start once and releases the toggle", async () => {
+  it("reports a blocked start in plain words and releases the toggle", async () => {
     const { mode, audio, button, sr } = setup();
-    audio.play = vi.fn(() => Promise.reject(new Error("Autoplay blocked")));
+    audio.play = vi.fn(() => Promise.reject(new globalThis.DOMException(
+      "play() failed because the user did not interact with the document first.",
+      "NotAllowedError",
+    )));
     mode.apply({ stream_mode: true, stream_state: "idle" });
     button.focus();
     await mode.toggleListen();
     await tick();
     expect(button.getAttribute("aria-pressed")).toBe("false");
-    expect(sr.textContent).toBe("Could not start listening: Autoplay blocked");
+    expect(sr.textContent).toBe("The browser blocked playback. Press Listen here again.");
     expect(audio.getAttribute("src")).toBeNull();
   });
 
-  it("reports a failed link lookup the same way", async () => {
-    const fetchInfo = vi.fn(async () => { throw new Error("Request failed (409)"); });
+  it("never speaks raw browser error text", async () => {
+    const cases = [
+      [new globalThis.DOMException("The element has no supported sources.", "NotSupportedError"), NOT_LOADED],
+      [new globalThis.DOMException("Some internal detail", "EncodingError"), NOT_LOADED],
+      [new TypeError("NetworkError when attempting to fetch resource."), DROPPED],
+    ];
+    for (const [failure, expected] of cases) {
+      const { mode, audio, sr } = setup();
+      audio.play = vi.fn(() => Promise.reject(failure));
+      mode.apply({ stream_mode: true, stream_state: "idle" });
+      await mode.toggleListen();
+      await tick();
+      expect(sr.textContent).toBe(expected);
+    }
+  });
+
+  it("reports a refused link lookup with the server's reason", async () => {
+    const refusal = Object.assign(new Error("Stream mode is not enabled"), { status: 409 });
+    const fetchInfo = vi.fn(async () => { throw refusal; });
     const { mode, button, sr } = setup({ fetchInfo });
     mode.apply({ stream_mode: true, stream_state: "idle" });
     await mode.toggleListen();
     await tick();
     expect(button.getAttribute("aria-pressed")).toBe("false");
-    expect(sr.textContent).toBe("Could not start listening: Request failed (409)");
+    expect(sr.textContent).toBe("Could not get the stream link: Stream mode is not enabled");
   });
 
-  it("speaks the new state only when the button itself is not focused", async () => {
+  it("never speaks the listen state: aria-pressed carries it", async () => {
     const { mode, button, sr } = setup();
     mode.apply({ stream_mode: true, stream_state: "idle" });
-
-    button.focus();
-    await mode.toggleListen();
-    await tick();
-    expect(sr.textContent).toBe("");
-    await mode.toggleListen();
-    await tick();
-    expect(sr.textContent).toBe("");
-
-    document.getElementById("elsewhere").focus();
-    await mode.toggleListen();
-    await tick();
-    expect(sr.textContent).toBe("Listen here on.");
-    await mode.toggleListen();
-    await tick();
-    expect(sr.textContent).toBe("Listen here off.");
+    for (const focus of [button, document.getElementById("elsewhere")]) {
+      focus.focus();
+      await mode.toggleListen();
+      await tick();
+      expect(button.getAttribute("aria-pressed")).toBe("true");
+      expect(sr.textContent).toBe("");
+      await mode.toggleListen();
+      await tick();
+      expect(button.getAttribute("aria-pressed")).toBe("false");
+      expect(sr.textContent).toBe("");
+    }
   });
 
   it("reconnects once after a dropped stream, then gives up and says so", async () => {
@@ -174,6 +195,7 @@ describe("stream mode", () => {
     expect(fetchInfo).toHaveBeenCalledTimes(1);
     audio.dispatchEvent(new Event("playing"));
 
+    mediaError(audio, 2);
     audio.dispatchEvent(new Event("error"));
     await tick();
     expect(fetchInfo).toHaveBeenCalledTimes(2);
@@ -183,15 +205,15 @@ describe("stream mode", () => {
     audio.dispatchEvent(new Event("ended"));
     await tick();
     expect(button.getAttribute("aria-pressed")).toBe("false");
-    expect(sr.textContent).toBe("Listening stopped: the stream connection was lost.");
+    expect(sr.textContent).toBe(DROPPED);
     expect(audio.getAttribute("src")).toBeNull();
   });
 
-  it("reports a failed reconnect as a lost connection", async () => {
+  it("reports a failed reconnect as a dropped connection", async () => {
     let calls = 0;
     const fetchInfo = vi.fn(async () => {
       calls += 1;
-      if (calls > 1) throw new Error("Failed to fetch");
+      if (calls > 1) throw new TypeError("Failed to fetch");
       return { path: "/stream/SECRET.mp3" };
     });
     const { mode, audio, button, sr } = setup({ fetchInfo });
@@ -202,7 +224,7 @@ describe("stream mode", () => {
     audio.dispatchEvent(new Event("error"));
     await tick();
     expect(button.getAttribute("aria-pressed")).toBe("false");
-    expect(sr.textContent).toBe("Listening stopped: the stream connection was lost.");
+    expect(sr.textContent).toBe(DROPPED);
   });
 
   it("allows a fresh reconnect after the stream played again", async () => {
@@ -219,16 +241,21 @@ describe("stream mode", () => {
     expect(button.getAttribute("aria-pressed")).toBe("true");
   });
 
-  it("reports a stream that never played without retrying", async () => {
-    const { mode, audio, button, fetchInfo, sr } = setup();
-    mode.apply({ stream_mode: true, stream_state: "idle" });
-    button.focus();
-    await mode.toggleListen();
-    audio.dispatchEvent(new Event("error"));
-    await tick();
-    expect(fetchInfo).toHaveBeenCalledOnce();
-    expect(button.getAttribute("aria-pressed")).toBe("false");
-    expect(sr.textContent).toBe("Could not start listening: the stream did not load.");
+  it("maps a stream that never played by its media error code, without retrying", async () => {
+    for (const [code, expected] of [
+      [4, NOT_LOADED], [3, NOT_LOADED], [2, DROPPED], [null, NOT_LOADED],
+    ]) {
+      const { mode, audio, button, fetchInfo, sr } = setup();
+      mode.apply({ stream_mode: true, stream_state: "idle" });
+      button.focus();
+      await mode.toggleListen();
+      if (code) mediaError(audio, code);
+      audio.dispatchEvent(new Event("error"));
+      await tick();
+      expect(fetchInfo).toHaveBeenCalledOnce();
+      expect(button.getAttribute("aria-pressed")).toBe("false");
+      expect(sr.textContent).toBe(expected);
+    }
   });
 
   it("ignores media errors while not listening", async () => {
@@ -238,6 +265,58 @@ describe("stream mode", () => {
     await tick();
     expect(fetchInfo).not.toHaveBeenCalled();
     expect(sr.textContent).toBe("");
+  });
+
+  describe("stalled connection", () => {
+    afterEach(() => vi.useRealTimers());
+
+    it("stops and says so once when a stall lasts 15 seconds", async () => {
+      vi.useFakeTimers();
+      const { mode, audio, button, sr } = setup();
+      const say = vi.spyOn(sr, "textContent", "set");
+      mode.apply({ stream_mode: true, stream_state: "playing" });
+      await mode.toggleListen();
+      audio.dispatchEvent(new Event("playing"));
+      audio.dispatchEvent(new Event("stalled"));
+      await vi.advanceTimersByTimeAsync(10000);
+      // A second stall signal does not restart or double the countdown.
+      audio.dispatchEvent(new Event("waiting"));
+      await vi.advanceTimersByTimeAsync(4999);
+      expect(button.getAttribute("aria-pressed")).toBe("true");
+      await vi.advanceTimersByTimeAsync(1);
+      expect(button.getAttribute("aria-pressed")).toBe("false");
+      expect(audio.getAttribute("src")).toBeNull();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(sr.textContent).toBe(STALLED);
+
+      audio.dispatchEvent(new Event("waiting"));
+      await vi.advanceTimersByTimeAsync(20000);
+      expect(say.mock.calls.filter(([text]) => text === STALLED)).toHaveLength(1);
+    });
+
+    it("keeps listening when audio plays again within 15 seconds", async () => {
+      vi.useFakeTimers();
+      const { mode, audio, button, sr } = setup();
+      mode.apply({ stream_mode: true, stream_state: "playing" });
+      await mode.toggleListen();
+      audio.dispatchEvent(new Event("waiting"));
+      await vi.advanceTimersByTimeAsync(14000);
+      audio.dispatchEvent(new Event("playing"));
+      await vi.advanceTimersByTimeAsync(20000);
+      expect(button.getAttribute("aria-pressed")).toBe("true");
+      expect(sr.textContent).toBe("");
+    });
+
+    it("forgets a pending stall when the user stops listening", async () => {
+      vi.useFakeTimers();
+      const { mode, audio, sr } = setup();
+      mode.apply({ stream_mode: true, stream_state: "playing" });
+      await mode.toggleListen();
+      audio.dispatchEvent(new Event("stalled"));
+      await mode.toggleListen();
+      await vi.advanceTimersByTimeAsync(20000);
+      expect(sr.textContent).toBe("");
+    });
   });
 
   it("announces each station event once", async () => {
@@ -301,6 +380,15 @@ describe("stream mode", () => {
     mode.stop();
     expect(audio.getAttribute("src")).toBeNull();
     expect(button.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("leaves the audio element alone on pushes while not listening", () => {
+    const { mode, audio } = setup();
+    mode.apply({ stream_mode: false });
+    mode.apply({ stream_mode: false });
+    mode.stop();
+    expect(audio.pause).not.toHaveBeenCalled();
+    expect(audio.load).not.toHaveBeenCalled();
   });
 
   it("uses the estimate unless listening", () => {

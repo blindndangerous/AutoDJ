@@ -110,7 +110,6 @@ const btnListen       = document.getElementById("btn-listen");
 // Stream mode (`autodj serve --stream`): the server mixes, so this page is
 // a remote plus an optional listener.  See modules/stream-mode.js.
 const streamMode = createStreamMode({
-  doc: document,
   audio: document.getElementById("stream-audio"),
   button: btnListen,
   idleNote: document.getElementById("stream-idle-note"),
