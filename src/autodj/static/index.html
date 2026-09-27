@@ -105,6 +105,11 @@
              aria-atomic="true">
           Loading…
         </div>
+        <!-- Stream mode with no current track: stands in for the title.
+             Not a live region, and the live region above is emptied
+             silently, so "Set stopped" stays the one spoken report and a
+             page loaded while idle speaks nothing on its own. -->
+        <p id="now-playing-idle" hidden>Nothing playing. The station starts when someone listens.</p>
         <!-- Stream mode, idle.  Plain text, not a live region: the
              "Set stopped" station event is the one spoken report. -->
         <p id="stream-idle-note" class="stream-idle-note" hidden></p>

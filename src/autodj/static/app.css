@@ -136,7 +136,8 @@
     }
 
     /* ---- Now playing ---- */
-    #now-playing-announce {
+    #now-playing-announce,
+    #now-playing-idle {
       font-size: 1.2rem;
       font-weight: 600;
       line-height: 1.3;

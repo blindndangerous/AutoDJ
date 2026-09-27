@@ -41,6 +41,7 @@ if (isDebug()) {
 
 const connStatus   = document.getElementById("conn-status");
 const npAnnounce   = document.getElementById("now-playing-announce");
+const npIdle       = document.getElementById("now-playing-idle");
 const npMeta       = document.getElementById("now-playing-meta");
 const cueSummary   = document.getElementById("cue-summary");
 const cueDetails   = document.getElementById("cue-details");
@@ -173,6 +174,7 @@ function clearProtectedSessionData() {
   historyItems.length = 0;
   historyList.replaceChildren();
   npAnnounce.textContent = "";
+  npIdle.hidden = true;
   npMeta.textContent = "";
   setPlaybackStale(false);
   nextText.textContent = "—";
@@ -354,6 +356,13 @@ function applyState(s) {
   // Now Playing
   const trackKey   = s.current_track ? s.current_track.path : null;
   const trackLabel = fmtTrack(s.current_track);
+  // Stream mode with nothing playing: the fixed idle line (not a live
+  // region) replaces the title, and the live region is emptied, which
+  // screen readers do not speak.  "Set stopped" is the one spoken report,
+  // and a page loaded while idle loses "Loading…" without a word.
+  const streamIdle = inStream && !trackKey;
+  if (npIdle.hidden === streamIdle) npIdle.hidden = !streamIdle;
+  if (streamIdle && npAnnounce.firstChild) npAnnounce.replaceChildren();
 
   if (!trackKey || trackKey !== lastTrackKey) _seekController?.cancel();
   if (trackKey !== lastTrackKey) {
@@ -368,7 +377,7 @@ function applyState(s) {
     const spokenOnly = document.createElement("span");
     spokenOnly.className = "visually-hidden";
     spokenOnly.textContent = details.slice(bpmTail.length);
-    npAnnounce.replaceChildren(trackLabel + bpmTail, spokenOnly);
+    if (!streamIdle) npAnnounce.replaceChildren(trackLabel + bpmTail, spokenOnly);
     lastTrackKey = trackKey;
     // Update browser titlebar: "AutoDJ - Artist - Title - Album"
     const t = s.current_track;

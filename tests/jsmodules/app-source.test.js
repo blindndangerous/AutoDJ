@@ -1385,10 +1385,50 @@ describe("stream mode", () => {
       .toBe(false);
   });
 
+  it("shows a fixed idle line, not Loading, on a page loaded while idle", async () => {
+    await setupApp({
+      initialState: { ...streamState, current_track: null, stream_state: "idle" },
+    });
+    const idleLine = document.getElementById("now-playing-idle");
+    expect(idleLine.hidden).toBe(false);
+    expect(idleLine.textContent)
+      .toBe("Nothing playing. The station starts when someone listens.");
+    expect(idleLine.hasAttribute("aria-live")).toBe(false);
+    // Emptied, which is not spoken; "Loading…" must not linger.
+    expect(document.getElementById("now-playing-announce").textContent).toBe("");
+  });
+
+  it("does not speak the title region alongside Set stopped", async () => {
+    const { webSocket } = await setupApp({
+      initialState: streamState,
+      onRequest: () => lyricsFor("a.mp3"),
+    });
+    const title = document.getElementById("now-playing-announce");
+    const idleLine = document.getElementById("now-playing-idle");
+    expect(title.textContent).toContain("Artist");
+    expect(idleLine.hidden).toBe(true);
+    webSocket.onmessage({ data: JSON.stringify({
+      ...streamState,
+      current_track: null,
+      stream_state: "idle",
+      stream_event: { id: "boot", seq: 2, name: "set_stopped" },
+    }) });
+    expect(title.textContent).toBe("");
+    expect(title.textContent).not.toContain("—");
+    expect(idleLine.hidden).toBe(false);
+    // The next set's first track is announced as usual.
+    webSocket.onmessage({ data: JSON.stringify({
+      ...streamState, current_track: { path: "b.mp3", artist: "B", title: "Next" },
+    }) });
+    expect(title.textContent).toContain("Next");
+    expect(idleLine.hidden).toBe(true);
+  });
+
   it("leaves browser mode unchanged", async () => {
     await setupApp();
     expect(document.getElementById("btn-listen").hidden).toBe(true);
     expect(document.getElementById("stream-idle-note").hidden).toBe(true);
+    expect(document.getElementById("now-playing-idle").hidden).toBe(true);
     expect(document.getElementById("progress-track").hidden).toBe(false);
     expect(document.getElementById("progress-bar-label").getAttribute("aria-hidden"))
       .toBe("true");
