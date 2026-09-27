@@ -106,11 +106,12 @@ const discEvery       = document.getElementById("disc-every");
 const settingsStatus  = document.getElementById("settings-status");
 const volAnnounce     = document.getElementById("vol-announce");
 const btnListen       = document.getElementById("btn-listen");
+const streamAudio     = document.getElementById("stream-audio");
 
 // Stream mode (`autodj serve --stream`): the server mixes, so this page is
 // a remote plus an optional listener.  See modules/stream-mode.js.
 const streamMode = createStreamMode({
-  audio: document.getElementById("stream-audio"),
+  audio: streamAudio,
   button: btnListen,
   idleNote: document.getElementById("stream-idle-note"),
   srStatus: document.getElementById("sr-status"),
@@ -320,6 +321,12 @@ function applyState(s) {
   // Stream mode never starts the deck engine, whatever browser_playback
   // says, so every browser-playback branch below reads browserMode.
   const inStream = Boolean(s.stream_mode);
+  // A mode flip (server restart) can hide the control that has focus:
+  // Listen here leaving stream mode, or the seek slider entering it.
+  // Focus goes to Play / Pause instead of falling to the page top.
+  const focused = document.activeElement;
+  const losesFocus = (!inStream && focused === btnListen)
+    || (inStream && focused && focused.id === "progress-track");
   _lastStreamMode = inStream;
   streamMode.apply(s);
   const browserMode = Boolean(s.browser_playback) && !inStream;
@@ -475,7 +482,9 @@ function applyState(s) {
   // every time the user nudges it.  Skip the overwrite while the user
   // is actively dragging / arrow-keying so the in-flight POST round-trip
   // can't fight the input.
-  if (Date.now() - _lastUserVolTs > 600) {
+  // In stream mode the slider and Mute belong to this page's own
+  // listening, so the station's volume and mute are not mirrored.
+  if (!inStream && Date.now() - _lastUserVolTs > 600) {
     const volInt = _gainToSlider(s.volume);
     volSlider.value = volInt;
     volPct.textContent = volInt + "%";
@@ -485,11 +494,7 @@ function applyState(s) {
   // Mute is a toggle with a fixed name, so NVDA says "Mute, toggle
   // button, pressed" instead of the contradictory "Unmute, pressed".
   // Only the hidden glyph changes.
-  const isMuted = s.is_muted;
-  setAttributeIfChanged(btnMute, "aria-pressed", isMuted ? "true" : "false");
-  setButtonContent(btnMute, isMuted
-    ? '<span aria-hidden="true">\uD83D\uDD07</span> Mute'
-    : '<span aria-hidden="true">\uD83D\uDD0A</span> Mute');
+  renderMute(inStream ? streamAudio.muted : s.is_muted);
 
   // Up Next is not a live region: it changes in the same tick as the
   // title, and announcing both read two bare track names back to back.
@@ -548,6 +553,16 @@ function applyState(s) {
       _settingsEls(),
     );
   }
+
+  // Last, so Play / Pause already has its enabled state for this push.
+  if (losesFocus) (btnPause.disabled ? btnSkip : btnPause).focus();
+}
+
+function renderMute(isMuted) {
+  setAttributeIfChanged(btnMute, "aria-pressed", isMuted ? "true" : "false");
+  setButtonContent(btnMute, isMuted
+    ? '<span aria-hidden="true">\uD83D\uDD07</span> Mute'
+    : '<span aria-hidden="true">\uD83D\uDD0A</span> Mute');
 }
 
 // ----------------------------------------------------------------
@@ -1426,6 +1441,12 @@ if (btnShuffle) {
 }
 
 btnMute.addEventListener("click", async () => {
+  // Stream mode: mute this page's listening only, never the station.
+  if (_lastStreamMode) {
+    streamAudio.muted = !streamAudio.muted;
+    renderMute(streamAudio.muted);
+    return;
+  }
   const epoch = captureAuthenticatedRequestEpoch();
   let data;
   try {
@@ -1524,19 +1545,13 @@ volSlider.addEventListener("input", () => {
   volSlider.setAttribute("aria-valuetext", `${val}%`);
   const spokenBySlider = document.activeElement === volSlider;
   _lastUserVolTs = Date.now();
-  // Drive the Web Audio gain immediately so the change is audible
-  // without waiting on the server round-trip.
-  setVolume(_sliderToGain(val));
-  clearTimeout(volTimer);
-  volTimer = setTimeout(() => {
-    // Send the perceptual gain (matches what we drive locally) so the
-    // server-side player + WebSocket echo stay in sync with the slider.
-    void requestJsonBestEffort("/api/volume", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ volume: _sliderToGain(val) }),
-    }, reportBackgroundRequestError);
-  }, 120);
+  if (_lastStreamMode) {
+    // Stream mode: this page's listening only; the station keeps its
+    // volume and nothing goes to the server.
+    streamAudio.volume = _sliderToGain(val);
+  } else {
+    sendVolume(val);
+  }
   // Polite announce for shortcut presses, debounced so holding the key
   // does not read every intermediate step.
   // Cleared 3 s after the announcement so AT users running with a
@@ -1552,6 +1567,22 @@ volSlider.addEventListener("input", () => {
     }
   }, 250);
 });
+
+function sendVolume(val) {
+  // Drive the Web Audio gain immediately so the change is audible
+  // without waiting on the server round-trip.
+  setVolume(_sliderToGain(val));
+  clearTimeout(volTimer);
+  volTimer = setTimeout(() => {
+    // Send the perceptual gain (matches what we drive locally) so the
+    // server-side player + WebSocket echo stay in sync with the slider.
+    void requestJsonBestEffort("/api/volume", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ volume: _sliderToGain(val) }),
+    }, reportBackgroundRequestError);
+  }, 120);
+}
 
 // ----------------------------------------------------------------
 // Keyboard shortcuts moved to ./modules/hotkeys.js.  Wired here,
@@ -1594,9 +1625,18 @@ import {
   installMediaActionHandlers,
 } from "./modules/media-session.js";
 
+// Stream mode: the OS Play / Pause keys toggle Listen here, like Space.
+function toggleListenFromMediaKey() {
+  if (!_lastStreamMode) return false;
+  btnListen.click();
+  return true;
+}
+
 installMediaActionHandlers({
   isEnabled: authenticatedInteractionEnabled,
+  onPause: toggleListenFromMediaKey,
   onPlay: async () => {
+    if (toggleListenFromMediaKey()) return true;
     if (!playbackEnabled && _lastBrowserPlayback) {
       try {
         await unlockAndPlay();

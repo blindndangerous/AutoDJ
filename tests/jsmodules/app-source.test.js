@@ -1485,6 +1485,122 @@ describe("stream mode", () => {
     expect(linerDeps.testOnServer()).toBe(false);
   });
 
+  it("keeps volume and mute on this page's own listening in stream mode", async () => {
+    const setVolume = vi.fn();
+    const { fetchImpl, webSocket } = await setupApp({
+      audio: { setVolume },
+      initialState: streamState,
+      onRequest: () => lyricsFor("a.mp3"),
+    });
+    const audio = document.getElementById("stream-audio");
+    const slider = document.querySelector("#vol");
+    const region = document.querySelector("#vol-announce");
+    const mute = document.querySelector("#btn-mute");
+    const serverCalls = () => fetchImpl.mock.calls
+      .filter(([url]) => url === "/api/volume" || url === "/api/mute");
+
+    // The arrow-key hotkeys drive the slider with focus elsewhere.
+    slider.value = "50";
+    slider.dispatchEvent(new Event("input"));
+    expect(audio.volume).toBeCloseTo(10 ** (-30 / 20), 4);
+    expect(slider.getAttribute("aria-valuetext")).toBe("50%");
+    await vi.waitFor(() => expect(region.textContent).toBe("Volume 50%."));
+    expect(setVolume).not.toHaveBeenCalled();
+
+    // M and the Mute button toggle only this page's audio.
+    mute.click();
+    await Promise.resolve();
+    expect(audio.muted).toBe(true);
+    expect(mute.getAttribute("aria-pressed")).toBe("true");
+    expect(mute.textContent.replace(/[^A-Za-z]/g, "")).toBe("Mute");
+
+    // The station's own volume and mute never overwrite the page's.
+    await new Promise((resolve) => setTimeout(resolve, 650));
+    webSocket.onmessage({ data: JSON.stringify({
+      ...streamState, volume: 0.2, is_muted: false,
+    }) });
+    expect(slider.value).toBe("50");
+    expect(mute.getAttribute("aria-pressed")).toBe("true");
+
+    mute.click();
+    await Promise.resolve();
+    expect(audio.muted).toBe(false);
+    expect(mute.getAttribute("aria-pressed")).toBe("false");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(serverCalls()).toHaveLength(0);
+  });
+
+  it("still sends volume and mute to the server outside stream mode", async () => {
+    const { fetchImpl } = await setupApp({
+      initialState: { current_track: { path: "a.mp3", title: "A" } },
+      onRequest: (url) => url === "/api/mute"
+        ? jsonResponse({ muted: true })
+        : jsonResponse({ volume: 0.5 }),
+    });
+    const slider = document.querySelector("#vol");
+    slider.value = "60";
+    slider.dispatchEvent(new Event("input"));
+    document.querySelector("#btn-mute").click();
+    await vi.waitFor(() => expect(fetchImpl.mock.calls.map(([url]) => url))
+      .toEqual(expect.arrayContaining(["/api/volume", "/api/mute"])));
+    expect(document.getElementById("stream-audio").muted).toBe(false);
+  });
+
+  it("sends the OS media Play and Pause keys to Listen here in stream mode", async () => {
+    const { webSocket } = await setupApp({
+      initialState: streamState,
+      onRequest: () => lyricsFor("a.mp3"),
+    });
+    const mediaSession = await import("../../src/autodj/static/modules/media-session.js");
+    const options = mediaSession.installMediaActionHandlers.mock.calls[0][0];
+    const listenClick = vi.spyOn(document.getElementById("btn-listen"), "click")
+      .mockImplementation(() => {});
+
+    expect(await options.onPlay()).toBe(true);
+    expect(await options.onPause()).toBe(true);
+    expect(listenClick).toHaveBeenCalledTimes(2);
+
+    webSocket.onmessage({ data: JSON.stringify({ ...streamState, stream_mode: false }) });
+    expect(await options.onPause()).toBe(false);
+    expect(listenClick).toHaveBeenCalledTimes(2);
+  });
+
+  it("moves focus to Play / Pause when a mode change hides the focused control", async () => {
+    const track = { path: "a.mp3", title: "A" };
+    const { webSocket } = await setupApp({
+      initialState: { ...streamState, current_track: track },
+      onRequest: () => lyricsFor("a.mp3"),
+    });
+    const listen = document.getElementById("btn-listen");
+    listen.focus();
+    webSocket.onmessage({ data: JSON.stringify({
+      ...streamState, current_track: track, stream_mode: false,
+    }) });
+    expect(listen.hidden).toBe(true);
+    expect(document.activeElement.id).toBe("btn-pause");
+
+    const seek = document.getElementById("progress-track");
+    seek.focus();
+    webSocket.onmessage({ data: JSON.stringify({ ...streamState, current_track: track }) });
+    expect(seek.hidden).toBe(true);
+    expect(document.activeElement.id).toBe("btn-pause");
+  });
+
+  it("answers the BPM and remaining-time keys from server state without --stream", async () => {
+    await setupApp({
+      initialState: {
+        browser_playback: false,
+        current_track: { path: "a.mp3", title: "A", bpm: 120 },
+        duration: 180,
+        elapsed: 30,
+      },
+      onRequest: () => lyricsFor("a.mp3"),
+    });
+    const options = await hotkeyOptions();
+    expect(options.getBpm()).toBe(120);
+    expect(options.getRemaining()).toBe(150);
+  });
+
   it("stops listening when the session expires", async () => {
     let expire = false;
     await setupApp({
