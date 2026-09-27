@@ -33,6 +33,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `--server-audio` now plays in stereo and gapless between tracks, using the same mix bus that
   drives stream mode instead of a fresh sound-card connection per track.
+- Harmonic mixing now has one setting, `harmonic_mode`, which both turns it on and picks the
+  rule: `off`, `compatible`, `strict`, `energy_boost`, `mood_change` or `neighbour`. The default
+  is `off`, so nothing changes if you never turned harmonic mixing on. If your `config.toml` has
+  `harmonic_mixing = true`, replace it with `harmonic_mode = "compatible"` (or another mode).
+  `autodj play` and `autodj serve` take `--harmonic-mode MODE` instead of
+  `--harmonic` / `--no-harmonic`.
+- A `harmonic_mode` in `config.toml` that is not one of those names, including `true` or
+  `false`, now stops AutoDJ with an error naming the setting. It used to be accepted and treated
+  as `compatible`.
+
+### Removed
+
+- The `harmonic_mixing` setting, in `config.toml`, in the saved web settings (`web_state.json`)
+  and in `POST /api/djmix`. A leftover `harmonic_mixing` key is ignored like any other unknown
+  key, so harmonic mixing stays off until you set `harmonic_mode`.
+- `autodj serve --no-playback`. It never did anything and was deprecated in 0.17.0; passing it
+  is now an error. Browser audio is still the default and `--server-audio` still opts into
+  server audio.
+- Saved web settings from older versions are no longer converted. A `web_state.json` that stores
+  `harmonic_mode` as `true` or `false` has that value ignored with a warning, and a
+  `web_state.json` with no `schema_version` (written before settings were versioned) is ignored
+  as a whole with a warning. Re-save your settings from the web page to write a current file.
+- `autodj.player` no longer re-exports `apply_eq`, `make_eq_filters`, `make_eq_state` and
+  `reset_eq_state`. Import them from `autodj.eq`.
 
 ### Fixed
 
