@@ -11,6 +11,9 @@
 //     "Set stopped" already said it once.
 //   - A station event is spoken once per (id, seq).  The first event seen
 //     after page load is only remembered, so a reload never repeats it.
+//   - "Make new link" on this page speaks its own confirmation, so the
+//     link_changed event its rotation causes is not spoken again here
+//     (claimLinkChange).  Other open pages still hear the event once.
 
 import { announceStatus } from "./live-region.js";
 
@@ -66,6 +69,9 @@ export function createStreamMode({ audio, button, idleNote, srStatus, fetchInfo 
   let stallTimer = null;
   let seenFirstApply = false;
   let lastEventKey = null;
+  // Set while this page's own "Make new link" is in flight.  The token
+  // lets a late release leave a newer claim alone.
+  let linkClaim = null;
 
   function say(text, tone = "info") {
     announceStatus(srStatus, text, { dwellMs: 4000, force: true, tone });
@@ -173,6 +179,10 @@ export function createStreamMode({ audio, button, idleNote, srStatus, fetchInfo 
     }
     if (!event || key === lastEventKey) return;
     lastEventKey = key;
+    if (event.name === "link_changed" && linkClaim) {
+      linkClaim = null;
+      return;
+    }
     const text = EVENT_TEXT[event.name];
     if (text) say(text);
   }
@@ -208,5 +218,201 @@ export function createStreamMode({ audio, button, idleNote, srStatus, fetchInfo 
     return STREAM_DELAY_ESTIMATE_S;
   }
 
-  return { apply, toggleListen, delaySeconds, stop, isListening: () => listening };
+  // Marks the next link_changed event as already announced by this page.
+  // Returns a release for a rotation that failed, so a later change made
+  // elsewhere is still spoken.
+  function claimLinkChange() {
+    const token = {};
+    linkClaim = token;
+    return () => {
+      if (linkClaim === token) linkClaim = null;
+    };
+  }
+
+  return {
+    apply, toggleListen, delaySeconds, stop, claimLinkChange,
+    isListening: () => listening,
+  };
+}
+
+// ----------------------------------------------------------------
+// Settings > Stream: the address, the playlist file, the quality and
+// "Make new link".
+//
+// Speech rules:
+//   - The listener count is plain text, never a live region, and is only
+//     rewritten when the number changes.
+//   - Copy and "Make new link" are user actions, so their confirmations
+//     are forced: pressing Copy twice is heard twice.
+//   - Failures of a user action go to the settings region with the error
+//     tone, like every other settings failure.
+//   - The quality select is never rewritten while it has focus.
+// ----------------------------------------------------------------
+
+const LINK_MADE_TEXT = "New stream link made. The old link no longer works.";
+const COPIED_TEXT = "Stream address copied.";
+const COPY_FAILED_TEXT = "Could not copy. Select the address and copy it yourself.";
+
+function listenerText(count) {
+  return `${count} listener${count === 1 ? "" : "s"}`;
+}
+
+// A 401 already opened the sign-in dialog; saying more would only talk
+// over it.
+function isAuthFailure(err) {
+  return Boolean(err) && err.name === "AuthenticationRequiredError";
+}
+
+function eventKey(event) {
+  return event ? `${event.id}|${event.seq}` : null;
+}
+
+export function createStreamSettings({
+  doc,
+  fetchInfo,
+  rotate,
+  saveBitrate,
+  claimLinkChange = () => () => {},
+  srStatus,
+  settingsStatus,
+}) {
+  const fieldset = doc.getElementById("stream-settings");
+  const url = doc.getElementById("stream-url");
+  const copy = doc.getElementById("stream-copy");
+  const m3u = doc.getElementById("stream-m3u");
+  const bitrate = doc.getElementById("stream-bitrate");
+  const rotateBtn = doc.getElementById("stream-rotate");
+  const dialog = doc.getElementById("stream-rotate-dialog");
+  const listeners = doc.getElementById("stream-listeners");
+  let active = false;
+  let lastEventKey = null;
+  // Bumped by every source of stream details, so a slow lookup cannot
+  // overwrite a newer link.
+  let generation = 0;
+  // The quality the server last confirmed, for undoing a failed save.
+  let savedBitrate = bitrate.value;
+
+  function fill(info) {
+    generation += 1;
+    url.value = `${doc.location.origin}${info.path}`;
+    m3u.setAttribute("href", info.m3u_path);
+    savedBitrate = String(info.bitrate);
+    if (doc.activeElement !== bitrate) bitrate.value = savedBitrate;
+  }
+
+  async function refresh() {
+    if (!active) return;
+    const mine = ++generation;
+    try {
+      const info = await fetchInfo();
+      if (mine === generation && active) fill(info);
+    } catch (err) {
+      if (mine !== generation || !active || isAuthFailure(err)) return;
+      announceStatus(settingsStatus, `Could not load the stream address: ${err.message}`,
+        { dwellMs: 6000, tone: "error" });
+    }
+  }
+
+  function hide() {
+    active = false;
+    generation += 1;
+    lastEventKey = null;
+    if (dialog.open) dialog.close();
+    fieldset.hidden = true;
+  }
+
+  // Sign-out: the address is a secret, so it leaves the page.
+  function reset() {
+    hide();
+    url.value = "";
+    m3u.removeAttribute("href");
+    listeners.textContent = "";
+  }
+
+  function apply(state) {
+    if (!state || !state.stream_mode) {
+      if (!active) return;
+      // A server restart without --stream: focus inside the section
+      // would fall to the page top, so it goes to the Settings heading.
+      const hadFocus = fieldset.contains(doc.activeElement) || dialog.open;
+      hide();
+      if (hadFocus) fieldset.closest("details")?.querySelector("summary")?.focus();
+      return;
+    }
+    if (fieldset.hidden) fieldset.hidden = false;
+    const text = listenerText(Number(state.stream_listeners) || 0);
+    if (listeners.textContent !== text) listeners.textContent = text;
+    const key = eventKey(state.stream_event);
+    if (!active) {
+      active = true;
+      lastEventKey = key;
+      void refresh();
+      return;
+    }
+    if (key === lastEventKey) return;
+    lastEventKey = key;
+    // Another page made a new link: the address shown here is dead.
+    if (state.stream_event?.name === "link_changed") void refresh();
+  }
+
+  // Plain http is not a secure context, so it has no clipboard API; the
+  // older selection copy still works there.
+  function copyBySelection() {
+    url.focus();
+    url.select();
+    try {
+      return typeof doc.execCommand === "function" && doc.execCommand("copy") === true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  copy.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(url.value);
+    } catch (_err) {
+      if (!copyBySelection()) {
+        // Focus stays on the selected address, ready for Ctrl+C.
+        announceStatus(srStatus, COPY_FAILED_TEXT, { dwellMs: 6000, force: true, tone: "error" });
+        return;
+      }
+      copy.focus();
+    }
+    announceStatus(srStatus, COPIED_TEXT, { dwellMs: 3000, force: true });
+  });
+
+  bitrate.addEventListener("change", async () => {
+    const chosen = bitrate.value;
+    const ok = await saveBitrate(Number(chosen), bitrate);
+    if (ok) savedBitrate = chosen;
+    else if (bitrate.value === chosen) bitrate.value = savedBitrate;
+  });
+
+  rotateBtn.addEventListener("click", () => {
+    // Escape closes without a submitter and leaves returnValue alone, so
+    // it must not still say "confirm" from last time.
+    dialog.returnValue = "";
+    dialog.showModal();
+  });
+
+  dialog.addEventListener("close", async () => {
+    if (!active) return;
+    // Cancel, Escape and confirm all leave focus on the button.
+    rotateBtn.focus();
+    if (dialog.returnValue !== "confirm") return;
+    const release = claimLinkChange();
+    try {
+      const info = await rotate();
+      if (!active) return;
+      fill(info);
+      announceStatus(srStatus, LINK_MADE_TEXT, { dwellMs: 5000, force: true });
+    } catch (err) {
+      release();
+      if (!active || isAuthFailure(err)) return;
+      announceStatus(settingsStatus, `Could not make a new link: ${err.message}`,
+        { dwellMs: 6000, force: true, tone: "error" });
+    }
+  });
+
+  return { apply, refresh, reset };
 }
