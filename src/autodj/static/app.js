@@ -1,6 +1,4 @@
-// Pure helpers extracted to ./modules/dom-helpers.js.  Aliased back to
-// the historical underscore-prefixed names so the rest of this file
-// keeps working without a sweep.
+// Pure helpers live in ./modules/dom-helpers.js.
 import {
   isDebug,
   dbg,
@@ -1528,9 +1526,7 @@ btnDiscovery.addEventListener("click", () => {
 let volTimer = null;
 let volAnnounceTimer = null;
 
-// Live-region clear helper extracted to ./modules/live-region.js.
-// Re-bound under the legacy underscore name so existing call sites
-// keep working without a sweep.
+// Live-region helpers live in ./modules/live-region.js.
 import {
   announceStatus,
   clearLiveRegionLater,
