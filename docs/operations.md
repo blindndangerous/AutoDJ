@@ -30,9 +30,15 @@ this machine that it can detect: the hostname, `<hostname>.local`, the fully qua
 non-loopback address, and `localhost`, `127.0.0.1` and `::1`. With `--ssl-certfile` and
 `--ssl-keyfile` it allows the matching `https://` origins too. It uses a configured
 `access_token` or `AUTODJ_ACCESS_TOKEN` when there is one; otherwise it loads or creates
-`<index_dir>/.access-token` (mode 0600). Startup prints the addresses to open and the current
-pairing code with how long it stays valid; it never prints the token. `uv run autodj doctor`
-shows the detected hosts and whether the token will be created.
+`<index_dir>/.access-token`. On Linux and macOS only you can read that file. On Windows it gets the index folder's permissions, and if the index folder is on a network share, anyone who can read the share can read the token. Deleting `.access-token` makes the next start create a new
+token, which ends every paired session; each browser must pair again. Startup prints the addresses
+to open and the current pairing code with how long it stays valid; it never prints the token.
+`uv run autodj devices pairing-code` also works with the saved token and says so on stderr.
+
+`uv run autodj doctor` shows the detected hosts and whether the token will be created. Doctor sees
+LAN mode only from `[server] lan` or `AUTODJ_LAN`, not from a `--lan` given only to
+`autodj serve`. Name lookups are given two seconds; on a machine with broken DNS, detection keeps
+the hostname, the `.local` name and the route address.
 
 ```bash
 uv run autodj serve --lan --ssl-certfile radio.pem --ssl-keyfile radio-key.pem

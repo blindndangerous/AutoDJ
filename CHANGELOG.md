@@ -13,8 +13,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `autodj serve --lan` opens AutoDJ to your local network with one switch. It listens on all
   interfaces, allows only this machine's own names and addresses (hostname, `.local` name, IP
   addresses) plus any you configure, and keeps pairing on. If no access token is configured it
-  creates one in `index/.access-token`, readable only by you. Startup prints the addresses to open
-  and the pairing code. `[server] lan = true` and `AUTODJ_LAN=1` do the same, `autodj doctor`
+  creates one in `index/.access-token`. On Linux and macOS only you can read that file; on Windows
+  it gets the index folder's permissions, so on a network share anyone who can read the share can
+  read the token. Startup prints the addresses to open and the pairing code. `[server] lan = true` and `AUTODJ_LAN=1` do the same, `autodj doctor`
   shows the detected hosts, and `autodj devices pairing-code` works with the saved token. The
   Compose `lan` profile now uses it too. `--allowed-host`, `--allowed-origin` and
   `--access-token` still work but are hidden from `--help` as advanced overrides.

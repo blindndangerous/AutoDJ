@@ -97,8 +97,9 @@ it permanent, set `[server] lan = true` in `config.toml` or `AUTODJ_LAN=1`.
 
 `--lan` listens on all interfaces, allows only this machine's own names and addresses in the
 browser's address bar, and keeps pairing on. It creates the pairing secret in
-`index/.access-token` the first time, readable only by you. For HTTPS, add `--ssl-certfile` and
-`--ssl-keyfile`. See [Operations](docs/operations.md) for containers, custom DNS names and other
+`index/.access-token` the first time. On Linux and macOS only you can read that file. On Windows
+it gets the index folder's permissions, and if the index folder is on a network share, anyone who
+can read the share can read the token. For HTTPS, add `--ssl-certfile` and `--ssl-keyfile`. See [Operations](docs/operations.md) for containers, custom DNS names and other
 advanced overrides.
 
 ## Commands

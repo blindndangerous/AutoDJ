@@ -107,13 +107,22 @@ machine does not know about, such as a CNAME in router DNS, are refused until ad
 also uses, that address is allowed too; this widens the Host check but does not bypass pairing.
 
 When no token is configured, `--lan` stores a generated 43-character token in
-`<index_dir>/.access-token`, written atomically with mode 0600 and regenerated if the file is
-empty or too short. An unreadable file stops startup with an error instead of silently replacing
+`<index_dir>/.access-token`, written atomically and regenerated if the file is empty or too
+short. On Linux and macOS the file has mode 0600, so only the owner can read it. On Windows the
+mode call does nothing and the file gets the index folder's permissions; if the index folder is
+on a network share, anyone who can read that share can read the token and derive pairing codes. An unreadable file stops startup with an error instead of silently replacing
 the token. A configured `access_token` or `AUTODJ_ACCESS_TOKEN` always wins. Anyone who can read
 the index directory can derive pairing codes, the same as for a token in `config.local.toml`;
 deleting the file rotates the token and ends every paired session on the next start. Startup
 prints the addresses and pairing code, never the token. `--lan --insecure-lan` keeps the
 automatic allowlists without any token.
+
+Name lookups for detection (the fully qualified name and the resolver addresses) run in a
+background thread that start-up waits on for at most two seconds, so broken DNS cannot stall
+startup. A fully qualified name is used only when it extends the hostname and does not end in
+`.arpa`, so ISP reverse-DNS names are not allowed. Names whose first label is `localhost` are
+skipped. Inside a container the start-up block prints only the explicitly configured hosts,
+because container addresses are not reachable from the network; they are still allowed.
 
 ## Request and audit records
 
