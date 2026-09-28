@@ -57,7 +57,6 @@ class TestNonFiniteRejected:
         resp = _post_raw(client, "/api/playback-settings", f'{{"crossfade_seconds": {token}}}')
         assert resp.status_code == 422
         _assert_status_healthy(client)
-        assert client.get("/api/settings").status_code == 200
 
     def test_mood_arc_hours(self, client, token: str) -> None:
         resp = _post_raw(client, "/api/playback-settings", f'{{"mood_arc_hours": {token}}}')

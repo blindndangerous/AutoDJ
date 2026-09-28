@@ -14,6 +14,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   fade-in or liner trigger, or a mood arc shorter than 15 minutes. Applying a saved profile with
   such a value, or with NaN or Infinity in it, now fails with an error and changes nothing.
 
+### Removed
+
+- `GET /api/settings` and `GET /api/profiles/{name}`. The web page never used them; the settings
+  are in `GET /api/status` under `settings`.
+
 ### Fixed
 
 - The liner ducking level now only accepts -30 to 0 dB. A positive value used to boost the music

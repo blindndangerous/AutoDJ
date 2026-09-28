@@ -533,28 +533,6 @@ class TestProfiles:
         body = tc.get("/api/profiles").json()
         assert "Wakeup" in body["profiles"]
 
-    def test_profile_get_round_trip(self, bridge, tmp_path) -> None:
-        from fastapi.testclient import TestClient
-
-        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
-        (tmp_path / "idx").mkdir()
-
-        tc = TestClient(create_app(bridge))
-        tc.post(
-            "/api/profiles",
-            json={
-                "name": "Workout",
-                "bpm_lo": 120,
-                "bpm_hi": 140,
-                "beat_sync_fx": True,
-            },
-        )
-        body = tc.get("/api/profiles/Workout").json()
-        assert body["name"] == "Workout"
-        assert body["bpm_lo"] == 120
-        assert body["bpm_hi"] == 140
-        assert body["beat_sync_fx"] is True
-
     def test_profile_invalid_name_rejected(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
@@ -663,8 +641,7 @@ class TestProfiles:
         assert "crossfade_secs" in resp.text
         assert "Typo" not in tc.get("/api/profiles").json()["profiles"]
 
-    @pytest.mark.parametrize("route", ["get", "apply"])
-    def test_stored_profile_with_unknown_key_is_400(self, bridge, tmp_path, route) -> None:
+    def test_stored_profile_with_unknown_key_is_400(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
         bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
@@ -676,10 +653,7 @@ class TestProfiles:
         bridge.save_persistent_state = MagicMock()
         tc = TestClient(create_app(bridge))
 
-        if route == "get":
-            resp = tc.get("/api/profiles/Old")
-        else:
-            resp = tc.post("/api/profiles/Old/apply")
+        resp = tc.post("/api/profiles/Old/apply")
 
         assert resp.status_code == 400
         assert "unknown profile keys: ['extra']" in resp.json()["detail"]
@@ -708,24 +682,6 @@ class TestProfiles:
         assert resp.status_code == 400
         assert pb.crossfade_seconds == pytest.approx(3.0)
         bridge.save_persistent_state.assert_not_called()
-
-    def test_profile_get_bad_name_400(self, bridge, tmp_path) -> None:
-        from fastapi.testclient import TestClient
-
-        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
-        (tmp_path / "idx").mkdir()
-        tc = TestClient(create_app(bridge))
-        resp = tc.get("/api/profiles/..%2Fescape")
-        assert resp.status_code in (400, 404)
-
-    def test_profile_get_missing_404(self, bridge, tmp_path) -> None:
-        from fastapi.testclient import TestClient
-
-        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
-        (tmp_path / "idx").mkdir()
-        tc = TestClient(create_app(bridge))
-        resp = tc.get("/api/profiles/Nope")
-        assert resp.status_code == 404
 
     def test_profile_delete_bad_name_400(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
@@ -778,7 +734,6 @@ class TestProfiles:
 
         assert tc.post("/api/profiles", json={"name": "Io"}).status_code == 200
         assert tc.get("/api/profiles").status_code == 200
-        assert tc.get("/api/profiles/Io").status_code == 200
         assert tc.post("/api/profiles/Io/apply").status_code == 200
         assert tc.delete("/api/profiles/Io").status_code == 200
         files = {"file": ("b.mp3", b"y", "audio/mpeg")}
@@ -2073,7 +2028,7 @@ class TestServeFunction:
 
 class TestSettingsEndpoints:
     def test_get_settings(self, client) -> None:
-        data = client.get("/api/settings").json()
+        data = client.get("/api/status").json()["settings"]
         assert "transition" in data
         assert "djmix" in data
         assert "playback" in data

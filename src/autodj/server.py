@@ -407,14 +407,14 @@ __all__ = ["PlayerBridge", "create_app", "serve"]
 
 
 FiniteFloat = Annotated[float, Field(allow_inf_nan=False)]
-NonNegativeFloat = Annotated[float, Field(ge=0.0, allow_inf_nan=False)]
 """Float that refuses the ``NaN``/``Infinity`` JSON tokens.
 
 pydantic accepts them by default, but they cannot be re-encoded as JSON:
 one non-finite value stored in the player config turns every later
-``/api/status``, ``/api/settings`` and WebSocket frame into a 500 or an
+``/api/status`` and WebSocket frame into a 500 or an
 unparseable payload until the process restarts.  Reject them at the edge.
 """
+NonNegativeFloat = Annotated[float, Field(ge=0.0, allow_inf_nan=False)]
 
 
 class VolumeBody(BaseModel):
@@ -1643,14 +1643,6 @@ def create_app(
         store = _profile_store()
         return {"profiles": await asyncio.to_thread(store.list_names), "root": str(store.root)}
 
-    # The store validates every name before touching the filesystem.
-    @app.get("/api/profiles/{name}")
-    async def api_profile_get(name: str) -> dict:
-        """Load a saved profile bundle by name."""
-        with _profile_http_errors():
-            snap = await asyncio.to_thread(_profile_store().load, name)
-        return snap.to_dict()
-
     @app.post("/api/profiles")
     async def api_profile_save(body: ProfileSaveBody) -> dict:
         """Save (or overwrite) a profile bundle."""
@@ -2057,11 +2049,6 @@ def create_app(
     # ------------------------------------------------------------------
     # Settings (mirror of CLI flags)
     # ------------------------------------------------------------------
-
-    @app.get("/api/settings")
-    async def api_settings() -> dict:
-        """Return the current playback / dj-mix / transition settings."""
-        return bridge.get_settings()
 
     @app.post("/api/preset")
     async def api_preset(body: PresetBody) -> dict:

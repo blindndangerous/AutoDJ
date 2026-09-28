@@ -837,7 +837,7 @@ def test_audit_rejections_use_route_templates_and_redact_inputs(
     private_name = "private-profile-name"
     secret_query = "secret-query-value"
     with caplog.at_level(logging.INFO, logger="autodj.audit"):
-        response = client.get(f"/api/profiles/{private_name}?token={secret_query}")
+        response = client.delete(f"/api/profiles/{private_name}?token={secret_query}")
 
     assert response.status_code == 401
     audit_messages = [item.message for item in caplog.records if item.name == "autodj.audit"]
@@ -845,7 +845,7 @@ def test_audit_rejections_use_route_templates_and_redact_inputs(
     assert len(records) == 1
     assert records[0] == {
         "action": "/api/profiles/{name}",
-        "method": "GET",
+        "method": "DELETE",
         "outcome": "rejected",
         "request_id": response.headers["X-Request-ID"],
         "route": "/api/profiles/{name}",
@@ -1060,15 +1060,6 @@ def test_websocket_bridge_failure_closes_and_audits_cleanup(
 
 
 class TestProfileValidateName:
-    def test_get_invalid_name_returns_400(self, client) -> None:
-        # Names with traversal / special chars trip validate_name -> 400
-        resp = client.get("/api/profiles/..%2Fbad")
-        assert resp.status_code in (400, 404)
-
-    def test_get_unknown_name_returns_404(self, client, tmp_path: Path) -> None:
-        resp = client.get("/api/profiles/no-such-profile-xyz")
-        assert resp.status_code == 404
-
     def test_save_invalid_name_400(self, client) -> None:
         resp = client.post("/api/profiles", json={"name": "../escape", "preset": None})
         assert resp.status_code == 400
@@ -1222,22 +1213,6 @@ class TestArt:
 
 
 class TestProfileSaveRoundTrip:
-    def test_save_then_get(self, client) -> None:
-        body = {
-            "name": "test-profile-1",
-            "preset": None,
-            "bpm_lo": 90,
-            "bpm_hi": 130,
-        }
-        resp = client.post("/api/profiles", json=body)
-        assert resp.status_code == 200
-        # Should be retrievable
-        get_resp = client.get(f"/api/profiles/{body['name']}")
-        assert get_resp.status_code == 200
-        assert get_resp.json()["name"] == body["name"]
-        # Cleanup
-        client.request("DELETE", f"/api/profiles/{body['name']}")
-
     def test_apply_round_trip(self, client) -> None:
         body = {"name": "apply-rt", "preset": None}
         client.post("/api/profiles", json=body)
@@ -1299,11 +1274,6 @@ class TestModuleTraversal:
 
 
 class TestProfileBadCharsRouted:
-    def test_get_bad_chars_returns_400(self, client) -> None:
-        # '@' is rejected by validate_name; the route still matches.
-        resp = client.get("/api/profiles/bad@name")
-        assert resp.status_code == 400
-
     def test_delete_bad_chars_returns_400(self, client) -> None:
         resp = client.request("DELETE", "/api/profiles/bad@name")
         assert resp.status_code == 400
@@ -1354,13 +1324,13 @@ class TestProfileApplyBranches:
         """A preset the config no longer has used to be dropped without a word."""
         body = {"name": "branchcov-gone", "preset": "warmup", "bpm_lo": 90, "bpm_hi": 130}
         client.post("/api/profiles", json=body)
-        before = client.get("/api/settings").json()["bpm_range"]
+        before = client.get("/api/status").json()["settings"]["bpm_range"]
 
         resp = client.post(f"/api/profiles/{body['name']}/apply")
 
         assert resp.status_code == 400
         assert "warmup" in resp.json()["detail"]
-        assert client.get("/api/settings").json()["bpm_range"] == before
+        assert client.get("/api/status").json()["settings"]["bpm_range"] == before
         client.request("DELETE", f"/api/profiles/{body['name']}")
 
 
