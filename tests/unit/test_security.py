@@ -12,7 +12,6 @@ import pytest
 from autodj.config import ServerConfig
 from autodj.security import (
     COOKIE_NAME,
-    PairingRateLimiter,
     SecurityMiddleware,
     SecurityPolicy,
     audit_record,
@@ -343,37 +342,6 @@ def test_request_ids_are_unique_lowercase_hex() -> None:
     values = {new_request_id() for _ in range(128)}
     assert len(values) == 128
     assert all(re.fullmatch(r"[0-9a-f]{32}", value) for value in values)
-
-
-@pytest.mark.parametrize(
-    "setting",
-    [
-        {"per_client_limit": 0},
-        {"global_limit": 0},
-        {"window_seconds": 0},
-        {"max_clients": 0},
-    ],
-)
-def test_pairing_limiter_requires_positive_settings(setting) -> None:
-    with pytest.raises(ValueError, match="must be positive"):
-        PairingRateLimiter(**setting)
-
-
-def test_pairing_limiter_rejects_nonfinite_clock() -> None:
-    with pytest.raises(ValueError, match="clock returned an invalid value"):
-        PairingRateLimiter(now=lambda: float("nan"))
-
-
-def test_pairing_limiter_discards_expired_client_window() -> None:
-    clock = [0.0]
-    limiter = PairingRateLimiter(now=lambda: clock[0], per_client_limit=1, window_seconds=10)
-    assert limiter.reserve("peer").allowed is True
-    assert limiter.reserve("peer").allowed is False
-
-    limiter._global_started = 5.0
-    clock[0] = 10.0
-
-    assert limiter.reserve("peer").allowed is True
 
 
 def test_secure_unspecified_host_has_no_implicit_origin() -> None:

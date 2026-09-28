@@ -229,9 +229,6 @@ describe("initAuthDialog", () => {
       "Too many wrong pairing codes from this device. Try again in 42 seconds."],
     ["Pairing is paused after too many wrong codes. Try again in 60 seconds with a new code.",
       "Pairing is paused after too many wrong codes. Try again in 60 seconds with a new code."],
-    // The limiter's generic detail keeps the Retry-After wording.
-    ["Too many pairing attempts",
-      "Too many pairing attempts. Wait about 17 seconds before trying again."],
     ["x".repeat(201), "Too many pairing attempts. Wait about 17 seconds before trying again."],
     [42, "Too many pairing attempts. Wait about 17 seconds before trying again."],
   ])("uses the server's lockout detail for HTTP 429 when it is specific (%#)",

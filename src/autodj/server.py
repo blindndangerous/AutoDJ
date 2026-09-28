@@ -85,7 +85,6 @@ from autodj.pairing import DeviceRegistry
 from autodj.security import (
     COOKIE_NAME,
     PAIRING_BODY_MAX_BYTES,
-    PairingRateLimiter,
     SecurityMiddleware,
     SecurityPolicy,
     _raw_header_values,
@@ -893,7 +892,6 @@ def create_app(
     player_thread: threading.Thread | None = None,
     *,
     secure_cookie: bool = False,
-    pairing_rate_limiter: PairingRateLimiter | None = None,
     stream_secret: StreamSecret | None = None,
     stream_first_track: IndexEntry | None = None,
     server_audio: bool = False,
@@ -1080,7 +1078,6 @@ def create_app(
     # routes and the middleware use these same objects directly.
     app.state.security_policy = policy
     app.state.device_registry = device_registry
-    app.state.pairing_rate_limiter = pairing_rate_limiter or PairingRateLimiter()
     # Request bodies the middleware caps before any route parses them.
     body_limits: dict[str, Callable[[], int]] = {
         "/api/pair": lambda: PAIRING_BODY_MAX_BYTES,
@@ -1377,11 +1374,12 @@ def create_app(
     # Radio stream (stream mode only; 404 otherwise)
     # ------------------------------------------------------------------
 
-    # Wrong or malformed stream secrets count here, separately from pairing.
-    stream_limiter = PairingRateLimiter()
+    def _stream_name(name: str) -> str:
+        """Return ``"mp3"`` or ``"m3u"`` for a valid secret; else 404.
 
-    def _stream_name(request: Request, name: str) -> str:
-        """Return ``"mp3"`` or ``"m3u"`` for a valid secret; else 404 or 429."""
+        The secret is 256 random bits compared in constant time, so a wrong
+        one is just not found; there is nothing worth rate limiting.
+        """
         match = _STREAM_NAME.match(name)
         if (
             bridge.stream_mode
@@ -1389,13 +1387,6 @@ def create_app(
             and bridge.stream_secret.matches(match["secret"])
         ):
             return match["ext"]
-        decision = stream_limiter.reserve(peer_address(request.scope))
-        if not decision.allowed:
-            raise HTTPException(
-                status_code=429,
-                detail="Too many attempts",
-                headers={"Retry-After": str(decision.retry_after)},
-            )
         raise HTTPException(status_code=404, detail="Not Found")
 
     def _require_stream_mode() -> None:
@@ -1410,7 +1401,7 @@ def create_app(
         ``HEAD`` answers with the same checks and headers but no body and
         without becoming a listener.
         """
-        ext = _stream_name(request, name)
+        ext = _stream_name(name)
         head = request.method == "HEAD"
         headers = {"Cache-Control": "no-store"}
         if ext == "m3u":

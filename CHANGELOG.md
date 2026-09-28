@@ -80,6 +80,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   untracked. `autodj doctor` no longer has a `frontend-bundle` check.
 - The `/static/` URLs. The page never used them; it loads its files from `/`, `/app.css`,
   `/app.js`, `/modules/` and the worklet URLs, which stay.
+- The request-rate limit on pairing (five tries a minute per address) and on stream links. The
+  wrong-code lockout still stops guessing: ten wrong pairing codes lock an address out until the
+  code changes, and fifty from all addresses pause pairing. A wrong stream link now always
+  answers "not found"; its 256-bit secret cannot be guessed.
 
 ### Fixed
 

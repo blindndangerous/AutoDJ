@@ -136,21 +136,6 @@ def test_encoder_cooldown_is_503(stream_app) -> None:
     assert "stream encoder failed" in response.text
 
 
-def test_wrong_secret_attempts_are_rate_limited(stream_app) -> None:
-    client, *_ = stream_app
-    responses = [client.get("/stream/" + "y" * 43 + ".mp3") for _ in range(8)]
-    codes = [r.status_code for r in responses]
-    assert codes[:5] == [404] * 5
-    assert codes[5:] == [429] * 3
-    assert int(responses[-1].headers["retry-after"]) >= 1
-
-
-def test_right_secret_is_not_rate_limited(stream_app) -> None:
-    client, secret, _stream = stream_app
-    codes = [client.get(f"/stream/{secret.value}.m3u").status_code for _ in range(8)]
-    assert codes == [200] * 8
-
-
 def test_stream_routes_are_404_in_browser_mode(client) -> None:
     assert client.get("/stream/" + "x" * 43 + ".mp3").status_code == 404
     assert client.get("/api/stream").status_code == 404
@@ -662,10 +647,9 @@ def test_head_on_the_playlist_sends_headers_only(stream_app) -> None:
     assert response.content == b""
 
 
-def test_head_with_a_wrong_secret_is_404_and_counted(stream_app) -> None:
+def test_head_with_a_wrong_secret_is_404(stream_app) -> None:
     client, *_ = stream_app
-    codes = [client.head("/stream/" + "z" * 43 + ".mp3").status_code for _ in range(6)]
-    assert codes == [404] * 5 + [429]
+    assert client.head("/stream/" + "z" * 43 + ".mp3").status_code == 404
 
 
 def test_idle_play_now_sets_the_next_sets_first_track() -> None:
