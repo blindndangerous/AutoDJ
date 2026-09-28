@@ -345,6 +345,7 @@ def test_rename_device_needs_a_session_and_validates_the_name(bridge, tmp_path) 
     registry.revoke(other.device_id)
     assert client.patch(url, json={"name": "Back again"}).status_code == 404
     assert client.patch(f"/api/devices/{'f' * 32}", json={"name": "Nobody"}).status_code == 404
+    assert client.patch("/api/devices/not-a-device", json={"name": "Nobody"}).status_code == 404
 
 
 def test_paired_browser_can_show_the_pairing_code(bridge, tmp_path) -> None:
