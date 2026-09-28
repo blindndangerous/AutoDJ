@@ -244,3 +244,18 @@ def test_paused_pairing_tells_the_user_to_wait_for_a_new_code(bridge, tmp_path) 
     assert response.json()["detail"] == (
         "Pairing is paused after too many wrong codes. Try again in 200 seconds with a new code."
     )
+
+
+def test_healthz_and_version_hide_details_until_paired(bridge, tmp_path) -> None:
+    """Under pairing, the track count, commit and build time need a session."""
+    client, _registry = _paired_client(bridge, tmp_path)
+
+    assert client.get("/healthz").json() == {"status": "ok"}
+    assert set(client.get("/api/version").json()) == {"version"}
+
+    code = client.app.state.security_policy.current_pairing_code()
+    paired = client.post("/api/pair", json={"code": code, "device_name": "Kitchen tablet"})
+    assert paired.status_code == 200
+
+    assert set(client.get("/healthz").json()) == {"status", "tracks"}
+    assert set(client.get("/api/version").json()) == {"version", "commit", "built_at"}

@@ -61,6 +61,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   log. Your web settings return to their defaults until you change one in the web page, which
   saves a new file. Earlier files stored a harmonic mode even when harmonic mixing was off, and
   reading it now would quietly turn key filtering on.
+- When pairing is on, as it is under `--lan`, `/healthz` answers only `{"status": "ok"}` and
+  `/api/version` only the version number until the browser is paired. The track count, commit
+  and build time need a session. Container health checks still work, since they only need the
+  answer.
 - The web page no longer reads timed lyric lines aloud as they play. Screen reader users can
   read them on demand in the Lyrics card, where the line playing now is marked as current. The
   automatic reading only worked with the card open, which it is not by default.

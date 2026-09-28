@@ -78,7 +78,8 @@ When `server.access_token` or `AUTODJ_ACCESS_TOKEN` is set:
 - The HTTP API and WebSocket both enforce session, Host, and Origin policy.
 
 Public assets, `/healthz`, `/api/version`, `/api/auth/status`, and `/api/pair` remain available
-without a session cookie. Unsafe HTTP methods require one allowed Origin. Audio and liner file
+without a session cookie. Without one, `/healthz` reports only its status and `/api/version` only
+the version number; the track count, commit and build time need a session. Unsafe HTTP methods require one allowed Origin. Audio and liner file
 endpoints use indexed or validated plain-file allowlists rather than arbitrary filesystem paths.
 The liner fetch and delete endpoints accept only one plain filename with a liner audio extension
 (`.mp3`, `.wav`, `.ogg`, `.m4a`, `.flac`, or `.aac`), so they cannot read or remove configuration,
