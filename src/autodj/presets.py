@@ -44,6 +44,9 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from autodj.genres import CANONICAL_GENRES
+from autodj.genres import normalise as normalise_genre
+
 logger = logging.getLogger(__name__)
 
 
@@ -280,7 +283,15 @@ def preset_from_config(name: str, section: dict[str, Any]) -> Preset:
     elif isinstance(genres_raw, list):
         genres = [str(g) for g in genres_raw]
     else:
-        genres = []
+        raise ValueError(f"Preset '{name}': genres must be a string or a list of strings")
+    # The picker canonicalises the filter and drops anything that maps to no
+    # bucket, so an unknown name would quietly narrow or switch off the filter.
+    unknown_genres = [g for g in genres if not normalise_genre(g)]
+    if unknown_genres:
+        raise ValueError(
+            f"Preset '{name}': unknown genres {unknown_genres}; "
+            f"known genres are {', '.join(CANONICAL_GENRES)}"
+        )
 
     curve_name: str | None = section.get("curve")
     bpm_target = section.get("bpm_target")

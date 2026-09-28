@@ -334,9 +334,15 @@ class TestPresetGenresFromSection:
         )
         assert p.genres == ["rock"]
 
-    def test_invalid_genres_type_yields_empty(self) -> None:
-        p = preset_from_config(
-            "x",
-            {"bpm_target": 100, "bpm_weight": 0.2, "genres": 42},
-        )
-        assert p.genres == []
+    def test_invalid_genres_type_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="genres must be a string or a list"):
+            preset_from_config("x", {"bpm_target": 100, "genres": 42})
+
+    def test_unknown_genre_skips_the_preset_with_a_warning(self, caplog) -> None:
+        """An unknown genre used to be dropped, turning the genre filter off."""
+        raw = {"late": {"bpm_target": 100, "genres": ["rock", "vaporwav"]}}
+        with caplog.at_level("WARNING"):
+            result = load_user_presets(raw)
+        assert result == {}
+        assert "Skipping invalid preset 'late'" in caplog.text
+        assert "unknown genres ['vaporwav']" in caplog.text

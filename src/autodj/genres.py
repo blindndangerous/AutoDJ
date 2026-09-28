@@ -94,6 +94,8 @@ _ALIASES: list[tuple[str, tuple[str, ...]]] = [
     ("soundtrack", ("soundtrack", "score", "film score", "ost", "video game")),
 ]
 
+CANONICAL_GENRES: tuple[str, ...] = tuple(canon for canon, _ in _ALIASES)
+
 
 def normalise(genre: str | None) -> str:
     """Return the canonical genre token for *genre*, or ``""`` if unknown.
