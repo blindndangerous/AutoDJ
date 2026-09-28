@@ -7,17 +7,17 @@
 
 import { escHtml } from "./dom-helpers.js";
 import { requestJson } from "./api-client.js";
-import { createLatestRequestOwner } from "./latest-request.js";
 
 const state = {
   cached: [],          // full list, used by the visible scroll
   lastIndex: null,     // skip the highlight work when the line is unchanged
   plain: false,        // untimed lyrics: there is no current line
 };
-const lyricsRequestOwner = createLatestRequestOwner();
+// The lyrics request in flight: a newer one aborts it.
+let lyricsRequest = null;
 
 export function resetLyricState(elements) {
-  lyricsRequestOwner.cancel();
+  lyricsRequest?.abort();
   state.lastIndex = null;
   state.cached = [];
   state.plain = false;
@@ -109,7 +109,8 @@ function prefersReducedMotion() {
 }
 
 export async function loadLyrics(path, elements) {
-  const request = lyricsRequestOwner.begin();
+  lyricsRequest?.abort();
+  const request = lyricsRequest = new AbortController();
   state.cached = [];
   state.lastIndex = null;
   renderLyricsList(elements);
@@ -118,7 +119,7 @@ export async function loadLyrics(path, elements) {
     const data = await requestJson(`/api/lyrics?path=${encodedPath}`, {
       signal: request.signal,
     });
-    if (!lyricsRequestOwner.isCurrent(request)) return;
+    if (request.signal.aborted) return;
     if (data.path !== path) {
       throw new Error("Lyrics response did not match the requested track");
     }
@@ -130,11 +131,9 @@ export async function loadLyrics(path, elements) {
   } catch (_) {
     // A failed load leaves the card as it was: hidden, or showing the
     // plain-text fallback.
-    if (!lyricsRequestOwner.isCurrent(request)) return;
+    if (request.signal.aborted) return;
     state.cached = [];
     if (!hasPlainFallback(elements)) renderLyricsList(elements);
-  } finally {
-    lyricsRequestOwner.finish(request);
   }
 }
 

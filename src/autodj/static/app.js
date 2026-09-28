@@ -25,7 +25,6 @@ import {
   setAuthRequiredHandler,
   withDisabled,
 } from "./modules/api-client.js";
-import { createLatestRequestOwner } from "./modules/latest-request.js";
 import { installSeekController } from "./modules/seek-controller.js";
 import { createStreamMode, createStreamSettings } from "./modules/stream-mode.js";
 
@@ -204,7 +203,7 @@ function clearProtectedSessionData() {
   streamMode.stop();
   streamSettings.reset();
   resetTrackCaches();
-  historyRequestOwner.cancel();
+  historyRequest?.abort();
   resetLyricState();
   renderLyricsList(_lyricEls);
   loadCoverArt(null);
@@ -1921,7 +1920,8 @@ const _libEls = {
 import { formatPlayedAt, historyNeedsDates } from "./modules/history-format.js";
 
 let _histPage = 1;
-const historyRequestOwner = createLatestRequestOwner();
+// The history request in flight: a newer one aborts it.
+let historyRequest = null;
 
 function _fmtDuration(sec) {
   const s = Math.round(sec || 0);
@@ -1932,12 +1932,13 @@ function _fmtDuration(sec) {
 // Refresh press even when nothing changed.
 async function fetchHistory(page, { announce = false } = {}) {
   _histPage = page;
-  const request = historyRequestOwner.begin();
+  historyRequest?.abort();
+  const request = historyRequest = new AbortController();
   try {
     const data = await requestJson(`/api/history?page=${page}&per_page=50`, {
       signal: request.signal,
     });
-    if (!historyRequestOwner.isCurrent(request)) return;
+    if (request.signal.aborted) return;
     const tbody = document.getElementById("history-tbody");
     const table = document.getElementById("history-table");
     const empty = document.getElementById("history-empty");
@@ -1983,7 +1984,7 @@ async function fetchHistory(page, { announce = false } = {}) {
         { dwellMs: 3000, force: true, mirror: false });
     }
   } catch (err) {
-    if (!historyRequestOwner.isCurrent(request)) return;
+    if (request.signal.aborted) return;
     const tbody = document.getElementById("history-tbody");
     const table = document.getElementById("history-table");
     const pag = document.getElementById("history-pagination");
@@ -2000,8 +2001,6 @@ async function fetchHistory(page, { announce = false } = {}) {
       announceStatus(document.getElementById("sr-status"),
         `Could not load history: ${err.message}`, { dwellMs: 6000, force: true, tone: "error" });
     }
-  } finally {
-    historyRequestOwner.finish(request);
   }
 }
 
