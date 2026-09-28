@@ -443,6 +443,35 @@ def key_label(key: int, mode: int, notation: str = "camelot", *, prefer_flats: b
     return camelot_label(key, mode)
 
 
+def key_spoken(
+    key: int, mode: int, notation: str = "camelot", *, prefer_flats: bool = False
+) -> str:
+    """Return :func:`key_label` spelled out for a screen reader.
+
+    NVDA reads ``"F#m"`` as "F number m" and ``"Bbm"`` as one word, so
+    letter names become ``"F sharp minor"`` and ``"B flat minor"``.
+    Camelot labels such as ``"8A"`` already read well and are returned
+    as they are.
+
+    Args:
+        key: Chromatic key 0-11.  ``-1`` = unknown.
+        mode: ``1`` = major, ``0`` = minor.  ``-1`` = unknown.
+        notation: ``"camelot"`` (default) or ``"musical"``.
+        prefer_flats: Only meaningful when ``notation == "musical"``.
+
+    Returns:
+        The spoken key, or ``"unknown"`` for unknown input.
+    """
+    label = key_label(key, mode, notation, prefer_flats=prefer_flats)
+    if label == "--":
+        return "unknown"
+    if notation != "musical":
+        return label
+    table = _MUSICAL_NAMES_FLAT if prefer_flats else _MUSICAL_NAMES_SHARP
+    name = table[key].replace("#", " sharp").replace("b", " flat")
+    return f"{name} {'minor' if mode == 0 else 'major'}"
+
+
 # ---------------------------------------------------------------------------
 # Cache (SQLite) — keyed by track path relative to music_dir
 # ---------------------------------------------------------------------------

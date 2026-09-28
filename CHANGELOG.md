@@ -41,6 +41,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   browser only.
 - The keyboard shortcuts list and the README now say that NVDA+F2 passes the next key through
   to the page in browse mode.
+- Each track in the state that `/api/status` and the WebSocket send now carries `key_spoken`,
+  the key spelled out for speech in the chosen notation: "F sharp minor" and "B flat minor"
+  instead of "F#m" and "Bbm", which NVDA reads as "F number m". Camelot keys such as "8A" are
+  sent as they are.
 
 ### Changed
 
@@ -84,6 +88,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   log. Your web settings return to their defaults until you change one in the web page, which
   saves a new file. Earlier files stored a harmonic mode even when harmonic mixing was off, and
   reading it now would quietly turn key filtering on.
+- When pairing is on, as it is under `--lan`, `/healthz` answers only `{"status": "ok"}` and
+  `/api/version` only the version number until the browser is paired. The track count, commit
+  and build time need a session. Container health checks still work, since they only need the
+  answer.
 - The web page no longer reads timed lyric lines aloud as they play. Screen reader users can
   read them on demand in the Lyrics card, where the line playing now is marked as current. The
   automatic reading only worked with the card open, which it is not by default.
@@ -99,6 +107,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The web page no longer fills in settings the server did not send with guesses meant for older
   servers, and no longer writes a browser console warning when the no-repeat window is bigger
   than the library. The server log already reports that.
+- `autodj stats` prints each histogram row as words, such as "120 to 129: 45 tracks, 12
+  percent", when its output is not a terminal, which includes the web page's library job log.
+  Screen readers read the bar characters as noise. In a terminal the bars stay and each row gains
+  a percentage. Ranges are written with "to" and keys as "C sharp" in both.
 
 ### Removed
 
@@ -206,6 +218,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - With `--server-audio` or `--stream`, a track starting no longer waits for the server to finish
   choosing the track after it. The choice works on a copy of the play history, so the page and
   the stream title update the moment the new track begins.
+- `autodj stats` no longer shows an always-empty "180 to 189" BPM row next to "180+".
 
 ## [0.17.0] - 2026-09-26
 

@@ -1,7 +1,8 @@
 # 3. Web UI defaults to browser-driven audio playback
 
 Date: 2026-05-05
-Status: Accepted
+Status: Accepted. Superseded in part by [ADR 4](0004-server-mix-bus-and-stream-mode.md):
+the server-side modes and where their playback effects live.
 
 ## Context
 
@@ -18,15 +19,17 @@ server-side stream.
 
 `autodj serve` runs with **server-side playback off**.  The Python
 process picks tracks; the browser's Web Audio graph plays them.
-Passing `--server-audio` opts back into the legacy mode (rare — only
-useful for headed hosts where the user wants both surfaces).
+Passing `--server-audio` opts back into server-side playback, for hosts
+that should play through their own sound card.
 
 ## Consequences
 
 - The web UI and the CLI `play` loop are now fully decoupled — they
   never share a soundcard.
-- All playback effects (crossfade, transitions, volume, device
-  selection) live in the browser's Web Audio graph.
+- In browser playback, all playback effects (crossfade, transitions,
+  volume, device selection) live in the browser's Web Audio graph.
+  `--server-audio` and stream mode apply them on the server mix bus
+  instead (ADR 4).
 - `AudioContext.setSinkId` is the only working route-changing API
   once Web Audio intercepts the `<audio>` element; the element-level
   `setSinkId` becomes a Firefox-only fallback.
@@ -41,5 +44,5 @@ useful for headed hosts where the user wants both surfaces).
 
 - Keep server-side playback as default and let users opt out — too
   surprising; users don't expect duplicate audio.
-- Drop server-side playback entirely — closes the door on legacy
-  workflows that depend on it; `--server-audio` keeps the option.
+- Drop server-side playback entirely — closes the door on workflows
+  that depend on it; `--server-audio` keeps the option.

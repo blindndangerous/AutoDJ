@@ -331,7 +331,17 @@ transition_mode         = "full_intro_outro"
 
 ### Multi-machine / NAS setups
 
-The index is portable.  Build it on a fast machine (one with a GPU is best), then copy `index/` to another machine that mounts the music library at any path.  AutoDJ stores music files and DJ metadata relative to a configurable root, so the same index works on Windows, Linux, and macOS as long as `music_dir` points at the right place on each machine.  Only tracks under `music_dir` are indexed.
+AutoDJ stores track paths relative to `music_dir`, so an index works on Windows, Linux and macOS
+as long as `music_dir` points at the library on each machine. Only tracks under `music_dir` are
+indexed.
+
+The simplest setup gives each machine its own index. After you add tracks to the library, run
+`uv run autodj index` on each machine; it only embeds the new and changed tracks.
+
+You can also build an index on a fast machine (one with a GPU is best) and copy it to another, but
+do not copy the whole `index/` folder. It also holds that machine's web settings, liners,
+profiles, pairing secret and paired browsers, and copying them would overwrite the other machine's
+own. [Operations](docs/operations.md#more-than-one-machine) lists which files are safe to copy.
 
 Per-machine file overrides go in `config.local.toml` next to loaded base configuration. Environment
 variables and CLI flags still take precedence.

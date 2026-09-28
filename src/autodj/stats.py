@@ -34,14 +34,27 @@ if TYPE_CHECKING:
 _BAR_WIDTH = 18
 _FILLED = "█"
 _EMPTY = "░"
-_KEY_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
-_BPM_LABELS = [f"{lo}–{lo + 9}" for lo in range(60, 190, 10)] + ["180+", "Unknown"]
-_LENGTH_LABELS = ["< 2 min", "2–5 min", "5–10 min", "> 10 min"]
+_KEY_NAMES = [
+    "C",
+    "C sharp",
+    "D",
+    "D sharp",
+    "E",
+    "F",
+    "F sharp",
+    "G",
+    "G sharp",
+    "A",
+    "A sharp",
+    "B",
+]
+_BPM_LABELS = [f"{lo} to {lo + 9}" for lo in range(60, 180, 10)] + ["180+", "Unknown"]
+_LENGTH_LABELS = ["Under 2 min", "2 to 5 min", "5 to 10 min", "Over 10 min"]
 _ENERGY_LABELS = [
-    "0.00–0.05 (silence)",
-    "0.05–0.15 (quiet)",
-    "0.15–0.30 (medium)",
-    "0.30–0.50 (loud)",
+    "0.00 to 0.05 (silence)",
+    "0.05 to 0.15 (quiet)",
+    "0.15 to 0.30 (medium)",
+    "0.30 to 0.50 (loud)",
     "0.50+ (very loud)",
 ]
 
@@ -63,6 +76,18 @@ def _fmt_duration(total_seconds: float) -> str:
     return f"{mins}m"
 
 
+def _plural(count: int, noun: str) -> str:
+    """Return ``"1 track"`` or ``"3 tracks"`` style text."""
+    return f"{count:,} {noun}" if count == 1 else f"{count:,} {noun}s"
+
+
+def _fmt_duration_words(total_seconds: float) -> str:
+    """Format total seconds as ``"X hours Y minutes"`` for plain output."""
+    hours, rem = divmod(int(total_seconds), 3600)
+    mins = _plural(rem // 60, "minute")
+    return f"{_plural(hours, 'hour')} {mins}" if hours else mins
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -75,8 +100,13 @@ def _print_histogram(
     rows: list[tuple[str, int]],
     min_width: int = 0,
     denom: int | None = None,
+    total: int | None = None,
 ) -> None:
-    """Render one label/bar/count table; prints nothing when *rows* is empty.
+    """Render one histogram; prints nothing when *rows* is empty.
+
+    On a terminal this is a label/bar/count table.  Anywhere else, such as
+    the web UI's job log, each row is a sentence with a count and a
+    percentage, because screen readers read the bar glyphs as noise.
 
     Args:
         console: Rich console to print to.
@@ -85,8 +115,25 @@ def _print_histogram(
         rows: ``(label, count)`` pairs in display order.
         min_width: Minimum width of the label column, 0 for automatic.
         denom: Count that maps to a full bar.  Defaults to the largest count.
+        total: Count that percentages are taken of.  Defaults to the sum of
+            the row counts.
     """
     if not rows:
+        return
+    whole = total if total is not None else sum(c for _, c in rows)
+
+    def pct(count: int) -> int:
+        return round(count * 100 / whole) if whole else 0
+
+    if not console.is_terminal:
+        console.print(f"{title}:", markup=False, highlight=False)
+        for label, count in rows:
+            console.print(
+                f"  {label}: {_plural(count, 'track')}, {pct(count)} percent",
+                markup=False,
+                highlight=False,
+                soft_wrap=True,
+            )
         return
     top = denom if denom is not None else max(c for _, c in rows)
     tbl = Table(title=title, show_header=False, box=None, padding=(0, 1))
@@ -96,8 +143,9 @@ def _print_histogram(
         tbl.add_column(label_col, style="dim")
     tbl.add_column("Bar")
     tbl.add_column("Count", justify="right", style="cyan")
+    tbl.add_column("Percent", justify="right", style="dim")
     for label, count in rows:
-        tbl.add_row(label, _bar(count, top), str(count))
+        tbl.add_row(label, _bar(count, top), str(count), f"{pct(count)}%")
     console.print(tbl)
 
 
@@ -108,30 +156,30 @@ def _bpm_bucket(bpm: float) -> str:
     if bpm >= 180:
         return "180+"
     lo = max(60, min(int(bpm // 10) * 10, 180))
-    return f"{lo}–{lo + 9}"
+    return f"{lo} to {lo + 9}"
 
 
 def _length_bucket(seconds: float) -> str:
     """Return the track-length bucket label for *seconds*."""
     if seconds < 120:
-        return "< 2 min"
+        return "Under 2 min"
     if seconds < 300:
-        return "2–5 min"
+        return "2 to 5 min"
     if seconds < 600:
-        return "5–10 min"
-    return "> 10 min"
+        return "5 to 10 min"
+    return "Over 10 min"
 
 
 def _energy_bucket(energy: float) -> str:
     """Return the energy bucket label for *energy*."""
     if energy < 0.05:
-        return "0.00–0.05 (silence)"
+        return "0.00 to 0.05 (silence)"
     if energy < 0.15:
-        return "0.05–0.15 (quiet)"
+        return "0.05 to 0.15 (quiet)"
     if energy < 0.30:
-        return "0.15–0.30 (medium)"
+        return "0.15 to 0.30 (medium)"
     if energy < 0.50:
-        return "0.30–0.50 (loud)"
+        return "0.30 to 0.50 (loud)"
     return "0.50+ (very loud)"
 
 
@@ -139,6 +187,14 @@ def _print_summary(entries: list[IndexEntry], console: Console) -> None:
     """Render the top summary panel (track count + total play time)."""
     n = len(entries)
     total_secs = sum(e.length for e in entries)
+    if not console.is_terminal:
+        console.print(
+            f"AutoDJ library stats: {_plural(n, 'track')}, "
+            f"{_fmt_duration_words(total_secs)} total play time.",
+            markup=False,
+            highlight=False,
+        )
+        return
     console.print(
         Panel(
             f"[bold green]{n:,}[/bold green] tracks  ·  "
@@ -189,14 +245,12 @@ def _key_rows(entries: list[IndexEntry]) -> list[tuple[str, int]]:
 
 
 def _mode_rows(entries: list[IndexEntry]) -> list[tuple[str, int]]:
-    """Return the major/minor rows with percentages baked into the labels."""
+    """Return the major and minor rows, or nothing when no mode was detected."""
     major = sum(1 for e in entries if e.mode == 1)
     minor = sum(1 for e in entries if e.mode == 0)
-    total = major + minor
-    if not total:
+    if not major + minor:
         return []
-    major_pct = round(major * 100 / total)
-    return [(f"Major ({major_pct}%)", major), (f"Minor ({100 - major_pct}%)", minor)]
+    return [("Major", major), ("Minor", minor)]
 
 
 def print_stats(entries: list[IndexEntry], console: Console) -> None:
@@ -212,7 +266,8 @@ def print_stats(entries: list[IndexEntry], console: Console) -> None:
         _bucket_rows(_BPM_LABELS, (_bpm_bucket(e.bpm) for e in entries)),
         min_width=8,
     )
-    _print_histogram(console, "Top Genres", "Genre", _top_rows(e.genre for e in entries))
+    n = len(entries)
+    _print_histogram(console, "Top Genres", "Genre", _top_rows(e.genre for e in entries), total=n)
     _print_histogram(console, "By Decade", "Decade", _decade_rows(entries), min_width=8)
     _print_histogram(
         console,
@@ -220,7 +275,9 @@ def print_stats(entries: list[IndexEntry], console: Console) -> None:
         "Bucket",
         _bucket_rows(_LENGTH_LABELS, (_length_bucket(e.length) for e in entries)),
     )
-    _print_histogram(console, "Top Artists", "Artist", _top_rows(e.artist for e in entries))
+    _print_histogram(
+        console, "Top Artists", "Artist", _top_rows(e.artist for e in entries), total=n
+    )
     _print_histogram(console, "Key Distribution", "Key", _key_rows(entries), min_width=3)
     mode_rows = _mode_rows(entries)
     _print_histogram(console, "Mode Split", "Mode", mode_rows, denom=sum(c for _, c in mode_rows))

@@ -273,12 +273,68 @@ Docker Desktop bind-mount ownership depends on its WSL2/Linux filesystem mapping
 `bash scripts/container_smoke.sh` inside WSL2 for the authoritative UID and mode gate. Do not
 replace the 0755 and UID 10001 contract with world-writable Windows mounts.
 
+## More than one machine
+
+AutoDJ stores track paths relative to `music_dir`, so an index built on one machine works on
+another that mounts the same library somewhere else. Point `music_dir` at the right place on each
+machine in that machine's `config.local.toml`.
+
+### Two independent indexes
+
+The simplest setup gives each machine its own index and never copies anything. For example, a NAS
+and a desktop each keep their own `index/` folder, and after you add tracks to the library you run
+this on each machine:
+
+```bash
+uv run autodj index
+```
+
+`autodj index` only embeds tracks it has not seen and files changed since they were embedded, then
+enriches from beets, prunes entries for deleted files, and analyses new tracks. Each machine keeps
+its own web settings, liners, profiles and paired browsers, and neither can overwrite the other.
+Use `autodj index --force` only when you want to rebuild an index from nothing.
+
+### Copying an index to another machine
+
+Building an index is slow without a GPU, so you can build it on a fast machine and copy it to
+another. Copy only the derived files, and never the whole `index/` folder, because that folder also
+holds files that belong to the machine that made them.
+
+Stop AutoDJ, and any `autodj index` or `autodj analyse` run, on both machines first. Then copy
+these files from `index/<name>/` on the source to `index/<name>/` on the destination, all of them
+together:
+
+- `index-manifest.json` and `.index-publication-state.json`, which say which generation is
+  current.
+- The generation files it names, `tracks.g<number>.db` and `vectors.g<number>.index`.
+- The working `tracks.db` and `vectors.index`.
+- `dj_meta.db`, the intro, outro, beat grid and cue cache.
+
+Do not copy these; they belong to the machine that made them:
+
+- `index/<name>/web_state.json`, the settings chosen in the web page.
+- `index/<name>/liners/`, the voice liners uploaded on that machine.
+- `index/profiles/`, the saved profiles.
+- `index/.access-token`, the LAN pairing secret. Copying it would let every browser paired with
+  one machine use the other.
+- `index/.paired-devices.sqlite3`, the paired browsers and their sessions.
+- `index/.stream-secret`, the secret in the radio stream address.
+- Any `-wal`, `-shm`, `.lock` or `.tmp` file.
+
+Run `uv run autodj doctor` on the destination before serving. Copying replaces the destination's
+index, so the next `autodj index` there starts from the copied one.
+
 ## Backup classifications
 
 Re-derivable data includes `vectors.index`, `tracks.db`, `index-manifest.json`, and `dj_meta.db`.
 Unique data includes profiles, liners, configured dayparts, optional history, and `web_state.json`.
 A full archive contains available data from both classifications and labels every item in
 `manifest.json`.
+
+Backups do not include `config.toml`, `config.local.toml` or `presets.toml`. Copy those yourself
+and keep them with the archive. Backups also leave out the pairing secret, the paired browsers and
+the stream secret, so after a restore on a new machine you pair your browsers again and use the new
+stream address.
 
 ## Stopped-service backup
 
@@ -314,6 +370,11 @@ uv run autodj restore --force backups/autodj-2026-08-02.zip
 uv run autodj doctor
 docker compose up
 ```
+
+Restore only accepts an archive made by the same major and minor version of AutoDJ: a 0.18.x
+backup restores on any 0.18.x release and on no other. To roll back to an earlier release, check
+out that release's tag as in the [upgrade checklist](#upgrade-checklist), then restore a backup made
+by that release.
 
 Restore refuses unknown archive schema versions and existing destinations without `--force`. It
 rejects encrypted, non-regular, unsafe, or symlink-derived content; preflights declared sizes and
@@ -361,6 +422,10 @@ These steps apply to a native installation from a source checkout.
 4. Run `uv sync --frozen --all-extras`, `npm ci`, and `npm run build` from the fetched release and
    its committed locks. If you use the experimental Windows AMD environment, update it by following
    [Experimental Windows AMD GPU setup](windows-amd.md).
-5. Run `uv run autodj doctor`.
-6. Run Python, frontend, and container gates from `CONTRIBUTING.md`.
-7. Start loopback-only and verify `/api/version` before enabling LAN access.
+5. Read the "Removed" and "Changed" sections of every release since yours in
+   [CHANGELOG.md](../CHANGELOG.md). A configuration key that a release removed now stops AutoDJ at
+   startup, so delete or rename it in your configuration files first.
+6. Run `uv run autodj doctor`. If it reports "old index format", run
+   `uv run autodj index --force` to rebuild it, then run doctor again.
+7. Start loopback-only and check that the version in the page footer is the release you checked
+   out before enabling LAN access.

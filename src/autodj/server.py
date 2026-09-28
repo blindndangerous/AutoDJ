@@ -16,6 +16,7 @@ Routes
 ``GET  /``                  → index.html
 ``GET  /api/status``        → JSON state snapshot
 ``GET  /api/version``       → {version, commit, built_at} for footer build stamp
+                              (commit and built_at only with a session when pairing is on)
 ``POST /api/skip``          → skip to next track
 ``POST /api/pause``         → toggle pause / resume
 ``POST /api/volume``        → set volume (body: ``{"volume": 0.75}``)
@@ -1346,16 +1347,45 @@ def create_app(
         )
         return response
 
+    async def _has_session(request: Request) -> bool:
+        """Return whether *request* may see details that need pairing.
+
+        True when the server needs no pairing, or when the browser holds a
+        valid session.  ``verify_session`` reads the device database, so it
+        runs off the event loop.
+        """
+        request_policy: SecurityPolicy = request.app.state.security_policy
+        if not request_policy.authentication_required:
+            return True
+        cookie = request.cookies.get(COOKIE_NAME)
+        if cookie is None:
+            return False
+        return await asyncio.to_thread(request_policy.verify_session, cookie)
+
     @app.get("/api/version")
-    async def api_version() -> JSONResponse:
-        """Return server + package version metadata."""
+    async def api_version(request: Request) -> JSONResponse:
+        """Return the package version, plus commit and build time once paired.
+
+        The page reads this before pairing, so the route stays public, but
+        the commit and build time would tell anyone on the network exactly
+        which build is running.
+        """
         # Footer build stamp.  Lets the user verify which commit + bundle
         # the server is actually serving (browser cache vs. fresh build).
-        return JSONResponse(_version_info())
+        info = _version_info()
+        if not await _has_session(request):
+            info = {"version": info["version"]}
+        return JSONResponse(info)
 
     @app.get("/healthz")
-    async def healthz() -> dict[str, str | int]:
-        """Return process readiness plus the indexed track count."""
+    async def healthz(request: Request) -> dict[str, str | int]:
+        """Return process readiness, plus the indexed track count once paired.
+
+        Container health checks call this without a session, so it stays
+        public; without one it reports only ``status``.
+        """
+        if not await _has_session(request):
+            return {"status": "ok"}
         return {"status": "ok", "tracks": bridge.sim.ntotal}
 
     @app.get("/api/history")
