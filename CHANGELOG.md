@@ -35,7 +35,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   says "No lyrics for this track." Lyrics are still never read aloud on their own.
 - New status keys in the web page, each spoken once on request from any tab: Shift+E says the
   elapsed and total time, Shift+V the volume and whether it is muted, Shift+Q how many tracks
-  are queued and the first one, and Shift+J the library job status with its latest log line.
+  are queued and the first one, and Shift+J the library job status: the running job, how long it
+  has run and its percentage when it shows one, or how the last job ended.
 - Settings, Announcements, "Announce track changes on every tab". Off by default, which keeps
   today's behaviour of speaking a new track only while Now Playing is showing. Saved in this
   browser only.
@@ -260,7 +261,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The track-change announcement and Shift+K say the key in words, such as "F sharp minor",
   instead of a label like "F#m" that NVDA reads as "F number m".
 - The library job clock can be read again, and a job that fails says why, taken from the last
-  line it printed, instead of only its exit code.
+  line the job printed, instead of only its exit code. The job runner's own closing line
+  ("autodj-jobs exit 1 (elapsed 1.0s)") was being spoken as the reason; it is now skipped, so a
+  failed Enrich says "No beets_db in config — enrich requires beets."
+- Shift+J during a job read its raw progress bar, block characters and all ("Pruning: 43 ████▎
+  32919 76728 00:22 00:29, 1477.44file s"). It now says the job, the time in words and the
+  percentage: "prune running, 27 seconds elapsed, 43 percent done." Job times in the finish
+  message are in minutes and seconds too, and "1 seconds" is now "1 second".
 - NVDA no longer calls the queue and search result lists "clickable".
 - A search result's Play now failure is no longer reported as "Could not update queue".
 - A setting that fails to save goes back at once and says so, for example "Could not save

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { applyLibraryJobState, installLibraryJobs } from
+import { applyLibraryJobState, installLibraryJobs, libraryJobStatusText } from
   "../../src/autodj/static/modules/library-jobs.js";
 
 function makeEls() {
@@ -100,7 +100,7 @@ describe("library job live region", () => {
     };
     applyLibraryJobState(finished, els);
     await settle();
-    expect(els.jobStatus.textContent).toBe("index finished cleanly in 61 seconds.");
+    expect(els.jobStatus.textContent).toBe("index finished cleanly in 1 minute 1 second.");
     expect(seen.announcements()).toBe(2);
 
     for (let i = 0; i < 10; i++) applyLibraryJobState(finished, els);
@@ -129,6 +129,35 @@ describe("library job live region", () => {
     seen.stop();
   });
 
+  it("gives a failure's own last line as the reason, not the runner's trailer", () => {
+    const els = makeEls();
+    applyLibraryJobState({
+      library_job: {
+        name: "enrich", running: false, elapsed_seconds: 1, exit_code: 1,
+        lines: [
+          "[autodj-jobs] $ autodj enrich",
+          "No beets_db in config — enrich requires beets.",
+          "[autodj-jobs] exit 1 (elapsed 1.0s)",
+        ],
+      },
+    }, els);
+
+    expect(els.jobStatus.textContent).toBe(
+      "enrich exited with code 1 after 1 second. No beets_db in config — enrich requires beets.",
+    );
+  });
+
+  it("speaks a running job's percentage on Shift+J instead of its progress bar", () => {
+    expect(libraryJobStatusText({
+      name: "prune", running: true, elapsed_seconds: 27.2,
+      lines: ["Pruning:  43%|████▎     | 32919/76728 [00:22<00:29, 1477.44file/s]"],
+    })).toBe("prune running, 27 seconds elapsed, 43 percent done.");
+    expect(libraryJobStatusText({
+      name: "stats", running: true, elapsed_seconds: 65,
+      lines: ["[autodj-jobs] $ autodj stats", "Loading faiss."],
+    })).toBe("stats running, 1 minute 5 seconds elapsed.");
+  });
+
   it("reports a job the user stopped as stopped, not as an exit code", () => {
     const els = makeEls();
     applyLibraryJobState({
@@ -138,7 +167,7 @@ describe("library job live region", () => {
       },
     }, els);
 
-    expect(els.jobStatus.textContent).toBe("enrich stopped after 417 seconds.");
+    expect(els.jobStatus.textContent).toBe("enrich stopped after 6 minutes 57 seconds.");
   });
 
   it("does not re-announce the start click on the next websocket tick", async () => {

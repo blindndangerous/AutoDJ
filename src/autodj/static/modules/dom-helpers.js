@@ -50,6 +50,18 @@ export function fmtTime(sec) {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
+// A duration in words for speech, such as "1 minute 5 seconds", where
+// fmtTime's "1:05" suits the screen.
+export function fmtDurationWords(sec) {
+  const s = Math.max(0, Math.round(Number(sec) || 0));
+  const mins = Math.floor(s / 60);
+  const secs = s % 60;
+  const secStr = `${secs} second${secs === 1 ? "" : "s"}`;
+  if (mins === 0) return secStr;
+  const minStr = `${mins} minute${mins === 1 ? "" : "s"}`;
+  return secs === 0 ? minStr : `${minStr} ${secStr}`;
+}
+
 export function fmtTrack(t) {
   if (!t) return "—";
   if (t.artist && t.title) return `${t.artist} — ${t.title}`;

@@ -27,7 +27,7 @@
 // localStorage and defaults to on; storage that is blocked or throws
 // simply means "on" and an unsaved choice.
 
-import { fmtTime, isTypingTarget, srSpeak } from "./dom-helpers.js";
+import { fmtDurationWords, fmtTime, isTypingTarget, srSpeak } from "./dom-helpers.js";
 
 const NATIVE_KEYBOARD_SELECTOR = [
   "button",
@@ -132,16 +132,6 @@ function _queueSummary(queue) {
   if (!queue || queue.length === 0) return "Queue empty";
   const count = queue.length === 1 ? "1 track queued" : `${queue.length} tracks queued`;
   return `${count}. First, ${_spokenTrack(queue[0])}`;
-}
-
-function _fmtRemaining(sec) {
-  const s = Math.max(0, Math.round(sec));
-  const mins = Math.floor(s / 60);
-  const secs = s % 60;
-  if (mins === 0) return `${secs} second${secs === 1 ? "" : "s"}`;
-  const minStr = `${mins} minute${mins === 1 ? "" : "s"}`;
-  if (secs === 0) return minStr;
-  return `${minStr} ${secs} second${secs === 1 ? "" : "s"}`;
 }
 
 export function toggleShortcutsModal() {
@@ -302,7 +292,7 @@ export function installHotkeys({
       }
       case "R": {
         const rem = getRemaining && getRemaining();
-        srSpeak(rem != null ? _fmtRemaining(rem) : "Position unknown");
+        srSpeak(rem != null ? fmtDurationWords(rem) : "Position unknown");
         break;
       }
       case "B": {

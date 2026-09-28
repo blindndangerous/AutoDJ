@@ -190,8 +190,8 @@ After `autodj serve`, point a browser at `http://localhost:8080`.  Five tabs:
 - **Shift+E** — speak the elapsed and total time, as the seek slider says it.
 - **Shift+V** — speak the volume, and whether it is muted.
 - **Shift+Q** — speak how many tracks are queued, and the first one.
-- **Shift+J** — speak the library job status: what is running, for how long, and its latest log
-  line, or how the last job ended.
+- **Shift+J** — speak the library job status: what is running, for how long, and how far it has
+  got as a percentage when the job shows one, or how the last job ended.
 - **?** — open the shortcut list.
 
 Every shortcut works from any tab, except Space and the Up and Down arrows, which work on Now

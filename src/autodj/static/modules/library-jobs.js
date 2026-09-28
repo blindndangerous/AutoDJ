@@ -20,7 +20,7 @@ import {
   requestJson,
   withDisabled,
 } from "./api-client.js";
-import { fmtTime, setNoValue } from "./dom-helpers.js";
+import { fmtDurationWords, fmtTime, setNoValue } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 
 const _jobStatusState = new WeakMap();
@@ -52,36 +52,42 @@ function reportJobError(jobStatus, text) {
   if (jobStatus.textContent !== text) jobStatus.textContent = text;
 }
 
-function lastLogLine(job) {
+// The runner's own lines: the command it started ("[autodj-jobs] $ ...")
+// and its exit trailer ("[autodj-jobs] exit 1 (elapsed 1.0s)").  Neither
+// says why a job failed; its spawn and read errors do, so they stay.
+const RUNNER_NOISE = /^\[autodj-jobs\] (\$ |exit )/;
+
+// The last line the job itself printed, which carries a failure's reason
+// (a prune safety abort, "No beets_db in config").
+function lastOutputLine(job) {
   const lines = job.lines || [];
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = String(lines[i]).trim();
-    if (line) return line;
+    if (line && !RUNNER_NOISE.test(line)) return line;
   }
   return "";
 }
 
 function finishedText(job) {
-  const seconds = Math.round(Number(job.elapsed_seconds) || 0);
-  if (job.exit_code === 0) return `${job.name} finished cleanly in ${seconds} seconds.`;
+  const took = fmtDurationWords(job.elapsed_seconds);
+  if (job.exit_code === 0) return `${job.name} finished cleanly in ${took}.`;
   // A job the user stopped exits non-zero (1 on Windows), which is not
   // a failure worth an exit code.
-  if (job.stopped) return `${job.name} stopped after ${seconds} seconds.`;
-  // A failure's reason is the last thing the job printed (a prune safety
-  // abort, a missing file), so it rides along instead of hiding in the log.
-  const reason = lastLogLine(job);
-  return `${job.name} exited with code ${job.exit_code} after ${seconds} seconds.`
+  if (job.stopped) return `${job.name} stopped after ${took}.`;
+  const reason = lastOutputLine(job);
+  return `${job.name} exited with code ${job.exit_code} after ${took}.`
     + (reason ? ` ${reason}` : "");
 }
 
-// Shift+J: the job's state on demand, with the latest log line as its
-// progress while it runs.
+// Shift+J: the job's state on demand.  A running job's progress is the
+// percentage from its progress bar when it prints one; the bar itself
+// (block characters, counts, "1477.44file/s") is noise when spoken.
 export function libraryJobStatusText(job) {
   if (!job || !job.name) return "No library job has run.";
   if (job.running) {
-    const line = lastLogLine(job);
-    return `${job.name} running, ${fmtTime(Number(job.elapsed_seconds) || 0)} elapsed.`
-      + (line ? ` ${line}` : "");
+    const percent = /(\d{1,3})(?:\.\d+)?%/.exec(lastOutputLine(job));
+    return `${job.name} running, ${fmtDurationWords(job.elapsed_seconds)} elapsed`
+      + (percent ? `, ${percent[1]} percent done.` : ".");
   }
   if (job.exit_code != null) return finishedText(job);
   return "No library job has run.";
