@@ -206,6 +206,13 @@ def test_state_reports_stream_mode(stream_app) -> None:
     assert state["stream_listeners"] == 3
     assert state["stream_event"] is None
     assert state["settings"]["playback"]["stream_bitrate"] == 320
+    assert state["stream_server_audio"] is False
+
+
+def test_state_reports_server_audio_in_stream_mode(stream_app, bridge) -> None:
+    client, *_ = stream_app
+    bridge.player._server_audio_too = True
+    assert client.get("/api/status").json()["stream_server_audio"] is True
 
 
 def test_state_in_browser_mode_is_unchanged(client) -> None:

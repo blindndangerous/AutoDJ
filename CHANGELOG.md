@@ -122,6 +122,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   details" section below it.
 - Stopping a library job with Stop running job now reports that the job stopped, instead of
   "exited with code 1".
+- In stream mode with `--server-audio`, the page's volume slider and Mute now also set the
+  volume and mute of the machine's own speakers. Before, they changed only the page's own
+  listening, and the speakers kept whatever volume the server started with.
 
 ## [0.17.0] - 2026-09-26
 

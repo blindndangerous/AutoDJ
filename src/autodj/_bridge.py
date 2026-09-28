@@ -830,6 +830,10 @@ class PlayerBridge:
             and not self.stream_mode,
             "settings": self.get_settings(),
             "stream_mode": self.stream_mode,
+            # Stream mode with --server-audio: the machine's sound card plays
+            # the mix too, so the page's volume and Mute drive it.
+            "stream_server_audio": self.stream_mode
+            and bool(getattr(self.player, "_server_audio_too", False)),
             "stream_state": self.station.state if self.stream_mode else None,
             "stream_listeners": int(self.stream.listener_count) if self.stream_mode else 0,
             "stream_event": self._current_station_event(),

@@ -136,6 +136,9 @@ window.addEventListener("hashchange", () => {
 });
 // Last pushed stream_mode, for the handlers that run between pushes.
 let _lastStreamMode = false;
+// Stream mode with --server-audio: the page's volume and Mute also drive
+// the machine's own speakers.
+let _lastStreamServerAudio = false;
 
 const auth = initAuthDialog({ document });
 let authExpiryHandled = false;
@@ -345,6 +348,7 @@ function applyState(s) {
   const losesFocus = (!inStream && focused === btnListen)
     || (inStream && focused && focused.id === "progress-track");
   _lastStreamMode = inStream;
+  _lastStreamServerAudio = inStream && Boolean(s.stream_server_audio);
   streamMode.apply(s);
   streamSettings.apply(s);
   const browserMode = Boolean(s.browser_playback) && !inStream;
@@ -507,18 +511,23 @@ function applyState(s) {
   // is actively dragging / arrow-keying so the in-flight POST round-trip
   // can't fight the input.
   // In stream mode the slider and Mute belong to this page's own
-  // listening, so the station's volume and mute are not mirrored.
-  if (!inStream && Date.now() - _lastUserVolTs > 600) {
+  // listening, so the station's volume and mute are not mirrored.  With
+  // --server-audio as well they drive the machine's speakers, and this
+  // page's listening follows the server's volume and mute.
+  const pageOnlyVolume = inStream && !_lastStreamServerAudio;
+  if (!pageOnlyVolume && Date.now() - _lastUserVolTs > 600) {
     const volInt = _gainToSlider(s.volume);
     volSlider.value = volInt;
     volPct.textContent = volInt + "%";
     setAttributeIfChanged(volSlider, "aria-valuetext", `${volInt}%`);
+    if (inStream) streamAudio.volume = s.volume;
   }
+  if (_lastStreamServerAudio) streamAudio.muted = s.is_muted;
 
   // Mute is a toggle with a fixed name, so NVDA says "Mute, toggle
   // button, pressed" instead of the contradictory "Unmute, pressed".
   // Only the hidden glyph changes.
-  renderMute(inStream ? streamAudio.muted : s.is_muted);
+  renderMute(pageOnlyVolume ? streamAudio.muted : s.is_muted);
 
   // Up Next is not a live region: it changes in the same tick as the
   // title, and announcing both read two bare track names back to back.
@@ -1477,7 +1486,8 @@ if (btnShuffle) {
 
 btnMute.addEventListener("click", async () => {
   // Stream mode: mute this page's listening only, never the station.
-  if (_lastStreamMode) {
+  // With --server-audio as well, the server's mute covers both.
+  if (_lastStreamMode && !_lastStreamServerAudio) {
     streamAudio.muted = !streamAudio.muted;
     renderMute(streamAudio.muted);
     return;
@@ -1496,11 +1506,8 @@ btnMute.addEventListener("click", async () => {
     return;
   }
   if (!isAuthenticatedRequestCurrent(epoch)) return;
-  const muted = data.muted;
-  btnMute.setAttribute("aria-pressed", muted ? "true" : "false");
-  btnMute.innerHTML = muted
-    ? '<span aria-hidden="true">\uD83D\uDD07</span> Mute'
-    : '<span aria-hidden="true">\uD83D\uDD0A</span> Mute';
+  if (_lastStreamMode) streamAudio.muted = data.muted;
+  renderMute(data.muted);
 });
 
 // Shortcuts modal: toolbar button + Close button inside the modal.
@@ -1578,13 +1585,12 @@ volSlider.addEventListener("input", () => {
   volSlider.setAttribute("aria-valuetext", `${val}%`);
   const spokenBySlider = document.activeElement === volSlider;
   _lastUserVolTs = Date.now();
-  if (_lastStreamMode) {
-    // Stream mode: this page's listening only; the station keeps its
-    // volume and nothing goes to the server.
-    streamAudio.volume = _sliderToGain(val);
-  } else {
-    sendVolume(val);
-  }
+  // Stream mode drives this page's listening, and goes to the server only
+  // when --server-audio plays the mix on the machine's speakers too.  The
+  // station's listeners never hear the change.
+  if (_lastStreamMode) streamAudio.volume = _sliderToGain(val);
+  else setVolume(_sliderToGain(val));
+  if (!_lastStreamMode || _lastStreamServerAudio) sendVolume(val);
   // Polite announce for shortcut presses, debounced so holding the key
   // does not read every intermediate step.
   // Cleared 3 s after the announcement so AT users running with a
@@ -1602,9 +1608,6 @@ volSlider.addEventListener("input", () => {
 });
 
 function sendVolume(val) {
-  // Drive the Web Audio gain immediately so the change is audible
-  // without waiting on the server round-trip.
-  setVolume(_sliderToGain(val));
   clearTimeout(volTimer);
   volTimer = setTimeout(() => {
     // Send the perceptual gain (matches what we drive locally) so the

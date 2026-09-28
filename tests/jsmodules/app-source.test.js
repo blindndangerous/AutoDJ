@@ -1596,6 +1596,42 @@ describe("stream mode", () => {
     expect(serverCalls()).toHaveLength(0);
   });
 
+  it("drives the server's speakers too when stream mode has server audio", async () => {
+    const serverState = { ...streamState, stream_server_audio: true, volume: 1, is_muted: false };
+    const { fetchImpl, webSocket } = await setupApp({
+      initialState: serverState,
+      onRequest: (url) => {
+        if (url === "/api/mute") return jsonResponse({ muted: true });
+        if (url === "/api/volume") return jsonResponse({ volume: 0.03 });
+        return lyricsFor("a.mp3");
+      },
+    });
+    const audio = document.getElementById("stream-audio");
+    const slider = document.querySelector("#vol");
+    const mute = document.querySelector("#btn-mute");
+    const calls = (path) => fetchImpl.mock.calls.filter(([url]) => url === path);
+
+    slider.value = "50";
+    slider.dispatchEvent(new Event("input"));
+    expect(audio.volume).toBeCloseTo(10 ** (-30 / 20), 4);
+    await vi.waitFor(() => expect(calls("/api/volume")).toHaveLength(1));
+    expect(JSON.parse(calls("/api/volume")[0][1].body).volume).toBeCloseTo(10 ** (-30 / 20), 4);
+
+    mute.click();
+    await vi.waitFor(() => expect(audio.muted).toBe(true));
+    expect(calls("/api/mute")).toHaveLength(1);
+    expect(mute.getAttribute("aria-pressed")).toBe("true");
+
+    // A change made elsewhere (another page, the terminal) reaches this
+    // page's listening as well as the slider and Mute.
+    await new Promise((resolve) => setTimeout(resolve, 650));
+    webSocket.onmessage({ data: JSON.stringify({ ...serverState, volume: 0.1, is_muted: false }) });
+    expect(slider.value).toBe(String(Math.round((20 * Math.log10(0.1) / 30 + 2) * 50)));
+    expect(audio.volume).toBeCloseTo(0.1, 4);
+    expect(audio.muted).toBe(false);
+    expect(mute.getAttribute("aria-pressed")).toBe("false");
+  });
+
   it("still sends volume and mute to the server outside stream mode", async () => {
     const { fetchImpl } = await setupApp({
       initialState: { current_track: { path: "a.mp3", title: "A" } },
