@@ -4,45 +4,21 @@ import numpy as np
 import pytest
 
 from autodj.transitions import (
+    _LAYERS,
+    _TAIL_EFFECTS,
     TransitionFx,
+    _freeze,
+    _glitch,
+    _halftime,
     _no_louder_than,
-    air_horn,
+    _reverb,
     apply_transition,
-    backspin,
-    beat_repeat,
-    bitcrusher,
-    chorus,
-    cross_eq_swap,
-    dub_delay,
-    dub_siren,
-    echo_out,
-    flanger,
-    freeze,
-    gate_stutter,
-    glitch,
-    halftime,
-    highpass_sweep,
-    lowpass_sweep,
-    noise_riser,
-    phaser,
     pick_effect,
-    pitch_swell,
-    reverb_tail,
-    reverse_reverb,
-    ring_modulator,
-    scratch,
-    sidechain_pump,
-    stutter_build,
-    submerge,
-    tape_stop,
-    telephone,
-    transformer,
-    vinyl_rewind,
-    vinyl_wow,
-    wow_flutter,
 )
 
 SR = 22050
+
+_TAIL = sorted(_TAIL_EFFECTS)
 
 
 def _audio(seconds: float = 2.0) -> np.ndarray:
@@ -57,84 +33,33 @@ def _audio(seconds: float = 2.0) -> np.ndarray:
 
 
 class TestPerEffectSanity:
-    """Each effect must:
+    """Each outgoing-tail effect must:
     - return a numpy float32 array
     - not introduce NaN / Inf
     - keep peak amplitude ≤ 1.05 (slight headroom OK)
     """
 
-    @pytest.mark.parametrize(
-        "fn",
-        [
-            echo_out,
-            reverb_tail,
-            tape_stop,
-            gate_stutter,
-            backspin,
-            bitcrusher,
-            flanger,
-            pitch_swell,
-            telephone,
-            chorus,
-            submerge,
-            vinyl_wow,
-            freeze,
-            glitch,
-            scratch,
-            beat_repeat,
-            sidechain_pump,
-            reverse_reverb,
-            vinyl_rewind,
-            transformer,
-            stutter_build,
-            wow_flutter,
-            phaser,
-            ring_modulator,
-            dub_delay,
-            halftime,
-        ],
-    )
-    def test_outgoing_tail_effect(self, fn) -> None:
+    @pytest.mark.parametrize("effect", _TAIL, ids=str)
+    def test_outgoing_tail_effect(self, effect: TransitionFx) -> None:
         a = _audio()
-        out = fn(a, SR)
+        out = _TAIL_EFFECTS[effect](a, SR)
         assert isinstance(out, np.ndarray)
         assert out.dtype == np.float32
         assert out.shape == a.shape
         assert np.all(np.isfinite(out))
         assert np.abs(out).max() <= 1.05
 
-    def test_highpass_sweep_on_head(self) -> None:
-        a = _audio()
-        out = highpass_sweep(a, SR)
-        assert out.shape == a.shape
-        assert np.all(np.isfinite(out))
-
-    def test_lowpass_sweep_on_tail(self) -> None:
-        a = _audio()
-        out = lowpass_sweep(a, SR)
-        assert out.shape == a.shape
-        assert np.all(np.isfinite(out))
-
-    def test_cross_eq_swap_returns_pair(self) -> None:
-        a = _audio()
-        b = _audio()
-        tail_t, head_full = cross_eq_swap(a, b, SR)
-        assert tail_t.shape == a.shape
-        assert head_full.shape == b.shape
-        assert np.all(np.isfinite(tail_t))
-        assert np.all(np.isfinite(head_full))
-
 
 class TestSynthesisedLayers:
-    @pytest.mark.parametrize("fn", [noise_riser, air_horn, dub_siren])
-    def test_fixed_length(self, fn) -> None:
-        layer = fn(SR, SR)
+    @pytest.mark.parametrize("effect", sorted(_LAYERS), ids=str)
+    def test_fixed_length(self, effect: TransitionFx) -> None:
+        layer = _LAYERS[effect](SR, SR, 3)
         assert layer.shape == (SR,)
         assert np.all(np.isfinite(layer))
 
-    @pytest.mark.parametrize("fn", [noise_riser, air_horn, dub_siren])
-    def test_zero_length(self, fn) -> None:
-        assert fn(0, SR).shape == (0,)
+    @pytest.mark.parametrize("effect", sorted(_LAYERS), ids=str)
+    def test_zero_length(self, effect: TransitionFx) -> None:
+        assert _LAYERS[effect](0, SR, 3).shape == (0,)
 
 
 def _music(seconds: float, level: float, seed: int) -> np.ndarray:
@@ -273,194 +198,114 @@ class TestPickEffect:
 
 
 class TestEdgeCases:
-    def test_empty_input_returns_empty(self) -> None:
-        empty = np.zeros(0, dtype=np.float32)
-        for fn in (
-            echo_out,
-            reverb_tail,
-            tape_stop,
-            gate_stutter,
-            backspin,
-            bitcrusher,
-            chorus,
-            vinyl_wow,
-        ):
-            out = fn(empty, SR)
-            assert out.shape == (0,)
-
     def test_short_input_doesnt_crash(self) -> None:
         short = np.array([0.1, -0.1, 0.05], dtype=np.float32)
-        for fn in (tape_stop, backspin, vinyl_wow, pitch_swell):
-            out = fn(short, SR)
+        for effect in (
+            TransitionFx.TAPE_STOP,
+            TransitionFx.BACKSPIN,
+            TransitionFx.VINYL_WOW,
+            TransitionFx.PITCH_SWELL,
+        ):
+            out = _TAIL_EFFECTS[effect](short, SR)
             assert out.shape == short.shape
+
+    @pytest.mark.parametrize(
+        "effect", [TransitionFx.PITCH_FALL, TransitionFx.FORWARD_SPIN], ids=str
+    )
+    def test_spin_shorter_than_its_curve_is_unchanged(self, effect: TransitionFx) -> None:
+        audio = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+        assert np.array_equal(_TAIL_EFFECTS[effect](audio, SR), audio)
+
+    def test_backspin_on_a_few_samples_keeps_length(self) -> None:
+        a = _audio(0.01)
+        assert _TAIL_EFFECTS[TransitionFx.BACKSPIN](a, SR).shape == a.shape
+
+    def test_reverb_shorter_than_its_combs(self) -> None:
+        # 50 samples: shorter than every comb and allpass delay.
+        short = np.linspace(-0.1, 0.1, 50, dtype=np.float32)
+        assert _reverb(short, SR, wet=0.45).shape == short.shape
+
+    def test_halftime_at_a_sample_rate_too_low_for_a_window(self) -> None:
+        """At 20 Hz a grain is one sample, too short for a Hann window."""
+        audio = np.array([0.1, 0.2, 0.3, 0.4, 0.5], dtype=np.float32)
+        out = _halftime(audio, sample_rate=20)
+        assert out.shape == audio.shape
+        assert np.all(np.isfinite(out))
 
 
 class TestFreeze:
     def test_loops_grain_through_tail(self) -> None:
-        # 1 s tail; ask for a 100 ms grain that loops 10×
         a = _audio(1.0)
-        out = freeze(a, SR, grain_ms=100.0, fade_out=False)
+        out = _freeze(a, SR, grain_ms=100.0)
         assert out.shape == a.shape
-        # Periodicity: samples 0 and 100ms-mark should be similar (after seam)
+        # Undo the fade-out: a grain later the loop repeats itself.
+        looped = out / np.maximum(np.linspace(1.0, 0.0, len(out)), 1e-9)
         grain = int(0.1 * SR)
-        # Skip the small seam region
-        assert np.abs(out[grain // 2] - out[grain + grain // 2]) < 0.5
+        assert looped[grain // 2] == pytest.approx(looped[grain + grain // 2], abs=1e-4)
 
     def test_fade_out_brings_tail_to_silence(self) -> None:
         a = _audio(1.0)
-        out = freeze(a, SR, grain_ms=80.0, fade_out=True)
+        out = _TAIL_EFFECTS[TransitionFx.FREEZE](a, SR)
         assert abs(out[-1]) < 0.05
         assert abs(out[len(out) // 2]) > abs(out[-1])
 
     def test_grain_longer_than_tail_clamps(self) -> None:
         a = _audio(0.05)  # 50 ms
-        out = freeze(a, SR, grain_ms=200.0, fade_out=False)
+        out = _freeze(a, SR, grain_ms=200.0)
         assert out.shape == a.shape
-
-    def test_empty_input_returns_empty(self) -> None:
-        out = freeze(np.zeros(0, dtype=np.float32), SR)
-        assert out.shape == (0,)
 
 
 class TestGlitch:
     def test_output_same_length(self) -> None:
         a = _audio(1.0)
-        out = glitch(a, SR, slice_ms=50.0, seed=42)
-        assert out.shape == a.shape
+        assert _glitch(a, SR, 42, slice_ms=50.0).shape == a.shape
 
     def test_seeded_is_reproducible(self) -> None:
         a = _audio(0.5)
-        out1 = glitch(a, SR, seed=7)
-        out2 = glitch(a, SR, seed=7)
-        np.testing.assert_array_equal(out1, out2)
+        np.testing.assert_array_equal(
+            _glitch(a, SR, 7, slice_ms=80.0), _glitch(a, SR, 7, slice_ms=80.0)
+        )
 
     def test_different_seeds_diverge(self) -> None:
         a = _audio(0.5)
-        out1 = glitch(a, SR, seed=1)
-        out2 = glitch(a, SR, seed=2)
-        # Almost certainly different
-        assert not np.allclose(out1, out2)
+        assert not np.allclose(_glitch(a, SR, 1, slice_ms=80.0), _glitch(a, SR, 2, slice_ms=80.0))
 
     def test_slice_longer_than_input_returns_copy(self) -> None:
         a = _audio(0.05)
-        out = glitch(a, SR, slice_ms=500.0)
-        assert out.shape == a.shape
+        assert _glitch(a, SR, None, slice_ms=500.0).shape == a.shape
 
     def test_empty_input_returns_empty(self) -> None:
-        out = glitch(np.zeros(0, dtype=np.float32), SR)
-        assert out.shape == (0,)
-
-
-class TestTransitionsExtraBranches:
-    def test_reverb_tail_short_input_skips_long_combs(self) -> None:
-        from autodj.transitions import reverb_tail
-
-        # 50 sample tail — shorter than any of the comb/allpass delays at
-        # SR = 44100, so the inner `if d >= len(tail)` early-continues fire.
-        short = np.linspace(-0.1, 0.1, 50, dtype=np.float32)
-        out = reverb_tail(short, SR)
-        assert out.shape == short.shape
-
-    def test_tape_stop_linear_curve(self) -> None:
-        from autodj.transitions import tape_stop
-
-        a = _audio(0.5)
-        out = tape_stop(a, SR, curve="linear")
-        assert out.shape == a.shape
-
-    def test_backspin_short_source_returns_tail(self) -> None:
-        from autodj.transitions import backspin
-
-        # 10 ms — shorter than the head_n setup, src ends up empty
-        a = _audio(0.01)
-        out = backspin(a, SR)
-        # len-zero src → returns the original tail unchanged
-        assert out.shape == a.shape
+        assert _glitch(np.zeros(0, dtype=np.float32), SR, None, slice_ms=80.0).shape == (0,)
 
 
 class TestEdgeCaseInputs:
-    """Boundary conditions not covered above: 1-2 sample buffers,
-    NaN audio, zero sample rate, all-silence input.  Every function
-    should degrade gracefully (no crash, no NaN/Inf in output).
+    """Boundary conditions: empty, single-sample and all-silence buffers.
+    Every effect should degrade gracefully (no crash, no NaN/Inf in output).
     """
 
-    @pytest.mark.parametrize(
-        "fn",
-        [
-            backspin,
-            beat_repeat,
-            bitcrusher,
-            chorus,
-            dub_delay,
-            echo_out,
-            flanger,
-            freeze,
-            gate_stutter,
-            glitch,
-            halftime,
-            phaser,
-            pitch_swell,
-            reverb_tail,
-            reverse_reverb,
-            ring_modulator,
-            scratch,
-            sidechain_pump,
-            stutter_build,
-            submerge,
-            tape_stop,
-            telephone,
-            transformer,
-            vinyl_rewind,
-            vinyl_wow,
-            wow_flutter,
-        ],
-    )
-    def test_one_sample_input(self, fn) -> None:
+    @pytest.mark.parametrize("effect", _TAIL, ids=str)
+    def test_empty_tail_returns_empty(self, effect: TransitionFx) -> None:
+        out = _TAIL_EFFECTS[effect](np.zeros(0, dtype=np.float32), SR)
+        assert isinstance(out, np.ndarray)
+        assert out.shape == (0,)
+
+    @pytest.mark.parametrize("effect", _TAIL, ids=str)
+    def test_one_sample_input(self, effect: TransitionFx) -> None:
         """Single-sample tail must not crash; either passes through or empty."""
         tiny = np.array([0.1], dtype=np.float32)
-        out = fn(tiny, SR)
+        out = _TAIL_EFFECTS[effect](tiny, SR)
         assert isinstance(out, np.ndarray)
         assert out.shape == tiny.shape
         assert np.all(np.isfinite(out))
 
-    @pytest.mark.parametrize(
-        "fn",
-        [
-            echo_out,
-            reverb_tail,
-            tape_stop,
-            gate_stutter,
-            bitcrusher,
-            flanger,
-            pitch_swell,
-            telephone,
-            chorus,
-            submerge,
-            vinyl_wow,
-            freeze,
-            scratch,
-            sidechain_pump,
-            reverse_reverb,
-            vinyl_rewind,
-            transformer,
-            stutter_build,
-            wow_flutter,
-            phaser,
-            ring_modulator,
-            dub_delay,
-            halftime,
-        ],
-    )
-    def test_all_silence_input_stays_finite(self, fn) -> None:
+    @pytest.mark.parametrize("effect", _TAIL, ids=str)
+    def test_all_silence_input_stays_finite(self, effect: TransitionFx) -> None:
         """Silent buffer in -> silent or finite buffer out (no NaN from /0)."""
         silent = np.zeros(int(0.5 * SR), dtype=np.float32)
-        out = fn(silent, SR)
-        assert np.all(np.isfinite(out))
+        assert np.all(np.isfinite(_TAIL_EFFECTS[effect](silent, SR)))
 
     def test_apply_transition_zero_length_buffers(self) -> None:
         """apply_transition must accept empty tail/head without crashing."""
-        from autodj.transitions import apply_transition
-
         empty = np.zeros(0, dtype=np.float32)
         for fx in (
             TransitionFx.REVERB_TAIL,
@@ -471,89 +316,6 @@ class TestEdgeCaseInputs:
             t, h, _extra = apply_transition(empty, empty, SR, fx)
             assert t.shape == (0,)
             assert h.shape == (0,)
-
-
-class TestEffectsEmptyBuffer:
-    """Cover the early-return ``if len(tail) == 0: return tail`` branches
-    for every per-effect helper.  These are testable defensively.
-    """
-
-    @pytest.mark.parametrize(
-        "fn",
-        [
-            echo_out,
-            reverb_tail,
-            tape_stop,
-            gate_stutter,
-            highpass_sweep,
-            lowpass_sweep,
-            bitcrusher,
-            flanger,
-            pitch_swell,
-            telephone,
-            chorus,
-            submerge,
-            vinyl_wow,
-            freeze,
-            scratch,
-            beat_repeat,
-            sidechain_pump,
-            reverse_reverb,
-            vinyl_rewind,
-            transformer,
-            stutter_build,
-            wow_flutter,
-            phaser,
-            ring_modulator,
-            dub_delay,
-        ],
-    )
-    def test_empty_tail_returns_empty(self, fn) -> None:
-        empty = np.zeros(0, dtype=np.float32)
-        out = fn(empty, SR)
-        assert isinstance(out, np.ndarray)
-        assert out.shape == (0,)
-
-
-class TestHalftimeShortGrain:
-    def test_low_sample_rate_uses_ones_window(self) -> None:
-        """With SR < 40, grain_n falls below 2 → np.ones path (line 1522)."""
-        from autodj.transitions import halftime
-
-        # Need n >= 4 (passes guard) but grain_n = int(0.05*SR).  SR=20 → 1.
-        audio = np.array([0.1, 0.2, 0.3, 0.4, 0.5], dtype=np.float32)
-        out = halftime(audio, sample_rate=20)
-        assert out.shape == audio.shape
-        assert np.all(np.isfinite(out))
-
-
-class TestPitchFallShortInput:
-    def test_short_input_returns_unchanged(self) -> None:
-        from autodj.transitions import pitch_fall
-
-        audio = np.array([0.1, 0.2, 0.3], dtype=np.float32)
-        out = pitch_fall(audio, SR)
-        assert np.array_equal(out, audio)
-
-
-class TestForwardSpinShortInput:
-    def test_short_input_returns_unchanged(self) -> None:
-        """``_forward_spin_tail`` early-returns when n<4 (line 1574)."""
-        from autodj.transitions import _forward_spin_tail
-
-        audio = np.array([0.1, 0.2, 0.3], dtype=np.float32)
-        out = _forward_spin_tail(audio)
-        assert np.array_equal(out, audio)
-
-
-class TestNoiseDropExtraEmpty:
-    def test_empty_tail_returns_empty(self) -> None:
-        """``_noise_drop_extra`` early-returns when tail is empty (line 1558)."""
-        from autodj.transitions import _noise_drop_extra
-
-        empty = np.zeros(0, dtype=np.float32)
-        out = _noise_drop_extra(empty, SR)
-        assert out.shape == (0,)
 
 
 class TestPickEffectEdgeCases:

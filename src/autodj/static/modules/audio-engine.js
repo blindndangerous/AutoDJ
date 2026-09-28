@@ -374,15 +374,7 @@ let _lastTransitionFx = "none";
 let _rotateCursor = -1;
 
 function _resolveTransition(name) {
-  const real = ["echo_out", "reverb_tail", "highpass_sweep", "lowpass_sweep",
-    "tape_stop", "gate_stutter", "noise_riser", "noise_drop",
-    "cross_eq_swap", "bitcrusher", "flanger", "pitch_swell", "pitch_fall",
-    "telephone",
-    "backspin", "forward_spin", "chorus", "submerge", "vinyl_wow",
-    "freeze", "glitch",
-    "scratch", "beat_repeat", "sidechain_pump", "reverse_reverb", "air_horn",
-    "vinyl_rewind", "transformer", "dub_siren", "stutter_build", "wow_flutter",
-    "phaser", "ring_modulator", "dub_delay", "halftime"];
+  const real = Object.keys(_EFFECTS);
   if (name === "random") return real[Math.floor(Math.random() * real.length)];
   if (name === "rotate") {
     _rotateCursor = (_rotateCursor + 1) % real.length;
@@ -519,11 +511,9 @@ function _disconnectAll(...nodes) {
   }
 }
 
-// Real reverse / fast-forward playback via decoded AudioBuffer.  HTML
-// <audio> can't go negative on playbackRate, so we fetch + decode the
-// audio file, slice the relevant chunk, optionally reverse it, and play
-// through an AudioBufferSourceNode while muting the live deck.  Caches
-// the decoded buffer per path so a Skip → Skip cycle doesn't re-decode.
+// Decoded copies of deck files for the effects that replay them (see
+// _decodedReplays), cached per path so a Skip → Skip cycle doesn't
+// re-decode.
 const _bufferCache = new Map();   // path → AudioBuffer
 const _bufferPending = new Map();
 let _bufferGeneration = 0;
@@ -560,160 +550,6 @@ async function _decodeFor(path) {
   _bufferPending.set(path, pending);
   return pending;
 }
-
-function _doSpin(ctx, outDeck, t0, fadeSec, reverse, teardowns, wet, slow = false) {
-  // Real reverse / push-forward via decoded AudioBuffer + AudioBufferSource.
-  // Critical detail: the buffer source goes to the effect bus, bypassing
-  // deck.gain — otherwise the crossfade ramp silences the spin before
-  // it's heard.  The live deck keeps only its dry share (none at a full
-  // wet mix), so the spin is what is heard.
-  //
-  // Industry envelope:
-  //   reverse: rate decays 2.0 → 0.05 (vinyl friction physics)
-  //   forward: rate accelerates 0.05 → 2.5 (mirror of backspin —
-  //            record starts at a near-stop, friction-released into
-  //            full forward speed at the cut)
-  const path = outDeck.path;
-  const currentT = outDeck.audio.currentTime;
-  const spinSec = Math.max(fadeSec, 2.5);
-  const windowSec = Math.max(spinSec * 1.5, 4.0);
-
-  _keepDry(ctx, outDeck, wet, teardowns);
-
-  let bufSrc = null;
-  let bufGain = null;
-  let synthNoise = null, synthBp = null, synthG = null;
-  let cancelled = false;
-
-  // Synth friction noise goes to the effect bus too.  Quiet so it
-  // doesn't drown the actual reversed audio.
-  const noiseBuf = ctx.createBuffer(1, ctx.sampleRate * spinSec, ctx.sampleRate);
-  const nd = noiseBuf.getChannelData(0);
-  for (let i = 0; i < nd.length; i++) nd[i] = (Math.random() * 2 - 1) * 0.6;
-  synthNoise = ctx.createBufferSource(); synthNoise.buffer = noiseBuf;
-  synthBp = ctx.createBiquadFilter();
-  synthBp.type = "bandpass"; synthBp.Q.value = 1.5;
-  if (reverse) {
-    synthBp.frequency.setValueAtTime(2500, t0);
-    synthBp.frequency.exponentialRampToValueAtTime(120, t0 + spinSec);
-  } else {
-    synthBp.frequency.setValueAtTime(120, t0);
-    synthBp.frequency.exponentialRampToValueAtTime(2500, t0 + spinSec);
-  }
-  synthG = ctx.createGain();
-  synthG.gain.setValueAtTime(0.0, t0);
-  synthG.gain.linearRampToValueAtTime(0.20, t0 + 0.05);
-  synthG.gain.linearRampToValueAtTime(0.15, t0 + spinSec * 0.6);
-  synthG.gain.exponentialRampToValueAtTime(0.001, t0 + spinSec);
-  synthNoise.connect(synthBp); synthBp.connect(synthG); synthG.connect(_fxBus);
-  synthNoise.start();
-
-  _decodeFor(path).then((buf) => {
-    if (cancelled) return;
-    const sr = buf.sampleRate;
-    const startSamp = Math.max(0, Math.floor((currentT - windowSec) * sr));
-    const endSamp = Math.min(buf.length, Math.floor(currentT * sr));
-    const len = endSamp - startSamp;
-    if (len <= 0) return;
-    const chunk = ctx.createBuffer(buf.numberOfChannels, len, sr);
-    for (let ch = 0; ch < buf.numberOfChannels; ch++) {
-      const dst = chunk.getChannelData(ch);
-      const src = buf.getChannelData(ch);
-      if (reverse) {
-        for (let i = 0; i < len; i++) dst[i] = src[endSamp - 1 - i];
-      } else {
-        for (let i = 0; i < len; i++) dst[i] = src[startSamp + i];
-      }
-    }
-    bufSrc = ctx.createBufferSource();
-    bufSrc.buffer = chunk;
-    if (reverse && slow) {
-      // vinyl_rewind: slow musical reverse 1.0 → 0.5 (one-octave drop)
-      bufSrc.playbackRate.setValueAtTime(1.0, t0);
-      bufSrc.playbackRate.linearRampToValueAtTime(0.5, t0 + spinSec);
-    } else if (reverse) {
-      bufSrc.playbackRate.setValueAtTime(2.0, t0);
-      bufSrc.playbackRate.linearRampToValueAtTime(0.05, t0 + spinSec);
-    } else {
-      // True mirror of the backspin envelope — slow start, accelerating
-      // INTO the cut.  Without this the forward variant just sounded
-      // like a fast-forward, not a deliberate spin.
-      bufSrc.playbackRate.setValueAtTime(0.05, t0);
-      bufSrc.playbackRate.linearRampToValueAtTime(2.5, t0 + spinSec);
-    }
-    bufGain = ctx.createGain();
-    bufGain.gain.setValueAtTime(1, t0);
-    bufGain.gain.setValueAtTime(1, t0 + spinSec - 0.3);
-    bufGain.gain.linearRampToValueAtTime(0.0, t0 + spinSec);
-    // Effect bus, not deck.gain, so the crossfade ramp doesn't silence us.
-    bufSrc.connect(bufGain); bufGain.connect(_fxBus);
-    bufSrc.start();
-  }).catch((err) => {
-    console.warn("spin decode failed, falling back to friction-only:", err);
-  });
-
-  teardowns.push(() => {
-    cancelled = true;
-    if (bufSrc) {
-      try { bufSrc.stop(); } catch (_) {}
-      _disconnectAll(bufSrc, bufGain);
-    }
-    if (synthNoise) {
-      try { synthNoise.stop(); } catch (_) {}
-      _disconnectAll(synthNoise, synthBp, synthG);
-    }
-  });
-}
-
-function _doTapeStop(ctx, outDeck, t0, fadeSec, teardowns, wet) {
-  // Tape stop = forward playback with playbackRate ramping to 0 over
-  // the full fade.  Goes to the effect bus (bypassing deck.gain) so the
-  // slow-down is heard at the deck's full level rather than being
-  // silenced by the crossfade ramp.
-  const path = outDeck.path;
-  const currentT = outDeck.audio.currentTime;
-  const stopSec = Math.max(fadeSec, 4.0);
-  _keepDry(ctx, outDeck, wet, teardowns);
-
-  let bufSrc = null, bufGain = null;
-  let cancelled = false;
-
-  _decodeFor(path).then((buf) => {
-    if (cancelled) return;
-    const sr = buf.sampleRate;
-    const startSamp = Math.floor(currentT * sr);
-    const endSamp = Math.min(buf.length, startSamp + Math.floor(stopSec * 2 * sr));
-    const len = endSamp - startSamp;
-    if (len <= 0) return;
-    const chunk = ctx.createBuffer(buf.numberOfChannels, len, sr);
-    for (let ch = 0; ch < buf.numberOfChannels; ch++) {
-      chunk.getChannelData(ch).set(buf.getChannelData(ch).subarray(startSamp, endSamp));
-    }
-    bufSrc = ctx.createBufferSource();
-    bufSrc.buffer = chunk;
-    // Quadratic-ish slowdown — sounds like a real tape brake.
-    bufSrc.playbackRate.setValueAtTime(1.0, t0);
-    bufSrc.playbackRate.linearRampToValueAtTime(0.4, t0 + stopSec * 0.5);
-    bufSrc.playbackRate.exponentialRampToValueAtTime(0.001, t0 + stopSec);
-    bufGain = ctx.createGain();
-    bufGain.gain.setValueAtTime(1, t0);
-    bufGain.gain.setValueAtTime(1, t0 + stopSec - 0.2);
-    bufGain.gain.linearRampToValueAtTime(0.0, t0 + stopSec);
-    bufSrc.connect(bufGain); bufGain.connect(_fxBus);
-    bufSrc.start();
-  }).catch((err) => {
-    console.warn("tape_stop decode failed:", err);
-  });
-
-  teardowns.push(() => {
-    cancelled = true;
-    if (bufSrc) {
-      try { bufSrc.stop(); } catch (_) {}
-      _disconnectAll(bufSrc, bufGain);
-    }
-  });
-}
-
 // Industry-standard minimum effect lengths (seconds).  Sourced from
 // commercial DJ-tool defaults (Pioneer DJM, Reloop RMX, Numark NS).
 // Mirrors Player._MIN_FX_DURATION_S on the Python side so CLI and
@@ -964,177 +800,446 @@ function _effectDurationFor(effect, fadeSec, outroLen) {
   return dur;
 }
 
-function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
-  const ctx = _ctx;
-  if (!ctx || effect === "none" || !effect) return () => {};
-  // Caller (startCrossfade) now resolves the effect-preferred duration
-  // and passes it in so the gain ramp and the effect scheduling share
-  // one timeline.  Direct callers (none currently, but defensive) get
-  // legacy behaviour via the floor when no outro length is known.
-  if (fadeSec == null || !(fadeSec > 0)) {
-    fadeSec = _effectDurationFor(effect, 3.0, _currentOutroLenCache);
-  }
-  const t0 = ctx.currentTime;
-  const tEnd = t0 + fadeSec;
-  const teardowns = [];
-  const wet = _wetMixCache;
-  _fxBus.gain.cancelScheduledValues(t0);
-  _fxBus.gain.setValueAtTime(wet, t0);
-  const replaceOn = (deck) => _replaceOn(ctx, deck, wet, teardowns);
-  const addTo = (deck) => _addTo(ctx, deck, wet, teardowns);
-  const keepDry = (deck) => _keepDry(ctx, deck, wet, teardowns);
+// ---- Effect builders ------------------------------------------------------
+//
+// Each effect in _EFFECTS below gets `fx`: the context, its start and end
+// (t0, tEnd) and length (fadeSec), both decks, the teardown list, and
+// the routing helpers replaceOn / addTo / keepDry bound to the wet mix.
+// Effects that differ only in their settings share a builder here.
 
-  function tearAll() {
-    for (const fn of teardowns) { try { fn(); } catch (_) {} }
-    _restoreDirect(outDeck);
-    _restoreDirect(inDeck);
-  }
+// Put the chain `first` ... `last` inline on `deck`, its output at the
+// wet mix beside the untouched signal (see _replaceOn).
+function _inline(fx, deck, first, last = first) {
+  const out = fx.replaceOn(deck);
+  deck.source.connect(first);
+  last.connect(out);
+}
 
-  if (effect === "lowpass_sweep") {
-    // Outgoing track keeps full level while a steep low-pass closes,
-    // then drops sharply at the end.  Overriding deck.gain here is
-    // safe because applyTransitionFx now runs AFTER startCrossfade has
-    // already scheduled its baseline ramps — our writes win.
-    const f = ctx.createBiquadFilter();
-    f.type = "lowpass";
-    f.Q.value = FLAT_Q;
-    const sweepEnd = t0 + Math.max(0.5, fadeSec * 0.7);
-    f.frequency.setValueAtTime(ctx.sampleRate / 2, t0);
-    f.frequency.exponentialRampToValueAtTime(180, sweepEnd);
-    const out = replaceOn(outDeck);
-    outDeck.source.connect(f);
-    f.connect(out);
-    // Keep outgoing loud while the filter sweeps, then a fast 200 ms
-    // drop at the very end so the cut is clean.
-    outDeck.gain.gain.cancelScheduledValues(t0);
-    outDeck.gain.gain.setValueAtTime(1, t0);
-    outDeck.gain.gain.setValueAtTime(1, Math.max(t0, tEnd - 0.2));
-    outDeck.gain.gain.linearRampToValueAtTime(0, tEnd);
-    teardowns.push(() => f.disconnect());
+// Keep the outgoing deck at full level through the effect, then drop it
+// to silence over the last `dropSec`: left to the crossfade ramp, the
+// deck fades before the effect's character is heard.
+function _holdThenDrop(fx, dropSec) {
+  const { t0, tEnd } = fx;
+  const gain = fx.outDeck.gain.gain;
+  gain.cancelScheduledValues(t0);
+  gain.setValueAtTime(1, t0);
+  gain.setValueAtTime(1, Math.max(t0, tEnd - dropSec));
+  gain.linearRampToValueAtTime(0, tEnd);
+}
+
+// Filter sweep put inline on `deck`: the cutoff glides from `fromHz` to
+// `toHz` over the first 70 % of the effect (at least 0.5 s).
+function _filterSweep(fx, deck, type, fromHz, toHz) {
+  const f = fx.ctx.createBiquadFilter();
+  f.type = type;
+  f.Q.value = FLAT_Q;
+  f.frequency.setValueAtTime(fromHz, fx.t0);
+  f.frequency.exponentialRampToValueAtTime(toHz, fx.t0 + Math.max(0.5, fx.fadeSec * 0.7));
+  _inline(fx, deck, f);
+  fx.teardowns.push(() => _disconnectAll(f));
+}
+
+// A delay line whose time a sine LFO sweeps by ±depthSec around baseSec.
+function _sweptDelay(ctx, maxSec, baseSec, hz, depthSec) {
+  const delay = ctx.createDelay(maxSec); delay.delayTime.value = baseSec;
+  const lfo = ctx.createOscillator(); lfo.frequency.value = hz;
+  const lfoGain = ctx.createGain(); lfoGain.gain.value = depthSec;
+  lfo.connect(lfoGain); lfoGain.connect(delay.delayTime);
+  return { delay, lfo, lfoGain };
+}
+
+// Feedback delay on the outgoing deck (echo_out, flanger, dub_delay).
+// Its repeats feed back at `feedback`, darkened by a lowpass at
+// `dampingHz` when given, and with the delay time swept when `sweep` is
+// given.  Returns the node carrying the repeats at `level` (a number, or
+// a function that automates the gain); the caller routes it.  Repeats
+// that line up in phase build to level / (1 - feedback), so keeping that
+// at or under 1 keeps the effect no louder than the deck.
+function _feedbackDelay(fx, { maxSec, delaySec, sweep = null, feedback, dampingHz = null, level }) {
+  const { ctx, outDeck } = fx;
+  let delay, lfo = null, lfoGain = null;
+  if (sweep) {
+    ({ delay, lfo, lfoGain } = _sweptDelay(ctx, maxSec, delaySec, sweep.hz, sweep.depthSec));
+  } else {
+    delay = ctx.createDelay(maxSec);
+    delay.delayTime.value = delaySec;
   }
-  else if (effect === "highpass_sweep") {
-    // Incoming track plays at full level but heavily filtered, so the
-    // bass-bloom is unmistakable — without overriding inDeck.gain the
-    // standard 0 → 1 ramp masks the filter character (everything
-    // sounds like "muffled fade-in" instead of "filter-in").
-    const f = ctx.createBiquadFilter();
-    f.type = "highpass";
-    f.Q.value = FLAT_Q;
-    const sweepEnd = t0 + Math.max(0.5, fadeSec * 0.7);
-    f.frequency.setValueAtTime(6000, t0);
-    f.frequency.exponentialRampToValueAtTime(50, sweepEnd);
-    const out = replaceOn(inDeck);
-    inDeck.source.connect(f);
-    f.connect(out);
-    inDeck.gain.gain.cancelScheduledValues(t0);
-    inDeck.gain.gain.setValueAtTime(1, t0);
-    teardowns.push(() => f.disconnect());
+  const fb = ctx.createGain(); fb.gain.value = feedback;
+  let damping = null;
+  if (dampingHz) {
+    damping = ctx.createBiquadFilter();
+    damping.type = "lowpass"; damping.frequency.value = dampingHz; damping.Q.value = FLAT_Q;
+    delay.connect(damping);
   }
-  else if (effect === "cross_eq_swap") {
-    const fOut = ctx.createBiquadFilter();
-    fOut.type = "highpass"; fOut.frequency.value = 250; fOut.Q.value = FLAT_Q;
-    const outOut = replaceOn(outDeck);
-    outDeck.source.connect(fOut); fOut.connect(outOut);
-    const fIn = ctx.createBiquadFilter();
-    fIn.type = "lowpass"; fIn.Q.value = FLAT_Q;
-    fIn.frequency.setValueAtTime(250, t0);
-    fIn.frequency.exponentialRampToValueAtTime(ctx.sampleRate / 2, tEnd);
-    const inOut = replaceOn(inDeck);
-    inDeck.source.connect(fIn); fIn.connect(inOut);
-    teardowns.push(() => fOut.disconnect());
-    teardowns.push(() => fIn.disconnect());
+  const tap = damping || delay;
+  const out = ctx.createGain();
+  if (typeof level === "number") out.gain.value = level; else level(out.gain);
+  outDeck.source.connect(delay);
+  tap.connect(fb); fb.connect(delay);   // feedback loop
+  tap.connect(out);
+  if (lfo) lfo.start();
+  fx.teardowns.push(() => {
+    if (lfo) { try { lfo.stop(); } catch (_) {} }
+    _disconnectAll(delay, fb, damping, out, lfoGain);
+  });
+  return out;
+}
+
+// Mono white noise at `level`, `sec` long.
+function _noiseBuffer(ctx, sec, level) {
+  const buf = ctx.createBuffer(1, ctx.sampleRate * sec, ctx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * level;
+  return buf;
+}
+
+// Noise layer on the effect bus (noise_riser, noise_drop): white noise
+// through a lowpass sweeping `fromHz` -> `toHz`, its level shaped by
+// `envelope(gainParam)`.  At least `minSec` long.
+function _noiseLayer(fx, minSec, fromHz, toHz, envelope) {
+  const { ctx, t0, tEnd } = fx;
+  const src = ctx.createBufferSource();
+  src.buffer = _noiseBuffer(ctx, Math.max(fx.fadeSec, minSec), 1);
+  const filter = ctx.createBiquadFilter(); filter.type = "lowpass";
+  filter.frequency.setValueAtTime(fromHz, t0);
+  filter.frequency.exponentialRampToValueAtTime(toHz, tEnd);
+  const g = ctx.createGain();
+  envelope(g.gain);
+  src.connect(filter); filter.connect(g); g.connect(_fxBus);
+  src.start();
+  fx.teardowns.push(() => {
+    try { src.stop(); } catch (_) {}
+    _disconnectAll(src, filter, g);
+  });
+}
+
+// An AudioWorklet with explicit stereo output: without outputChannelCount
+// some browsers give the worklet a single channel, which then upmixes to
+// silence on certain destinations.
+function _stereoWorklet(ctx, name) {
+  return new AudioWorkletNode(ctx, name, {
+    numberOfInputs: 1,
+    numberOfOutputs: 1,
+    outputChannelCount: [2],
+  });
+}
+
+// Worklet fed from the outgoing deck and sent to the effect bus through
+// a gain shaped by `envelope` (freeze, glitch), so it is heard at the
+// deck's level instead of fading with the crossfade.  The deck keeps
+// only its dry share.  Routing source -> passthrough gain -> worklet
+// steadies the input on Chrome, where MediaElementSource ->
+// AudioWorkletNode can deliver empty quanta during the first capture
+// window.  Do NOT mute the <audio> element: MediaElementSource respects
+// the muted flag and would feed the worklet silence.
+function _workletToBus(fx, name, params, envelope) {
+  const { ctx, t0, outDeck } = fx;
+  const node = _stereoWorklet(ctx, name);
+  for (const [key, value] of Object.entries(params)) {
+    node.parameters.get(key).setValueAtTime(value, t0);
   }
-  else if (effect === "echo_out") {
-    // Tempo-synced eighth-note echo throw.  delayTime = beatSec / 2
-    // (1/8 note) so the tail subdivides the outgoing groove instead of
-    // sitting at the legacy 375 ms.  The wet path goes to the effect bus
-    // so the echo tail survives after deck.gain has ramped to silence.
-    // Echo level 0.4 with feedback 0.6: repeats that line up in phase
-    // build to 0.4 / (1 - 0.6) = 1, the deck's own level, never above.
-    const delay = ctx.createDelay(2.0);
-    const eighth = _BS.beatSec(t0) / 2;
-    delay.delayTime.value = Math.max(0.05, Math.min(1.5, eighth));
-    const fb = ctx.createGain(); fb.gain.value = 0.6;
-    const echo = ctx.createGain();
-    echo.gain.setValueAtTime(0.4, t0);
-    echo.gain.setValueAtTime(0.4, t0 + fadeSec * 0.6);
-    echo.gain.exponentialRampToValueAtTime(0.001, tEnd);
-    outDeck.source.connect(delay);
-    delay.connect(fb); fb.connect(delay);
-    delay.connect(echo); echo.connect(_fxBus);
-    teardowns.push(() => _disconnectAll(delay, fb, echo));
+  const passthrough = ctx.createGain();
+  passthrough.gain.value = 1.0;
+  const g = ctx.createGain();
+  envelope(g.gain);
+  fx.keepDry(outDeck);
+  outDeck.source.connect(passthrough);
+  passthrough.connect(node);
+  node.connect(g); g.connect(_fxBus);
+  fx.teardowns.push(() => _disconnectAll(node, g, passthrough));
+}
+
+// `len` frames of `buf` from `start` as a new buffer, back to front when
+// `reverse`.
+function _copyFrames(ctx, buf, start, len, reverse = false) {
+  const out = ctx.createBuffer(buf.numberOfChannels, len, buf.sampleRate);
+  for (let ch = 0; ch < buf.numberOfChannels; ch++) {
+    const dst = out.getChannelData(ch);
+    const src = buf.getChannelData(ch);
+    if (reverse) {
+      for (let i = 0; i < len; i++) dst[i] = src[start + len - 1 - i];
+    } else {
+      dst.set(src.subarray(start, start + len));
+    }
   }
-  else if (effect === "reverb_tail") {
-    // Big-hall reverb that survives the crossfade.  The wet path goes to
-    // the effect bus, bypassing deck.gain, so the tail rings even after
-    // the dry signal is silenced.  IR length 4 s + decay=1.8 (slower
-    // decay = longer audible tail).  The normalised IR passes about half
-    // the level (RMS); at 1.4 the tail sits about 3 dB under the dry.
+  return out;
+}
+
+// Replays cut from the decoded outgoing track (spins, tape stop, scratch,
+// beat repeat, and the freeze / glitch fallbacks where worklets are
+// unavailable).  They go to the effect bus, not deck.gain, or the
+// crossfade ramp would silence them; the deck keeps only its dry share,
+// so at a full wet mix the replay is what is heard.  `build(buf,
+// currentT)` schedules them once the file is decoded and returns
+// [{ src, g }], which stop on teardown.  HTML <audio> can't play
+// backwards or slow to a stop, which is why these decode the file.
+function _decodedReplays(fx, build, onError) {
+  const path = fx.outDeck.path;
+  const currentT = fx.outDeck.audio.currentTime;
+  fx.keepDry(fx.outDeck);
+  let cancelled = false;
+  const sources = [];
+  _decodeFor(path).then((buf) => {
+    if (cancelled) return;
+    sources.push(...build(buf, currentT));
+  }).catch(onError);
+  fx.teardowns.push(() => {
+    cancelled = true;
+    for (const s of sources) {
+      try { s.src.stop(); } catch (_) {}
+      _disconnectAll(s.src, s.g);
+    }
+  });
+}
+
+const _warnReplayFailed = (err) => console.warn("effect replay decode failed:", err);
+
+// Playback-rate glide from `from` to `to` over `sec`.
+const _glide = (from, to) => (rate, t0, sec) => {
+  rate.setValueAtTime(from, t0);
+  rate.linearRampToValueAtTime(to, t0 + sec);
+};
+
+// The outgoing track replayed at a changing speed (tape_stop and the
+// spins), at least `minSec` long.  A spin reads the window behind the
+// playhead, backwards when `reverse`; tape stop reads the audio still to
+// come.  `rate(param, t0, sec)` shapes the speed, the last `release`
+// seconds fade out, and `friction` [fromHz, toHz] adds a quiet swept
+// noise, the sound of the record under the hand.
+function _spin(fx, { minSec, ahead = false, reverse = false, rate, release, friction = null }) {
+  const { ctx, t0 } = fx;
+  const sec = Math.max(fx.fadeSec, minSec);
+  _decodedReplays(fx, (buf, currentT) => {
+    const sr = buf.sampleRate;
+    let startSamp, endSamp;
+    if (ahead) {
+      startSamp = Math.floor(currentT * sr);
+      endSamp = Math.min(buf.length, startSamp + Math.floor(sec * 2 * sr));
+    } else {
+      const windowSec = Math.max(sec * 1.5, 4.0);
+      startSamp = Math.max(0, Math.floor((currentT - windowSec) * sr));
+      endSamp = Math.min(buf.length, Math.floor(currentT * sr));
+    }
+    const len = endSamp - startSamp;
+    if (len <= 0) return [];
+    const src = ctx.createBufferSource();
+    src.buffer = _copyFrames(ctx, buf, startSamp, len, reverse);
+    rate(src.playbackRate, t0, sec);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(1, t0);
+    g.gain.setValueAtTime(1, t0 + sec - release);
+    g.gain.linearRampToValueAtTime(0.0, t0 + sec);
+    src.connect(g); g.connect(_fxBus);
+    src.start();
+    return [{ src, g }];
+  }, _warnReplayFailed);
+  if (!friction) return;
+  const noise = ctx.createBufferSource();
+  noise.buffer = _noiseBuffer(ctx, sec, 0.6);
+  const bp = ctx.createBiquadFilter();
+  bp.type = "bandpass"; bp.Q.value = 1.5;
+  bp.frequency.setValueAtTime(friction[0], t0);
+  bp.frequency.exponentialRampToValueAtTime(friction[1], t0 + sec);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0, t0);
+  g.gain.linearRampToValueAtTime(0.20, t0 + 0.05);
+  g.gain.linearRampToValueAtTime(0.15, t0 + sec * 0.6);
+  g.gain.exponentialRampToValueAtTime(0.001, t0 + sec);
+  noise.connect(bp); bp.connect(g); g.connect(_fxBus);
+  noise.start();
+  fx.teardowns.push(() => {
+    try { noise.stop(); } catch (_) {}
+    _disconnectAll(noise, bp, g);
+  });
+}
+
+// Bend the outgoing <audio> element's playbackRate along `rateAt(t)`, t
+// running 0 -> 1 over `sec`, every `everyMs`.  preservesPitch defaults to
+// true in browsers, which turns a rate change into a tempo change only;
+// switching it off makes the bend a real pitch bend.  When the bend ends
+// the rate goes to `endRate` (if given); teardown puts it back to
+// `restoreRate` (the rate before the effect when null).
+function _bendRate(fx, { sec = fx.fadeSec, everyMs, rateAt, preservesPitch = false,
+  endRate = null, restoreRate = 1.0 }) {
+  const audio = fx.outDeck.audio;
+  const prevPreserve = audio.preservesPitch !== false;
+  const prevRate = audio.playbackRate;
+  try { audio.preservesPitch = preservesPitch; } catch (_) {}
+  const startMs = performance.now();
+  const durMs = sec * 1000;
+  const iv = setInterval(() => {
+    const t = (performance.now() - startMs) / durMs;
+    if (t >= 1) {
+      clearInterval(iv);
+      if (endRate !== null) { try { audio.playbackRate = endRate; } catch (_) {} }
+      return;
+    }
+    try { audio.playbackRate = rateAt(t); } catch (_) {}
+  }, everyMs);
+  fx.teardowns.push(() => {
+    clearInterval(iv);
+    try { audio.playbackRate = restoreRate === null ? prevRate : restoreRate; } catch (_) {}
+    try { audio.preservesPitch = prevPreserve; } catch (_) {}
+  });
+}
+
+// A gain inline on the outgoing deck, automated by `schedule(gainParam)`
+// (the rhythmic gates and the sidechain pump).
+function _gainGate(fx, schedule) {
+  const gate = fx.ctx.createGain();
+  schedule(gate.gain);
+  _inline(fx, fx.outDeck, gate);
+  fx.teardowns.push(() => _disconnectAll(gate));
+}
+
+// ---- The effects ----------------------------------------------------------
+//
+// Keyed by effect name, in the order ROTATE cycles through them.
+const _EFFECTS = {
+  echo_out(fx) {
+    // Tempo-synced eighth-note echo throw, sent to the effect bus so the
+    // tail survives after deck.gain has ramped to silence.  Level 0.4
+    // with feedback 0.6 builds to at most 0.4 / (1 - 0.6) = 1.
+    const echo = _feedbackDelay(fx, {
+      maxSec: 2.0,
+      delaySec: Math.max(0.05, Math.min(1.5, _BS.beatSec(fx.t0) / 2)),
+      feedback: 0.6,
+      level: (gain) => {
+        gain.setValueAtTime(0.4, fx.t0);
+        gain.setValueAtTime(0.4, fx.t0 + fx.fadeSec * 0.6);
+        gain.exponentialRampToValueAtTime(0.001, fx.tEnd);
+      },
+    });
+    echo.connect(_fxBus);
+  },
+
+  reverb_tail(fx) {
+    // Big-hall reverb on the effect bus, so it rings on after the dry
+    // signal is silenced.  4 s IR, slow decay.  The normalised IR passes
+    // about half the level (RMS); at 1.4 the tail sits about 3 dB under
+    // the dry.
+    const { ctx, t0, fadeSec } = fx;
     const conv = ctx.createConvolver();
     conv.buffer = _makeReverbIR(4.0, 1.8);
     const tail = ctx.createGain();
     tail.gain.setValueAtTime(1.4, t0);
     tail.gain.setValueAtTime(1.4, t0 + fadeSec * 0.4);
     tail.gain.exponentialRampToValueAtTime(0.001, t0 + fadeSec + 1.0);
-    outDeck.source.connect(conv); conv.connect(tail);
+    fx.outDeck.source.connect(conv); conv.connect(tail);
     tail.connect(_fxBus);
-    teardowns.push(() => _disconnectAll(conv, tail));
-  }
-  else if (effect === "telephone") {
-    // Real telephone band-pass + saturation + heavy compression.
-    // Without saturation it just sounds slightly muffled, not phone-y.
-    const hp = ctx.createBiquadFilter();
-    hp.type = "highpass"; hp.frequency.value = 500; hp.Q.value = 3;
-    const lp = ctx.createBiquadFilter();
-    lp.type = "lowpass";  lp.frequency.value = 2800; lp.Q.value = 3;
-    // Saturation curve — soft-clip with mild even-harmonic bias.  The
-    // drive squashes the band into a near-constant level, so the curve's
-    // ceiling sets how loud the phone sounds: 0.35 lands it just under
-    // the music's RMS (0.85 had it 6 to 7 dB over).
-    const shaper = ctx.createWaveShaper();
-    const n = 1024;
-    const curve = new Float32Array(n);
-    for (let i = 0; i < n; i++) {
-      const x = (i / (n - 1)) * 2 - 1;
-      curve[i] = Math.tanh(x * 4) * 0.35;
-    }
-    shaper.curve = curve;
-    const drive = ctx.createGain(); drive.gain.value = 1.6;
-    const out = replaceOn(outDeck);
-    outDeck.source.connect(hp);
-    hp.connect(lp); lp.connect(drive); drive.connect(shaper);
-    shaper.connect(out);
-    teardowns.push(() => _disconnectAll(hp, lp, drive, shaper));
-  }
-  else if (effect === "flanger") {
-    // Classic flanger: short delay (1-10 ms) modulated by slow LFO,
-    // with feedback to intensify the comb-filter resonance.  Level 0.45
-    // with feedback 0.55 keeps the comb peaks at 0.45 / (1 - 0.55) = 1.
-    const delay = ctx.createDelay(0.02); delay.delayTime.value = 0.005;
-    const lfo = ctx.createOscillator(); lfo.frequency.value = 0.5;
-    const lfoGain = ctx.createGain(); lfoGain.gain.value = 0.004;
-    lfo.connect(lfoGain); lfoGain.connect(delay.delayTime);
-    const fb = ctx.createGain(); fb.gain.value = 0.55;   // feedback for resonance
-    delay.connect(fb); fb.connect(delay);
-    const flanged = ctx.createGain(); flanged.gain.value = 0.45;
-    outDeck.source.connect(delay); delay.connect(flanged); flanged.connect(addTo(outDeck));
-    lfo.start();
-    teardowns.push(() => {
-      try { lfo.stop(); } catch (_) {}
-      _disconnectAll(delay, fb, flanged, lfoGain);
+    fx.teardowns.push(() => _disconnectAll(conv, tail));
+  },
+
+  highpass_sweep(fx) {
+    // Filter-in: the incoming track at full level, heavily filtered, so
+    // the bass bloom is unmistakable.  Left to its 0 -> 1 ramp it would
+    // sound like a muffled fade-in.
+    _filterSweep(fx, fx.inDeck, "highpass", 6000, 50);
+    fx.inDeck.gain.gain.cancelScheduledValues(fx.t0);
+    fx.inDeck.gain.gain.setValueAtTime(1, fx.t0);
+  },
+
+  lowpass_sweep(fx) {
+    // Filter-out: the outgoing track stays loud while a steep lowpass
+    // closes, then drops in the last 200 ms.  applyTransitionFx runs
+    // after startCrossfade has scheduled its ramps, so these writes win.
+    _filterSweep(fx, fx.outDeck, "lowpass", fx.ctx.sampleRate / 2, 180);
+    _holdThenDrop(fx, 0.2);
+  },
+
+  tape_stop(fx) {
+    _spin(fx, {
+      minSec: 4.0,
+      ahead: true,
+      release: 0.2,
+      // Quadratic-ish slowdown to a stop, like a real tape brake.
+      rate: (rate, t0, sec) => {
+        rate.setValueAtTime(1.0, t0);
+        rate.linearRampToValueAtTime(0.4, t0 + sec * 0.5);
+        rate.exponentialRampToValueAtTime(0.001, t0 + sec);
+      },
     });
-  }
-  else if (effect === "bitcrusher") {
-    // AudioWorklet-based bitcrusher: sample-rate reduction + bit-depth
-    // quantisation give the authentic 8-bit-console / Atari sound.
-    // Worklet module loads at AudioContext boot; if a transition fires
-    // before it finishes (first ~50 ms of session) we just skip the
-    // effect for that one crossfade — no WaveShaper fallback.
+  },
+
+  gate_stutter(fx) {
+    // Tempo-synced gate accelerating from 1/8 to 1/16 notes (8 -> 16 Hz
+    // when the BPM is unknown), open a quarter of each cycle.  The
+    // worklet puts raised-cosine fades on every edge; without it the
+    // gain steps are scheduled directly.
+    const { ctx, t0, tEnd } = fx;
+    const beatHz = (_BS.outBpm > 0 ? _BS.outBpm : 120) / 60;
+    if (!_workletReady.stutter) {
+      _gainGate(fx, (gain) => {
+        gain.setValueAtTime(1, t0);
+        let t = _BS.nextDownbeat(t0);
+        let rate = beatHz * 2;
+        const maxRate = beatHz * 4;
+        while (t < tEnd) {
+          const cycle = 1 / rate;
+          gain.setValueAtTime(1, t);
+          gain.setValueAtTime(0, t + cycle * 0.25);
+          t += cycle;
+          rate = Math.min(maxRate, rate * 1.05);
+        }
+      });
+      return;
+    }
+    const node = new AudioWorkletNode(ctx, "stutter");
+    const rateParam = node.parameters.get("rate");
+    rateParam.setValueAtTime(beatHz * 2, t0);
+    rateParam.linearRampToValueAtTime(beatHz * 4, tEnd);
+    node.parameters.get("duty").setValueAtTime(0.25, t0);
+    _inline(fx, fx.outDeck, node);
+    fx.teardowns.push(() => _disconnectAll(node));
+  },
+
+  noise_riser(fx) {
+    // Builds over the effect, then fades out in the last 0.4 s instead
+    // of ending on a hard cut.  Crests at 0.25: white noise that bright
+    // reads far louder than its level, so it sits about 8 dB under a
+    // mastered track's RMS.
+    const { t0, tEnd } = fx;
+    _noiseLayer(fx, 4, 200, 16000, (gain) => {
+      gain.setValueAtTime(0.0, t0);
+      gain.linearRampToValueAtTime(0.25, Math.max(t0 + 0.05, tEnd - 0.4));
+      gain.exponentialRampToValueAtTime(0.001, tEnd);
+    });
+  },
+
+  noise_drop(fx) {
+    // The riser's opposite: starts bright and sweeps down in pitch as it
+    // fades, like a bomb drop or a rocket fly-by.
+    const { t0, tEnd } = fx;
+    _noiseLayer(fx, 3, 16000, 150, (gain) => {
+      gain.setValueAtTime(0.25, t0);
+      gain.exponentialRampToValueAtTime(0.001, tEnd);
+    });
+  },
+
+  cross_eq_swap(fx) {
+    // Outgoing keeps its highs; incoming starts as bass only and opens
+    // up, so the two hand the bass over instead of clashing.
+    const { ctx, t0, tEnd } = fx;
+    const fOut = ctx.createBiquadFilter();
+    fOut.type = "highpass"; fOut.frequency.value = 250; fOut.Q.value = FLAT_Q;
+    _inline(fx, fx.outDeck, fOut);
+    const fIn = ctx.createBiquadFilter();
+    fIn.type = "lowpass"; fIn.Q.value = FLAT_Q;
+    fIn.frequency.setValueAtTime(250, t0);
+    fIn.frequency.exponentialRampToValueAtTime(ctx.sampleRate / 2, tEnd);
+    _inline(fx, fx.inDeck, fIn);
+    fx.teardowns.push(() => _disconnectAll(fOut, fIn));
+  },
+
+  bitcrusher(fx) {
+    // Sample-rate reduction plus bit-depth quantisation in a worklet:
+    // the 8-bit console sound.  The deck holds full level so the lo-fi
+    // character isn't masked by the crossfade ramp.
+    const { ctx, t0, tEnd, fadeSec } = fx;
     if (!_workletReady.bitcrusher) {
-      // WaveShaper fallback — quantises amplitude only (no rate-reduce
-      // sample-and-hold) but still produces a recognisable crunch so
-      // the effect is never silent on browsers where the worklet
-      // module fails to load.
+      // WaveShaper fallback: quantises amplitude only (no sample-and-hold)
+      // but still crunches, so the effect is never silent where the
+      // worklet fails to load.
       console.warn("bitcrusher worklet not ready; falling back to WaveShaper.");
       const shaper = ctx.createWaveShaper();
       const N = 4096;
@@ -1146,165 +1251,116 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
       }
       shaper.curve = curve;
       shaper.oversample = "none";
-      const out = replaceOn(outDeck);
-      outDeck.source.connect(shaper);
-      shaper.connect(out);
-      outDeck.gain.gain.cancelScheduledValues(t0);
-      outDeck.gain.gain.setValueAtTime(1, t0);
-      outDeck.gain.gain.setValueAtTime(1, Math.max(t0, tEnd - 0.3));
-      outDeck.gain.gain.linearRampToValueAtTime(0, tEnd);
-      teardowns.push(() => shaper.disconnect());
-      return tearAll;
+      _inline(fx, fx.outDeck, shaper);
+      _holdThenDrop(fx, 0.3);
+      fx.teardowns.push(() => _disconnectAll(shaper));
+      return;
     }
-    const node = new AudioWorkletNode(ctx, "bitcrusher", {
-      numberOfInputs: 1,
-      numberOfOutputs: 1,
-      outputChannelCount: [2],
-    });
-    // Outgoing stays loud through the entire effect, then drops in 300 ms
-    // at the very end — without this the deck-gain crossfade ramp masks
-    // the lo-fi character.
-    outDeck.gain.gain.cancelScheduledValues(t0);
-    outDeck.gain.gain.setValueAtTime(1, t0);
-    outDeck.gain.gain.setValueAtTime(1, Math.max(t0, tEnd - 0.3));
-    outDeck.gain.gain.linearRampToValueAtTime(0, tEnd);
+    const node = _stereoWorklet(ctx, "bitcrusher");
+    _holdThenDrop(fx, 0.3);
+    // Peak crush at 25 % of the fade: by halfway the crossfade has the
+    // outgoing track at about 50 %, so the crush has to land early to be
+    // heard.  Bottoms out at 2 bits / 24x rate reduction.
+    const peakAt = t0 + Math.max(0.4, fadeSec * 0.25);
     const bitsParam = node.parameters.get("bits");
     const rateParam = node.parameters.get("rateReduce");
-    // Peak crush at 25 % of fade — by the halfway mark the crossfade
-    // gain ramp has already dropped the outgoing track to ~50 %, so
-    // the lo-fi character has to land EARLY to be perceived.  Bottom
-    // out at 2 bits / 24× rate-reduce for an unmistakable Atari sound.
-    const peakAt = t0 + Math.max(0.4, fadeSec * 0.25);
     bitsParam.setValueAtTime(12, t0);
     bitsParam.linearRampToValueAtTime(2, peakAt);
     bitsParam.setValueAtTime(2, tEnd);
     rateParam.setValueAtTime(1, t0);
     rateParam.linearRampToValueAtTime(24, peakAt);
     rateParam.setValueAtTime(24, tEnd);
-    const out = replaceOn(outDeck);
-    outDeck.source.connect(node);
-    node.connect(out);
-    teardowns.push(() => { try { node.disconnect(); } catch (_) {} });
-  }
-  else if (effect === "gate_stutter") {
-    // Sample-accurate stutter via AudioWorklet — raised-cosine fades on
-    // every gate edge eliminate the clicks that GainNode setValueAtTime
-    // produces at hard 1→0 transitions.  Falls back to setValueAtTime
-    // scheduling when the worklet hasn't loaded yet.
-    if (_workletReady.stutter) {
-      const node = new AudioWorkletNode(ctx, "stutter");
-      const rateParam = node.parameters.get("rate");
-      const dutyParam = node.parameters.get("duty");
-      // Tempo-synced gate: 1/8-note triplet accelerating to 1/16 over
-      // the fade.  Hz = bpm/60 * subdivision.  Falls back to 8->16 Hz
-      // when BPM is unknown (matches legacy behaviour).
-      const beatHz = (_BS.outBpm > 0 ? _BS.outBpm : 120) / 60;
-      const startHz = beatHz * 2;       // 1/8 notes
-      const endHz = beatHz * 4;         // 1/16 notes
-      rateParam.setValueAtTime(startHz, t0);
-      rateParam.linearRampToValueAtTime(endHz, tEnd);
-      dutyParam.setValueAtTime(0.25, t0);
-      const out = replaceOn(outDeck);
-      outDeck.source.connect(node);
-      node.connect(out);
-      teardowns.push(() => { try { node.disconnect(); } catch (_) {} });
-    } else {
-      const wrapper = ctx.createGain();
-      wrapper.gain.setValueAtTime(1, t0);
-      const beatHz = (_BS.outBpm > 0 ? _BS.outBpm : 120) / 60;
-      let t = _BS.nextDownbeat(t0);
-      let rate = beatHz * 2;            // 1/8 notes
-      const maxRate = beatHz * 4;       // 1/16 notes
-      while (t < tEnd) {
-        const cycle = 1 / rate;
-        wrapper.gain.setValueAtTime(1, t);
-        wrapper.gain.setValueAtTime(0, t + cycle * 0.25);
-        t += cycle;
-        rate = Math.min(maxRate, rate * 1.05);
-      }
-      const out = replaceOn(outDeck);
-      outDeck.source.connect(wrapper); wrapper.connect(out);
-      teardowns.push(() => wrapper.disconnect());
+    _inline(fx, fx.outDeck, node);
+    fx.teardowns.push(() => _disconnectAll(node));
+  },
+
+  flanger(fx) {
+    // 1-9 ms delay swept by a 0.5 Hz LFO, with feedback for the comb
+    // resonance.  Level 0.45 with feedback 0.55 keeps the comb peaks at
+    // 0.45 / (1 - 0.55) = 1.
+    const flanged = _feedbackDelay(fx, {
+      maxSec: 0.02,
+      delaySec: 0.005,
+      sweep: { hz: 0.5, depthSec: 0.004 },
+      feedback: 0.55,
+      level: 0.45,
+    });
+    flanged.connect(fx.addTo(fx.outDeck));
+  },
+
+  pitch_swell(fx) {
+    // Speed and pitch rising 1x -> 2x into the cut.
+    _bendRate(fx, { everyMs: 20, rateAt: (t) => 1.0 + t });
+  },
+
+  pitch_fall(fx) {
+    // Pitch sagging 1x -> 0.3x without tape_stop's brake to zero.  Floors
+    // at 0.3 because some browsers glitch below about 0.25.
+    _bendRate(fx, { everyMs: 20, rateAt: (t) => Math.max(0.3, 1.0 - 0.7 * t) });
+  },
+
+  telephone(fx) {
+    // Telephone band-pass, then drive into a soft-clip curve: without the
+    // saturation it only sounds muffled, not phone-like.  The drive
+    // squashes the band to a near-constant level, so the curve's ceiling
+    // sets how loud the phone is: 0.35 lands it just under the music's
+    // RMS.
+    const { ctx } = fx;
+    const hp = ctx.createBiquadFilter();
+    hp.type = "highpass"; hp.frequency.value = 500; hp.Q.value = 3;
+    const lp = ctx.createBiquadFilter();
+    lp.type = "lowpass";  lp.frequency.value = 2800; lp.Q.value = 3;
+    const shaper = ctx.createWaveShaper();
+    const n = 1024;
+    const curve = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const x = (i / (n - 1)) * 2 - 1;
+      curve[i] = Math.tanh(x * 4) * 0.35;
     }
-  }
-  else if (effect === "noise_riser") {
-    // Build over fadeSec, then quickly fade OUT in the last 0.4s so it
-    // doesn't end with a hard cut.  Crests at 0.25: white noise that
-    // bright reads far louder than its level, so it sits about 8 dB
-    // under a mastered track's RMS.
-    const dur = Math.max(fadeSec, 4);
-    const buf = ctx.createBuffer(1, ctx.sampleRate * dur, ctx.sampleRate);
-    const data = buf.getChannelData(0);
-    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
-    const src = ctx.createBufferSource(); src.buffer = buf;
-    const filter = ctx.createBiquadFilter(); filter.type = "lowpass";
-    filter.frequency.setValueAtTime(200, t0);
-    filter.frequency.exponentialRampToValueAtTime(16000, tEnd);
-    const g = ctx.createGain();
-    const peakAt = Math.max(t0 + 0.05, tEnd - 0.4);
-    g.gain.setValueAtTime(0.0, t0);
-    g.gain.linearRampToValueAtTime(0.25, peakAt);
-    g.gain.exponentialRampToValueAtTime(0.001, tEnd);
-    src.connect(filter); filter.connect(g); g.connect(_fxBus);
-    src.start();
-    teardowns.push(() => {
-      try { src.stop(); } catch (_) {}
-      src.disconnect(); filter.disconnect(); g.disconnect();
+    shaper.curve = curve;
+    const drive = ctx.createGain(); drive.gain.value = 1.6;
+    _inline(fx, fx.outDeck, hp, shaper);
+    hp.connect(lp); lp.connect(drive); drive.connect(shaper);
+    fx.teardowns.push(() => _disconnectAll(hp, lp, drive, shaper));
+  },
+
+  backspin(fx) {
+    // Thrown back at 2x, friction slowing it to 0.05x.
+    _spin(fx, {
+      minSec: 2.5, reverse: true, rate: _glide(2.0, 0.05), release: 0.3, friction: [2500, 120],
     });
-  }
-  // -------- noise_drop: opposite of noise_riser --------
-  // Starts loud + bright on the OUTGOING side, sweeps down in pitch and
-  // fades out as the track flips.  Sounds like a bomb-drop or rocket fly-by.
-  else if (effect === "noise_drop") {
-    const dur = Math.max(fadeSec, 3);
-    const buf = ctx.createBuffer(1, ctx.sampleRate * dur, ctx.sampleRate);
-    const data = buf.getChannelData(0);
-    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
-    const src = ctx.createBufferSource(); src.buffer = buf;
-    const filter = ctx.createBiquadFilter(); filter.type = "lowpass";
-    filter.frequency.setValueAtTime(16000, t0);
-    filter.frequency.exponentialRampToValueAtTime(150, tEnd);
-    const g = ctx.createGain();
-    g.gain.setValueAtTime(0.25, t0);
-    g.gain.exponentialRampToValueAtTime(0.001, tEnd);
-    src.connect(filter); filter.connect(g); g.connect(_fxBus);
-    src.start();
-    teardowns.push(() => {
-      try { src.stop(); } catch (_) {}
-      src.disconnect(); filter.disconnect(); g.disconnect();
+  },
+
+  forward_spin(fx) {
+    // The backspin's mirror: from a near stop, released into 2.5x at the cut.
+    _spin(fx, {
+      minSec: 2.5, rate: _glide(0.05, 2.5), release: 0.3, friction: [120, 2500],
     });
-  }
-  // -------- chorus: detuned delays (lush thick stereo-ish doubling) --------
-  else if (effect === "chorus") {
-    const voices = 3;
-    const rates = [0.4, 0.6, 0.8];
-    const depths = [0.003, 0.004, 0.005];
-    const baseDelays = [0.020, 0.025, 0.030];
-    // Three voices at 0.33 each: even in phase they add up to the
-    // deck's own level.
-    const voiced = ctx.createGain(); voiced.gain.value = 0.33;
-    const lfos = [], delays = [], gains = [];
-    for (let i = 0; i < voices; i++) {
-      const d = ctx.createDelay(0.1); d.delayTime.value = baseDelays[i];
-      const lfo = ctx.createOscillator(); lfo.frequency.value = rates[i];
-      const lg = ctx.createGain(); lg.gain.value = depths[i];
-      lfo.connect(lg); lg.connect(d.delayTime);
-      outDeck.source.connect(d); d.connect(voiced);
-      lfo.start();
-      lfos.push(lfo); delays.push(d); gains.push(lg);
-    }
-    voiced.connect(addTo(outDeck));
-    teardowns.push(() => {
-      for (const o of lfos) { try { o.stop(); } catch (_) {} }
-      for (const o of [...delays, ...gains, voiced]) {
-        try { o.disconnect(); } catch (_) {}
-      }
+  },
+
+  chorus(fx) {
+    // Three detuned voices; at 0.33 each they add up, even in phase, to
+    // the deck's own level.
+    const voiced = fx.ctx.createGain(); voiced.gain.value = 0.33;
+    const voices = [[0.020, 0.4, 0.003], [0.025, 0.6, 0.004], [0.030, 0.8, 0.005]]
+      .map(([baseSec, hz, depthSec]) => {
+        const voice = _sweptDelay(fx.ctx, 0.1, baseSec, hz, depthSec);
+        fx.outDeck.source.connect(voice.delay); voice.delay.connect(voiced);
+        voice.lfo.start();
+        return voice;
+      });
+    voiced.connect(fx.addTo(fx.outDeck));
+    fx.teardowns.push(() => {
+      for (const voice of voices) { try { voice.lfo.stop(); } catch (_) {} }
+      _disconnectAll(...voices.map((v) => v.delay), ...voices.map((v) => v.lfoGain), voiced);
     });
-  }
-  // -------- submerge: heavy lowpass + reverb wash (underwater) --------
-  else if (effect === "submerge") {
-    // Filtered signal at 0.8 plus the wash (the 2.5 s IR passes about
+  },
+
+  submerge(fx) {
+    // Underwater: a lowpass closing to 400 Hz plus a reverb wash.  The
+    // filtered signal at 0.8 plus the wash (the 2.5 s IR passes about
     // 0.4, times 0.45) stays at the deck's level.
+    const { ctx, t0, tEnd } = fx;
     const lp = ctx.createBiquadFilter();
     lp.type = "lowpass"; lp.Q.value = FLAT_Q;
     lp.frequency.setValueAtTime(ctx.sampleRate / 2, t0);
@@ -1313,250 +1369,118 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
     conv.buffer = _makeReverbIR(2.5, 2.0);
     const filtered = ctx.createGain(); filtered.gain.value = 0.8;
     const wash = ctx.createGain(); wash.gain.value = 0.45;
-    const out = replaceOn(outDeck);
-    outDeck.source.connect(lp);
+    const out = fx.replaceOn(fx.outDeck);
+    fx.outDeck.source.connect(lp);
     lp.connect(filtered); filtered.connect(out);   // dry filtered
     lp.connect(conv);                              // + wet reverb
     conv.connect(wash); wash.connect(out);
-    teardowns.push(() => _disconnectAll(lp, conv, filtered, wash));
-  }
-  // -------- vinyl_wow: pitch wobble (drunk turntable) on outgoing --------
-  else if (effect === "vinyl_wow") {
-    // HTMLMediaElement.preservesPitch defaults to TRUE — that's why
-    // playbackRate changes were inaudible: the browser was time-stretching
-    // to keep pitch constant.  Disable it so playbackRate modulation
-    // becomes a real pitch wobble.
-    const audio = outDeck.audio;
-    const prevPreserve = audio.preservesPitch !== false;
-    try { audio.preservesPitch = false; } catch (_) {}
-    const startMs = performance.now();
-    const durMs = fadeSec * 1000;
-    const iv = setInterval(() => {
-      const t = (performance.now() - startMs) / durMs;
-      if (t >= 1) {
-        clearInterval(iv);
-        try { audio.playbackRate = 1.0; } catch (_) {}
-        return;
-      }
-      // 1.2 Hz LFO, depth grows from 5 % to 25 % (a real drunk turntable)
-      const depth = 0.05 + 0.20 * t;
-      const phase = Math.sin(2 * Math.PI * 1.2 * t * fadeSec);
-      try { audio.playbackRate = 1.0 + depth * phase; } catch (_) {}
-    }, 16);
-    teardowns.push(() => {
-      clearInterval(iv);
-      try { audio.playbackRate = 1.0; } catch (_) {}
-      try { audio.preservesPitch = prevPreserve; } catch (_) {}
+    fx.teardowns.push(() => _disconnectAll(lp, conv, filtered, wash));
+  },
+
+  vinyl_wow(fx) {
+    // Drunk turntable: a 1.2 Hz pitch wobble whose depth grows 5 % -> 25 %.
+    _bendRate(fx, {
+      everyMs: 16,
+      endRate: 1.0,
+      rateAt: (t) => {
+        const depth = 0.05 + 0.20 * t;
+        return 1.0 + depth * Math.sin(2 * Math.PI * 1.2 * t * fx.fadeSec);
+      },
     });
-  }
-  else if (effect === "tape_stop") {
-    // Real tape stop via decoded AudioBufferSourceNode — playbackRate
-    // can ramp all the way to 0 (HTMLMediaElement floors at ~0.2 with
-    // glitches below).  Mute the live deck while the buffered source
-    // plays the same audio.
-    _doTapeStop(ctx, outDeck, t0, fadeSec, teardowns, wet);
-  }
-  else if (effect === "backspin") {
-    // Real reverse playback via decoded AudioBuffer.  HTMLMediaElement
-    // can't go negative on playbackRate, so we fetch+decode the file,
-    // reverse the relevant chunk, and play it through an AudioBufferSource
-    // while muting the live deck.  Falls back to a fast tape-stop dive
-    // if decoding fails (slow connection, unsupported codec).
-    _doSpin(ctx, outDeck, t0, fadeSec, /*reverse=*/true, teardowns, wet);
-  }
-  else if (effect === "forward_spin") {
-    _doSpin(ctx, outDeck, t0, fadeSec, /*reverse=*/false, teardowns, wet);
-  }
-  else if (effect === "freeze") {
-    // Granular freeze — capture last grainMs of input and loop with fade.
-    // Worklet output goes to the effect bus via its own gain envelope so
-    // the looped grain is heard at the deck's level rather than being
-    // silenced by the crossfade ramp.  The deck keeps only its dry share,
-    // so at a full wet mix the loop is the only audible signal.
+  },
+
+  freeze(fx) {
+    // Capture the last 150 ms and loop it, fading out over the effect.
+    const { ctx, t0, tEnd, fadeSec } = fx;
     if (_workletReady.freeze) {
-      // Force stereo output explicitly — without outputChannelCount,
-      // some browsers default the worklet output to a single channel,
-      // which then upmixes to silence on certain destination
-      // configurations.  Routing source → passthrough gain → worklet
-      // also stabilises the input frames on Chrome where MediaElementSource
-      // → AudioWorkletNode can deliver empty input quanta during the
-      // first capture window.
-      const node = new AudioWorkletNode(ctx, "freeze", {
-        numberOfInputs: 1,
-        numberOfOutputs: 1,
-        outputChannelCount: [2],
-      });
-      node.parameters.get("grainMs").setValueAtTime(150, t0);
-      node.parameters.get("fadeOutSec").setValueAtTime(fadeSec, t0);
-      const passthrough = ctx.createGain();
-      passthrough.gain.value = 1.0;
+      _workletToBus(fx, "freeze", { grainMs: 150, fadeOutSec: fadeSec },
+        (gain) => gain.setValueAtTime(1, t0));
+      return;
+    }
+    // No worklet (non-secure context, http:// over a LAN): loop the
+    // last 150 ms of the decoded track instead.
+    console.warn("freeze worklet unavailable; using BufferSource fallback");
+    _decodedReplays(fx, (buf, currentT) => {
+      const sr = buf.sampleRate;
+      const grainLen = Math.floor(0.15 * sr);
+      const startSamp = Math.max(0, Math.floor(currentT * sr) - grainLen);
+      const src = ctx.createBufferSource();
+      src.buffer = _copyFrames(ctx, buf, startSamp, grainLen);
+      src.loop = true;
       const g = ctx.createGain();
       g.gain.setValueAtTime(1, t0);
-      // CRITICAL: do NOT set audio.muted=true.  MediaElementSource
-      // respects the element's muted flag and feeds silence into the
-      // worklet — so the freeze captures silence and loops nothing.
-      keepDry(outDeck);
-      outDeck.source.connect(passthrough);
-      passthrough.connect(node);
-      node.connect(g); g.connect(_fxBus);
-      teardowns.push(() => _disconnectAll(node, g, passthrough));
-    } else {
-      // Worklet unavailable (non-secure context — http:// over LAN).
-      // Capture last 150 ms of decoded audio and loop it via a
-      // BufferSource so the freeze still produces sound.  It goes to
-      // the effect bus, so the deck-gain crossfade handles the dry path
-      // independently.
-      console.warn("freeze worklet unavailable; using BufferSource fallback");
-      const path = outDeck.path;
-      const currentT = outDeck.audio.currentTime;
-      const grainSec = 0.15;
-      let bufSrc = null, bufGain = null;
-      let cancelled = false;
-      keepDry(outDeck);
-      _decodeFor(path).then((buf) => {
-        if (cancelled) return;
-        const sr = buf.sampleRate;
-        const grainLen = Math.floor(grainSec * sr);
-        const startSamp = Math.max(0, Math.floor(currentT * sr) - grainLen);
-        const grain = ctx.createBuffer(buf.numberOfChannels, grainLen, sr);
-        for (let ch = 0; ch < buf.numberOfChannels; ch++) {
-          grain.getChannelData(ch).set(
-            buf.getChannelData(ch).subarray(startSamp, startSamp + grainLen),
-          );
-        }
-        bufSrc = ctx.createBufferSource();
-        bufSrc.buffer = grain;
-        bufSrc.loop = true;
-        bufGain = ctx.createGain();
-        bufGain.gain.setValueAtTime(1, t0);
-        bufGain.gain.linearRampToValueAtTime(0.0, tEnd);
-        bufSrc.connect(bufGain); bufGain.connect(_fxBus);
-        bufSrc.start();
-      }).catch((err) => console.warn("freeze fallback decode failed:", err));
-      teardowns.push(() => {
-        cancelled = true;
-        if (bufSrc) { try { bufSrc.stop(); } catch (_) {} _disconnectAll(bufSrc, bufGain); }
-      });
-    }
-  }
-  else if (effect === "glitch") {
-    // Random buffer slicing + reorder.  Same pattern as freeze: the
-    // effect bus, not deck.gain, so the chaotic stutter is audible.  Do
-    // NOT mute the <audio> element — that silences the source feeding
-    // the worklet.
+      g.gain.linearRampToValueAtTime(0.0, tEnd);
+      src.connect(g); g.connect(_fxBus);
+      src.start();
+      return [{ src, g }];
+    }, _warnReplayFailed);
+  },
+
+  glitch(fx) {
+    // 80 ms slices of the recent audio replayed in random order.
+    const { ctx, t0, tEnd, fadeSec } = fx;
     if (_workletReady.glitch) {
-      const node = new AudioWorkletNode(ctx, "glitch", {
-        numberOfInputs: 1,
-        numberOfOutputs: 1,
-        outputChannelCount: [2],
+      _workletToBus(fx, "glitch", { sliceMs: 80, density: 0.85 }, (gain) => {
+        gain.setValueAtTime(1, t0);
+        gain.setValueAtTime(1, t0 + fadeSec * 0.7);
+        gain.linearRampToValueAtTime(0, tEnd);
       });
-      node.parameters.get("sliceMs").setValueAtTime(80, t0);
-      node.parameters.get("density").setValueAtTime(0.85, t0);
-      const passthrough = ctx.createGain();
-      passthrough.gain.value = 1.0;
-      const g = ctx.createGain();
-      g.gain.setValueAtTime(1, t0);
-      g.gain.setValueAtTime(1, t0 + fadeSec * 0.7);
-      g.gain.linearRampToValueAtTime(0, tEnd);
-      keepDry(outDeck);
-      outDeck.source.connect(passthrough);
-      passthrough.connect(node);
-      node.connect(g); g.connect(_fxBus);
-      teardowns.push(() => _disconnectAll(node, g, passthrough));
-    } else {
-      // Non-secure-context fallback — slice the decoded buffer into
-      // 80 ms chunks and schedule them in a random order via separate
-      // BufferSources.  Each chunk has a 5 ms attack/release ramp so
-      // the seams don't click.
-      console.warn("glitch worklet unavailable; using BufferSource fallback");
-      const path = outDeck.path;
-      const currentT = outDeck.audio.currentTime;
-      const sliceSec = 0.08;
-      const totalSec = Math.max(fadeSec, 2.0);
-      let cancelled = false;
-      const sources = [];
-      keepDry(outDeck);
-      _decodeFor(path).then((buf) => {
-        if (cancelled) return;
-        const sr = buf.sampleRate;
-        const sliceLen = Math.floor(sliceSec * sr);
-        const winLen = Math.max(sliceLen * 6, Math.floor(0.5 * sr));
-        const winStart = Math.max(0, Math.floor(currentT * sr) - winLen);
-        const nSrcSlices = Math.max(1, Math.floor(winLen / sliceLen));
-        const nSlots = Math.ceil(totalSec / sliceSec);
-        const ramp = 0.005;
-        for (let i = 0; i < nSlots; i++) {
-          const idx = Math.floor(Math.random() * nSrcSlices);
-          const sStart = winStart + idx * sliceLen;
-          if (sStart + sliceLen > buf.length) continue;
-          const slice = ctx.createBuffer(buf.numberOfChannels, sliceLen, sr);
-          for (let ch = 0; ch < buf.numberOfChannels; ch++) {
-            slice.getChannelData(ch).set(
-              buf.getChannelData(ch).subarray(sStart, sStart + sliceLen),
-            );
-          }
-          const src = ctx.createBufferSource(); src.buffer = slice;
-          const g2 = ctx.createGain();
-          const tStart = t0 + i * sliceSec;
-          g2.gain.setValueAtTime(0, tStart);
-          g2.gain.linearRampToValueAtTime(1, tStart + ramp);
-          g2.gain.setValueAtTime(1, tStart + sliceSec - ramp);
-          g2.gain.linearRampToValueAtTime(0, tStart + sliceSec);
-          src.connect(g2); g2.connect(_fxBus);
-          src.start(tStart);
-          src.stop(tStart + sliceSec + 0.01);
-          sources.push({ src, g: g2 });
-        }
-      }).catch((err) => console.warn("glitch fallback decode failed:", err));
-      teardowns.push(() => {
-        cancelled = true;
-        for (const s of sources) {
-          try { s.src.stop(); } catch (_) {}
-          _disconnectAll(s.src, s.g);
-        }
-      });
+      return;
     }
-  }
-  // -------- scratch: rapid back-and-forth sweep over short slice --------
-  else if (effect === "scratch") {
-    const path = outDeck.path;
-    const currentT = outDeck.audio.currentTime;
-    // 1/4-note slice, scratched over a bar (4 passes ⇒ one bar of
-    // forward / reverse / forward / reverse).  Aligns with the groove
-    // instead of the legacy 250 ms fixed slice.
+    // No worklet: schedule decoded slices from the last half second or
+    // so, each with a 5 ms attack and release so the seams don't click.
+    console.warn("glitch worklet unavailable; using BufferSource fallback");
+    const sliceSec = 0.08;
+    const totalSec = Math.max(fadeSec, 2.0);
+    _decodedReplays(fx, (buf, currentT) => {
+      const sr = buf.sampleRate;
+      const sliceLen = Math.floor(sliceSec * sr);
+      const winLen = Math.max(sliceLen * 6, Math.floor(0.5 * sr));
+      const winStart = Math.max(0, Math.floor(currentT * sr) - winLen);
+      const nSrcSlices = Math.max(1, Math.floor(winLen / sliceLen));
+      const nSlots = Math.ceil(totalSec / sliceSec);
+      const ramp = 0.005;
+      const sources = [];
+      for (let i = 0; i < nSlots; i++) {
+        const idx = Math.floor(Math.random() * nSrcSlices);
+        const sStart = winStart + idx * sliceLen;
+        if (sStart + sliceLen > buf.length) continue;
+        const src = ctx.createBufferSource();
+        src.buffer = _copyFrames(ctx, buf, sStart, sliceLen);
+        const g = ctx.createGain();
+        const tStart = t0 + i * sliceSec;
+        g.gain.setValueAtTime(0, tStart);
+        g.gain.linearRampToValueAtTime(1, tStart + ramp);
+        g.gain.setValueAtTime(1, tStart + sliceSec - ramp);
+        g.gain.linearRampToValueAtTime(0, tStart + sliceSec);
+        src.connect(g); g.connect(_fxBus);
+        src.start(tStart);
+        src.stop(tStart + sliceSec + 0.01);
+        sources.push({ src, g });
+      }
+      return sources;
+    }, _warnReplayFailed);
+  },
+
+  scratch(fx) {
+    // A 1/4-note slice scratched over the effect: forward, back, forward,
+    // back, each pass speeding up then slowing down, from the next
+    // downbeat.
+    const { ctx, t0, fadeSec } = fx;
     const sliceSec = _BS.beatSec(t0);
     const totalSec = Math.max(fadeSec, 2.0);
     const nPasses = 4;
-    keepDry(outDeck);
-    let cancelled = false;
-    const sources = [];
-    _decodeFor(path).then((buf) => {
-      if (cancelled) return;
+    _decodedReplays(fx, (buf, currentT) => {
       const sr = buf.sampleRate;
       const sliceLen = Math.floor(sliceSec * sr);
       const startSamp = Math.max(0, Math.floor(currentT * sr) - sliceLen);
-      const slice = ctx.createBuffer(buf.numberOfChannels, sliceLen, sr);
-      for (let ch = 0; ch < buf.numberOfChannels; ch++) {
-        slice.getChannelData(ch).set(
-          buf.getChannelData(ch).subarray(startSamp, startSamp + sliceLen),
-        );
-      }
+      const slice = _copyFrames(ctx, buf, startSamp, sliceLen);
       const passLen = totalSec / nPasses;
       const tScratchStart = _BS.nextDownbeat(t0);
+      const sources = [];
       for (let p = 0; p < nPasses; p++) {
-        const reverse = (p % 2 === 1);
-        const passBuf = ctx.createBuffer(slice.numberOfChannels, sliceLen, sr);
-        for (let ch = 0; ch < slice.numberOfChannels; ch++) {
-          const dst = passBuf.getChannelData(ch);
-          const src = slice.getChannelData(ch);
-          if (reverse) {
-            for (let i = 0; i < sliceLen; i++) dst[i] = src[sliceLen - 1 - i];
-          } else {
-            dst.set(src);
-          }
-        }
-        const src = ctx.createBufferSource(); src.buffer = passBuf;
-        // Sine-shaped rate envelope — accelerate then decelerate per pass
+        const src = ctx.createBufferSource();
+        src.buffer = _copyFrames(ctx, slice, 0, sliceLen, p % 2 === 1);
         const t1 = tScratchStart + p * passLen;
         const t2 = t1 + passLen;
         src.playbackRate.setValueAtTime(0.4, t1);
@@ -1572,47 +1496,28 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
         src.stop(t2 + 0.01);
         sources.push({ src, g });
       }
-    }).catch(announceRequestError);
-    teardowns.push(() => {
-      cancelled = true;
-      for (const s of sources) {
-        try { s.src.stop(); } catch (_) {}
-        _disconnectAll(s.src, s.g);
-      }
-    });
-  }
-  // -------- beat_repeat: capture short slice, retrigger N times --------
-  else if (effect === "beat_repeat") {
-    const path = outDeck.path;
-    const currentT = outDeck.audio.currentTime;
-    // Tempo-synced 1/8-note slice retriggered every 1/8 note.  Slice
-    // size + stride both come from the blended BPM so the repeats land
-    // on the grid; first hit lands on the next downbeat.
+      return sources;
+    }, announceRequestError);
+  },
+
+  beat_repeat(fx) {
+    // A 1/8-note slice retriggered every 1/8 note from the next downbeat,
+    // each hit a sharp attack and decay.
+    const { ctx, t0, tEnd, fadeSec } = fx;
     const sliceSec = _BS.beatSec(t0) / 2;
-    const totalSec = Math.max(fadeSec, 3.0);
-    const nRepeats = Math.max(4, Math.floor(totalSec / sliceSec));
-    keepDry(outDeck);
-    let cancelled = false;
-    const sources = [];
-    _decodeFor(path).then((buf) => {
-      if (cancelled) return;
+    const nRepeats = Math.max(4, Math.floor(Math.max(fadeSec, 3.0) / sliceSec));
+    _decodedReplays(fx, (buf, currentT) => {
       const sr = buf.sampleRate;
       const sliceLen = Math.floor(sliceSec * sr);
       const startSamp = Math.max(0, Math.floor(currentT * sr) - sliceLen);
-      const slice = ctx.createBuffer(buf.numberOfChannels, sliceLen, sr);
-      for (let ch = 0; ch < buf.numberOfChannels; ch++) {
-        slice.getChannelData(ch).set(
-          buf.getChannelData(ch).subarray(startSamp, startSamp + sliceLen),
-        );
-      }
-      const stride = sliceSec;
+      const slice = _copyFrames(ctx, buf, startSamp, sliceLen);
       const tStart = _BS.nextDownbeat(t0);
+      const sources = [];
       for (let i = 0; i < nRepeats; i++) {
-        const t1 = tStart + i * stride;
+        const t1 = tStart + i * sliceSec;
         if (t1 >= tEnd) break;
         const src = ctx.createBufferSource(); src.buffer = slice;
         const g = ctx.createGain();
-        // Retrigger envelope — sharp attack + decay so each hit punches
         g.gain.setValueAtTime(1, t1);
         g.gain.linearRampToValueAtTime(0, t1 + sliceSec);
         src.connect(g); g.connect(_fxBus);
@@ -1620,50 +1525,33 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
         src.stop(t1 + sliceSec + 0.01);
         sources.push({ src, g });
       }
-    }).catch(announceRequestError);
-    teardowns.push(() => {
-      cancelled = true;
-      for (const s of sources) {
-        try { s.src.stop(); } catch (_) {}
-        _disconnectAll(s.src, s.g);
+      return sources;
+    }, announceRequestError);
+  },
+
+  sidechain_pump(fx) {
+    // Four-on-the-floor duck to 0.3 on every beat of the blended tempo
+    // from the next downbeat, recovering across the beat.
+    const { t0, tEnd } = fx;
+    _gainGate(fx, (gain) => {
+      gain.value = 1.0;
+      let t = _BS.nextDownbeat(t0);
+      while (t < tEnd) {
+        const period = _BS.beatSec(t);
+        gain.setValueAtTime(1 - 0.7, t);
+        gain.exponentialRampToValueAtTime(1.0, t + period * 0.95);
+        t += period;
       }
     });
-  }
-  // -------- sidechain_pump: rhythmic 4-on-the-floor amplitude duck --------
-  else if (effect === "sidechain_pump") {
-    // Periodic 4-on-floor gain duck synced to the OUTGOING track's tempo
-    // and aligned to its next downbeat.  Each duck lands on a beat and
-    // recovers across the beat; period = beatSec at the blended BPM.
-    const pump = ctx.createGain();
-    pump.gain.value = 1.0;
-    const depth = 0.7;
-    const tStart = _BS.nextDownbeat(t0);
-    let t = tStart;
-    while (t < tEnd) {
-      const period = _BS.beatSec(t);
-      pump.gain.setValueAtTime(1 - depth, t);
-      pump.gain.exponentialRampToValueAtTime(1.0, t + period * 0.95);
-      t += period;
-    }
-    const out = replaceOn(outDeck);
-    outDeck.source.connect(pump);
-    pump.connect(out);
-    teardowns.push(() => { try { pump.disconnect(); } catch (_) {} });
-  }
-  // -------- reverse_reverb: swelling reverb INTO the cut --------
-  else if (effect === "reverse_reverb") {
-    // Build a reverse-decay IR (envelope rises 0 → 1 over duration),
-    // convolve.  The swell goes to the effect bus, bypassing deck.gain,
-    // so it crescendos all the way to the cut.  IR is shared across crossfades via
-    // _cachedIR — re-running the RNG fill every transition was wasteful.
-    // True reverse-reverb requires playing reversed audio through a
-    // forward reverb, then reversing the result.  Approximated here
-    // with: dense forward-decay IR + rising wet send.  A pre-emphasis
-    // band-pass on the wet path concentrates the swell in the
-    // 200-2000 Hz range so it cuts through over the dry signal —
-    // without this the wet was perceptually buried.  The normalised
-    // 2.5 s IR passes about 0.4 (RMS), so the swell crests at 2.0 x 0.4,
-    // just under the deck's level as the dry fades out beneath it.
+  },
+
+  reverse_reverb(fx) {
+    // A swell rising into the cut: a dense reverb whose send rises, on
+    // the effect bus so it crescendos past the deck fade.  A band-pass
+    // centres it on 200-2000 Hz so it isn't buried under the dry signal.
+    // The normalised 2.5 s IR passes about 0.4 (RMS), so the swell
+    // crests at 2.0 x 0.4, just under the deck's level.
+    const { ctx, t0, tEnd } = fx;
     const conv = ctx.createConvolver();
     conv.buffer = _makeReverseReverbIR(2.5, 2.5);
     const bp = ctx.createBiquadFilter();
@@ -1672,27 +1560,23 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
     swell.gain.setValueAtTime(0.001, t0);
     swell.gain.exponentialRampToValueAtTime(2.0, tEnd - 0.05);
     swell.gain.linearRampToValueAtTime(0.0, tEnd);
-    outDeck.source.connect(conv); conv.connect(bp); bp.connect(swell);
+    fx.outDeck.source.connect(conv); conv.connect(bp); bp.connect(swell);
     swell.connect(_fxBus);
-    teardowns.push(() => _disconnectAll(conv, bp, swell));
-  }
-  // -------- air_horn: synth dub-siren riser layered with the music --------
-  else if (effect === "air_horn") {
+    fx.teardowns.push(() => _disconnectAll(conv, bp, swell));
+  },
+
+  air_horn(fx) {
+    // Square-wave horn sweeping up two octaves: from half the outgoing
+    // root to twice the incoming one when key-sync knows them, else
+    // 220 -> 880 Hz.  Softened by a lowpass; a square wave is as loud as
+    // its peak, so 0.2 sits about 5 dB under a mastered track's RMS.
+    const { ctx, t0, tEnd } = fx;
     const osc = ctx.createOscillator();
     osc.type = "square";
-    // Pitch sweep tuned to song key when key-sync enabled.  Anchor at
-    // the outgoing root one octave below middle (e.g. A2≈110), sweep
-    // up two octaves toward the incoming root.  Falls back to the
-    // legacy 220→880 Hz sweep when neither key is known.
     const outRoot = _BS.rootHzAt(t0);
     const inRoot = _BS.rootHzAt(tEnd);
-    const startHz = outRoot ? outRoot * 0.5 : 220;
-    const endHz = inRoot ? inRoot * 2.0 : 880;
-    osc.frequency.setValueAtTime(startHz, t0);
-    osc.frequency.exponentialRampToValueAtTime(Math.max(50, endHz), tEnd - 0.1);
-    // Soft filter so it isn't pure square harshness.  A square wave is
-    // as loud as its peak, so 0.2 puts the horn about 5 dB under a
-    // mastered track's RMS instead of on top of it.
+    osc.frequency.setValueAtTime(outRoot ? outRoot * 0.5 : 220, t0);
+    osc.frequency.exponentialRampToValueAtTime(Math.max(50, inRoot ? inRoot * 2.0 : 880), tEnd - 0.1);
     const lp = ctx.createBiquadFilter();
     lp.type = "lowpass"; lp.frequency.value = 3500; lp.Q.value = 1.5;
     const g = ctx.createGain();
@@ -1703,103 +1587,50 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
     osc.connect(lp); lp.connect(g); g.connect(_fxBus);
     osc.start(t0);
     osc.stop(tEnd + 0.05);
-    teardowns.push(() => {
+    fx.teardowns.push(() => {
       try { osc.stop(); } catch (_) {}
       _disconnectAll(osc, lp, g);
     });
-  }
-  else if (effect === "pitch_swell") {
-    // Real pitch swell — disable preservesPitch so playbackRate
-    // upward ramp becomes pitch up, not just tempo up.  Browsers
-    // default preservesPitch=true which is why the old swell sounded
-    // like a tempo speed-up.
-    const audio = outDeck.audio;
-    const prevPreserve = audio.preservesPitch !== false;
-    try { audio.preservesPitch = false; } catch (_) {}
-    const startMs = performance.now();
-    const durMs = fadeSec * 1000;
-    const iv = setInterval(() => {
-      const t = (performance.now() - startMs) / durMs;
-      if (t >= 1) { clearInterval(iv); return; }
-      try { audio.playbackRate = 1.0 + t; } catch (_) {}
-    }, 20);
-    teardowns.push(() => {
-      clearInterval(iv);
-      try { audio.playbackRate = 1.0; } catch (_) {}
-      try { audio.preservesPitch = prevPreserve; } catch (_) {}
+  },
+
+  vinyl_rewind(fx) {
+    // Walkman rewind: a smooth reverse slowing 1x -> 0.5x, a musical
+    // sister to the backspin's turntablist throw.
+    _spin(fx, {
+      minSec: 2.5, reverse: true, rate: _glide(1.0, 0.5), release: 0.3, friction: [2500, 120],
     });
-  }
-  else if (effect === "pitch_fall") {
-    // Mirror of pitch_swell — pitch ramps DOWN (1.0 → 0.3) into the
-    // cut, like a slowed tape but without the brake-to-zero of
-    // tape_stop.  Floors at 0.3 because some browsers get glitchy
-    // below ~0.25 playbackRate.
-    const audio = outDeck.audio;
-    const prevPreserve = audio.preservesPitch !== false;
-    try { audio.preservesPitch = false; } catch (_) {}
-    const startMs = performance.now();
-    const durMs = fadeSec * 1000;
-    const iv = setInterval(() => {
-      const t = (performance.now() - startMs) / durMs;
-      if (t >= 1) { clearInterval(iv); return; }
-      try { audio.playbackRate = Math.max(0.3, 1.0 - 0.7 * t); } catch (_) {}
-    }, 20);
-    teardowns.push(() => {
-      clearInterval(iv);
-      try { audio.playbackRate = 1.0; } catch (_) {}
-      try { audio.preservesPitch = prevPreserve; } catch (_) {}
+  },
+
+  transformer(fx) {
+    // Syncopated open/cut pattern at 1/16-note steps from the next
+    // downbeat, with 5 ms ramps on the edges.
+    const { t0, tEnd } = fx;
+    _gainGate(fx, (gain) => {
+      gain.setValueAtTime(1, t0);
+      const pattern = [1, 0, 1, 0, 0, 1, 0, 1];
+      const cycle = 1 / ((_BS.outBpm > 0 ? _BS.outBpm : 120) / 60 * 4);
+      let i = 0;
+      for (let t = _BS.nextDownbeat(t0); t < tEnd; t += cycle) {
+        const open = pattern[i % pattern.length];
+        gain.setValueAtTime(open ? 1 : 0, t);
+        gain.linearRampToValueAtTime(open ? 1 : 0, t + Math.min(0.005, cycle * 0.1));
+        i++;
+      }
+      gain.setValueAtTime(1, tEnd);
     });
-  }
-  // -------- vinyl_rewind: slow musical reverse + pitch drop --------
-  else if (effect === "vinyl_rewind") {
-    // Distinct from backspin (fast 2.0×→0.05× friction).  Vinyl-rewind is
-    // a smooth 1.0×→0.5× reverse — sounds like rewinding a Walkman tape
-    // to find the previous track, not a turntablist trick.
-    _doSpin(ctx, outDeck, t0, fadeSec, /*reverse=*/true, teardowns, wet, /*slow=*/true);
-  }
-  // -------- transformer: rapid tempo-cut DJ fader pattern --------
-  else if (effect === "transformer") {
-    // Syncopated [open, cut, open, cut, cut, open, cut, open] pattern
-    // at 1/16-note resolution.  cps = bpm/60 * 4.  Aligned to next
-    // downbeat so the syncopation lands on-grid instead of arbitrary.
-    const wrapper = ctx.createGain();
-    wrapper.gain.setValueAtTime(1, t0);
-    const pattern = [1, 0, 1, 0, 0, 1, 0, 1];
-    const cps = (_BS.outBpm > 0 ? _BS.outBpm : 120) / 60 * 4;
-    const cycle = 1 / cps;
-    let i = 0;
-    for (let t = _BS.nextDownbeat(t0); t < tEnd; t += cycle) {
-      const open = pattern[i % pattern.length];
-      // Tiny ramps avoid clicks on the gate edges.
-      wrapper.gain.setValueAtTime(open ? 1 : 0, t);
-      wrapper.gain.linearRampToValueAtTime(open ? 1 : 0, t + Math.min(0.005, cycle * 0.1));
-      i++;
-    }
-    wrapper.gain.setValueAtTime(1, tEnd);
-    const out = replaceOn(outDeck);
-    outDeck.source.connect(wrapper);
-    wrapper.connect(out);
-    teardowns.push(() => {
-      try { wrapper.disconnect(); } catch (_) {}
-    });
-  }
-  // -------- dub_siren: smooth sine siren with vibrato --------
-  else if (effect === "dub_siren") {
-    // Distinct from air_horn (square-ish 220→880 Hz fast horn).  Dub siren
-    // is a sine 440 → 1760 Hz with 5 Hz vibrato and slow fade-in — sits
-    // BEHIND the music rather than crashing on top.
+  },
+
+  dub_siren(fx) {
+    // Sine siren two octaves up from the outgoing root (440 -> 1760 Hz
+    // when no key is known) with a 5 Hz vibrato and a slow fade-in: it
+    // sits behind the music where the air horn lands on top.
+    const { ctx, t0, tEnd, fadeSec } = fx;
     const osc = ctx.createOscillator();
     osc.type = "sine";
-    // Tune sweep to song key when known: outgoing root -> incoming root
-    // two octaves up (perceived siren rise).  Legacy 440->1760 Hz
-    // (A4 -> A6) when neither side has a key.
     const outRoot = _BS.rootHzAt(t0);
     const inRoot = _BS.rootHzAt(tEnd);
-    const startHz = outRoot || 440;
-    const endHz = (inRoot || 440) * 4.0;
-    osc.frequency.setValueAtTime(startHz, t0);
-    osc.frequency.exponentialRampToValueAtTime(Math.max(80, endHz), tEnd);
-    // Vibrato: second oscillator modulates frequency
+    osc.frequency.setValueAtTime(outRoot || 440, t0);
+    osc.frequency.exponentialRampToValueAtTime(Math.max(80, (inRoot || 440) * 4.0), tEnd);
     const vibLfo = ctx.createOscillator();
     vibLfo.type = "sine";
     vibLfo.frequency.value = 5;
@@ -1814,53 +1645,72 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
     osc.connect(g); g.connect(_fxBus);
     osc.start(t0); vibLfo.start(t0);
     osc.stop(tEnd + 0.05); vibLfo.stop(tEnd + 0.05);
-    teardowns.push(() => {
+    fx.teardowns.push(() => {
       try { osc.stop(); vibLfo.stop(); } catch (_) {}
       _disconnectAll(osc, vibLfo, vibGain, g);
     });
-  }
-  // -------- stutter_build: accelerating gate freq quarter -> 32nd notes --------
-  else if (effect === "stutter_build") {
-    // Tempo-synced build: starts at 1/4-note gate, accelerates to
-    // 1/32-note gate at the cut.  At 120 BPM that's 2 Hz -> 16 Hz; at
-    // 140 BPM 2.33 -> 18.7 Hz.  Aligned to next downbeat.
-    const wrapper = ctx.createGain();
-    wrapper.gain.setValueAtTime(1, t0);
-    const beatHz = (_BS.outBpm > 0 ? _BS.outBpm : 120) / 60;
-    const startRate = beatHz;            // 1/4 notes
-    const endRate = beatHz * 8;          // 1/32 notes
-    let t = _BS.nextDownbeat(t0);
-    let elapsed = 0;
-    while (t < tEnd) {
-      const frac = elapsed / Math.max(0.001, fadeSec);
-      const rate = startRate + (endRate - startRate) * Math.min(1, frac);
-      const cycle = 1 / rate;
-      // 50% duty: half open, half closed.  Tiny ramp to avoid clicks.
-      wrapper.gain.setValueAtTime(1, t);
-      wrapper.gain.setValueAtTime(0, t + cycle * 0.5);
-      t += cycle;
-      elapsed += cycle;
-    }
-    wrapper.gain.setValueAtTime(1, tEnd);
-    const out = replaceOn(outDeck);
-    outDeck.source.connect(wrapper);
-    wrapper.connect(out);
-    teardowns.push(() => {
-      try { wrapper.disconnect(); } catch (_) {}
+  },
+
+  stutter_build(fx) {
+    // A 50 % gate accelerating from 1/4 to 1/32 notes over the effect,
+    // from the next downbeat.
+    const { t0, tEnd, fadeSec } = fx;
+    _gainGate(fx, (gain) => {
+      gain.setValueAtTime(1, t0);
+      const beatHz = (_BS.outBpm > 0 ? _BS.outBpm : 120) / 60;
+      const startRate = beatHz;
+      const endRate = beatHz * 8;
+      let t = _BS.nextDownbeat(t0);
+      let elapsed = 0;
+      while (t < tEnd) {
+        const frac = elapsed / Math.max(0.001, fadeSec);
+        const cycle = 1 / (startRate + (endRate - startRate) * Math.min(1, frac));
+        gain.setValueAtTime(1, t);
+        gain.setValueAtTime(0, t + cycle * 0.5);
+        t += cycle;
+        elapsed += cycle;
+      }
+      gain.setValueAtTime(1, tEnd);
     });
-  }
-  // -------- phaser: 4-stage allpass cascade (sweepy notch sound) --------
-  else if (effect === "phaser") {
-    // Web Audio doesn't ship a phaser primitive; cascade four BiquadFilter
-    // allpass stages with a single LFO modulating each frequency.  4 stages
-    // gives the classic "sweepy" 4-notch sound (vs 2-stage = subtle, 6-stage
-    // = guitar-pedal-warble).  Different from flanger (DelayNode + LFO =
-    // metallic comb teeth).
+  },
+
+  wow_flutter(fx) {
+    // Worn cassette: vinyl_wow's pitch wobble (1.5 Hz, ±4 %) plus an
+    // 8 Hz tremolo of 0.85 ± 0.15, so its crests reach the deck's level
+    // and never pass it.
+    const { ctx, t0, tEnd } = fx;
+    const trem = ctx.createGain();
+    trem.gain.setValueAtTime(0.85, t0);
+    const tremLfo = ctx.createOscillator();
+    tremLfo.type = "sine";
+    tremLfo.frequency.value = 8;
+    const tremDepth = ctx.createGain();
+    tremDepth.gain.value = 0.15;
+    tremLfo.connect(tremDepth); tremDepth.connect(trem.gain);
+    _inline(fx, fx.outDeck, trem);
+    tremLfo.start(t0); tremLfo.stop(tEnd + 0.05);
+    fx.teardowns.push(() => {
+      try { tremLfo.stop(); } catch (_) {}
+      _disconnectAll(trem, tremLfo, tremDepth);
+    });
+    _bendRate(fx, {
+      everyMs: 16,
+      endRate: 1.0,
+      rateAt: (t) => 1.0 + 0.04 * Math.sin(2 * Math.PI * 1.5 * t * fx.fadeSec),
+    });
+  },
+
+  phaser(fx) {
+    // Four allpass stages (staggered 400-1000 Hz) swept ±600 Hz by one
+    // 0.5 Hz LFO: four moving notches, where the flanger's delay gives
+    // metallic comb teeth.  Mixed 50/50 with the plain signal; allpasses
+    // keep the level, so the sum never passes the deck's.
+    const { ctx, t0, tEnd } = fx;
     const stages = [];
     for (let i = 0; i < 4; i++) {
       const ap = ctx.createBiquadFilter();
       ap.type = "allpass";
-      ap.frequency.value = 400 + i * 200;  // staggered base frequencies
+      ap.frequency.value = 400 + i * 200;
       ap.Q.value = 0.7;
       stages.push(ap);
     }
@@ -1868,167 +1718,116 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
     lfo.type = "sine";
     lfo.frequency.value = 0.5;
     const lfoGain = ctx.createGain();
-    lfoGain.gain.value = 600;  // ±600 Hz sweep
+    lfoGain.gain.value = 600;
     lfo.connect(lfoGain);
-    stages.forEach(ap => lfoGain.connect(ap.frequency));
-    // Chain stages: out → ap1 → ap2 → ap3 → ap4 → shifted, mixed 50/50
-    // with the plain signal (allpass stages keep the level, so the sum
-    // never passes the deck's).
-    const out = replaceOn(outDeck);
+    stages.forEach((ap) => lfoGain.connect(ap.frequency));
+    const out = fx.replaceOn(fx.outDeck);
     const shifted = ctx.createGain();
     shifted.gain.value = 0.5;
     const plain = ctx.createGain();
     plain.gain.value = 0.5;
-    outDeck.source.connect(plain);
+    fx.outDeck.source.connect(plain);
     plain.connect(out);
-    outDeck.source.connect(stages[0]);
+    fx.outDeck.source.connect(stages[0]);
     for (let i = 0; i < stages.length - 1; i++) stages[i].connect(stages[i + 1]);
     stages[stages.length - 1].connect(shifted);
     shifted.connect(out);
     lfo.start(t0);
     lfo.stop(tEnd + 0.05);
-    teardowns.push(() => {
+    fx.teardowns.push(() => {
       try { lfo.stop(); } catch (_) {}
       _disconnectAll(...stages, lfo, lfoGain, shifted, plain);
     });
-  }
-  // -------- ring_modulator: signal × sine carrier (clangy bell tone) --------
-  else if (effect === "ring_modulator") {
-    // True ring-mod = signal × sine.  Web Audio has no multiplier node, but
-    // a GainNode whose .gain is driven by a LFO source achieves the same
-    // result: gain oscillates between -1 and +1, multiplying the audio by
-    // the LFO sample-by-sample.
+  },
+
+  ring_modulator(fx) {
+    // Signal times a sine carrier (clangy bell sidebands), 50/50 with the
+    // plain signal.  A GainNode at 0 whose gain the carrier drives
+    // multiplies the audio by the sine.  The carrier sits an octave under
+    // the song's root so the sidebands stay in key (173 Hz, about F3,
+    // without key-sync).
+    const { ctx, t0, tEnd } = fx;
     const ring = ctx.createGain();
-    ring.gain.value = 0;  // baseline 0; LFO modulates around 0
+    ring.gain.value = 0;
     const carrier = ctx.createOscillator();
     carrier.type = "sine";
-    // Carrier tuned to the song's root note (one octave down from C4
-    // reference) so the resulting clangy sidebands sit IN-key with the
-    // track instead of producing the legacy 173 Hz F3-ish dissonance.
     const carrierRoot = _BS.rootHzAt(t0);
     carrier.frequency.value = carrierRoot ? carrierRoot * 0.5 : 173;
     const carrierGain = ctx.createGain();
     carrierGain.gain.value = 1.0;
     carrier.connect(carrierGain);
     carrierGain.connect(ring.gain);
-    // Mix 50/50 plain + ring so the original beat is still audible
-    const out = replaceOn(outDeck);
+    const out = fx.replaceOn(fx.outDeck);
     const plain = ctx.createGain();
     plain.gain.value = 0.5;
     const ringMix = ctx.createGain();
     ringMix.gain.value = 0.5;
-    outDeck.source.connect(plain);
+    fx.outDeck.source.connect(plain);
     plain.connect(out);
-    outDeck.source.connect(ring);
+    fx.outDeck.source.connect(ring);
     ring.connect(ringMix);
     ringMix.connect(out);
     carrier.start(t0);
     carrier.stop(tEnd + 0.05);
-    teardowns.push(() => {
+    fx.teardowns.push(() => {
       try { carrier.stop(); } catch (_) {}
       _disconnectAll(carrier, carrierGain, ring, ringMix, plain);
     });
-  }
-  // -------- dub_delay: long quarter-note lowpass-feedback delay --------
-  else if (effect === "dub_delay") {
-    // Distinct from echo_out (1/8 note feedback, full-spectrum).
-    // Dub delay = full-beat (1/4 note) delay with lowpass on the
-    // feedback path so each repeat darkens.  Quarter note keeps the
-    // groove audible inside the feedback even at slow tempos.  The
-    // track plays on untouched; the repeats are added at 0.45 with
-    // feedback 0.55, so even repeats that line up in phase build to
-    // 0.45 / (1 - 0.55) = 1, the deck's own level.
-    const delayNode = ctx.createDelay(2.0);
-    const quarter = _BS.beatSec(t0);
-    delayNode.delayTime.value = Math.max(0.2, Math.min(1.8, quarter));
-    const fb = ctx.createGain();
-    fb.gain.value = 0.55;
-    const fbLp = ctx.createBiquadFilter();
-    fbLp.type = "lowpass";
-    fbLp.frequency.value = 1500;
-    fbLp.Q.value = FLAT_Q;
-    const repeats = ctx.createGain();
-    repeats.gain.value = 0.45;
-    // Repeats: source → delay → fbLp → fb → delay (loop) AND → repeats → out
-    outDeck.source.connect(delayNode);
-    delayNode.connect(fbLp);
-    fbLp.connect(fb);
-    fb.connect(delayNode);  // feedback loop
-    fbLp.connect(repeats);
-    repeats.connect(addTo(outDeck));
-    teardowns.push(() => {
-      _disconnectAll(delayNode, fbLp, fb, repeats);
-    });
-  }
-  // -------- halftime: tempo to 50 % with pitch preserved --------
-  else if (effect === "halftime") {
-    // Distinct from pitch_fall (pitch + tempo down) and tape_stop (slow
-    // to zero).  Halftime keeps musical pitch — kicks half as often,
-    // melodies recognisable.  Classic trap pre-drop technique.  Browser
-    // implementation: HTMLMediaElement.preservesPitch=true (default) +
-    // playbackRate=0.5.  Cleanest way without granular DSP.
-    const audio = outDeck.audio;
-    const prevPreserve = audio.preservesPitch !== false;
-    const prevRate = audio.playbackRate;
-    try { audio.preservesPitch = true; } catch (_) {}
-    // Smooth ramp from 1.0 → 0.5 over half the fade so the halftime drop
-    // feels intentional, not a glitch
-    const startMs = performance.now();
-    const durMs = (fadeSec * 0.5) * 1000;
-    const iv = setInterval(() => {
-      const t = (performance.now() - startMs) / durMs;
-      if (t >= 1) {
-        clearInterval(iv);
-        try { audio.playbackRate = 0.5; } catch (_) {}
-        return;
-      }
-      try { audio.playbackRate = 1.0 - 0.5 * t; } catch (_) {}
-    }, 20);
-    teardowns.push(() => {
-      clearInterval(iv);
-      try { audio.playbackRate = prevRate; } catch (_) {}
-      try { audio.preservesPitch = prevPreserve; } catch (_) {}
-    });
-  }
-  // -------- wow_flutter: pitch wobble + amplitude tremolo --------
-  else if (effect === "wow_flutter") {
-    // vinyl_wow modulates pitch only.  wow_flutter adds amplitude tremolo
-    // for a worn-cassette feel: slow 1.5 Hz wow + fast 8 Hz flutter trem.
-    const audio = outDeck.audio;
-    const prevPreserve = audio.preservesPitch !== false;
-    try { audio.preservesPitch = false; } catch (_) {}
-    // Amplitude tremolo via gain node in the audio path: 0.85 ± 0.15,
-    // so the crests reach the deck's level and never pass it.
-    const trem = ctx.createGain();
-    trem.gain.setValueAtTime(0.85, t0);
-    const tremLfo = ctx.createOscillator();
-    tremLfo.type = "sine";
-    tremLfo.frequency.value = 8;
-    const tremDepth = ctx.createGain();
-    tremDepth.gain.value = 0.15;  // ±15 % amplitude
-    tremLfo.connect(tremDepth); tremDepth.connect(trem.gain);
-    const out = replaceOn(outDeck);
-    outDeck.source.connect(trem); trem.connect(out);
-    tremLfo.start(t0); tremLfo.stop(tEnd + 0.05);
-    // Pitch wobble via setInterval (matches vinyl_wow pattern).
-    const startMs = performance.now();
-    const durMs = fadeSec * 1000;
-    const iv = setInterval(() => {
-      const t = (performance.now() - startMs) / durMs;
-      if (t >= 1) { clearInterval(iv); try { audio.playbackRate = 1.0; } catch (_) {} return; }
-      const phase = Math.sin(2 * Math.PI * 1.5 * t * fadeSec);
-      try { audio.playbackRate = 1.0 + 0.04 * phase; } catch (_) {}
-    }, 16);
-    teardowns.push(() => {
-      clearInterval(iv);
-      try { audio.playbackRate = 1.0; } catch (_) {}
-      try { audio.preservesPitch = prevPreserve; } catch (_) {}
-      try { tremLfo.stop(); } catch (_) {}
-      _disconnectAll(trem, tremLfo, tremDepth);
-    });
-  }
+  },
 
-  return tearAll;
+  dub_delay(fx) {
+    // Quarter-note delay with a lowpass in the loop, so every repeat is
+    // darker; the track plays on untouched beside it.  0.45 with feedback
+    // 0.55 builds to at most 0.45 / (1 - 0.55) = 1.
+    const repeats = _feedbackDelay(fx, {
+      maxSec: 2.0,
+      delaySec: Math.max(0.2, Math.min(1.8, _BS.beatSec(fx.t0))),
+      feedback: 0.55,
+      dampingHz: 1500,
+      level: 0.45,
+    });
+    repeats.connect(fx.addTo(fx.outDeck));
+  },
+
+  halftime(fx) {
+    // Half tempo at the same pitch (preservesPitch on), easing 1x -> 0.5x
+    // over the first half of the effect: the trap pre-drop.
+    _bendRate(fx, {
+      sec: fx.fadeSec * 0.5,
+      everyMs: 20,
+      preservesPitch: true,
+      rateAt: (t) => 1.0 - 0.5 * t,
+      endRate: 0.5,
+      restoreRate: null,
+    });
+  },
+};
+
+function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
+  const ctx = _ctx;
+  if (!ctx || effect === "none" || !effect) return () => {};
+  // Caller (startCrossfade) resolves the effect-preferred duration and
+  // passes it in so the gain ramp and the effect share one timeline.
+  if (fadeSec == null || !(fadeSec > 0)) {
+    fadeSec = _effectDurationFor(effect, 3.0, _currentOutroLenCache);
+  }
+  const t0 = ctx.currentTime;
+  const wet = _wetMixCache;
+  const teardowns = [];
+  _fxBus.gain.cancelScheduledValues(t0);
+  _fxBus.gain.setValueAtTime(wet, t0);
+  const fx = {
+    ctx, t0, tEnd: t0 + fadeSec, fadeSec, outDeck, inDeck, teardowns,
+    replaceOn: (deck) => _replaceOn(ctx, deck, wet, teardowns),
+    addTo: (deck) => _addTo(ctx, deck, wet, teardowns),
+    keepDry: (deck) => _keepDry(ctx, deck, wet, teardowns),
+  };
+  if (Object.hasOwn(_EFFECTS, effect)) _EFFECTS[effect](fx);
+  return () => {
+    for (const fn of teardowns) { try { fn(); } catch (_) {} }
+    _restoreDirect(outDeck);
+    _restoreDirect(inDeck);
+  };
 }
 
 // `serverLed` = the server already advanced (shuffle, queued "Now",
