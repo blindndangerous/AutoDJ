@@ -9,8 +9,6 @@ from __future__ import annotations
 import random
 from pathlib import Path
 
-import pytest
-
 from autodj.liners import LINER_EXTS, LinerLibrary, LinerTrigger
 
 
@@ -117,7 +115,7 @@ class TestLinerLibrary:
 
     def test_pick_random_returns_member(self) -> None:
         files = [Path(f"a{i}.mp3") for i in range(5)]
-        lib = LinerLibrary(files=files, weights=[1.0] * 5)
+        lib = LinerLibrary(files=files)
         rng = random.Random(7)
         for _ in range(10):
             result = lib.pick("random", rng=rng)
@@ -132,31 +130,11 @@ class TestLinerLibrary:
         # Wraps:
         assert lib.pick("sequential") == files[0]
 
-    def test_pick_weighted_honours_weights(self) -> None:
-        # Weight skewed completely to file index 1 — pick is deterministic.
-        files = [Path("a.mp3"), Path("b.mp3"), Path("c.mp3")]
-        lib = LinerLibrary(files=files, weights=[0.0, 1.0, 0.0])
-        rng = random.Random(0)
-        for _ in range(5):
-            assert lib.pick("weighted", rng=rng) == files[1]
-
-    def test_pick_weighted_zero_total_falls_back_to_random(self) -> None:
-        files = [Path("a.mp3"), Path("b.mp3")]
-        lib = LinerLibrary(files=files, weights=[0.0, 0.0])
-        result = lib.pick("weighted", rng=random.Random(1))
-        assert result in files
-
     def test_pick_unknown_mode_falls_back_to_random(self) -> None:
         files = [Path("a.mp3"), Path("b.mp3")]
-        lib = LinerLibrary(files=files, weights=[1.0, 1.0])
+        lib = LinerLibrary(files=files)
         result = lib.pick("nonsense_mode", rng=random.Random(2))
         assert result in files
-
-    def test_weighted_nan_total_falls_back_to_last_file(self) -> None:
-        files = [Path("a.mp3"), Path("b.mp3")]
-        lib = LinerLibrary(files=files, weights=[float("nan"), 1.0])
-
-        assert lib.pick("weighted", rng=random.Random(2)) == files[-1]
 
     def test_from_folder_sorts_case_insensitive(self, tmp_path: Path) -> None:
         (tmp_path / "Zeta.mp3").write_bytes(b"")
@@ -165,22 +143,3 @@ class TestLinerLibrary:
         lib = LinerLibrary.from_folder(tmp_path)
         names = [f.name for f in lib.files]
         assert names == ["alpha.mp3", "Beta.mp3", "Zeta.mp3"]
-
-
-class TestLinerLibraryWeightsParity:
-    """Default weights match the file count and are 1.0 each."""
-
-    def test_default_weights_balanced(self, tmp_path: Path) -> None:
-        for n in ["a.mp3", "b.mp3", "c.mp3"]:
-            (tmp_path / n).write_bytes(b"")
-        lib = LinerLibrary.from_folder(tmp_path)
-        assert lib.weights == [1.0, 1.0, 1.0]
-        # Trim to length sanity.
-        assert len(lib.weights) == len(lib.files)
-
-    @pytest.mark.parametrize("count", [1, 5, 50])
-    def test_weights_track_file_count(self, tmp_path: Path, count: int) -> None:
-        for i in range(count):
-            (tmp_path / f"f{i}.mp3").write_bytes(b"")
-        lib = LinerLibrary.from_folder(tmp_path)
-        assert len(lib.weights) == count

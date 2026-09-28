@@ -1,4 +1,4 @@
-// User-managed queue: render, reorder (Up/Down), Remove.
+// User-managed queue: render, reorder (Top/Up/Down), Remove, Clear.
 //
 // Event delegation on the <ul> so the per-row buttons share a single
 // handler.  Optimistic local render + key tracking so the UI updates
@@ -11,6 +11,7 @@ import {
   isAuthenticatedRequestCurrent,
   requestJson,
 } from "./api-client.js";
+import { confirmAction } from "./confirm-dialog.js";
 
 let _lastKey = "";
 let _renderGeneration = 0;
@@ -75,7 +76,7 @@ export function renderQueue(queue, { queueList, queueCount }) {
   if (queue.length === 0) {
     queueList.innerHTML = `
       <li class="no-results">
-        Queue is empty.  Search and use "Next" to add a track.
+        Queue is empty.  Search, then use Play next or Add to queue.
       </li>`;
     return;
   }
@@ -86,6 +87,10 @@ export function renderQueue(queue, { queueList, queueCount }) {
     const isLast  = i === queue.length - 1;
     return `<li data-path="${path}" data-queue-index="${i}">
       <span class="queue-name" title="${name}">${i + 1}. ${name}</span>
+      <button class="queue-btn" data-action="top"    data-path="${path}"
+              aria-label="Move ${name} to top of queue" ${isFirst ? "disabled" : ""}>
+        Top
+      </button>
       <button class="queue-btn" data-action="up"     data-path="${path}"
               aria-label="Move ${name} up in queue"     ${isFirst ? "disabled" : ""}>
         <span aria-hidden="true">▲</span> Up
@@ -100,6 +105,51 @@ export function renderQueue(queue, { queueList, queueCount }) {
       </button>
     </li>`;
   }).join("");
+}
+
+// Up and Down said only "Moved X up.", which left the listener counting
+// rows to find out where the track landed.
+function movedMessage(name, index, length) {
+  return `Moved ${name} to position ${index + 1} of ${length}.`;
+}
+
+// Clear queue asks first: it throws away every row at once.  Focus stays
+// on the button whatever the answer, so the user is where they started.
+export function installQueueClear({ queueList, queueAnnounce, queueClear, queueCount }) {
+  if (!queueClear || !queueList) return;
+  const doc = queueClear.ownerDocument;
+  queueClear.addEventListener("click", async () => {
+    const count = queueList.querySelectorAll("li[data-path]").length;
+    if (count === 0) {
+      announceStatus(queueAnnounce, "The queue is already empty.", { dwellMs: 3000, force: true });
+      return;
+    }
+    const plural = count === 1 ? "track" : "tracks";
+    const confirmed = await confirmAction(doc, {
+      title: "Clear the queue?",
+      message: `This removes all ${count} queued ${plural}.  AutoDJ keeps picking tracks on its own.`,
+      confirmLabel: "Clear queue",
+    });
+    queueClear.focus();
+    if (!confirmed) return;
+    const epoch = captureAuthenticatedRequestEpoch();
+    try {
+      await requestJson("/api/queue/reorder", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paths: [] }),
+      });
+      if (!isAuthenticatedRequestCurrent(epoch)) return;
+      _lastKey = _queueKey([]);
+      renderQueue([], { queueList, queueCount });
+      announceStatus(queueAnnounce, `Cleared the queue.  Removed ${count} ${plural}.`,
+        { dwellMs: 3000, force: true });
+    } catch (errorValue) {
+      if (!isAuthenticatedRequestCurrent(epoch)) return;
+      announceStatus(queueAnnounce, `Could not clear the queue: ${errorValue.message}`,
+        { dwellMs: 6000, force: true, tone: "error" });
+    }
+  });
 }
 
 export function installQueueButtons(els) {
@@ -135,15 +185,20 @@ export function installQueueButtons(els) {
       ? items[idx].querySelector(".queue-name").textContent.replace(/^\d+\.\s*/, "")
       : path;
 
-    if (action === "up" && idx > 0) {
+    if (action === "top" && idx > 0) {
+      newQueue.unshift(...newQueue.splice(idx, 1));
+      focusIndex = 0;
+      announceMsg = movedMessage(niceName, 0, newQueue.length);
+      focusAction = newQueue.length > 1 ? "down" : "remove";
+    } else if (action === "up" && idx > 0) {
       [newQueue[idx - 1], newQueue[idx]] = [newQueue[idx], newQueue[idx - 1]];
       focusIndex = idx - 1;
-      announceMsg = `Moved ${niceName} up.`;
+      announceMsg = movedMessage(niceName, idx - 1, newQueue.length);
       if (idx - 1 === 0) focusAction = "down";
     } else if (action === "down" && idx < newQueue.length - 1) {
       [newQueue[idx + 1], newQueue[idx]] = [newQueue[idx], newQueue[idx + 1]];
       focusIndex = idx + 1;
-      announceMsg = `Moved ${niceName} down.`;
+      announceMsg = movedMessage(niceName, idx + 1, newQueue.length);
       if (idx + 1 === newQueue.length - 1) focusAction = "up";
     } else if (action === "remove") {
       newQueue.splice(idx, 1);

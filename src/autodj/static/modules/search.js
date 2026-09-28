@@ -1,7 +1,7 @@
-// Track search + play-now / queue-add buttons.
+// Track search + Play now / Play next / Add to queue buttons.
 //
-// Event delegation at document level so each result row's "Now" /
-// "Next" buttons share a single handler instead of N per-row listeners.
+// Event delegation at document level so each result row's buttons
+// share a single handler instead of N per-row listeners.
 // Not on the results <ul>: a click listener there made NVDA call the
 // whole list "clickable".
 
@@ -83,11 +83,16 @@ export function installSearch({
         <button class="result-btn"
                 aria-label="Play ${name} now"
                 data-path="${path}"
-                data-now="true"><span aria-hidden="true">&#9654;</span> Now</button>
+                data-now="true"><span aria-hidden="true">&#9654;</span> Play now</button>
         <button class="result-btn"
-                aria-label="Queue ${name} as next track"
+                aria-label="Play ${name} next"
                 data-path="${path}"
-                data-now="false"><span aria-hidden="true">&#9197;</span> Next</button>
+                data-now="false"
+                data-next="true"><span aria-hidden="true">&#9197;</span> Play next</button>
+        <button class="result-btn"
+                aria-label="Add ${name} to queue"
+                data-path="${path}"
+                data-now="false">Add to queue</button>
       </li>`;
     }).join("");
     // The server caps at SEARCH_RESULT_LIMIT; say so, otherwise a full
@@ -130,6 +135,15 @@ export function installSearch({
         });
         if (!isAuthenticatedRequestCurrent(epoch)) return;
         announce(`Playing ${name} now.`);
+      } else if (btn.dataset.next === "true") {
+        // Plays straight after the current track, ahead of the queue.
+        await requestJson("/api/play-next", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path, now: false }),
+        });
+        if (!isAuthenticatedRequestCurrent(epoch)) return;
+        announce(`${name} plays next.`);
       } else {
         await requestJson("/api/queue/add", {
           method: "POST",

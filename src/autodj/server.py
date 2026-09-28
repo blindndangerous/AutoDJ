@@ -556,6 +556,7 @@ class DjMixBody(BaseModel):
     phrase_align: bool | None = None
     outro_intro_align: bool | None = None
     filter_sweep: bool | None = None
+    phrase_bars: Annotated[int, Field(ge=1, le=64)] | None = None
 
 
 class PlaybackSettingsBody(BaseModel):
@@ -596,6 +597,13 @@ class PlaybackSettingsBody(BaseModel):
     liners_random_max_minutes: FiniteFloat | None = None
     liners_pick_mode: str | None = None
     liners_duck_db: FiniteFloat | None = None
+    # The ranges here are the ones the Settings panel's number fields use.
+    no_repeat_window: Annotated[int, Field(ge=0, le=100_000)] | None = None
+    artist_repeat_window: Annotated[int, Field(ge=0, le=100)] | None = None
+    transition_wet_mix: Annotated[float, Field(ge=0.0, le=1.0, allow_inf_nan=False)] | None = None
+    replaygain_target_db: Annotated[float, Field(ge=-30.0, le=0.0, allow_inf_nan=False)] | None = (
+        None
+    )
 
     @model_validator(mode="after")
     def _check_choices(self) -> PlaybackSettingsBody:
@@ -1333,11 +1341,11 @@ def create_app(
         )
         return response
 
-    @app.post("/api/logout")
-    async def api_logout(request: Request) -> Response:
-        """Delete the browser session using the same cookie scope and flags."""
-        request_policy: SecurityPolicy = request.app.state.security_policy
-        response = JSONResponse({"authenticated": False})
+    def _signed_out_response(
+        request_policy: SecurityPolicy, payload: dict[str, object]
+    ) -> Response:
+        """Return *payload* with the session cookie deleted in its own scope."""
+        response = JSONResponse(payload)
         response.delete_cookie(
             COOKIE_NAME,
             path="/",
@@ -1361,6 +1369,62 @@ def create_app(
         if cookie is None:
             return False
         return await asyncio.to_thread(request_policy.verify_session, cookie)
+
+    @app.post("/api/logout")
+    async def api_logout(request: Request) -> Response:
+        """Sign this browser out: revoke its paired device and delete the cookie.
+
+        Only deleting the cookie would leave the device active in the paired
+        devices list, and a copied cookie would keep working for the rest of
+        its 90 days.
+        """
+        request_policy: SecurityPolicy = request.app.state.security_policy
+        registry: DeviceRegistry | None = request.app.state.device_registry
+        device_id = request_policy.session_device_id(request.cookies.get(COOKIE_NAME))
+        if device_id is not None and registry is not None:
+            await asyncio.to_thread(registry.revoke, device_id)
+        return _signed_out_response(request_policy, {"authenticated": False})
+
+    @app.get("/api/devices")
+    async def api_devices(request: Request) -> dict[str, object]:
+        """List paired browsers, marking the one making this request."""
+        request_policy: SecurityPolicy = request.app.state.security_policy
+        registry: DeviceRegistry | None = request.app.state.device_registry
+        if registry is None or not request_policy.authentication_required:
+            return {"pairing": False, "devices": []}
+        current = request_policy.session_device_id(request.cookies.get(COOKIE_NAME))
+        devices = await asyncio.to_thread(registry.list_devices)
+        return {
+            "pairing": True,
+            "devices": [
+                {
+                    "device_id": device.device_id,
+                    "name": device.name,
+                    "paired_at": device.paired_at,
+                    "last_seen_at": device.last_seen_at,
+                    "current": device.device_id == current,
+                }
+                for device in devices
+                if device.revoked_at is None
+            ],
+        }
+
+    @app.delete("/api/devices/{device_id}")
+    async def api_device_revoke(device_id: str, request: Request) -> Response:
+        """Revoke one paired browser; revoking this browser also signs it out."""
+        request_policy: SecurityPolicy = request.app.state.security_policy
+        registry: DeviceRegistry | None = request.app.state.device_registry
+        if registry is None or not request_policy.authentication_required:
+            raise HTTPException(status_code=409, detail="Pairing is not enabled")
+        # Read before revoking: afterwards this session no longer resolves.
+        current = request_policy.session_device_id(request.cookies.get(COOKIE_NAME))
+        if not await asyncio.to_thread(registry.revoke, device_id):
+            raise HTTPException(status_code=404, detail="That device is not paired")
+        payload: dict[str, object] = {"revoked": device_id, "signed_out": False}
+        if current == device_id:
+            payload["signed_out"] = True
+            return _signed_out_response(request_policy, payload)
+        return JSONResponse(payload)
 
     @app.get("/api/version")
     async def api_version(request: Request) -> JSONResponse:
@@ -1622,6 +1686,20 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+        # A preset the configuration no longer has would be dropped without a
+        # word by set_preset, so the profile is refused before anything
+        # changes, the same as a bad playback choice below.
+        if snap.preset is not None:
+            from autodj.presets import get_preset
+
+            try:
+                get_preset(snap.preset, bridge.player._cfg.presets)
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Profile {name} uses preset {snap.preset!r}, which does not exist",
+                ) from exc
+
         applied: list[str] = []
         # Playback flags
         kw: dict = {}
@@ -1662,11 +1740,10 @@ def create_app(
         if snap.harmonic_mode is not None:
             bridge.set_djmix(harmonic_mode=snap.harmonic_mode)
             applied.append("harmonic_mode")
-        # Preset
+        # Preset, checked above
         if snap.preset is not None:
-            with contextlib.suppress(Exception):
-                bridge.set_preset(snap.preset)
-                applied.append("preset")
+            bridge.set_preset(snap.preset)
+            applied.append("preset")
         bridge.save_persistent_state()
         return {"applied": applied, "name": name}
 

@@ -352,3 +352,71 @@ describe("library job controls", () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe("library job follow-up", () => {
+  const json = (body, status = 200) => Promise.resolve(new globalThis.Response(
+    JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } },
+  ));
+  const stats = {
+    track_count: 7, average_bpm: 120, tracks_with_bpm: 7,
+    tracks_with_key: 1, tracks_with_genre: 2, tracks_with_energy: 3,
+  };
+
+  function setup(onJob) {
+    document.body.innerHTML = `
+      <p id="status">Idle.</p><p id="elapsed"></p><div id="log"></div>
+      <span id="count"></span><span id="avg"></span><span id="key"></span>
+      <span id="genre"></span><span id="energy"></span>
+      <button id="run-stats">Stats</button><p id="sr-status"></p>
+      <div id="status-toast" hidden></div>`;
+    const fetchImpl = vi.fn((url) => (url === "/api/library/job" ? onJob() : json(stats)));
+    vi.stubGlobal("fetch", fetchImpl);
+    const $ = (id) => document.getElementById(id);
+    const els = {
+      jobStatus: $("status"), jobElapsed: $("elapsed"), libLog: $("log"),
+      statCount: $("count"), statAvgBpm: $("avg"), statWithKey: $("key"),
+      statWithGenre: $("genre"), statWithEnergy: $("energy"), runStats: $("run-stats"),
+    };
+    installLibraryJobs(els);
+    return { els, fetchImpl };
+  }
+
+  const allLines = Array.from({ length: 40 }, (_, i) => `line ${i + 1}`);
+  const finished = (lines) => ({ library_job: {
+    name: "stats", running: false, exit_code: 0, started_at: 100,
+    elapsed_seconds: 3, lines,
+  } });
+
+  it("fetches the full log once the job finishes and keeps the shown lines", async () => {
+    const { els, fetchImpl } = setup(() => json({ ...finished(allLines).library_job }));
+    applyLibraryJobState(finished(allLines.slice(-25)), els);
+    const firstShown = els.libLog.firstChild;
+
+    await vi.waitFor(() => expect(logLines(els.libLog)).toEqual(allLines));
+    // The 25 lines already on screen are the same nodes: a reader inside
+    // the log keeps their place.
+    expect(els.libLog.childNodes[15]).toBe(firstShown);
+    // The next push still carries only 25 lines; the full log stays.
+    applyLibraryJobState(finished(allLines.slice(-25)), els);
+    expect(logLines(els.libLog)).toEqual(allLines);
+    expect(fetchImpl.mock.calls.filter(([url]) => url === "/api/library/job")).toHaveLength(1);
+    await vi.waitFor(() => expect(els.statCount.textContent).toBe("7"));
+    vi.unstubAllGlobals();
+  });
+
+  it("says which job is running instead of starting another", async () => {
+    const { els, fetchImpl } = setup(() => json({}));
+    applyLibraryJobState({ library_job: {
+      name: "index", running: true, started_at: 5, elapsed_seconds: 1, lines: [],
+    } }, els);
+    const calls = fetchImpl.mock.calls.length;
+
+    els.runStats.click();
+
+    await vi.waitFor(() => expect(document.getElementById("sr-status").textContent)
+      .toContain("A job is already running: index."));
+    expect(fetchImpl.mock.calls.length).toBe(calls);
+    expect(els.runStats.disabled).toBe(false);
+    vi.unstubAllGlobals();
+  });
+});

@@ -6,7 +6,7 @@ to give the impression of a real station.  This module owns:
 
 - File discovery in the configured liner folder.
 - Trigger evaluation (every N tracks, every X minutes, random window).
-- Pick rotation (random / sequential / weighted).
+- Pick rotation (random / sequential).
 
 Playback itself happens in the browser (Web Audio decoding the raw
 file bytes from ``GET /api/liners/file/<name>`` and ducking the active deck
@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 LINER_EXTS: tuple[str, ...] = (".mp3", ".wav", ".ogg", ".m4a", ".flac", ".aac")
 
 # Rotation modes accepted by :meth:`LinerLibrary.pick`.
-LINER_PICK_MODES: tuple[str, ...] = ("random", "sequential", "weighted")
+LINER_PICK_MODES: tuple[str, ...] = ("random", "sequential")
 
 
 @dataclass
@@ -126,20 +126,16 @@ class LinerLibrary:
 
     - ``random``: pick uniformly at random each time.
     - ``sequential``: play in directory-listing order, wrap at end.
-    - ``weighted``: random pick weighted by ``weights`` (parallel list,
-      defaults to all 1.0 for uniform when no weights are set).
 
     Attributes:
         folder: Source directory.  ``None`` when the library was
             constructed in-memory for testing.
         files: Discovered clip paths sorted ascending (case-insensitive).
-        weights: Optional per-file weight (parallel to ``files``).
         cursor: Sequential-mode cursor; ignored by other modes.
     """
 
     folder: Path | None = None
     files: list[Path] = field(default_factory=list)
-    weights: list[float] = field(default_factory=list)
     cursor: int = 0
 
     @classmethod
@@ -153,13 +149,13 @@ class LinerLibrary:
         """
         if not folder.exists() or not folder.is_dir():
             logger.debug("Liner folder %s missing or not a directory", folder)
-            return cls(folder=folder, files=[], weights=[])
+            return cls(folder=folder, files=[])
         files: list[Path] = []
         for p in folder.rglob("*"):
             if p.is_file() and p.suffix.lower() in LINER_EXTS:
                 files.append(p)
         files.sort(key=lambda f: f.name.lower())
-        return cls(folder=folder, files=files, weights=[1.0] * len(files))
+        return cls(folder=folder, files=files)
 
     def pick(
         self,
@@ -170,7 +166,7 @@ class LinerLibrary:
         """Return the next liner path under *mode* rotation.
 
         Args:
-            mode: One of ``"random"``, ``"sequential"``, ``"weighted"``.
+            mode: One of ``"random"``, ``"sequential"``.
                 Unknown modes fall back to ``"random"``.
             rng: Inject a deterministic RNG for testing.
 
@@ -184,17 +180,6 @@ class LinerLibrary:
             pick = self.files[self.cursor % len(self.files)]
             self.cursor = (self.cursor + 1) % len(self.files)
             return pick
-        if mode == "weighted" and self.weights and len(self.weights) == len(self.files):
-            total = sum(self.weights)
-            if total <= 0:
-                return r.choice(self.files)
-            target = r.uniform(0, total)
-            running = 0.0
-            for f, w in zip(self.files, self.weights, strict=False):
-                running += w
-                if running >= target:
-                    return f
-            return self.files[-1]
         # Default: random
         return r.choice(self.files)
 

@@ -24,6 +24,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
+from autodj.liners import LINER_PICK_MODES
+
 if TYPE_CHECKING:
     from autodj.presets import Preset
 
@@ -481,7 +483,11 @@ class PlaybackConfig:
                 if data.get("liners_random_max_minutes") is not None
                 else None
             ),
-            liners_pick_mode=str(data.get("liners_pick_mode", "random")),
+            liners_pick_mode=_one_of(
+                str(data.get("liners_pick_mode", "random")),
+                LINER_PICK_MODES,
+                "playback.liners_pick_mode",
+            ),
             liners_duck_db=float(data.get("liners_duck_db", -12.0)),
             server_max_track_minutes=float(max_minutes),
             dayparts_dir=(data.get("dayparts_dir") or None),

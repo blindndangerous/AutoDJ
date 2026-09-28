@@ -45,6 +45,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the key spelled out for speech in the chosen notation: "F sharp minor" and "B flat minor"
   instead of "F#m" and "Bbm", which NVDA reads as "F number m". Camelot keys such as "8A" are
   sent as they are.
+- Search results have three buttons: Play now, Play next (plays straight after the current
+  track) and Add to queue (adds it to the end). The old "Next" button said it queued the track as
+  the next one but added it to the end.
+- The queue has a Top button on each track and a Clear queue button, which asks before clearing.
+  Moving a track now says where it landed, such as "Moved Alpha to position 2 of 5", instead of
+  only "Moved Alpha up".
+- Settings, Profiles saves the current settings under a name, lists saved profiles, and applies
+  or deletes them (deleting asks first). These are the same profile files `GET /api/profiles`
+  already served.
+- Settings, Browser access (when the server pairs browsers, as with `--lan`): "Sign out this
+  browser", and a list of paired devices with their last use and a Revoke button each. Revoking
+  this browser's own entry signs it out. New `GET /api/devices` and `DELETE /api/devices/{id}`
+  need a paired session.
+- Settings can now change how many tracks pass before a song or an artist may repeat
+  (`no_repeat_window`, `artist_repeat_window`), the phrase length used by phrase align
+  (`phrase_bars`), the filter sweep (`filter_sweep`), the transition effect level (`wet_mix`) and
+  the ReplayGain target loudness (`target_db`). The number fields accept the same ranges as the
+  server and say the allowed range in words when a value is refused. The values are saved in
+  `web_state.json` with the other settings.
+- Library tools has an Analyse button, which runs `autodj analyse` to fill in intro, outro, beat
+  grid and cue points. When any job finishes, the page loads its whole log instead of only the
+  last 25 lines, so a Stats report is no longer cut off, and the Index stats refresh.
+- Voice liners have a "Replace existing file" checkbox for uploading over a liner with the same
+  name, and each trigger field now says that blank or 0 turns it off.
+- History has a Refresh history button, and shows the date next to the time when the page holds
+  tracks from before today.
 
 ### Changed
 
@@ -112,8 +138,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Screen readers read the bar characters as noise. In a terminal the bars stay and each row gains
   a percentage. Ranges are written with "to" and keys as "C sharp" in both.
 
+- "Sign out this browser", and `POST /api/logout`, now revoke this browser's paired device as
+  well as deleting its cookie, so the device leaves the paired devices list and a copied cookie
+  stops working.
+- Applying a profile whose preset no longer exists now fails with a message naming the preset,
+  and changes nothing. Before, the preset was skipped without a word and the rest applied.
+- Pressing a Library tools Run button while a job is running starts nothing and says which job
+  is running. The buttons stay enabled.
+- Clearing a voice liner trigger field in the web page now turns that trigger off. Before, a
+  blank field left the old value in place on the server.
+- The History pager buttons are named "Previous page", "Next page" and "Go to page".
+
 ### Removed
 
+- The Recently Played card on the Queue & Search tab. It kept five tracks in the browser, emptied
+  on reload and repeated the History tab.
+- The "weighted" voice liner rotation mode. It behaved exactly like random. `liners_pick_mode =
+  "weighted"` in `config.toml` now stops AutoDJ with an error, a saved `web_state.json` value is
+  ignored with a warning, and profiles and `POST /api/playback-settings` refuse it. Use `random`
+  or `sequential`.
 - The `harmonic_mixing` setting, in `config.toml`, in `web_state.json` and in `POST /api/djmix`,
   which now answers 422 when a request still sends it.
 - `autodj serve --no-playback`. It never did anything and was deprecated in 0.17.0; passing it

@@ -375,6 +375,43 @@ def apply_filter_sweep(
 # ---------------------------------------------------------------------------
 
 
+def effective_no_repeat_window(configured: int, library_size: int) -> int:
+    """Return the no-repeat window the picker can honour for *library_size*.
+
+    A library of 200 tracks with a window of 500 would refuse to repeat any
+    track once every track had played, then fall through the relaxation
+    paths and either fail or return the same neighbour on every advance.
+    At least 4 unplayed candidates (or a tenth of the library) are kept.
+    """
+    if library_size <= 0 or configured < library_size:
+        return configured
+    effective = max(1, library_size - max(4, library_size // 10))
+    logger.warning(
+        "playback.no_repeat_window=%d but library has only %d tracks; "
+        "using %d so the picker always has candidates.",
+        configured,
+        library_size,
+        effective,
+    )
+    return effective
+
+
+def apply_repeat_windows(player: Any) -> None:
+    """Resize *player*'s repeat windows to its configured values.
+
+    Used when the web UI or restored web state changes
+    ``playback.no_repeat_window`` or ``playback.artist_repeat_window`` on
+    a running player.
+    """
+    pb = player._cfg.playback
+    sim = player._sim
+    library_size = int(sim.ntotal) if sim is not None else 0
+    player._state.resize_repeat_windows(
+        effective_no_repeat_window(int(pb.no_repeat_window), library_size),
+        int(pb.artist_repeat_window),
+    )
+
+
 @dataclass
 class PlayerState:
     """Mutable shared state for the playback loop.
@@ -428,6 +465,21 @@ class PlayerState:
         self.recently_played_artists = deque(maxlen=w)
         self.recently_played_albums = deque(maxlen=w)
         self.recently_played_titles = deque(maxlen=w)
+
+    def resize_repeat_windows(self, no_repeat_window: int, artist_repeat_window: int) -> None:
+        """Change both repeat windows, keeping the most recent history.
+
+        A shorter window keeps the newest entries; a longer one keeps all
+        of them and simply remembers more from now on.
+        """
+        with self.queue_lock:
+            self.no_repeat_window = no_repeat_window
+            self.artist_repeat_window = artist_repeat_window
+            self.recently_played = deque(self.recently_played, maxlen=no_repeat_window)
+            w = max(0, artist_repeat_window)
+            self.recently_played_artists = deque(self.recently_played_artists, maxlen=w)
+            self.recently_played_albums = deque(self.recently_played_albums, maxlen=w)
+            self.recently_played_titles = deque(self.recently_played_titles, maxlen=w)
 
     def record_played(self, entry: IndexEntry) -> None:
         """Record a track as recently played.
@@ -744,19 +796,10 @@ class Player:
         # libraries.  Reserve at least 4 unplayed candidates so the
         # picker still has variety.
         library_size = len(getattr(sim_index, "entries", []) or [])
-        configured = int(cfg.playback.no_repeat_window)
-        effective = configured
-        if library_size > 0 and configured >= library_size:
-            effective = max(1, library_size - max(4, library_size // 10))
-            logger.warning(
-                "playback.no_repeat_window=%d but library has only %d "
-                "tracks; clamping to %d so the picker always has "
-                "candidates.  Bump the library size or lower the "
-                "config value to silence this.",
-                configured,
-                library_size,
-                effective,
-            )
+        effective = effective_no_repeat_window(
+            int(cfg.playback.no_repeat_window),
+            library_size,
+        )
         self._state = PlayerState(
             no_repeat_window=effective,
             artist_repeat_window=cfg.playback.artist_repeat_window,

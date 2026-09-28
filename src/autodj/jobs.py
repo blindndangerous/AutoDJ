@@ -1,9 +1,9 @@
 """Background job runner for the web UI.
 
 Wraps long-running library-maintenance commands (``index``, ``enrich``,
-``prune``, ``stats``) so the web UI can drive them without dropping to a
-terminal.  One concurrent job slot — running a second job while the
-first is in flight returns 409 from the API.
+``analyse``, ``prune``, ``stats``) so the web UI can drive them without
+dropping to a terminal.  One concurrent job slot — running a second job
+while the first is in flight returns 409 from the API.
 
 Each job runs as a subprocess (``<python> -m autodj …``) so a crash in the
 indexer can't take down the live web server, and so torch / muq /
@@ -69,6 +69,7 @@ class JobManager:
     _ALLOWED_FLAGS: ClassVar[dict[str, dict[str, Callable[[str], bool]]]] = {
         "index": {"--limit": _is_positive_int},
         "enrich": {},
+        "analyse": {},
         "prune": {},
         "stats": {},
         "list-indexes": {},
@@ -76,7 +77,7 @@ class JobManager:
 
     # Subcommands that accept ``--name``.  ``list-indexes`` reports on every
     # index, so it has no single one to be given.
-    _NAME_AWARE: ClassVar[set[str]] = {"index", "enrich", "prune", "stats"}
+    _NAME_AWARE: ClassVar[set[str]] = {"index", "enrich", "analyse", "prune", "stats"}
 
     def __init__(self) -> None:
         self._config_path: str | None = None

@@ -259,3 +259,67 @@ def test_healthz_and_version_hide_details_until_paired(bridge, tmp_path) -> None
 
     assert set(client.get("/healthz").json()) == {"status", "tracks"}
     assert set(client.get("/api/version").json()) == {"version", "commit", "built_at"}
+
+
+def _pair(client: TestClient, name: str) -> str:
+    code = client.app.state.security_policy.current_pairing_code()
+    response = client.post("/api/pair", json={"code": code, "device_name": name})
+    assert response.status_code == 200
+    return response.json()["device_id"]
+
+
+def test_devices_list_marks_this_browser_and_needs_a_session(bridge, tmp_path) -> None:
+    client, registry = _paired_client(bridge, tmp_path)
+    other = registry.pair("Old phone")
+    assert client.get("/api/devices").status_code == 401
+
+    this = _pair(client, "Kitchen tablet")
+    body = client.get("/api/devices").json()
+
+    assert body["pairing"] is True
+    assert [(d["name"], d["current"]) for d in body["devices"]] == [
+        ("Old phone", False),
+        ("Kitchen tablet", True),
+    ]
+    assert {d["device_id"] for d in body["devices"]} == {other.device_id, this}
+
+
+def test_revoking_another_device_keeps_this_session(bridge, tmp_path) -> None:
+    client, registry = _paired_client(bridge, tmp_path)
+    other = registry.pair("Old phone")
+    _pair(client, "Kitchen tablet")
+
+    response = client.delete(f"/api/devices/{other.device_id}")
+
+    assert response.json() == {"revoked": other.device_id, "signed_out": False}
+    assert not registry.is_active(other.device_id)
+    assert client.get("/api/status").status_code == 200
+    assert [d["name"] for d in client.get("/api/devices").json()["devices"]] == ["Kitchen tablet"]
+    assert client.delete(f"/api/devices/{other.device_id}").status_code == 404
+
+
+def test_revoking_this_device_signs_this_browser_out(bridge, tmp_path) -> None:
+    client, _registry = _paired_client(bridge, tmp_path)
+    this = _pair(client, "Kitchen tablet")
+
+    response = client.delete(f"/api/devices/{this}")
+
+    assert response.json()["signed_out"] is True
+    assert "autodj_session" not in client.cookies
+    assert client.get("/api/status").status_code == 401
+
+
+def test_sign_out_revokes_this_device(bridge, tmp_path) -> None:
+    """Deleting only the cookie left the device paired for 90 more days."""
+    client, registry = _paired_client(bridge, tmp_path)
+    this = _pair(client, "Kitchen tablet")
+
+    assert client.post("/api/logout").status_code == 200
+
+    assert not registry.is_active(this)
+    assert client.get("/api/status").status_code == 401
+
+
+def test_device_routes_without_pairing_say_so(client) -> None:
+    assert client.get("/api/devices").json() == {"pairing": False, "devices": []}
+    assert client.delete(f"/api/devices/{'a' * 32}").status_code == 409

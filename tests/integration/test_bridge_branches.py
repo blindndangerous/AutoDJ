@@ -311,3 +311,28 @@ class TestServerAudioUpNext:
         bridge.player._playing_render = None
         bridge._sync_next_for_prefetch()
         assert state.next_track is before
+
+
+def test_repeat_windows_resize_the_running_history(bridge) -> None:
+    """A window changed in Settings has to reach the picker without a restart."""
+    from types import SimpleNamespace
+
+    from autodj.player import PlayerState
+
+    state = PlayerState(no_repeat_window=10, artist_repeat_window=3)
+    for i in range(5):
+        state.record_played(_entry(path=f"/m/{i}.mp3", artist=f"Artist {i}"))
+    bridge.player._state = state
+    bridge.player._sim = SimpleNamespace(ntotal=100)
+
+    bridge.set_playback_settings(no_repeat_window=2, artist_repeat_window=1)
+
+    assert list(state.recently_played) == ["/m/3.mp3", "/m/4.mp3"]
+    assert list(state.recently_played_artists) == ["artist 4"]
+    settings = bridge.get_settings()["playback"]
+    assert (settings["no_repeat_window"], settings["artist_repeat_window"]) == (2, 1)
+
+    # Larger than the library: the picker keeps a tenth of it unplayed.
+    bridge.set_playback_settings(no_repeat_window=500)
+    assert state.recently_played.maxlen == 90
+    assert bridge.get_settings()["playback"]["no_repeat_window"] == 500

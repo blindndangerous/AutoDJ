@@ -1,4 +1,4 @@
-// Library tools panel: index / enrich / prune / stats jobs.
+// Library tools panel: index / enrich / analyse / prune / stats jobs.
 // All controls are no-ops on pages that don't include the library
 // section markup, so this module is safe to wire unconditionally.
 //
@@ -25,6 +25,12 @@ import { announceStatus } from "./live-region.js";
 
 const _jobStatusState = new WeakMap();
 const _logState = new WeakMap();
+// Only an installed panel fetches on its own; applyLibraryJobState alone
+// just renders what it is given.
+const _installed = new WeakSet();
+// Per panel: the latest job snapshot, which finished job has been
+// followed up (full log, fresh stats), and which job's full log is shown.
+const _jobs = new WeakMap();
 
 // Write `text` into the live region only when the phase actually
 // changed.  Repeated ticks carrying the same phase are silent.
@@ -164,12 +170,74 @@ function renderLog(libLog, lines) {
   if (pinned) libLog.scrollTop = libLog.scrollHeight;
 }
 
+// The websocket carries only the last 25 log lines, which cut a Stats
+// report short.  Once a job has finished, fetch the log the server keeps
+// (GET /api/library/job) and add the missing head in front of what is
+// already shown, so a reader part-way down the log keeps their place.
+function renderFullLog(libLog, lines) {
+  const previous = _logState.get(libLog);
+  const rendered = previous ? previous.lines : [];
+  const head = lines.length - rendered.length;
+  const isSuffix = rendered.length > 0 && head >= 0
+    && rendered.every((line, i) => line === lines[head + i]);
+  if (!isSuffix) {
+    _logState.delete(libLog);
+    renderLog(libLog, lines);
+    return;
+  }
+  if (head === 0) return;
+  const pinned = libLog.scrollTop + libLog.clientHeight
+    >= libLog.scrollHeight - 4;
+  const fragment = libLog.ownerDocument.createDocumentFragment();
+  for (const line of lines.slice(0, head)) fragment.appendChild(logLine(libLog, line));
+  libLog.insertBefore(fragment, libLog.firstChild);
+  _logState.set(libLog, { lines: lines.slice() });
+  if (pinned) libLog.scrollTop = libLog.scrollHeight;
+}
+
+async function followUpFinishedJob(els, job) {
+  const epoch = captureAuthenticatedRequestEpoch();
+  // Index stats change after index, enrich, analyse and prune.  Quiet: the
+  // finish announcement is the one thing said.
+  void refreshLibStats(els, null, { quiet: true });
+  if (!els.libLog) return;
+  let full;
+  try {
+    full = await requestJson("/api/library/job");
+  } catch (_errorValue) {
+    return;  // The last 25 lines stay on screen.
+  }
+  if (!isAuthenticatedRequestCurrent(epoch)) return;
+  const current = _jobs.get(els);
+  if (!full || full.running || full.started_at !== job.started_at
+      || !current || current.job.started_at !== job.started_at) return;
+  current.fullLogFor = job.started_at;
+  renderFullLog(els.libLog, Array.isArray(full.lines) ? full.lines : []);
+}
+
+function runningJobName(els) {
+  const current = _jobs.get(els);
+  return current && current.job.running ? current.job.name : null;
+}
+
+// Run buttons stay enabled while a job runs (a disabled button drops
+// focus and says nothing about why).  Pressing one says which job holds
+// the single slot, through the page status region so #lib-job-status
+// keeps its one-announcement-per-phase contract.
+function reportBusy(els, name) {
+  const doc = (els.jobStatus || els.libLog)?.ownerDocument || globalThis.document;
+  announceStatus(doc.getElementById("sr-status"),
+    `A job is already running: ${name}.  Wait for it to finish, or press Stop running job.`,
+    { dwellMs: 5000, force: true });
+}
+
 export function installLibraryJobs(els) {
   const {
-    runIndex, runEnrich, runPrune, runStats, runStop,
+    runIndex, runEnrich, runAnalyse, runPrune, runStats, runStop,
     indexLimit, statsRefresh,
     statCount,
   } = els;
+  _installed.add(els);
 
   if (runIndex) {
     runIndex.addEventListener("click", (event) => {
@@ -179,6 +247,7 @@ export function installLibraryJobs(els) {
     });
   }
   if (runEnrich) runEnrich.addEventListener("click", (event) => void _run(els, "enrich", [], event.currentTarget));
+  if (runAnalyse) runAnalyse.addEventListener("click", (event) => void _run(els, "analyse", [], event.currentTarget));
   if (runPrune)  runPrune.addEventListener("click",  (event) => void _run(els, "prune", [], event.currentTarget));
   if (runStats)  runStats.addEventListener("click",  (event) => void _run(els, "stats", [], event.currentTarget));
   if (runStop) {
@@ -204,6 +273,11 @@ export function installLibraryJobs(els) {
 
 async function _run(els, name, args = [], control = null) {
   const { jobStatus } = els;
+  const running = runningJobName(els);
+  if (running) {
+    reportBusy(els, running);
+    return;
+  }
   const epoch = captureAuthenticatedRequestEpoch();
   try {
     await withDisabled(control, () => requestJson("/api/library/run", {
@@ -217,11 +291,16 @@ async function _run(els, name, args = [], control = null) {
     setJobPhase(jobStatus, `running:${name}`, `${name} started.`);
   } catch (err) {
     if (!isAuthenticatedRequestCurrent(epoch)) return;
+    // Another page (or the CLI) started a job since the last push.
+    if (err.status === 409 && runningJobName(els)) {
+      reportBusy(els, runningJobName(els));
+      return;
+    }
     reportJobError(jobStatus, `Error starting ${name}: ${err.message || err}`);
   }
 }
 
-async function refreshLibStats(els, control = null) {
+async function refreshLibStats(els, control = null, { quiet = false } = {}) {
   const {
     statCount, statAvgBpm, statWithKey, statWithGenre, statWithEnergy,
   } = els;
@@ -248,7 +327,7 @@ async function refreshLibStats(els, control = null) {
         "Stats refreshed.", { dwellMs: 3000, force: true });
     }
   } catch (errorValue) {
-    if (!isAuthenticatedRequestCurrent(epoch)) return;
+    if (!isAuthenticatedRequestCurrent(epoch) || quiet) return;
     reportJobError(
       els.jobStatus,
       `Could not load library stats: ${errorValue.message}`,
@@ -260,6 +339,22 @@ export function applyLibraryJobState(s, els) {
   const { libLog, jobStatus, jobElapsed } = els;
   const job = s && s.library_job;
   if (!job || !libLog) return;
+  const previous = _jobs.get(els);
+  const current = {
+    job,
+    finishedFor: previous ? previous.finishedFor : null,
+    fullLogFor: previous ? previous.fullLogFor : null,
+  };
+  _jobs.set(els, current);
   updateJobStatus(job, jobStatus, jobElapsed);
-  renderLog(libLog, job.lines || []);
+  // The full log of this finished job is already shown; the websocket's
+  // 25-line window would cut it back down.
+  if (job.running || current.fullLogFor !== job.started_at) {
+    renderLog(libLog, job.lines || []);
+  }
+  const finished = !job.running && job.exit_code != null && job.started_at != null;
+  if (finished && current.finishedFor !== job.started_at && _installed.has(els)) {
+    current.finishedFor = job.started_at;
+    void followUpFinishedJob(els, job);
+  }
 }

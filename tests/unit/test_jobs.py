@@ -323,7 +323,7 @@ class TestJobManagerConfigPassthrough:
         mgr = JobManager()
         mgr.configure(config_path="cfg.toml", index_name="party")
 
-        for name in ("index", "enrich", "prune", "stats"):
+        for name in ("index", "enrich", "analyse", "prune", "stats"):
             argv = self._capture(mgr, name).args[0]
             assert argv[1:] == [
                 "-m",

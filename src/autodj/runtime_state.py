@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, TypedDict, TypeGuard
 
 from autodj.dj_meta import HARMONIC_MODES
+from autodj.liners import LINER_PICK_MODES
 from autodj.transitions import TRANSITION_EFFECT_NAMES
 
 logger = logging.getLogger(__name__)
@@ -34,7 +35,6 @@ logger = logging.getLogger(__name__)
 #: harmonic mixing on, so a version 1 file (which stored "compatible" next to
 #: ``harmonic_mixing: false``) would silently switch key filtering on.
 STATE_VERSION = 2
-LINER_PICK_MODES = frozenset({"random", "sequential", "weighted"})
 TRANSITION_EFFECTS = TRANSITION_EFFECT_NAMES
 
 
@@ -70,6 +70,10 @@ class PlaybackState(TypedDict, total=False):
     liners_pick_mode: str
     liners_duck_db: float
     stream_bitrate: int
+    no_repeat_window: int
+    artist_repeat_window: int
+    transition_wet_mix: float
+    replaygain_target_db: float
 
 
 DJMIX_BOOL_FIELDS = (
@@ -192,6 +196,58 @@ def _restore_djmix(cfg: Any, data: dict) -> None:
             cfg.djmix.harmonic_mode = value
         else:
             _warn("harmonic_mode", value)
+
+
+def _read_int_in_range(data: dict, field: str, low: int, high: int) -> int | None:
+    """Read a whole-number field inside ``[low, high]`` or warn."""
+    if field not in data:
+        return None
+    value = data[field]
+    if type(value) is int and low <= value <= high:
+        return value
+    _warn(field, value)
+    return None
+
+
+def _read_float_in_range(data: dict, field: str, low: float, high: float) -> float | None:
+    """Read a finite number inside ``[low, high]`` or warn."""
+    if field not in data:
+        return None
+    value = data[field]
+    if _is_finite_number(value) and low <= value <= high:
+        return float(value)
+    _warn(field, value)
+    return None
+
+
+def _restore_mix_levels(cfg: Any, player: Any, data: dict, pb: dict) -> None:
+    """Restore phrase length, repeat windows, effect level and loudness target.
+
+    The ranges match the ones ``POST /api/playback-settings`` and
+    ``POST /api/djmix`` accept.
+    """
+    djmix = data.get("djmix")
+    if isinstance(djmix, dict):
+        bars = _read_int_in_range(djmix, "phrase_bars", 1, 64)
+        if bars is not None:
+            cfg.djmix.phrase_bars = bars
+    wet = _read_float_in_range(pb, "transition_wet_mix", 0.0, 1.0)
+    if wet is not None:
+        cfg.transitions.wet_mix = wet
+    target = _read_float_in_range(pb, "replaygain_target_db", -30.0, 0.0)
+    if target is not None:
+        cfg.replaygain.target_db = target
+    no_repeat = _read_int_in_range(pb, "no_repeat_window", 0, 100_000)
+    artist = _read_int_in_range(pb, "artist_repeat_window", 0, 100)
+    if no_repeat is None and artist is None:
+        return
+    if no_repeat is not None:
+        cfg.playback.no_repeat_window = no_repeat
+    if artist is not None:
+        cfg.playback.artist_repeat_window = artist
+    from autodj.player import apply_repeat_windows
+
+    apply_repeat_windows(player)
 
 
 def _restore_transition(cfg: Any, data: dict) -> None:
@@ -457,6 +513,7 @@ def load_into_player(player: Any, index_dir: Path | None) -> None:
         _restore_validated_strings(cfg, playback)
         _restore_liners(cfg, playback)
         _restore_stream_bitrate(cfg, playback)
+    _restore_mix_levels(cfg, player, data, playback if isinstance(playback, dict) else {})
     _restore_bpm_range(player, data)
     _restore_discovery(player, data)
 

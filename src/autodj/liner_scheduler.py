@@ -188,13 +188,12 @@ class LinerScheduler:
         """Rescan the liner folder in place, keeping the rotation cursor.
 
         Replacing ``self._library`` outright (as opposed to updating its
-        ``files``/``weights``) would reset :attr:`LinerLibrary.cursor`
+        ``files``) would reset :attr:`LinerLibrary.cursor`
         to 0 on every automatic pick, so ``"sequential"`` mode would
         always replay the first file instead of rotating.
         """
         fresh = LinerLibrary.from_folder(self._folder)
         self._library.files = fresh.files
-        self._library.weights = fresh.weights
         if self._library.files:
             self._library.cursor %= len(self._library.files)
         else:

@@ -715,7 +715,7 @@ describe("app request behavior", () => {
       onRequest: () => jsonResponse({ lyrics: [] }),
     });
     expect(await linerDeps.playLiner(new ArrayBuffer(1), -12)).toBe(true);
-    const history = document.querySelector("#history-list");
+    const nowPlaying = document.querySelector("#now-playing-announce");
     for (let index = 2; index <= 5; index += 1) {
       webSocket.onmessage({ data: JSON.stringify({
         browser_playback: true,
@@ -732,7 +732,7 @@ describe("app request behavior", () => {
         volume: 1,
       }) });
     }
-    expect(history.children).toHaveLength(5);
+    expect(nowPlaying.textContent).toContain("Track 5");
     vi.useFakeTimers();
 
     webSocket.onclose({ code: 1006, wasClean: false });
@@ -742,7 +742,7 @@ describe("app request behavior", () => {
     expect(resetTrackCaches).not.toHaveBeenCalled();
     expect(resetTransitionCaches).toHaveBeenCalledOnce();
     expect(loadCoverArt).not.toHaveBeenCalledWith(null);
-    expect(history.children).toHaveLength(5);
+    expect(nowPlaying.textContent).toContain("Track 5");
     expect(dialog.showModal).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(3000);
@@ -1228,7 +1228,6 @@ describe("app request behavior", () => {
         : jsonResponse({ ok: true }),
     });
     expect(await linerDeps.playLiner(new ArrayBuffer(1), -12)).toBe(true);
-    expect(document.querySelector("#history-list").children.length).toBeGreaterThan(0);
     expect(document.querySelector("#next-track-text").textContent).toContain("Next");
     expect(document.querySelector("#queue-list").textContent).toContain("Queued secret");
     expect(document.querySelector("#preset-select").textContent).toContain("Secret preset");
@@ -1254,7 +1253,6 @@ describe("app request behavior", () => {
     expect(source.stop).toHaveBeenCalledOnce();
     expect(resetTrackCaches).toHaveBeenCalledOnce();
     expect(webSocket.close).toHaveBeenCalledOnce();
-    expect(document.querySelector("#history-list").children).toHaveLength(0);
     expect(document.querySelector("#now-playing-title").textContent).not.toContain("Current");
     expect(document.querySelector("#now-playing-meta").textContent).toBe("");
     const cueSummary = document.querySelector("#cue-summary");

@@ -1205,6 +1205,7 @@ class PlayerBridge:
                 "phrase_align": cfg.djmix.phrase_align,
                 "outro_intro_align": cfg.djmix.outro_intro_align,
                 "filter_sweep": cfg.djmix.filter_sweep,
+                "phrase_bars": int(cfg.djmix.phrase_bars),
             },
             "playback": {
                 "crossfade_seconds": pb.crossfade_seconds,
@@ -1224,7 +1225,10 @@ class PlayerBridge:
                 "mood_arc_hours": pb.mood_arc_hours,
                 "import_external_cues": pb.import_external_cues,
                 "beat_sync_fx": bool(pb.beat_sync_fx),
-                "no_repeat_window": int(p._state.no_repeat_window),
+                "no_repeat_window": int(pb.no_repeat_window),
+                "artist_repeat_window": int(pb.artist_repeat_window),
+                "transition_wet_mix": float(cfg.transitions.wet_mix),
+                "replaygain_target_db": float(cfg.replaygain.target_db),
                 "library_size": int(p._sim.ntotal if p._sim else 0),
                 "key_sync_fx": bool(pb.key_sync_fx),
                 "beatmatch_on_skip": bool(pb.beatmatch_on_skip),
@@ -1282,7 +1286,7 @@ class PlayerBridge:
             raise ValueError(f"unknown transition effect: {effect}")
         self.player._cfg.transitions.effect = name
 
-    def set_djmix(self, **flags: bool | str | None) -> None:
+    def set_djmix(self, **flags: bool | int | str | None) -> None:
         """Set one or more DJ-mix toggle flags or harmonic_mode string."""
         from autodj.dj_meta import HARMONIC_MODES
 
@@ -1294,6 +1298,9 @@ class PlayerBridge:
                 mode = str(v).lower()
                 if mode in HARMONIC_MODES:
                     cfg.djmix.harmonic_mode = mode
+                continue
+            if k == "phrase_bars":
+                cfg.djmix.phrase_bars = int(v)
                 continue
             if hasattr(cfg.djmix, k):
                 setattr(cfg.djmix, k, bool(v))
@@ -1384,6 +1391,21 @@ class PlayerBridge:
         if (v := kw.get("beatmatch_on_skip")) is not None:
             cfg.playback.beatmatch_on_skip = bool(v)
 
+    def _apply_repeat_windows(self, kw: dict) -> None:
+        """Apply the no-repeat and artist-repeat windows from *kw*."""
+        no_repeat = kw.get("no_repeat_window")
+        artist = kw.get("artist_repeat_window")
+        if no_repeat is None and artist is None:
+            return
+        from autodj.player import apply_repeat_windows
+
+        pb = self.player._cfg.playback
+        if no_repeat is not None:
+            pb.no_repeat_window = max(0, int(no_repeat))
+        if artist is not None:
+            pb.artist_repeat_window = max(0, int(artist))
+        apply_repeat_windows(self.player)
+
     def _apply_liners(self, kw: dict) -> None:
         """Apply voice-liner overrides; positive numerics, ``None`` zeros disable."""
         cfg = self.player._cfg
@@ -1430,6 +1452,10 @@ class PlayerBridge:
         liners_pick_mode: str | None = None,
         liners_duck_db: float | None = None,
         post_queue_seed: str | None = None,
+        no_repeat_window: int | None = None,
+        artist_repeat_window: int | None = None,
+        transition_wet_mix: float | None = None,
+        replaygain_target_db: float | None = None,
     ) -> None:
         """Apply playback-related settings; only non-null fields take effect.
 
@@ -1444,6 +1470,11 @@ class PlayerBridge:
         self._apply_picker_modes(kw)
         if (v := kw.get("replaygain_enabled")) is not None:
             cfg.replaygain.enabled = bool(v)
+        if (v := _finite(kw.get("replaygain_target_db"))) is not None:
+            cfg.replaygain.target_db = v
+        if (v := _finite(kw.get("transition_wet_mix"))) is not None:
+            cfg.transitions.wet_mix = min(1.0, max(0.0, v))
+        self._apply_repeat_windows(kw)
         self._apply_validators(kw)
         self._apply_lyrics(kw)
         self._apply_session_envelope(kw)

@@ -39,6 +39,17 @@ function _intOrNull(el) {
   return isNaN(n) ? null : n;
 }
 
+// A trigger field left blank means "off", the same as 0.  Sending null
+// would mean "leave unchanged" to the server, so clearing the field could
+// never switch a trigger off.
+function _intOrOff(el) {
+  return _intOrNull(el) ?? 0;
+}
+
+function _floatOrOff(el) {
+  return _floatOrNull(el) ?? 0;
+}
+
 function _floatOrNull(el) {
   if (!el || el.value === "" || el.value == null) return null;
   const n = parseFloat(el.value);
@@ -164,10 +175,10 @@ async function _deleteLiner(els, name, control) {
 function _postConfig(els, postSettings, control) {
   void postSettings("/api/playback-settings", {
     liners_enabled:            !!(els.lnEnabled && els.lnEnabled.checked),
-    liners_every_n_songs:      _intOrNull(els.lnEveryN),
-    liners_every_minutes:      _floatOrNull(els.lnEveryMin),
-    liners_random_min_minutes: _floatOrNull(els.lnRandMin),
-    liners_random_max_minutes: _floatOrNull(els.lnRandMax),
+    liners_every_n_songs:      _intOrOff(els.lnEveryN),
+    liners_every_minutes:      _floatOrOff(els.lnEveryMin),
+    liners_random_min_minutes: _floatOrOff(els.lnRandMin),
+    liners_random_max_minutes: _floatOrOff(els.lnRandMax),
     liners_pick_mode:          els.lnPickMode ? els.lnPickMode.value : "random",
     liners_duck_db:            _floatOrNull(els.lnDuckDb),
   }, control);
@@ -180,8 +191,6 @@ function _pickLiner() {
     const i = (state.seqCursor++) % state.lib.files.length;
     return state.lib.files[i];
   }
-  // weighted falls back to random in the browser since weights are
-  // not persisted yet; matches LinerLibrary.pick fallback behaviour.
   const i = Math.floor(Math.random() * state.lib.files.length);
   return state.lib.files[i];
 }
@@ -258,19 +267,23 @@ export function installLiners(els, deps) {
       const f = els.lnUpload.files[0];
       const fd = new FormData();
       fd.append("file", f, f.name);
+      const replace = Boolean(els.lnUploadReplace && els.lnUploadReplace.checked);
       _setStatus(els, `Uploading ${f.name}...`);
       const epoch = captureAuthenticatedRequestEpoch();
       try {
         await withDisabled(event.currentTarget, () => requestJson(
-          "/api/liners/upload", { method: "POST", body: fd },
+          `/api/liners/upload${replace ? "?replace=true" : ""}`,
+          { method: "POST", body: fd },
         ));
         if (!isAuthenticatedRequestCurrent(epoch)) return;
-        _setStatus(els, `Uploaded ${f.name}`);
+        _setStatus(els, replace ? `Uploaded ${f.name}, replacing any file with that name.` : `Uploaded ${f.name}`);
         els.lnUpload.value = "";
         await _refreshLibrary(els);
       } catch (err) {
         if (!isAuthenticatedRequestCurrent(epoch)) return;
-        _setStatus(els, `Upload failed: ${err.message}`);
+        _setStatus(els, err.status === 409 && !replace
+          ? `Upload failed: a liner named ${f.name} already exists.  Tick Replace existing file to overwrite it.`
+          : `Upload failed: ${err.message}`);
       }
     });
   }

@@ -115,7 +115,11 @@ entries with softmax weights.
 
 `PlayerState` keeps `recently_played` as a deque bounded by
 `no_repeat_window` (default 500), plus artist, album, and title windows of
-`artist_repeat_window` (default 3).
+`artist_repeat_window` (default 3). Both can be changed while AutoDJ runs, under Settings,
+Playback ("Tracks before a song can repeat" and "Tracks before an artist can repeat"); the new
+value applies to the next pick and is saved in `web_state.json`. When the library holds no more
+tracks than `no_repeat_window`, the player uses a smaller window so that at least a tenth of the
+library (and at least 4 tracks) stays available.
 
 Two mechanisms deliberately leave similarity behind:
 

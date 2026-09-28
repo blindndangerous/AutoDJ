@@ -1320,6 +1320,13 @@ class TestProfileBadCharsRouted:
 
 
 class TestProfileApplyBranches:
+    @pytest.fixture
+    def client(self, tmp_path: Path) -> TestClient:
+        """Profiles under tmp_path, so parallel workers never see these files."""
+        player = _make_player_mock()
+        player._cfg.index.active_dir = str(tmp_path / "idx")
+        return TestClient(create_app(PlayerBridge(player=player, sim=_make_sim_mock())))
+
     def test_apply_with_bpm_and_harmonic_and_preset(self, client) -> None:
         body = {
             "name": "branchcov-1",
@@ -1337,15 +1344,24 @@ class TestProfileApplyBranches:
         client.request("DELETE", f"/api/profiles/{body['name']}")
 
     def test_apply_with_preset_set(self, client) -> None:
-        body = {
-            "name": "branchcov-preset",
-            "preset": "warmup",
-        }
+        body = {"name": "branchcov-preset", "preset": "chill"}
         client.post("/api/profiles", json=body)
         resp = client.post(f"/api/profiles/{body['name']}/apply")
         assert resp.status_code == 200
-        # `preset` may or may not appear depending on whether the
-        # built-in preset exists — but the contextlib.suppress branch is hit.
+        assert "preset" in resp.json()["applied"]
+        client.request("DELETE", f"/api/profiles/{body['name']}")
+
+    def test_apply_with_missing_preset_is_refused_and_changes_nothing(self, client) -> None:
+        """A preset the config no longer has used to be dropped without a word."""
+        body = {"name": "branchcov-gone", "preset": "warmup", "bpm_lo": 90, "bpm_hi": 130}
+        client.post("/api/profiles", json=body)
+        before = client.get("/api/settings").json()["bpm_range"]
+
+        resp = client.post(f"/api/profiles/{body['name']}/apply")
+
+        assert resp.status_code == 400
+        assert "warmup" in resp.json()["detail"]
+        assert client.get("/api/settings").json()["bpm_range"] == before
         client.request("DELETE", f"/api/profiles/{body['name']}")
 
 

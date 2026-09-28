@@ -373,19 +373,6 @@
       min-width: 36px;
     }
 
-    /* ---- History ---- */
-    #history-list {
-      list-style: none;
-    }
-    #history-list li {
-      padding: 0.4rem 0.25rem;
-      border-bottom: 1px solid var(--border);
-      font-size: 0.875rem;
-      color: var(--text-dim);
-    }
-    #history-list li:last-child { border-bottom: none; }
-    #history-list .history-title { color: var(--text); font-weight: 500; }
-
     /* ---- History view (its own tab) ----
        This view shipped with no CSS at all: a browser-default <h2> and a
        raw <table> with zero cell padding, so "06:45:32 AM" ran straight
@@ -449,6 +436,31 @@
     }
     #hist-page-info { color: var(--text-dim); font-size: 0.9rem; }
     #hist-goto { width: 5rem; }
+    #hist-refresh { margin-bottom: 0.75rem; }
+
+    /* ---- Queue: Clear queue sits under the rows ---- */
+    #queue-clear { margin-top: 0.75rem; }
+
+    /* ---- Settings: profiles and paired devices ---- */
+    #profile-list,
+    #device-list {
+      list-style: none;
+      margin-top: 0.5rem;
+    }
+    #profile-list li,
+    #device-list li {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.4rem 0.25rem;
+      border-bottom: 1px solid var(--border);
+    }
+    #profile-list li:last-child,
+    #device-list li:last-child { border-bottom: none; }
+    .profile-name,
+    .device-text { flex: 1; min-width: 0; }
+    #access-refresh { margin-top: 0.5rem; }
 
     /* ---- Library tools: index stats ----
        <dl> with no CSS rendered as eight identical lines because the
@@ -844,8 +856,8 @@
     }
 
     /* ---- Empty-list placeholder utility ---- */
-    /* Used by #why-list, #queue-list, #history-list, #search-results and
-       #ln-file-list.  list-style: none matters for #why-list, which is
+    /* Used by #why-list, #queue-list, #search-results, #ln-file-list,
+       #profile-list and #device-list.  list-style: none matters for #why-list, which is
        the one of those lists that still shows markers. */
     .no-results {
       color: var(--text-dim);
@@ -1171,7 +1183,8 @@
 /* Hotkey help modal -------------------------------------------------- */
 
 #hotkey-help-modal,
-#stream-rotate-dialog {
+#stream-rotate-dialog,
+#confirm-dialog {
   /* `*, *::before, *::after { margin: 0 }` overrides the UA
      `dialog:modal { margin: auto }`, which pinned this dialog to the
      top-left corner of the viewport.  #auth-dialog already restores it. */
@@ -1185,7 +1198,8 @@
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
 }
 #hotkey-help-modal::backdrop,
-#stream-rotate-dialog::backdrop {
+#stream-rotate-dialog::backdrop,
+#confirm-dialog::backdrop {
   background: rgba(0, 0, 0, 0.55);
 }
 #hotkey-help-modal kbd {
@@ -1237,13 +1251,16 @@
 .stream-detail {
   margin: 0.4rem 0;
 }
-#stream-rotate-dialog h2 {
+#stream-rotate-dialog h2,
+#confirm-dialog h2 {
   margin-top: 0;
 }
-#stream-rotate-dialog p {
+#stream-rotate-dialog p,
+#confirm-dialog p {
   margin: 0.75rem 0 1rem;
 }
-#stream-rotate-dialog .dialog-actions {
+#stream-rotate-dialog .dialog-actions,
+#confirm-dialog .dialog-actions {
   display: flex;
   justify-content: flex-end;
   gap: 0.75rem;

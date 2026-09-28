@@ -92,7 +92,9 @@ uv run autodj serve --lan
 
 Startup prints the addresses to open, such as `http://nas:8080` and `http://192.168.1.20:8080`,
 and an 8-digit pairing code. Open one of the addresses on the other device and enter the code once;
-that browser stays paired. Run `uv run autodj devices pairing-code` for a fresh code later. To make
+that browser stays paired. Run `uv run autodj devices pairing-code` for a fresh code later. In the
+web page, Settings, Browser access lists the paired devices with a Revoke button each, and **Sign
+out this browser** ends this browser's pairing. To make
 it permanent, set `[server] lan = true` in `config.toml` or `AUTODJ_LAN=1`.
 
 `--lan` listens on all interfaces, allows only this machine's own names and addresses in the
@@ -165,10 +167,10 @@ and copy it to the mounted index directory before starting Compose.
 After `autodj serve`, point a browser at `http://localhost:8080`.  Five tabs:
 
 - **Now Playing.**  What is playing, the next track, album art, lyrics, the cue strip on the progress bar.
-- **Queue & Search.**  Find any track in your library and play it now or queue it up.  Reorder the queue.
-- **History.**  What has played this session, newest first, one page at a time.
-- **Settings.**  Pick a preset, change the crossfade length, switch transition effects, set a BPM range, toggle voice liners, choose an audio output device.
-- **Library tools.**  Run index / enrich / prune / stats jobs without leaving the page.
+- **Queue & Search.**  Find any track in your library and choose Play now, Play next (straight after the current track) or Add to queue (at the end).  Move queued tracks up, down or to the top, remove them, or clear the whole queue; each move says the new position, such as "Moved Alpha to position 2 of 5".
+- **History.**  What has played, newest first, one page at a time.  Times get a date when the page holds tracks from before today.  Refresh history reloads the page you are on.
+- **Settings.**  Pick a preset, change the crossfade length, switch transition effects and their level, set a BPM range, set how soon a song or an artist may repeat, toggle voice liners, choose an audio output device.  **Profiles** saves the current settings under a name to apply later.  **Browser access** (with `--lan`) signs this browser out or revokes another paired device.
+- **Library tools.**  Run index, enrich, analyse, prune and stats jobs without leaving the page.  One job runs at a time; the index stats and the full job log refresh when it finishes.
 
 ### Keyboard shortcuts
 
@@ -222,7 +224,9 @@ Drop short spoken clips into a folder.  AutoDJ will fade the music down for a co
 1. Open the **Settings** tab.
 2. Tick **Enable voice liners**.
 3. The Trigger / Mix / Library boxes appear.
-4. Click the **Choose liner file** button to upload an MP3 / WAV / OGG / M4A / FLAC / AAC.
+4. Click the **Choose liner file** button to upload an MP3 / WAV / OGG / M4A / FLAC / AAC.  To
+   swap in a new recording under a name that is already there, tick **Replace existing file**
+   first; without it the upload is refused so nothing is overwritten by accident.
 5. Set how often you want them to play.
 
 You can pick three trigger styles, in any combination:
@@ -231,7 +235,11 @@ You can pick three trigger styles, in any combination:
 - **Every N minutes** -- on a wall-clock timer.
 - **Random window** -- pick a random delay between two values.
 
-Rotation modes: random, sequential, and weighted.  Weighted is accepted but every liner currently carries the same weight, so it behaves like random until per-file weights exist.
+Leave a trigger blank or set it to 0 to turn it off.  The random window needs both values above 0,
+with the minimum no larger than the maximum.
+
+Rotation modes: random and sequential.  The old weighted mode is gone: a config file or saved web
+state that still says `weighted` is rejected, so pick one of the two.
 
 ## How well does this work?
 
