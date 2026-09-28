@@ -1921,12 +1921,16 @@ def create_app(
     async def api_volume(body: VolumeBody) -> dict[str, float]:
         """Set the playback volume (0.0-1.0)."""
         bridge.set_volume(body.volume)
+        # Saved so a restart comes back at this volume, not at full.  On the
+        # event loop like the other settings, so two saves never overlap.
+        bridge.save_persistent_state()
         return {"volume": bridge.player._state.volume}
 
     @app.post("/api/mute")
     async def api_mute() -> dict[str, bool]:
         """Toggle mute."""
         muted = bridge.toggle_mute()
+        bridge.save_persistent_state()
         return {"muted": muted}
 
     @app.post("/api/play-next")

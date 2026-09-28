@@ -553,22 +553,32 @@ describe("page volume", () => {
     expect(live.setValueAtTime).toHaveBeenLastCalledWith(1, 2);
   });
 
-  it("plays the live deck again when the server state returns after a hard stop", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
-      jsonResponse({ current_track: { path: "current.mp3" } }),
-    ));
+  it("stays stopped after a hard stop until Play, then starts the track from the top", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({ current_track: { path: "current.mp3" } })));
     const { engine } = await importEngine();
     await expect(engine.unlockAndPlay()).resolves.toBe(true);
     engine.stopAllDecks();
-    const live = engine.decks[engine.activeIdx].gain.gain;
-    live.setValueAtTime.mockClear();
+    expect(engine.playbackEnabled).toBe(false);
+    const live = engine.decks[engine.activeIdx];
+    live.gain.gain.setValueAtTime.mockClear();
+    for (const deck of engine.decks) deck.audio.play.mockClear();
 
-    engine.applyBrowserPlaybackState({
-      browser_playback: true, current_track: { path: "current.mp3" }, next_track: null,
-      is_muted: false, is_paused: false, settings: { playback: {} },
-    });
+    // The server comes back playing, the same track and then another.
+    for (const path of ["current.mp3", "other.mp3"]) {
+      engine.applyBrowserPlaybackState({
+        browser_playback: true, current_track: { path }, next_track: null,
+        is_muted: false, is_paused: false, settings: { playback: {} },
+      });
+    }
 
-    expect(live.setValueAtTime).toHaveBeenLastCalledWith(1, 2);
+    for (const deck of engine.decks) expect(deck.audio.play).not.toHaveBeenCalled();
+    expect(live.gain.gain.setValueAtTime).not.toHaveBeenCalled();
+    expect(live.gain.gain.value).toBe(0);
+    expect(live.audio.currentTime).toBe(0);
+
+    await expect(engine.unlockAndPlay()).resolves.toBe(true);
+    expect(engine.playbackEnabled).toBe(true);
+    expect(live.gain.gain.setValueAtTime).toHaveBeenLastCalledWith(1, 2);
   });
 
   it("keeps the master silent while muted when the volume changes", async () => {

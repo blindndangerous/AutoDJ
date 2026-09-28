@@ -1062,6 +1062,64 @@ describe("app request behavior", () => {
     expect(setVolume).toHaveBeenLastCalledWith(gain);
   });
 
+  it("fires no scheduled liner while playback is stopped, as after a lost link", async () => {
+    for (const playbackEnabled of [false, true]) {
+      let linerDeps;
+      await setupApp({
+        audio: {
+          _ctx: {}, _lastBrowserPlayback: true, decks: [{ audio: {} }], playbackEnabled,
+        },
+        initialState: { browser_playback: true },
+        onInstallLiners: (_elements, deps) => { linerDeps = deps; },
+      });
+      expect(linerDeps.canPlay()).toBe(playbackEnabled);
+      vi.unstubAllGlobals();
+      for (const modulePath of moduleMocks) vi.doUnmock(modulePath);
+    }
+  });
+
+  it("takes no louder volume from the server after a reconnect until set here", async () => {
+    const quiet = 10 ** (-57 / 20);   // 5 %
+    const quieter = quiet / 2;
+    const setVolume = vi.fn();
+    const { fetchImpl, webSocket, WebSocketImpl } = await setupApp({
+      audio: { setVolume },
+      initialState: { volume: quiet },
+      onRequest: (url, options) => url === "/api/volume"
+        ? jsonResponse(JSON.parse(options.body))
+        : jsonResponse({ ok: true }),
+    });
+    const slider = document.querySelector("#vol");
+    const push = (volume) => webSocket.onmessage({ data: JSON.stringify({
+      current_track: null, queue: [], eq: {}, volume,
+    }) });
+    vi.useFakeTimers();
+
+    // A restarted server comes back at full volume.
+    webSocket.onclose({ code: 1006, wasClean: false });
+    await vi.advanceTimersByTimeAsync(3000);
+    await vi.waitFor(() => expect(WebSocketImpl).toHaveBeenCalledTimes(2));
+    webSocket.onopen();
+    push(1);
+    expect(slider.value).toBe("5");
+    expect(setVolume).toHaveBeenLastCalledWith(quiet);
+    expect(fetchImpl.mock.calls.some(([url]) => url === "/api/volume")).toBe(false);
+
+    // A lower volume set elsewhere is still followed.
+    push(quieter);
+    expect(setVolume).toHaveBeenLastCalledWith(quieter);
+    push(1);
+    expect(setVolume).toHaveBeenLastCalledWith(quiet);
+
+    // A volume change on this page lifts the limit.
+    slider.value = "50";
+    slider.dispatchEvent(new Event("input"));
+    await vi.advanceTimersByTimeAsync(700);
+    push(1);
+    expect(slider.value).toBe("100");
+    expect(setVolume).toHaveBeenLastCalledWith(1);
+  });
+
   it("keeps pointer previews local and sends only the final absolute seek", async () => {
     let resolveSeek;
     const deckAudio = { currentTime: 10, duration: 100 };
@@ -1595,6 +1653,35 @@ describe("stream mode", () => {
     listen.click();
     expect(listen.getAttribute("aria-pressed")).toBe("false");
     expect(audio.getAttribute("src")).toBeNull();
+  });
+
+  it("stops listening when the link drops and stays stopped after it returns", async () => {
+    const { webSocket, WebSocketImpl } = await setupApp({
+      initialState: streamState,
+      onRequest: (url) => url === "/api/stream"
+        ? jsonResponse({ path: "/stream/SECRET.mp3", m3u_path: "/stream/SECRET.m3u" })
+        : lyricsFor("a.mp3"),
+    });
+    const audio = document.getElementById("stream-audio");
+    audio.play = vi.fn().mockResolvedValue();
+    audio.pause = vi.fn();
+    const listen = document.getElementById("btn-listen");
+    listen.click();
+    await vi.waitFor(() => expect(audio.play).toHaveBeenCalledOnce());
+    vi.useFakeTimers();
+
+    webSocket.onclose({ code: 1006, wasClean: false });
+    expect(listen.getAttribute("aria-pressed")).toBe("false");
+    expect(audio.getAttribute("src")).toBeNull();
+    // The dropped stream's error gets no silent retry either.
+    audio.dispatchEvent(new Event("error"));
+    await vi.advanceTimersByTimeAsync(3000);
+    await vi.waitFor(() => expect(WebSocketImpl).toHaveBeenCalledTimes(2));
+    webSocket.onopen();
+    webSocket.onmessage({ data: JSON.stringify(streamState) });
+
+    expect(audio.play).toHaveBeenCalledOnce();
+    expect(listen.getAttribute("aria-pressed")).toBe("false");
   });
 
   it("refuses seeking and answers status keys from the server clock", async () => {

@@ -73,6 +73,8 @@ class PlaybackState(TypedDict, total=False):
     artist_repeat_window: int
     transition_wet_mix: float
     replaygain_target_db: float
+    volume: float
+    is_muted: bool
 
 
 DJMIX_BOOL_FIELDS = (
@@ -429,6 +431,16 @@ def _restore_stream_bitrate(cfg: Any, pb: dict) -> None:
         _warn("stream_bitrate", value)
 
 
+def _restore_volume(player: Any, pb: dict) -> None:
+    """Restore the volume and mute, so a restart never comes back at full volume."""
+    volume = _read_float_in_range(pb, "volume", 0.0, 1.0)
+    if volume is not None:
+        player._state.volume = volume
+    muted = _read_bool(pb, "is_muted")
+    if muted is not None:
+        player._state.is_muted = muted
+
+
 def _restore_bpm_range(player: Any, data: dict) -> None:
     """Restore a valid BPM range or clear it when explicitly null."""
     if "bpm_range" not in data:
@@ -512,6 +524,7 @@ def load_into_player(player: Any, index_dir: Path | None) -> None:
         _restore_validated_strings(cfg, playback)
         _restore_liners(cfg, playback)
         _restore_stream_bitrate(cfg, playback)
+        _restore_volume(player, playback)
     _restore_mix_levels(cfg, player, data, playback if isinstance(playback, dict) else {})
     _restore_bpm_range(player, data)
     _restore_discovery(player, data)

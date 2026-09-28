@@ -2113,6 +2113,25 @@ class TestSettingsEndpoints:
         data = _json.loads(f.read_text(encoding="utf-8"))
         assert data["transition"] == "tape_stop"
 
+    def test_volume_and_mute_survive_a_restart(self, bridge, tmp_path) -> None:
+        """A restarted server came back at full volume (D15)."""
+        from fastapi.testclient import TestClient
+
+        from autodj.player import PlayerState
+
+        quiet = 10 ** (-57 / 20)
+        bridge.player._cfg.index.active_dir = tmp_path
+        tc = TestClient(create_app(bridge))
+        tc.post("/api/volume", json={"volume": quiet})
+        tc.post("/api/mute")
+
+        bridge.player._state = PlayerState()
+        assert bridge.player._state.volume == 1.0
+        bridge.load_persistent_state()
+
+        assert bridge.player._state.volume == pytest.approx(quiet)
+        assert bridge.player._state.is_muted is True
+
     def test_post_djmix_flags(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 

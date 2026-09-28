@@ -253,7 +253,10 @@ function deckStandby() { return decks[activeIdx ^ 1]; }
 export function stopAllDecks() {
   // Hard stop — used when the server disconnects so audio doesn't keep
   // playing from buffered files after the control surface is gone.
+  // Nothing plays again until the listener presses Play: a server that
+  // comes back must not restart the music on its own (D15).
   _playbackGeneration += 1;
+  playbackEnabled = false;
   if (_pendingCrossfade) {
     const pending = _pendingCrossfade;
     _pendingCrossfade = null;
@@ -270,7 +273,6 @@ export function stopAllDecks() {
         d.gain.gain.cancelScheduledValues(_ctx ? _ctx.currentTime : 0);
         d.gain.gain.value = 0;
       } catch (_) {}
-      _deckGainsCleared = true;
     }
   }
   crossfading = false;
@@ -327,17 +329,15 @@ function applyVolume() {
   _master.gain.setValueAtTime(target, _ctx.currentTime);
 }
 
-// Live deck at full, standby silent.  stopAllDecks leaves both at 0,
-// and only then do they need putting back: rewriting them on every
-// state push would cut short a liner duck.
-let _deckGainsCleared = false;
+// Live deck at full, standby silent.  stopAllDecks leaves both at 0, and
+// only Play (unlockAndPlay) puts them back: rewriting them on every state
+// push would cut short a liner duck.
 function restoreDeckGains() {
   if (!_ctx || crossfading) return;
   for (let i = 0; i < decks.length; i++) {
     decks[i].gain.gain.cancelScheduledValues(_ctx.currentTime);
     decks[i].gain.gain.setValueAtTime(i === activeIdx ? 1 : 0, _ctx.currentTime);
   }
-  _deckGainsCleared = false;
 }
 
 // ----------------------------------------------------------------
@@ -2489,7 +2489,6 @@ export function applyBrowserPlaybackState(s) {
       if (crossfading && deckStandby().audio.paused && playbackEnabled) {
         playOnDeck(deckStandby());
       }
-      if (_deckGainsCleared) restoreDeckGains();
     }
   }
 }

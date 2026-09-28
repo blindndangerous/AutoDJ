@@ -1226,6 +1226,8 @@ class PlayerBridge:
                 "liners_pick_mode": pb.liners_pick_mode,
                 "liners_duck_db": pb.liners_duck_db,
                 "stream_bitrate": int(cfg.stream.bitrate),
+                "volume": float(p._state.volume),
+                "is_muted": bool(p._state.is_muted),
             },
             "bpm_range": {
                 "lo": bpm_range[0] if bpm_range else None,

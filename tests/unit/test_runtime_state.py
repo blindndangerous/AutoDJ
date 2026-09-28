@@ -107,6 +107,11 @@ def test_huge_integer_is_not_a_finite_runtime_number() -> None:
         {"playback": {"artist_repeat_window": 2.5}},
         {"playback": {"transition_wet_mix": 2.0}},
         {"playback": {"replaygain_target_db": "loud"}},
+        {"playback": {"volume": 1.5}},
+        {"playback": {"volume": -0.1}},
+        {"playback": {"volume": True}},
+        {"playback": {"volume": "0.5"}},
+        {"playback": {"is_muted": "true"}},
     ],
 )
 def test_invalid_state_field_is_warned_and_ignored(tmp_path: Path, caplog, payload) -> None:
@@ -663,6 +668,8 @@ class TestRoundTrip:
         p1._cfg.stream.bitrate = 192
         p1._bpm_range = (100.0, 132.0)
         p1._discovery_every = 9
+        p1._state.volume = 0.0014
+        p1._state.is_muted = True
 
         bridge1 = PlayerBridge(p1, p1._sim)
         saved = bridge1.get_settings()
@@ -717,6 +724,8 @@ class TestRoundTrip:
             "artist_repeat_window",
             "transition_wet_mix",
             "replaygain_target_db",
+            "volume",
+            "is_muted",
             # Bridge-visible derived session values are never persisted.
             "library_size",
         }

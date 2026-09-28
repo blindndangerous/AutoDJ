@@ -355,6 +355,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and a hidden " or " between them. The button is now named "Play or Pause" outright, and its
   symbol and visible "Play/Pause" are hidden from screen readers, so both browsers read the one
   name.
+- After the AutoDJ server restarted it came back at full volume, and a page that had been
+  playing took that volume and started playing again by itself within a few seconds. The server
+  now keeps the volume and Mute in its saved settings and restores them when it starts. The page
+  never starts playing on its own after its connection drops, and neither do voice liners: press
+  Play (or Listen here in stream mode) and the current track starts from its beginning. As a
+  safety net, after a dropped connection the page does not take a louder volume from the server
+  than the one it was playing at until you change the volume on the page; a quieter one still
+  applies.
 
 ## [0.17.0] - 2026-09-26
 

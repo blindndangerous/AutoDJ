@@ -175,8 +175,14 @@ function invalidateReconnectAttempt() {
   }
 }
 
+// Everything this page plays stops when the link drops or the session
+// ends, and stays stopped: the listener presses Play (or Listen here)
+// to start again.  The level the page was playing at becomes a ceiling
+// for the volumes the server pushes afterwards (see applyState).
 function stopProtectedPlayback() {
+  holdVolumeCeiling();
   stopAllDecks();
+  streamMode.stop();
   stopActiveLiners();
   resetTransitionCaches();
 }
@@ -532,14 +538,18 @@ function applyState(s) {
   // page's listening follows the server's volume and mute.
   const pageOnlyVolume = inStream && !_lastStreamServerAudio;
   if (!pageOnlyVolume && Date.now() - _lastUserVolTs > 600) {
-    const volInt = _gainToSlider(s.volume);
+    // After the link has dropped, a server volume above the page's own
+    // level is held at that level until the listener sets the volume
+    // here: a restarted server once pushed 100 % (D15).
+    const gain = _volumeCeiling === null ? s.volume : Math.min(s.volume, _volumeCeiling);
+    const volInt = _gainToSlider(gain);
     volSlider.value = volInt;
     volPct.textContent = volInt + "%";
     setAttributeIfChanged(volSlider, "aria-valuetext", `${volInt}%`);
     // The deck engine takes the same volume the slider now shows, so
     // browser audio never plays louder than the page says.
-    if (inStream) streamAudio.volume = s.volume;
-    else setVolume(s.volume);
+    if (inStream) streamAudio.volume = gain;
+    else setVolume(gain);
   }
   if (_lastStreamServerAudio) streamAudio.muted = s.is_muted;
 
@@ -1653,8 +1663,23 @@ function _gainToSlider(gain) {
 // can't fight the in-flight POST.
 let _lastUserVolTs = 0;
 
+// The loudest gain the page may take from the server without a volume
+// change made on this page; null when there is no limit.  Set when the
+// link drops (or the session ends) to the level the page was playing
+// at, kept at the lowest such level, and lifted by the next volume
+// change here.  Before the first state the page has no level of its
+// own, so the server's volume is taken as it is.
+let _volumeCeiling = null;
+
+function holdVolumeCeiling() {
+  if (_lastState === null) return;
+  const gain = _sliderToGain(parseInt(volSlider.value, 10) || 0);
+  _volumeCeiling = _volumeCeiling === null ? gain : Math.min(_volumeCeiling, gain);
+}
+
 volSlider.addEventListener("input", () => {
   const val = parseInt(volSlider.value, 10);
+  _volumeCeiling = null;
   volPct.textContent = val + "%";
   // The focused slider speaks its own value ("95%"), so the live region
   // below is only for changes made while focus is elsewhere (the Up and
@@ -1989,7 +2014,10 @@ function startAuthenticatedApp(initialState) {
   // that read its live bindings and stop liner playback after auth expiry.
   installLiners(_linerEls, {
     postSettings,
-    canPlay: () => authenticatedActivityActive && !!_ctx && !!_lastBrowserPlayback,
+    // Liners join music that is playing: after a hard stop (a lost link)
+    // none fires until the listener has pressed Play again.
+    canPlay: () => authenticatedActivityActive && !!_ctx && !!_lastBrowserPlayback
+      && playbackEnabled,
     // Whenever the server mixes the audio (stream mode or --server-audio),
     // Test asks the server to play the liner into that mix; only browser
     // playback plays it on this page.
