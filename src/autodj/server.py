@@ -2215,6 +2215,7 @@ def serve(
     no_playback: bool = False,
     stream: bool = False,
     lan_configured_hosts: list[str] | None = None,
+    cli_settings: frozenset[str] = frozenset(),
 ) -> None:
     """Start the Player thread and the FastAPI/uvicorn web server.
 
@@ -2241,6 +2242,8 @@ def serve(
         lan_configured_hosts: In LAN mode, the allowed hosts configured before
             detection was merged in; inside a container these are the only
             addresses printed, because container addresses are unreachable.
+        cli_settings: Saved web settings (``web_state.json`` names) given on
+            the command line; they keep their command-line value this run.
 
     HTTPS is on when ``cfg.server.ssl_certfile`` and ``ssl_keyfile`` are set;
     a :class:`~autodj.tls.CertificateReloader` then loads renewed files into
@@ -2316,9 +2319,9 @@ def serve(
     # stream title and liner counting all hang off this hook.
     player.on_track_started = bridge.on_track_started
 
-    # Restore previously-saved settings (preset, transition, EQ, etc.)
-    # so the user doesn't have to re-tick everything on each `serve` restart.
-    bridge.load_persistent_state()
+    # Restore the settings saved from the web page, except the ones this
+    # command line sets, so the user doesn't re-tick everything on restart.
+    bridge.load_persistent_state(cli_settings)
 
     # Start Player in a daemon thread — it blocks internally on playback
     player_thread = threading.Thread(

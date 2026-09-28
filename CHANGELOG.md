@@ -83,6 +83,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `autodj serve` flags now win over the settings saved from the web page, as the README says.
+  `--preset`, `--bpm-range`, `--discovery-every`, `--transition`, the DJ-mix flags and the other
+  playback flags used to be replaced by the saved value on start. Settings not given on the
+  command line are still restored from `web_state.json`.
 - The liner ducking level (Duck depth) now only accepts -30 to 0 dB. A positive value used to
   boost the music, not quieten it, while a liner played. AutoDJ refuses to start with
   `liners_duck_db` outside that range in the config file, the server refuses it, a saved value
