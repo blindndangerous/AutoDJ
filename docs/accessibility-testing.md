@@ -48,6 +48,14 @@ Before every release, a person must manually sample each flow below with either 
 - Settings changes and their status or error feedback.
 - Library-job status and review of the persistent output log. Leave a job running for several
   minutes and confirm the status is spoken once at the start and once at the end, not repeatedly.
+- Stream mode (`serve --stream`): the Settings, Stream section, Copy address, the
+  quality choice and listener count, and Listen here starting and stopping the stream in the page.
+- Voice liners: uploading a liner, Test liner, and each rotation mode, including the spoken
+  result when an upload or test fails.
+- EQ: each band's slider, its spoken value, and resetting the bands.
+- History: the History tab's table read with table navigation, its pagination, and the empty state.
+- Why this track: reading the reasons for the current pick, and confirming they are not read
+  again on their own when the track changes.
 
 For that release, record the date, exact screen reader and browser versions, flows sampled, results, and defects found. Keep this record with the release evidence so readers can find any limits or unresolved defects.
 
