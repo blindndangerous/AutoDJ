@@ -28,6 +28,7 @@ class _Rig:
         self.player._state = PlayerState()
         self.player._state.queue = list(queue or [])
         self.player._state.queued_next = queued_next
+        self.player._pop_user_queue.side_effect = lambda: Player._pop_user_queue(self.player)
         self.shuffle_pick = MagicMock(name="shuffle")
         self.player._random_start_entry.return_value = self.shuffle_pick if shuffle else None
         self.player.end_set.return_value = None  # the track a stop cut short

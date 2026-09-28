@@ -45,8 +45,8 @@ class Station:
             bus: The mix bus (``playing``, ``start_set``, ``stop_set``).
             stream: The stream output; its ``listener_count`` is read on
                 every :meth:`tick`.
-            player: The player (queue, ``begin_set``, ``end_set``,
-                ``_random_start_entry``).
+            player: The player (``_pop_user_queue``, ``begin_set``,
+                ``end_set``, ``_random_start_entry``).
             idle_grace: Seconds without listeners before the set stops.
             clock: Monotonic seconds.
             on_event: Receives ``"set_started"`` and ``"set_stopped"``.
@@ -114,22 +114,11 @@ class Station:
             self._start_entry, self._start_mode = entry, pick_mode
             return True
 
-    def _next_pick(self) -> Any:
-        """Take the play-next pick or the queue head, if any (queue lock only)."""
-        state = self._player._state
-        with state.queue_lock:
-            if state.queued_next is not None:
-                entry, state.queued_next = state.queued_next, None
-                return entry
-            if state.queue:
-                return state.queue.pop(0)
-        return None
-
     def _start(self) -> None:
         """Begin a new set (station lock held, queue lock not held)."""
         entry, pick_mode = self._start_entry, self._start_mode
         if entry is None:
-            entry, pick_mode = self._next_pick(), "queue"
+            entry, pick_mode = self._player._pop_user_queue(), "queue"
         if entry is None:
             entry = self._player._random_start_entry()
             pick_mode = "seed"
