@@ -324,85 +324,77 @@ Do not copy these; they belong to the machine that made them:
 Run `uv run autodj doctor` on the destination before serving. Copying replaces the destination's
 index, so the next `autodj index` there starts from the copied one.
 
-## Backup classifications
+## Backup
 
-Re-derivable data includes `vectors.index`, `tracks.db`, `index-manifest.json`, and `dj_meta.db`.
-Unique data includes profiles, liners, configured dayparts, optional history, and `web_state.json`.
-A full archive contains available data from both classifications and labels every item in
-`manifest.json`.
+`autodj backup` writes one ZIP file holding:
+
+- The published index: `tracks.db`, `vectors.index` and `index-manifest.json`.
+- `dj_meta.db`, the intro, outro, beat grid and cue cache.
+- `web_state.json`, the settings chosen in the web page.
+- Every file in the liners folder (`[playback] liners_folder`, or `index/<name>/liners`) and in
+  `index/profiles`.
+- The play history file, when `[playback] history_file` is set.
+- `manifest.json`, which records the AutoDJ version that made the archive and lists its files.
 
 Backups do not include `config.toml`, `config.local.toml` or `presets.toml`. Copy those yourself
 and keep them with the archive. Backups also leave out the pairing secret, the paired browsers and
 the stream secret, so after a restore on a new machine you pair your browsers again and use the new
 stream address.
 
-## Stopped-service backup
+Backup is safe while AutoDJ is serving: it copies the index under the index's own lock and
+`dj_meta.db` through SQLite's backup, so it never picks up a half-written index. It refuses to
+overwrite an existing archive unless you pass `--force`, and it refuses an index made by an older
+AutoDJ; rebuild that with `autodj index --force` first.
 
 ```bash
 # Linux/WSL2 Bash
-docker compose --profile lan --profile stream down
 uv run autodj backup backups/autodj-$(date +%F).zip
 ```
-
-Stopped mode refuses `tracks.db-wal`, `tracks.db-shm`, `dj_meta.db-wal`, `dj_meta.db-shm`, and
-SQLite rollback journals. Do not copy a live SQLite main file by itself. Backup rechecks sidecars
-after copying. These checks can detect activity but cannot prove the process is stopped. Stopping
-the service is the operator's responsibility. Backup refuses an existing destination unless
-`--force` is explicitly supplied.
-
-## SQLite online backup
-
-```bash
-# Linux/WSL2 Bash
-uv run autodj backup --online backups/autodj-live-$(date +%F).zip
-```
-
-SQLite online backup includes committed DJ metadata WAL state consistently while serving and
-archives one manifest-selected index generation. It retries a bounded generation race and refuses
-continuous index churn instead of mixing generations.
-
-## Restore and validate
-
-```bash
-# Linux/WSL2 Bash
-docker compose --profile lan --profile stream down
-uv run autodj restore --force backups/autodj-2026-08-02.zip
-uv run autodj doctor
-docker compose up
-```
-
-Restore only accepts an archive made by the same major and minor version of AutoDJ: a 0.18.x
-backup restores on any 0.18.x release and on no other. To roll back to an earlier release, check
-out that release's tag as in the [upgrade checklist](#upgrade-checklist), then restore a backup made
-by that release.
-
-Restore refuses unknown archive schema versions and existing destinations without `--force`. It
-rejects encrypted, non-regular, unsafe, or symlink-derived content; preflights declared sizes and
-target-filesystem free space; checks every member size and digest; and stages every payload before
-replacing any target. An install failure rolls prior targets back. Cleanup warnings after a
-successful install name retained recovery files and do not mean rollback occurred. Do not serve
-until doctor exits 0. Keep an untouched archive until playback and profile and liner inventory are
-confirmed.
-
-For a native Windows process, press Ctrl+C in the terminal running `uv run autodj serve`, then wait
-for the process to exit. If a service manager runs AutoDJ, stop that service and wait for it to
-report that the process has stopped. The following commands create a stopped backup:
 
 ```powershell
 $stamp = Get-Date -Format yyyy-MM-dd
 uv run autodj backup "backups\autodj-$stamp.zip"
 ```
 
-To restore on native Windows, stop AutoDJ the same way, then run:
+## Restore and validate
+
+Stop AutoDJ, and any `autodj index` or `autodj analyse` run, before you restore. Restore cannot
+tell whether AutoDJ is running, and a running AutoDJ would keep using the files it replaces.
+
+```bash
+# Linux/WSL2 Bash
+docker compose --profile lan --profile stream down
+uv run autodj restore --force backups/autodj-2026-08-02.zip
+docker compose up
+```
+
+For a native Windows process, press Ctrl+C in the terminal running `uv run autodj serve`, then wait
+for the process to exit. If a service manager runs AutoDJ, stop that service and wait for it to
+report that the process has stopped. Then run:
 
 ```powershell
 uv run autodj restore --force "backups\autodj-2026-09-12.zip"
-uv run autodj doctor
 ```
 
-Replace the archive path with the backup you intend to restore. Use the same configuration for
-backup, restore, and doctor that the previous `serve` process used. After doctor succeeds, restart
-with the previous `uv run autodj serve` command and its options, or restart the service manager.
+Restore only accepts an archive made by the same major and minor version of AutoDJ: a 0.19.x
+backup restores on any 0.19.x release and on no other. To roll back to an earlier release, check
+out that release's tag as in the [upgrade checklist](#upgrade-checklist), then restore a backup made
+by that release. Restore also refuses an archive whose file names are absolute or contain `..`,
+files the manifest does not list, and an index made by an older AutoDJ.
+
+Without `--force`, restore refuses when anything it would replace already exists. With it:
+
+- The index in the archive replaces the current index, including its older generations.
+- `dj_meta.db`, `web_state.json` and the history file are replaced when the archive has them.
+- The liners folder and `index/profiles` are replaced whole: files that are not in the backup are
+  deleted. Parts the archive does not hold are left alone.
+
+Restore unpacks every file into a temporary folder beside its destination and checks the index
+before it replaces anything, so a damaged archive changes nothing. If the replacement itself is
+interrupted, run the same restore again. Restore then runs `autodj doctor` and says so if doctor
+finds a required failure; do not serve until doctor passes. Use the same configuration for backup,
+restore, and doctor that the previous `serve` process used. Keep the archive until playback,
+profiles and liners look right.
 
 ## Upgrade checklist
 

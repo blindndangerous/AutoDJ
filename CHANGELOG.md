@@ -22,9 +22,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Deleting a voice liner asks in the page's own confirmation dialog, like deleting a profile,
   instead of the browser's pop-up. After the delete, focus goes to the next liner's Delete button,
   or to Upload when no liner is left.
+- `autodj backup` and `autodj restore` are much simpler. A backup holds the same things as
+  before and is safe to make while AutoDJ is serving, so the `--online` option is gone. Stop
+  AutoDJ before you restore: restore cannot tell whether it is running. Restore now replaces the
+  liners folder and `index/profiles` whole, so files added since the backup are deleted, and a
+  restored index replaces every older index generation. It no longer checks free space or rolls
+  back a half-finished restore; if a restore is interrupted, run it again. Restore still only
+  accepts a backup made by the same major and minor version, so a 0.18 backup cannot be restored.
 
 ### Removed
 
+- `autodj backup --online`. Every backup now reads the index and the DJ metadata safely while
+  AutoDJ runs.
 - `GET /api/settings` and `GET /api/profiles/{name}`. The web page never used them; the settings
   are in `GET /api/status` under `settings`.
 - The `autodj play` terminal player, with its keyboard keys (a global keyboard hook that also
