@@ -81,14 +81,20 @@ async def test_icy_listener_gets_title_block(output: StreamOutput) -> None:
     assert encode_metadata("Artist - Song") in data
 
 
-async def test_listener_count_callback_and_disconnect_all(output: StreamOutput) -> None:
-    counts: list[int] = []
-    output.on_listener_change = counts.append
+async def test_listener_count_follows_add_remove_and_disconnect_all(
+    output: StreamOutput,
+) -> None:
+    counts = []
     first = output.add_listener(icy=False)
+    counts.append(output.listener_count)
     output.remove_listener(first)
-    output.add_listener(icy=False)
+    counts.append(output.listener_count)
+    second = output.add_listener(icy=False)
+    counts.append(output.listener_count)
     output.disconnect_all()
+    counts.append(output.listener_count)
     assert counts == [1, 0, 1, 0]
+    assert first.closed and second.closed
 
 
 async def test_connect_disconnect_churn_does_not_leak(output: StreamOutput) -> None:
@@ -214,12 +220,10 @@ async def test_listener_drains_remaining_chunks_after_close() -> None:
 
 
 async def test_remove_listener_is_idempotent(output: StreamOutput) -> None:
-    counts: list[int] = []
-    output.on_listener_change = counts.append
     listener = output.add_listener(icy=False)
     output.remove_listener(listener)
     output.remove_listener(listener)
-    assert counts == [1, 0]
+    assert listener.closed
     assert output.listener_count == 0
 
 
@@ -548,132 +552,14 @@ async def test_close_logs_when_a_thread_outlives_the_join_timeout(
         out._reader.join(timeout=2)
 
 
-async def test_notify_callback_can_remove_a_listener_without_deadlock() -> None:
+async def test_restart_set_bitrate_and_close_each_disconnect_listeners() -> None:
+    """Each swaps or stops the encoder under the lock and drops every listener."""
     out = StreamOutput(320, 8, encoder_factory=FakeEncoder, loop=asyncio.get_running_loop())
-    listener = out.add_listener(icy=False)
-    calls: list[int] = []
-
-    def on_change(count: int) -> None:
-        calls.append(count)
-        if count > 0 and not listener.closed:
-            out.remove_listener(listener)
-
-    out.on_listener_change = on_change
-
-    # Triggers a delivery whose callback removes a listener reentrantly.
-    # Before the fix this deadlocked on _notify_lock forever; pytest's
-    # per-test timeout bounds it either way, but a passing run proves it
-    # returned rather than hung.
-    out.add_listener(icy=False)
-
-    assert calls == [2, 1]
-    assert calls[-1] == out.listener_count == 1
-    out.close()
-
-
-async def test_notify_callback_exception_is_logged_not_propagated(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    out = StreamOutput(320, 8, encoder_factory=FakeEncoder, loop=asyncio.get_running_loop())
-
-    def bad_callback(count: int) -> None:
-        raise RuntimeError("callback exploded")
-
-    out.on_listener_change = bad_callback
-
-    with caplog.at_level("ERROR", logger="autodj.stream"):
-        listener = out.add_listener(icy=False)  # must not raise despite the callback
-
-    assert any("Stream listener-count callback raised" in r.message for r in caplog.records)
-
-    # _notify_lock must not be left held: a later notification still
-    # has to go through promptly.
-    good_calls: list[int] = []
-    out.on_listener_change = good_calls.append
-    out.remove_listener(listener)
-    assert good_calls == [0]
-    out.close()
-
-
-async def test_notify_callback_exception_does_not_mask_the_original_exception() -> None:
-    out = StreamOutput(320, 8, encoder_factory=FakeEncoder, loop=asyncio.get_running_loop())
-
-    def bad_callback(count: int) -> None:
-        raise RuntimeError("callback exploded")
-
-    out.on_listener_change = bad_callback
-
-    with pytest.raises(ValueError, match="boom"), out._locked():
-        out._notify_due = True
-        raise ValueError("boom")
-
-    out.close()
-
-
-async def test_notifications_never_overlap_and_final_count_is_correct() -> None:
-    out = StreamOutput(320, 100, encoder_factory=FakeEncoder, loop=asyncio.get_running_loop())
-    calls: list[int] = []
-    active = 0
-    max_concurrent = 0
-    guard = threading.Lock()
-
-    def on_change(count: int) -> None:
-        nonlocal active, max_concurrent
-        with guard:
-            active += 1
-            max_concurrent = max(max_concurrent, active)
-        time.sleep(0.005)  # give a genuinely concurrent call a chance to overlap
-        with guard:
-            active -= 1
-        calls.append(count)
-
-    out.on_listener_change = on_change
-
-    def add_and_remove() -> None:
+    for action in (lambda: out.set_bitrate(192), out._restart_encoder, out.close):
         listener = out.add_listener(icy=False)
-        out.remove_listener(listener)
-
-    threads = [threading.Thread(target=add_and_remove) for _ in range(10)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=5)
-
-    assert max_concurrent == 1  # callbacks never ran concurrently
-    assert calls  # at least one delivery happened
-    assert calls[-1] == out.listener_count == 0  # the last delivery reflects true final state
-    out.close()
-
-
-async def test_restart_set_bitrate_close_notify_without_holding_the_lock() -> None:
-    out = StreamOutput(320, 8, encoder_factory=FakeEncoder, loop=asyncio.get_running_loop())
-    lock_was_free: list[bool] = []
-
-    def on_change(count: int) -> None:
-        results: list[bool] = []
-
-        def try_from_another_thread() -> None:
-            got = out._lock.acquire(blocking=False)
-            if got:
-                out._lock.release()
-            results.append(got)
-
-        checker = threading.Thread(target=try_from_another_thread)
-        checker.start()
-        checker.join(timeout=1)
-        lock_was_free.append(bool(results) and results[0])
-
-    out.on_listener_change = on_change
-
-    out.set_bitrate(192)
-    out._restart_encoder()
-    out.close()
-
-    # set_bitrate, _restart_encoder and close each notify at least once
-    # (disconnect_all always notifies), and none of them may still be
-    # holding self._lock while the callback runs.
-    assert len(lock_was_free) == 3
-    assert all(lock_was_free)
+        action()
+        assert listener.closed
+        assert out.listener_count == 0
 
 
 async def test_set_bitrate_factory_failure_leaves_state_untouched() -> None:

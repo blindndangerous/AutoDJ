@@ -19,7 +19,7 @@ import logging
 import subprocess  # nosec B404 -- ffmpeg MP3 encoder with fixed argv, no shell
 import threading
 import time
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Callable
 from typing import cast
 
 import numpy as np
@@ -226,8 +226,7 @@ class StreamOutput:
         self._max_listeners = max_listeners
         self._factory = encoder_factory
         self._clock = clock
-        self._lock = threading.RLock()
-        self._lock_depth = threading.local()
+        self._lock = threading.Lock()
         self._listeners: list[Listener] = []
         self._burst: collections.deque[bytes] = collections.deque()
         self._burst_size = 0
@@ -238,11 +237,6 @@ class StreamOutput:
         self._title = ""
         self._pending_titles: collections.deque[tuple[int, str]] = collections.deque()
         self._closed = False
-        self.on_listener_change: Callable[[int], None] | None = None
-
-        self._notify_lock = threading.Lock()
-        self._notify_due = False
-        self._delivering = threading.local()
 
         self._pcm_queue_max = max(1, int(_PCM_QUEUE_SECONDS / _BLOCK_SECONDS))
         self._pcm_queue: collections.deque[bytes] = collections.deque()
@@ -256,95 +250,6 @@ class StreamOutput:
             target=self._write_loop, name="autodj-stream-writer", daemon=True
         )
         self._writer.start()
-
-    @contextlib.contextmanager
-    def _locked(self) -> Iterator[None]:
-        """Acquire ``self._lock``; deliver any due notification once released.
-
-        Every internal critical section goes through this instead of
-        ``self._lock`` directly. It is reentrant, like the ``RLock`` it
-        wraps: a nested call (e.g. ``disconnect_all`` invoked from
-        ``_restart_encoder``/``set_bitrate``/``close``) can mark a
-        notification as due via ``self._notify_due`` but never delivers it
-        itself. Only the call that is outermost on this thread delivers —
-        and only after the lock has actually been released, never while
-        any nesting level still holds it — so a slow
-        ``on_listener_change`` callback can never stall some other thread
-        that needs ``self._lock`` for something unrelated.
-        """
-        depth = getattr(self._lock_depth, "n", 0)
-        self._lock.acquire()
-        self._lock_depth.n = depth + 1
-        try:
-            yield
-        finally:
-            self._lock_depth.n = depth
-            deliver = depth == 0 and self._notify_due
-            self._lock.release()
-            if deliver:
-                self._deliver_notification()
-
-    def _deliver_notification(self) -> None:
-        """Tell ``on_listener_change`` the current listener count.
-
-        Runs serialized under ``self._notify_lock`` — never while holding
-        ``self._lock`` — so two deliveries can never interleave or run
-        concurrently. Each iteration re-reads the count fresh, under
-        ``self._lock``, from inside the notify lock (the acquisition order
-        is always notify lock then main lock, never the reverse), so
-        whichever iteration actually runs last always reports the true
-        state as of that moment — there is no stale value to accidentally
-        deliver out of order.
-
-        The callback itself can safely call ``add_listener``/
-        ``remove_listener``/``disconnect_all`` (e.g. to react to its own
-        notification) without deadlocking: ``self._notify_lock`` is a
-        plain, non-reentrant ``Lock``, so a naive reentrant call would
-        block forever on itself. A thread-local "delivering" flag detects
-        that case — the nested change just marks another notification due
-        and returns immediately instead of trying to acquire the lock
-        again — and the loop below picks it up once the in-flight callback
-        returns, re-reading the count fresh and calling the callback
-        again, until nothing is left due. This bounds the recursion to
-        this method's own loop; it does not help a callback that blocks
-        waiting on a *different* thread which itself needs to change the
-        listener set (for example, calling
-        ``asyncio.run_coroutine_threadsafe(coro, loop).result()`` and
-        having that coroutine call back into ``add_listener``/
-        ``remove_listener`` on the event loop) — that is a genuine
-        cross-thread deadlock this method cannot detect, so callbacks must
-        not block on another thread that might be adding or removing
-        listeners.
-
-        A callback that raises is logged and otherwise ignored: letting it
-        propagate from here would surface it from whichever unrelated
-        ``_locked()`` call happened to trigger delivery, potentially
-        masking an exception that call itself was already raising, and
-        would also skip releasing ``self._notify_lock``.
-        """
-        if getattr(self._delivering, "active", False):
-            return
-        self._notify_lock.acquire()
-        try:
-            self._delivering.active = True
-            try:
-                while True:
-                    with self._lock:
-                        if not self._notify_due:
-                            break
-                        self._notify_due = False
-                        count = len(self._listeners)
-                    callback = self.on_listener_change
-                    if callback is None:
-                        continue
-                    try:
-                        callback(count)
-                    except Exception:
-                        logger.exception("Stream listener-count callback raised")
-            finally:
-                self._delivering.active = False
-        finally:
-            self._notify_lock.release()
 
     # -- encoder lifecycle -------------------------------------------------
 
@@ -384,6 +289,17 @@ class StreamOutput:
             self._title = self._pending_titles[-1][1]
             self._pending_titles.clear()
 
+    def _install_encoder(self, encoder: FfmpegEncoder) -> None:
+        """Make *encoder* current and start draining it (lock held).
+
+        Byte positions restart at 0 for the new encoder, so pending title
+        marks from the old one are flushed first.
+        """
+        self._encoder = encoder
+        self._flush_pending_titles()
+        self._pcm_in = self._mp3_out = 0
+        self._reader = self._start_reader(encoder)
+
     def _restart_encoder(self, dead: FfmpegEncoder | None = None) -> None:
         """Replace *dead* with a fresh encoder, counting the failure.
 
@@ -394,14 +310,14 @@ class StreamOutput:
                 this is a no-op: acting on a stale reference here would
                 double-count the failure and could stomp a newer encoder.
         """
-        with self._locked():
+        with self._lock:
             current = self._encoder
             if dead is None:
                 dead = current
             if dead is not current:
                 return
             self._record_failure()
-            self.disconnect_all()
+            self._disconnect_all_locked()
             try:
                 self._encoder.close()
             except Exception:
@@ -418,10 +334,7 @@ class StreamOutput:
                 )
                 self._record_failure()
                 return
-            self._encoder = new_encoder
-            self._flush_pending_titles()
-            self._pcm_in = self._mp3_out = 0
-            self._reader = self._start_reader(self._encoder)
+            self._install_encoder(new_encoder)
 
     def _read_loop(self, encoder: FfmpegEncoder) -> None:
         """Drain *encoder*'s MP3 output and restart it if it exits."""
@@ -453,7 +366,7 @@ class StreamOutput:
                 if not self._pcm_queue:
                     return  # closed with nothing left to flush
                 pcm = self._pcm_queue.popleft()
-            with self._locked():
+            with self._lock:
                 encoder = self._encoder
             if not encoder.alive:
                 self._log_write_problem_once("Stream encoder is not alive; dropping queued audio")
@@ -464,7 +377,7 @@ class StreamOutput:
                 self._log_write_problem_once("Stream encoder rejected a write; it may have exited")
                 continue
             self._pcm_write_problem_logged = False
-            with self._locked():
+            with self._lock:
                 self._pcm_in += len(pcm)
 
     # -- data path ---------------------------------------------------------
@@ -500,7 +413,7 @@ class StreamOutput:
             artist: The track artist.
             title: The track title.
         """
-        with self._locked():
+        with self._lock:
             self._pending_titles.append((self._pcm_in, format_stream_title(artist, title)))
 
     def _on_encoded(self, encoder: FfmpegEncoder, data: bytes) -> None:
@@ -515,7 +428,7 @@ class StreamOutput:
                 encoder's byte-position bookkeeping.
             data: The newly encoded MP3 bytes.
         """
-        with self._locked():
+        with self._lock:
             if encoder is not self._encoder:
                 return
             self._mp3_out += len(data)
@@ -539,7 +452,7 @@ class StreamOutput:
     @property
     def listener_count(self) -> int:
         """Current number of listeners."""
-        with self._locked():
+        with self._lock:
             return len(self._listeners)
 
     def add_listener(self, icy: bool) -> Listener:
@@ -556,7 +469,7 @@ class StreamOutput:
             EncoderUnavailableError: The stream is closed, the encoder is
                 cooling down, or a dead encoder could not be replaced.
         """
-        with self._locked():
+        with self._lock:
             if self._closed:
                 raise EncoderUnavailableError("stream output is closed")
             if self._clock() < self._cooldown_until:
@@ -564,17 +477,15 @@ class StreamOutput:
             if not self._encoder.alive:
                 dead = self._encoder
                 try:
-                    self._encoder = self._factory(self._bitrate)
+                    new_encoder = self._factory(self._bitrate)
                 except Exception as exc:
                     self._record_failure()
                     raise EncoderUnavailableError("stream encoder failed") from exc
+                self._install_encoder(new_encoder)
                 try:
                     dead.close()
                 except Exception:
                     logger.debug("Closing the dead encoder raised", exc_info=True)
-                self._flush_pending_titles()
-                self._pcm_in = self._mp3_out = 0
-                self._reader = self._start_reader(self._encoder)
             if len(self._listeners) >= self._max_listeners:
                 raise ListenerLimitError("listener limit reached")
             max_bytes = int(self._bitrate * 1000 / 8 * _QUEUE_SECONDS)
@@ -584,7 +495,6 @@ class StreamOutput:
             if start >= 0:
                 listener.push(burst[start:], self._title)
             self._listeners.append(listener)
-            self._notify_due = True
         return listener
 
     def remove_listener(self, listener: Listener) -> None:
@@ -593,20 +503,22 @@ class StreamOutput:
         Args:
             listener: The listener to remove.
         """
-        with self._locked():
+        with self._lock:
             if listener not in self._listeners:
                 return
             self._listeners.remove(listener)
             listener.close()
-            self._notify_due = True
 
     def disconnect_all(self) -> None:
         """Close every listener."""
-        with self._locked():
-            for listener in list(self._listeners):
-                listener.close()
-            self._listeners.clear()
-            self._notify_due = True
+        with self._lock:
+            self._disconnect_all_locked()
+
+    def _disconnect_all_locked(self) -> None:
+        """Close every listener (lock held)."""
+        for listener in self._listeners:
+            listener.close()
+        self._listeners.clear()
 
     def set_bitrate(self, bitrate: int) -> None:
         """Restart the encoder at *bitrate*; listeners reconnect on their own.
@@ -623,27 +535,24 @@ class StreamOutput:
             EncoderUnavailableError: The replacement encoder could not be
                 built.
         """
-        with self._locked():
+        with self._lock:
             try:
                 new_encoder = self._factory(bitrate)
             except Exception as exc:
                 raise EncoderUnavailableError("stream encoder failed") from exc
             self._bitrate = bitrate
-            self.disconnect_all()
+            self._disconnect_all_locked()
             old = self._encoder
-            self._encoder = new_encoder
-            self._flush_pending_titles()
-            self._pcm_in = self._mp3_out = 0
             self._burst.clear()
             self._burst_size = 0
-            self._reader = self._start_reader(self._encoder)
+            self._install_encoder(new_encoder)
         old.close()
 
     def close(self) -> None:
         """Disconnect listeners and stop the encoder and its threads."""
-        with self._locked():
+        with self._lock:
             self._closed = True
-            self.disconnect_all()
+            self._disconnect_all_locked()
             encoder = self._encoder
             reader = self._reader
         with self._pcm_cond:

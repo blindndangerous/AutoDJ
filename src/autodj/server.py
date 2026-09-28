@@ -881,7 +881,6 @@ def _start_stream_station(
         station.start_with(first_track, "seed")
     bridge.attach_stream(stream=stream_out, secret=secret, station=station)
     bridge.attach_liner_scheduler(scheduler)
-    stream_out.on_listener_change = station.listener_changed
     bus.add_output(stream_out)
     return stream_out
 
