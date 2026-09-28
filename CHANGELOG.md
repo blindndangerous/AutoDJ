@@ -14,6 +14,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   instead of the browser's pop-up. After the delete, focus goes to the next liner's Delete button,
   or to Upload when no liner is left.
 
+### Fixed
+
+- The voice liner Duck depth field on the web page refuses a value outside minus 30 to 0 and
+  says why, like the other number fields, instead of sending it. A Duck depth of 0 (no drop) is
+  now used as 0 when the page plays a liner, not as minus 12.
+
 ## [0.18.0] - 2026-09-28
 
 ### Added

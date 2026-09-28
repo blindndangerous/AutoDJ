@@ -8,6 +8,7 @@
 import { confirmAction } from "./confirm-dialog.js";
 import { dbg } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
+import { parseSettingValue, refusalText } from "./mix-settings.js";
 import { applyShowWhen } from "./show-when.js";
 import {
   captureAuthenticatedRequestEpoch,
@@ -49,10 +50,14 @@ function _floatOrNull(el) {
   return isNaN(n) ? null : n;
 }
 
-function _setStatus(els, msg, { force = false } = {}) {
+// The range the server accepts for liners_duck_db: 0 is no drop, minus
+// 30 nearly silent.
+const DUCK_DB = { label: "Duck depth", min: -30, max: 0, integer: false };
+
+function _setStatus(els, msg, { force = false, tone = "info" } = {}) {
   if (!els.lnStatus) return;
   els.lnStatus.classList.remove("visually-hidden");
-  announceStatus(els.lnStatus, msg, { dwellMs: 4000, force });
+  announceStatus(els.lnStatus, msg, { dwellMs: tone === "error" ? 6000 : 4000, force, tone });
 }
 
 export function renderLinerFileList(fileList, files, onDelete) {
@@ -206,7 +211,7 @@ async function _playByName(els, deps, name, ready = deps.canPlay) {
     if (!ready()) return;
     const buf = await requestBinary(`/api/liners/file/${encodeURIComponent(name)}`);
     if (!ready() || !isAuthenticatedRequestCurrent(epoch)) return;
-    const duckDb = (state.lib.config && state.lib.config.duck_db) || -12;
+    const duckDb = state.lib.config?.duck_db ?? -12;
     const ok = await deps.playLiner(buf, duckDb, epoch);
     if (!isAuthenticatedRequestCurrent(epoch)) return;
     if (!ok) {
@@ -291,6 +296,12 @@ export function installLiners(els, deps) {
   ]) {
     if (!el) continue;
     el.addEventListener("change", (event) => {
+      // A depth outside the range goes back to the saved one, and says so.
+      if (el === els.lnDuckDb && parseSettingValue(el.value, DUCK_DB) === null) {
+        el.value = String(state.lib.config?.duck_db ?? -12);
+        _setStatus(els, refusalText(DUCK_DB, el.value), { force: true, tone: "error" });
+        return;
+      }
       _postConfig(els, deps.postSettings, event.currentTarget);
     });
   }

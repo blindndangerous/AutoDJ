@@ -544,6 +544,31 @@ describe("liner settings and upload", () => {
     });
   });
 
+  it("refuses a duck depth outside minus 30 to 0 and says so", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => ok({ files: [], config: { duck_db: -9 } })));
+    const { installLiners } = await import("../../src/autodj/static/modules/liners.js");
+    const postSettings = vi.fn().mockResolvedValue(true);
+    const elements = els();
+    installLiners(elements, { postSettings, canPlay: () => false });
+    await vi.waitFor(() => expect(elements.lnDuckDb.value).toBe("-9"));
+
+    // +60 dB would multiply the music by 1000 while a liner plays.
+    for (const typed of ["60", "-31", ""]) {
+      elements.lnDuckDb.value = typed;
+      elements.lnDuckDb.dispatchEvent(new Event("change"));
+      expect(elements.lnDuckDb.value).toBe("-9");
+      await vi.waitFor(() => expect(elements.lnStatus.textContent).toBe(
+        "Could not save Duck depth: enter a number from minus 30 to 0.  It is still minus 9.",
+      ));
+      elements.lnStatus.textContent = "";
+    }
+    expect(postSettings).not.toHaveBeenCalled();
+
+    elements.lnDuckDb.value = "0";
+    elements.lnDuckDb.dispatchEvent(new Event("change"));
+    expect(postSettings.mock.calls[0][1]).toMatchObject({ liners_duck_db: 0 });
+  });
+
   it("asks the server to replace an existing file only when ticked", async () => {
     const fetchImpl = vi.fn(() => ok({ files: [], config: {}, filename: "id.mp3", size: 1 }));
     vi.stubGlobal("fetch", fetchImpl);
