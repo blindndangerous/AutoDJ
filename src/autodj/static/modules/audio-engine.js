@@ -2524,7 +2524,7 @@ export function applyBrowserPlaybackState(s) {
   _paused = Boolean(s.is_paused);
   if (_ctx) {
     applyVolume();
-    if (_paused) {
+    if (s.is_paused) {
       suppressAdvance = true;
       // Pause BOTH decks during a crossfade — pausing only the active
       // (outgoing) deck would leave the incoming standby deck audible

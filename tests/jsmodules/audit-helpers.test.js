@@ -126,7 +126,7 @@ describe("browser audit helpers", () => {
     const serverPauseRemoved = {
       ...sources,
       audio: sources.audio.replace(
-        /if \(s\.is_paused\) \{[\s\S]*?for \(const d of decks\) \{[\s\S]*?\n {8}\}\r?\n {6}\}/,
+        /if \(s\.is_paused\) \{\s*suppressAdvance = true;[\s\S]*?for \(const d of decks\) \{[\s\S]*?\n {6}\}\r?\n {4}\}/,
         "if (s.is_paused) { suppressAdvance = true; }",
       ),
     };
