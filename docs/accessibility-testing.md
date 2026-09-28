@@ -4,10 +4,18 @@ AutoDJ uses automated checks and requires a manual sample before release to catc
 
 ## Published evidence
 
-As of 2026-09-12, this repository and the [v0.16.1 release](https://github.com/blindndangerous/AutoDJ/releases/tag/v0.16.1)
-contain no screen-reader sampling record with the versions and flows required below. Automated
-test results therefore remain the only published evidence here. Record the required manual sample
-and link it from the next release's notes before making screen-reader compatibility claims.
+For 0.18.0, the release sample is recorded in [accessibility-samples/0.18.0.md](accessibility-samples/0.18.0.md).
+It was taken on 2026-09-27 and 2026-09-28 on Windows 11 with NVDA 2026.2 and Google Chrome
+153.0.8010.53 (all twelve flows below), Mozilla Firefox 156.0.1 and Microsoft Edge 154.0.4258.37
+(a subset of flows). Narrator was not sampled. No person listened: an automated agent sent keys to
+the page and captured NVDA's speech through the screen-reader-testing MCP server, in place of
+sampling by hand. The record lists each flow's steps, what NVDA spoke, the results, eighteen
+defects with their status after four later runs on 2026-09-28 that checked the fixes (the last
+on master cfb3ac7), and the limits of that method. It starts with a summary of what 0.18.0 ships
+with: D4 (the pairing dialog's name read twice) is accepted, and D14 (NVDA reads a stray line
+from the top of the page when the page's confirmation dialog closes) is accepted as a known NVDA and Chrome quirk.
+It covers only those pairings and flows. This repository has no sampling record for earlier
+releases.
 
 ## Continuous integration
 
