@@ -213,7 +213,9 @@ export function ensureAudioGraph() {
     d.source.connect(d.analyser);
     d._silenceMs = 0;
   }
-  decks[0].gain.gain.value = 1;
+  // The live deck starts at the page's volume, never at full gain: the
+  // first sound after a page load must already match the slider.
+  decks[0].gain.gain.value = _silenced ? 0 : _volume;
   decks[1].gain.gain.value = 0;
   // Load AudioWorklets asynchronously.  Effects fall back to vanilla
   // Web Audio nodes (WaveShaper, GainNode automation) if a worklet
@@ -273,21 +275,41 @@ function playOnDeck(deck) {
   });
 }
 
+// The page's volume as a linear gain, and whether mute or pause holds
+// the live deck at 0.  Both start silent until the first server state
+// says otherwise, so nothing plays at full gain before the page has
+// read the volume the slider shows.
+export let _volume = 0;
+let _silenced = false;
+
 export function setVolume(linear) {
-  // Master volume rides on whichever gain node is "live".  In normal
-  // play we apply the slider value directly to the active deck's gain,
-  // multiplied by 1.0 (= full).  During a crossfade the per-deck gains
-  // are being ramped, so we wait until that completes before touching
-  // them again — the slider's effective value is captured by `_volume`.
-  _volume = isIOS ? 1 : linear;
-  if (!_ctx || crossfading) return;
+  // Master volume rides on whichever gain node is "live".  During a
+  // crossfade the per-deck gains are being ramped, so we wait until
+  // that completes before touching them again; the ramps read
+  // `_volume`.  An unchanged value is left alone so a state push every
+  // second does not cancel a liner duck in progress.
+  const next = isIOS ? 1 : linear;
+  if (next === _volume) return;
+  _volume = next;
+  applyVolume();
+}
+
+// Put `_volume` on the live deck now.  Without Web Audio the <audio>
+// elements play directly, so their own volume carries it.
+function applyVolume() {
+  if (!_ctx) {
+    if (!(window.AudioContext || window.webkitAudioContext)) {
+      for (const d of decks) d.audio.volume = _volume;
+    }
+    return;
+  }
+  if (crossfading) return;
   for (let i = 0; i < decks.length; i++) {
-    const target = (i === activeIdx) ? _volume : 0;
+    const target = (i === activeIdx && !_silenced) ? _volume : 0;
     decks[i].gain.gain.cancelScheduledValues(_ctx.currentTime);
     decks[i].gain.gain.setValueAtTime(target, _ctx.currentTime);
   }
 }
-export let _volume = 1;
 
 // ----------------------------------------------------------------
 // Browser-side transition effects (Web Audio API).  Each effect builds
@@ -476,8 +498,8 @@ function _doSpin(ctx, outDeck, t0, fadeSec, reverse, teardowns, slow = false) {
   }
   synthG = ctx.createGain();
   synthG.gain.setValueAtTime(0.0, t0);
-  synthG.gain.linearRampToValueAtTime(0.20, t0 + 0.05);
-  synthG.gain.linearRampToValueAtTime(0.15, t0 + spinSec * 0.6);
+  synthG.gain.linearRampToValueAtTime(_volume * 0.20, t0 + 0.05);
+  synthG.gain.linearRampToValueAtTime(_volume * 0.15, t0 + spinSec * 0.6);
   synthG.gain.exponentialRampToValueAtTime(0.001, t0 + spinSec);
   synthNoise.connect(synthBp); synthBp.connect(synthG); synthG.connect(ctx.destination);
   synthNoise.start();
@@ -1104,7 +1126,7 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
     const g = ctx.createGain();
     const peakAt = Math.max(t0 + 0.05, tEnd - 0.4);
     g.gain.setValueAtTime(0.0, t0);
-    g.gain.linearRampToValueAtTime(0.4, peakAt);
+    g.gain.linearRampToValueAtTime(_volume * 0.4, peakAt);
     g.gain.exponentialRampToValueAtTime(0.001, tEnd);
     src.connect(filter); filter.connect(g); g.connect(ctx.destination);
     src.start();
@@ -1126,7 +1148,7 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
     filter.frequency.setValueAtTime(16000, t0);
     filter.frequency.exponentialRampToValueAtTime(150, tEnd);
     const g = ctx.createGain();
-    g.gain.setValueAtTime(0.4, t0);
+    g.gain.setValueAtTime(_volume * 0.4, t0);
     g.gain.exponentialRampToValueAtTime(0.001, tEnd);
     src.connect(filter); filter.connect(g); g.connect(ctx.destination);
     src.start();
@@ -2245,7 +2267,7 @@ export async function unlockAndPlay() {
     return false;
   }
   playbackEnabled = true;
-  setVolume(_volume);   // apply current slider value
+  applyVolume();   // a reconnect's stopAllDecks left the gains at 0
   if (_applyState) _applyState(state);    // refresh UI from /api/status
   return true;
 }
@@ -2349,8 +2371,9 @@ export function applyBrowserPlaybackState(s) {
   }
 
   // Sync server-driven pause / mute with the browser deck.
+  _silenced = Boolean(s.is_muted || s.is_paused);
   if (_ctx) {
-    const wantMuted = s.is_muted || s.is_paused;
+    const wantMuted = _silenced;
     if (wantMuted) {
       // Mute the live deck without stomping the crossfade ramp
       if (!crossfading) deckActive().gain.gain.value = 0;

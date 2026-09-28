@@ -523,9 +523,10 @@ function applyState(s) {
 
   // Volume — server stores the perceptual *gain* (post-curve), so invert
   // the fader curve before writing it back to the slider.  Without this
-  // inversion a 50 % slider sets gain ≈ 0.0316, the WS echo arrives as
-  // `volume: 0.03`, and Math.round(0.03*100)=3 — the slider snaps to ~0
-  // every time the user nudges it.  Skip the overwrite while the user
+  // inversion a 50 % slider sets gain ≈ 0.0316 and the echo would put
+  // the slider at 3.  The server sends the gain unrounded: every setting
+  // below 23 % is a gain under 0.005, which rounding to two places
+  // turned into 0.  Skip the overwrite while the user
   // is actively dragging / arrow-keying so the in-flight POST round-trip
   // can't fight the input.
   // In stream mode the slider and Mute belong to this page's own
@@ -538,7 +539,10 @@ function applyState(s) {
     volSlider.value = volInt;
     volPct.textContent = volInt + "%";
     setAttributeIfChanged(volSlider, "aria-valuetext", `${volInt}%`);
+    // The deck engine takes the same volume the slider now shows, so
+    // browser audio never plays louder than the page says.
     if (inStream) streamAudio.volume = s.volume;
+    else setVolume(s.volume);
   }
   if (_lastStreamServerAudio) streamAudio.muted = s.is_muted;
 
@@ -2007,8 +2011,9 @@ function startAuthenticatedApp(initialState) {
           || !isAuthenticatedRequestCurrent(epoch)) return false;
       const src = audioContext.createBufferSource();
       src.buffer = audioBuf;
+      // The liner follows the page volume like the music it ducks.
       const gain = audioContext.createGain();
-      gain.gain.value = 1.0;
+      gain.gain.value = _volume;
       src.connect(gain);
       gain.connect(audioContext.destination);
       const duckLin = Math.pow(10, duckDb / 20);

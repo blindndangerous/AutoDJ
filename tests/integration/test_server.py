@@ -149,6 +149,15 @@ class TestVolume:
         tc.post("/api/volume", json={"volume": -0.5})
         assert bridge.player._state.volume == pytest.approx(0.0)
 
+    def test_low_volume_survives_the_round_trip(self, bridge) -> None:
+        """A 5 % fader gain (about 0.0014) must not come back as 0."""
+        from fastapi.testclient import TestClient
+
+        quiet = 10 ** (-57 / 20)
+        tc = TestClient(create_app(bridge))
+        assert tc.post("/api/volume", json={"volume": quiet}).json()["volume"] == quiet
+        assert tc.get("/api/status").json()["volume"] == quiet
+
     def test_volume_response_returns_new_value(self, bridge) -> None:
         from fastapi.testclient import TestClient
 

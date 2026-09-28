@@ -1007,6 +1007,35 @@ describe("app request behavior", () => {
     await vi.waitFor(() => expect(region.textContent).toBe("Volume 90%."));
   });
 
+  it("keeps a low volume through the server echo and hands it to the deck engine", async () => {
+    const quiet = 10 ** (-57 / 20);   // the fader curve's gain for 5 %
+    const setVolume = vi.fn();
+    const { fetchImpl, webSocket } = await setupApp({
+      audio: { setVolume },
+      initialState: { volume: quiet },
+      onRequest: (url, options) => jsonResponse(JSON.parse(options.body)),
+    });
+    const slider = document.querySelector("#vol");
+    expect(slider.value).toBe("5");
+    expect(slider.getAttribute("aria-valuetext")).toBe("5%");
+    expect(setVolume).toHaveBeenCalledWith(quiet);
+
+    vi.useFakeTimers();
+    slider.value = "3";
+    slider.dispatchEvent(new Event("input"));
+    await vi.advanceTimersByTimeAsync(200);
+    const sent = fetchImpl.mock.calls.find(([url]) => url === "/api/volume");
+    const gain = JSON.parse(sent[1].body).volume;
+    expect(gain).toBeGreaterThan(0);
+    await vi.advanceTimersByTimeAsync(700);
+    webSocket.onmessage({ data: JSON.stringify({
+      current_track: null, queue: [], eq: {}, volume: gain,
+    }) });
+    expect(slider.value).toBe("3");
+    expect(slider.getAttribute("aria-valuetext")).toBe("3%");
+    expect(setVolume).toHaveBeenLastCalledWith(gain);
+  });
+
   it("keeps pointer previews local and sends only the final absolute seek", async () => {
     let resolveSeek;
     const deckAudio = { currentTime: 10, duration: 100 };

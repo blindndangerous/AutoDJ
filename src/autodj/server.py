@@ -1921,7 +1921,7 @@ def create_app(
     async def api_volume(body: VolumeBody) -> dict[str, float]:
         """Set the playback volume (0.0-1.0)."""
         bridge.set_volume(body.volume)
-        return {"volume": round(bridge.player._state.volume, 2)}
+        return {"volume": bridge.player._state.volume}
 
     @app.post("/api/mute")
     async def api_mute() -> dict[str, bool]:

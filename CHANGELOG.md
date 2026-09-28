@@ -284,6 +284,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   known, turned it off. The preset is now skipped with a warning that names it, the unknown
   genres and the genres AutoDJ knows. A `genres` value that is not a string or a list is
   refused the same way instead of meaning no filter.
+- Browser playback started at full volume after the page loaded, whatever the volume slider
+  showed, and stayed there until the slider was moved. Voice liners and the noise sweeps of some
+  transition effects also played at full volume. They now all play at the volume the slider
+  shows, from the first sound, and again after a reconnect.
+- Any volume below about 23 percent came back from the server as 0: Shift+V and the slider said
+  0, and the slider jumped back to 0 a moment after each arrow press. The server rounded the
+  volume to two decimal places, and on the slider's loudness curve every setting below 23 percent
+  is under 0.005. The server now keeps and sends the exact value, so 1 to 22 percent can be set,
+  are spoken and stay put.
 - The m shortcut worked once and then did nothing when NVDA passed the keys to the page, until
   the browser window lost focus. The page waited for m's own key release, and keys passed through
   NVDA are released under the name "Unidentified". Any key release now lets every shortcut fire

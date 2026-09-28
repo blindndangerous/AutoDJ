@@ -524,3 +524,46 @@ describe("audio engine request recovery", () => {
     expect(engine.decks.map((deck) => deck.audio.play.mock.calls.length)).toEqual(playCounts);
   });
 });
+
+describe("page volume", () => {
+  // Gain for a 5 % slider on the page's fader curve.
+  const quiet = 10 ** (-57 / 20);
+
+  it("plays the first sound at the page's volume, not full gain", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      jsonResponse({ current_track: { path: "current.mp3" } }),
+    ));
+    const { engine } = await importEngine();
+    const gainsAtPlay = [];
+    for (const deck of engine.decks) {
+      deck.audio.play = vi.fn(() => {
+        const live = engine.decks[engine.activeIdx].gain;
+        const scheduled = live.gain.setValueAtTime.mock.calls.at(-1);
+        gainsAtPlay.push(scheduled ? scheduled[0] : live.gain.value);
+        return Promise.resolve();
+      });
+    }
+
+    engine.setVolume(quiet);
+    await expect(engine.unlockAndPlay()).resolves.toBe(true);
+
+    expect(gainsAtPlay.length).toBeGreaterThan(0);
+    for (const gain of gainsAtPlay) expect(gain).toBe(quiet);
+    const live = engine.decks[engine.activeIdx].gain.gain;
+    expect(live.setValueAtTime).toHaveBeenLastCalledWith(quiet, 2);
+  });
+
+  it("keeps a muted deck silent when the volume changes", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const { engine } = await importEngine();
+    engine.ensureAudioGraph();
+    engine.applyBrowserPlaybackState({
+      browser_playback: true, current_track: null, next_track: null,
+      is_muted: true, is_paused: false, settings: { playback: {} },
+    });
+
+    engine.setVolume(0.5);
+    expect(engine.decks[engine.activeIdx].gain.gain.setValueAtTime)
+      .toHaveBeenLastCalledWith(0, 2);
+  });
+});

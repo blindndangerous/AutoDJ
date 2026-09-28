@@ -814,7 +814,7 @@ class PlayerBridge:
             "next_track": _track_dict(state.next_track),
             "queue": [_track_dict(e) for e in self._queue_snapshot()],
             "is_paused": state.is_paused,
-            "volume": round(state.volume, 2),
+            "volume": state.volume,
             "is_muted": state.is_muted,
             "elapsed": elapsed,
             "duration": round(state.current_track.length, 1)
