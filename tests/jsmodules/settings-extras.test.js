@@ -8,6 +8,7 @@ import { installProfiles, profileFromSettings } from
   "../../src/autodj/static/modules/profiles.js";
 import { installAccess, REVOKED_REASON, SIGNED_OUT_REASON } from
   "../../src/autodj/static/modules/devices.js";
+import { FOCUS_SETTLE_MS } from "../../src/autodj/static/modules/dom-helpers.js";
 
 const json = (body, status = 200) => Promise.resolve(new globalThis.Response(
   JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } },
@@ -147,24 +148,38 @@ describe("profiles", () => {
     const { els, answer } = setup(fetchImpl);
     await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(1));
     const remove = els.list.querySelector('[aria-label="Delete profile Only"]');
-    // Focus as the list loses the pressed button: NVDA read the page title
-    // and banner when it passed through <body>.
-    const focusAtRemoval = [];
+    // NVDA read the page title and banner when the pressed button went in
+    // the same update as the focus move (D14): the button has to outlive
+    // the move by a separate task, long enough for the new focus to be
+    // reported first.
+    const removals = [];
     const observer = new window.MutationObserver((records) => {
       if (records.some((record) => [...record.removedNodes].some((node) => node.contains(remove)))) {
-        focusAtRemoval.push(document.activeElement);
+        removals.push({ focus: document.activeElement, at: Date.now() });
       }
     });
     observer.observe(els.list, { childList: true });
+    let focusMovedAt = null;
+    els.nameInput.addEventListener("focus", () => {
+      focusMovedAt = Date.now();
+      expect(remove.isConnected).toBe(true);
+    });
 
     remove.focus();
     remove.click();
     await answer("confirm");
     await vi.waitFor(() => expect(els.status.textContent).toBe("Deleted profile Only."));
+    expect(document.activeElement).toBe(els.nameInput);
+    // Held, out of sight and out of the tab order, until the delay ends.
+    expect(remove.isConnected).toBe(true);
+    expect(remove.closest("li").classList.contains("visually-hidden")).toBe(true);
+    expect(remove.tabIndex).toBe(-1);
+    await vi.waitFor(() => expect(remove.isConnected).toBe(false), { timeout: 2000 });
     observer.disconnect();
 
-    expect(focusAtRemoval).toEqual([els.nameInput]);
-    expect(document.activeElement).toBe(els.nameInput);
+    expect(removals).toHaveLength(1);
+    expect(removals[0].focus).toBe(els.nameInput);
+    expect(removals[0].at - focusMovedAt).toBeGreaterThanOrEqual(FOCUS_SETTLE_MS - 5);
     expect(els.list.textContent).toBe("No saved profiles yet.");
   });
 
@@ -267,5 +282,36 @@ describe("browser access", () => {
     await answer("confirm");
 
     await vi.waitFor(() => expect(onSignedOut).toHaveBeenCalledWith(REVOKED_REASON));
+  });
+
+  it("moves focus to the next Revoke before the revoked row goes", async () => {
+    let listed = devices;
+    const fetchImpl = vi.fn((url, init = {}) => {
+      if (init.method === "DELETE") {
+        listed = devices.slice(1);
+        return json({ revoked: "a".repeat(32), signed_out: false });
+      }
+      return json({ pairing: true, devices: listed });
+    });
+    const { els, answer } = setup(fetchImpl);
+    await vi.waitFor(() => expect(els.list.querySelectorAll("button")).toHaveLength(2));
+    const revoke = els.list.querySelector('[aria-label="Revoke Phone"]');
+    let connectedAtFocus = null;
+    els.list.addEventListener("focusin", (event) => {
+      if (event.target.getAttribute("aria-label") === "Revoke Tablet, this browser") {
+        connectedAtFocus ??= revoke.isConnected;
+      }
+    });
+
+    revoke.focus();
+    revoke.click();
+    await answer("confirm");
+    await vi.waitFor(() => expect(els.status.textContent).toBe("Revoked Phone."));
+
+    expect(document.activeElement.getAttribute("aria-label")).toBe("Revoke Tablet, this browser");
+    expect(connectedAtFocus).toBe(true);
+    await vi.waitFor(() => expect(revoke.isConnected).toBe(false), { timeout: 2000 });
+    expect(els.list.querySelectorAll("li")).toHaveLength(1);
+    expect(document.activeElement.getAttribute("aria-label")).toBe("Revoke Tablet, this browser");
   });
 });

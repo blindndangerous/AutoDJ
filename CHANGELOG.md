@@ -308,8 +308,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   to 0.25)", "BPM lifts 100 to 130, up 30" and "relative major or minor flip". NVDA skipped the
   arrow at its default punctuation level, so the two values ran together.
 - Deleting the last saved profile dropped focus to the page for a moment, so NVDA read the page
-  title three times and the banner before reaching Profile name. The new rows now go in and focus
-  moves before the deleted row is removed. Deleting a voice liner and revoking a device work the
+  title three times and the banner before reaching Profile name, and revoking a device did the
+  same before reaching the next Revoke button. Moving focus before removing the row was not
+  enough: the browser told NVDA about the removal and the new focus in one update, the removal
+  first. The deleted row now stays, hidden and out of the tab order, for a moment after focus has
+  moved to the next row or to Profile name, and only then goes. Deleting a voice liner works the
   same way.
 - Voice liners' Test now said nothing and did nothing while browser playback was stopped. It now
   says "Liner not played: nothing is playing. Press Play first."

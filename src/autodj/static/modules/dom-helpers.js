@@ -129,26 +129,49 @@ export function isTypingTarget(el) {
   return false;
 }
 
+// How long the pressed button outlives its row: time for the browser to
+// report the new focus to the screen reader in an earlier accessibility
+// update than the one that removes the button.
+export const FOCUS_SETTLE_MS = 300;
+
 // Swap a list's rows for *rows* after a row was deleted, without focus
-// passing through <body>.  Removing the focused Delete button first
-// dropped focus to the page for a moment, and NVDA read the page title
-// and the banner before focus landed.  So the new rows go in first; when
-// focus is still on *focus.from* (the pressed button) or already lost,
-// it moves to the control matching *focus.selector* at *focus.index* in
-// the new rows (the next row's, or the last), or to *focus.fallback* when
-// the list is empty; only then do the old rows go.  Focus the user moved
-// elsewhere while the request ran stays where it is.
+// passing through the document.  The new rows go in first; when focus is
+// still on *focus.from* (the pressed button) or already lost, it moves to
+// the control matching *focus.selector* at *focus.index* in the new rows
+// (the next row's, or the last), or to *focus.fallback* when the list is
+// empty.  Focus the user moved elsewhere while the request ran stays
+// where it is.
+//
+// Moving focus before the removal was not enough (D14): the browser sent
+// NVDA the removal and the focus change in one update, the removal first,
+// so NVDA saw its focused button die, fell back to the document and read
+// the page title and the banner before the new focus.  So the row that
+// held the pressed button stays, visually hidden and out of the tab
+// order, until the new focus has been reported, and is removed then.
 export function replaceRows(list, rows, focus = null) {
   const doc = list.ownerDocument;
   const old = Array.from(list.childNodes);
   list.append(...rows);
+  let held = null;
   if (focus) {
     const active = doc.activeElement;
     if (active === focus.from || !active || active === doc.body) {
       const targets = rows.flatMap((row) => Array.from(row.querySelectorAll(focus.selector)));
       const target = targets[Math.min(focus.index, targets.length - 1)] || focus.fallback;
-      if (target) target.focus();
+      if (target) {
+        target.focus();
+        if (focus.from && doc.activeElement === target) {
+          held = old.find((node) => node.contains(focus.from)) || null;
+        }
+      }
     }
   }
-  for (const node of old) node.remove();
+  for (const node of old) {
+    if (node !== held) node.remove();
+  }
+  if (held) {
+    held.classList.add("visually-hidden");
+    focus.from.tabIndex = -1;
+    setTimeout(() => held.remove(), FOCUS_SETTLE_MS);
+  }
 }
