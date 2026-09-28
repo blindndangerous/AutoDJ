@@ -1283,6 +1283,45 @@ class TestRenderTrackLoading:
         assert rendered is not None
         assert rendered.audio.shape == (3 * 44100, 2)
 
+    def test_track_over_the_length_limit_is_skipped_with_one_log_line(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from autodj.stereo import TrackTooLongError
+
+        player = self._make_player()
+        player._cfg.playback.server_max_track_minutes = 15.0
+        current, nxt = player._sim.entries[0], player._sim.entries[1]
+        caplog.clear()
+        with patch(
+            "autodj.player.load_stereo", side_effect=TrackTooLongError(current.path, 3720.0)
+        ) as load:
+            assert player._render_track(current, nxt, 0) is None
+        assert load.call_args.args[2] == 15.0 * 60
+        skipped = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert len(skipped) == 1
+        assert "62 minutes" in skipped[0].getMessage()
+        assert "server_max_track_minutes" in skipped[0].getMessage()
+
+    def test_next_track_over_the_limit_is_not_mixed_in(self) -> None:
+        """The playing track plays out whole; the long one is skipped on its own turn."""
+        from autodj.stereo import TrackTooLongError
+
+        player = self._make_player()
+        current, nxt = player._sim.entries[0], player._sim.entries[1]
+        body = np.ones((3 * 44100, 2), np.float32)
+
+        def fake_load(path, *_args):
+            if path == nxt.path:
+                raise TrackTooLongError(path, 3720.0)
+            return body
+
+        with patch("autodj.player.load_stereo", side_effect=fake_load):
+            rendered = player._render_track(current, nxt, 0)
+        assert rendered is not None
+        assert rendered.audio.shape == body.shape
+        assert rendered.next_entry is nxt
+        assert rendered.next_start_offset == 0
+
     def test_short_next_track_skips_crossfade(self) -> None:
         """When the next track is shorter than the crossfade, the render is a plain cut."""
         player = self._make_player()

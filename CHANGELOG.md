@@ -33,6 +33,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Server-side mixing (`--server-audio` and `--stream`) now skips tracks longer than
+  `[playback] server_max_track_minutes` (default 15), with one line in the log naming the track,
+  and moves on to the next. The server decodes each track whole, at about 21 MB per minute, and
+  holds a few at once, so an hour-long DJ mix could use several gigabytes and exhaust a small
+  machine such as a NAS. Raise the setting if you have the memory. Browser playback has no limit.
 - `--server-audio` now plays in stereo and gapless between tracks, using the same mix bus that
   drives stream mode instead of a fresh sound-card connection per track.
 - Harmonic mixing now has one setting, `harmonic_mode`, which both turns it on and picks the

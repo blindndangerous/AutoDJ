@@ -30,11 +30,12 @@ def renderer(monkeypatch: pytest.MonkeyPatch) -> player_mod.Player:
         "empty": np.zeros((0, 2), np.float32),
     }
     monkeypatch.setattr(
-        player_mod, "load_stereo", lambda path, target_sr=44100: audio[Path(path).stem]
+        player_mod, "load_stereo", lambda path, _sr, _max_seconds: audio[Path(path).stem]
     )
     p = player_mod.Player.__new__(player_mod.Player)
     p._cfg = MagicMock()
     p._cfg.playback.crossfade_seconds = 2.0
+    p._cfg.playback.server_max_track_minutes = 15.0
     p._apply_replaygain = lambda audio_in, _path: audio_in
     p._ensure_dj_cache = lambda: None
     p._outgoing_meta = lambda *_a: None
@@ -76,7 +77,7 @@ def test_render_returns_none_for_unloadable_or_empty(
 ) -> None:
     assert renderer._render_track(_entry("empty"), None, start_offset=0) is None
 
-    def _boom(path: str, target_sr: int = 44100) -> np.ndarray:
+    def _boom(path: str, *_args: object) -> np.ndarray:
         raise OSError("bad file")
 
     monkeypatch.setattr(player_mod, "load_stereo", _boom)

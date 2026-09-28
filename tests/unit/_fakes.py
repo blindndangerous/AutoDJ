@@ -51,6 +51,7 @@ def make_cfg_mock() -> MagicMock:
     cfg.playback.import_external_cues = False  # tests opt-in per-case
     cfg.playback.pick_top_k = 1
     cfg.playback.pick_temperature = 0.0
+    cfg.playback.server_max_track_minutes = 15.0
     cfg.replaygain.enabled = False
     cfg.replaygain.target_db = -14.0
     cfg.replaygain.max_clip_safe_gain = 1.0

@@ -56,7 +56,15 @@ except ImportError:  # pragma: no cover — minimal install path
 from autodj.indexer import IndexEntry
 from autodj.mixbus import BusEvents, MixBus, RenderedTrack
 from autodj.render_ahead import RenderAhead
-from autodj.stereo import SAMPLE_RATE, envelope, load_stereo, mono, per_channel, to_stereo
+from autodj.stereo import (
+    SAMPLE_RATE,
+    TrackTooLongError,
+    envelope,
+    load_stereo,
+    mono,
+    per_channel,
+    to_stereo,
+)
 
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig
@@ -2094,16 +2102,26 @@ class Player:
                     start = snapped_samples
         return start
 
+    def _max_render_seconds(self) -> float:
+        """Longest track server-side mixing decodes (``server_max_track_minutes``)."""
+        return float(self._cfg.playback.server_max_track_minutes) * 60.0
+
     def _load_incoming(
         self,
         next_entry: IndexEntry,
         sr_a: int,
         crossfade_samples: int,
-    ) -> np.ndarray:
-        """Load incoming track, resample to sr_a, ReplayGain — silence on failure."""
+    ) -> np.ndarray | None:
+        """Load incoming track, resample to sr_a, ReplayGain — silence on failure.
+
+        Returns ``None`` when the track is too long to mix: it is skipped
+        (and logged) when its own render comes round.
+        """
         try:
-            audio_b = load_stereo(str(next_entry.path), sr_a)
+            audio_b = load_stereo(str(next_entry.path), sr_a, self._max_render_seconds())
             return self._apply_replaygain(audio_b, next_entry.path)
+        except TrackTooLongError:
+            return None
         except (OSError, ValueError, RuntimeError) as exc:
             logger.warning("Cannot pre-load next track (%s): %s", next_entry.path, exc)
             return np.zeros((crossfade_samples, 2), dtype=np.float32)
@@ -2361,11 +2379,22 @@ class Player:
                 overlap (including any skipped intro).
 
         Returns:
-            The rendered track, or ``None`` when *current* cannot be loaded or
-            has no audio left after *start_offset*.
+            The rendered track, or ``None`` when *current* cannot be loaded,
+            is longer than ``server_max_track_minutes`` (the whole track is
+            held in memory while it plays), or has no audio left after
+            *start_offset*.
         """
         try:
-            audio_a_full = load_stereo(str(current.path), SAMPLE_RATE)
+            audio_a_full = load_stereo(str(current.path), SAMPLE_RATE, self._max_render_seconds())
+        except TrackTooLongError as exc:
+            logger.warning(
+                "Skipping %s: it is %.0f minutes long, and [playback] "
+                "server_max_track_minutes is %g.",
+                current.path,
+                exc.seconds / 60.0,
+                self._cfg.playback.server_max_track_minutes,
+            )
+            return None
         except (OSError, ValueError, RuntimeError) as exc:
             logger.error("Cannot load %s: %s — skipping.", current.path, exc)
             return None
@@ -2391,6 +2420,9 @@ class Player:
         a_start_full = self._crossfade_start_in_a(audio_a_full, SAMPLE_RATE, meta_a, crossfade)
         a_start = max(0, a_start_full - start_offset)
         audio_b_loaded = self._load_incoming(next_entry, SAMPLE_RATE, crossfade)
+        if audio_b_loaded is None:
+            # Too long to mix in: play this track out; the next render skips it.
+            return RenderedTrack(current, audio_a, next_entry, 0, "", start_offset=start_offset)
         pre_stretch_len = len(audio_b_loaded)
         audio_b = self._maybe_beatmatch(audio_b_loaded, current, next_entry)
         post_stretch_len = len(audio_b)

@@ -118,7 +118,7 @@ def test_eq_stateful_stereo_matches_mono() -> None:
 def test_load_stereo_falls_back_to_librosa_on_soundfile_failure() -> None:
     fake_mono = np.ones(22050, dtype=np.float32)
     with (
-        patch("autodj.stereo.sf.read", side_effect=Exception("unsupported format")),
+        patch("autodj.stereo.sf.SoundFile", side_effect=Exception("unsupported format")),
         patch("librosa.load", return_value=(fake_mono, 22050)),
         patch("librosa.resample", side_effect=lambda audio, orig_sr, target_sr, axis: audio),
     ):
@@ -131,3 +131,26 @@ def test_mono_helper() -> None:
     st = np.stack([np.ones(3), np.zeros(3)], axis=1).astype(np.float32)
     np.testing.assert_allclose(stereo.mono(st), 0.5)
     np.testing.assert_array_equal(stereo.mono(np.ones(3)), np.ones(3))
+
+
+def test_load_stereo_refuses_a_long_file_before_decoding_it(tmp_path: Path) -> None:
+    path = tmp_path / "long.wav"
+    sf.write(path, _tone(3 * 44100), 44100)
+    with (
+        patch("soundfile.SoundFile.read", side_effect=AssertionError("decoded")),
+        pytest.raises(stereo.TrackTooLongError) as caught,
+    ):
+        stereo.load_stereo(str(path), max_seconds=2.0)
+    assert caught.value.seconds == pytest.approx(3.0)
+    assert stereo.load_stereo(str(path), max_seconds=3.0).shape == (3 * 44100, 2)
+
+
+def test_load_stereo_fallback_decodes_at_most_a_second_past_the_limit() -> None:
+    too_long = np.ones((2, 22050 * 3), dtype=np.float32)
+    with (
+        patch("autodj.stereo.sf.SoundFile", side_effect=Exception("unsupported format")),
+        patch("librosa.load", return_value=(too_long, 22050)) as load,
+        pytest.raises(stereo.TrackTooLongError),
+    ):
+        stereo.load_stereo("mix.m4a", target_sr=22050, max_seconds=2.0)
+    assert load.call_args.kwargs["duration"] == 3.0

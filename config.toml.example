@@ -237,6 +237,12 @@ liners_enabled = false
 liners_pick_mode = "random"            # random | sequential | weighted
 liners_duck_db = -12.0                 # how far the music ducks under a liner
 
+# Longest track the server mixes with --server-audio or --stream, in
+# minutes (1 to 600).  The server decodes each track whole, at about 21 MB
+# per minute, and holds a few at once, so longer tracks (hour-long DJ mixes)
+# are skipped with a log line.  Browser playback has no limit.
+server_max_track_minutes = 15.0
+
 # Per-file dayparts.  Accepted by the config loader and archived by
 # `autodj backup`, but the picker still uses the five built-in profiles —
 # nothing loads this folder yet.

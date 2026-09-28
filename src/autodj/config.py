@@ -374,6 +374,12 @@ class PlaybackConfig:
     liners_random_max_minutes: float | None = None
     liners_pick_mode: str = "random"
     liners_duck_db: float = -12.0
+    # Server-side mixing (--server-audio and --stream) decodes each track
+    # whole, at about 21 MB per minute, and holds a few such buffers at
+    # once (the playing track, the next one, and the render in progress).
+    # Longer tracks are skipped with a log line so a one-hour mix cannot
+    # exhaust a small machine's memory.  Browser playback has no limit.
+    server_max_track_minutes: float = 15.0
     # Per-file daypart directory.  ``autodj.daypart.load_dayparts_from_dir``
     # can turn one TOML per file into a daypart (each may declare
     # ``indexes = [...]`` to scope itself to specific index names), and
@@ -411,6 +417,13 @@ class PlaybackConfig:
         fade_in = float(data.get("fade_in_seconds", 3.0))
         if fade_in < 0:
             raise ValueError(f"playback.fade_in_seconds must be >= 0, got {fade_in}")
+        max_minutes = data.get("server_max_track_minutes", 15.0)
+        if isinstance(max_minutes, bool) or not isinstance(max_minutes, int | float):
+            raise TypeError("playback.server_max_track_minutes must be a number")
+        if not 1 <= max_minutes <= 600:
+            raise ValueError(
+                f"playback.server_max_track_minutes must be between 1 and 600, got {max_minutes}"
+            )
 
         return cls(
             crossfade_seconds=crossfade,
@@ -470,6 +483,7 @@ class PlaybackConfig:
             ),
             liners_pick_mode=str(data.get("liners_pick_mode", "random")),
             liners_duck_db=float(data.get("liners_duck_db", -12.0)),
+            server_max_track_minutes=float(max_minutes),
             dayparts_dir=(data.get("dayparts_dir") or None),
         )
 

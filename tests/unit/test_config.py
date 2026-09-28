@@ -382,6 +382,18 @@ class TestPlaybackConfig:
         with pytest.raises(ValueError):
             PlaybackConfig.from_dict({"fade_in_seconds": -1.0})
 
+    def test_server_max_track_minutes_accepts_an_integer(self) -> None:
+        pb = PlaybackConfig.from_dict({"server_max_track_minutes": 30})
+        assert pb.server_max_track_minutes == 30.0
+
+    @pytest.mark.parametrize(
+        ("value", "error"),
+        [(0, ValueError), (601, ValueError), (True, TypeError), ("15", TypeError)],
+    )
+    def test_server_max_track_minutes_rejects_bad_values(self, value, error) -> None:
+        with pytest.raises(error, match="server_max_track_minutes"):
+            PlaybackConfig.from_dict({"server_max_track_minutes": value})
+
     def test_no_repeat_window_zero_allowed(self) -> None:
         pb = PlaybackConfig.from_dict({"no_repeat_window": 0})
         assert pb.no_repeat_window == 0
