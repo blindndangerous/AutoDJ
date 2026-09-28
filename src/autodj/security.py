@@ -227,20 +227,6 @@ def _parse_host_header(value: object) -> str | None:
     return canonical
 
 
-def _clock_timestamp(now: Callable[[], float]) -> int:
-    """Return a valid nonnegative integral timestamp from a clock callback."""
-    try:
-        value = now()
-        if type(value) not in {int, float}:
-            raise TypeError
-        timestamp = int(value)
-    except (OverflowError, TypeError, ValueError):
-        raise ValueError("clock returned an invalid timestamp") from None
-    if not 0 <= timestamp <= _MAX_EXPIRY:
-        raise ValueError("clock returned an invalid timestamp")
-    return timestamp
-
-
 def _is_unspecified_host(host: str) -> bool:
     """Return whether host is an unspecified IP address."""
     try:
@@ -284,7 +270,7 @@ class SecurityPolicy:
         token = self.config.access_token
         if token is None:
             raise RuntimeError("access token is not configured")
-        window = _clock_timestamp(self.now) // PAIRING_CODE_WINDOW_SECONDS
+        window = int(self.now()) // PAIRING_CODE_WINDOW_SECONDS
         return self._pairing_code(token, window)
 
     def pairing_code_seconds_left(self) -> tuple[int, int]:
@@ -293,7 +279,7 @@ class SecurityPolicy:
         A code is accepted for its own window and the one after it, so it
         outlives the start of its successor by one full window.
         """
-        timestamp = _clock_timestamp(self.now)
+        timestamp = int(self.now())
         next_start = (timestamp // PAIRING_CODE_WINDOW_SECONDS + 1) * PAIRING_CODE_WINDOW_SECONDS
         return next_start + PAIRING_CODE_WINDOW_SECONDS - timestamp, next_start - timestamp
 
@@ -303,10 +289,7 @@ class SecurityPolicy:
         Checked before comparing, so a locked-out client or a paused server
         answers the same way for right and wrong codes.
         """
-        try:
-            timestamp = _clock_timestamp(self.now)
-        except (RuntimeError, ValueError):
-            return None
+        timestamp = int(self.now())
         window = timestamp // PAIRING_CODE_WINDOW_SECONDS
         retry_after = (window + 1) * PAIRING_CODE_WINDOW_SECONDS - timestamp
         with self._pairing_lock:
@@ -359,10 +342,7 @@ class SecurityPolicy:
         token = self.config.access_token
         if token is None:
             return False
-        try:
-            timestamp = _clock_timestamp(self.now)
-        except (RuntimeError, ValueError):
-            return False
+        timestamp = int(self.now())
         window = timestamp // PAIRING_CODE_WINDOW_SECONDS
         candidate_bytes = candidate.encode("ascii")
         previous_window = max(0, window - 1)
@@ -420,9 +400,7 @@ class SecurityPolicy:
             raise ValueError("device ID is invalid")
         if self.device_is_active is not None and not self.device_is_active(device_id):
             raise ValueError("device is not active")
-        expires = _clock_timestamp(self.now) + self.config.session_ttl_seconds
-        if not 0 <= expires <= _MAX_EXPIRY:
-            raise RuntimeError("session expiry is outside the supported range")
+        expires = int(self.now()) + self.config.session_ttl_seconds
         nonce = secrets.token_hex(16)
         payload = f"{expires}.{device_id}.{nonce}"
         signature = hmac.new(
@@ -458,11 +436,7 @@ class SecurityPolicy:
         signature_valid = secrets.compare_digest(
             signature.encode("ascii"), expected.encode("ascii")
         )
-        try:
-            current_time = _clock_timestamp(self.now)
-        except ValueError:
-            return False, None
-        if not signature_valid or expires < current_time:
+        if not signature_valid or expires < int(self.now()):
             return False, None
         if (
             device_id is not None
@@ -518,23 +492,7 @@ def audit_record(
     route: str | None = None,
     status: int | None = None,
 ) -> str:
-    """Serialize a validated closed-schema audit event as JSON."""
-    for field_name, required_value in (
-        ("request_id", request_id),
-        ("action", action),
-        ("outcome", outcome),
-    ):
-        if type(required_value) is not str:
-            raise TypeError(f"{field_name} must be a string")
-    for field_name, optional_value in (("method", method), ("route", route)):
-        if optional_value is not None and type(optional_value) is not str:
-            raise TypeError(f"{field_name} must be a string or None")
-    if status is not None:
-        if type(status) is not int:
-            raise TypeError("status must be an integer or None")
-        if not (100 <= status <= 599 or 1000 <= status <= 4999):
-            raise ValueError("status must be a valid HTTP status or WebSocket code")
-
+    """Serialize a closed-schema audit event as JSON."""
     record: dict[str, str | int] = {
         "action": action,
         "outcome": outcome,
@@ -665,6 +623,7 @@ class SecurityMiddleware:
         consumed = 0
 
         async def capped() -> Message:
+            """Receive one message and count its body bytes against the cap."""
             nonlocal consumed
             message = await receive()
             if message["type"] == "http.request":

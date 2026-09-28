@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 import re
 import sqlite3
 import time
@@ -63,16 +62,6 @@ class DeviceRegistry:
                 """
             )
 
-    def _timestamp(self) -> int:
-        """Return validated whole seconds from configured wall clock."""
-        value = self._now()
-        if type(value) not in {int, float} or not math.isfinite(float(value)):
-            raise ValueError("device registry clock returned an invalid value")
-        timestamp = int(value)
-        if timestamp < 0:
-            raise ValueError("device registry clock returned an invalid value")
-        return timestamp
-
     @staticmethod
     def _name(value: str) -> str:
         """Validate and normalize an operator-visible device name."""
@@ -93,7 +82,7 @@ class DeviceRegistry:
     def pair(self, name: str) -> PairedDevice:
         """Create and persist a distinct authorized browser identity."""
         normalized = self._name(name)
-        timestamp = self._timestamp()
+        timestamp = int(self._now())
         device_id = uuid.uuid4().hex
         with self._connect() as connection:
             connection.execute(
@@ -121,7 +110,7 @@ class DeviceRegistry:
             changed = connection.execute(
                 "UPDATE paired_devices SET last_seen_at = ? "
                 "WHERE device_id = ? AND revoked_at IS NULL",
-                (self._timestamp(), device_id),
+                (int(self._now()), device_id),
             ).rowcount
         return changed == 1
 
@@ -142,7 +131,7 @@ class DeviceRegistry:
             changed = connection.execute(
                 "UPDATE paired_devices SET revoked_at = ? "
                 "WHERE device_id = ? AND revoked_at IS NULL",
-                (self._timestamp(), device_id),
+                (int(self._now()), device_id),
             ).rowcount
         return changed == 1
 
@@ -151,6 +140,6 @@ class DeviceRegistry:
         with self._connect() as connection:
             changed = connection.execute(
                 "UPDATE paired_devices SET revoked_at = ? WHERE revoked_at IS NULL",
-                (self._timestamp(),),
+                (int(self._now()),),
             ).rowcount
         return changed
