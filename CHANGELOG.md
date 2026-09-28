@@ -60,6 +60,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The web page no longer reads timed lyric lines aloud as they play. Screen reader users can
   read them on demand in the Lyrics card, where the line playing now is marked as current. The
   automatic reading only worked with the card open, which it is not by default.
+- `autodj stats` prints each histogram row as words, such as "120 to 129: 45 tracks, 12
+  percent", when its output is not a terminal, which includes the web page's library job log.
+  Screen readers read the bar characters as noise. In a terminal the bars stay and each row gains
+  a percentage. Ranges are written with "to" and keys as "C sharp" in both.
 
 ### Removed
 
@@ -122,6 +126,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   details" section below it.
 - Stopping a library job with Stop running job now reports that the job stopped, instead of
   "exited with code 1".
+- `autodj stats` no longer shows an always-empty "180 to 189" BPM row next to "180+".
 
 ## [0.17.0] - 2026-09-26
 

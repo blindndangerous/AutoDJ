@@ -239,6 +239,17 @@ class TestPrintStatsEnergy:
         print_stats(entries, _console())
 
 
+def test_captured_output_has_words_not_bar_glyphs() -> None:
+    """The web job log captures output; NVDA reads bar glyphs as noise."""
+    buf = StringIO()
+    entries = [_make_entry(mode=1), _make_entry(mode=1), _make_entry(mode=0, bpm=90.0)]
+    print_stats(entries, Console(file=buf, width=120))
+    out = buf.getvalue()
+    assert "█" not in out and "░" not in out and "╭" not in out
+    assert "120 to 129: 2 tracks, 67 percent" in out
+    assert "Minor: 1 track, 33 percent" in out
+
+
 class TestPrintStatsSummary:
     def test_track_count_in_output(self) -> None:
         buf = StringIO()

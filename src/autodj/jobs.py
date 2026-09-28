@@ -137,6 +137,10 @@ class JobManager:
         # the child blocked on write forever -- holding the single job slot
         # until someone pressed Stop.
         env = dict(os.environ, PYTHONIOENCODING="utf-8")
+        # Rich treats either variable as "this is a terminal" and would fill
+        # the log with colour codes and bar glyphs the page reads out.
+        for name in ("FORCE_COLOR", "TTY_COMPATIBLE"):
+            env.pop(name, None)
         if self._index_dir:
             env["AUTODJ_INDEX_DIR"] = self._index_dir
         return env
