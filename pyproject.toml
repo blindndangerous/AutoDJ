@@ -33,10 +33,10 @@ dependencies = [
     "uvicorn[standard]>=0.29.0", # ASGI server
     "muq>=0.1.0", # MuQ embedding model (24 kHz, 1024-dim)
     "transformers>=5.16.1", # MuQ compatibility is handled at model load.
-    "huggingface_hub>=0.23.0", # model checkpoint download
+    "huggingface_hub>=1.31.0", # model checkpoint download
     "mutagen>=1.47.0", # tags, ReplayGain, cover art, embedded lyrics, ALAC detection
     "scipy>=1.13.0", # biquad filters (EQ duck, sweeps, transitions)
-    "filelock>=3.20.0", # cross-process index manifest lock
+    "filelock>=3.32.5", # cross-process index manifest lock
 ]
 
 [project.optional-dependencies]
