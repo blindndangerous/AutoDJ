@@ -10,9 +10,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "eslint --max-warnings 0 src/autodj/static tests/jsmodules tests/playwright scripts/*.mjs vite.config.js eslint.config.js",
+    "lint": "eslint --max-warnings 0 src/autodj/static tests/jsmodules tests/playwright vite.config.js eslint.config.js",
     "deadcode": "knip",
-    "audit:lock": "node scripts/check-package-lock-integrity.mjs",
     "audit:transitions": "node tests/playwright/transition_audit.mjs",
     "audit:health": "node tests/playwright/health_audit.mjs",
     "audit:ci": "npm run audit:health && npm run audit:transitions"
