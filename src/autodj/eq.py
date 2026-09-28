@@ -9,13 +9,14 @@ from __future__ import annotations
 from typing import Any, cast
 
 import numpy as np
+from scipy.signal import butter, sosfilt
+
+# Band boundaries: low / mid at 250 Hz, mid / high at 4 kHz.
+_LOW_CROSSOVER_HZ = 250.0
+_HIGH_CROSSOVER_HZ = 4000.0
 
 
-def make_eq_filters(
-    sample_rate: int,
-    low_crossover_hz: float = 250.0,
-    high_crossover_hz: float = 4000.0,
-) -> dict[str, Any] | None:
+def make_eq_filters(sample_rate: int) -> dict[str, Any]:
     """Return SOS filter coefficients for a 3-band split (low / mid / high).
 
     The returned object is a dict ``{"low": sos, "mid_lp": sos, "mid_hp": sos,
@@ -24,20 +25,13 @@ def make_eq_filters(
 
     Args:
         sample_rate: Sample rate in Hz.
-        low_crossover_hz: Boundary between low and mid bands.
-        high_crossover_hz: Boundary between mid and high bands.
 
     Returns:
-        Dict of SOS coefficients, or ``None`` when scipy is unavailable.
+        Dict of SOS coefficients.
     """
-    try:
-        from scipy.signal import butter
-    except ImportError:  # pragma: no cover — scipy required by full install
-        return None
-
     nyquist = sample_rate / 2.0
-    low_norm = max(1e-4, min(0.99, low_crossover_hz / nyquist))
-    high_norm = max(1e-4, min(0.99, high_crossover_hz / nyquist))
+    low_norm = max(1e-4, min(0.99, _LOW_CROSSOVER_HZ / nyquist))
+    high_norm = max(1e-4, min(0.99, _HIGH_CROSSOVER_HZ / nyquist))
     return {
         "low": butter(2, low_norm, btype="low", output="sos"),
         "mid_lp": butter(2, high_norm, btype="low", output="sos"),
@@ -46,9 +40,7 @@ def make_eq_filters(
     }
 
 
-def make_eq_state(
-    sos_filters: dict[str, Any] | None, channels: int = 1
-) -> dict[str, np.ndarray] | None:
+def make_eq_state(sos_filters: dict[str, Any], channels: int = 1) -> dict[str, np.ndarray]:
     """Return zero-initialised filter memory for :func:`apply_eq`.
 
     One ``zi`` array per band, shaped for the second-order sections that
@@ -56,7 +48,7 @@ def make_eq_state(
     silence", which is what a fresh track does.
 
     Args:
-        sos_filters: Dict from :func:`make_eq_filters`, or ``None``.
+        sos_filters: Dict from :func:`make_eq_filters`.
         channels: Number of audio channels the state will filter.  ``1``
             (mono, the default) shapes each band's ``zi`` as
             ``(sections, 2)``; ``2`` (stereo) shapes it as
@@ -64,10 +56,8 @@ def make_eq_state(
             ``axis=0`` convention for ``(frames, channels)`` input.
 
     Returns:
-        Dict of per-band state arrays, or ``None`` when there are no filters.
+        Dict of per-band state arrays.
     """
-    if sos_filters is None:
-        return None
     shape_tail = () if channels == 1 else (channels,)
     return {
         name: np.zeros((np.asarray(sos).shape[0], 2, *shape_tail), dtype=np.float64)
@@ -75,7 +65,7 @@ def make_eq_state(
     }
 
 
-def reset_eq_state(state: dict[str, np.ndarray] | None) -> None:
+def reset_eq_state(state: dict[str, np.ndarray]) -> None:
     """Zero the filter memory in *state*, in place.
 
     Call this whenever the EQ starts filtering again after a stretch of
@@ -84,17 +74,15 @@ def reset_eq_state(state: dict[str, np.ndarray] | None) -> None:
     click.  Starting from zeros is the same assumption a new stream makes.
 
     Args:
-        state: Dict from :func:`make_eq_state`, or ``None``.
+        state: Dict from :func:`make_eq_state`.
     """
-    if state is None:
-        return
     for band in state.values():
         band.fill(0.0)
 
 
 def apply_eq(
     chunk: np.ndarray,
-    sos_filters: dict[str, Any] | None,
+    sos_filters: dict[str, Any],
     low_gain: float,
     mid_gain: float,
     high_gain: float,
@@ -125,12 +113,6 @@ def apply_eq(
     Returns:
         EQ-processed float32 chunk (same shape, hard-clipped to ±1.0).
     """
-    if sos_filters is None:
-        return chunk
-    try:
-        from scipy.signal import sosfilt
-    except ImportError:  # pragma: no cover — scipy required by full install
-        return chunk
 
     def _filter(band: str, signal: np.ndarray) -> np.ndarray:
         if state is None or band not in state:

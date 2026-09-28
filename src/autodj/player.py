@@ -39,6 +39,7 @@ import numpy as np
 from rich.console import Console
 from rich.live import Live
 from rich.panel import Panel
+from scipy.signal import butter, sosfilt
 
 # Heavy / platform-specific audio deps are imported with graceful None
 # fallback so hosts without them (a NAS running browser-driven `serve`)
@@ -172,8 +173,8 @@ def _apply_crossfade_ducked(
     produce in the sub-200 Hz range — the core trick used by pro DJs
     when manually mixing.
 
-    Falls back to plain :func:`_apply_crossfade` if scipy is unavailable
-    or the crossfade region is too short for filter design.
+    Falls back to plain :func:`_apply_crossfade` if the crossfade region
+    is too short for filter design.
 
     Args:
         audio_a: Mono or stereo float32 audio array for the outgoing track.
@@ -190,11 +191,6 @@ def _apply_crossfade_ducked(
     if crossfade_samples == 0:
         return np.concatenate([audio_a, audio_b]).astype(np.float32)
     if crossfade_samples > len(audio_a) or crossfade_samples > len(audio_b):
-        return _apply_crossfade(audio_a, audio_b, crossfade_samples)
-
-    try:
-        from scipy.signal import butter, sosfilt
-    except ImportError:  # pragma: no cover — scipy required by full install
         return _apply_crossfade(audio_a, audio_b, crossfade_samples)
 
     a_body = audio_a[: len(audio_a) - crossfade_samples]
@@ -316,8 +312,7 @@ def apply_filter_sweep(
     filtered blocks.  Step boundaries are smoothed with a 32-sample
     crossfade to hide any click.
 
-    Falls back to the unfiltered input when scipy is unavailable or the
-    cutoff range is invalid.
+    Falls back to the unfiltered input when the cutoff range is invalid.
 
     Args:
         audio: Mono or stereo float32 audio array.
@@ -332,11 +327,6 @@ def apply_filter_sweep(
     """
     if len(audio) == 0:
         return audio
-    try:
-        from scipy.signal import butter, sosfilt
-    except ImportError:  # pragma: no cover — scipy required by full install
-        return audio
-
     nyquist = sample_rate / 2.0
     block = max(1, len(audio) // n_steps)
     out = np.empty_like(audio)

@@ -370,7 +370,7 @@ class MixBus:
                 return np.zeros((self.BLOCK, 2), np.float32)
             block = self._music(self.BLOCK, pending)
             low, mid, high = self._eq_gains()
-            engaged = self._eq_filters is not None and (low, mid, high) != (1.0, 1.0, 1.0)
+            engaged = (low, mid, high) != (1.0, 1.0, 1.0)
             if engaged and not self._eq_engaged:
                 reset_eq_state(self._eq_state)
             self._eq_engaged = engaged

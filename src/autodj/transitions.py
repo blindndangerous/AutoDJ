@@ -23,8 +23,7 @@ a single dispatch surface.  All effects are stateless — they take a
 buffer in, return a buffer out — so they can be chained or swapped per
 crossfade with no setup cost.
 
-Every effect degrades gracefully when scipy is missing (returns the
-input unchanged).  None raise on short / silent buffers.
+None of the effects raise on short / silent buffers.
 """
 
 from __future__ import annotations
@@ -402,8 +401,6 @@ def highpass_sweep(
     progressively.  Pairs naturally with :func:`echo_out` on the
     outgoing side.
 
-    Falls back to the unfiltered head when scipy is unavailable.
-
     Args:
         head: Mono float32 audio of the incoming overlap.
         sample_rate: Sample rate in Hz.
@@ -599,10 +596,8 @@ def telephone(
     """
     if len(tail) == 0:
         return tail
-    try:
-        from scipy.signal import butter, sosfilt
-    except ImportError:
-        return tail
+    from scipy.signal import butter, sosfilt
+
     nyq = sample_rate / 2.0
     lo = max(1e-4, min(0.99, 300.0 / nyq))
     hi = max(1e-4, min(0.99, 3500.0 / nyq))
@@ -695,10 +690,7 @@ def cross_eq_swap(
         ``(tail_treble, head_bass)`` — pre-processed buffers ready to
         feed straight into a linear crossfade.
     """
-    try:
-        from scipy.signal import butter, sosfilt
-    except ImportError:
-        return tail, head
+    from scipy.signal import butter, sosfilt
 
     nyq = sample_rate / 2.0
     cutoff = max(1e-4, min(0.99, crossover_hz / nyq))

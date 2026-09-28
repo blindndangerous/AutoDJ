@@ -1565,20 +1565,11 @@ class TestEq:
         out = apply_eq(a, sos, 2.0, 2.0, 2.0)  # boosted further
         assert np.abs(out).max() <= 1.0 + 1e-6
 
-    def test_apply_eq_none_filters_returns_input(self) -> None:
-        a = _sine_audio(0.1)
-        out = apply_eq(a, None, 1.0, 1.0, 1.0)
-        np.testing.assert_array_equal(out, a)
-
     def test_make_eq_state_returns_one_array_per_band(self) -> None:
         sos = make_eq_filters(44100)
         state = make_eq_state(sos)
-        assert state is not None
         assert set(state) == set(sos)
         assert all(band.shape[1] == 2 for band in state.values())
-
-    def test_make_eq_state_without_filters_is_none(self) -> None:
-        assert make_eq_state(None) is None
 
     def test_blockwise_filtering_matches_one_shot(self) -> None:
         """Carried state must make N blocks equal one call over the whole signal.
@@ -1603,14 +1594,10 @@ class TestEq:
         sos = make_eq_filters(44100)
         state = make_eq_state(sos)
         apply_eq(_sine_audio(0.05), sos, 1.6, 0.4, 1.2, state=state)
-        assert state is not None
         assert any(np.abs(band).max() > 0 for band in state.values())
 
         reset_eq_state(state)
         assert all(np.abs(band).max() == 0 for band in state.values())
-
-    def test_reset_eq_state_without_state_is_a_no_op(self) -> None:
-        reset_eq_state(None)
 
     def test_re_engaging_after_bypass_matches_a_fresh_stream(self) -> None:
         """Stale memory from before a bypass would splice a click into playback."""
@@ -2249,7 +2236,7 @@ class TestPlayerCoverageErrorPaths:
 
     def test_filter_failure_keeps_current_chunk(self) -> None:
         audio = _sine_audio(0.1)
-        with patch("scipy.signal.butter", side_effect=ValueError("bad filter")):
+        with patch("autodj.player.butter", side_effect=ValueError("bad filter")):
             result = apply_filter_sweep(audio, 44100, 8000, 200)
 
         assert result.shape == audio.shape
