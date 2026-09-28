@@ -1590,14 +1590,10 @@ class Player:
                 target.target_energy if target_energy is None else target_energy,
             )
         if self._cfg.playback.enable_daypart:
-            from autodj.daypart import current_daypart
+            from autodj.daypart import daypart_target
 
-            dp = current_daypart()
-            return (
-                dp.target_bpm,
-                dp.bpm_weight,
-                dp.target_energy if target_energy is None else target_energy,
-            )
+            bpm, weight, energy = daypart_target(datetime.now().hour)
+            return (bpm, weight, energy if target_energy is None else target_energy)
         return (None, 0.2, target_energy)
 
     def _resolve_query_path(self, current_path: str) -> tuple[str, str]:

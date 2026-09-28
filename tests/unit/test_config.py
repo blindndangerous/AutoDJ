@@ -641,6 +641,22 @@ def test_removed_weighted_liner_mode_is_rejected() -> None:
         PlaybackConfig.from_dict({"liners_pick_mode": "weighted"})
 
 
+@pytest.mark.parametrize("value", [0.5, 60.0, -30.5, float("nan")])
+def test_liner_duck_outside_minus_30_to_0_db_is_rejected(value: float) -> None:
+    """A positive duck would multiply the music's volume under every liner."""
+    from autodj.config import PlaybackConfig
+
+    with pytest.raises(ValueError, match=r"playback\.liners_duck_db"):
+        PlaybackConfig.from_dict({"liners_duck_db": value})
+
+
+@pytest.mark.parametrize("value", [-30, 0, -12.5])
+def test_liner_duck_range_ends_are_accepted(value: float) -> None:
+    from autodj.config import PlaybackConfig
+
+    assert PlaybackConfig.from_dict({"liners_duck_db": value}).liners_duck_db == value
+
+
 # ---------------------------------------------------------------------------
 # PlaybackConfig.transition_mode (Mixxx-style crossfade alignment)
 # ---------------------------------------------------------------------------
@@ -797,6 +813,7 @@ class TestServerConfig:
             ({"session_ttl_seconds": 31_536_001}, "server.session_ttl_seconds"),
             ({"liner_upload_max_mib": 0}, "server.liner_upload_max_mib"),
             ({"liner_upload_max_mib": 1025}, "server.liner_upload_max_mib"),
+            ({"liner_upload_max_bytes": 50 * 1024 * 1024}, r"unknown \[server\] keys"),
         ],
     )
     def test_rejects_wrong_types_and_out_of_bounds_values(

@@ -52,7 +52,7 @@ is not optional.
 
 ## The filter, then the ranking
 
-`find_next` builds one predicate (`_build_predicate`) and applies it before
+`find_next_for_path` builds one predicate (`_build_predicate`) and applies it before
 any scoring. In order:
 
 1. Path is not in `recently_played`.

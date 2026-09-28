@@ -28,6 +28,7 @@ class _Rig:
         self.player._state = PlayerState()
         self.player._state.queue = list(queue or [])
         self.player._state.queued_next = queued_next
+        self.player._pop_user_queue.side_effect = lambda: Player._pop_user_queue(self.player)
         self.shuffle_pick = MagicMock(name="shuffle")
         self.player._random_start_entry.return_value = self.shuffle_pick if shuffle else None
         self.player.end_set.return_value = None  # the track a stop cut short
@@ -44,9 +45,9 @@ class _Rig:
         )
 
     def listeners(self, count: int) -> None:
-        """Change the listener count and notify the station, like StreamOutput."""
+        """Change the listener count and let the station's next tick see it."""
         self.stream.listener_count = count
-        self.station.listener_changed(count)
+        self.station.tick()
 
 
 def test_starts_idle() -> None:
@@ -223,15 +224,12 @@ def test_grace_restarts_when_a_paused_set_resumes() -> None:
     rig.bus.stop_set.assert_called_once()
 
 
-def test_tick_rereads_the_listener_count() -> None:
-    """A missed notification is caught up by the once-a-second tick."""
+def test_grace_starts_at_the_first_empty_tick() -> None:
     rig = _Rig()
-    rig.stream.listener_count = 1  # no listener_changed call
-    rig.station.tick()
+    rig.listeners(1)
     rig.bus.start_set.assert_called_once()
-    rig.stream.listener_count = 0
     rig.now = 10.0
-    rig.station.tick()  # grace starts now
+    rig.listeners(0)  # grace starts now
     rig.now = 39.0
     rig.station.tick()
     rig.bus.stop_set.assert_not_called()
@@ -252,8 +250,10 @@ def test_defaults_need_no_callbacks() -> None:
     stream.listener_count = 0
     now = [0.0]
     station = Station(bus, stream, player, idle_grace=1.0, clock=lambda: now[0])
-    station.listener_changed(1)
-    station.listener_changed(0)
+    stream.listener_count = 1
+    station.tick()
+    stream.listener_count = 0
+    station.tick()
     now[0] = 2.0
     station.tick()
     assert station.state == "idle"
@@ -310,7 +310,7 @@ def test_real_player_first_listener_plays_queue_head_then_stops_cleanly() -> Non
     player._render_ahead.start()
     try:
         stream.listener_count = 1
-        station.listener_changed(1)
+        station.tick()
         _play_until_a_track_starts(player)
         assert player._state.current_track.path == head.path
         assert player._state.queue == []
@@ -318,7 +318,7 @@ def test_real_player_first_listener_plays_queue_head_then_stops_cleanly() -> Non
         assert [row["title"] for row in bridge.history_snapshot()] == [head.title]
 
         stream.listener_count = 0
-        station.listener_changed(0)
+        station.tick()
         now[0] = 31.0
         station.tick()
         assert station.state == "idle"
@@ -330,7 +330,7 @@ def test_real_player_first_listener_plays_queue_head_then_stops_cleanly() -> Non
         assert not player._render_ahead.wait_ready(0.3)
 
         stream.listener_count = 1
-        station.listener_changed(1)
+        station.tick()
         _play_until_a_track_starts(player)
         assert player._state.current_track is not None
         assert station.state == "playing"
@@ -380,14 +380,14 @@ def test_real_player_ignores_a_track_start_left_over_from_a_stopped_set(tmp_path
     player._render_ahead.start()
     try:
         stream.listener_count = 1
-        station.listener_changed(1)
+        station.tick()
         _play_until_a_track_starts(player)
         assert player._render_ahead.wait_ready(WAIT)
         leftover = player._take_render()  # the bus took it just before stopping
         assert leftover is not None
         numbered = player._state.track_number
         stream.listener_count = 0
-        station.listener_changed(0)
+        station.tick()
         now[0] = 31.0
         station.tick()
         m3u_before = export.read_text(encoding="utf-8")

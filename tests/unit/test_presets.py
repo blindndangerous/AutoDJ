@@ -299,33 +299,6 @@ class TestPresetTargetBpm:
         assert p.discovery_every is None
 
 
-class TestPresetMatchesGenres:
-    """Cover the Preset.matches_genre method."""
-
-    def test_no_filter_passes(self) -> None:
-        p = Preset(name="t", bpm_weight=0.0, _curve=constant_curve(120.0))
-        assert p.matches_genre("anything") is True
-
-    def test_filter_with_empty_entry_fails(self) -> None:
-        p = Preset(
-            name="t",
-            bpm_weight=0.0,
-            _curve=constant_curve(120.0),
-            genres=["rock"],
-        )
-        assert p.matches_genre("") is False
-
-    def test_filter_substring_match(self) -> None:
-        p = Preset(
-            name="t",
-            bpm_weight=0.0,
-            _curve=constant_curve(120.0),
-            genres=["rock"],
-        )
-        assert p.matches_genre("Indie Rock") is True
-        assert p.matches_genre("Jazz") is False
-
-
 class TestPresetGenresFromSection:
     def test_string_genre_wrapped_in_list(self) -> None:
         p = preset_from_config(

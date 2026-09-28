@@ -90,26 +90,6 @@ class Preset:
         """
         return self._curve(track_number)
 
-    def matches_genre(self, entry_genre: str) -> bool:
-        """Return ``True`` if *entry_genre* matches any of this preset's genres.
-
-        Case-insensitive substring match.  Empty :attr:`genres` always
-        returns ``True`` (no filter).  Empty *entry_genre* returns ``False``
-        when a filter is in effect (unknown-genre tracks are excluded).
-
-        Args:
-            entry_genre: The candidate track's genre string.
-
-        Returns:
-            ``True`` if the candidate passes the genre filter.
-        """
-        if not self.genres:
-            return True
-        if not entry_genre:
-            return False
-        eg = entry_genre.lower()
-        return any(g.lower() in eg for g in self.genres)
-
 
 # ---------------------------------------------------------------------------
 # Curve constructors

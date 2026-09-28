@@ -448,9 +448,9 @@ class SimilarityIndex:
         out.sort(key=lambda x: x[0], reverse=True)
         return out
 
-    def find_next(
+    def find_next_for_path(
         self,
-        query_vector: np.ndarray,
+        current_path: str,
         recently_played: deque[str],
         n_candidates: int = 10,
         target_bpm: float | None = None,
@@ -458,7 +458,7 @@ class SimilarityIndex:
         bpm_range: tuple[float, float] | None = None,
         genre_filter: list[str] | None = None,
         invert: bool = False,
-        harmonic_from: tuple[int, int] | None = None,
+        harmonic_only: bool = False,
         harmonic_mode: str = "compatible",
         target_energy: float | None = None,
         energy_weight: float = 0.15,
@@ -468,21 +468,23 @@ class SimilarityIndex:
         pick_top_k: int = 1,
         pick_temperature: float = 0.0,
     ) -> IndexEntry:
-        """Find the best next track that isn't in *recently_played*.
+        """Find the best next track after *current_path* that isn't in *recently_played*.
 
-        Queries FAISS for nearest neighbors (by cosine similarity), expanding
-        to the full index when needed to satisfy active filters and the requested
-        candidate-pool size. Smart shuffle searches the full index for the global
-        farthest eligible track.
+        Uses the stored embedding for *current_path* (no model inference) and
+        queries FAISS for nearest neighbours by cosine similarity, expanding to
+        the full index when needed to satisfy active filters and the requested
+        candidate-pool size. Smart shuffle (*invert*) searches the full index
+        for the global farthest eligible track.
 
         Args:
-            query_vector: Finite, non-zero array of shape ``(FEATURE_DIM,)``
-                representing the current track. It is normalized before search.
+            current_path: The file path string of the currently playing track,
+                as stored in :attr:`IndexEntry.path`.
             recently_played: Deque of file path strings to exclude.
             n_candidates: Minimum neighbour pool size before filtering.
             target_bpm: Desired BPM for re-ranking.
             bpm_weight: BPM-vs-cosine blend weight.
             bpm_range: Hard ``(lo, hi)`` BPM filter.
+            harmonic_only: Keep only keys compatible with the current track.
 
         Returns:
             The :class:`IndexEntry` for the recommended next track.
@@ -490,13 +492,33 @@ class SimilarityIndex:
         Raises:
             TypeError: If *n_candidates* is not an integer.
             ValueError: If *n_candidates* is not positive.
-            SimilarityError: If all retrieved candidates were excluded.
+            SimilarityError: If *current_path* is not in the index, its stored
+                vector is empty or non-finite, or all candidates were excluded.
+
+        Example:
+            >>> next_track = sim.find_next_for_path(
+            ...     "Z:/Music/Portishead/Dummy/01 - Mysterons.flac",
+            ...     recently_played=deque(),
+            ... )
         """
         with self._reload_lock:
             if isinstance(n_candidates, bool) or not isinstance(n_candidates, int):
                 raise TypeError("n_candidates must be a positive integer.")
             if n_candidates <= 0:
                 raise ValueError("n_candidates must be a positive integer.")
+
+            idx = self._path_to_idx.get(current_path)
+            if idx is None:
+                raise SimilarityError(
+                    f"Track not in index: {current_path}\nRun 'autodj index' to add it, then retry."
+                )
+            # faiss-cpu >=1.14 stubs pick the torch.Tensor reconstruct() overload;
+            # the C++ impl returns a float32 ndarray, so narrow back.
+            query_vector = cast(npt.NDArray[np.float32], self.faiss_index.reconstruct(idx))
+            harmonic_from: tuple[int, int] | None = None
+            if harmonic_only:
+                cur = self.entries[idx]
+                harmonic_from = (cur.key, cur.mode)
 
             excluded = set(recently_played)
             query = query_vector.reshape(1, -1).astype(np.float32)
@@ -596,90 +618,6 @@ class SimilarityIndex:
                     target_energy,
                 )
             return self._public_entry(best)
-
-    def find_next_for_path(
-        self,
-        current_path: str,
-        recently_played: deque[str],
-        n_candidates: int = 10,
-        target_bpm: float | None = None,
-        bpm_weight: float = 0.2,
-        bpm_range: tuple[float, float] | None = None,
-        genre_filter: list[str] | None = None,
-        invert: bool = False,
-        harmonic_only: bool = False,
-        harmonic_mode: str = "compatible",
-        target_energy: float | None = None,
-        energy_weight: float = 0.15,
-        excluded_artists: set[str] | None = None,
-        excluded_albums: set[str] | None = None,
-        excluded_titles: set[str] | None = None,
-        pick_top_k: int = 1,
-        pick_temperature: float = 0.0,
-    ) -> IndexEntry:
-        """Find the next track using the pre-computed vector for *current_path*.
-
-        Reconstructs the stored embedding vector from the FAISS index by path,
-        then delegates to :meth:`find_next`.  No model inference is needed —
-        vectors are looked up from the index built by ``autodj index``.
-
-        All keyword arguments are forwarded to :meth:`find_next`.
-
-        Args:
-            current_path: The file path string of the currently playing track,
-                as stored in :attr:`IndexEntry.path`.
-            recently_played: Deque of file path strings to exclude from results.
-            n_candidates: Number of candidates to retrieve before filtering.
-            target_bpm: Desired BPM for re-ranking (forwarded to find_next).
-            bpm_weight: BPM vs cosine blend weight (forwarded to find_next).
-            bpm_range: Hard BPM filter ``(lo, hi)`` (forwarded to find_next).
-
-        Returns:
-            The :class:`IndexEntry` for the recommended next track.
-
-        Raises:
-            SimilarityError: If *current_path* is not in the index, or if no
-                candidates remain after exclusions.
-
-        Example:
-            >>> next_track = sim.find_next_for_path(
-            ...     "Z:/Music/Portishead/Dummy/01 - Mysterons.flac",
-            ...     recently_played=deque(),
-            ... )
-        """
-        with self._reload_lock:
-            idx = self._path_to_idx.get(current_path)
-            if idx is None:
-                raise SimilarityError(
-                    f"Track not in index: {current_path}\nRun 'autodj index' to add it, then retry."
-                )
-            # faiss-cpu >=1.14 stubs pick the torch.Tensor reconstruct() overload;
-            # the C++ impl returns a float32 ndarray, so narrow back for find_next.
-            query_vector = cast(npt.NDArray[np.float32], self.faiss_index.reconstruct(idx))
-            # Resolve harmonic_from from the current entry's key/mode if requested
-            harmonic_from: tuple[int, int] | None = None
-            if harmonic_only:
-                cur = self.entries[idx]
-                harmonic_from = (cur.key, cur.mode)
-            return self.find_next(
-                query_vector,
-                recently_played,
-                n_candidates,
-                target_bpm=target_bpm,
-                bpm_weight=bpm_weight,
-                bpm_range=bpm_range,
-                genre_filter=genre_filter,
-                invert=invert,
-                harmonic_from=harmonic_from,
-                harmonic_mode=harmonic_mode,
-                target_energy=target_energy,
-                energy_weight=energy_weight,
-                excluded_artists=excluded_artists,
-                excluded_albums=excluded_albums,
-                excluded_titles=excluded_titles,
-                pick_top_k=pick_top_k,
-                pick_temperature=pick_temperature,
-            )
 
     def find_distant(
         self,

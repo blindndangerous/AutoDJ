@@ -412,7 +412,6 @@ def test_lifespan_starts_the_station_and_shuts_it_down_first(tmp_path: Path) -> 
             player._state.is_paused = True
             assert bridge.liner_scheduler._can_fire() is False
             player.bus.playing = False
-            assert stream.on_listener_change == bridge.station.listener_changed
             player.bus.add_output.assert_called_once_with(stream)
             info = client.get("/api/stream").json()
             assert info["path"] == f"/stream/{secret.value}.mp3"
@@ -776,5 +775,8 @@ def test_seed_becomes_the_first_sets_first_track(tmp_path: Path) -> None:
         patch("autodj.stream.FfmpegEncoder", FakeEncoder),
         TestClient(create_app(bridge, stream_secret=secret, stream_first_track=seed)),
     ):
-        bridge.station.listener_changed(1)
+        bus = bridge.player.bus
+        bus.start_set.side_effect = lambda: setattr(bus, "playing", True)
+        bridge.stream.add_listener(icy=False)
+        bridge.station.tick()
         bridge.player.begin_set.assert_called_once_with(seed, "seed")
