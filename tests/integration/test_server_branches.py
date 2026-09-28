@@ -665,8 +665,8 @@ def test_unauthorized_chunked_upload_never_reads_receive() -> None:
 @pytest.mark.parametrize(
     ("path", "raw_path"),
     [
-        ("/static/../api/status", b"/static/%2e%2e/api/status"),
-        ("/static/\\api/status", b"/static/%5capi/status"),
+        ("/modules/../api/status", b"/modules/%2e%2e/api/status"),
+        ("/modules/\\api/status", b"/modules/%5capi/status"),
         ("/modules//api/status", b"/modules/%2fapi/status"),
     ],
 )

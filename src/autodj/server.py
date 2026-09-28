@@ -1248,8 +1248,6 @@ def create_app(
     app.mount(
         "/modules", _RevalidatedStaticFiles(directory=_STATIC_DIR / "modules"), name="modules"
     )
-    # Serve any other assets at /static/...
-    app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
     # ------------------------------------------------------------------
     # REST API

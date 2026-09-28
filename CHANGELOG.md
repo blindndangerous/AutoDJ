@@ -35,6 +35,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The web bundle build (`npm run build`) and the `src/autodj/static_dist` folder it produced.
   Delete a leftover `src/autodj/static_dist` folder: AutoDJ ignores it, but Git now lists it as
   untracked. `autodj doctor` no longer has a `frontend-bundle` check.
+- The `/static/` URLs. The page never used them; it loads its files from `/`, `/app.css`,
+  `/app.js`, `/modules/` and the worklet URLs, which stay.
 
 ### Fixed
 
