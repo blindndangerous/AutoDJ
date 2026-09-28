@@ -188,12 +188,14 @@ Audit records use fixed JSON fields for request ID, action, outcome, method, rou
 status. They do not include tokens, request bodies, query strings, client-supplied filenames, or
 music paths.
 
-Rejected requests are audited. Successful or rejected unsafe HTTP
-actions are audited after response status is known. WebSocket connection, control, error, and
-disconnect events are audited. These records support single-user incident review but do not provide
-per-user attribution.
+Rejected requests are audited. Successful or rejected unsafe HTTP actions are audited after
+response status is known. The WebSocket only pushes state; frames a browser sends on it are
+ignored. WebSocket connection, error, and disconnect events are audited. These records support
+single-user incident review but do not provide per-user attribution.
 
-## BA backup is a plain ZIP file: the published index generation, `dj_meta.db`, `web_state.json`,
+## Backup and restore boundary
+
+A backup is a plain ZIP file: the published index generation, `dj_meta.db`, `web_state.json`,
 the liners and profiles folders, the optional play history, and a `manifest.json` naming the
 AutoDJ version and the files. It is safe to make while AutoDJ serves: the index is copied under
 its publication lock and `dj_meta.db` through SQLite's backup API. The archive is written to a

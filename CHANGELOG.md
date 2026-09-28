@@ -63,6 +63,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   apply; an older file that still has them logs a warning for each until the page next saves.
 - An unknown harmonic mode sent to `POST /api/djmix` is refused with an error instead of being
   ignored.
+- The Now Playing Discovery button now uses `POST /api/discovery/toggle`, which needs a paired
+  session like the other controls, instead of a message on the WebSocket. The WebSocket only sends
+  state to the page and ignores anything the page sends on it. The button also works while the
+  WebSocket is reconnecting.
 
 ### Removed
 

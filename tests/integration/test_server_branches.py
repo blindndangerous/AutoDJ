@@ -621,6 +621,7 @@ def test_options_has_no_cors_bypass() -> None:
         ("post", "/api/playback-settings"),
         ("post", "/api/bpm-range"),
         ("post", "/api/discovery"),
+        ("post", "/api/discovery/toggle"),
         ("post", "/api/eq"),
         ("post", "/api/library/stop"),
     ],
@@ -795,80 +796,25 @@ def test_websocket_closes_when_an_established_session_expires() -> None:
     assert expired.value.code == 4401
 
 
-def test_websocket_rejects_mutation_after_session_expiry() -> None:
-    now = [1000.0]
-    client, bridge = _security_client_and_bridge(session_ttl_seconds=60)
-    client.app.state.security_policy.now = lambda: now[0]
-    initial = bridge.player._state.discovery_enabled
-    assert _pair(client).status_code == 200
-
-    with client.websocket_connect("/ws") as websocket:
-        now[0] = 1061.0
-        websocket.send_json({"type": "toggle_discovery"})
-        with pytest.raises(WebSocketDisconnect) as expired:
-            websocket.receive_text()
-
-    assert expired.value.code == 4401
-    assert bridge.player._state.discovery_enabled is initial
-
-
-def test_websocket_audits_connect_mutation_and_disconnect(
+def test_websocket_ignores_inbound_frames_and_audits_connect_and_disconnect(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    client = _security_client()
+    """The socket only pushes state: a frame from the page changes nothing."""
+    client, bridge = _security_client_and_bridge()
     assert _pair(client).status_code == 200
+    initial = bridge.player._state.discovery_enabled
     with (
         caplog.at_level(logging.INFO, logger="autodj.audit"),
         client.websocket_connect("/ws") as websocket,
     ):
         websocket.send_text("not-json")
-        websocket.send_json({"type": "toggle_discovery"})
-    records = [json.loads(item.message) for item in caplog.records if item.name == "autodj.audit"]
-    assert [record["outcome"] for record in records[-3:]] == [
-        "connected",
-        "success",
-        "disconnected",
-    ]
-    assert records[-2]["action"] == "toggle_discovery"
-    assert all(record["route"] == "/ws" for record in records[-3:])
-
-
-def test_websocket_ignores_binary_frame_then_processes_mutation() -> None:
-    client, bridge = _security_client_and_bridge()
-    assert _pair(client).status_code == 200
-    initial = bridge.player._state.discovery_enabled
-
-    with client.websocket_connect("/ws") as websocket:
-        websocket.send_bytes(b"not-a-text-command")
+        websocket.send_bytes(b"binary")
         websocket.send_json({"type": "toggle_discovery"})
         time.sleep(0.05)
-
-    assert bridge.player._state.discovery_enabled is not initial
-
-
-def test_websocket_bridge_failure_closes_and_audits_cleanup(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    client, bridge = _security_client_and_bridge()
-    bridge.toggle_discovery = MagicMock(side_effect=RuntimeError("private failure details"))
-    assert _pair(client).status_code == 200
-    caplog.clear()
-
-    with (
-        caplog.at_level(logging.INFO, logger="autodj.audit"),
-        client.websocket_connect("/ws") as websocket,
-    ):
-        websocket.send_json({"type": "toggle_discovery"})
-        with pytest.raises(WebSocketDisconnect) as closed:
-            websocket.receive_text()
-    assert closed.value.code == 1011
+    assert bridge.player._state.discovery_enabled is initial
     records = [json.loads(item.message) for item in caplog.records if item.name == "autodj.audit"]
-    assert [(record["action"], record["outcome"], record["status"]) for record in records] == [
-        ("/ws", "connected", 101),
-        ("toggle_discovery", "rejected", 500),
-        ("/ws", "disconnected", 1011),
-    ]
-    assert "private failure details" not in caplog.text
+    assert [record["outcome"] for record in records[-2:]] == ["connected", "disconnected"]
+    assert all(record["route"] == "/ws" for record in records[-2:])
 
 
 # ---------------------------------------------------------------------------

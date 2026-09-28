@@ -1054,15 +1054,18 @@ class TestGetIndexHtml:
 
 
 # ---------------------------------------------------------------------------
-# POST /api/discovery toggle via WebSocket message
+# POST /api/discovery/toggle — the Now Playing Discovery button
 # ---------------------------------------------------------------------------
 
 
 class TestDiscoveryToggle:
-    def test_toggle_discovery_via_bridge(self, bridge) -> None:
-        initial = bridge.player._state.discovery_enabled
-        bridge.toggle_discovery()
-        assert bridge.player._state.discovery_enabled is not initial
+    def test_toggle_route_flips_discovery_and_reports_it(self, bridge) -> None:
+        from fastapi.testclient import TestClient
+
+        client = TestClient(create_app(bridge))
+        assert client.post("/api/discovery/toggle").json() == {"discovery_enabled": True}
+        assert bridge.player._state.discovery_enabled is True
+        assert client.post("/api/discovery/toggle").json() == {"discovery_enabled": False}
 
 
 # ---------------------------------------------------------------------------
@@ -1274,130 +1277,6 @@ async def test_broadcast_close_failure_is_redacted_and_cancels_handler(caplog) -
     assert "private-close-secret" not in caplog.text
 
 
-async def test_bridge_error_close_waits_for_broadcast_and_prunes_client() -> None:
-    import asyncio
-
-    from autodj.server import (
-        _close_and_prune_websocket,
-        _send_websocket_payload,
-        _WebSocketClient,
-    )
-
-    class OrderedSocket:
-        def __init__(self) -> None:
-            self.send_started = asyncio.Event()
-            self.release_send = asyncio.Event()
-            self.sending = False
-            self.close_codes: list[int] = []
-            self.protocol_errors: list[str] = []
-            self.events: list[str] = []
-
-        async def send_text(self, _payload: str) -> None:
-            self.sending = True
-            self.events.append("send-start")
-            self.send_started.set()
-            await self.release_send.wait()
-            self.events.append("send-end")
-            self.sending = False
-
-        async def close(self, *, code: int) -> None:
-            if self.sending:
-                self.protocol_errors.append("close overlapped send")
-                raise RuntimeError("concurrent ASGI send")
-            self.events.append("close")
-            self.close_codes.append(code)
-
-    websocket = OrderedSocket()
-    client = _WebSocketClient(websocket, request_id="b" * 32)
-    clients = {client}
-    clients_lock = asyncio.Lock()
-    broadcast = asyncio.create_task(_send_websocket_payload(client, "payload", timeout_seconds=1.0))
-    await websocket.send_started.wait()
-
-    bridge_close = asyncio.create_task(
-        _close_and_prune_websocket(
-            client,
-            clients,
-            clients_lock,
-            code=1011,
-            timeout_seconds=1.0,
-        )
-    )
-    await asyncio.sleep(0)
-    assert websocket.close_codes == []
-    assert client in clients
-
-    websocket.release_send.set()
-    assert await broadcast is True
-    assert await bridge_close is True
-
-    assert websocket.events == ["send-start", "send-end", "close"]
-    assert websocket.close_codes == [1011]
-    assert websocket.protocol_errors == []
-    assert client not in clients
-
-
-async def test_stale_broadcast_snapshot_skips_client_closed_by_bridge() -> None:
-    import asyncio
-    import contextlib
-
-    from autodj.server import (
-        _broadcast_clients,
-        _close_and_prune_websocket,
-        _WebSocketClient,
-    )
-
-    class ClosedSocket:
-        def __init__(self) -> None:
-            self.closed = False
-            self.send_calls = 0
-            self.close_codes: list[int] = []
-            self.protocol_errors: list[str] = []
-
-        async def send_text(self, _payload: str) -> None:
-            self.send_calls += 1
-            if self.closed:
-                self.protocol_errors.append("send after close")
-                raise RuntimeError("ASGI send after close")
-
-        async def close(self, *, code: int) -> None:
-            self.closed = True
-            self.close_codes.append(code)
-
-    async def handler() -> None:
-        await asyncio.Event().wait()
-
-    handler_task = asyncio.create_task(handler())
-    websocket = ClosedSocket()
-    client = _WebSocketClient(
-        websocket,
-        request_id="c" * 32,
-        handler_task=handler_task,
-    )
-    clients = {client}
-    clients_lock = asyncio.Lock()
-    stale_snapshot = tuple(clients)
-
-    assert await _close_and_prune_websocket(
-        client,
-        clients,
-        clients_lock,
-        code=1011,
-        timeout_seconds=1.0,
-    )
-    dead = await _broadcast_clients(stale_snapshot, "stale", timeout_seconds=1.0)
-
-    assert dead == {client}
-    assert client not in clients
-    assert websocket.close_codes == [1011]
-    assert websocket.send_calls == 0
-    assert websocket.protocol_errors == []
-    assert not handler_task.done()
-    handler_task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await handler_task
-
-
 async def test_http_api_accessible_via_async_client() -> None:
     """Verify all REST endpoints respond correctly using the async ASGI transport."""
     from httpx2 import ASGITransport, AsyncClient
@@ -1541,65 +1420,6 @@ class TestLifespan:
             close_cache()
 
         assert not player_thread.is_alive()
-
-
-# ---------------------------------------------------------------------------
-# WebSocket text messages (discovery toggle + bad JSON)
-# ---------------------------------------------------------------------------
-
-
-class TestWebSocketMessages:
-    def test_toggle_discovery_via_ws_message(self) -> None:
-        """Sending {"type": "toggle_discovery"} toggles the discovery flag."""
-        from fastapi.testclient import TestClient
-
-        player = _make_player_mock()
-        sim = _make_sim_mock()
-        bridge = PlayerBridge(player=player, sim=sim)
-        app = create_app(bridge)
-
-        initial = player._state.discovery_enabled
-        tc = TestClient(app)
-        with tc.websocket_connect("/ws") as ws:
-            ws.send_text('{"type": "toggle_discovery"}')
-            # Yield control so the server processes the message
-            import time
-
-            time.sleep(0.05)
-
-        assert player._state.discovery_enabled is not initial
-
-    def test_invalid_json_over_ws_does_not_crash(self) -> None:
-        """Non-JSON text should be silently ignored."""
-        from fastapi.testclient import TestClient
-
-        player = _make_player_mock()
-        sim = _make_sim_mock()
-        bridge = PlayerBridge(player=player, sim=sim)
-        app = create_app(bridge)
-
-        tc = TestClient(app)
-        with tc.websocket_connect("/ws") as ws:
-            ws.send_text("not valid json {[}")
-            import time
-
-            time.sleep(0.05)
-        # No exception = success
-
-    def test_unknown_message_type_ignored(self) -> None:
-        from fastapi.testclient import TestClient
-
-        player = _make_player_mock()
-        sim = _make_sim_mock()
-        bridge = PlayerBridge(player=player, sim=sim)
-        app = create_app(bridge)
-
-        tc = TestClient(app)
-        with tc.websocket_connect("/ws") as ws:
-            ws.send_text('{"type": "unknown_action"}')
-            import time
-
-            time.sleep(0.05)
 
 
 # ---------------------------------------------------------------------------

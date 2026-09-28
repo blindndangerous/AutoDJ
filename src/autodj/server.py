@@ -59,7 +59,6 @@ from fastapi import (
     Response,
     UploadFile,
     WebSocket,
-    WebSocketDisconnect,
 )
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
@@ -263,26 +262,6 @@ async def _broadcast_and_prune(
         async with clients_lock:
             clients.difference_update(dead)
     return dead
-
-
-async def _close_and_prune_websocket(
-    client: _WebSocketClient,
-    clients: set[_WebSocketClient],
-    clients_lock: asyncio.Lock,
-    *,
-    code: int,
-    timeout_seconds: float = _WS_SEND_TIMEOUT_SECONDS,
-) -> bool:
-    """Close a WebSocket client and remove it from the shared client set."""
-    closed = await _close_websocket_client(
-        client,
-        code=code,
-        timeout_seconds=timeout_seconds,
-        failure_action="websocket_close",
-    )
-    async with clients_lock:
-        clients.discard(client)
-    return closed
 
 
 async def reload_published_generation_once(
@@ -1904,6 +1883,11 @@ def create_app(
         bridge.save_persistent_state()
         return bridge.get_settings()
 
+    @app.post("/api/discovery/toggle")
+    async def api_discovery_toggle() -> dict[str, bool]:
+        """Turn discovery on or off for this run (the Now Playing Discovery button)."""
+        return {"discovery_enabled": bridge.toggle_discovery()}
+
     # ------------------------------------------------------------------
     # 3-band EQ
     # ------------------------------------------------------------------
@@ -2064,62 +2048,12 @@ def create_app(
         )
         disconnect_code = 1000
         try:
+            # The socket only pushes state; frames the page sends are ignored.
             while True:
                 message = await websocket.receive()
                 if message["type"] == "websocket.disconnect":
-                    raise WebSocketDisconnect(
-                        code=message.get("code", 1000),
-                        reason=message.get("reason", ""),
-                    )
-                text = message.get("text")
-                if not isinstance(text, str):
-                    continue
-                if not _websocket_session_is_valid(client):
-                    disconnect_code = 4401
-                    await _close_and_prune_websocket(
-                        client,
-                        _ws_clients,
-                        _ws_lock,
-                        code=disconnect_code,
-                    )
-                    return
-                # Handle incoming control commands from the client
-                try:
-                    msg = json.loads(text)
-                    if isinstance(msg, dict) and msg.get("type") == "toggle_discovery":
-                        try:
-                            bridge.toggle_discovery()
-                        except Exception:
-                            disconnect_code = 1011
-                            emit_audit(
-                                request_id,
-                                "toggle_discovery",
-                                "rejected",
-                                method="WS",
-                                route=route,
-                                status=500,
-                                level=logging.WARNING,
-                            )
-                            await _close_and_prune_websocket(
-                                client,
-                                _ws_clients,
-                                _ws_lock,
-                                code=disconnect_code,
-                            )
-                            return
-                        emit_audit(
-                            request_id,
-                            "toggle_discovery",
-                            "success",
-                            method="WS",
-                            route=route,
-                            status=200,
-                        )
-                except (json.JSONDecodeError, AttributeError):
-                    pass
-        except WebSocketDisconnect as exc:
-            disconnect_code = exc.code
-            pass
+                    disconnect_code = message.get("code", 1000)
+                    break
         except asyncio.CancelledError:
             if client.failure_code is None:
                 raise
