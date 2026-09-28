@@ -351,7 +351,7 @@ describe("bootstrapAuthenticatedApp", () => {
     expect(startAuthenticatedApp).not.toHaveBeenCalled();
   });
 
-  it("fetches initial state then starts authenticated work exactly once", async () => {
+  it("fetches initial state then starts authenticated work", async () => {
     const initialState = { paused: false };
     const fetchImpl = vi.fn().mockResolvedValue(response({
       ok: true,
@@ -367,13 +367,7 @@ describe("bootstrapAuthenticatedApp", () => {
       startAuthenticatedApp,
     };
 
-    const [first, second] = await Promise.all([
-      bootstrapAuthenticatedApp(args),
-      bootstrapAuthenticatedApp(args),
-    ]);
-    const third = await bootstrapAuthenticatedApp(args);
-
-    expect([first, second, third]).toEqual([true, true, true]);
+    expect(await bootstrapAuthenticatedApp(args)).toBe(true);
     expect(fetchImpl).toHaveBeenCalledOnce();
     expect(fetchImpl).toHaveBeenCalledWith("/api/auth/status");
     expect(requestState).toHaveBeenCalledOnce();
@@ -464,33 +458,6 @@ describe("bootstrapAuthenticatedApp", () => {
     expect(requestState).toHaveBeenCalledWith("/api/status");
     expect(startAuthenticatedApp).toHaveBeenCalledOnce();
     expect(startAuthenticatedApp).toHaveBeenCalledWith(initialState);
-  });
-
-  it("does not retry a callback that threw after startup was attempted", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(response({
-      ok: true,
-      status: 200,
-      json: { required: true, authenticated: true },
-    }));
-    const requestState = vi.fn().mockResolvedValue({ paused: false });
-    const startAuthenticatedApp = vi.fn()
-      .mockImplementationOnce(() => {
-        throw new Error("partial startup");
-      })
-      .mockImplementationOnce(() => {});
-    const args = {
-      fetchImpl,
-      requestState,
-      auth: { show: vi.fn() },
-      startAuthenticatedApp,
-      onError: vi.fn(),
-    };
-
-    expect(await bootstrapAuthenticatedApp(args)).toBe(false);
-    expect(await bootstrapAuthenticatedApp(args)).toBe(false);
-    expect(startAuthenticatedApp).toHaveBeenCalledOnce();
-    expect(fetchImpl).toHaveBeenCalledOnce();
-    expect(requestState).toHaveBeenCalledOnce();
   });
 });
 

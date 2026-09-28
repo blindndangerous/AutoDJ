@@ -19,6 +19,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Playback settings out of range are refused instead of quietly adjusted: a negative crossfade,
   fade-in or liner trigger, or a mood arc shorter than 15 minutes. Applying a saved profile with
   such a value, or with NaN or Infinity in it, now fails with an error and changes nothing.
+- Deleting a voice liner asks in the page's own confirmation dialog, like deleting a profile,
+  instead of the browser's pop-up. After the delete, focus goes to the next liner's Delete button,
+  or to Upload when no liner is left.
 
 ### Removed
 
@@ -27,10 +30,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- The liner ducking level now only accepts -30 to 0 dB. A positive value used to boost the music,
-  not quieten it, while a liner played. AutoDJ refuses to start with `liners_duck_db` outside that
-  range in the config file, the server refuses it, and a saved value outside that range is ignored
-  on restart.
+- The liner ducking level (Duck depth) now only accepts -30 to 0 dB. A positive value used to
+  boost the music, not quieten it, while a liner played. AutoDJ refuses to start with
+  `liners_duck_db` outside that range in the config file, the server refuses it, a saved value
+  outside that range is ignored on restart, and the web page's Duck depth field refuses it and
+  says why, like the other number fields, instead of sending it.
+- A Duck depth of 0 (no drop) is now used as 0 when the web page plays a liner, not as minus 12.
 - The random and rotate transition choices in the server-side mix (the radio stream) now include
   backspin, as the web page already did.
 - Liner clips in subfolders of the liners folder no longer show up in the list. They could not

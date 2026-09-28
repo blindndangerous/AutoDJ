@@ -1,6 +1,6 @@
 // Pure DOM / formatting helpers shared across modules.
 
-import { showVisibleStatus } from "./live-region.js";
+import { announceStatus } from "./live-region.js";
 
 // ----------------------------------------------------------------
 // Debug logging — opt-in via `?debug=1` URL param OR
@@ -83,36 +83,18 @@ export function escHtml(str) {
     .replace(/"/g, "&quot;");
 }
 
+// Query hotkeys answer out loud through #sr-status, and the same answer
+// shows in the visible mirror.  Forced, so asking twice is answered
+// twice; the region empties 300 ms later.
+export function srSpeak(msg) {
+  announceStatus(document.getElementById("sr-status"), msg, { force: true, dwellMs: 300 });
+}
+
 // ----------------------------------------------------------------
 // Text-entry controls keep their keys. The hotkeys module separately
 // preserves native activation, navigation, and dropdown typeahead while
 // allowing unrelated letter shortcuts from buttons and sliders.
 // ----------------------------------------------------------------
-
-// ----------------------------------------------------------------
-// Screen-reader announcements via ARIA live region #sr-status.
-// Clear-then-set pattern lets the same message be re-announced on
-// repeated key press.  300 ms window is long enough for polite
-// announcement to fire; short enough that a second keypress clears
-// and re-sets the text.
-// ----------------------------------------------------------------
-
-let _srTimer = null;
-
-export function srSpeak(msg) {
-  const el = document.getElementById("sr-status");
-  if (!el) return;
-  // Query hotkeys answer out loud; show the same answer so a sighted
-  // keyboard user gets the reply too.  The mirror is aria-hidden, so
-  // this is still one announcement.
-  showVisibleStatus(msg);
-  clearTimeout(_srTimer);
-  el.textContent = "";
-  setTimeout(() => {
-    el.textContent = msg;
-    _srTimer = setTimeout(() => { el.textContent = ""; }, 300);
-  }, 0);
-}
 
 export function isTypingTarget(el) {
   if (!el) return false;
@@ -129,49 +111,35 @@ export function isTypingTarget(el) {
   return false;
 }
 
-// How long the pressed button outlives its row: time for the browser to
-// report the new focus to the screen reader in an earlier accessibility
-// update than the one that removes the button.
-const FOCUS_SETTLE_MS = 300;
+// ----------------------------------------------------------------
+// Settings lists: saved profiles, paired devices, voice liners.
+// ----------------------------------------------------------------
 
-// Swap a list's rows for *rows* after a row was deleted, without focus
-// passing through the document.  The new rows go in first; when focus is
-// still on *focus.from* (the pressed button) or already lost, it moves to
-// the control matching *focus.selector* at *focus.index* in the new rows
-// (the next row's, or the last), or to *focus.fallback* when the list is
-// empty.  Focus the user moved elsewhere while the request ran stays
-// where it is.
-//
-// Moving focus before the removal was not enough (D14): the browser sent
-// NVDA the removal and the focus change in one update, the removal first,
-// so NVDA saw its focused button die, fell back to the document and read
-// the page title and the banner before the new focus.  So the row that
-// held the pressed button stays, visually hidden and out of the tab
-// order, until the new focus has been reported, and is removed then.
-export function replaceRows(list, rows, focus = null) {
-  const doc = list.ownerDocument;
-  const old = Array.from(list.childNodes);
-  list.append(...rows);
-  let held = null;
-  if (focus) {
-    const active = doc.activeElement;
-    if (active === focus.from || !active || active === doc.body) {
-      const targets = rows.flatMap((row) => Array.from(row.querySelectorAll(focus.selector)));
-      const target = targets[Math.min(focus.index, targets.length - 1)] || focus.fallback;
-      if (target) {
-        target.focus();
-        if (focus.from && doc.activeElement === target) {
-          held = old.find((node) => node.contains(focus.from)) || null;
-        }
-      }
-    }
-  }
-  for (const node of old) {
-    if (node !== held) node.remove();
-  }
-  if (held) {
-    held.classList.add("visually-hidden");
-    focus.from.tabIndex = -1;
-    setTimeout(() => held.remove(), FOCUS_SETTLE_MS);
-  }
+// A button for one row, named for that row: "Delete" on screen, "Delete
+// profile Early" to a screen reader.
+export function rowButton(doc, label, name, onClick) {
+  const button = doc.createElement("button");
+  button.type = "button";
+  button.textContent = label;
+  button.setAttribute("aria-label", name);
+  button.addEventListener("click", () => onClick(button));
+  return button;
+}
+
+// One row: the text in a span, then its buttons.
+export function listRow(doc, text, textClass, ...buttons) {
+  const row = doc.createElement("li");
+  const span = doc.createElement("span");
+  if (textClass) span.className = textClass;
+  span.textContent = text;
+  row.append(span);
+  for (const button of buttons) row.append(" ", button);
+  return row;
+}
+
+// After a row's delete, the control that gets focus: the same control in
+// the row that took its place, else the last row's, else *fallback*.
+export function nextRowControl(list, selector, index, fallback) {
+  const controls = list.querySelectorAll(selector);
+  return controls[Math.min(index, controls.length - 1)] || fallback;
 }

@@ -24,22 +24,22 @@ import {
 import { fmtDurationWords, fmtTime, setNoValue } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 
-const _jobStatusState = new WeakMap();
-const _logState = new WeakMap();
-// Only an installed panel fetches on its own; applyLibraryJobState alone
-// just renders what it is given.
-const _installed = new WeakSet();
-// Per panel: the latest job snapshot, which finished job has been
-// followed up (full log, fresh stats), and which job's full log is shown.
-const _jobs = new WeakMap();
+// The page has one Library panel.  Its memory: the phase last spoken, the
+// log lines on screen, whether installLibraryJobs ran (only then does the
+// panel fetch on its own; applyLibraryJobState alone just renders what it
+// is given), and the latest job snapshot with which finished job has been
+// followed up (full log, fresh stats) and which job's full log is shown.
+let spokenPhase = null;
+let shownLines = null;
+let installed = false;
+let latest = null;
 
 // Write `text` into the live region only when the phase actually
 // changed.  Repeated ticks carrying the same phase are silent.
 function setJobPhase(jobStatus, phase, text) {
   if (!jobStatus) return;
-  const previous = _jobStatusState.get(jobStatus);
-  if (previous && previous.phase === phase) return;
-  _jobStatusState.set(jobStatus, { phase });
+  if (spokenPhase === phase) return;
+  spokenPhase = phase;
   if (jobStatus.textContent !== text) jobStatus.textContent = text;
 }
 
@@ -49,7 +49,7 @@ function setJobPhase(jobStatus, phase, text) {
 // setting one, and the following tick re-establishes the real phase.
 function reportJobError(jobStatus, text) {
   if (!jobStatus) return;
-  _jobStatusState.delete(jobStatus);
+  spokenPhase = null;
   if (jobStatus.textContent !== text) jobStatus.textContent = text;
 }
 
@@ -157,14 +157,13 @@ function slideOffset(rendered, lines) {
 // head may fall off; drop exactly the vanished nodes and append exactly
 // the new ones rather than replacing the whole subtree every second.
 function renderLog(libLog, lines) {
-  const previous = _logState.get(libLog);
-  const rendered = previous ? previous.lines : null;
+  const rendered = shownLines;
 
   renderLogCount(libLog, lines.length);
   if (lines.length === 0) {
     if (!rendered || rendered.length !== 0) {
       libLog.replaceChildren(emptyLogNote(libLog));
-      _logState.set(libLog, { lines: [] });
+      shownLines = [];
     }
     return;
   }
@@ -182,7 +181,7 @@ function renderLog(libLog, lines) {
   for (let i = kept; i < lines.length; i++) {
     libLog.appendChild(logLine(libLog, lines[i]));
   }
-  _logState.set(libLog, { lines: lines.slice() });
+  shownLines = lines.slice();
 }
 
 // The websocket carries only the last 25 log lines, which cut a Stats
@@ -190,13 +189,12 @@ function renderLog(libLog, lines) {
 // (GET /api/library/job) and add the missing head in front of what is
 // already shown, so a reader part-way down the log keeps their place.
 function renderFullLog(libLog, lines) {
-  const previous = _logState.get(libLog);
-  const rendered = previous ? previous.lines : [];
+  const rendered = shownLines || [];
   const head = lines.length - rendered.length;
   const isSuffix = rendered.length > 0 && head >= 0
     && rendered.every((line, i) => line === lines[head + i]);
   if (!isSuffix) {
-    _logState.delete(libLog);
+    shownLines = null;
     renderLog(libLog, lines);
     return;
   }
@@ -205,7 +203,7 @@ function renderFullLog(libLog, lines) {
   const fragment = libLog.ownerDocument.createDocumentFragment();
   for (const line of lines.slice(0, head)) fragment.appendChild(logLine(libLog, line));
   libLog.insertBefore(fragment, libLog.firstChild);
-  _logState.set(libLog, { lines: lines.slice() });
+  shownLines = lines.slice();
 }
 
 async function followUpFinishedJob(els, job) {
@@ -221,16 +219,15 @@ async function followUpFinishedJob(els, job) {
     return;  // The last 25 lines stay on screen.
   }
   if (!isAuthenticatedRequestCurrent(epoch)) return;
-  const current = _jobs.get(els);
+  const current = latest;
   if (!full || full.running || full.started_at !== job.started_at
       || !current || current.job.started_at !== job.started_at) return;
   current.fullLogFor = job.started_at;
   renderFullLog(els.libLog, Array.isArray(full.lines) ? full.lines : []);
 }
 
-function runningJobName(els) {
-  const current = _jobs.get(els);
-  return current && current.job.running ? current.job.name : null;
+function runningJobName() {
+  return latest && latest.job.running ? latest.job.name : null;
 }
 
 // Run buttons stay enabled while a job runs (a disabled button drops
@@ -250,7 +247,7 @@ export function installLibraryJobs(els) {
     indexLimit, statsRefresh,
     statCount,
   } = els;
-  _installed.add(els);
+  installed = true;
 
   if (runIndex) {
     runIndex.addEventListener("click", (event) => {
@@ -286,7 +283,7 @@ export function installLibraryJobs(els) {
 
 async function _run(els, name, args = [], control = null) {
   const { jobStatus } = els;
-  const running = runningJobName(els);
+  const running = runningJobName();
   if (running) {
     reportBusy(els, running);
     return;
@@ -305,8 +302,8 @@ async function _run(els, name, args = [], control = null) {
   } catch (err) {
     if (!isAuthenticatedRequestCurrent(epoch)) return;
     // Another page (or the CLI) started a job since the last push.
-    if (err.status === 409 && runningJobName(els)) {
-      reportBusy(els, runningJobName(els));
+    if (err.status === 409 && runningJobName()) {
+      reportBusy(els, runningJobName());
       return;
     }
     reportJobError(jobStatus, `Error starting ${name}: ${err.message || err}`);
@@ -352,13 +349,13 @@ export function applyLibraryJobState(s, els) {
   const { libLog, jobStatus, jobElapsed } = els;
   const job = s && s.library_job;
   if (!job || !libLog) return;
-  const previous = _jobs.get(els);
+  const previous = latest;
   const current = {
     job,
     finishedFor: previous ? previous.finishedFor : null,
     fullLogFor: previous ? previous.fullLogFor : null,
   };
-  _jobs.set(els, current);
+  latest = current;
   updateJobStatus(job, jobStatus, jobElapsed);
   // The full log of this finished job is already shown; the websocket's
   // 25-line window would cut it back down.
@@ -366,7 +363,7 @@ export function applyLibraryJobState(s, els) {
     renderLog(libLog, job.lines || []);
   }
   const finished = !job.running && job.exit_code != null && job.started_at != null;
-  if (finished && current.finishedFor !== job.started_at && _installed.has(els)) {
+  if (finished && current.finishedFor !== job.started_at && installed) {
     current.finishedFor = job.started_at;
     void followUpFinishedJob(els, job);
   }

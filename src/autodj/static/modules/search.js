@@ -13,7 +13,6 @@ import {
   requestJson,
   withDisabled,
 } from "./api-client.js";
-import { createLatestRequestOwner } from "./latest-request.js";
 
 // Mirrors the `limit` default of GET /api/search (server.py).
 const SEARCH_RESULT_LIMIT = 100;
@@ -22,7 +21,8 @@ export function installSearch({
   searchInput, btnSearch, searchResults, searchCount, queueAnnounce,
 }) {
   if (!searchInput || !searchResults) return;
-  const searchRequestOwner = createLatestRequestOwner();
+  // The search in flight: a newer one, or emptying the field, aborts it.
+  let searchRequest = null;
 
   // Announced once and shown once: announceStatus writes the region and
   // copies the same string into the visible #status-toast, so a failed
@@ -47,10 +47,11 @@ export function installSearch({
     if (!q) {
       searchResults.innerHTML = "";
       setCount("");
-      searchRequestOwner.cancel();
+      searchRequest?.abort();
       return;
     }
-    const request = searchRequestOwner.begin();
+    searchRequest?.abort();
+    const request = searchRequest = new AbortController();
     let data;
     try {
       data = await withDisabled(btnSearch, () => requestJson(
@@ -58,14 +59,13 @@ export function installSearch({
         { signal: request.signal },
       ));
     } catch (errorValue) {
-      if (!searchRequestOwner.isCurrent(request)) return;
+      if (request.signal.aborted) return;
       setCount(`Could not search: ${errorValue.message}`,
         { mirror: true, tone: "error" });
       searchInput.focus();
       return;
     }
-    if (!searchRequestOwner.isCurrent(request)) return;
-    searchRequestOwner.finish(request);
+    if (request.signal.aborted) return;
     const results = data.results || [];
 
     if (results.length === 0) {
@@ -111,7 +111,7 @@ export function installSearch({
   // Collapse results when input is cleared.
   searchInput.addEventListener("input", () => {
     if (!searchInput.value.trim()) {
-      searchRequestOwner.cancel();
+      searchRequest?.abort();
       searchResults.innerHTML = "";
       setCount("");
     }

@@ -12,6 +12,7 @@ import {
   requestJson,
 } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
+import { listRow, nextRowControl, rowButton } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 
 export const SIGNED_OUT_REASON =
@@ -38,24 +39,14 @@ export function installAccess(els, { onSignedOut }) {
   };
 
   function render() {
-    const rows = [];
-    for (const device of devices) {
-      const row = doc.createElement("li");
-      const text = doc.createElement("span");
-      text.className = "device-text";
+    list.replaceChildren(...devices.map((device) => {
       const who = device.current ? `${device.name}, this browser` : device.name;
-      text.textContent = `${who}.  Last used ${formatSeen(device.last_seen_at)}.  `
-        + `Paired ${formatSeen(device.paired_at)}.`;
-      const revoke = doc.createElement("button");
-      revoke.type = "button";
-      revoke.textContent = "Revoke";
+      const revoke = rowButton(doc, "Revoke", `Revoke ${who}`,
+        (button) => void revokeDevice(device, button));
       revoke.dataset.deviceId = device.device_id;
-      revoke.setAttribute("aria-label", `Revoke ${who}`);
-      revoke.addEventListener("click", () => void revokeDevice(device, revoke));
-      row.append(text, " ", revoke);
-      rows.push(row);
-    }
-    list.replaceChildren(...rows);
+      return listRow(doc, `${who}.  Last used ${formatSeen(device.last_seen_at)}.  `
+        + `Paired ${formatSeen(device.paired_at)}.`, "device-text", revoke);
+    }));
   }
 
   async function load({ announce = false } = {}) {
@@ -134,8 +125,7 @@ export function installAccess(els, { onSignedOut }) {
         await load();
         if (!isAuthenticatedRequestCurrent(epoch)) return null;
         result = [`Revoked ${device.name}.`];
-        const targets = Array.from(list.querySelectorAll("button[data-device-id]"));
-        return targets[Math.min(index, targets.length - 1)] || refresh;
+        return nextRowControl(list, "button[data-device-id]", index, refresh);
       },
     });
     if (!confirmed) {

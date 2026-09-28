@@ -1,144 +1,45 @@
-const installedControllers = new WeakMap();
+// Dragging on the progress bar: preview while the pointer moves, seek
+// when it is released over the bar.  Pointer capture keeps the moves and
+// the release coming to the bar even off its edge.  A release outside it,
+// a cancelled pointer or a lost capture (alt-tab, a touch the browser
+// took over) drops the drag without seeking.  The keyboard and
+// aria-valuetext side of the slider lives in app.js.
 
 export function installSeekController(element, { preview, commit }) {
-  installedControllers.get(element)?.destroy();
-
-  let activePointerId = null;
-  let fallbackTarget = null;
-  let destroyed = false;
-  const ownerDocument = element.ownerDocument;
-  const windowTarget = ownerDocument?.defaultView;
-
-  function isDragging() {
-    return activePointerId !== null;
-  }
-
-  function owns(event) {
-    return activePointerId !== null && event.pointerId === activePointerId;
-  }
-
-  function release(pointerId) {
-    try {
-      element.releasePointerCapture(pointerId);
-    } catch (_) {}
-  }
-
-  function clearFallback() {
-    if (!fallbackTarget) return;
-    fallbackTarget.removeEventListener("pointerup", onOutsidePointerUp);
-    fallbackTarget.removeEventListener("pointercancel", onPointerCancel);
-    fallbackTarget = null;
-  }
-
-  function finish(event, shouldCommit) {
-    if (!owns(event)) return;
-    const pointerId = activePointerId;
-    activePointerId = null;
-    clearFallback();
-    try {
-      if (shouldCommit) commit(event);
-    } finally {
-      release(pointerId);
-    }
-  }
+  let pointerId = null;
+  const owns = (event) => pointerId !== null && event.pointerId === pointerId;
 
   function cancel() {
-    if (!isDragging()) return;
-    const pointerId = activePointerId;
-    activePointerId = null;
-    clearFallback();
-    release(pointerId);
+    if (pointerId === null) return;
+    const id = pointerId;
+    pointerId = null;
+    element.releasePointerCapture(id);
   }
 
-  function previewOwned(event) {
-    try {
-      preview(event);
-    } catch (errorValue) {
-      cancel();
-      throw errorValue;
-    }
-  }
-
-  function onPointerDown(event) {
-    if (destroyed || isDragging() || event.isPrimary === false
-        || (event.button !== undefined && event.button !== 0)) return;
-    activePointerId = event.pointerId;
-    installFallback();
-    try {
-      element.setPointerCapture(event.pointerId);
-    } catch (_) {}
-    try {
-      previewOwned(event);
-    } finally {
-      event.preventDefault();
-    }
-  }
-
-  function onPointerMove(event) {
-    if (owns(event)) previewOwned(event);
-  }
-
-  function releasedOutside(event) {
-    if (typeof event.clientX !== "number" || typeof event.clientY !== "number"
-        || typeof element.getBoundingClientRect !== "function") return false;
-    const rect = element.getBoundingClientRect();
-    return event.clientX < rect.left || event.clientX > rect.right
-      || event.clientY < rect.top || event.clientY > rect.bottom;
-  }
-
-  function onPointerUp(event) {
-    finish(event, !releasedOutside(event));
-  }
-
-  function onOutsidePointerUp(event) {
-    finish(event, false);
-  }
-
-  function onPointerCancel(event) {
-    finish(event, false);
-  }
-
-  function onLostPointerCapture(event) {
+  element.addEventListener("pointerdown", (event) => {
+    if (pointerId !== null || !event.isPrimary || event.button !== 0) return;
+    event.preventDefault();
+    pointerId = event.pointerId;
+    element.setPointerCapture(pointerId);
+    preview(event);
+  });
+  element.addEventListener("pointermove", (event) => {
+    if (owns(event)) preview(event);
+  });
+  element.addEventListener("pointerup", (event) => {
     if (!owns(event)) return;
-    activePointerId = null;
-    clearFallback();
-  }
-
-  function onVisibilityChange() {
-    if (ownerDocument?.visibilityState === "hidden") cancel();
-  }
-
-  function installFallback() {
-    if (!ownerDocument?.addEventListener) return;
-    fallbackTarget = ownerDocument;
-    ownerDocument.addEventListener("pointerup", onOutsidePointerUp);
-    ownerDocument.addEventListener("pointercancel", onPointerCancel);
-  }
-
-  function destroy() {
-    if (destroyed) return;
-    destroyed = true;
+    const rect = element.getBoundingClientRect();
+    const inside = event.clientX >= rect.left && event.clientX <= rect.right
+      && event.clientY >= rect.top && event.clientY <= rect.bottom;
     cancel();
-    element.removeEventListener("pointerdown", onPointerDown);
-    element.removeEventListener("pointermove", onPointerMove);
-    element.removeEventListener("pointerup", onPointerUp);
-    element.removeEventListener("pointercancel", onPointerCancel);
-    element.removeEventListener("lostpointercapture", onLostPointerCapture);
-    ownerDocument?.removeEventListener("visibilitychange", onVisibilityChange);
-    windowTarget?.removeEventListener("blur", cancel);
-    if (installedControllers.get(element) === controller) {
-      installedControllers.delete(element);
-    }
-  }
+    if (inside) commit(event);
+  });
+  element.addEventListener("pointercancel", (event) => {
+    if (owns(event)) cancel();
+  });
+  element.addEventListener("lostpointercapture", (event) => {
+    if (owns(event)) pointerId = null;
+  });
 
-  const controller = { cancel, destroy, isDragging };
-  element.addEventListener("pointerdown", onPointerDown);
-  element.addEventListener("pointermove", onPointerMove);
-  element.addEventListener("pointerup", onPointerUp);
-  element.addEventListener("pointercancel", onPointerCancel);
-  element.addEventListener("lostpointercapture", onLostPointerCapture);
-  ownerDocument?.addEventListener("visibilitychange", onVisibilityChange);
-  windowTarget?.addEventListener("blur", cancel);
-  installedControllers.set(element, controller);
-  return controller;
+  return { cancel, isDragging: () => pointerId !== null };
 }

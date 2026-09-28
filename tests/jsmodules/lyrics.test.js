@@ -216,13 +216,7 @@ describe("lyrics request ownership", () => {
     expect(elements.lyricsList.children).toHaveLength(0);
   });
 
-  it.each([
-    [true, "auto"],
-    [false, "smooth"],
-  ])("uses %s reduced-motion preference when scrolling the current line", async (
-    reducedMotion, expectedBehavior,
-  ) => {
-    vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: reducedMotion })));
+  it("scrolls only the lyrics box, centring the current line", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
       lyricsResponse("motion.flac", "Line one"),
     ));
@@ -230,7 +224,8 @@ describe("lyrics request ownership", () => {
     await loadLyrics("motion.flac", elements);
     const line = elements.lyricsList.querySelector("li");
     line.scrollIntoView = vi.fn();
-    elements.lyricsList.scrollTo = vi.fn();
+    line.getBoundingClientRect = () => ({ top: 300, height: 20 });
+    elements.lyricsList.getBoundingClientRect = () => ({ top: 100, height: 140 });
 
     applyLyricsState({
       has_lyrics: true,
@@ -238,44 +233,11 @@ describe("lyrics request ownership", () => {
       lyric_text: "Line one",
     }, elements);
 
-    // Only the lyrics box scrolls -- scrollIntoView would drag every
-    // scrollable ancestor, including the page, once per line.
+    // scrollIntoView would drag every scrollable ancestor, including the
+    // page, once per line.
     expect(line.scrollIntoView).not.toHaveBeenCalled();
-    expect(elements.lyricsList.scrollTo).toHaveBeenCalledWith({
-      top: expect.any(Number),
-      behavior: expectedBehavior,
-    });
+    expect(elements.lyricsList.scrollTop).toBe(140);
     expect(line.getAttribute("aria-current")).toBe("true");
-  });
-
-  it.each([
-    ["absent", undefined],
-    ["non-callable", {}],
-    ["throwing", vi.fn(() => { throw new Error("media query failed"); })],
-  ])("uses non-animated scrolling when matchMedia is %s", async (
-    _description, matchMediaValue,
-  ) => {
-    vi.stubGlobal("matchMedia", matchMediaValue);
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
-      lyricsResponse("safe-motion.flac", "Line one"),
-    ));
-    const elements = lyricElements();
-    await loadLyrics("safe-motion.flac", elements);
-    const line = elements.lyricsList.querySelector("li");
-    line.scrollIntoView = vi.fn();
-    elements.lyricsList.scrollTo = vi.fn();
-
-    expect(() => applyLyricsState({
-      has_lyrics: true,
-      lyric_index: 0,
-      lyric_text: "Line one",
-    }, elements)).not.toThrow();
-
-    expect(line.scrollIntoView).not.toHaveBeenCalled();
-    expect(elements.lyricsList.scrollTo).toHaveBeenCalledWith({
-      top: expect.any(Number),
-      behavior: "auto",
-    });
   });
 });
 
@@ -348,7 +310,6 @@ describe("timed highlight from the local playback clock", () => {
   async function loaded() {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(timedResponse("t.flac")));
     const elements = lyricElements();
-    elements.lyricsList.scrollTo = vi.fn();
     await loadLyrics("t.flac", elements);
     return elements;
   }
@@ -418,7 +379,6 @@ describe("the current line said on request", () => {
       { headers: { "Content-Type": "application/json" } },
     )));
     const elements = lyricElements();
-    elements.lyricsList.scrollTo = vi.fn();
     await loadLyrics("t.flac", elements);
     return elements;
   }

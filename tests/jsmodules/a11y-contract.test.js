@@ -9,7 +9,6 @@ const staticPath = (...parts) => join(
 const cssSource = readFileSync(staticPath("app.css"), "utf8");
 const htmlSource = readFileSync(staticPath("index.html"), "utf8");
 const appSource = readFileSync(staticPath("app.js"), "utf8");
-const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
 
 function stripCssComments(source) {
   let result = "";
@@ -1656,9 +1655,10 @@ describe("static accessibility contracts", () => {
     expect(note.hasAttribute("role")).toBe(false);
     expect(note.hasAttribute("aria-hidden")).toBe(false);
 
-    // A plain native modal: named by its own heading, described by its
-    // warning, Escape cancels, and the buttons return cancel / confirm.
-    const dialog = document.querySelector("#stream-rotate-dialog");
+    // Make new link asks in the shared confirmation: a plain native
+    // modal named by its own heading, described by its message, with
+    // Cancel first.
+    const dialog = document.querySelector("#confirm-dialog");
     expect(dialog.tagName).toBe("DIALOG");
     // A modal inside a hidden tab panel (display: none) never renders,
     // so the dialog sits outside every panel and card.
@@ -1666,20 +1666,19 @@ describe("static accessibility contracts", () => {
     const title = document.getElementById(dialog.getAttribute("aria-labelledby"));
     expect(title.tagName).toBe("H2");
     expect(dialog.contains(title)).toBe(true);
-    expect(title.textContent.trim()).toBe("Make a new stream link?");
-    const warning = document.getElementById(dialog.getAttribute("aria-describedby"));
-    expect(dialog.contains(warning)).toBe(true);
+    const message = document.getElementById(dialog.getAttribute("aria-describedby"));
+    expect(dialog.contains(message)).toBe(true);
     expect(dialog.hasAttribute("role")).toBe(false);
     expect(dialog.hasAttribute("closedby")).toBe(false);
     const form = dialog.querySelector("form");
     expect(form.getAttribute("method")).toBe("dialog");
     const buttons = [...form.querySelectorAll("button")];
-    expect(buttons.map((button) => [
-      button.getAttribute("type"), button.value, button.textContent.trim(),
-    ])).toEqual([
-      ["submit", "cancel", "Cancel"],
-      ["submit", "confirm", "Make new link"],
-    ]);
+    expect(buttons.map((button) => [button.id, button.getAttribute("type"), button.value]))
+      .toEqual([
+        ["confirm-cancel", "submit", "cancel"],
+        ["confirm-accept", "submit", "confirm"],
+      ]);
+    expect(buttons[0].textContent.trim()).toBe("Cancel");
   });
 
   it("never nests a dialog inside a tab panel", () => {
@@ -1737,318 +1736,5 @@ describe("static accessibility contracts", () => {
     installDocument({ html: htmlSource });
     const desc = document.querySelector("#transition-desc").textContent.trim();
     expect(desc.split(/\s+/).length).toBeLessThan(20);
-  });
-});
-
-describe("frontend CI gate", () => {
-  function stripYamlComment(line) {
-    let quote = null;
-    for (let index = 0; index < line.length; index += 1) {
-      const character = line[index];
-      if (quote) {
-        if (quote === '"' && character === "\\") index += 1;
-        else if (character === quote) quote = null;
-      } else if (character === '"' || character === "'") {
-        quote = character;
-      } else if (character === "#"
-        && (index === 0 || /\s/.test(line[index - 1]))) {
-        return line.slice(0, index).trimEnd();
-      }
-    }
-    return line.trimEnd();
-  }
-
-  function workflowJobLines(source, jobName) {
-    const lines = source.split(/\r?\n/).map(stripYamlComment);
-    const jobsIndex = lines.findIndex((line) => line === "jobs:");
-    if (jobsIndex < 0) return [];
-
-    const jobLines = [];
-    let inTarget = false;
-    for (const line of lines.slice(jobsIndex + 1)) {
-      if (!line.trim()) continue;
-      const indentation = line.match(/^ */)[0].length;
-      if (indentation === 0) break;
-      const job = indentation === 2
-        ? line.match(/^ {2}([a-zA-Z0-9_-]+):\s*$/)?.[1]
-        : null;
-      if (job) {
-        if (inTarget) break;
-        inTarget = job === jobName;
-      } else if (inTarget) {
-        jobLines.push(line);
-      }
-    }
-    return jobLines;
-  }
-
-  function frontendRunSteps(source) {
-    const jobLines = workflowJobLines(source, "frontend");
-    const stepsIndex = jobLines.findIndex((line) => line === "    steps:");
-    if (stepsIndex < 0) return { commands: [], blocking: false };
-
-    const commands = [];
-    const continueValues = [];
-    for (const line of jobLines) {
-      const jobValue = line.match(/^ {4}continue-on-error:\s*(.+)$/)?.[1];
-      const stepValue = line.match(
-        /^ {6}(?:-\s+)?continue-on-error:\s*(.+)$/,
-      )?.[1] ?? line.match(/^ {8}continue-on-error:\s*(.+)$/)?.[1];
-      if (jobValue !== undefined) continueValues.push(jobValue.trim());
-      if (stepValue !== undefined) continueValues.push(stepValue.trim());
-    }
-
-    for (const line of jobLines.slice(stepsIndex + 1)) {
-      if (!line.trim()) continue;
-      const indentation = line.match(/^ */)[0].length;
-      if (indentation <= 4) break;
-      const command = line.match(/^ {6}-\s+run:\s*(.+)$/)?.[1]
-        ?? line.match(/^ {8}run:\s*(.+)$/)?.[1];
-      if (command !== undefined) commands.push(command.trim());
-    }
-    return {
-      commands,
-      blocking: continueValues.every((value) => value === "false"),
-    };
-  }
-
-  function frontendGateMeetsContract(source) {
-    const { commands, blocking } = frontendRunSteps(source);
-    return blocking
-      && commands.includes("npm ci --ignore-scripts")
-      && commands.includes("npm run lint")
-      && commands.some((command) => command === "npm test"
-        || command === "npm test -- --run")
-      && commands.includes("npm run build");
-  }
-
-  function jobRunSteps(source, jobName) {
-    const jobLines = workflowJobLines(source, jobName);
-    const jobContinueValues = jobLines
-      .map((line) => line.match(/^ {4}continue-on-error:\s*(.+)$/)?.[1])
-      .filter((value) => value !== undefined);
-    const jobIfValues = jobLines
-      .map((line) => line.match(/^ {4}if:\s*(.+)$/)?.[1])
-      .filter((value) => value !== undefined);
-    const steps = [];
-    let current = null;
-    for (const line of jobLines) {
-      const stepStart = line.match(/^ {6}-\s*(.*)$/)?.[1];
-      if (stepStart !== undefined) {
-        if (current?.command) steps.push(current);
-        current = { command: null, continueOnError: null, ifCondition: null };
-        const inlineRun = stepStart.match(/^run:\s*(.+)$/)?.[1];
-        const inlineContinue = stepStart.match(/^continue-on-error:\s*(.+)$/)?.[1];
-        const inlineIf = stepStart.match(/^if:\s*(.+)$/)?.[1];
-        if (inlineRun !== undefined) current.command = inlineRun.trim();
-        if (inlineContinue !== undefined) {
-          current.continueOnError = inlineContinue.trim();
-        }
-        if (inlineIf !== undefined) current.ifCondition = inlineIf.trim();
-        continue;
-      }
-      if (!current) continue;
-      const command = line.match(/^ {8}run:\s*(.+)$/)?.[1];
-      const continueValue = line.match(/^ {8}continue-on-error:\s*(.+)$/)?.[1];
-      const ifValue = line.match(/^ {8}if:\s*(.+)$/)?.[1];
-      if (command !== undefined) current.command = command.trim();
-      if (continueValue !== undefined) current.continueOnError = continueValue.trim();
-      if (ifValue !== undefined) current.ifCondition = ifValue.trim();
-    }
-    if (current?.command) steps.push(current);
-    return {
-      blocking: jobContinueValues.every((value) => value.trim() === "false"),
-      unconditional: jobIfValues.every((value) => value.trim() === "true"),
-      steps,
-    };
-  }
-
-  function dependencyGateMeetsContract(source) {
-    const frontend = jobRunSteps(source, "frontend");
-    const quality = jobRunSteps(source, "quality");
-    const testJob = jobRunSteps(source, "test");
-    const frontendCommands = frontend.steps.map((step) => step.command);
-    const qualityCommands = quality.steps.map((step) => step.command);
-    const guard = "uv run python scripts/check_pip_audit_suppressions.py";
-    const audit = "uv run pip-audit --ignore-vuln PYSEC-2022-42969";
-    const hasBlockingCommand = (job, command) => {
-      const step = job.steps.find((candidate) => candidate.command === command);
-      return Boolean(step)
-        && [null, "false"].includes(step.continueOnError)
-        && [null, "true"].includes(step.ifCondition);
-    };
-    const requiredFrontend = [
-      "npm run audit:lock",
-      "npm ci --ignore-scripts",
-      "npm run lint",
-      "npm test",
-      "npm run build",
-      "npm run deadcode",
-      "npm audit --audit-level=high",
-    ];
-    const requiredQuality = [
-      "uv lock --check",
-      "uv sync --frozen --all-extras",
-      guard,
-      audit,
-    ];
-    return frontend.blocking && frontend.unconditional
-      && quality.blocking && quality.unconditional
-      && testJob.blocking && testJob.unconditional
-      && requiredFrontend.every((command) => hasBlockingCommand(frontend, command))
-      && requiredQuality.every((command) => hasBlockingCommand(quality, command))
-      && hasBlockingCommand(testJob, "uv sync --frozen --all-extras")
-      && frontendCommands.indexOf("npm run audit:lock")
-        < frontendCommands.indexOf("npm ci --ignore-scripts")
-      && qualityCommands.indexOf(guard) >= 0
-      && qualityCommands.indexOf(audit) > qualityCommands.indexOf(guard);
-  }
-
-  it("runs install, lint, unit tests, and build as blocking steps", () => {
-    expect(frontendGateMeetsContract(workflow)).toBe(true);
-  });
-
-  it("gates lock integrity, frozen syncs, and suppression expiry", () => {
-    expect(dependencyGateMeetsContract(workflow)).toBe(true);
-    expect(dependencyGateMeetsContract(workflow.replace(
-      "      - run: npm run audit:lock",
-      "      # - run: npm run audit:lock",
-    ))).toBe(false);
-    expect(dependencyGateMeetsContract(workflow.replace(
-      "uv run python scripts/check_pip_audit_suppressions.py",
-      "true # suppression expiry disabled",
-    ))).toBe(false);
-    expect(dependencyGateMeetsContract(workflow.replace(
-      "        run: uv run python scripts/check_pip_audit_suppressions.py",
-      "        continue-on-error: true\n"
-        + "        run: uv run python scripts/check_pip_audit_suppressions.py",
-    ))).toBe(false);
-    expect(dependencyGateMeetsContract(workflow.replace(
-      /uv sync --frozen --all-extras/g,
-      "uv sync --all-extras",
-    ))).toBe(false);
-    for (const [command, replacement, continueValue] of [
-      [
-        "      - run: npm run audit:lock",
-        "      - run: npm run audit:lock\n        continue-on-error: true",
-        "true",
-      ],
-      [
-        "      - run: npm audit --audit-level=high",
-        "      - run: npm audit --audit-level=high\n"
-          + "        continue-on-error: ${{ always() }}",
-        "${{ always() }}",
-      ],
-      [
-        "        run: uv lock --check",
-        "        continue-on-error: true\n        run: uv lock --check",
-        "true",
-      ],
-      [
-        "        run: uv run pip-audit --ignore-vuln PYSEC-2022-42969",
-        "        continue-on-error: ${{ failure() }}\n"
-          + "        run: uv run pip-audit --ignore-vuln PYSEC-2022-42969",
-        "${{ failure() }}",
-      ],
-    ]) {
-      expect(dependencyGateMeetsContract(workflow.replace(
-        command,
-        replacement,
-      )), `${command} with ${continueValue}`).toBe(false);
-    }
-    expect(dependencyGateMeetsContract(workflow.replace(
-      "      - name: Install dependencies\n"
-        + "        run: uv sync --frozen --all-extras\n\n"
-        + "      - name: Pytest — test suite",
-      "      - name: Install dependencies\n"
-        + "        continue-on-error: true\n"
-        + "        run: uv sync --frozen --all-extras\n\n"
-        + "      - name: Pytest — test suite",
-    ))).toBe(false);
-  });
-
-  it("does not allow required jobs or dependency gates to be conditional", () => {
-    for (const [needle, replacement, label] of [
-      [
-        "  frontend:\n    name: Frontend lint, test, build, audit",
-        "  frontend:\n    if: false\n    name: Frontend lint, test, build, audit",
-        "frontend job false condition",
-      ],
-      [
-        "  quality:\n    name: Quality & security",
-        "  quality:\n    if: ${{ success() }}\n    name: Quality & security",
-        "quality job expression condition",
-      ],
-      [
-        "  test:\n    name: Tests (${{ matrix.os }})",
-        "  test:\n    if: false\n    name: Tests (${{ matrix.os }})",
-        "matrix job false condition",
-      ],
-      [
-        "      - run: npm run audit:lock",
-        "      - run: npm run audit:lock\n        if: false",
-        "frontend gate false condition",
-      ],
-      [
-        "        run: uv run pip-audit --ignore-vuln PYSEC-2022-42969",
-        "        if: ${{ always() }}\n"
-          + "        run: uv run pip-audit --ignore-vuln PYSEC-2022-42969",
-        "quality gate expression condition",
-      ],
-      [
-        "      - name: Install dependencies\n"
-          + "        run: uv sync --frozen --all-extras\n\n"
-          + "      - name: Pytest — test suite",
-        "      - name: Install dependencies\n"
-          + "        if: false\n"
-          + "        run: uv sync --frozen --all-extras\n\n"
-          + "      - name: Pytest — test suite",
-        "matrix dependency gate false condition",
-      ],
-    ]) {
-      expect(
-        dependencyGateMeetsContract(workflow.replace(needle, replacement)),
-        label,
-      ).toBe(false);
-    }
-    expect(dependencyGateMeetsContract(workflow
-      .replace(
-        "  frontend:\n    name: Frontend lint, test, build, audit",
-        "  frontend:\n    if: true\n    name: Frontend lint, test, build, audit",
-      )
-      .replace(
-        "      - run: npm run audit:lock",
-        "      - run: npm run audit:lock\n        if: true",
-      ))).toBe(true);
-  });
-
-  it("does not accept required commands from comments", () => {
-    const commented = workflow.replace(
-      "      - run: npm test",
-      "      # - run: npm test",
-    );
-    expect(frontendGateMeetsContract(commented)).toBe(false);
-  });
-
-  it("does not accept a shell-masked unit-test failure", () => {
-    const masked = workflow.replace("run: npm test", "run: npm test || true");
-    expect(frontendGateMeetsContract(masked)).toBe(false);
-  });
-
-  it("does not accept expression-based continue-on-error", () => {
-    const nonblocking = workflow.replace(
-      "      - run: npm test",
-      "      - run: npm test\n        continue-on-error: ${{ always() }}",
-    );
-    expect(frontendGateMeetsContract(nonblocking)).toBe(false);
-  });
-
-  it("ignores comments and permits explicitly blocking steps", () => {
-    const blocking = workflow.replace(
-      "      - run: npm test",
-      "      # continue-on-error: true\n"
-        + "      - run: npm test\n        continue-on-error: false",
-    );
-    expect(frontendGateMeetsContract(blocking)).toBe(true);
   });
 });

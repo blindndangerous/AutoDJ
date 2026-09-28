@@ -15,7 +15,6 @@ export const CUE_COLORS = {
 
 let _lastCueKey = "";
 const CUE_SUMMARY_LIMIT = 3;
-const SAFE_CSS_COLOR = /^(?:#[0-9a-f]{3,8}|[a-z]+|(?:rgb|hsl)a?\([0-9.,%+\-\s/]+\))$/i;
 
 function _validCues(track) {
   const duration = track && Number.isFinite(track.length) && track.length > 0
@@ -47,16 +46,11 @@ function _cuePhrase(cue) {
   return `${_cueDescription(cue)} at ${fmtTime(cue.time_s)}`;
 }
 
+// A cue's own color when the browser accepts it as one, else its type's.
 function _cueColor(cue) {
   const fallback = CUE_COLORS[cue.type] || CUE_COLORS.user;
-  if (typeof cue.color !== "string") return fallback;
-  const candidate = cue.color.trim();
-  if (!SAFE_CSS_COLOR.test(candidate)) return fallback;
-  const supports = globalThis.CSS?.supports;
-  if (typeof supports === "function" && !supports("color", candidate)) {
-    return fallback;
-  }
-  return candidate;
+  const color = typeof cue.color === "string" ? cue.color.trim() : "";
+  return color && globalThis.CSS?.supports?.("color", color) ? color : fallback;
 }
 
 export function renderCueStrip(cueStripEl, track) {

@@ -1,10 +1,18 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { applyLibraryJobState, installLibraryJobs, libraryJobStatusText } from
-  "../../src/autodj/static/modules/library-jobs.js";
+// The module remembers the page's one Library panel, so every test gets
+// a fresh copy.
+let applyLibraryJobState;
+let installLibraryJobs;
+let libraryJobStatusText;
+beforeEach(async () => {
+  vi.resetModules();
+  ({ applyLibraryJobState, installLibraryJobs, libraryJobStatusText } = await import(
+    "../../src/autodj/static/modules/library-jobs.js"));
+});
 
 function makeEls() {
   document.body.innerHTML =

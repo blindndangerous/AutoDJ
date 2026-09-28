@@ -541,6 +541,8 @@
          only cue that more text existed was a half-clipped last line. */
       scrollbar-width: thin;
       scrollbar-color: var(--accent) transparent;
+      /* The reduced-motion rule below turns this off. */
+      scroll-behavior: smooth;
       font-size: 0.95rem;
       line-height: 1.5;
     }
@@ -653,10 +655,20 @@
     }
     /* `hidden` attribute must win over author display rules
        (settings-row uses flex, setting-desc uses block; both beat the
-       UA [hidden] {display:none} on specificity).  Enforce spec
-       behaviour so data-show-when actually hides its targets. */
+       UA [hidden] {display:none} on specificity). */
     [hidden] {
       display: none !important;
+    }
+    /* A setting that only matters while another one is on shows only
+       then.  display: none also takes the label, field and description
+       out of the accessibility tree together. */
+    body:has(#dj-phrase-align:not(:checked)) [data-show-when="dj-phrase-align"],
+    body:has(#pb-replaygain:not(:checked)) [data-show-when="pb-replaygain"],
+    body:has(#pb-mood-arc:not(:checked)) [data-show-when="pb-mood-arc"],
+    body:has(#key-notation option[value="musical"]:not(:checked)) [data-show-when="key-notation=musical"],
+    body:has(#disc-enabled:not(:checked)) [data-show-when="disc-enabled"],
+    body:has(#ln-enabled:not(:checked)) [data-show-when="ln-enabled"] {
+      display: none;
     }
     .settings-row {
       display: flex;
@@ -1185,7 +1197,6 @@
 /* Hotkey help modal -------------------------------------------------- */
 
 #hotkey-help-modal,
-#stream-rotate-dialog,
 #confirm-dialog {
   /* `*, *::before, *::after { margin: 0 }` overrides the UA
      `dialog:modal { margin: auto }`, which pinned this dialog to the
@@ -1200,7 +1211,6 @@
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
 }
 #hotkey-help-modal::backdrop,
-#stream-rotate-dialog::backdrop,
 #confirm-dialog::backdrop {
   background: rgba(0, 0, 0, 0.55);
 }
@@ -1253,15 +1263,12 @@
 .stream-detail {
   margin: 0.4rem 0;
 }
-#stream-rotate-dialog h2,
 #confirm-dialog h2 {
   margin-top: 0;
 }
-#stream-rotate-dialog p,
 #confirm-dialog p {
   margin: 0.75rem 0 1rem;
 }
-#stream-rotate-dialog .dialog-actions,
 #confirm-dialog .dialog-actions {
   display: flex;
   justify-content: flex-end;

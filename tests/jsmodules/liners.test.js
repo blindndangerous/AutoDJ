@@ -176,8 +176,53 @@ describe("liner authentication races", () => {
 describe("liner file controls", () => {
   beforeEach(() => {
     vi.resetModules();
-    vi.stubGlobal("confirm", vi.fn(() => true));
   });
+
+  const response = (body, status = 200) => new globalThis.Response(
+    JSON.stringify(body),
+    { status, headers: { "Content-Type": "application/json" } },
+  );
+  const inventory = (files) => response({ config: {}, files, folder: "liners" });
+
+  // The shared confirmation as a browser runs it: closing puts focus back
+  // on the element that had it when the dialog opened.  answer() presses
+  // the dialog's own button.
+  async function installWithDialog(fetchImpl) {
+    document.body.innerHTML = `
+      <p id="status"></p>
+      <button id="upload" type="button">Upload liner</button>
+      <ul id="files"></ul>
+      <dialog id="confirm-dialog"><h2 id="confirm-title"></h2><p id="confirm-message"></p>
+        <button id="confirm-cancel"></button><button id="confirm-accept"></button></dialog>`;
+    const dialog = document.querySelector("#confirm-dialog");
+    let opener = null;
+    dialog.showModal = vi.fn(() => {
+      opener = document.activeElement;
+      dialog.setAttribute("open", "");
+    });
+    dialog.close = vi.fn((value) => {
+      if (!dialog.hasAttribute("open")) return;
+      if (value !== undefined) dialog.returnValue = value;
+      dialog.removeAttribute("open");
+      if (opener?.isConnected) opener.focus();
+      dialog.dispatchEvent(new Event("close"));
+    });
+    vi.stubGlobal("fetch", fetchImpl);
+    const { installLiners } = await import("../../src/autodj/static/modules/liners.js");
+    const list = document.querySelector("#files");
+    const status = document.querySelector("#status");
+    const upload = document.querySelector("#upload");
+    installLiners({ lnFileList: list, lnStatus: status, lnUploadSubmit: upload }, {
+      canPlay: () => false,
+      playLiner: vi.fn(),
+      postSettings: vi.fn(),
+    });
+    const answer = async (value) => {
+      await vi.waitFor(() => expect(dialog.hasAttribute("open")).toBe(true));
+      document.getElementById(value === "confirm" ? "confirm-accept" : "confirm-cancel").click();
+    };
+    return { list, status, upload, answer };
+  }
 
   it("renders hostile filenames as text with an accurate Delete name", async () => {
     const { renderLinerFileList } = await import(
@@ -213,140 +258,94 @@ describe("liner file controls", () => {
     expect(list.querySelector(".no-results")).not.toBeNull();
   });
 
-  it("re-enables Delete after a failure and leaves focus where the user put it", async () => {
-    document.body.innerHTML = '<input id="elsewhere"><p id="status"></p><ul id="files"></ul>';
-    const fetchImpl = vi.fn()
-      .mockResolvedValueOnce(new globalThis.Response(JSON.stringify({
-        config: {}, files: ["first.mp3"], folder: "liners",
-      }), { headers: { "Content-Type": "application/json" } }))
-      .mockResolvedValueOnce(new globalThis.Response(JSON.stringify({
-        detail: "disk unavailable",
-      }), { status: 500, headers: { "Content-Type": "application/json" } }));
-    vi.stubGlobal("fetch", fetchImpl);
-    const { installLiners } = await import(
-      "../../src/autodj/static/modules/liners.js"
-    );
-    const list = document.querySelector("#files");
-    const status = document.querySelector("#status");
-    installLiners({ lnFileList: list, lnStatus: status }, {
-      canPlay: () => false,
-      playLiner: vi.fn(),
-      postSettings: vi.fn(),
-    });
+  it("asks in the shared dialog and deletes nothing on Cancel", async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(inventory(["only.mp3"]));
+    const { list, answer } = await installWithDialog(fetchImpl);
     await vi.waitFor(() => expect(list.querySelector("button")).not.toBeNull());
-    const originalButton = list.querySelector("button");
-    const elsewhere = document.querySelector("#elsewhere");
-    elsewhere.focus();
+    const remove = list.querySelector("button");
+    remove.focus();
+    remove.click();
+    await vi.waitFor(() => expect(document.activeElement.id).toBe("confirm-cancel"));
+    expect(document.getElementById("confirm-title").textContent).toBe("Delete liner only.mp3?");
+    expect(document.getElementById("confirm-accept").textContent).toBe("Delete liner");
 
-    originalButton.click();
+    await answer("cancel");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(document.activeElement).toBe(remove);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("puts focus back on Delete and says why when the delete fails", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(inventory(["first.mp3"]))
+      .mockResolvedValueOnce(response({ detail: "disk unavailable" }, 500));
+    const { list, status, answer } = await installWithDialog(fetchImpl);
+    await vi.waitFor(() => expect(list.querySelector("button")).not.toBeNull());
+    const remove = list.querySelector("button");
+    remove.focus();
+    remove.click();
+
+    await answer("confirm");
     await vi.waitFor(() => expect(status.textContent).toContain("disk unavailable"));
 
-    expect(originalButton.disabled).toBe(false);
-    expect(document.activeElement).toBe(elsewhere);
+    expect(document.activeElement).toBe(remove);
   });
 
   it("focuses a stable control when inventory refresh fails after deletion", async () => {
-    document.body.innerHTML = `
-      <p id="status"></p>
-      <button id="upload" type="button">Upload liner</button>
-      <ul id="files"></ul>
-    `;
-    const response = (body, status = 200) => new globalThis.Response(
-      JSON.stringify(body),
-      { status, headers: { "Content-Type": "application/json" } },
-    );
-    vi.stubGlobal("fetch", vi.fn()
-      .mockResolvedValueOnce(response({
-        config: {}, files: ["first.mp3", "second.mp3"], folder: "liners",
-      }))
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(inventory(["first.mp3", "second.mp3"]))
       .mockResolvedValueOnce(response({ ok: true }))
-      .mockResolvedValueOnce(response({ detail: "inventory unavailable" }, 500)));
-    const { installLiners } = await import(
-      "../../src/autodj/static/modules/liners.js"
-    );
-    const list = document.querySelector("#files");
-    const status = document.querySelector("#status");
-    installLiners({
-      lnFileList: list,
-      lnStatus: status,
-      lnUploadSubmit: document.querySelector("#upload"),
-    }, {
-      canPlay: () => false,
-      playLiner: vi.fn(),
-      postSettings: vi.fn(),
-    });
+      .mockResolvedValueOnce(response({ detail: "inventory unavailable" }, 500));
+    const { list, status, answer } = await installWithDialog(fetchImpl);
     await vi.waitFor(() => expect(list.querySelectorAll("button")).toHaveLength(2));
     const originalButton = list.querySelectorAll("button")[0];
 
     originalButton.focus();
     originalButton.click();
+    await answer("confirm");
     await vi.waitFor(() => expect(status.textContent).toContain("inventory unavailable"));
 
     expect(originalButton.isConnected).toBe(true);
-    expect(originalButton.disabled).toBe(false);
     expect(document.activeElement).toBe(originalButton);
   });
 
-  it("focuses the next Delete button at the deleted index after refresh", async () => {
-    document.body.innerHTML = '<p id="status"></p><ul id="files"></ul>';
-    const response = (files) => new globalThis.Response(JSON.stringify({
-      config: {}, files, folder: "liners",
-    }), { headers: { "Content-Type": "application/json" } });
+  it("moves focus from the dialog straight to the next Delete button", async () => {
     const fetchImpl = vi.fn()
-      .mockResolvedValueOnce(response(["first.mp3", "second.mp3", "third.mp3"]))
-      .mockResolvedValueOnce(response([]))
-      .mockResolvedValueOnce(response(["first.mp3", "third.mp3"]));
-    vi.stubGlobal("fetch", fetchImpl);
-    const { installLiners } = await import(
-      "../../src/autodj/static/modules/liners.js"
-    );
-    const list = document.querySelector("#files");
-    installLiners({
-      lnFileList: list,
-      lnStatus: document.querySelector("#status"),
-    }, {
-      canPlay: () => false,
-      playLiner: vi.fn(),
-      postSettings: vi.fn(),
-    });
+      .mockResolvedValueOnce(inventory(["first.mp3", "second.mp3", "third.mp3"]))
+      .mockResolvedValueOnce(response({ ok: true }))
+      .mockResolvedValueOnce(inventory(["first.mp3", "third.mp3"]));
+    const { list, status, answer } = await installWithDialog(fetchImpl);
     await vi.waitFor(() => expect(list.querySelectorAll("button")).toHaveLength(3));
+    const remove = list.querySelectorAll("button")[1];
+    remove.focus();
+    remove.click();
+    await vi.waitFor(() => expect(document.activeElement.id).toBe("confirm-cancel"));
 
-    list.querySelectorAll("button")[1].click();
-    await vi.waitFor(() => expect(list.querySelectorAll("button")).toHaveLength(2));
+    // Focus that went back to the pressed button first made NVDA read a
+    // line from the top of the page before the new target (D14).
+    const focused = [];
+    const record = (event) => focused.push(event.target);
+    document.addEventListener("focusin", record);
+    await answer("confirm");
+    await vi.waitFor(() => expect(status.textContent).toBe("Deleted second.mp3"));
+    document.removeEventListener("focusin", record);
 
-    expect(document.activeElement).toBe(list.querySelectorAll("button")[1]);
+    expect(focused).toEqual([list.querySelectorAll("button")[1]]);
+    expect(document.activeElement.getAttribute("aria-label")).toBe("Delete third.mp3");
   });
 
   it("focuses the labelled upload button after deleting the last file", async () => {
-    document.body.innerHTML = `
-      <p id="status"></p>
-      <button id="upload" type="button">Upload liner</button>
-      <ul id="files"></ul>
-    `;
-    const response = (files) => new globalThis.Response(JSON.stringify({
-      config: {}, files, folder: "liners",
-    }), { headers: { "Content-Type": "application/json" } });
-    vi.stubGlobal("fetch", vi.fn()
-      .mockResolvedValueOnce(response(["only.mp3"]))
-      .mockResolvedValueOnce(response([]))
-      .mockResolvedValueOnce(response([])));
-    const { installLiners } = await import(
-      "../../src/autodj/static/modules/liners.js"
-    );
-    const list = document.querySelector("#files");
-    const upload = document.querySelector("#upload");
-    installLiners({
-      lnFileList: list,
-      lnStatus: document.querySelector("#status"),
-      lnUploadSubmit: upload,
-    }, {
-      canPlay: () => false,
-      playLiner: vi.fn(),
-      postSettings: vi.fn(),
-    });
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(inventory(["only.mp3"]))
+      .mockResolvedValueOnce(response({ ok: true }))
+      .mockResolvedValueOnce(inventory([]));
+    const { list, upload, answer } = await installWithDialog(fetchImpl);
     await vi.waitFor(() => expect(list.querySelector("button")).not.toBeNull());
 
+    list.querySelector("button").focus();
     list.querySelector("button").click();
+    await answer("confirm");
     await vi.waitFor(() => expect(list.querySelectorAll("button")).toHaveLength(0));
 
     expect(document.activeElement).toBe(upload);
@@ -543,6 +542,31 @@ describe("liner settings and upload", () => {
       liners_random_min_minutes: 0,
       liners_random_max_minutes: 0,
     });
+  });
+
+  it("refuses a duck depth outside minus 30 to 0 and says so", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => ok({ files: [], config: { duck_db: -9 } })));
+    const { installLiners } = await import("../../src/autodj/static/modules/liners.js");
+    const postSettings = vi.fn().mockResolvedValue(true);
+    const elements = els();
+    installLiners(elements, { postSettings, canPlay: () => false });
+    await vi.waitFor(() => expect(elements.lnDuckDb.value).toBe("-9"));
+
+    // +60 dB would multiply the music by 1000 while a liner plays.
+    for (const typed of ["60", "-31", ""]) {
+      elements.lnDuckDb.value = typed;
+      elements.lnDuckDb.dispatchEvent(new Event("change"));
+      expect(elements.lnDuckDb.value).toBe("-9");
+      await vi.waitFor(() => expect(elements.lnStatus.textContent).toBe(
+        "Could not save Duck depth: enter a number from minus 30 to 0.  It is still minus 9.",
+      ));
+      elements.lnStatus.textContent = "";
+    }
+    expect(postSettings).not.toHaveBeenCalled();
+
+    elements.lnDuckDb.value = "0";
+    elements.lnDuckDb.dispatchEvent(new Event("change"));
+    expect(postSettings.mock.calls[0][1]).toMatchObject({ liners_duck_db: 0 });
   });
 
   it("asks the server to replace an existing file only when ticked", async () => {

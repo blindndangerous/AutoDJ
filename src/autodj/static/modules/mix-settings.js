@@ -54,12 +54,18 @@ function rangeWords(spec) {
   return `${kind} from ${words(spec.min)} to ${words(spec.max)}`;
 }
 
-function parseSettingValue(text, spec) {
+// The number in *text* when it is inside spec's range, else null.
+export function parseSettingValue(text, spec) {
   if (String(text).trim() === "") return null;
   const value = Number(text);
   if (!Number.isFinite(value) || value < spec.min || value > spec.max) return null;
   if (spec.integer && !Number.isInteger(value)) return null;
   return value;
+}
+
+// What a refused value says; *shown* is what the field holds again.
+export function refusalText(spec, shown) {
+  return `Could not save ${spec.label}: enter ${rangeWords(spec)}.  It is still ${numberWords(Number(shown))}.`;
 }
 
 export function applyMixSettings(st, els) {
@@ -102,8 +108,7 @@ export function installMixSettings(els, { postSettings, settingsStatus }) {
       const value = parseSettingValue(input.value, spec);
       if (value === null) {
         revert();
-        announceStatus(settingsStatus,
-          `Could not save ${spec.label}: enter ${rangeWords(spec)}.  It is still ${numberWords(Number(input.value))}.`,
+        announceStatus(settingsStatus, refusalText(spec, input.value),
           { dwellMs: 6000, force: true, tone: "error" });
         return;
       }

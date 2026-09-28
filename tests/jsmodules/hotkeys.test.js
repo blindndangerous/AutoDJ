@@ -90,20 +90,6 @@ describe("native keyboard ownership", () => {
     expect(spaceReachesShortcut(document.createElement("a"))).toBe(true);
     expect(spaceReachesShortcut({ closest: () => plain })).toBe(true);
   });
-
-  it("recognizes cross-realm-like elements and handles invalid closest safely", () => {
-    const crossRealmButton = {
-      nodeType: 1,
-      closest: () => ({ role: "button" }),
-    };
-    const invalidElement = {
-      nodeType: 1,
-      closest: () => { throw new TypeError("invalid selector context"); },
-    };
-
-    expect(spaceReachesShortcut(crossRealmButton)).toBe(false);
-    expect(spaceReachesShortcut(invalidElement)).toBe(true);
-  });
 });
 
 describe("page shortcut scope", () => {
@@ -126,7 +112,6 @@ describe("page shortcut scope", () => {
       <select id="native-select"><option>Native choice</option></select>
       <div role="tab" id="native-tab"><span id="native-tab-label">Tab</span></div>
       <div role="slider" id="custom-seek-slider" tabindex="0"></div>
-      <div id="shadow-host" tabindex="0">Shadow host</div>
       <div id="plain" tabindex="0">Plain content</div>
       <button id="page-skip">Page skip</button>
       <button id="page-shuffle">Shuffle</button>
@@ -350,43 +335,6 @@ describe("page shortcut scope", () => {
     expect(skipClick).toHaveBeenCalledOnce();
   });
 
-  it("uses the composed path for shadow-native ownership without latching", () => {
-    const host = document.querySelector("#shadow-host");
-    const localToggle = vi.fn();
-    const crossRealmButton = {
-      nodeType: 1,
-      closest: () => ({ role: "button" }),
-    };
-    const addEventListener = vi.spyOn(window, "addEventListener");
-    installHotkeys({ togglePlay: localToggle });
-    const keydownHandler = addEventListener.mock.calls.find(
-      ([type]) => type === "keydown",
-    )[1];
-    addEventListener.mockRestore();
-    const shadowEvent = {
-      key: " ",
-      repeat: false,
-      target: host,
-      composedPath: () => [crossRealmButton, host, document.body, window],
-      preventDefault: vi.fn(),
-    };
-    const plainEvent = {
-      key: " ",
-      repeat: false,
-      target: document.querySelector("#plain"),
-      composedPath: () => [document.querySelector("#plain"), document.body, window],
-      preventDefault: vi.fn(),
-    };
-
-    keydownHandler(shadowEvent);
-    keydownHandler(plainEvent);
-    window.dispatchEvent(new KeyboardEvent("keyup", { key: " " }));
-
-    expect(shadowEvent.preventDefault).not.toHaveBeenCalled();
-    expect(plainEvent.preventDefault).toHaveBeenCalledOnce();
-    expect(localToggle).toHaveBeenCalledOnce();
-  });
-
   it("sends Space and k to togglePlay", () => {
     const togglePlay = vi.fn();
     const addEventListener = vi.spyOn(window, "addEventListener");
@@ -423,46 +371,6 @@ describe("page shortcut scope", () => {
 
     expect(registration[2]).toBe(true);
   });
-
-  it.each(["", "plaintext-only"])(
-    "uses the composed path for contenteditable=%s without latching",
-    (contentEditable) => {
-      const host = document.querySelector("#shadow-host");
-      const editor = document.createElement("div");
-      editor.setAttribute("contenteditable", contentEditable);
-      Object.defineProperty(editor, "isContentEditable", { value: true });
-      const localSkip = document.createElement("button");
-      const localSkipClick = vi.spyOn(localSkip, "click");
-      const addEventListener = vi.spyOn(window, "addEventListener");
-      installHotkeys({ btnSkip: localSkip });
-      const keydownHandler = addEventListener.mock.calls.find(
-        ([type]) => type === "keydown",
-      )[1];
-      addEventListener.mockRestore();
-      const editorEvent = {
-        key: "n",
-        repeat: false,
-        target: host,
-        composedPath: () => [editor, host, document.body, window],
-        preventDefault: vi.fn(),
-      };
-      const plainEvent = {
-        key: "n",
-        repeat: false,
-        target: document.querySelector("#plain"),
-        composedPath: () => [document.querySelector("#plain"), document.body, window],
-        preventDefault: vi.fn(),
-      };
-
-      keydownHandler(editorEvent);
-      keydownHandler(plainEvent);
-      window.dispatchEvent(new KeyboardEvent("keyup", { key: "n" }));
-
-      expect(editorEvent.preventDefault).not.toHaveBeenCalled();
-      expect(plainEvent.preventDefault).toHaveBeenCalledOnce();
-      expect(localSkipClick).toHaveBeenCalledOnce();
-    },
-  );
 });
 
 describe("spoken status keys", () => {

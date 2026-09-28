@@ -22,7 +22,6 @@ import {
   requestJson,
   requestJsonBestEffort,
 } from "./api-client.js";
-import { createLatestRequestOwner } from "./latest-request.js";
 
 // DOM refs are looked up here so app.js doesn't have to inject them.
 const eqLow      = document.getElementById("eq-low");
@@ -2054,23 +2053,22 @@ function requestAdvance() {
   return runAdvance(captureAuthenticatedRequestEpoch(), _playbackGeneration);
 }
 
-const repickResponseOwner = createLatestRequestOwner();
+// The repick in flight: a newer one makes its answer stale.
+let repickRequest = null;
 const runRepick = makeSingleFlight(async (blacklist, epoch, playbackGeneration) => {
   const isCurrent = () => isAuthenticatedRequestCurrent(epoch)
     && playbackGeneration === _playbackGeneration;
   if (!isCurrent()) return null;
-  const request = repickResponseOwner.begin();
+  repickRequest?.abort();
+  const request = repickRequest = new AbortController();
   const state = await requestJsonBestEffort("/api/repick-next", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(blacklist ? { blacklist } : {}),
   }, (errorValue) => {
-    if (repickResponseOwner.isCurrent(request)
-        && isCurrent()) announceRequestError(errorValue);
+    if (!request.signal.aborted && isCurrent()) announceRequestError(errorValue);
   });
-  if (state && _applyState && repickResponseOwner.isCurrent(request)
-      && isCurrent()) _applyState(state);
-  repickResponseOwner.finish(request);
+  if (state && _applyState && !request.signal.aborted && isCurrent()) _applyState(state);
   return state;
 });
 function requestRepick(blacklist) {
@@ -2559,7 +2557,8 @@ export function applyBrowserPlaybackState(s) {
 // Cover art
 // ----------------------------------------------------------------
 
-const coverRequestOwner = createLatestRequestOwner();
+// The cover art probe in flight: a newer track aborts it.
+let coverRequest = null;
 
 // Keep the 96 px box in the layout when there is no art.  Hiding the
 // <img> moved the title, badges and Camelot wheel 111 px sideways on
@@ -2577,15 +2576,15 @@ export function loadCoverArt(trackPath) {
   // DevTools on tracks without embedded art.  fetch returns ok=false on
   // 404 without logging.  Set <img>.src only after we know the response
   // is a real image.
+  coverRequest?.abort();
   if (!trackPath) {
-    coverRequestOwner.cancel();
     showArtPlaceholder(coverArt);
     return;
   }
-  const request = coverRequestOwner.begin();
+  const request = coverRequest = new AbortController();
   const url = `/api/art?path=${encodeURIComponent(trackPath)}`;
   void probeResource(url, { method: "GET", signal: request.signal }).then((exists) => {
-    if (!coverRequestOwner.isCurrent(request)) return;
+    if (request.signal.aborted) return;
     if (!exists) {
       showArtPlaceholder(coverArt);
       return;
@@ -2594,11 +2593,9 @@ export function loadCoverArt(trackPath) {
     coverArt.classList.remove("no-art");
     coverArt.hidden = false;
   }).catch((errorValue) => {
-    if (!coverRequestOwner.isCurrent(request)) return;
+    if (request.signal.aborted) return;
     showArtPlaceholder(coverArt);
     announceRequestError(errorValue);
-  }).finally(() => {
-    coverRequestOwner.finish(request);
   });
 }
 
@@ -2615,7 +2612,7 @@ export function resetTransitionCaches() {
 // Full protected-session reset used only after confirmed auth expiry.
 export function resetTrackCaches() {
   resetTransitionCaches();
-  coverRequestOwner.cancel();
+  coverRequest?.abort();
   _bufferGeneration += 1;
   _bufferCache.clear();
   _bufferPending.clear();
