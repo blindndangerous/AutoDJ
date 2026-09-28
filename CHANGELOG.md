@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Serato hot cues and saved loops are imported from the tags inside MP3, AIFF, FLAC and MP4/M4A
+  files when `import_external_cues` is on, next to the Mixxx, Rekordbox and Traktor imports. The
+  reader follows the published format notes of the serato-tags project and has only been tested
+  with hand-made tags, not a real Serato library. Ogg files are skipped because Serato's layout
+  there is not documented.
+
 ### Changed
 
 - The MuQ model is now kept in Hugging Face's own cache layout inside `models/` (or your
@@ -54,6 +62,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   backspin, as the web page already did.
 - Liner clips in subfolders of the liners folder no longer show up in the list. They could not
   be played, because liners are opened by name from the folder itself.
+- Mixxx cue import uses each track's own sample rate, so cues on 48 kHz tracks no longer land
+  about 9% late. Mixxx outro cues now count as outro markers (they were read as intro markers),
+  and Mixxx's hidden "audible sound" range is no longer imported as an outro.
 
 ## [0.18.0] - 2026-09-28
 

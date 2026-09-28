@@ -1,17 +1,28 @@
 """Tests for autodj.dj_cues_import.
 
-Cover Mixxx SQLite reader, Rekordbox/Traktor XML readers, library
-auto-discovery, file:// URL conversion, and key-normalisation merge
+Cover Mixxx SQLite reader, Rekordbox/Traktor XML readers, the Serato
+Markers2 tag reader, library auto-discovery, file:// URL conversion, and key-normalisation merge
 edge cases.  Test fixtures construct minimal in-memory artefacts so
 the suite never needs real DJ-software installs.
 """
 
 from __future__ import annotations
 
+import base64
+import logging
 import sqlite3
+import struct
 from pathlib import Path
+from types import SimpleNamespace
 
+import mutagen
+import numpy as np
 import pytest
+import soundfile as sf
+from mutagen.flac import FLAC
+from mutagen.id3 import GEOB, ID3
+from mutagen.mp4 import MP4FreeForm, MP4Tags
+from mutagen.oggvorbis import OggVorbis
 
 from autodj.dj_cues_import import (
     _default_search_paths,
@@ -19,6 +30,7 @@ from autodj.dj_cues_import import (
     _normalise_keys,
     import_from_mixxx,
     import_from_rekordbox_xml,
+    import_from_serato_tags,
     import_from_traktor_nml,
 )
 from autodj.dj_meta import Cue
@@ -28,7 +40,11 @@ from autodj.dj_meta import Cue
 # ---------------------------------------------------------------------------
 
 
-def _make_mixxx_db(path: Path, rows: list[tuple[str, float, int, str | None]]) -> None:
+def _make_mixxx_db(
+    path: Path,
+    rows: list[tuple[str, float, int, str | None]],
+    samplerate: int | None = 44100,
+) -> None:
     """Build a tiny Mixxx-compatible SQLite db with the rows given.
 
     Each row = (location, position_in_samples, cue_type, label).
@@ -37,7 +53,7 @@ def _make_mixxx_db(path: Path, rows: list[tuple[str, float, int, str | None]]) -
     cur = con.cursor()
     cur.executescript(
         """
-        CREATE TABLE library (id INTEGER PRIMARY KEY, location INTEGER);
+        CREATE TABLE library (id INTEGER PRIMARY KEY, location INTEGER, samplerate INTEGER);
         CREATE TABLE track_locations (id INTEGER PRIMARY KEY, location TEXT);
         CREATE TABLE cues (
             track_id INTEGER, position REAL, type INTEGER, label TEXT
@@ -46,7 +62,7 @@ def _make_mixxx_db(path: Path, rows: list[tuple[str, float, int, str | None]]) -
     )
     for i, (loc, pos, ctype, label) in enumerate(rows, start=1):
         cur.execute("INSERT INTO track_locations VALUES (?, ?)", (i, loc))
-        cur.execute("INSERT INTO library VALUES (?, ?)", (i, i))
+        cur.execute("INSERT INTO library VALUES (?, ?, ?)", (i, i, samplerate))
         cur.execute(
             "INSERT INTO cues (track_id, position, type, label) VALUES (?, ?, ?, ?)",
             (i, pos, ctype, label),
@@ -62,14 +78,14 @@ class TestImportFromMixxx:
 
     def test_parses_intro_outro_cues(self, tmp_path) -> None:
         db = tmp_path / "m.db"
-        # type 6 = intro start, type 8 = outro start
-        # position is in samples assuming 44100 Hz stereo, so 88200/sample
+        # type 6 = intro, type 7 = outro; position in stereo samples at 48 kHz
         _make_mixxx_db(
             db,
             [
-                ("/music/a.flac", 44100.0 * 2.0 * 5.0, 6, "intro"),  # 5.0s
-                ("/music/a.flac", 44100.0 * 2.0 * 200.0, 8, "outro"),  # 200.0s
+                ("/music/a.flac", 48000.0 * 2.0 * 5.0, 6, "intro"),  # 5.0s
+                ("/music/a.flac", 48000.0 * 2.0 * 200.0, 7, "outro"),  # 200.0s
             ],
+            samplerate=48000,
         )
         result = import_from_mixxx(db)
         cues = result.get(str(Path("/music/a.flac")), [])
@@ -80,6 +96,17 @@ class TestImportFromMixxx:
         assert cues[0].source == "mixxx"
         assert cues[1].time_s == pytest.approx(200.0)
         assert cues[1].type == "outro_downbeat"
+
+    def test_skips_n60db_sound_range(self, tmp_path) -> None:
+        # type 8 is Mixxx's hidden "audible sound" range, not an outro
+        db = tmp_path / "m.db"
+        _make_mixxx_db(db, [("/music/x.flac", 88200.0, 8, None)])
+        assert import_from_mixxx(db) == {}
+
+    def test_skips_track_without_samplerate(self, tmp_path) -> None:
+        db = tmp_path / "m.db"
+        _make_mixxx_db(db, [("/music/x.flac", 88200.0, 1, None)], samplerate=None)
+        assert import_from_mixxx(db) == {}
 
     def test_skips_unmapped_type_zero(self, tmp_path) -> None:
         db = tmp_path / "m.db"
@@ -316,3 +343,122 @@ class TestDefaultSearchPaths:
         (traktor / "collection.nml").write_text("<NML/>", encoding="utf-8")
         result = _default_search_paths(tmp_path)
         assert any(p.name == "collection.nml" for p in result)
+
+
+# ---------------------------------------------------------------------------
+# Serato Markers2
+# ---------------------------------------------------------------------------
+# Hand-built tags following the serato-tags format notes; no real Serato
+# library was available to copy from.
+
+
+def _serato_entry(name: bytes, data: bytes) -> bytes:
+    return name + b"\x00" + struct.pack(">I", len(data)) + data
+
+
+def _serato_geob_body() -> bytes:
+    """A Markers2 body with a track COLOR, one hot cue and one saved loop.
+
+    Encoded the way Serato does it: '=' padding written as 'A', a linefeed
+    every 72 base64 characters, NUL padding to 470 bytes.
+    """
+    cue = b"\x00\x00" + struct.pack(">I", 12500) + b"\x00\xcc\x00\x00\x00\x00"
+    cue += "Dröp".encode() + b"\x00"
+    loop = b"\x00\x01" + struct.pack(">II", 30000, 32000) + b"\xff" * 4
+    loop += b"\x00\x27\xaa\xe1" + b"\x00\x00" + b"Loop A\x00"
+    payload = b"\x01\x01" + _serato_entry(b"COLOR", b"\x00\xff\xff\xff")
+    payload += _serato_entry(b"CUE", cue) + _serato_entry(b"LOOP", loop) + b"\x00"
+    b64 = base64.b64encode(payload).replace(b"=", b"A")
+    b64 = b"\n".join(b64[i : i + 72] for i in range(0, len(b64), 72))
+    return (b"\x01\x01" + b64).ljust(470, b"\x00")
+
+
+EXPECTED_SERATO = [
+    Cue(time_s=12.5, type="user", label="Dröp", source="serato", color="#cc0000"),
+    Cue(time_s=30.0, type="user", label="Loop A", source="serato", color="#27aae1"),
+]
+
+
+def _tiny_mp3(path: Path) -> None:
+    """Ten silent MPEG-1 Layer III frames (128 kbps, 44.1 kHz, 417 bytes each)."""
+    path.write_bytes((b"\xff\xfb\x90\x00" + b"\x00" * 413) * 10)
+
+
+def _mp3_with_geob(path: Path, body: bytes) -> Path:
+    _tiny_mp3(path)
+    tags = ID3()
+    tags.add(
+        GEOB(encoding=0, mime="application/octet-stream", desc="Serato Markers2", data=body),
+    )
+    tags.save(path)
+    return path
+
+
+class TestImportFromSeratoTags:
+    def test_mp3_geob_frame(self, tmp_path: Path) -> None:
+        mp3 = _mp3_with_geob(tmp_path / "t.mp3", _serato_geob_body())
+        assert import_from_serato_tags(mp3) == EXPECTED_SERATO
+
+    def test_flac_vorbis_comment(self, tmp_path: Path) -> None:
+        flac = tmp_path / "t.flac"
+        sf.write(flac, np.zeros(4410, dtype="float32"), 44100)
+        tags = FLAC(flac)
+        wrapped = b"application/octet-stream\x00\x00Serato Markers2\x00" + _serato_geob_body()
+        tags["SERATO_MARKERS_V2"] = base64.b64encode(wrapped).decode("ascii").rstrip("=")
+        tags.save()
+        assert import_from_serato_tags(flac) == EXPECTED_SERATO
+
+    def test_mp4_freeform_atom(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # No MP4 writer in the test deps: hand mutagen's MP4Tags to the reader.
+        tags = MP4Tags()
+        wrapped = b"application/octet-stream\x00\x00Serato Markers2\x00" + _serato_geob_body()
+        tags["----:com.serato.dj:markersv2"] = [MP4FreeForm(base64.b64encode(wrapped))]
+        monkeypatch.setattr(mutagen, "File", lambda _p: SimpleNamespace(tags=tags))
+        assert import_from_serato_tags(tmp_path / "t.m4a") == EXPECTED_SERATO
+
+    def test_ogg_is_not_read(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        # serato-tags says Ogg uses a different, undocumented layout.
+        ogg = tmp_path / "t.ogg"
+        sf.write(ogg, np.zeros(4410, dtype="float32"), 44100, format="OGG")
+        tags = OggVorbis(ogg)
+        tags["SERATO_MARKERS_V2"] = "not the FLAC layout"
+        tags.save()
+        with caplog.at_level(logging.WARNING, logger="autodj.dj_cues_import"):
+            assert import_from_serato_tags(ogg) == []
+        assert caplog.text == ""
+
+    def test_file_without_serato_tag(self, tmp_path: Path) -> None:
+        mp3 = tmp_path / "plain.mp3"
+        _tiny_mp3(mp3)
+        assert import_from_serato_tags(mp3) == []
+
+    def test_missing_file(self, tmp_path: Path) -> None:
+        assert import_from_serato_tags(tmp_path / "gone.mp3") == []
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            pytest.param(_serato_geob_body()[:40], id="cut-mid-entry"),
+            pytest.param(b"" + _serato_geob_body()[2:], id="unknown-version"),
+        ],
+    )
+    def test_malformed_tag_warns(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture, body: bytes
+    ) -> None:
+        mp3 = _mp3_with_geob(tmp_path / "bad.mp3", body)
+        with caplog.at_level(logging.WARNING, logger="autodj.dj_cues_import"):
+            assert import_from_serato_tags(mp3) == []
+        assert "malformed Markers2" in caplog.text
+
+    def test_flac_field_without_envelope_warns(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # The bare GEOB body, without the FLAC/MP4 header, is not a valid field.
+        flac = tmp_path / "t.flac"
+        sf.write(flac, np.zeros(4410, dtype="float32"), 44100)
+        tags = FLAC(flac)
+        tags["SERATO_MARKERS_V2"] = base64.b64encode(_serato_geob_body()).decode("ascii")
+        tags.save()
+        with caplog.at_level(logging.WARNING, logger="autodj.dj_cues_import"):
+            assert import_from_serato_tags(flac) == []
+        assert "malformed Markers2" in caplog.text

@@ -1406,7 +1406,7 @@ def cmd_analyse(
     "--import-external-cues/--no-import-external-cues",
     "import_external_cues",
     default=None,
-    help="Auto-import cues from Mixxx / Rekordbox / Traktor libraries.",
+    help="Import cues from Mixxx / Rekordbox / Traktor libraries and Serato file tags.",
 )
 @click.option(
     "--beat-sync-fx/--no-beat-sync-fx",
