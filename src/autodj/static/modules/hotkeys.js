@@ -206,20 +206,16 @@ export function installHotkeys({
 }) {
   installShortcutToggle(shortcutToggle);
   const active = () => isEnabled() && shortcutsEnabled();
-  window.addEventListener("keyup", (e) => {
-    _pressed.delete(e.key);
-    // Modifier-aware aliases -- e.g. Shift held on "?" produces "?",
-    // but releasing the letter without releasing Shift drops the
-    // lower-case sibling too.  Cheap to clear both.
-    if (e.key && e.key.length === 1) {
-      _pressed.delete(e.key.toLowerCase());
-      _pressed.delete(e.key.toUpperCase());
-    }
-  }, true);
+  // The latch only has to stop a held key from firing again before it
+  // is released, so any keyup clears all of it.  Keys NVDA passes
+  // through arrive with keyup.key "Unidentified", so clearing only the
+  // released key left m latched after its first press.
+  window.addEventListener("keyup", () => _pressed.clear(), true);
 
-  // Window blur clears the latch -- otherwise alt-tabbing while a key
-  // is held would leave it permanently flagged as pressed.
+  // Window blur and hiding the tab clear the latch too -- otherwise
+  // alt-tabbing while a key is held would leave it flagged as pressed.
   window.addEventListener("blur", () => _pressed.clear());
+  document.addEventListener("visibilitychange", () => _pressed.clear());
 
   window.addEventListener("keydown", (e) => {
     if (e.repeat) return;

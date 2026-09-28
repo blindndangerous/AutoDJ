@@ -271,6 +271,23 @@ describe("page shortcut scope", () => {
     expect(volumeInput).not.toHaveBeenCalled();
   });
 
+  it("unlatches a key whose keyup arrives as Unidentified through NVDA", () => {
+    document.querySelector("#hotkey-help-modal").close();
+    const plain = document.querySelector("#plain");
+
+    for (let press = 0; press < 3; press += 1) {
+      keyEvent(plain, "m");
+      window.dispatchEvent(new KeyboardEvent("keyup", { key: "Unidentified" }));
+    }
+    expect(muteClick).toHaveBeenCalledTimes(3);
+
+    // A held key still fires once until some key is released.
+    keyEvent(plain, "m");
+    keyEvent(plain, "m");
+    expect(muteClick).toHaveBeenCalledTimes(4);
+    window.dispatchEvent(new KeyboardEvent("keyup", { key: "Unidentified" }));
+  });
+
   it("opens and closes help with ? from focused shortcut buttons", () => {
     const modal = document.querySelector("#hotkey-help-modal");
     const helpButton = document.querySelector("#btn-shortcuts");

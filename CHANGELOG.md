@@ -284,6 +284,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   known, turned it off. The preset is now skipped with a warning that names it, the unknown
   genres and the genres AutoDJ knows. A `genres` value that is not a string or a list is
   refused the same way instead of meaning no filter.
+- The m shortcut worked once and then did nothing when NVDA passed the keys to the page, until
+  the browser window lost focus. The page waited for m's own key release, and keys passed through
+  NVDA are released under the name "Unidentified". Any key release now lets every shortcut fire
+  again, and so does switching away from the tab.
 - In Windows High Contrast and other forced-colours modes, the volume and EQ slider thumbs now
   take the system highlight colour and a text-coloured border as intended. The rule named the
   Chrome and Firefox thumbs in one selector list, so each browser dropped the whole rule.
