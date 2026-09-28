@@ -464,3 +464,68 @@ describe("Test liner in stream mode", () => {
     expect(fetchImpl.mock.calls.some(([url]) => url === "/api/liners/test")).toBe(false);
   });
 });
+
+describe("liner settings and upload", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    document.body.innerHTML = `
+      <input type="checkbox" id="enabled" checked>
+      <input type="number" id="every-n" value="">
+      <input type="number" id="every-min" value="">
+      <input type="number" id="rand-min" value="">
+      <input type="number" id="rand-max" value="">
+      <select id="pick"><option value="random">Random</option></select>
+      <input type="number" id="duck" value="-12">
+      <input type="file" id="upload"><button id="submit">Upload</button>
+      <input type="checkbox" id="replace">
+      <p id="status"></p><div id="status-toast" hidden></div>`;
+  });
+
+  function els() {
+    const $ = (id) => document.getElementById(id);
+    return {
+      lnEnabled: $("enabled"), lnEveryN: $("every-n"), lnEveryMin: $("every-min"),
+      lnRandMin: $("rand-min"), lnRandMax: $("rand-max"), lnPickMode: $("pick"),
+      lnDuckDb: $("duck"), lnUpload: $("upload"), lnUploadSubmit: $("submit"),
+      lnUploadReplace: $("replace"), lnStatus: $("status"),
+    };
+  }
+
+  const ok = (body) => Promise.resolve(new globalThis.Response(JSON.stringify(body), {
+    headers: { "Content-Type": "application/json" },
+  }));
+
+  it("sends 0 for a cleared trigger so clearing it turns the trigger off", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => ok({ files: [], config: {} })));
+    const { installLiners } = await import("../../src/autodj/static/modules/liners.js");
+    const postSettings = vi.fn().mockResolvedValue(true);
+    const elements = els();
+    installLiners(elements, { postSettings, canPlay: () => false });
+
+    elements.lnEveryN.dispatchEvent(new Event("change"));
+
+    expect(postSettings.mock.calls[0][1]).toMatchObject({
+      liners_every_n_songs: 0,
+      liners_every_minutes: 0,
+      liners_random_min_minutes: 0,
+      liners_random_max_minutes: 0,
+    });
+  });
+
+  it("asks the server to replace an existing file only when ticked", async () => {
+    const fetchImpl = vi.fn(() => ok({ files: [], config: {}, filename: "id.mp3", size: 1 }));
+    vi.stubGlobal("fetch", fetchImpl);
+    const { installLiners } = await import("../../src/autodj/static/modules/liners.js");
+    const elements = els();
+    installLiners(elements, { postSettings: vi.fn(), canPlay: () => false });
+    Object.defineProperty(elements.lnUpload, "files", {
+      value: [new globalThis.File(["x"], "id.mp3")], configurable: true,
+    });
+
+    elements.lnUploadReplace.checked = true;
+    elements.lnUploadSubmit.click();
+
+    await vi.waitFor(() => expect(fetchImpl.mock.calls
+      .some(([url]) => url === "/api/liners/upload?replace=true")).toBe(true));
+  });
+});

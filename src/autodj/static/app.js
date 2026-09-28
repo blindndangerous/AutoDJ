@@ -57,7 +57,6 @@ const searchInput  = document.getElementById("search-input");
 const btnSearch    = document.getElementById("btn-search");
 const searchResults= document.getElementById("search-results");
 const searchCount  = document.getElementById("search-count");
-const historyList  = document.getElementById("history-list");
 const whyList      = document.getElementById("why-list");
 const lyricsCard   = document.getElementById("lyrics-card");
 const lyricsList   = document.getElementById("lyrics-list");
@@ -171,8 +170,6 @@ function clearProtectedSessionData() {
   loadCoverArt(null);
   _lastState = null;
   lastTrackKey = null;
-  historyItems.length = 0;
-  historyList.replaceChildren();
   npAnnounce.textContent = "";
   npIdle.hidden = true;
   npMeta.textContent = "";
@@ -207,6 +204,11 @@ function clearProtectedSessionData() {
   renderCueStrip(null);
   applyCamelotWheel(null, "compatible");
   resetQueueState(_queueEls);
+  resetMixSettings(_mixEls);
+  _profileEls.list.replaceChildren();
+  _profileEls.status.textContent = "";
+  _accessEls.list.replaceChildren();
+  _accessEls.status.textContent = "";
   queueAnnounce.textContent = "";
   resetSettingsState(_settingsEls());
   settingsStatus.textContent = "";
@@ -285,7 +287,6 @@ function reportBackgroundRequestError(errorValue) {
 // ----------------------------------------------------------------
 
 let lastTrackKey = null;   // detect track changes for aria-live announce
-const historyItems = [];   // most-recent first
 // lastLyricIndex + cachedLyrics moved into ./modules/lyrics.js.
 let lastNextKey  = null;   // suppress aria-live re-announce of unchanged next track
 
@@ -400,13 +401,6 @@ function applyState(s) {
       void loadLyrics(trackKey, _lyricEls);
     } else {
       loadCoverArt(null);
-    }
-
-    // Push to history (skip duplicates at top)
-    if (trackKey && historyItems[0] !== trackLabel) {
-      historyItems.unshift(trackLabel);
-      if (historyItems.length > 5) historyItems.pop();
-      renderHistory();
     }
   }
 
@@ -587,6 +581,7 @@ function applyState(s) {
       { ...s.settings, discovery_enabled: s.discovery_enabled },
       _settingsEls(),
     );
+    applyMixSettings(s.settings, _mixEls);
   }
 
   // Last, so Play / Pause already has its enabled state for this push.
@@ -1089,12 +1084,66 @@ import {
 const _queueEls = { queueList, queueCount, queueAnnounce };
 installQueueButtons(_queueEls);
 
-function renderHistory() {
-  if (historyItems.length === 0) return;
-  historyList.innerHTML = historyItems
-    .map(name => `<li><span class="history-title">${escHtml(name)}</span></li>`)
-    .join("");
-}
+// Clear queue (asks first) lives in ./modules/queue.js too.
+import { installQueueClear } from "./modules/queue.js";
+installQueueClear({
+  ..._queueEls,
+  queueClear: document.getElementById("queue-clear"),
+});
+
+// ----------------------------------------------------------------
+// Settings: repeat windows, phrase length, filter sweep, effect level,
+// ReplayGain target -- ./modules/mix-settings.js.
+// ----------------------------------------------------------------
+import {
+  applyMixSettings, installMixSettings, resetMixSettings,
+} from "./modules/mix-settings.js";
+
+const _mixEls = {
+  pbNoRepeat:     document.getElementById("pb-no-repeat"),
+  pbArtistRepeat: document.getElementById("pb-artist-repeat"),
+  djPhraseBars:   document.getElementById("dj-phrase-bars"),
+  djFilterSweep:  document.getElementById("dj-filter-sweep"),
+  txWetMix:       document.getElementById("tx-wet-mix"),
+  pbRgTarget:     document.getElementById("pb-rg-target"),
+};
+installMixSettings(_mixEls, {
+  postSettings: (url, body, control) => postSettings(url, body, control),
+  settingsStatus,
+});
+
+// ----------------------------------------------------------------
+// Settings: Profiles and Browser access -- ./modules/profiles.js and
+// ./modules/devices.js.  Both load when their card is opened.
+// ----------------------------------------------------------------
+import { installProfiles } from "./modules/profiles.js";
+import { installAccess } from "./modules/devices.js";
+
+const _profileEls = {
+  card:       document.getElementById("profiles-card"),
+  nameInput:  document.getElementById("profile-name"),
+  saveButton: document.getElementById("profile-save"),
+  list:       document.getElementById("profile-list"),
+  status:     document.getElementById("profiles-status"),
+};
+installProfiles(_profileEls, { getSettings: () => _lastState?.settings || null });
+
+const _accessEls = {
+  card:     document.getElementById("access-card"),
+  note:     document.getElementById("access-note"),
+  controls: document.getElementById("access-controls"),
+  signOut:  document.getElementById("access-sign-out"),
+  refresh:  document.getElementById("access-refresh"),
+  list:     document.getElementById("device-list"),
+  status:   document.getElementById("access-status"),
+};
+installAccess(_accessEls, {
+  // The pairing dialog takes focus and says why it opened.
+  onSignedOut: (reason) => {
+    expireAuthenticatedSession();
+    auth.show(reason);
+  },
+});
 
 // ----------------------------------------------------------------
 // WebSocket
@@ -1715,6 +1764,7 @@ import {
 const _libEls = {
   runIndex:        document.getElementById("lib-run-index"),
   runEnrich:       document.getElementById("lib-run-enrich"),
+  runAnalyse:      document.getElementById("lib-run-analyse"),
   runPrune:        document.getElementById("lib-run-prune"),
   runStats:        document.getElementById("lib-run-stats"),
   runStop:         document.getElementById("lib-run-stop"),
@@ -1733,6 +1783,7 @@ const _libEls = {
 // ----------------------------------------------------------------
 // History tab
 // ----------------------------------------------------------------
+import { formatPlayedAt, historyNeedsDates } from "./modules/history-format.js";
 
 let _histPage = 1;
 const historyRequestOwner = createLatestRequestOwner();
@@ -1742,12 +1793,8 @@ function _fmtDuration(sec) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
-function _fmtTime(iso) {
-  try {
-    return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-  } catch (_) { return iso; }
-}
-
+// announce: "page" says where paging landed; "refresh" confirms a
+// Refresh press even when nothing changed.
 async function fetchHistory(page, { announce = false } = {}) {
   _histPage = page;
   const request = historyRequestOwner.begin();
@@ -1765,13 +1812,19 @@ async function fetchHistory(page, { announce = false } = {}) {
     if (!data.total) {
       table.setAttribute("hidden", "");
       pag.setAttribute("hidden", "");
+      empty.textContent = "No tracks played yet this session.";
       empty.removeAttribute("hidden");
+      if (announce === "refresh") {
+        announceStatus(document.getElementById("sr-status"),
+          "History refreshed.  No tracks played yet.", { dwellMs: 3000, force: true, mirror: false });
+      }
       return;
     }
     empty.setAttribute("hidden", "");
     table.removeAttribute("hidden");
+    const withDate = historyNeedsDates(data.items);
     tbody.innerHTML = data.items.map(it => `<tr>
-      <td>${_fmtTime(it.played_at)}</td>
+      <td>${escHtml(formatPlayedAt(it.played_at, withDate))}</td>
       <td>${escHtml(it.title)}</td>
       <td>${escHtml(it.artist)}</td>
       <td>${_fmtDuration(it.duration)}</td>
@@ -1790,7 +1843,8 @@ async function fetchHistory(page, { announce = false } = {}) {
     // Prev / Next / Go leave focus where it was, so say where they landed.
     // The page label is already on screen, hence no visible mirror.
     if (announce) {
-      announceStatus(document.getElementById("sr-status"), pageText,
+      announceStatus(document.getElementById("sr-status"),
+        announce === "refresh" ? `History refreshed.  ${pageText}.` : pageText,
         { dwellMs: 3000, force: true, mirror: false });
     }
   } catch (err) {
@@ -1805,6 +1859,11 @@ async function fetchHistory(page, { announce = false } = {}) {
     if (empty) {
       empty.textContent = `Could not load history: ${err.message}`;
       empty.removeAttribute("hidden");
+    }
+    // A button press that fails must say so; the note above is not live.
+    if (announce) {
+      announceStatus(document.getElementById("sr-status"),
+        `Could not load history: ${err.message}`, { dwellMs: 6000, force: true, tone: "error" });
     }
   } finally {
     historyRequestOwner.finish(request);
@@ -1824,6 +1883,9 @@ document.addEventListener("DOMContentLoaded", () => {
   const next = document.getElementById("hist-next");
   prev.addEventListener("click", () => stepPage(prev, -1));
   next.addEventListener("click", () => stepPage(next, 1));
+  document.getElementById("hist-refresh").addEventListener("click", () => {
+    void fetchHistory(_histPage, { announce: "refresh" });
+  });
   document.getElementById("hist-go").addEventListener("click", () => {
     const v = parseInt(document.getElementById("hist-goto").value, 10);
     if (v > 0) void fetchHistory(v, { announce: true });
@@ -1875,6 +1937,7 @@ const _linerEls = {
   lnFileList:      document.getElementById("ln-file-list"),
   lnUpload:        document.getElementById("ln-upload"),
   lnUploadSubmit:  document.getElementById("ln-upload-submit"),
+  lnUploadReplace: document.getElementById("ln-upload-replace"),
   lnStatus:        document.getElementById("ln-status"),
 };
 

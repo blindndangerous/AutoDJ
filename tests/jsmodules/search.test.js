@@ -133,3 +133,31 @@ describe("search feedback is visible", () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe("search result actions", () => {
+  it("Play next puts the track after the current one; Add to queue appends", async () => {
+    const fetchImpl = vi.fn((url) => Promise.resolve(url.startsWith("/api/search")
+      ? jsonResponse({ results: [{ path: "a.mp3", title: "Alpha" }] })
+      : jsonResponse({ ok: true })));
+    vi.stubGlobal("fetch", fetchImpl);
+    const els = setup();
+    els.searchInput.value = "alpha";
+    els.btnSearch.click();
+    await vi.waitFor(() => expect(els.searchResults.textContent).toContain("Alpha"));
+
+    const button = (label) => [...els.searchResults.querySelectorAll("button")]
+      .find((b) => b.getAttribute("aria-label") === label);
+    button("Play Alpha next").click();
+    await vi.waitFor(() => expect(els.queueAnnounce.textContent).toBe("Alpha plays next."));
+    button("Add Alpha to queue").click();
+    await vi.waitFor(() => expect(els.queueAnnounce.textContent).toBe("Added Alpha to queue."));
+
+    const posts = fetchImpl.mock.calls.filter(([url]) => !url.startsWith("/api/search"))
+      .map(([url, init]) => [url, JSON.parse(init.body)]);
+    expect(posts).toEqual([
+      ["/api/play-next", { path: "a.mp3", now: false }],
+      ["/api/queue/add", { path: "a.mp3" }],
+    ]);
+    vi.unstubAllGlobals();
+  });
+});

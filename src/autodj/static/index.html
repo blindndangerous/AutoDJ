@@ -303,6 +303,9 @@
        ============================================================ -->
   <section data-view="history" id="panel-history" role="tabpanel" hidden aria-labelledby="tab-history">
     <h2>History</h2>
+    <!-- History does not refresh by itself while the tab is open; this
+         reloads the page being shown. -->
+    <button type="button" id="hist-refresh">Refresh history</button>
     <p id="history-empty">No tracks played yet this session.</p>
     <table id="history-table" aria-label="History" hidden>
       <!-- Proportional widths for table-layout: fixed, which is what stops
@@ -315,7 +318,7 @@
       </colgroup>
       <thead>
         <tr>
-          <th scope="col">Time</th>
+          <th scope="col">Played</th>
           <th scope="col">Title</th>
           <th scope="col">Artist</th>
           <th scope="col">Duration</th>
@@ -324,21 +327,22 @@
       <tbody id="history-tbody"></tbody>
     </table>
     <nav id="history-pagination" aria-label="History pagination" hidden>
-      <button type="button" id="hist-prev">Prev</button>
+      <button type="button" id="hist-prev">Previous page</button>
       <span id="hist-page-info">Page 1 of 1</span>
-      <button type="button" id="hist-next">Next</button>
+      <button type="button" id="hist-next">Next page</button>
       <label for="hist-goto" class="visually-hidden">Page number</label>
       <input type="number" id="hist-goto" min="1" value="1">
-      <button type="button" id="hist-go">Go</button>
+      <button type="button" id="hist-go">Go to page</button>
     </nav>
   </section>
 
   <!-- ============================================================
-       View: Settings — every CLI flag mirrored as a form control
+       View: Settings — the mix and playback options a DJ changes during
+       a set.  Startup-only options (library folder, server address,
+       pick_top_k and the like) stay in config.toml.
        ============================================================ -->
   <section data-view="settings" id="panel-settings" role="tabpanel" hidden aria-labelledby="tab-settings">
 
-  <!-- Settings — full mirror of CLI flags -->
   <details class="card" open>
     <summary><h2>Settings</h2></summary>
 
@@ -402,6 +406,14 @@
       </div>
       <span class="setting-desc" id="transition-desc">
         Audio treatment layered on every crossfade.
+      </span>
+      <div class="settings-row">
+        <label for="tx-wet-mix">Transition effect level (percent)</label>
+        <input type="number" id="tx-wet-mix" min="0" max="100" step="5" value="100"
+               inputmode="decimal" aria-describedby="tx-wet-mix-desc">
+      </div>
+      <span class="setting-desc" id="tx-wet-mix-desc">
+        How much of the transition effect sits on top of the plain crossfade, from 0 (plain crossfade only) to 100 (full effect).  Used when the server does the mixing, in stream mode or with server audio; crossfades played by this browser ignore it.
       </span>
       <!-- Per-effect detail is read on demand, not on every focus of the
            select: as the select's description it was about 450 words. -->
@@ -484,7 +496,15 @@
         <label for="dj-phrase-align">Phrase align</label>
       </div>
       <span class="setting-desc" id="dj-phrase-desc">
-        Snap the crossfade start to the nearest 8-bar boundary using the cached beat grid.  Keeps transitions on musical phrase ends instead of mid-bar.
+        Snap the crossfade start to the nearest phrase boundary using the cached beat grid.  Keeps transitions on musical phrase ends instead of mid-bar.
+      </span>
+      <div class="settings-row" data-show-when="dj-phrase-align">
+        <label for="dj-phrase-bars">Phrase length (bars)</label>
+        <input type="number" id="dj-phrase-bars" min="1" max="64" step="1" value="8"
+               inputmode="numeric" aria-describedby="dj-phrase-bars-desc">
+      </div>
+      <span class="setting-desc" id="dj-phrase-bars-desc" data-show-when="dj-phrase-align">
+        How many bars make one phrase, a whole number from 1 to 64.  8 suits most dance music; 16 or 32 waits for longer phrases.
       </span>
 
       <div class="settings-check">
@@ -493,6 +513,14 @@
       </div>
       <span class="setting-desc" id="dj-outro-desc">
         Auto-detect each track's outro start <span aria-hidden="true">+</span><span class="visually-hidden">and</span> intro end on first play.  Crossfade lands between them so the new track's first downbeat replaces the old track's outro — no cold cuts into 4-bar intros.
+      </span>
+
+      <div class="settings-check">
+        <input type="checkbox" id="dj-filter-sweep" aria-describedby="dj-filter-sweep-desc">
+        <label for="dj-filter-sweep">Filter sweep</label>
+      </div>
+      <span class="setting-desc" id="dj-filter-sweep-desc">
+        Close a low-pass filter over the outgoing track during the crossfade, so it fades out muffled while the new track comes in clear.  Used when the server does the mixing, in stream mode or with server audio; crossfades played by this browser ignore it.
       </span>
     </fieldset>
 
@@ -526,6 +554,24 @@
         Every next pick stays similar to the <em>seed</em> track (the song the session started from), not to whatever just played.  Prevents the long sonic drift you get from chained similarity hops, while still letting Discovery break out periodically when enabled.
       </span>
 
+      <div class="settings-row">
+        <label for="pb-no-repeat">Tracks before a song can repeat</label>
+        <input type="number" id="pb-no-repeat" min="0" max="100000" step="1" value="500"
+               inputmode="numeric" aria-describedby="pb-no-repeat-desc">
+      </div>
+      <span class="setting-desc" id="pb-no-repeat-desc">
+        How many recently played tracks the picker avoids, a whole number from 0 to 100000.  0 lets a song come back straight away.  When the library holds fewer tracks than this, AutoDJ uses a smaller number so it always has something to pick.
+      </span>
+
+      <div class="settings-row">
+        <label for="pb-artist-repeat">Tracks before an artist can repeat</label>
+        <input type="number" id="pb-artist-repeat" min="0" max="100" step="1" value="3"
+               inputmode="numeric" aria-describedby="pb-artist-repeat-desc">
+      </div>
+      <span class="setting-desc" id="pb-artist-repeat-desc">
+        How many of the latest tracks are checked for the same artist, album or song title, a whole number from 0 to 100.  0 turns this check off.
+      </span>
+
       <div class="settings-check">
         <input type="checkbox" id="pb-show-lyrics" aria-describedby="pb-show-lyrics-desc">
         <label for="pb-show-lyrics">Show lyrics</label>
@@ -539,7 +585,15 @@
         <label for="pb-replaygain">ReplayGain normalisation</label>
       </div>
       <span class="setting-desc" id="pb-rg-desc">
-        Apply embedded ReplayGain track-gain tags so every track plays at a consistent loudness.  Tracks without tags play unchanged.  Targets <span aria-hidden="true">−</span><span class="visually-hidden">minus </span>14 dB (Spotify-ish reference) by default.
+        Apply embedded ReplayGain track-gain tags so every track plays at a consistent loudness.  Tracks without tags play unchanged.
+      </span>
+      <div class="settings-row" data-show-when="pb-replaygain">
+        <label for="pb-rg-target">ReplayGain target loudness (decibels)</label>
+        <input type="number" id="pb-rg-target" min="-30" max="0" step="1" value="-14"
+               inputmode="decimal" aria-describedby="pb-rg-target-desc">
+      </div>
+      <span class="setting-desc" id="pb-rg-target-desc" data-show-when="pb-replaygain">
+        The loudness every tagged track is brought to, from minus 30 to 0.  Minus 14 is the default; minus 18 is the original ReplayGain reference and plays quieter.  Used when the server does the mixing, in stream mode or with server audio; crossfades played by this browser ignore it.
       </span>
 
       <div class="settings-check">
@@ -786,36 +840,55 @@
       <legend>Trigger</legend>
       <div class="settings-row">
         <label for="ln-every-n">Every N tracks</label>
-        <input type="number" id="ln-every-n" min="0" max="500" step="1" inputmode="numeric">
+        <input type="number" id="ln-every-n" min="0" max="500" step="1" inputmode="numeric"
+               aria-describedby="ln-every-n-desc">
       </div>
+      <span class="setting-desc" id="ln-every-n-desc">
+        Play a liner after this many tracks.  Blank or 0 turns this trigger off.
+      </span>
       <div class="settings-row">
         <label for="ln-every-min">Every N minutes</label>
-        <input type="number" id="ln-every-min" min="0" max="240" step="1" inputmode="decimal">
+        <input type="number" id="ln-every-min" min="0" max="240" step="1" inputmode="decimal"
+               aria-describedby="ln-every-min-desc">
       </div>
+      <span class="setting-desc" id="ln-every-min-desc">
+        Play a liner when this many minutes have passed since the last one.  Blank or 0 turns this trigger off.
+      </span>
       <div class="settings-row">
         <label for="ln-rand-min">Random window minimum (minutes)</label>
-        <input type="number" id="ln-rand-min" min="0" max="240" step="1" inputmode="decimal">
+        <input type="number" id="ln-rand-min" min="0" max="240" step="1" inputmode="decimal"
+               aria-describedby="ln-rand-desc">
       </div>
       <div class="settings-row">
         <label for="ln-rand-max">Random window maximum (minutes)</label>
-        <input type="number" id="ln-rand-max" min="0" max="240" step="1" inputmode="decimal">
+        <input type="number" id="ln-rand-max" min="0" max="240" step="1" inputmode="decimal"
+               aria-describedby="ln-rand-desc">
       </div>
+      <span class="setting-desc" id="ln-rand-desc">
+        Play a liner at a random time between the minimum and the maximum number of minutes after the last one.  Both must be above 0 and the minimum must not be larger than the maximum; otherwise the random trigger is off.
+      </span>
     </fieldset>
 
     <fieldset data-show-when="ln-enabled">
       <legend>Mix</legend>
       <div class="settings-row">
         <label for="ln-pick-mode">Rotation mode</label>
-        <select id="ln-pick-mode">
+        <select id="ln-pick-mode" aria-describedby="ln-pick-mode-desc">
           <option value="random">Random</option>
           <option value="sequential">Sequential</option>
-          <option value="weighted">Weighted</option>
         </select>
       </div>
+      <span class="setting-desc" id="ln-pick-mode-desc">
+        Random picks any liner each time.  Sequential plays them in file-name order and starts again after the last one.
+      </span>
       <div class="settings-row">
-        <label for="ln-duck-db">Duck depth (dB)</label>
-        <input type="number" id="ln-duck-db" min="-30" max="0" step="1" value="-12" inputmode="decimal">
+        <label for="ln-duck-db">Duck depth (decibels)</label>
+        <input type="number" id="ln-duck-db" min="-30" max="0" step="1" value="-12" inputmode="decimal"
+               aria-describedby="ln-duck-db-desc">
       </div>
+      <span class="setting-desc" id="ln-duck-db-desc">
+        How far the music drops while a liner plays, from 0 (no drop) to minus 30 (nearly silent).  Minus 12 is the default.
+      </span>
       <button type="button" id="ln-test">Test now</button>
     </fieldset>
 
@@ -830,9 +903,57 @@
                accept=".mp3,.wav,.ogg,.m4a,.flac,.aac,audio/*">
         <button type="button" id="ln-upload-submit">Upload</button>
       </div>
+      <div class="settings-check">
+        <input type="checkbox" id="ln-upload-replace" aria-describedby="ln-upload-replace-desc">
+        <label for="ln-upload-replace">Replace existing file</label>
+      </div>
+      <span class="setting-desc" id="ln-upload-replace-desc">
+        When a liner with the same file name is already in the folder, overwrite it.  Unticked, that upload is refused.
+      </span>
       <h3>Files</h3>
       <ul id="ln-file-list" aria-label="Voice liner files"></ul>
     </fieldset>
+  </details>
+
+  <!-- Profiles: named snapshots of the settings above.  The list loads
+       when the card is opened. -->
+  <details class="card" id="profiles-card">
+    <summary><h2>Profiles</h2></summary>
+    <p class="card-desc">
+      A profile saves the current preset, BPM range, harmonic mixing, transition mode, crossfade and fade-in, pick mode, anchor to seed, daypart, mood arc, the effect sync options and the voice liner switch and rotation, so a whole set-up comes back with one press.
+    </p>
+    <div id="profiles-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+    <fieldset>
+      <legend>Save the current settings</legend>
+      <div class="settings-row">
+        <label for="profile-name">Profile name</label>
+        <input type="text" id="profile-name" maxlength="64" autocomplete="off"
+               aria-describedby="profile-name-desc">
+        <button type="button" id="profile-save">Save profile</button>
+      </div>
+      <span class="setting-desc" id="profile-name-desc">
+        Letters, digits, spaces, dashes and underscores, up to 64 characters.  Saving under a name that already exists asks before replacing it.
+      </span>
+    </fieldset>
+    <h3 id="profile-list-heading">Saved profiles</h3>
+    <ul id="profile-list" aria-labelledby="profile-list-heading"></ul>
+  </details>
+
+  <!-- Browser access: only meaningful when the server asks browsers to
+       pair (LAN mode).  Loads when the card is opened. -->
+  <details class="card" id="access-card">
+    <summary><h2>Browser access</h2></summary>
+    <div id="access-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+    <p id="access-note" hidden>This server does not ask browsers to pair, so there is nothing to sign out of or revoke.</p>
+    <div id="access-controls" hidden>
+      <button type="button" id="access-sign-out" aria-describedby="access-sign-out-desc">Sign out this browser</button>
+      <span class="setting-desc" id="access-sign-out-desc">
+        Ends this browser's pairing.  Using AutoDJ here again needs a new pairing code from the server.
+      </span>
+      <h3 id="device-list-heading">Paired devices</h3>
+      <button type="button" id="access-refresh">Refresh device list</button>
+      <ul id="device-list" aria-labelledby="device-list-heading"></ul>
+    </div>
   </details>
 
   </section>
@@ -848,7 +969,8 @@
       Queue
       <span id="queue-count" aria-hidden="true" style="color:var(--text-dim);font-weight:normal"></span>
     </h2></summary>
-    <!-- Visually hidden announce region for queue mutations: "Added X", "Moved X up", "Removed X" -->
+    <!-- Visually hidden announce region for queue mutations: "Added X",
+         "Moved X to position 2 of 5", "Removed X", "Cleared the queue" -->
     <div id="queue-announce"
          role="status"
          aria-live="polite"
@@ -856,14 +978,17 @@
          class="visually-hidden"></div>
     <ol id="queue-list" role="list" aria-label="Queued tracks" tabindex="-1">
       <li class="no-results">
-        Queue is empty.  Search and use "Next" to add a track.
+        Queue is empty.  Search, then use Play next or Add to queue.
       </li>
     </ol>
+    <!-- Outside the list, so it stays put while rows come and go.  It asks
+         before clearing, in #confirm-dialog. -->
+    <button type="button" id="queue-clear">Clear queue</button>
   </details>
 
   <!-- Search.  Open by default: the empty-queue message above tells the
-       user to "Search and use Next to add a track", so the field it
-       refers to must not be hidden behind a disclosure. -->
+       user to search, so the field it refers to must not be hidden behind
+       a disclosure. -->
   <details class="card" open>
     <summary><h2>Search Library</h2></summary>
     <div class="search-row">
@@ -888,18 +1013,10 @@
     <ul id="search-results" role="list" aria-label="Search results"></ul>
   </details>
 
-  <!-- History -->
-  <details class="card">
-    <summary><h2>Recently Played</h2></summary>
-    <ul id="history-list" role="list" aria-label="Recently played tracks">
-      <li><span class="no-results">Nothing played yet.</span></li>
-    </ul>
-  </details>
-
   </section>
   <!-- ============================================================
-       View: Library tools — index / enrich / prune / stats from
-       the web UI.  Empty placeholder until the parity work lands.
+       View: Library tools — index / enrich / analyse / prune / stats
+       jobs and the index stats, run from the web UI.
        ============================================================ -->
   <section data-view="library" id="panel-library" role="tabpanel" hidden aria-labelledby="tab-library">
     <details class="card" open>
@@ -907,8 +1024,9 @@
 
       <p>
         Run library-maintenance commands without dropping to a terminal.
-        One job at a time — start a second while the first is running and
-        the server returns a 409.
+        One job runs at a time.  Pressing a Run button while a job is
+        running starts nothing and tells you which job is running.  Index
+        stats refresh by themselves when a job finishes.
       </p>
 
       <!-- Stats card -->
@@ -938,13 +1056,17 @@
 
         <div class="settings-row">
           <button type="button" id="lib-run-enrich">Enrich</button>
+          <button type="button" id="lib-run-analyse">Analyse</button>
           <button type="button" id="lib-run-prune">Prune</button>
           <button type="button" id="lib-run-stats">Stats</button>
           <button type="button" id="lib-run-stop">Stop running job</button>
         </div>
         <p class="setting-desc">
           <strong>Enrich</strong> refreshes title/artist/genre/BPM/key from
-          beets without re-embedding.  <strong>Prune</strong> drops index
+          beets without re-embedding.  <strong>Analyse</strong> finds the
+          intro, outro, beat grid and cue points of tracks not analysed yet;
+          already analysed tracks are skipped, so running it again is quick.
+          <strong>Prune</strong> drops index
           entries whose files were deleted.  <strong>Stats</strong> prints
           the full library report from the indexer.  <strong>Stop</strong>
           terminates the running subprocess.
@@ -989,6 +1111,21 @@
     <div class="dialog-actions">
       <button type="submit" value="cancel">Cancel</button>
       <button type="submit" value="confirm">Make new link</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Shared confirmation for actions that cannot be undone (Clear queue,
+     Delete profile, Sign out, Revoke device).  modules/confirm-dialog.js
+     fills in the words; Cancel is first and gets focus. -->
+<dialog id="confirm-dialog" aria-labelledby="confirm-title"
+        aria-describedby="confirm-message">
+  <form method="dialog">
+    <h2 id="confirm-title"></h2>
+    <p id="confirm-message"></p>
+    <div class="dialog-actions">
+      <button type="submit" id="confirm-cancel" value="cancel">Cancel</button>
+      <button type="submit" id="confirm-accept" value="confirm"></button>
     </div>
   </form>
 </dialog>

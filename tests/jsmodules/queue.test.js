@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { applyQueueState, installQueueButtons, renderQueue } from
+import { applyQueueState, installQueueButtons, installQueueClear, renderQueue } from
   "../../src/autodj/static/modules/queue.js";
 
 describe("queue mutations", () => {
@@ -293,15 +293,16 @@ describe("repeated queue actions stay audible", () => {
       await vi.waitFor(() => expect(added(spoken)).toBe(before + 1));
     };
 
-    // Charlie moves 3 -> 2, then 2 -> 1: the same sentence, twice, well
-    // inside the three-second dwell.
+    // Charlie moves 3 -> 2, then 2 -> 1, well inside the three-second
+    // dwell, and each move says where the track landed.
     await clickUpOn("Charlie");
+    expect(region.textContent).toBe("Moved Charlie to position 2 of 3.");
     await clickUpOn("Charlie");
 
     expect(added(spoken)).toBe(2);
     expect(added(shown)).toBe(2);
-    expect(region.textContent).toBe("Moved Charlie up.");
-    expect(toast.textContent).toBe("Moved Charlie up.");
+    expect(region.textContent).toBe("Moved Charlie to position 1 of 3.");
+    expect(toast.textContent).toBe("Moved Charlie to position 1 of 3.");
     vi.unstubAllGlobals();
   });
 });
@@ -366,5 +367,78 @@ describe("websocket queue renders keep keyboard focus", () => {
 
     applyQueueState([track("b.mp3")], els);
     expect(document.activeElement).toBe(outside);
+  });
+});
+
+describe("queue Top and Clear queue", () => {
+  const ok = () => Promise.resolve(new globalThis.Response('{"ok":true}', {
+    headers: { "Content-Type": "application/json" },
+  }));
+
+  function setup() {
+    document.body.innerHTML = `
+      <p id="announce"></p><ul id="queue"></ul><button id="clear">Clear queue</button>
+      <dialog id="confirm-dialog"><h2 id="confirm-title"></h2><p id="confirm-message"></p>
+        <button id="confirm-cancel"></button><button id="confirm-accept"></button></dialog>`;
+    const dialog = document.querySelector("#confirm-dialog");
+    dialog.showModal = vi.fn(() => dialog.setAttribute("open", ""));
+    const els = {
+      queueList: document.querySelector("#queue"),
+      queueCount: document.createElement("span"),
+      queueAnnounce: document.querySelector("#announce"),
+      queueClear: document.querySelector("#clear"),
+    };
+    applyQueueState([
+      { path: "a.mp3", display_name: "Alpha" },
+      { path: "b.mp3", display_name: "Bravo" },
+      { path: "c.mp3", display_name: "Charlie" },
+    ], els);
+    installQueueButtons(els);
+    installQueueClear(els);
+    const answer = (value) => {
+      dialog.returnValue = value;
+      dialog.removeAttribute("open");
+      dialog.dispatchEvent(new Event("close"));
+    };
+    return { els, dialog, answer };
+  }
+
+  it("moves a track to the top and says where it landed", async () => {
+    const fetchImpl = vi.fn(ok);
+    vi.stubGlobal("fetch", fetchImpl);
+    const { els } = setup();
+
+    els.queueList.querySelector('[data-path="c.mp3"][data-action="top"]').click();
+
+    await vi.waitFor(() => expect(els.queueAnnounce.textContent)
+      .toBe("Moved Charlie to position 1 of 3."));
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body))
+      .toEqual({ paths: ["c.mp3", "a.mp3", "b.mp3"] });
+    expect(document.activeElement.dataset.path).toBe("c.mp3");
+    vi.unstubAllGlobals();
+  });
+
+  it("clears only after confirmation and keeps focus on the button", async () => {
+    const fetchImpl = vi.fn(ok);
+    vi.stubGlobal("fetch", fetchImpl);
+    const { els, dialog, answer } = setup();
+
+    els.queueClear.click();
+    await vi.waitFor(() => expect(dialog.showModal).toHaveBeenCalledOnce());
+    answer("cancel");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(els.queueClear);
+
+    els.queueClear.click();
+    await vi.waitFor(() => expect(dialog.showModal).toHaveBeenCalledTimes(2));
+    answer("confirm");
+    await vi.waitFor(() => expect(els.queueAnnounce.textContent)
+      .toBe("Cleared the queue.  Removed 3 tracks."));
+    expect(fetchImpl.mock.calls[0][0]).toBe("/api/queue/reorder");
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toEqual({ paths: [] });
+    expect(els.queueList.querySelectorAll("li[data-path]")).toHaveLength(0);
+    expect(document.activeElement).toBe(els.queueClear);
+    vi.unstubAllGlobals();
   });
 });
