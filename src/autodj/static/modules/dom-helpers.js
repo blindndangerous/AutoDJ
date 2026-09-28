@@ -132,7 +132,7 @@ export function isTypingTarget(el) {
 // How long the pressed button outlives its row: time for the browser to
 // report the new focus to the screen reader in an earlier accessibility
 // update than the one that removes the button.
-export const FOCUS_SETTLE_MS = 300;
+const FOCUS_SETTLE_MS = 300;
 
 // Swap a list's rows for *rows* after a row was deleted, without focus
 // passing through the document.  The new rows go in first; when focus is

@@ -12,7 +12,6 @@ import {
   requestJson,
 } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { replaceRows } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 
 export const SIGNED_OUT_REASON =
@@ -38,8 +37,7 @@ export function installAccess(els, { onSignedOut }) {
     announceStatus(status, message, { dwellMs: tone === "error" ? 6000 : 3000, force: true, tone });
   };
 
-  // `focus` comes from a revoke: see replaceRows.
-  function render(focus = null) {
+  function render() {
     const rows = [];
     for (const device of devices) {
       const row = doc.createElement("li");
@@ -57,10 +55,10 @@ export function installAccess(els, { onSignedOut }) {
       row.append(text, " ", revoke);
       rows.push(row);
     }
-    replaceRows(list, rows, focus);
+    list.replaceChildren(...rows);
   }
 
-  async function load({ announce = false, focus = null } = {}) {
+  async function load({ announce = false } = {}) {
     const epoch = captureAuthenticatedRequestEpoch();
     try {
       const body = await requestJson("/api/devices");
@@ -69,7 +67,7 @@ export function installAccess(els, { onSignedOut }) {
       note.hidden = pairing;
       controls.hidden = !pairing;
       devices = pairing && Array.isArray(body.devices) ? body.devices : [];
-      render(focus);
+      render();
       if (announce) {
         const count = devices.length;
         say(`Device list refreshed.  ${count} paired ${count === 1 ? "device" : "devices"}.`);
@@ -102,36 +100,54 @@ export function installAccess(els, { onSignedOut }) {
     onSignedOut(SIGNED_OUT_REASON);
   }
 
+  // The revoke runs while the confirmation is still open, so the list is
+  // already updated when it closes and focus goes straight to the next
+  // row's Revoke, or Refresh when none is left (see confirmAction).  The
+  // result is said after the dialog has closed.
   async function revokeDevice(device, button) {
+    const index = devices.indexOf(device);
+    const epoch = captureAuthenticatedRequestEpoch();
+    let result = null;
+    let signedOut = false;
     const confirmed = await confirmAction(doc, {
       title: device.current ? `Revoke ${device.name}, this browser?` : `Revoke ${device.name}?`,
       message: device.current
         ? "This browser is signed out and needs a new pairing code to use AutoDJ again."
         : "That device needs a new pairing code to use AutoDJ again.",
       confirmLabel: "Revoke",
+      onConfirm: async () => {
+        let reply;
+        try {
+          reply = await requestJson(`/api/devices/${encodeURIComponent(device.device_id)}`, {
+            method: "DELETE",
+          });
+        } catch (errorValue) {
+          if (!isAuthenticatedRequestCurrent(epoch)) return null;
+          result = [`Could not revoke ${device.name}: ${errorValue.message}`, "error"];
+          return button;
+        }
+        if (!isAuthenticatedRequestCurrent(epoch)) return null;
+        if (reply && reply.signed_out) {
+          signedOut = true;
+          return null;
+        }
+        await load();
+        if (!isAuthenticatedRequestCurrent(epoch)) return null;
+        result = [`Revoked ${device.name}.`];
+        const targets = Array.from(list.querySelectorAll("button[data-device-id]"));
+        return targets[Math.min(index, targets.length - 1)] || refresh;
+      },
     });
-    button.focus();
-    if (!confirmed) return;
-    const index = devices.indexOf(device);
-    const epoch = captureAuthenticatedRequestEpoch();
-    let result;
-    try {
-      result = await requestJson(`/api/devices/${encodeURIComponent(device.device_id)}`, {
-        method: "DELETE",
-      });
-    } catch (errorValue) {
-      if (!isAuthenticatedRequestCurrent(epoch)) return;
-      say(`Could not revoke ${device.name}: ${errorValue.message}`, "error");
+    if (!confirmed) {
+      button.focus();
       return;
     }
     if (!isAuthenticatedRequestCurrent(epoch)) return;
-    if (result && result.signed_out) {
+    if (signedOut) {
       onSignedOut(REVOKED_REASON);
       return;
     }
-    await load({ focus: { from: button, selector: "button[data-device-id]", index, fallback: refresh } });
-    if (!isAuthenticatedRequestCurrent(epoch)) return;
-    say(`Revoked ${device.name}.`);
+    if (result) say(...result);
   }
 
   signOut.addEventListener("click", () => void signOutHere());

@@ -218,6 +218,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   starts Listen here only on a page where Listen here was pressed. The media Pause key only
   stops: on a page that is not playing it does nothing, where before it could unpause the
   server.
+- After Delete profile or Revoke is confirmed, focus now goes from the confirmation straight to
+  the next row, the Profile name field or the Refresh button. The action now runs while the
+  confirmation is still open, and focus moves as it closes. Before, focus went back to the
+  button that opened the confirmation first, and NVDA read a line from the top of the page and
+  that button before the new focus. Clear queue works the same way and keeps focus on its
+  button.
 - With `--server-audio`, each incoming track restarted from its very beginning on the sound
   card, replaying the few seconds of the outgoing track's crossfade and the incoming track's own
   skipped intro that had already played during the overlap.

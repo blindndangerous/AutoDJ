@@ -125,29 +125,37 @@ export function installQueueClear({ queueList, queueAnnounce, queueClear, queueC
       return;
     }
     const plural = count === 1 ? "track" : "tracks";
+    const epoch = captureAuthenticatedRequestEpoch();
+    let result = null;
+    // Cleared while the confirmation is still open, so focus comes back
+    // to the button with the list already empty (see confirmAction).  The
+    // result is said after the dialog has closed.
     const confirmed = await confirmAction(doc, {
       title: "Clear the queue?",
       message: `This removes all ${count} queued ${plural}.  AutoDJ keeps picking tracks on its own.`,
       confirmLabel: "Clear queue",
+      onConfirm: async () => {
+        try {
+          await requestJson("/api/queue/reorder", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ paths: [] }),
+          });
+          if (!isAuthenticatedRequestCurrent(epoch)) return null;
+          _lastKey = _queueKey([]);
+          renderQueue([], { queueList, queueCount });
+          result = [`Cleared the queue.  Removed ${count} ${plural}.`, { dwellMs: 3000, force: true }];
+        } catch (errorValue) {
+          if (!isAuthenticatedRequestCurrent(epoch)) return null;
+          result = [`Could not clear the queue: ${errorValue.message}`,
+            { dwellMs: 6000, force: true, tone: "error" }];
+        }
+        return queueClear;
+      },
     });
     queueClear.focus();
-    if (!confirmed) return;
-    const epoch = captureAuthenticatedRequestEpoch();
-    try {
-      await requestJson("/api/queue/reorder", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ paths: [] }),
-      });
-      if (!isAuthenticatedRequestCurrent(epoch)) return;
-      _lastKey = _queueKey([]);
-      renderQueue([], { queueList, queueCount });
-      announceStatus(queueAnnounce, `Cleared the queue.  Removed ${count} ${plural}.`,
-        { dwellMs: 3000, force: true });
-    } catch (errorValue) {
-      if (!isAuthenticatedRequestCurrent(epoch)) return;
-      announceStatus(queueAnnounce, `Could not clear the queue: ${errorValue.message}`,
-        { dwellMs: 6000, force: true, tone: "error" });
+    if (confirmed && result && isAuthenticatedRequestCurrent(epoch)) {
+      announceStatus(queueAnnounce, ...result);
     }
   });
 }

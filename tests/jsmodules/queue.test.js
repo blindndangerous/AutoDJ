@@ -380,8 +380,21 @@ describe("queue Top and Clear queue", () => {
       <p id="announce"></p><ul id="queue"></ul><button id="clear">Clear queue</button>
       <dialog id="confirm-dialog"><h2 id="confirm-title"></h2><p id="confirm-message"></p>
         <button id="confirm-cancel"></button><button id="confirm-accept"></button></dialog>`;
+    // The modal dialog as a browser runs it: closing puts focus back on
+    // the element that had it when the dialog opened.
     const dialog = document.querySelector("#confirm-dialog");
-    dialog.showModal = vi.fn(() => dialog.setAttribute("open", ""));
+    let opener = null;
+    dialog.showModal = vi.fn(() => {
+      opener = document.activeElement;
+      dialog.setAttribute("open", "");
+    });
+    dialog.close = vi.fn((value) => {
+      if (!dialog.hasAttribute("open")) return;
+      if (value !== undefined) dialog.returnValue = value;
+      dialog.removeAttribute("open");
+      if (opener?.isConnected) opener.focus();
+      dialog.dispatchEvent(new Event("close"));
+    });
     const els = {
       queueList: document.querySelector("#queue"),
       queueCount: document.createElement("span"),
@@ -396,9 +409,7 @@ describe("queue Top and Clear queue", () => {
     installQueueButtons(els);
     installQueueClear(els);
     const answer = (value) => {
-      dialog.returnValue = value;
-      dialog.removeAttribute("open");
-      dialog.dispatchEvent(new Event("close"));
+      document.getElementById(value === "confirm" ? "confirm-accept" : "confirm-cancel").click();
     };
     return { els, dialog, answer };
   }
@@ -432,9 +443,18 @@ describe("queue Top and Clear queue", () => {
 
     els.queueClear.click();
     await vi.waitFor(() => expect(dialog.showModal).toHaveBeenCalledTimes(2));
+    // Focus leaves the dialog once, for the button, with the list already
+    // empty: never to the page or to rows about to go.
+    const focused = [];
+    const onFocus = (event) => focused.push({
+      target: event.target, rows: els.queueList.querySelectorAll("li[data-path]").length,
+    });
+    document.addEventListener("focusin", onFocus);
     answer("confirm");
     await vi.waitFor(() => expect(els.queueAnnounce.textContent)
       .toBe("Cleared the queue.  Removed 3 tracks."));
+    document.removeEventListener("focusin", onFocus);
+    expect(focused).toEqual([{ target: els.queueClear, rows: 0 }]);
     expect(fetchImpl.mock.calls[0][0]).toBe("/api/queue/reorder");
     expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toEqual({ paths: [] });
     expect(els.queueList.querySelectorAll("li[data-path]")).toHaveLength(0);

@@ -8,7 +8,6 @@ import { installProfiles, profileFromSettings } from
   "../../src/autodj/static/modules/profiles.js";
 import { installAccess, REVOKED_REASON, SIGNED_OUT_REASON } from
   "../../src/autodj/static/modules/devices.js";
-import { FOCUS_SETTLE_MS } from "../../src/autodj/static/modules/dom-helpers.js";
 
 const json = (body, status = 200) => Promise.resolve(new globalThis.Response(
   JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } },
@@ -19,15 +18,35 @@ const CONFIRM = `
     <button id="confirm-cancel"></button><button id="confirm-accept"></button></dialog>
   <div id="status-toast" hidden></div>`;
 
+// The modal dialog as a browser runs it: closing puts focus back on the
+// element that had it when the dialog opened, if that is still in the page.
+// answer() presses the dialog's own button.
 function confirmDialog() {
   const dialog = document.querySelector("#confirm-dialog");
-  dialog.showModal = vi.fn(() => dialog.setAttribute("open", ""));
+  let opener = null;
+  dialog.showModal = vi.fn(() => {
+    opener = document.activeElement;
+    dialog.setAttribute("open", "");
+  });
+  dialog.close = vi.fn((value) => {
+    if (!dialog.hasAttribute("open")) return;
+    if (value !== undefined) dialog.returnValue = value;
+    dialog.removeAttribute("open");
+    if (opener?.isConnected) opener.focus();
+    dialog.dispatchEvent(new Event("close"));
+  });
   return async (value) => {
     await vi.waitFor(() => expect(dialog.showModal).toHaveBeenCalled());
-    dialog.returnValue = value;
-    dialog.removeAttribute("open");
-    dialog.dispatchEvent(new Event("close"));
+    document.getElementById(value === "confirm" ? "confirm-accept" : "confirm-cancel").click();
   };
+}
+
+// Every element that gets focus from now on, until stop().
+function recordFocus() {
+  const focused = [];
+  const listener = (event) => focused.push(event.target);
+  document.addEventListener("focusin", listener);
+  return { focused, stop: () => document.removeEventListener("focusin", listener) };
 }
 
 afterEach(() => {
@@ -139,7 +158,7 @@ describe("profiles", () => {
     expect(document.activeElement.getAttribute("aria-label")).toBe("Delete profile Late");
   });
 
-  it("never drops focus to the page while the last profile's row goes", async () => {
+  it("moves focus from the dialog straight to the name field when the last profile goes", async () => {
     let names = ["Only"];
     const fetchImpl = vi.fn((url, init = {}) => {
       if (init.method === "DELETE") names = [];
@@ -148,64 +167,35 @@ describe("profiles", () => {
     const { els, answer } = setup(fetchImpl);
     await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(1));
     const remove = els.list.querySelector('[aria-label="Delete profile Only"]');
-    // NVDA read the page title and banner when the pressed button went in
-    // the same update as the focus move (D14): the button has to outlive
-    // the move by a separate task, long enough for the new focus to be
-    // reported first.
-    const removals = [];
-    const observer = new window.MutationObserver((records) => {
-      if (records.some((record) => [...record.removedNodes].some((node) => node.contains(remove)))) {
-        removals.push({ focus: document.activeElement, at: Date.now() });
-      }
-    });
-    observer.observe(els.list, { childList: true });
-    let focusMovedAt = null;
-    els.nameInput.addEventListener("focus", () => {
-      focusMovedAt = Date.now();
-      expect(remove.isConnected).toBe(true);
-    });
-
     remove.focus();
     remove.click();
+    await vi.waitFor(() => expect(document.activeElement.id).toBe("confirm-cancel"));
+
+    // NVDA read a line from the top of the page and then the Delete button
+    // before the name field when focus went back to the button first (D14).
+    const { focused, stop } = recordFocus();
     await answer("confirm");
     await vi.waitFor(() => expect(els.status.textContent).toBe("Deleted profile Only."));
-    expect(document.activeElement).toBe(els.nameInput);
-    // Held, out of sight and out of the tab order, until the delay ends.
-    expect(remove.isConnected).toBe(true);
-    expect(remove.closest("li").classList.contains("visually-hidden")).toBe(true);
-    expect(remove.tabIndex).toBe(-1);
-    await vi.waitFor(() => expect(remove.isConnected).toBe(false), { timeout: 2000 });
-    observer.disconnect();
+    stop();
 
-    expect(removals).toHaveLength(1);
-    expect(removals[0].focus).toBe(els.nameInput);
-    expect(removals[0].at - focusMovedAt).toBeGreaterThanOrEqual(FOCUS_SETTLE_MS - 5);
+    expect(focused).toEqual([els.nameInput]);
     expect(els.list.textContent).toBe("No saved profiles yet.");
   });
 
-  it("does not pull focus back to the list when the user moved on during a delete", async () => {
-    let names = ["Early", "Late"];
-    let finishDelete;
-    const fetchImpl = vi.fn((url, init = {}) => {
-      if (init.method !== "DELETE") return json({ profiles: names });
-      names = ["Late"];
-      return new Promise((resolve) => {
-        finishDelete = () => resolve(new globalThis.Response("{}", {
-          headers: { "Content-Type": "application/json" },
-        }));
-      });
-    });
+  it("puts focus back on Delete when the confirmation is cancelled", async () => {
+    const fetchImpl = vi.fn(() => json({ profiles: ["Only"] }));
     const { els, answer } = setup(fetchImpl);
-    await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(2));
+    await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(1));
+    const remove = els.list.querySelector('[aria-label="Delete profile Only"]');
+    remove.focus();
+    remove.click();
+    await vi.waitFor(() => expect(document.activeElement.id).toBe("confirm-cancel"));
 
-    els.list.querySelector('[aria-label="Delete profile Early"]').click();
-    await answer("confirm");
-    await vi.waitFor(() => expect(finishDelete).toBeTypeOf("function"));
-    els.nameInput.focus();
-    finishDelete();
+    await answer("cancel");
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
-    await vi.waitFor(() => expect(els.status.textContent).toBe("Deleted profile Early."));
-    expect(document.activeElement).toBe(els.nameInput);
+    expect(document.activeElement).toBe(remove);
+    expect(fetchImpl.mock.calls.some(([, init = {}]) => init.method === "DELETE")).toBe(false);
   });
 
   it("says why a profile could not be applied and leaves focus alone", async () => {
@@ -284,7 +274,7 @@ describe("browser access", () => {
     await vi.waitFor(() => expect(onSignedOut).toHaveBeenCalledWith(REVOKED_REASON));
   });
 
-  it("moves focus to the next Revoke before the revoked row goes", async () => {
+  it("moves focus from the dialog straight to the next Revoke", async () => {
     let listed = devices;
     const fetchImpl = vi.fn((url, init = {}) => {
       if (init.method === "DELETE") {
@@ -296,22 +286,33 @@ describe("browser access", () => {
     const { els, answer } = setup(fetchImpl);
     await vi.waitFor(() => expect(els.list.querySelectorAll("button")).toHaveLength(2));
     const revoke = els.list.querySelector('[aria-label="Revoke Phone"]');
-    let connectedAtFocus = null;
-    els.list.addEventListener("focusin", (event) => {
-      if (event.target.getAttribute("aria-label") === "Revoke Tablet, this browser") {
-        connectedAtFocus ??= revoke.isConnected;
-      }
-    });
-
     revoke.focus();
     revoke.click();
+    await vi.waitFor(() => expect(document.activeElement.id).toBe("confirm-cancel"));
+
+    const { focused, stop } = recordFocus();
     await answer("confirm");
     await vi.waitFor(() => expect(els.status.textContent).toBe("Revoked Phone."));
+    stop();
 
-    expect(document.activeElement.getAttribute("aria-label")).toBe("Revoke Tablet, this browser");
-    expect(connectedAtFocus).toBe(true);
-    await vi.waitFor(() => expect(revoke.isConnected).toBe(false), { timeout: 2000 });
+    expect(focused.map((element) => element.getAttribute("aria-label")))
+      .toEqual(["Revoke Tablet, this browser"]);
+    expect(revoke.isConnected).toBe(false);
     expect(els.list.querySelectorAll("li")).toHaveLength(1);
-    expect(document.activeElement.getAttribute("aria-label")).toBe("Revoke Tablet, this browser");
+  });
+
+  it("puts focus back on Revoke and says why when the revoke fails", async () => {
+    const fetchImpl = vi.fn((url, init = {}) => (init.method === "DELETE"
+      ? json({ detail: "Server busy" }, 503)
+      : json({ pairing: true, devices })));
+    const { els, answer } = setup(fetchImpl);
+    await vi.waitFor(() => expect(els.list.querySelectorAll("button")).toHaveLength(2));
+    const revoke = els.list.querySelector('[aria-label="Revoke Phone"]');
+    revoke.focus();
+    revoke.click();
+
+    await answer("confirm");
+    await vi.waitFor(() => expect(els.status.textContent).toBe("Could not revoke Phone: Server busy"));
+    expect(document.activeElement).toBe(revoke);
   });
 });

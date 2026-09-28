@@ -12,7 +12,6 @@ import {
   requestJson,
 } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { replaceRows } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 
 // profiles.validate_name on the server.
@@ -52,13 +51,12 @@ export function installProfiles(els, { getSettings }) {
     announceStatus(status, message, { dwellMs: tone === "error" ? 6000 : 3000, force: true, tone });
   };
 
-  // `focus` comes from a delete: see replaceRows.
-  function render(focus = null) {
+  function render() {
     if (names.length === 0) {
       const empty = doc.createElement("li");
       empty.className = "no-results";
       empty.textContent = "No saved profiles yet.";
-      replaceRows(list, [empty], focus);
+      list.replaceChildren(empty);
       return;
     }
     const rows = [];
@@ -81,16 +79,16 @@ export function installProfiles(els, { getSettings }) {
       row.append(label, " ", apply, " ", remove);
       rows.push(row);
     }
-    replaceRows(list, rows, focus);
+    list.replaceChildren(...rows);
   }
 
-  async function load(focus = null) {
+  async function load() {
     const epoch = captureAuthenticatedRequestEpoch();
     try {
       const body = await requestJson("/api/profiles");
       if (!isAuthenticatedRequestCurrent(epoch)) return false;
       names = Array.isArray(body.profiles) ? body.profiles : [];
-      render(focus);
+      render();
       return true;
     } catch (errorValue) {
       if (!isAuthenticatedRequestCurrent(epoch)) return false;
@@ -152,26 +150,40 @@ export function installProfiles(els, { getSettings }) {
     }
   }
 
+  // The delete runs while the confirmation is still open, so the list is
+  // already updated when it closes and focus goes straight to the next
+  // row's Delete, or the name field when none is left (see confirmAction).
+  // The result is said after the dialog has closed: the status region is
+  // behind it until then.
   async function deleteProfile(name, button) {
+    const index = names.indexOf(name);
+    const epoch = captureAuthenticatedRequestEpoch();
+    let result = null;
     const confirmed = await confirmAction(doc, {
       title: `Delete profile ${name}?`,
       message: "The saved settings are removed.  The settings in use now do not change.",
       confirmLabel: "Delete profile",
+      onConfirm: async () => {
+        try {
+          await requestJson(`/api/profiles/${encodeURIComponent(name)}`, { method: "DELETE" });
+          if (!isAuthenticatedRequestCurrent(epoch)) return null;
+          await load();
+          if (!isAuthenticatedRequestCurrent(epoch)) return null;
+          result = [`Deleted profile ${name}.`];
+          const targets = Array.from(list.querySelectorAll("button[data-profile]"));
+          return targets[Math.min(index, targets.length - 1)] || nameInput;
+        } catch (errorValue) {
+          if (!isAuthenticatedRequestCurrent(epoch)) return null;
+          result = [`Could not delete profile ${name}: ${errorValue.message}`, "error"];
+          return button;
+        }
+      },
     });
-    button.focus();
-    if (!confirmed) return;
-    const index = names.indexOf(name);
-    const epoch = captureAuthenticatedRequestEpoch();
-    try {
-      await requestJson(`/api/profiles/${encodeURIComponent(name)}`, { method: "DELETE" });
-      if (!isAuthenticatedRequestCurrent(epoch)) return;
-      await load({ from: button, selector: "button[data-profile]", index, fallback: nameInput });
-      if (!isAuthenticatedRequestCurrent(epoch)) return;
-      say(`Deleted profile ${name}.`);
-    } catch (errorValue) {
-      if (!isAuthenticatedRequestCurrent(epoch)) return;
-      say(`Could not delete profile ${name}: ${errorValue.message}`, "error");
+    if (!confirmed) {
+      button.focus();
+      return;
     }
+    if (result && isAuthenticatedRequestCurrent(epoch)) say(...result);
   }
 
   saveButton.addEventListener("click", () => void save());
