@@ -5,6 +5,7 @@ import {
   fmtTime,
   fmtTrack,
   escHtml,
+  setNoValue,
   srSpeak,
 } from "./modules/dom-helpers.js";
 import {
@@ -176,7 +177,7 @@ function clearProtectedSessionData() {
   npIdle.hidden = true;
   npMeta.textContent = "";
   setPlaybackStale(false);
-  nextText.textContent = "—";
+  setNoValue(nextText, "None");
   progressFill.style.width = "0%";
   progressLbl.textContent = "0:00 / 0:00";
   const progressTrack = document.getElementById("progress-track");
@@ -535,7 +536,8 @@ function applyState(s) {
   const nextKey = s.next_track ? s.next_track.path : "";
   if (nextKey !== lastNextKey) {
     lastNextKey = nextKey;
-    nextText.textContent = fmtTrack(s.next_track);
+    if (s.next_track) nextText.textContent = fmtTrack(s.next_track);
+    else setNoValue(nextText, "None");
   }
 
   // Discovery button — show only when discovery is configured

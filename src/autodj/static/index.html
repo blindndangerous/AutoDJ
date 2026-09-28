@@ -285,7 +285,7 @@
     <summary><h2>Up Next</h2></summary>
     <!-- Not live: it changes in the same tick as the track title, which
          is the one track-change announcement.  Shift+N speaks it. -->
-    <p id="next-track-text">—</p>
+    <p id="next-track-text"><span aria-hidden="true">—</span><span class="visually-hidden">None</span></p>
   </details>
 
   <!-- Lyrics — collapsed disclosure, shown only when the current track
@@ -355,7 +355,7 @@
         </select>
       </div>
       <span class="setting-desc" id="preset-desc">
-        Bias the next-track picker toward a target BPM curve.  E.g. <em>wakeup</em> ramps 70 → 130 BPM, <em>chill</em> stays at 75 BPM, <em>slide</em> arches.  Built-ins plus any user presets in config.toml.
+        Bias the next-track picker toward a target BPM curve.  E.g. <em>wakeup</em> ramps 70<span aria-hidden="true"> → </span><span class="visually-hidden"> to </span>130 BPM, <em>chill</em> stays at 75 BPM, <em>slide</em> arches.  Built-ins plus any user presets in config.toml.
       </span>
       <div class="settings-row">
         <label for="transition-select">Transition effect</label>
@@ -416,29 +416,29 @@
           <li><strong>gate stutter</strong> chops the outgoing into rhythmic bursts (sample-accurate worklet)</li>
           <li><strong>noise riser</strong> layers a synthesised white-noise build (bright)</li>
           <li><strong>noise drop</strong> opposite of the riser — bright crash falling to silence</li>
-          <li><strong>backspin</strong> reverses the outgoing tail with vinyl-friction decel (2.0×→0.05×)</li>
-          <li><strong>forward spin</strong> push-forward release (1.0×→3.0× accel)</li>
+          <li><strong>backspin</strong> reverses the outgoing tail with vinyl-friction decel (<span aria-hidden="true">2.0×→0.05×</span><span class="visually-hidden">2.0 times to 0.05 times speed</span>)</li>
+          <li><strong>forward spin</strong> push-forward release (<span aria-hidden="true">1.0×→3.0×</span><span class="visually-hidden">1.0 times to 3.0 times speed</span> accel)</li>
           <li><strong>cross-EQ swap</strong> hands bass duties from the outgoing to the incoming track</li>
-          <li><strong>bitcrusher</strong> degrades bit-depth + sample-rate (8-bit-console feel, AudioWorklet)</li>
+          <li><strong>bitcrusher</strong> degrades bit-depth <span aria-hidden="true">+</span><span class="visually-hidden">and</span> sample-rate (8-bit-console feel, AudioWorklet)</li>
           <li><strong>flanger</strong> adds a swirly modulated delay</li>
           <li><strong>pitch swell</strong> sweeps pitch upward (preservesPitch off)</li>
-          <li><strong>pitch fall</strong> sweeps pitch downward to 0.3× (mirror of swell, preservesPitch off)</li>
-          <li><strong>telephone</strong> 500-2800 Hz band-pass + tanh saturation (sounds like a phone call)</li>
+          <li><strong>pitch fall</strong> sweeps pitch downward to 0.3<span aria-hidden="true">×</span><span class="visually-hidden"> times</span> (mirror of swell, preservesPitch off)</li>
+          <li><strong>telephone</strong> 500-2800 Hz band-pass <span aria-hidden="true">+</span><span class="visually-hidden">and</span> tanh saturation (sounds like a phone call)</li>
           <li><strong>chorus</strong> three detuned voices for a thick double</li>
-          <li><strong>submerge</strong> heavy lowpass + reverb wash (underwater)</li>
+          <li><strong>submerge</strong> heavy lowpass <span aria-hidden="true">+</span><span class="visually-hidden">and</span> reverb wash (underwater)</li>
           <li><strong>vinyl wow</strong> drunk-turntable pitch wobble (60 Hz polling, <span aria-hidden="true">±</span><span class="visually-hidden">plus or minus </span>25 % depth)</li>
           <li><strong>freeze</strong> captures the last 150 ms and loops with fade-out (granular, AudioWorklet)</li>
-          <li><strong>glitch</strong> random buffer slicing + reorder (ring-buffer worklet)</li>
+          <li><strong>glitch</strong> random buffer slicing <span aria-hidden="true">+</span><span class="visually-hidden">and</span> reorder (ring-buffer worklet)</li>
           <li><strong>scratch</strong> turntablist 4-pass back-and-forth over a 250 ms slice</li>
           <li><strong>beat repeat</strong> stamps a 250 ms slice 8 times across the tail (Pioneer Loop Roll)</li>
-          <li><strong>sidechain pump</strong> rhythmic 4-on-the-floor amplitude duck @ 120 BPM</li>
+          <li><strong>sidechain pump</strong> rhythmic 4-on-the-floor amplitude duck <span aria-hidden="true">@</span><span class="visually-hidden">at</span> 120 BPM</li>
           <li><strong>reverse reverb</strong> reverse'd reverb tail that swells INTO the cut</li>
           <li><strong>air horn</strong> synth dub-siren with 220-880 Hz pitch sweep, layered with the music</li>
           <li><strong>vinyl rewind</strong> slow musical reverse with one-octave pitch drop (smoother than backspin)</li>
           <li><strong>transformer</strong> rapid 16-cps DJ-fader cut pattern with syncopated rhythm</li>
           <li><strong>dub siren</strong> sine 440-1760 Hz riser with 5 Hz vibrato (sits behind the music vs air horn's crash)</li>
-          <li><strong>stutter build</strong> gate frequency accelerates 4 Hz → 32 Hz across the fade for tension</li>
-          <li><strong>wow + flutter</strong> 1.5 Hz pitch wobble + 8 Hz tremolo (worn-cassette feel, distinct from vinyl wow's pitch-only)</li>
+          <li><strong>stutter build</strong> gate frequency accelerates 4 Hz<span aria-hidden="true"> → </span><span class="visually-hidden"> to </span>32 Hz across the fade for tension</li>
+          <li><strong>wow <span aria-hidden="true">+</span><span class="visually-hidden">and</span> flutter</strong> 1.5 Hz pitch wobble <span aria-hidden="true">+</span><span class="visually-hidden">and</span> 8 Hz tremolo (worn-cassette feel, distinct from vinyl wow's pitch-only)</li>
           <li><strong>phaser</strong> 4-stage allpass cascade with 0.5 Hz LFO sweep (sweepy notch, no metallic comb of flanger)</li>
           <li><strong>ring modulator</strong> multiplies the signal by a 173 Hz sine (clangy bell sidebands, sci-fi voice)</li>
           <li><strong>dub delay</strong> 1 s delay with lowpass on the feedback loop (each repeat darkens, classic Lee Perry sound)</li>
@@ -458,13 +458,13 @@
           <option value="compatible" aria-label="compatible (Camelot match, plus or minus 1, relative)">compatible (Camelot match, ±1, relative)</option>
           <option value="strict">strict (same Camelot position only)</option>
           <option value="neighbour" aria-label="neighbour (same side, plus or minus 1 only)">neighbour (same side, ±1 only)</option>
-          <option value="mood_change">mood change (relative major/minor only)</option>
+          <option value="mood_change" aria-label="mood change (relative major or minor only)">mood change (relative major/minor only)</option>
           <option value="energy_boost" aria-label="energy boost (same side, plus 2 jump)">energy boost (same side, +2 jump)</option>
         </select>
       </div>
       <span class="setting-desc" id="dj-harmonic-desc">
         Restrict next-track picks to harmonically related keys.
-        <strong>compatible</strong> is the classic Camelot rule (same position, <span aria-hidden="true">±</span><span class="visually-hidden">plus or minus </span>1, or relative major/minor) — broadest pool.
+        <strong>compatible</strong> is the classic Camelot rule (same position, <span aria-hidden="true">±</span><span class="visually-hidden">plus or minus </span>1, or relative major<span aria-hidden="true">/</span><span class="visually-hidden"> or </span>minor) — broadest pool.
         <strong>strict</strong> only allows the exact same key.
         <strong>neighbour</strong> walks the wheel one step at a time, no mode flips.
         <strong>mood change</strong> swaps major<span aria-hidden="true">↔</span><span class="visually-hidden"> and </span>minor only (energy stays, mood flips).
@@ -489,10 +489,10 @@
 
       <div class="settings-check">
         <input type="checkbox" id="dj-outro-intro" aria-describedby="dj-outro-desc">
-        <label for="dj-outro-intro">Outro / intro align</label>
+        <label for="dj-outro-intro">Outro <span aria-hidden="true">/</span><span class="visually-hidden">and</span> intro align</label>
       </div>
       <span class="setting-desc" id="dj-outro-desc">
-        Auto-detect each track's outro start + intro end on first play.  Crossfade lands between them so the new track's first downbeat replaces the old track's outro — no cold cuts into 4-bar intros.
+        Auto-detect each track's outro start <span aria-hidden="true">+</span><span class="visually-hidden">and</span> intro end on first play.  Crossfade lands between them so the new track's first downbeat replaces the old track's outro — no cold cuts into 4-bar intros.
       </span>
     </fieldset>
 
@@ -515,7 +515,7 @@
         </select>
       </div>
       <span class="setting-desc" id="pb-pick-mode-desc">
-        How AutoDJ picks the next track.  <em>Similarity</em> picks the closest sonic neighbour to whatever just played.  <em>Entropy walk</em> picks the most sonically distant track instead — A → far(A) → far(far(A)) → … — so the set drifts through the library rather than clustering around the seed.  <em>Random walk</em> picks uniformly at random and ignores similarity, key, BPM, and energy entirely.  Switch back to <em>Similarity</em> mid-set and AutoDJ resumes from the song currently playing.
+        How AutoDJ picks the next track.  <em>Similarity</em> picks the closest sonic neighbour to whatever just played.  <em>Entropy walk</em> picks the most sonically distant track instead — <span aria-hidden="true">A → far(A) → far(far(A)) → …</span><span class="visually-hidden">A, then the track farthest from A, then the track farthest from that, and so on</span> — so the set drifts through the library rather than clustering around the seed.  <em>Random walk</em> picks uniformly at random and ignores similarity, key, BPM, and energy entirely.  Switch back to <em>Similarity</em> mid-set and AutoDJ resumes from the song currently playing.
       </span>
 
       <div class="settings-check">
@@ -539,7 +539,7 @@
         <label for="pb-replaygain">ReplayGain normalisation</label>
       </div>
       <span class="setting-desc" id="pb-rg-desc">
-        Apply embedded ReplayGain track-gain tags so every track plays at a consistent loudness.  Tracks without tags play unchanged.  Targets −14 dB (Spotify-ish reference) by default.
+        Apply embedded ReplayGain track-gain tags so every track plays at a consistent loudness.  Tracks without tags play unchanged.  Targets <span aria-hidden="true">−</span><span class="visually-hidden">minus </span>14 dB (Spotify-ish reference) by default.
       </span>
 
       <div class="settings-check">
@@ -564,7 +564,7 @@
                inputmode="decimal" aria-describedby="pb-mood-arc-hours-desc">
       </div>
       <span class="setting-desc" id="pb-mood-arc-hours-desc">
-        How long one full warmup-peak-cool cycle takes before the arc loops.  3 h matches a standard club set; 1 h works well for short sessions; 6+ h gives a slow festival-style ramp.  Changing this re-anchors the arc to "now".
+        How long one full warmup-peak-cool cycle takes before the arc loops.  3 h matches a standard club set; 1 h works well for short sessions; 6<span aria-hidden="true">+</span><span class="visually-hidden"> or more</span> h gives a slow festival-style ramp.  Changing this re-anchors the arc to "now".
       </span>
 
       <div class="settings-check">
@@ -572,7 +572,7 @@
         <label for="pb-import-cues">Auto-import DJ-software cues</label>
       </div>
       <span class="setting-desc" id="pb-import-cues-desc">
-        On the first cache load, scan for Mixxx (mixxx.db), Rekordbox (Library.xml export), and Traktor (collection.nml) libraries in your music folder and the standard per-OS user-data locations, then merge any cues found into AutoDJ's auto-detected ones.  User / DJ-software cues win on conflict.
+        On the first cache load, scan for Mixxx (mixxx.db), Rekordbox (Library.xml export), and Traktor (collection.nml) libraries in your music folder and the standard per-OS user-data locations, then merge any cues found into AutoDJ's auto-detected ones.  User <span aria-hidden="true">/</span><span class="visually-hidden">or</span> DJ-software cues win on conflict.
       </span>
 
       <div class="settings-check">
@@ -580,7 +580,7 @@
         <label for="pb-beat-sync-fx">Beat-sync transition FX</label>
       </div>
       <span class="setting-desc" id="pb-beat-sync-fx-desc">
-        Snap rhythmic transition effects (echo, dub delay, beat repeat, gate stutter, stutter build, sidechain pump, transformer, scratch) to the beat grid + size their internal events to whole bars at a tempo blended from the outgoing track to the incoming track.  Envelope effects (sweeps, risers, drops, reverbs) bar-round their fade duration.  Falls back to seconds-based timing when no beat grid or BPM is known.
+        Snap rhythmic transition effects (echo, dub delay, beat repeat, gate stutter, stutter build, sidechain pump, transformer, scratch) to the beat grid <span aria-hidden="true">+</span><span class="visually-hidden">and</span> size their internal events to whole bars at a tempo blended from the outgoing track to the incoming track.  Envelope effects (sweeps, risers, drops, reverbs) bar-round their fade duration.  Falls back to seconds-based timing when no beat grid or BPM is known.
       </span>
 
       <div class="settings-check">
@@ -596,7 +596,7 @@
         <label for="pb-beatmatch-on-skip">Beatmatch on skip</label>
       </div>
       <span class="setting-desc" id="pb-beatmatch-on-skip-desc">
-        When you press Skip, pitch-stretch the incoming track so its tempo matches the outgoing one (preserves musical pitch).  Without this, skipping mid-track cold-cuts to the new tempo.  Capped at +-15% so wildly mismatched tracks don't sound silly.  Browser-only — CLI server-audio mode can't pitch-stretch on the fly.
+        When you press Skip, pitch-stretch the incoming track so its tempo matches the outgoing one (preserves musical pitch).  Without this, skipping mid-track cold-cuts to the new tempo.  Capped at <span aria-hidden="true">+-</span><span class="visually-hidden">plus or minus </span>15% so wildly mismatched tracks don't sound silly.  Browser-only — CLI server-audio mode can't pitch-stretch on the fly.
       </span>
 
       <div class="settings-row">
@@ -610,8 +610,8 @@
         </button>
       </div>
       <span class="setting-desc" id="audio-device-desc">
-        Pick which sound card / headphones the browser plays through.
-        Works in Chromium / Edge (full support) and Firefox 116+.  Safari has
+        Pick which sound card <span aria-hidden="true">/</span><span class="visually-hidden">or</span> headphones the browser plays through.
+        Works in Chromium <span aria-hidden="true">/</span><span class="visually-hidden">and</span> Edge (full support) and Firefox 116<span aria-hidden="true">+</span><span class="visually-hidden"> or later</span>.  Safari has
         <em>not</em> shipped <code>setSinkId</code> yet — it falls back to the
         system default.  Browsers hide device <em>names</em> until you grant
         microphone permission once: click <em>Show device names</em> to do
@@ -624,14 +624,14 @@
       <div class="settings-row">
         <label for="pb-transition-mode">Transition mode</label>
         <select id="pb-transition-mode" aria-describedby="pb-transition-mode-desc">
-          <option value="full_intro_outro">Full intro / outro</option>
+          <option value="full_intro_outro" aria-label="Full intro and outro">Full intro / outro</option>
           <option value="outro_fade">Outro fade</option>
           <option value="fixed_skip_silence">Fixed (skip silence)</option>
           <option value="fixed">Fixed</option>
         </select>
       </div>
       <span class="setting-desc" id="pb-transition-mode-desc">
-        Mirrors Mixxx's AutoDJ transition modes.  <em>Full intro/outro</em> aligns the start of the incoming intro with the start of the outgoing outro and sizes the fade to whichever marker is shorter — best when both tracks have detected intro and outro markers.  <em>Outro fade</em> begins the fade at the outgoing outro_start and uses outro length only.  <em>Fixed (skip silence)</em> uses the Crossfade-seconds value but trims leading silence on the incoming track and trailing silence on the outgoing.  <em>Fixed</em> fades for the Crossfade-seconds value at the end of the outgoing track, with no marker alignment.
+        Mirrors Mixxx's AutoDJ transition modes.  <em>Full intro<span aria-hidden="true">/</span><span class="visually-hidden"> and </span>outro</em> aligns the start of the incoming intro with the start of the outgoing outro and sizes the fade to whichever marker is shorter — best when both tracks have detected intro and outro markers.  <em>Outro fade</em> begins the fade at the outgoing outro_start and uses outro length only.  <em>Fixed (skip silence)</em> uses the Crossfade-seconds value but trims leading silence on the incoming track and trailing silence on the outgoing.  <em>Fixed</em> fades for the Crossfade-seconds value at the end of the outgoing track, with no marker alignment.
       </span>
 
       <div class="settings-row">
@@ -648,8 +648,8 @@
       <div class="settings-row">
         <label for="key-notation">Key notation</label>
         <select id="key-notation" aria-describedby="key-notation-desc">
-          <option value="camelot">Camelot (8A / 8B)</option>
-          <option value="musical">Musical (C, Am, F#m)</option>
+          <option value="camelot" aria-label="Camelot (8A or 8B)">Camelot (8A / 8B)</option>
+          <option value="musical" aria-label="Musical (C, A minor, F sharp minor)">Musical (C, Am, F#m)</option>
         </select>
       </div>
       <span class="setting-desc" id="key-notation-desc">
@@ -660,7 +660,7 @@
         <input type="checkbox" id="key-prefer-flats" aria-describedby="key-prefer-flats-desc">
       </div>
       <span class="setting-desc" id="key-prefer-flats-desc" data-show-when="key-notation=musical">
-        When checked, accidentals render as <em>Db, Eb, Gb, Ab, Bb</em>.  When unchecked, they render as <em>C#, D#, F#, G#, A#</em> — which matches the spelling most DJ tag editors emit.
+        When checked, accidentals render as <em>Db, Eb, Gb, Ab, Bb</em>.  When unchecked, they render as <em><span aria-hidden="true">C#, D#, F#, G#, A#</span><span class="visually-hidden">C sharp, D sharp, F sharp, G sharp, A sharp</span></em> — which matches the spelling most DJ tag editors emit.
       </span>
 
       <div class="settings-row">
@@ -668,7 +668,7 @@
         <input type="number" id="pb-crossfade" min="0" max="20" step="0.5" value="3" aria-describedby="pb-crossfade-desc">
       </div>
       <span class="setting-desc" id="pb-crossfade-desc">
-        How long the gain ramp between tracks lasts.  2-3 s feels natural for most music; 5-8 s for ambient or testing transition effects.  0 = instant cut.
+        How long the gain ramp between tracks lasts.  2-3 s feels natural for most music; 5-8 s for ambient or testing transition effects.  0 <span aria-hidden="true">=</span><span class="visually-hidden">means</span> instant cut.
       </span>
 
       <div class="settings-row">
@@ -676,7 +676,7 @@
         <input type="number" id="pb-fade-in" min="0" max="20" step="0.5" value="3" aria-describedby="pb-fade-in-desc">
       </div>
       <span class="setting-desc" id="pb-fade-in-desc">
-        How long the incoming track takes to reach full volume.  0 = incoming track starts at full volume immediately when the crossfade begins (no ramp-up).  Capped at crossfade length.
+        How long the incoming track takes to reach full volume.  0 <span aria-hidden="true">=</span><span class="visually-hidden">means</span> incoming track starts at full volume immediately when the crossfade begins (no ramp-up).  Capped at crossfade length.
       </span>
     </fieldset>
 
@@ -914,11 +914,11 @@
       <!-- Stats card -->
       <h3 id="library-stats-heading">Index stats</h3>
       <dl id="library-stats" aria-labelledby="library-stats-heading">
-        <dt>Tracks indexed</dt>     <dd id="lib-stat-count">—</dd>
-        <dt>Average BPM</dt>        <dd id="lib-stat-avg-bpm">—</dd>
-        <dt>Tracks with key</dt>    <dd id="lib-stat-with-key">—</dd>
-        <dt>Tracks with genre</dt>  <dd id="lib-stat-with-genre">—</dd>
-        <dt>Tracks with energy</dt> <dd id="lib-stat-with-energy">—</dd>
+        <dt>Tracks indexed</dt>     <dd id="lib-stat-count"><span aria-hidden="true">—</span><span class="visually-hidden">Not loaded</span></dd>
+        <dt>Average BPM</dt>        <dd id="lib-stat-avg-bpm"><span aria-hidden="true">—</span><span class="visually-hidden">Not loaded</span></dd>
+        <dt>Tracks with key</dt>    <dd id="lib-stat-with-key"><span aria-hidden="true">—</span><span class="visually-hidden">Not loaded</span></dd>
+        <dt>Tracks with genre</dt>  <dd id="lib-stat-with-genre"><span aria-hidden="true">—</span><span class="visually-hidden">Not loaded</span></dd>
+        <dt>Tracks with energy</dt> <dd id="lib-stat-with-energy"><span aria-hidden="true">—</span><span class="visually-hidden">Not loaded</span></dd>
       </dl>
       <button type="button" id="lib-stats-refresh">Refresh stats</button>
 
@@ -1005,13 +1005,13 @@
   <p>Transport keys work on the Now Playing tab. Status keys (Shift+letter) and <kbd><span aria-hidden="true">?</span><span class="visually-hidden">question mark</span></kbd> work from any tab. Letter and punctuation shortcuts work on focused buttons and sliders, but not while typing or using dropdown typeahead. Space activates a focused button; arrow keys operate the focused slider or tab.</p>
   <p>If these single-key shortcuts get in your way, turn them all off with the <strong>Enable keyboard shortcuts</strong> checkbox under Settings, Keyboard. The choice is saved in this browser. This list stays available from the Keyboard shortcuts button.</p>
   <dl style="display:grid;grid-template-columns:max-content 1fr;column-gap:1rem;row-gap:0.25rem;margin:0">
-    <dt><kbd>Space</kbd> / <kbd>k</kbd></dt><dd>Play or pause. In stream mode, start or stop listening on this page.</dd>
+    <dt><kbd>Space</kbd> <span aria-hidden="true">/</span><span class="visually-hidden">or</span> <kbd>k</kbd></dt><dd>Play or pause. In stream mode, start or stop listening on this page.</dd>
     <dt><kbd>n</kbd></dt><dd>Skip to next track</dd>
     <dt><kbd>S</kbd></dt><dd>Shuffle (fresh random track)</dd>
-    <dt><kbd>M</kbd></dt><dd>Mute / unmute</dd>
-    <dt><kbd>↑</kbd> / <kbd>↓</kbd></dt><dd>Volume up / down (5%)</dd>
-    <dt><kbd>,</kbd> / <kbd>.</kbd></dt><dd>Seek back / forward 1 measure (BPM-derived; falls back to 5 s). Not available in stream mode.</dd>
-    <dt><kbd><span aria-hidden="true">?</span><span class="visually-hidden">question mark</span></kbd></dt><dd>Open / close this dialog</dd>
+    <dt><kbd>M</kbd></dt><dd>Mute <span aria-hidden="true">/</span><span class="visually-hidden">or</span> unmute</dd>
+    <dt><kbd><span aria-hidden="true">↑</span><span class="visually-hidden">Up Arrow</span></kbd> <span aria-hidden="true">/</span><span class="visually-hidden">or</span> <kbd><span aria-hidden="true">↓</span><span class="visually-hidden">Down Arrow</span></kbd></dt><dd>Volume up <span aria-hidden="true">/</span><span class="visually-hidden">or</span> down (5%)</dd>
+    <dt><kbd><span aria-hidden="true">,</span><span class="visually-hidden">Comma</span></kbd> <span aria-hidden="true">/</span><span class="visually-hidden">or</span> <kbd><span aria-hidden="true">.</span><span class="visually-hidden">Period</span></kbd></dt><dd>Seek back <span aria-hidden="true">/</span><span class="visually-hidden">or</span> forward 1 measure (BPM-derived; falls back to 5 s). Not available in stream mode.</dd>
+    <dt><kbd><span aria-hidden="true">?</span><span class="visually-hidden">question mark</span></kbd></dt><dd>Open <span aria-hidden="true">/</span><span class="visually-hidden">or</span> close this dialog</dd>
     <dt><kbd>Esc</kbd></dt><dd>Close this dialog</dd>
     <dt style="margin-top:0.5rem"><kbd>Shift+T</kbd></dt><dd style="margin-top:0.5rem">Speak current track (artist – title)</dd>
     <dt><kbd>Shift+N</kbd></dt><dd>Speak next track (artist, title, BPM)</dd>

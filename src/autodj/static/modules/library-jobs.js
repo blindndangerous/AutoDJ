@@ -20,6 +20,7 @@ import {
   requestJson,
   withDisabled,
 } from "./api-client.js";
+import { setNoValue } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 
 const _jobStatusState = new WeakMap();
@@ -201,8 +202,11 @@ async function refreshLibStats(els, control = null) {
     const s = await withDisabled(control, () => requestJson("/api/library/stats"));
     if (!isAuthenticatedRequestCurrent(epoch)) return;
     statCount.textContent       = s.track_count;
-    statAvgBpm.textContent      = s.average_bpm
-      ? `${s.average_bpm} (${s.tracks_with_bpm} tracks)` : "—";
+    if (s.average_bpm) {
+      statAvgBpm.textContent = `${s.average_bpm} (${s.tracks_with_bpm} tracks)`;
+    } else {
+      setNoValue(statAvgBpm, "None");
+    }
     statWithKey.textContent     = s.tracks_with_key;
     statWithGenre.textContent   = s.tracks_with_genre;
     statWithEnergy.textContent  = s.tracks_with_energy;

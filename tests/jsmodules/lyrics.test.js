@@ -439,6 +439,9 @@ describe("the current line said on request", () => {
     expect(currentLyricLine()).toBe("First");
     at(elements, 12);
     expect(currentLyricLine()).toBe("Instrumental. Next line: Second");
+    // The break is named in words in the list too, not just a note glyph.
+    expect(elements.lyricsList.querySelector('li[aria-current="true"] .visually-hidden')
+      .textContent).toBe("Instrumental");
     at(elements, 31);
     expect(currentLyricLine()).toBe("Instrumental.");
   });

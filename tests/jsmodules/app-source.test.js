@@ -1220,7 +1220,7 @@ describe("app request behavior", () => {
     const cueDetails = document.querySelector("#cue-details");
     expect(cueDetails).not.toBeNull();
     if (cueDetails) expect(cueDetails.textContent).toBe("No cue points");
-    expect(document.querySelector("#next-track-text").textContent).toBe("—");
+    expect(document.querySelector("#next-track-text").textContent).toBe("—None");
     expect(document.querySelector("#queue-list").textContent).not.toContain("Queued secret");
     expect(document.querySelector("#preset-select").textContent).not.toContain("Secret preset");
     expect(updateMediaSession).toHaveBeenLastCalledWith({ current_track: null });

@@ -125,6 +125,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   details" section below it.
 - Stopping a library job with Stop running job now reports that the job stopped, instead of
   "exited with code 1".
+- More symbols that NVDA skips at low punctuation levels now have words for screen readers,
+  with the text on screen unchanged: the arrow, comma and period keys and the slashes in the
+  keyboard shortcuts list; plus, times, arrow, at, equals and minus signs in the setting
+  descriptions and Transition effect details; the slashes and sharp sign in the Harmonic mixing,
+  Transition mode and Key notation choices; the dash that stands for no value in Up Next and the
+  Library stats; and the note shown for an instrumental break in the Lyrics card.
 - The Library tools output log now holds each line as its own line on the page, so NVDA's
   browse mode reads it one line per Down Arrow. Before, the whole log was one block of text.
 - In stream mode with `--server-audio`, the page's volume slider and Mute now also set the

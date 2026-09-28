@@ -56,6 +56,13 @@ export function fmtTrack(t) {
   return t.display_name || t.title || "Unknown";
 }
 
+// A lone dash that stands for "no value".  NVDA says nothing for "—"
+// below its "most" punctuation level, so a screen reader gets `words`
+// instead and the dash stays on screen.
+export function setNoValue(el, words) {
+  el.innerHTML = `<span aria-hidden="true">—</span><span class="visually-hidden">${escHtml(words)}</span>`;
+}
+
 export function escHtml(str) {
   return String(str)
     .replace(/&/g, "&amp;")

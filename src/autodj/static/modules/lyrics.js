@@ -138,6 +138,11 @@ export async function loadLyrics(path, elements) {
   }
 }
 
+// A blank timed line is an instrumental break.  NVDA has no name for the
+// note glyph, so the line says so in words.
+const INSTRUMENTAL_LINE =
+  '<span aria-hidden="true">♫</span><span class="visually-hidden">Instrumental</span>';
+
 export function renderLyricsList({ lyricsCard, lyricsList }) {
   if (state.cached.length === 0) {
     lyricsCard.hidden = true;
@@ -146,7 +151,7 @@ export function renderLyricsList({ lyricsCard, lyricsList }) {
   }
   lyricsCard.hidden = false;
   lyricsList.innerHTML = state.cached
-    .map((ll, i) => `<li data-i="${i}">${escHtml(ll.text || "♫")}</li>`)
+    .map((ll, i) => `<li data-i="${i}">${ll.text ? escHtml(ll.text) : INSTRUMENTAL_LINE}</li>`)
     .join("");
 }
 

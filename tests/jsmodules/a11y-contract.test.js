@@ -1702,14 +1702,27 @@ describe("static accessibility contracts", () => {
     expect(regressedDialog.closest('[role="tabpanel"]')).not.toBeNull();
   });
 
-  it("names the plus and plus-or-minus options in words", () => {
-    // NVDA's default punctuation level drops these, so "±1" was heard as "1".
+  it("names options that use symbols in words", () => {
+    // NVDA drops these below its "some" punctuation level, so "±1" was
+    // heard as "1" and "major/minor" as "major minor".
     installDocument({ html: htmlSource });
     const symbolic = [...document.querySelectorAll("option")]
-      .filter((option) => /[±+]/.test(option.textContent));
+      .filter((option) => /[±+×/#→]/.test(option.textContent));
     expect(symbolic.length).toBeGreaterThan(0);
     for (const option of symbolic) {
-      expect(option.getAttribute("aria-label"), option.textContent).toMatch(/^[^±+]+$/);
+      expect(option.getAttribute("aria-label"), option.textContent).toMatch(/^[^±+×/#→]+$/);
+    }
+  });
+
+  it("gives every key in the shortcuts dialog a spoken name", () => {
+    // "↑", "," and "." are silent in NVDA at low punctuation levels, which
+    // left the Volume and Seek rows with no key at all.
+    installDocument({ html: htmlSource });
+    for (const kbd of document.querySelectorAll("#hotkey-help-modal kbd")) {
+      const spoken = [...kbd.querySelectorAll("*")]
+        .filter((el) => el.closest('[aria-hidden="true"]'))
+        .reduce((text, el) => text.replace(el.textContent, ""), kbd.textContent);
+      expect(spoken, kbd.textContent).toMatch(/[A-Za-z]/);
     }
   });
 
