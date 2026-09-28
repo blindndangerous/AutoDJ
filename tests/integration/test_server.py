@@ -365,6 +365,8 @@ class TestLiners:
             {"liners_folder": "/etc/autodj"},
             {"liners_enabled": True, "liners_folder": "../config"},
             {"bogus_field": 1},
+            {"liners_enabled": True, "liners_duck_db": 60.0},
+            {"liners_enabled": True, "liners_duck_db": -31.0},
         ],
     )
     def test_playback_settings_reject_liner_root_and_unknown_fields(

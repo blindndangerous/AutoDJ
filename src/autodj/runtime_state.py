@@ -412,7 +412,7 @@ def _restore_liners(cfg: Any, pb: dict) -> None:
             _warn("liners_pick_mode", value)
     if "liners_duck_db" in pb:
         value = pb["liners_duck_db"]
-        if _is_finite_number(value) and -60 <= value <= 0:
+        if _is_finite_number(value) and -30 <= value <= 0:
             playback.liners_duck_db = float(value)
         else:
             _warn("liners_duck_db", value)

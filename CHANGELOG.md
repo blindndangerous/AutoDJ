@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The liner ducking level now only accepts -30 to 0 dB. A positive value used to boost the music
+  while a liner played; the server now refuses it, and a saved value outside that range is ignored
+  on restart.
+
 ## [0.18.0] - 2026-09-28
 
 ### Added
