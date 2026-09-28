@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- The MuQ model is now kept in Hugging Face's own cache layout inside `models/` (or your
+  `[index] model_dir`), and `autodj index` asks Hugging Face for it on every run, which only
+  downloads what is missing and uses the saved copy when offline. The first `autodj index` after
+  upgrading downloads the model once more. Afterwards you can delete the old folder, named like
+  `models/MuQ-large-msd-iter-e891ff924c0b7fe8`, and the `.lock` file beside it. To keep using that folder instead, set
+  `[model] manual_path` to it.
+
 ## [0.18.0] - 2026-09-28
 
 ### Added

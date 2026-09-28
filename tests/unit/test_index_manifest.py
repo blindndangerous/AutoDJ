@@ -4,10 +4,9 @@ import json
 import os
 import sqlite3
 import stat
-import sys
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import faiss
 import numpy as np
@@ -64,24 +63,6 @@ def test_snapshot_token_rejects_negative_generation() -> None:
 def test_snapshot_token_for_manifest_requires_live_manifest() -> None:
     with pytest.raises(ValueError, match="positive"):
         snapshot_token_for_manifest(IndexManifest(2, 0, 0, "", "", "", "", "", 0))
-
-
-def test_fork_reset_rebinds_inherited_lock_state_without_acquiring_guard(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import autodj.index_manifest as manifest_module
-
-    inherited_guard = __import__("threading").Lock()
-    inherited_guard.acquire()
-    monkeypatch.setattr(manifest_module, "_LOCKS_GUARD", inherited_guard)
-    monkeypatch.setattr(manifest_module, "_LOCKS", {Path("old"): __import__("threading").RLock()})
-    manifest_module._HELD_LOCKS.paths = {Path("old")}
-
-    manifest_module._reset_process_local_locks()
-
-    assert manifest_module._LOCKS == {}
-    assert manifest_module._LOCKS_GUARD is not inherited_guard
-    assert manifest_module._HELD_LOCKS.paths == set()
 
 
 def _manifest_payload(**changes: object) -> dict[str, object]:
@@ -186,74 +167,6 @@ def test_v2_manifest_rejects_negative_state_revision_without_state_file(tmp_path
     (tmp_path / "index-manifest.json").write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(IndexConsistencyError, match="generation/count"):
         read_manifest(tmp_path)
-
-
-@pytest.mark.skipif(os.name != "nt", reason="msvcrt locking is Windows-only")
-def test_windows_lock_retries_contention_until_acquired(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import errno
-    import msvcrt
-
-    import autodj.index_manifest as manifest_module
-
-    calls: list[int] = []
-
-    def locking(_fd: int, mode: int, _length: int) -> None:
-        calls.append(mode)
-        if len(calls) < 3:
-            raise OSError(errno.EACCES, "locked")
-
-    monkeypatch.setattr(msvcrt, "locking", locking)
-    with (tmp_path / "lock").open("a+b") as handle:
-        manifest_module._acquire_os_lock(handle)
-    assert calls == [msvcrt.LK_NBLCK, msvcrt.LK_NBLCK, msvcrt.LK_NBLCK]
-
-
-@pytest.mark.skipif(os.name != "nt", reason="msvcrt locking is Windows-only")
-def test_windows_lock_propagates_non_contention_error(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import errno
-    import msvcrt
-
-    import autodj.index_manifest as manifest_module
-
-    calls: list[int] = []
-
-    def locking(_fd: int, mode: int, _length: int) -> None:
-        calls.append(mode)
-        raise OSError(errno.EIO, "disk failure")
-
-    monkeypatch.setattr(msvcrt, "locking", locking)
-    with (tmp_path / "lock").open("a+b") as handle, pytest.raises(OSError, match="disk failure"):
-        manifest_module._acquire_os_lock(handle)
-    assert calls == [msvcrt.LK_NBLCK]
-
-
-def test_windows_lock_bindings_are_exercised_without_windows(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import autodj.index_manifest as manifest_module
-
-    locking = MagicMock()
-    fake_msvcrt = type("FakeMsvcrt", (), {"LK_NBLCK": 7, "LK_UNLCK": 8, "locking": locking})
-    monkeypatch.setattr(manifest_module.os, "name", "nt")
-    with patch.dict(sys.modules, {"msvcrt": fake_msvcrt}):
-        handle = MagicMock()
-        handle.tell.return_value = 0
-        handle.fileno.return_value = 12
-        manifest_module._acquire_os_lock(handle)
-        manifest_module._release_os_lock(handle)
-
-    handle.write.assert_called_once_with(b"0")
-    handle.flush.assert_called_once_with()
-    assert locking.call_args_list == [
-        ((handle.fileno(), 7, 1), {}),
-        ((handle.fileno(), 8, 1), {}),
-    ]
 
 
 def test_publish_manifest_is_monotonic_atomic_and_retains_two_generations(
@@ -692,48 +605,6 @@ def test_manifest_revision_cannot_exceed_publication_state(tmp_path: Path) -> No
 
     with pytest.raises(IndexConsistencyError, match="exceeds publication state"):
         read_manifest(tmp_path)
-
-
-def test_thread_lock_resets_state_after_pid_change(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import autodj.index_manifest as manifest_module
-
-    monkeypatch.setattr(manifest_module, "_LOCKS_PROCESS_ID", -1)
-
-    lock = manifest_module._thread_lock(tmp_path)
-
-    assert os.getpid() == manifest_module._LOCKS_PROCESS_ID
-    assert manifest_module._LOCKS[tmp_path] is lock
-
-
-def test_fsync_directory_ignores_open_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import autodj.index_manifest as manifest_module
-
-    fsync = MagicMock()
-    monkeypatch.setattr(manifest_module.os, "open", MagicMock(side_effect=OSError("denied")))
-    monkeypatch.setattr(manifest_module.os, "fsync", fsync)
-
-    manifest_module.fsync_directory(tmp_path)
-
-    fsync.assert_not_called()
-
-
-def test_fsync_directory_closes_descriptor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import autodj.index_manifest as manifest_module
-
-    fsync = MagicMock()
-    close = MagicMock()
-    monkeypatch.setattr(manifest_module.os, "open", MagicMock(return_value=91))
-    monkeypatch.setattr(manifest_module.os, "fsync", fsync)
-    monkeypatch.setattr(manifest_module.os, "close", close)
-
-    manifest_module.fsync_directory(tmp_path)
-
-    fsync.assert_called_once_with(91)
-    close.assert_called_once_with(91)
 
 
 def test_checkpoint_rejects_busy_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, BinaryIO, cast
 from urllib.parse import quote
 
 from autodj import index_manifest as index_publication
+from autodj.fsutil import fsync_directory
 from autodj.index_manifest import (
     MANIFEST_NAME,
     PUBLICATION_STATE_NAME,
@@ -519,18 +520,6 @@ def _sqlite_snapshot(source: Path, target: Path, root: Path) -> None:
         raise BackupError(f"SQLite backup source changed identity during snapshot: {source}")
 
 
-def _fsync_directory(path: Path) -> None:
-    """Flush a directory entry update on platforms that support it."""
-
-    if os.name == "nt":
-        return
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
 def _remove_snapshot(path: Path) -> None:
     """Remove a temporary snapshot directory when it exists."""
 
@@ -803,10 +792,10 @@ def _recover_backup_destination(
                 )
                 return f"{message}; {cleanup_error}" if cleanup_error else message
             with suppress(OSError):
-                _fsync_directory(destination.parent)
+                fsync_directory(destination.parent)
             return f"new archive retained at {retained} after destination removal failed: {exc}"
     try:
-        _fsync_directory(destination.parent)
+        fsync_directory(destination.parent)
     except OSError as exc:
         return f"previous destination state was restored, but directory sync failed: {exc}"
     return None
@@ -857,7 +846,7 @@ def _publish_backup_destination(state: _BackupPublication, *, force: bool) -> No
             )
             if not state.recovery_populated:
                 raise BackupError("old backup destination move could not be reconciled")
-            _fsync_directory(state.destination.parent)
+            fsync_directory(state.destination.parent)
         try:
             os.replace(state.unpublished, state.destination)
         except BaseException:
@@ -900,7 +889,7 @@ def _finish_backup_publication(state: _BackupPublication) -> None:
 
     _unlink_quietly(state.unpublished)
     try:
-        _fsync_directory(state.destination.parent)
+        fsync_directory(state.destination.parent)
     except OSError as exc:
         raise BackupError(
             f"backup destination directory sync failed after publication: {exc}"
@@ -955,7 +944,7 @@ def _finish_backup_publication(state: _BackupPublication) -> None:
         state.destination_installed = False
         state.cleanup_rollback_intended = False
         try:
-            _fsync_directory(state.destination.parent)
+            fsync_directory(state.destination.parent)
         except OSError as sync_exc:
             raise BackupError(
                 "backup recovery cleanup failed and the old destination was restored, "
@@ -965,7 +954,7 @@ def _finish_backup_publication(state: _BackupPublication) -> None:
             f"backup recovery cleanup failed; old destination restored: {cleanup_exc}"
         ) from cleanup_exc
     with suppress(OSError):
-        _fsync_directory(state.destination.parent)
+        fsync_directory(state.destination.parent)
 
 
 def _raise_backup_failure(state: _BackupPublication, exc: BaseException) -> None:
@@ -2266,7 +2255,7 @@ def _commit_staged(
         try:
             guarded = next(record for record in staged if parent in record.target.parents)
             _validate_restore_guard(guarded)
-            _fsync_directory(parent)
+            fsync_directory(parent)
             _validate_restore_guard(guarded)
         except (OSError, BackupError, StopIteration) as exc:
             warnings.append(f"directory sync failed for installed restore at {parent}: {exc}")

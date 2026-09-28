@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import errno
 import hashlib
 import json
 import logging
@@ -10,16 +9,17 @@ import os
 import re
 import shutil
 import sqlite3
-import threading
-import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, BinaryIO, Protocol, cast
+from typing import Any
 
+from filelock import FileLock
+
+from autodj.fsutil import atomic_write, fsync_directory
 from autodj.sqlite_utils import readonly_uri
 
 SCHEMA_VERSION = 2
@@ -57,55 +57,7 @@ _TRACKS_SCHEMA_CONTRACT = (
     ("tempo_confidence", "REAL"),
     ("embedded_at", "REAL"),
 )
-_LOCKS: dict[Path, threading.RLock] = {}
-_LOCKS_GUARD = threading.Lock()
-_LOCKS_PROCESS_ID = os.getpid()
-_WINDOWS_LOCK_RETRY_SECONDS = 0.1
 logger = logging.getLogger(__name__)
-
-
-class _LockState(threading.local):
-    """Track publication locks held by the current thread."""
-
-    def __init__(self) -> None:
-        self.paths: set[Path] = set()
-
-
-_HELD_LOCKS = _LockState()
-
-
-class _WindowsLockApi(Protocol):
-    """Windows lock members omitted from non-Windows type stubs."""
-
-    LK_NBLCK: int
-    LK_UNLCK: int
-
-    def locking(self, fd: int, operation: int, length: int) -> None:
-        """Apply or release a byte-range lock."""
-
-
-class _PosixLockApi(Protocol):
-    """POSIX lock members omitted from Windows type stubs."""
-
-    LOCK_EX: int
-    LOCK_UN: int
-
-    def flock(self, fd: int, operation: int) -> None:
-        """Apply or release an advisory file lock."""
-
-
-def _reset_process_local_locks() -> None:
-    """Discard inherited lock ownership after fork."""
-    # Never touch inherited synchronization primitives here: another thread
-    # may have held one at fork time, making acquisition in the child hang.
-    global _HELD_LOCKS, _LOCKS, _LOCKS_GUARD, _LOCKS_PROCESS_ID
-    _LOCKS = {}
-    _LOCKS_GUARD = threading.Lock()
-    _HELD_LOCKS = _LockState()
-    _LOCKS_PROCESS_ID = os.getpid()
-
-
-getattr(os, "register_at_fork", lambda **_kwargs: None)(after_in_child=_reset_process_local_locks)
 
 
 class IndexConsistencyError(RuntimeError):
@@ -290,18 +242,8 @@ def _read_publication_state(index_dir: Path) -> _PublicationState | None:
 
 
 def _atomic_json_write(path: Path, payload: dict[str, Any]) -> None:
-    """Atomically replace *path* with *payload* and flush the directory when supported."""
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        with temporary.open("x", encoding="utf-8", newline="\n") as handle:
-            json.dump(payload, handle, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-        fsync_directory(path.parent)
-    finally:
-        temporary.unlink(missing_ok=True)
+    """Atomically replace *path* with *payload* as sorted, newline-terminated JSON."""
+    atomic_write(path, json.dumps(payload, sort_keys=True) + "\n")
 
 
 def _write_publication_state(index_dir: Path, state: _PublicationState) -> None:
@@ -556,93 +498,21 @@ def _immutable_sqlite_uri(path: Path) -> str:
     return readonly_uri(path, immutable=True)
 
 
-def _thread_lock(path: Path) -> threading.RLock:
-    """Return the process-local reentrant lock for an index directory."""
-    if os.getpid() != _LOCKS_PROCESS_ID:
-        _reset_process_local_locks()
-    with _LOCKS_GUARD:
-        return _LOCKS.setdefault(path, threading.RLock())
-
-
-def _acquire_os_lock(handle: BinaryIO) -> None:
-    """Acquire the platform file lock, retrying Windows contention."""
-    if os.name == "nt":
-        import msvcrt
-
-        windows_lock = cast(_WindowsLockApi, msvcrt)
-
-        handle.seek(0)
-        while True:
-            try:
-                windows_lock.locking(handle.fileno(), windows_lock.LK_NBLCK, 1)
-            except OSError as exc:
-                if exc.errno not in {errno.EACCES, errno.EAGAIN} and getattr(
-                    exc, "winerror", None
-                ) not in {32, 33}:
-                    raise
-                time.sleep(_WINDOWS_LOCK_RETRY_SECONDS)
-            else:
-                break
-        handle.seek(0, os.SEEK_END)
-        if handle.tell() == 0:
-            handle.write(b"0")
-            handle.flush()
-    else:
-        import fcntl
-
-        posix_lock = cast(_PosixLockApi, fcntl)
-        posix_lock.flock(handle.fileno(), posix_lock.LOCK_EX)
-
-
-def _release_os_lock(handle: BinaryIO) -> None:
-    """Release the platform file lock."""
-    if os.name == "nt":
-        import msvcrt
-
-        windows_lock = cast(_WindowsLockApi, msvcrt)
-
-        handle.seek(0)
-        windows_lock.locking(handle.fileno(), windows_lock.LK_UNLCK, 1)
-    else:
-        import fcntl
-
-        posix_lock = cast(_PosixLockApi, fcntl)
-        posix_lock.flock(handle.fileno(), posix_lock.LOCK_UN)
-
-
 @contextmanager
 def publication_lock(index_dir: Path) -> Iterator[None]:
-    """Serialize index readers and publishers across threads and processes."""
+    """Serialize index readers and publishers across threads and processes.
+
+    Reentrant within one thread; other threads and processes wait.
+    """
     index_dir = index_dir.resolve()
     index_dir.mkdir(parents=True, exist_ok=True)
-    local_lock = _thread_lock(index_dir)
-    with local_lock:
-        held = _HELD_LOCKS.paths
-        if index_dir in held:
-            yield
-            return
-        lock_path = index_dir / ".index-publication.lock"
-        with lock_path.open("a+b") as handle:
-            _acquire_os_lock(handle)
-            _HELD_LOCKS.paths = {*held, index_dir}
-            try:
-                yield
-            finally:
-                _HELD_LOCKS.paths = held
-                _release_os_lock(handle)
-
-
-def fsync_directory(path: Path) -> None:
-    """Flush directory metadata when the platform supports it."""
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-    try:
-        fd = os.open(path, flags)
-    except OSError:
-        return
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+    # One shared instance per path gives per-thread reentrancy.  Keep the lock
+    # file on release: doctor treats a published index without it as damaged.
+    lock = FileLock(
+        index_dir / ".index-publication.lock", is_singleton=True, preserve_lock_file=True
+    )
+    with lock:
+        yield
 
 
 def _durable_copy(source: Path, destination: Path) -> None:
