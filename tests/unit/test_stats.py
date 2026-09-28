@@ -250,6 +250,15 @@ def test_captured_output_has_words_not_bar_glyphs() -> None:
     assert "Minor: 1 track, 33 percent" in out
 
 
+def test_terminal_output_keeps_bars_with_percentages() -> None:
+    buf = StringIO()
+    entries = [_make_entry(mode=1), _make_entry(mode=0)]
+    print_stats(entries, Console(file=buf, force_terminal=True, color_system=None, width=120))
+    out = buf.getvalue()
+    assert "█" in out
+    assert "50%" in out
+
+
 class TestPrintStatsSummary:
     def test_track_count_in_output(self) -> None:
         buf = StringIO()
