@@ -20,7 +20,7 @@ import subprocess  # nosec B404 -- ffmpeg MP3 encoder with fixed argv, no shell
 import threading
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
-from typing import Protocol, cast
+from typing import cast
 
 import numpy as np
 
@@ -46,30 +46,8 @@ class EncoderUnavailableError(Exception):
     """The encoder failed repeatedly and is cooling down."""
 
 
-class Encoder(Protocol):
-    """PCM-in, MP3-out encoder."""
-
-    @property
-    def alive(self) -> bool:
-        """Whether the encoder process is still running."""
-        raise NotImplementedError
-
-    def write(self, pcm: bytes) -> None:
-        """Feed raw f32le stereo PCM."""
-
-    def read(self, n: int) -> bytes:
-        """Read up to *n* encoded bytes; ``b""`` once the encoder has exited."""
-        raise NotImplementedError
-
-    def close_input(self) -> None:
-        """Close the encoder's input so it flushes."""
-
-    def close(self) -> None:
-        """Stop the encoder and release resources."""
-
-
-class _FfmpegEncoder:  # pragma: no cover -- exercised by tests/integration/test_stream_ffmpeg.py
-    """ffmpeg subprocess encoder."""
+class FfmpegEncoder:  # pragma: no cover -- exercised by tests/integration/test_stream_ffmpeg.py
+    """ffmpeg subprocess encoder: f32le stereo PCM in, MP3 out."""
 
     def __init__(self, bitrate: int) -> None:
         """Start an ffmpeg subprocess that encodes f32le stereo PCM to MP3.
@@ -77,7 +55,6 @@ class _FfmpegEncoder:  # pragma: no cover -- exercised by tests/integration/test
         Args:
             bitrate: The MP3 bitrate in kbps.
         """
-        self.bitrate = bitrate
         self._proc = subprocess.Popen(  # nosec B603 B607 -- fixed argv, ffmpeg from PATH
             [
                 "ffmpeg",
@@ -149,18 +126,6 @@ class _FfmpegEncoder:  # pragma: no cover -- exercised by tests/integration/test
             if pipe is not None:
                 with contextlib.suppress(Exception):
                     pipe.close()
-
-
-def ffmpeg_encoder(bitrate: int) -> Encoder:
-    """Start a real ffmpeg MP3 encoder at *bitrate* kbps.
-
-    Args:
-        bitrate: The MP3 bitrate in kbps.
-
-    Returns:
-        A live :class:`Encoder` backed by an ffmpeg subprocess.
-    """
-    return _FfmpegEncoder(bitrate)  # pragma: no cover
 
 
 class Listener:
@@ -242,36 +207,21 @@ class StreamOutput:
         self,
         bitrate: int,
         max_listeners: int,
-        encoder_factory: Callable[[int], Encoder] = ffmpeg_encoder,
+        encoder_factory: Callable[[int], FfmpegEncoder],
+        loop: asyncio.AbstractEventLoop,
         clock: Callable[[], float] = time.monotonic,
-        loop: asyncio.AbstractEventLoop | None = None,
     ) -> None:
         """Start the encoder and its writer and reader threads.
 
         Args:
             bitrate: The initial MP3 bitrate in kbps.
             max_listeners: The maximum number of concurrent listeners.
-            encoder_factory: Builds a fresh :class:`Encoder` for a given
-                bitrate; defaults to the real ffmpeg encoder.
+            encoder_factory: Builds a fresh encoder for a given bitrate
+                (:class:`FfmpegEncoder` in production).
+            loop: The asyncio event loop listeners run on.
             clock: Monotonic time source, overridable for tests.
-            loop: The asyncio event loop listeners run on. If omitted, the
-                currently running event loop is used.
-
-        Raises:
-            RuntimeError: *loop* was omitted and there is no running event
-                loop to fall back on.
         """
-        if loop is not None:
-            self._loop = loop
-        else:
-            try:
-                self._loop = asyncio.get_running_loop()
-            except RuntimeError as exc:
-                raise RuntimeError(
-                    "StreamOutput requires a running event loop; pass loop= "
-                    "explicitly or construct it from inside an async context"
-                ) from exc
-
+        self._loop = loop
         self._bitrate = bitrate
         self._max_listeners = max_listeners
         self._factory = encoder_factory
@@ -300,7 +250,7 @@ class StreamOutput:
         self._pcm_stall_logged = False
         self._pcm_write_problem_logged = False
 
-        self._encoder: Encoder = self._factory(bitrate)
+        self._encoder: FfmpegEncoder = self._factory(bitrate)
         self._reader = self._start_reader(self._encoder)
         self._writer = threading.Thread(
             target=self._write_loop, name="autodj-stream-writer", daemon=True
@@ -398,7 +348,7 @@ class StreamOutput:
 
     # -- encoder lifecycle -------------------------------------------------
 
-    def _start_reader(self, encoder: Encoder) -> threading.Thread:
+    def _start_reader(self, encoder: FfmpegEncoder) -> threading.Thread:
         """Start the daemon thread that drains *encoder*'s output."""
         thread = threading.Thread(
             target=self._read_loop, args=(encoder,), name="autodj-stream-reader", daemon=True
@@ -434,7 +384,7 @@ class StreamOutput:
             self._title = self._pending_titles[-1][1]
             self._pending_titles.clear()
 
-    def _restart_encoder(self, dead: Encoder | None = None) -> None:
+    def _restart_encoder(self, dead: FfmpegEncoder | None = None) -> None:
         """Replace *dead* with a fresh encoder, counting the failure.
 
         Args:
@@ -473,7 +423,7 @@ class StreamOutput:
             self._pcm_in = self._mp3_out = 0
             self._reader = self._start_reader(self._encoder)
 
-    def _read_loop(self, encoder: Encoder) -> None:
+    def _read_loop(self, encoder: FfmpegEncoder) -> None:
         """Drain *encoder*'s MP3 output and restart it if it exits."""
         while True:
             data = encoder.read(4096)
@@ -553,7 +503,7 @@ class StreamOutput:
         with self._locked():
             self._pending_titles.append((self._pcm_in, format_stream_title(artist, title)))
 
-    def _on_encoded(self, encoder: Encoder, data: bytes) -> None:
+    def _on_encoded(self, encoder: FfmpegEncoder, data: bytes) -> None:
         """Advance the title cursor and burst buffer, then fan *data* out.
 
         Args:

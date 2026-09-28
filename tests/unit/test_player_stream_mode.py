@@ -6,6 +6,7 @@ import threading
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import pytest
 
 from autodj.mixbus import MixBus, RenderedTrack
 from autodj.player import Player
@@ -79,12 +80,12 @@ def test_end_set_parks_the_worker_and_clears_now_playing() -> None:
     assert player._current_lyrics_plain == ""
 
 
-def test_parked_worker_renders_nothing() -> None:
+def test_parked_worker_renders_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     player = _player(stream_mode=True)
     player._render_track = MagicMock(  # type: ignore[method-assign]
         side_effect=AssertionError("must not render while parked")
     )
-    player._render_ahead._retry_seconds = 0.01
+    monkeypatch.setattr("autodj.render_ahead._RETRY_SECONDS", 0.01)
     player.reset_render_ahead(None)
     player._render_ahead.start()
     try:

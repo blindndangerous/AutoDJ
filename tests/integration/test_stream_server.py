@@ -396,7 +396,7 @@ def test_lifespan_starts_the_station_and_shuts_it_down_first(tmp_path: Path) -> 
     secret = StreamSecret.load_or_create(tmp_path / ".stream-secret")
     order: list[str] = []
     player.bus.remove_output.side_effect = lambda _out: order.append("remove_output")
-    with patch("autodj.stream.ffmpeg_encoder", FakeEncoder):
+    with patch("autodj.stream.FfmpegEncoder", FakeEncoder):
         app = create_app(bridge, stream_secret=secret)
         with TestClient(app) as client:
             assert bridge.stream_mode
@@ -605,7 +605,7 @@ def test_failure_building_the_response_frees_the_listener_slot(tmp_path: Path) -
     bridge = _lifespan_bridge()
     secret = StreamSecret.load_or_create(tmp_path / ".stream-secret")
     with (
-        patch("autodj.stream.ffmpeg_encoder", FakeEncoder),
+        patch("autodj.stream.FfmpegEncoder", FakeEncoder),
         patch("autodj.server._ListenerResponse", side_effect=RuntimeError("boom")),
         TestClient(create_app(bridge, stream_secret=secret)) as client,
     ):
@@ -754,7 +754,7 @@ def test_stream_shutdown_failure_still_stops_the_player(tmp_path: Path, caplog) 
     bridge.player.bus.remove_output.side_effect = RuntimeError("bus gone")
     secret = StreamSecret.load_or_create(tmp_path / ".stream-secret")
     with (
-        patch("autodj.stream.ffmpeg_encoder", FakeEncoder),
+        patch("autodj.stream.FfmpegEncoder", FakeEncoder),
         TestClient(create_app(bridge, stream_secret=secret)),
     ):
         stream = bridge.stream
@@ -773,7 +773,7 @@ def test_seed_becomes_the_first_sets_first_track(tmp_path: Path) -> None:
     seed = _make_entry(2)
     secret = StreamSecret.load_or_create(tmp_path / ".stream-secret")
     with (
-        patch("autodj.stream.ffmpeg_encoder", FakeEncoder),
+        patch("autodj.stream.FfmpegEncoder", FakeEncoder),
         TestClient(create_app(bridge, stream_secret=secret, stream_first_track=seed)),
     ):
         bridge.station.listener_changed(1)

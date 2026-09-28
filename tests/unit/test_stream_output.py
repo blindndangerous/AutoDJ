@@ -700,14 +700,3 @@ async def test_set_bitrate_factory_failure_leaves_state_untouched() -> None:
     assert out.listener_count == 1
     assert not listener.closed
     out.close()
-
-
-def test_requires_a_loop_outside_a_running_event_loop() -> None:
-    with pytest.raises(RuntimeError):
-        StreamOutput(320, 8, encoder_factory=FakeEncoder)
-
-
-async def test_loop_defaults_to_the_running_loop_when_omitted() -> None:
-    out = StreamOutput(320, 8, encoder_factory=FakeEncoder)
-    assert out._loop is asyncio.get_running_loop()
-    out.close()

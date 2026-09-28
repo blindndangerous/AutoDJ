@@ -9,13 +9,13 @@ import numpy as np
 import pytest
 
 from autodj.icy import mp3_frame_offset
-from autodj.stream import ffmpeg_encoder
+from autodj.stream import FfmpegEncoder
 
 pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
 
 
 def test_two_seconds_encode_to_valid_mp3() -> None:
-    encoder = ffmpeg_encoder(128)
+    encoder = FfmpegEncoder(128)
     t = np.arange(88200, dtype=np.float32) / 44100
     pcm = np.stack([np.sin(2 * np.pi * 440 * t)] * 2, axis=1).astype(np.float32) * 0.3
 

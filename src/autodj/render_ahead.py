@@ -13,15 +13,8 @@ logger = logging.getLogger(__name__)
 
 TrackHook = Callable[[RenderedTrack], None]
 
-
-def _never_stale(_track: RenderedTrack) -> bool:
-    """Default *is_stale*: a rendered track never goes out of date."""
-    return False
-
-
-def _no_op(_track: RenderedTrack) -> None:
-    """Default *rewind* / *skip_past*: leave the cursor alone."""
-    return None
+# Pause before trying again after a render returned ``None`` or raised.
+_RETRY_SECONDS = 1.0
 
 
 class RenderAhead:
@@ -61,27 +54,23 @@ class RenderAhead:
     def __init__(
         self,
         render: Callable[[], RenderedTrack | None],
-        retry_seconds: float = 1.0,
-        is_stale: Callable[[RenderedTrack], bool] | None = None,
-        rewind: TrackHook | None = None,
-        skip_past: TrackHook | None = None,
+        is_stale: Callable[[RenderedTrack], bool],
+        rewind: TrackHook,
+        skip_past: TrackHook,
     ) -> None:
         """Create an idle worker; call :meth:`start` to begin rendering.
 
         Args:
             render: Produces the next track, or ``None`` when nothing
                 could be rendered.  Called only on the worker thread.
-            retry_seconds: Pause before trying again after *render*
-                returned ``None`` or raised.
-            is_stale: See the class docstring; defaults to "never".
-            rewind: See the class docstring; defaults to a no-op.
-            skip_past: See the class docstring; defaults to a no-op.
+            is_stale: See the class docstring.
+            rewind: See the class docstring.
+            skip_past: See the class docstring.
         """
         self._render = render
-        self._retry_seconds = retry_seconds
-        self._is_stale = is_stale or _never_stale
-        self._rewind = rewind or _no_op
-        self._skip_past = skip_past or _no_op
+        self._is_stale = is_stale
+        self._rewind = rewind
+        self._skip_past = skip_past
         self._cond = threading.Condition()
         self._ready: RenderedTrack | None = None
         self._fallback: RenderedTrack | None = None
@@ -245,7 +234,7 @@ class RenderAhead:
                         self._fallback = None
                         self._cond.notify_all()
                     elif not self._stopped:
-                        self._cond.wait(self._retry_seconds)
+                        self._cond.wait(_RETRY_SECONDS)
                     return
                 self._revalidate = False
             if self._is_stale(track):

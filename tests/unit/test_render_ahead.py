@@ -62,15 +62,15 @@ class _Cursor:
 
 
 @pytest.fixture
-def worker_factory():
+def worker_factory(monkeypatch: pytest.MonkeyPatch):
     workers: list[RenderAhead] = []
     cursors: list[_Cursor] = []
+    monkeypatch.setattr("autodj.render_ahead._RETRY_SECONDS", 0.01)
 
-    def make(render=None, retry_seconds: float = 0.01) -> tuple[RenderAhead, _Cursor]:
+    def make(render=None) -> tuple[RenderAhead, _Cursor]:
         cursor = _Cursor()
         worker = RenderAhead(
             render or cursor,
-            retry_seconds=retry_seconds,
             is_stale=cursor.is_stale,
             rewind=cursor.rewind,
             skip_past=cursor.skip_past,
@@ -345,18 +345,6 @@ def test_ready_popped_while_being_judged_is_left_alone(worker_factory) -> None:
     assert ready is not None
 
 
-def test_worker_without_hooks_never_goes_stale() -> None:
-    worker = RenderAhead(lambda: _track("plain"))
-    try:
-        worker.start()
-        assert worker.wait_ready(WAIT)
-        worker.refresh()
-        track = worker.pop()
-        assert track is not None and track.entry.path == "plain0"
-    finally:
-        worker.stop(timeout=WAIT)
-
-
 # --- lifecycle ---------------------------------------------------------------
 
 
@@ -392,14 +380,17 @@ def test_stop_can_be_signalled_without_waiting(worker_factory) -> None:
     assert not thread.is_alive()
 
 
-def test_empty_render_during_stop_exits_without_retry_wait(worker_factory) -> None:
+def test_empty_render_during_stop_exits_without_retry_wait(
+    worker_factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
     holder: dict[str, RenderAhead] = {}
 
     def render() -> RenderedTrack | None:
         holder["worker"].stop(timeout=0)  # stop arrives while this render runs
         return None
 
-    worker, _ = worker_factory(render, retry_seconds=60.0)
+    worker, _ = worker_factory(render)
+    monkeypatch.setattr("autodj.render_ahead._RETRY_SECONDS", 60.0)
     holder["worker"] = worker
     worker.start()
     thread = worker._thread
@@ -437,24 +428,6 @@ def test_restart_while_the_old_render_is_in_flight_keeps_one_worker(worker_facto
     assert worker.wait_ready(WAIT)  # still rendering after the restart
     track = worker.pop()
     assert track is not None and track.entry.path == "t1"
-
-
-def test_default_hooks_leave_the_cursor_alone() -> None:
-    count = {"n": 0}
-
-    def render() -> RenderedTrack | None:
-        count["n"] += 1
-        return _track("plain", count["n"])
-
-    worker = RenderAhead(render, is_stale=lambda _track: True)  # no rewind / skip_past
-    try:
-        worker.start()
-        assert worker.wait_ready(WAIT)
-        worker.refresh()  # stale: kept as fallback, default rewind does nothing
-        assert worker.wait_ready(WAIT)
-        assert worker.pop() is not None
-    finally:
-        worker.stop(timeout=WAIT)
 
 
 def test_reset_while_a_finished_render_is_judged_wins(worker_factory) -> None:

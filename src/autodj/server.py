@@ -853,7 +853,7 @@ def _start_stream_station(
     stream_out = stream_module.StreamOutput(
         cfg.stream.bitrate,
         cfg.stream.max_listeners,
-        encoder_factory=stream_module.ffmpeg_encoder,
+        encoder_factory=stream_module.FfmpegEncoder,
         loop=loop,
     )
     station = Station(
