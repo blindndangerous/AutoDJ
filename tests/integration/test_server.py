@@ -746,7 +746,6 @@ class TestProfiles:
             "list_names",
             "load",
             "delete",
-            "resolve_liner_path",
             "open_liner_file",
             "delete_liner_file",
         ):

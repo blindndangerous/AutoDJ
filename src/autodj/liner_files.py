@@ -147,46 +147,9 @@ def _validate_audio_name(name: str) -> None:
     """
     _validate_name(name)
     if os.path.splitext(name)[1].lower() not in LINER_EXTS:
-        raise InvalidLinerName("liner name must use a supported audio extension")
-
-
-def _is_reparse_point(path: Path) -> bool:
-    """Return whether a path is a symbolic link or Windows reparse point."""
-
-    try:
-        metadata = path.lstat()
-    except FileNotFoundError:
-        return False
-    return stat.S_ISLNK(metadata.st_mode) or bool(
-        getattr(metadata, "st_file_attributes", 0) & _REPARSE_ATTRIBUTE
-    )
-
-
-def resolve_liner_path(root: Path, name: str, *, require_file: bool = False) -> Path:
-    """Validate one name and return its display path inside *root*.
-
-    Security-sensitive I/O uses pinned handle-relative functions below; callers
-    must not use this returned path for mutation or deferred opening.
-    """
-    _validate_name(name)
-    root = Path(root)
-    if _is_reparse_point(root):
-        raise InvalidLinerName("configured liner root cannot be a reparse point")
-    if root.exists() and not root.is_dir():
-        raise InvalidLinerName("configured liner root is not a directory")
-    resolved_root = root.resolve()
-    candidate = resolved_root / name
-    if _is_reparse_point(candidate):
-        raise InvalidLinerName("liner file cannot be a reparse point")
-    target = candidate.resolve()
-    try:
-        target.relative_to(resolved_root)
-    except ValueError as exc:
-        raise InvalidLinerName("liner path escapes configured root") from exc
-    if require_file:
-        opened = open_liner_file(root, name)
-        opened.file.close()
-    return target
+        raise InvalidLinerName(
+            f"liner name must use a supported audio extension: {', '.join(LINER_EXTS)}"
+        )
 
 
 _INVALID_HANDLE_VALUE = cast(int, ctypes.c_void_p(-1).value)
@@ -1218,7 +1181,7 @@ async def store_liner_upload(
     replace: bool,
 ) -> tuple[Path, int]:
     """Stream and atomically publish one upload relative to a pinned root."""
-    _validate_name(name)
+    _validate_audio_name(name)
     if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes <= 0:
         raise ValueError("max_bytes must be a positive integer")
 

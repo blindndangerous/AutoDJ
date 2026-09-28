@@ -1769,23 +1769,11 @@ def create_app(
             LinerConflictError,
             LinerStorageUnsupportedError,
             LinerTooLargeError,
-            resolve_liner_path,
             store_liner_upload,
         )
-        from autodj.liners import LINER_EXTS
 
         name = file.filename or ""
         folder = _resolve_liner_folder()
-        try:
-            parsed_target = await asyncio.to_thread(resolve_liner_path, folder, name)
-        except InvalidLinerName as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        extension = parsed_target.suffix.lower()
-        if extension not in LINER_EXTS:
-            raise HTTPException(
-                status_code=400,
-                detail=(f"Unsupported extension {extension!r}; allowed: {', '.join(LINER_EXTS)}"),
-            )
         try:
             target, size = await store_liner_upload(
                 folder,
