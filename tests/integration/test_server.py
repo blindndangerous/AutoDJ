@@ -640,6 +640,41 @@ class TestProfiles:
         assert resp.status_code == 422
         assert "Bad" not in tc.get("/api/profiles").json()["profiles"]
 
+    def test_profile_save_rejects_unknown_keys(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
+        (tmp_path / "idx").mkdir()
+        tc = TestClient(create_app(bridge))
+
+        resp = tc.post("/api/profiles", json={"name": "Typo", "crossfade_secs": 4.0})
+
+        assert resp.status_code == 422
+        assert "crossfade_secs" in resp.text
+        assert "Typo" not in tc.get("/api/profiles").json()["profiles"]
+
+    @pytest.mark.parametrize("route", ["get", "apply"])
+    def test_stored_profile_with_unknown_key_is_400(self, bridge, tmp_path, route) -> None:
+        from fastapi.testclient import TestClient
+
+        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
+        (tmp_path / "idx").mkdir()
+        (tmp_path / "profiles").mkdir()
+        (tmp_path / "profiles" / "Old.json").write_text(
+            '{"name": "Old", "crossfade_seconds": 9.0, "extra": {}}', encoding="utf-8"
+        )
+        bridge.save_persistent_state = MagicMock()
+        tc = TestClient(create_app(bridge))
+
+        if route == "get":
+            resp = tc.get("/api/profiles/Old")
+        else:
+            resp = tc.post("/api/profiles/Old/apply")
+
+        assert resp.status_code == 400
+        assert "unknown profile keys: ['extra']" in resp.json()["detail"]
+        bridge.save_persistent_state.assert_not_called()
+
     def test_profile_apply_stored_bad_choice_is_400_and_changes_nothing(
         self, bridge, tmp_path
     ) -> None:

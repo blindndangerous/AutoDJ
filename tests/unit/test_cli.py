@@ -1820,6 +1820,20 @@ class TestCmdAnalyse:
         assert result.exit_code == 1
         assert "No index" in result.output
 
+    @pytest.mark.parametrize("command", ["analyse", "stats"])
+    def test_old_index_format_exits_with_the_rebuild_hint(
+        self, tmp_path: Path, command: str
+    ) -> None:
+        cfg = _make_cfg()
+        cfg.index.active_dir = tmp_path / "old-index"
+        cfg.index.active_dir.mkdir()
+        (cfg.index.active_dir / "tracks.db").touch()  # a pre-manifest index
+        cfg.library.music_dir = tmp_path
+        with patch("autodj.config.load_config", return_value=cfg):
+            result = CliRunner().invoke(cli, [command])
+        assert result.exit_code == 1
+        assert "autodj index --force" in " ".join(result.output.split())
+
     def test_invalid_name_exits(self, tmp_path: Path) -> None:
         cfg = self._cfg_with_index(tmp_path)
         with patch("autodj.config.load_config", return_value=cfg):

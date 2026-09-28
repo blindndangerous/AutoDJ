@@ -237,9 +237,9 @@ def test_seek_refused_in_stream_mode(stream_app) -> None:
 def _stream_bridge(scheduler=None) -> tuple[PlayerBridge, MagicMock]:
     bridge = PlayerBridge(player=_make_player_mock(), sim=_make_sim_mock())
     stream = _stream_mock()
-    bridge.attach_stream(
-        stream=stream, secret=MagicMock(), station=MagicMock(state="idle"), scheduler=scheduler
-    )
+    bridge.attach_stream(stream=stream, secret=MagicMock(), station=MagicMock(state="idle"))
+    if scheduler is not None:
+        bridge.attach_liner_scheduler(scheduler)
     return bridge, stream
 
 
@@ -286,7 +286,7 @@ def test_on_track_started_hands_the_liner_check_to_a_worker() -> None:
         assert started.wait(2.0)
         assert caller[0] is not threading.current_thread()
     finally:
-        bridge.shutdown_stream_workers()
+        bridge.shutdown_liner_worker()
 
 
 def test_liner_worker_failure_is_logged(caplog) -> None:
@@ -300,13 +300,13 @@ def test_liner_worker_failure_is_logged(caplog) -> None:
     while "liner track-start check failed" not in caplog.text.lower():
         assert time.monotonic() < deadline
         time.sleep(0.01)
-    bridge.shutdown_stream_workers()
+    bridge.shutdown_liner_worker()
 
 
 def test_on_track_started_after_shutdown_skips_the_liner() -> None:
     scheduler = MagicMock()
     bridge, stream = _stream_bridge(scheduler)
-    bridge.shutdown_stream_workers()
+    bridge.shutdown_liner_worker()
     _started(bridge, _make_entry(1))
     scheduler.on_track_start.assert_not_called()
     stream.set_title.assert_called_once()
@@ -318,7 +318,7 @@ def test_on_track_started_racing_shutdown_skips_the_liner() -> None:
 
     scheduler = MagicMock()
     bridge, _stream = _stream_bridge(scheduler)
-    bridge.shutdown_stream_workers()
+    bridge.shutdown_liner_worker()
     closed = ThreadPoolExecutor(max_workers=1)
     closed.shutdown()
     bridge._liner_worker = closed
@@ -327,7 +327,7 @@ def test_on_track_started_racing_shutdown_skips_the_liner() -> None:
 
 
 def test_shutdown_without_a_stream_is_a_no_op() -> None:
-    PlayerBridge(player=_make_player_mock(), sim=_make_sim_mock()).shutdown_stream_workers()
+    PlayerBridge(player=_make_player_mock(), sim=_make_sim_mock()).shutdown_liner_worker()
 
 
 def test_forget_track_removes_the_newest_matching_row() -> None:
@@ -430,6 +430,45 @@ def test_lifespan_starts_the_station_and_shuts_it_down_first(tmp_path: Path) -> 
     assert player._state.should_stop is True
 
 
+def test_server_audio_lifespan_fires_liners_into_the_mix_bus(tmp_path: Path) -> None:
+    """Plain --server-audio schedules liners too, with the configured ducking."""
+    import time
+
+    import numpy as np
+    import soundfile as sf
+
+    player = _make_player_mock()
+    player.bus = MagicMock()
+    player.bus.playing = True
+    playback = player._cfg.playback
+    playback.liners_folder = str(tmp_path)
+    playback.liners_enabled = True
+    playback.liners_every_n_songs = 1
+    playback.liners_every_minutes = None
+    playback.liners_random_min_minutes = None
+    playback.liners_random_max_minutes = None
+    playback.liners_pick_mode = "sequential"
+    playback.liners_duck_db = -9.0
+    sf.write(tmp_path / "station-id.wav", np.full(441, 0.25, np.float32), 44100)
+    bridge = PlayerBridge(player=player, sim=_make_sim_mock())
+    with TestClient(create_app(bridge, server_audio=True)):
+        assert not bridge.stream_mode
+        scheduler = bridge.liner_scheduler
+        assert scheduler is not None
+        player._state.is_paused = True
+        assert scheduler._can_fire() is False
+        player._state.is_paused = False
+        bridge.on_track_started(player._state.current_track)
+        deadline = time.monotonic() + 5.0
+        while not player.bus.play_liner.called:
+            assert time.monotonic() < deadline, "no liner reached the mix bus"
+            time.sleep(0.01)
+    audio = player.bus.play_liner.call_args.args[0]
+    assert audio.shape == (441, 2)
+    assert player.bus.play_liner.call_args.kwargs == {"duck_db": -9.0}
+    assert bridge._liner_worker is None
+
+
 async def _yield(_seconds: float) -> None:
     """A tick-loop sleep that only yields, so tests run many ticks quickly."""
     import asyncio
@@ -462,7 +501,7 @@ def test_tick_stream_workers_ticks_both_and_survives_failures(caplog) -> None:
     assert bridge.station.tick.call_count >= 2  # a failure does not end the loop
     assert bridge.liner_scheduler.tick.call_count >= 2
     assert "station tick failed" in caplog.text
-    bridge.shutdown_stream_workers()
+    bridge.shutdown_liner_worker()
 
 
 def test_slow_liner_tick_does_not_hold_up_the_station() -> None:
@@ -485,7 +524,7 @@ def test_slow_liner_tick_does_not_hold_up_the_station() -> None:
         assert bridge.station.tick.call_count >= 3
     finally:
         release.set()
-        bridge.shutdown_stream_workers()
+        bridge.shutdown_liner_worker()
 
 
 def test_tick_stream_workers_skips_what_is_missing() -> None:
@@ -668,7 +707,7 @@ def test_hook_ignores_a_start_from_a_stopped_set() -> None:
         assert bridge.history_snapshot() == []
         stream.set_title.assert_not_called()
     finally:
-        bridge.shutdown_stream_workers()
+        bridge.shutdown_liner_worker()
     scheduler.on_track_start.assert_not_called()
 
 
@@ -688,7 +727,7 @@ def test_shutdown_does_not_wait_for_a_liner_decode() -> None:
     _started(bridge, _make_entry(1))
     assert running.wait(2.0)
     began = time.monotonic()
-    bridge.shutdown_stream_workers()
+    bridge.shutdown_liner_worker()
     assert time.monotonic() - began < 1.0
     release.set()
 

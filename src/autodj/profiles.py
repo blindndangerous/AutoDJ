@@ -39,7 +39,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -109,32 +109,31 @@ class ProfileSnapshot:
     mood_arc_hours: float | None = None
     liners_enabled: bool | None = None
     liners_pick_mode: str | None = None
-    # Free-form extension dict so future fields don't break old files.
-    extra: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         """Return a plain JSON-serialisable representation."""
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict) -> ProfileSnapshot:
+    def from_dict(cls, data: object) -> ProfileSnapshot:
         """Inverse of :meth:`to_dict`.
 
-        Tolerates unknown keys (forward compatibility) by routing them
-        into ``extra``.
+        Args:
+            data: A JSON object with a ``name`` and any snapshot fields.
+
+        Raises:
+            ValueError: *data* is not an object, has no ``name``, or has
+                a key that is not a snapshot field (a removed or
+                misspelled setting fails loudly, as in ``config.toml``).
         """
-        known = {f for f in cls.__dataclass_fields__ if f != "extra"}
-        kwargs: dict = {}
-        extra: dict = dict(data.get("extra") or {})
-        for k, v in data.items():
-            if k == "extra":
-                continue
-            if k in known:
-                kwargs[k] = v
-            else:
-                extra[k] = v
-        kwargs["extra"] = extra
-        return cls(**kwargs)
+        if not isinstance(data, dict):
+            raise ValueError("a profile must be a JSON object")
+        unknown = set(data) - set(cls.__dataclass_fields__)
+        if unknown:
+            raise ValueError(f"unknown profile keys: {sorted(unknown)}")
+        if "name" not in data:
+            raise ValueError("a profile needs a name")
+        return cls(**data)
 
 
 @dataclass
@@ -184,12 +183,16 @@ class ProfileStore:
 
         Raises:
             FileNotFoundError: When the profile does not exist.
+            ValueError: When the file is not valid JSON or not a valid
+                profile (see :meth:`ProfileSnapshot.from_dict`).
         """
         target = self._path_for(name)
         if not target.is_file():
             raise FileNotFoundError(f"Profile not found: {name}")
-        data = json.loads(target.read_text(encoding="utf-8"))
-        return ProfileSnapshot.from_dict(data)
+        try:
+            return ProfileSnapshot.from_dict(json.loads(target.read_text(encoding="utf-8")))
+        except ValueError as exc:
+            raise ValueError(f"Profile {name!r} ({target}) is invalid: {exc}") from exc
 
     def delete(self, name: str) -> bool:
         """Remove the profile named *name*; returns True when a file was removed."""

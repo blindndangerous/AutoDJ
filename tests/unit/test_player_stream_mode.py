@@ -28,8 +28,9 @@ def test_stream_mode_builds_the_bus_up_front() -> None:
     assert events.on_position == player._on_position
 
 
-def test_without_stream_mode_there_is_no_bus_until_run() -> None:
-    assert _player().bus is None
+def test_server_audio_builds_the_bus_up_front_and_browser_mode_has_none() -> None:
+    assert isinstance(_player().bus, MixBus)
+    assert _player(dry_run=True).bus is None
 
 
 def test_random_start_entry_picks_from_the_library() -> None:

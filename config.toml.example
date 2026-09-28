@@ -226,8 +226,9 @@ key_sync_fx = true
 beatmatch_on_skip = false
 
 # Voice liners — short spoken clips layered over the mix.  Triggers are
-# evaluated in the browser; any combination may be set, and a null / absent
-# value disables that trigger.
+# evaluated in the browser when it plays the audio, and on the server with
+# --server-audio or --stream; any combination may be set, and a null /
+# absent value disables that trigger.
 liners_enabled = false
 # liners_folder = "~/.autodj/liners"   # default: <index_dir>/<name>/liners
 # liners_every_n_songs = 5             # after every N tracks
@@ -236,6 +237,12 @@ liners_enabled = false
 # liners_random_max_minutes = 25.0     # random window, upper bound
 liners_pick_mode = "random"            # random | sequential | weighted
 liners_duck_db = -12.0                 # how far the music ducks under a liner
+
+# Longest track the server mixes with --server-audio or --stream, in
+# minutes (1 to 600).  The server decodes each track whole, at about 21 MB
+# per minute, and holds a few at once, so longer tracks (hour-long DJ mixes)
+# are skipped with a log line.  Browser playback has no limit.
+server_max_track_minutes = 15.0
 
 # Per-file dayparts.  Accepted by the config loader and archived by
 # `autodj backup`, but the picker still uses the five built-in profiles —

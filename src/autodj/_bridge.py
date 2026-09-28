@@ -142,9 +142,9 @@ class PlayerBridge:
         default_factory=lambda: deque(maxlen=500),
         init=False,
     )
-    # Set by the server in server-mixed modes (``--server-audio``); ``None``
-    # in browser-driven mode, where the browser evaluates liner triggers
-    # itself and the "Test liner" route below is a no-op.
+    # Set by the server in server-mixed modes (``--server-audio`` and
+    # ``--stream``); ``None`` in browser-driven mode, where the browser
+    # evaluates liner triggers itself and the "Test liner" route is a no-op.
     liner_scheduler: Any = None
     # Stream mode (``serve --stream``): the stream output, its secret and
     # the station, set together by :meth:`attach_stream`.
@@ -172,28 +172,31 @@ class PlayerBridge:
         """Whether the mix is served as a radio stream."""
         return self.stream is not None
 
-    def attach_stream(
-        self, *, stream: Any, secret: Any, station: Any, scheduler: Any = None
-    ) -> None:
+    def attach_stream(self, *, stream: Any, secret: Any, station: Any) -> None:
         """Switch the bridge into stream mode.
 
         Args:
             stream: The :class:`~autodj.stream.StreamOutput`.
             secret: The :class:`~autodj.stream_secret.StreamSecret`.
             station: The :class:`~autodj.station.Station`.
-            scheduler: The :class:`~autodj.liner_scheduler.LinerScheduler`,
-                if liners play into the stream.
         """
         self.stream = stream
         self.stream_secret = secret
         self.station = station
-        self.liner_scheduler = scheduler
-        if scheduler is not None:
-            self._liner_worker = ThreadPoolExecutor(
-                max_workers=1, thread_name_prefix="autodj-liner"
-            )
 
-    def shutdown_stream_workers(self) -> None:
+    def attach_liner_scheduler(self, scheduler: Any) -> None:
+        """Fire voice liners into the server mix (stream or server audio).
+
+        Each track start is then counted by *scheduler* on a worker
+        thread (see :meth:`on_track_started`).
+
+        Args:
+            scheduler: The :class:`~autodj.liner_scheduler.LinerScheduler`.
+        """
+        self.liner_scheduler = scheduler
+        self._liner_worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="autodj-liner")
+
+    def shutdown_liner_worker(self) -> None:
         """Stop the liner worker without waiting for a check in progress.
 
         Queued checks are dropped; one already decoding a liner (up to

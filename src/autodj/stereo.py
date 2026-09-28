@@ -87,28 +87,60 @@ def envelope(env: np.ndarray, like: np.ndarray) -> np.ndarray:
     return env if like.ndim == 1 else env[:, None]
 
 
-def load_stereo(path: str, target_sr: int = SAMPLE_RATE) -> np.ndarray:
+class TrackTooLongError(ValueError):
+    """A track is longer than the caller is willing to hold in memory.
+
+    Attributes:
+        seconds: The track's length (at least the part that was read).
+    """
+
+    def __init__(self, path: str, seconds: float) -> None:
+        """Record *path* and its length in *seconds*."""
+        super().__init__(f"{path} is {seconds / 60:.1f} minutes long")
+        self.seconds = seconds
+
+
+def load_stereo(
+    path: str, target_sr: int = SAMPLE_RATE, max_seconds: float | None = None
+) -> np.ndarray:
     """Load an audio file as stereo float32 at *target_sr*.
 
     Uses soundfile first and falls back to librosa for formats soundfile
     cannot read.  Both paths resample to *target_sr*.
 
+    A decoded track costs about 21 MB per minute (stereo float32 at
+    44.1 kHz), so *max_seconds* refuses longer files before decoding
+    them: soundfile reads the length from the header, and the librosa
+    fallback decodes at most a second past the limit.
+
     Args:
         path: Audio file path.
         target_sr: Output sample rate in Hz.
+        max_seconds: Longest track to load, or ``None`` for no limit.
 
     Returns:
         ``(frames, 2)`` float32 audio.
 
     Raises:
         OSError: If neither decoder can read the file.
+        TrackTooLongError: If the track is longer than *max_seconds*.
     """
     try:
-        audio, sr = sf.read(path, dtype="float32", always_2d=True)
+        with sf.SoundFile(path) as source:
+            seconds = source.frames / source.samplerate
+            if max_seconds is not None and seconds > max_seconds:
+                raise TrackTooLongError(path, seconds)
+            audio = source.read(dtype="float32", always_2d=True)
+            sr = source.samplerate
+    except TrackTooLongError:
+        raise
     except Exception:
         import librosa
 
-        audio, sr = librosa.load(path, sr=None, mono=False)
+        duration = None if max_seconds is None else max_seconds + 1.0
+        audio, sr = librosa.load(path, sr=None, mono=False, duration=duration)
+        if max_seconds is not None and audio.shape[-1] > max_seconds * sr:
+            raise TrackTooLongError(path, audio.shape[-1] / sr) from None
         audio = audio.T if audio.ndim == 2 else audio
     audio = to_stereo(audio)
     if int(sr) != target_sr:

@@ -30,7 +30,7 @@ from autodj.index_manifest import (
     sha256_file,
 )
 from autodj.sqlite_utils import readonly_uri
-from autodj.version import REQUIRED_BUILT_ASSETS, current_version
+from autodj.version import REQUIRED_BUILT_ASSETS, current_version, stale_bundle_reason
 
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig, IndexConfig, ModelConfig
@@ -789,6 +789,14 @@ def _bundle_check(package_dir: Path | None = None) -> DoctorCheck:
                 CheckStatus.FAIL,
                 f"bundle {version}; runtime {runtime_version}",
                 "rebuild the web bundle for the installed AutoDJ version",
+            )
+        stale = stale_bundle_reason(payload, root)
+        if stale is not None:
+            return DoctorCheck(
+                "frontend-bundle",
+                CheckStatus.FAIL,
+                "stale bundle",
+                f"{stale}; run `npm run build`",
             )
     complete = all((bundle / name).is_file() for name in REQUIRED_BUILT_ASSETS)
     if not stamp.is_file() or not complete:

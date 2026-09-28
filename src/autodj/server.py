@@ -100,7 +100,7 @@ from autodj.stream_secret import (
     paired_devices_path,
     stream_secret_path,
 )
-from autodj.version import REQUIRED_BUILT_ASSETS, current_version
+from autodj.version import REQUIRED_BUILT_ASSETS, current_version, stale_bundle_reason
 
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig
@@ -336,7 +336,12 @@ def _selected_static_dir(package_dir: Path) -> Path:
 
 
 def _validated_bundle_version(static_built: Path, runtime_version: str) -> str | None:
-    """Validate metadata for a built bundle; source assets have no stamp."""
+    """Validate metadata for a built bundle; source assets have no stamp.
+
+    The stamp must match the runtime version and, in a source checkout,
+    the web sources it was built from (see
+    :func:`~autodj.version.stale_bundle_reason`).
+    """
     if not all((static_built / name).is_file() for name in REQUIRED_BUILT_ASSETS):
         return None
     stamp = static_built / _BUILD_INFO_NAME
@@ -353,6 +358,9 @@ def _validated_bundle_version(static_built: Path, runtime_version: str) -> str |
         raise RuntimeError(
             f"Built static bundle version {version} does not match runtime version {runtime_version}"
         )
+    stale = stale_bundle_reason(payload, static_built.parent)
+    if stale is not None:
+        raise RuntimeError(f"Built static bundle is stale: {stale}; run `npm run build`")
     return version
 
 
@@ -424,8 +432,11 @@ class ProfileSaveBody(BaseModel):
     """Request body for POST /api/profiles.
 
     All snapshot fields are optional except ``name``; missing fields
-    mean "do not override" when the profile is later applied.
+    mean "do not override" when the profile is later applied.  Unknown
+    fields are refused, as the stored profile would refuse them.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     name: str
     index_name: str | None = None
@@ -849,10 +860,35 @@ def _start_stream_station(
     )
     if first_track is not None:
         station.start_with(first_track, "seed")
-    bridge.attach_stream(stream=stream_out, secret=secret, station=station, scheduler=scheduler)
+    bridge.attach_stream(stream=stream_out, secret=secret, station=station)
+    bridge.attach_liner_scheduler(scheduler)
     stream_out.on_listener_change = station.listener_changed
     bus.add_output(stream_out)
     return stream_out
+
+
+def _start_server_audio_liners(bridge: PlayerBridge, liner_folder: Path) -> None:
+    """Fire voice liners into the plain ``--server-audio`` mix bus.
+
+    Same triggers, rotation and ducking as stream mode; automatic
+    liners fire only while a set is playing and not paused, like the
+    station's "playing" state.
+
+    Args:
+        bridge: The bridge whose player mixes on the server.
+        liner_folder: Where liners are read from.
+    """
+    from autodj.liner_scheduler import LinerScheduler
+
+    player = bridge.player
+    bus = player.bus
+    scheduler = LinerScheduler(
+        player._cfg.playback,
+        liner_folder,
+        bus,
+        can_fire=lambda: bus.playing and not player._state.is_paused,
+    )
+    bridge.attach_liner_scheduler(scheduler)
 
 
 async def _stop_stream_station(bridge: PlayerBridge, stream_out: StreamOutput) -> None:
@@ -864,7 +900,7 @@ async def _stop_stream_station(bridge: PlayerBridge, stream_out: StreamOutput) -
     steps: tuple[tuple[str, Callable[[], None]], ...] = (
         ("detaching", functools.partial(bridge.player.bus.remove_output, stream_out)),
         ("closing", stream_out.close),
-        ("stopping the liner worker for", bridge.shutdown_stream_workers),
+        ("stopping the liner worker for", bridge.shutdown_liner_worker),
     )
     for what, step in steps:
         try:
@@ -918,6 +954,7 @@ def create_app(
     device_registry: DeviceRegistry | None = None,
     stream_secret: StreamSecret | None = None,
     stream_first_track: IndexEntry | None = None,
+    server_audio: bool = False,
 ) -> FastAPI:
     """Create and return the FastAPI application.
 
@@ -930,6 +967,8 @@ def create_app(
             bridge's player must have been built in stream mode).
         stream_first_track: In stream mode, the track the first set
             starts with (``--seed``).
+        server_audio: Plain ``--server-audio`` (no stream): voice liners
+            fire into the player's mix bus, which must already exist.
 
     Returns:
         A configured :class:`fastapi.FastAPI` instance.
@@ -977,6 +1016,9 @@ def create_app(
                 stream_first_track,
             )
             stream_ticker = asyncio.create_task(_stream_tick_loop())
+        elif server_audio:
+            await asyncio.to_thread(_start_server_audio_liners, bridge, _resolve_liner_folder())
+            stream_ticker = asyncio.create_task(_stream_tick_loop())
         broadcast = asyncio.create_task(_broadcast_loop())
         watcher = asyncio.create_task(_index_watcher_loop())
         try:
@@ -1003,6 +1045,8 @@ def create_app(
                 stream_ticker.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await stream_ticker
+            if server_audio:
+                bridge.shutdown_liner_worker()
             try:
                 bridge.player._state.should_stop = True
                 bridge.player._skip_event.set()
@@ -1501,6 +1545,8 @@ def create_app(
             snap = await asyncio.to_thread(_profile_store().load, name)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return snap.to_dict()
 
     @app.post("/api/profiles")
@@ -1543,6 +1589,8 @@ def create_app(
             snap = await asyncio.to_thread(_profile_store().load, name)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         applied: list[str] = []
         # Playback flags
@@ -2352,7 +2400,7 @@ def create_app(
             await _broadcast_and_prune(_ws_clients, _ws_lock, payload)
 
     async def _stream_tick_loop() -> None:  # pragma: no cover — long-running task
-        """Tick the station and liner scheduler once a second (stream mode)."""
+        """Tick the station and liner scheduler once a second (server mixing)."""
         await _tick_stream_workers(bridge)
 
     async def _index_watcher_loop() -> None:  # pragma: no cover — long-running task
@@ -2536,6 +2584,7 @@ def serve(
         secure_cookie=secure_cookie,
         stream_secret=stream_secret,
         stream_first_track=seed_entry if stream else None,
+        server_audio=not no_playback and not stream,
     )
 
     startup_policy: SecurityPolicy = app.state.security_policy

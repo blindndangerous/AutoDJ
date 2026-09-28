@@ -583,17 +583,24 @@ class TestSaveFrom:
         # No exception bubbles
         save_from_player({"preset": "chill"}, tmp_path)
 
-    def test_load_unknown_preset_swallowed(self, tmp_path) -> None:
-        """Unknown preset name in saved state → silently skipped."""
+    def test_load_unknown_preset_is_warned_and_skipped(self, tmp_path, caplog) -> None:
         from autodj.runtime_state import load_into_player
 
-        (tmp_path / "web_state.json").write_text(
-            '{"schema_version": STATE_VERSION, "preset": "nosuchpreset_xyz"}',
-            encoding="utf-8",
-        )
+        _write_state(tmp_path, {"preset": "nosuchpreset_xyz", "transition": "echo_out"})
         p = _make_player()
-        load_into_player(p, tmp_path)  # no exception
+        load_into_player(p, tmp_path)
         assert p._preset is None
+        assert "ignoring invalid" in caplog.text
+        assert p._cfg.transitions.effect == "echo_out"  # the rest still loads
+
+    def test_load_restores_a_saved_preset(self, tmp_path) -> None:
+        from autodj.presets import BUILTIN_PRESETS
+        from autodj.runtime_state import load_into_player
+
+        _write_state(tmp_path, {"preset": "wakeup"})
+        p = _make_player()
+        load_into_player(p, tmp_path)
+        assert p._preset is BUILTIN_PRESETS["wakeup"]
 
 
 class TestRoundTrip:

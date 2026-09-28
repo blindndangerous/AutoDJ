@@ -19,14 +19,16 @@
 //     unchanged in the closeBundle hook below.
 
 import { defineConfig } from "vite";
+import { createHash } from "node:crypto";
 import {
   copyFileSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "smol-toml";
 
@@ -58,16 +60,45 @@ export function readProjectVersion(source) {
   return version;
 }
 
-export function writeBuildInfo(out, version) {
+// Hash of the bundle's build inputs: every file under src/autodj/static
+// plus this config.  The server and `autodj doctor` recompute it in a
+// source checkout (autodj.version.web_source_hash, which must match this
+// exactly) and refuse a bundle built from other sources, even when the
+// version is the same.  One line per file, "<path>\0<sha256>\n", in path
+// order; paths are POSIX-style from the checkout root, and CRLF is read as
+// LF so Windows and Linux checkouts agree.
+export function webSourceHash(root) {
+  const files = [resolve(root, "vite.config.js")];
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) walk(path);
+      else if (entry.isFile()) files.push(path);
+    }
+  };
+  walk(resolve(root, "src/autodj/static"));
+  const rows = files.map((file) => [relative(root, file).split(sep).join("/"), file]);
+  rows.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  const digest = createHash("sha256");
+  for (const [path, file] of rows) {
+    const text = readFileSync(file).toString("latin1").replaceAll("\r\n", "\n");
+    const content = createHash("sha256").update(Buffer.from(text, "latin1")).digest("hex");
+    digest.update(`${path}\0${content}\n`, "utf8");
+  }
+  return digest.digest("hex");
+}
+
+export function writeBuildInfo(out, version, sourceHash) {
   if (!existsSync(out)) mkdirSync(out, { recursive: true });
   writeFileSync(
     resolve(out, "build-info.json"),
-    `${JSON.stringify({ version }, null, 2)}\n`,
+    `${JSON.stringify({ version, source_hash: sourceHash }, null, 2)}\n`,
     "utf8",
   );
 }
 
 const PRODUCT_VERSION = readProjectVersion(pyproject);
+const SOURCE_HASH = webSourceHash(here);
 
 // Files we copy as-is into static_dist after the bundle step.
 // Worklets MUST keep their filenames stable (the FastAPI server has
@@ -117,7 +148,7 @@ export default defineConfig({
           const to   = resolve(OUT, f);
           if (existsSync(from)) copyFileSync(from, to);
         }
-        writeBuildInfo(OUT, PRODUCT_VERSION);
+        writeBuildInfo(OUT, PRODUCT_VERSION, SOURCE_HASH);
       },
     },
   ],

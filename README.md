@@ -344,6 +344,11 @@ variables and CLI flags still take precedence.
 deleted `node_modules`. Either delete `src/autodj/static_dist` (server falls back to unbundled
 source) or run `npm ci && npm run build`.
 
+**The server will not start: "Built static bundle is stale".** The web bundle in
+`src/autodj/static_dist` was built from different web sources than the ones in your checkout,
+usually because you pulled new code without rebuilding. Run `npm ci && npm run build`.
+`autodj doctor` reports the same problem as a failed `frontend-bundle` check.
+
 **No sound from the web UI.**  Click the **Play** button once -- browsers require a user gesture before they will play audio.  After the first click, AutoDJ unlocks its audio context and plays normally for the rest of the session.
 
 **Voice liner upload button is missing.**  The whole "Library" panel hides until you tick the **Enable voice liners** checkbox.  Tick it first, then the upload form appears.

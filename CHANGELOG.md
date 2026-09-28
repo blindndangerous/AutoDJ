@@ -44,6 +44,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Server-side mixing (`--server-audio` and `--stream`) now skips tracks longer than
+  `[playback] server_max_track_minutes` (default 15), with one line in the log naming the track,
+  and moves on to the next. The server decodes each track whole, at about 21 MB per minute, and
+  holds a few at once, so an hour-long DJ mix could use several gigabytes and exhaust a small
+  machine such as a NAS. Raise the setting if you have the memory. Browser playback has no limit.
 - `--server-audio` now plays in stereo and gapless between tracks, using the same mix bus that
   drives stream mode instead of a fresh sound-card connection per track.
 - Harmonic mixing now has one setting, `harmonic_mode`, which both turns it on and picks the
@@ -64,6 +69,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   or `path_remap` in `[library]`, stops AutoDJ with an error naming the section and key instead
   of being ignored. Preset names under `[presets.NAME]` are still free-form; the keys inside
   each preset are checked by the preset loader as before.
+- The web bundle's `build-info.json` now also records a fingerprint of the web sources it was
+  built from. In a source checkout, the server refuses to start and `autodj doctor` fails when the
+  bundle was built from different sources, even at the same version (for example after a
+  `git pull` without `npm run build`). Run `npm run build` to fix it. A bundle built by an earlier
+  version has no fingerprint and is refused the same way. Installed packages, which ship the built
+  bundle without its sources, are not affected.
+- Saved profiles (the JSON files in the `profiles` folder next to your index) with a key AutoDJ
+  does not know are now refused with an error naming the key, instead of the key being kept and
+  ignored. Saving a profile through `/api/profiles` with an unknown field is refused the same way.
+  Profiles saved by earlier versions all contain an empty `"extra": {}` entry: delete that line
+  from each file, or save the profile again.
 - Saved web settings (`web_state.json`) from earlier versions are ignored, with one warning in the
   log. Your web settings return to their defaults until you change one in the web page, which
   saves a new file. Earlier files stored a harmonic mode even when harmonic mixing was off, and
@@ -184,6 +200,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Voice liners' Test now button asks the server to play the liner whenever the server mixes the
   audio, with `--server-audio` as well as in stream mode. Before, with plain `--server-audio` it
   tried to play the liner in the browser, which is not playing anything, so nothing was heard.
+- Voice liners never played with plain `--server-audio` (without `--stream`): only stream mode
+  started the server's liner scheduler. They now play on the same triggers, with the same ducking,
+  while a track is playing and not paused.
+- With `--server-audio` or `--stream`, a track starting no longer waits for the server to finish
+  choosing the track after it. The choice works on a copy of the play history, so the page and
+  the stream title update the moment the new track begins.
 
 ## [0.17.0] - 2026-09-26
 

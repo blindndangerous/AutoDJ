@@ -16,6 +16,7 @@ from autodj.version import (
     _project_version,
     _source_pyproject,
     current_version,
+    web_source_hash,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -312,3 +313,73 @@ def test_version_timestamp_ignores_partial_built_bundle(tmp_path: Path, monkeypa
             assert _version_info()["built_at"].startswith("2023-11-14T22:13:20")
     finally:
         server._version_info.cache_clear()
+
+
+# The same tree and digest are pinned in tests/jsmodules/vite-version.test.js,
+# so the Python check and the vite build stamp cannot drift apart.
+PINNED_WEB_SOURCE_HASH = "c2ec7628d7bfbb824855fdaaae7f91d053ff6cdf57d5d3b53cb7f8d67ac71491"
+
+
+def write_web_checkout(root: Path) -> Path:
+    package = root / "src" / "autodj"
+    (package / "static" / "modules").mkdir(parents=True)
+    (root / "vite.config.js").write_bytes(b"export default {};\n")
+    (package / "static" / "app.js").write_bytes(b"import './modules/a.js';\r\n")
+    (package / "static" / "index.html").write_bytes(b"<!doctype html>\n")
+    (package / "static" / "modules" / "a.js").write_bytes(b"export const a = 1;\n")
+    return package
+
+
+def write_stamped_bundle(package: Path, source_hash: str) -> None:
+    bundle = package / "static_dist"
+    bundle.mkdir()
+    write_required_built_assets(bundle)
+    stamp = {"version": "0.15.0", "source_hash": source_hash}
+    (bundle / "build-info.json").write_text(json.dumps(stamp), encoding="utf-8")
+
+
+def test_web_source_hash_matches_the_vite_build_stamp(tmp_path: Path) -> None:
+    assert web_source_hash(write_web_checkout(tmp_path)) == PINNED_WEB_SOURCE_HASH
+
+
+def test_web_source_hash_ignores_line_endings_and_sees_edits(tmp_path: Path) -> None:
+    package = write_web_checkout(tmp_path)
+    app = package / "static" / "app.js"
+    app.write_bytes(b"import './modules/a.js';\n")
+    assert web_source_hash(package) == PINNED_WEB_SOURCE_HASH
+    app.write_bytes(b"import './modules/b.js';\n")
+    assert web_source_hash(package) != PINNED_WEB_SOURCE_HASH
+
+
+def test_web_source_hash_is_none_outside_a_source_checkout(tmp_path: Path) -> None:
+    package = write_web_checkout(tmp_path)
+    (tmp_path / "vite.config.js").unlink()
+    assert web_source_hash(package) is None
+
+
+def test_bundle_built_from_other_sources_is_refused(tmp_path: Path) -> None:
+    package = write_web_checkout(tmp_path)
+    write_stamped_bundle(package, "0" * 64)
+    with pytest.raises(RuntimeError, match=r"stale: the web sources changed.*npm run build"):
+        _validated_bundle_version(package / "static_dist", "0.15.0")
+
+
+def test_bundle_from_matching_sources_is_accepted(tmp_path: Path) -> None:
+    package = write_web_checkout(tmp_path)
+    write_stamped_bundle(package, PINNED_WEB_SOURCE_HASH)
+    assert _validated_bundle_version(package / "static_dist", "0.15.0") == "0.15.0"
+
+
+def test_installed_bundle_without_sources_is_accepted(tmp_path: Path) -> None:
+    """A wheel ships the bundle but not vite.config.js: nothing to compare."""
+    package = tmp_path / "site-packages" / "autodj"
+    package.mkdir(parents=True)
+    write_stamped_bundle(package, "0" * 64)
+    assert _validated_bundle_version(package / "static_dist", "0.15.0") == "0.15.0"
+
+
+def test_bundle_stamp_without_a_source_hash_is_refused(tmp_path: Path) -> None:
+    write_required_built_assets(tmp_path)
+    (tmp_path / "build-info.json").write_text('{"version":"0.15.0"}', encoding="utf-8")
+    with pytest.raises(RuntimeError, match="no source_hash"):
+        _validated_bundle_version(tmp_path, "0.15.0")

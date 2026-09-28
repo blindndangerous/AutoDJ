@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from autodj.version import web_source_hash
 from scripts.verify_release import ReleaseVerificationError, main, verify_release
 
 ROOT = Path(__file__).parents[2]
@@ -814,17 +815,24 @@ def test_release_workflow_clean_builds_bundle_into_wheel_and_sdist() -> None:
     build_info = json.loads(
         (clean / "src" / "autodj" / "static_dist" / "build-info.json").read_text(encoding="utf-8")
     )
-    assert build_info == {"version": version}
+    # The vite stamp and the Python check hash the same sources the same way.
+    source_hash = web_source_hash(clean / "src" / "autodj")
+    assert source_hash is not None
+    stamp = {"version": version, "source_hash": source_hash}
+    assert build_info == stamp
 
     with zipfile.ZipFile(clean / "dist" / f"autodj-{version}-py3-none-any.whl") as wheel:
         wheel_members = set(wheel.namelist())
         for asset in expected_assets:
             assert f"autodj/static_dist/{asset}" in wheel_members
-        assert json.loads(wheel.read("autodj/static_dist/build-info.json")) == {"version": version}
+        assert json.loads(wheel.read("autodj/static_dist/build-info.json")) == stamp
     with tarfile.open(clean / "dist" / f"autodj-{version}.tar.gz") as sdist:
         sdist_members = set(sdist.getnames())
         for asset in expected_assets:
             assert f"autodj-{version}/src/autodj/static_dist/{asset}" in sdist_members
-        assert json.loads(
-            sdist.extractfile(f"autodj-{version}/src/autodj/static_dist/build-info.json").read()
-        ) == {"version": version}
+        assert (
+            json.loads(
+                sdist.extractfile(f"autodj-{version}/src/autodj/static_dist/build-info.json").read()
+            )
+            == stamp
+        )

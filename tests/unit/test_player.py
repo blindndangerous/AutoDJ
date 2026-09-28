@@ -1146,7 +1146,7 @@ class TestKeyboardHandler:
     def test_n_skips(self) -> None:
         captured, _kb_mock, sysmod = self._setup()
         with sysmod:
-            player = Player(_make_cfg_mock(), _make_sim_index())
+            player = Player(_make_cfg_mock(), _make_sim_index(), dry_run=True)
             player._setup_keyboard()
             char_key = MagicMock()
             char_key.char = "n"
@@ -1272,7 +1272,7 @@ class TestRenderTrackLoading:
         good_audio = np.ones((3 * 44100, 2), dtype=np.float32)
         loads = iter([good_audio])
 
-        def fake_load(_path, _sr=44100):
+        def fake_load(*_args):
             try:
                 return next(loads)
             except StopIteration:
@@ -1282,6 +1282,45 @@ class TestRenderTrackLoading:
             rendered = player._render_track(current, nxt, 0)
         assert rendered is not None
         assert rendered.audio.shape == (3 * 44100, 2)
+
+    def test_track_over_the_length_limit_is_skipped_with_one_log_line(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from autodj.stereo import TrackTooLongError
+
+        player = self._make_player()
+        player._cfg.playback.server_max_track_minutes = 15.0
+        current, nxt = player._sim.entries[0], player._sim.entries[1]
+        caplog.clear()
+        with patch(
+            "autodj.player.load_stereo", side_effect=TrackTooLongError(current.path, 3720.0)
+        ) as load:
+            assert player._render_track(current, nxt, 0) is None
+        assert load.call_args.args[2] == 15.0 * 60
+        skipped = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert len(skipped) == 1
+        assert "62 minutes" in skipped[0].getMessage()
+        assert "server_max_track_minutes" in skipped[0].getMessage()
+
+    def test_next_track_over_the_limit_is_not_mixed_in(self) -> None:
+        """The playing track plays out whole; the long one is skipped on its own turn."""
+        from autodj.stereo import TrackTooLongError
+
+        player = self._make_player()
+        current, nxt = player._sim.entries[0], player._sim.entries[1]
+        body = np.ones((3 * 44100, 2), np.float32)
+
+        def fake_load(path, *_args):
+            if path == nxt.path:
+                raise TrackTooLongError(path, 3720.0)
+            return body
+
+        with patch("autodj.player.load_stereo", side_effect=fake_load):
+            rendered = player._render_track(current, nxt, 0)
+        assert rendered is not None
+        assert rendered.audio.shape == body.shape
+        assert rendered.next_entry is nxt
+        assert rendered.next_start_offset == 0
 
     def test_short_next_track_skips_crossfade(self) -> None:
         """When the next track is shorter than the crossfade, the render is a plain cut."""
@@ -2222,7 +2261,7 @@ class TestPlayerCoverageErrorPaths:
         player._state.track_number = 1
         current = player._sim.entries[0]
         with patch.object(player._sim, "find_distant", side_effect=SimilarityError("none")):
-            assert player._try_discovery(current) is None
+            assert player._try_discovery(current, player._pick_context()) is None
 
     def test_pick_next_relaxes_repeat_window_after_similarity_failure(self) -> None:
         player = Player(_make_cfg_mock(), _make_sim_index(3))
@@ -2380,13 +2419,10 @@ def test_next_rendered_carries_offset_between_tracks(monkeypatch):
     p._pick_lock = threading.Lock()
     p._set_generation = 0
     p._pending_pick_mode = "seed"
-    p._pick_exclude = None
     p._pending_from_queue = False
-    p._peek_queue = False
-    p._queue_reserved = None
     first, second, third = MagicMock(), MagicMock(), MagicMock()
     picks = iter([second, third])
-    p._pick_next = lambda _current: next(picks)
+    p._choose_next = lambda _current, _context: (next(picks), "similarity")
     p._last_pick_mode = "similar"
     calls = []
 
@@ -2412,13 +2448,10 @@ def test_next_rendered_skips_unrenderable_tracks_and_stops_without_a_cursor() ->
     p._pick_lock = threading.Lock()
     p._set_generation = 0
     p._pending_pick_mode = "seed"
-    p._pick_exclude = None
     p._pending_from_queue = False
-    p._peek_queue = False
-    p._queue_reserved = None
     bad, good, after = MagicMock(), MagicMock(), MagicMock()
     picks = iter([good, after])
-    p._pick_next = lambda _current: next(picks)
+    p._choose_next = lambda _current, _context: (next(picks), "similarity")
     p._last_pick_mode = "similarity"
 
     def fake_render(current, nxt, _offset):
@@ -2445,11 +2478,8 @@ def test_next_rendered_gives_up_after_five_failed_renders() -> None:
     p._pick_lock = threading.Lock()
     p._set_generation = 0
     p._pending_pick_mode = "seed"
-    p._pick_exclude = None
     p._pending_from_queue = False
-    p._peek_queue = False
-    p._queue_reserved = None
-    p._pick_next = lambda _current: MagicMock()
+    p._choose_next = lambda _current, _context: (MagicMock(), "similarity")
     p._last_pick_mode = "similarity"
     attempts = []
     p._render_track = lambda current, _nxt, _offset: attempts.append(current)
@@ -2689,11 +2719,7 @@ class TestNextRenderedProvenance:
         first, second = player._sim.entries[:2]
         player._render_track = _stub_render  # type: ignore[method-assign]
 
-        def pick(_current):
-            player._last_pick_mode = "discovery"
-            return second
-
-        player._pick_next = pick  # type: ignore[method-assign]
+        player._choose_next = lambda _current, _context: (second, "discovery")  # type: ignore[method-assign]
         player._last_pick_mode = "what the UI shows"
         player.reset_render_ahead(first, 7, pick_mode="seed")
 
@@ -2771,7 +2797,6 @@ class TestRenderAheadRepeatAvoidance:
         # The real history is untouched until the track actually starts.
         assert list(player._state.recently_played) == [played.path]
         assert list(player._state.recently_played_artists) == ["artist 0"]
-        assert player._pick_exclude is None
 
     def test_exclusion_window_slides_like_a_recorded_track(self) -> None:
         player = _bus_player()
@@ -2779,8 +2804,7 @@ class TestRenderAheadRepeatAvoidance:
         a, b, current = player._sim.entries[:3]
         player._state.record_played(a)
         player._state.record_played(b)
-        player._pick_exclude = current
-        paths, artists, _albums, _titles = player._recent_exclusions()
+        paths, artists, _albums, _titles = player._recent_exclusions(current)
         assert list(paths) == [b.path, current.path]
         assert artists == {"artist 2"}
 
@@ -2847,7 +2871,40 @@ class TestTrackStartRobustness:
         assert started == [entry]
         assert "Recording" in caplog.text
 
-    def test_track_start_waits_for_an_in_progress_pick(self) -> None:
+    def test_slow_pick_does_not_delay_track_start(self) -> None:
+        import threading
+
+        player = _bus_player()
+        first, second, started = player._sim.entries[:3]
+        player._render_track = _stub_render  # type: ignore[method-assign]
+        searching, release = threading.Event(), threading.Event()
+
+        def slow_search(**_kwargs):
+            searching.set()
+            release.wait(5.0)
+            return second
+
+        player._sim.find_next_for_path = slow_search  # type: ignore[method-assign]
+        player.reset_render_ahead(first, 0)
+        picker = threading.Thread(target=player._next_rendered)
+        picker.start()
+        try:
+            assert searching.wait(2.0)
+            starter = threading.Thread(
+                target=player._on_track_start,
+                args=(_rendered_with(started, pick_mode="discovery"),),
+            )
+            starter.start()
+            starter.join(1.0)
+            assert not starter.is_alive(), "track start waited for the similarity search"
+        finally:
+            release.set()
+            picker.join(5.0)
+        assert started.path in player._state.recently_played
+        # The pick finishing afterwards leaves the started track's mode alone.
+        assert player._last_pick_mode == "discovery"
+
+    def test_track_start_waits_for_a_history_copy(self) -> None:
         import threading
 
         player = _bus_player()
@@ -2882,7 +2939,6 @@ class TestPeekThenCommit:
         assert rendered.from_queue is True
         assert rendered.next_entry is b
         assert player._state.queue == [a, b]
-        assert player._peek_queue is False and player._queue_reserved is None
 
     def test_queued_next_is_peeked_before_the_queue(self) -> None:
         player = _bus_player()
@@ -2955,7 +3011,7 @@ class TestPeekThenCommit:
             return _stub_render(current, nxt, offset)
 
         player._render_track = render  # type: ignore[method-assign]
-        player._pick_next = lambda _current: good  # type: ignore[method-assign]
+        player._choose_next = lambda _current, _context: (good, "similarity")  # type: ignore[method-assign]
         player.reset_render_ahead(bad, 0)
         worker = player._render_ahead
         try:
