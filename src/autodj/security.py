@@ -541,7 +541,6 @@ def _is_public_path(path: str) -> bool:
     """
     return (
         path in _PUBLIC_FILES
-        or _safe_public_prefix(path, "/static/")
         or _safe_public_prefix(path, "/modules/")
         or _safe_public_prefix(path, "/stream/")
     )

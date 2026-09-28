@@ -556,8 +556,7 @@ These steps apply to a native installation from a source checkout.
    git switch --detach vX.Y.Z
    ```
 
-4. Run `uv sync --frozen --all-extras`, `npm ci`, and `npm run build` from the fetched release and
-   its committed locks. If you use the experimental Windows AMD environment, update it by following
+4. Run `uv sync --frozen --all-extras` from the fetched release and its committed lock. If you use the experimental Windows AMD environment, update it by following
    [Experimental Windows AMD GPU setup](windows-amd.md).
 5. Read the "Removed" and "Changed" sections of every release since yours in
    [CHANGELOG.md](../CHANGELOG.md). A configuration key that a release removed now stops AutoDJ at

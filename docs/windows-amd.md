@@ -43,13 +43,6 @@ override the wheel's dependency constraint or suppress the advisory: a compatibl
 is needed to resolve it. See [PyTorch's dependency tracking issue](https://github.com/pytorch/pytorch/issues/187188).
 The Pillow floor above also avoids retaining an older vulnerable version from the AMD wheel install.
 
-If you use AutoDJ's web UI, install and build its frontend once:
-
-```powershell
-npm ci
-npm run build
-```
-
 ## Check the GPU and run AutoDJ
 
 Confirm that PyTorch sees the Radeon device and reports its HIP runtime:

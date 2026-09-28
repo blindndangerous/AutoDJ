@@ -30,7 +30,6 @@ from autodj.index_manifest import (
     sha256_file,
 )
 from autodj.sqlite_utils import readonly_uri
-from autodj.version import REQUIRED_BUILT_ASSETS, current_version, stale_bundle_reason
 
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig, IndexConfig, ModelConfig
@@ -750,70 +749,6 @@ def _network_check(cfg: AutoDJConfig) -> DoctorCheck:
     )
 
 
-def _bundle_check(package_dir: Path | None = None) -> DoctorCheck:
-    """Validate built web bundle metadata or report source-asset fallback."""
-    root = Path(__file__).parent if package_dir is None else package_dir
-    bundle = root / "static_dist"
-    stamp = bundle / "build-info.json"
-    runtime_version: str | None = None
-    if stamp.is_file():
-        try:
-            payload = json.loads(stamp.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            return DoctorCheck(
-                "frontend-bundle",
-                CheckStatus.FAIL,
-                "invalid build-info.json",
-                f"{exc}; rebuild the web bundle",
-            )
-        version = payload.get("version") if isinstance(payload, dict) else None
-        if not isinstance(version, str) or not version:
-            return DoctorCheck(
-                "frontend-bundle",
-                CheckStatus.FAIL,
-                "invalid build-info.json",
-                "version must be a non-empty string; rebuild the web bundle",
-            )
-        try:
-            runtime_version = current_version()
-        except (OSError, RuntimeError, TypeError, ValueError):
-            return DoctorCheck(
-                "frontend-bundle",
-                CheckStatus.FAIL,
-                "version inspection failed",
-                "inspect installed/source version metadata and rebuild the web bundle",
-            )
-        if version != runtime_version:
-            return DoctorCheck(
-                "frontend-bundle",
-                CheckStatus.FAIL,
-                f"bundle {version}; runtime {runtime_version}",
-                "rebuild the web bundle for the installed AutoDJ version",
-            )
-        stale = stale_bundle_reason(payload, root)
-        if stale is not None:
-            return DoctorCheck(
-                "frontend-bundle",
-                CheckStatus.FAIL,
-                "stale bundle",
-                f"{stale}; run `npm run build`",
-            )
-    complete = all((bundle / name).is_file() for name in REQUIRED_BUILT_ASSETS)
-    if not stamp.is_file() or not complete:
-        reason = "missing build-info.json" if not stamp.is_file() else "incomplete built assets"
-        return DoctorCheck(
-            "frontend-bundle",
-            CheckStatus.WARN,
-            "source assets in use",
-            f"{reason}; build the production bundle when packaging AutoDJ",
-        )
-    return DoctorCheck(
-        "frontend-bundle",
-        CheckStatus.PASS,
-        f"bundle {runtime_version}; runtime {runtime_version}",
-    )
-
-
 def _stream_check(cfg: AutoDJConfig) -> DoctorCheck:
     """Check stream-mode prerequisites.
 
@@ -856,7 +791,6 @@ def run_doctor(
             _dependency_check(),
             _model_cache_check(cfg),
             _network_check(cfg),
-            _bundle_check(),
             _stream_check(cfg),
         )
     )

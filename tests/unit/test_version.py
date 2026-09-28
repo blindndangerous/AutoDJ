@@ -1,6 +1,5 @@
 import importlib.metadata
 import json
-import os
 import subprocess
 import sys
 import tomllib
@@ -10,13 +9,11 @@ from unittest.mock import patch
 import pytest
 
 import autodj
-from autodj.server import _validated_bundle_version, _version_info
+from autodj.server import _version_info
 from autodj.version import (
-    REQUIRED_BUILT_ASSETS,
     _project_version,
     _source_pyproject,
     current_version,
-    web_source_hash,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -45,11 +42,6 @@ def copy_version_package(destination: Path) -> None:
     package.mkdir(parents=True)
     for name in ("__init__.py", "version.py"):
         (package / name).write_bytes((ROOT / "src" / "autodj" / name).read_bytes())
-
-
-def write_required_built_assets(directory: Path) -> None:
-    for name in REQUIRED_BUILT_ASSETS:
-        (directory / name).write_text(name, encoding="utf-8")
 
 
 def project_version() -> str:
@@ -250,136 +242,3 @@ def test_malformed_source_metadata_has_actionable_error(tmp_path: Path) -> None:
     result = run_isolated_import(root / "src")
     assert result.returncode != 0
     assert "Unable to read AutoDJ version" in result.stderr
-
-
-def test_built_bundle_version_must_match_runtime(tmp_path: Path) -> None:
-    write_required_built_assets(tmp_path)
-    stamp = tmp_path / "build-info.json"
-    stamp.write_text('{"version":"0.14.0"}\n', encoding="utf-8")
-
-    with pytest.raises(RuntimeError, match=r"bundle version 0\.14\.0.*runtime version 0\.15\.0"):
-        _validated_bundle_version(tmp_path, "0.15.0")
-
-
-@pytest.mark.parametrize(
-    ("contents", "message"),
-    [
-        (None, "missing build-info.json"),
-        ("not json", "invalid build-info.json"),
-        ('{"version": ""}', "non-empty string version"),
-    ],
-)
-def test_built_bundle_stamp_failures_are_actionable(
-    tmp_path: Path, contents: str | None, message: str
-) -> None:
-    write_required_built_assets(tmp_path)
-    if contents is not None:
-        (tmp_path / "build-info.json").write_text(contents, encoding="utf-8")
-
-    with pytest.raises(RuntimeError, match=message):
-        _validated_bundle_version(tmp_path, "0.15.0")
-
-
-def test_built_bundle_stamp_rejects_invalid_utf8(tmp_path: Path) -> None:
-    write_required_built_assets(tmp_path)
-    (tmp_path / "build-info.json").write_bytes(b"\xff")
-
-    with pytest.raises(RuntimeError, match=r"invalid build-info\.json"):
-        _validated_bundle_version(tmp_path, "0.15.0")
-
-
-def test_source_assets_do_not_require_bundle_stamp(tmp_path: Path) -> None:
-    assert _validated_bundle_version(tmp_path, "0.15.0") is None
-
-
-def test_version_timestamp_ignores_partial_built_bundle(tmp_path: Path, monkeypatch) -> None:
-    import autodj.server as server
-
-    source = tmp_path / "static"
-    built = tmp_path / "static_dist"
-    source.mkdir()
-    built.mkdir()
-    (source / "index.html").write_text("source", encoding="utf-8")
-    source_app = source / "app.js"
-    source_app.write_text("source", encoding="utf-8")
-    built_app = built / "app.js"
-    built_app.write_text("partial", encoding="utf-8")
-    os.utime(source_app, (1_700_000_000, 1_700_000_000))
-    os.utime(built_app, (1_710_000_000, 1_710_000_000))
-    monkeypatch.setattr(server, "_PACKAGE_DIR", tmp_path)
-    server._version_info.cache_clear()
-    try:
-        with patch("autodj.server.current_version", return_value="0.15.0"):
-            assert _version_info()["built_at"].startswith("2023-11-14T22:13:20")
-    finally:
-        server._version_info.cache_clear()
-
-
-# The same tree and digest are pinned in tests/jsmodules/vite-version.test.js,
-# so the Python check and the vite build stamp cannot drift apart.
-PINNED_WEB_SOURCE_HASH = "c2ec7628d7bfbb824855fdaaae7f91d053ff6cdf57d5d3b53cb7f8d67ac71491"
-
-
-def write_web_checkout(root: Path) -> Path:
-    package = root / "src" / "autodj"
-    (package / "static" / "modules").mkdir(parents=True)
-    (root / "vite.config.js").write_bytes(b"export default {};\n")
-    (package / "static" / "app.js").write_bytes(b"import './modules/a.js';\r\n")
-    (package / "static" / "index.html").write_bytes(b"<!doctype html>\n")
-    (package / "static" / "modules" / "a.js").write_bytes(b"export const a = 1;\n")
-    return package
-
-
-def write_stamped_bundle(package: Path, source_hash: str) -> None:
-    bundle = package / "static_dist"
-    bundle.mkdir()
-    write_required_built_assets(bundle)
-    stamp = {"version": "0.15.0", "source_hash": source_hash}
-    (bundle / "build-info.json").write_text(json.dumps(stamp), encoding="utf-8")
-
-
-def test_web_source_hash_matches_the_vite_build_stamp(tmp_path: Path) -> None:
-    assert web_source_hash(write_web_checkout(tmp_path)) == PINNED_WEB_SOURCE_HASH
-
-
-def test_web_source_hash_ignores_line_endings_and_sees_edits(tmp_path: Path) -> None:
-    package = write_web_checkout(tmp_path)
-    app = package / "static" / "app.js"
-    app.write_bytes(b"import './modules/a.js';\n")
-    assert web_source_hash(package) == PINNED_WEB_SOURCE_HASH
-    app.write_bytes(b"import './modules/b.js';\n")
-    assert web_source_hash(package) != PINNED_WEB_SOURCE_HASH
-
-
-def test_web_source_hash_is_none_outside_a_source_checkout(tmp_path: Path) -> None:
-    package = write_web_checkout(tmp_path)
-    (tmp_path / "vite.config.js").unlink()
-    assert web_source_hash(package) is None
-
-
-def test_bundle_built_from_other_sources_is_refused(tmp_path: Path) -> None:
-    package = write_web_checkout(tmp_path)
-    write_stamped_bundle(package, "0" * 64)
-    with pytest.raises(RuntimeError, match=r"stale: the web sources changed.*npm run build"):
-        _validated_bundle_version(package / "static_dist", "0.15.0")
-
-
-def test_bundle_from_matching_sources_is_accepted(tmp_path: Path) -> None:
-    package = write_web_checkout(tmp_path)
-    write_stamped_bundle(package, PINNED_WEB_SOURCE_HASH)
-    assert _validated_bundle_version(package / "static_dist", "0.15.0") == "0.15.0"
-
-
-def test_installed_bundle_without_sources_is_accepted(tmp_path: Path) -> None:
-    """A wheel ships the bundle but not vite.config.js: nothing to compare."""
-    package = tmp_path / "site-packages" / "autodj"
-    package.mkdir(parents=True)
-    write_stamped_bundle(package, "0" * 64)
-    assert _validated_bundle_version(package / "static_dist", "0.15.0") == "0.15.0"
-
-
-def test_bundle_stamp_without_a_source_hash_is_refused(tmp_path: Path) -> None:
-    write_required_built_assets(tmp_path)
-    (tmp_path / "build-info.json").write_text('{"version":"0.15.0"}', encoding="utf-8")
-    with pytest.raises(RuntimeError, match="no source_hash"):
-        _validated_bundle_version(tmp_path, "0.15.0")

@@ -24,8 +24,9 @@ uploaded to a cloud service.
 
 ## Quick start
 
-Install Git, uv, and Node.js with npm first. The project requires Python 3.14; `uv sync` can
-install that interpreter. CI uses Node.js 24.6.0.
+Install Git and uv first. The project requires Python 3.14; `uv sync` can install that
+interpreter. Running AutoDJ does not need Node.js; the server serves the web UI files as they are
+in the checkout.
 
 ```bash
 git clone https://github.com/blindndangerous/AutoDJ
@@ -33,7 +34,6 @@ cd AutoDJ
 
 # Install exactly the dependencies recorded in uv.lock.
 uv sync --frozen --all-extras
-npm ci
 mkdir -p music index models
 ```
 
@@ -355,15 +355,6 @@ variables and CLI flags still take precedence.
 
 **The first index run is taking forever.**  This is the slow pass.  AutoDJ has to listen to every file and remember what it sounds like.  On a CPU it can take many hours for a 10000-track library.  A compatible GPU can speed up the embedding step.  In one small, repeated benchmark on a Ryzen AI 7 PRO 350 with Radeon 860M graphics, the GPU was about 1.9x faster than CPU after warmup; that smoke-test result does not predict full-library time.  See [Windows AMD GPU setup](docs/windows-amd.md) for the tested configuration.  Run with `--limit 50` first to confirm it works, then leave the full run going overnight.
 
-**Browser says "loading module ... was blocked".** You probably ran `npm run build` once and then
-deleted `node_modules`. Either delete `src/autodj/static_dist` (server falls back to unbundled
-source) or run `npm ci && npm run build`.
-
-**The server will not start: "Built static bundle is stale".** The web bundle in
-`src/autodj/static_dist` was built from different web sources than the ones in your checkout,
-usually because you pulled new code without rebuilding. Run `npm ci && npm run build`.
-`autodj doctor` reports the same problem as a failed `frontend-bundle` check.
-
 **No sound from the web UI.**  Click the **Play** button once -- browsers require a user gesture before they will play audio.  After the first click, AutoDJ unlocks its audio context and plays normally for the rest of the session.
 
 **Voice liner upload button is missing.**  The whole "Library" panel hides until you tick the **Enable voice liners** checkbox.  Tick it first, then the upload form appears.
@@ -391,7 +382,6 @@ src/autodj/
         modules/            # ES modules (lyrics, queue, hotkeys, ...)
         index.html
         app.css
-    static_dist/        # built output (gitignored; produced by `npm run build`)
 ```
 
 The test suites are listed under "Where things live" in
@@ -413,16 +403,15 @@ the dependency audits, `trivy-fs` and `pytest` run once per `git push`,
 and CI runs everything on every push.
 
 Gates outside pre-commit include lock checks, the coverage-exclusion policy, Vitest, the
-Vite build, the frontend dead-code scan, npm audit, Playwright audits, container smoke, and release
-verification. Run their commands directly or through CI as described in
-[Contributing](CONTRIBUTING.md).
+frontend dead-code scan, npm audit, Playwright audits, container smoke, and release verification.
+Run their commands directly or through CI as described in [Contributing](CONTRIBUTING.md).
 
 ## Release artifacts
 
 Every tag publishes what `uv build` produces: a wheel, an sdist, a CycloneDX SBOM, and a cosign
 signature bundle beside each file. They exist so a build can be verified and archived, and so
-AutoDJ can be installed without a checkout — the wheel already carries the minified web UI, so it
-needs no Node toolchain.
+AutoDJ can be installed without a checkout. The wheel carries the web UI files, so it needs no
+Node toolchain.
 
 AutoDJ is not on PyPI. To install a tagged wheel, pick a version from the
 [releases page](https://github.com/blindndangerous/AutoDJ/releases) and replace both `X.Y.Z`
@@ -447,7 +436,8 @@ AutoDJ keeps everything in directories you chose; it installs no system service.
 source checkout, stop AutoDJ, run `autodj backup` first if you want to keep profiles, liners, or
 history, then delete what you no longer want:
 
-- `.venv/` and `node_modules/` hold the Python and Node dependencies.
+- `.venv/` holds the Python dependencies, and `node_modules/` the Node development tools if you
+  installed them.
 - `index/` (or your `[index] index_dir`) holds the index, DJ metadata, profiles, liners, and saved
   web state.
 - `models/` (or your `[index] model_dir`) holds the downloaded model weights. Hugging Face can

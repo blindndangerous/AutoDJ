@@ -665,8 +665,8 @@ def test_unauthorized_chunked_upload_never_reads_receive() -> None:
 @pytest.mark.parametrize(
     ("path", "raw_path"),
     [
-        ("/static/../api/status", b"/static/%2e%2e/api/status"),
-        ("/static/\\api/status", b"/static/%5capi/status"),
+        ("/modules/../api/status", b"/modules/%2e%2e/api/status"),
+        ("/modules/\\api/status", b"/modules/%5capi/status"),
         ("/modules//api/status", b"/modules/%2fapi/status"),
     ],
 )
@@ -1221,27 +1221,10 @@ class TestModuleTraversal:
         resp = client.get("/modules/C:/Windows/System32/cmd.exe")
         assert resp.status_code in (400, 404)
 
-    async def test_module_name_resolving_outside_modules_is_refused(self, bridge) -> None:
-        """The guard itself, past the router: ../app.css exists but is not a module."""
-        from fastapi import HTTPException
-
-        app = create_app(bridge)
-        route = next(r for r in app.routes if getattr(r, "path", None) == "/modules/{name}")
-        with pytest.raises(HTTPException) as caught:
-            await route.endpoint("../app.css")
-        assert caught.value.status_code == 404
-
-    def test_modules_endpoint_serves_existing_module_when_present(self, client) -> None:
-        """Best-effort: when the source static dir is the live one (no
-        bundled static_dist on this checkout), confirm a real module file
-        is served. CI has no static_dist so the response is 200; local
-        builds with static_dist may 404 — both are acceptable.
-        """
+    def test_modules_endpoint_serves_existing_module(self, client) -> None:
         resp = client.get("/modules/dom-helpers.js")
-        # Either 200 (no bundle, real modules dir) or 404 (bundled, no /modules).
-        assert resp.status_code in (200, 404)
-        if resp.status_code == 200:
-            assert "javascript" in resp.headers.get("content-type", "")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/javascript")
 
 
 # ---------------------------------------------------------------------------
@@ -1396,23 +1379,6 @@ class TestLinerUploadDelete:
         )
 
         assert response.status_code == 400
-
-
-def test_dev_module_route_serves_existing_javascript(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from autodj import server
-
-    monkeypatch.setattr(
-        server,
-        "_selected_static_dir",
-        MagicMock(return_value=server._PACKAGE_DIR / "static"),
-    )
-    player = _make_player_mock()
-    client = TestClient(create_app(PlayerBridge(player=player, sim=_make_sim_mock())))
-    response = client.get("/modules/tabs.js")
-    assert response.status_code == 200
-    assert "javascript" in response.headers["content-type"]
 
 
 @pytest.mark.parametrize(

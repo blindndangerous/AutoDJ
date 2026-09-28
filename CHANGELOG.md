@@ -50,6 +50,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Voice liner uploads and deletes now work in a liners folder that other users or a group can
   write to, such as a shared NAS folder; they used to be refused. A liner file name can be at most
   200 bytes long.
+- Running AutoDJ no longer needs Node.js or npm. The server sends the web page's files from
+  `src/autodj/static` as they are, gzip-compressed for browsers that accept it. Node.js is only
+  needed to run the JavaScript tests, lint and browser audits.
+- The page's scripts and stylesheet are now checked with the server on each page load and reused
+  from the browser cache when unchanged, instead of being downloaded again every time.
 
 ### Removed
 
@@ -62,6 +67,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   on the machine's own speakers, run `autodj serve --server-audio` and control it from the web
   page; choose the output device with `[playback] audio_device`. The `play` extra no longer
   installs `pynput`.
+- The web bundle build (`npm run build`) and the `src/autodj/static_dist` folder it produced.
+  Delete a leftover `src/autodj/static_dist` folder: AutoDJ ignores it, but Git now lists it as
+  untracked. `autodj doctor` no longer has a `frontend-bundle` check.
+- The `/static/` URLs. The page never used them; it loads its files from `/`, `/app.css`,
+  `/app.js`, `/modules/` and the worklet URLs, which stay.
 
 ### Fixed
 

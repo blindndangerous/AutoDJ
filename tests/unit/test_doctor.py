@@ -34,7 +34,6 @@ from autodj.doctor import (
     CheckStatus,
     DoctorCheck,
     DoctorReport,
-    _bundle_check,
     _dependency_check,
     _python_check,
     render_text,
@@ -858,17 +857,6 @@ def test_missing_ffmpeg_warns_with_alac_fallback(monkeypatch: pytest.MonkeyPatch
     assert "raw ALAC fallback" in check.detail
 
 
-def test_invalid_bundle_stamp_fails(tmp_path: Path) -> None:
-    bundle = tmp_path / "static_dist"
-    bundle.mkdir()
-    (bundle / "build-info.json").write_text("not json", encoding="utf-8")
-
-    check = doctor._bundle_check(tmp_path)
-
-    assert check.status is doctor.CheckStatus.FAIL
-    assert "build-info.json" in check.summary
-
-
 def test_network_rejects_unsafe_bind_and_accepts_loopback_alternates(tmp_path: Path) -> None:
     unsafe = _config(tmp_path / "unsafe", host="192.168.1.20")
     unsafe.server.access_token = None
@@ -1098,21 +1086,6 @@ def test_explicit_insecure_lan_is_warning(tmp_path: Path) -> None:
     assert doctor._network_check(cfg).status is doctor.CheckStatus.WARN
 
 
-def test_bundle_version_mismatch_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    bundle = tmp_path / "static_dist"
-    bundle.mkdir()
-    for name in doctor.REQUIRED_BUILT_ASSETS:
-        (bundle / name).write_text("asset", encoding="utf-8")
-    (bundle / "build-info.json").write_text('{"version":"0.1.0"}', encoding="utf-8")
-    monkeypatch.setattr(doctor, "current_version", lambda: "9.9.9")
-
-    check = doctor._bundle_check(tmp_path)
-
-    assert check.status is doctor.CheckStatus.FAIL
-    assert "0.1.0" in check.summary
-    assert "9.9.9" in check.summary
-
-
 def test_run_doctor_check_order(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
 
@@ -1130,7 +1103,6 @@ def test_run_doctor_check_order(tmp_path: Path) -> None:
         "dependencies",
         "model-cache",
         "network-safety",
-        "frontend-bundle",
         "stream",
     ]
 
@@ -1389,78 +1361,8 @@ def test_non_loopback_token_authentication_passes(tmp_path: Path) -> None:
     assert doctor._network_check(cfg).status is doctor.CheckStatus.PASS
 
 
-@pytest.mark.parametrize("stamp", [None, '{"version":""}'])
-def test_missing_or_invalid_bundle_metadata_is_reported(tmp_path: Path, stamp: str | None) -> None:
-    bundle = tmp_path / "static_dist"
-    bundle.mkdir()
-    if stamp is not None:
-        (bundle / "build-info.json").write_text(stamp, encoding="utf-8")
-
-    check = doctor._bundle_check(tmp_path)
-
-    expected = doctor.CheckStatus.WARN if stamp is None else doctor.CheckStatus.FAIL
-    assert check.status is expected
-
-
-def test_incomplete_built_assets_warn_even_with_valid_stamp(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    bundle = tmp_path / "static_dist"
-    bundle.mkdir()
-    (bundle / "build-info.json").write_text(
-        '{"version":"1.2.3","source_hash":"abc"}', encoding="utf-8"
-    )
-    monkeypatch.setattr(doctor, "current_version", lambda: "1.2.3")
-
-    check = doctor._bundle_check(tmp_path)
-
-    assert check.status is doctor.CheckStatus.WARN
-    assert "incomplete built assets" in check.detail
-
-
-def test_bundle_version_inspection_errors_fail_safely_and_redact(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    bundle = tmp_path / "static_dist"
-    bundle.mkdir()
-    for name in doctor.REQUIRED_BUILT_ASSETS:
-        (bundle / name).write_text("asset", encoding="utf-8")
-    (bundle / "build-info.json").write_text('{"version":"1.2.3"}', encoding="utf-8")
-    secret = "version-error-secret"
-
-    def fail_version() -> str:
-        raise RuntimeError(secret)
-
-    monkeypatch.setattr(doctor, "current_version", fail_version)
-
-    check = doctor._bundle_check(tmp_path)
-    payload = doctor.DoctorReport((check,)).to_json()
-
-    assert check.status is doctor.CheckStatus.FAIL
-    assert "version" in check.detail
-    assert secret not in payload
-
-
-def test_bundle_check_does_not_catch_system_exit(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    bundle = tmp_path / "static_dist"
-    bundle.mkdir()
-    (bundle / "build-info.json").write_text('{"version":"1.2.3"}', encoding="utf-8")
-
-    def stop() -> str:
-        raise SystemExit(2)
-
-    monkeypatch.setattr(doctor, "current_version", stop)
-
-    with pytest.raises(SystemExit, match="2"):
-        doctor._bundle_check(tmp_path)
-
-
 def test_literal_planned_api_skeleton_has_failure_exit() -> None:
-    assert all(callable(item) for item in (_bundle_check, _dependency_check, _python_check))
+    assert all(callable(item) for item in (_dependency_check, _python_check))
     assert callable(render_text)
     assert callable(run_doctor)
     report = DoctorReport(
@@ -1532,7 +1434,6 @@ def test_run_doctor_uses_planned_stable_identifiers(tmp_path: Path) -> None:
         "dependencies",
         "model-cache",
         "network-safety",
-        "frontend-bundle",
         "stream",
     ]
 
@@ -1699,28 +1600,6 @@ def test_configuration_check_shows_lan_setting(
 
     assert isinstance(check.detail, dict)
     assert check.detail["lan"] is True
-
-
-def test_bundle_built_from_other_web_sources_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    package = tmp_path / "src" / "autodj"
-    (package / "static").mkdir(parents=True)
-    (package / "static" / "app.js").write_text("console.log(1);", encoding="utf-8")
-    (tmp_path / "vite.config.js").write_text("export default {};", encoding="utf-8")
-    bundle = package / "static_dist"
-    bundle.mkdir()
-    for name in doctor.REQUIRED_BUILT_ASSETS:
-        (bundle / name).write_text("asset", encoding="utf-8")
-    stamp = '{"version":"1.2.3","source_hash":"' + "0" * 64 + '"}'
-    (bundle / "build-info.json").write_text(stamp, encoding="utf-8")
-    monkeypatch.setattr(doctor, "current_version", lambda: "1.2.3")
-
-    check = doctor._bundle_check(package)
-
-    assert check.status is doctor.CheckStatus.FAIL
-    assert check.summary == "stale bundle"
-    assert "npm run build" in check.detail
 
 
 def test_published_empty_index_warns_instead_of_passing(tmp_path: Path) -> None:

@@ -28,15 +28,8 @@ RUN set -eu; \
     uv pip install --python /opt/venv/bin/python --no-deps --require-hashes \
         --index-url https://download.pytorch.org/whl/cpu -r container/torch-cpu.txt
 
-FROM node:24.6.0-bookworm-slim@sha256:9b741b28148b0195d62fa456ed84dd6c953c1f17a3761f3e6e6797a754d9edff AS frontend
-WORKDIR /build
-COPY package.json package-lock.json pyproject.toml vite.config.js ./
-COPY src/autodj/static ./src/autodj/static
-RUN npm ci --ignore-scripts --no-audit --no-fund && npm run build
-
 FROM python-base AS package
 COPY src ./src
-COPY --from=frontend /build/src/autodj/static_dist ./src/autodj/static_dist
 RUN uv export --frozen --only-group build --no-emit-project --format requirements-txt --output-file /tmp/build-constraints.txt \
     && uv build --wheel --out-dir /tmp/dist --build-constraints /tmp/build-constraints.txt --require-hashes
 

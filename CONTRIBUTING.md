@@ -9,7 +9,7 @@ Shortest path from "I have an idea" to "my change is merged".
 git clone https://github.com/<your-fork>/autodj
 cd autodj
 
-# 2. Install with dev tools
+# 2. Install with dev tools (Node.js is only needed for the JS tests, lint and audits)
 uv sync --frozen --all-extras
 npm ci
 
@@ -20,7 +20,6 @@ uv run pre-commit install
 uv run python scripts/ci_pytest.py
 npm run lint
 npm test
-npm run build
 ```
 
 Full suite must remain green. `scripts/ci_pytest.py` enforces at least 99.1% line coverage and 94.7%
@@ -72,8 +71,7 @@ The maintainer cuts releases from `master`. For version `X.Y.Z`:
 3. Record the manual screen-reader sample that
    [Accessibility testing](docs/accessibility-testing.md) requires, and link it from the release
    notes.
-4. Commit, then check that the artifacts build: `npm ci && npm run build`, then
-   `uv build --sdist --wheel`.
+4. Commit, then check that the artifacts build: `uv build --sdist --wheel`.
 5. Tag and push the tag: `git tag vX.Y.Z`, then `git push origin vX.Y.Z`. The Release workflow
    reruns CI and the security scans, checks that the tag equals `uv version --short` and that
    `CHANGELOG.md` has a `## [X.Y.Z]` heading, smoke-installs the wheel, then publishes the signed
