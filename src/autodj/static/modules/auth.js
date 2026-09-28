@@ -3,8 +3,6 @@ import {
   requestJson,
 } from "./api-client.js";
 
-const bootstrapRuns = new WeakMap();
-
 // The request limiter's generic 429 detail.  It says less than the
 // Retry-After wording below, so it does not replace it.
 const GENERIC_RATE_LIMIT_DETAIL = "Too many pairing attempts";
@@ -180,13 +178,15 @@ function validAuthState(value) {
     && typeof value.authenticated === "boolean";
 }
 
-async function runBootstrap({
-  fetchImpl,
-  requestState,
+// Checks pairing, then loads the first state and starts the page.  Resolves
+// true once started; false when the pairing dialog opened or startup
+// failed (onError has said why).
+export async function bootstrapAuthenticatedApp({
+  fetchImpl = fetch,
+  requestState = requestJson,
   auth,
   startAuthenticatedApp,
-  onError,
-  startupState,
+  onError = () => {},
 }) {
   try {
     let authResponse;
@@ -212,7 +212,6 @@ async function runBootstrap({
     }
 
     const initialState = await requestState("/api/status");
-    startupState.attempted = true;
     startAuthenticatedApp(initialState);
     return true;
   } catch (errorValue) {
@@ -220,48 +219,6 @@ async function runBootstrap({
     onError(errorValue);
     return false;
   }
-}
-
-export function bootstrapAuthenticatedApp({
-  fetchImpl = fetch,
-  requestState = requestJson,
-  auth,
-  startAuthenticatedApp,
-  onError = () => {},
-}) {
-  if (bootstrapRuns.has(startAuthenticatedApp)) {
-    return bootstrapRuns.get(startAuthenticatedApp);
-  }
-  const startupState = { attempted: false };
-  const run = runBootstrap({
-    fetchImpl,
-    requestState,
-    auth,
-    startAuthenticatedApp,
-    onError,
-    startupState,
-  });
-  bootstrapRuns.set(startAuthenticatedApp, run);
-  void run.then(
-    (started) => {
-      if (
-        !started
-        && !startupState.attempted
-        && bootstrapRuns.get(startAuthenticatedApp) === run
-      ) {
-        bootstrapRuns.delete(startAuthenticatedApp);
-      }
-    },
-    () => {
-      if (
-        !startupState.attempted
-        && bootstrapRuns.get(startAuthenticatedApp) === run
-      ) {
-        bootstrapRuns.delete(startAuthenticatedApp);
-      }
-    },
-  );
-  return run;
 }
 
 export function handleWebSocketAuthenticationClose(
