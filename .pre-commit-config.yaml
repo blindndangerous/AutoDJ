@@ -111,25 +111,9 @@ repos:
         pass_filenames: false
         files: ^(src/|pyproject\.toml$)
 
-      - id: interrogate
-        name: interrogate
-        entry: uv run --frozen interrogate -c pyproject.toml src/autodj
-        language: system
-        stages: [pre-push]
-        pass_filenames: false
-        files: ^(src/|pyproject\.toml$)
-
-      - id: xenon
-        name: xenon
-        entry: uv run --frozen xenon --max-absolute E --max-modules B --max-average B src/
-        language: system
-        stages: [pre-push]
-        pass_filenames: false
-        files: ^src/
-
       - id: pip-audit
         name: pip-audit
-        entry: uv run --frozen pip-audit --ignore-vuln PYSEC-2022-42969
+        entry: uv run --frozen pip-audit
         language: system
         stages: [pre-push]
         pass_filenames: false

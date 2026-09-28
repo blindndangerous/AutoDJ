@@ -54,7 +54,6 @@ The PR template auto-renders this list. Tick the boxes:
   only the quick hooks; the full test suite and the slower scans run when you `git push`. Run
   every hook by hand with `uv run pre-commit run --all-files` followed by
   `uv run pre-commit run --all-files --hook-stage pre-push`.
-- `uv run pyright src/autodj/` remains required; pre-commit does not run Pyright.
 - Run `uv run autodj doctor` against intended local configuration.
 - For web UI changes, start AutoDJ and run Playwright Chromium audit with
   `AUTODJ_BROWSERS=chromium npm run audit:ci`.

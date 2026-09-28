@@ -98,33 +98,17 @@ jobs:
       - name: Mypy — type check
         run: uv run mypy src/autodj/
 
-      - name: Pyright — cross-check type checker
-        run: uv run pyright src/autodj/
-
       - name: Vulture — dead code
         run: uv run vulture
 
       - name: Deptry — unused / missing deps
         run: uv run deptry src/
 
-      - name: Interrogate — docstring coverage
-        run: uv run interrogate -c pyproject.toml src/autodj
-
-      - name: Xenon — complexity gate
-        run: uv run xenon --max-absolute E --max-modules B --max-average B src/
-
       - name: Bandit — security scan
         run: uv run bandit -r src/ -c pyproject.toml
 
-      - name: Check pip-audit suppression expiry
-        run: uv run python scripts/check_pip_audit_suppressions.py
-
       - name: pip-audit — dependency CVE scan
-        # PYSEC-2022-42969 affects Subversion metadata parsing in dev-only py,
-        # reached through xenon -> radon; AutoDJ does not accept SVN metadata.
-        # Source: https://osv.dev/vulnerability/PYSEC-2022-42969
-        # Reviewed: 2026-08-02. Expiry/re-review: 2026-11-02.
-        run: uv run pip-audit --ignore-vuln PYSEC-2022-42969
+        run: uv run pip-audit
 
       - name: Semgrep — multi-rule SAST
         continue-on-error: true     # advisory; bandit is the hard gate

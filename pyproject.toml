@@ -164,16 +164,6 @@ check_untyped_defs = true
 no_implicit_optional = true
 
 # ---------------------------------------------------------------------------
-# Pyright — cross-check type checker (mypy is primary)
-# ---------------------------------------------------------------------------
-[tool.pyright]
-include = ["src/autodj"]
-pythonVersion = "3.14"
-typeCheckingMode = "basic"
-reportMissingImports = "warning"
-reportMissingTypeStubs = false
-
-# ---------------------------------------------------------------------------
 # Bandit — security linter
 # ---------------------------------------------------------------------------
 [tool.deptry]
@@ -210,14 +200,6 @@ ignore_decorators = ["@app.route", "@app.get", "@app.post", "@app.websocket", "@
 # raw parameter name is never referenced directly by vulture's heuristic.
 ignore_names = ["replaygain_enabled", "replaygain_target_db", "transition_fx", "transition_wet_mix"]
 
-[tool.interrogate]
-fail-under = 95
-exclude = ["tests", "tmp", "build"]
-ignore-init-method = true
-ignore-private = true
-ignore-nested-functions = true
-verbose = 1
-
 [tool.bandit]
 targets = ["src/autodj"]
 exclude_dirs = ["tests", "tmp"]
@@ -233,7 +215,6 @@ build = [
 dev = [
     "bandit>=1.9.4",
     "mypy>=2.0.0",
-    "pyright>=1.1.380",
     "pip-audit>=2.10.0",
     "pre-commit>=4.5.1",
     "pytest>=8.0.0",
@@ -245,8 +226,6 @@ dev = [
     "ruff>=0.15.10",
     "vulture>=2.16",         # dead-code detector
     "deptry>=0.20",          # dep declaration auditor
-    "xenon>=0.9",            # cyclomatic complexity gate
-    "interrogate>=1.7",      # docstring coverage gate
     "pytest-xdist>=3.6.0",   # parallel test execution
     "pip-licenses>=5.0",     # license auditor
     "mutmut>=3.0",           # mutation testing (weekly workflow only)

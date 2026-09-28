@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -32,21 +30,6 @@ def _write_coverage_config(root: Path, exclusions: list[str], *, comment: str = 
 def test_repository_coverage_exclusions_pass_policy() -> None:
     """The checked-in coverage configuration must remain narrowly scoped."""
     assert main() == 0
-
-
-def test_configured_vulture_gate_reports_no_dead_code() -> None:
-    """Configured Vulture gate must report no dead code."""
-    root = Path(__file__).resolve().parents[2]
-    result = subprocess.run(
-        [sys.executable, "-m", "vulture"],
-        cwd=root,
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-
-    output = result.stdout + result.stderr
-    assert result.returncode == 0, f"Vulture found dead code:\n{output}"
 
 
 def test_dj_meta_cache_exit_accepts_traceback_keyword(tmp_path: Path) -> None:

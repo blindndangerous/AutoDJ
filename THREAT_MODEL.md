@@ -198,9 +198,8 @@ Trivy HIGH or CRITICAL findings with fixes available.
 
 `uv.lock` and `package-lock.json` are committed. CI uses frozen installs, runs `pip-audit` and
 `npm audit`, scans source tree with Trivy and OSV-Scanner, checks secrets with Gitleaks, and produces
-dependency and container SBOM artifacts. `osv-scanner.toml` records the rationale for its one
-ignored advisory. `scripts/check_pip_audit_suppressions.py` rejects the matching pip-audit
-suppression after its 2026-11-02 expiry unless reviewed.
+dependency and container SBOM artifacts. Neither `pip-audit` nor OSV-Scanner ignores any
+advisory.
 
 ## Reporting a vulnerability
 
