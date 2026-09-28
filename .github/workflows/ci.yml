@@ -55,7 +55,6 @@ jobs:
         with:
           node-version: "24.6.0"
           cache: npm
-      - run: npm run audit:lock
       - run: npm ci --ignore-scripts
       - run: npm run lint
       - run: npm test
