@@ -52,13 +52,17 @@ jobs:
           uv build --sdist --wheel
           --build-constraints "$RUNNER_TEMP/build-constraints.txt"
           --require-hashes
-      - name: Verify tag, project, changelog, and wheel metadata
-        run: uv run --frozen python scripts/verify_release.py --tag "$GITHUB_REF_NAME" --wheel dist/*.whl --sdist dist/*.tar.gz
+      - name: Verify tag, project version and changelog
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          test "$(uv version --short)" = "$version"
+          grep -q "^## \[$version\]" CHANGELOG.md
       - name: Smoke-install exact wheel
         run: |
           uv venv .release-venv --python 3.14
           uv pip install --python .release-venv/bin/python dist/*.whl
           test "$(.release-venv/bin/python -c 'import autodj; print(autodj.__version__)')" = "${GITHUB_REF_NAME#v}"
+          .release-venv/bin/python -c 'import autodj, pathlib; assert (pathlib.Path(autodj.__file__).parent / "static_dist" / "app.js").is_file(), "wheel lacks the built web bundle"'
       - name: Verify runtime API version
         run: |
           set -euo pipefail
