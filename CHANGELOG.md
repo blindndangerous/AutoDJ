@@ -10,6 +10,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Settings, Browser access can rename a paired device, says when each device was paired and when
+  it was last seen, and has **Show pairing code** for pairing another device from a device that is
+  already paired. The code is said once, digit by digit; it changes by itself every five minutes
+  and cannot be edited. A device that pairs while the code is shown is announced by name.
+  `autodj devices rename DEVICE_ID NAME` does the same rename from the command line.
+
 - Serato hot cues and saved loops are imported from the tags inside MP3, AIFF, FLAC and MP4/M4A
   files when `import_external_cues` is on, next to the Mixxx, Rekordbox and Traktor imports. The
   reader follows the published format notes of the serato-tags project and has only been tested

@@ -49,6 +49,8 @@ Out of scope:
   origin checks follow its own TLS setting, so AutoDJ must terminate TLS itself.
 - Anyone who has passed Cloudflare Access and paired a browser; they are trusted like a paired
   browser on the LAN.
+- A paired browser showing the pairing code: any paired device can show it and pair another
+  device, by design.
 - Attacks that already control filesystem roots trusted through local operating-system ACLs.
   For example, a local process or share user who can write to the liner folder, index folder or
   music library can already change what AutoDJ reads and writes there; AutoDJ does not race-proof

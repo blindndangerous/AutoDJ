@@ -49,6 +49,19 @@ uv run autodj serve --lan --ssl-certfile radio.pem --ssl-keyfile radio-key.pem
 `--lan --insecure-lan` keeps the detected allowlists but turns pairing off; use it only on a
 trusted network. `--insecure-lan` without `--lan` still needs explicit allowlists.
 
+### Paired devices
+
+In the web page, Settings, Browser access lists every paired device with when it was paired and
+when it was last seen, and marks this browser. Each row has Rename and Revoke. Names are 1 to 64
+printable characters. **Show pairing code** shows the current code with a Copy button and how long
+it stays valid; the code changes by itself every five minutes and cannot be edited. While the code
+is shown the page checks the list every five seconds and says the name of any device that pairs.
+Any paired device can show the code, so any paired device can pair another one.
+
+From the command line, `autodj devices list` prints each device's id, `autodj devices rename
+DEVICE_ID NAME` renames one, `autodj devices revoke DEVICE_ID` revokes one, `autodj devices reset`
+revokes them all, and `autodj devices pairing-code` prints the current code.
+
 ## Container ownership and exposure
 
 Create bind sources before startup:
