@@ -858,8 +858,8 @@ def _start_stream_station(
     """Build the stream output, liner scheduler and station; attach them.
 
     Starts the MP3 encoder, registers the stream as an output of the
-    player's mix bus, and wires listener changes to the station, which
-    starts a set on the first listener.
+    player's mix bus, and hands the stream to the station, which reads its
+    listener count and starts a set on the first listener.
 
     Args:
         bridge: The bridge whose player was built in stream mode.

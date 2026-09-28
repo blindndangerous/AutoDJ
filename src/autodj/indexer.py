@@ -50,6 +50,7 @@ from tqdm import tqdm
 
 from autodj.beets import BeetsNotFoundError, Track, get_all_tracks
 from autodj.config import AutoDJConfig
+from autodj.fsutil import fsync_directory
 from autodj.index_manifest import (
     MANIFEST_NAME,
     IndexConsistencyError,
@@ -59,7 +60,6 @@ from autodj.index_manifest import (
     _immutable_sqlite_uri,
     current_snapshot_token,
     discard_publication_record,
-    fsync_directory,
     is_absolute_storage,
     publication_lock,
     publish_manifest,
