@@ -775,6 +775,27 @@ describe("app request behavior", () => {
     await vi.waitFor(() => expect(pause.disabled).toBe(false));
   });
 
+  it("says Playing after the first Play only when playback really started", async () => {
+    const unlockAndPlay = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    await setupApp({
+      audio: { _lastBrowserPlayback: true, playbackEnabled: false, unlockAndPlay },
+      initialState: {
+        browser_playback: true,
+        current_track: { path: "current.mp3", title: "Current" },
+      },
+    });
+    const pause = document.querySelector("#btn-pause");
+    const status = document.querySelector("#sr-status");
+
+    pause.click();
+    await vi.waitFor(() => expect(unlockAndPlay).toHaveBeenCalledOnce());
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(status.textContent).not.toBe("Playing");
+
+    pause.click();
+    await vi.waitFor(() => expect(status.textContent).toBe("Playing"));
+  });
+
   it("keeps Skip owned through a browser crossfade and ignores double click", async () => {
     let resolveCrossfade;
     const startCrossfade = vi.fn(() => new Promise((resolve) => {

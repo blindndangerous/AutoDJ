@@ -2323,19 +2323,36 @@ function _resolveFadeSec(mode, baseFade, outroLen, nextIntroEnd) {
   return baseFade;
 }
 
-// First-click unlock — used by the unified Play button (btnPause).
+const BLOCKED_PLAY_TEXT = "The browser did not start playback. Press Play again.";
+
+// Play from the Play button, the first time and after every hard stop.
+// Resolves true only once the deck is really playing, so the caller's
+// "Playing" is never said over silence; otherwise it says why and
+// resolves false.
 export async function unlockAndPlay() {
   const epoch = captureAuthenticatedRequestEpoch();
+  // Both calls run synchronously inside the click: Firefox only lets a
+  // context resume, and a deck play, while the user gesture is current.
   ensureAudioGraph();
-  if (_ctx && _ctx.state === "suspended") await _ctx.resume();
-  if (!isAuthenticatedRequestCurrent(epoch)) return false;
+  const resuming = _ctx && _ctx.state !== "running" ? _ctx.resume() : null;
   // Start a silent play() on the active deck to satisfy iOS gesture rule.
   playOnDeck(deckActive());
 
   // Pull current state and load the active deck with the current track.
+  if (resuming) {
+    try { await resuming; } catch (_) { /* checked below, before Playing */ }
+  }
   let state;
   try {
     state = await requestJson("/api/status");
+    // A paused server pauses the deck again on its next push: the first
+    // Play after pairing said "Playing" and nothing played (D17).  Play
+    // means play, so the server is unpaused before the deck starts.
+    if (state.is_paused && isAuthenticatedRequestCurrent(epoch)) {
+      const reply = await requestJson("/api/pause", { method: "POST" });
+      if (reply.paused) throw new Error("the server stayed paused");
+      state = { ...state, is_paused: false };
+    }
   } catch (err) {
     if (!isAuthenticatedRequestCurrent(epoch)) return false;
     announceEngineError("Cannot reach server: " + (err.message || err), { force: true });
@@ -2347,14 +2364,26 @@ export async function unlockAndPlay() {
     announceEngineError("No current track on server.", { force: true });
     throw new Error("no current track");
   }
-  setSrcOnDeck(deckActive(), path);
-  await playOnDeck(deckActive());
+  const deck = deckActive();
+  setSrcOnDeck(deck, path);
+  let started = true;
+  try {
+    await deck.audio.play();
+  } catch (err) {
+    console.warn("deck.play failed:", err);
+    started = false;
+  }
   if (!isAuthenticatedRequestCurrent(epoch)) {
     stopAllDecks();
     return false;
   }
+  if (!started || (_ctx && _ctx.state !== "running")) {
+    try { deck.audio.pause(); } catch (_) {}
+    announceEngineError(BLOCKED_PLAY_TEXT, { force: true });
+    return false;
+  }
   playbackEnabled = true;
-  restoreDeckGains();   // a reconnect's stopAllDecks left them at 0
+  restoreDeckGains();   // a hard stop left them at 0
   applyVolume();
   if (_applyState) _applyState(state);    // refresh UI from /api/status
   return true;

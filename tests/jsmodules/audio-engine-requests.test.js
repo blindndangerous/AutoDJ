@@ -581,6 +581,82 @@ describe("page volume", () => {
     expect(live.gain.gain.setValueAtTime).toHaveBeenLastCalledWith(1, 2);
   });
 
+  it("unpauses a paused server before saying the first Play worked", async () => {
+    let paused = true;
+    const fetchImpl = vi.fn(async (url) => {
+      if (url === "/api/pause") {
+        paused = !paused;
+        return jsonResponse({ paused });
+      }
+      return jsonResponse({ current_track: { path: "current.mp3" }, is_paused: paused });
+    });
+    vi.stubGlobal("fetch", fetchImpl);
+    const { engine } = await importEngine();
+    const deck = engine.decks[engine.activeIdx];
+    let pausedWhenPlayed = null;
+    deck.audio.play = vi.fn(() => {
+      pausedWhenPlayed = paused;
+      return Promise.resolve();
+    });
+
+    await expect(engine.unlockAndPlay()).resolves.toBe(true);
+
+    expect(fetchImpl.mock.calls.filter(([url]) => url === "/api/pause")).toHaveLength(1);
+    expect(paused).toBe(false);
+    // The deck's real play() ran after the server was unpaused.
+    expect(pausedWhenPlayed).toBe(false);
+  });
+
+  it("resumes the context inside the click, before any request", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse({ current_track: { path: "current.mp3" } }),
+    );
+    vi.stubGlobal("fetch", fetchImpl);
+    const { context, engine } = await importEngine();
+    context.state = "suspended";
+    context.resume = vi.fn(() => {
+      context.state = "running";
+      return Promise.resolve();
+    });
+
+    const playing = engine.unlockAndPlay();
+    // Synchronous part of the click handler: the gesture is still current.
+    expect(context.resume).toHaveBeenCalledOnce();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    await expect(playing).resolves.toBe(true);
+  });
+
+  it("says Play did not start, and does not report playing, when the deck refuses", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      jsonResponse({ current_track: { path: "current.mp3" } }),
+    ));
+    const { engine } = await importEngine();
+    const deck = engine.decks[engine.activeIdx];
+    deck.audio.play = vi.fn(() => Promise.reject(
+      Object.assign(new Error("blocked"), { name: "NotAllowedError" }),
+    ));
+
+    await expect(engine.unlockAndPlay()).resolves.toBe(false);
+
+    expect(engine.playbackEnabled).toBe(false);
+    await vi.waitFor(() => expect(document.querySelector("#sr-status").textContent)
+      .toBe("The browser did not start playback. Press Play again."));
+  });
+
+  it("says Play did not start when the audio context stays suspended", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      jsonResponse({ current_track: { path: "current.mp3" } }),
+    ));
+    const { context, engine } = await importEngine();
+    context.state = "suspended";
+    context.resume = vi.fn(() => Promise.reject(new Error("no gesture")));
+
+    await expect(engine.unlockAndPlay()).resolves.toBe(false);
+    expect(engine.playbackEnabled).toBe(false);
+    await vi.waitFor(() => expect(document.querySelector("#sr-status").textContent)
+      .toBe("The browser did not start playback. Press Play again."));
+  });
+
   it("keeps the master silent while muted when the volume changes", async () => {
     vi.stubGlobal("fetch", vi.fn());
     const { engine } = await importEngine();
