@@ -131,7 +131,8 @@ def test_play_loader_prints_the_rebuild_message_for_an_old_manifest(
         _load_index_or_exit(cfg, active_dir=tmp_path)
 
     assert exit_info.value.code == 1
-    assert "autodj index --force" in capsys.readouterr().out
+    # Rich wraps long lines at the console width, so compare with whitespace collapsed.
+    assert "autodj index --force" in " ".join(capsys.readouterr().out.split())
 
 
 @pytest.mark.parametrize(
