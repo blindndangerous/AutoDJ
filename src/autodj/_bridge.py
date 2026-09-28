@@ -382,14 +382,7 @@ class PlayerBridge:
         state = p._state
         cur = state.current_track
 
-        with state.queue_lock:
-            if state.queued_next is not None:
-                queued: IndexEntry | None = state.queued_next
-                state.queued_next = None
-            elif state.queue:
-                queued = state.queue.pop(0)
-            else:
-                queued = None
+        queued = p._pop_user_queue()
         if queued is not None:
             nxt = queued
             p._last_pick_mode = "queue"
