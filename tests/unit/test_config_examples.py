@@ -140,7 +140,7 @@ def test_operator_docs_cover_reproducible_workflows() -> None:
     assert "94.7%" in contributing
     assert "`uv run pyright src/autodj/`" in contributing
     assert "pre-commit does not run Pyright" in contributing
-    assert "0.17.x" in security
+    assert "0.18.x" in security
     assert "AUTODJ_ACCESS_TOKEN" in threat
     assert "SQLite online backup" in operations
     assert "tracks.db-wal" in operations
