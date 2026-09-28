@@ -250,7 +250,7 @@ def test_unwritable_token_file_fails_clearly(
     def refuse(path: Path, text: str) -> None:
         raise PermissionError("read-only volume")
 
-    monkeypatch.setattr(lan, "write_private_file", refuse)
+    monkeypatch.setattr("autodj.stream_secret.write_private_file", refuse)
 
     with pytest.raises(AccessTokenError, match="cannot write access token"):
         load_or_create_access_token(tmp_path / ".access-token")

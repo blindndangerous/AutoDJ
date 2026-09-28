@@ -9,7 +9,6 @@ loads or creates a private access token in the index directory.
 from __future__ import annotations
 
 import logging
-import secrets
 import socket
 import threading
 from dataclasses import replace
@@ -22,7 +21,7 @@ from autodj.config import (
     is_loopback_bind,
     validate_access_token,
 )
-from autodj.stream_secret import write_private_file
+from autodj.stream_secret import load_or_create_secret, read_secret
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -195,48 +194,33 @@ def lan_origins(hosts: Iterable[str], port: int, *, tls: bool) -> list[str]:
     return sorted(origins)
 
 
+def _is_valid_token(text: str) -> bool:
+    """Return whether *text* passes the access-token rules."""
+    try:
+        validate_access_token(text)
+    except ValueError:
+        return False
+    return True
+
+
 def read_access_token(path: Path) -> str | None:
     """Return the saved access token, or ``None`` if it is missing or not valid.
-
-    Args:
-        path: The token file.
 
     Raises:
         AccessTokenError: The file exists but cannot be read.
     """
-    try:
-        text = path.read_text(encoding="utf-8").strip()
-    except FileNotFoundError:
-        return None
-    except (OSError, UnicodeDecodeError) as exc:
-        raise AccessTokenError(f"cannot read access token at {path}: {exc}") from exc
-    try:
-        validate_access_token(text)
-    except ValueError:
-        return None
-    return text
+    return read_secret(path, valid=_is_valid_token, error=AccessTokenError, what="access token")
 
 
 def load_or_create_access_token(path: Path) -> str:
     """Return the saved access token, creating or replacing it when missing or invalid.
 
-    The file is written atomically and readable only by its owner.
-
-    Args:
-        path: The token file.
-
     Raises:
         AccessTokenError: The file cannot be read or written.
     """
-    token = read_access_token(path)
-    if token is not None:
-        return token
-    token = secrets.token_urlsafe(32)
-    try:
-        write_private_file(path, token + "\n")
-    except OSError as exc:
-        raise AccessTokenError(f"cannot write access token at {path}: {exc}") from exc
-    return token
+    return load_or_create_secret(
+        path, valid=_is_valid_token, error=AccessTokenError, what="access token"
+    )
 
 
 def lan_server_config(

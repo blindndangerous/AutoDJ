@@ -101,7 +101,7 @@ def test_write_cleanup_on_replace_failure(tmp_path: Path, monkeypatch: pytest.Mo
     monkeypatch.setattr("os.replace", failing_replace)
 
     with pytest.raises(StreamSecretError):
-        secret._write()
+        secret.rotate()
 
     # Verify no temp files left behind
     temp_files = list(tmp_path.glob(".stream-secret.*"))
@@ -121,7 +121,7 @@ def test_write_mkdir_failure_is_stream_secret_error(
     monkeypatch.setattr("pathlib.Path.mkdir", failing_mkdir)
 
     with pytest.raises(StreamSecretError, match="cannot write stream secret"):
-        secret._write()
+        secret.rotate()
 
 
 def test_write_mkstemp_failure_is_stream_secret_error(
@@ -137,7 +137,7 @@ def test_write_mkstemp_failure_is_stream_secret_error(
     monkeypatch.setattr("tempfile.mkstemp", failing_mkstemp)
 
     with pytest.raises(StreamSecretError, match="cannot write stream secret"):
-        secret._write()
+        secret.rotate()
 
 
 def test_paired_devices_path_with_minimal_config() -> None:
