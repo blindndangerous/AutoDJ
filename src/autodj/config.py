@@ -453,6 +453,11 @@ class PlaybackConfig(_Section):
             str(self.liners_pick_mode), LINER_PICK_MODES, "playback.liners_pick_mode"
         )
         self.liners_duck_db = float(self.liners_duck_db)
+        if not -30.0 <= self.liners_duck_db <= 0.0:
+            # A positive value would boost the music under every liner.
+            raise ValueError(
+                f"playback.liners_duck_db must be between -30 and 0 dB, got {self.liners_duck_db}"
+            )
 
 
 @dataclass

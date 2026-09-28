@@ -10,6 +10,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `liners_duck_db` in the config file must now be between -30 and 0 dB; AutoDJ refuses to start
+  with any other value. A positive value used to make the music louder, not quieter, while a
+  liner played.
 - The random and rotate transition choices in the server-side mix (the radio stream) now include
   backspin, as the web page already did.
 

@@ -236,7 +236,7 @@ liners_enabled = false
 # liners_random_min_minutes = 10.0     # random window, lower bound
 # liners_random_max_minutes = 25.0     # random window, upper bound
 liners_pick_mode = "random"            # random | sequential
-liners_duck_db = -12.0                 # how far the music ducks under a liner
+liners_duck_db = -12.0                 # how far the music ducks under a liner, -30 to 0 dB
 
 # Longest track the server mixes with --server-audio or --stream, in
 # minutes (1 to 600).  The server decodes each track whole, at about 21 MB
