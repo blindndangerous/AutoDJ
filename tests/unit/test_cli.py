@@ -1299,8 +1299,9 @@ class TestNameValidation:
             result = CliRunner().invoke(cli, ["serve", "--name", "../etc"])
         assert result.exit_code == 1
 
-    def test_index_accepts_normal_name(self) -> None:
+    def test_index_accepts_normal_name(self, tmp_path: Path) -> None:
         cfg_mock = _make_cfg()
+        cfg_mock.index.active_dir = tmp_path / "noindex"
         with (
             patch("autodj.config.load_config", return_value=cfg_mock),
             patch("autodj.model.download_model_if_needed"),
