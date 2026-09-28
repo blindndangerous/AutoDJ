@@ -817,10 +817,10 @@ class Player:
         # other.
         self._set_generation = 0
         self._set_lock = threading.Lock()
-        # Stream mode: the bus exists from the start (the server registers
-        # the stream output on it) and stays idle until the station starts
-        # a set.
-        if stream_mode:
+        # Server-side mixing (stream mode or server audio): the bus exists
+        # from the start, so the server can register the stream output and
+        # the liner scheduler on it.  It stays idle until a set starts.
+        if not dry_run:
             self._build_bus()
 
     def _build_status(self) -> Panel:
@@ -1009,8 +1009,7 @@ class Player:
         from autodj.sound_output import SoundDeviceOutput
 
         self.reset_render_ahead(current, 0, pick_mode="seed")
-        self._build_bus()
-        assert self.bus is not None
+        assert self.bus is not None  # built in __init__ unless dry-run
         output = SoundDeviceOutput(
             self._state, getattr(self._cfg.playback, "audio_device", None) or None
         )

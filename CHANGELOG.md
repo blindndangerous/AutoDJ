@@ -110,6 +110,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   skipped intro that had already played during the overlap.
 - `/api/history` stayed empty for the whole session with `--server-audio`, because tracks were
   never recorded as played through that output path.
+- Voice liners never played with plain `--server-audio` (without `--stream`): only stream mode
+  started the server's liner scheduler. They now play on the same triggers, with the same ducking,
+  while a track is playing and not paused.
 - With `--server-audio` or `--stream`, a track starting no longer waits for the server to finish
   choosing the track after it. The choice works on a copy of the play history, so the page and
   the stream title update the moment the new track begins.

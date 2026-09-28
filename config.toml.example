@@ -226,8 +226,9 @@ key_sync_fx = true
 beatmatch_on_skip = false
 
 # Voice liners — short spoken clips layered over the mix.  Triggers are
-# evaluated in the browser; any combination may be set, and a null / absent
-# value disables that trigger.
+# evaluated in the browser when it plays the audio, and on the server with
+# --server-audio or --stream; any combination may be set, and a null /
+# absent value disables that trigger.
 liners_enabled = false
 # liners_folder = "~/.autodj/liners"   # default: <index_dir>/<name>/liners
 # liners_every_n_songs = 5             # after every N tracks

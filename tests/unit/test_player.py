@@ -1146,7 +1146,7 @@ class TestKeyboardHandler:
     def test_n_skips(self) -> None:
         captured, _kb_mock, sysmod = self._setup()
         with sysmod:
-            player = Player(_make_cfg_mock(), _make_sim_index())
+            player = Player(_make_cfg_mock(), _make_sim_index(), dry_run=True)
             player._setup_keyboard()
             char_key = MagicMock()
             char_key.char = "n"
