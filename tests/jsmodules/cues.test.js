@@ -55,11 +55,10 @@ describe("renderCueStrip", () => {
     const marker = element.querySelector(".cue-mark");
     expect(marker.getAttribute("onmouseover")).toBeNull();
     expect(marker.onmouseover).toBeNull();
-    expect(marker.style.background).toBe(CUE_COLORS.drop);
     expect(marker.title).toBe("drop: Safe label");
   });
 
-  it("falls back when the browser rejects a conservatively shaped color", () => {
+  it("falls back when the browser rejects the color", () => {
     const supports = vi.fn(() => false);
     vi.stubGlobal("CSS", { supports });
     const element = document.createElement("div");

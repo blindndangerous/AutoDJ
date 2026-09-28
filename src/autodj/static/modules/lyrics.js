@@ -83,29 +83,15 @@ function clearCurrentLine(lyricsList) {
 // Scroll ONLY the lyrics box.  Element.scrollIntoView walks every
 // scrollable ancestor including the document, so with real synced
 // lyrics it yanked the whole page every few seconds -- which is exactly
-// the case the embedded-LRC fix has just made common.
+// the case the embedded-LRC fix has just made common.  The box scrolls
+// smoothly, or at once under prefers-reduced-motion (app.css).
 function scrollActiveLineIntoView(lyricsList, li) {
-  if (!lyricsList || typeof li.getBoundingClientRect !== "function") return;
   const lineBox = li.getBoundingClientRect();
   const listBox = lyricsList.getBoundingClientRect();
   const top = lyricsList.scrollTop
     + (lineBox.top - listBox.top)
     - (listBox.height - lineBox.height) / 2;
-  const behavior = prefersReducedMotion() ? "auto" : "smooth";
-  if (typeof lyricsList.scrollTo === "function") {
-    lyricsList.scrollTo({ top: Math.max(0, top), behavior });
-  } else {
-    lyricsList.scrollTop = Math.max(0, top);
-  }
-}
-
-function prefersReducedMotion() {
-  try {
-    if (typeof globalThis.matchMedia !== "function") return true;
-    return globalThis.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  } catch (_) {
-    return true;
-  }
+  lyricsList.scrollTop = Math.max(0, top);
 }
 
 export async function loadLyrics(path, elements) {

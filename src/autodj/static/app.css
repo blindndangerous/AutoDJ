@@ -541,6 +541,8 @@
          only cue that more text existed was a half-clipped last line. */
       scrollbar-width: thin;
       scrollbar-color: var(--accent) transparent;
+      /* The reduced-motion rule below turns this off. */
+      scroll-behavior: smooth;
       font-size: 0.95rem;
       line-height: 1.5;
     }
