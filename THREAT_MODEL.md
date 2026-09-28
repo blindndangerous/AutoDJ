@@ -14,8 +14,8 @@ AutoDJ is a single-user local music player with these exposed surfaces:
 - LAN mode requires either an access token or explicit `--insecure-lan`, plus exact Host and Origin
   allowlists. `AUTODJ_ACCESS_TOKEN` is supported for secret injection. `serve --lan` fills in
   both allowlists and the token automatically; see "Automatic LAN mode" below.
-- Backup and restore trust configured source and destination roots after applying path, type,
-  identity, size, digest, and free-space checks.
+- Backup and restore trust the configured index, liners, profiles and history locations. Restore
+  checks member names and the AutoDJ version before it replaces anything.
 
 Cloud sync, multi-user roles, billing, and public Internet hosting are out of scope. Use TLS for any
 network where observers could read HTTP traffic, and terminate it in AutoDJ itself with
@@ -193,23 +193,24 @@ actions are audited after response status is known. WebSocket connection, contro
 disconnect events are audited. These records support single-user incident review but do not provide
 per-user attribution.
 
-## Backup and restore boundary
+## BA backup is a plain ZIP file: the published index generation, `dj_meta.db`, `web_state.json`,
+the liners and profiles folders, the optional play history, and a `manifest.json` naming the
+AutoDJ version and the files. It is safe to make while AutoDJ serves: the index is copied under
+its publication lock and `dj_meta.db` through SQLite's backup API. The archive is written to a
+temporary file and renamed into place, and it may not be written inside the liners or profiles
+folder.
 
-Backups classify published index and SQLite data as derived. Profiles, liners, dayparts, optional
-history, and `web_state.json` are unique data. Each archived payload has an exact destination, size,
-classification, and SHA-256 digest in schema 1 `manifest.json`.
+Restore requires a backup from the same major and minor version. It refuses member names that
+are absolute, contain `..`, backslashes or drive letters, or fall outside the known index files,
+liners, profiles and history, and it refuses an archive whose files differ from its manifest.
+Every file is unpacked beside its destination and the index is checked before anything is
+replaced. Restored liners and profiles folders replace the current ones whole. There are no
+digests, free-space checks or rollback: an interrupted restore is run again. The operator must
+stop AutoDJ first, because restore cannot tell whether it runs. Filesystem locations remain
+trusted through operating-system ACLs. AutoDJ does not defend against an attacker who already
+controls them and can race filesystem operations.
 
-Stopped backup rejects SQLite WAL, shared-memory, and rollback-journal sidecars and rechecks state
-during copying. This detects activity but does not prove no writer exists, so the operator must stop
-service. Online backup uses SQLite backup API for live DJ metadata and retries bounded index
-generation changes.
-
-Restore rejects unknown schema and incompatible release lines, unsafe paths, normalized path
-collisions, symlink or reparse traversal, encrypted or non-regular ZIP members, invalid mappings,
-undeclared files, size mismatches, and digest mismatches. It checks central-directory metadata and
-target free space before extraction, stages every payload, and rolls installed targets back after a
-failure. Filesystem roots remain trusted through operating-system ACLs. AutoDJ does not defend
-against an attacker who already controls those roots and can race filesystem operations.
+ace filesystem operations.
 
 ## Container and dependency controls
 
