@@ -100,8 +100,8 @@ export function showVisibleStatus(
 //   default -- change-detection.  For anything driven by the 1 Hz
 //     websocket tick.  Re-writing identical text is what makes NVDA
 //     repeat itself, so an unchanged message is a no-op.
-//   force   -- clear, then set on the next task, the same pattern
-//     srSpeak uses.  For anything the USER just did.  Pressing "Move up"
+//   force   -- clear, then set on the next task.  For anything the
+//     USER just did.  Pressing "Move up"
 //     twice, or searching twice and getting the same count, has to be
 //     reported twice: silence would read as the button not working.
 export function announceStatus(

@@ -1,6 +1,6 @@
 // Pure DOM / formatting helpers shared across modules.
 
-import { showVisibleStatus } from "./live-region.js";
+import { announceStatus } from "./live-region.js";
 
 // ----------------------------------------------------------------
 // Debug logging — opt-in via `?debug=1` URL param OR
@@ -83,36 +83,18 @@ export function escHtml(str) {
     .replace(/"/g, "&quot;");
 }
 
+// Query hotkeys answer out loud through #sr-status, and the same answer
+// shows in the visible mirror.  Forced, so asking twice is answered
+// twice; the region empties 300 ms later.
+export function srSpeak(msg) {
+  announceStatus(document.getElementById("sr-status"), msg, { force: true, dwellMs: 300 });
+}
+
 // ----------------------------------------------------------------
 // Text-entry controls keep their keys. The hotkeys module separately
 // preserves native activation, navigation, and dropdown typeahead while
 // allowing unrelated letter shortcuts from buttons and sliders.
 // ----------------------------------------------------------------
-
-// ----------------------------------------------------------------
-// Screen-reader announcements via ARIA live region #sr-status.
-// Clear-then-set pattern lets the same message be re-announced on
-// repeated key press.  300 ms window is long enough for polite
-// announcement to fire; short enough that a second keypress clears
-// and re-sets the text.
-// ----------------------------------------------------------------
-
-let _srTimer = null;
-
-export function srSpeak(msg) {
-  const el = document.getElementById("sr-status");
-  if (!el) return;
-  // Query hotkeys answer out loud; show the same answer so a sighted
-  // keyboard user gets the reply too.  The mirror is aria-hidden, so
-  // this is still one announcement.
-  showVisibleStatus(msg);
-  clearTimeout(_srTimer);
-  el.textContent = "";
-  setTimeout(() => {
-    el.textContent = msg;
-    _srTimer = setTimeout(() => { el.textContent = ""; }, 300);
-  }, 0);
-}
 
 export function isTypingTarget(el) {
   if (!el) return false;
