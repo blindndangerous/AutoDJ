@@ -266,8 +266,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A setting that fails to save goes back at once and says so, for example "Could not save
   Beatmatch; it is still on.", instead of flipping back silently a second later. The Preset and
   Harmonic mixing lists no longer reset while they have focus.
-- The pairing dialog's instructions are read once instead of twice, and when a paired browser
-  is signed out the dialog says so.
+- The pairing dialog's name and instructions are read once instead of twice, on load and after
+  signing out, and when a paired browser is signed out the dialog says so. NVDA with Chrome read
+  any named dialog twice as focus moved into it, so the name and instructions now belong to the
+  form inside the dialog: NVDA says "dialog", then "Pair this browser" and the instructions once.
 - The Play, Skip and Mute buttons no longer carry a tooltip that NVDA read as a description
   repeating the button name. Skip's said "the next sonically similar track", which was wrong
   with a queue or in random mode.

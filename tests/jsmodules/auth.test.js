@@ -13,9 +13,9 @@ import { AuthenticationRequiredError } from
   "../../src/autodj/static/modules/api-client.js";
 
 function installDialogMarkup() {
-  document.body.innerHTML = `<dialog id="auth-dialog"
+  document.body.innerHTML = `<dialog id="auth-dialog">
+    <form id="auth-form" method="dialog"
       aria-labelledby="auth-title" aria-describedby="auth-reason auth-help">
-    <form id="auth-form" method="dialog">
       <h2 id="auth-title">Pair this browser</h2>
       <p id="auth-reason" hidden></p>
       <p id="auth-help">Enter the pairing code shown by the server.</p>
@@ -139,7 +139,7 @@ describe("initAuthDialog", () => {
     auth.show(SIGNED_OUT_TEXT);
     expect(reason.hidden).toBe(false);
     expect(reason.textContent).toBe(SIGNED_OUT_TEXT);
-    expect(els.dialog.getAttribute("aria-describedby")).toContain("auth-reason");
+    expect(els.form.getAttribute("aria-describedby")).toContain("auth-reason");
 
     auth.show();
     expect(reason.hidden).toBe(true);
@@ -913,7 +913,7 @@ describe("app startup integration", () => {
 });
 
 describe("pairing dialog markup", () => {
-  it("parses as a named, described, one-time-code form", () => {
+  it("names and describes the form, not the dialog, so NVDA reads it once", () => {
     const html = readFileSync(
       join(process.cwd(), "src/autodj/static/index.html"), "utf8",
     );
@@ -921,14 +921,21 @@ describe("pairing dialog markup", () => {
     template.innerHTML = html;
     const parsed = template.content;
     const dialog = parsed.querySelector("#auth-dialog");
+    const form = parsed.querySelector("#auth-form");
     const input = parsed.querySelector("#auth-token");
     const label = parsed.querySelector('label[for="auth-token"]');
     const error = parsed.querySelector("#auth-error");
 
     expect(dialog?.tagName).toBe("DIALOG");
-    expect(parsed.querySelector(`#${dialog?.getAttribute("aria-labelledby")}`)
+    // NVDA with Chrome spoke a named dialog's name and description twice
+    // as focus entered it; the named form inside is spoken once.
+    for (const attribute of ["aria-label", "aria-labelledby", "aria-describedby"]) {
+      expect(dialog?.hasAttribute(attribute), attribute).toBe(false);
+    }
+    expect(form?.parentElement).toBe(dialog);
+    expect(parsed.querySelector(`#${form?.getAttribute("aria-labelledby")}`)
       ?.textContent.trim()).toBe("Pair this browser");
-    expect(dialog?.getAttribute("aria-describedby")).toBe("auth-reason auth-help");
+    expect(form?.getAttribute("aria-describedby")).toBe("auth-reason auth-help");
     expect(parsed.querySelector("#auth-help")?.textContent.trim()).toBe(
       "Enter the 8-digit pairing code shown by the AutoDJ server. You only need to do this once on this browser.",
     );
