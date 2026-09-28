@@ -22,11 +22,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Deleting a voice liner asks in the page's own confirmation dialog, like deleting a profile,
   instead of the browser's pop-up. After the delete, focus goes to the next liner's Delete button,
   or to Upload when no liner is left.
+- Running AutoDJ no longer needs Node.js or npm. The server sends the web page's files from
+  `src/autodj/static` as they are, gzip-compressed for browsers that accept it. Node.js is only
+  needed to run the JavaScript tests, lint and browser audits.
+- The page's scripts and stylesheet are now checked with the server on each page load and reused
+  from the browser cache when unchanged, instead of being downloaded again every time.
 
 ### Removed
 
 - `GET /api/settings` and `GET /api/profiles/{name}`. The web page never used them; the settings
   are in `GET /api/status` under `settings`.
+- The web bundle build (`npm run build`) and the `src/autodj/static_dist` folder it produced.
+  Delete a leftover `src/autodj/static_dist` folder: AutoDJ ignores it, but Git now lists it as
+  untracked. `autodj doctor` no longer has a `frontend-bundle` check.
 
 ### Fixed
 
