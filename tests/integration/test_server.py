@@ -4011,42 +4011,33 @@ async def test_asgi_disconnect_before_alac_body_reaps_spawned_ffmpeg(
 
 
 class TestStaticAssets:
-    def test_app_css_no_cache(self, client) -> None:
-        resp = client.get("/app.css")
-        assert resp.status_code == 200
-        assert resp.headers["cache-control"] == "no-cache, no-store, must-revalidate"
-
-    def test_app_js_no_cache(self, client) -> None:
-        resp = client.get("/app.js")
-        assert resp.status_code == 200
-        assert resp.headers["cache-control"] == "no-cache, no-store, must-revalidate"
-
-    def test_index_no_cache(self, client) -> None:
+    def test_index_is_not_stored(self, client) -> None:
         resp = client.get("/")
-        assert resp.headers["cache-control"] == "no-cache, no-store, must-revalidate"
+        assert resp.headers["cache-control"] == "no-store"
 
-    def test_worklet_endpoint(self, client) -> None:
-        resp = client.get("/bitcrusher-worklet.js")
+    @pytest.mark.parametrize(
+        ("path", "media_type"),
+        [
+            ("/app.css", "text/css"),
+            ("/app.js", "text/javascript"),
+            ("/modules/audio-engine.js", "text/javascript"),
+            ("/bitcrusher-worklet.js", "text/javascript"),
+            ("/stutter-worklet.js", "text/javascript"),
+            ("/freeze-worklet.js", "text/javascript"),
+            ("/glitch-worklet.js", "text/javascript"),
+        ],
+    )
+    def test_asset_is_revalidated_by_etag(self, client, path: str, media_type: str) -> None:
+        resp = client.get(path)
         assert resp.status_code == 200
-        assert resp.headers["cache-control"] == "no-cache, no-store, must-revalidate"
+        assert resp.headers["content-type"].startswith(media_type)
+        assert resp.headers["cache-control"] == "no-cache"
+        if path.endswith("-worklet.js"):
+            assert "registerProcessor" in resp.text
 
-    def test_stutter_worklet_endpoint(self, client) -> None:
-        resp = client.get("/stutter-worklet.js")
-        assert resp.status_code == 200
-        assert resp.headers["cache-control"] == "no-cache, no-store, must-revalidate"
-        assert "registerProcessor" in resp.text
-
-    def test_freeze_worklet_endpoint(self, client) -> None:
-        resp = client.get("/freeze-worklet.js")
-        assert resp.status_code == 200
-        assert "registerProcessor" in resp.text
-        assert resp.headers["cache-control"] == "no-cache, no-store, must-revalidate"
-
-    def test_glitch_worklet_endpoint(self, client) -> None:
-        resp = client.get("/glitch-worklet.js")
-        assert resp.status_code == 200
-        assert "registerProcessor" in resp.text
-        assert resp.headers["cache-control"] == "no-cache, no-store, must-revalidate"
+        again = client.get(path, headers={"If-None-Match": resp.headers["etag"]})
+        assert again.status_code == 304
+        assert again.content == b""
 
 
 # ---------------------------------------------------------------------------

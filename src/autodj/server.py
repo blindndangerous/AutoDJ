@@ -38,6 +38,7 @@ import contextlib
 import functools
 import json
 import logging
+import os
 import re
 import shutil
 import stat
@@ -64,6 +65,9 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from starlette.background import BackgroundTask
+from starlette.datastructures import Headers
+from starlette.staticfiles import NotModifiedResponse
+from starlette.types import Scope
 
 # PlayerBridge lives in autodj._bridge so neither file balloons over
 # the 2000-line working budget.
@@ -95,7 +99,7 @@ from autodj.stream_secret import (
     paired_devices_path,
     stream_secret_path,
 )
-from autodj.version import REQUIRED_BUILT_ASSETS, current_version, stale_bundle_reason
+from autodj.version import current_version
 
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig
@@ -115,8 +119,7 @@ _ALAC_PREFETCH_TIMEOUT_SECONDS = 5.0
 _MULTIPART_OVERHEAD_BYTES = 64 * 1024
 # Total seconds shutdown waits for the player and cache writers to stop.
 _SHUTDOWN_TIMEOUT_S = 30.0
-_PACKAGE_DIR = Path(__file__).parent
-_BUILD_INFO_NAME = "build-info.json"
+_STATIC_DIR = Path(__file__).parent / "static"
 # Play now, Play next and Add to queue on a search result whose file was
 # pruned from the index since the search ran.
 _TRACK_GONE_DETAIL = "That track is no longer in the library."
@@ -326,57 +329,52 @@ def _advertised_server_origin(policy: SecurityPolicy) -> str:
     )
 
 
-def _selected_static_dir(package_dir: Path) -> Path:
-    """Select a complete built bundle, otherwise source assets."""
-    static_built = package_dir / "static_dist"
-    if all((static_built / name).is_file() for name in (*REQUIRED_BUILT_ASSETS, _BUILD_INFO_NAME)):
-        return static_built
-    return package_dir / "static"
+# Browsers get index.html fresh every time; scripts and the stylesheet
+# carry an ETag and are revalidated on each load (304 when unchanged).
+_NO_STORE = {"Cache-Control": "no-store"}
+_ASSET_MEDIA_TYPES = {".js": "text/javascript", ".css": "text/css"}
 
 
-def _validated_bundle_version(static_built: Path, runtime_version: str) -> str | None:
-    """Validate metadata for a built bundle; source assets have no stamp.
+class _RevalidatedStaticFiles(StaticFiles):
+    """Serve web UI files with ``Cache-Control: no-cache`` and fixed JS/CSS types.
 
-    The stamp must match the runtime version and, in a source checkout,
-    the web sources it was built from (see
-    :func:`~autodj.version.stale_bundle_reason`).
+    The media type does not come from :mod:`mimetypes`, which on Windows reads
+    the registry and can call ``.js`` ``text/plain`` (module scripts and
+    AudioWorklet modules then refuse to load).
     """
-    if not all((static_built / name).is_file() for name in REQUIRED_BUILT_ASSETS):
-        return None
-    stamp = static_built / _BUILD_INFO_NAME
-    if not stamp.is_file():
-        raise RuntimeError(f"Built static bundle is missing build-info.json: {stamp}")
-    try:
-        payload = json.loads(stamp.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"Built static bundle has invalid build-info.json: {exc}") from exc
-    version = payload.get("version") if isinstance(payload, dict) else None
-    if not isinstance(version, str) or not version:
-        raise RuntimeError("Built static bundle build-info.json needs a non-empty string version")
-    if version != runtime_version:
-        raise RuntimeError(
-            f"Built static bundle version {version} does not match runtime version {runtime_version}"
+
+    def file_response(
+        self,
+        full_path: str | os.PathLike[str],
+        stat_result: os.stat_result,
+        scope: Scope,
+        status_code: int = 200,
+    ) -> Response:
+        """Return the file, or 304 when the request's validator still matches."""
+        response = FileResponse(
+            full_path,
+            status_code=status_code,
+            stat_result=stat_result,
+            media_type=_ASSET_MEDIA_TYPES.get(Path(full_path).suffix),
+            headers={"Cache-Control": "no-cache"},
         )
-    stale = stale_bundle_reason(payload, static_built.parent)
-    if stale is not None:
-        raise RuntimeError(f"Built static bundle is stale: {stale}; run `npm run build`")
-    return version
+        if self.is_not_modified(response.headers, Headers(scope=scope)):
+            return NotModifiedResponse(response.headers)
+        return response
 
 
 @functools.cache
 def _version_info() -> dict[str, str]:
     """Return {version, commit, built_at} for the running build.
 
-    Cached on first call so the timestamp reflects when the currently
-    installed bundle was produced (preferring static_dist/app.js mtime,
-    falling back to the source tree, then to process start time).
+    Cached on first call.  ``built_at`` is the modification time of the
+    served ``app.js``, or the process start time when it is missing.
     Commit is the short SHA from `git rev-parse` when the source tree
     is a git checkout, else "unknown".
     """
     import datetime
     import subprocess  # nosec B404 - trusted invocation (git, fixed argv)
 
-    here = _PACKAGE_DIR
     version = current_version()
 
     commit = "unknown"
@@ -386,7 +384,7 @@ def _version_info() -> dict[str, str]:
         # "unknown" placeholder.
         out = subprocess.check_output(  # nosec B603 B607
             ["git", "rev-parse", "--short", "HEAD"],
-            cwd=here,
+            cwd=_STATIC_DIR.parent,
             stderr=subprocess.DEVNULL,
             text=True,
             timeout=2,
@@ -396,7 +394,7 @@ def _version_info() -> dict[str, str]:
     except (OSError, subprocess.SubprocessError):
         pass
 
-    candidate = _selected_static_dir(here) / "app.js"
+    candidate = _STATIC_DIR / "app.js"
     built_at: str | None = None
     if candidate.exists():
         built_at = datetime.datetime.fromtimestamp(
@@ -1184,103 +1182,53 @@ def create_app(
     # Static HTML
     # ------------------------------------------------------------------
 
-    # Prefer the bundled / minified output from `npm run build` when it
-    # exists; fall back to the raw sources for dev (no Node toolchain
-    # required).  Both directories share filenames so the FastAPI
-    # routes below resolve transparently regardless of which the user
-    # has on disk.  See vite.config.js for the build pipeline.
-    _static_built = _PACKAGE_DIR / "static_dist"
-    _static_dir = _selected_static_dir(_PACKAGE_DIR)
-    if _static_dir == _static_built:
-        _validated_bundle_version(_static_built, current_version())
-        logger.info("Serving built static assets from %s", _static_dir)
-    _static_html_path = _static_dir / "index.html"
-    # Read the bundled HTML once at startup so the GET / handler never
-    # blocks the asyncio event loop on a disk read — important when the
-    # static dir lives on a NAS mount and the file is ~80 KB.
+    _static_html_path = _STATIC_DIR / "index.html"
+    # Read the HTML once at startup so the GET / handler never blocks the
+    # asyncio event loop on a disk read -- important when the static dir
+    # lives on a NAS mount and the file is ~80 KB.
     try:
         _index_html_cache = _static_html_path.read_text(encoding="utf-8")
-    except OSError as exc:  # pragma: no cover -- only when the bundle is corrupt
+    except OSError as exc:  # pragma: no cover -- only when the package is corrupt
         logger.error("Could not read %s at startup: %s", _static_html_path, exc)
         _index_html_cache = (
             "<!doctype html><meta charset=utf-8>"
             "<title>AutoDJ unavailable</title>"
-            "<p>Static bundle missing — see server log.</p>"
+            "<p>Web UI files missing — see server log.</p>"
         )
-
-    # Cache-busting headers so Firefox / Chrome don't keep serving
-    # stale HTML / JS / CSS across server upgrades.  In a single-user
-    # NAS deployment we don't need browser caching — every page load
-    # should pick up the latest static assets.
-    _NO_CACHE = {
-        "Cache-Control": "no-cache, no-store, must-revalidate",
-        "Pragma": "no-cache",
-        "Expires": "0",
-    }
 
     @app.get("/", response_class=HTMLResponse)
     async def get_index() -> HTMLResponse:
-        """Serve the bundled web UI HTML from the in-memory cache."""
-        return HTMLResponse(content=_index_html_cache, headers=_NO_CACHE)
+        """Serve the web UI HTML from the in-memory cache."""
+        return HTMLResponse(content=_index_html_cache, headers=_NO_STORE)
 
-    # Convenience aliases at the top level for `app.css` / `app.js` /
-    # the AudioWorklet — bypass StaticFiles caching defaults.
-    # Explicit routes MUST be registered before the /static mount,
-    # otherwise the mount short-circuits with default headers.
-    @app.get("/app.css")
-    async def get_css() -> FileResponse:
-        """Serve the bundled stylesheet."""
-        return FileResponse(_static_dir / "app.css", media_type="text/css", headers=_NO_CACHE)
+    # The page loads /app.css and /app.js; app.js imports /modules/*.js and
+    # the audio engine loads the AudioWorklet modules by absolute URL.
+    _assets = _RevalidatedStaticFiles(directory=_STATIC_DIR)
 
-    def _js_asset_route(filename: str) -> Callable[[], Awaitable[FileResponse]]:
-        """Build a no-cache handler serving one bundled JS file."""
+    def _asset_route(filename: str) -> Callable[[Request], Awaitable[Response]]:
+        """Build a handler serving one top-level web UI file."""
 
-        async def get_js_asset() -> FileResponse:
-            """Serve a bundled script or AudioWorklet module."""
-            return FileResponse(
-                _static_dir / filename,
-                media_type="text/javascript",
-                headers=_NO_CACHE,
-            )
+        async def get_asset(request: Request) -> Response:
+            """Serve the stylesheet, the page script or an AudioWorklet module."""
+            return await _assets.get_response(filename, request.scope)
 
-        return get_js_asset
+        return get_asset
 
-    for _js_name in (
+    for _asset_name in (
+        "app.css",
         "app.js",
         "bitcrusher-worklet.js",
         "stutter-worklet.js",
         "freeze-worklet.js",
         "glitch-worklet.js",
     ):
-        app.get(f"/{_js_name}")(_js_asset_route(_js_name))
+        app.get(f"/{_asset_name}")(_asset_route(_asset_name))
 
-    # ES module imports.  index.html loads /app.js as a module; that
-    # script's `import "./modules/foo.js"` resolves against the script
-    # URL, so the browser fetches /modules/foo.js -- which previously
-    # had no route and 404'd in dev mode (no `npm run build`).
-    # Production (static_dist/) does not need this because vite bundles
-    # everything into a single /app.js, but the route is harmless when
-    # the directory is empty.  Path is sanitised to prevent traversal.
-    @app.get("/modules/{name}")
-    async def get_module(name: str) -> FileResponse:
-        """Serve a module under /modules with traversal protection."""
-        # Reject anything outside the modules/ directory.
-        target = (_static_dir / "modules" / name).resolve()
-        modules_root = (_static_dir / "modules").resolve()
-        try:
-            target.relative_to(modules_root)
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail="Not found") from exc
-        if not target.is_file():
-            raise HTTPException(status_code=404, detail="Not found")
-        return FileResponse(
-            target,
-            media_type="text/javascript",
-            headers=_NO_CACHE,
-        )
-
+    app.mount(
+        "/modules", _RevalidatedStaticFiles(directory=_STATIC_DIR / "modules"), name="modules"
+    )
     # Serve any other assets at /static/...
-    app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
+    app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
     # ------------------------------------------------------------------
     # REST API
@@ -1449,8 +1397,8 @@ def create_app(
         the commit and build time would tell anyone on the network exactly
         which build is running.
         """
-        # Footer build stamp.  Lets the user verify which commit + bundle
-        # the server is actually serving (browser cache vs. fresh build).
+        # Footer build stamp.  Lets the user verify which commit the server
+        # is actually serving.
         info = _version_info()
         if not await _has_session(request):
             info = {"version": info["version"]}

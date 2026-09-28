@@ -45,7 +45,7 @@ jobs:
           path: container-sbom.cdx.json
 
   frontend:
-    name: Frontend lint, test, build, audit
+    name: Frontend lint, test, audit
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -58,7 +58,6 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run lint
       - run: npm test
-      - run: npm run build
       - run: npm run deadcode
       - run: npm audit --audit-level=high
 

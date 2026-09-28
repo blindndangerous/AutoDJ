@@ -4,7 +4,7 @@
 // assert against a fake document.  Pure-function modules
 // (dom-helpers, camelot-wheel adjacency rules) work in either env.
 
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {

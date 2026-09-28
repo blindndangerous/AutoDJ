@@ -5,15 +5,13 @@
 //
 // Wired alongside the Python toolchain (ruff + mypy + vulture +
 // deptry) so the JS surface gets the same dead-code / unused-import
-// scrutiny as the Python surface.  Catches what bundler tree-shaking
-// silently drops, which is otherwise invisible to reviewers.
+// scrutiny as the Python surface.
 
 import js from "@eslint/js";
 
 export default [
   {
     ignores: [
-      "src/autodj/static_dist/**", // vite output
       "node_modules/**",
       "tmp/**",
       "**/*.min.js",
@@ -145,7 +143,7 @@ export default [
     files: [
       "tests/**/*.{js,mjs}",
       "scripts/**/*.mjs",
-      "vite.config.js",
+      "vitest.config.js",
       "eslint.config.js",
     ],
     languageOptions: {

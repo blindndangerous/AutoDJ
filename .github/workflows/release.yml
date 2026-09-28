@@ -30,12 +30,6 @@ jobs:
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with: {python-version: "3.14"}
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
-        with: {node-version: "24.6.0", cache: "npm"}
-      - name: Install frontend dependencies
-        run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Build frontend assets
-        run: npm run build
       - name: Export build constraints
         run: >-
           uv export --frozen --only-group build --no-emit-project
@@ -56,7 +50,7 @@ jobs:
           uv venv .release-venv --python 3.14
           uv pip install --python .release-venv/bin/python dist/*.whl
           test "$(.release-venv/bin/python -c 'import autodj; print(autodj.__version__)')" = "${GITHUB_REF_NAME#v}"
-          .release-venv/bin/python -c 'import autodj, pathlib; assert (pathlib.Path(autodj.__file__).parent / "static_dist" / "app.js").is_file(), "wheel lacks the built web bundle"'
+          .release-venv/bin/python -c 'import autodj, pathlib; static = pathlib.Path(autodj.__file__).parent / "static"; missing = [name for name in ("index.html", "app.js") if not (static / name).is_file()]; assert not missing, f"wheel lacks static/{missing}"'
       - name: Verify runtime API version
         run: |
           set -euo pipefail

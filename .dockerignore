@@ -7,7 +7,6 @@
 __pycache__
 *.py[cod]
 node_modules
-src/autodj/static_dist
 config.toml
 config.local.toml*
 *.pem

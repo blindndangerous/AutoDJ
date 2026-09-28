@@ -603,7 +603,7 @@ def cli(ctx: click.Context, config_path: str | None, verbose: bool) -> None:
 @click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
 @click.pass_context
 def cmd_doctor(ctx: click.Context, as_json: bool) -> None:
-    """Check configuration, storage, dependencies, model, network, and bundle health."""
+    """Check configuration, storage, dependencies, model, network, and stream health."""
     from autodj.doctor import (
         CheckStatus,
         DoctorCheck,
