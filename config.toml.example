@@ -91,6 +91,12 @@ insecure_lan = false
 # allowed_origins = ["https://radio.local:8080"]
 session_ttl_seconds = 7776000  # 90 days; revoke paired browsers with `autodj devices`.
 liner_upload_max_mib = 50
+# Serve HTTPS: a PEM certificate chain and its private key, both or neither.  Both files
+# must exist at startup; --ssl-certfile and --ssl-keyfile replace them.  Renewed files are
+# picked up within five minutes without a restart.  See "HTTPS with your own domain" in
+# docs/operations.md for a Let's Encrypt certificate and remote access.
+# ssl_certfile = "/srv/autodj/tls/fullchain.pem"
+# ssl_keyfile = "/srv/autodj/tls/privkey.pem"
 
 # ---------------------------------------------------------------------------
 # Radio-style MP3 stream — server mixes the set and serves it as a live

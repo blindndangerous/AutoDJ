@@ -29,6 +29,15 @@ from autodj.server import PlaybackSettingsBody, PlayerBridge, create_app
 from ._helpers import NO_INDEX_DIR, _make_entry, _make_player_mock, _make_sim_mock
 
 
+def _tls_files(tmp_path: Path) -> dict[str, str]:
+    """Create placeholder certificate and key files; uvicorn is mocked, so never parsed."""
+    cert = tmp_path / "radio.pem"
+    key = tmp_path / "radio-key.pem"
+    cert.write_text("cert", encoding="utf-8")
+    key.write_text("key", encoding="utf-8")
+    return {"ssl_certfile": str(cert), "ssl_keyfile": str(key)}
+
+
 def _register_index_entry(bridge, entry) -> None:
     """Publish one extra entry through immutable similarity-index seams."""
     entries = (*bridge.sim.entries_snapshot(), entry)
@@ -1889,6 +1898,7 @@ class TestServeFunction:
     def test_wildcard_serve_advertises_usable_allowed_origin(
         self,
         caplog,
+        tmp_path: Path,
         tls: bool,
         origin: str,
     ) -> None:
@@ -1900,6 +1910,7 @@ class TestServeFunction:
         from autodj.server import serve
 
         port = 8443 if tls else 8080
+        tls_files = _tls_files(tmp_path) if tls else {}
         cfg = MagicMock()
         cfg.index.index_dir = NO_INDEX_DIR
         cfg.server = ServerConfig(
@@ -1909,20 +1920,23 @@ class TestServeFunction:
             insecure_lan=not tls,
             allowed_hosts=["radio.local"],
             allowed_origins=[origin],
+            **tls_files,
         )
         cfg.playback.no_repeat_window = 50
         cfg.playback.artist_repeat_window = 3
         cfg.playback.crossfade_seconds = 3.0
-        kwargs = {"ssl_certfile": "radio.pem", "ssl_keyfile": "radio-key.pem"} if tls else {}
 
         with (
             patch("autodj.player.Player.run"),
             patch("uvicorn.run") as mock_uvicorn,
             caplog.at_level(logging.INFO, logger="autodj.server"),
         ):
-            serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None, **kwargs)
+            serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None)
 
         assert f"AutoDJ server ready: {origin}" in caplog.text
+        uvicorn_kwargs = mock_uvicorn.call_args.kwargs
+        assert ("ssl_context_factory" in uvicorn_kwargs) is tls
+        assert uvicorn_kwargs.get("ssl_certfile") == tls_files.get("ssl_certfile")
         assert "server ready: http://0.0.0.0" not in caplog.text
         assert "server ready: https://0.0.0.0" not in caplog.text
         app = mock_uvicorn.call_args.args[0]
@@ -1946,24 +1960,19 @@ class TestServeFunction:
             assert client.post("/api/login", json={"token": "unused"}).status_code == 404
 
     @pytest.mark.parametrize(
-        ("origin", "tls_kwargs"),
+        ("origin", "tls"),
         [
-            ("http://other.local:8080", {}),
-            (
-                "http://radio.local:8080",
-                {"ssl_certfile": "radio.pem", "ssl_keyfile": "radio-key.pem"},
-            ),
-            ("http://radio.local:9090", {}),
-            (
-                "https://radio.local:9090",
-                {"ssl_certfile": "radio.pem", "ssl_keyfile": "radio-key.pem"},
-            ),
+            ("http://other.local:8080", False),
+            ("http://radio.local:8080", True),
+            ("http://radio.local:9090", False),
+            ("https://radio.local:9090", True),
         ],
     )
     def test_serve_rejects_unusable_advertised_policy_before_side_effects(
         self,
+        tmp_path: Path,
         origin: str,
-        tls_kwargs: dict[str, str],
+        tls: bool,
     ) -> None:
         from unittest.mock import MagicMock, patch
 
@@ -1976,6 +1985,7 @@ class TestServeFunction:
             access_token="s" * 32,
             allowed_hosts=["radio.local"],
             allowed_origins=[origin],
+            **(_tls_files(tmp_path) if tls else {}),
         )
         original_server = cfg.server
 
@@ -1984,7 +1994,7 @@ class TestServeFunction:
             patch("uvicorn.run") as mock_uvicorn,
             pytest.raises(ValueError, match="allowed origin"),
         ):
-            serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None, **tls_kwargs)
+            serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None)
 
         player_class.assert_not_called()
         mock_uvicorn.assert_not_called()
