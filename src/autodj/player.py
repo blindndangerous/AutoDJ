@@ -733,11 +733,11 @@ class Player:
         # arc via config / CLI / web UI so unattended playback ramps
         # warmup -> peak -> cool over a session-relative window.
         self._mood_arc: Any = None
-        if getattr(cfg.playback, "enable_mood_arc", False):
+        if cfg.playback.enable_mood_arc:
             from autodj.mood_arc import make_default_arc
 
             self._mood_arc = make_default_arc(
-                duration_hours=getattr(cfg.playback, "mood_arc_hours", 3.0),
+                duration_hours=cfg.playback.mood_arc_hours,
             )
         # DJ meta cache — initialised lazily on first use so tests with
         # mock configs don't trip on the cache load.
@@ -1011,9 +1011,7 @@ class Player:
         self._ensure_external_cues()
         output = None
         if self._server_audio_too:
-            output = SoundDeviceOutput(
-                self._state, getattr(self._cfg.playback, "audio_device", None) or None
-            )
+            output = SoundDeviceOutput(self._state, self._cfg.playback.audio_device or None)
             bus.add_output(output)
         stop = threading.Event()
         watcher = threading.Thread(
@@ -1042,9 +1040,7 @@ class Player:
 
         self.reset_render_ahead(current, 0, pick_mode="seed")
         assert self.bus is not None  # built in __init__ unless dry-run
-        output = SoundDeviceOutput(
-            self._state, getattr(self._cfg.playback, "audio_device", None) or None
-        )
+        output = SoundDeviceOutput(self._state, self._cfg.playback.audio_device or None)
         self.bus.add_output(output)
         stop = threading.Event()
         watcher = threading.Thread(
@@ -1584,7 +1580,7 @@ class Player:
                 self._preset.bpm_weight,
                 target_energy,
             )
-        if getattr(self._cfg.playback, "enable_mood_arc", False) and self._mood_arc:
+        if self._cfg.playback.enable_mood_arc and self._mood_arc:
             from autodj.mood_arc import current_arc_target
 
             target = current_arc_target(self._mood_arc)
@@ -1593,7 +1589,7 @@ class Player:
                 target.bpm_weight,
                 target.target_energy if target_energy is None else target_energy,
             )
-        if getattr(self._cfg.playback, "enable_daypart", False):
+        if self._cfg.playback.enable_daypart:
             from autodj.daypart import current_daypart
 
             dp = current_daypart()
@@ -1743,7 +1739,7 @@ class Player:
 
         # Respect the lyric-display toggle — when off we skip ALL lyric
         # work so the CLI panel stays compact and the web UI hides its card.
-        if not getattr(self._cfg.playback, "show_lyrics", True):
+        if not self._cfg.playback.show_lyrics:
             return [], ""
 
         lyrics = load_lrc_for(path)
@@ -1816,7 +1812,7 @@ class Player:
             return
         self._current_lyrics = []
         self._current_lyrics_plain = ""
-        if not getattr(self._cfg.playback, "show_lyrics", True):
+        if not self._cfg.playback.show_lyrics:
             return
         with self._bg_lyrics_lock:
             if path in self._bg_lyrics_inflight:
@@ -1883,7 +1879,7 @@ class Player:
             return
         self._external_cues_loaded = True
         self._external_cues: dict[str, list[Any]] = {}
-        if not getattr(self._cfg.playback, "import_external_cues", True):
+        if not self._cfg.playback.import_external_cues:
             return
         try:
             from autodj.dj_cues_import import auto_import_cues

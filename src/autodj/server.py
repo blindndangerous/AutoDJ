@@ -1144,13 +1144,7 @@ def create_app(
         return JSONResponse(status_code=422, content={"detail": detail})
 
     def _liner_upload_max_bytes() -> int:
-        server_cfg = getattr(bridge.player._cfg, "server", None)
-        configured_limit = getattr(server_cfg, "liner_upload_max_bytes", None)
-        return (
-            configured_limit
-            if isinstance(configured_limit, int) and not isinstance(configured_limit, bool)
-            else 50 * 1024 * 1024
-        )
+        return bridge.player._cfg.server.liner_upload_max_bytes
 
     from autodj.liner_files import LinerUploadBodyLimitMiddleware
 
@@ -2256,12 +2250,11 @@ def create_app(
         # Point the child at the same configuration this server is running
         # on, every time: --name and settings can change under a live server,
         # so reading it at app-creation time would go stale.
-        cfg = getattr(bridge.player, "_cfg", None)
-        index_cfg = getattr(cfg, "index", None)
+        cfg = bridge.player._cfg
         mgr.configure(
-            config_path=getattr(cfg, "config_path", None),
-            index_dir=getattr(index_cfg, "index_dir", None),
-            index_name=getattr(index_cfg, "name", None),
+            config_path=cfg.config_path,
+            index_dir=cfg.index.index_dir,
+            index_name=cfg.index.name,
         )
         # start() may wait up to a second for the previous job's output reader
         # and spawns a process, so keep it off the event loop.
@@ -2479,9 +2472,6 @@ def create_app(
 
     async def _index_watcher_loop() -> None:  # pragma: no cover — long-running task
         """Reload each newly published index generation every 10 seconds."""
-        cfg = getattr(bridge.player, "_cfg", None)
-        if cfg is None:
-            return
         observed = bridge.sim.snapshot_token
         while True:
             try:
@@ -2690,7 +2680,7 @@ def serve(
         "AutoDJ server ready: %s  (%s, %d indexed tracks, seed=%s)",
         advertised_origin,
         audio_mode,
-        len(getattr(sim, "entries", []) or []),
+        sim.ntotal,
         getattr(seed_entry, "display_name", "random"),
     )
     logger.info(

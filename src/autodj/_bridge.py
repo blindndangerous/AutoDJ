@@ -468,8 +468,7 @@ class PlayerBridge:
         # the just-played track as the seed (= "last_queued" mode), the
         # default.
         seed_for_next = nxt
-        cfg_pb = getattr(p._cfg, "playback", None)
-        seed_mode = getattr(cfg_pb, "post_queue_seed", "last_queued") if cfg_pb else "last_queued"
+        seed_mode = p._cfg.playback.post_queue_seed
         queue_just_emptied = (
             not state.queue and state.queued_next is None and state.pre_queue_seed is not None
         )
@@ -507,9 +506,8 @@ class PlayerBridge:
         try:
             from autodj.dj_meta import key_label  # local — avoid cycles
 
-            cfg_pb = getattr(p._cfg, "playback", None)
-            notation = getattr(cfg_pb, "key_notation", "camelot") if cfg_pb else "camelot"
-            prefer_flats = bool(getattr(cfg_pb, "key_prefer_flats", False)) if cfg_pb else False
+            notation = p._cfg.playback.key_notation
+            prefer_flats = p._cfg.playback.key_prefer_flats
 
             def _fmt(t: Any) -> str:
                 if t is None:
@@ -633,9 +631,8 @@ class PlayerBridge:
         #                     used by the Camelot wheel SVG, since the
         #                     wheel is Camelot-shaped regardless of
         #                     which display notation the user picked.
-        cfg_pb = getattr(self.player._cfg, "playback", None)
-        _key_notation = getattr(cfg_pb, "key_notation", "camelot") if cfg_pb else "camelot"
-        _key_prefer_flats = bool(getattr(cfg_pb, "key_prefer_flats", False)) if cfg_pb else False
+        _key_notation = self.player._cfg.playback.key_notation
+        _key_prefer_flats = self.player._cfg.playback.key_prefer_flats
 
         # Pull the DJ-meta sidecar (if any) so we can surface the
         # outgoing track's outro length to the browser — the per-effect
@@ -931,8 +928,7 @@ class PlayerBridge:
         adding the new item so we record the song the user diverted
         from, not the queued track itself.
         """
-        cfg_pb = getattr(self.player._cfg, "playback", None)
-        mode = getattr(cfg_pb, "post_queue_seed", "last_queued") if cfg_pb else "last_queued"
+        mode = self.player._cfg.playback.post_queue_seed
         if mode != "pre_queue":
             return
         state = self.player._state
@@ -1165,18 +1161,13 @@ class PlayerBridge:
         """Restore previously-saved settings from web_state.json."""
         from autodj.runtime_state import load_into_player
 
-        cfg = getattr(self.player, "_cfg", None)
-        load_into_player(self.player, cfg.index.active_dir if cfg else None)
+        load_into_player(self.player, self.player._cfg.index.active_dir)
 
     def save_persistent_state(self) -> None:
         """Write current settings to web_state.json (atomic)."""
         from autodj.runtime_state import save_from_player
 
-        cfg = getattr(self.player, "_cfg", None)
-        save_from_player(
-            self.get_settings(),
-            cfg.index.active_dir if cfg else None,
-        )
+        save_from_player(self.get_settings(), self.player._cfg.index.active_dir)
 
     def get_settings(self) -> dict:
         """Return a snapshot of every adjustable setting + available presets."""
