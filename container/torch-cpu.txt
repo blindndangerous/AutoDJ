@@ -2,7 +2,7 @@
 # `uv pip install --require-hashes --no-deps --index-url https://download.pytorch.org/whl/cpu`.
 #
 # Versions must equal the torch, torchaudio and torchvision versions in uv.lock;
-# the image build and tests/unit/test_containerfile.py both fail otherwise.
+# the image build fails otherwise.
 # Each package lists the sha256 of its cp314 manylinux_2_28 wheel for x86_64 and
 # aarch64, copied from the #sha256= fragments on the download.pytorch.org/whl/cpu
 # index pages. When uv.lock moves any of these versions, update this file too.
