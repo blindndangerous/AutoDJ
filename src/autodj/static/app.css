@@ -760,6 +760,28 @@
       font-variant-numeric: tabular-nums;
       min-height: 1.2em;
     }
+    /* One block per line, so a screen reader's line navigation meets one
+       log line at a time; each line keeps its own spacing. */
+    #library-log {
+      margin: 0;
+      background: #0f1626;
+      color: #cce0ff;
+      padding: 0.5rem;
+      border-radius: var(--radius);
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 0.85rem;
+      max-height: 16rem;
+      overflow: auto;
+      border: 1px solid var(--border);
+    }
+    #library-log > div {
+      white-space: pre-wrap;
+    }
+    #library-log > .lib-log-empty {
+      margin: 0;
+      color: var(--text-dim);
+      font-style: italic;
+    }
 
     /* ---- Visible status mirror ----
        Same string the live region just announced, shown where a sighted

@@ -125,6 +125,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   details" section below it.
 - Stopping a library job with Stop running job now reports that the job stopped, instead of
   "exited with code 1".
+- The Library tools output log now holds each line as its own line on the page, so NVDA's
+  browse mode reads it one line per Down Arrow. Before, the whole log was one block of text.
 - In stream mode with `--server-audio`, the page's volume slider and Mute now also set the
   volume and mute of the machine's own speakers. Before, they changed only the page's own
   listening, and the speakers kept whatever volume the server started with.

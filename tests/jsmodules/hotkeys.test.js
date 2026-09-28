@@ -283,8 +283,13 @@ describe("page shortcut scope", () => {
 
     const skipEvent = keyEvent(settingsTabLabel, "n");
     const seekEvent = keyEvent(settingsTabLabel, ",");
+    // A focused scroller on another tab, such as the library job log,
+    // keeps its arrow keys.
+    const arrowEvent = keyEvent(document.querySelector("#plain"), "ArrowDown");
     expect(skipEvent.defaultPrevented).toBe(false);
     expect(seekEvent.defaultPrevented).toBe(false);
+    expect(arrowEvent.defaultPrevented).toBe(false);
+    expect(volumeInput).not.toHaveBeenCalled();
     expect(skipClick).not.toHaveBeenCalled();
     expect(seekDelta).not.toHaveBeenCalled();
   });

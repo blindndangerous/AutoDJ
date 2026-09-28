@@ -936,9 +936,10 @@ function libraryLogOwnershipIsScoped(html = htmlSource) {
     && status.textContent.trim() !== ""
     && liveOwners.size === 1
     && liveOwners.has(status)
-    && log?.tagName === "PRE"
+    && log?.tagName === "DIV"
+    && log.getAttribute("tabindex") === "0"
     && !log.hasAttribute("aria-live")
-    // Named region (a bare <pre> cannot carry a name), never a live role.
+    // Named region (a bare <div> cannot carry a name), never a live role.
     && log.getAttribute("role") === "region"
     && log.getAttribute("aria-labelledby") === "library-log-heading";
 }
@@ -1482,8 +1483,8 @@ describe("static accessibility contracts", () => {
       '></p>',
     ))).toBe(false);
     expect(libraryLogOwnershipIsScoped(htmlSource.replace(
-      '<pre id="library-log"',
-      '<pre id="library-log" aria-live="polite"',
+      '<div id="library-log"',
+      '<div id="library-log" aria-live="polite"',
     ))).toBe(false);
     expect(libraryLogOwnershipIsScoped(htmlSource.replace(
       ' role="region"',
@@ -1542,15 +1543,6 @@ describe("static accessibility contracts", () => {
     ]) {
       expect(document.querySelector(selector).hasAttribute("role"), selector)
         .toBe(false);
-    }
-    const libraryLog = document.querySelector("#library-log");
-    expect(libraryLog.tagName).toBe("PRE");
-    expect(libraryLog.style.margin).toBe("0px");
-    const libraryLogStyle = window.getComputedStyle(libraryLog);
-    for (const property of [
-      "marginTop", "marginRight", "marginBottom", "marginLeft",
-    ]) {
-      expect(libraryLogStyle[property], property).toBe("0px");
     }
   });
 

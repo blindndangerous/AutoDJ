@@ -952,31 +952,24 @@
       </div>
 
       <!-- Status badge + streamed log output -->
-      <!-- #library-log is a neutral preformatted region rather than an
-           output/status/live region.  #lib-job-status announces throttled
-           start, progress, and finish summaries while the full log remains
-           visually scrollable, keyboard focusable, and available on demand. -->
+      <!-- #library-log is a named region, not an output/status/live
+           region.  #lib-job-status announces the start and the finish once
+           each; the full log stays scrollable, keyboard focusable, and read
+           on demand.  One <div> per line (library-jobs.js adds them), so
+           NVDA's browse mode reads one line per Down Arrow. -->
       <h3 id="library-log-heading">Output</h3>
       <p id="lib-job-status" aria-live="polite" aria-atomic="true">Idle.</p>
       <!-- Ticking clock lives OUTSIDE the live region: aria-live="off"
            plus no role means NVDA never speaks it, so a two-hour index
            run produces one announcement, not one every ten seconds. -->
       <p id="lib-job-elapsed" aria-live="off" aria-hidden="true"></p>
-      <!-- Region role: a bare <pre> maps to the generic role, which may
-           not be named, so aria-labelledby was ignored and the focusable
-           log had no name.  A region is named, not live. -->
-      <pre id="library-log"
+      <!-- Region role: a bare <div> maps to the generic role, which may
+           not be named.  A region is named, not live, and NVDA stays in
+           browse mode when it gets focus. -->
+      <div id="library-log"
            role="region"
            aria-labelledby="library-log-heading"
-           tabindex="0"
-           style="display:block;margin:0;background:#0f1626;color:#cce0ff;
-                  padding:0.5rem;border-radius:var(--radius);
-                  font-family:ui-monospace,Consolas,monospace;
-                  font-size:0.85rem;max-height:16rem;
-                  overflow:auto;white-space:pre-wrap;
-                  border:1px solid var(--border)">
-        <em style="color:var(--text-dim)">No job has run yet.</em>
-      </pre>
+           tabindex="0"><p class="lib-log-empty">No job has run yet.</p></div>
     </details>
   </section>
 

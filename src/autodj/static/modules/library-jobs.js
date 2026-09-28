@@ -9,8 +9,10 @@
 //   starts and once when it ends.  The ticking elapsed counter lives in
 //   the sibling #lib-job-elapsed, which is aria-live="off" and therefore
 //   silent no matter how often it changes.
-//   #library-log is a plain <pre>: it is appended to, never rebuilt, so
-//   a reader who has tabbed into it keeps their reading cursor.
+//   #library-log is a named region, not a live one, holding one block
+//   element per line, so NVDA's browse mode reads it a line per Down
+//   Arrow.  Lines are appended, never rebuilt, so a reader inside the log
+//   keeps their reading cursor.
 
 import {
   captureAuthenticatedRequestEpoch,
@@ -71,10 +73,16 @@ function updateJobStatus(job, jobStatus, jobElapsed) {
 }
 
 function emptyLogNote(libLog) {
-  const note = libLog.ownerDocument.createElement("em");
+  const note = libLog.ownerDocument.createElement("p");
   note.className = "lib-log-empty";
   note.textContent = "No job has run yet.";
   return note;
+}
+
+function logLine(libLog, text) {
+  const line = libLog.ownerDocument.createElement("div");
+  line.textContent = text;
+  return line;
 }
 
 // Index of the first rendered line inside `lines`, or -1 when the two
@@ -118,17 +126,9 @@ function renderLog(libLog, lines) {
     for (let i = 0; i < offset; i++) {
       if (libLog.firstChild) libLog.removeChild(libLog.firstChild);
     }
-    // The surviving first node still carries the separator newline that
-    // joined it to the node just removed.
-    const first = libLog.firstChild;
-    if (first && typeof first.data === "string" && first.data.startsWith("\n")) {
-      first.data = first.data.slice(1);
-    }
   }
   for (let i = kept; i < lines.length; i++) {
-    libLog.appendChild(
-      libLog.ownerDocument.createTextNode((i === 0 ? "" : "\n") + lines[i]),
-    );
+    libLog.appendChild(logLine(libLog, lines[i]));
   }
   _logState.set(libLog, { lines: lines.slice() });
   if (pinned) libLog.scrollTop = libLog.scrollHeight;

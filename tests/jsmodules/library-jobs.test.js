@@ -5,12 +5,21 @@ import { applyLibraryJobState, installLibraryJobs } from
 
 function makeEls() {
   document.body.innerHTML =
-    '<p id="status">Idle.</p><p id="elapsed" aria-live="off"></p><pre id="log"></pre>';
+    '<p id="status">Idle.</p><p id="elapsed" aria-live="off"></p><div id="log"></div>';
   return {
     jobStatus: document.querySelector("#status"),
     jobElapsed: document.querySelector("#elapsed"),
     libLog: document.querySelector("#log"),
   };
+}
+
+// One element per line: NVDA's browse mode reads one per Down Arrow.
+// Text nodes joined by newlines in a <pre> are not a line each for it.
+function logLines(log) {
+  return [...log.childNodes].map((node) => {
+    expect(node.tagName).toBe("DIV");
+    return node.textContent;
+  });
 }
 
 // One live-region announcement == one batch of text landing in the node.
@@ -133,7 +142,7 @@ describe("library job live region", () => {
   it("does not re-announce the start click on the next websocket tick", async () => {
     document.body.innerHTML = `
       <button id="run-index">Index</button>
-      <p id="status">Idle.</p><p id="elapsed" aria-live="off"></p><pre id="log"></pre>`;
+      <p id="status">Idle.</p><p id="elapsed" aria-live="off"></p><div id="log"></div>`;
     const els = {
       runIndex: document.querySelector("#run-index"),
       jobStatus: document.querySelector("#status"),
@@ -172,7 +181,7 @@ describe("library job log", () => {
       library_job: { name: "index", running: true, elapsed_seconds: 1, lines: ["one"] },
     }, els);
     await settle();
-    expect(els.libLog.textContent).toBe("one");
+    expect(logLines(els.libLog)).toEqual(["one"]);
     const afterFirst = seen.records.length;
 
     // Identical payload -> no DOM work at all.
@@ -191,7 +200,7 @@ describe("library job log", () => {
       },
     }, els);
     await settle();
-    expect(els.libLog.textContent).toBe("one\ntwo");
+    expect(logLines(els.libLog)).toEqual(["one", "two"]);
     const appended = seen.records.slice(afterFirst);
     expect(appended).toHaveLength(1);
     expect(appended[0].addedNodes).toHaveLength(1);
@@ -217,7 +226,7 @@ describe("library job log", () => {
     }, els);
     await settle();
 
-    expect(els.libLog.textContent).toBe("b\nc\nd");
+    expect(logLines(els.libLog)).toEqual(["b", "c", "d"]);
     const removed = seen.records.reduce((n, r) => n + r.removedNodes.length, 0);
     const added = seen.records.reduce((n, r) => n + r.addedNodes.length, 0);
     expect(removed).toBe(1);
