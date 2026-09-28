@@ -17,3 +17,12 @@ model_dir = "/srv/autodj/models"
 host = "127.0.0.1"
 port = 8080
 # Supply access_token through AUTODJ_ACCESS_TOKEN; never commit it here.
+# HTTPS for your own domain on the LAN and through a Cloudflare Tunnel with Cloudflare
+# Access (see "HTTPS with your own domain" in docs/operations.md).  The same as
+# `autodj serve --lan --allowed-host autodj.example.net
+# --allowed-origin https://autodj.example.net --ssl-certfile ... --ssl-keyfile ...`:
+# lan = true
+# allowed_hosts = ["autodj.example.net"]
+# allowed_origins = ["https://autodj.example.net"]
+# ssl_certfile = "/srv/autodj/tls/fullchain.pem"
+# ssl_keyfile = "/srv/autodj/tls/privkey.pem"

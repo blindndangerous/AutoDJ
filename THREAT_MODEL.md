@@ -19,10 +19,24 @@ AutoDJ is a single-user local music player with these exposed surfaces:
 
 Cloud sync, multi-user roles, billing, and public Internet hosting are out of scope. Use TLS for any
 network where observers could read HTTP traffic, and terminate it in AutoDJ itself with
-`--ssl-certfile` and `--ssl-keyfile`. A TLS-terminating reverse proxy is not supported: the
-`Secure` cookie flag and the advertised-origin check follow AutoDJ's own TLS setting, so a proxy in
-front of plain HTTP leaves session cookies without `Secure`. For remote access, reach the LAN
-through a private overlay network such as a VPN rather than publishing the port.
+`[server] ssl_certfile` and `ssl_keyfile` (or `--ssl-certfile` and `--ssl-keyfile`). A proxy that
+forwards to AutoDJ over plain HTTP is not supported: the `Secure` cookie flag and the
+advertised-origin check follow AutoDJ's own TLS setting, so such a proxy leaves session cookies
+without `Secure`.
+
+The supported remote setup is a Cloudflare Tunnel that connects to AutoDJ over HTTPS and checks
+its certificate against the domain (`originServerName`), with Cloudflare Access (an email
+one-time PIN policy) in front and `cloudflared` set to refuse requests without a valid Access
+token; see [docs/operations.md](docs/operations.md#https-with-your-own-domain). Access decides
+who reaches AutoDJ at all; AutoDJ's pairing and Host and Origin checks still apply behind it.
+Every tunnelled request arrives from the `cloudflared` machine's address, so the per-address
+pairing lockout counts all remote browsers as one client, and someone who passed Access could
+use up that budget and delay other remote pairings for one code window. Never expose AutoDJ to
+the internet without Access, including through port forwarding.
+
+AutoDJ reloads a renewed certificate and key when their files change, checked every five
+minutes. It copies the pair and test-loads it before putting it into the live TLS context, so a
+half-copied or mismatched pair is refused and the previous certificate keeps being served.
 
 ## CLI risks
 
@@ -87,7 +101,15 @@ the version number; the track count, commit and build time need a session. Unsaf
 endpoints use indexed or validated plain-file allowlists rather than arbitrary filesystem paths.
 The liner fetch and delete endpoints accept only one plain filename with a liner audio extension
 (`.mp3`, `.wav`, `.ogg`, `.m4a`, `.flac`, or `.aac`), so they cannot read or remove configuration,
-databases, or other non-audio files even when those share the liner root.
+databases, or other non-audio files even when those share the liner root. Upload names get the
+same check and may be at most 200 UTF-8 bytes. An upload is written to a hidden
+`.<name>.<random>.part` file in the liner folder, flushed to disk, then renamed over the final
+name; it is refused with 409 when that name exists unless the request asks to replace it. The
+upload body is capped by `[server] liner_upload_max_mib` before any route reads it.
+These checks stop a browser request from reaching outside the liner folder. They do not defend
+the folder against a local process or network-share user who can already write to it: such a
+user can change the liners directly, so AutoDJ uses plain file operations there and does not
+require the folder to be private (a group-writable NAS share works).
 The liner *root directory* comes only from configuration. `/api/playback-settings` rejects
 `liners_folder`, like any other unknown field, with 422 before applying anything, and
 `liners_folder` is not part of the `PlaybackState` schema that `PERSISTED_PLAYBACK_FIELDS`

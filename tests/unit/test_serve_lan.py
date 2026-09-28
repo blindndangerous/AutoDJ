@@ -47,7 +47,6 @@ def _stage(cfg: MagicMock, **overrides: object) -> ServerConfig:
         "allowed_hosts": (),
         "allowed_origins": (),
         "lan": None,
-        "tls": False,
     }
     options.update(overrides)
     return _stage_serve_server(cfg, **options)  # type: ignore[arg-type]
@@ -132,11 +131,64 @@ def test_insecure_lan_alone_still_needs_explicit_lists(tmp_path: Path) -> None:
         _stage(_cfg(tmp_path), host="0.0.0.0", insecure_lan=True)
 
 
+def _tls_files(tmp_path: Path, stem: str = "site") -> dict[str, str]:
+    cert = tmp_path / f"{stem}.pem"
+    key = tmp_path / f"{stem}-key.pem"
+    cert.write_text("cert", encoding="utf-8")
+    key.write_text("key", encoding="utf-8")
+    return {"ssl_certfile": str(cert), "ssl_keyfile": str(key)}
+
+
 def test_explicit_non_loopback_host_is_kept(tmp_path: Path) -> None:
-    staged = _stage(_cfg(tmp_path), lan=True, host="192.168.1.20", tls=True)
+    staged = _stage(_cfg(tmp_path), lan=True, host="192.168.1.20", **_tls_files(tmp_path))
 
     assert staged.host == "192.168.1.20"
     assert "https://192.168.1.20:8080" in (staged.allowed_origins or [])
+
+
+def test_config_lan_with_extra_hosts_and_tls_matches_the_cli_flags(tmp_path: Path) -> None:
+    tls = _tls_files(tmp_path)
+    domain = "autodj.devils-edge.net"
+    from_config = _stage(
+        _cfg(
+            tmp_path,
+            ServerConfig(
+                lan=True,
+                allowed_hosts=[domain],
+                allowed_origins=[f"https://{domain}"],
+                **tls,
+            ),
+        )
+    )
+    from_flags = _stage(
+        _cfg(tmp_path),
+        lan=True,
+        allowed_hosts=(domain,),
+        allowed_origins=(f"https://{domain}",),
+        **tls,
+    )
+
+    assert from_config == from_flags
+    assert f"https://{domain}" in (from_config.allowed_origins or [])
+    assert f"https://{domain}:8080" in (from_config.allowed_origins or [])
+
+
+def test_cli_tls_files_replace_the_configured_pair(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path, ServerConfig(**_tls_files(tmp_path, "config")))
+    cli_files = _tls_files(tmp_path, "cli")
+
+    assert _stage(cfg).ssl_certfile == str(tmp_path / "config.pem")
+    assert _stage(cfg, **cli_files).ssl_keyfile == cli_files["ssl_keyfile"]
+    with pytest.raises(click.ClickException, match="set together"):
+        _stage(cfg, ssl_certfile=cli_files["ssl_certfile"])
+
+
+def test_missing_tls_file_stops_start_up(tmp_path: Path) -> None:
+    tls = _tls_files(tmp_path)
+    Path(tls["ssl_keyfile"]).unlink()
+
+    with pytest.raises(click.ClickException, match="ssl_keyfile is not a file"):
+        _stage(_cfg(tmp_path, ServerConfig(**tls)))
 
 
 def test_unreadable_token_file_stops_start_up(tmp_path: Path) -> None:

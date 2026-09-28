@@ -15,6 +15,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reader follows the published format notes of the serato-tags project and has only been tested
   with hand-made tags, not a real Serato library. Ogg files are skipped because Serato's layout
   there is not documented.
+- `[server] ssl_certfile` and `ssl_keyfile` in `config.toml` or `config.local.toml` turn on HTTPS,
+  like `--ssl-certfile` and `--ssl-keyfile`, which replace them when given. Both must be set, and
+  AutoDJ refuses to start if either file is missing.
+- A renewed certificate is picked up while AutoDJ runs: it checks the certificate and key files
+  every five minutes and new connections get the new certificate, so a Let's Encrypt renewal
+  needs no restart. A half-copied or mismatched pair is refused with a warning and the old
+  certificate stays in use.
+- The operations guide has a new section, "HTTPS with your own domain": a Let's Encrypt
+  certificate through certbot's Cloudflare DNS plugin, copying it on renewal, home DNS so
+  traffic stays on the LAN, and a Cloudflare Tunnel with Cloudflare Access for remote use.
 
 ### Changed
 
@@ -37,6 +47,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   restored index replaces every older index generation. It no longer checks free space or rolls
   back a half-finished restore; if a restore is interrupted, run it again. Restore still only
   accepts a backup made by the same major and minor version, so a 0.18 backup cannot be restored.
+- Voice liner uploads and deletes now work in a liners folder that other users or a group can
+  write to, such as a shared NAS folder; they used to be refused. A liner file name can be at most
+  200 bytes long.
 
 ### Removed
 

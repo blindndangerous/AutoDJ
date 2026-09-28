@@ -40,6 +40,7 @@ import json
 import logging
 import re
 import shutil
+import ssl
 import stat
 import threading
 import time
@@ -95,6 +96,7 @@ from autodj.stream_secret import (
     paired_devices_path,
     stream_secret_path,
 )
+from autodj.tls import CertificateReloader
 from autodj.version import REQUIRED_BUILT_ASSETS, current_version, stale_bundle_reason
 
 if TYPE_CHECKING:
@@ -1766,7 +1768,6 @@ def create_app(
         from autodj.liner_files import (
             InvalidLinerName,
             LinerConflictError,
-            LinerStorageUnsupportedError,
             LinerTooLargeError,
             store_liner_upload,
         )
@@ -1787,18 +1788,12 @@ def create_app(
             raise HTTPException(status_code=409, detail="Liner already exists") from exc
         except LinerTooLargeError as exc:
             raise HTTPException(status_code=413, detail=str(exc)) from exc
-        except LinerStorageUnsupportedError as exc:
-            raise HTTPException(status_code=503, detail="Liner storage is unavailable") from exc
         return {"filename": target.name, "size": size}
 
     @app.delete("/api/liners/file/{name}")
     async def api_liner_delete(name: str) -> dict[str, str]:
         """Remove one validated plain liner file."""
-        from autodj.liner_files import (
-            InvalidLinerName,
-            LinerStorageUnsupportedError,
-            delete_liner_file,
-        )
+        from autodj.liner_files import InvalidLinerName, delete_liner_file
 
         try:
             await asyncio.to_thread(delete_liner_file, _resolve_liner_folder(), name)
@@ -1806,8 +1801,6 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail="Liner not found") from exc
-        except LinerStorageUnsupportedError as exc:
-            raise HTTPException(status_code=503, detail="Liner storage is unavailable") from exc
         except OSError as exc:
             raise HTTPException(status_code=500, detail="Unable to delete liner") from exc
         return {"deleted": name}
@@ -1815,11 +1808,7 @@ def create_app(
     @app.get("/api/liners/file/{name}")
     async def api_liner_file(name: str) -> FileResponse:
         """Serve one validated plain liner file."""
-        from autodj.liner_files import (
-            InvalidLinerName,
-            LinerStorageUnsupportedError,
-            open_liner_file,
-        )
+        from autodj.liner_files import InvalidLinerName, open_liner_file
 
         folder = _resolve_liner_folder()
         try:
@@ -1828,8 +1817,6 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail="Liner not found") from exc
-        except LinerStorageUnsupportedError as exc:
-            raise HTTPException(status_code=503, detail="Liner storage is unavailable") from exc
         await asyncio.to_thread(opened.file.close)
         return FileResponse(folder / name, stat_result=opened.stat_result)
 
@@ -2370,8 +2357,6 @@ def serve(
     anchor_to_seed: bool = False,
     no_playback: bool = False,
     stream: bool = False,
-    ssl_certfile: str | None = None,
-    ssl_keyfile: str | None = None,
     lan_configured_hosts: list[str] | None = None,
 ) -> None:
     """Start the Player thread and the FastAPI/uvicorn web server.
@@ -2400,6 +2385,10 @@ def serve(
             detection was merged in; inside a container these are the only
             addresses printed, because container addresses are unreachable.
 
+    HTTPS is on when ``cfg.server.ssl_certfile`` and ``ssl_keyfile`` are set;
+    a :class:`~autodj.tls.CertificateReloader` then loads renewed files into
+    the running server.
+
     Raises:
         SystemExit: *stream* is set and the stream secret file cannot be
             read or written.
@@ -2412,7 +2401,9 @@ def serve(
     port = cfg.server.port if port is None else port
     staged_server = replace(cfg.server, host=host, port=port)
     validate_server_exposure(staged_server)
-    secure_cookie = bool(ssl_certfile and ssl_keyfile)
+    ssl_certfile = staged_server.ssl_certfile
+    ssl_keyfile = staged_server.ssl_keyfile
+    secure_cookie = ssl_certfile is not None
     advertised_origin = _advertised_server_origin(
         SecurityPolicy(staged_server, secure_cookie=secure_cookie)
     )
@@ -2542,15 +2533,31 @@ def serve(
     }
     if stream:
         uvicorn_kwargs["timeout_graceful_shutdown"] = _STREAM_SHUTDOWN_GRACE_SECONDS
-    if (
-        ssl_certfile and ssl_keyfile
-    ):  # pragma: no cover — HTTPS path requires real cert files; CI runs HTTP
-        uvicorn_kwargs["ssl_certfile"] = ssl_certfile
-        uvicorn_kwargs["ssl_keyfile"] = ssl_keyfile
+    reloaders: list[CertificateReloader] = []
+    if ssl_certfile is not None and ssl_keyfile is not None:
+        certfile, keyfile = ssl_certfile, ssl_keyfile
+
+        def _watched_ssl_context(
+            _config: object, default_factory: Callable[[], ssl.SSLContext]
+        ) -> ssl.SSLContext:
+            """Build uvicorn's context and reload renewed certificate files into it."""
+            context = default_factory()
+            reloader = CertificateReloader(context, certfile, keyfile)
+            reloader.start()
+            reloaders.append(reloader)
+            return context
+
+        uvicorn_kwargs["ssl_certfile"] = certfile
+        uvicorn_kwargs["ssl_keyfile"] = keyfile
+        uvicorn_kwargs["ssl_context_factory"] = _watched_ssl_context
     # uvicorn normally swallows SIGINT and exits cleanly via the
     # FastAPI lifespan, but a second Ctrl+C (or a SIGINT received
     # mid-asyncio-teardown on Windows) can re-raise.  Suppress so the
     # CLI sees a clean return; the lifespan already logged
     # "Server stopped cleanly."
-    with contextlib.suppress(KeyboardInterrupt):
-        uvicorn.run(app, **uvicorn_kwargs)
+    try:
+        with contextlib.suppress(KeyboardInterrupt):
+            uvicorn.run(app, **uvicorn_kwargs)
+    finally:
+        for reloader in reloaders:
+            reloader.stop()

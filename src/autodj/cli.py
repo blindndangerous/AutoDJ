@@ -419,7 +419,8 @@ def _stage_serve_server(
     allowed_hosts: tuple[str, ...],
     allowed_origins: tuple[str, ...],
     lan: bool | None,
-    tls: bool,
+    ssl_certfile: str | None = None,
+    ssl_keyfile: str | None = None,
 ) -> ServerConfig:
     """Return the server settings ``serve`` will use, after CLI overrides and ``--lan``.
 
@@ -436,7 +437,9 @@ def _stage_serve_server(
         allowed_hosts: ``--allowed-host`` values; empty keeps the config list.
         allowed_origins: ``--allowed-origin`` values; empty keeps the config list.
         lan: ``--lan``, or ``None`` to use ``[server] lan``.
-        tls: Both TLS files were given.
+        ssl_certfile: ``--ssl-certfile``, or ``None``.
+        ssl_keyfile: ``--ssl-keyfile``, or ``None``.  Giving either TLS option
+            replaces both ``[server] ssl_certfile`` and ``ssl_keyfile``.
 
     Raises:
         click.ClickException: The settings are invalid or unsafe, or the saved
@@ -449,6 +452,7 @@ def _stage_serve_server(
     from autodj.stream_secret import access_token_path
 
     server = cfg.server
+    cli_tls = ssl_certfile is not None or ssl_keyfile is not None
     try:
         staged = replace(
             server,
@@ -461,9 +465,13 @@ def _stage_serve_server(
             allowed_origins=(
                 server.allowed_origins if not allowed_origins else list(allowed_origins)
             ),
+            ssl_certfile=ssl_certfile if cli_tls else server.ssl_certfile,
+            ssl_keyfile=ssl_keyfile if cli_tls else server.ssl_keyfile,
         )
         if staged.lan:
-            staged = lan_server_config(staged, tls=tls, token_path=access_token_path(cfg))
+            staged = lan_server_config(
+                staged, tls=staged.ssl_certfile is not None, token_path=access_token_path(cfg)
+            )
         validate_server_exposure(staged)
     except AccessTokenError as exc:
         raise click.ClickException(f"LAN mode cannot start: {exc}") from exc
@@ -499,16 +507,10 @@ def _print_serve_url_banner(
     console_: Console,
     host: str,
     port: int,
-    ssl_certfile: str | None,
-    ssl_keyfile: str | None,
+    tls: bool,
 ) -> str:  # pragma: no cover -- terminal banner
     """Print the web-UI URL + reachability hint; return the URL."""
-    if (ssl_certfile and not ssl_keyfile) or (ssl_keyfile and not ssl_certfile):
-        console_.print(
-            "[bold red]TLS error:[/] --ssl-certfile and --ssl-keyfile must be supplied together.",
-        )
-        sys.exit(1)
-    scheme = "https" if (ssl_certfile and ssl_keyfile) else "http"
+    scheme = "https" if tls else "http"
     url = f"{scheme}://{host}:{port}"
     console_.print(f"  Web UI  : [link={url}]{url}[/link]")
     if scheme == "https":
@@ -1520,7 +1522,8 @@ def cmd_analyse(
     help=(
         "Path to TLS certificate (PEM).  When combined with --ssl-keyfile, "
         "starts uvicorn in HTTPS mode — required for AudioWorklet on "
-        "non-localhost hosts.  Generate via mkcert or any internal CA."
+        "non-localhost hosts.  Overrides [server] ssl_certfile; renewed files "
+        "are picked up without a restart."
     ),
 )
 @click.option(
@@ -1600,6 +1603,8 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
             insecure_lan is not None,
             bool(allowed_hosts),
             bool(allowed_origins),
+            ssl_certfile is not None,
+            ssl_keyfile is not None,
         )
     )
     staged_server = _stage_serve_server(
@@ -1611,7 +1616,8 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
         allowed_hosts=allowed_hosts,
         allowed_origins=allowed_origins,
         lan=lan,
-        tls=bool(ssl_certfile and ssl_keyfile),
+        ssl_certfile=ssl_certfile,
+        ssl_keyfile=ssl_keyfile,
     )
     # Captured before cfg.server is replaced by the merged, detected lists.
     lan_configured_hosts = _configured_allowed_hosts(cfg, allowed_hosts)
@@ -1653,7 +1659,7 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
         discovery_every=discovery_every,
     )
     seed_entry = _resolve_seed(sim, cfg, seed, console, interactive=False)
-    url = _print_serve_url_banner(console, host, port, ssl_certfile, ssl_keyfile)
+    url = _print_serve_url_banner(console, host, port, staged_server.ssl_certfile is not None)
     cfg.djmix = staged_override_cfg.djmix
     cfg.playback = staged_override_cfg.playback
     cfg.transitions = staged_override_cfg.transitions
@@ -1691,8 +1697,6 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
             anchor_to_seed=bool(anchor_to_seed),
             no_playback=not server_audio,
             stream=cfg.stream.enabled,
-            ssl_certfile=ssl_certfile,
-            ssl_keyfile=ssl_keyfile,
             lan_configured_hosts=lan_configured_hosts,
         )
     except KeyboardInterrupt:

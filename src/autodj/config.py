@@ -784,7 +784,7 @@ def _canonicalize_allowed_origins(values: object) -> list[str] | None:
 
 @dataclass
 class ServerConfig(_Section):
-    """Web-server bind, request policy, session, and upload limits."""
+    """Web-server bind, request policy, session, TLS files, and upload limits."""
 
     SECTION: ClassVar[str] = "server"
 
@@ -797,9 +797,20 @@ class ServerConfig(_Section):
     allowed_origins: list[str] | None = None
     session_ttl_seconds: int = 90 * 24 * 60 * 60
     liner_upload_max_bytes: int = 50 * _MIB
+    ssl_certfile: str | None = None
+    ssl_keyfile: str | None = None
 
     def __post_init__(self) -> None:
         """Normalize and validate server settings after initialization."""
+        for name in ("ssl_certfile", "ssl_keyfile"):
+            value = getattr(self, name)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise ValueError(f"server.{name} must be a nonempty path")
+        if (self.ssl_certfile is None) != (self.ssl_keyfile is None):
+            raise ValueError(
+                "server.ssl_certfile and server.ssl_keyfile (or --ssl-certfile and "
+                "--ssl-keyfile) must be set together"
+            )
         self.host = _canonicalize_host(
             self.host,
             field_name="server.host",
@@ -883,8 +894,15 @@ def is_loopback_bind(host: str) -> bool:
 
 
 def validate_server_exposure(cfg: ServerConfig) -> None:
-    """Normalize mutable overrides and reject unsafe bind configurations."""
+    """Normalize mutable overrides and reject unsafe bind configurations.
+
+    Also requires the TLS certificate and key files, when set, to exist.
+    """
     cfg.__post_init__()
+    for name in ("ssl_certfile", "ssl_keyfile"):
+        value = getattr(cfg, name)
+        if value is not None and not Path(value).is_file():
+            raise ValueError(f"server.{name} is not a file: {value}")
     loopback = is_loopback_bind(cfg.host)
     # Sentinel comparison enforces explicit allowlists; it does not bind a socket.
     if cfg.host in {"0.0.0.0", "::"} and (  # nosec B104
