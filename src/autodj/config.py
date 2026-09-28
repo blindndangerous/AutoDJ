@@ -18,10 +18,10 @@ import re
 import tomllib
 from collections.abc import Callable, Iterable, Mapping
 from copy import deepcopy
-from dataclasses import dataclass, field, fields
+from dataclasses import MISSING, dataclass, field, fields
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar, Self
 from urllib.parse import urlsplit
 
 from autodj.liners import LINER_PICK_MODES
@@ -35,8 +35,40 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
+class _Section:
+    """Build a section dataclass from its TOML table.
+
+    Each subclass names its table in ``SECTION``; its dataclass fields are
+    the accepted keys and ``__post_init__`` coerces and range-checks them.
+    """
+
+    SECTION: ClassVar[str]
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> Self:
+        """Construct the section from a raw TOML table.
+
+        Raises:
+            TypeError: If *data* is not a table, or a value has the wrong type.
+            KeyError: If a required key is missing.
+            ValueError: On an unknown key or an invalid value.
+        """
+        if not isinstance(data, Mapping):
+            raise TypeError(f"{cls.SECTION} section must be a table")
+        _reject_unknown_keys(cls.SECTION, data, _field_names(cls))
+        for f in fields(cls):  # type: ignore[arg-type]
+            if f.name not in data and f.default is MISSING and f.default_factory is MISSING:
+                raise KeyError(f"config.toml [{cls.SECTION}] section is missing {f.name!r}")
+        return cls(**data)
+
+
+def _optional(convert: Callable[[Any], Any], value: Any) -> Any:
+    """Return ``convert(value)``, or ``None`` when *value* is ``None``."""
+    return None if value is None else convert(value)
+
+
 @dataclass
-class LibraryConfig:
+class LibraryConfig(_Section):
     """Settings for the music library location and format filtering.
 
     Attributes:
@@ -48,37 +80,20 @@ class LibraryConfig:
         supported_formats: List of audio file extensions to index (without dots).
     """
 
+    SECTION: ClassVar[str] = "library"
+
     music_dir: Path
-    beets_db: Path | None
-    supported_formats: list[str]
+    beets_db: Path | None = None
+    supported_formats: list[str] = field(default_factory=lambda: ["mp3", "flac", "m4a"])
 
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> LibraryConfig:
-        """Construct a LibraryConfig from a raw TOML section dict.
-
-        Args:
-            data: Dictionary of keys from the ``[library]`` TOML section.
-
-        Returns:
-            A populated LibraryConfig instance.
-
-        Raises:
-            KeyError: If ``music_dir`` is not present.
-            ValueError: On an unknown key.
-        """
-        _reject_unknown_keys("library", data, _field_names(cls))
-        if "music_dir" not in data:
-            raise KeyError("config.toml [library] section is missing 'music_dir'")
-        beets_raw = data.get("beets_db")
-        return cls(
-            music_dir=Path(data["music_dir"]).expanduser(),
-            beets_db=Path(beets_raw).expanduser() if beets_raw else None,
-            supported_formats=data.get("supported_formats", ["mp3", "flac", "m4a"]),
-        )
+    def __post_init__(self) -> None:
+        """Expand ``~`` in the paths; an empty ``beets_db`` means none."""
+        self.music_dir = Path(self.music_dir).expanduser()
+        self.beets_db = Path(self.beets_db).expanduser() if self.beets_db else None
 
 
 @dataclass
-class IndexConfig:
+class IndexConfig(_Section):
     """Settings for the FAISS index storage locations.
 
     AutoDJ supports **named indexes** so you can keep multiple curated
@@ -96,38 +111,28 @@ class IndexConfig:
             ``--name`` on any CLI subcommand.
     """
 
+    SECTION: ClassVar[str] = "index"
+
     index_dir: Path = field(default_factory=lambda: Path("index"))
     model_dir: Path = field(default_factory=lambda: Path("models"))
     name: str = "default"
+
+    def __post_init__(self) -> None:
+        """Expand the paths and validate the index name.
+
+        Raises:
+            ValueError: If ``name`` contains path separators / traversal /
+                leading dot — names are bare identifiers, not paths.
+        """
+        self.index_dir = Path(self.index_dir).expanduser()
+        self.model_dir = Path(self.model_dir).expanduser()
+        self.name = str(self.name).strip() or "default"
+        validate_index_name(self.name)
 
     @property
     def active_dir(self) -> Path:
         """Resolved location of the active named index."""
         return self.index_dir / self.name
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> IndexConfig:
-        """Construct an IndexConfig from a raw TOML section dict.
-
-        Args:
-            data: Dictionary of keys from the ``[index]`` TOML section.
-
-        Returns:
-            A populated IndexConfig instance with defaults applied for missing keys.
-
-        Raises:
-            ValueError: On an unknown key, or if ``name`` contains path
-                separators / traversal / leading dot — names are bare
-                identifiers, not paths.
-        """
-        _reject_unknown_keys("index", data, _field_names(cls))
-        name = str(data.get("name", "default")).strip() or "default"
-        validate_index_name(name)
-        return cls(
-            index_dir=Path(data.get("index_dir", "index")).expanduser(),
-            model_dir=Path(data.get("model_dir", "models")).expanduser(),
-            name=name,
-        )
 
 
 def validate_index_name(name: str) -> None:
@@ -230,7 +235,7 @@ _validate_transition_mode = partial(
 
 
 @dataclass
-class PlaybackConfig:
+class PlaybackConfig(_Section):
     """Settings for audio playback behaviour.
 
     Attributes:
@@ -252,6 +257,8 @@ class PlaybackConfig:
             progressively attenuated during an EQ-ducked crossfade.  Default
             180 Hz covers kick drums and sub-bass.
     """
+
+    SECTION: ClassVar[str] = "playback"
 
     crossfade_seconds: float = 3.0
     fade_in_seconds: float = 3.0
@@ -383,112 +390,73 @@ class PlaybackConfig:
     # exhaust a small machine's memory.  Browser playback has no limit.
     server_max_track_minutes: float = 15.0
 
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> PlaybackConfig:
-        """Construct a PlaybackConfig from a raw TOML section dict.
-
-        Args:
-            data: Dictionary of keys from the ``[playback]`` TOML section.
-
-        Returns:
-            A populated PlaybackConfig instance.
+    def __post_init__(self) -> None:
+        """Coerce the TOML values and range-check them.
 
         Raises:
-            ValueError: On an unknown key, or if ``crossfade_seconds`` or
-                ``no_repeat_window`` is negative.
+            TypeError: If ``server_max_track_minutes`` is not a number.
+            ValueError: If ``crossfade_seconds``, ``fade_in_seconds`` or
+                ``no_repeat_window`` is negative, a choice is not one of its
+                options, or ``server_max_track_minutes`` is outside 1-600.
         """
-        _reject_unknown_keys("playback", data, _field_names(cls))
-        crossfade = float(data.get("crossfade_seconds", 3.0))
-        no_repeat = int(data.get("no_repeat_window", 500))
-        artist_repeat = int(data.get("artist_repeat_window", 3))
-
-        if crossfade < 0:
-            raise ValueError(f"playback.crossfade_seconds must be >= 0, got {crossfade}")
-        if no_repeat < 0:
-            raise ValueError(f"playback.no_repeat_window must be >= 0, got {no_repeat}")
-
-        history_raw = data.get("history_file")
-        discovery_every_raw = data.get("discovery_every")
-
-        fade_in = float(data.get("fade_in_seconds", 3.0))
-        if fade_in < 0:
-            raise ValueError(f"playback.fade_in_seconds must be >= 0, got {fade_in}")
-        max_minutes = data.get("server_max_track_minutes", 15.0)
+        self.crossfade_seconds = float(self.crossfade_seconds)
+        if self.crossfade_seconds < 0:
+            raise ValueError(
+                f"playback.crossfade_seconds must be >= 0, got {self.crossfade_seconds}"
+            )
+        self.no_repeat_window = int(self.no_repeat_window)
+        if self.no_repeat_window < 0:
+            raise ValueError(f"playback.no_repeat_window must be >= 0, got {self.no_repeat_window}")
+        self.fade_in_seconds = float(self.fade_in_seconds)
+        if self.fade_in_seconds < 0:
+            raise ValueError(f"playback.fade_in_seconds must be >= 0, got {self.fade_in_seconds}")
+        max_minutes = self.server_max_track_minutes
         if isinstance(max_minutes, bool) or not isinstance(max_minutes, int | float):
             raise TypeError("playback.server_max_track_minutes must be a number")
         if not 1 <= max_minutes <= 600:
             raise ValueError(
                 f"playback.server_max_track_minutes must be between 1 and 600, got {max_minutes}"
             )
-
-        return cls(
-            crossfade_seconds=crossfade,
-            fade_in_seconds=fade_in,
-            no_repeat_window=no_repeat,
-            artist_repeat_window=max(0, artist_repeat),
-            history_file=Path(history_raw).expanduser() if history_raw else None,
-            discovery_every=int(discovery_every_raw) if discovery_every_raw is not None else None,
-            crossfade_eq_duck=bool(data.get("crossfade_eq_duck", False)),
-            crossfade_bass_cutoff_hz=float(data.get("crossfade_bass_cutoff_hz", 180.0)),
-            transition_mode=_validate_transition_mode(
-                str(data.get("transition_mode", "full_intro_outro")),
-            ),
-            post_queue_seed=_validate_post_queue_seed(
-                str(data.get("post_queue_seed", "last_queued")),
-            ),
-            pick_top_k=max(1, int(data.get("pick_top_k", 1))),
-            pick_temperature=max(0.0, float(data.get("pick_temperature", 0.3))),
-            key_notation=_validate_key_notation(
-                str(data.get("key_notation", "camelot")),
-            ),
-            key_prefer_flats=bool(data.get("key_prefer_flats", False)),
-            show_lyrics=bool(data.get("show_lyrics", True)),
-            prefetch_next_track=bool(data.get("prefetch_next_track", True)),
-            silence_trigger_crossfade=bool(
-                data.get("silence_trigger_crossfade", True),
-            ),
-            audio_device=data.get("audio_device") or None,
-            enable_daypart=bool(data.get("enable_daypart", False)),
-            enable_mood_arc=bool(data.get("enable_mood_arc", False)),
-            mood_arc_hours=max(0.25, float(data.get("mood_arc_hours", 3.0))),
-            import_external_cues=bool(data.get("import_external_cues", True)),
-            beat_sync_fx=bool(data.get("beat_sync_fx", True)),
-            key_sync_fx=bool(data.get("key_sync_fx", True)),
-            beatmatch_on_skip=bool(data.get("beatmatch_on_skip", False)),
-            liners_enabled=bool(data.get("liners_enabled", False)),
-            liners_folder=(data.get("liners_folder") or None),
-            liners_every_n_songs=(
-                int(data["liners_every_n_songs"])
-                if data.get("liners_every_n_songs") is not None
-                else None
-            ),
-            liners_every_minutes=(
-                float(data["liners_every_minutes"])
-                if data.get("liners_every_minutes") is not None
-                else None
-            ),
-            liners_random_min_minutes=(
-                float(data["liners_random_min_minutes"])
-                if data.get("liners_random_min_minutes") is not None
-                else None
-            ),
-            liners_random_max_minutes=(
-                float(data["liners_random_max_minutes"])
-                if data.get("liners_random_max_minutes") is not None
-                else None
-            ),
-            liners_pick_mode=_one_of(
-                str(data.get("liners_pick_mode", "random")),
-                LINER_PICK_MODES,
-                "playback.liners_pick_mode",
-            ),
-            liners_duck_db=float(data.get("liners_duck_db", -12.0)),
-            server_max_track_minutes=float(max_minutes),
+        self.server_max_track_minutes = float(max_minutes)
+        self.artist_repeat_window = max(0, int(self.artist_repeat_window))
+        self.history_file = Path(self.history_file).expanduser() if self.history_file else None
+        self.discovery_every = _optional(int, self.discovery_every)
+        self.crossfade_bass_cutoff_hz = float(self.crossfade_bass_cutoff_hz)
+        self.transition_mode = _validate_transition_mode(str(self.transition_mode))
+        self.post_queue_seed = _validate_post_queue_seed(str(self.post_queue_seed))
+        self.pick_top_k = max(1, int(self.pick_top_k))
+        self.pick_temperature = max(0.0, float(self.pick_temperature))
+        self.key_notation = _validate_key_notation(str(self.key_notation))
+        self.audio_device = self.audio_device or None
+        self.mood_arc_hours = max(0.25, float(self.mood_arc_hours))
+        for name in (
+            "crossfade_eq_duck",
+            "key_prefer_flats",
+            "show_lyrics",
+            "prefetch_next_track",
+            "silence_trigger_crossfade",
+            "enable_daypart",
+            "enable_mood_arc",
+            "import_external_cues",
+            "beat_sync_fx",
+            "key_sync_fx",
+            "beatmatch_on_skip",
+            "liners_enabled",
+        ):
+            setattr(self, name, bool(getattr(self, name)))
+        self.liners_folder = self.liners_folder or None
+        self.liners_every_n_songs = _optional(int, self.liners_every_n_songs)
+        self.liners_every_minutes = _optional(float, self.liners_every_minutes)
+        self.liners_random_min_minutes = _optional(float, self.liners_random_min_minutes)
+        self.liners_random_max_minutes = _optional(float, self.liners_random_max_minutes)
+        self.liners_pick_mode = _one_of(
+            str(self.liners_pick_mode), LINER_PICK_MODES, "playback.liners_pick_mode"
         )
+        self.liners_duck_db = float(self.liners_duck_db)
 
 
 @dataclass
-class DjMixConfig:
+class DjMixConfig(_Section):
     """Settings for the DJ-grade mixing layer (beatmatch, phrase align, sweep, harmony).
 
     Every option defaults to off so the basic crossfade behaviour is
@@ -520,6 +488,8 @@ class DjMixConfig:
             :func:`autodj.dj_meta.harmonic_compatible` for the others.
     """
 
+    SECTION: ClassVar[str] = "djmix"
+
     beatmatch: bool = False
     beatmatch_max_stretch: float = 0.08
     outro_intro_align: bool = False
@@ -529,42 +499,37 @@ class DjMixConfig:
     filter_sweep_floor_hz: float = 250.0
     harmonic_mode: str = "off"
 
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> DjMixConfig:
-        """Construct a DjMixConfig from a raw TOML section dict.
+    def __post_init__(self) -> None:
+        """Coerce the TOML values and validate ``harmonic_mode``.
 
         Raises:
-            ValueError: On an unknown key, or if ``harmonic_mode`` is not one
-                of :data:`autodj.dj_meta.HARMONIC_MODES`.
+            ValueError: If ``harmonic_mode`` is not one of
+                :data:`autodj.dj_meta.HARMONIC_MODES`.
         """
-        _reject_unknown_keys("djmix", data, _field_names(cls))
-        harmonic_mode = data.get("harmonic_mode", "off")
-        if isinstance(harmonic_mode, str):
-            harmonic_mode = harmonic_mode.lower()
-        if harmonic_mode != "off":
+        if isinstance(self.harmonic_mode, str):
+            self.harmonic_mode = self.harmonic_mode.lower()
+        if self.harmonic_mode != "off":
             # dj_meta pulls in numpy, so the default "off" is accepted
             # without importing it; config loading stays light for doctor.
             from autodj.dj_meta import HARMONIC_MODES
 
-            if not isinstance(harmonic_mode, str):
+            if not isinstance(self.harmonic_mode, str):
                 raise ValueError(
-                    f"djmix.harmonic_mode must be one of {HARMONIC_MODES}, got {harmonic_mode!r}"
+                    f"djmix.harmonic_mode must be one of {HARMONIC_MODES}, "
+                    f"got {self.harmonic_mode!r}"
                 )
-            _one_of(harmonic_mode, HARMONIC_MODES, "djmix.harmonic_mode")
-        return cls(
-            beatmatch=bool(data.get("beatmatch", False)),
-            beatmatch_max_stretch=float(data.get("beatmatch_max_stretch", 0.08)),
-            outro_intro_align=bool(data.get("outro_intro_align", False)),
-            phrase_align=bool(data.get("phrase_align", False)),
-            phrase_bars=int(data.get("phrase_bars", 8)),
-            filter_sweep=bool(data.get("filter_sweep", False)),
-            filter_sweep_floor_hz=float(data.get("filter_sweep_floor_hz", 250.0)),
-            harmonic_mode=harmonic_mode,
-        )
+            _one_of(self.harmonic_mode, HARMONIC_MODES, "djmix.harmonic_mode")
+        self.beatmatch = bool(self.beatmatch)
+        self.beatmatch_max_stretch = float(self.beatmatch_max_stretch)
+        self.outro_intro_align = bool(self.outro_intro_align)
+        self.phrase_align = bool(self.phrase_align)
+        self.phrase_bars = int(self.phrase_bars)
+        self.filter_sweep = bool(self.filter_sweep)
+        self.filter_sweep_floor_hz = float(self.filter_sweep_floor_hz)
 
 
 @dataclass
-class TransitionsConfig:
+class TransitionsConfig(_Section):
     """Settings for transition effects layered onto every crossfade.
 
     Attributes:
@@ -580,25 +545,19 @@ class TransitionsConfig:
             the outer mix on top of that.
     """
 
+    SECTION: ClassVar[str] = "transitions"
+
     effect: str = "none"
     wet_mix: float = 1.0
 
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> TransitionsConfig:
-        """Construct a TransitionsConfig from a raw TOML section dict.
-
-        Raises:
-            ValueError: On an unknown key.
-        """
-        _reject_unknown_keys("transitions", data, _field_names(cls))
-        return cls(
-            effect=str(data.get("effect", "none")).lower(),
-            wet_mix=float(data.get("wet_mix", 1.0)),
-        )
+    def __post_init__(self) -> None:
+        """Lower-case the effect name and coerce the wet mix."""
+        self.effect = str(self.effect).lower()
+        self.wet_mix = float(self.wet_mix)
 
 
 @dataclass
-class ReplayGainConfig:
+class ReplayGainConfig(_Section):
     """Settings for ReplayGain loudness normalisation.
 
     Attributes:
@@ -613,27 +572,21 @@ class ReplayGainConfig:
             clipping.  Lower it (e.g. ``0.95``) for extra headroom.
     """
 
+    SECTION: ClassVar[str] = "replaygain"
+
     enabled: bool = False
     target_db: float = -14.0
     max_clip_safe_gain: float = 1.0
 
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> ReplayGainConfig:
-        """Construct a ReplayGainConfig from a raw TOML section dict.
-
-        Raises:
-            ValueError: On an unknown key.
-        """
-        _reject_unknown_keys("replaygain", data, _field_names(cls))
-        return cls(
-            enabled=bool(data.get("enabled", False)),
-            target_db=float(data.get("target_db", -14.0)),
-            max_clip_safe_gain=float(data.get("max_clip_safe_gain", 1.0)),
-        )
+    def __post_init__(self) -> None:
+        """Coerce the TOML values."""
+        self.enabled = bool(self.enabled)
+        self.target_db = float(self.target_db)
+        self.max_clip_safe_gain = float(self.max_clip_safe_gain)
 
 
 @dataclass
-class ModelConfig:
+class ModelConfig(_Section):
     """Settings for the MuQ embedding model.
 
     Attributes:
@@ -643,12 +596,14 @@ class ModelConfig:
             When set, ``name`` is ignored and the model is loaded from disk.
     """
 
+    SECTION: ClassVar[str] = "model"
+
     name: str = "OpenMuQ/MuQ-large-msd-iter"
     revision: str = "main"
     manual_path: Path | None = None
 
     def __post_init__(self) -> None:
-        """Validate the configured model revision."""
+        """Validate the configured model revision; an empty ``manual_path`` means none."""
         if (
             not isinstance(self.revision, str)
             or not self.revision
@@ -657,27 +612,7 @@ class ModelConfig:
             raise ValueError(
                 "model.revision must be a non-empty string without surrounding whitespace"
             )
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> ModelConfig:
-        """Construct a ModelConfig from a raw TOML section dict.
-
-        Args:
-            data: Dictionary of keys from the ``[model]`` TOML section.
-
-        Returns:
-            A populated ModelConfig instance.
-
-        Raises:
-            ValueError: On an unknown key.
-        """
-        _reject_unknown_keys("model", data, _field_names(cls))
-        manual_raw = data.get("manual_path")
-        return cls(
-            name=data.get("name", "OpenMuQ/MuQ-large-msd-iter"),
-            revision=data.get("revision", "main"),
-            manual_path=Path(manual_raw) if manual_raw else None,
-        )
+        self.manual_path = Path(self.manual_path) if self.manual_path else None
 
 
 MIN_ACCESS_TOKEN_BYTES = 32
@@ -843,8 +778,10 @@ def _canonicalize_allowed_origins(values: object) -> list[str] | None:
 
 
 @dataclass
-class ServerConfig:
+class ServerConfig(_Section):
     """Web-server bind, request policy, session, and upload limits."""
+
+    SECTION: ClassVar[str] = "server"
 
     host: str = "127.0.0.1"
     port: int = 8080
@@ -904,35 +841,22 @@ class ServerConfig:
         return [canonicalize_allowed_origin(f"http://{rendered_host}:{self.port}")]
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> ServerConfig:
-        """Construct server settings from a raw configuration section.
+    def from_dict(cls, data: Mapping[str, Any]) -> Self:
+        """Construct server settings; the upload cap is written in MiB, stored in bytes.
 
         Raises:
             TypeError: If *data* is not a table.
             ValueError: On an unknown key or an out-of-range value.
         """
-        if not isinstance(data, dict):
+        if not isinstance(data, Mapping):
             raise TypeError("server section must be a table")
-        # The upload cap is written in MiB but stored in bytes.
-        _reject_unknown_keys(
-            "server",
-            data,
-            (_field_names(cls) - {"liner_upload_max_bytes"}) | {"liner_upload_max_mib"},
-        )
-        max_mib = _require_int(data.get("liner_upload_max_mib", 50), "server.liner_upload_max_mib")
+        data = dict(data)
+        if "liner_upload_max_bytes" in data:
+            raise ValueError("unknown [server] keys: ['liner_upload_max_bytes']")
+        max_mib = _require_int(data.pop("liner_upload_max_mib", 50), "server.liner_upload_max_mib")
         if not 1 <= max_mib <= MAX_LINER_UPLOAD_MIB:
             raise ValueError("server.liner_upload_max_mib must be between 1 and 1024")
-        return cls(
-            host=data.get("host", "127.0.0.1"),
-            port=data.get("port", 8080),
-            access_token=data.get("access_token"),
-            insecure_lan=data.get("insecure_lan", False),
-            lan=data.get("lan", False),
-            allowed_hosts=data.get("allowed_hosts"),
-            allowed_origins=data.get("allowed_origins"),
-            session_ttl_seconds=data.get("session_ttl_seconds", 90 * 24 * 60 * 60),
-            liner_upload_max_bytes=max_mib * _MIB,
-        )
+        return super().from_dict({**data, "liner_upload_max_bytes": max_mib * _MIB})
 
 
 def is_loopback_bind(host: str) -> bool:
@@ -974,7 +898,7 @@ def validate_server_exposure(cfg: ServerConfig) -> None:
 
 
 @dataclass
-class HuggingFaceConfig:
+class HuggingFaceConfig(_Section):
     """Settings for HuggingFace Hub access.
 
     Attributes:
@@ -983,23 +907,13 @@ class HuggingFaceConfig:
             Get one free at https://huggingface.co/settings/tokens
     """
 
+    SECTION: ClassVar[str] = "huggingface"
+
     token: str | None = field(default=None, repr=False)
 
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> HuggingFaceConfig:
-        """Construct a HuggingFaceConfig from a raw TOML section dict.
-
-        Args:
-            data: Dictionary of keys from the ``[huggingface]`` TOML section.
-
-        Returns:
-            A populated HuggingFaceConfig instance.
-
-        Raises:
-            ValueError: On an unknown key.
-        """
-        _reject_unknown_keys("huggingface", data, _field_names(cls))
-        return cls(token=data.get("token") or None)
+    def __post_init__(self) -> None:
+        """Treat an empty token as none."""
+        self.token = self.token or None
 
 
 STREAM_BITRATES = (128, 192, 256, 320)
@@ -1026,7 +940,7 @@ def parse_env_bool(value: str) -> bool:
 
 
 @dataclass
-class StreamConfig:
+class StreamConfig(_Section):
     """Radio stream settings (``[stream]``).
 
     Attributes:
@@ -1036,6 +950,8 @@ class StreamConfig:
         max_listeners: Concurrent listener limit.
         station_name: Name sent to players as ``icy-name``.
     """
+
+    SECTION: ClassVar[str] = "stream"
 
     enabled: bool = False
     bitrate: int = 320
@@ -1067,23 +983,6 @@ class StreamConfig:
             # It is sent as an HTTP header (icy-name): no control characters.
             raise ValueError("stream.station_name must not contain control characters")
         self.idle_grace_seconds = float(self.idle_grace_seconds)
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> StreamConfig:
-        """Build from the ``[stream]`` table.
-
-        Args:
-            data: Dictionary of keys from the ``[stream]`` TOML section.
-
-        Returns:
-            A populated StreamConfig instance.
-
-        Raises:
-            ValueError: On an unknown key or invalid value.
-            TypeError: On a wrongly typed value.
-        """
-        _reject_unknown_keys("stream", data, _field_names(cls))
-        return cls(**data)
 
 
 # ---------------------------------------------------------------------------
@@ -1182,17 +1081,17 @@ def _environment_overlay(environ: Mapping[str, str]) -> dict[str, Any]:
     return overlay
 
 
-_SECTIONS = (
-    "library",
-    "index",
-    "playback",
-    "model",
-    "huggingface",
-    "replaygain",
-    "djmix",
-    "transitions",
-    "server",
-    "stream",
+_SECTION_TYPES: tuple[type[_Section], ...] = (
+    LibraryConfig,
+    IndexConfig,
+    PlaybackConfig,
+    ModelConfig,
+    HuggingFaceConfig,
+    ReplayGainConfig,
+    DjMixConfig,
+    TransitionsConfig,
+    ServerConfig,
+    StreamConfig,
 )
 
 
@@ -1209,24 +1108,14 @@ def _build_config(
     if not isinstance(presets_raw, Mapping):
         raise TypeError("presets section must be a table")
 
-    unknown_sections = set(raw) - {*_SECTIONS, "presets"}
+    unknown_sections = set(raw) - {t.SECTION for t in _SECTION_TYPES} - {"presets"}
     if unknown_sections:
         raise ValueError(f"unknown config sections: {sorted(unknown_sections)}")
-    for section in _SECTIONS:
-        if not isinstance(raw.get(section, {}), Mapping):
-            raise TypeError(f"{section} section must be a table")
-
+    sections: dict[str, Any] = {
+        t.SECTION: t.from_dict(raw.get(t.SECTION, {})) for t in _SECTION_TYPES
+    }
     return AutoDJConfig(
-        library=LibraryConfig.from_dict(raw.get("library", {})),
-        index=IndexConfig.from_dict(raw.get("index", {})),
-        playback=PlaybackConfig.from_dict(raw.get("playback", {})),
-        model=ModelConfig.from_dict(raw.get("model", {})),
-        huggingface=HuggingFaceConfig.from_dict(raw.get("huggingface", {})),
-        replaygain=ReplayGainConfig.from_dict(raw.get("replaygain", {})),
-        djmix=DjMixConfig.from_dict(raw.get("djmix", {})),
-        transitions=TransitionsConfig.from_dict(raw.get("transitions", {})),
-        server=ServerConfig.from_dict(raw.get("server", {})),
-        stream=StreamConfig.from_dict(raw.get("stream", {})),
+        **sections,
         presets=load_user_presets(presets_raw),
         config_path=config_path,
         config_sources=tuple(sources),

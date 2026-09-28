@@ -797,6 +797,7 @@ class TestServerConfig:
             ({"session_ttl_seconds": 31_536_001}, "server.session_ttl_seconds"),
             ({"liner_upload_max_mib": 0}, "server.liner_upload_max_mib"),
             ({"liner_upload_max_mib": 1025}, "server.liner_upload_max_mib"),
+            ({"liner_upload_max_bytes": 50 * 1024 * 1024}, r"unknown \[server\] keys"),
         ],
     )
     def test_rejects_wrong_types_and_out_of_bounds_values(
