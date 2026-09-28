@@ -43,8 +43,8 @@ import re
 import shutil
 import threading
 import time
-from collections.abc import AsyncGenerator, Awaitable, Callable
-from dataclasses import dataclass, field
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
@@ -440,7 +440,6 @@ class ProfileSaveBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str
-    index_name: str | None = None
     preset: str | None = None
     bpm_lo: FiniteFloat | None = None
     bpm_hi: FiniteFloat | None = None
@@ -466,6 +465,17 @@ class ProfileSaveBody(BaseModel):
         """Refuse to store a profile that could never be applied."""
         validate_playback_choices(self.model_dump())
         return self
+
+
+@contextlib.contextmanager
+def _profile_http_errors() -> Iterator[None]:
+    """Answer a bad profile name or file with 400 and a missing profile with 404."""
+    try:
+        yield
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 class SeekBody(BaseModel):
@@ -1626,46 +1636,29 @@ def create_app(
         store = _profile_store()
         return {"profiles": await asyncio.to_thread(store.list_names), "root": str(store.root)}
 
+    # The store validates every name before touching the filesystem.
     @app.get("/api/profiles/{name}")
     async def api_profile_get(name: str) -> dict:
         """Load a saved profile bundle by name."""
-        from autodj.profiles import validate_name
-
-        try:
-            validate_name(name)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        try:
+        with _profile_http_errors():
             snap = await asyncio.to_thread(_profile_store().load, name)
-        except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return snap.to_dict()
 
     @app.post("/api/profiles")
     async def api_profile_save(body: ProfileSaveBody) -> dict:
         """Save (or overwrite) a profile bundle."""
-        from autodj.profiles import ProfileSnapshot, validate_name
+        from autodj.profiles import ProfileSnapshot
 
-        try:
-            validate_name(body.name)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
         snap = ProfileSnapshot(**body.model_dump())
-        target = await asyncio.to_thread(_profile_store().save, snap)
+        with _profile_http_errors():
+            target = await asyncio.to_thread(_profile_store().save, snap)
         return {"saved": snap.name, "path": str(target)}
 
     @app.delete("/api/profiles/{name}")
     async def api_profile_delete(name: str) -> dict:
         """Delete a saved profile bundle by name."""
-        from autodj.profiles import validate_name
-
-        try:
-            validate_name(name)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        ok = await asyncio.to_thread(_profile_store().delete, name)
+        with _profile_http_errors():
+            ok = await asyncio.to_thread(_profile_store().delete, name)
         if not ok:
             raise HTTPException(status_code=404, detail="Profile not found")
         return {"deleted": name}
@@ -1673,18 +1666,10 @@ def create_app(
     @app.post("/api/profiles/{name}/apply")
     async def api_profile_apply(name: str) -> dict:
         """Load a saved profile and push every set field through the bridge."""
-        from autodj.profiles import validate_name
+        from autodj.profiles import ProfileSnapshot
 
-        try:
-            validate_name(name)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        try:
+        with _profile_http_errors():
             snap = await asyncio.to_thread(_profile_store().load, name)
-        except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         # A preset the configuration no longer has would be dropped without a
         # word by set_preset, so the profile is refused before anything
@@ -1701,29 +1686,15 @@ def create_app(
                 ) from exc
 
         applied: list[str] = []
-        # Playback flags
+        # Playback flags: every snapshot field not applied on its own below.
         kw: dict = {}
-        for fld in (
-            "transition_mode",
-            "post_queue_seed",
-            "beat_sync_fx",
-            "key_sync_fx",
-            "beatmatch_on_skip",
-            "crossfade_seconds",
-            "fade_in_seconds",
-            "smart_shuffle",
-            "pure_shuffle",
-            "anchor_to_seed",
-            "enable_daypart",
-            "enable_mood_arc",
-            "mood_arc_hours",
-            "liners_enabled",
-            "liners_pick_mode",
-        ):
-            v = getattr(snap, fld, None)
+        for fld in fields(ProfileSnapshot):
+            if fld.name in {"name", "preset", "bpm_lo", "bpm_hi", "harmonic_mode"}:
+                continue
+            v = getattr(snap, fld.name)
             if v is not None:
-                kw[fld] = v
-                applied.append(fld)
+                kw[fld.name] = v
+                applied.append(fld.name)
         # A profile saved before its fields were validated, or edited by hand,
         # can hold a bad choice.  set_playback_settings checks every field
         # before changing any, and it runs before the other setters below, so

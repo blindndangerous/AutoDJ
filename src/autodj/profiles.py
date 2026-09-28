@@ -13,15 +13,12 @@ This is distinct from:
 - **Cue points**: per-track markers (drop, breakdown, phrase, outro
   downbeat) cached inside ``dj_meta.db``.
 
-Profiles are pure config.  They reference an index name (so a profile
-can pin "use the workout index") but don't store track data
-themselves.
+Profiles are pure config and store no track data.
 
 Example::
 
     >>> snap = ProfileSnapshot(
     ...     name="Late night",
-    ...     index_name="ambient",
     ...     preset="wind_down",
     ...     bpm_lo=70, bpm_hi=110,
     ...     harmonic_mode="compatible",
@@ -68,8 +65,6 @@ class ProfileSnapshot:
 
     Attributes:
         name: User-facing label.  Doubles as the filename stem.
-        index_name: Name of the index (library) this profile is
-            bound to, or ``None`` for "current index".
         preset: Built-in preset name, or ``None``.
         bpm_lo, bpm_hi: BPM range filter.
         harmonic_mode: Camelot harmonic-mode key.
@@ -89,7 +84,6 @@ class ProfileSnapshot:
     """
 
     name: str
-    index_name: str | None = None
     preset: str | None = None
     bpm_lo: float | None = None
     bpm_hi: float | None = None

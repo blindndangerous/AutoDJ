@@ -39,7 +39,6 @@ class TestProfileSnapshotRoundTrip:
     def test_to_dict_from_dict(self) -> None:
         snap = ProfileSnapshot(
             name="Wakeup",
-            index_name="ambient",
             bpm_lo=70.0,
             bpm_hi=120.0,
             beat_sync_fx=True,

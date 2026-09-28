@@ -171,6 +171,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   key, instead of loading with that key ignored.
 - `autodj.player` no longer re-exports `apply_eq`, `make_eq_filters`, `make_eq_state` and
   `reset_eq_state`. Import them from `autodj.eq`.
+- The `index_name` field of a saved profile. It was stored but never applied. `POST
+  /api/profiles` now answers 422 when a request still sends it, and a profile file that still has
+  it is refused when it is loaded or applied; save the profile again.
 
 - Upgrade note: an index made before the index manifest format (a folder with `tracks.db`
   and `vectors.index` but no `index-manifest.json`), or one that stores absolute track paths,
