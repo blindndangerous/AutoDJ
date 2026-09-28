@@ -15,9 +15,10 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
+from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Match
@@ -620,9 +621,16 @@ def peer_address(scope: Scope) -> str:
 class SecurityMiddleware:
     """Enforce HTTP request policy before any downstream body consumer."""
 
-    def __init__(self, app: ASGIApp, policy: SecurityPolicy) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        policy: SecurityPolicy,
+        body_limits: Mapping[str, Callable[[], int]],
+    ) -> None:
+        """Wrap *app*; *body_limits* maps a POST path to its request-body cap in bytes."""
         self.app = app
         self._policy = policy
+        self._body_limits = body_limits
 
     @staticmethod
     def _pairing_limiter(scope: Scope) -> PairingRateLimiter | None:
@@ -633,8 +641,8 @@ class SecurityMiddleware:
         return limiter if isinstance(limiter, PairingRateLimiter) else None
 
     @staticmethod
-    def _declared_pairing_body_too_large(scope: Scope) -> bool:
-        """Return whether Content-Length is malformed or exceeds pairing body limit."""
+    def _declared_body_too_large(scope: Scope, cap: int) -> bool:
+        """Return whether Content-Length is malformed or exceeds *cap*."""
         values = _raw_header_values(scope, b"content-length")
         if not values:
             return False
@@ -645,24 +653,27 @@ class SecurityMiddleware:
             or not values[0].isdecimal()
         ):
             return True
-        return int(values[0]) > PAIRING_BODY_MAX_BYTES
+        return int(values[0]) > cap
 
     @staticmethod
-    async def _buffer_pairing_body(receive: Receive) -> tuple[bytes, bool]:
-        """Read bounded pairing body and report whether client disconnected."""
-        body = bytearray()
-        while True:
+    def _capped_receive(receive: Receive, cap: int) -> Receive:
+        """Return *receive* raising 413 once the body passes *cap* bytes.
+
+        FastAPI re-raises an HTTPException from body parsing, so the route
+        answers 413 before it parses or spools anything past the cap.
+        """
+        consumed = 0
+
+        async def capped() -> Message:
+            nonlocal consumed
             message = await receive()
-            if message["type"] != "http.request":
-                return bytes(body), True
-            chunk = message.get("body", b"")
-            if not isinstance(chunk, bytes):
-                raise ValueError("invalid ASGI request body")
-            if len(chunk) > PAIRING_BODY_MAX_BYTES - len(body):
-                raise _PairingBodyTooLarge
-            body.extend(chunk)
-            if not message.get("more_body", False):
-                return bytes(body), False
+            if message["type"] == "http.request":
+                consumed += len(message.get("body", b""))
+                if consumed > cap:
+                    raise HTTPException(status_code=413, detail="Request body too large")
+            return message
+
+        return capped
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Enforce request policy, attach request IDs, and audit unsafe requests."""
@@ -739,30 +750,14 @@ class SecurityMiddleware:
                     )
                 return
 
-        if is_pairing:
-            if self._declared_pairing_body_too_large(scope):
-                await self._reject_pairing_body(scope, receive, send, request_id, method, route)
+        body_limit = self._body_limits.get(path) if method == "POST" else None
+        downstream_receive = receive
+        if body_limit is not None:
+            cap = body_limit()
+            if self._declared_body_too_large(scope, cap):
+                await self._reject_body_too_large(scope, receive, send, request_id, method, route)
                 return
-            try:
-                body, disconnected = await self._buffer_pairing_body(receive)
-            except (_PairingBodyTooLarge, ValueError):
-                await self._reject_pairing_body(scope, receive, send, request_id, method, route)
-                return
-            replayed = False
-
-            async def receive_pairing_body() -> Message:
-                """Replay buffered pairing body once to downstream application."""
-                nonlocal replayed
-                if replayed:
-                    return await receive()
-                replayed = True
-                if disconnected:
-                    return {"type": "http.disconnect"}
-                return {"type": "http.request", "body": body, "more_body": False}
-
-            downstream_receive: Receive = receive_pairing_body
-        else:
-            downstream_receive = receive
+            downstream_receive = self._capped_receive(receive, cap)
 
         response_status: int | None = None
 
@@ -819,7 +814,7 @@ class SecurityMiddleware:
             )
 
     @staticmethod
-    async def _reject_pairing_body(
+    async def _reject_body_too_large(
         scope: Scope,
         receive: Receive,
         send: Send,
@@ -827,7 +822,7 @@ class SecurityMiddleware:
         method: str,
         route: str,
     ) -> None:
-        """Send and audit 413 response for oversized pairing request body."""
+        """Send and audit a 413 response for a declared oversized request body."""
         response = JSONResponse(
             {"detail": "Request body too large"},
             status_code=413,
@@ -843,9 +838,3 @@ class SecurityMiddleware:
             status=413,
             level=logging.WARNING,
         )
-
-
-class _PairingBodyTooLarge(Exception):
-    """Signal that buffered pairing request exceeded allowed body size."""
-
-    pass

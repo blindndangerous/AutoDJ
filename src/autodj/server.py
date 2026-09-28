@@ -79,6 +79,7 @@ from autodj.lan import format_lan_banner, lan_urls, running_in_container
 from autodj.pairing import DeviceRegistry
 from autodj.security import (
     COOKIE_NAME,
+    PAIRING_BODY_MAX_BYTES,
     PairingRateLimiter,
     SecurityMiddleware,
     SecurityPolicy,
@@ -110,6 +111,8 @@ _WS_SEND_TIMEOUT_SECONDS = 2.0
 _STREAM_SHUTDOWN_GRACE_SECONDS = 3
 _STREAM_NAME = re.compile(r"^(?P<secret>[A-Za-z0-9_-]{1,128})\.(?P<ext>mp3|m3u)$")
 _ALAC_PREFETCH_TIMEOUT_SECONDS = 5.0
+# Room for the multipart framing around an uploaded liner.
+_MULTIPART_OVERHEAD_BYTES = 64 * 1024
 # Total seconds shutdown waits for the player and cache writers to stop.
 _SHUTDOWN_TIMEOUT_S = 30.0
 _PACKAGE_DIR = Path(__file__).parent
@@ -1157,13 +1160,6 @@ def create_app(
     def _liner_upload_max_bytes() -> int:
         return bridge.player._cfg.server.liner_upload_max_bytes
 
-    from autodj.liner_files import LinerUploadBodyLimitMiddleware
-
-    app.add_middleware(
-        LinerUploadBodyLimitMiddleware,
-        max_file_bytes=_liner_upload_max_bytes,
-    )
-
     server_config = bridge.player._cfg.server
     device_registry: DeviceRegistry | None = None
     if isinstance(server_config.access_token, str):
@@ -1178,9 +1174,12 @@ def create_app(
     app.state.security_policy = policy
     app.state.device_registry = device_registry
     app.state.pairing_rate_limiter = pairing_rate_limiter or PairingRateLimiter()
-    # Last-added middleware is outermost. Security rejects before upload limiting
-    # can inspect or consume a request body.
-    app.add_middleware(SecurityMiddleware, policy=policy)
+    # Request bodies the middleware caps before any route parses them.
+    body_limits: dict[str, Callable[[], int]] = {
+        "/api/pair": lambda: PAIRING_BODY_MAX_BYTES,
+        "/api/liners/upload": lambda: _liner_upload_max_bytes() + _MULTIPART_OVERHEAD_BYTES,
+    }
+    app.add_middleware(SecurityMiddleware, policy=policy, body_limits=body_limits)
 
     # ------------------------------------------------------------------
     # Static HTML

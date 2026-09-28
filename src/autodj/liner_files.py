@@ -11,7 +11,7 @@ import os
 import secrets
 import stat
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
@@ -102,7 +102,6 @@ class _StagedUpload:
 
 
 _CHUNK_BYTES = 1024 * 1024
-DEFAULT_MULTIPART_OVERHEAD_BYTES = 64 * 1024
 _WINDOWS_FORBIDDEN = frozenset('<>"|?*')
 _WINDOWS_DEVICES = {
     "CON",
@@ -1508,103 +1507,3 @@ def delete_liner_file(root: Path, name: str) -> None:
                 logger.warning("Unable to close root after committed liner deletion", exc_info=True)
             else:
                 logger.warning("Unable to close root after failed liner deletion", exc_info=True)
-
-
-class _BodyLimitExceeded(Exception):
-    """Signal that streaming request input exceeded the configured cap."""
-
-    pass
-
-
-class LinerUploadBodyLimitMiddleware:
-    """Reject oversized liner request bodies before multipart parsing/spooling."""
-
-    def __init__(
-        self,
-        app: Callable[..., Awaitable[None]],
-        *,
-        max_file_bytes: Callable[[], int],
-        multipart_overhead_bytes: int = DEFAULT_MULTIPART_OVERHEAD_BYTES,
-    ) -> None:
-        if multipart_overhead_bytes <= 0:
-            raise ValueError("multipart_overhead_bytes must be positive")
-        self.app = app
-        self.max_file_bytes = max_file_bytes
-        self.multipart_overhead_bytes = multipart_overhead_bytes
-
-    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
-        """Enforce the upload request cap before the wrapped app consumes its body."""
-
-        if (
-            scope.get("type") != "http"
-            or scope.get("method") != "POST"
-            or scope.get("path") != "/api/liners/upload"
-        ):
-            await self.app(scope, receive, send)
-            return
-        max_file_bytes = self.max_file_bytes()
-        if (
-            isinstance(max_file_bytes, bool)
-            or not isinstance(max_file_bytes, int)
-            or max_file_bytes <= 0
-        ):
-            max_file_bytes = 50 * 1024 * 1024
-        request_cap = max_file_bytes + self.multipart_overhead_bytes
-        headers = {key.lower(): value for key, value in scope.get("headers", [])}
-        declared = headers.get(b"content-length")
-        if declared is not None:
-            try:
-                declared_size = int(declared)
-                if declared_size < 0 or declared_size > request_cap:
-                    await self._send_too_large(send)
-                    return
-            except ValueError:
-                await self._send_too_large(send)
-                return
-
-        consumed = 0
-
-        async def limited_receive() -> dict[str, Any]:
-            """Count request bytes and abort when the cap is exceeded."""
-
-            nonlocal consumed
-            message = await receive()
-            if message.get("type") == "http.request":
-                body = message.get("body", b"")
-                if consumed + len(body) > request_cap:
-                    raise _BodyLimitExceeded
-                consumed += len(body)
-            return message
-
-        response_started = False
-
-        async def tracked_send(message: dict[str, Any]) -> None:
-            """Record whether the wrapped app has started its response."""
-
-            nonlocal response_started
-            if message.get("type") == "http.response.start":
-                response_started = True
-            await send(message)
-
-        try:
-            await self.app(scope, limited_receive, tracked_send)
-        except _BodyLimitExceeded:
-            if not response_started:
-                await self._send_too_large(send)
-
-    @staticmethod
-    async def _send_too_large(send: Any) -> None:
-        """Send the JSON 413 response used for oversized upload bodies."""
-
-        body = b'{"detail":"Request body too large"}'
-        await send(
-            {
-                "type": "http.response.start",
-                "status": 413,
-                "headers": [
-                    (b"content-type", b"application/json"),
-                    (b"content-length", str(len(body)).encode("ascii")),
-                ],
-            }
-        )
-        await send({"type": "http.response.body", "body": body})

@@ -23,7 +23,6 @@ from autodj.liner_files import (
     LinerConflictError,
     LinerStorageUnsupportedError,
     LinerTooLargeError,
-    LinerUploadBodyLimitMiddleware,
     OpenedLiner,
     delete_liner_file,
     open_liner_file,
@@ -1569,88 +1568,6 @@ def test_posix_hard_link_fallback_has_exactly_one_winner(
     assert list(root.glob(".liner-upload-*")) == []
 
 
-def _upload_scope(content_length: str | None = None) -> dict[str, Any]:
-    headers = [(b"content-type", b"multipart/form-data; boundary=x")]
-    if content_length is not None:
-        headers.append((b"content-length", content_length.encode("ascii")))
-    return {
-        "type": "http",
-        "asgi": {"version": "3.0"},
-        "http_version": "1.1",
-        "method": "POST",
-        "scheme": "http",
-        "path": "/api/liners/upload",
-        "raw_path": b"/api/liners/upload",
-        "query_string": b"",
-        "headers": headers,
-        "client": ("127.0.0.1", 1),
-        "server": ("test", 80),
-    }
-
-
-@pytest.mark.asyncio
-async def test_body_limit_rejects_large_declared_length_without_calling_parser() -> None:
-    downstream_called = False
-    receive_called = False
-    sent: list[dict[str, Any]] = []
-
-    async def downstream(scope: Any, receive: Any, send: Any) -> None:
-        nonlocal downstream_called
-        downstream_called = True
-
-    async def receive() -> dict[str, Any]:
-        nonlocal receive_called
-        receive_called = True
-        return {"type": "http.request", "body": b"", "more_body": False}
-
-    async def send(message: dict[str, Any]) -> None:
-        sent.append(message)
-
-    middleware = LinerUploadBodyLimitMiddleware(
-        downstream, max_file_bytes=lambda: 10, multipart_overhead_bytes=5
-    )
-    await middleware(_upload_scope("16"), receive, send)
-    assert sent[0]["status"] == 413
-    assert downstream_called is False
-    assert receive_called is False
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("declared_length", [None, "1"])
-async def test_body_limit_stops_chunked_or_lying_body_before_parser_cap(
-    declared_length: str | None,
-) -> None:
-    messages = iter(
-        [
-            {"type": "http.request", "body": b"12345678", "more_body": True},
-            {"type": "http.request", "body": b"abcdefgh", "more_body": False},
-        ]
-    )
-    parser_bytes = 0
-    sent: list[dict[str, Any]] = []
-
-    async def receive() -> dict[str, Any]:
-        return next(messages)
-
-    async def downstream(scope: Any, receive: Any, send: Any) -> None:
-        nonlocal parser_bytes
-        while True:
-            message = await receive()
-            parser_bytes += len(message.get("body", b""))
-            if not message.get("more_body", False):
-                break
-
-    async def send(message: dict[str, Any]) -> None:
-        sent.append(message)
-
-    middleware = LinerUploadBodyLimitMiddleware(
-        downstream, max_file_bytes=lambda: 10, multipart_overhead_bytes=5
-    )
-    await middleware(_upload_scope(declared_length), receive, send)
-    assert sent[0]["status"] == 413
-    assert parser_bytes == 8
-
-
 def test_non_replace_upload_is_atomic_across_processes(tmp_path: Path) -> None:
     root = tmp_path / "liners"
     root.mkdir()
@@ -1714,88 +1631,6 @@ def test_threaded_non_replace_upload_has_one_winner(tmp_path: Path) -> None:
         outcomes = sorted(executor.map(upload, (b"one", b"two")))
     assert outcomes == ["conflict", "stored"]
     assert (root / "thread-race.mp3").read_bytes() in {b"one", b"two"}
-
-
-def test_body_limit_requires_positive_multipart_overhead() -> None:
-    async def downstream(scope: Any, receive: Any, send: Any) -> None:
-        return None
-
-    with pytest.raises(ValueError, match="must be positive"):
-        LinerUploadBodyLimitMiddleware(
-            downstream, max_file_bytes=lambda: 1, multipart_overhead_bytes=0
-        )
-
-
-@pytest.mark.asyncio
-async def test_body_limit_passes_non_upload_scope_through() -> None:
-    called = False
-
-    async def downstream(scope: Any, receive: Any, send: Any) -> None:
-        nonlocal called
-        called = True
-
-    middleware = LinerUploadBodyLimitMiddleware(downstream, max_file_bytes=lambda: 1)
-    await middleware({"type": "websocket"}, None, None)
-
-    assert called
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("configured_limit", [True, "10", 0, -1])
-async def test_body_limit_falls_back_for_invalid_configured_limit(
-    configured_limit: object,
-) -> None:
-    called = False
-
-    async def downstream(scope: Any, receive: Any, send: Any) -> None:
-        nonlocal called
-        called = True
-
-    middleware = LinerUploadBodyLimitMiddleware(downstream, max_file_bytes=lambda: configured_limit)
-    await middleware(_upload_scope("1024"), None, None)
-
-    assert called
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("declared_length", ["-1", "not-an-integer"])
-async def test_body_limit_rejects_invalid_declared_length(declared_length: str) -> None:
-    sent: list[dict[str, Any]] = []
-
-    async def downstream(scope: Any, receive: Any, send: Any) -> None:
-        raise AssertionError("downstream must not run")
-
-    async def send(message: dict[str, Any]) -> None:
-        sent.append(message)
-
-    middleware = LinerUploadBodyLimitMiddleware(
-        downstream, max_file_bytes=lambda: 10, multipart_overhead_bytes=5
-    )
-    await middleware(_upload_scope(declared_length), None, send)
-
-    assert sent[0]["status"] == 413
-
-
-@pytest.mark.asyncio
-async def test_body_limit_does_not_replace_started_response() -> None:
-    sent: list[dict[str, Any]] = []
-
-    async def receive() -> dict[str, Any]:
-        return {"type": "http.request", "body": b"123456", "more_body": False}
-
-    async def downstream(scope: Any, receive: Any, send: Any) -> None:
-        await send({"type": "http.response.start", "status": 200})
-        await receive()
-
-    async def send(message: dict[str, Any]) -> None:
-        sent.append(message)
-
-    middleware = LinerUploadBodyLimitMiddleware(
-        downstream, max_file_bytes=lambda: 1, multipart_overhead_bytes=1
-    )
-    await middleware(_upload_scope(), receive, send)
-
-    assert sent == [{"type": "http.response.start", "status": 200}]
 
 
 def _fake_directory(*, uid: int = 42, mode: int = 0o700, inode: int = 2) -> Any:

@@ -6,7 +6,6 @@ import json
 import re
 import secrets
 from dataclasses import replace
-from types import SimpleNamespace
 
 import pytest
 
@@ -503,77 +502,6 @@ def test_host_policy_rejects_empty_or_invalid_dns_name(host: str) -> None:
 
 def test_security_middleware_unknown_peer_and_malformed_length() -> None:
     assert peer_address({"type": "http"}) == "<unknown>"
-    assert SecurityMiddleware._declared_pairing_body_too_large(
-        {"type": "http", "headers": [(b"content-length", b"invalid")]}
+    assert SecurityMiddleware._declared_body_too_large(
+        {"type": "http", "headers": [(b"content-length", b"invalid")]}, 4096
     )
-
-
-@pytest.mark.asyncio
-async def test_pairing_body_buffer_rejects_nonbytes_chunk() -> None:
-    async def receive():
-        return {"type": "http.request", "body": "not bytes"}
-
-    with pytest.raises(ValueError, match="invalid ASGI request body"):
-        await SecurityMiddleware._buffer_pairing_body(receive)
-
-
-def _pairing_scope() -> dict:
-    return {
-        "type": "http",
-        "method": "POST",
-        "path": "/api/pair",
-        "headers": [
-            (b"host", b"radio.local"),
-            (b"origin", b"https://radio.local:8080"),
-        ],
-        "app": SimpleNamespace(routes=[]),
-    }
-
-
-@pytest.mark.asyncio
-async def test_pairing_body_replay_delegates_after_buffered_message() -> None:
-    received = []
-
-    async def app(_scope, receive, _send):
-        received.append(await receive())
-        received.append(await receive())
-
-    messages = iter(
-        [
-            {"type": "http.request", "body": b"pairing", "more_body": False},
-            {"type": "http.disconnect"},
-        ]
-    )
-
-    async def receive():
-        return next(messages)
-
-    async def send(_message):
-        return None
-
-    middleware = SecurityMiddleware(app, SecurityPolicy(_server()))
-    await middleware(_pairing_scope(), receive, send)
-
-    assert received == [
-        {"type": "http.request", "body": b"pairing", "more_body": False},
-        {"type": "http.disconnect"},
-    ]
-
-
-@pytest.mark.asyncio
-async def test_pairing_disconnect_is_replayed_to_downstream() -> None:
-    received = []
-
-    async def app(_scope, receive, _send):
-        received.append(await receive())
-
-    async def receive():
-        return {"type": "http.disconnect"}
-
-    async def send(_message):
-        return None
-
-    middleware = SecurityMiddleware(app, SecurityPolicy(_server()))
-    await middleware(_pairing_scope(), receive, send)
-
-    assert received == [{"type": "http.disconnect"}]

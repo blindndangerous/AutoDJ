@@ -295,52 +295,6 @@ def test_malformed_and_oversized_pairing_consume_bounded_attempt_budget(
     assert statuses == [413, 422, 429]
 
 
-def test_single_oversized_pairing_chunk_is_not_copied_into_accumulator(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import autodj.security as security_module
-
-    class BoundedAccumulator:
-        extended = False
-
-        def __len__(self) -> int:
-            return 0
-
-        def extend(self, _chunk: bytes) -> None:
-            type(self).extended = True
-            raise AssertionError("oversized chunk was copied")
-
-    monkeypatch.setattr(security_module, "bytearray", BoundedAccumulator, raising=False)
-    messages: list[dict[str, Any]] = []
-
-    async def receive() -> dict[str, Any]:
-        return {"type": "http.request", "body": b"x" * 1_000_000, "more_body": False}
-
-    async def send(message: dict[str, Any]) -> None:
-        messages.append(message)
-
-    scope: dict[str, Any] = {
-        "type": "http",
-        "asgi": {"version": "3.0"},
-        "http_version": "1.1",
-        "method": "POST",
-        "scheme": "http",
-        "path": "/api/pair",
-        "raw_path": b"/api/pair",
-        "query_string": b"",
-        "root_path": "",
-        "headers": [(b"host", b"testserver"), (b"origin", b"http://testserver")],
-        "client": ("127.0.0.1", 50000),
-        "server": ("testserver", 80),
-        "state": {},
-    }
-
-    asyncio.run(_security_app()(scope, receive, send))
-
-    assert _response_status(messages) == 413
-    assert BoundedAccumulator.extended is False
-
-
 def test_successful_pairing_resets_per_client_failures() -> None:
     limiter = PairingRateLimiter(per_client_limit=2, global_limit=100)
     app = _security_app()
@@ -405,6 +359,58 @@ def test_pairing_body_is_capped_before_json_parsing(
     start = next(message for message in messages if message["type"] == "http.response.start")
     assert any(key.lower() == b"x-request-id" for key, _ in start["headers"])
     assert len([record for record in caplog.records if '"status":413' in record.message]) == 1
+
+
+def test_chunked_liner_upload_past_the_cap_is_413_before_anything_is_stored(
+    tmp_path: Path,
+) -> None:
+    """A body with no Content-Length is counted as it streams into the multipart parser."""
+    player = _make_player_mock()
+    player._cfg.playback.liners_folder = str(tmp_path / "liners")
+    player._cfg.server.liner_upload_max_bytes = 1024
+    app = create_app(PlayerBridge(player=player, sim=_make_sim_mock()))
+    boundary = b"cap"
+    head = (
+        b'--cap\r\nContent-Disposition: form-data; name="file"; filename="big.mp3"\r\n'
+        b"Content-Type: audio/mpeg\r\n\r\n"
+    )
+    chunks = [head] + [b"x" * 16384] * 8 + [b"\r\n--cap--\r\n"]
+    reads = 0
+    messages: list[dict[str, Any]] = []
+
+    async def receive() -> dict[str, Any]:
+        nonlocal reads
+        reads += 1
+        chunk = chunks[reads - 1]
+        return {"type": "http.request", "body": chunk, "more_body": reads < len(chunks)}
+
+    async def send(message: dict[str, Any]) -> None:
+        messages.append(message)
+
+    scope: dict[str, Any] = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/api/liners/upload",
+        "raw_path": b"/api/liners/upload",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"host", b"testserver"),
+            (b"origin", b"http://testserver"),
+            (b"content-type", b"multipart/form-data; boundary=" + boundary),
+        ],
+        "client": ("127.0.0.1", 50000),
+        "server": ("testserver", 80),
+        "state": {},
+    }
+    asyncio.run(app(scope, receive, send))
+
+    assert _response_status(messages) == 413
+    assert reads < len(chunks)
+    assert not (tmp_path / "liners" / "big.mp3").exists()
 
 
 def test_post_start_exception_audits_actual_status_without_second_response(
