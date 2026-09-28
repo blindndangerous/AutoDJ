@@ -445,6 +445,18 @@ describe("Test liner in stream mode", () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(fetchImpl.mock.calls.some(([url]) => url === "/api/liners/test")).toBe(false);
   });
+
+  it("says why nothing plays when browser playback is stopped", async () => {
+    const { fetchImpl, playLiner, status } = await install({
+      testOnServer: () => false,
+      onTest: () => json({ played: "station-id.mp3" }),
+    });
+    document.querySelector("#liner-test").click();
+    await vi.waitFor(() => expect(status.textContent)
+      .toBe("Liner not played: nothing is playing. Press Play first."));
+    expect(fetchImpl.mock.calls.some(([url]) => url.startsWith("/api/liners/file/"))).toBe(false);
+    expect(playLiner).not.toHaveBeenCalled();
+  });
 });
 
 describe("liner settings and upload", () => {

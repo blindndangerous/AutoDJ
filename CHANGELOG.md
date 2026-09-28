@@ -310,6 +310,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   title three times and the banner before reaching Profile name. The new rows now go in and focus
   moves before the deleted row is removed. Deleting a voice liner and revoking a device work the
   same way.
+- Voice liners' Test now said nothing and did nothing while browser playback was stopped. It now
+  says "Liner not played: nothing is playing. Press Play first."
 - Browser playback started at full volume after the page loaded, whatever the volume slider
   showed, and stayed there until the slider was moved. Voice liners and the noise sweeps of some
   transition effects also played at full volume. They now all play at the volume the slider

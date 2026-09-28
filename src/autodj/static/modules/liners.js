@@ -278,9 +278,18 @@ export function installLiners(els, deps) {
         _setStatus(els, "No liner files in folder.");
         return;
       }
-      await withDisabled(event.currentTarget, () => (deps.testOnServer()
-        ? _testOnServer(els, name)
-        : _playByName(els, deps, name)));
+      if (deps.testOnServer()) {
+        await withDisabled(event.currentTarget, () => _testOnServer(els, name));
+        return;
+      }
+      // The browser mixes the liner into its own playback, so with none
+      // running there is nothing to play it over.  Say so rather than
+      // doing nothing.
+      if (!deps.canPlay()) {
+        _setStatus(els, "Liner not played: nothing is playing. Press Play first.", { force: true });
+        return;
+      }
+      await withDisabled(event.currentTarget, () => _playByName(els, deps, name));
     });
   }
 
