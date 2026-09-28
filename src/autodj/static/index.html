@@ -66,14 +66,18 @@
      back/forward + deep links keep working. -->
 <!-- A navigation landmark, so the tabs are not the one part of the page
      outside every landmark.  The landmark carries the name; naming the
-     tablist too made NVDA say "Sections" twice. -->
+     tablist too made NVDA say "Sections" twice.
+     The tabs carry no aria-controls.  With it, showing the new panel
+     changed a relation of the tab that had just taken focus, and Chrome
+     and NVDA then spoke that tab a second time on every arrow key.
+     Each panel's aria-labelledby still names it after its tab. -->
 <nav class="tablist-wrap" id="view-nav" aria-label="Sections">
   <div role="tablist" aria-orientation="horizontal">
-    <button type="button" role="tab" id="tab-now"      data-view="now"      aria-controls="panel-now"      aria-selected="true"  tabindex="0">Now Playing</button>
-    <button type="button" role="tab" id="tab-queue"    data-view="queue"    aria-controls="panel-queue"    aria-selected="false" tabindex="-1">Queue &amp; Search</button>
-    <button type="button" role="tab" id="tab-history"  data-view="history"  aria-controls="panel-history"  aria-selected="false" tabindex="-1">History</button>
-    <button type="button" role="tab" id="tab-settings" data-view="settings" aria-controls="panel-settings" aria-selected="false" tabindex="-1">Settings</button>
-    <button type="button" role="tab" id="tab-library"  data-view="library"  aria-controls="panel-library"  aria-selected="false" tabindex="-1">Library tools</button>
+    <button type="button" role="tab" id="tab-now"      data-view="now"      aria-selected="true"  tabindex="0">Now Playing</button>
+    <button type="button" role="tab" id="tab-queue"    data-view="queue"    aria-selected="false" tabindex="-1">Queue &amp; Search</button>
+    <button type="button" role="tab" id="tab-history"  data-view="history"  aria-selected="false" tabindex="-1">History</button>
+    <button type="button" role="tab" id="tab-settings" data-view="settings" aria-selected="false" tabindex="-1">Settings</button>
+    <button type="button" role="tab" id="tab-library"  data-view="library"  aria-selected="false" tabindex="-1">Library tools</button>
   </div>
 </nav>
 

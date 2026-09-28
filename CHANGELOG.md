@@ -220,6 +220,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Play and Pause now say "Playing" or "Paused" after the button or the Space and K keys change
   the playback state. NVDA did not read the button's new label.
 - Moving between the section tabs with the arrow keys reads each tab once instead of twice.
+  Each tab named its panel with `aria-controls`; showing that panel as the tab took focus made
+  NVDA with Chrome speak the tab a second time. The tabs no longer carry `aria-controls`, and
+  each panel is still named after its tab.
 - Symbols that NVDA skips at its default punctuation level are now read in words: the question
   mark key in the keyboard shortcuts help, "plus or minus" and "plus" in the Harmonic mixing
   choices and descriptions, and the Beatmatch description. The text on screen is unchanged.

@@ -62,11 +62,11 @@ function _onTabKeydown(e) {
       return;
   }
   e.preventDefault();
-  // Select first, then focus, as the APG tabs example does.  Focusing a
-  // tab that only becomes selected on the later hashchange made NVDA
-  // speak it twice: once unselected on focus, then again on the
-  // selection change.  The hashchange that follows finds the state
-  // already set and changes nothing.
+  // Select first, then focus, as the APG tabs example does, so focus
+  // lands on a tab that is already selected.  The hashchange that
+  // follows finds the state already set and changes nothing.  The tabs
+  // carry no aria-controls (see index.html): that relation to the panel
+  // shown here made NVDA speak the focused tab a second time.
   applyView(nextName, false);
   const nextTab = _viewLinks.get(nextName);
   if (nextTab) nextTab.focus();

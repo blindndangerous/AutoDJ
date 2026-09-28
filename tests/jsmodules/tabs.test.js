@@ -78,4 +78,41 @@ describe("tab arrow keys", () => {
       window.location.hash = "";
     }
   });
+
+  it("moves focus once per arrow, writes no live region and ties no panel to the tab", async () => {
+    installIndex();
+    window.location.hash = "#now";
+    vi.resetModules();
+    const { initViewRouter: freshRouter } = await import(
+      "../../src/autodj/static/modules/tabs.js");
+    try {
+      freshRouter();
+      const now = document.querySelector("#tab-now");
+      now.focus();
+      const focusEvents = [];
+      document.addEventListener("focusin", (event) => focusEvents.push(event.target.id));
+      const liveWrites = [];
+      const observer = new window.MutationObserver((records) => {
+        for (const record of records) {
+          const node = record.target.nodeType === 1 ? record.target : record.target.parentElement;
+          if (node?.closest('[aria-live], [role="status"], [role="alert"]')) liveWrites.push(node);
+        }
+      });
+      observer.observe(document.body, { childList: true, characterData: true, subtree: true });
+
+      now.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      observer.disconnect();
+
+      expect(focusEvents).toEqual(["tab-queue"]);
+      expect(liveWrites).toEqual([]);
+      // Showing a panel that the focused tab points at with aria-controls
+      // made Chrome and NVDA speak the tab twice.
+      for (const tab of document.querySelectorAll('[role="tab"]')) {
+        expect(tab.hasAttribute("aria-controls"), tab.id).toBe(false);
+      }
+    } finally {
+      window.location.hash = "";
+    }
+  });
 });
