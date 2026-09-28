@@ -1,10 +1,25 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { readProjectVersion, writeBuildInfo } from "../../vite.config.js";
+import { readProjectVersion, webSourceHash, writeBuildInfo } from "../../vite.config.js";
+
+// Pinned in tests/unit/test_version.py too, for the same tree, so the
+// build stamp and the Python check (autodj.version.web_source_hash)
+// cannot drift apart.
+const PINNED_WEB_SOURCE_HASH =
+  "c2ec7628d7bfbb824855fdaaae7f91d053ff6cdf57d5d3b53cb7f8d67ac71491";
+
+function writeWebCheckout(root) {
+  const statics = join(root, "src", "autodj", "static");
+  mkdirSync(join(statics, "modules"), { recursive: true });
+  writeFileSync(join(root, "vite.config.js"), "export default {};\n");
+  writeFileSync(join(statics, "app.js"), "import './modules/a.js';\r\n");
+  writeFileSync(join(statics, "index.html"), "<!doctype html>\n");
+  writeFileSync(join(statics, "modules", "a.js"), "export const a = 1;\n");
+}
 
 describe("product version build metadata", () => {
   it("parses project.version with TOML semantics", () => {
@@ -34,13 +49,24 @@ describe("product version build metadata", () => {
     try {
       writeFileSync(join(out, "build-info.json"), '{"version":"0.14.0"}\n');
 
-      writeBuildInfo(out, "0.15.0");
+      writeBuildInfo(out, "0.15.0", "abc123");
 
       expect(readFileSync(join(out, "build-info.json"), "utf8")).toBe(
-        '{\n  "version": "0.15.0"\n}\n',
+        '{\n  "version": "0.15.0",\n  "source_hash": "abc123"\n}\n',
       );
     } finally {
       rmSync(out, { recursive: true, force: true });
+    }
+  });
+
+  it("hashes the web sources exactly as the Python check does", () => {
+    const root = mkdtempSync(join(tmpdir(), "autodj-vite-hash-"));
+    try {
+      writeWebCheckout(root);
+
+      expect(webSourceHash(root)).toBe(PINNED_WEB_SOURCE_HASH);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

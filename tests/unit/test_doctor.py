@@ -1407,7 +1407,9 @@ def test_incomplete_built_assets_warn_even_with_valid_stamp(
 ) -> None:
     bundle = tmp_path / "static_dist"
     bundle.mkdir()
-    (bundle / "build-info.json").write_text('{"version":"1.2.3"}', encoding="utf-8")
+    (bundle / "build-info.json").write_text(
+        '{"version":"1.2.3","source_hash":"abc"}', encoding="utf-8"
+    )
     monkeypatch.setattr(doctor, "current_version", lambda: "1.2.3")
 
     check = doctor._bundle_check(tmp_path)
@@ -1697,3 +1699,25 @@ def test_configuration_check_shows_lan_setting(
 
     assert isinstance(check.detail, dict)
     assert check.detail["lan"] is True
+
+
+def test_bundle_built_from_other_web_sources_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = tmp_path / "src" / "autodj"
+    (package / "static").mkdir(parents=True)
+    (package / "static" / "app.js").write_text("console.log(1);", encoding="utf-8")
+    (tmp_path / "vite.config.js").write_text("export default {};", encoding="utf-8")
+    bundle = package / "static_dist"
+    bundle.mkdir()
+    for name in doctor.REQUIRED_BUILT_ASSETS:
+        (bundle / name).write_text("asset", encoding="utf-8")
+    stamp = '{"version":"1.2.3","source_hash":"' + "0" * 64 + '"}'
+    (bundle / "build-info.json").write_text(stamp, encoding="utf-8")
+    monkeypatch.setattr(doctor, "current_version", lambda: "1.2.3")
+
+    check = doctor._bundle_check(package)
+
+    assert check.status is doctor.CheckStatus.FAIL
+    assert check.summary == "stale bundle"
+    assert "npm run build" in check.detail

@@ -58,6 +58,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   or `path_remap` in `[library]`, stops AutoDJ with an error naming the section and key instead
   of being ignored. Preset names under `[presets.NAME]` are still free-form; the keys inside
   each preset are checked by the preset loader as before.
+- The web bundle's `build-info.json` now also records a fingerprint of the web sources it was
+  built from. In a source checkout, the server refuses to start and `autodj doctor` fails when the
+  bundle was built from different sources, even at the same version (for example after a
+  `git pull` without `npm run build`). Run `npm run build` to fix it. A bundle built by an earlier
+  version has no fingerprint and is refused the same way. Installed packages, which ship the built
+  bundle without its sources, are not affected.
 - Saved profiles (the JSON files in the `profiles` folder next to your index) with a key AutoDJ
   does not know are now refused with an error naming the key, instead of the key being kept and
   ignored. Saving a profile through `/api/profiles` with an unknown field is refused the same way.

@@ -100,7 +100,7 @@ from autodj.stream_secret import (
     paired_devices_path,
     stream_secret_path,
 )
-from autodj.version import REQUIRED_BUILT_ASSETS, current_version
+from autodj.version import REQUIRED_BUILT_ASSETS, current_version, stale_bundle_reason
 
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig
@@ -333,7 +333,12 @@ def _selected_static_dir(package_dir: Path) -> Path:
 
 
 def _validated_bundle_version(static_built: Path, runtime_version: str) -> str | None:
-    """Validate metadata for a built bundle; source assets have no stamp."""
+    """Validate metadata for a built bundle; source assets have no stamp.
+
+    The stamp must match the runtime version and, in a source checkout,
+    the web sources it was built from (see
+    :func:`~autodj.version.stale_bundle_reason`).
+    """
     if not all((static_built / name).is_file() for name in REQUIRED_BUILT_ASSETS):
         return None
     stamp = static_built / _BUILD_INFO_NAME
@@ -350,6 +355,9 @@ def _validated_bundle_version(static_built: Path, runtime_version: str) -> str |
         raise RuntimeError(
             f"Built static bundle version {version} does not match runtime version {runtime_version}"
         )
+    stale = stale_bundle_reason(payload, static_built.parent)
+    if stale is not None:
+        raise RuntimeError(f"Built static bundle is stale: {stale}; run `npm run build`")
     return version
 
 
