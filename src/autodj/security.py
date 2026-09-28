@@ -25,6 +25,7 @@ from starlette.routing import Match
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from autodj.config import ServerConfig, canonicalize_allowed_origin
+from autodj.pairing import DEVICE_ID
 
 COOKIE_NAME = "autodj_session"
 
@@ -47,13 +48,11 @@ _PUBLIC_FILES = frozenset(
     }
 )
 
-_HEX_32 = re.compile(r"[0-9a-f]{32}\Z")
 _HEX_64 = re.compile(r"[0-9a-f]{64}\Z")
 _CANONICAL_EXPIRY = re.compile(r"(?:0|[1-9][0-9]{0,18})\Z")
 _MAX_EXPIRY = 2**63 - 1
 _DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
 _BRACKETED_HOST = re.compile(r"\[([^\]]+)\](?::([0-9]+))?\Z")
-_DEVICE_ID = re.compile(r"[0-9a-f]{32}\Z")
 PAIRING_BODY_MAX_BYTES = 4096
 PAIRING_CODE_WINDOW_SECONDS = 300
 # Wrong well-formed codes tolerated per code window.  The rate limiter alone
@@ -396,7 +395,7 @@ class SecurityPolicy:
         token = self.config.access_token
         if token is None:
             raise RuntimeError("access token is not configured")
-        if _DEVICE_ID.fullmatch(device_id) is None:
+        if DEVICE_ID.fullmatch(device_id) is None:
             raise ValueError("device ID is invalid")
         if self.device_is_active is not None and not self.device_is_active(device_id):
             raise ValueError("device is not active")
@@ -416,14 +415,14 @@ class SecurityPolicy:
         parts = value.split(".")
         if len(parts) == 4:
             expires_text, device_id, nonce, signature = parts
-            if _DEVICE_ID.fullmatch(device_id) is None:
+            if DEVICE_ID.fullmatch(device_id) is None:
                 return False, None
             payload = f"{expires_text}.{device_id}.{nonce}"
         else:
             return False, None
         if (
             _CANONICAL_EXPIRY.fullmatch(expires_text) is None
-            or _HEX_32.fullmatch(nonce) is None
+            or DEVICE_ID.fullmatch(nonce) is None  # 32 hex digits, like a device ID
             or _HEX_64.fullmatch(signature) is None
         ):
             return False, None

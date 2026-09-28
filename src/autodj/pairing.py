@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-_DEVICE_ID = re.compile(r"[0-9a-f]{32}\Z")
+DEVICE_ID = re.compile(r"[0-9a-f]{32}\Z")
 _MAX_DEVICE_NAME = 64
 
 
@@ -93,7 +93,7 @@ class DeviceRegistry:
 
     def is_active(self, device_id: str) -> bool:
         """Return whether device exists and has not been revoked."""
-        if not isinstance(device_id, str) or _DEVICE_ID.fullmatch(device_id) is None:
+        if not isinstance(device_id, str) or DEVICE_ID.fullmatch(device_id) is None:
             return False
         with self._connect() as connection:
             row = connection.execute(
@@ -104,8 +104,6 @@ class DeviceRegistry:
 
     def touch(self, device_id: str) -> bool:
         """Record recent use for an active paired device."""
-        if not self.is_active(device_id):
-            return False
         with self._connect() as connection:
             changed = connection.execute(
                 "UPDATE paired_devices SET last_seen_at = ? "
@@ -125,7 +123,7 @@ class DeviceRegistry:
 
     def revoke(self, device_id: str) -> bool:
         """Revoke one device and report whether active state changed."""
-        if not isinstance(device_id, str) or _DEVICE_ID.fullmatch(device_id) is None:
+        if not isinstance(device_id, str) or DEVICE_ID.fullmatch(device_id) is None:
             return False
         with self._connect() as connection:
             changed = connection.execute(
