@@ -356,9 +356,12 @@ function setButtonContent(button, html) {
 // Play / Pause is always named "Play or Pause"; only the hidden glyph
 // follows the state, so no browser speaks the button again when the
 // state flips, and announcePlayState says "Playing" or "Paused" once.
+// The name is the button's aria-label (index.html) and all of its text
+// is hidden: built from the visible words and a hidden " or ", browse
+// mode read "PlayorPause" in Chrome and three lines in Firefox (D16).
 function renderPlayPause(playing) {
-  setButtonContent(btnPause, `<span aria-hidden="true">${playing ? "\u23F8" : "\u25B6"}</span>`
-    + ' Play<span aria-hidden="true">/</span><span class="visually-hidden"> or </span>Pause');
+  setButtonContent(btnPause,
+    `<span aria-hidden="true">${playing ? "\u23F8" : "\u25B6"} Play/Pause</span>`);
 }
 
 function setAttributeIfChanged(element, name, value) {

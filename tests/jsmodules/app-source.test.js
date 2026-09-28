@@ -879,11 +879,28 @@ describe("app request behavior", () => {
     });
     const pause = document.querySelector("#btn-pause");
     const mute = document.querySelector("#btn-mute");
-    // The accessible name: the button's text without its aria-hidden parts.
-    const name = (button) => [...button.childNodes]
+    // The accessible name: aria-label, else the button's text without its
+    // aria-hidden parts.
+    const name = (button) => button.getAttribute("aria-label") ?? [...button.childNodes]
       .filter((node) => node.nodeType === 3 || !node.hasAttribute("aria-hidden"))
       .map((node) => node.textContent).join("").replace(/\s+/g, " ").trim();
     const glyph = (button) => button.querySelector('[aria-hidden="true"]').textContent;
+    // Browse mode reads a button's text, not only its name: every word
+    // Play / Pause shows is hidden, so its one name is all that is read
+    // ("PlayorPause" in Chrome and three lines in Firefox before, D16).
+    const readableText = (button) => {
+      const walker = document.createTreeWalker(button, 4);
+      let text = "";
+      while (walker.nextNode()) {
+        if (!walker.currentNode.parentElement.closest('[aria-hidden="true"]')) {
+          text += walker.currentNode.textContent;
+        }
+      }
+      return text.trim();
+    };
+    expect(pause.getAttribute("aria-label")).toBe("Play or Pause");
+    expect(readableText(pause)).toBe("");
+    expect(pause.textContent).toMatch(/ Play\/Pause$/);
 
     webSocket.onmessage({ data: JSON.stringify({
       current_track: { path: "a.mp3", title: "A" }, is_paused: true, is_muted: true,
@@ -902,6 +919,8 @@ describe("app request behavior", () => {
       queue: [], eq: {}, volume: 1,
     }) });
     expect(name(pause)).toBe("Play or Pause");
+    expect(readableText(pause)).toBe("");
+    expect(pause.querySelectorAll("*")).toHaveLength(1);
     expect(glyph(pause)).not.toBe(pausedGlyph);
     expect(name(mute)).toBe("Mute");
     expect(mute.getAttribute("aria-pressed")).toBe("false");

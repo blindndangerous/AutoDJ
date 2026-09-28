@@ -350,6 +350,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - In Windows High Contrast and other forced-colours modes, the volume and EQ slider thumbs now
   take the system highlight colour and a text-coloured border as intended. The rule named the
   Chrome and Firefox thumbs in one selector list, so each browser dropped the whole rule.
+- In browse mode NVDA read the Play or Pause button as one word, "PlayorPause", in Chrome, and as
+  three buttons, "Play", "or" and "Pause", in Firefox. Its name was built from the visible words
+  and a hidden " or " between them. The button is now named "Play or Pause" outright, and its
+  symbol and visible "Play/Pause" are hidden from screen readers, so both browsers read the one
+  name.
 
 ## [0.17.0] - 2026-09-26
 
