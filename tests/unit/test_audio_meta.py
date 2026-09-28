@@ -920,3 +920,11 @@ class TestEmbeddedLyricClassification:
         _timed, plain = parse_embedded_lyrics("prose <00:12.30>with word tags\nmore")
 
         assert plain == "prose with word tags\nmore"
+
+
+def test_stripped_lyrics_lose_blank_edges_but_keep_inner_breaks() -> None:
+    """Timestamp-only intro/outro lines leave no blank lines for a screen reader."""
+    from autodj.audio_meta import strip_lyric_timestamps
+
+    text = "[ar:Me]\n[00:00.00]\n[00:01.00]Hello\n\n[00:02.00]World\n[00:09.00]\n"
+    assert strip_lyric_timestamps(text) == "Hello\n\nWorld"

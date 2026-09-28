@@ -497,3 +497,44 @@ def test_serve_uses_empty_index_when_files_are_absent(tmp_path: Path) -> None:
         result = CliRunner().invoke(cli, ["serve"])
     assert result.exit_code == 0, result.output
     assert serve_mock.call_args.kwargs["sim"].ntotal == 0
+
+
+def test_bridge_reload_refuses_a_snapshot_that_moved_on(tmp_path: Path) -> None:
+    """The watcher saw generation N; a reload after N+1 published must not swap it in."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from autodj.index_manifest import current_snapshot_token
+
+    def entry(name: str) -> IndexEntry:
+        return IndexEntry(
+            path=f"{name}.flac",
+            title=name,
+            artist="Artist",
+            album="",
+            genre="",
+            bpm=0.0,
+            year=0,
+            length=1.0,
+            energy=0.0,
+            key=-1,
+            mode=-1,
+            tempo_confidence=0.0,
+        )
+
+    vectors = np.zeros((2, FEATURE_DIM), dtype=np.float32)
+    vectors[:, 0] = 1.0
+    save_index([entry("one")], vectors[:1], tmp_path)
+    seen = current_snapshot_token(tmp_path)
+    save_index([entry("one"), entry("two")], vectors, tmp_path)
+    sim = SimilarityIndex.empty()
+    player = MagicMock()
+    player._cfg = SimpleNamespace(
+        index=SimpleNamespace(active_dir=tmp_path), library=SimpleNamespace(music_dir=None)
+    )
+    bridge = PlayerBridge(player=player, sim=sim)
+
+    with pytest.raises(IndexConsistencyError, match="expected generation"):
+        bridge.reload_index_from_disk(expected_snapshot=seen)
+    assert sim.ntotal == 0
+    assert bridge.reload_index_from_disk(expected_snapshot=current_snapshot_token(tmp_path)) == 2

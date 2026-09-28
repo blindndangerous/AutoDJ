@@ -1270,6 +1270,16 @@ class TestModuleTraversal:
         resp = client.get("/modules/C:/Windows/System32/cmd.exe")
         assert resp.status_code in (400, 404)
 
+    async def test_module_name_resolving_outside_modules_is_refused(self, bridge) -> None:
+        """The guard itself, past the router: ../app.css exists but is not a module."""
+        from fastapi import HTTPException
+
+        app = create_app(bridge)
+        route = next(r for r in app.routes if getattr(r, "path", None) == "/modules/{name}")
+        with pytest.raises(HTTPException) as caught:
+            await route.endpoint("../app.css")
+        assert caught.value.status_code == 404
+
     def test_modules_endpoint_serves_existing_module_when_present(self, client) -> None:
         """Best-effort: when the source static dir is the live one (no
         bundled static_dist on this checkout), confirm a real module file

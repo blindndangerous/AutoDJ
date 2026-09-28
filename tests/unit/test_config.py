@@ -822,9 +822,38 @@ class TestServerConfig:
     def test_loopback_detection_never_needs_dns(self, host: str) -> None:
         assert is_loopback_bind(host)
 
-    @pytest.mark.parametrize("host", ["radio.local", "0.0.0.0", "::"])
+    @pytest.mark.parametrize("host", ["radio.local", "0.0.0.0", "::", "bad host!", "0"])
     def test_non_loopback_detection(self, host: str) -> None:
         assert not is_loopback_bind(host)
+
+    def test_zero_is_not_a_host_name(self) -> None:
+        """Many resolvers read "0" as 0.0.0.0, so it must not pass as a name."""
+        with pytest.raises(ValueError, match="invalid host"):
+            ServerConfig(allowed_hosts=["0"])
+
+    @pytest.mark.parametrize(
+        ("kwargs", "error", "message"),
+        [
+            ({"access_token": 12345}, TypeError, "access_token must be a string"),
+            ({"liner_upload_max_bytes": 1024}, ValueError, "between 1 MiB and 1024 MiB"),
+        ],
+    )
+    def test_programmatic_values_are_validated(self, kwargs, error, message) -> None:
+        with pytest.raises(error, match=message):
+            ServerConfig(**kwargs)
+
+    def test_server_section_must_be_a_table(self) -> None:
+        with pytest.raises(TypeError, match="server section must be a table"):
+            ServerConfig.from_dict(["127.0.0.1"])  # type: ignore[arg-type]
+
+    def test_empty_explicit_host_list_is_refused_even_on_loopback(self) -> None:
+        cfg = ServerConfig(allowed_hosts=[])
+        with pytest.raises(ValueError, match="explicit allowed_hosts and allowed_origins"):
+            validate_server_exposure(cfg)
+
+    def test_wildcard_bind_derives_no_default_origin(self) -> None:
+        cfg = ServerConfig(host="0.0.0.0", access_token="s" * 32, allowed_hosts=["radio.local"])
+        assert cfg.effective_allowed_origins() == []
 
     def test_wildcard_requires_explicit_nonempty_policy_lists(self) -> None:
         cfg = ServerConfig(

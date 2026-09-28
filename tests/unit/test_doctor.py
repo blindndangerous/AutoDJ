@@ -1721,3 +1721,27 @@ def test_bundle_built_from_other_web_sources_fails(
     assert check.status is doctor.CheckStatus.FAIL
     assert check.summary == "stale bundle"
     assert "npm run build" in check.detail
+
+
+def test_published_empty_index_warns_instead_of_passing(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    cfg.index.active_dir.mkdir(parents=True)
+    save_index([], np.zeros((0, FEATURE_DIM), dtype=np.float32), cfg.index.active_dir)
+
+    check = doctor._index_check(cfg)
+
+    assert check.status is doctor.CheckStatus.WARN
+    assert check.summary == "empty index"
+    assert "autodj index" in check.detail
+
+
+def test_tracks_db_without_a_manifest_is_the_old_index_format(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    cfg.index.active_dir.mkdir(parents=True)
+    (cfg.index.active_dir / "tracks.db").touch()
+
+    check = doctor._tracks_database_check(cfg)
+
+    assert check.status is doctor.CheckStatus.FAIL
+    assert check.summary == "old index format"
+    assert "autodj index --force" in check.detail

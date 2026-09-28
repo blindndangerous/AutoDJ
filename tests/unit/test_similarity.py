@@ -1080,6 +1080,23 @@ class TestBpmReranking:
         assert any("energy re-ranked" in message for message in caplog.messages)
 
 
+def test_no_candidates_error_names_every_active_hard_filter() -> None:
+    sim, _ = _make_similarity_index(6)
+    with pytest.raises(SimilarityError) as caught:
+        sim.find_next_for_path(
+            sim.entries[0].path,
+            recently_played=deque(),
+            bpm_range=(118.0, 122.0),
+            genre_filter=["Jazz"],
+            harmonic_only=True,
+            harmonic_mode="strict",
+        )
+    assert str(caught.value) == (
+        "No candidates satisfy hard filters: BPM 118-122, known values only; "
+        "genre Jazz; harmonic mode strict."
+    )
+
+
 # ---------------------------------------------------------------------------
 # find_distant
 # ---------------------------------------------------------------------------
@@ -1120,6 +1137,14 @@ class TestFindDistant:
                 current_path="unknown.flac",
                 recently_played=deque(),
             )
+
+    def test_falls_back_to_any_free_track_when_the_distant_quarter_is_played(self) -> None:
+        sim, vectors = _make_similarity_index(20)
+        _scores, order = sim.faiss_index.search(vectors[:1], sim.ntotal)
+        nearest = sim.entries[int(order[0][1])]  # most similar, far from the bottom quarter
+        played = deque(e.path for e in sim.entries if e.path != nearest.path)
+        result = sim.find_distant(current_path=sim.entries[0].path, recently_played=played)
+        assert result.path == nearest.path
 
     def test_raises_if_all_excluded(self) -> None:
         sim, _ = _make_similarity_index(5)
