@@ -1047,7 +1047,7 @@ setApplyState(applyState);
 // Lyrics rendering moved to ./modules/lyrics.js.
 import {
   loadLyrics, applyLyricsState, renderLyricsList,
-  resetLyricState,
+  resetLyricState, currentLyricLine,
 } from "./modules/lyrics.js";
 
 const _lyricEls = { lyricsCard, lyricsList };
@@ -1648,6 +1648,7 @@ installHotkeys({
     if (!_lastBrowserPlayback) return Math.max(0, dur - _lastElapsed);
     try { return Math.max(0, dur - decks[activeIdx].audio.currentTime); } catch (_) { return null; }
   },
+  getLyricLine: currentLyricLine,
   isEnabled: authenticatedInteractionEnabled,
   shortcutToggle: document.getElementById("hotkeys-enabled"),
   // In stream mode Play / Pause stops the station for every listener, so

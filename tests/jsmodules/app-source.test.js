@@ -1469,6 +1469,8 @@ describe("stream mode", () => {
     expect(document.getElementById("progress-bar-label").textContent).toBe("0:47 / 3:20");
     expect(document.querySelector('#lyrics-list li[aria-current="true"]').textContent)
       .toBe("Two");
+    // Shift+L says the line the listener hears, not the server's.
+    expect((await hotkeyOptions()).getLyricLine()).toBe("Two");
   });
 
   it("starts and stops listening from the button with a fresh link", async () => {

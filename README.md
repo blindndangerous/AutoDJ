@@ -183,6 +183,8 @@ After `autodj serve`, point a browser at `http://localhost:8080`.  Five tabs:
 - **Shift+R** — speak the time remaining.
 - **Shift+B** — speak the current BPM.
 - **Shift+K** — speak the musical key.
+- **Shift+L** — speak the current lyric line once. During an instrumental break it says
+  "Instrumental" and the next line; a track without lyrics says so.
 - **?** — open the shortcut list.
 
 Playback, volume, and seek shortcuts work on the Now Playing tab. Status shortcuts (Shift+letter)

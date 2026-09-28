@@ -30,6 +30,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   set starts when the first listener connects and stops 30 seconds after the last one
   disconnects. Combine it with `--lan` (`serve --lan --stream`) so other devices can reach it,
   or run the new Compose `stream` profile. See [Operations](docs/operations.md#radio-stream-sonos-vlc-and-other-players).
+- Shift+L in the web page speaks the current lyric line once, on request. During an
+  instrumental break it says "Instrumental" and the next line to be sung; a track without lyrics
+  says "No lyrics for this track." Lyrics are still never read aloud on their own.
 
 ### Changed
 

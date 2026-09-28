@@ -17,6 +17,7 @@
 //
 // Key conflicts: lowercase k = pause, uppercase K (Shift+K) = speak key.
 // Lowercase n = skip, uppercase N (Shift+N) = speak next track.
+// Shift+L speaks the current lyric line; lowercase l is unused.
 //
 // WCAG 2.1.4: single-key shortcuts can be switched off with the
 // Settings > Keyboard checkbox.  The choice is kept per browser in
@@ -184,7 +185,7 @@ const _pressed = new Set();
 export function installHotkeys({
   btnPause, btnSkip, btnShuffle, btnMute, volSlider,
   seekDelta, getBpm,
-  getTrack, getNextTrack, getRemaining,
+  getTrack, getNextTrack, getRemaining, getLyricLine,
   isEnabled = () => true,
   shortcutToggle = null,
   // Optional: what Space / k do instead of pressing Play / Pause.  Stream
@@ -235,7 +236,7 @@ export function installHotkeys({
     if (e.ctrlKey || e.metaKey || e.altKey) return;
 
     const key = e.key;
-    const statusKey = ["T", "N", "R", "B", "K"].includes(key);
+    const statusKey = ["T", "N", "R", "B", "K", "L"].includes(key);
     if (!nowVisible && !statusKey && key !== "?") return;
 
     let bumpVol = 0;
@@ -308,6 +309,9 @@ export function installHotkeys({
         srSpeak(tk && tk.key_label ? tk.key_label : "Key unknown");
         break;
       }
+      case "L":
+        srSpeak(getLyricLine ? getLyricLine() : "No lyrics for this track.");
+        break;
       case "?":
         if (!toggleShortcutsModal()) return;
         break;

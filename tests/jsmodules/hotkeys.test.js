@@ -275,7 +275,7 @@ describe("page shortcut scope", () => {
     document.querySelector("#panel-now").setAttribute("hidden", "");
     const settingsTabLabel = document.querySelector("#native-tab-label");
 
-    for (const key of ["T", "N", "R", "B", "K"]) {
+    for (const key of ["T", "N", "R", "B", "K", "L"]) {
       const event = keyEvent(settingsTabLabel, key, { shiftKey: true });
       expect(event.defaultPrevented).toBe(true);
       window.dispatchEvent(new KeyboardEvent("keyup", { key }));

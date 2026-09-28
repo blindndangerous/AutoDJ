@@ -1,8 +1,9 @@
 // Lyrics rendering: timestamped LRC scroll + plain-text fallback.
-// Nothing here speaks.  Lyrics are read on demand in the Lyrics card;
-// the active line carries aria-current so a screen reader says
-// "current" on it.  The auto-read live region was removed in 0.18.0:
-// lines are not to be spoken over the music.
+// Nothing here speaks by itself.  Lyrics are read on demand in the
+// Lyrics card, where the active line carries aria-current so a screen
+// reader says "current" on it, or with Shift+L (currentLyricLine below).
+// The auto-read live region was removed in 0.18.0: lines are not to be
+// spoken over the music.
 
 import { escHtml } from "./dom-helpers.js";
 import { requestJson } from "./api-client.js";
@@ -11,6 +12,7 @@ import { createLatestRequestOwner } from "./latest-request.js";
 const state = {
   cached: [],          // full list, used by the visible scroll
   lastIndex: null,     // skip the highlight work when the line is unchanged
+  plain: false,        // untimed lyrics: there is no current line
 };
 const lyricsRequestOwner = createLatestRequestOwner();
 
@@ -18,7 +20,23 @@ export function resetLyricState(elements) {
   lyricsRequestOwner.cancel();
   state.lastIndex = null;
   state.cached = [];
+  state.plain = false;
   if (elements) renderLyricsList(elements);
+}
+
+// What Shift+L says, once, on request.  A blank timed line is an
+// instrumental break; before the first line or on a blank one, the next
+// sung line is given too.
+export function currentLyricLine() {
+  if (state.plain) return "Lyrics for this track are not timed.";
+  if (state.cached.length === 0) return "No lyrics for this track.";
+  const text = (i) => String(state.cached[i].text || "").trim();
+  const idx = state.lastIndex;
+  if (idx !== null && text(idx)) return text(idx);
+  for (let i = idx === null ? 0 : idx + 1; i < state.cached.length; i++) {
+    if (text(i)) return `Instrumental. Next line: ${text(i)}`;
+  }
+  return "Instrumental.";
 }
 
 // Belt and braces for the raw-timestamp defect.  The server parses LRC
@@ -159,7 +177,8 @@ export function applyLyricsState(
   // Plain (unsynced) beets lyrics fallback -- show as a single block
   // when we have no timestamped .lrc list.  Updated on every track
   // change.
-  if (!s.has_lyrics && s.lyrics_plain) {
+  state.plain = !s.has_lyrics && Boolean(s.lyrics_plain);
+  if (state.plain) {
     clearCurrentLine(lyricsList);
     if (state.cached.length || lyricsList.querySelector(".plain-lyrics") === null) {
       state.cached = [];

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
-  applyLyricsState, loadLyrics, resetLyricState, stripLyricTimestamps,
+  applyLyricsState, currentLyricLine, loadLyrics, resetLyricState, stripLyricTimestamps,
 } from
   "../../src/autodj/static/modules/lyrics.js";
 
@@ -408,5 +408,44 @@ describe("timed highlight from the local playback clock", () => {
       { elapsed: 30, localClock: true },
     )).not.toThrow();
     expect(elements.lyricsList.querySelectorAll("li.active")).toHaveLength(0);
+  });
+});
+
+describe("the current line said on request", () => {
+  async function loadedWith(lines) {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new globalThis.Response(
+      JSON.stringify({ path: "t.flac", lyrics: lines }),
+      { headers: { "Content-Type": "application/json" } },
+    )));
+    const elements = lyricElements();
+    elements.lyricsList.scrollTo = vi.fn();
+    await loadLyrics("t.flac", elements);
+    return elements;
+  }
+  const at = (elements, elapsed) => applyLyricsState(
+    { has_lyrics: true, lyric_index: null }, elements, { elapsed, localClock: true },
+  );
+
+  it("says the line playing now, or the next one during a break", async () => {
+    const elements = await loadedWith([
+      { time_s: 5, text: "First" },
+      { time_s: 10, text: "" },
+      { time_s: 20, text: "Second" },
+      { time_s: 30, text: "" },
+    ]);
+    at(elements, 1);
+    expect(currentLyricLine()).toBe("Instrumental. Next line: First");
+    at(elements, 6);
+    expect(currentLyricLine()).toBe("First");
+    at(elements, 12);
+    expect(currentLyricLine()).toBe("Instrumental. Next line: Second");
+    at(elements, 31);
+    expect(currentLyricLine()).toBe("Instrumental.");
+  });
+
+  it("says when there are no lyrics or they are not timed", () => {
+    expect(currentLyricLine()).toBe("No lyrics for this track.");
+    applyLyricsState({ has_lyrics: false, lyrics_plain: "Words" }, lyricElements());
+    expect(currentLyricLine()).toBe("Lyrics for this track are not timed.");
   });
 });
