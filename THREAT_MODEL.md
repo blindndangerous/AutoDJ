@@ -111,9 +111,10 @@ the folder against a local process or network-share user who can already write t
 user can change the liners directly, so AutoDJ uses plain file operations there and does not
 require the folder to be private (a group-writable NAS share works).
 The liner *root directory* comes only from configuration. `/api/playback-settings` rejects
-`liners_folder`, like any other unknown field, with 422 before applying anything, and
-`liners_folder` is not part of the `PlaybackState` schema that `PERSISTED_PLAYBACK_FIELDS`
-derives from, so `web_state.json` never stores it. Treat a paired browser as trusted.
+`liners_folder`, like any other unknown field, with 422 before applying anything.
+`web_state.json` keeps only fields a settings route accepts, and on restart each saved value
+must pass that route's field rule, so the file can neither store nor restore `liners_folder`.
+Treat a paired browser as trusted.
 
 ### Automatic LAN mode
 

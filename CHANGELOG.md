@@ -55,6 +55,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   needed to run the JavaScript tests, lint and browser audits.
 - The page's scripts and stylesheet are now checked with the server on each page load and reused
   from the browser cache when unchanged, instead of being downloaded again every time.
+- Settings saved by the web page (`web_state.json`) are checked on restart by the same rules the
+  settings page's requests must pass, one setting at a time: a bad value is skipped with a
+  warning and the other saved settings still apply. A file with any `schema_version` other than
+  2 is ignored instead of partly applied. `prefetch_next_track` and `silence_trigger_crossfade`
+  are no longer saved there, since the page cannot change them, so the values in `config.toml`
+  apply; an older file that still has them logs a warning for each until the page next saves.
+- An unknown harmonic mode sent to `POST /api/djmix` is refused with an error instead of being
+  ignored.
 
 ### Removed
 
