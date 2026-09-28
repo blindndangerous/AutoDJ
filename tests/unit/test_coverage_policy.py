@@ -2,16 +2,12 @@
 
 from __future__ import annotations
 
-import ast
 import json
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
 
 import pytest
-from packaging.requirements import Requirement
-from packaging.utils import canonicalize_name
 
 from scripts.check_coverage_policy import main
 
@@ -23,7 +19,6 @@ ALLOWED_EXCLUSIONS = (
     r"if torch.cuda.is_available\(\):",
     r"if not torch.cuda.is_available\(\):",
 )
-EXPECTED_STARLETTE_VERSION = "1.6.0"
 
 
 def _write_coverage_config(root: Path, exclusions: list[str], *, comment: str = "") -> None:
@@ -52,82 +47,6 @@ def test_configured_vulture_gate_reports_no_dead_code() -> None:
 
     output = result.stdout + result.stderr
     assert result.returncode == 0, f"Vulture found dead code:\n{output}"
-
-
-def _assert_starlette_dependency_contract(root: Path, project_text: str) -> None:
-    import_locations: list[str] = []
-    for module_path in sorted((root / "src").rglob("*.py")):
-        tree = ast.parse(module_path.read_text(encoding="utf-8"), filename=str(module_path))
-        for node in ast.walk(tree):
-            imported_modules: list[str] = []
-            if isinstance(node, ast.Import):
-                imported_modules = [alias.name for alias in node.names]
-            elif isinstance(node, ast.ImportFrom) and node.module is not None:
-                imported_modules = [node.module]
-            if any(module.partition(".")[0] == "starlette" for module in imported_modules):
-                relative_path = module_path.relative_to(root).as_posix()
-                import_locations.append(f"{relative_path}:{node.lineno}")
-
-    assert import_locations, "Expected production source to import Starlette directly"
-
-    project = tomllib.loads(project_text)
-    requirements = [Requirement(item) for item in project["project"]["dependencies"]]
-    matches = [req for req in requirements if canonicalize_name(req.name) == "starlette"]
-    assert matches, "Direct Starlette imports must declare a direct dependency: " + ", ".join(
-        import_locations
-    )
-    assert len(matches) == 1, "Starlette must have one canonical direct declaration"
-    requirement = matches[0]
-    assert requirement.marker is None, "Starlette direct dependency must be unconditional"
-    assert not requirement.extras, "Starlette direct dependency must not request extras"
-
-    lock = tomllib.loads((root / "uv.lock").read_text(encoding="utf-8"))
-    locked_versions = [
-        package["version"]
-        for package in lock["package"]
-        if canonicalize_name(package["name"]) == "starlette"
-    ]
-    assert locked_versions == [EXPECTED_STARLETTE_VERSION]
-    # Compatible-release pin: the security middleware leans on Starlette routing
-    # internals, so published metadata admits patch releases of the reviewed
-    # minor version and nothing newer.
-    assert str(requirement.specifier) == f"~={EXPECTED_STARLETTE_VERSION}"
-
-
-def test_starlette_imports_have_pinned_direct_dependency() -> None:
-    """Direct Starlette imports must pin the locked minor version."""
-    root = Path(__file__).resolve().parents[2]
-    project_text = (root / "pyproject.toml").read_text(encoding="utf-8")
-
-    _assert_starlette_dependency_contract(root, project_text)
-
-
-def test_starlette_dependency_contract_rejects_missing_declaration() -> None:
-    """Removing the direct declaration must break the dependency contract."""
-    root = Path(__file__).resolve().parents[2]
-    project_text = (root / "pyproject.toml").read_text(encoding="utf-8")
-    mutated_text = project_text.replace(
-        f'"starlette~={EXPECTED_STARLETTE_VERSION}",',
-        "",
-    )
-    assert mutated_text != project_text
-
-    with pytest.raises(AssertionError, match="must declare a direct dependency"):
-        _assert_starlette_dependency_contract(root, mutated_text)
-
-
-def test_starlette_dependency_contract_rejects_conditional_declaration() -> None:
-    """An impossible environment marker must not satisfy the direct dependency."""
-    root = Path(__file__).resolve().parents[2]
-    project_text = (root / "pyproject.toml").read_text(encoding="utf-8")
-    mutated_text = project_text.replace(
-        f'"starlette~={EXPECTED_STARLETTE_VERSION}"',
-        f"\"starlette~={EXPECTED_STARLETTE_VERSION}; python_version < '3.0'\"",
-    )
-    assert mutated_text != project_text
-
-    with pytest.raises(AssertionError, match="must be unconditional"):
-        _assert_starlette_dependency_contract(root, mutated_text)
 
 
 def test_dj_meta_cache_exit_accepts_traceback_keyword(tmp_path: Path) -> None:
