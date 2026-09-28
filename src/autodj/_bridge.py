@@ -618,12 +618,14 @@ class PlayerBridge:
             key_to_hz,
             synthesize_downbeats,
         )
-        from autodj.dj_meta import camelot_label, key_label
+        from autodj.dj_meta import camelot_label, key_label, key_spoken
 
         # Two key fields per track:
         #   ``key_label``  -- notation-aware display string (Camelot or
         #                     letter-name, sharps or flats per settings).
         #                     Drives the now-playing badge + log lines.
+        #   ``key_spoken`` -- the same key spelled out for speech
+        #                     ("F sharp minor"), since NVDA misreads "F#m".
         #   ``camelot_cell`` -- always-Camelot cell address (8A / 8B)
         #                     used by the Camelot wheel SVG, since the
         #                     wheel is Camelot-shaped regardless of
@@ -770,6 +772,12 @@ class PlayerBridge:
                 "mode": entry.mode,
                 "camelot_cell": camelot_label(entry.key, entry.mode),
                 "key_label": key_label(
+                    entry.key,
+                    entry.mode,
+                    _key_notation,
+                    prefer_flats=_key_prefer_flats,
+                ),
+                "key_spoken": key_spoken(
                     entry.key,
                     entry.mode,
                     _key_notation,

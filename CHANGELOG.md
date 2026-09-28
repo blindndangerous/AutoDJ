@@ -30,6 +30,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   set starts when the first listener connects and stops 30 seconds after the last one
   disconnects. Combine it with `--lan` (`serve --lan --stream`) so other devices can reach it,
   or run the new Compose `stream` profile. See [Operations](docs/operations.md#radio-stream-sonos-vlc-and-other-players).
+- Each track in the state that `/api/status` and the WebSocket send now carries `key_spoken`,
+  the key spelled out for speech in the chosen notation: "F sharp minor" and "B flat minor"
+  instead of "F#m" and "Bbm", which NVDA reads as "F number m". Camelot keys such as "8A" are
+  sent as they are.
 
 ### Changed
 

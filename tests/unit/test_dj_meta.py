@@ -15,6 +15,7 @@ from autodj.dj_meta import (
     detect_intro_outro,
     harmonic_compatible,
     key_label,
+    key_spoken,
     musical_label,
     nearest_phrase_boundary,
 )
@@ -100,6 +101,15 @@ class TestKeyLabelDispatcher:
     def test_unknown_input_returns_dashes(self) -> None:
         assert key_label(-1, 1, "musical") == "--"
         assert key_label(-1, 1, "camelot") == "--"
+
+
+def test_key_spoken_spells_out_accidentals_for_screen_readers() -> None:
+    """NVDA reads "F#m" as "F number m"; the spoken form must not."""
+    assert key_spoken(6, 0, "musical") == "F sharp minor"
+    assert key_spoken(10, 0, "musical", prefer_flats=True) == "B flat minor"
+    assert key_spoken(11, 1, "musical", prefer_flats=True) == "B major"
+    assert key_spoken(9, 0, "camelot") == "8A"
+    assert key_spoken(-1, 1, "musical") == "unknown"
 
 
 class TestHarmonicCompatible:
