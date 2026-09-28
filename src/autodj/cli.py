@@ -810,16 +810,19 @@ def cmd_devices_pairing_code(ctx: click.Context) -> None:
 
 @cli.command("backup")
 @click.argument("destination", type=click.Path(path_type=Path, dir_okay=False))
-@click.option("--online", is_flag=True, help="Use SQLite online backup while AutoDJ is running.")
-@click.option("--force", is_flag=True, help="Atomically replace an existing destination archive.")
+@click.option("--force", is_flag=True, help="Replace an existing archive at DESTINATION.")
 @click.pass_context
-def cmd_backup(ctx: click.Context, destination: Path, online: bool, force: bool) -> None:
-    """Create a versioned backup of derived and unique AutoDJ state."""
+def cmd_backup(ctx: click.Context, destination: Path, force: bool) -> None:
+    """Write the index, DJ metadata, web settings, liners, profiles and history to a ZIP file.
+
+    Safe while AutoDJ is serving.  config.toml, config.local.toml and
+    presets.toml are not included; copy them yourself.
+    """
     from autodj.backup import BackupError, create_backup
 
     cfg = _load_cfg_or_exit(ctx.obj["config_path"])
     try:
-        path = create_backup(cfg, destination, online=online, force=force)
+        path = create_backup(cfg, destination, force=force)
     except BackupError as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(f"Backup written: {path}")
@@ -827,21 +830,23 @@ def cmd_backup(ctx: click.Context, destination: Path, online: bool, force: bool)
 
 @cli.command("restore")
 @click.argument("archive", type=click.Path(path_type=Path, exists=True, dir_okay=False))
-@click.option("--force", is_flag=True, help="Replace files already present at restore targets.")
+@click.option("--force", is_flag=True, help="Replace the files and folders the backup restores.")
 @click.pass_context
 def cmd_restore(ctx: click.Context, archive: Path, force: bool) -> None:
-    """Restore a compatible backup, then require doctor validation."""
+    """Restore a backup made by the same major.minor version, then run doctor.
+
+    Stop AutoDJ first; restore cannot tell whether it is running.  The liners
+    and profiles folders in the backup replace the current ones whole.
+    """
     from autodj.backup import BackupError, restore_backup
     from autodj.doctor import render_text, run_doctor
 
     cfg = _load_cfg_or_exit(ctx.obj["config_path"])
     try:
-        result = restore_backup(cfg, archive, force=force)
+        restored = restore_backup(cfg, archive, force=force)
     except BackupError as exc:
         raise click.ClickException(str(exc)) from exc
-    click.echo(f"Restored {result.restored} files.")
-    for warning in result.warnings:
-        click.echo(f"WARNING: {warning}", err=True)
+    click.echo(f"Restored {restored} files.")
     report = run_doctor(cfg)
     click.echo(render_text(report))
     if report.exit_code:
