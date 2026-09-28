@@ -1,7 +1,7 @@
 // User-managed queue: render, reorder (Top/Up/Down), Remove, Clear.
 //
-// Event delegation on the <ul> so the per-row buttons share a single
-// handler.  Optimistic local render + key tracking so the UI updates
+// Event delegation at document level so the per-row buttons share a
+// single handler.  Optimistic local render + key tracking so the UI updates
 // immediately without waiting for the server round trip.
 
 import { escHtml, fmtTrack } from "./dom-helpers.js";

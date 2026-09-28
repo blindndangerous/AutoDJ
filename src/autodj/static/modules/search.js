@@ -156,9 +156,10 @@ export function installSearch({
       });
     } catch (errorValue) {
       if (!isAuthenticatedRequestCurrent(epoch)) return;
-      announce(now
-        ? `Could not play ${name} now. ${errorValue.message}`
-        : `Could not add ${name} to the queue. ${errorValue.message}`, "error");
+      const failed = now ? `Could not play ${name} now.`
+        : btn.dataset.next === "true" ? `Could not play ${name} next.`
+          : `Could not add ${name} to the queue.`;
+      announce(`${failed} ${errorValue.message}`, "error");
     } finally {
       if (isAuthenticatedRequestCurrent(epoch)) btn.focus();
     }

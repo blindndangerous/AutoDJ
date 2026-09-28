@@ -134,6 +134,24 @@ describe("search feedback is visible", () => {
     expect(els.queueAnnounce.textContent).toBe(toast.textContent);
     vi.unstubAllGlobals();
   });
+
+  it("says a failed Play next did not play next", async () => {
+    const els = setup();
+    els.searchResults.innerHTML = `<li>
+      <span class="result-name">Gone Track</span>
+      <button class="result-btn" data-path="/m/gone.mp3" data-now="false"
+              data-next="true">Play next</button>
+    </li>`;
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(
+      jsonResponse({ detail: "That track is no longer in the library." }, 404),
+    )));
+
+    els.searchResults.querySelector(".result-btn").click();
+    await vi.waitFor(() => expect(els.queueAnnounce.textContent).toBe(
+      "Could not play Gone Track next. That track is no longer in the library.",
+    ));
+    vi.unstubAllGlobals();
+  });
 });
 
 describe("search result actions", () => {

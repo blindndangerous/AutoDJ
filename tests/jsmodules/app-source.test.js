@@ -715,7 +715,7 @@ describe("app request behavior", () => {
       onRequest: () => jsonResponse({ lyrics: [] }),
     });
     expect(await linerDeps.playLiner(new ArrayBuffer(1), -12)).toBe(true);
-    const nowPlaying = document.querySelector("#now-playing-announce");
+    const nowPlaying = document.querySelector("#now-playing-title");
     for (let index = 2; index <= 5; index += 1) {
       webSocket.onmessage({ data: JSON.stringify({
         browser_playback: true,
