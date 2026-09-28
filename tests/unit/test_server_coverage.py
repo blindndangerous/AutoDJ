@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import io
 import sys
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from autodj.http_media import OpenedMediaFile
 from autodj.index_manifest import IndexSnapshotToken
 from autodj.server import (
     _close_alac_stream,
@@ -114,36 +113,26 @@ def _mutagen_modules(mp4_factory: object) -> dict[str, ModuleType]:
     return {"mutagen": mutagen, "mutagen.mp4": mp4}
 
 
-def test_alac_detection_reads_codec_and_rewinds_source() -> None:
-    handle = io.BytesIO(b"audio")
-    source = OpenedMediaFile(handle=handle, size=5)
+def test_alac_detection_reads_codec() -> None:
     factory = MagicMock(return_value=SimpleNamespace(info=SimpleNamespace(codec="ALAC")))
 
     with patch.dict(sys.modules, _mutagen_modules(factory)):
-        assert _is_alac(source, ".m4a")
-
-    assert handle.tell() == 0
+        assert _is_alac(Path("song.m4a"))
 
 
-def test_alac_detection_contains_parser_error_and_rewinds_source() -> None:
-    handle = io.BytesIO(b"audio")
-    source = OpenedMediaFile(handle=handle, size=5)
+def test_alac_detection_contains_parser_error() -> None:
     factory = MagicMock(side_effect=ValueError("bad mp4"))
 
     with patch.dict(sys.modules, _mutagen_modules(factory)):
-        assert not _is_alac(source, ".mp4")
-
-    assert handle.tell() == 0
+        assert not _is_alac(Path("song.mp4"))
 
 
 def test_alac_detection_contains_incomplete_mutagen_module() -> None:
-    handle = io.BytesIO(b"audio")
-    source = OpenedMediaFile(handle=handle, size=5)
     modules = _mutagen_modules(MagicMock())
     del modules["mutagen"].MutagenError
 
     with patch.dict(sys.modules, modules):
-        assert not _is_alac(source, ".m4a")
+        assert not _is_alac(Path("song.m4a"))
 
 
 @pytest.mark.asyncio

@@ -11,7 +11,7 @@ import os
 import secrets
 import stat
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import Awaitable, Callable
 from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,14 +36,6 @@ class LinerTooLargeError(ValueError):
 
 class LinerStorageUnsupportedError(OSError):
     """Raised when storage cannot provide required atomic operations."""
-
-
-class MalformedLinerRange(ValueError):
-    """Raised when a byte-range header is malformed or unsupported."""
-
-
-class LinerRangeNotSatisfiable(ValueError):
-    """Raised when a byte range starts beyond the held file."""
 
 
 class AsyncReader(Protocol):
@@ -1616,60 +1608,3 @@ class LinerUploadBodyLimitMiddleware:
             }
         )
         await send({"type": "http.response.body", "body": body})
-
-
-def parse_liner_range(value: str, file_size: int) -> tuple[int, int]:
-    """Parse one HTTP bytes range into a half-open interval."""
-    if file_size <= 0:
-        raise LinerRangeNotSatisfiable(file_size)
-    if not value.lower().startswith("bytes=") or "," in value:
-        raise MalformedLinerRange(value)
-    requested = value.split("=", 1)[1].strip()
-    if "-" not in requested:
-        raise MalformedLinerRange(value)
-    start_text, end_text = (part.strip() for part in requested.split("-", 1))
-    try:
-        if not start_text:
-            suffix = int(end_text)
-            if suffix <= 0:
-                raise MalformedLinerRange(value)
-            return max(file_size - suffix, 0), file_size
-        start = int(start_text)
-        end = min(int(end_text) + 1, file_size) if end_text else file_size
-    except ValueError as exc:
-        raise MalformedLinerRange(value) from exc
-    if start < 0:
-        raise MalformedLinerRange(value)
-    if start >= file_size:
-        raise LinerRangeNotSatisfiable(file_size)
-    if end <= start:
-        raise MalformedLinerRange(value)
-    return start, end
-
-
-async def iter_opened_liner(
-    opened: OpenedLiner, *, start: int = 0, end: int | None = None
-) -> AsyncIterator[bytes]:
-    """Yield held-file content and close its descriptor on every exit path."""
-    try:
-        opened.file.seek(start)
-        remaining = None if end is None else end - start
-        while remaining is None or remaining > 0:
-            chunk = await _read_file_chunk(
-                opened.file, 64 * 1024 if remaining is None else min(64 * 1024, remaining)
-            )
-            if not chunk:
-                break
-            yield chunk
-            if remaining is not None:
-                remaining -= len(chunk)
-    finally:
-        opened.file.close()
-
-
-async def _read_file_chunk(file: BinaryIO, size: int) -> bytes:
-    """Read one file chunk in a worker thread without blocking the event loop."""
-
-    import asyncio
-
-    return await asyncio.to_thread(file.read, size)

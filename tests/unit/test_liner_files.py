@@ -21,16 +21,12 @@ import pytest
 from autodj.liner_files import (
     InvalidLinerName,
     LinerConflictError,
-    LinerRangeNotSatisfiable,
     LinerStorageUnsupportedError,
     LinerTooLargeError,
     LinerUploadBodyLimitMiddleware,
-    MalformedLinerRange,
     OpenedLiner,
     delete_liner_file,
-    iter_opened_liner,
     open_liner_file,
-    parse_liner_range,
     resolve_liner_path,
     store_liner_upload,
 )
@@ -1718,68 +1714,6 @@ def test_threaded_non_replace_upload_has_one_winner(tmp_path: Path) -> None:
         outcomes = sorted(executor.map(upload, (b"one", b"two")))
     assert outcomes == ["conflict", "stored"]
     assert (root / "thread-race.mp3").read_bytes() in {b"one", b"two"}
-
-
-@pytest.mark.parametrize(
-    ("value", "file_size", "expected"),
-    [
-        ("bytes=2-5", 10, (2, 6)),
-        ("BYTES=7-", 10, (7, 10)),
-        ("bytes=-3", 10, (7, 10)),
-        ("bytes=-30", 10, (0, 10)),
-        ("bytes=2-99", 10, (2, 10)),
-    ],
-)
-def test_parse_liner_range_accepts_single_bounded_ranges(
-    value: str, file_size: int, expected: tuple[int, int]
-) -> None:
-    assert parse_liner_range(value, file_size) == expected
-
-
-@pytest.mark.parametrize(
-    "value",
-    [
-        "items=0-1",
-        "bytes=0-1,3-4",
-        "bytes=3",
-        "bytes=-0",
-        "bytes=abc-def",
-        "bytes=-1-2",
-        "bytes=5-3",
-    ],
-)
-def test_parse_liner_range_rejects_malformed_ranges(value: str) -> None:
-    with pytest.raises(MalformedLinerRange):
-        parse_liner_range(value, 10)
-
-
-@pytest.mark.parametrize(("value", "file_size"), [("bytes=0-1", 0), ("bytes=10-", 10)])
-def test_parse_liner_range_rejects_unsatisfiable_ranges(value: str, file_size: int) -> None:
-    with pytest.raises(LinerRangeNotSatisfiable) as exc_info:
-        parse_liner_range(value, file_size)
-    assert exc_info.value.args == (file_size,)
-
-
-@pytest.mark.asyncio
-async def test_iter_opened_liner_honors_bounds_and_closes_file() -> None:
-    handle = io.BytesIO(b"0123456789")
-    opened = OpenedLiner(file=handle, stat_result=os.stat_result((0,) * 10))
-
-    chunks = [chunk async for chunk in iter_opened_liner(opened, start=2, end=6)]
-
-    assert b"".join(chunks) == b"2345"
-    assert handle.closed
-
-
-@pytest.mark.asyncio
-async def test_iter_opened_liner_reads_to_eof_and_closes_file() -> None:
-    handle = io.BytesIO(b"payload")
-    opened = OpenedLiner(file=handle, stat_result=os.stat_result((0,) * 10))
-
-    chunks = [chunk async for chunk in iter_opened_liner(opened)]
-
-    assert chunks == [b"payload"]
-    assert handle.closed
 
 
 def test_body_limit_requires_positive_multipart_overhead() -> None:

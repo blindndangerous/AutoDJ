@@ -13,7 +13,6 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -1515,29 +1514,6 @@ class TestLinerUploadDelete:
         )
 
         assert response.status_code == 400
-
-    def test_streaming_response_construction_failure_closes_file(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from autodj import liner_files, server
-
-        player = _make_player_mock()
-        player._cfg.playback.liners_folder = str(tmp_path)
-        client = TestClient(create_app(PlayerBridge(player=player, sim=_make_sim_mock())))
-        file = MagicMock()
-        opened = liner_files.OpenedLiner(
-            file=file,
-            stat_result=SimpleNamespace(st_size=5),
-        )
-        monkeypatch.setattr(liner_files, "open_liner_file", MagicMock(return_value=opened))
-        monkeypatch.setattr(
-            server, "StreamingResponse", MagicMock(side_effect=RuntimeError("response"))
-        )
-
-        response = client.get("/api/liners/file/clip.wav")
-
-        assert response.status_code == 500
-        file.close.assert_called()
 
 
 def test_dev_module_route_serves_existing_javascript(
