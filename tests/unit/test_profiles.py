@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -47,15 +48,18 @@ class TestProfileSnapshotRoundTrip:
         again = ProfileSnapshot.from_dict(d)
         assert again == snap
 
-    def test_unknown_keys_routed_to_extra(self) -> None:
-        snap = ProfileSnapshot.from_dict(
-            {
-                "name": "X",
-                "future_field_we_havent_seen": 42,
-            },
-        )
-        assert snap.name == "X"
-        assert snap.extra["future_field_we_havent_seen"] == 42
+    @pytest.mark.parametrize(
+        ("data", "message"),
+        [
+            ({"name": "X", "bpm_low": 80}, "unknown profile keys: ['bpm_low']"),
+            ({"name": "X", "extra": {}}, "unknown profile keys: ['extra']"),
+            ({"bpm_lo": 80}, "needs a name"),
+            (["X"], "JSON object"),
+        ],
+    )
+    def test_from_dict_rejects_what_it_cannot_apply(self, data, message) -> None:
+        with pytest.raises(ValueError, match=re.escape(message)):
+            ProfileSnapshot.from_dict(data)
 
 
 class TestProfileStore:
@@ -87,6 +91,13 @@ class TestProfileStore:
     def test_delete_returns_false_when_missing(self, tmp_path: Path) -> None:
         store = ProfileStore(tmp_path / "profiles")
         assert store.delete("NeverExisted") is False
+
+    def test_load_names_the_profile_with_an_unknown_key(self, tmp_path: Path) -> None:
+        root = tmp_path / "profiles"
+        root.mkdir()
+        (root / "Old.json").write_text('{"name": "Old", "extra": {}}', encoding="utf-8")
+        with pytest.raises(ValueError, match=r"Profile 'Old' .*unknown profile keys: \['extra'\]"):
+            ProfileStore(root).load("Old")
 
     def test_load_missing_raises(self, tmp_path: Path) -> None:
         store = ProfileStore(tmp_path / "profiles")

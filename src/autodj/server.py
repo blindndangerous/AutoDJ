@@ -421,8 +421,11 @@ class ProfileSaveBody(BaseModel):
     """Request body for POST /api/profiles.
 
     All snapshot fields are optional except ``name``; missing fields
-    mean "do not override" when the profile is later applied.
+    mean "do not override" when the profile is later applied.  Unknown
+    fields are refused, as the stored profile would refuse them.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     name: str
     index_name: str | None = None
@@ -1531,6 +1534,8 @@ def create_app(
             snap = await asyncio.to_thread(_profile_store().load, name)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return snap.to_dict()
 
     @app.post("/api/profiles")
@@ -1573,6 +1578,8 @@ def create_app(
             snap = await asyncio.to_thread(_profile_store().load, name)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         applied: list[str] = []
         # Playback flags

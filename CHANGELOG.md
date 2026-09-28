@@ -58,6 +58,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   or `path_remap` in `[library]`, stops AutoDJ with an error naming the section and key instead
   of being ignored. Preset names under `[presets.NAME]` are still free-form; the keys inside
   each preset are checked by the preset loader as before.
+- Saved profiles (the JSON files in the `profiles` folder next to your index) with a key AutoDJ
+  does not know are now refused with an error naming the key, instead of the key being kept and
+  ignored. Saving a profile through `/api/profiles` with an unknown field is refused the same way.
+  Profiles saved by earlier versions all contain an empty `"extra": {}` entry: delete that line
+  from each file, or save the profile again.
 - Saved web settings (`web_state.json`) from earlier versions are ignored, with one warning in the
   log. Your web settings return to their defaults until you change one in the web page, which
   saves a new file. Earlier files stored a harmonic mode even when harmonic mixing was off, and
