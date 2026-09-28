@@ -14,10 +14,10 @@ _SECRET = "pairing-secret-that-is-at-least-32-bytes"
 def _paired_client(bridge, tmp_path) -> tuple[TestClient, DeviceRegistry]:
     bridge.player._cfg.server.access_token = _SECRET
     bridge.player._cfg.index.active_dir = tmp_path
-    registry = DeviceRegistry(tmp_path / ".paired-devices.sqlite3", now=lambda: 1_000)
-    app = create_app(bridge, device_registry=registry)
+    bridge.player._cfg.index.index_dir = tmp_path
+    app = create_app(bridge)
     app.state.security_policy.now = lambda: 1_000
-    return TestClient(app), registry
+    return TestClient(app), app.state.device_registry
 
 
 def test_browser_pairs_once_and_reuses_device_session(bridge, tmp_path) -> None:
@@ -71,10 +71,9 @@ def test_revoked_device_loses_api_access_without_server_restart(bridge, tmp_path
 def test_pairing_attempts_share_bounded_authentication_limiter(bridge, tmp_path) -> None:
     bridge.player._cfg.server.access_token = _SECRET
     bridge.player._cfg.index.active_dir = tmp_path
-    registry = DeviceRegistry(tmp_path / ".paired-devices.sqlite3", now=lambda: 1_000)
+    bridge.player._cfg.index.index_dir = tmp_path
     app = create_app(
         bridge,
-        device_registry=registry,
         pairing_rate_limiter=PairingRateLimiter(per_client_limit=1, global_limit=10),
     )
     app.state.security_policy.now = lambda: 1_000
@@ -97,7 +96,7 @@ def test_pairing_attempts_share_bounded_authentication_limiter(bridge, tmp_path)
         ).status_code
         == 429
     )
-    assert registry.list_devices() == []
+    assert app.state.device_registry.list_devices() == []
 
 
 def test_pairing_rejects_oversized_body_before_json_parsing(bridge, tmp_path) -> None:

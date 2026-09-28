@@ -1488,7 +1488,7 @@ class TestLifespan:
         assert not player_thread.is_alive()
 
     def test_shutdown_timeout_keeps_cache_open_for_blocked_player_thread(
-        self, tmp_path, caplog
+        self, tmp_path, caplog, monkeypatch
     ) -> None:
         import logging
         import threading
@@ -1510,11 +1510,8 @@ class TestLifespan:
             allow_player_exit.wait()
 
         player_thread = threading.Thread(target=player_loop, name="blocked-test-player")
-        app = create_app(
-            bridge,
-            player_thread=player_thread,
-            shutdown_timeout_s=-1.0,
-        )
+        monkeypatch.setattr("autodj.server._SHUTDOWN_TIMEOUT_S", 0.0)
+        app = create_app(bridge, player_thread=player_thread)
         player_thread.start()
         client = TestClient(app)
 

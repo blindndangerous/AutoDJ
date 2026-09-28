@@ -110,6 +110,8 @@ _WS_SEND_TIMEOUT_SECONDS = 2.0
 _STREAM_SHUTDOWN_GRACE_SECONDS = 3
 _STREAM_NAME = re.compile(r"^(?P<secret>[A-Za-z0-9_-]{1,128})\.(?P<ext>mp3|m3u)$")
 _ALAC_PREFETCH_TIMEOUT_SECONDS = 5.0
+# Total seconds shutdown waits for the player and cache writers to stop.
+_SHUTDOWN_TIMEOUT_S = 30.0
 _PACKAGE_DIR = Path(__file__).parent
 _BUILD_INFO_NAME = "build-info.json"
 # Play now, Play next and Add to queue on a search result whose file was
@@ -979,11 +981,9 @@ async def _tick_stream_workers(
 def create_app(
     bridge: PlayerBridge,
     player_thread: threading.Thread | None = None,
-    shutdown_timeout_s: float = 30.0,
     *,
     secure_cookie: bool = False,
     pairing_rate_limiter: PairingRateLimiter | None = None,
-    device_registry: DeviceRegistry | None = None,
     stream_secret: StreamSecret | None = None,
     stream_first_track: IndexEntry | None = None,
     server_audio: bool = False,
@@ -993,7 +993,6 @@ def create_app(
     Args:
         bridge: A fully initialised :class:`PlayerBridge`.
         player_thread: Optional main player thread to join during shutdown.
-        shutdown_timeout_s: Total seconds allowed for all cache writers to stop.
         stream_secret: In stream mode, the stream secret; the app then
             starts the stream output and station when it starts up (the
             bridge's player must have been built in stream mode).
@@ -1005,7 +1004,6 @@ def create_app(
     Returns:
         A configured :class:`fastapi.FastAPI` instance.
     """
-    shutdown_timeout_s = max(0.0, float(shutdown_timeout_s))
     # Connected WebSocket clients — populated at runtime
     _ws_clients: set[_WebSocketClient] = set()
     _ws_lock = asyncio.Lock()
@@ -1092,7 +1090,7 @@ def create_app(
                     _quiesce_cache_writers,
                     bridge,
                     player_thread,
-                    shutdown_timeout_s,
+                    _SHUTDOWN_TIMEOUT_S,
                 )
             cache_closed = False
             if writers_quiesced:
@@ -1107,7 +1105,7 @@ def create_app(
                 logger.warning(
                     "Degraded shutdown: DJ-meta cache remains open because writers "
                     "did not stop within %.2f seconds",
-                    shutdown_timeout_s,
+                    _SHUTDOWN_TIMEOUT_S,
                 )
             for task in (broadcast, watcher):
                 task.cancel()
@@ -1167,14 +1165,16 @@ def create_app(
     )
 
     server_config = bridge.player._cfg.server
-    if device_registry is None and isinstance(server_config.access_token, str):
-        registry_path = paired_devices_path(bridge.player._cfg)
-        device_registry = DeviceRegistry(registry_path)
+    device_registry: DeviceRegistry | None = None
+    if isinstance(server_config.access_token, str):
+        device_registry = DeviceRegistry(paired_devices_path(bridge.player._cfg))
     policy = SecurityPolicy(
         server_config,
         secure_cookie=secure_cookie,
         device_is_active=(device_registry.is_active if device_registry is not None else None),
     )
+    # Read-only handles for serve()'s startup banner and for tests; the
+    # routes and the middleware use these same objects directly.
     app.state.security_policy = policy
     app.state.device_registry = device_registry
     app.state.pairing_rate_limiter = pairing_rate_limiter or PairingRateLimiter()
@@ -1296,9 +1296,9 @@ def create_app(
     @app.get("/api/auth/status")
     async def api_auth_status(request: Request) -> dict[str, object]:
         """Report whether this browser holds a valid authenticated session."""
-        request_policy: SecurityPolicy = request.app.state.security_policy
+        request_policy = policy
         device_id = request_policy.session_device_id(request.cookies.get(COOKIE_NAME))
-        registry: DeviceRegistry | None = request.app.state.device_registry
+        registry = device_registry
         cookie = request.cookies.get(COOKIE_NAME)
 
         def _status() -> dict[str, object]:
@@ -1324,8 +1324,8 @@ def create_app(
     @app.post("/api/pair")
     async def api_pair(body: PairBody, request: Request) -> Response:
         """Pair one browser and issue its persistent device-bound session."""
-        request_policy: SecurityPolicy = request.app.state.security_policy
-        registry: DeviceRegistry | None = request.app.state.device_registry
+        request_policy = policy
+        registry = device_registry
         if registry is None or not request_policy.authentication_required:
             raise HTTPException(status_code=409, detail="Pairing is not enabled")
         client = peer_address(request.scope)
@@ -1379,7 +1379,7 @@ def create_app(
         valid session.  ``verify_session`` reads the device database, so it
         runs off the event loop.
         """
-        request_policy: SecurityPolicy = request.app.state.security_policy
+        request_policy = policy
         if not request_policy.authentication_required:
             return True
         cookie = request.cookies.get(COOKIE_NAME)
@@ -1395,8 +1395,8 @@ def create_app(
         devices list, and a copied cookie would keep working for the rest of
         its 90 days.
         """
-        request_policy: SecurityPolicy = request.app.state.security_policy
-        registry: DeviceRegistry | None = request.app.state.device_registry
+        request_policy = policy
+        registry = device_registry
         device_id = request_policy.session_device_id(request.cookies.get(COOKIE_NAME))
         if device_id is not None and registry is not None:
             await asyncio.to_thread(registry.revoke, device_id)
@@ -1405,8 +1405,8 @@ def create_app(
     @app.get("/api/devices")
     async def api_devices(request: Request) -> dict[str, object]:
         """List paired browsers, marking the one making this request."""
-        request_policy: SecurityPolicy = request.app.state.security_policy
-        registry: DeviceRegistry | None = request.app.state.device_registry
+        request_policy = policy
+        registry = device_registry
         if registry is None or not request_policy.authentication_required:
             return {"pairing": False, "devices": []}
         current = request_policy.session_device_id(request.cookies.get(COOKIE_NAME))
@@ -1429,8 +1429,8 @@ def create_app(
     @app.delete("/api/devices/{device_id}")
     async def api_device_revoke(device_id: str, request: Request) -> Response:
         """Revoke one paired browser; revoking this browser also signs it out."""
-        request_policy: SecurityPolicy = request.app.state.security_policy
-        registry: DeviceRegistry | None = request.app.state.device_registry
+        request_policy = policy
+        registry = device_registry
         if registry is None or not request_policy.authentication_required:
             raise HTTPException(status_code=409, detail="Pairing is not enabled")
         # Read before revoking: afterwards this session no longer resolves.
@@ -2179,7 +2179,7 @@ def create_app(
         """WebSocket: broadcast state updates to a connected browser."""
         request_id = new_request_id()
         route = "/ws"
-        request_policy: SecurityPolicy = websocket.app.state.security_policy
+        request_policy = policy
         host_values = _raw_header_values(websocket.scope, b"host")
         origin_values = _raw_header_values(websocket.scope, b"origin")
 
@@ -2213,8 +2213,7 @@ def create_app(
 
         def session_is_valid() -> bool:
             """Return whether the accepted WebSocket session remains valid."""
-            live_policy: SecurityPolicy = websocket.app.state.security_policy
-            return not live_policy.authentication_required or live_policy.verify_session(
+            return not request_policy.authentication_required or request_policy.verify_session(
                 session_cookie
             )
 

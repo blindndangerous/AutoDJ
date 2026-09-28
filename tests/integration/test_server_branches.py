@@ -65,12 +65,13 @@ def _security_app():
     return create_app(PlayerBridge(player=player, sim=_make_sim_mock()))
 
 
-def _security_client_and_bridge() -> tuple[TestClient, PlayerBridge]:
+def _security_client_and_bridge(**server: Any) -> tuple[TestClient, PlayerBridge]:
     player = _make_player_mock()
     player._cfg.server = ServerConfig(
         access_token=_TEST_ACCESS_TOKEN,
         allowed_hosts=["testserver"],
         allowed_origins=["http://testserver"],
+        **server,
     )
     bridge = PlayerBridge(player=player, sim=_make_sim_mock())
     return (
@@ -149,26 +150,6 @@ def test_security_policy_snapshots_mutable_configuration() -> None:
     replacement = SecurityPolicy(original)
     assert replacement.verify_pairing_code(replacement.current_pairing_code())
     assert replacement.host_allowed("rotated.local")
-
-
-def test_app_policy_replacement_is_atomic() -> None:
-    app = _security_app()
-    rotated = "rotated-task10-access-token-is-32-bytes"
-    app.state.security_policy = SecurityPolicy(
-        ServerConfig(
-            access_token=rotated,
-            allowed_hosts=["rotated.local"],
-            allowed_origins=["http://rotated.local"],
-        ),
-        device_is_active=app.state.device_registry.is_active,
-    )
-    client = TestClient(
-        app,
-        base_url="http://rotated.local",
-        headers={"Host": "rotated.local", "Origin": "http://rotated.local"},
-    )
-
-    assert _pair(client).status_code == 200
 
 
 def test_pairing_rate_limiter_is_bounded_isolated_and_expires() -> None:
@@ -951,10 +932,7 @@ def test_websocket_closes_when_an_established_session_expires() -> None:
     )
     bridge = PlayerBridge(player=player, sim=_make_sim_mock())
     app = create_app(bridge)
-    app.state.security_policy = SecurityPolicy(
-        player._cfg.server,
-        now=lambda: now[0],
-    )
+    app.state.security_policy.now = lambda: now[0]
 
     with TestClient(
         app,
@@ -972,16 +950,8 @@ def test_websocket_closes_when_an_established_session_expires() -> None:
 
 def test_websocket_rejects_mutation_after_session_expiry() -> None:
     now = [1000.0]
-    client, bridge = _security_client_and_bridge()
-    client.app.state.security_policy = SecurityPolicy(
-        ServerConfig(
-            access_token=_TEST_ACCESS_TOKEN,
-            allowed_hosts=["testserver"],
-            allowed_origins=["http://testserver"],
-            session_ttl_seconds=60,
-        ),
-        now=lambda: now[0],
-    )
+    client, bridge = _security_client_and_bridge(session_ttl_seconds=60)
+    client.app.state.security_policy.now = lambda: now[0]
     initial = bridge.player._state.discovery_enabled
     assert _pair(client).status_code == 200
 

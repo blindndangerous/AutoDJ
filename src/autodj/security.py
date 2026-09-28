@@ -624,12 +624,6 @@ class SecurityMiddleware:
         self.app = app
         self._policy = policy
 
-    def _current_policy(self, scope: Scope) -> SecurityPolicy:
-        """Return the application policy when available, otherwise the default policy."""
-        app = scope.get("app")
-        state = getattr(app, "state", None)
-        return getattr(state, "security_policy", self._policy)
-
     @staticmethod
     def _pairing_limiter(scope: Scope) -> PairingRateLimiter | None:
         """Return application pairing limiter when it has expected type."""
@@ -683,7 +677,7 @@ class SecurityMiddleware:
         path = str(scope.get("path", ""))
         is_pairing = method == "POST" and path == "/api/pair"
         route = _route_template(scope)
-        policy = self._current_policy(scope)
+        policy = self._policy
         host_values = _raw_header_values(scope, b"host")
         origin_values = _raw_header_values(scope, b"origin")
 

@@ -1036,10 +1036,8 @@ class TestAnalyseTrackInBackground:
         )
         monkeypatch.setattr(player, "_merge_external_cues_into", block_before_write)
         monkeypatch.setattr(threading, "excepthook", capture_thread_error)
-        app = create_app(
-            PlayerBridge(player=player, sim=player._sim),
-            shutdown_timeout_s=0.05,
-        )
+        monkeypatch.setattr("autodj.server._SHUTDOWN_TIMEOUT_S", 0.05)
+        app = create_app(PlayerBridge(player=player, sim=player._sim))
 
         player.analyse_track_in_background(path)
         assert worker_blocked.wait(2.0)
