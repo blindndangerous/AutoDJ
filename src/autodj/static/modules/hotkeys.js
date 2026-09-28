@@ -210,12 +210,17 @@ export function installHotkeys({
   window.addEventListener("keydown", (e) => {
     if (e.repeat) return;
 
-    // Do not latch keys pressed inside the help dialog.  If a keyup is
+    // Do not latch keys pressed while a dialog is open.  If a keyup is
     // missed as the dialog closes, it must not suppress the next page key.
     if (_eventTargetIsTyping(e)) return;
+    // Every dialog here opens with showModal(), so the page behind it is
+    // inert: while one shows (the shortcut list, Clear queue's confirm,
+    // Make new link, sign in) no shortcut acts on the page.  Only ? works,
+    // to close the shortcut list.
     const modal = document.getElementById("hotkey-help-modal");
-    if (modal && modal.open && _eventIsWithin(e, modal)) {
-      if (e.key === "?" && !e.ctrlKey && !e.metaKey && !e.altKey
+    if (document.querySelector("dialog[open]")) {
+      if (modal && modal.open && _eventIsWithin(e, modal)
+          && e.key === "?" && !e.ctrlKey && !e.metaKey && !e.altKey
           && !_pressed.has(e.key) && active()) {
         _pressed.add(e.key);
         e.preventDefault();
