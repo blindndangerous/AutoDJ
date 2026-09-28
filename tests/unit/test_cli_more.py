@@ -164,6 +164,7 @@ class TestIndexCommand:
         cfg = _write_min_cfg(tmp_path)
         cfg_mock = _cfg()
         cfg_mock.library.beets_db = None
+        cfg_mock.index.active_dir = tmp_path / "noindex"
         with (
             patch("autodj.cli._can_import", return_value=True),
             patch("autodj.cli._load_cfg_or_exit", return_value=cfg_mock),
@@ -179,6 +180,7 @@ class TestIndexCommand:
         cfg = _write_min_cfg(tmp_path)
         cfg_mock = _cfg()
         cfg_mock.library.beets_db = tmp_path / "library.db"
+        cfg_mock.index.active_dir = tmp_path / "noindex"
         with (
             patch("autodj.cli._can_import", return_value=True),
             patch("autodj.cli._load_cfg_or_exit", return_value=cfg_mock),
@@ -195,6 +197,7 @@ class TestIndexCommand:
         cfg = _write_min_cfg(tmp_path)
         cfg_mock = _cfg()
         cfg_mock.library.beets_db = tmp_path / "library.db"
+        cfg_mock.index.active_dir = tmp_path / "noindex"
         with (
             patch("autodj.cli._can_import", return_value=True),
             patch("autodj.cli._load_cfg_or_exit", return_value=cfg_mock),
