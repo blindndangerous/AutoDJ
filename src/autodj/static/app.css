@@ -1185,7 +1185,6 @@
 /* Hotkey help modal -------------------------------------------------- */
 
 #hotkey-help-modal,
-#stream-rotate-dialog,
 #confirm-dialog {
   /* `*, *::before, *::after { margin: 0 }` overrides the UA
      `dialog:modal { margin: auto }`, which pinned this dialog to the
@@ -1200,7 +1199,6 @@
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
 }
 #hotkey-help-modal::backdrop,
-#stream-rotate-dialog::backdrop,
 #confirm-dialog::backdrop {
   background: rgba(0, 0, 0, 0.55);
 }
@@ -1253,15 +1251,12 @@
 .stream-detail {
   margin: 0.4rem 0;
 }
-#stream-rotate-dialog h2,
 #confirm-dialog h2 {
   margin-top: 0;
 }
-#stream-rotate-dialog p,
 #confirm-dialog p {
   margin: 0.75rem 0 1rem;
 }
-#stream-rotate-dialog .dialog-actions,
 #confirm-dialog .dialog-actions {
   display: flex;
   justify-content: flex-end;

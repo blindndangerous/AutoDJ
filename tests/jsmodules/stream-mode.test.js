@@ -503,10 +503,24 @@ function settingsDom() {
       <p id="stream-listeners"></p>
     </fieldset>
     </details>
-    <dialog id="stream-rotate-dialog" aria-labelledby="stream-rotate-title"><form method="dialog"><h2 id="stream-rotate-title">Make a new stream link?</h2><button value="cancel">Cancel</button><button value="confirm">Make new link</button></form></dialog>
+    <dialog id="confirm-dialog"><h2 id="confirm-title"></h2><p id="confirm-message"></p>
+      <button id="confirm-cancel"></button><button id="confirm-accept"></button></dialog>
     <div id="sr-status" role="status" aria-live="polite" aria-atomic="true"></div>`;
-  const dialog = document.getElementById("stream-rotate-dialog");
-  dialog.showModal = vi.fn(() => dialog.setAttribute("open", ""));
+  // The shared confirmation as a browser runs it: closing puts focus back
+  // on the element that had it when the dialog opened.
+  const dialog = document.getElementById("confirm-dialog");
+  let opener = null;
+  dialog.showModal = vi.fn(() => {
+    opener = document.activeElement;
+    dialog.setAttribute("open", "");
+  });
+  dialog.close = vi.fn((value) => {
+    if (!dialog.hasAttribute("open")) return;
+    if (value !== undefined) dialog.returnValue = value;
+    dialog.removeAttribute("open");
+    if (opener?.isConnected) opener.focus();
+    dialog.dispatchEvent(new Event("close"));
+  });
   return dialog;
 }
 
@@ -526,10 +540,9 @@ function makeSettings(overrides = {}) {
 
 const byId = (id) => document.getElementById(id);
 
+// Presses the confirmation's own button.
 function closeDialog(dialog, value) {
-  dialog.returnValue = value;
-  dialog.removeAttribute("open");
-  dialog.dispatchEvent(new Event("close"));
+  byId(value === "confirm" ? "confirm-accept" : "confirm-cancel").click();
 }
 
 describe("stream settings", () => {
@@ -654,7 +667,7 @@ describe("stream settings", () => {
     let resolveSlow;
     const fetchInfo = vi.fn(() => new Promise((resolve) => { resolveSlow = resolve; }));
     const { ui } = makeSettings({ fetchInfo });
-    const dialog = byId("stream-rotate-dialog");
+    const dialog = byId("confirm-dialog");
     ui.apply({ stream_mode: true });
     byId("stream-rotate").click();
     closeDialog(dialog, "confirm");
@@ -692,7 +705,10 @@ describe("stream settings", () => {
     rotateBtn.focus();
     rotateBtn.click();
     expect(dialog.showModal).toHaveBeenCalled();
+    expect(byId("confirm-title").textContent).toBe("Make a new stream link?");
+    expect(byId("confirm-accept").textContent).toBe("Make new link");
     closeDialog(dialog, "cancel");
+    await tick();
     expect(opts.rotate).not.toHaveBeenCalled();
     expect(opts.claimLinkChange).not.toHaveBeenCalled();
     expect(document.activeElement).toBe(rotateBtn);
@@ -707,16 +723,15 @@ describe("stream settings", () => {
     expect(document.activeElement).toBe(rotateBtn);
   });
 
-  it("treats Escape (no return value) as cancel", () => {
+  it("treats Escape as cancel", async () => {
     const dialog = settingsDom();
     const { ui, opts } = makeSettings();
     ui.apply({ stream_mode: true });
-    dialog.returnValue = "confirm";
     byId("stream-rotate").click();
-    // Escape closes without a submitter, so returnValue keeps whatever was
-    // there when the dialog opened: the click cleared it.
+    // Escape closes the dialog without pressing either button.
     dialog.removeAttribute("open");
     dialog.dispatchEvent(new Event("close"));
+    await tick();
     expect(opts.rotate).not.toHaveBeenCalled();
     expect(document.activeElement).toBe(byId("stream-rotate"));
   });
@@ -1115,6 +1130,7 @@ describe("stream settings", () => {
     await tick();
     byId("stream-rotate").click();
     closeDialog(dialog, "confirm");
+    await vi.waitFor(() => expect(opts.rotate).toHaveBeenCalled());
     ui.apply({ stream_mode: true, stream_event: { id: "a", seq: 1, name: "link_changed" } });
     reply(NEW_INFO);
     await tick();

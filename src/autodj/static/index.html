@@ -1126,25 +1126,10 @@
 <div id="vol-announce" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div>
 </main>
 
-<!-- "Make new link" confirmation.  A plain native modal: Escape and
-     Cancel both close it without changing anything, and focus goes back
-     to the Make new link button either way.  It lives outside <main>
-     because a modal inside a hidden tab panel is never rendered. -->
-<dialog id="stream-rotate-dialog" aria-labelledby="stream-rotate-title"
-        aria-describedby="stream-rotate-warning">
-  <form method="dialog">
-    <h2 id="stream-rotate-title">Make a new stream link?</h2>
-    <p id="stream-rotate-warning">Every speaker using the current link stops, and you will need to add the new link to them.</p>
-    <div class="dialog-actions">
-      <button type="submit" value="cancel">Cancel</button>
-      <button type="submit" value="confirm">Make new link</button>
-    </div>
-  </form>
-</dialog>
-
 <!-- Shared confirmation for actions that cannot be undone (Clear queue,
-     Delete profile, Delete liner, Sign out, Revoke device).  modules/confirm-dialog.js
-     fills in the words; Cancel is first and gets focus. -->
+     Delete profile, Delete liner, Sign out, Revoke device, Make new
+     link).  modules/confirm-dialog.js fills in the words; Cancel is
+     first and gets focus. -->
 <dialog id="confirm-dialog" aria-labelledby="confirm-title"
         aria-describedby="confirm-message">
   <form method="dialog">

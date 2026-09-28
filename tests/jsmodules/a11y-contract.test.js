@@ -1656,9 +1656,10 @@ describe("static accessibility contracts", () => {
     expect(note.hasAttribute("role")).toBe(false);
     expect(note.hasAttribute("aria-hidden")).toBe(false);
 
-    // A plain native modal: named by its own heading, described by its
-    // warning, Escape cancels, and the buttons return cancel / confirm.
-    const dialog = document.querySelector("#stream-rotate-dialog");
+    // Make new link asks in the shared confirmation: a plain native
+    // modal named by its own heading, described by its message, with
+    // Cancel first.
+    const dialog = document.querySelector("#confirm-dialog");
     expect(dialog.tagName).toBe("DIALOG");
     // A modal inside a hidden tab panel (display: none) never renders,
     // so the dialog sits outside every panel and card.
@@ -1666,20 +1667,19 @@ describe("static accessibility contracts", () => {
     const title = document.getElementById(dialog.getAttribute("aria-labelledby"));
     expect(title.tagName).toBe("H2");
     expect(dialog.contains(title)).toBe(true);
-    expect(title.textContent.trim()).toBe("Make a new stream link?");
-    const warning = document.getElementById(dialog.getAttribute("aria-describedby"));
-    expect(dialog.contains(warning)).toBe(true);
+    const message = document.getElementById(dialog.getAttribute("aria-describedby"));
+    expect(dialog.contains(message)).toBe(true);
     expect(dialog.hasAttribute("role")).toBe(false);
     expect(dialog.hasAttribute("closedby")).toBe(false);
     const form = dialog.querySelector("form");
     expect(form.getAttribute("method")).toBe("dialog");
     const buttons = [...form.querySelectorAll("button")];
-    expect(buttons.map((button) => [
-      button.getAttribute("type"), button.value, button.textContent.trim(),
-    ])).toEqual([
-      ["submit", "cancel", "Cancel"],
-      ["submit", "confirm", "Make new link"],
-    ]);
+    expect(buttons.map((button) => [button.id, button.getAttribute("type"), button.value]))
+      .toEqual([
+        ["confirm-cancel", "submit", "cancel"],
+        ["confirm-accept", "submit", "confirm"],
+      ]);
+    expect(buttons[0].textContent.trim()).toBe("Cancel");
   });
 
   it("never nests a dialog inside a tab panel", () => {

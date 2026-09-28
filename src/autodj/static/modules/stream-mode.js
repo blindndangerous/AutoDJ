@@ -15,6 +15,7 @@
 //     link_changed event its rotation causes is not spoken again here
 //     (claimLinkChange).  Other open pages still hear the event once.
 
+import { confirmAction } from "./confirm-dialog.js";
 import { announceStatus } from "./live-region.js";
 
 export const STREAM_DELAY_ESTIMATE_S = 3;
@@ -324,7 +325,6 @@ export function createStreamSettings({
   const m3u = doc.getElementById("stream-m3u");
   const bitrate = doc.getElementById("stream-bitrate");
   const rotateBtn = doc.getElementById("stream-rotate");
-  const dialog = doc.getElementById("stream-rotate-dialog");
   const listeners = doc.getElementById("stream-listeners");
   let active = false;
   let lastEventKey = null;
@@ -339,6 +339,8 @@ export function createStreamSettings({
   // Set from "Make new link" until its link_changed event arrives, so
   // that event does not fetch what the rotate reply already gave us.
   let ownRotation = null;
+  // True while the "Make new link" confirmation is open.
+  let confirming = false;
   // Quality saves: the value the server last confirmed, the newest
   // choice not yet sent, the settle timer and whether a save is out.
   let savedBitrate = bitrate.value;
@@ -409,7 +411,7 @@ export function createStreamSettings({
     lastEventKey = null;
     ownRotation = null;
     stopBitrateSaves();
-    if (dialog.open) dialog.close();
+    if (confirming) doc.getElementById("confirm-dialog")?.close();
     fieldset.hidden = true;
   }
 
@@ -437,7 +439,7 @@ export function createStreamSettings({
       if (!active) return;
       // A server restart without --stream: focus inside the section
       // would fall to the page top, so it goes to the Settings heading.
-      const hadFocus = fieldset.contains(doc.activeElement) || dialog.open;
+      const hadFocus = fieldset.contains(doc.activeElement) || confirming;
       hide();
       if (hadFocus) fieldset.closest("details")?.querySelector("summary")?.focus();
       return;
@@ -538,13 +540,6 @@ export function createStreamSettings({
     settleTimer = setTimeout(() => void flushBitrate(), BITRATE_SETTLE_MS);
   });
 
-  rotateBtn.addEventListener("click", () => {
-    // Escape closes without a submitter and leaves returnValue alone, so
-    // it must not still say "confirm" from last time.
-    dialog.returnValue = "";
-    dialog.showModal();
-  });
-
   // Claims the link_changed event this rotation causes, both for speech
   // (stream mode) and for the address lookup (here).
   function claimOwnRotation() {
@@ -557,11 +552,18 @@ export function createStreamSettings({
     };
   }
 
-  dialog.addEventListener("close", async () => {
+  rotateBtn.addEventListener("click", async () => {
+    confirming = true;
+    const confirmed = await confirmAction(doc, {
+      title: "Make a new stream link?",
+      message: "Every speaker using the current link stops, and you will need to add the new link to them.",
+      confirmLabel: "Make new link",
+    });
+    confirming = false;
     if (!active) return;
     // Cancel, Escape and confirm all leave focus on the button.
     rotateBtn.focus();
-    if (dialog.returnValue !== "confirm") return;
+    if (!confirmed) return;
     const release = claimOwnRotation();
     let info;
     try {
