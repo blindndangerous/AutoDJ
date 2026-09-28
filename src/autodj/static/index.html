@@ -8,16 +8,16 @@
 </head>
 <body>
 
-<!-- The name and description sit on the form, not the dialog.  NVDA with
-     Chrome read a named dialog twice whenever focus entered it, even a
-     bare dialog with one field; an unnamed dialog holding a named form is
-     read once: "dialog", then "Pair this browser form landmark" and the
-     description.  One description only: on the code field as well it was
-     read a second time as focus landed there.  #auth-reason says why a
-     signed-in browser is being asked again, and is empty on first pairing. -->
-<dialog id="auth-dialog">
-  <form id="auth-form" method="dialog"
+<!-- The dialog carries its name and the one description: on the code field
+     as well it was read a second time as focus landed there.  NVDA 2026.2
+     with Chrome still reads a named dialog's name and description twice as
+     focus enters it, even a bare dialog with one field; that is the
+     browser and screen reader, and the dialog keeps its name.  #auth-reason
+     says why a signed-in browser is being asked again, and is empty on
+     first pairing. -->
+<dialog id="auth-dialog"
         aria-labelledby="auth-title" aria-describedby="auth-reason auth-help">
+  <form id="auth-form" method="dialog">
     <h2 id="auth-title">Pair this browser</h2>
     <p id="auth-reason" hidden></p>
     <p id="auth-help">Enter the 8-digit pairing code shown by the AutoDJ server. You only need to do this once on this browser.</p>
