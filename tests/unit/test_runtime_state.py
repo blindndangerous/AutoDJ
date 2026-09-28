@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from autodj.player import PlayerState
 from autodj.runtime_state import (
     STATE_VERSION,
     _is_finite_number,
@@ -45,18 +46,21 @@ def _make_player() -> SimpleNamespace:
         liners_random_max_minutes=None,
         liners_pick_mode="random",
         liners_duck_db=-12.0,
+        no_repeat_window=20,
+        artist_repeat_window=3,
     )
     cfg = SimpleNamespace(
-        transitions=SimpleNamespace(effect="none"),
+        transitions=SimpleNamespace(effect="none", wet_mix=1.0),
         djmix=SimpleNamespace(
             harmonic_mode="off",
             beatmatch=False,
             phrase_align=False,
             outro_intro_align=False,
             filter_sweep=False,
+            phrase_bars=8,
         ),
         playback=playback,
-        replaygain=SimpleNamespace(enabled=False),
+        replaygain=SimpleNamespace(enabled=False, target_db=-14.0),
         stream=SimpleNamespace(bitrate=320),
         presets={},
     )
@@ -69,7 +73,7 @@ def _make_player() -> SimpleNamespace:
         _preset=None,
         _discovery_every=None,
         _mood_arc=None,
-        _state=SimpleNamespace(no_repeat_window=20),
+        _state=PlayerState(no_repeat_window=20),
         _sim=SimpleNamespace(entries_snapshot=lambda: (), ntotal=0),
     )
 
@@ -98,6 +102,11 @@ def test_huge_integer_is_not_a_finite_runtime_number() -> None:
         {"playback": {"stream_bitrate": 320.0}},
         {"bpm_range": "invalid"},
         {"discovery_every": "invalid"},
+        {"djmix": {"phrase_bars": 0}},
+        {"playback": {"no_repeat_window": -1}},
+        {"playback": {"artist_repeat_window": 2.5}},
+        {"playback": {"transition_wet_mix": 2.0}},
+        {"playback": {"replaygain_target_db": "loud"}},
     ],
 )
 def test_invalid_state_field_is_warned_and_ignored(tmp_path: Path, caplog, payload) -> None:
@@ -609,7 +618,12 @@ class TestRoundTrip:
         p1._cfg.djmix.phrase_align = True
         p1._cfg.djmix.outro_intro_align = True
         p1._cfg.djmix.filter_sweep = True
+        p1._cfg.djmix.phrase_bars = 16
         p1._cfg.transitions.effect = "echo_out"
+        p1._cfg.transitions.wet_mix = 0.6
+        p1._cfg.replaygain.target_db = -18.0
+        p1._cfg.playback.no_repeat_window = 50
+        p1._cfg.playback.artist_repeat_window = 5
         p1._cfg.playback.crossfade_seconds = 6.0
         p1._cfg.playback.fade_in_seconds = 1.5
         p1._cfg.playback.crossfade_eq_duck = True
@@ -660,6 +674,7 @@ class TestRoundTrip:
             "phrase_align",
             "outro_intro_align",
             "filter_sweep",
+            "phrase_bars",
         }
         assert set(saved["playback"]) == {
             "crossfade_seconds",
@@ -691,8 +706,11 @@ class TestRoundTrip:
             "liners_pick_mode",
             "liners_duck_db",
             "stream_bitrate",
-            # Bridge-visible derived session values are never persisted.
             "no_repeat_window",
+            "artist_repeat_window",
+            "transition_wet_mix",
+            "replaygain_target_db",
+            # Bridge-visible derived session values are never persisted.
             "library_size",
         }
         # Config-only absolute path is neither browser-visible nor persisted.
@@ -702,7 +720,6 @@ class TestRoundTrip:
         stored = json.loads((tmp_path / "web_state.json").read_text(encoding="utf-8"))
         assert stored["schema_version"] == STATE_VERSION
         assert "available_presets" not in stored
-        assert "no_repeat_window" not in stored["playback"]
         assert "library_size" not in stored["playback"]
         assert "liners_folder" not in stored["playback"]
 
@@ -712,13 +729,16 @@ class TestRoundTrip:
         expected_playback = {
             key: value
             for key, value in saved["playback"].items()
-            if key not in {"no_repeat_window", "library_size", "liners_folder"}
+            if key not in {"library_size", "liners_folder"}
         }
         assert restored["transition"] == saved["transition"]
         assert restored["djmix"] == saved["djmix"]
         assert {key: restored["playback"][key] for key in expected_playback} == expected_playback
         assert restored["bpm_range"] == saved["bpm_range"]
         assert restored["discovery_every"] == saved["discovery_every"]
+        # The running player's history windows follow the restored values.
+        assert p2._state.recently_played.maxlen == 50
+        assert p2._state.recently_played_artists.maxlen == 5
 
 
 def test_string_false_is_rejected_instead_of_coerced(tmp_path, caplog) -> None:

@@ -234,7 +234,7 @@ liners_enabled = false
 # liners_every_minutes = 20.0          # on a wall-clock timer
 # liners_random_min_minutes = 10.0     # random window, lower bound
 # liners_random_max_minutes = 25.0     # random window, upper bound
-liners_pick_mode = "random"            # random | sequential | weighted
+liners_pick_mode = "random"            # random | sequential
 liners_duck_db = -12.0                 # how far the music ducks under a liner
 
 # Per-file dayparts.  Accepted by the config loader and archived by

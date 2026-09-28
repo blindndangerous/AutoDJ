@@ -621,6 +621,14 @@ class TestDjMixConfig:
             DjMixConfig.from_dict({"harmonic_mixing": False, "harmonic_mode": "off"})
 
 
+def test_removed_weighted_liner_mode_is_rejected() -> None:
+    """The removed Weighted rotation must stop startup, not load as a no-op."""
+    from autodj.config import PlaybackConfig
+
+    with pytest.raises(ValueError, match=r"playback\.liners_pick_mode"):
+        PlaybackConfig.from_dict({"liners_pick_mode": "weighted"})
+
+
 # ---------------------------------------------------------------------------
 # PlaybackConfig.transition_mode (Mixxx-style crossfade alignment)
 # ---------------------------------------------------------------------------
