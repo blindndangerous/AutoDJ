@@ -2046,23 +2046,78 @@ describe("stream mode", () => {
     expect(document.getElementById("stream-audio").muted).toBe(true);
   });
 
-  it("sends the OS media Play and Pause keys to Listen here in stream mode", async () => {
+  it("lets the OS media keys start Listen here only after this page pressed it", async () => {
     const { webSocket } = await setupApp({
       initialState: streamState,
       onRequest: () => lyricsFor("a.mp3"),
     });
     const mediaSession = await import("../../src/autodj/static/modules/media-session.js");
     const options = mediaSession.installMediaActionHandlers.mock.calls[0][0];
-    const listenClick = vi.spyOn(document.getElementById("btn-listen"), "click")
-      .mockImplementation(() => {});
+    const listen = document.getElementById("btn-listen");
+    const play = vi.spyOn(document.getElementById("stream-audio"), "play")
+      .mockResolvedValue(undefined);
 
+    // Never pressed here: Play and Pause are dealt with, and nothing plays.
     expect(await options.onPlay()).toBe(true);
     expect(await options.onPause()).toBe(true);
-    expect(listenClick).toHaveBeenCalledTimes(2);
+    expect(play).not.toHaveBeenCalled();
+    expect(listen.getAttribute("aria-pressed")).not.toBe("true");
+
+    listen.click();
+    await vi.waitFor(() => expect(play).toHaveBeenCalledOnce());
+    expect(await options.onPause()).toBe(true);
+    expect(listen.getAttribute("aria-pressed")).toBe("false");
+    // Pause never starts it again.
+    expect(await options.onPause()).toBe(true);
+    expect(listen.getAttribute("aria-pressed")).toBe("false");
+    expect(await options.onPlay()).toBe(true);
+    expect(play).toHaveBeenCalledTimes(2);
+    expect(listen.getAttribute("aria-pressed")).toBe("true");
 
     webSocket.onmessage({ data: JSON.stringify({ ...streamState, stream_mode: false }) });
     expect(await options.onPause()).toBe(false);
-    expect(listenClick).toHaveBeenCalledTimes(2);
+  });
+
+  it("never lets the OS media Play key start a page that has not pressed Play", async () => {
+    const unlockAndPlay = vi.fn().mockResolvedValue(true);
+    await setupApp({
+      audio: { _lastBrowserPlayback: true, playbackEnabled: false, unlockAndPlay },
+      initialState: {
+        browser_playback: true,
+        current_track: { path: "current.mp3", title: "Current" },
+        is_paused: true,
+      },
+    });
+    const mediaSession = await import("../../src/autodj/static/modules/media-session.js");
+    const options = mediaSession.installMediaActionHandlers.mock.calls[0][0];
+
+    // true: handled here, so the server's pause toggle does not run either.
+    expect(await options.onPlay()).toBe(true);
+    expect(await options.onPause()).toBe(true);
+    expect(unlockAndPlay).not.toHaveBeenCalled();
+
+    // Once Play was pressed on this page, the media key may start it again
+    // after a hard stop (playbackEnabled is still false in this mock).
+    document.querySelector("#btn-pause").click();
+    await vi.waitFor(() => expect(unlockAndPlay).toHaveBeenCalledOnce());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(await options.onPlay()).toBe(true);
+    expect(unlockAndPlay).toHaveBeenCalledTimes(2);
+  });
+
+  it("never lets the OS media Pause key unpause the server", async () => {
+    const { webSocket } = await setupApp({ initialState: { is_paused: true } });
+    const mediaSession = await import("../../src/autodj/static/modules/media-session.js");
+    const options = mediaSession.installMediaActionHandlers.mock.calls[0][0];
+
+    expect(await options.onPause()).toBe(true);
+    expect(await options.onPlay()).toBe(false);
+
+    webSocket.onmessage({ data: JSON.stringify({
+      browser_playback: false, current_track: null, is_paused: false, queue: [],
+    }) });
+    expect(await options.onPause()).toBe(false);
+    expect(await options.onPlay()).toBe(true);
   });
 
   it("moves focus to Play / Pause when a mode change hides the focused control", async () => {

@@ -139,7 +139,17 @@ const streamMode = createStreamMode({
   // The stream never starts before it has the page's volume and mute.
   beforePlay: () => applyPageLevel(),
 });
-btnListen.addEventListener("click", () => void streamMode.toggleListen());
+// Whether the listener has started playback with Play or Pause (or its
+// hotkey), or pressed Listen here, on this page since signing in.  A page
+// plays only after that: server pushes never start a deck
+// (playbackEnabled), and the OS media Play key, which the system can send
+// to any tab, restarts playback only on a page that opted in here.
+let _playOptedIn = false;
+let _listenOptedIn = false;
+btnListen.addEventListener("click", () => {
+  _listenOptedIn = true;
+  void streamMode.toggleListen();
+});
 // Settings > Stream.  This page speaks its own "Make new link"
 // confirmation, so it claims the station event that rotation causes.
 const streamSettings = createStreamSettings({
@@ -257,6 +267,8 @@ function clearProtectedSessionData() {
   _linerEls.lnFolderDisplay.textContent = "";
   _linerEls.lnStatus.textContent = "";
   updateMediaSession({ current_track: null });
+  _playOptedIn = false;
+  _listenOptedIn = false;
   lastNextKey = null;
   _lastWhyKey = "";
   _lastDuration = 0;
@@ -1351,7 +1363,10 @@ btnPause.addEventListener("click", async () => {
   // handler is required for iOS autoplay grants.
   if (!playbackEnabled && _lastBrowserPlayback) {
     try {
-      if (await withDisabled(btnPause, unlockAndPlay)) announcePlayState(false);
+      if (await withDisabled(btnPause, unlockAndPlay)) {
+        _playOptedIn = true;
+        announcePlayState(false);
+      }
     } catch (_) { /* unlockAndPlay already announced the error */ }
     return;
   }
@@ -1824,28 +1839,44 @@ import {
   installMediaActionHandlers,
 } from "./modules/media-session.js";
 
-// Stream mode: the OS Play / Pause keys toggle Listen here, like Space.
-function toggleListenFromMediaKey() {
-  if (!_lastStreamMode) return false;
-  btnListen.click();
-  return true;
+// The OS media keys (and the system's media overlay) can reach any tab,
+// including one where the listener never played, so they never start
+// sound on a page that has not opted in with its own Play or Listen here.
+// In stream mode they start and stop Listen here, like Space.  Pause only
+// ever stops: a page that is not playing ignores it, where the server's
+// pause toggle would have unpaused the station.  Each returns true when
+// the key is dealt with here, ignored included; false lets the server's
+// pause toggle run.
+async function mediaKeyPlay() {
+  if (_lastStreamMode) {
+    if (_listenOptedIn && !streamMode.isListening()) await streamMode.toggleListen();
+    return true;
+  }
+  if (_lastBrowserPlayback && !playbackEnabled) {
+    if (!_playOptedIn) return true;
+    try {
+      await unlockAndPlay();
+    } catch (_errorValue) {
+      // unlockAndPlay owns the visible error announcement.
+    }
+    return true;
+  }
+  return _lastState?.is_paused !== true;
+}
+
+function mediaKeyPause() {
+  if (_lastStreamMode) {
+    streamMode.stop();
+    return true;
+  }
+  if (_lastBrowserPlayback && !playbackEnabled) return true;
+  return _lastState?.is_paused === true;
 }
 
 installMediaActionHandlers({
   isEnabled: authenticatedInteractionEnabled,
-  onPause: toggleListenFromMediaKey,
-  onPlay: async () => {
-    if (toggleListenFromMediaKey()) return true;
-    if (!playbackEnabled && _lastBrowserPlayback) {
-      try {
-        await unlockAndPlay();
-      } catch (_errorValue) {
-        // unlockAndPlay owns the visible error announcement.
-      }
-      return true;
-    }
-    return false;
-  },
+  onPause: mediaKeyPause,
+  onPlay: mediaKeyPlay,
   onRequestError: reportBackgroundRequestError,
 });
 

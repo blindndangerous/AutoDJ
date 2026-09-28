@@ -581,6 +581,43 @@ describe("page volume", () => {
     expect(live.gain.gain.setValueAtTime).toHaveBeenLastCalledWith(1, 2);
   });
 
+  it("never starts a deck on a page where Play was not pressed, whatever the server pushes", async () => {
+    const { engine } = await importEngine();
+    // Test liner builds the audio graph without pressing Play.
+    engine.ensureAudioGraph();
+    const push = (path, isPaused) => engine.applyBrowserPlaybackState({
+      browser_playback: true, current_track: { path }, next_track: { path: "next.mp3" },
+      is_muted: false, is_paused: isPaused, settings: { playback: {} },
+    });
+
+    // Another page pauses and unpauses the server, then the track changes.
+    push("current.mp3", false);
+    push("current.mp3", true);
+    push("current.mp3", false);
+    push("other.mp3", false);
+
+    for (const deck of engine.decks) expect(deck.audio.play).not.toHaveBeenCalled();
+    expect(engine.playbackEnabled).toBe(false);
+  });
+
+  it("follows the server's pause and resume once Play was pressed on this page", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({ current_track: { path: "current.mp3" } })));
+    const { engine } = await importEngine();
+    await expect(engine.unlockAndPlay()).resolves.toBe(true);
+    const live = engine.decks[engine.activeIdx];
+    const push = (isPaused) => engine.applyBrowserPlaybackState({
+      browser_playback: true, current_track: { path: "current.mp3" }, next_track: null,
+      is_muted: false, is_paused: isPaused, settings: { playback: {} },
+    });
+
+    push(true);
+    expect(live.audio.pause).toHaveBeenCalled();
+    live.audio.play.mockClear();
+    Object.defineProperty(live.audio, "paused", { configurable: true, value: true });
+    push(false);
+    expect(live.audio.play).toHaveBeenCalledOnce();
+  });
+
   it("unpauses a paused server before saying the first Play worked", async () => {
     let paused = true;
     const fetchImpl = vi.fn(async (url) => {

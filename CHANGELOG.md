@@ -210,6 +210,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A page where Play was never pressed could start playing on its own. The operating system's
+  media Play key or media overlay can reach any open AutoDJ tab, and that tab then started its
+  deck at the page volume and unpaused the server. In release testing a Firefox page that had
+  never been told to play played for about 45 seconds. The media Play key now plays only on a
+  page where Play (or Space or K) was pressed earlier in the session, and in stream mode it
+  starts Listen here only on a page where Listen here was pressed. The media Pause key only
+  stops: on a page that is not playing it does nothing, where before it could unpause the
+  server.
 - With `--server-audio`, each incoming track restarted from its very beginning on the sound
   card, replaying the few seconds of the outgoing track's crossfade and the incoming track's own
   skipped intro that had already played during the overlap.
