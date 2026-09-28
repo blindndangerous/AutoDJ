@@ -59,7 +59,8 @@ def test_every_effect_has_a_fingerprint() -> None:
         rounded = {
             k: [[float(f"{v:.7g}") for v in row] for row in rows] for k, rows in prints.items()
         }
-        _FILE.write_text(json.dumps(rounded, indent=1) + "\n", encoding="utf-8", newline="\n")
+        rows = ",\n".join(f" {json.dumps(k)}: {json.dumps(v)}" for k, v in rounded.items())
+        _FILE.write_text("{\n" + rows + "\n}\n", encoding="utf-8", newline="\n")
     assert set(_stored()) == {fx.value for fx in _EFFECTS}
 
 
