@@ -35,7 +35,7 @@ class TestServerAcceptsEveryEffect:
     def test_rejected_effect_leaves_the_previous_choice(self, client) -> None:
         client.post("/api/transition", json={"effect": "halftime"})
         client.post("/api/transition", json={"effect": "wobble"})
-        assert client.get("/api/settings").json()["transition"] == "halftime"
+        assert client.get("/api/status").json()["settings"]["transition"] == "halftime"
 
     def test_effect_name_is_case_insensitive(self, client) -> None:
         resp = client.post("/api/transition", json={"effect": "HALFTIME"})

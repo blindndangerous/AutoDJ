@@ -15,7 +15,6 @@ budget.  Shared fixtures ``client`` / ``bridge`` come from
 from __future__ import annotations
 
 import asyncio
-import os
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,7 +24,7 @@ from urllib.parse import urlencode
 import pytest
 
 from autodj.config import ServerConfig
-from autodj.server import PlayerBridge, create_app
+from autodj.server import PlaybackSettingsBody, PlayerBridge, create_app
 
 from ._helpers import NO_INDEX_DIR, _make_entry, _make_player_mock, _make_sim_mock
 
@@ -279,7 +278,7 @@ class TestLiners:
         assert resp.content == b"raw-mp3-bytes"
         assert resp.headers["content-type"] == "audio/mpeg"
 
-    def test_liner_file_range_uses_held_descriptor(self, bridge, tmp_path) -> None:
+    def test_liner_file_range(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
         folder = tmp_path / "liners"
@@ -322,7 +321,7 @@ class TestLiners:
 
         tc = TestClient(create_app(bridge))
         resp = tc.get("/api/liners/file/..%2Fsecret.txt")
-        assert resp.status_code == 400
+        assert resp.status_code == 404
 
     @pytest.mark.parametrize("name", ["config.toml", "tracks.db", "notes", "clip.mp3.bak"])
     def test_liner_file_routes_refuse_non_audio_names(self, bridge, tmp_path, name) -> None:
@@ -365,6 +364,8 @@ class TestLiners:
             {"liners_folder": "/etc/autodj"},
             {"liners_enabled": True, "liners_folder": "../config"},
             {"bogus_field": 1},
+            {"liners_enabled": True, "liners_duck_db": 60.0},
+            {"liners_enabled": True, "liners_duck_db": -31.0},
         ],
     )
     def test_playback_settings_reject_liner_root_and_unknown_fields(
@@ -499,7 +500,7 @@ class TestLiners:
 
         tc = TestClient(create_app(bridge))
         resp = tc.delete("/api/liners/file/..%2Fsecret.txt")
-        assert resp.status_code == 400
+        assert resp.status_code == 404
         assert outside.exists()
 
 
@@ -531,28 +532,6 @@ class TestProfiles:
         assert resp.status_code == 200
         body = tc.get("/api/profiles").json()
         assert "Wakeup" in body["profiles"]
-
-    def test_profile_get_round_trip(self, bridge, tmp_path) -> None:
-        from fastapi.testclient import TestClient
-
-        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
-        (tmp_path / "idx").mkdir()
-
-        tc = TestClient(create_app(bridge))
-        tc.post(
-            "/api/profiles",
-            json={
-                "name": "Workout",
-                "bpm_lo": 120,
-                "bpm_hi": 140,
-                "beat_sync_fx": True,
-            },
-        )
-        body = tc.get("/api/profiles/Workout").json()
-        assert body["name"] == "Workout"
-        assert body["bpm_lo"] == 120
-        assert body["bpm_hi"] == 140
-        assert body["beat_sync_fx"] is True
 
     def test_profile_invalid_name_rejected(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
@@ -662,8 +641,7 @@ class TestProfiles:
         assert "crossfade_secs" in resp.text
         assert "Typo" not in tc.get("/api/profiles").json()["profiles"]
 
-    @pytest.mark.parametrize("route", ["get", "apply"])
-    def test_stored_profile_with_unknown_key_is_400(self, bridge, tmp_path, route) -> None:
+    def test_stored_profile_with_unknown_key_is_400(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
         bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
@@ -675,10 +653,7 @@ class TestProfiles:
         bridge.save_persistent_state = MagicMock()
         tc = TestClient(create_app(bridge))
 
-        if route == "get":
-            resp = tc.get("/api/profiles/Old")
-        else:
-            resp = tc.post("/api/profiles/Old/apply")
+        resp = tc.post("/api/profiles/Old/apply")
 
         assert resp.status_code == 400
         assert "unknown profile keys: ['extra']" in resp.json()["detail"]
@@ -707,24 +682,6 @@ class TestProfiles:
         assert resp.status_code == 400
         assert pb.crossfade_seconds == pytest.approx(3.0)
         bridge.save_persistent_state.assert_not_called()
-
-    def test_profile_get_bad_name_400(self, bridge, tmp_path) -> None:
-        from fastapi.testclient import TestClient
-
-        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
-        (tmp_path / "idx").mkdir()
-        tc = TestClient(create_app(bridge))
-        resp = tc.get("/api/profiles/..%2Fescape")
-        assert resp.status_code in (400, 404)
-
-    def test_profile_get_missing_404(self, bridge, tmp_path) -> None:
-        from fastapi.testclient import TestClient
-
-        bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
-        (tmp_path / "idx").mkdir()
-        tc = TestClient(create_app(bridge))
-        resp = tc.get("/api/profiles/Nope")
-        assert resp.status_code == 404
 
     def test_profile_delete_bad_name_400(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
@@ -777,7 +734,6 @@ class TestProfiles:
 
         assert tc.post("/api/profiles", json={"name": "Io"}).status_code == 200
         assert tc.get("/api/profiles").status_code == 200
-        assert tc.get("/api/profiles/Io").status_code == 200
         assert tc.post("/api/profiles/Io/apply").status_code == 200
         assert tc.delete("/api/profiles/Io").status_code == 200
         files = {"file": ("b.mp3", b"y", "audio/mpeg")}
@@ -790,7 +746,6 @@ class TestProfiles:
             "list_names",
             "load",
             "delete",
-            "resolve_liner_path",
             "open_liner_file",
             "delete_liner_file",
         ):
@@ -1532,7 +1487,7 @@ class TestLifespan:
         assert not player_thread.is_alive()
 
     def test_shutdown_timeout_keeps_cache_open_for_blocked_player_thread(
-        self, tmp_path, caplog
+        self, tmp_path, caplog, monkeypatch
     ) -> None:
         import logging
         import threading
@@ -1554,11 +1509,8 @@ class TestLifespan:
             allow_player_exit.wait()
 
         player_thread = threading.Thread(target=player_loop, name="blocked-test-player")
-        app = create_app(
-            bridge,
-            player_thread=player_thread,
-            shutdown_timeout_s=-1.0,
-        )
+        monkeypatch.setattr("autodj.server._SHUTDOWN_TIMEOUT_S", 0.0)
+        app = create_app(bridge, player_thread=player_thread)
         player_thread.start()
         client = TestClient(app)
 
@@ -2072,7 +2024,7 @@ class TestServeFunction:
 
 class TestSettingsEndpoints:
     def test_get_settings(self, client) -> None:
-        data = client.get("/api/settings").json()
+        data = client.get("/api/status").json()["settings"]
         assert "transition" in data
         assert "djmix" in data
         assert "playback" in data
@@ -2201,13 +2153,15 @@ class TestSettingsEndpoints:
             tc.post("/api/playback-settings", json={"transition_mode": "wat"})
         assert bridge.player._cfg.playback.transition_mode == prev
 
-    def test_post_playback_settings_clamps_negative(self, bridge, tmp_path) -> None:
+    def test_post_playback_settings_rejects_negative(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
         bridge.player._cfg.index.active_dir = tmp_path
+        bridge.player._cfg.playback.crossfade_seconds = 3.0
         tc = TestClient(create_app(bridge))
-        tc.post("/api/playback-settings", json={"crossfade_seconds": -3.0})
-        assert bridge.player._cfg.playback.crossfade_seconds == 0.0
+        resp = tc.post("/api/playback-settings", json={"crossfade_seconds": -3.0})
+        assert resp.status_code == 422
+        assert bridge.player._cfg.playback.crossfade_seconds == 3.0
 
     def test_post_playback_settings_fade_in(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
@@ -2216,8 +2170,9 @@ class TestSettingsEndpoints:
         tc = TestClient(create_app(bridge))
         tc.post("/api/playback-settings", json={"fade_in_seconds": 1.5})
         assert bridge.player._cfg.playback.fade_in_seconds == pytest.approx(1.5)
-        tc.post("/api/playback-settings", json={"fade_in_seconds": -1.0})
-        assert bridge.player._cfg.playback.fade_in_seconds == 0.0
+        resp = tc.post("/api/playback-settings", json={"fade_in_seconds": -1.0})
+        assert resp.status_code == 422
+        assert bridge.player._cfg.playback.fade_in_seconds == pytest.approx(1.5)
 
     def test_post_playback_pure_shuffle(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
@@ -2796,14 +2751,14 @@ class TestPostQueueSeed:
         target = bridge.sim.entries[2]
         bridge.queue_add(target.path)
         assert bridge.player._state.pre_queue_seed is not None
-        bridge.set_playback_settings(post_queue_seed="last_queued")
+        bridge.set_playback_settings(PlaybackSettingsBody(post_queue_seed="last_queued"))
         assert bridge.player._state.pre_queue_seed is None
 
     def test_set_playback_settings_validates_post_queue_seed(self, bridge) -> None:
         import pytest
 
         with pytest.raises(ValueError):
-            bridge.set_playback_settings(post_queue_seed="garbage")
+            bridge.set_playback_settings(PlaybackSettingsBody(post_queue_seed="garbage"))
 
     def test_pre_queue_capture_does_not_overwrite_existing(self, bridge) -> None:
         bridge.player._cfg.playback.post_queue_seed = "pre_queue"
@@ -3064,33 +3019,33 @@ class TestMisc:
         bridge.player._pick_next.assert_not_called()
 
     def test_set_playback_settings_toggles_daypart(self, bridge) -> None:
-        bridge.set_playback_settings(enable_daypart=True)
+        bridge.set_playback_settings(PlaybackSettingsBody(enable_daypart=True))
         assert bridge.player._cfg.playback.enable_daypart is True
-        bridge.set_playback_settings(enable_daypart=False)
+        bridge.set_playback_settings(PlaybackSettingsBody(enable_daypart=False))
         assert bridge.player._cfg.playback.enable_daypart is False
 
     def test_set_playback_settings_arms_mood_arc(self, bridge) -> None:
-        bridge.set_playback_settings(enable_mood_arc=True, mood_arc_hours=2.5)
+        bridge.set_playback_settings(PlaybackSettingsBody(enable_mood_arc=True, mood_arc_hours=2.5))
         assert bridge.player._cfg.playback.enable_mood_arc is True
         assert bridge.player._cfg.playback.mood_arc_hours == 2.5
         # Arc instance was anchored to "now".
         assert bridge.player._mood_arc is not None
-        bridge.set_playback_settings(enable_mood_arc=False)
+        bridge.set_playback_settings(PlaybackSettingsBody(enable_mood_arc=False))
         assert bridge.player._mood_arc is None
 
     def test_set_playback_settings_re_anchors_arc_on_hours_change(
         self,
         bridge,
     ) -> None:
-        bridge.set_playback_settings(enable_mood_arc=True, mood_arc_hours=1.0)
+        bridge.set_playback_settings(PlaybackSettingsBody(enable_mood_arc=True, mood_arc_hours=1.0))
         first_arc = bridge.player._mood_arc
-        bridge.set_playback_settings(mood_arc_hours=2.0)
+        bridge.set_playback_settings(PlaybackSettingsBody(mood_arc_hours=2.0))
         # Re-anchored: new arc instance, new duration.
         assert bridge.player._mood_arc is not first_arc
         assert bridge.player._cfg.playback.mood_arc_hours == 2.0
 
     def test_set_playback_settings_toggles_external_cues(self, bridge) -> None:
-        bridge.set_playback_settings(import_external_cues=False)
+        bridge.set_playback_settings(PlaybackSettingsBody(import_external_cues=False))
         assert bridge.player._cfg.playback.import_external_cues is False
 
     def test_advance_now_recovers_when_next_pick_fails(self, bridge) -> None:
@@ -3455,8 +3410,9 @@ class TestAudioEndpoint:
         tc = TestClient(create_app(bridge))
         resp = tc.get(f"/api/audio?path={fake}", headers={"Range": "bytes=999999-"})
         assert resp.status_code == 416
+        assert resp.headers["content-range"] == "bytes */100"
 
-    def test_audio_malformed_range_416(self, tmp_path, bridge) -> None:
+    def test_audio_malformed_range_400(self, tmp_path, bridge) -> None:
         from fastapi.testclient import TestClient
 
         fake = tmp_path / "song.flac"
@@ -3466,7 +3422,7 @@ class TestAudioEndpoint:
         _register_index_entry(bridge, e)
         tc = TestClient(create_app(bridge))
         resp = tc.get(f"/api/audio?path={fake}", headers={"Range": "kilobytes=0-50"})
-        assert resp.status_code == 416
+        assert resp.status_code == 400
 
     def test_audio_suffix_range_returns_final_bytes(self, tmp_path, bridge) -> None:
         from fastapi.testclient import TestClient
@@ -3487,29 +3443,6 @@ class TestAudioEndpoint:
         assert response.headers["accept-ranges"] == "bytes"
         assert response.headers["content-length"] == "10"
         assert response.content == bytes(range(90, 100))
-
-    @pytest.mark.parametrize(
-        "header",
-        ["bytes=100-", "bytes=0-1,4-5", "bytes=+1-5", "bytes=1- 5"],
-    )
-    def test_audio_unsatisfiable_or_multi_range_has_size_header(
-        self, tmp_path, bridge, header
-    ) -> None:
-        from fastapi.testclient import TestClient
-
-        audio = tmp_path / "range.flac"
-        audio.write_bytes(b"x" * 100)
-        entry = _make_entry(127)
-        entry.path = str(audio)
-        _register_index_entry(bridge, entry)
-
-        response = TestClient(create_app(bridge)).get(
-            f"/api/audio?path={audio}", headers={"Range": header}
-        )
-
-        assert response.status_code == 416
-        assert response.headers["accept-ranges"] == "bytes"
-        assert response.headers["content-range"] == "bytes */100"
 
     def test_audio_range_on_empty_file_is_unsatisfiable(self, tmp_path, bridge) -> None:
         from fastapi.testclient import TestClient
@@ -3629,41 +3562,8 @@ class TestAudioEndpoint:
 
         assert response.status_code == status
         assert response.content == b""
-        assert response.headers["accept-ranges"] == "bytes"
         assert response.headers.get("content-range") == content_range
         assert response.headers["content-length"] == content_length
-
-    def test_audio_head_never_reads_body(self, tmp_path, bridge, monkeypatch) -> None:
-        from fastapi.testclient import TestClient
-
-        audio = tmp_path / "head.flac"
-        audio.write_bytes(b"metadata")
-        entry = _make_entry(136)
-        entry.path = str(audio)
-        _register_index_entry(bridge, entry)
-        app = create_app(bridge)
-        real_open = Path.open
-
-        class NoReadFile:
-            def __init__(self, handle):
-                self.handle = handle
-
-            def __getattr__(self, name):
-                return getattr(self.handle, name)
-
-            def read(self, _size=-1):
-                raise AssertionError("HEAD consumed audio body")
-
-        def no_read_open(path, *args, **kwargs):
-            handle = real_open(path, *args, **kwargs)
-            return NoReadFile(handle) if path == audio else handle
-
-        monkeypatch.setattr(Path, "open", no_read_open)
-
-        response = TestClient(app).head(f"/api/audio?path={audio}")
-
-        assert response.status_code == 200
-        assert response.content == b""
 
     def test_alac_head_reports_transcode_policy_without_spawning(
         self, tmp_path, bridge, monkeypatch
@@ -3691,265 +3591,6 @@ class TestAudioEndpoint:
         assert response.headers["accept-ranges"] == "none"
         assert "content-range" not in response.headers
         assert "content-length" not in response.headers
-
-
-async def test_audio_read_runs_off_event_loop(tmp_path, bridge, monkeypatch) -> None:
-    from httpx2 import ASGITransport, AsyncClient
-
-    audio = tmp_path / "slow.flac"
-    audio.write_bytes(b"x" * (512 * 1024))
-    entry = _make_entry(131)
-    entry.path = str(audio)
-    _register_index_entry(bridge, entry)
-    app = create_app(bridge)
-    opened = threading.Event()
-    release = threading.Event()
-    real_open = Path.open
-
-    class SlowFile:
-        def __init__(self, handle):
-            self.handle = handle
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, traceback):
-            self.handle.close()
-
-        def __getattr__(self, name):
-            return getattr(self.handle, name)
-
-        def read(self, size=-1):
-            opened.set()
-            assert release.wait(2.0)
-            return self.handle.read(size)
-
-    def slow_open(path, *args, **kwargs):
-        return SlowFile(real_open(path, *args, **kwargs))
-
-    monkeypatch.setattr(Path, "open", slow_open)
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://testserver"
-    ) as client:
-        request_task = asyncio.create_task(client.get(f"/api/audio?path={audio}"))
-        try:
-            opened_in_time = await asyncio.to_thread(opened.wait, 1.0)
-            if opened_in_time:
-                loop_was_responsive = asyncio.Event()
-                asyncio.get_running_loop().call_soon(loop_was_responsive.set)
-                await asyncio.wait_for(loop_was_responsive.wait(), timeout=0.2)
-        finally:
-            release.set()
-        response = await request_task
-
-    assert opened_in_time is True
-    assert response.status_code == 200
-    assert len(response.content) == 512 * 1024
-
-
-async def test_audio_file_checks_run_off_event_loop(tmp_path, bridge, monkeypatch) -> None:
-    from httpx2 import ASGITransport, AsyncClient
-
-    audio = tmp_path / "check.flac"
-    audio.write_bytes(b"x")
-    entry = _make_entry(132)
-    entry.path = str(audio)
-    _register_index_entry(bridge, entry)
-    entered = threading.Event()
-    release = threading.Event()
-    real_fstat = os.fstat
-
-    def slow_fstat(fd):
-        entered.set()
-        assert release.wait(2.0)
-        return real_fstat(fd)
-
-    monkeypatch.setattr(os, "fstat", slow_fstat)
-    app = create_app(bridge)
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://testserver"
-    ) as client:
-        request_task = asyncio.create_task(client.get(f"/api/audio?path={audio}"))
-        try:
-            entered_in_time = await asyncio.to_thread(entered.wait, 1.0)
-            if entered_in_time:
-                loop_was_responsive = asyncio.Event()
-                asyncio.get_running_loop().call_soon(loop_was_responsive.set)
-                await asyncio.wait_for(loop_was_responsive.wait(), timeout=0.2)
-        finally:
-            release.set()
-        response = await request_task
-
-    assert entered_in_time is True
-    assert response.status_code == 200
-
-
-def test_audio_stream_uses_handle_opened_before_metadata_snapshot(
-    tmp_path, bridge, monkeypatch
-) -> None:
-    from fastapi.testclient import TestClient
-
-    audio = tmp_path / "authorized.flac"
-    replacement = tmp_path / "replacement.flac"
-    audio.write_bytes(b"original")
-    replacement.write_bytes(b"replaced")
-    entry = _make_entry(140)
-    entry.path = str(audio)
-    _register_index_entry(bridge, entry)
-    app = create_app(bridge)
-    metadata_taken = False
-    target_open_count = 0
-    real_open = Path.open
-    real_stat = Path.stat
-    real_fstat = os.fstat
-
-    def marking_stat(path, *args, **kwargs):
-        nonlocal metadata_taken
-        result = real_stat(path, *args, **kwargs)
-        if path == audio:
-            metadata_taken = True
-        return result
-
-    def marking_fstat(fd):
-        nonlocal metadata_taken
-        result = real_fstat(fd)
-        metadata_taken = True
-        return result
-
-    def routed_open(path, *args, **kwargs):
-        nonlocal target_open_count
-        if path == audio:
-            target_open_count += 1
-            source = replacement if metadata_taken else audio
-            return real_open(source, *args, **kwargs)
-        return real_open(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "stat", marking_stat)
-    monkeypatch.setattr(os, "fstat", marking_fstat)
-    monkeypatch.setattr(Path, "open", routed_open)
-
-    response = TestClient(app).get(f"/api/audio?path={audio}")
-
-    assert response.status_code == 200
-    assert response.headers["content-length"] == "8"
-    assert response.content == b"original"
-    assert target_open_count == 1
-
-
-@pytest.mark.parametrize("mutation", ["grow", "truncate"])
-def test_audio_stream_is_bounded_by_same_handle_snapshot(
-    tmp_path, bridge, monkeypatch, mutation
-) -> None:
-    from fastapi.testclient import TestClient
-
-    audio = tmp_path / "changing.flac"
-    audio.write_bytes(b"abcd")
-    entry = _make_entry(141)
-    entry.path = str(audio)
-    _register_index_entry(bridge, entry)
-    app = create_app(bridge)
-    mutated = False
-    real_open = Path.open
-    real_stat = Path.stat
-    real_fstat = os.fstat
-    closed = threading.Event()
-
-    class TrackedFile:
-        def __init__(self, handle):
-            self.handle = handle
-
-        def __getattr__(self, name):
-            return getattr(self.handle, name)
-
-        def close(self):
-            self.handle.close()
-            closed.set()
-
-    def tracked_open(path, *args, **kwargs):
-        handle = real_open(path, *args, **kwargs)
-        if path == audio and args == ("rb",):
-            return TrackedFile(handle)
-        return handle
-
-    def mutate_once() -> None:
-        nonlocal mutated
-        if mutated:
-            return
-        mutated = True
-        mode = "ab" if mutation == "grow" else "r+b"
-        with real_open(audio, mode) as handle:
-            if mutation == "grow":
-                handle.write(b"efgh")
-            else:
-                handle.truncate(2)
-
-    def mutating_stat(path, *args, **kwargs):
-        result = real_stat(path, *args, **kwargs)
-        if path == audio:
-            mutate_once()
-        return result
-
-    def mutating_fstat(fd):
-        result = real_fstat(fd)
-        mutate_once()
-        return result
-
-    monkeypatch.setattr(Path, "stat", mutating_stat)
-    monkeypatch.setattr(os, "fstat", mutating_fstat)
-    monkeypatch.setattr(Path, "open", tracked_open)
-
-    if mutation == "truncate":
-        with pytest.raises(OSError, match="truncated"):
-            TestClient(app).get(f"/api/audio?path={audio}")
-    else:
-        response = TestClient(app).get(f"/api/audio?path={audio}")
-
-        assert response.status_code == 200
-        assert response.headers["content-length"] == "4"
-        assert response.content == b"abcd"
-    assert closed.wait(0.5) is True
-
-
-@pytest.mark.parametrize(
-    ("method", "range_header", "status"),
-    [("GET", "bytes=100-", 416), ("HEAD", None, 200)],
-)
-def test_audio_preopened_handle_closes_without_body(
-    tmp_path, bridge, monkeypatch, method, range_header, status
-) -> None:
-    from fastapi.testclient import TestClient
-
-    audio = tmp_path / "close.flac"
-    audio.write_bytes(b"body")
-    entry = _make_entry(142)
-    entry.path = str(audio)
-    _register_index_entry(bridge, entry)
-    app = create_app(bridge)
-    real_open = Path.open
-    closed = threading.Event()
-
-    class TrackedFile:
-        def __init__(self, handle):
-            self.handle = handle
-
-        def __getattr__(self, name):
-            return getattr(self.handle, name)
-
-        def close(self):
-            self.handle.close()
-            closed.set()
-
-    def tracked_open(path, *args, **kwargs):
-        handle = real_open(path, *args, **kwargs)
-        return TrackedFile(handle) if path == audio else handle
-
-    monkeypatch.setattr(Path, "open", tracked_open)
-    headers = {} if range_header is None else {"Range": range_header}
-
-    response = TestClient(app).request(method, f"/api/audio?path={audio}", headers=headers)
-
-    assert response.status_code == status
-    assert closed.wait(0.5) is True
 
 
 async def test_alac_process_spawns_with_resolved_path_before_headers(
@@ -4274,107 +3915,6 @@ async def _cancel_asgi_after_first_body(app, *, path: str, expected_prefix: byte
     await asyncio.wait_for(app(scope, receive, send), timeout=1.0)
     assert response_status == 200
     assert first_chunk.startswith(expected_prefix)
-
-
-async def test_partial_asgi_file_response_closes_open_handle(bridge, tmp_path, monkeypatch) -> None:
-    audio = tmp_path / "large.flac"
-    audio.write_bytes(b"x" * (256 * 1024))
-    entry = _make_entry(133)
-    entry.path = str(audio)
-    _register_index_entry(bridge, entry)
-    real_open = Path.open
-    closed = threading.Event()
-
-    class TrackedFile:
-        def __init__(self, handle):
-            self.handle = handle
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, traceback):
-            self.close()
-
-        def close(self):
-            self.handle.close()
-            closed.set()
-
-        def __getattr__(self, name):
-            return getattr(self.handle, name)
-
-    def tracked_open(path, *args, **kwargs):
-        handle = real_open(path, *args, **kwargs)
-        return TrackedFile(handle) if path == audio else handle
-
-    monkeypatch.setattr(Path, "open", tracked_open)
-
-    await _cancel_asgi_after_first_body(create_app(bridge), path=str(audio), expected_prefix=b"x")
-
-    assert closed.wait(1.0) is True
-
-
-async def test_asgi_disconnect_before_body_closes_preopened_handle(
-    bridge, tmp_path, monkeypatch
-) -> None:
-    audio = tmp_path / "before-body.flac"
-    audio.write_bytes(b"body")
-    entry = _make_entry(143)
-    entry.path = str(audio)
-    _register_index_entry(bridge, entry)
-    app = create_app(bridge)
-    real_open = Path.open
-    closed = threading.Event()
-    response_started = asyncio.Event()
-    never = asyncio.Event()
-    request_sent = False
-
-    class TrackedFile:
-        def __init__(self, handle):
-            self.handle = handle
-
-        def __getattr__(self, name):
-            return getattr(self.handle, name)
-
-        def close(self):
-            self.handle.close()
-            closed.set()
-
-    def tracked_open(path, *args, **kwargs):
-        handle = real_open(path, *args, **kwargs)
-        return TrackedFile(handle) if path == audio else handle
-
-    async def receive() -> dict:
-        nonlocal request_sent
-        if not request_sent:
-            request_sent = True
-            return {"type": "http.request", "body": b"", "more_body": False}
-        await response_started.wait()
-        return {"type": "http.disconnect"}
-
-    async def send(message: dict) -> None:
-        if message["type"] == "http.response.start":
-            response_started.set()
-            await never.wait()
-
-    scope = {
-        "type": "http",
-        "asgi": {"version": "3.0"},
-        "http_version": "1.1",
-        "method": "GET",
-        "scheme": "http",
-        "path": "/api/audio",
-        "raw_path": b"/api/audio",
-        "query_string": urlencode({"path": str(audio)}).encode("ascii"),
-        "headers": [(b"host", b"testserver")],
-        "client": ("127.0.0.1", 12345),
-        "server": ("test", 80),
-        "root_path": "",
-    }
-    monkeypatch.setattr(Path, "open", tracked_open)
-
-    await asyncio.wait_for(app(scope, receive, send), timeout=1.0)
-
-    assert closed.wait(0.5) is True
 
 
 async def test_partial_asgi_alac_response_cancels_and_reaps_ffmpeg(

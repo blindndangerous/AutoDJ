@@ -16,14 +16,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   upgrading downloads the model once more. Afterwards you can delete the old folder, named like
   `models/MuQ-large-msd-iter-e891ff924c0b7fe8`, and the `.lock` file beside it. To keep using that folder instead, set
   `[model] manual_path` to it.
+- Playback settings out of range are refused instead of quietly adjusted: a negative crossfade,
+  fade-in or liner trigger, or a mood arc shorter than 15 minutes. Applying a saved profile with
+  such a value, or with NaN or Infinity in it, now fails with an error and changes nothing.
+
+### Removed
+
+- `GET /api/settings` and `GET /api/profiles/{name}`. The web page never used them; the settings
+  are in `GET /api/status` under `settings`.
 
 ### Fixed
 
-- `liners_duck_db` in the config file must now be between -30 and 0 dB; AutoDJ refuses to start
-  with any other value. A positive value used to make the music louder, not quieter, while a
-  liner played.
+- The liner ducking level now only accepts -30 to 0 dB. A positive value used to boost the music,
+  not quieten it, while a liner played. AutoDJ refuses to start with `liners_duck_db` outside that
+  range in the config file, the server refuses it, and a saved value outside that range is ignored
+  on restart.
 - The random and rotate transition choices in the server-side mix (the radio stream) now include
   backspin, as the web page already did.
+- Liner clips in subfolders of the liners folder no longer show up in the list. They could not
+  be played, because liners are opened by name from the folder itself.
 
 ## [0.18.0] - 2026-09-28
 

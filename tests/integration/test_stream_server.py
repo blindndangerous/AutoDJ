@@ -732,12 +732,12 @@ def test_shutdown_does_not_wait_for_a_liner_decode() -> None:
 
 
 def test_rotate_failure_is_a_clear_500_and_keeps_the_link(stream_app) -> None:
-    from autodj.stream_secret import StreamSecretError
+    from unittest.mock import patch
 
     client, secret, stream = stream_app
     old = secret.value
-    secret._write = MagicMock(side_effect=StreamSecretError("cannot write stream secret"))
-    response = client.post("/api/stream/rotate")
+    with patch("autodj.stream_secret.write_private_file", side_effect=OSError("disk full")):
+        response = client.post("/api/stream/rotate")
     assert response.status_code == 500
     assert response.json()["detail"] == "Could not save the new stream link"
     assert secret.value == old

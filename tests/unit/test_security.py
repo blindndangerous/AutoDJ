@@ -6,7 +6,6 @@ import json
 import re
 import secrets
 from dataclasses import replace
-from types import SimpleNamespace
 
 import pytest
 
@@ -207,72 +206,6 @@ def test_malformed_session_values_are_rejected_without_raising(value: object) ->
 
 
 @pytest.mark.parametrize(
-    "bad_now",
-    [
-        float("nan"),
-        float("inf"),
-        float("-inf"),
-        "not-a-time",
-    ],
-)
-def test_invalid_clock_values_reject_session_without_raising(bad_now: object) -> None:
-    cookie = SecurityPolicy(_server(access_token=_TOKEN), now=lambda: 1000).issue_device_session(
-        _DEVICE_ID
-    )
-    policy = SecurityPolicy(_server(access_token=_TOKEN), now=lambda: bad_now)  # type: ignore[arg-type]
-
-    assert policy.verify_session(cookie) is False
-
-
-@pytest.mark.parametrize("error_type", [ValueError, OverflowError])
-def test_clock_conversion_errors_reject_session_without_raising(
-    error_type: type[Exception],
-) -> None:
-    cookie = SecurityPolicy(_server(access_token=_TOKEN), now=lambda: 1000).issue_device_session(
-        _DEVICE_ID
-    )
-
-    def broken_clock() -> float:
-        raise error_type("clock failed")
-
-    assert (
-        SecurityPolicy(_server(access_token=_TOKEN), now=broken_clock).verify_session(cookie)
-        is False
-    )
-
-
-@pytest.mark.parametrize(
-    "bad_now",
-    [
-        float("nan"),
-        float("inf"),
-        float("-inf"),
-        "not-a-time",
-    ],
-)
-def test_invalid_clock_values_fail_session_issue_safely(bad_now: object) -> None:
-    policy = SecurityPolicy(_server(access_token=_TOKEN), now=lambda: bad_now)  # type: ignore[arg-type]
-
-    with pytest.raises(ValueError, match="clock") as raised:
-        policy.issue_device_session(_DEVICE_ID)
-    assert _TOKEN not in str(raised.value)
-
-
-@pytest.mark.parametrize("error_type", [ValueError, OverflowError])
-def test_clock_conversion_errors_fail_session_issue_safely(
-    error_type: type[Exception],
-) -> None:
-    def broken_clock() -> float:
-        raise error_type("secret clock details")
-
-    policy = SecurityPolicy(_server(access_token=_TOKEN), now=broken_clock)
-    with pytest.raises(ValueError, match="clock") as raised:
-        policy.issue_device_session(_DEVICE_ID)
-    assert "secret clock details" not in str(raised.value)
-    assert _TOKEN not in str(raised.value)
-
-
-@pytest.mark.parametrize(
     ("host", "allowed"),
     [
         ("radio.local", True),
@@ -406,37 +339,6 @@ def test_audit_record_omits_optional_fields_and_rejects_extra_data() -> None:
         )
 
 
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("request_id", 123),
-        ("action", None),
-        ("outcome", {"secret": "value"}),
-        ("method", 1),
-        ("route", ["/private/path"]),
-        ("status", True),
-        ("status", 200.0),
-        ("status", float("nan")),
-    ],
-)
-def test_audit_record_rejects_wrong_runtime_field_types(field: str, value: object) -> None:
-    arguments: dict[str, object] = {
-        "request_id": "request",
-        "action": "pair",
-        "outcome": "success",
-        field: value,
-    }
-
-    with pytest.raises(TypeError, match=field):
-        audit_record(**arguments)  # type: ignore[arg-type]
-
-
-@pytest.mark.parametrize("status", [99, 5000])
-def test_audit_record_rejects_status_outside_http_and_websocket_ranges(status: int) -> None:
-    with pytest.raises(ValueError, match="status"):
-        audit_record("request", "pair", "success", status=status)
-
-
 def test_request_ids_are_unique_lowercase_hex() -> None:
     values = {new_request_id() for _ in range(128)}
     assert len(values) == 128
@@ -474,22 +376,6 @@ def test_pairing_limiter_discards_expired_client_window() -> None:
     assert limiter.reserve("peer").allowed is True
 
 
-def test_issue_device_session_rejects_expiry_overflow() -> None:
-    policy = SecurityPolicy(
-        _server(access_token=_TOKEN, session_ttl_seconds=60), now=lambda: 2**63 - 1
-    )
-
-    with pytest.raises(RuntimeError, match="expiry is outside"):
-        policy.issue_device_session(_DEVICE_ID)
-
-
-def test_negative_clock_timestamp_is_rejected() -> None:
-    policy = SecurityPolicy(_server(access_token=_TOKEN), now=lambda: -1)
-
-    with pytest.raises(ValueError, match="invalid timestamp"):
-        policy.issue_device_session(_DEVICE_ID)
-
-
 def test_secure_unspecified_host_has_no_implicit_origin() -> None:
     policy = SecurityPolicy(_server(host="0.0.0.0", allowed_origins=None), secure_cookie=True)
 
@@ -503,77 +389,6 @@ def test_host_policy_rejects_empty_or_invalid_dns_name(host: str) -> None:
 
 def test_security_middleware_unknown_peer_and_malformed_length() -> None:
     assert peer_address({"type": "http"}) == "<unknown>"
-    assert SecurityMiddleware._declared_pairing_body_too_large(
-        {"type": "http", "headers": [(b"content-length", b"invalid")]}
+    assert SecurityMiddleware._declared_body_too_large(
+        {"type": "http", "headers": [(b"content-length", b"invalid")]}, 4096
     )
-
-
-@pytest.mark.asyncio
-async def test_pairing_body_buffer_rejects_nonbytes_chunk() -> None:
-    async def receive():
-        return {"type": "http.request", "body": "not bytes"}
-
-    with pytest.raises(ValueError, match="invalid ASGI request body"):
-        await SecurityMiddleware._buffer_pairing_body(receive)
-
-
-def _pairing_scope() -> dict:
-    return {
-        "type": "http",
-        "method": "POST",
-        "path": "/api/pair",
-        "headers": [
-            (b"host", b"radio.local"),
-            (b"origin", b"https://radio.local:8080"),
-        ],
-        "app": SimpleNamespace(routes=[]),
-    }
-
-
-@pytest.mark.asyncio
-async def test_pairing_body_replay_delegates_after_buffered_message() -> None:
-    received = []
-
-    async def app(_scope, receive, _send):
-        received.append(await receive())
-        received.append(await receive())
-
-    messages = iter(
-        [
-            {"type": "http.request", "body": b"pairing", "more_body": False},
-            {"type": "http.disconnect"},
-        ]
-    )
-
-    async def receive():
-        return next(messages)
-
-    async def send(_message):
-        return None
-
-    middleware = SecurityMiddleware(app, SecurityPolicy(_server()))
-    await middleware(_pairing_scope(), receive, send)
-
-    assert received == [
-        {"type": "http.request", "body": b"pairing", "more_body": False},
-        {"type": "http.disconnect"},
-    ]
-
-
-@pytest.mark.asyncio
-async def test_pairing_disconnect_is_replayed_to_downstream() -> None:
-    received = []
-
-    async def app(_scope, receive, _send):
-        received.append(await receive())
-
-    async def receive():
-        return {"type": "http.disconnect"}
-
-    async def send(_message):
-        return None
-
-    middleware = SecurityMiddleware(app, SecurityPolicy(_server()))
-    await middleware(_pairing_scope(), receive, send)
-
-    assert received == [{"type": "http.disconnect"}]

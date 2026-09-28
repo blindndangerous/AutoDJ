@@ -154,9 +154,9 @@ def test_fire_with_no_files_returns_none(tmp_path: Path) -> None:
 
 
 def test_nested_liner_name_is_skipped_gracefully(tmp_path: Path) -> None:
-    """A nested-folder name from ``rglob`` cannot open under the plain root;
+    """A clip in a subfolder cannot open under the plain root;
 
-    firing it must be swallowed rather than raising into the mix bus.
+    firing it by name must be swallowed rather than raising into the mix bus.
     """
     bus = MagicMock()
     sub = tmp_path / "sub"

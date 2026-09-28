@@ -140,18 +140,18 @@ class LinerLibrary:
 
     @classmethod
     def from_folder(cls, folder: Path) -> LinerLibrary:
-        """Walk *folder* and collect every audio file with a known extension.
+        """Collect every audio file with a known extension directly in *folder*.
 
-        Recursive: any file under *folder* matching :data:`LINER_EXTS`
-        is included.  Returns an empty library when the folder is
-        missing or empty — callers fall back to no-op rather than
-        raising.
+        Only the folder itself is listed, not subfolders: liners are
+        fetched by bare name from the root.  Returns an empty library
+        when the folder is missing or empty — callers fall back to
+        no-op rather than raising.
         """
         if not folder.exists() or not folder.is_dir():
             logger.debug("Liner folder %s missing or not a directory", folder)
             return cls(folder=folder, files=[])
         files: list[Path] = []
-        for p in folder.rglob("*"):
+        for p in folder.iterdir():
             if p.is_file() and p.suffix.lower() in LINER_EXTS:
                 files.append(p)
         files.sort(key=lambda f: f.name.lower())

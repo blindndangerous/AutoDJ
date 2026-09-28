@@ -15,15 +15,17 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
+from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Match
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from autodj.config import ServerConfig, canonicalize_allowed_origin
+from autodj.pairing import DEVICE_ID
 
 COOKIE_NAME = "autodj_session"
 
@@ -46,13 +48,11 @@ _PUBLIC_FILES = frozenset(
     }
 )
 
-_HEX_32 = re.compile(r"[0-9a-f]{32}\Z")
 _HEX_64 = re.compile(r"[0-9a-f]{64}\Z")
 _CANONICAL_EXPIRY = re.compile(r"(?:0|[1-9][0-9]{0,18})\Z")
 _MAX_EXPIRY = 2**63 - 1
 _DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
 _BRACKETED_HOST = re.compile(r"\[([^\]]+)\](?::([0-9]+))?\Z")
-_DEVICE_ID = re.compile(r"[0-9a-f]{32}\Z")
 PAIRING_BODY_MAX_BYTES = 4096
 PAIRING_CODE_WINDOW_SECONDS = 300
 # Wrong well-formed codes tolerated per code window.  The rate limiter alone
@@ -226,20 +226,6 @@ def _parse_host_header(value: object) -> str | None:
     return canonical
 
 
-def _clock_timestamp(now: Callable[[], float]) -> int:
-    """Return a valid nonnegative integral timestamp from a clock callback."""
-    try:
-        value = now()
-        if type(value) not in {int, float}:
-            raise TypeError
-        timestamp = int(value)
-    except (OverflowError, TypeError, ValueError):
-        raise ValueError("clock returned an invalid timestamp") from None
-    if not 0 <= timestamp <= _MAX_EXPIRY:
-        raise ValueError("clock returned an invalid timestamp")
-    return timestamp
-
-
 def _is_unspecified_host(host: str) -> bool:
     """Return whether host is an unspecified IP address."""
     try:
@@ -283,7 +269,7 @@ class SecurityPolicy:
         token = self.config.access_token
         if token is None:
             raise RuntimeError("access token is not configured")
-        window = _clock_timestamp(self.now) // PAIRING_CODE_WINDOW_SECONDS
+        window = int(self.now()) // PAIRING_CODE_WINDOW_SECONDS
         return self._pairing_code(token, window)
 
     def pairing_code_seconds_left(self) -> tuple[int, int]:
@@ -292,7 +278,7 @@ class SecurityPolicy:
         A code is accepted for its own window and the one after it, so it
         outlives the start of its successor by one full window.
         """
-        timestamp = _clock_timestamp(self.now)
+        timestamp = int(self.now())
         next_start = (timestamp // PAIRING_CODE_WINDOW_SECONDS + 1) * PAIRING_CODE_WINDOW_SECONDS
         return next_start + PAIRING_CODE_WINDOW_SECONDS - timestamp, next_start - timestamp
 
@@ -302,10 +288,7 @@ class SecurityPolicy:
         Checked before comparing, so a locked-out client or a paused server
         answers the same way for right and wrong codes.
         """
-        try:
-            timestamp = _clock_timestamp(self.now)
-        except (RuntimeError, ValueError):
-            return None
+        timestamp = int(self.now())
         window = timestamp // PAIRING_CODE_WINDOW_SECONDS
         retry_after = (window + 1) * PAIRING_CODE_WINDOW_SECONDS - timestamp
         with self._pairing_lock:
@@ -358,10 +341,7 @@ class SecurityPolicy:
         token = self.config.access_token
         if token is None:
             return False
-        try:
-            timestamp = _clock_timestamp(self.now)
-        except (RuntimeError, ValueError):
-            return False
+        timestamp = int(self.now())
         window = timestamp // PAIRING_CODE_WINDOW_SECONDS
         candidate_bytes = candidate.encode("ascii")
         previous_window = max(0, window - 1)
@@ -415,13 +395,11 @@ class SecurityPolicy:
         token = self.config.access_token
         if token is None:
             raise RuntimeError("access token is not configured")
-        if _DEVICE_ID.fullmatch(device_id) is None:
+        if DEVICE_ID.fullmatch(device_id) is None:
             raise ValueError("device ID is invalid")
         if self.device_is_active is not None and not self.device_is_active(device_id):
             raise ValueError("device is not active")
-        expires = _clock_timestamp(self.now) + self.config.session_ttl_seconds
-        if not 0 <= expires <= _MAX_EXPIRY:
-            raise RuntimeError("session expiry is outside the supported range")
+        expires = int(self.now()) + self.config.session_ttl_seconds
         nonce = secrets.token_hex(16)
         payload = f"{expires}.{device_id}.{nonce}"
         signature = hmac.new(
@@ -437,14 +415,14 @@ class SecurityPolicy:
         parts = value.split(".")
         if len(parts) == 4:
             expires_text, device_id, nonce, signature = parts
-            if _DEVICE_ID.fullmatch(device_id) is None:
+            if DEVICE_ID.fullmatch(device_id) is None:
                 return False, None
             payload = f"{expires_text}.{device_id}.{nonce}"
         else:
             return False, None
         if (
             _CANONICAL_EXPIRY.fullmatch(expires_text) is None
-            or _HEX_32.fullmatch(nonce) is None
+            or DEVICE_ID.fullmatch(nonce) is None  # 32 hex digits, like a device ID
             or _HEX_64.fullmatch(signature) is None
         ):
             return False, None
@@ -457,11 +435,7 @@ class SecurityPolicy:
         signature_valid = secrets.compare_digest(
             signature.encode("ascii"), expected.encode("ascii")
         )
-        try:
-            current_time = _clock_timestamp(self.now)
-        except ValueError:
-            return False, None
-        if not signature_valid or expires < current_time:
+        if not signature_valid or expires < int(self.now()):
             return False, None
         if (
             device_id is not None
@@ -517,23 +491,7 @@ def audit_record(
     route: str | None = None,
     status: int | None = None,
 ) -> str:
-    """Serialize a validated closed-schema audit event as JSON."""
-    for field_name, required_value in (
-        ("request_id", request_id),
-        ("action", action),
-        ("outcome", outcome),
-    ):
-        if type(required_value) is not str:
-            raise TypeError(f"{field_name} must be a string")
-    for field_name, optional_value in (("method", method), ("route", route)):
-        if optional_value is not None and type(optional_value) is not str:
-            raise TypeError(f"{field_name} must be a string or None")
-    if status is not None:
-        if type(status) is not int:
-            raise TypeError("status must be an integer or None")
-        if not (100 <= status <= 599 or 1000 <= status <= 4999):
-            raise ValueError("status must be a valid HTTP status or WebSocket code")
-
+    """Serialize a closed-schema audit event as JSON."""
     record: dict[str, str | int] = {
         "action": action,
         "outcome": outcome,
@@ -620,15 +578,16 @@ def peer_address(scope: Scope) -> str:
 class SecurityMiddleware:
     """Enforce HTTP request policy before any downstream body consumer."""
 
-    def __init__(self, app: ASGIApp, policy: SecurityPolicy) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        policy: SecurityPolicy,
+        body_limits: Mapping[str, Callable[[], int]],
+    ) -> None:
+        """Wrap *app*; *body_limits* maps a POST path to its request-body cap in bytes."""
         self.app = app
         self._policy = policy
-
-    def _current_policy(self, scope: Scope) -> SecurityPolicy:
-        """Return the application policy when available, otherwise the default policy."""
-        app = scope.get("app")
-        state = getattr(app, "state", None)
-        return getattr(state, "security_policy", self._policy)
+        self._body_limits = body_limits
 
     @staticmethod
     def _pairing_limiter(scope: Scope) -> PairingRateLimiter | None:
@@ -639,8 +598,8 @@ class SecurityMiddleware:
         return limiter if isinstance(limiter, PairingRateLimiter) else None
 
     @staticmethod
-    def _declared_pairing_body_too_large(scope: Scope) -> bool:
-        """Return whether Content-Length is malformed or exceeds pairing body limit."""
+    def _declared_body_too_large(scope: Scope, cap: int) -> bool:
+        """Return whether Content-Length is malformed or exceeds *cap*."""
         values = _raw_header_values(scope, b"content-length")
         if not values:
             return False
@@ -651,24 +610,28 @@ class SecurityMiddleware:
             or not values[0].isdecimal()
         ):
             return True
-        return int(values[0]) > PAIRING_BODY_MAX_BYTES
+        return int(values[0]) > cap
 
     @staticmethod
-    async def _buffer_pairing_body(receive: Receive) -> tuple[bytes, bool]:
-        """Read bounded pairing body and report whether client disconnected."""
-        body = bytearray()
-        while True:
+    def _capped_receive(receive: Receive, cap: int) -> Receive:
+        """Return *receive* raising 413 once the body passes *cap* bytes.
+
+        FastAPI re-raises an HTTPException from body parsing, so the route
+        answers 413 before it parses or spools anything past the cap.
+        """
+        consumed = 0
+
+        async def capped() -> Message:
+            """Receive one message and count its body bytes against the cap."""
+            nonlocal consumed
             message = await receive()
-            if message["type"] != "http.request":
-                return bytes(body), True
-            chunk = message.get("body", b"")
-            if not isinstance(chunk, bytes):
-                raise ValueError("invalid ASGI request body")
-            if len(chunk) > PAIRING_BODY_MAX_BYTES - len(body):
-                raise _PairingBodyTooLarge
-            body.extend(chunk)
-            if not message.get("more_body", False):
-                return bytes(body), False
+            if message["type"] == "http.request":
+                consumed += len(message.get("body", b""))
+                if consumed > cap:
+                    raise HTTPException(status_code=413, detail="Request body too large")
+            return message
+
+        return capped
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Enforce request policy, attach request IDs, and audit unsafe requests."""
@@ -683,7 +646,7 @@ class SecurityMiddleware:
         path = str(scope.get("path", ""))
         is_pairing = method == "POST" and path == "/api/pair"
         route = _route_template(scope)
-        policy = self._current_policy(scope)
+        policy = self._policy
         host_values = _raw_header_values(scope, b"host")
         origin_values = _raw_header_values(scope, b"origin")
 
@@ -745,30 +708,14 @@ class SecurityMiddleware:
                     )
                 return
 
-        if is_pairing:
-            if self._declared_pairing_body_too_large(scope):
-                await self._reject_pairing_body(scope, receive, send, request_id, method, route)
+        body_limit = self._body_limits.get(path) if method == "POST" else None
+        downstream_receive = receive
+        if body_limit is not None:
+            cap = body_limit()
+            if self._declared_body_too_large(scope, cap):
+                await self._reject_body_too_large(scope, receive, send, request_id, method, route)
                 return
-            try:
-                body, disconnected = await self._buffer_pairing_body(receive)
-            except (_PairingBodyTooLarge, ValueError):
-                await self._reject_pairing_body(scope, receive, send, request_id, method, route)
-                return
-            replayed = False
-
-            async def receive_pairing_body() -> Message:
-                """Replay buffered pairing body once to downstream application."""
-                nonlocal replayed
-                if replayed:
-                    return await receive()
-                replayed = True
-                if disconnected:
-                    return {"type": "http.disconnect"}
-                return {"type": "http.request", "body": body, "more_body": False}
-
-            downstream_receive: Receive = receive_pairing_body
-        else:
-            downstream_receive = receive
+            downstream_receive = self._capped_receive(receive, cap)
 
         response_status: int | None = None
 
@@ -825,7 +772,7 @@ class SecurityMiddleware:
             )
 
     @staticmethod
-    async def _reject_pairing_body(
+    async def _reject_body_too_large(
         scope: Scope,
         receive: Receive,
         send: Send,
@@ -833,7 +780,7 @@ class SecurityMiddleware:
         method: str,
         route: str,
     ) -> None:
-        """Send and audit 413 response for oversized pairing request body."""
+        """Send and audit a 413 response for a declared oversized request body."""
         response = JSONResponse(
             {"detail": "Request body too large"},
             status_code=413,
@@ -849,9 +796,3 @@ class SecurityMiddleware:
             status=413,
             level=logging.WARNING,
         )
-
-
-class _PairingBodyTooLarge(Exception):
-    """Signal that buffered pairing request exceeded allowed body size."""
-
-    pass

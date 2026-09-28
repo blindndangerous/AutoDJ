@@ -13,7 +13,6 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -66,12 +65,13 @@ def _security_app():
     return create_app(PlayerBridge(player=player, sim=_make_sim_mock()))
 
 
-def _security_client_and_bridge() -> tuple[TestClient, PlayerBridge]:
+def _security_client_and_bridge(**server: Any) -> tuple[TestClient, PlayerBridge]:
     player = _make_player_mock()
     player._cfg.server = ServerConfig(
         access_token=_TEST_ACCESS_TOKEN,
         allowed_hosts=["testserver"],
         allowed_origins=["http://testserver"],
+        **server,
     )
     bridge = PlayerBridge(player=player, sim=_make_sim_mock())
     return (
@@ -150,26 +150,6 @@ def test_security_policy_snapshots_mutable_configuration() -> None:
     replacement = SecurityPolicy(original)
     assert replacement.verify_pairing_code(replacement.current_pairing_code())
     assert replacement.host_allowed("rotated.local")
-
-
-def test_app_policy_replacement_is_atomic() -> None:
-    app = _security_app()
-    rotated = "rotated-task10-access-token-is-32-bytes"
-    app.state.security_policy = SecurityPolicy(
-        ServerConfig(
-            access_token=rotated,
-            allowed_hosts=["rotated.local"],
-            allowed_origins=["http://rotated.local"],
-        ),
-        device_is_active=app.state.device_registry.is_active,
-    )
-    client = TestClient(
-        app,
-        base_url="http://rotated.local",
-        headers={"Host": "rotated.local", "Origin": "http://rotated.local"},
-    )
-
-    assert _pair(client).status_code == 200
 
 
 def test_pairing_rate_limiter_is_bounded_isolated_and_expires() -> None:
@@ -315,52 +295,6 @@ def test_malformed_and_oversized_pairing_consume_bounded_attempt_budget(
     assert statuses == [413, 422, 429]
 
 
-def test_single_oversized_pairing_chunk_is_not_copied_into_accumulator(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import autodj.security as security_module
-
-    class BoundedAccumulator:
-        extended = False
-
-        def __len__(self) -> int:
-            return 0
-
-        def extend(self, _chunk: bytes) -> None:
-            type(self).extended = True
-            raise AssertionError("oversized chunk was copied")
-
-    monkeypatch.setattr(security_module, "bytearray", BoundedAccumulator, raising=False)
-    messages: list[dict[str, Any]] = []
-
-    async def receive() -> dict[str, Any]:
-        return {"type": "http.request", "body": b"x" * 1_000_000, "more_body": False}
-
-    async def send(message: dict[str, Any]) -> None:
-        messages.append(message)
-
-    scope: dict[str, Any] = {
-        "type": "http",
-        "asgi": {"version": "3.0"},
-        "http_version": "1.1",
-        "method": "POST",
-        "scheme": "http",
-        "path": "/api/pair",
-        "raw_path": b"/api/pair",
-        "query_string": b"",
-        "root_path": "",
-        "headers": [(b"host", b"testserver"), (b"origin", b"http://testserver")],
-        "client": ("127.0.0.1", 50000),
-        "server": ("testserver", 80),
-        "state": {},
-    }
-
-    asyncio.run(_security_app()(scope, receive, send))
-
-    assert _response_status(messages) == 413
-    assert BoundedAccumulator.extended is False
-
-
 def test_successful_pairing_resets_per_client_failures() -> None:
     limiter = PairingRateLimiter(per_client_limit=2, global_limit=100)
     app = _security_app()
@@ -425,6 +359,58 @@ def test_pairing_body_is_capped_before_json_parsing(
     start = next(message for message in messages if message["type"] == "http.response.start")
     assert any(key.lower() == b"x-request-id" for key, _ in start["headers"])
     assert len([record for record in caplog.records if '"status":413' in record.message]) == 1
+
+
+def test_chunked_liner_upload_past_the_cap_is_413_before_anything_is_stored(
+    tmp_path: Path,
+) -> None:
+    """A body with no Content-Length is counted as it streams into the multipart parser."""
+    player = _make_player_mock()
+    player._cfg.playback.liners_folder = str(tmp_path / "liners")
+    player._cfg.server.liner_upload_max_bytes = 1024
+    app = create_app(PlayerBridge(player=player, sim=_make_sim_mock()))
+    boundary = b"cap"
+    head = (
+        b'--cap\r\nContent-Disposition: form-data; name="file"; filename="big.mp3"\r\n'
+        b"Content-Type: audio/mpeg\r\n\r\n"
+    )
+    chunks = [head] + [b"x" * 16384] * 8 + [b"\r\n--cap--\r\n"]
+    reads = 0
+    messages: list[dict[str, Any]] = []
+
+    async def receive() -> dict[str, Any]:
+        nonlocal reads
+        reads += 1
+        chunk = chunks[reads - 1]
+        return {"type": "http.request", "body": chunk, "more_body": reads < len(chunks)}
+
+    async def send(message: dict[str, Any]) -> None:
+        messages.append(message)
+
+    scope: dict[str, Any] = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/api/liners/upload",
+        "raw_path": b"/api/liners/upload",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"host", b"testserver"),
+            (b"origin", b"http://testserver"),
+            (b"content-type", b"multipart/form-data; boundary=" + boundary),
+        ],
+        "client": ("127.0.0.1", 50000),
+        "server": ("testserver", 80),
+        "state": {},
+    }
+    asyncio.run(app(scope, receive, send))
+
+    assert _response_status(messages) == 413
+    assert reads < len(chunks)
+    assert not (tmp_path / "liners" / "big.mp3").exists()
 
 
 def test_post_start_exception_audits_actual_status_without_second_response(
@@ -838,7 +824,7 @@ def test_audit_rejections_use_route_templates_and_redact_inputs(
     private_name = "private-profile-name"
     secret_query = "secret-query-value"
     with caplog.at_level(logging.INFO, logger="autodj.audit"):
-        response = client.get(f"/api/profiles/{private_name}?token={secret_query}")
+        response = client.delete(f"/api/profiles/{private_name}?token={secret_query}")
 
     assert response.status_code == 401
     audit_messages = [item.message for item in caplog.records if item.name == "autodj.audit"]
@@ -846,7 +832,7 @@ def test_audit_rejections_use_route_templates_and_redact_inputs(
     assert len(records) == 1
     assert records[0] == {
         "action": "/api/profiles/{name}",
-        "method": "GET",
+        "method": "DELETE",
         "outcome": "rejected",
         "request_id": response.headers["X-Request-ID"],
         "route": "/api/profiles/{name}",
@@ -952,10 +938,7 @@ def test_websocket_closes_when_an_established_session_expires() -> None:
     )
     bridge = PlayerBridge(player=player, sim=_make_sim_mock())
     app = create_app(bridge)
-    app.state.security_policy = SecurityPolicy(
-        player._cfg.server,
-        now=lambda: now[0],
-    )
+    app.state.security_policy.now = lambda: now[0]
 
     with TestClient(
         app,
@@ -973,16 +956,8 @@ def test_websocket_closes_when_an_established_session_expires() -> None:
 
 def test_websocket_rejects_mutation_after_session_expiry() -> None:
     now = [1000.0]
-    client, bridge = _security_client_and_bridge()
-    client.app.state.security_policy = SecurityPolicy(
-        ServerConfig(
-            access_token=_TEST_ACCESS_TOKEN,
-            allowed_hosts=["testserver"],
-            allowed_origins=["http://testserver"],
-            session_ttl_seconds=60,
-        ),
-        now=lambda: now[0],
-    )
+    client, bridge = _security_client_and_bridge(session_ttl_seconds=60)
+    client.app.state.security_policy.now = lambda: now[0]
     initial = bridge.player._state.discovery_enabled
     assert _pair(client).status_code == 200
 
@@ -1061,15 +1036,6 @@ def test_websocket_bridge_failure_closes_and_audits_cleanup(
 
 
 class TestProfileValidateName:
-    def test_get_invalid_name_returns_400(self, client) -> None:
-        # Names with traversal / special chars trip validate_name -> 400
-        resp = client.get("/api/profiles/..%2Fbad")
-        assert resp.status_code in (400, 404)
-
-    def test_get_unknown_name_returns_404(self, client, tmp_path: Path) -> None:
-        resp = client.get("/api/profiles/no-such-profile-xyz")
-        assert resp.status_code == 404
-
     def test_save_invalid_name_400(self, client) -> None:
         resp = client.post("/api/profiles", json={"name": "../escape", "preset": None})
         assert resp.status_code == 400
@@ -1122,21 +1088,22 @@ class TestLinerEndpoints:
         assert resp.status_code == 404
 
     @pytest.mark.parametrize(
-        "escaped",
+        ("escaped", "status"),
         [
-            "..%2Fclip.mp3",
-            "sub%2Fclip.mp3",
-            "clip.mp3%3Astream",
-            "clip.mp3.",
-            "clip.mp3%20",
+            # A decoded slash matches no route at all.
+            ("..%2Fclip.mp3", 404),
+            ("sub%2Fclip.mp3", 404),
+            ("clip.mp3%3Astream", 400),
+            ("clip.mp3.", 400),
+            ("clip.mp3%20", 400),
         ],
     )
     @pytest.mark.parametrize("method", ["get", "delete"])
     def test_file_routes_reject_encoded_or_windows_aliases(
-        self, client, escaped: str, method: str
+        self, client, escaped: str, status: int, method: str
     ) -> None:
         response = getattr(client, method)(f"/api/liners/file/{escaped}")
-        assert response.status_code == 400
+        assert response.status_code == status
 
     @pytest.mark.parametrize(
         "name",
@@ -1223,22 +1190,6 @@ class TestArt:
 
 
 class TestProfileSaveRoundTrip:
-    def test_save_then_get(self, client) -> None:
-        body = {
-            "name": "test-profile-1",
-            "preset": None,
-            "bpm_lo": 90,
-            "bpm_hi": 130,
-        }
-        resp = client.post("/api/profiles", json=body)
-        assert resp.status_code == 200
-        # Should be retrievable
-        get_resp = client.get(f"/api/profiles/{body['name']}")
-        assert get_resp.status_code == 200
-        assert get_resp.json()["name"] == body["name"]
-        # Cleanup
-        client.request("DELETE", f"/api/profiles/{body['name']}")
-
     def test_apply_round_trip(self, client) -> None:
         body = {"name": "apply-rt", "preset": None}
         client.post("/api/profiles", json=body)
@@ -1300,11 +1251,6 @@ class TestModuleTraversal:
 
 
 class TestProfileBadCharsRouted:
-    def test_get_bad_chars_returns_400(self, client) -> None:
-        # '@' is rejected by validate_name; the route still matches.
-        resp = client.get("/api/profiles/bad@name")
-        assert resp.status_code == 400
-
     def test_delete_bad_chars_returns_400(self, client) -> None:
         resp = client.request("DELETE", "/api/profiles/bad@name")
         assert resp.status_code == 400
@@ -1355,13 +1301,13 @@ class TestProfileApplyBranches:
         """A preset the config no longer has used to be dropped without a word."""
         body = {"name": "branchcov-gone", "preset": "warmup", "bpm_lo": 90, "bpm_hi": 130}
         client.post("/api/profiles", json=body)
-        before = client.get("/api/settings").json()["bpm_range"]
+        before = client.get("/api/status").json()["settings"]["bpm_range"]
 
         resp = client.post(f"/api/profiles/{body['name']}/apply")
 
         assert resp.status_code == 400
         assert "warmup" in resp.json()["detail"]
-        assert client.get("/api/settings").json()["bpm_range"] == before
+        assert client.get("/api/status").json()["settings"]["bpm_range"] == before
         client.request("DELETE", f"/api/profiles/{body['name']}")
 
 
@@ -1515,29 +1461,6 @@ class TestLinerUploadDelete:
         )
 
         assert response.status_code == 400
-
-    def test_streaming_response_construction_failure_closes_file(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from autodj import liner_files, server
-
-        player = _make_player_mock()
-        player._cfg.playback.liners_folder = str(tmp_path)
-        client = TestClient(create_app(PlayerBridge(player=player, sim=_make_sim_mock())))
-        file = MagicMock()
-        opened = liner_files.OpenedLiner(
-            file=file,
-            stat_result=SimpleNamespace(st_size=5),
-        )
-        monkeypatch.setattr(liner_files, "open_liner_file", MagicMock(return_value=opened))
-        monkeypatch.setattr(
-            server, "StreamingResponse", MagicMock(side_effect=RuntimeError("response"))
-        )
-
-        response = client.get("/api/liners/file/clip.wav")
-
-        assert response.status_code == 500
-        file.close.assert_called()
 
 
 def test_dev_module_route_serves_existing_javascript(

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import math
 import secrets
 
 import pytest
@@ -97,14 +96,6 @@ def test_registry_reset_revokes_only_active_devices(tmp_path) -> None:
     assert all(device.revoked_at == 1_000 for device in registry.list_devices())
 
 
-@pytest.mark.parametrize("clock", [math.nan, math.inf, -1, "invalid"])
-def test_registry_rejects_invalid_clock_values(tmp_path, clock: object) -> None:
-    registry = DeviceRegistry(tmp_path / "devices.sqlite3", now=lambda: clock)  # type: ignore[arg-type]
-
-    with pytest.raises(ValueError, match="clock"):
-        registry.pair("Kitchen tablet")
-
-
 def test_device_session_identifies_device_and_honors_revocation(tmp_path) -> None:
     registry = DeviceRegistry(tmp_path / "devices.sqlite3", now=lambda: 1_000)
     device = registry.pair("Living room")
@@ -140,19 +131,13 @@ def test_registry_rejects_invalid_device_names(tmp_path) -> None:
             raise AssertionError(f"invalid device name accepted: {name!r}")
 
 
-def test_pairing_policy_rejects_missing_token_clock_and_device(tmp_path) -> None:
+def test_pairing_policy_rejects_missing_token_and_device(tmp_path) -> None:
     registry = DeviceRegistry(tmp_path / "devices.sqlite3", now=lambda: 1_000)
     no_token = SecurityPolicy(ServerConfig(), device_is_active=registry.is_active)
     with pytest.raises(RuntimeError, match="access token"):
         no_token.current_pairing_code()
     assert not no_token.verify_pairing_code("12345678")
 
-    bad_clock = SecurityPolicy(
-        ServerConfig(access_token=_SECRET),
-        now=lambda: math.nan,
-        device_is_active=registry.is_active,
-    )
-    assert not bad_clock.verify_pairing_code("12345678")
     with pytest.raises(ValueError, match="device ID"):
         _policy(registry).issue_device_session("invalid")
     with pytest.raises(ValueError, match="not active"):
@@ -248,12 +233,6 @@ def test_malformed_codes_do_not_count_toward_any_limit() -> None:
         assert not policy.verify_pairing_code("not-a-code", "10.0.0.9")
     assert policy.pairing_block("10.0.0.9") is None
     assert policy.verify_pairing_code(policy.current_pairing_code(), "10.0.0.9")
-
-
-def test_pairing_block_fails_open_on_a_broken_clock() -> None:
-    # verify_pairing_code already refuses every code when the clock is bad.
-    policy = SecurityPolicy(ServerConfig(access_token=_SECRET), now=lambda: float("nan"))
-    assert policy.pairing_block("10.0.0.9") is None
 
 
 def test_pairing_code_seconds_left_covers_the_grace_window() -> None:

@@ -11,7 +11,7 @@ import os
 import secrets
 import stat
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import Callable
 from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,14 +36,6 @@ class LinerTooLargeError(ValueError):
 
 class LinerStorageUnsupportedError(OSError):
     """Raised when storage cannot provide required atomic operations."""
-
-
-class MalformedLinerRange(ValueError):
-    """Raised when a byte-range header is malformed or unsupported."""
-
-
-class LinerRangeNotSatisfiable(ValueError):
-    """Raised when a byte range starts beyond the held file."""
 
 
 class AsyncReader(Protocol):
@@ -110,7 +102,6 @@ class _StagedUpload:
 
 
 _CHUNK_BYTES = 1024 * 1024
-DEFAULT_MULTIPART_OVERHEAD_BYTES = 64 * 1024
 _WINDOWS_FORBIDDEN = frozenset('<>"|?*')
 _WINDOWS_DEVICES = {
     "CON",
@@ -156,46 +147,9 @@ def _validate_audio_name(name: str) -> None:
     """
     _validate_name(name)
     if os.path.splitext(name)[1].lower() not in LINER_EXTS:
-        raise InvalidLinerName("liner name must use a supported audio extension")
-
-
-def _is_reparse_point(path: Path) -> bool:
-    """Return whether a path is a symbolic link or Windows reparse point."""
-
-    try:
-        metadata = path.lstat()
-    except FileNotFoundError:
-        return False
-    return stat.S_ISLNK(metadata.st_mode) or bool(
-        getattr(metadata, "st_file_attributes", 0) & _REPARSE_ATTRIBUTE
-    )
-
-
-def resolve_liner_path(root: Path, name: str, *, require_file: bool = False) -> Path:
-    """Validate one name and return its display path inside *root*.
-
-    Security-sensitive I/O uses pinned handle-relative functions below; callers
-    must not use this returned path for mutation or deferred opening.
-    """
-    _validate_name(name)
-    root = Path(root)
-    if _is_reparse_point(root):
-        raise InvalidLinerName("configured liner root cannot be a reparse point")
-    if root.exists() and not root.is_dir():
-        raise InvalidLinerName("configured liner root is not a directory")
-    resolved_root = root.resolve()
-    candidate = resolved_root / name
-    if _is_reparse_point(candidate):
-        raise InvalidLinerName("liner file cannot be a reparse point")
-    target = candidate.resolve()
-    try:
-        target.relative_to(resolved_root)
-    except ValueError as exc:
-        raise InvalidLinerName("liner path escapes configured root") from exc
-    if require_file:
-        opened = open_liner_file(root, name)
-        opened.file.close()
-    return target
+        raise InvalidLinerName(
+            f"liner name must use a supported audio extension: {', '.join(LINER_EXTS)}"
+        )
 
 
 _INVALID_HANDLE_VALUE = cast(int, ctypes.c_void_p(-1).value)
@@ -1227,7 +1181,7 @@ async def store_liner_upload(
     replace: bool,
 ) -> tuple[Path, int]:
     """Stream and atomically publish one upload relative to a pinned root."""
-    _validate_name(name)
+    _validate_audio_name(name)
     if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes <= 0:
         raise ValueError("max_bytes must be a positive integer")
 
@@ -1516,160 +1470,3 @@ def delete_liner_file(root: Path, name: str) -> None:
                 logger.warning("Unable to close root after committed liner deletion", exc_info=True)
             else:
                 logger.warning("Unable to close root after failed liner deletion", exc_info=True)
-
-
-class _BodyLimitExceeded(Exception):
-    """Signal that streaming request input exceeded the configured cap."""
-
-    pass
-
-
-class LinerUploadBodyLimitMiddleware:
-    """Reject oversized liner request bodies before multipart parsing/spooling."""
-
-    def __init__(
-        self,
-        app: Callable[..., Awaitable[None]],
-        *,
-        max_file_bytes: Callable[[], int],
-        multipart_overhead_bytes: int = DEFAULT_MULTIPART_OVERHEAD_BYTES,
-    ) -> None:
-        if multipart_overhead_bytes <= 0:
-            raise ValueError("multipart_overhead_bytes must be positive")
-        self.app = app
-        self.max_file_bytes = max_file_bytes
-        self.multipart_overhead_bytes = multipart_overhead_bytes
-
-    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
-        """Enforce the upload request cap before the wrapped app consumes its body."""
-
-        if (
-            scope.get("type") != "http"
-            or scope.get("method") != "POST"
-            or scope.get("path") != "/api/liners/upload"
-        ):
-            await self.app(scope, receive, send)
-            return
-        max_file_bytes = self.max_file_bytes()
-        if (
-            isinstance(max_file_bytes, bool)
-            or not isinstance(max_file_bytes, int)
-            or max_file_bytes <= 0
-        ):
-            max_file_bytes = 50 * 1024 * 1024
-        request_cap = max_file_bytes + self.multipart_overhead_bytes
-        headers = {key.lower(): value for key, value in scope.get("headers", [])}
-        declared = headers.get(b"content-length")
-        if declared is not None:
-            try:
-                declared_size = int(declared)
-                if declared_size < 0 or declared_size > request_cap:
-                    await self._send_too_large(send)
-                    return
-            except ValueError:
-                await self._send_too_large(send)
-                return
-
-        consumed = 0
-
-        async def limited_receive() -> dict[str, Any]:
-            """Count request bytes and abort when the cap is exceeded."""
-
-            nonlocal consumed
-            message = await receive()
-            if message.get("type") == "http.request":
-                body = message.get("body", b"")
-                if consumed + len(body) > request_cap:
-                    raise _BodyLimitExceeded
-                consumed += len(body)
-            return message
-
-        response_started = False
-
-        async def tracked_send(message: dict[str, Any]) -> None:
-            """Record whether the wrapped app has started its response."""
-
-            nonlocal response_started
-            if message.get("type") == "http.response.start":
-                response_started = True
-            await send(message)
-
-        try:
-            await self.app(scope, limited_receive, tracked_send)
-        except _BodyLimitExceeded:
-            if not response_started:
-                await self._send_too_large(send)
-
-    @staticmethod
-    async def _send_too_large(send: Any) -> None:
-        """Send the JSON 413 response used for oversized upload bodies."""
-
-        body = b'{"detail":"Request body too large"}'
-        await send(
-            {
-                "type": "http.response.start",
-                "status": 413,
-                "headers": [
-                    (b"content-type", b"application/json"),
-                    (b"content-length", str(len(body)).encode("ascii")),
-                ],
-            }
-        )
-        await send({"type": "http.response.body", "body": body})
-
-
-def parse_liner_range(value: str, file_size: int) -> tuple[int, int]:
-    """Parse one HTTP bytes range into a half-open interval."""
-    if file_size <= 0:
-        raise LinerRangeNotSatisfiable(file_size)
-    if not value.lower().startswith("bytes=") or "," in value:
-        raise MalformedLinerRange(value)
-    requested = value.split("=", 1)[1].strip()
-    if "-" not in requested:
-        raise MalformedLinerRange(value)
-    start_text, end_text = (part.strip() for part in requested.split("-", 1))
-    try:
-        if not start_text:
-            suffix = int(end_text)
-            if suffix <= 0:
-                raise MalformedLinerRange(value)
-            return max(file_size - suffix, 0), file_size
-        start = int(start_text)
-        end = min(int(end_text) + 1, file_size) if end_text else file_size
-    except ValueError as exc:
-        raise MalformedLinerRange(value) from exc
-    if start < 0:
-        raise MalformedLinerRange(value)
-    if start >= file_size:
-        raise LinerRangeNotSatisfiable(file_size)
-    if end <= start:
-        raise MalformedLinerRange(value)
-    return start, end
-
-
-async def iter_opened_liner(
-    opened: OpenedLiner, *, start: int = 0, end: int | None = None
-) -> AsyncIterator[bytes]:
-    """Yield held-file content and close its descriptor on every exit path."""
-    try:
-        opened.file.seek(start)
-        remaining = None if end is None else end - start
-        while remaining is None or remaining > 0:
-            chunk = await _read_file_chunk(
-                opened.file, 64 * 1024 if remaining is None else min(64 * 1024, remaining)
-            )
-            if not chunk:
-                break
-            yield chunk
-            if remaining is not None:
-                remaining -= len(chunk)
-    finally:
-        opened.file.close()
-
-
-async def _read_file_chunk(file: BinaryIO, size: int) -> bytes:
-    """Read one file chunk in a worker thread without blocking the event loop."""
-
-    import asyncio
-
-    return await asyncio.to_thread(file.read, size)

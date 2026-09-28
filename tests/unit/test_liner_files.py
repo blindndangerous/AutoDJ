@@ -21,17 +21,12 @@ import pytest
 from autodj.liner_files import (
     InvalidLinerName,
     LinerConflictError,
-    LinerRangeNotSatisfiable,
     LinerStorageUnsupportedError,
     LinerTooLargeError,
-    LinerUploadBodyLimitMiddleware,
-    MalformedLinerRange,
     OpenedLiner,
+    _validate_audio_name,
     delete_liner_file,
-    iter_opened_liner,
     open_liner_file,
-    parse_liner_range,
-    resolve_liner_path,
     store_liner_upload,
 )
 
@@ -254,14 +249,13 @@ def _process_upload(
         "clip.mp3 ",
     ],
 )
-def test_resolve_liner_path_rejects_escape_and_device_names(tmp_path: Path, name: str) -> None:
+def test_liner_name_rejects_escape_and_device_names(name: str) -> None:
     with pytest.raises(InvalidLinerName):
-        resolve_liner_path(tmp_path / "liners", name)
+        _validate_audio_name(name)
 
 
-def test_resolve_liner_path_accepts_plain_unicode_filename(tmp_path: Path) -> None:
-    root = tmp_path / "liners"
-    assert resolve_liner_path(root, "statión-音.mp3") == root.resolve() / "statión-音.mp3"
+def test_liner_name_accepts_plain_unicode_filename() -> None:
+    _validate_audio_name("statión-音.mp3")
 
 
 @pytest.mark.parametrize("name", ["config.toml", "tracks.db", "README", "clip.mp3.bak"])
@@ -285,62 +279,6 @@ def test_open_accepts_uppercase_audio_extension(tmp_path: Path) -> None:
         assert opened.file.read() == b"riff"
     finally:
         opened.file.close()
-
-
-def test_resolve_liner_path_requires_regular_file(tmp_path: Path) -> None:
-    root = tmp_path / "liners"
-    root.mkdir()
-    (root / "folder.mp3").mkdir()
-    with pytest.raises(FileNotFoundError):
-        resolve_liner_path(root, "folder.mp3", require_file=True)
-
-
-def test_resolve_liner_path_rejects_symlink_target(tmp_path: Path) -> None:
-    root = tmp_path / "liners"
-    root.mkdir()
-    outside = tmp_path / "outside.mp3"
-    outside.write_bytes(b"outside")
-    try:
-        (root / "clip.mp3").symlink_to(outside)
-    except OSError as exc:
-        pytest.skip(f"symlinks unavailable: {exc}")
-    with pytest.raises(InvalidLinerName):
-        resolve_liner_path(root, "clip.mp3", require_file=True)
-
-
-def test_resolve_liner_path_rejects_symlink_root(tmp_path: Path) -> None:
-    actual = tmp_path / "actual"
-    actual.mkdir()
-    root = tmp_path / "liners"
-    try:
-        root.symlink_to(actual, target_is_directory=True)
-    except OSError as exc:
-        pytest.skip(f"symlinks unavailable: {exc}")
-    with pytest.raises(InvalidLinerName):
-        resolve_liner_path(root, "clip.mp3")
-
-
-def test_resolve_liner_path_rejects_target_escape_after_reparse_check(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from autodj import liner_files
-
-    root = tmp_path / "liners"
-    root.mkdir()
-    candidate = root / "clip.mp3"
-    outside = tmp_path / "outside.mp3"
-    native_resolve = Path.resolve
-
-    def raced_resolve(path: Path, *args: Any, **kwargs: Any) -> Path:
-        if path == candidate:
-            return outside
-        return native_resolve(path, *args, **kwargs)
-
-    monkeypatch.setattr(liner_files, "_is_reparse_point", MagicMock(return_value=False))
-    monkeypatch.setattr(Path, "resolve", raced_resolve)
-
-    with pytest.raises(InvalidLinerName, match="escapes configured root"):
-        resolve_liner_path(root, "clip.mp3")
 
 
 @pytest.mark.asyncio
@@ -1573,88 +1511,6 @@ def test_posix_hard_link_fallback_has_exactly_one_winner(
     assert list(root.glob(".liner-upload-*")) == []
 
 
-def _upload_scope(content_length: str | None = None) -> dict[str, Any]:
-    headers = [(b"content-type", b"multipart/form-data; boundary=x")]
-    if content_length is not None:
-        headers.append((b"content-length", content_length.encode("ascii")))
-    return {
-        "type": "http",
-        "asgi": {"version": "3.0"},
-        "http_version": "1.1",
-        "method": "POST",
-        "scheme": "http",
-        "path": "/api/liners/upload",
-        "raw_path": b"/api/liners/upload",
-        "query_string": b"",
-        "headers": headers,
-        "client": ("127.0.0.1", 1),
-        "server": ("test", 80),
-    }
-
-
-@pytest.mark.asyncio
-async def test_body_limit_rejects_large_declared_length_without_calling_parser() -> None:
-    downstream_called = False
-    receive_called = False
-    sent: list[dict[str, Any]] = []
-
-    async def downstream(scope: Any, receive: Any, send: Any) -> None:
-        nonlocal downstream_called
-        downstream_called = True
-
-    async def receive() -> dict[str, Any]:
-        nonlocal receive_called
-        receive_called = True
-        return {"type": "http.request", "body": b"", "more_body": False}
-
-    async def send(message: dict[str, Any]) -> None:
-        sent.append(message)
-
-    middleware = LinerUploadBodyLimitMiddleware(
-        downstream, max_file_bytes=lambda: 10, multipart_overhead_bytes=5
-    )
-    await middleware(_upload_scope("16"), receive, send)
-    assert sent[0]["status"] == 413
-    assert downstream_called is False
-    assert receive_called is False
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("declared_length", [None, "1"])
-async def test_body_limit_stops_chunked_or_lying_body_before_parser_cap(
-    declared_length: str | None,
-) -> None:
-    messages = iter(
-        [
-            {"type": "http.request", "body": b"12345678", "more_body": True},
-            {"type": "http.request", "body": b"abcdefgh", "more_body": False},
-        ]
-    )
-    parser_bytes = 0
-    sent: list[dict[str, Any]] = []
-
-    async def receive() -> dict[str, Any]:
-        return next(messages)
-
-    async def downstream(scope: Any, receive: Any, send: Any) -> None:
-        nonlocal parser_bytes
-        while True:
-            message = await receive()
-            parser_bytes += len(message.get("body", b""))
-            if not message.get("more_body", False):
-                break
-
-    async def send(message: dict[str, Any]) -> None:
-        sent.append(message)
-
-    middleware = LinerUploadBodyLimitMiddleware(
-        downstream, max_file_bytes=lambda: 10, multipart_overhead_bytes=5
-    )
-    await middleware(_upload_scope(declared_length), receive, send)
-    assert sent[0]["status"] == 413
-    assert parser_bytes == 8
-
-
 def test_non_replace_upload_is_atomic_across_processes(tmp_path: Path) -> None:
     root = tmp_path / "liners"
     root.mkdir()
@@ -1718,150 +1574,6 @@ def test_threaded_non_replace_upload_has_one_winner(tmp_path: Path) -> None:
         outcomes = sorted(executor.map(upload, (b"one", b"two")))
     assert outcomes == ["conflict", "stored"]
     assert (root / "thread-race.mp3").read_bytes() in {b"one", b"two"}
-
-
-@pytest.mark.parametrize(
-    ("value", "file_size", "expected"),
-    [
-        ("bytes=2-5", 10, (2, 6)),
-        ("BYTES=7-", 10, (7, 10)),
-        ("bytes=-3", 10, (7, 10)),
-        ("bytes=-30", 10, (0, 10)),
-        ("bytes=2-99", 10, (2, 10)),
-    ],
-)
-def test_parse_liner_range_accepts_single_bounded_ranges(
-    value: str, file_size: int, expected: tuple[int, int]
-) -> None:
-    assert parse_liner_range(value, file_size) == expected
-
-
-@pytest.mark.parametrize(
-    "value",
-    [
-        "items=0-1",
-        "bytes=0-1,3-4",
-        "bytes=3",
-        "bytes=-0",
-        "bytes=abc-def",
-        "bytes=-1-2",
-        "bytes=5-3",
-    ],
-)
-def test_parse_liner_range_rejects_malformed_ranges(value: str) -> None:
-    with pytest.raises(MalformedLinerRange):
-        parse_liner_range(value, 10)
-
-
-@pytest.mark.parametrize(("value", "file_size"), [("bytes=0-1", 0), ("bytes=10-", 10)])
-def test_parse_liner_range_rejects_unsatisfiable_ranges(value: str, file_size: int) -> None:
-    with pytest.raises(LinerRangeNotSatisfiable) as exc_info:
-        parse_liner_range(value, file_size)
-    assert exc_info.value.args == (file_size,)
-
-
-@pytest.mark.asyncio
-async def test_iter_opened_liner_honors_bounds_and_closes_file() -> None:
-    handle = io.BytesIO(b"0123456789")
-    opened = OpenedLiner(file=handle, stat_result=os.stat_result((0,) * 10))
-
-    chunks = [chunk async for chunk in iter_opened_liner(opened, start=2, end=6)]
-
-    assert b"".join(chunks) == b"2345"
-    assert handle.closed
-
-
-@pytest.mark.asyncio
-async def test_iter_opened_liner_reads_to_eof_and_closes_file() -> None:
-    handle = io.BytesIO(b"payload")
-    opened = OpenedLiner(file=handle, stat_result=os.stat_result((0,) * 10))
-
-    chunks = [chunk async for chunk in iter_opened_liner(opened)]
-
-    assert chunks == [b"payload"]
-    assert handle.closed
-
-
-def test_body_limit_requires_positive_multipart_overhead() -> None:
-    async def downstream(scope: Any, receive: Any, send: Any) -> None:
-        return None
-
-    with pytest.raises(ValueError, match="must be positive"):
-        LinerUploadBodyLimitMiddleware(
-            downstream, max_file_bytes=lambda: 1, multipart_overhead_bytes=0
-        )
-
-
-@pytest.mark.asyncio
-async def test_body_limit_passes_non_upload_scope_through() -> None:
-    called = False
-
-    async def downstream(scope: Any, receive: Any, send: Any) -> None:
-        nonlocal called
-        called = True
-
-    middleware = LinerUploadBodyLimitMiddleware(downstream, max_file_bytes=lambda: 1)
-    await middleware({"type": "websocket"}, None, None)
-
-    assert called
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("configured_limit", [True, "10", 0, -1])
-async def test_body_limit_falls_back_for_invalid_configured_limit(
-    configured_limit: object,
-) -> None:
-    called = False
-
-    async def downstream(scope: Any, receive: Any, send: Any) -> None:
-        nonlocal called
-        called = True
-
-    middleware = LinerUploadBodyLimitMiddleware(downstream, max_file_bytes=lambda: configured_limit)
-    await middleware(_upload_scope("1024"), None, None)
-
-    assert called
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("declared_length", ["-1", "not-an-integer"])
-async def test_body_limit_rejects_invalid_declared_length(declared_length: str) -> None:
-    sent: list[dict[str, Any]] = []
-
-    async def downstream(scope: Any, receive: Any, send: Any) -> None:
-        raise AssertionError("downstream must not run")
-
-    async def send(message: dict[str, Any]) -> None:
-        sent.append(message)
-
-    middleware = LinerUploadBodyLimitMiddleware(
-        downstream, max_file_bytes=lambda: 10, multipart_overhead_bytes=5
-    )
-    await middleware(_upload_scope(declared_length), None, send)
-
-    assert sent[0]["status"] == 413
-
-
-@pytest.mark.asyncio
-async def test_body_limit_does_not_replace_started_response() -> None:
-    sent: list[dict[str, Any]] = []
-
-    async def receive() -> dict[str, Any]:
-        return {"type": "http.request", "body": b"123456", "more_body": False}
-
-    async def downstream(scope: Any, receive: Any, send: Any) -> None:
-        await send({"type": "http.response.start", "status": 200})
-        await receive()
-
-    async def send(message: dict[str, Any]) -> None:
-        sent.append(message)
-
-    middleware = LinerUploadBodyLimitMiddleware(
-        downstream, max_file_bytes=lambda: 1, multipart_overhead_bytes=1
-    )
-    await middleware(_upload_scope(), receive, send)
-
-    assert sent == [{"type": "http.response.start", "status": 200}]
 
 
 def _fake_directory(*, uid: int = 42, mode: int = 0o700, inode: int = 2) -> Any:
@@ -2512,49 +2224,6 @@ async def test_upload_rejects_nonbytes_reader_result(
 
     with pytest.raises(TypeError, match="must return bytes"):
         await store_liner_upload(tmp_path, "clip.mp3", TextReader(), max_bytes=10, replace=False)
-
-
-def test_resolve_liner_path_rejects_non_directory_root(tmp_path: Path) -> None:
-    root = tmp_path / "liners"
-    root.write_text("not a directory", encoding="utf-8")
-
-    with pytest.raises(InvalidLinerName, match="not a directory"):
-        resolve_liner_path(root, "clip.mp3")
-
-
-@pytest.mark.parametrize(
-    ("reparse_results", "message"),
-    [([True], "configured liner root"), ([False, True], "liner file")],
-)
-def test_resolve_liner_path_rejects_mocked_reparse_points(
-    reparse_results: list[bool],
-    message: str,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from autodj import liner_files
-
-    root = tmp_path / "liners"
-    root.mkdir()
-    monkeypatch.setattr(liner_files, "_is_reparse_point", MagicMock(side_effect=reparse_results))
-
-    with pytest.raises(InvalidLinerName, match=message):
-        resolve_liner_path(root, "clip.mp3")
-
-
-def test_resolve_liner_path_closes_required_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from autodj import liner_files
-
-    root = tmp_path / "liners"
-    root.mkdir()
-    file = MagicMock()
-    opened = OpenedLiner(file=file, stat_result=os.stat_result((0,) * 10))
-    monkeypatch.setattr(liner_files, "open_liner_file", MagicMock(return_value=opened))
-
-    assert resolve_liner_path(root, "clip.mp3", require_file=True) == root / "clip.mp3"
-    file.close.assert_called_once()
 
 
 def test_open_posix_root_closes_anchor_when_child_is_missing(

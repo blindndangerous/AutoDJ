@@ -12,6 +12,7 @@ import pytest
 
 from autodj.dj_meta import Cue, DjMeta
 from autodj.indexer import IndexEntry
+from autodj.server import PlaybackSettingsBody
 
 
 def _entry(**over) -> IndexEntry:
@@ -196,14 +197,14 @@ class TestCoverArt:
 class TestApplyKeyPreferFlats:
     def test_key_prefer_flats_path(self, bridge) -> None:
         bridge.player._cfg.playback.key_prefer_flats = False
-        bridge.set_playback_settings(key_prefer_flats=True)
+        bridge.set_playback_settings(PlaybackSettingsBody(key_prefer_flats=True))
         assert bridge.player._cfg.playback.key_prefer_flats is True
 
 
 class TestApplySessionEnvelopeExtras:
     def test_beatmatch_on_skip_apply(self, bridge) -> None:
         bridge.player._cfg.playback.beatmatch_on_skip = False
-        bridge.set_playback_settings(beatmatch_on_skip=True)
+        bridge.set_playback_settings(PlaybackSettingsBody(beatmatch_on_skip=True))
         assert bridge.player._cfg.playback.beatmatch_on_skip is True
 
 
@@ -218,33 +219,30 @@ class TestPlaybackChoiceValidation:
         pb.liners_enabled = False
         with pytest.raises(ValueError, match=field):
             bridge.set_playback_settings(
-                crossfade_seconds=9.0, liners_enabled=True, **{field: "bogus"}
+                PlaybackSettingsBody(crossfade_seconds=9.0, liners_enabled=True, **{field: "bogus"})
             )
         assert pb.crossfade_seconds == pytest.approx(3.0)
         assert pb.liners_enabled is False
 
 
 class TestApplyLiners:
-    def test_liners_folder_is_not_a_runtime_setting(self, bridge) -> None:
-        # The liner root is configuration-only; the bridge has no knob for it.
-        with pytest.raises(TypeError):
-            bridge.set_playback_settings(liners_folder="some/dir")
-
     def test_liners_every_minutes_disable_when_zero(self, bridge) -> None:
-        bridge.set_playback_settings(liners_every_minutes=5.0)
+        bridge.set_playback_settings(PlaybackSettingsBody(liners_every_minutes=5.0))
         assert bridge.player._cfg.playback.liners_every_minutes == 5.0
-        bridge.set_playback_settings(liners_every_minutes=0)
+        bridge.set_playback_settings(PlaybackSettingsBody(liners_every_minutes=0))
         assert bridge.player._cfg.playback.liners_every_minutes is None
 
     def test_liners_random_min_max_minutes(self, bridge) -> None:
         bridge.set_playback_settings(
-            liners_random_min_minutes=3.0,
-            liners_random_max_minutes=10.0,
+            PlaybackSettingsBody(
+                liners_random_min_minutes=3.0,
+                liners_random_max_minutes=10.0,
+            )
         )
         assert bridge.player._cfg.playback.liners_random_min_minutes == 3.0
         assert bridge.player._cfg.playback.liners_random_max_minutes == 10.0
-        bridge.set_playback_settings(liners_random_min_minutes=0)
-        bridge.set_playback_settings(liners_random_max_minutes=0)
+        bridge.set_playback_settings(PlaybackSettingsBody(liners_random_min_minutes=0))
+        bridge.set_playback_settings(PlaybackSettingsBody(liners_random_max_minutes=0))
         assert bridge.player._cfg.playback.liners_random_min_minutes is None
         assert bridge.player._cfg.playback.liners_random_max_minutes is None
 
@@ -325,7 +323,7 @@ def test_repeat_windows_resize_the_running_history(bridge) -> None:
     bridge.player._state = state
     bridge.player._sim = SimpleNamespace(ntotal=100)
 
-    bridge.set_playback_settings(no_repeat_window=2, artist_repeat_window=1)
+    bridge.set_playback_settings(PlaybackSettingsBody(no_repeat_window=2, artist_repeat_window=1))
 
     assert list(state.recently_played) == ["/m/3.mp3", "/m/4.mp3"]
     assert list(state.recently_played_artists) == ["artist 4"]
@@ -333,6 +331,6 @@ def test_repeat_windows_resize_the_running_history(bridge) -> None:
     assert (settings["no_repeat_window"], settings["artist_repeat_window"]) == (2, 1)
 
     # Larger than the library: the picker keeps a tenth of it unplayed.
-    bridge.set_playback_settings(no_repeat_window=500)
+    bridge.set_playback_settings(PlaybackSettingsBody(no_repeat_window=500))
     assert state.recently_played.maxlen == 90
     assert bridge.get_settings()["playback"]["no_repeat_window"] == 500

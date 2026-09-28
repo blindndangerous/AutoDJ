@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
+from types import MethodType
 from unittest.mock import MagicMock, PropertyMock
 
 from autodj.config import ServerConfig, StreamConfig
@@ -46,7 +47,7 @@ def _make_entry(i: int = 0) -> IndexEntry:
 
 def _make_player_mock(entry: IndexEntry | None = None) -> MagicMock:
     """Build a mock Player carrying every attribute PlayerBridge touches."""
-    from autodj.player import PlayerState
+    from autodj.player import Player, PlayerState
 
     player = MagicMock()
     state = PlayerState()
@@ -57,6 +58,8 @@ def _make_player_mock(entry: IndexEntry | None = None) -> MagicMock:
     state.is_muted = False
     state.queue = []
     player._state = state
+    # The real queue pop, so advancing through the bridge consumes the queue.
+    player._pop_user_queue = MethodType(Player._pop_user_queue, player)
     player._playback_pos = [44100 * 30]  # 30 s into the track
     player._current_sr = 44100
     player._skip_event = MagicMock()

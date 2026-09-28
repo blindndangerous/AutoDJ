@@ -38,15 +38,15 @@ import contextlib
 import functools
 import json
 import logging
-import mimetypes
 import re
 import shutil
+import stat
 import threading
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator
 from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, BinaryIO, Literal
 
 from fastapi import (
     FastAPI,
@@ -62,7 +62,7 @@ from fastapi import (
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from starlette.background import BackgroundTask
 
 # PlayerBridge lives in autodj._bridge so neither file balloons over
@@ -73,19 +73,13 @@ from autodj._bridge import (
     StreamSeekUnavailable,
     validate_playback_choices,
 )
-from autodj.http_media import (
-    OpenedMediaFile,
-    RangeNotSatisfiable,
-    open_media_file,
-    parse_single_range,
-    stream_file_chunks,
-)
 from autodj.icy import METAINT
 from autodj.index_manifest import IndexConsistencyError, IndexSnapshotToken, current_snapshot_token
 from autodj.lan import format_lan_banner, lan_urls, running_in_container
 from autodj.pairing import DeviceRegistry
 from autodj.security import (
     COOKIE_NAME,
+    PAIRING_BODY_MAX_BYTES,
     PairingRateLimiter,
     SecurityMiddleware,
     SecurityPolicy,
@@ -117,6 +111,10 @@ _WS_SEND_TIMEOUT_SECONDS = 2.0
 _STREAM_SHUTDOWN_GRACE_SECONDS = 3
 _STREAM_NAME = re.compile(r"^(?P<secret>[A-Za-z0-9_-]{1,128})\.(?P<ext>mp3|m3u)$")
 _ALAC_PREFETCH_TIMEOUT_SECONDS = 5.0
+# Room for the multipart framing around an uploaded liner.
+_MULTIPART_OVERHEAD_BYTES = 64 * 1024
+# Total seconds shutdown waits for the player and cache writers to stop.
+_SHUTDOWN_TIMEOUT_S = 30.0
 _PACKAGE_DIR = Path(__file__).parent
 _BUILD_INFO_NAME = "build-info.json"
 # Play now, Play next and Add to queue on a search result whose file was
@@ -418,9 +416,10 @@ FiniteFloat = Annotated[float, Field(allow_inf_nan=False)]
 
 pydantic accepts them by default, but they cannot be re-encoded as JSON:
 one non-finite value stored in the player config turns every later
-``/api/status``, ``/api/settings`` and WebSocket frame into a 500 or an
+``/api/status`` and WebSocket frame into a 500 or an
 unparseable payload until the process restarts.  Reject them at the edge.
 """
+NonNegativeFloat = Annotated[float, Field(ge=0.0, allow_inf_nan=False)]
 
 
 class VolumeBody(BaseModel):
@@ -581,8 +580,8 @@ class PlaybackSettingsBody(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    crossfade_seconds: FiniteFloat | None = None
-    fade_in_seconds: FiniteFloat | None = None
+    crossfade_seconds: NonNegativeFloat | None = None
+    fade_in_seconds: NonNegativeFloat | None = None
     crossfade_eq_duck: bool | None = None
     smart_shuffle: bool | None = None
     pure_shuffle: bool | None = None
@@ -595,18 +594,19 @@ class PlaybackSettingsBody(BaseModel):
     show_lyrics: bool | None = None
     enable_daypart: bool | None = None
     enable_mood_arc: bool | None = None
-    mood_arc_hours: FiniteFloat | None = None
+    mood_arc_hours: Annotated[float, Field(ge=0.25, allow_inf_nan=False)] | None = None
     import_external_cues: bool | None = None
     beat_sync_fx: bool | None = None
     key_sync_fx: bool | None = None
     beatmatch_on_skip: bool | None = None
     liners_enabled: bool | None = None
-    liners_every_n_songs: int | None = None
-    liners_every_minutes: FiniteFloat | None = None
-    liners_random_min_minutes: FiniteFloat | None = None
-    liners_random_max_minutes: FiniteFloat | None = None
+    # 0 turns a liner trigger off.
+    liners_every_n_songs: Annotated[int, Field(ge=0)] | None = None
+    liners_every_minutes: NonNegativeFloat | None = None
+    liners_random_min_minutes: NonNegativeFloat | None = None
+    liners_random_max_minutes: NonNegativeFloat | None = None
     liners_pick_mode: str | None = None
-    liners_duck_db: FiniteFloat | None = None
+    liners_duck_db: Annotated[float, Field(ge=-30.0, le=0.0, allow_inf_nan=False)] | None = None
     # The ranges here are the ones the Settings panel's number fields use.
     no_repeat_window: Annotated[int, Field(ge=0, le=100_000)] | None = None
     artist_repeat_window: Annotated[int, Field(ge=0, le=100)] | None = None
@@ -669,9 +669,9 @@ def _audio_mime(path: Path) -> str:
     return _MIME_BY_SUFFIX.get(path.suffix.lower(), "application/octet-stream")
 
 
-def _is_alac(source: OpenedMediaFile, suffix: str) -> bool:
+def _is_alac(path: Path) -> bool:
     """Return whether an MP4-family file reports Apple Lossless audio."""
-    if suffix.lower() not in (".m4a", ".mp4"):
+    if path.suffix.lower() not in (".m4a", ".mp4"):
         return False
     try:
         import mutagen
@@ -682,21 +682,14 @@ def _is_alac(source: OpenedMediaFile, suffix: str) -> bool:
         return False
 
     try:
-        source.handle.seek(0)
-        codec = getattr(MP4(source.handle).info, "codec", None) or ""
+        codec = getattr(MP4(path).info, "codec", None) or ""
         return codec.lower() == "alac"
     except (OSError, ValueError, mutagen_error):
         return False
-    finally:
-        with contextlib.suppress(OSError):
-            source.handle.seek(0)
 
 
-async def _start_alac_transcoder(
-    executable: str,
-    source: OpenedMediaFile,
-) -> Any:
-    """Spawn ffmpeg from resolved executable using already-opened source."""
+async def _start_alac_transcoder(executable: str, source: BinaryIO) -> Any:
+    """Spawn ffmpeg from resolved executable reading the opened source on stdin."""
     return await asyncio.create_subprocess_exec(
         executable,
         "-loglevel",
@@ -710,7 +703,7 @@ async def _start_alac_transcoder(
         "-f",
         "mp3",
         "pipe:1",
-        stdin=source.handle,
+        stdin=source,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
     )
@@ -779,20 +772,45 @@ async def _close_alac_stream(stream: AsyncGenerator[bytes], process: Any) -> Non
         await _terminate_alac_process(process)
 
 
-async def _close_opened_media(source: OpenedMediaFile) -> None:
-    """Close opened media without blocking event loop."""
-    await asyncio.to_thread(source.close)
-
-
-async def _close_file_media_stream(
-    stream: AsyncGenerator[bytes],
-    source: OpenedMediaFile,
-) -> None:
-    """Close both iterator state and handle, including pre-body disconnects."""
+async def _alac_response(audio_path: Path, method: str) -> Response | None:
+    """Return an MP3 transcode of an ALAC file, or None to serve the source bytes."""
+    ffmpeg = await asyncio.to_thread(shutil.which, "ffmpeg")
+    if ffmpeg is None:
+        logger.warning("ffmpeg unavailable; serving ALAC source bytes for %s", audio_path)
+        return None
+    if method == "HEAD":
+        response = Response(
+            status_code=200, media_type="audio/mpeg", headers={"Accept-Ranges": "none"}
+        )
+        del response.headers["content-length"]
+        return response
+    source = await asyncio.to_thread(audio_path.open, "rb")
     try:
-        await stream.aclose()
+        process = await _start_alac_transcoder(ffmpeg, source)
+    except OSError:
+        logger.warning(
+            "ffmpeg failed to start; serving ALAC source bytes for %s", audio_path, exc_info=True
+        )
+        return None
     finally:
-        await _close_opened_media(source)
+        await asyncio.to_thread(source.close)
+    first_chunk = await _prefetch_alac_output(process)
+    if first_chunk is None:
+        logger.warning(
+            "ffmpeg produced no initial output; serving ALAC source bytes for %s", audio_path
+        )
+        return None
+    try:
+        stream = _transcode_alac_to_mp3(process, first_chunk)
+        return StreamingResponse(
+            stream,
+            media_type="audio/mpeg",
+            headers={"Accept-Ranges": "none"},
+            background=BackgroundTask(_close_alac_stream, stream, process),
+        )
+    except BaseException:
+        await _terminate_alac_process(process)
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -965,11 +983,9 @@ async def _tick_stream_workers(
 def create_app(
     bridge: PlayerBridge,
     player_thread: threading.Thread | None = None,
-    shutdown_timeout_s: float = 30.0,
     *,
     secure_cookie: bool = False,
     pairing_rate_limiter: PairingRateLimiter | None = None,
-    device_registry: DeviceRegistry | None = None,
     stream_secret: StreamSecret | None = None,
     stream_first_track: IndexEntry | None = None,
     server_audio: bool = False,
@@ -979,7 +995,6 @@ def create_app(
     Args:
         bridge: A fully initialised :class:`PlayerBridge`.
         player_thread: Optional main player thread to join during shutdown.
-        shutdown_timeout_s: Total seconds allowed for all cache writers to stop.
         stream_secret: In stream mode, the stream secret; the app then
             starts the stream output and station when it starts up (the
             bridge's player must have been built in stream mode).
@@ -991,7 +1006,6 @@ def create_app(
     Returns:
         A configured :class:`fastapi.FastAPI` instance.
     """
-    shutdown_timeout_s = max(0.0, float(shutdown_timeout_s))
     # Connected WebSocket clients — populated at runtime
     _ws_clients: set[_WebSocketClient] = set()
     _ws_lock = asyncio.Lock()
@@ -1078,7 +1092,7 @@ def create_app(
                     _quiesce_cache_writers,
                     bridge,
                     player_thread,
-                    shutdown_timeout_s,
+                    _SHUTDOWN_TIMEOUT_S,
                 )
             cache_closed = False
             if writers_quiesced:
@@ -1093,7 +1107,7 @@ def create_app(
                 logger.warning(
                     "Degraded shutdown: DJ-meta cache remains open because writers "
                     "did not stop within %.2f seconds",
-                    shutdown_timeout_s,
+                    _SHUTDOWN_TIMEOUT_S,
                 )
             for task in (broadcast, watcher):
                 task.cancel()
@@ -1145,28 +1159,26 @@ def create_app(
     def _liner_upload_max_bytes() -> int:
         return bridge.player._cfg.server.liner_upload_max_bytes
 
-    from autodj.liner_files import LinerUploadBodyLimitMiddleware
-
-    app.add_middleware(
-        LinerUploadBodyLimitMiddleware,
-        max_file_bytes=_liner_upload_max_bytes,
-    )
-
     server_config = bridge.player._cfg.server
-    if device_registry is None and isinstance(server_config.access_token, str):
-        registry_path = paired_devices_path(bridge.player._cfg)
-        device_registry = DeviceRegistry(registry_path)
+    device_registry: DeviceRegistry | None = None
+    if isinstance(server_config.access_token, str):
+        device_registry = DeviceRegistry(paired_devices_path(bridge.player._cfg))
     policy = SecurityPolicy(
         server_config,
         secure_cookie=secure_cookie,
         device_is_active=(device_registry.is_active if device_registry is not None else None),
     )
+    # Read-only handles for serve()'s startup banner and for tests; the
+    # routes and the middleware use these same objects directly.
     app.state.security_policy = policy
     app.state.device_registry = device_registry
     app.state.pairing_rate_limiter = pairing_rate_limiter or PairingRateLimiter()
-    # Last-added middleware is outermost. Security rejects before upload limiting
-    # can inspect or consume a request body.
-    app.add_middleware(SecurityMiddleware, policy=policy)
+    # Request bodies the middleware caps before any route parses them.
+    body_limits: dict[str, Callable[[], int]] = {
+        "/api/pair": lambda: PAIRING_BODY_MAX_BYTES,
+        "/api/liners/upload": lambda: _liner_upload_max_bytes() + _MULTIPART_OVERHEAD_BYTES,
+    }
+    app.add_middleware(SecurityMiddleware, policy=policy, body_limits=body_limits)
 
     # ------------------------------------------------------------------
     # Static HTML
@@ -1282,9 +1294,9 @@ def create_app(
     @app.get("/api/auth/status")
     async def api_auth_status(request: Request) -> dict[str, object]:
         """Report whether this browser holds a valid authenticated session."""
-        request_policy: SecurityPolicy = request.app.state.security_policy
+        request_policy = policy
         device_id = request_policy.session_device_id(request.cookies.get(COOKIE_NAME))
-        registry: DeviceRegistry | None = request.app.state.device_registry
+        registry = device_registry
         cookie = request.cookies.get(COOKIE_NAME)
 
         def _status() -> dict[str, object]:
@@ -1310,8 +1322,8 @@ def create_app(
     @app.post("/api/pair")
     async def api_pair(body: PairBody, request: Request) -> Response:
         """Pair one browser and issue its persistent device-bound session."""
-        request_policy: SecurityPolicy = request.app.state.security_policy
-        registry: DeviceRegistry | None = request.app.state.device_registry
+        request_policy = policy
+        registry = device_registry
         if registry is None or not request_policy.authentication_required:
             raise HTTPException(status_code=409, detail="Pairing is not enabled")
         client = peer_address(request.scope)
@@ -1365,7 +1377,7 @@ def create_app(
         valid session.  ``verify_session`` reads the device database, so it
         runs off the event loop.
         """
-        request_policy: SecurityPolicy = request.app.state.security_policy
+        request_policy = policy
         if not request_policy.authentication_required:
             return True
         cookie = request.cookies.get(COOKIE_NAME)
@@ -1381,8 +1393,8 @@ def create_app(
         devices list, and a copied cookie would keep working for the rest of
         its 90 days.
         """
-        request_policy: SecurityPolicy = request.app.state.security_policy
-        registry: DeviceRegistry | None = request.app.state.device_registry
+        request_policy = policy
+        registry = device_registry
         device_id = request_policy.session_device_id(request.cookies.get(COOKIE_NAME))
         if device_id is not None and registry is not None:
             await asyncio.to_thread(registry.revoke, device_id)
@@ -1391,8 +1403,8 @@ def create_app(
     @app.get("/api/devices")
     async def api_devices(request: Request) -> dict[str, object]:
         """List paired browsers, marking the one making this request."""
-        request_policy: SecurityPolicy = request.app.state.security_policy
-        registry: DeviceRegistry | None = request.app.state.device_registry
+        request_policy = policy
+        registry = device_registry
         if registry is None or not request_policy.authentication_required:
             return {"pairing": False, "devices": []}
         current = request_policy.session_device_id(request.cookies.get(COOKIE_NAME))
@@ -1415,8 +1427,8 @@ def create_app(
     @app.delete("/api/devices/{device_id}")
     async def api_device_revoke(device_id: str, request: Request) -> Response:
         """Revoke one paired browser; revoking this browser also signs it out."""
-        request_policy: SecurityPolicy = request.app.state.security_policy
-        registry: DeviceRegistry | None = request.app.state.device_registry
+        request_policy = policy
+        registry = device_registry
         if registry is None or not request_policy.authentication_required:
             raise HTTPException(status_code=409, detail="Pairing is not enabled")
         # Read before revoking: afterwards this session no longer resolves.
@@ -1629,14 +1641,6 @@ def create_app(
         store = _profile_store()
         return {"profiles": await asyncio.to_thread(store.list_names), "root": str(store.root)}
 
-    # The store validates every name before touching the filesystem.
-    @app.get("/api/profiles/{name}")
-    async def api_profile_get(name: str) -> dict:
-        """Load a saved profile bundle by name."""
-        with _profile_http_errors():
-            snap = await asyncio.to_thread(_profile_store().load, name)
-        return snap.to_dict()
-
     @app.post("/api/profiles")
     async def api_profile_save(body: ProfileSaveBody) -> dict:
         """Save (or overwrite) a profile bundle."""
@@ -1689,16 +1693,19 @@ def create_app(
                 kw[fld.name] = v
                 applied.append(fld.name)
         # A profile saved before its fields were validated, or edited by hand,
-        # can hold a bad choice.  set_playback_settings checks every field
-        # before changing any, and it runs before the other setters below, so
-        # a rejected profile leaves the session untouched.
+        # can hold a bad value.  Both bodies are validated before any setter
+        # runs, so a rejected profile leaves the session untouched.
         try:
-            bridge.set_playback_settings(**kw)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            playback = PlaybackSettingsBody.model_validate(kw)
+            bpm = BpmRangeBody(lo=snap.bpm_lo, hi=snap.bpm_hi)
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"Profile {name} is invalid: {exc}"
+            ) from exc
+        bridge.set_playback_settings(playback)
         # BPM range
-        if snap.bpm_lo is not None and snap.bpm_hi is not None:
-            bridge.set_bpm_range(snap.bpm_lo, snap.bpm_hi)
+        if bpm.lo is not None and bpm.hi is not None:
+            bridge.set_bpm_range(bpm.lo, bpm.hi)
             applied.append("bpm_range")
         # DJ-mix harmonic mode
         if snap.harmonic_mode is not None:
@@ -1761,23 +1768,11 @@ def create_app(
             LinerConflictError,
             LinerStorageUnsupportedError,
             LinerTooLargeError,
-            resolve_liner_path,
             store_liner_upload,
         )
-        from autodj.liners import LINER_EXTS
 
         name = file.filename or ""
         folder = _resolve_liner_folder()
-        try:
-            parsed_target = await asyncio.to_thread(resolve_liner_path, folder, name)
-        except InvalidLinerName as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        extension = parsed_target.suffix.lower()
-        if extension not in LINER_EXTS:
-            raise HTTPException(
-                status_code=400,
-                detail=(f"Unsupported extension {extension!r}; allowed: {', '.join(LINER_EXTS)}"),
-            )
         try:
             target, size = await store_liner_upload(
                 folder,
@@ -1818,72 +1813,25 @@ def create_app(
         return {"deleted": name}
 
     @app.get("/api/liners/file/{name}")
-    async def api_liner_file(name: str, request: Request) -> StreamingResponse:
+    async def api_liner_file(name: str) -> FileResponse:
         """Serve one validated plain liner file."""
         from autodj.liner_files import (
             InvalidLinerName,
-            LinerRangeNotSatisfiable,
             LinerStorageUnsupportedError,
-            MalformedLinerRange,
-            iter_opened_liner,
             open_liner_file,
-            parse_liner_range,
         )
 
+        folder = _resolve_liner_folder()
         try:
-            opened = await asyncio.to_thread(open_liner_file, _resolve_liner_folder(), name)
+            opened = await asyncio.to_thread(open_liner_file, folder, name)
         except InvalidLinerName as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail="Liner not found") from exc
         except LinerStorageUnsupportedError as exc:
             raise HTTPException(status_code=503, detail="Liner storage is unavailable") from exc
-        media_type, _encoding = mimetypes.guess_type(name)
-        file_size = opened.stat_result.st_size
-        start = 0
-        end = file_size
-        status_code = 200
-        headers = {"Content-Length": str(file_size), "Accept-Ranges": "bytes"}
-        requested_range = request.headers.get("range")
-        if requested_range is not None:
-            try:
-                start, end = parse_liner_range(requested_range, file_size)
-            except MalformedLinerRange as exc:
-                opened.file.close()
-                raise HTTPException(status_code=400, detail="Malformed byte range") from exc
-            except LinerRangeNotSatisfiable as exc:
-                opened.file.close()
-                raise HTTPException(
-                    status_code=416,
-                    detail="Byte range is not satisfiable",
-                    headers={"Content-Range": f"bytes */{file_size}"},
-                ) from exc
-            status_code = 206
-            headers["Content-Length"] = str(end - start)
-            headers["Content-Range"] = f"bytes {start}-{end - 1}/{file_size}"
-        try:
-            return StreamingResponse(
-                iter_opened_liner(opened, start=start, end=end),
-                status_code=status_code,
-                media_type=media_type or "application/octet-stream",
-                headers=headers,
-                background=BackgroundTask(opened.file.close),
-            )
-        except BaseException:
-            opened.file.close()
-            raise
-
-    @app.get("/api/liners/file/{escaped:path}", include_in_schema=False)
-    async def api_liner_file_reject_path(escaped: str) -> None:
-        """Reject liner file requests whose path is not a plain filename."""
-        del escaped
-        raise HTTPException(status_code=400, detail="liner name must be one plain filename")
-
-    @app.delete("/api/liners/file/{escaped:path}", include_in_schema=False)
-    async def api_liner_delete_reject_path(escaped: str) -> None:
-        """Reject liner deletion requests whose path is not a plain filename."""
-        del escaped
-        raise HTTPException(status_code=400, detail="liner name must be one plain filename")
+        await asyncio.to_thread(opened.file.close)
+        return FileResponse(folder / name, stat_result=opened.stat_result)
 
     @app.post("/api/liners/test")
     async def api_liner_test(body: LinerTestBody) -> dict[str, str | None]:
@@ -2009,119 +1957,21 @@ def create_app(
 
     @app.api_route("/api/audio", methods=["GET", "HEAD"])
     async def api_audio(path: str, request: Request) -> Response:
-        """Stream indexed audio with one RFC-shaped byte range."""
+        """Serve indexed audio with byte ranges; ALAC is transcoded to MP3."""
         if bridge.sim.entry_for_path(path) is None:
             raise HTTPException(status_code=404, detail="Track not in index")
         audio_path = Path(path)
         try:
-            source: OpenedMediaFile | None = await asyncio.to_thread(
-                open_media_file,
-                audio_path,
-            )
+            metadata = await asyncio.to_thread(audio_path.stat)
         except OSError:
             raise HTTPException(status_code=404, detail="File not found on disk") from None
-
-        try:
-            if source is None:  # pragma: no cover - assignment above is non-null
-                raise RuntimeError("media source ownership lost")
-            file_size = source.size
-            if await asyncio.to_thread(_is_alac, source, audio_path.suffix):
-                ffmpeg = await asyncio.to_thread(shutil.which, "ffmpeg")
-                if ffmpeg is None:
-                    logger.warning(
-                        "ffmpeg unavailable; serving ALAC source bytes for %s",
-                        audio_path,
-                    )
-                elif request.method == "HEAD":
-                    response = Response(
-                        status_code=200,
-                        media_type="audio/mpeg",
-                        headers={"Accept-Ranges": "none"},
-                    )
-                    del response.headers["content-length"]
-                    return response
-                else:
-                    try:
-                        process = await _start_alac_transcoder(ffmpeg, source)
-                    except OSError:
-                        logger.warning(
-                            "ffmpeg failed to start; serving ALAC source bytes for %s",
-                            audio_path,
-                            exc_info=True,
-                        )
-                    else:
-                        first_chunk = await _prefetch_alac_output(process)
-                        if first_chunk is None:
-                            logger.warning(
-                                "ffmpeg produced no initial output; serving ALAC source "
-                                "bytes for %s",
-                                audio_path,
-                            )
-                        else:
-                            try:
-                                stream = _transcode_alac_to_mp3(process, first_chunk)
-                                response = StreamingResponse(
-                                    stream,
-                                    media_type="audio/mpeg",
-                                    headers={"Accept-Ranges": "none"},
-                                    background=BackgroundTask(
-                                        _close_alac_stream,
-                                        stream,
-                                        process,
-                                    ),
-                                )
-                                await _close_opened_media(source)
-                            except BaseException:
-                                await _terminate_alac_process(process)
-                                raise
-                            source = None
-                            return response
-
-            mime = _audio_mime(audio_path)
-            range_header = request.headers.get("range")
-            requested_range = None
-            status_code = 200
-            headers = {
-                "Accept-Ranges": "bytes",
-                "Content-Length": str(file_size),
-            }
-            if range_header is not None:
-                try:
-                    requested_range = parse_single_range(range_header, file_size)
-                except RangeNotSatisfiable:
-                    return Response(
-                        status_code=416,
-                        headers={
-                            "Accept-Ranges": "bytes",
-                            "Content-Range": f"bytes */{file_size}",
-                        },
-                    )
-                status_code = 206
-                headers["Content-Range"] = (
-                    f"bytes {requested_range.start}-{requested_range.end}/{file_size}"
-                )
-                headers["Content-Length"] = str(requested_range.length)
-
-            if request.method == "HEAD":
-                return Response(
-                    status_code=status_code,
-                    media_type=mime,
-                    headers=headers,
-                )
-
-            stream = stream_file_chunks(source, requested_range)
-            response = StreamingResponse(
-                stream,
-                status_code=status_code,
-                media_type=mime,
-                headers=headers,
-                background=BackgroundTask(_close_file_media_stream, stream, source),
-            )
-            source = None
-            return response
-        finally:
-            if source is not None:
-                await _close_opened_media(source)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise HTTPException(status_code=404, detail="File not found on disk")
+        if await asyncio.to_thread(_is_alac, audio_path):
+            transcoded = await _alac_response(audio_path, request.method)
+            if transcoded is not None:
+                return transcoded
+        return FileResponse(audio_path, media_type=_audio_mime(audio_path), stat_result=metadata)
 
     @app.post("/api/advance")
     async def api_advance() -> JSONResponse:
@@ -2174,11 +2024,6 @@ def create_app(
     # Settings (mirror of CLI flags)
     # ------------------------------------------------------------------
 
-    @app.get("/api/settings")
-    async def api_settings() -> dict:
-        """Return the current playback / dj-mix / transition settings."""
-        return bridge.get_settings()
-
     @app.post("/api/preset")
     async def api_preset(body: PresetBody) -> dict:
         """Activate a preset by name."""
@@ -2206,7 +2051,7 @@ def create_app(
     @app.post("/api/playback-settings")
     async def api_playback_settings(body: PlaybackSettingsBody) -> dict:
         """Apply playback-flag overrides (transition mode, lyrics, ...)."""
-        bridge.set_playback_settings(**body.model_dump(exclude_none=True))
+        bridge.set_playback_settings(body)
         bridge.save_persistent_state()
         return bridge.get_settings()
 
@@ -2320,7 +2165,7 @@ def create_app(
         """WebSocket: broadcast state updates to a connected browser."""
         request_id = new_request_id()
         route = "/ws"
-        request_policy: SecurityPolicy = websocket.app.state.security_policy
+        request_policy = policy
         host_values = _raw_header_values(websocket.scope, b"host")
         origin_values = _raw_header_values(websocket.scope, b"origin")
 
@@ -2354,8 +2199,7 @@ def create_app(
 
         def session_is_valid() -> bool:
             """Return whether the accepted WebSocket session remains valid."""
-            live_policy: SecurityPolicy = websocket.app.state.security_policy
-            return not live_policy.authentication_required or live_policy.verify_session(
+            return not request_policy.authentication_required or request_policy.verify_session(
                 session_cookie
             )
 

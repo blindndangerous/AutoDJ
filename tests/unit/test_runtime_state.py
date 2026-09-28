@@ -96,6 +96,7 @@ def test_huge_integer_is_not_a_finite_runtime_number() -> None:
         {"playback": {"transition_mode": 12}},
         {"playback": {"liners_pick_mode": "invalid"}},
         {"playback": {"liners_duck_db": 1.0}},
+        {"playback": {"liners_duck_db": -45.0}},
         {"playback": {"stream_bitrate": 100}},
         {"playback": {"stream_bitrate": "320"}},
         {"playback": {"stream_bitrate": True}},
