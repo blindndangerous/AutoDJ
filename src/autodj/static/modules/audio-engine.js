@@ -367,13 +367,20 @@ function _resolveTransition(name) {
   return name || "none";
 }
 
-function _routeThrough(deck, headNode) {
+// disconnect() drops every output of the deck's source, the silence
+// detector's analyser tap included, so both put the tap back.  Without
+// it the first effect transition left the silence-triggered crossfade
+// dead for the rest of the session.
+function _reconnectSource(deck, target) {
   try { deck.source.disconnect(); } catch (_) {}
-  deck.source.connect(headNode);
+  deck.source.connect(target);
+  if (deck.analyser) deck.source.connect(deck.analyser);
+}
+function _routeThrough(deck, headNode) {
+  _reconnectSource(deck, headNode);
 }
 function _restoreDirect(deck) {
-  try { deck.source.disconnect(); } catch (_) {}
-  deck.source.connect(deck.gain);
+  _reconnectSource(deck, deck.gain);
 }
 
 // Web Audio reads a lowpass or highpass Q in dB.  -3.01 dB is the

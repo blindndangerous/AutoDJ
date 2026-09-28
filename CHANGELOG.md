@@ -367,6 +367,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   been left paused; the second press worked. Seen in Firefox and Edge. Play now unpauses the
   server before it starts the music, says "Playing" only once the music has really started, and
   otherwise says "The browser did not start playback. Press Play again."
+- In browser playback, the crossfade that starts early when a track ends in silence stopped
+  working after the first transition that used an effect. Setting up and removing an effect cut
+  the deck off from the level meter that listens for the silence. The meter now stays connected.
 
 ## [0.17.0] - 2026-09-26
 

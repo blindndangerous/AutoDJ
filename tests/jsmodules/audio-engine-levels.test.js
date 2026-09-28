@@ -403,6 +403,22 @@ describe("transition effect levels", () => {
     });
   }
 
+  // The silence-triggered crossfade reads each deck's analyser tap.
+  // Rerouting a deck's source for an effect, and putting it back after,
+  // used to drop that tap for good, so the trigger died after the first
+  // effect transition.
+  for (const effect of EFFECTS) {
+    it(`${effect}: the silence detector keeps hearing both decks`, async () => {
+      const { engine } = await runEffect(effect);
+      for (const deck of engine.decks) expect(deck.source.outputs.has(deck.analyser)).toBe(true);
+      engine.stopAllDecks();   // tears the effect down
+      for (const deck of engine.decks) {
+        expect(deck.source.outputs.has(deck.analyser), `${effect} after`).toBe(true);
+        expect(deck.source.outputs.has(deck.gain), `${effect} after`).toBe(true);
+      }
+    });
+  }
+
   it("silences effects with the music when muted", async () => {
     const { engine } = await runEffect("echo_out", { muted: true });
     expect(engine._master.gain.value).toBe(0);
