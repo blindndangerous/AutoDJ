@@ -235,6 +235,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Skip no longer moves focus to the Skip button after every skip, and a failed Play, Shuffle,
   Mute or Discovery no longer pulls focus to its button. Pressing n or m while on the seek
   slider, an EQ slider or the lyrics now leaves focus there.
+- Search results, profiles and voice liners stop moving focus after a request too.
+  Play now, Play next, Add to queue and Apply leave focus where it is when they finish, and so
+  does a failed liner delete. Deleting a profile or a liner, or revoking a device, still moves
+  focus to the next row because the one you were on is gone, but only if focus has not already
+  moved somewhere else while the request ran.
 - With Why this track open, a track change no longer reads the whole reasons list after the
   title. Pressing Reset EQ twice in a row now confirms both presses.
 - The track-change announcement and Shift+K say the key in words, such as "F sharp minor",
@@ -262,6 +267,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   choosing the track after it. The choice works on a copy of the play history, so the page and
   the stream title update the moment the new track begins.
 - `autodj stats` no longer shows an always-empty "180 to 189" BPM row next to "180+".
+- A preset genre that AutoDJ does not know, such as a misspelling in `genres = ["rock",
+  "vaporwav"]`, was dropped without a word, which narrowed the filter or, when no name was
+  known, turned it off. The preset is now skipped with a warning that names it, the unknown
+  genres and the genres AutoDJ knows. A `genres` value that is not a string or a list is
+  refused the same way instead of meaning no filter.
 
 ## [0.17.0] - 2026-09-26
 
