@@ -101,13 +101,13 @@ class TestLinerLibrary:
             assert ext == ext.lower()
             assert ext.startswith(".")
 
-    def test_from_folder_recursive(self, tmp_path: Path) -> None:
+    def test_from_folder_lists_the_root_only(self, tmp_path: Path) -> None:
+        """Liners open by bare name from the root, so a subfolder clip would list then fail."""
         (tmp_path / "sub").mkdir()
         (tmp_path / "sub" / "deep.mp3").write_bytes(b"")
         (tmp_path / "top.wav").write_bytes(b"")
         lib = LinerLibrary.from_folder(tmp_path)
-        names = sorted(f.name for f in lib.files)
-        assert names == ["deep.mp3", "top.wav"]
+        assert [f.name for f in lib.files] == ["top.wav"]
 
     def test_pick_empty(self) -> None:
         lib = LinerLibrary(files=[])
