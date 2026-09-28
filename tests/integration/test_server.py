@@ -24,7 +24,7 @@ from urllib.parse import urlencode
 import pytest
 
 from autodj.config import ServerConfig
-from autodj.server import PlayerBridge, create_app
+from autodj.server import PlaybackSettingsBody, PlayerBridge, create_app
 
 from ._helpers import NO_INDEX_DIR, _make_entry, _make_player_mock, _make_sim_mock
 
@@ -2202,13 +2202,15 @@ class TestSettingsEndpoints:
             tc.post("/api/playback-settings", json={"transition_mode": "wat"})
         assert bridge.player._cfg.playback.transition_mode == prev
 
-    def test_post_playback_settings_clamps_negative(self, bridge, tmp_path) -> None:
+    def test_post_playback_settings_rejects_negative(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
         bridge.player._cfg.index.active_dir = tmp_path
+        bridge.player._cfg.playback.crossfade_seconds = 3.0
         tc = TestClient(create_app(bridge))
-        tc.post("/api/playback-settings", json={"crossfade_seconds": -3.0})
-        assert bridge.player._cfg.playback.crossfade_seconds == 0.0
+        resp = tc.post("/api/playback-settings", json={"crossfade_seconds": -3.0})
+        assert resp.status_code == 422
+        assert bridge.player._cfg.playback.crossfade_seconds == 3.0
 
     def test_post_playback_settings_fade_in(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
@@ -2217,8 +2219,9 @@ class TestSettingsEndpoints:
         tc = TestClient(create_app(bridge))
         tc.post("/api/playback-settings", json={"fade_in_seconds": 1.5})
         assert bridge.player._cfg.playback.fade_in_seconds == pytest.approx(1.5)
-        tc.post("/api/playback-settings", json={"fade_in_seconds": -1.0})
-        assert bridge.player._cfg.playback.fade_in_seconds == 0.0
+        resp = tc.post("/api/playback-settings", json={"fade_in_seconds": -1.0})
+        assert resp.status_code == 422
+        assert bridge.player._cfg.playback.fade_in_seconds == pytest.approx(1.5)
 
     def test_post_playback_pure_shuffle(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
@@ -2797,14 +2800,14 @@ class TestPostQueueSeed:
         target = bridge.sim.entries[2]
         bridge.queue_add(target.path)
         assert bridge.player._state.pre_queue_seed is not None
-        bridge.set_playback_settings(post_queue_seed="last_queued")
+        bridge.set_playback_settings(PlaybackSettingsBody(post_queue_seed="last_queued"))
         assert bridge.player._state.pre_queue_seed is None
 
     def test_set_playback_settings_validates_post_queue_seed(self, bridge) -> None:
         import pytest
 
         with pytest.raises(ValueError):
-            bridge.set_playback_settings(post_queue_seed="garbage")
+            bridge.set_playback_settings(PlaybackSettingsBody(post_queue_seed="garbage"))
 
     def test_pre_queue_capture_does_not_overwrite_existing(self, bridge) -> None:
         bridge.player._cfg.playback.post_queue_seed = "pre_queue"
@@ -3065,33 +3068,33 @@ class TestMisc:
         bridge.player._pick_next.assert_not_called()
 
     def test_set_playback_settings_toggles_daypart(self, bridge) -> None:
-        bridge.set_playback_settings(enable_daypart=True)
+        bridge.set_playback_settings(PlaybackSettingsBody(enable_daypart=True))
         assert bridge.player._cfg.playback.enable_daypart is True
-        bridge.set_playback_settings(enable_daypart=False)
+        bridge.set_playback_settings(PlaybackSettingsBody(enable_daypart=False))
         assert bridge.player._cfg.playback.enable_daypart is False
 
     def test_set_playback_settings_arms_mood_arc(self, bridge) -> None:
-        bridge.set_playback_settings(enable_mood_arc=True, mood_arc_hours=2.5)
+        bridge.set_playback_settings(PlaybackSettingsBody(enable_mood_arc=True, mood_arc_hours=2.5))
         assert bridge.player._cfg.playback.enable_mood_arc is True
         assert bridge.player._cfg.playback.mood_arc_hours == 2.5
         # Arc instance was anchored to "now".
         assert bridge.player._mood_arc is not None
-        bridge.set_playback_settings(enable_mood_arc=False)
+        bridge.set_playback_settings(PlaybackSettingsBody(enable_mood_arc=False))
         assert bridge.player._mood_arc is None
 
     def test_set_playback_settings_re_anchors_arc_on_hours_change(
         self,
         bridge,
     ) -> None:
-        bridge.set_playback_settings(enable_mood_arc=True, mood_arc_hours=1.0)
+        bridge.set_playback_settings(PlaybackSettingsBody(enable_mood_arc=True, mood_arc_hours=1.0))
         first_arc = bridge.player._mood_arc
-        bridge.set_playback_settings(mood_arc_hours=2.0)
+        bridge.set_playback_settings(PlaybackSettingsBody(mood_arc_hours=2.0))
         # Re-anchored: new arc instance, new duration.
         assert bridge.player._mood_arc is not first_arc
         assert bridge.player._cfg.playback.mood_arc_hours == 2.0
 
     def test_set_playback_settings_toggles_external_cues(self, bridge) -> None:
-        bridge.set_playback_settings(import_external_cues=False)
+        bridge.set_playback_settings(PlaybackSettingsBody(import_external_cues=False))
         assert bridge.player._cfg.playback.import_external_cues is False
 
     def test_advance_now_recovers_when_next_pick_fails(self, bridge) -> None:

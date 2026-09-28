@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Playback settings out of range are refused instead of quietly adjusted: a negative crossfade,
+  fade-in or liner trigger, or a mood arc shorter than 15 minutes. Applying a saved profile with
+  such a value, or with NaN or Infinity in it, now fails with an error and changes nothing.
+
 ### Fixed
 
 - The liner ducking level now only accepts -30 to 0 dB. A positive value used to boost the music

@@ -62,7 +62,7 @@ from fastapi import (
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from starlette.background import BackgroundTask
 
 # PlayerBridge lives in autodj._bridge so neither file balloons over
@@ -407,6 +407,7 @@ __all__ = ["PlayerBridge", "create_app", "serve"]
 
 
 FiniteFloat = Annotated[float, Field(allow_inf_nan=False)]
+NonNegativeFloat = Annotated[float, Field(ge=0.0, allow_inf_nan=False)]
 """Float that refuses the ``NaN``/``Infinity`` JSON tokens.
 
 pydantic accepts them by default, but they cannot be re-encoded as JSON:
@@ -574,8 +575,8 @@ class PlaybackSettingsBody(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    crossfade_seconds: FiniteFloat | None = None
-    fade_in_seconds: FiniteFloat | None = None
+    crossfade_seconds: NonNegativeFloat | None = None
+    fade_in_seconds: NonNegativeFloat | None = None
     crossfade_eq_duck: bool | None = None
     smart_shuffle: bool | None = None
     pure_shuffle: bool | None = None
@@ -588,16 +589,17 @@ class PlaybackSettingsBody(BaseModel):
     show_lyrics: bool | None = None
     enable_daypart: bool | None = None
     enable_mood_arc: bool | None = None
-    mood_arc_hours: FiniteFloat | None = None
+    mood_arc_hours: Annotated[float, Field(ge=0.25, allow_inf_nan=False)] | None = None
     import_external_cues: bool | None = None
     beat_sync_fx: bool | None = None
     key_sync_fx: bool | None = None
     beatmatch_on_skip: bool | None = None
     liners_enabled: bool | None = None
-    liners_every_n_songs: int | None = None
-    liners_every_minutes: FiniteFloat | None = None
-    liners_random_min_minutes: FiniteFloat | None = None
-    liners_random_max_minutes: FiniteFloat | None = None
+    # 0 turns a liner trigger off.
+    liners_every_n_songs: Annotated[int, Field(ge=0)] | None = None
+    liners_every_minutes: NonNegativeFloat | None = None
+    liners_random_min_minutes: NonNegativeFloat | None = None
+    liners_random_max_minutes: NonNegativeFloat | None = None
     liners_pick_mode: str | None = None
     liners_duck_db: Annotated[float, Field(ge=-30.0, le=0.0, allow_inf_nan=False)] | None = None
     # The ranges here are the ones the Settings panel's number fields use.
@@ -1701,16 +1703,19 @@ def create_app(
                 kw[fld.name] = v
                 applied.append(fld.name)
         # A profile saved before its fields were validated, or edited by hand,
-        # can hold a bad choice.  set_playback_settings checks every field
-        # before changing any, and it runs before the other setters below, so
-        # a rejected profile leaves the session untouched.
+        # can hold a bad value.  Both bodies are validated before any setter
+        # runs, so a rejected profile leaves the session untouched.
         try:
-            bridge.set_playback_settings(**kw)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            playback = PlaybackSettingsBody.model_validate(kw)
+            bpm = BpmRangeBody(lo=snap.bpm_lo, hi=snap.bpm_hi)
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"Profile {name} is invalid: {exc}"
+            ) from exc
+        bridge.set_playback_settings(playback)
         # BPM range
-        if snap.bpm_lo is not None and snap.bpm_hi is not None:
-            bridge.set_bpm_range(snap.bpm_lo, snap.bpm_hi)
+        if bpm.lo is not None and bpm.hi is not None:
+            bridge.set_bpm_range(bpm.lo, bpm.hi)
             applied.append("bpm_range")
         # DJ-mix harmonic mode
         if snap.harmonic_mode is not None:
@@ -2085,7 +2090,7 @@ def create_app(
     @app.post("/api/playback-settings")
     async def api_playback_settings(body: PlaybackSettingsBody) -> dict:
         """Apply playback-flag overrides (transition mode, lyrics, ...)."""
-        bridge.set_playback_settings(**body.model_dump(exclude_none=True))
+        bridge.set_playback_settings(body)
         bridge.save_persistent_state()
         return bridge.get_settings()
 

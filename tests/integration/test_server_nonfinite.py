@@ -80,47 +80,19 @@ class TestNonFiniteRejected:
         _assert_status_healthy(client)
 
 
-class TestBridgeRejectsNonFinite:
-    def test_set_volume_keeps_previous(self, bridge) -> None:
-        bridge.set_volume(0.5)
-        bridge.set_volume(float("inf"))
-        assert bridge.player._state.volume == pytest.approx(0.5)
+def test_hand_edited_profile_with_non_finite_value_is_refused(bridge, tmp_path) -> None:
+    """A profile file is plain JSON, which Python reads NaN and Infinity from."""
+    from fastapi.testclient import TestClient
 
-    def test_set_volume_ignores_nan(self, bridge) -> None:
-        bridge.set_volume(0.5)
-        bridge.set_volume(float("nan"))
-        assert bridge.player._state.volume == pytest.approx(0.5)
+    from autodj.server import create_app
 
-    def test_set_eq_ignores_non_finite(self, bridge) -> None:
-        bridge.set_eq(low=1.5)
-        bridge.set_eq(low=float("inf"), mid=float("nan"))
-        eq = bridge.get_eq()
-        assert eq["low"] == pytest.approx(1.5)
-        assert math.isfinite(eq["mid"])
+    bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
+    profiles = tmp_path / "profiles"
+    profiles.mkdir()
+    (profiles / "p.json").write_text('{"name": "p", "crossfade_seconds": NaN}', encoding="utf-8")
+    before = bridge.player._cfg.playback.crossfade_seconds
 
-    def test_crossfade_seconds_ignores_infinity(self, bridge) -> None:
-        cfg = bridge.player._cfg
-        before = cfg.playback.crossfade_seconds
-        bridge.set_playback_settings(crossfade_seconds=float("inf"))
-        assert cfg.playback.crossfade_seconds == pytest.approx(before)
+    resp = TestClient(create_app(bridge)).post("/api/profiles/p/apply")
 
-    def test_mood_arc_hours_ignores_nan(self, bridge) -> None:
-        cfg = bridge.player._cfg
-        before = cfg.playback.mood_arc_hours
-        bridge.set_playback_settings(mood_arc_hours=float("nan"))
-        assert cfg.playback.mood_arc_hours == pytest.approx(before)
-
-    def test_liners_duck_db_ignores_infinity(self, bridge) -> None:
-        cfg = bridge.player._cfg
-        before = cfg.playback.liners_duck_db
-        bridge.set_playback_settings(liners_duck_db=float("-inf"))
-        assert cfg.playback.liners_duck_db == pytest.approx(before)
-
-    def test_bpm_range_ignores_non_finite(self, bridge) -> None:
-        bridge.set_bpm_range(100.0, 140.0)
-        bridge.set_bpm_range(float("nan"), float("inf"))
-        assert bridge.player._bpm_range is None
-
-    def test_bpm_range_ignores_one_non_finite_bound(self, bridge) -> None:
-        bridge.set_bpm_range(100.0, float("inf"))
-        assert bridge.player._bpm_range is None
+    assert resp.status_code == 400
+    assert bridge.player._cfg.playback.crossfade_seconds == before

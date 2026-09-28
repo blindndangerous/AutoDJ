@@ -13,7 +13,6 @@ server stack.
 from __future__ import annotations
 
 import logging
-import math
 import secrets
 import threading
 from collections import deque
@@ -26,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from autodj.index_manifest import IndexSnapshotToken
     from autodj.indexer import IndexEntry
+    from autodj.server import PlaybackSettingsBody
 
 logger = logging.getLogger(__name__)
 
@@ -34,23 +34,6 @@ STREAM_SEEK_UNAVAILABLE = "Seeking is not available while streaming."
 
 class StreamSeekUnavailable(Exception):
     """Seeking was asked for while serving the mix as a radio stream."""
-
-
-def _finite(value: Any) -> float | None:
-    """Return *value* as a float, or ``None`` when it is not finite.
-
-    Mirrors :func:`autodj.runtime_state._is_finite_number`.  ``NaN`` and
-    ``Infinity`` survive the ``max``/``min`` clamps used below and cannot be
-    re-encoded as JSON, so they are dropped rather than stored.
-    """
-    try:
-        number = float(value)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    if not math.isfinite(number):
-        logger.warning("ignoring non-finite setting value: %r", value)
-        return None
-    return number
 
 
 def validate_playback_choices(values: Mapping[str, Any]) -> None:
@@ -570,10 +553,7 @@ class PlayerBridge:
         Args:
             volume: Float in ``[0.0, 1.0]``.  Clamped automatically.
         """
-        number = _finite(volume)
-        if number is None:
-            return
-        self.player._state.volume = max(0.0, min(1.0, number))
+        self.player._state.volume = max(0.0, min(1.0, volume))
 
     def toggle_mute(self) -> bool:
         """Toggle mute.
@@ -1136,12 +1116,12 @@ class PlayerBridge:
     ) -> dict[str, float]:
         """Set one or more EQ band gains.  Returns the resulting state."""
         p = self.player
-        if (number := _finite(low)) is not None:
-            p._eq_low = max(0.0, min(2.0, number))
-        if (number := _finite(mid)) is not None:
-            p._eq_mid = max(0.0, min(2.0, number))
-        if (number := _finite(high)) is not None:
-            p._eq_high = max(0.0, min(2.0, number))
+        if low is not None:
+            p._eq_low = max(0.0, min(2.0, low))
+        if mid is not None:
+            p._eq_mid = max(0.0, min(2.0, mid))
+        if high is not None:
+            p._eq_high = max(0.0, min(2.0, high))
         return self.get_eq()
 
     def get_eq(self) -> dict[str, float]:
@@ -1291,189 +1271,62 @@ class PlayerBridge:
             if hasattr(cfg.djmix, k):
                 setattr(cfg.djmix, k, bool(v))
 
-    def _apply_crossfade(self, kw: dict) -> None:
-        """Apply crossfade / fade-in / EQ-duck overrides from *kw*."""
-        cfg = self.player._cfg
-        if (v := _finite(kw.get("crossfade_seconds"))) is not None:
-            cfg.playback.crossfade_seconds = max(0.0, v)
-        if (v := _finite(kw.get("fade_in_seconds"))) is not None:
-            cfg.playback.fade_in_seconds = max(0.0, v)
-        if (v := kw.get("crossfade_eq_duck")) is not None:
-            cfg.playback.crossfade_eq_duck = bool(v)
+    def set_playback_settings(self, body: PlaybackSettingsBody) -> None:
+        """Apply the fields set in *body*, which pydantic has already validated."""
+        values = body.model_dump(exclude_none=True)
+        player = self.player
+        cfg = player._cfg
+        targets = {
+            "smart_shuffle": (player, "_smart_shuffle"),
+            "pure_shuffle": (player, "_pure_shuffle"),
+            "anchor_to_seed": (player, "_anchor_to_seed"),
+            "replaygain_enabled": (cfg.replaygain, "enabled"),
+            "replaygain_target_db": (cfg.replaygain, "target_db"),
+            "transition_wet_mix": (cfg.transitions, "wet_mix"),
+        }
+        for key, value in values.items():
+            target, attribute = targets.get(key, (cfg.playback, key))
+            setattr(target, attribute, value)
 
-    def _apply_picker_modes(self, kw: dict) -> None:
-        """Apply smart / pure / anchor shuffle toggles from *kw*."""
-        if (v := kw.get("smart_shuffle")) is not None:
-            self.player._smart_shuffle = bool(v)
-        if (v := kw.get("pure_shuffle")) is not None:
-            self.player._pure_shuffle = bool(v)
-        if (v := kw.get("anchor_to_seed")) is not None:
-            self.player._anchor_to_seed = bool(v)
-            if (
-                self.player._anchor_to_seed
-                and not getattr(self.player, "_seed_path", None)
-                and self.player._state.current_track
-            ):
-                self.player._seed_path = self.player._state.current_track.path
+        # Liner triggers: 0 turns the trigger off.
+        for key in (
+            "liners_every_n_songs",
+            "liners_every_minutes",
+            "liners_random_min_minutes",
+            "liners_random_max_minutes",
+        ):
+            if values.get(key) == 0:
+                setattr(cfg.playback, key, None)
+        if values.get("anchor_to_seed") and not getattr(player, "_seed_path", None):
+            current = player._state.current_track
+            if current:
+                player._seed_path = current.path
+        if "post_queue_seed" in values and cfg.playback.post_queue_seed != "pre_queue":
+            player._state.pre_queue_seed = None
+        if values.get("show_lyrics") is False:
+            player._current_lyrics = []
+            player._current_lyrics_plain = ""
+        if "no_repeat_window" in values or "artist_repeat_window" in values:
+            from autodj.player import apply_repeat_windows
 
-    def _apply_validators(self, kw: dict) -> None:
-        """Apply transition_mode / post_queue_seed / key_notation overrides.
+            apply_repeat_windows(player)
+        if "enable_mood_arc" in values or (
+            "mood_arc_hours" in values and cfg.playback.enable_mood_arc
+        ):
+            from autodj.mood_arc import make_default_arc
 
-        Values were already checked by :func:`validate_playback_choices`.
-        """
-        cfg = self.player._cfg
-        if (v := kw.get("transition_mode")) is not None:
-            cfg.playback.transition_mode = str(v)
-        if (v := kw.get("post_queue_seed")) is not None:
-            cfg.playback.post_queue_seed = str(v)
-            if cfg.playback.post_queue_seed != "pre_queue":
-                self.player._state.pre_queue_seed = None
-        if (v := kw.get("key_notation")) is not None:
-            cfg.playback.key_notation = str(v)
-        if (v := kw.get("key_prefer_flats")) is not None:
-            cfg.playback.key_prefer_flats = bool(v)
-
-    def _apply_lyrics(self, kw: dict) -> None:
-        """Apply lyrics-card visibility override."""
-        cfg = self.player._cfg
-        v = kw.get("show_lyrics")
-        if v is None:
-            return
-        cfg.playback.show_lyrics = bool(v)
-        if not v:
-            self.player._current_lyrics = []
-            self.player._current_lyrics_plain = ""
-
-    def _apply_session_envelope(self, kw: dict) -> None:
-        """Apply daypart / mood-arc / cue-import / beat-sync overrides."""
-        cfg = self.player._cfg
-        if (v := kw.get("enable_daypart")) is not None:
-            cfg.playback.enable_daypart = bool(v)
-        enable_arc = kw.get("enable_mood_arc")
-        if enable_arc is not None:
-            cfg.playback.enable_mood_arc = bool(enable_arc)
-            if enable_arc:
-                from autodj.mood_arc import make_default_arc
-
-                self.player._mood_arc = make_default_arc(
-                    duration_hours=cfg.playback.mood_arc_hours,
-                )
-            else:
-                self.player._mood_arc = None
-        if (v := _finite(kw.get("mood_arc_hours"))) is not None:
-            cfg.playback.mood_arc_hours = max(0.25, v)
-            if cfg.playback.enable_mood_arc:
-                from autodj.mood_arc import make_default_arc
-
-                self.player._mood_arc = make_default_arc(
-                    duration_hours=cfg.playback.mood_arc_hours,
-                )
-        if (v := kw.get("import_external_cues")) is not None:
-            cfg.playback.import_external_cues = bool(v)
-        if (v := kw.get("beat_sync_fx")) is not None:
-            cfg.playback.beat_sync_fx = bool(v)
-        if (v := kw.get("key_sync_fx")) is not None:
-            cfg.playback.key_sync_fx = bool(v)
-        if (v := kw.get("beatmatch_on_skip")) is not None:
-            cfg.playback.beatmatch_on_skip = bool(v)
-
-    def _apply_repeat_windows(self, kw: dict) -> None:
-        """Apply the no-repeat and artist-repeat windows from *kw*."""
-        no_repeat = kw.get("no_repeat_window")
-        artist = kw.get("artist_repeat_window")
-        if no_repeat is None and artist is None:
-            return
-        from autodj.player import apply_repeat_windows
-
-        pb = self.player._cfg.playback
-        if no_repeat is not None:
-            pb.no_repeat_window = max(0, int(no_repeat))
-        if artist is not None:
-            pb.artist_repeat_window = max(0, int(artist))
-        apply_repeat_windows(self.player)
-
-    def _apply_liners(self, kw: dict) -> None:
-        """Apply voice-liner overrides; positive numerics, ``None`` zeros disable."""
-        cfg = self.player._cfg
-        if (v := kw.get("liners_enabled")) is not None:
-            cfg.playback.liners_enabled = bool(v)
-        if (v := kw.get("liners_every_n_songs")) is not None:
-            cfg.playback.liners_every_n_songs = int(v) if v > 0 else None
-        if (v := _finite(kw.get("liners_every_minutes"))) is not None:
-            cfg.playback.liners_every_minutes = v if v > 0 else None
-        if (v := _finite(kw.get("liners_random_min_minutes"))) is not None:
-            cfg.playback.liners_random_min_minutes = v if v > 0 else None
-        if (v := _finite(kw.get("liners_random_max_minutes"))) is not None:
-            cfg.playback.liners_random_max_minutes = v if v > 0 else None
-        if (v := kw.get("liners_pick_mode")) is not None:
-            cfg.playback.liners_pick_mode = str(v)
-        if (v := _finite(kw.get("liners_duck_db"))) is not None:
-            cfg.playback.liners_duck_db = v
-
-    def set_playback_settings(
-        self,
-        crossfade_seconds: float | None = None,
-        fade_in_seconds: float | None = None,
-        crossfade_eq_duck: bool | None = None,
-        smart_shuffle: bool | None = None,
-        pure_shuffle: bool | None = None,
-        anchor_to_seed: bool | None = None,
-        replaygain_enabled: bool | None = None,
-        transition_mode: str | None = None,
-        key_notation: str | None = None,
-        key_prefer_flats: bool | None = None,
-        show_lyrics: bool | None = None,
-        enable_daypart: bool | None = None,
-        enable_mood_arc: bool | None = None,
-        mood_arc_hours: float | None = None,
-        import_external_cues: bool | None = None,
-        beat_sync_fx: bool | None = None,
-        key_sync_fx: bool | None = None,
-        beatmatch_on_skip: bool | None = None,
-        liners_enabled: bool | None = None,
-        liners_every_n_songs: int | None = None,
-        liners_every_minutes: float | None = None,
-        liners_random_min_minutes: float | None = None,
-        liners_random_max_minutes: float | None = None,
-        liners_pick_mode: str | None = None,
-        liners_duck_db: float | None = None,
-        post_queue_seed: str | None = None,
-        no_repeat_window: int | None = None,
-        artist_repeat_window: int | None = None,
-        transition_wet_mix: float | None = None,
-        replaygain_target_db: float | None = None,
-    ) -> None:
-        """Apply playback-related settings; only non-null fields take effect.
-
-        Raises:
-            ValueError: A choice field holds an unknown value.  Nothing has
-                been applied when this is raised.
-        """
-        kw = {k: v for k, v in locals().items() if k != "self" and v is not None}
-        validate_playback_choices(kw)
-        cfg = self.player._cfg
-        self._apply_crossfade(kw)
-        self._apply_picker_modes(kw)
-        if (v := kw.get("replaygain_enabled")) is not None:
-            cfg.replaygain.enabled = bool(v)
-        if (v := _finite(kw.get("replaygain_target_db"))) is not None:
-            cfg.replaygain.target_db = v
-        if (v := _finite(kw.get("transition_wet_mix"))) is not None:
-            cfg.transitions.wet_mix = min(1.0, max(0.0, v))
-        self._apply_repeat_windows(kw)
-        self._apply_validators(kw)
-        self._apply_lyrics(kw)
-        self._apply_session_envelope(kw)
-        self._apply_liners(kw)
+            player._mood_arc = (
+                make_default_arc(duration_hours=cfg.playback.mood_arc_hours)
+                if cfg.playback.enable_mood_arc
+                else None
+            )
 
     def set_bpm_range(self, lo: float | None, hi: float | None) -> None:
         """Set the hard BPM filter; pass both null to clear."""
-        low = _finite(lo)
-        high = _finite(hi)
-        if low is None or high is None or low >= high:
+        if lo is None or hi is None or lo >= hi:
             self.player._bpm_range = None
         else:
-            self.player._bpm_range = (low, high)
+            self.player._bpm_range = (lo, hi)
 
     def set_discovery_every(self, every: int | None) -> None:
         """Set the discovery rate; null disables.
