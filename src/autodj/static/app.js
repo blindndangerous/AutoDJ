@@ -1043,6 +1043,12 @@ const _accessEls = {
   refresh:  document.getElementById("access-refresh"),
   list:     document.getElementById("device-list"),
   status:   document.getElementById("access-status"),
+  pairToggle:    document.getElementById("pair-toggle"),
+  pairPanel:     document.getElementById("pair-panel"),
+  pairCode:      document.getElementById("pair-code"),
+  pairCountdown: document.getElementById("pair-countdown"),
+  pairCopy:      document.getElementById("pair-copy"),
+  pairRefresh:   document.getElementById("pair-refresh"),
 };
 installAccess(_accessEls, {
   // The pairing dialog takes focus and says why it opened.
