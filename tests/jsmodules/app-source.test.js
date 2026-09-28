@@ -1083,6 +1083,54 @@ describe("app request behavior", () => {
     expect(setVolume).toHaveBeenLastCalledWith(gain);
   });
 
+  it("plays a Test liner into the master while paused, without ducking, and not while muted", async () => {
+    const source = { addEventListener: vi.fn(), connect: vi.fn(), start: vi.fn() };
+    const master = { gain: { value: 0.5 } };
+    const deckGain = {
+      cancelScheduledValues: vi.fn(), linearRampToValueAtTime: vi.fn(),
+      setValueAtTime: vi.fn(), value: 1,
+    };
+    const audioContext = {
+      createBufferSource: vi.fn(() => source),
+      currentTime: 2,
+      decodeAudioData: vi.fn().mockResolvedValue({ duration: 1 }),
+      resume: vi.fn().mockResolvedValue(),
+      state: "suspended",
+    };
+    const ensureAudioGraph = vi.fn(() => audioContext);
+    let linerDeps;
+    const { webSocket } = await setupApp({
+      audio: {
+        _ctx: audioContext, _lastBrowserPlayback: true, _master: master,
+        decks: [{ audio: {}, gain: { gain: deckGain } }], ensureAudioGraph,
+        playbackEnabled: true,
+      },
+      initialState: { browser_playback: true, is_paused: true },
+      onInstallLiners: (_elements, deps) => { linerDeps = deps; },
+    });
+    const push = (state) => webSocket.onmessage({ data: JSON.stringify({
+      browser_playback: true, current_track: null, queue: [], eq: {}, volume: 0.5, ...state,
+    }) });
+
+    // Paused: nothing scheduled, but Test is ready and starts the audio.
+    expect(linerDeps.canPlay()).toBe(false);
+    expect(linerDeps.prepareTest()).toBeNull();
+    expect(ensureAudioGraph).toHaveBeenCalled();
+    expect(audioContext.resume).toHaveBeenCalled();
+    expect(await linerDeps.playLiner(new ArrayBuffer(1), -12)).toBe(true);
+    expect(source.connect).toHaveBeenCalledWith(master);
+    expect(deckGain.linearRampToValueAtTime).not.toHaveBeenCalled();
+
+    push({ is_paused: false, is_muted: true });
+    expect(linerDeps.prepareTest()).toBe("Muted, so the liner was not played.");
+
+    // Playing and unmuted: the liner ducks the live deck.
+    push({ is_paused: false, is_muted: false });
+    expect(linerDeps.canPlay()).toBe(true);
+    expect(await linerDeps.playLiner(new ArrayBuffer(1), -12)).toBe(true);
+    expect(deckGain.linearRampToValueAtTime).toHaveBeenCalled();
+  });
+
   it("fires no scheduled liner while playback is stopped, as after a lost link", async () => {
     for (const playbackEnabled of [false, true]) {
       let linerDeps;

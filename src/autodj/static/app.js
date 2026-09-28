@@ -1995,6 +1995,9 @@ const _linerEls = {
 
 let authenticatedAppStarted = false;
 const activeLinerSources = new Set();
+const LINER_MUTED_TEXT = "Muted, so the liner was not played.";
+const LINER_OFFLINE_TEXT = "Liner not played: the page is not connected to AutoDJ.";
+const LINER_NO_AUDIO_TEXT = "Liner not played: this browser cannot play audio here.";
 
 function stopActiveLiners() {
   const sources = Array.from(activeLinerSources);
@@ -2014,14 +2017,30 @@ function startAuthenticatedApp(initialState) {
   // that read its live bindings and stop liner playback after auth expiry.
   installLiners(_linerEls, {
     postSettings,
-    // Liners join music that is playing: after a hard stop (a lost link)
-    // none fires until the listener has pressed Play again.
+    // Scheduled liners join music that is playing: none fires while
+    // paused, or after a hard stop (a lost link) until the listener has
+    // pressed Play again.
     canPlay: () => authenticatedActivityActive && !!_ctx && !!_lastBrowserPlayback
-      && playbackEnabled,
+      && playbackEnabled && !_lastState?.is_paused,
     // Whenever the server mixes the audio (stream mode or --server-audio),
     // Test asks the server to play the liner into that mix; only browser
     // playback plays it on this page.
     testOnServer: () => _lastStreamMode || _lastState?.browser_playback === false,
+    // Test in browser playback is a preview: it plays at the page volume
+    // whether or not music is playing, and only Mute keeps it silent.
+    // Runs inside the click, so the audio graph can start here.
+    prepareTest: () => {
+      if (!authenticatedInteractionEnabled() || !_lastBrowserPlayback) {
+        return LINER_OFFLINE_TEXT;
+      }
+      if (_lastState?.is_muted) return LINER_MUTED_TEXT;
+      const audioContext = ensureAudioGraph();
+      if (!audioContext) return LINER_NO_AUDIO_TEXT;
+      if (audioContext.state === "suspended") {
+        void audioContext.resume().catch(() => {});
+      }
+      return null;
+    },
     playLiner: async (
       arrayBuf, duckDb, epoch = captureAuthenticatedRequestEpoch(),
     ) => {
@@ -2034,17 +2053,21 @@ function startAuthenticatedApp(initialState) {
       const src = audioContext.createBufferSource();
       src.buffer = audioBuf;
       // The liner goes through the master gain like the music it ducks,
-      // so it follows the page volume and Mute.
+      // so it follows the page volume and Mute, but not Pause.
       src.connect(_master);
       const duckLin = Math.pow(10, duckDb / 20);
       const dur = audioBuf.duration;
       const t0 = audioContext.currentTime;
-      const active = decks[activeIdx];
-      active.gain.gain.cancelScheduledValues(t0);
-      active.gain.gain.setValueAtTime(active.gain.gain.value, t0);
-      active.gain.gain.linearRampToValueAtTime(duckLin, t0 + 0.2);
-      active.gain.gain.setValueAtTime(duckLin, t0 + dur - 0.2);
-      active.gain.gain.linearRampToValueAtTime(1, t0 + dur + 0.2);
+      // Only music that is playing is ducked: a stopped deck's gain is
+      // left for Play to set.
+      if (playbackEnabled && !_lastState?.is_paused) {
+        const active = decks[activeIdx];
+        active.gain.gain.cancelScheduledValues(t0);
+        active.gain.gain.setValueAtTime(active.gain.gain.value, t0);
+        active.gain.gain.linearRampToValueAtTime(duckLin, t0 + 0.2);
+        active.gain.gain.setValueAtTime(duckLin, t0 + dur - 0.2);
+        active.gain.gain.linearRampToValueAtTime(1, t0 + dur + 0.2);
+      }
       activeLinerSources.add(src);
       src.addEventListener("ended", () => activeLinerSources.delete(src), { once: true });
       src.start(t0);

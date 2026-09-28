@@ -314,8 +314,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   first. The deleted row now stays, hidden and out of the tab order, for a moment after focus has
   moved to the next row or to Profile name, and only then goes. Deleting a voice liner works the
   same way.
-- Voice liners' Test now said nothing and did nothing while browser playback was stopped. It now
-  says "Liner not played: nothing is playing. Press Play first."
+- Voice liners' Test now said nothing and did nothing while browser playback was stopped, and
+  played silently while it was paused. In browser playback it now plays the liner at the page
+  volume whether or not music is playing, before the first Play and while paused included. Only
+  Mute keeps it silent, and then it says "Muted, so the liner was not played." Scheduled liners
+  still play only over music that is playing.
+- In browser playback, un-pausing while muted left the music stopped until Mute was turned off.
+  Muted music now keeps playing, silently, like on the server.
 - With the page opened as localhost in stream mode, the note that the stream address only works
   on this computer is now part of the description of the address field and Copy address, so it is
   heard when tabbing to them. Before, it was only found by reading on in browse mode.

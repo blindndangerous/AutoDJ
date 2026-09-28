@@ -176,12 +176,14 @@ function _rollRandomTarget() {
   return lo + Math.random() * (hi - lo);
 }
 
-async function _playByName(els, deps, name) {
+// `ready` says whether the liner may still play: the schedule's canPlay,
+// or Test's own check.
+async function _playByName(els, deps, name, ready = deps.canPlay) {
   const epoch = captureAuthenticatedRequestEpoch();
   try {
-    if (!deps.canPlay()) return;
+    if (!ready()) return;
     const buf = await requestBinary(`/api/liners/file/${encodeURIComponent(name)}`);
-    if (!deps.canPlay() || !isAuthenticatedRequestCurrent(epoch)) return;
+    if (!ready() || !isAuthenticatedRequestCurrent(epoch)) return;
     const duckDb = (state.lib.config && state.lib.config.duck_db) || -12;
     const ok = await deps.playLiner(buf, duckDb, epoch);
     if (!isAuthenticatedRequestCurrent(epoch)) return;
@@ -282,14 +284,16 @@ export function installLiners(els, deps) {
         await withDisabled(event.currentTarget, () => _testOnServer(els, name));
         return;
       }
-      // The browser mixes the liner into its own playback, so with none
-      // running there is nothing to play it over.  Say so rather than
-      // doing nothing.
-      if (!deps.canPlay()) {
-        _setStatus(els, "Liner not played: nothing is playing. Press Play first.", { force: true });
+      // Browser playback: Test previews the liner on this page, over the
+      // music or on its own.  prepareTest says why it cannot (Mute, for
+      // one), and runs inside the click so the page's audio can start.
+      const refusal = deps.prepareTest();
+      if (refusal) {
+        _setStatus(els, refusal, { force: true });
         return;
       }
-      await withDisabled(event.currentTarget, () => _playByName(els, deps, name));
+      await withDisabled(event.currentTarget,
+        () => _playByName(els, deps, name, () => deps.prepareTest() === null));
     });
   }
 

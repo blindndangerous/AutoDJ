@@ -201,23 +201,30 @@ export function ensureAudioGraph() {
   }
   _ctx = new Ctx();
   // Every sound the page makes reaches the speakers through this one
-  // gain, which carries the page volume and drops to 0 while muted or
-  // paused: both decks, every transition effect and voice liners.
+  // gain, which carries the page volume and drops to 0 while muted: both
+  // decks, every transition effect and voice liners.
   _master = _ctx.createGain();
-  _masterTarget = _silenced ? 0 : _volume;
+  _masterTarget = _muted ? 0 : _volume;
   _master.gain.value = _masterTarget;
   _master.connect(_ctx.destination);
+  // The music and its effects meet here before the master, and drop to 0
+  // while paused, so an effect tail stops with the decks.  Voice liners
+  // skip it: Test previews a liner while paused.
+  _program = _ctx.createGain();
+  _programTarget = _paused ? 0 : 1;
+  _program.gain.value = _programTarget;
+  _program.connect(_master);
   // Effect sounds that play past the deck gains (echo and reverb tails,
   // noise, tones, decoded replays) meet here, scaled by the wet mix.
   _fxBus = _ctx.createGain();
   _fxBus.gain.value = _wetMixCache;
-  _fxBus.connect(_master);
+  _fxBus.connect(_program);
   for (const d of decks) {
     d.source = _ctx.createMediaElementSource(d.audio);
     d.gain   = _ctx.createGain();
     d.gain.gain.value = 0;
     d.source.connect(d.gain);
-    d.gain.connect(_master);
+    d.gain.connect(_program);
     // Silent analyser tap — pulled only for silence detection.  Pre-gain
     // so we measure the actual track signal, not our crossfade ramp.
     d.analyser = _ctx.createAnalyser();
@@ -291,14 +298,18 @@ function playOnDeck(deck) {
   });
 }
 
-// The page's volume as a linear gain, and whether mute or pause holds
-// the master at 0.  The volume starts silent until the first server
-// state says otherwise, so nothing plays at full gain before the page
-// has read the volume the slider shows.
+// The page's volume as a linear gain, whether mute holds the master at
+// 0, and whether pause holds the music (not the liners) at 0.  The volume
+// starts silent until the first server state says otherwise, so nothing
+// plays at full gain before the page has read the volume the slider
+// shows.
 let _volume = 0;
-let _silenced = false;
+let _muted = false;
+let _paused = false;
 export let _master = null;
 let _masterTarget = null;
+let _program = null;
+let _programTarget = null;
 let _fxBus = null;
 // The server's transition wet mix (0 to 1): how much of each effect is
 // heard against the untouched music.
@@ -311,10 +322,10 @@ export function setVolume(linear) {
   applyVolume();
 }
 
-// Put the volume, or 0 while muted or paused, on the master now.  It
-// sits after the deck gains, so a change never disturbs a crossfade or
-// a liner duck.  Without Web Audio the <audio> elements play directly,
-// so their own volume carries it.
+// Put the volume, or 0 while muted, on the master now, and 0 on the
+// music while paused.  Both sit after the deck gains, so a change never
+// disturbs a crossfade or a liner duck.  Without Web Audio the <audio>
+// elements play directly, so their own volume carries it.
 function applyVolume() {
   if (!_ctx) {
     if (!(window.AudioContext || window.webkitAudioContext)) {
@@ -322,11 +333,18 @@ function applyVolume() {
     }
     return;
   }
-  const target = _silenced ? 0 : _volume;
+  const now = _ctx.currentTime;
+  const program = _paused ? 0 : 1;
+  if (program !== _programTarget) {
+    _programTarget = program;
+    _program.gain.cancelScheduledValues(now);
+    _program.gain.setValueAtTime(program, now);
+  }
+  const target = _muted ? 0 : _volume;
   if (target === _masterTarget) return;
   _masterTarget = target;
-  _master.gain.cancelScheduledValues(_ctx.currentTime);
-  _master.gain.setValueAtTime(target, _ctx.currentTime);
+  _master.gain.cancelScheduledValues(now);
+  _master.gain.setValueAtTime(target, now);
 }
 
 // Live deck at full, standby silent.  stopAllDecks leaves both at 0, and
@@ -2497,22 +2515,23 @@ export function applyBrowserPlaybackState(s) {
     }
   }
 
-  // Sync server-driven pause / mute with the browser deck.  The master
-  // gain goes to 0, which silences effects and liners too, and leaves
-  // the deck gains (a crossfade in progress) alone.
-  _silenced = Boolean(s.is_muted || s.is_paused);
+  // Sync server-driven pause / mute with the browser deck.  Mute puts
+  // the master at 0, which silences effects and liners too; pause puts
+  // the music and its effects at 0 and stops the decks, while a Test
+  // liner can still be heard.  Neither touches the deck gains (a
+  // crossfade in progress).  Muted music keeps playing, silently.
+  _muted = Boolean(s.is_muted);
+  _paused = Boolean(s.is_paused);
   if (_ctx) {
     applyVolume();
-    if (_silenced) {
-      if (s.is_paused) {
-        suppressAdvance = true;
-        // Pause BOTH decks during a crossfade — pausing only the active
-        // (outgoing) deck would leave the incoming standby deck audible
-        // and the user's pause click would feel like a duck rather than
-        // a stop.  Off-crossfade, only the active deck is playing.
-        for (const d of decks) {
-          try { d.audio.pause(); } catch (_) {}
-        }
+    if (_paused) {
+      suppressAdvance = true;
+      // Pause BOTH decks during a crossfade — pausing only the active
+      // (outgoing) deck would leave the incoming standby deck audible
+      // and the user's pause click would feel like a duck rather than
+      // a stop.  Off-crossfade, only the active deck is playing.
+      for (const d of decks) {
+        try { d.audio.pause(); } catch (_) {}
       }
     } else {
       // Resume.  Active deck must always start playing again; standby is

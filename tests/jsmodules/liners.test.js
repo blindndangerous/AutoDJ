@@ -75,7 +75,8 @@ describe("liner authentication races", () => {
       lnStatus: document.querySelector("#liner-status"),
       lnTestBtn: document.querySelector("#liner-test"),
     }, {
-      canPlay: () => active,
+      canPlay: () => false,
+      prepareTest: () => (active ? null : "Muted, so the liner was not played."),
       playLiner,
       postSettings: vi.fn(),
       testOnServer: () => false,
@@ -154,7 +155,10 @@ describe("liner authentication races", () => {
       lnFileList: fileList,
       lnStatus: document.querySelector("#liner-status"),
       lnTestBtn: button,
-    }, { canPlay: () => true, playLiner, postSettings: vi.fn(), testOnServer: () => false });
+    }, {
+      canPlay: () => false, prepareTest: () => null, playLiner, postSettings: vi.fn(),
+      testOnServer: () => false,
+    });
     await vi.waitFor(() => expect(fileList.textContent).toContain("late.mp3"));
 
     button.click();
@@ -354,7 +358,7 @@ describe("Test liner in stream mode", () => {
     status, headers: { "Content-Type": "application/json" },
   });
 
-  async function install({ testOnServer = () => true, onTest }) {
+  async function install({ testOnServer = () => true, prepareTest = () => null, onTest }) {
     vi.resetModules();
     document.body.innerHTML = `
       <button id="liner-test">Test now</button>
@@ -375,7 +379,7 @@ describe("Test liner in stream mode", () => {
       lnFileList: fileList,
       lnStatus: document.querySelector("#liner-status"),
       lnTestBtn: document.querySelector("#liner-test"),
-    }, { canPlay: () => false, playLiner, postSettings: vi.fn(), testOnServer });
+    }, { canPlay: () => false, prepareTest, playLiner, postSettings: vi.fn(), testOnServer });
     await vi.waitFor(() => expect(fileList.textContent).toContain("station-id.mp3"));
     return { fetchImpl, playLiner, status: document.querySelector("#liner-status") };
   }
@@ -446,16 +450,51 @@ describe("Test liner in stream mode", () => {
     expect(fetchImpl.mock.calls.some(([url]) => url === "/api/liners/test")).toBe(false);
   });
 
-  it("says why nothing plays when browser playback is stopped", async () => {
+  it("says why Test plays nothing in browser playback, and fetches nothing", async () => {
     const { fetchImpl, playLiner, status } = await install({
       testOnServer: () => false,
+      prepareTest: () => "Muted, so the liner was not played.",
       onTest: () => json({ played: "station-id.mp3" }),
     });
     document.querySelector("#liner-test").click();
     await vi.waitFor(() => expect(status.textContent)
-      .toBe("Liner not played: nothing is playing. Press Play first."));
+      .toBe("Muted, so the liner was not played."));
     expect(fetchImpl.mock.calls.some(([url]) => url.startsWith("/api/liners/file/"))).toBe(false);
     expect(playLiner).not.toHaveBeenCalled();
+  });
+
+  it("plays Test in browser playback when the scheduled liners may not", async () => {
+    vi.resetModules();
+    document.body.innerHTML = `
+      <button id="liner-test">Test now</button>
+      <ul id="liner-files"></ul>
+      <div id="liner-status" role="status" aria-live="polite" aria-atomic="true"></div>`;
+    vi.stubGlobal("fetch", vi.fn((url) => Promise.resolve(url === "/api/liners"
+      ? json({ config: { duck_db: -12 }, files: ["station-id.mp3"] })
+      : new globalThis.Response(new Uint8Array([1]), {
+        headers: { "Content-Type": "audio/mpeg" },
+      }))));
+    const playLiner = vi.fn().mockResolvedValue(true);
+    const { installLiners } = await import("../../src/autodj/static/modules/liners.js");
+    const fileList = document.querySelector("#liner-files");
+    installLiners({
+      lnFileList: fileList,
+      lnStatus: document.querySelector("#liner-status"),
+      lnTestBtn: document.querySelector("#liner-test"),
+    }, {
+      // Paused: nothing scheduled may play, but Test previews the liner.
+      canPlay: () => false,
+      prepareTest: () => null,
+      playLiner,
+      postSettings: vi.fn(),
+      testOnServer: () => false,
+    });
+    await vi.waitFor(() => expect(fileList.textContent).toContain("station-id.mp3"));
+
+    document.querySelector("#liner-test").click();
+    await vi.waitFor(() => expect(document.querySelector("#liner-status").textContent)
+      .toBe("Liner playing: station-id.mp3"));
+    expect(playLiner).toHaveBeenCalledOnce();
   });
 });
 

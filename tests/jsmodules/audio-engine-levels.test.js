@@ -257,7 +257,9 @@ async function settle() {
 }
 
 // Run one transition and return the engine and the graph it built.
-async function runEffect(effect, { volume = 0.5, wetMix = 1, worklets = true, muted = false } = {}) {
+async function runEffect(effect, {
+  volume = 0.5, wetMix = 1, worklets = true, muted = false, unlock = false,
+} = {}) {
   installDom();
   let ctx = null;
   vi.stubGlobal("AudioContext", vi.fn(function AudioContextMock() {
@@ -270,7 +272,9 @@ async function runEffect(effect, { volume = 0.5, wetMix = 1, worklets = true, mu
     ? new globalThis.Response(new Uint8Array([1, 2, 3]), {
       status: 200, headers: { "Content-Type": "audio/mpeg" },
     })
-    : jsonResponse({ ok: true }))));
+    : jsonResponse(String(url) === "/api/status"
+      ? { current_track: { path: "current.mp3" }, is_paused: false }
+      : { ok: true }))));
   const engine = await import("../../src/autodj/static/modules/audio-engine.js");
   engine.setVolume(volume);
   engine.applyBrowserPlaybackState({
@@ -286,6 +290,8 @@ async function runEffect(effect, { volume = 0.5, wetMix = 1, worklets = true, mu
   });
   engine.ensureAudioGraph();
   await settle();
+  // Play pressed, so the decks follow pause and resume.
+  if (unlock) await engine.unlockAndPlay();
   engine.setSrcOnDeck(engine.decks[0], "current.mp3");
   void engine.startCrossfade("next.mp3", 6, true);
   await settle();
@@ -312,6 +318,12 @@ function effectGains(ctx, engine) {
     gains.push({ source: source.kind, gain: input.get(master) ?? Infinity });
   }
   return gains;
+}
+
+// The node between the music (decks and effect bus) and the master.
+function programOf(ctx, engine) {
+  return ctx.nodes.find((n) => n.kind === "gain"
+    && n !== engine._master && n.outputs.has(engine._master));
 }
 
 beforeEach(() => {
@@ -384,10 +396,10 @@ describe("transition effect levels", () => {
   for (const effect of ["noise_riser", "noise_drop", "backspin", "forward_spin", "vinyl_rewind"]) {
     it(`${effect}: its tails fade out at a low volume instead of rising`, async () => {
       const { ctx, engine } = await runEffect(effect, { volume: quiet });
-      const master = engine._master;
       const deckGains = new Set(engine.decks.map((d) => d.gain));
-      const bus = ctx.nodes.find((n) => n.kind === "gain" && n !== master
-        && !deckGains.has(n) && n.outputs.has(master));
+      const program = programOf(ctx, engine);
+      const bus = ctx.nodes.find((n) => n.kind === "gain" && !deckGains.has(n)
+        && n.outputs.has(program));
       const layers = ctx.nodes.filter((n) => n.kind === "gain" && n.outputs.has(bus));
       expect(layers.length).toBeGreaterThan(0);
       for (const layer of layers) {
@@ -418,6 +430,78 @@ describe("transition effect levels", () => {
       }
     });
   }
+
+  const pushState = (engine, { paused = false, muted = false } = {}) => {
+    engine.applyBrowserPlaybackState({
+      browser_playback: true,
+      current_track: { path: "current.mp3", bpm: 124, key_hz: 220 },
+      next_track: { path: "next.mp3", bpm: 124, key_hz: 220 },
+      is_muted: muted,
+      is_paused: paused,
+      settings: { transition: "echo_out", playback: { fade_in_seconds: 0 } },
+    });
+  };
+
+  it("stops an effect with the music when paused mid-effect, liners aside", async () => {
+    const { ctx, engine } = await runEffect("echo_out");
+    const master = engine._master;
+    const program = programOf(ctx, engine);
+    for (const deck of engine.decks) deck.audio.pause.mockClear();
+
+    pushState(engine, { paused: true });
+
+    expect(program.gain.value).toBe(0);
+    expect(master.gain.value).toBe(0.5);
+    for (const deck of engine.decks) expect(deck.audio.pause).toHaveBeenCalled();
+    // Every deck and effect sound reaches the master only through the
+    // paused node; a liner, connected to the master, is the exception.
+    const sources = ctx.nodes.filter((n) => ["media", "buffer", "oscillator"].includes(n.kind));
+    const cut = new Set([program]);
+    const reachesPast = (node, seen = new Set()) => {
+      if (node === master) return true;
+      if (cut.has(node) || seen.has(node)) return false;
+      seen.add(node);
+      return [...node.outputs].some((t) => !(t instanceof FakeParam) && reachesPast(t, seen));
+    };
+    for (const source of sources) expect(reachesPast(source), source.kind).toBe(false);
+    engine.stopAllDecks();
+  });
+
+  it("resumes both decks of a crossfade and leaves their fades alone", async () => {
+    const { ctx, engine } = await runEffect("echo_out", { unlock: true });
+    expect(engine.crossfading).toBe(true);
+    const program = programOf(ctx, engine);
+    const deckEvents = () => engine.decks.map((d) => d.gain.gain.events.length);
+
+    pushState(engine, { paused: true });
+    const before = deckEvents();
+    for (const deck of engine.decks) {
+      deck.audio.play.mockClear();
+      Object.defineProperty(deck.audio, "paused", { configurable: true, value: true });
+    }
+    pushState(engine, { paused: false });
+
+    expect(program.gain.value).toBe(1);
+    for (const deck of engine.decks) expect(deck.audio.play).toHaveBeenCalledOnce();
+    expect(deckEvents()).toEqual(before);
+    engine.stopAllDecks();
+  });
+
+  it("unmutes a crossfade to the page volume without touching its fades", async () => {
+    const { ctx, engine } = await runEffect("echo_out");
+    const master = engine._master;
+    const deckEvents = () => engine.decks.map((d) => d.gain.gain.events.length);
+    const before = deckEvents();
+
+    pushState(engine, { muted: true });
+    expect(master.gain.value).toBe(0);
+    expect(programOf(ctx, engine).gain.value).toBe(1);
+    pushState(engine, { muted: false });
+
+    expect(master.gain.value).toBe(0.5);
+    expect(deckEvents()).toEqual(before);
+    engine.stopAllDecks();
+  });
 
   it("silences effects with the music when muted", async () => {
     const { engine } = await runEffect("echo_out", { muted: true });
