@@ -1,5 +1,5 @@
 // Shared "are you sure" step for actions that cannot be undone: Clear
-// queue, Delete profile, Sign out, Revoke device.
+// queue, Delete profile, Delete liner, Sign out, Revoke device.
 //
 // A native modal <dialog>: NVDA hears the title and the message when it
 // opens, focus starts on Cancel so a stray Enter changes nothing, and

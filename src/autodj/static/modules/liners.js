@@ -5,7 +5,8 @@
 // the audio-engine module and is injected via deps.playLiner so this
 // module stays free of AudioContext + decks state.
 
-import { dbg, replaceRows } from "./dom-helpers.js";
+import { confirmAction } from "./confirm-dialog.js";
+import { dbg } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 import { applyShowWhen } from "./show-when.js";
 import {
@@ -54,14 +55,13 @@ function _setStatus(els, msg, { force = false } = {}) {
   announceStatus(els.lnStatus, msg, { dwellMs: 4000, force });
 }
 
-// `focus` comes from a delete: see replaceRows.
-export function renderLinerFileList(fileList, files, onDelete, focus = null) {
+export function renderLinerFileList(fileList, files, onDelete) {
   if (!fileList) return;
   if (!files || files.length === 0) {
     const empty = document.createElement("li");
     empty.className = "no-results";
     empty.textContent = "No liner files yet.";
-    replaceRows(fileList, [empty], focus);
+    fileList.replaceChildren(empty);
     return;
   }
   const rows = [];
@@ -79,70 +79,92 @@ export function renderLinerFileList(fileList, files, onDelete, focus = null) {
     li.appendChild(button);
     rows.push(li);
   }
-  replaceRows(fileList, rows, focus);
+  fileList.replaceChildren(...rows);
 }
 
-async function _refreshLibrary(els, focus = null) {
+// Loads the liner folder and config into the page.  False when the
+// sign-in changed meanwhile; a failed request throws.
+async function _loadLibrary(els, epoch) {
+  const body = await requestJson("/api/liners");
+  if (!isAuthenticatedRequestCurrent(epoch)) return false;
+  state.lib = body;
+  if (els.lnFolderDisplay) {
+    els.lnFolderDisplay.textContent = "Folder: " + (body.folder || "—");
+  }
+  renderLinerFileList(
+    els.lnFileList,
+    body.files,
+    (name, button) => void _deleteLiner(els, name, button),
+  );
+  // Sync config inputs from server payload, leaving fields the user
+  // is currently editing untouched.
+  const c = body.config || {};
+  const sync = (el, v) => {
+    if (el && document.activeElement !== el) el.value = v;
+  };
+  if (els.lnEnabled && document.activeElement !== els.lnEnabled) {
+    els.lnEnabled.checked = !!c.enabled;
+  }
+  sync(els.lnEveryN,    c.every_n_songs        != null ? c.every_n_songs        : "");
+  sync(els.lnEveryMin,  c.every_minutes        != null ? c.every_minutes        : "");
+  sync(els.lnRandMin,   c.random_min_minutes   != null ? c.random_min_minutes   : "");
+  sync(els.lnRandMax,   c.random_max_minutes   != null ? c.random_max_minutes   : "");
+  sync(els.lnPickMode,  c.pick_mode || "random");
+  sync(els.lnDuckDb,    c.duck_db != null ? c.duck_db : -12);
+  applyShowWhen();
+  return true;
+}
+
+async function _refreshLibrary(els) {
   const epoch = captureAuthenticatedRequestEpoch();
   try {
-    const body = await requestJson("/api/liners");
-    if (!isAuthenticatedRequestCurrent(epoch)) return false;
-    state.lib = body;
-    if (els.lnFolderDisplay) {
-      els.lnFolderDisplay.textContent = "Folder: " + (body.folder || "—");
-    }
-    renderLinerFileList(
-      els.lnFileList,
-      body.files,
-      (name, button) => void _deleteLiner(els, name, button),
-      focus,
-    );
-    // Sync config inputs from server payload, leaving fields the user
-    // is currently editing untouched.
-    const c = body.config || {};
-    const sync = (el, v) => {
-      if (el && document.activeElement !== el) el.value = v;
-    };
-    if (els.lnEnabled && document.activeElement !== els.lnEnabled) {
-      els.lnEnabled.checked = !!c.enabled;
-    }
-    sync(els.lnEveryN,    c.every_n_songs        != null ? c.every_n_songs        : "");
-    sync(els.lnEveryMin,  c.every_minutes        != null ? c.every_minutes        : "");
-    sync(els.lnRandMin,   c.random_min_minutes   != null ? c.random_min_minutes   : "");
-    sync(els.lnRandMax,   c.random_max_minutes   != null ? c.random_max_minutes   : "");
-    sync(els.lnPickMode,  c.pick_mode || "random");
-    sync(els.lnDuckDb,    c.duck_db != null ? c.duck_db : -12);
-    applyShowWhen();
-    return true;
+    await _loadLibrary(els, epoch);
   } catch (err) {
-    if (!isAuthenticatedRequestCurrent(epoch)) return false;
+    if (!isAuthenticatedRequestCurrent(epoch)) return;
     dbg("liner refresh failed:", err);
     _setStatus(els, `Could not load liners: ${err.message}`);
-    return false;
   }
 }
 
-async function _deleteLiner(els, name, control) {
-  if (!confirm(`Delete liner "${name}"?`)) return;
-  const controls = els.lnFileList
-    ? Array.from(els.lnFileList.querySelectorAll("button"))
-    : [];
-  const deletedIndex = Math.max(0, controls.indexOf(control));
+// The delete runs while the confirmation is still open, so the list is
+// already updated when it closes and focus goes straight to the next
+// row's Delete, or Upload when none is left (see confirmAction).  The
+// result is said after the dialog has closed.
+async function _deleteLiner(els, name, button) {
+  const list = els.lnFileList;
+  const index = Array.from(list.querySelectorAll("button")).indexOf(button);
   const epoch = captureAuthenticatedRequestEpoch();
-  try {
-    await withDisabled(control, () => requestJson(
-      `/api/liners/file/${encodeURIComponent(name)}`,
-      { method: "DELETE" },
-    ));
-    if (!isAuthenticatedRequestCurrent(epoch)) return;
-    _setStatus(els, `Deleted ${name}`);
-    await _refreshLibrary(els, {
-      from: control, selector: "button", index: deletedIndex, fallback: els.lnUploadSubmit,
-    });
-  } catch (err) {
-    if (!isAuthenticatedRequestCurrent(epoch)) return;
-    _setStatus(els, `Delete failed: ${err.message}`);
+  let result = null;
+  const confirmed = await confirmAction(button.ownerDocument, {
+    title: `Delete liner ${name}?`,
+    message: "The file is removed from the liners folder.",
+    confirmLabel: "Delete liner",
+    onConfirm: async () => {
+      try {
+        await requestJson(`/api/liners/file/${encodeURIComponent(name)}`, { method: "DELETE" });
+      } catch (err) {
+        if (!isAuthenticatedRequestCurrent(epoch)) return null;
+        result = `Delete failed: ${err.message}`;
+        return button;
+      }
+      if (!isAuthenticatedRequestCurrent(epoch)) return null;
+      try {
+        if (!(await _loadLibrary(els, epoch))) return null;
+      } catch (err) {
+        if (!isAuthenticatedRequestCurrent(epoch)) return null;
+        result = `Deleted ${name}, but could not load liners: ${err.message}`;
+        return button;
+      }
+      result = `Deleted ${name}`;
+      const targets = Array.from(list.querySelectorAll("button"));
+      return targets[Math.min(index, targets.length - 1)] || els.lnUploadSubmit;
+    },
+  });
+  if (!confirmed) {
+    button.focus();
+    return;
   }
+  if (result && isAuthenticatedRequestCurrent(epoch)) _setStatus(els, result);
 }
 
 function _postConfig(els, postSettings, control) {

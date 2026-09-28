@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Deleting a voice liner asks in the page's own confirmation dialog, like deleting a profile,
+  instead of the browser's pop-up. After the delete, focus goes to the next liner's Delete button,
+  or to Upload when no liner is left.
+
 ## [0.18.0] - 2026-09-28
 
 ### Added
