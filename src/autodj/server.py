@@ -1847,18 +1847,6 @@ def create_app(
         await asyncio.to_thread(opened.file.close)
         return FileResponse(folder / name, stat_result=opened.stat_result)
 
-    @app.get("/api/liners/file/{escaped:path}", include_in_schema=False)
-    async def api_liner_file_reject_path(escaped: str) -> None:
-        """Reject liner file requests whose path is not a plain filename."""
-        del escaped
-        raise HTTPException(status_code=400, detail="liner name must be one plain filename")
-
-    @app.delete("/api/liners/file/{escaped:path}", include_in_schema=False)
-    async def api_liner_delete_reject_path(escaped: str) -> None:
-        """Reject liner deletion requests whose path is not a plain filename."""
-        del escaped
-        raise HTTPException(status_code=400, detail="liner name must be one plain filename")
-
     @app.post("/api/liners/test")
     async def api_liner_test(body: LinerTestBody) -> dict[str, str | None]:
         """Fire a liner through the server mix bus, in server-mixed modes.

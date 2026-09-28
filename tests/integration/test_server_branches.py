@@ -1112,21 +1112,22 @@ class TestLinerEndpoints:
         assert resp.status_code == 404
 
     @pytest.mark.parametrize(
-        "escaped",
+        ("escaped", "status"),
         [
-            "..%2Fclip.mp3",
-            "sub%2Fclip.mp3",
-            "clip.mp3%3Astream",
-            "clip.mp3.",
-            "clip.mp3%20",
+            # A decoded slash matches no route at all.
+            ("..%2Fclip.mp3", 404),
+            ("sub%2Fclip.mp3", 404),
+            ("clip.mp3%3Astream", 400),
+            ("clip.mp3.", 400),
+            ("clip.mp3%20", 400),
         ],
     )
     @pytest.mark.parametrize("method", ["get", "delete"])
     def test_file_routes_reject_encoded_or_windows_aliases(
-        self, client, escaped: str, method: str
+        self, client, escaped: str, status: int, method: str
     ) -> None:
         response = getattr(client, method)(f"/api/liners/file/{escaped}")
-        assert response.status_code == 400
+        assert response.status_code == status
 
     @pytest.mark.parametrize(
         "name",

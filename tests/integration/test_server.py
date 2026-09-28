@@ -321,7 +321,7 @@ class TestLiners:
 
         tc = TestClient(create_app(bridge))
         resp = tc.get("/api/liners/file/..%2Fsecret.txt")
-        assert resp.status_code == 400
+        assert resp.status_code == 404
 
     @pytest.mark.parametrize("name", ["config.toml", "tracks.db", "notes", "clip.mp3.bak"])
     def test_liner_file_routes_refuse_non_audio_names(self, bridge, tmp_path, name) -> None:
@@ -500,7 +500,7 @@ class TestLiners:
 
         tc = TestClient(create_app(bridge))
         resp = tc.delete("/api/liners/file/..%2Fsecret.txt")
-        assert resp.status_code == 400
+        assert resp.status_code == 404
         assert outside.exists()
 
 
