@@ -1,13 +1,27 @@
-// Temporary: the effect refactor must build the same Web Audio graph.
+// Every transition effect still builds the Web Audio graph it was tuned to.
 //
-// Runs every transition effect through the engine as it was before the
-// refactor (golden/audio-engine-before.js, a verbatim copy with its
-// imports repointed) and through the current engine, against a fake
-// AudioContext that records every node, connection, parameter event,
-// buffer and <audio> element write, and asserts the two records match.
-// Deleted, with the copy, once the refactor is done.
+// A fake AudioContext records everything an effect does: each node and
+// its constructor arguments, its connections, every parameter's
+// automation (method, value, time), buffer and curve contents, start and
+// stop calls, and the effect's writes to the <audio> element's
+// playbackRate and preservesPitch (the setInterval bends are driven with
+// a controlled clock).  Math.random is seeded, so the record is exact.
+// Each record is reduced to a SHA-256 digest and compared with
+// golden/effect-graphs.json, taken before the effects were deduplicated
+// into shared builders.  Any change to an effect's settings, timing or
+// routing changes its digest.
+//
+// After an intended change to an effect, rewrite the file with
+// AUTODJ_UPDATE_EFFECT_GRAPHS=1 npx vitest run tests/jsmodules/audio-engine-golden.test.js
+// and say in the commit which effects moved.
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const GOLDEN = join(process.cwd(), "tests/jsmodules/golden/effect-graphs.json");
+const UPDATE = process.env.AUTODJ_UPDATE_EFFECT_GRAPHS === "1";
 
 const SAMPLE_RATE = 8000;
 
@@ -162,7 +176,8 @@ function snapshot(ctx) {
       kind: n.kind,
       args: n.args,
       props,
-      params: Object.fromEntries(Object.entries(n.params).map(([k, p]) => [k, p.log])),
+      params: Object.fromEntries(Object.entries(n.params).sort(([a], [b]) => (a < b ? -1 : 1))
+        .map(([k, p]) => [k, p.log])),
       outputs: [...n.outputs].map(ref).sort(),
       calls: n.calls,
     };
@@ -319,16 +334,25 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
-describe("effect refactor keeps every effect's graph", () => {
+const stored = UPDATE ? {} : JSON.parse(readFileSync(GOLDEN, "utf8"));
+const fresh = {};
+
+afterAll(() => {
+  if (UPDATE) writeFileSync(GOLDEN, `${JSON.stringify(fresh, null, 1)}\n`);
+});
+
+describe("every effect builds the graph it was tuned to", () => {
   for (const scenario of SCENARIOS) {
     for (const effect of EFFECTS) {
-      it(`${effect}: ${scenario.name}`, async () => {
-        const before = await record(() => import("./golden/audio-engine-before.js"), effect, scenario);
-        const after = await record(
+      const key = `${effect}: ${scenario.name}`;
+      it(key, async () => {
+        const rec = await record(
           () => import("../../src/autodj/static/modules/audio-engine.js"), effect, scenario);
-        // Every effect builds nodes or drives a deck's playback rate.
-        expect(before.built.length > 10 || before.driven.length > 0).toBe(true);
-        expect(after).toEqual(before);
+        // Every effect builds nodes or bends a deck's playback rate.
+        expect(rec.built.length > 10 || rec.driven.length > 0).toBe(true);
+        const digest = createHash("sha256").update(JSON.stringify(rec)).digest("hex");
+        fresh[key] = digest;
+        if (!UPDATE) expect(digest, key).toBe(stored[key]);
       });
     }
   }

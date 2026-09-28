@@ -1,73 +1,72 @@
-"""Temporary: the effect refactor must render every effect bit for bit the same.
+"""Every transition effect still renders the audio it was tuned to.
 
-``_transitions_before`` is a verbatim copy of ``autodj.transitions`` from
-before the refactor.  Every effect runs through both on the same
-fixed-seed audio, mono and stereo, at two sample rates and a range of
-lengths down to a single sample, and the outputs must be identical.
-Deleted, with the copy, once the refactor is done.
+Each effect runs over the same fixed-seed music and its output is
+reduced to a fingerprint: the RMS of each twelfth of the treated tail,
+the treated head and the added layer.  The fingerprints in
+``transition_fingerprints.json`` were taken before the effects were
+deduplicated into shared families; a change to any effect's settings or
+maths moves them.  The tolerance only absorbs the last-bit differences
+numpy's float32 sin and exp can show between CPUs.
+
+After an intended change to an effect, rewrite the file with
+``AUTODJ_UPDATE_FINGERPRINTS=1 pytest tests/unit/test_transitions_golden.py``
+and say in the commit which effects moved.
 """
 
 from __future__ import annotations
 
+import json
+import os
+from pathlib import Path
+
 import numpy as np
 import pytest
 
-from autodj import transitions as after
-from tests.unit import _transitions_before as before
+from autodj.transitions import TransitionFx, apply_transition
 
-_EFFECTS = [
-    fx
-    for fx in after.TransitionFx
-    if fx not in (after.TransitionFx.RANDOM, after.TransitionFx.ROTATE)
-]
+_FILE = Path(__file__).with_name("transition_fingerprints.json")
+_SR = 22050
+_SEGMENTS = 12
+_EFFECTS = [fx for fx in TransitionFx if fx not in (TransitionFx.RANDOM, TransitionFx.ROTATE)]
 
 
-def _music(n: int, seed: int, sample_rate: int) -> np.ndarray:
+def _music(seed: int) -> np.ndarray:
     rng = np.random.default_rng(seed)
-    t = np.arange(n) / sample_rate
+    t = np.arange(_SR) / _SR
     audio = sum(0.3 * np.sin(2 * np.pi * f * t + rng.uniform(0, 6)) for f in (55, 110, 220, 330))
-    audio = audio + 0.05 * rng.standard_normal(n)
+    audio = audio + 0.05 * rng.standard_normal(_SR)
     return (0.4 * audio).astype(np.float32)
 
 
-def _run(module, tail, head, sample_rate, effect):
-    try:
-        return module.apply_transition(
-            tail, head, sample_rate, module.TransitionFx(effect.value), seed=7
-        )
-    except Exception as exc:  # both sides must fail the same way
-        return type(exc)
+def _fingerprint(effect: TransitionFx) -> list[list[float]]:
+    outputs = apply_transition(_music(1), _music(2), _SR, effect, seed=7)
+    return [
+        [
+            float(np.sqrt(np.mean(part.astype(np.float64) ** 2))) if len(part) else 0.0
+            for part in np.array_split(out, _SEGMENTS)
+        ]
+        for out in outputs
+    ]
+
+
+def _stored() -> dict[str, list[list[float]]]:
+    return json.loads(_FILE.read_text(encoding="utf-8"))
+
+
+def test_every_effect_has_a_fingerprint() -> None:
+    if os.environ.get("AUTODJ_UPDATE_FINGERPRINTS"):
+        prints = {fx.value: _fingerprint(fx) for fx in _EFFECTS}
+        rounded = {
+            k: [[float(f"{v:.7g}") for v in row] for row in rows] for k, rows in prints.items()
+        }
+        _FILE.write_text(json.dumps(rounded, indent=1) + "\n", encoding="utf-8", newline="\n")
+    assert set(_stored()) == {fx.value for fx in _EFFECTS}
 
 
 @pytest.mark.parametrize("effect", _EFFECTS, ids=str)
-@pytest.mark.parametrize("sample_rate", [22050, 44100])
-@pytest.mark.parametrize("n", [0, 1, 2, 3, 4, 5, 64, 3001])
-def test_mono_short_buffers_match(effect, sample_rate, n) -> None:
-    tail = _music(n, 1, sample_rate)
-    head = _music(n, 2, sample_rate)
-    old = _run(before, tail, head, sample_rate, effect)
-    new = _run(after, tail, head, sample_rate, effect)
-    if isinstance(old, type):
-        assert new is old
-        return
-    for o, a in zip(old, new, strict=True):
-        assert o.dtype == a.dtype
-        np.testing.assert_array_equal(a, o)
-
-
-@pytest.mark.parametrize("effect", _EFFECTS, ids=str)
-@pytest.mark.parametrize("sample_rate", [22050, 44100])
-def test_long_mono_and_stereo_match(effect, sample_rate) -> None:
-    n = int(1.5 * sample_rate)
-    mono_tail = _music(n, 1, sample_rate)
-    mono_head = _music(n, 2, sample_rate)
-    stereo_tail = np.stack([mono_tail, _music(n, 3, sample_rate)], axis=1)
-    stereo_head = np.stack([mono_head, _music(n, 4, sample_rate)], axis=1)
-    for tail, head in ((mono_tail, mono_head), (stereo_tail, stereo_head)):
-        old = _run(before, tail, head, sample_rate, effect)
-        new = _run(after, tail, head, sample_rate, effect)
-        assert not isinstance(old, type), old
-        for o, a in zip(old, new, strict=True):
-            assert o.dtype == a.dtype
-            assert o.shape == a.shape
-            np.testing.assert_array_equal(a, o)
+def test_effect_renders_as_tuned(effect: TransitionFx) -> None:
+    expected = _stored()[effect.value]
+    for name, got, want in zip(
+        ("tail", "head", "layer"), _fingerprint(effect), expected, strict=True
+    ):
+        np.testing.assert_allclose(got, want, rtol=1e-4, atol=1e-7, err_msg=f"{effect} {name}")
