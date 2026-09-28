@@ -1503,14 +1503,17 @@ describe("static accessibility contracts", () => {
     }
 
     for (const selector of [
-      "#status-toast", "#playback-stale-note", "#lib-job-elapsed",
+      "#status-toast", "#playback-stale-note",
       "#cue-legend", "#camelot-legend", "#cue-summary",
     ]) {
       expect(document.querySelector(selector).getAttribute("aria-hidden"), selector)
         .toBe("true");
     }
+    // Silent but readable: the job clock can be reached with the cursor.
     expect(document.querySelector("#lib-job-elapsed").getAttribute("aria-live"))
       .toBe("off");
+    expect(document.querySelector("#lib-job-elapsed").hasAttribute("aria-hidden"))
+      .toBe(false);
 
     const progress = document.querySelector("#progress-track");
     const describedBy = progress.getAttribute("aria-describedby").split(/\s+/);

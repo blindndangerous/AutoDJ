@@ -864,15 +864,15 @@ class TestPlayNext:
         data = TestClient(create_app(bridge)).post("/api/play-next", json={"path": path}).json()
         assert data["ok"] is True
 
-    def test_play_next_returns_ok_false_for_unknown_path(self, bridge) -> None:
+    def test_play_next_unknown_path_is_404_in_plain_words(self, bridge) -> None:
         from fastapi.testclient import TestClient
 
-        data = (
-            TestClient(create_app(bridge))
-            .post("/api/play-next", json={"path": "Z:/nope.flac"})
-            .json()
+        resp = TestClient(create_app(bridge)).post(
+            "/api/play-next",
+            json={"path": "Z:/nope.flac"},
         )
-        assert data["ok"] is False
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "That track is no longer in the library."
 
     def test_play_next_sets_queued_next(self, bridge) -> None:
         from fastapi.testclient import TestClient
@@ -2497,7 +2497,8 @@ class TestQueueEndpoints:
 
         tc = TestClient(create_app(bridge))
         resp = tc.post("/api/queue/add", json={"path": "Z:/nope.flac"})
-        assert resp.json()["ok"] is False
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "That track is no longer in the library."
 
     def test_queue_remove(self, bridge) -> None:
         from fastapi.testclient import TestClient

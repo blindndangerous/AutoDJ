@@ -2,6 +2,8 @@
 // Sighted users see colored ticks on the progress bar; AT users can
 // revisit matching static summary text whenever they need it.
 
+import { fmtTime } from "./dom-helpers.js";
+
 export const CUE_COLORS = {
   drop:            "#ff5470",
   breakdown:       "#5a7bff",
@@ -39,8 +41,10 @@ function _cueDescription(cue) {
   return cue.type.replace(/_/g, " ") + (cue.label ? `: ${cue.label}` : "");
 }
 
+// Minutes and seconds, the seek slider's own format ("1:35 of 3:20"),
+// so a cue can be found by listening to the slider.
 function _cuePhrase(cue) {
-  return `${_cueDescription(cue)} at ${Math.round(cue.time_s)} seconds`;
+  return `${_cueDescription(cue)} at ${fmtTime(cue.time_s)}`;
 }
 
 function _cueColor(cue) {

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  SIGNED_OUT_TEXT,
   bootstrapAuthenticatedApp,
   handleWebSocketAuthenticationClose,
   initAuthDialog,
@@ -13,13 +14,13 @@ import { AuthenticationRequiredError } from
 
 function installDialogMarkup() {
   document.body.innerHTML = `<dialog id="auth-dialog"
-      aria-labelledby="auth-title" aria-describedby="auth-help">
+      aria-labelledby="auth-title" aria-describedby="auth-reason auth-help">
     <form id="auth-form" method="dialog">
       <h2 id="auth-title">Pair this browser</h2>
+      <p id="auth-reason" hidden></p>
       <p id="auth-help">Enter the pairing code shown by the server.</p>
       <label for="auth-token">Pairing code</label>
-      <input id="auth-token" name="code" required
-             aria-describedby="auth-help">
+      <input id="auth-token" name="code" required>
       <label for="auth-device-name">Device name</label>
       <input id="auth-device-name" name="device_name">
       <p id="auth-error" role="alert" aria-live="assertive"
@@ -130,6 +131,21 @@ describe("initAuthDialog", () => {
     expect(document.activeElement).toBe(els.token);
   });
 
+  it("says why a signed-out browser is asked to pair again", () => {
+    const els = installDialogMarkup();
+    const auth = initAuthDialog({ document, fetchImpl: vi.fn() });
+    const reason = document.querySelector("#auth-reason");
+
+    auth.show(SIGNED_OUT_TEXT);
+    expect(reason.hidden).toBe(false);
+    expect(reason.textContent).toBe(SIGNED_OUT_TEXT);
+    expect(els.dialog.getAttribute("aria-describedby")).toContain("auth-reason");
+
+    auth.show();
+    expect(reason.hidden).toBe(true);
+    expect(reason.textContent).toBe("");
+  });
+
   it("keeps forward and reverse Tab focus inside the required dialog", () => {
     const els = installDialogMarkup();
     const auth = initAuthDialog({ document, fetchImpl: vi.fn() });
@@ -176,7 +192,7 @@ describe("initAuthDialog", () => {
     expect(mutations).toContain("");
     expect(els.token.getAttribute("aria-invalid")).toBe("true");
     // Spoken once, by the alert; the refocused field does not repeat it.
-    expect(els.token.getAttribute("aria-describedby")).not.toContain("auth-error");
+    expect(els.token.getAttribute("aria-describedby") ?? "").not.toContain("auth-error");
     expect(els.form.getAttribute("aria-busy")).toBe("false");
     expect(els.status.textContent).toBe("");
     expect(els.token.readOnly).toBe(false);
@@ -486,7 +502,7 @@ describe("handleWebSocketAuthenticationClose", () => {
     expect(handleWebSocketAuthenticationClose(
       { code: 4401 }, { auth, onExpired },
     )).toBe(true);
-    expect(auth.show).toHaveBeenCalledOnce();
+    expect(auth.show).toHaveBeenCalledExactlyOnceWith(SIGNED_OUT_TEXT);
     expect(onExpired).toHaveBeenCalledOnce();
 
     expect(handleWebSocketAuthenticationClose(
@@ -914,17 +930,18 @@ describe("pairing dialog markup", () => {
     expect(dialog?.tagName).toBe("DIALOG");
     expect(parsed.querySelector(`#${dialog?.getAttribute("aria-labelledby")}`)
       ?.textContent.trim()).toBe("Pair this browser");
-    expect(parsed.querySelector(`#${dialog?.getAttribute("aria-describedby")}`)
-      ?.textContent.trim()).toBe(
-        "Enter the 8-digit pairing code shown by the AutoDJ server. You only need to do this once on this browser.",
-      );
+    expect(dialog?.getAttribute("aria-describedby")).toBe("auth-reason auth-help");
+    expect(parsed.querySelector("#auth-help")?.textContent.trim()).toBe(
+      "Enter the 8-digit pairing code shown by the AutoDJ server. You only need to do this once on this browser.",
+    );
     expect(label?.textContent.trim()).toBe("Pairing code");
     expect(input?.type).toBe("text");
     expect(input?.required).toBe(true);
     expect(input?.autocomplete).toBe("one-time-code");
     expect(input?.inputMode).toBe("numeric");
     expect(input?.maxLength).toBe(8);
-    expect(input?.getAttribute("aria-describedby")).toBe("auth-help");
+    // Described once, by the dialog: on the field too it was read twice.
+    expect(input?.hasAttribute("aria-describedby")).toBe(false);
     expect(error?.getAttribute("role")).toBe("alert");
     expect(error?.getAttribute("aria-live")).toBe("assertive");
     expect(error?.getAttribute("aria-atomic")).toBe("true");

@@ -46,13 +46,13 @@ describe("checkedResponse", () => {
     await expect(checkedResponse(html, { url: "/api/status" }))
       .rejects.toBeInstanceOf(ApiError);
     await expect(checkedResponse(malformed, { url: "/api/status" }))
-      .rejects.toThrow("malformed JSON");
+      .rejects.toThrow("The AutoDJ server sent a reply this page cannot read.");
     await expect(checkedResponse(jsonResponse({ success: false, error: "No track" }), {
       url: "/api/advance",
     })).rejects.toThrow("No track");
     await expect(checkedResponse(jsonResponse({ ok: false }), {
       url: "/api/queue/add",
-    })).rejects.toThrow("request was not accepted");
+    })).rejects.toThrow("The AutoDJ server did not accept that request.");
   });
 
   it("opens the shared authentication dialog on a mid-session 401", async () => {
@@ -82,7 +82,7 @@ describe("checkedResponse", () => {
     }
     await expect(checkedResponse(new globalThis.Response("{}", {
       headers: { "Content-Type": "text/json" },
-    }), { url: "/api/test" })).rejects.toThrow("non-JSON");
+    }), { url: "/api/test" })).rejects.toThrow("cannot read");
   });
 
   it("preserves AuthenticationRequiredError when the auth handler fails", async () => {
@@ -116,6 +116,23 @@ describe("request helpers", () => {
     vi.unstubAllGlobals();
   });
 
+  it("says an unreachable server in words and leaves a cancel alone", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));
+    await expect(requestJson("/api/seek")).rejects.toThrow(
+      "The AutoDJ server is not reachable.",
+    );
+    const abort = new globalThis.DOMException("The operation was aborted.", "AbortError");
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(abort));
+    await expect(requestJson("/api/search?q=x")).rejects.toBe(abort);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new globalThis.Response("oops", {
+      status: 500, headers: { "Content-Type": "text/plain" },
+    })));
+    await expect(requestJson("/api/seek")).rejects.toThrow(
+      "The AutoDJ server hit an error. The server log has the details.",
+    );
+    vi.unstubAllGlobals();
+  });
+
   it("rejects failed binary requests", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(
       { detail: "missing bytes" }, { status: 404 },
@@ -141,9 +158,9 @@ describe("request helpers", () => {
 
     await expect(requestBinary("/audio.mp3")).resolves.toBeInstanceOf(ArrayBuffer);
     await expect(requestBinary("/audio.bin")).resolves.toBeInstanceOf(ArrayBuffer);
-    await expect(requestBinary("/fake-json")).rejects.toThrow("unexpected content type");
-    await expect(requestBinary("/fake-html")).rejects.toThrow("unexpected content type");
-    await expect(requestBinary("/missing-type")).rejects.toThrow("missing content type");
+    await expect(requestBinary("/fake-json")).rejects.toThrow("cannot read");
+    await expect(requestBinary("/fake-html")).rejects.toThrow("cannot read");
+    await expect(requestBinary("/missing-type")).rejects.toThrow("cannot read");
     vi.unstubAllGlobals();
   });
 
@@ -180,8 +197,8 @@ describe("request helpers", () => {
         headers: { "Content-Type": "text/html" },
       })));
     await expect(probeResource("/cover.jpg")).resolves.toBe(true);
-    await expect(probeResource("/cover-json")).rejects.toThrow("unexpected content type");
-    await expect(probeResource("/cover-html")).rejects.toThrow("unexpected content type");
+    await expect(probeResource("/cover-json")).rejects.toThrow("cannot read");
+    await expect(probeResource("/cover-html")).rejects.toThrow("cannot read");
     vi.unstubAllGlobals();
   });
 

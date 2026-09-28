@@ -9,6 +9,8 @@ const bootstrapRuns = new WeakMap();
 // Retry-After wording below, so it does not replace it.
 const GENERIC_RATE_LIMIT_DETAIL = "Too many pairing attempts";
 const MAX_SERVER_DETAIL_LENGTH = 200;
+// Shown when a session this browser had is revoked or expires.
+export const SIGNED_OUT_TEXT = "This browser was signed out. Enter a new pairing code.";
 
 // The pairing lockout explains itself ("Too many wrong pairing codes
 // from this device. Try again in 42 seconds."), which tells the user
@@ -56,8 +58,10 @@ export function initAuthDialog({
   const deviceName = document.querySelector("#auth-device-name");
   const status = document.querySelector("#auth-status");
   const error = document.querySelector("#auth-error");
+  const reasonText = document.querySelector("#auth-reason");
   const submitButton = form?.querySelector('button[type="submit"]');
-  if (!dialog || !form || !token || !deviceName || !status || !error || !submitButton) {
+  if (!dialog || !form || !token || !deviceName || !status || !error
+      || !reasonText || !submitButton) {
     throw new Error("Authentication dialog markup is incomplete.");
   }
 
@@ -131,7 +135,11 @@ export function initAuthDialog({
     return pendingSubmit;
   }
 
-  function show() {
+  // `reason` says why a browser that was paired is being asked again; it
+  // is part of the dialog's description, so it is read as the dialog opens.
+  function show(reason = "") {
+    reasonText.textContent = reason;
+    reasonText.hidden = !reason;
     if (!dialog.open) dialog.showModal();
     if (!pendingSubmit) setBusy(false);
     token.focus();
@@ -181,17 +189,22 @@ async function runBootstrap({
   startupState,
 }) {
   try {
-    const authResponse = await fetchImpl("/api/auth/status");
+    let authResponse;
+    try {
+      authResponse = await fetchImpl("/api/auth/status");
+    } catch (cause) {
+      throw new Error("The AutoDJ server is not reachable.", { cause });
+    }
     if (authResponse.status === 401) {
       auth.show();
       return false;
     }
     if (!authResponse.ok) {
-      throw new Error(`/api/auth/status returned ${authResponse.status}`);
+      throw new Error("The AutoDJ server could not check whether this browser is paired.");
     }
     const authState = await authResponse.json();
     if (!validAuthState(authState)) {
-      throw new Error("/api/auth/status returned malformed data");
+      throw new Error("The AutoDJ server sent a reply this page cannot read.");
     }
     if (authState.required && !authState.authenticated) {
       auth.show();
@@ -257,7 +270,7 @@ export function handleWebSocketAuthenticationClose(
 ) {
   if (!event || event.code !== 4401) return false;
   onExpired();
-  auth.show();
+  auth.show(SIGNED_OUT_TEXT);
   return true;
 }
 
@@ -273,7 +286,7 @@ export async function reconnectWebSocketAfterClose({
       const response = await fetchImpl("/api/auth/status");
       if (response.status === 401) {
         onExpired();
-        auth.show();
+        auth.show(SIGNED_OUT_TEXT);
         return false;
       }
       if (response.ok) {
@@ -281,7 +294,7 @@ export async function reconnectWebSocketAfterClose({
         if (!validAuthState(authState)
             || (authState.required && !authState.authenticated)) {
           onExpired();
-          auth.show();
+          auth.show(SIGNED_OUT_TEXT);
           return false;
         }
       }

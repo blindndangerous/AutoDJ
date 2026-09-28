@@ -59,7 +59,7 @@ describe("library job live region", () => {
 
     expect(els.jobStatus.textContent).toBe("index running.");
     expect(seen.announcements()).toBe(1);
-    expect(els.jobElapsed.textContent).toBe("120s elapsed");
+    expect(els.jobElapsed.textContent).toBe("2:00 elapsed");
     seen.stop();
   });
 
@@ -110,19 +110,21 @@ describe("library job live region", () => {
     seen.stop();
   });
 
-  it("announces a non-zero exit once, in whole seconds", async () => {
+  it("announces a non-zero exit once, in whole seconds, with its reason", async () => {
     const els = makeEls();
     const seen = watch(els.jobStatus);
 
     applyLibraryJobState({
       library_job: {
-        name: "prune", running: false, elapsed_seconds: 4.7, exit_code: 2, lines: [],
+        name: "prune", running: false, elapsed_seconds: 4.7, exit_code: 2,
+        lines: ["Scanning index", "Refusing to prune: most files are missing.", ""],
       },
     }, els);
     await settle();
 
-    expect(els.jobStatus.textContent)
-      .toBe("prune exited with code 2 after 5 seconds.");
+    expect(els.jobStatus.textContent).toBe(
+      "prune exited with code 2 after 5 seconds. Refusing to prune: most files are missing.",
+    );
     expect(seen.announcements()).toBe(1);
     seen.stop();
   });

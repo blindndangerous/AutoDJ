@@ -102,6 +102,7 @@ describe("applySettingsState", () => {
       },
       bpm_range: { lo: 90, hi: 130 },
       discovery_every: 5,
+      discovery_enabled: true,
     };
     expect(() => applySettingsState(state, els)).not.toThrow();
     expect(els.presetSelect.value).toBe("chill");
@@ -124,14 +125,42 @@ describe("applySettingsState", () => {
     // than contradicting it.
     applySettingsState({ discovery_every: 20, discovery_enabled: false }, els);
     expect(els.discEnabled.checked).toBe(false);
+  });
 
-    // Servers that predate the field fall back to "configured means on".
-    applySettingsState({ discovery_every: 20 }, els);
-    expect(els.discEnabled.checked).toBe(true);
+  it("leaves a focused Preset or Harmonic mixing choice alone", () => {
+    const els = makeEls();
+    document.body.append(els.harmonicMode);
+    applySettingsState({ djmix: { harmonic_mode: "off" } }, els);
+    els.harmonicMode.focus();
+    els.harmonicMode.value = "compatible";
+    applySettingsState({ djmix: { harmonic_mode: "off" } }, els);
+    expect(els.harmonicMode.value).toBe("compatible");
   });
 });
 
 describe("postSettings", () => {
+  it("puts a checkbox back at once and says what it still is", async () => {
+    const els = makeEls();
+    document.body.innerHTML = '<label for="dj-beatmatch">Beatmatch</label>';
+    els.djBeatmatch.id = "dj-beatmatch";
+    document.body.append(els.djBeatmatch);
+    applySettingsState({ djmix: { beatmatch: false } }, els);
+    els.djBeatmatch.checked = true;
+    const settingsStatus = document.createElement("p");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new globalThis.Response(
+      JSON.stringify({ detail: "Settings locked" }),
+      { status: 423, headers: { "Content-Type": "application/json" } },
+    )));
+
+    await postSettings("/api/djmix", { beatmatch: true }, {
+      settingsStatus, control: els.djBeatmatch,
+    });
+    expect(els.djBeatmatch.checked).toBe(false);
+    await vi.waitFor(() => expect(settingsStatus.textContent)
+      .toBe("Could not save Beatmatch; it is still off. Settings locked"));
+    vi.unstubAllGlobals();
+  });
+
   it("returns false, announces failure, and restores the initiating control", async () => {
     const settingsStatus = document.createElement("p");
     const control = document.createElement("select");

@@ -20,7 +20,7 @@ import {
   requestJson,
   withDisabled,
 } from "./api-client.js";
-import { setNoValue } from "./dom-helpers.js";
+import { fmtTime, setNoValue } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 
 const _jobStatusState = new WeakMap();
@@ -46,11 +46,46 @@ function reportJobError(jobStatus, text) {
   if (jobStatus.textContent !== text) jobStatus.textContent = text;
 }
 
+function lastLogLine(job) {
+  const lines = job.lines || [];
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = String(lines[i]).trim();
+    if (line) return line;
+  }
+  return "";
+}
+
+function finishedText(job) {
+  const seconds = Math.round(Number(job.elapsed_seconds) || 0);
+  if (job.exit_code === 0) return `${job.name} finished cleanly in ${seconds} seconds.`;
+  // A job the user stopped exits non-zero (1 on Windows), which is not
+  // a failure worth an exit code.
+  if (job.stopped) return `${job.name} stopped after ${seconds} seconds.`;
+  // A failure's reason is the last thing the job printed (a prune safety
+  // abort, a missing file), so it rides along instead of hiding in the log.
+  const reason = lastLogLine(job);
+  return `${job.name} exited with code ${job.exit_code} after ${seconds} seconds.`
+    + (reason ? ` ${reason}` : "");
+}
+
+// Shift+J: the job's state on demand, with the latest log line as its
+// progress while it runs.
+export function libraryJobStatusText(job) {
+  if (!job || !job.name) return "No library job has run.";
+  if (job.running) {
+    const line = lastLogLine(job);
+    return `${job.name} running, ${fmtTime(Number(job.elapsed_seconds) || 0)} elapsed.`
+      + (line ? ` ${line}` : "");
+  }
+  if (job.exit_code != null) return finishedText(job);
+  return "No library job has run.";
+}
+
 function updateJobStatus(job, jobStatus, jobElapsed) {
-  // Visual-only clock.  Never announced: the node is aria-live="off".
+  // Silent clock.  Never announced: the node is aria-live="off".
   if (jobElapsed) {
     const elapsed = job.running
-      ? `${Math.round(Number(job.elapsed_seconds) || 0)}s elapsed`
+      ? `${fmtTime(Number(job.elapsed_seconds) || 0)} elapsed`
       : "";
     if (jobElapsed.textContent !== elapsed) jobElapsed.textContent = elapsed;
   }
@@ -61,13 +96,7 @@ function updateJobStatus(job, jobStatus, jobElapsed) {
     return;
   }
   if (job.exit_code != null) {
-    const seconds = Math.round(Number(job.elapsed_seconds) || 0);
-    // A job the user stopped exits non-zero (1 on Windows), which is not
-    // a failure worth an exit code.
-    let text = `${job.name} exited with code ${job.exit_code} after ${seconds} seconds.`;
-    if (job.exit_code === 0) text = `${job.name} finished cleanly in ${seconds} seconds.`;
-    else if (job.stopped) text = `${job.name} stopped after ${seconds} seconds.`;
-    setJobPhase(jobStatus, `finished:${job.name}:${job.exit_code}`, text);
+    setJobPhase(jobStatus, `finished:${job.name}:${job.exit_code}`, finishedText(job));
     return;
   }
   if (!job.name) setJobPhase(jobStatus, "idle", "Idle.");

@@ -185,12 +185,23 @@ After `autodj serve`, point a browser at `http://localhost:8080`.  Five tabs:
 - **Shift+K** — speak the musical key.
 - **Shift+L** — speak the current lyric line once. During an instrumental break it says
   "Instrumental" and the next line; a track without lyrics says so.
+- **Shift+E** — speak the elapsed and total time, as the seek slider says it.
+- **Shift+V** — speak the volume, and whether it is muted.
+- **Shift+Q** — speak how many tracks are queued, and the first one.
+- **Shift+J** — speak the library job status: what is running, for how long, and its latest log
+  line, or how the last job ended.
 - **?** — open the shortcut list.
 
-Playback, volume, and seek shortcuts work on the Now Playing tab. Status shortcuts (Shift+letter)
-and `?` work on every tab. Letter and punctuation shortcuts also work when a button or slider has
-focus. Text fields and dropdown typeahead keep their keys; Space activates a focused button and
-arrow keys operate the focused slider or tab. Open dialogs keep playback shortcuts inactive.
+Every shortcut works from any tab, except Space and the Up and Down arrows, which work on Now
+Playing only because on the other tabs they scroll the page. Letter and punctuation shortcuts also
+work when a button or slider has focus. Text fields and dropdowns keep their keys; Space activates
+a focused button and arrow keys operate the focused slider or tab. Open dialogs keep playback
+shortcuts inactive. With NVDA in browse mode, press NVDA+F2 and then a shortcut to pass that one
+key through to the page.
+
+A new track is announced while the Now Playing tab is showing. To hear it on every tab, turn on
+**Announce track changes on every tab** under Settings, Announcements; the choice is saved in this
+browser only.
 
 To turn the shortcuts off, clear **Enable keyboard shortcuts** under Settings, Keyboard. The
 setting is on by default and is saved in this browser only, not on the server. With it off, no
@@ -228,7 +239,7 @@ It works well when your library has the genre clustering you expect.  Pop tracks
 
 It does not work well when:
 
-- The library is tiny (under ~50 tracks) -- there is not enough variety for the picker to behave like a DJ.  AutoDJ warns when the no-repeat window is bigger than the library.
+- The library is tiny (under ~50 tracks) -- there is not enough variety for the picker to behave like a DJ.  When the no-repeat window is bigger than the library, AutoDJ shrinks it to fit and says so in the server log; the web page does not show this.
 - All your files are tagged "Unknown Artist" -- the picker still works on sound alone, but the web UI looks bare.
 - Your tracks are very compressed (96 kbps MP3) -- the audio analysis still works but is less accurate.
 
@@ -341,9 +352,10 @@ source) or run `npm ci && npm run build`.
 
 **Lyrics card never appears.**  AutoDJ checks three places, in order: an LRC file next to the audio file (timestamped, scrolls), the `lyrics` field in the beets database, the embedded ID3 / Vorbis / MP4 lyric tag.  If none of those is present, the lyrics card stays hidden.
 
-**Playback shortcuts do nothing on the Settings tab.** Playback and seek shortcuts only fire on
-Now Playing. Status shortcuts (Shift+letter) and `?` work on every tab, except while typing or
-using dropdown typeahead. With NVDA, use focus mode (NVDA+Space) so the app receives the keys.
+**Space or the arrow keys do nothing on the Settings tab.** Space and the Up and Down arrows only
+act on Now Playing, where they do not scroll the page; use k to play or pause from other tabs.
+The other shortcuts work on every tab, except while typing or using a dropdown. With NVDA, use
+focus mode (NVDA+Space) so the app receives the keys, or press NVDA+F2 before a single shortcut.
 
 ## Project layout
 

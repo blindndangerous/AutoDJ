@@ -12,19 +12,22 @@
 // second keydown for the same key is suppressed regardless of the
 // repeat flag.
 //
-// Scope: transport hotkeys only fire when the Now Playing tab is
-// visible.  Status keys and ? work from any tab.
+// Scope: every shortcut works from any tab except Space and the Up and
+// Down arrows, which scroll the page on the other tabs and so only act
+// while Now Playing is showing.  Text fields and dropdowns keep all keys.
 //
 // Key conflicts: lowercase k = pause, uppercase K (Shift+K) = speak key.
 // Lowercase n = skip, uppercase N (Shift+N) = speak next track.
 // Shift+L speaks the current lyric line; lowercase l is unused.
+// s/S and m/M are shuffle and mute in either case, so no status key may
+// use them.  Status keys: T N R B K L E V Q J.
 //
 // WCAG 2.1.4: single-key shortcuts can be switched off with the
 // Settings > Keyboard checkbox.  The choice is kept per browser in
 // localStorage and defaults to on; storage that is blocked or throws
 // simply means "on" and an unsaved choice.
 
-import { isTypingTarget, srSpeak } from "./dom-helpers.js";
+import { fmtTime, isTypingTarget, srSpeak } from "./dom-helpers.js";
 
 const NATIVE_KEYBOARD_SELECTOR = [
   "button",
@@ -118,6 +121,19 @@ function _eventIsWithin(event, element) {
   return _eventPath(event).includes(element);
 }
 
+// "Artist, Title": a comma, because NVDA with punctuation off says
+// nothing for a dash and runs the two names together.
+function _spokenTrack(t) {
+  if (t.artist && t.title) return `${t.artist}, ${t.title}`;
+  return t.display_name || t.title || "Unknown track";
+}
+
+function _queueSummary(queue) {
+  if (!queue || queue.length === 0) return "Queue empty";
+  const count = queue.length === 1 ? "1 track queued" : `${queue.length} tracks queued`;
+  return `${count}. First, ${_spokenTrack(queue[0])}`;
+}
+
 function _fmtRemaining(sec) {
   const s = Math.max(0, Math.round(sec));
   const mins = Math.floor(s / 60);
@@ -186,6 +202,7 @@ export function installHotkeys({
   btnPause, btnSkip, btnShuffle, btnMute, volSlider,
   seekDelta, getBpm,
   getTrack, getNextTrack, getRemaining, getLyricLine,
+  getPosition, getQueue, getJobStatus,
   isEnabled = () => true,
   shortcutToggle = null,
   // Optional: what Space / k do instead of pressing Play / Pause.  Stream
@@ -236,8 +253,9 @@ export function installHotkeys({
     if (e.ctrlKey || e.metaKey || e.altKey) return;
 
     const key = e.key;
-    const statusKey = ["T", "N", "R", "B", "K", "L"].includes(key);
-    if (!nowVisible && !statusKey && key !== "?") return;
+    const scrollsPage = key === " " || key === "Spacebar"
+      || key === "ArrowUp" || key === "ArrowDown";
+    if (!nowVisible && scrollsPage) return;
 
     let bumpVol = 0;
     switch (key) {
@@ -306,11 +324,31 @@ export function installHotkeys({
       }
       case "K": {
         const tk = getTrack && getTrack();
-        srSpeak(tk && tk.key_label ? tk.key_label : "Key unknown");
+        // key_spoken is the key in words ("F sharp minor"); the display
+        // label ("F#m") reads as "F number m" to a screen reader.
+        srSpeak(tk && tk.key_spoken ? tk.key_spoken : "Key unknown");
         break;
       }
       case "L":
         srSpeak(getLyricLine ? getLyricLine() : "No lyrics for this track.");
+        break;
+      case "E": {
+        const pos = getPosition && getPosition();
+        // The seek slider's own wording, so the two never disagree.
+        srSpeak(pos ? `${fmtTime(pos.elapsed)} of ${fmtTime(pos.duration)}` : "Position unknown");
+        break;
+      }
+      case "V": {
+        if (!volSlider) return;
+        const muted = btnMute && btnMute.getAttribute("aria-pressed") === "true";
+        srSpeak(`Volume ${volSlider.value} percent${muted ? ", muted" : ""}`);
+        break;
+      }
+      case "Q":
+        srSpeak(_queueSummary(getQueue && getQueue()));
+        break;
+      case "J":
+        srSpeak(getJobStatus ? getJobStatus() : "No library job has run.");
         break;
       case "?":
         if (!toggleShortcutsModal()) return;

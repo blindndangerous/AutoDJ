@@ -118,6 +118,9 @@ _STREAM_NAME = re.compile(r"^(?P<secret>[A-Za-z0-9_-]{1,128})\.(?P<ext>mp3|m3u)$
 _ALAC_PREFETCH_TIMEOUT_SECONDS = 5.0
 _PACKAGE_DIR = Path(__file__).parent
 _BUILD_INFO_NAME = "build-info.json"
+# Play now, Play next and Add to queue on a search result whose file was
+# pruned from the index since the search ran.
+_TRACK_GONE_DETAIL = "That track is no longer in the library."
 
 
 @dataclass(eq=False)
@@ -1809,8 +1812,9 @@ def create_app(
     @app.post("/api/play-next")
     async def api_play_next(body: PlayNextBody) -> dict[str, bool]:
         """Insert a track at the head of the queue."""
-        found = bridge.play_next(body.path, now=body.now)
-        return {"ok": found}
+        if not bridge.play_next(body.path, now=body.now):
+            raise HTTPException(status_code=404, detail=_TRACK_GONE_DETAIL)
+        return {"ok": True}
 
     @app.get("/api/search")
     async def api_search(q: str = "", limit: int = 100) -> dict[str, list]:
@@ -1825,7 +1829,9 @@ def create_app(
     @app.post("/api/queue/add")
     async def api_queue_add(body: PlayNextBody) -> dict[str, bool]:
         """Append a track to the user-ordered queue."""
-        return {"ok": bridge.queue_add(body.path)}
+        if not bridge.queue_add(body.path):
+            raise HTTPException(status_code=404, detail=_TRACK_GONE_DETAIL)
+        return {"ok": True}
 
     @app.post("/api/queue/remove")
     async def api_queue_remove(body: PlayNextBody) -> dict[str, bool]:

@@ -91,7 +91,7 @@ describe("applyCueSummary", () => {
     }, element);
 
     expect(element.textContent).toBe(
-      "2 cue points, drop at 25 seconds, outro downbeat at 90 seconds",
+      "2 cue points, drop at 0:25, outro downbeat at 1:30",
     );
   });
 
@@ -120,7 +120,7 @@ describe("applyCueSummary", () => {
     renderCueStrip(strip, track);
 
     expect(element.textContent).toBe(
-      "2 cue points, user: Chorus at 10 seconds, user at 20 seconds",
+      "2 cue points, user: Chorus at 0:10, user at 0:20",
     );
     expect(Array.from(strip.querySelectorAll(".cue-mark"), (mark) => mark.title))
       .toEqual(["user: Chorus", "user"]);
@@ -134,7 +134,7 @@ describe("applyCueSummary", () => {
       cues: [{ type: " user ", label, time_s: 10 }],
     }, element);
 
-    expect(element.textContent).toBe("1 cue point, user at 10 seconds");
+    expect(element.textContent).toBe("1 cue point, user at 0:10");
   });
 
   it("writes markup-like labels as text", () => {
@@ -145,7 +145,7 @@ describe("applyCueSummary", () => {
       cues: [{ type: "user", label: "<img src=x>", time_s: 10 }],
     }, element);
 
-    expect(element.textContent).toContain("user: <img src=x> at 10 seconds");
+    expect(element.textContent).toContain("user: <img src=x> at 0:10");
     expect(element.querySelector("img")).toBeNull();
   });
 
@@ -166,14 +166,14 @@ describe("applyCueSummary", () => {
     cuesModule.applyCueSummary?.(track, summary, details);
 
     expect(summary.textContent).toBe(
-      "5 cue points, user: Intro at 10 seconds, drop at 20 seconds, "
-      + "breakdown at 30 seconds, and 2 more",
+      "5 cue points, user: Intro at 0:10, drop at 0:20, "
+      + "breakdown at 0:30, and 2 more",
     );
     expect(summary.textContent).not.toContain("first downbeat");
     expect(details.textContent).toBe(
-      "5 cue points, user: Intro at 10 seconds, drop at 20 seconds, "
-      + "breakdown at 30 seconds, first downbeat at 40 seconds, "
-      + "outro downbeat at 50 seconds",
+      "5 cue points, user: Intro at 0:10, drop at 0:20, "
+      + "breakdown at 0:30, first downbeat at 0:40, "
+      + "outro downbeat at 0:50",
     );
   });
 

@@ -36,8 +36,27 @@ export function setAuthRequiredHandler(handler) {
   authRequiredHandler = handler;
 }
 
-function rawRequest(url, options) {
-  return fetch(url, options);
+// What a failed request says out loud.  Every failure reaches speech
+// through a status region, so it is a plain sentence: never "Failed to
+// fetch", a URL or a bare status code.
+const UNREACHABLE_TEXT = "The AutoDJ server is not reachable.";
+const UNREADABLE_TEXT = "The AutoDJ server sent a reply this page cannot read.";
+const NOT_ACCEPTED_TEXT = "The AutoDJ server did not accept that request.";
+
+function httpFailureText(status) {
+  return status >= 500
+    ? "The AutoDJ server hit an error. The server log has the details."
+    : NOT_ACCEPTED_TEXT;
+}
+
+async function rawRequest(url, options) {
+  try {
+    return await fetch(url, options);
+  } catch (cause) {
+    // A cancelled request is the caller's own doing, not a failure.
+    if (cause?.name === "AbortError") throw cause;
+    throw new ApiError(UNREACHABLE_TEXT, { url, cause });
+  }
 }
 
 function responseUrl(response, fallback) {
@@ -60,13 +79,13 @@ function mediaType(response) {
 function requireMediaType(response, url, acceptedPrefixes) {
   const type = mediaType(response);
   if (!type) {
-    throw new ApiError(`${url} returned missing content type`, {
+    throw new ApiError(UNREADABLE_TEXT, {
       status: response.status,
       url,
     });
   }
   if (!acceptedPrefixes.some((prefix) => type.startsWith(prefix))) {
-    throw new ApiError(`${url} returned unexpected content type ${type}`, {
+    throw new ApiError(UNREADABLE_TEXT, {
       status: response.status,
       url,
     });
@@ -103,9 +122,7 @@ export async function checkedResponse(response, { url = "" } = {}) {
   }
   if (!isJsonResponse(response)) {
     throw new ApiError(
-      response.ok
-        ? `${requestUrl} returned non-JSON content`
-        : `${requestUrl} returned HTTP ${response.status}`,
+      response.ok ? UNREADABLE_TEXT : httpFailureText(response.status),
       { status: response.status, url: requestUrl },
     );
   }
@@ -114,7 +131,7 @@ export async function checkedResponse(response, { url = "" } = {}) {
   try {
     payload = await response.json();
   } catch (cause) {
-    throw new ApiError(`${requestUrl} returned malformed JSON`, {
+    throw new ApiError(UNREADABLE_TEXT, {
       status: response.status,
       url: requestUrl,
       cause,
@@ -123,14 +140,14 @@ export async function checkedResponse(response, { url = "" } = {}) {
 
   if (!response.ok) {
     throw new ApiError(
-      payloadMessage(payload, `${requestUrl} returned HTTP ${response.status}`),
+      payloadMessage(payload, httpFailureText(response.status)),
       { status: response.status, url: requestUrl },
     );
   }
   if (payload && typeof payload === "object"
       && (payload.ok === false || payload.success === false)) {
     throw new ApiError(
-      payloadMessage(payload, "The request was not accepted."),
+      payloadMessage(payload, NOT_ACCEPTED_TEXT),
       { status: response.status, url: requestUrl },
     );
   }
@@ -175,7 +192,7 @@ export async function requestBinary(url, options = {}) {
   }
   if (!response.ok) {
     if (isJsonResponse(response)) await checkedResponse(response, { url });
-    throw new ApiError(`${url} returned HTTP ${response.status}`, {
+    throw new ApiError(httpFailureText(response.status), {
       status: response.status,
       url,
     });
@@ -197,7 +214,7 @@ export async function probeResource(url, options = {}) {
     }
     if (!response.ok) {
       if (isJsonResponse(response)) await checkedResponse(response, { url });
-      throw new ApiError(`${url} returned HTTP ${response.status}`, {
+      throw new ApiError(httpFailureText(response.status), {
         status: response.status,
         url,
       });

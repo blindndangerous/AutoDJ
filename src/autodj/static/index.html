@@ -8,16 +8,19 @@
 </head>
 <body>
 
+<!-- One description, on the dialog only: on the code field as well it was
+     read a second time as focus landed there.  #auth-reason says why a
+     signed-in browser is being asked again, and is empty on first pairing. -->
 <dialog id="auth-dialog" aria-modal="true"
-        aria-labelledby="auth-title" aria-describedby="auth-help">
+        aria-labelledby="auth-title" aria-describedby="auth-reason auth-help">
   <form id="auth-form" method="dialog">
     <h2 id="auth-title">Pair this browser</h2>
+    <p id="auth-reason" hidden></p>
     <p id="auth-help">Enter the 8-digit pairing code shown by the AutoDJ server. You only need to do this once on this browser.</p>
     <label for="auth-token">Pairing code</label>
     <input id="auth-token" name="code" type="text"
            autocomplete="one-time-code" inputmode="numeric"
-           pattern="[0-9]{8}" maxlength="8" required
-           aria-describedby="auth-help">
+           pattern="[0-9]{8}" maxlength="8" required>
     <label for="auth-device-name">Device name <span class="visually-hidden">(optional)</span></label>
     <input id="auth-device-name" name="device_name" type="text"
            autocomplete="off" maxlength="64" placeholder="Kitchen tablet">
@@ -61,15 +64,18 @@
      Tabs are announced as "tab" with selected state and arrow-key
      navigation per APG.  `hashchange` is still honoured so browser
      back/forward + deep links keep working. -->
-<div class="tablist-wrap" id="view-nav">
-  <div role="tablist" aria-label="Sections" aria-orientation="horizontal">
+<!-- A navigation landmark, so the tabs are not the one part of the page
+     outside every landmark.  The landmark carries the name; naming the
+     tablist too made NVDA say "Sections" twice. -->
+<nav class="tablist-wrap" id="view-nav" aria-label="Sections">
+  <div role="tablist" aria-orientation="horizontal">
     <button type="button" role="tab" id="tab-now"      data-view="now"      aria-controls="panel-now"      aria-selected="true"  tabindex="0">Now Playing</button>
     <button type="button" role="tab" id="tab-queue"    data-view="queue"    aria-controls="panel-queue"    aria-selected="false" tabindex="-1">Queue &amp; Search</button>
     <button type="button" role="tab" id="tab-history"  data-view="history"  aria-controls="panel-history"  aria-selected="false" tabindex="-1">History</button>
     <button type="button" role="tab" id="tab-settings" data-view="settings" aria-controls="panel-settings" aria-selected="false" tabindex="-1">Settings</button>
     <button type="button" role="tab" id="tab-library"  data-view="library"  aria-controls="panel-library"  aria-selected="false" tabindex="-1">Library tools</button>
   </div>
-</div>
+</nav>
 
 <main id="main-content" tabindex="-1">
 
@@ -92,34 +98,30 @@
     </p>
 
     <div class="now-playing-row">
-      <!-- Decorative cover art — track info already announced by aria-live below.
+      <!-- Decorative cover art — the track change is announced by #track-announce.
            Hidden via .hidden when no embedded art (prevents broken-image icon). -->
       <img id="cover-art" alt="" aria-hidden="true" hidden>
 
       <div class="now-playing-text">
-        <!-- aria-live region: the single track-change announcement (title,
-             BPM, key, beatmatch).  Key and beatmatch sit in a visually
-             hidden span; the metadata line shows them. -->
-        <div id="now-playing-announce"
-             aria-live="polite"
-             aria-atomic="true">
-          Loading…
-        </div>
+        <!-- The visible title.  Not a live region: a hidden tab panel
+             never speaks, so the one track-change announcement goes
+             through #track-announce at body level instead. -->
+        <div id="now-playing-title">Loading…</div>
         <!-- Stream mode with no current track: stands in for the title.
-             Not a live region, and the live region above is emptied
-             silently, so "Set stopped" stays the one spoken report and a
-             page loaded while idle speaks nothing on its own. -->
+             Not a live region, and nothing is announced when the set
+             stops playing a track, so "Set stopped" stays the one spoken
+             report and a page loaded while idle speaks nothing on its own. -->
         <p id="now-playing-idle" hidden>Nothing playing. The station starts when someone listens.</p>
         <!-- Stream mode, idle.  Plain text, not a live region: the
              "Set stopped" station event is the one spoken report. -->
         <p id="stream-idle-note" class="stream-idle-note" hidden></p>
         <div id="now-playing-meta"></div>
         <!-- Visual-only badge row: BPM / Camelot key / energy / beatmatch ratio.
-             aria-hidden because the track-change announcement above already
+             aria-hidden because the track-change announcement already
              speaks BPM, key and beatmatch. -->
         <div id="now-playing-badges" aria-hidden="true" class="badges-row"></div>
         <!-- Camelot wheel: decorative visual aid only.  Current key + harmonic
-             compatibility are already announced via #now-playing-announce, so this
+             compatibility are already announced via #track-announce, so this
              SVG is hidden from assistive tech (aria-hidden="true").  Sectors
              distinguish active / compatible / idle by stroke width AND fill
              so colour is not the sole indicator (WCAG 1.4.1). -->
@@ -135,8 +137,8 @@
         </svg>
         <!-- The ring key lives outside the SVG: inside it, 8 viewBox units
              rendered at 7.3 px, which made the wheel's only legend
-             unreadable.  aria-hidden with the wheel -- #now-playing-announce
-             already says the key. -->
+             unreadable.  aria-hidden with the wheel -- the track-change
+             announcement and Shift+K already say the key. -->
         <p id="camelot-legend" aria-hidden="true">Outer ring B (major) · inner ring A (minor)</p>
       </div>
     </div>
@@ -188,17 +190,17 @@
         <!-- Play / Pause / Resume: the label names the next action, so no
              aria-pressed.  Mute and Discovery are the other pattern: a
              fixed name plus aria-pressed. -->
+        <!-- No title attributes on Play, Skip and Mute: NVDA read each one
+             as a description that only repeated the name. -->
         <button id="btn-pause"
-                disabled
-                title="Pause or resume playback">
+                disabled>
           <span aria-hidden="true">▶</span> Play
         </button>
         <!-- Stream mode only.  Fixed name plus aria-pressed, like Mute:
              it plays the station in this browser, while Play / Pause
              pauses the station for every listener. -->
         <button type="button" id="btn-listen" aria-pressed="false" hidden><span aria-hidden="true">🔊</span> Listen here</button>
-        <button id="btn-skip"
-                title="Skip to the next sonically similar track">
+        <button id="btn-skip">
           <span aria-hidden="true">⏭</span> Skip
         </button>
         <button id="btn-shuffle"
@@ -231,8 +233,7 @@
       <span id="vol-pct" aria-hidden="true">100%</span>
       <!-- Fix 2: emoji wrapped in aria-hidden -->
       <button id="btn-mute"
-              aria-pressed="false"
-              title="Toggle mute">
+              aria-pressed="false">
         <span aria-hidden="true">🔊</span> Mute
       </button>
     </div>
@@ -273,7 +274,9 @@
   <!-- Why this track? — plain-English explanation of the picker's choice -->
   <details class="card">
     <summary><h2>Why this track?</h2></summary>
-    <ul id="why-list" role="list" aria-live="polite" aria-atomic="true">
+    <!-- Read on demand, not live: it is rebuilt on every track change,
+         which is already announced once. -->
+    <ul id="why-list" role="list">
       <li class="no-results">
         No reasons yet — start playback to see why each track was picked.
       </li>
@@ -714,6 +717,17 @@
     </fieldset>
 
     <fieldset>
+      <legend>Announcements</legend>
+      <div class="settings-check">
+        <input type="checkbox" id="announce-all-tabs" aria-describedby="announce-all-tabs-desc">
+        <label for="announce-all-tabs">Announce track changes on every tab</label>
+      </div>
+      <span class="setting-desc" id="announce-all-tabs-desc">
+        When off, a new track is spoken only while the Now Playing tab is showing.  Saved in this browser only.
+      </span>
+    </fieldset>
+
+    <fieldset>
       <legend>Keyboard</legend>
       <div class="settings-check">
         <input type="checkbox" id="hotkeys-enabled" checked aria-describedby="hotkeys-enabled-desc">
@@ -723,6 +737,7 @@
         Single-key shortcuts such as Space, N, M, the arrow keys and the question mark.  Turn this off if they clash with your screen reader or other keys you use; buttons and sliders keep working as usual.  Saved in this browser only.
       </span>
     </fieldset>
+
 
     <!-- Stream mode only (autodj serve --stream); stream-mode.js shows it.
          The listener count is plain text, not a live region. -->
@@ -961,8 +976,10 @@
       <p id="lib-job-status" aria-live="polite" aria-atomic="true">Idle.</p>
       <!-- Ticking clock lives OUTSIDE the live region: aria-live="off"
            plus no role means NVDA never speaks it, so a two-hour index
-           run produces one announcement, not one every ten seconds. -->
-      <p id="lib-job-elapsed" aria-live="off" aria-hidden="true"></p>
+           run produces one announcement, not one every ten seconds.  It
+           can still be read with the cursor, and Shift+J speaks the job
+           status on demand. -->
+      <p id="lib-job-elapsed" aria-live="off"></p>
       <!-- Region role: a bare <div> maps to the generic role, which may
            not be named.  A region is named, not live, and NVDA stays in
            browse mode when it gets focus. -->
@@ -1002,7 +1019,7 @@
      while showModal() still made the rest of the page inert. -->
 <dialog id="hotkey-help-modal" aria-labelledby="hotkey-help-title">
   <h2 id="hotkey-help-title" style="margin-top:0">Keyboard shortcuts</h2>
-  <p>Transport keys work on the Now Playing tab. Status keys (Shift+letter) and <kbd><span aria-hidden="true">?</span><span class="visually-hidden">question mark</span></kbd> work from any tab. Letter and punctuation shortcuts work on focused buttons and sliders, but not while typing or using dropdown typeahead. Space activates a focused button; arrow keys operate the focused slider or tab.</p>
+  <p>Space and the Up and Down Arrow keys work on the Now Playing tab only, because on other tabs they scroll the page. Every other shortcut works from any tab. Letter and punctuation shortcuts work on focused buttons and sliders, but not while typing in a text field or using a dropdown. Space activates a focused button; arrow keys operate the focused slider or tab.</p>
   <p>If these single-key shortcuts get in your way, turn them all off with the <strong>Enable keyboard shortcuts</strong> checkbox under Settings, Keyboard. The choice is saved in this browser. This list stays available from the Keyboard shortcuts button.</p>
   <dl style="display:grid;grid-template-columns:max-content 1fr;column-gap:1rem;row-gap:0.25rem;margin:0">
     <dt><kbd>Space</kbd> <span aria-hidden="true">/</span><span class="visually-hidden">or</span> <kbd>k</kbd></dt><dd>Play or pause. In stream mode, start or stop listening on this page.</dd>
@@ -1019,9 +1036,13 @@
     <dt><kbd>Shift+B</kbd></dt><dd>Speak current BPM</dd>
     <dt><kbd>Shift+K</kbd></dt><dd>Speak current key</dd>
     <dt><kbd>Shift+L</kbd></dt><dd>Speak current lyric line</dd>
+    <dt><kbd>Shift+E</kbd></dt><dd>Speak elapsed and total time</dd>
+    <dt><kbd>Shift+V</kbd></dt><dd>Speak volume, and whether muted</dd>
+    <dt><kbd>Shift+Q</kbd></dt><dd>Speak how many tracks are queued, and the first one</dd>
+    <dt><kbd>Shift+J</kbd></dt><dd>Speak the library job status</dd>
   </dl>
   <p style="margin-top:1rem;color:var(--text-dim);font-size:0.9em">
-    NVDA users: shortcuts work in focus mode (NVDA+Space to toggle).  In browse mode, NVDA intercepts the letter keys; switch to focus mode first.
+    NVDA users: shortcuts work in focus mode (NVDA+Space to toggle).  In browse mode, NVDA intercepts the letter keys; switch to focus mode first, or press NVDA+F2 and then the shortcut to pass that one key through.
   </p>
   <div style="margin-top:1rem;text-align:right">
     <button id="btn-shortcuts-close" type="button">Close</button>
@@ -1058,6 +1079,9 @@
 <script type="module" src="/app.js"></script>
 <!-- Screen-reader live region for status announcements (Shift+T/N/R/B/K) -->
 <div id="sr-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+<!-- The one track-change announcement.  At body level so it can speak
+     from any tab; app.js decides whether it does (Settings, Announcements). -->
+<div id="track-announce" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
 <!-- Sighted mirror of whatever the live regions above just announced.
      Deliberately aria-hidden with no role and no aria-live: the region
      that owns the message does the speaking, this only makes the same

@@ -270,12 +270,12 @@ describe("page shortcut scope", () => {
     expect(modal.open).toBe(false);
   });
 
-  it("allows status keys on other tabs while keeping transport keys Now-only", () => {
+  it("works from any tab except Space and the volume arrows", () => {
     document.querySelector("#hotkey-help-modal").close();
     document.querySelector("#panel-now").setAttribute("hidden", "");
     const settingsTabLabel = document.querySelector("#native-tab-label");
 
-    for (const key of ["T", "N", "R", "B", "K", "L"]) {
+    for (const key of ["T", "N", "R", "B", "K", "L", "E", "V", "Q", "J"]) {
       const event = keyEvent(settingsTabLabel, key, { shiftKey: true });
       expect(event.defaultPrevented).toBe(true);
       window.dispatchEvent(new KeyboardEvent("keyup", { key }));
@@ -283,15 +283,19 @@ describe("page shortcut scope", () => {
 
     const skipEvent = keyEvent(settingsTabLabel, "n");
     const seekEvent = keyEvent(settingsTabLabel, ",");
-    // A focused scroller on another tab, such as the library job log,
-    // keeps its arrow keys.
-    const arrowEvent = keyEvent(document.querySelector("#plain"), "ArrowDown");
-    expect(skipEvent.defaultPrevented).toBe(false);
-    expect(seekEvent.defaultPrevented).toBe(false);
+    expect(skipEvent.defaultPrevented).toBe(true);
+    expect(seekEvent.defaultPrevented).toBe(true);
+    expect(skipClick).toHaveBeenCalledOnce();
+    expect(seekDelta).toHaveBeenCalledOnce();
+
+    // Off Now Playing these scroll the page, so they stay the page's.
+    const plain = document.querySelector("#plain");
+    const arrowEvent = keyEvent(plain, "ArrowDown");
+    const spaceEvent = keyEvent(plain, " ");
     expect(arrowEvent.defaultPrevented).toBe(false);
+    expect(spaceEvent.defaultPrevented).toBe(false);
     expect(volumeInput).not.toHaveBeenCalled();
-    expect(skipClick).not.toHaveBeenCalled();
-    expect(seekDelta).not.toHaveBeenCalled();
+    expect(pauseClick).not.toHaveBeenCalled();
   });
 
   it("does not latch keys suppressed inside the dialog when their keyup is missed", () => {
@@ -429,6 +433,28 @@ describe("page shortcut scope", () => {
       expect(localSkipClick).toHaveBeenCalledOnce();
     },
   );
+});
+
+describe("spoken status keys", () => {
+  it("speaks the key in words, never the display label", async () => {
+    document.body.innerHTML = '<div id="sr-status"></div><section id="panel-now"></section>';
+    const addEventListener = vi.spyOn(window, "addEventListener");
+    installHotkeys({
+      getTrack: () => ({ key_label: "F#m", key_spoken: "F sharp minor" }),
+    });
+    const keydownHandler = addEventListener.mock.calls.find(
+      ([type]) => type === "keydown",
+    )[1];
+    addEventListener.mockRestore();
+
+    keydownHandler({
+      key: "K", repeat: false, target: document.body, preventDefault: vi.fn(),
+    });
+    window.dispatchEvent(new KeyboardEvent("keyup", { key: "K" }));
+
+    await vi.waitFor(() => expect(document.querySelector("#sr-status").textContent)
+      .toBe("F sharp minor"));
+  });
 });
 
 describe("keyboard shortcut toggle (WCAG 2.1.4)", () => {

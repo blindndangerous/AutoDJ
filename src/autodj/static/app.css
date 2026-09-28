@@ -136,7 +136,7 @@
     }
 
     /* ---- Now playing ---- */
-    #now-playing-announce,
+    #now-playing-title,
     #now-playing-idle {
       font-size: 1.2rem;
       font-weight: 600;
@@ -1045,7 +1045,7 @@
 
     /* ----------------------------------------------------------------
        Camelot wheel — decorative visual aid for harmonic mixing.
-       Hidden from AT (#now-playing-announce already conveys the key).
+       Hidden from AT (#track-announce and Shift+K already convey the key).
        ---------------------------------------------------------------- */
     #camelot-wheel {
       display: block;

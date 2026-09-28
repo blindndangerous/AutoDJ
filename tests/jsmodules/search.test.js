@@ -122,12 +122,14 @@ describe("search feedback is visible", () => {
       <button class="result-btn" data-path="/m/gone.mp3" data-now="false">Next</button>
     </li>`;
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(
-      jsonResponse({ detail: "No such file" }, 404),
+      jsonResponse({ detail: "That track is no longer in the library." }, 404),
     )));
 
     els.searchResults.querySelector(".result-btn").click();
     const toast = document.querySelector("#status-toast");
-    await vi.waitFor(() => expect(toast.textContent).toContain("Could not update queue"));
+    await vi.waitFor(() => expect(toast.textContent).toBe(
+      "Could not add Gone Track to the queue. That track is no longer in the library.",
+    ));
     expect(toast.hidden).toBe(false);
     expect(els.queueAnnounce.textContent).toBe(toast.textContent);
     vi.unstubAllGlobals();

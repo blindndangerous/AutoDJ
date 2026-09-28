@@ -1,7 +1,9 @@
 // Track search + play-now / queue-add buttons.
 //
-// Event delegation on the results <ul> so each result row's "Now" /
+// Event delegation at document level so each result row's "Now" /
 // "Next" buttons share a single handler instead of N per-row listeners.
+// Not on the results <ul>: a click listener there made NVDA call the
+// whole list "clickable".
 
 import { escHtml, fmtTrack } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
@@ -111,9 +113,9 @@ export function installSearch({
   });
 
   // Play-now / queue-add buttons via event delegation.
-  searchResults.addEventListener("click", async (e) => {
-    const btn = e.target.closest(".result-btn");
-    if (!btn) return;
+  searchResults.ownerDocument.addEventListener("click", async (e) => {
+    const btn = e.target.closest?.(".result-btn");
+    if (!btn || !searchResults.contains(btn)) return;
     const epoch = captureAuthenticatedRequestEpoch();
     const path = btn.dataset.path;
     const now  = btn.dataset.now === "true";
@@ -140,7 +142,9 @@ export function installSearch({
       });
     } catch (errorValue) {
       if (!isAuthenticatedRequestCurrent(epoch)) return;
-      announce(`Could not update queue: ${errorValue.message}`, "error");
+      announce(now
+        ? `Could not play ${name} now. ${errorValue.message}`
+        : `Could not add ${name} to the queue. ${errorValue.message}`, "error");
     } finally {
       if (isAuthenticatedRequestCurrent(epoch)) btn.focus();
     }

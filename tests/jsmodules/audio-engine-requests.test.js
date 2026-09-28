@@ -47,7 +47,7 @@ function installDom() {
     <div class="volume-row"><input id="vol" type="range" value="100"></div>
     <button id="btn-pause"></button>
     <img id="cover-art">
-    <div id="now-playing-announce">Artist — Title</div>
+    <div id="now-playing-title">Artist — Title</div>
     <div id="sr-status"></div>
     <audio id="browser-player"></audio>
     <audio id="browser-player-b"></audio>
@@ -184,7 +184,7 @@ describe("audio engine request recovery", () => {
     standby.audio.dispatchEvent(new Event("error"));
     expect(document.querySelector("#sr-status").textContent)
       .toContain("Playback error: decode. (broken.mp3)");
-    expect(document.querySelector("#now-playing-announce").textContent)
+    expect(document.querySelector("#now-playing-title").textContent)
       .toBe("Artist — Title");
   });
 
@@ -407,7 +407,7 @@ describe("audio engine request recovery", () => {
 
     startDecodedTransition(engine, "bad.mp3");
     await vi.waitFor(() => expect(document.querySelector("#sr-status").textContent)
-      .toContain("unexpected content type"));
+      .toContain("cannot read"));
     await vi.waitFor(() => expect(engine.decks[0].audio.muted).toBe(false));
     expect(decodeAudioData).not.toHaveBeenCalled();
     engine.stopAllDecks();
@@ -423,7 +423,7 @@ describe("audio engine request recovery", () => {
     await vi.waitFor(() => expect(document.querySelector("#sr-status").textContent)
       .toContain("Status unavailable"));
     // The visible track title is not overwritten with the error.
-    expect(document.querySelector("#now-playing-announce").textContent)
+    expect(document.querySelector("#now-playing-title").textContent)
       .toBe("Artist — Title");
   });
 
@@ -451,7 +451,7 @@ describe("audio engine request recovery", () => {
     engine.loadCoverArt("invalid.mp3");
     invalidRequest.resolve(binaryResponse("application/json"));
     await vi.waitFor(() => expect(document.querySelector("#sr-status").textContent)
-      .toContain("unexpected content type"));
+      .toContain("cannot read"));
     // The box stays in the layout as a placeholder rather than being
     // removed, so the title and wheel do not jump sideways.
     const art = document.querySelector("#cover-art");

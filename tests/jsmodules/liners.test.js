@@ -107,6 +107,7 @@ describe("liner authentication races", () => {
 
     document.querySelector("#liner-test").click();
     await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(resolveAudioBytes).toEqual(expect.any(Function)));
     active = false;
     resolveAudioBytes(new ArrayBuffer(1));
     await Promise.resolve();
@@ -180,6 +181,7 @@ describe("liner authentication races", () => {
 
     button.click();
     await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(resolveAudioBytes).toEqual(expect.any(Function)));
     apiClient.invalidateAuthenticatedRequestEpoch?.();
     resolveAudioBytes(new ArrayBuffer(1));
     await new Promise((resolve) => setTimeout(resolve, 0));

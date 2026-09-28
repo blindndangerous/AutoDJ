@@ -9,6 +9,7 @@ import {
   srSpeak,
 } from "./modules/dom-helpers.js";
 import {
+  SIGNED_OUT_TEXT,
   bootstrapAuthenticatedApp,
   handleWebSocketAuthenticationClose,
   initAuthDialog,
@@ -39,7 +40,9 @@ if (isDebug()) {
 // ----------------------------------------------------------------
 
 const connStatus   = document.getElementById("conn-status");
-const npAnnounce   = document.getElementById("now-playing-announce");
+const npTitle      = document.getElementById("now-playing-title");
+const trackAnnounce = document.getElementById("track-announce");
+const panelNow     = document.getElementById("panel-now");
 const npIdle       = document.getElementById("now-playing-idle");
 const npMeta       = document.getElementById("now-playing-meta");
 const cueSummary   = document.getElementById("cue-summary");
@@ -107,6 +110,26 @@ const volAnnounce     = document.getElementById("vol-announce");
 const btnListen       = document.getElementById("btn-listen");
 const streamAudio     = document.getElementById("stream-audio");
 
+// Settings > Announcements.  Kept per browser, like the shortcut switch;
+// off (the default) speaks a new track only while Now Playing shows.
+const ANNOUNCE_ALL_TABS_KEY = "autodj.announceTrackChangesEverywhere";
+const announceAllTabs = document.getElementById("announce-all-tabs");
+try {
+  announceAllTabs.checked = globalThis.localStorage?.getItem(ANNOUNCE_ALL_TABS_KEY) === "on";
+} catch (_) {
+  // Blocked storage: the default, for this page load.
+}
+announceAllTabs.addEventListener("change", () => {
+  try {
+    globalThis.localStorage?.setItem(ANNOUNCE_ALL_TABS_KEY, announceAllTabs.checked ? "on" : "off");
+  } catch (_) {
+    // Still honoured until the page is reloaded.
+  }
+});
+function announceTrackChangesEverywhere() {
+  return announceAllTabs.checked;
+}
+
 // Stream mode (`autodj serve --stream`): the server mixes, so this page is
 // a remote plus an optional listener.  See modules/stream-mode.js.
 const streamMode = createStreamMode({
@@ -173,7 +196,8 @@ function clearProtectedSessionData() {
   lastTrackKey = null;
   historyItems.length = 0;
   historyList.replaceChildren();
-  npAnnounce.textContent = "";
+  npTitle.textContent = "";
+  trackAnnounce.textContent = "";
   npIdle.hidden = true;
   npMeta.textContent = "";
   setPlaybackStale(false);
@@ -244,7 +268,7 @@ function expireAuthenticatedSession({ playbackStopped = false } = {}) {
 
 function requireAuthentication() {
   expireAuthenticatedSession();
-  auth.show();
+  auth.show(SIGNED_OUT_TEXT);
 }
 
 setAuthRequiredHandler(requireAuthentication);
@@ -275,7 +299,7 @@ function reportBackgroundRequestError(errorValue) {
   };
   announceStatus(
     document.getElementById("sr-status"),
-    `Request failed: ${message}`,
+    message,
     { dwellMs: 8000, tone: "error" },
   );
 }
@@ -357,28 +381,29 @@ function applyState(s) {
   // Now Playing
   const trackKey   = s.current_track ? s.current_track.path : null;
   const trackLabel = fmtTrack(s.current_track);
-  // Stream mode with nothing playing: the fixed idle line (not a live
-  // region) replaces the title, and the live region is emptied, which
-  // screen readers do not speak.  "Set stopped" is the one spoken report,
-  // and a page loaded while idle loses "Loading…" without a word.
+  // Stream mode with nothing playing: the fixed idle line replaces the
+  // title and nothing is announced.  "Set stopped" is the one spoken
+  // report, and a page loaded while idle loses "Loading…" without a word.
   const streamIdle = inStream && !trackKey;
   if (npIdle.hidden === streamIdle) npIdle.hidden = !streamIdle;
-  if (streamIdle && npAnnounce.firstChild) npAnnounce.replaceChildren();
+  if (streamIdle && npTitle.firstChild) npTitle.replaceChildren();
 
   if (!trackKey || trackKey !== lastTrackKey) _seekController?.cancel();
   if (trackKey !== lastTrackKey) {
     // Track changed -- one announcement carries everything, so NVDA
-    // reads "<artist> -- <title>, 128 BPM, key 8A" in one breath.  BPM
-    // stays visible in the title as before; the rest of the tail is
-    // visually hidden because the metadata line already shows it.
-    const details = trackChangeDetails(s);
+    // reads "<artist> -- <title>, 128 BPM, key A minor" in one breath.
+    // The visible title shows the BPM; the metadata line shows the rest.
     const bpmTail = s.current_track && s.current_track.bpm
       ? `, ${Math.round(s.current_track.bpm)} BPM`
       : "";
-    const spokenOnly = document.createElement("span");
-    spokenOnly.className = "visually-hidden";
-    spokenOnly.textContent = details.slice(bpmTail.length);
-    if (!streamIdle) npAnnounce.replaceChildren(trackLabel + bpmTail, spokenOnly);
+    if (!streamIdle) npTitle.textContent = trackLabel + bpmTail;
+    // Spoken from #track-announce at body level: a live region inside
+    // the hidden Now Playing panel never spoke on another tab.  Other
+    // tabs hear it only when Settings > Announcements asks for it.
+    if (trackKey && (!panelNow.hidden || announceTrackChangesEverywhere())) {
+      announceStatus(trackAnnounce, trackLabel + trackChangeDetails(s),
+        { mirror: false, dwellMs: 10000 });
+    }
     lastTrackKey = trackKey;
     // Update browser titlebar: "AutoDJ - Artist - Title - Album"
     const t = s.current_track;
@@ -546,7 +571,7 @@ function applyState(s) {
     const isOn = s.discovery_enabled;
     setAttributeIfChanged(btnDiscovery, "aria-pressed", isOn ? "true" : "false");
     setButtonContent(btnDiscovery, isOn
-      ? '<span aria-hidden="true">\u25c8</span> Discovery <small>ON</small>'
+      ? '<span aria-hidden="true">\u25c8</span> Discovery <small aria-hidden="true">ON</small>'
       : '<span aria-hidden="true">\u25c8</span> Discovery');
   } else {
     if (btnDiscovery.style.display !== "none") btnDiscovery.style.display = "none";
@@ -1281,7 +1306,6 @@ btnPause.addEventListener("click", async () => {
   } catch (errorValue) {
     if (!isAuthenticatedRequestCurrent(epoch)) return;
     reportBackgroundRequestError(errorValue);
-    btnPause.focus();
   }
 });
 
@@ -1324,7 +1348,6 @@ btnSkip.addEventListener("click", async () => {
   }).catch((errorValue) => {
     if (isAuthenticatedRequestCurrent(epoch)) reportBackgroundRequestError(errorValue);
   });
-  if (isAuthenticatedRequestCurrent(epoch)) btnSkip.focus();
 });
 
 // ----------------------------------------------------------------
@@ -1378,6 +1401,7 @@ function _seekByDelta(deltaSec) {
     return;
   }
   const dur = _seekTrackDuration();
+  const target = Math.max(0, Math.min(dur, _currentPositionSeconds() + deltaSec));
   if (_lastBrowserPlayback && dur > 0) {
     try {
       const deck = decks[activeIdx];
@@ -1386,7 +1410,14 @@ function _seekByDelta(deltaSec) {
         Math.min(dur - 0.1, deck.audio.currentTime + deltaSec),
       );
     } catch (_) {}
+  } else if (dur > 0) {
+    // The pushed clock trails the seek, so remember where it went: the
+    // next press builds on it and the slider arrows do too.
+    _keyboardSeek = { seconds: target, at: performance.now() };
   }
+  // Comma and period leave focus where it is, so the new position is
+  // said in the seek slider's own words.
+  if (dur > 0) srSpeak(`${fmtTime(target)} of ${fmtTime(dur)}`);
   void postJsonBestEffort("/api/seek", { delta: deltaSec }, reportBackgroundRequestError);
 }
 
@@ -1481,9 +1512,14 @@ if (btnShuffle) {
     } catch (errorValue) {
       if (!isAuthenticatedRequestCurrent(epoch)) return;
       reportBackgroundRequestError(errorValue);
-      btnShuffle.focus();
     }
   });
+}
+
+// The M key leaves focus where it was, so the new state is said out loud;
+// on the focused button NVDA already reads the pressed state change.
+function sayMuteState(muted) {
+  if (document.activeElement !== btnMute) srSpeak(muted ? "Muted" : "Unmuted");
 }
 
 btnMute.addEventListener("click", async () => {
@@ -1492,6 +1528,7 @@ btnMute.addEventListener("click", async () => {
   if (_lastStreamMode && !_lastStreamServerAudio) {
     streamAudio.muted = !streamAudio.muted;
     renderMute(streamAudio.muted);
+    sayMuteState(streamAudio.muted);
     return;
   }
   const epoch = captureAuthenticatedRequestEpoch();
@@ -1504,12 +1541,12 @@ btnMute.addEventListener("click", async () => {
   } catch (errorValue) {
     if (!isAuthenticatedRequestCurrent(epoch)) return;
     reportBackgroundRequestError(errorValue);
-    btnMute.focus();
     return;
   }
   if (!isAuthenticatedRequestCurrent(epoch)) return;
   if (_lastStreamMode) streamAudio.muted = data.muted;
   renderMute(data.muted);
+  sayMuteState(data.muted);
 });
 
 // Shortcuts modal: toolbar button + Close button inside the modal.
@@ -1533,7 +1570,6 @@ btnDiscovery.addEventListener("click", () => {
     reportBackgroundRequestError(
       new Error("Discovery is unavailable while disconnected."),
     );
-    btnDiscovery.focus();
   }
 });
 
@@ -1651,12 +1687,29 @@ installHotkeys({
     try { return Math.max(0, dur - decks[activeIdx].audio.currentTime); } catch (_) { return null; }
   },
   getLyricLine: currentLyricLine,
+  getPosition: () => {
+    const duration = _seekTrackDuration();
+    return duration > 0 ? { elapsed: _currentPositionSeconds(), duration } : null;
+  },
+  getQueue:    () => _lastState && _lastState.queue,
+  getJobStatus: () => libraryJobStatusText(_lastState && _lastState.library_job),
   isEnabled: authenticatedInteractionEnabled,
   shortcutToggle: document.getElementById("hotkeys-enabled"),
   // In stream mode Play / Pause stops the station for every listener, so
   // Space and k toggle Listen here (this page only) instead.
-  togglePlay:  () => (_lastStreamMode ? btnListen : btnPause).click(),
+  togglePlay:  () => {
+    if (!_lastStreamMode) {
+      btnPause.click();
+      return;
+    }
+    btnListen.click();
+    // A focused Listen here speaks its own pressed state.
+    if (document.activeElement !== btnListen) {
+      srSpeak(streamMode.isListening() ? "Listening" : "Stopped listening");
+    }
+  },
 });
+
 
 // Media Session API moved to ./modules/media-session.js.
 import {
@@ -1710,6 +1763,7 @@ installSearch({
 import {
   installLibraryJobs,
   applyLibraryJobState,
+  libraryJobStatusText,
 } from "./modules/library-jobs.js";
 
 const _libEls = {
@@ -1942,10 +1996,10 @@ function startAuthenticatedApp(initialState) {
 void bootstrapAuthenticatedApp({
   auth,
   startAuthenticatedApp,
+  // Startup failures are already plain sentences (api-client.js, auth.js).
   onError: errorValue => {
-    setConnStatus("error", `Cannot reach server: ${errorValue.message}`);
-    showVisibleStatus(`Cannot reach server: ${errorValue.message}`,
-      document, { tone: "error" });
+    setConnStatus("error", errorValue.message);
+    showVisibleStatus(errorValue.message, document, { tone: "error" });
   },
 });
 

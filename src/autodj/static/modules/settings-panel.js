@@ -6,7 +6,7 @@
 // would require funnelling every DOM ref + would not shorten the
 // total surface area.
 
-import { escHtml, dbg } from "./dom-helpers.js";
+import { escHtml } from "./dom-helpers.js";
 import { applyShowWhen } from "./show-when.js";
 import { announceStatus } from "./live-region.js";
 import {
@@ -17,8 +17,38 @@ import {
 } from "./api-client.js";
 
 let _lastPresetOptionsKey = "";
-let _libraryWarned = false;
 const _controlDefaults = new WeakMap();
+// The value the server last confirmed for each control, so a failed save
+// can put the control straight back instead of leaving the user's choice
+// on screen until the next websocket push flips it silently.
+const _confirmed = new WeakMap();
+
+function isToggle(control) {
+  return control.type === "checkbox" || control.type === "radio";
+}
+
+function confirmValue(control) {
+  _confirmed.set(control, isToggle(control) ? control.checked : control.value);
+}
+
+function spokenValue(control) {
+  if (isToggle(control)) return control.checked ? "on" : "off";
+  if (control.tagName === "SELECT") {
+    return control.selectedOptions?.[0]?.textContent.trim() || "unset";
+  }
+  return control.value === "" ? "blank" : control.value;
+}
+
+// "Could not save Beatmatch; it is still on."  The label is the name the
+// user just heard on the control.
+function revertAfterFailure(control) {
+  if (!control || !_confirmed.has(control)) return "";
+  const value = _confirmed.get(control);
+  if (isToggle(control)) control.checked = value;
+  else control.value = value;
+  const name = (control.labels?.[0]?.textContent || "").replace(/\s+/g, " ").trim();
+  return name ? `Could not save ${name}; it is still ${spokenValue(control)}.` : "";
+}
 
 function rememberControlDefaults(els) {
   for (const control of Object.values(els)) {
@@ -52,7 +82,6 @@ export function resetSettingsState(els) {
     control.disabled = defaults.disabled;
   }
   _lastPresetOptionsKey = "";
-  _libraryWarned = false;
   applyShowWhen();
 }
 
@@ -65,12 +94,16 @@ export async function postSettings(url, body, { settingsStatus, control } = {}) 
       body: JSON.stringify(body),
     }));
     if (!isAuthenticatedRequestCurrent(epoch)) return false;
+    if (control) confirmValue(control);
     return true;
   } catch (err) {
     if (!isAuthenticatedRequestCurrent(epoch)) return false;
+    const reverted = revertAfterFailure(control);
+    if (reverted) applyShowWhen();
     // The settings card is several screens tall, so the failure has to
     // travel to the visible toast as well as the live region.
-    announceStatus(settingsStatus, `Could not save: ${err.message}`,
+    announceStatus(settingsStatus,
+      reverted ? `${reverted} ${err.message}` : `Could not save. ${err.message}`,
       { dwellMs: 6000, force: true, tone: "error" });
     return false;
   }
@@ -101,16 +134,16 @@ export function applySettingsState(st, els) {
         `<option value="${escHtml(n)}">${escHtml(n)}</option>`
       ).join("");
   }
-  presetSelect.value = st.preset || "";
+  // Without the focus-check guard, every WS state echo (~1 Hz)
+  // reassigns .value, which closes the dropdown and shifts focus
+  // mid-selection.
+  if (document.activeElement !== presetSelect) presetSelect.value = st.preset || "";
 
   if (document.activeElement !== transitionSelect) {
-    // Without the focus-check guard, every WS state echo (~1 Hz)
-    // reassigns .value, which closes the dropdown and shifts focus
-    // mid-selection.
     transitionSelect.value = st.transition || "none";
   }
 
-  if (st.djmix) {
+  if (st.djmix && document.activeElement !== harmonicMode) {
     const mode = st.djmix.harmonic_mode;
     if (harmonicMode.value !== mode) harmonicMode.value = mode;
   }
@@ -121,9 +154,6 @@ export function applySettingsState(st, els) {
   pbEqDuck.checked       = !!(st.playback && st.playback.crossfade_eq_duck);
   if (pbPickMode && document.activeElement !== pbPickMode) {
     // Project the two server-side flags back to the three-way select.
-    // pure_shuffle wins over smart_shuffle when both are somehow set
-    // (defensive — bridge clears the other on switch, but old saved
-    // state might carry both true).
     let mode = "similarity";
     if (st.playback && st.playback.pure_shuffle) mode = "pure";
     else if (st.playback && st.playback.smart_shuffle) mode = "smart";
@@ -140,32 +170,8 @@ export function applySettingsState(st, els) {
   if (pbImportCues) {
     pbImportCues.checked = !!(st.playback && st.playback.import_external_cues);
   }
-  if (pbBeatSyncFx) {
-    // Default ON when the server hasn't sent the field yet (older deploy).
-    pbBeatSyncFx.checked = !(st.playback && st.playback.beat_sync_fx === false);
-  }
-
-  // One-shot library-size sanity check -- warn the user when the
-  // configured no_repeat_window exceeds the library size, since that
-  // forces repeats sooner than the config implies.  Fired once per
-  // session so chatty WS pushes do not spam.
-  if (!_libraryWarned && st.playback &&
-      typeof st.playback.no_repeat_window === "number" &&
-      typeof st.playback.library_size === "number" &&
-      st.playback.library_size > 0) {
-    _libraryWarned = true;
-    dbg("library_size =", st.playback.library_size,
-      "| no_repeat_window =", st.playback.no_repeat_window);
-    if (st.playback.library_size <= st.playback.no_repeat_window) {
-      console.warn("[autodj] Library has", st.playback.library_size,
-        "tracks but no_repeat_window is", st.playback.no_repeat_window,
-        "-- repeats will start once you reach the library size. " +
-        "Lower playback.no_repeat_window in config.toml to silence.");
-    }
-  }
-  if (pbKeySyncFx) {
-    pbKeySyncFx.checked = !(st.playback && st.playback.key_sync_fx === false);
-  }
+  if (pbBeatSyncFx) pbBeatSyncFx.checked = !!(st.playback && st.playback.beat_sync_fx);
+  if (pbKeySyncFx) pbKeySyncFx.checked = !!(st.playback && st.playback.key_sync_fx);
   if (pbBeatmatchSkip) {
     pbBeatmatchSkip.checked = !!(st.playback && st.playback.beatmatch_on_skip === true);
   }
@@ -181,8 +187,7 @@ export function applySettingsState(st, els) {
     pbCrossfade.value = st.playback.crossfade_seconds;
   }
   if (pbFadeIn && st.playback && document.activeElement !== pbFadeIn) {
-    pbFadeIn.value = typeof st.playback.fade_in_seconds === "number"
-      ? st.playback.fade_in_seconds : 3;
+    pbFadeIn.value = st.playback.fade_in_seconds;
   }
   if (keyNotation && st.playback && st.playback.key_notation &&
       document.activeElement !== keyNotation) {
@@ -200,11 +205,15 @@ export function applySettingsState(st, els) {
   // One concept, one answer: the checkbox tracks the same runtime flag
   // the Now Playing Discovery button toggles, so the two controls can no
   // longer disagree.
-  const discOn = st.discovery_every != null && st.discovery_enabled !== false;
+  const discOn = st.discovery_every != null && Boolean(st.discovery_enabled);
   discEnabled.checked = discOn;
   if (document.activeElement !== discEvery && discOn) {
     discEvery.value = st.discovery_every;
   }
   discEvery.disabled = !discOn;
+  // A focused control may hold a change still being saved.
+  for (const control of Object.values(els)) {
+    if (control && control !== document.activeElement) confirmValue(control);
+  }
   applyShowWhen();
 }

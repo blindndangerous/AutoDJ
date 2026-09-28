@@ -13,7 +13,7 @@ function installAudioDom() {
     <input id="vol" type="range" value="100">
     <button id="btn-pause"></button>
     <img id="cover-art">
-    <div id="now-playing-announce"></div>
+    <div id="now-playing-title"></div>
     <audio id="browser-player"></audio>
     <audio id="browser-player-b"></audio>
   `;

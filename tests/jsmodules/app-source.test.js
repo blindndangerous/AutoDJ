@@ -91,6 +91,7 @@ async function setupApp({
   vi.doMock(moduleMocks[0], () => ({
     applyLibraryJobState: vi.fn(),
     installLibraryJobs: vi.fn(),
+    libraryJobStatusText: vi.fn(),
   }));
   vi.doMock(moduleMocks[1], () => ({
     bumpLinerTrackCount,
@@ -241,8 +242,8 @@ describe("durable playback semantics", () => {
     expect(metadata.textContent).toBe(
       "Album Night Drive · BPM 128 · Key 8A · Energy 0.70",
     );
-    expect(cueSummary.textContent).toBe("1 cue point, drop at 30 seconds");
-    expect(cueDetails.textContent).toBe("1 cue point, drop at 30 seconds");
+    expect(cueSummary.textContent).toBe("1 cue point, drop at 0:30");
+    expect(cueDetails.textContent).toBe("1 cue point, drop at 0:30");
     let metadataWrites = 0;
     let cueWrites = 0;
     let cueDetailWrites = 0;
@@ -304,7 +305,7 @@ describe("durable playback semantics", () => {
     const metadata = document.querySelector("#now-playing-meta");
     expect(cueSummary).not.toBeNull();
     expect(cueDetails).not.toBeNull();
-    expect(cueSummary.textContent).toContain("drop at 10 seconds");
+    expect(cueSummary.textContent).toContain("drop at 0:10");
 
     webSocket.onmessage({ data: JSON.stringify({
       browser_playback: false,
@@ -925,20 +926,62 @@ describe("app request behavior", () => {
   it("announces a track change once, key included, with Up Next silent", async () => {
     const { webSocket } = await setupApp();
     webSocket.onmessage({ data: JSON.stringify({
-      current_track: { path: "a.mp3", artist: "Artist", title: "Song", bpm: 128, key_label: "8A" },
+      current_track: {
+        path: "a.mp3", artist: "Artist", title: "Song", bpm: 128,
+        key_label: "F#m", key_spoken: "F sharp minor",
+      },
       next_track: { path: "b.mp3", artist: "Other", title: "Next" },
       queue: [], eq: {}, volume: 1,
     }) });
 
-    const title = document.querySelector("#now-playing-announce");
-    expect(title.getAttribute("aria-live")).toBe("polite");
-    expect(title.textContent).toBe("Artist — Song, 128 BPM, key 8A");
-    expect(title.querySelector(".visually-hidden").textContent).toBe(", key 8A");
+    const title = document.querySelector("#now-playing-title");
+    expect(title.closest("[aria-live]")).toBeNull();
+    expect(title.textContent).toBe("Artist — Song, 128 BPM");
+    const region = document.querySelector("#track-announce");
+    expect(region.parentElement).toBe(document.body);
+    expect(region.textContent).toBe("Artist — Song, 128 BPM, key F sharp minor");
     const upNext = document.querySelector("#next-track-text");
     expect(upNext.textContent).toBe("Other — Next");
     expect(upNext.hasAttribute("aria-live")).toBe(false);
     expect(upNext.closest("[aria-live]")).toBeNull();
     expect(document.querySelector("#badges-announce")).toBeNull();
+  });
+
+  it("speaks a track change on other tabs only when Settings asks for it", async () => {
+    const { webSocket } = await setupApp();
+    const region = document.querySelector("#track-announce");
+    const optIn = document.querySelector("#announce-all-tabs");
+    const push = (path) => webSocket.onmessage({ data: JSON.stringify({
+      current_track: { path, artist: "Artist", title: path },
+      queue: [], eq: {}, volume: 1,
+    }) });
+    document.querySelector("#panel-now").hidden = true;
+
+    expect(optIn.checked).toBe(false);
+    push("one.mp3");
+    expect(region.textContent).not.toContain("one.mp3");
+
+    optIn.checked = true;
+    optIn.dispatchEvent(new Event("change"));
+    push("two.mp3");
+    expect(region.textContent).toBe("Artist — two.mp3");
+  });
+
+  it("leaves focus where a skip or mute key found it, and says the mute state", async () => {
+    await setupApp({
+      initialState: { current_track: { path: "a.mp3", title: "Song" } },
+      onRequest: (url) => url === "/api/mute"
+        ? jsonResponse({ muted: true })
+        : jsonResponse({ ok: true }),
+    });
+    const eq = document.querySelector("#eq-low");
+    eq.focus();
+
+    document.querySelector("#btn-skip").click();
+    document.querySelector("#btn-mute").click();
+    await vi.waitFor(() => expect(document.querySelector("#sr-status").textContent)
+      .toBe("Muted"));
+    expect(document.activeElement).toBe(eq);
   });
 
   it("speaks volume once: from the slider when focused, the region otherwise", async () => {
@@ -1212,7 +1255,7 @@ describe("app request behavior", () => {
     expect(resetTrackCaches).toHaveBeenCalledOnce();
     expect(webSocket.close).toHaveBeenCalledOnce();
     expect(document.querySelector("#history-list").children).toHaveLength(0);
-    expect(document.querySelector("#now-playing-announce").textContent).not.toContain("Current");
+    expect(document.querySelector("#now-playing-title").textContent).not.toContain("Current");
     expect(document.querySelector("#now-playing-meta").textContent).toBe("");
     const cueSummary = document.querySelector("#cue-summary");
     expect(cueSummary).not.toBeNull();
@@ -1271,7 +1314,7 @@ describe("app request behavior", () => {
     }));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(document.querySelector("#now-playing-announce").textContent)
+    expect(document.querySelector("#now-playing-title").textContent)
       .not.toContain("Late secret");
     expect(updateMediaSession).toHaveBeenLastCalledWith({ current_track: null });
   });
@@ -1314,9 +1357,9 @@ describe("app request behavior", () => {
     }));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(document.querySelector("#now-playing-announce").textContent)
+    expect(document.querySelector("#now-playing-title").textContent)
       .toContain("Track C");
-    expect(document.querySelector("#now-playing-announce").textContent)
+    expect(document.querySelector("#now-playing-title").textContent)
       .not.toContain("Late Track B");
     webSocket.onmessage({ data: JSON.stringify(stateC) });
     expect(getLinerTrackCountForTest()).toBe(1);
@@ -1354,7 +1397,7 @@ describe("app request behavior", () => {
 
     document.querySelector("#btn-shuffle").click();
     await vi.waitFor(() => expect(document.querySelector(
-      "#now-playing-announce",
+      "#now-playing-title",
     ).textContent).toContain("Track B"));
 
     expect(getLinerTrackCountForTest()).toBe(1);
@@ -1416,7 +1459,7 @@ describe("stream mode", () => {
       .toBe("Nothing playing. The station starts when someone listens.");
     expect(idleLine.hasAttribute("aria-live")).toBe(false);
     // Emptied, which is not spoken; "Loading…" must not linger.
-    expect(document.getElementById("now-playing-announce").textContent).toBe("");
+    expect(document.getElementById("now-playing-title").textContent).toBe("");
   });
 
   it("does not speak the title region alongside Set stopped", async () => {
@@ -1424,7 +1467,7 @@ describe("stream mode", () => {
       initialState: streamState,
       onRequest: () => lyricsFor("a.mp3"),
     });
-    const title = document.getElementById("now-playing-announce");
+    const title = document.getElementById("now-playing-title");
     const idleLine = document.getElementById("now-playing-idle");
     expect(title.textContent).toContain("Artist");
     expect(idleLine.hidden).toBe(true);
@@ -1891,7 +1934,7 @@ describe("stream mode", () => {
       quality.value = "128";
       quality.dispatchEvent(new Event("change"));
       await vi.waitFor(() => expect(document.getElementById("settings-status").textContent)
-        .toBe("Could not save: stream encoder failed"));
+        .toBe("Could not save Quality; it is still 192 kbps. stream encoder failed"));
       await vi.waitFor(() => expect(quality.value).toBe("192"));
     });
   });

@@ -33,6 +33,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Shift+L in the web page speaks the current lyric line once, on request. During an
   instrumental break it says "Instrumental" and the next line to be sung; a track without lyrics
   says "No lyrics for this track." Lyrics are still never read aloud on their own.
+- New status keys in the web page, each spoken once on request from any tab: Shift+E says the
+  elapsed and total time, Shift+V the volume and whether it is muted, Shift+Q how many tracks
+  are queued and the first one, and Shift+J the library job status with its latest log line.
+- Settings, Announcements, "Announce track changes on every tab". Off by default, which keeps
+  today's behaviour of speaking a new track only while Now Playing is showing. Saved in this
+  browser only.
+- The keyboard shortcuts list and the README now say that NVDA+F2 passes the next key through
+  to the page in browse mode.
 
 ### Changed
 
@@ -63,6 +71,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The web page no longer reads timed lyric lines aloud as they play. Screen reader users can
   read them on demand in the Lyrics card, where the line playing now is marked as current. The
   automatic reading only worked with the card open, which it is not by default.
+- Web page shortcuts other than Space and the Up and Down arrows now work from every tab, so n,
+  k, m, s, comma and period no longer need Now Playing to be showing. Space and the arrows still
+  act only on Now Playing, where they do not scroll the page.
+- `POST /api/play-next` and `POST /api/queue/add` answer 404 with "That track is no longer in
+  the library." when the path is not in the index, instead of 200 with `"ok": false`.
+- Request failures in the web page are said in plain sentences, such as "The AutoDJ server is
+  not reachable.", instead of "Failed to fetch", a request address or a bare HTTP status.
+- Cue points are read as minutes and seconds ("drop at 1:35"), the way the seek slider says
+  the position, instead of a count of seconds.
+- The web page no longer fills in settings the server did not send with guesses meant for older
+  servers, and no longer writes a browser console warning when the no-repeat window is bigger
+  than the library. The server log already reports that.
 
 ### Removed
 
@@ -136,6 +156,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - In stream mode with `--server-audio`, the page's volume slider and Mute now also set the
   volume and mute of the machine's own speakers. Before, they changed only the page's own
   listening, and the speakers kept whatever volume the server started with.
+- A new track was never spoken while the Queue, History, Settings or Library tools tab was
+  showing, because the announcement lived inside the hidden Now Playing tab. It now comes from
+  the page itself (see Settings, Announcements).
+- The m, comma and period keys, and Space or k in stream mode, now say what they did ("Muted",
+  "1:36 of 3:20", "Listening") when focus is not on the control they act on.
+- Skip no longer moves focus to the Skip button after every skip, and a failed Play, Shuffle,
+  Mute or Discovery no longer pulls focus to its button. Pressing n or m while on the seek
+  slider, an EQ slider or the lyrics now leaves focus there.
+- With Why this track open, a track change no longer reads the whole reasons list after the
+  title. Pressing Reset EQ twice in a row now confirms both presses.
+- The track-change announcement and Shift+K say the key in words, such as "F sharp minor",
+  instead of a label like "F#m" that NVDA reads as "F number m".
+- The library job clock can be read again, and a job that fails says why, taken from the last
+  line it printed, instead of only its exit code.
+- NVDA no longer calls the queue and search result lists "clickable".
+- A search result's Play now failure is no longer reported as "Could not update queue".
+- A setting that fails to save goes back at once and says so, for example "Could not save
+  Beatmatch; it is still on.", instead of flipping back silently a second later. The Preset and
+  Harmonic mixing lists no longer reset while they have focus.
+- The pairing dialog's instructions are read once instead of twice, and when a paired browser
+  is signed out the dialog says so.
+- The Play, Skip and Mute buttons no longer carry a tooltip that NVDA read as a description
+  repeating the button name. Skip's said "the next sonically similar track", which was wrong
+  with a queue or in random mode.
+- The section tabs are now inside a navigation landmark named Sections.
 
 ## [0.17.0] - 2026-09-26
 

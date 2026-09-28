@@ -107,9 +107,11 @@ export function installQueueButtons(els) {
   if (!queueList) return;
   let mutationPending = false;
 
-  queueList.addEventListener("click", async (e) => {
-    const btn = e.target.closest(".queue-btn");
-    if (!btn || btn.disabled || mutationPending) return;
+  // Delegated from the document, not the <ol>: a click listener on the
+  // list made NVDA call the whole list "clickable".
+  queueList.ownerDocument.addEventListener("click", async (e) => {
+    const btn = e.target.closest?.(".queue-btn");
+    if (!btn || !queueList.contains(btn) || btn.disabled || mutationPending) return;
     const epoch = captureAuthenticatedRequestEpoch();
     const action = btn.dataset.action;
     const path   = btn.dataset.path;

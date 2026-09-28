@@ -11,7 +11,7 @@
 // that previously inlined three direct assignments.
 
 import { dbg } from "./dom-helpers.js";
-import { announceStatus, clearLiveRegionLater } from "./live-region.js";
+import { announceStatus } from "./live-region.js";
 import {
   captureAuthenticatedRequestEpoch,
   isAuthenticatedRequestCurrent,
@@ -80,7 +80,7 @@ export function applyEqState(eq) {
 
 let eqDebounceTimer = null;
 // Engine failures go to the shared status region, never into
-// #now-playing-announce: that node is the visible track title, so writing
+// #now-playing-title: that node is the visible track title, so writing
 // an error there replaced the song name on screen and bypassed the
 // visible status line.  `force` is for failures of something the user
 // just did, which must be reported again if it fails again.
@@ -90,7 +90,7 @@ function announceEngineError(message, { force = false } = {}) {
 }
 
 function announceRequestError(errorValue) {
-  announceEngineError(`Request failed: ${errorValue.message || errorValue}`);
+  announceEngineError(errorValue.message || String(errorValue));
 }
 
 export function postEq() {
@@ -123,8 +123,8 @@ btnEqReset.addEventListener("click", () => {
     sp.textContent = "Unity";
   }
   postEq();
-  eqAnnounce.textContent = "EQ reset to unity.";
-  clearLiveRegionLater(eqAnnounce);
+  // Forced: a second Reset within the dwell must be heard again.
+  announceStatus(eqAnnounce, "EQ reset to unity.", { dwellMs: 3000, force: true, mirror: false });
   // Per a11y review, focus stays on Reset button.
 });
 

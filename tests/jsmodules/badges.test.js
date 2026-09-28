@@ -46,14 +46,16 @@ describe("persistent playback metadata", () => {
 describe("track-change details", () => {
   it("speaks BPM, key and beatmatch once, as the tail of the title", () => {
     expect(badges.trackChangeDetails({
-      current_track: { path: "a.flac", bpm: 127.6, key_label: "8A" },
+      current_track: {
+        path: "a.flac", bpm: 127.6, key_label: "F#m", key_spoken: "F sharp minor",
+      },
       beatmatch_ratio: 1.02,
-    })).toBe(", 128 BPM, key 8A, beatmatched 1.02 times");
+    })).toBe(", 128 BPM, key F sharp minor, beatmatched 1.02 times");
   });
 
   it("omits unknown key, missing BPM and a unity beatmatch", () => {
     expect(badges.trackChangeDetails({
-      current_track: { path: "a.flac", key_label: " -- " },
+      current_track: { path: "a.flac", key_label: "--", key_spoken: "" },
       beatmatch_ratio: 1,
     })).toBe("");
     expect(badges.trackChangeDetails({ current_track: null })).toBe("");
