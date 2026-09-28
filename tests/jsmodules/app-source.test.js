@@ -345,7 +345,7 @@ describe("app request behavior", () => {
         : jsonResponse({ ok: true }),
     });
     const progress = document.querySelector("#progress-track");
-    progress.getBoundingClientRect = () => ({ left: 0, width: 100 });
+    progress.getBoundingClientRect = () => ({ bottom: 20, left: 0, right: 100, top: 0, width: 100 });
     const down = new Event("pointerdown", { bubbles: true, cancelable: true });
     Object.defineProperties(down, {
       button: { value: 0 },
@@ -380,12 +380,13 @@ describe("app request behavior", () => {
       onRequest: () => jsonResponse({ ok: true }),
     });
     const progress = document.querySelector("#progress-track");
-    progress.getBoundingClientRect = () => ({ left: 0, width: 100 });
+    progress.getBoundingClientRect = () => ({ bottom: 20, left: 0, right: 100, top: 0, width: 100 });
     const dispatchPointer = (type, clientX) => {
       const event = new Event(type, { bubbles: true, cancelable: true });
       Object.defineProperties(event, {
         button: { value: 0 },
         clientX: { value: clientX },
+        clientY: { value: 10 },
         isPrimary: { value: true },
         pointerId: { value: 24 },
       });
@@ -435,12 +436,13 @@ describe("app request behavior", () => {
         : jsonResponse({ ok: true }),
     });
     const progress = document.querySelector("#progress-track");
-    progress.getBoundingClientRect = () => ({ left: 0, width: 100 });
+    progress.getBoundingClientRect = () => ({ bottom: 20, left: 0, right: 100, top: 0, width: 100 });
     const dispatchPointer = (type, clientX) => {
       const event = new Event(type, { bubbles: true, cancelable: true });
       Object.defineProperties(event, {
         button: { value: 0 },
         clientX: { value: clientX },
+        clientY: { value: 10 },
         isPrimary: { value: true },
         pointerId: { value: 29 },
       });
@@ -1205,12 +1207,13 @@ describe("app request behavior", () => {
         : jsonResponse({ ok: true }),
     });
     const seek = document.querySelector("#progress-track");
-    seek.getBoundingClientRect = () => ({ left: 0, width: 100 });
+    seek.getBoundingClientRect = () => ({ bottom: 20, left: 0, right: 100, top: 0, width: 100 });
     const dispatchPointer = (type, clientX) => {
       const event = new Event(type, { bubbles: true, cancelable: true });
       Object.defineProperties(event, {
         button: { value: 0 },
         clientX: { value: clientX },
+        clientY: { value: 10 },
         isPrimary: { value: true },
         pointerId: { value: 55 },
       });
@@ -1419,12 +1422,13 @@ describe("app request behavior", () => {
     expect(document.querySelector("#preset-select").textContent).toContain("Secret preset");
 
     const progress = document.querySelector("#progress-track");
-    progress.getBoundingClientRect = () => ({ left: 0, width: 100 });
+    progress.getBoundingClientRect = () => ({ bottom: 20, left: 0, right: 100, top: 0, width: 100 });
     const dispatchPointer = (type, clientX) => {
       const event = new Event(type, { bubbles: true, cancelable: true });
       Object.defineProperties(event, {
         button: { value: 0 },
         clientX: { value: clientX },
+        clientY: { value: 10 },
         isPrimary: { value: true },
         pointerId: { value: 61 },
       });
