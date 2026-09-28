@@ -5,7 +5,7 @@
 // the audio-engine module and is injected via deps.playLiner so this
 // module stays free of AudioContext + decks state.
 
-import { dbg } from "./dom-helpers.js";
+import { dbg, focusIfLost } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 import { applyShowWhen } from "./show-when.js";
 import {
@@ -141,34 +141,15 @@ async function _deleteLiner(els, name, control) {
     ));
     if (!isAuthenticatedRequestCurrent(epoch)) return;
     _setStatus(els, `Deleted ${name}`);
-    const refreshed = await _refreshLibrary(els);
+    await _refreshLibrary(els);
     if (!isAuthenticatedRequestCurrent(epoch)) return;
-    if (!refreshed) {
-      const connected = (candidate) => candidate?.isConnected && !candidate.disabled;
-      const next = controls.slice(deletedIndex + 1).find(connected);
-      const previous = controls.slice(0, deletedIndex).reverse().find(connected);
-      const stableTarget = connected(control)
-        ? control
-        : next || previous || (connected(els.lnUploadSubmit) ? els.lnUploadSubmit : null);
-      if (stableTarget) {
-        stableTarget.focus();
-      } else if (els.lnFileList) {
-        els.lnFileList.setAttribute("tabindex", "-1");
-        els.lnFileList.focus();
-      }
-      return;
-    }
     const remaining = els.lnFileList
       ? Array.from(els.lnFileList.querySelectorAll("button"))
       : [];
-    const focusTarget = remaining.length
-      ? remaining[Math.min(deletedIndex, remaining.length - 1)]
-      : els.lnUploadSubmit;
-    focusTarget?.focus();
+    focusIfLost(remaining[Math.min(deletedIndex, remaining.length - 1)] || els.lnUploadSubmit);
   } catch (err) {
     if (!isAuthenticatedRequestCurrent(epoch)) return;
     _setStatus(els, `Delete failed: ${err.message}`);
-    control?.focus();
   }
 }
 

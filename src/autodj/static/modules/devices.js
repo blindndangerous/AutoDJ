@@ -12,6 +12,7 @@ import {
   requestJson,
 } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
+import { focusIfLost } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 
 export const SIGNED_OUT_REASON =
@@ -129,7 +130,7 @@ export function installAccess(els, { onSignedOut }) {
     await load();
     if (!isAuthenticatedRequestCurrent(epoch)) return;
     const remaining = Array.from(list.querySelectorAll("button[data-device-id]"));
-    (remaining[Math.min(index, remaining.length - 1)] || refresh).focus();
+    focusIfLost(remaining[Math.min(index, remaining.length - 1)] || refresh);
     say(`Revoked ${device.name}.`);
   }
 

@@ -160,8 +160,6 @@ export function installSearch({
         : btn.dataset.next === "true" ? `Could not play ${name} next.`
           : `Could not add ${name} to the queue.`;
       announce(`${failed} ${errorValue.message}`, "error");
-    } finally {
-      if (isAuthenticatedRequestCurrent(epoch)) btn.focus();
     }
   });
 }

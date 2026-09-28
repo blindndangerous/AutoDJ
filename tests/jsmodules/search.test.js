@@ -73,7 +73,7 @@ describe("search requests", () => {
     vi.unstubAllGlobals();
   });
 
-  it("announces a failed mutation and restores and refocuses its control", async () => {
+  it("announces a failed mutation, restores its control and leaves focus alone", async () => {
     vi.stubGlobal("fetch", vi.fn()
       .mockResolvedValueOnce(jsonResponse({
         results: [{ path: "song.mp3", title: "Song" }],
@@ -85,12 +85,13 @@ describe("search requests", () => {
     await vi.waitFor(() => expect(els.searchResults.querySelector(".result-btn"))
       .not.toBeNull());
     const mutation = els.searchResults.querySelector(".result-btn");
+    els.searchInput.focus();
     mutation.click();
 
     await vi.waitFor(() => expect(els.queueAnnounce.textContent)
       .toContain("Queue unavailable"));
     expect(mutation.disabled).toBe(false);
-    expect(document.activeElement).toBe(mutation);
+    expect(document.activeElement).toBe(els.searchInput);
     vi.unstubAllGlobals();
   });
 });

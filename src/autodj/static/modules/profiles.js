@@ -12,6 +12,7 @@ import {
   requestJson,
 } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
+import { focusIfLost } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 
 // profiles.validate_name on the server.
@@ -69,7 +70,7 @@ export function installProfiles(els, { getSettings }) {
       apply.type = "button";
       apply.textContent = "Apply";
       apply.setAttribute("aria-label", `Apply profile ${name}`);
-      apply.addEventListener("click", () => void applyProfile(name, apply));
+      apply.addEventListener("click", () => void applyProfile(name));
       const remove = doc.createElement("button");
       remove.type = "button";
       remove.textContent = "Delete";
@@ -137,7 +138,7 @@ export function installProfiles(els, { getSettings }) {
     }
   }
 
-  async function applyProfile(name, button) {
+  async function applyProfile(name) {
     const epoch = captureAuthenticatedRequestEpoch();
     try {
       await requestJson(`/api/profiles/${encodeURIComponent(name)}/apply`, { method: "POST" });
@@ -146,8 +147,6 @@ export function installProfiles(els, { getSettings }) {
     } catch (errorValue) {
       if (!isAuthenticatedRequestCurrent(epoch)) return;
       say(`Could not apply profile ${name}: ${errorValue.message}`, "error");
-    } finally {
-      if (isAuthenticatedRequestCurrent(epoch) && button.isConnected) button.focus();
     }
   }
 
@@ -167,8 +166,7 @@ export function installProfiles(els, { getSettings }) {
       await load();
       if (!isAuthenticatedRequestCurrent(epoch)) return;
       const remaining = Array.from(list.querySelectorAll("button[data-profile]"));
-      const target = remaining[Math.min(index, remaining.length - 1)] || nameInput;
-      target.focus();
+      focusIfLost(remaining[Math.min(index, remaining.length - 1)] || nameInput);
       say(`Deleted profile ${name}.`);
     } catch (errorValue) {
       if (!isAuthenticatedRequestCurrent(epoch)) return;

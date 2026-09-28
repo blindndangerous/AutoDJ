@@ -116,3 +116,14 @@ export function isTypingTarget(el) {
   }
   return false;
 }
+
+// Re-rendering a list removes the button that had focus, which drops focus
+// to <body>.  Put it on *target* in that case only; focus the user has moved
+// somewhere else while the request ran stays where it is.
+export function focusIfLost(target) {
+  const doc = target?.ownerDocument;
+  if (!doc) return;
+  const active = doc.activeElement;
+  if (active && active !== doc.body) return;
+  target.focus();
+}

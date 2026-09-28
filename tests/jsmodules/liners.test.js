@@ -231,8 +231,8 @@ describe("liner file controls", () => {
     expect(list.querySelector(".no-results")).not.toBeNull();
   });
 
-  it("reenables and refocuses the original Delete button after failure", async () => {
-    document.body.innerHTML = '<p id="status"></p><ul id="files"></ul>';
+  it("re-enables Delete after a failure and leaves focus where the user put it", async () => {
+    document.body.innerHTML = '<input id="elsewhere"><p id="status"></p><ul id="files"></ul>';
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce(new globalThis.Response(JSON.stringify({
         config: {}, files: ["first.mp3"], folder: "liners",
@@ -253,13 +253,14 @@ describe("liner file controls", () => {
     });
     await vi.waitFor(() => expect(list.querySelector("button")).not.toBeNull());
     const originalButton = list.querySelector("button");
-    originalButton.focus();
+    const elsewhere = document.querySelector("#elsewhere");
+    elsewhere.focus();
 
     originalButton.click();
     await vi.waitFor(() => expect(status.textContent).toContain("disk unavailable"));
 
     expect(originalButton.disabled).toBe(false);
-    expect(document.activeElement).toBe(originalButton);
+    expect(document.activeElement).toBe(elsewhere);
   });
 
   it("focuses a stable control when inventory refresh fails after deletion", async () => {

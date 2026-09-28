@@ -138,20 +138,46 @@ describe("profiles", () => {
     expect(document.activeElement.getAttribute("aria-label")).toBe("Delete profile Late");
   });
 
-  it("says why a profile could not be applied and keeps focus on Apply", async () => {
+  it("does not pull focus back to the list when the user moved on during a delete", async () => {
+    let names = ["Early", "Late"];
+    let finishDelete;
+    const fetchImpl = vi.fn((url, init = {}) => {
+      if (init.method !== "DELETE") return json({ profiles: names });
+      names = ["Late"];
+      return new Promise((resolve) => {
+        finishDelete = () => resolve(new globalThis.Response("{}", {
+          headers: { "Content-Type": "application/json" },
+        }));
+      });
+    });
+    const { els, answer } = setup(fetchImpl);
+    await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(2));
+
+    els.list.querySelector('[aria-label="Delete profile Early"]').click();
+    await answer("confirm");
+    await vi.waitFor(() => expect(finishDelete).toBeTypeOf("function"));
+    els.nameInput.focus();
+    finishDelete();
+
+    await vi.waitFor(() => expect(els.status.textContent).toBe("Deleted profile Early."));
+    expect(document.activeElement).toBe(els.nameInput);
+  });
+
+  it("says why a profile could not be applied and leaves focus alone", async () => {
     const fetchImpl = vi.fn((url) => (url.endsWith("/apply")
       ? json({ detail: "Profile Late uses a preset that does not exist" }, 400)
       : json({ profiles: ["Late"] })));
     const { els } = setup(fetchImpl);
     await vi.waitFor(() => expect(els.list.querySelectorAll("button")).toHaveLength(2));
     const apply = els.list.querySelector('[aria-label="Apply profile Late"]');
+    els.nameInput.focus();
 
     apply.click();
 
     await vi.waitFor(() => expect(els.status.textContent).toBe(
       "Could not apply profile Late: Profile Late uses a preset that does not exist",
     ));
-    expect(document.activeElement).toBe(apply);
+    expect(document.activeElement).toBe(els.nameInput);
   });
 });
 
