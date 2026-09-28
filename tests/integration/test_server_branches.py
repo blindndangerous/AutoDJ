@@ -14,7 +14,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -1380,74 +1380,9 @@ class TestLinerUploadDelete:
         def _broken_delete(*args, **kwargs):
             raise OSError("locked")
 
-        monkeypatch.setattr(liner_files, "_delete_relative_file", _broken_delete)
+        monkeypatch.setattr(liner_files, "delete_liner_file", _broken_delete)
         resp = client.delete("/api/liners/file/doomed.wav")
         assert resp.status_code == 500
-
-    @pytest.mark.parametrize(
-        ("error_name", "status"),
-        [
-            ("InvalidLinerName", 400),
-            ("LinerStorageUnsupportedError", 503),
-        ],
-    )
-    def test_upload_maps_storage_boundary_errors(
-        self,
-        error_name: str,
-        status: int,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        from autodj import liner_files
-
-        player = _make_player_mock()
-        player._cfg.playback.liners_folder = str(tmp_path)
-        client = TestClient(create_app(PlayerBridge(player=player, sim=_make_sim_mock())))
-        error_type = getattr(liner_files, error_name)
-        monkeypatch.setattr(
-            liner_files,
-            "store_liner_upload",
-            AsyncMock(side_effect=error_type("storage rejected")),
-        )
-
-        response = client.post(
-            "/api/liners/upload",
-            files={"file": ("clip.wav", b"data", "audio/wav")},
-        )
-
-        assert response.status_code == status
-
-    def test_delete_maps_unsupported_storage(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from autodj import liner_files
-
-        player = _make_player_mock()
-        player._cfg.playback.liners_folder = str(tmp_path)
-        client = TestClient(create_app(PlayerBridge(player=player, sim=_make_sim_mock())))
-        monkeypatch.setattr(
-            liner_files,
-            "delete_liner_file",
-            MagicMock(side_effect=liner_files.LinerStorageUnsupportedError("unsupported")),
-        )
-
-        assert client.delete("/api/liners/file/clip.wav").status_code == 503
-
-    def test_open_maps_unsupported_storage(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from autodj import liner_files
-
-        player = _make_player_mock()
-        player._cfg.playback.liners_folder = str(tmp_path)
-        client = TestClient(create_app(PlayerBridge(player=player, sim=_make_sim_mock())))
-        monkeypatch.setattr(
-            liner_files,
-            "open_liner_file",
-            MagicMock(side_effect=liner_files.LinerStorageUnsupportedError("unsupported")),
-        )
-
-        assert client.get("/api/liners/file/clip.wav").status_code == 503
 
     def test_open_rejects_malformed_range_and_closes_file(self, tmp_path: Path) -> None:
         player = _make_player_mock()

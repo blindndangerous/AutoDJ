@@ -87,7 +87,15 @@ the version number; the track count, commit and build time need a session. Unsaf
 endpoints use indexed or validated plain-file allowlists rather than arbitrary filesystem paths.
 The liner fetch and delete endpoints accept only one plain filename with a liner audio extension
 (`.mp3`, `.wav`, `.ogg`, `.m4a`, `.flac`, or `.aac`), so they cannot read or remove configuration,
-databases, or other non-audio files even when those share the liner root.
+databases, or other non-audio files even when those share the liner root. Upload names get the
+same check and may be at most 200 UTF-8 bytes. An upload is written to a hidden
+`.<name>.<random>.part` file in the liner folder, flushed to disk, then renamed over the final
+name; it is refused with 409 when that name exists unless the request asks to replace it. The
+upload body is capped by `[server] liner_upload_max_mib` before any route reads it.
+These checks stop a browser request from reaching outside the liner folder. They do not defend
+the folder against a local process or network-share user who can already write to it: such a
+user can change the liners directly, so AutoDJ uses plain file operations there and does not
+require the folder to be private (a group-writable NAS share works).
 The liner *root directory* comes only from configuration. `/api/playback-settings` rejects
 `liners_folder`, like any other unknown field, with 422 before applying anything, and
 `liners_folder` is not part of the `PlaybackState` schema that `PERSISTED_PLAYBACK_FIELDS`

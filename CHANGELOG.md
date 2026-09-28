@@ -22,6 +22,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Deleting a voice liner asks in the page's own confirmation dialog, like deleting a profile,
   instead of the browser's pop-up. After the delete, focus goes to the next liner's Delete button,
   or to Upload when no liner is left.
+- Voice liner uploads and deletes now work in a liners folder that other users or a group can
+  write to, such as a shared NAS folder; they used to be refused. A liner file name can be at most
+  200 bytes long.
 
 ### Removed
 

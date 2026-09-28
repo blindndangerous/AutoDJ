@@ -42,6 +42,9 @@ Out of scope:
   TLS itself with `--ssl-certfile` and `--ssl-keyfile`; that end-to-end TLS setup on a private LAN
   is in scope.
 - Attacks that already control filesystem roots trusted through local operating-system ACLs.
+  For example, a local process or share user who can write to the liner folder, index folder or
+  music library can already change what AutoDJ reads and writes there; AutoDJ does not race-proof
+  its file operations against that user.
 
 Operational security boundaries and recovery procedures are documented in
 [THREAT_MODEL.md](THREAT_MODEL.md) and [docs/operations.md](docs/operations.md).

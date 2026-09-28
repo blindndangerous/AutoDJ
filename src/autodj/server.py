@@ -1766,7 +1766,6 @@ def create_app(
         from autodj.liner_files import (
             InvalidLinerName,
             LinerConflictError,
-            LinerStorageUnsupportedError,
             LinerTooLargeError,
             store_liner_upload,
         )
@@ -1787,18 +1786,12 @@ def create_app(
             raise HTTPException(status_code=409, detail="Liner already exists") from exc
         except LinerTooLargeError as exc:
             raise HTTPException(status_code=413, detail=str(exc)) from exc
-        except LinerStorageUnsupportedError as exc:
-            raise HTTPException(status_code=503, detail="Liner storage is unavailable") from exc
         return {"filename": target.name, "size": size}
 
     @app.delete("/api/liners/file/{name}")
     async def api_liner_delete(name: str) -> dict[str, str]:
         """Remove one validated plain liner file."""
-        from autodj.liner_files import (
-            InvalidLinerName,
-            LinerStorageUnsupportedError,
-            delete_liner_file,
-        )
+        from autodj.liner_files import InvalidLinerName, delete_liner_file
 
         try:
             await asyncio.to_thread(delete_liner_file, _resolve_liner_folder(), name)
@@ -1806,8 +1799,6 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail="Liner not found") from exc
-        except LinerStorageUnsupportedError as exc:
-            raise HTTPException(status_code=503, detail="Liner storage is unavailable") from exc
         except OSError as exc:
             raise HTTPException(status_code=500, detail="Unable to delete liner") from exc
         return {"deleted": name}
@@ -1815,11 +1806,7 @@ def create_app(
     @app.get("/api/liners/file/{name}")
     async def api_liner_file(name: str) -> FileResponse:
         """Serve one validated plain liner file."""
-        from autodj.liner_files import (
-            InvalidLinerName,
-            LinerStorageUnsupportedError,
-            open_liner_file,
-        )
+        from autodj.liner_files import InvalidLinerName, open_liner_file
 
         folder = _resolve_liner_folder()
         try:
@@ -1828,8 +1815,6 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail="Liner not found") from exc
-        except LinerStorageUnsupportedError as exc:
-            raise HTTPException(status_code=503, detail="Liner storage is unavailable") from exc
         await asyncio.to_thread(opened.file.close)
         return FileResponse(folder / name, stat_result=opened.stat_result)
 
