@@ -1,7 +1,6 @@
 # AutoDJ
 
 [![CI](https://github.com/blindndangerous/AutoDJ/actions/workflows/ci.yml/badge.svg)](https://github.com/blindndangerous/AutoDJ/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/blindndangerous/AutoDJ/graph/badge.svg)](https://codecov.io/gh/blindndangerous/AutoDJ)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 AutoDJ plays music from your own library and chooses the next track using audio similarity, tempo,

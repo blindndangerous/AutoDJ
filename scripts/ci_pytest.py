@@ -66,7 +66,6 @@ def main() -> int:
             "--cov-branch",
             "--cov-fail-under=0",
             f"--cov-report=json:{COVERAGE_JSON}",
-            "--cov-report=xml",
             "--cov-report=term",
             "-n",
             workers,

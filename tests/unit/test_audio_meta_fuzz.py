@@ -1,17 +1,18 @@
-"""Fuzz harnesses for parsers in autodj.audio_meta.
+"""Hypothesis property tests for the LRC sidecar parser.
 
-Goal: find inputs that crash or hang the LRC sidecar parser.  Any
-exception other than the documented ones counts as a fuzz finding.
+Any exception from ``parse_lrc`` counts as a finding.  The example budget
+stays small so the suite runs on every push.
 """
 
 from __future__ import annotations
 
-from hypothesis import given
+from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from autodj.audio_meta import parse_lrc
 
 
+@settings(max_examples=50, database=None)
 @given(text=st.text(max_size=4096))
 def test_parse_lrc_never_crashes_on_arbitrary_text(text: str) -> None:
     """``parse_lrc`` must return a list (possibly empty) for any input."""
@@ -19,6 +20,7 @@ def test_parse_lrc_never_crashes_on_arbitrary_text(text: str) -> None:
     assert isinstance(out, list)
 
 
+@settings(max_examples=50, database=None)
 @given(
     timestamps=st.lists(
         st.tuples(

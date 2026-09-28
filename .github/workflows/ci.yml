@@ -127,18 +127,11 @@ jobs:
           uv run pip-licenses
           --fail-on="GNU Affero General Public License v3;GNU Affero General Public License v3 or later (AGPLv3+);AGPL-3.0;AGPL-3.0-only;AGPL-3.0-or-later"
 
-      - name: Syft — generate SBOM
-        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
-        with:
-          format: cyclonedx-json
-          output-file: sbom.json
-
   test:
     name: Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
-      id-token: write          # Codecov OIDC upload
     strategy:
       fail-fast: false
       matrix:
@@ -163,15 +156,8 @@ jobs:
       - name: Pytest — test suite
         run: uv run python scripts/ci_pytest.py
 
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v6.0.2
-        with:
-          files: coverage.xml
-          fail_ci_if_error: false
-          use_oidc: true
-
   browser:
-    name: Browser assertions (Chromium)
+    name: Browser assertions (Chromium, Firefox)
     needs: [test, frontend]
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -189,7 +175,7 @@ jobs:
           cache: npm
       - run: uv sync --frozen --all-extras
       - run: npm ci --ignore-scripts
-      - run: npx --no-install playwright install --with-deps chromium
+      - run: npx --no-install playwright install --with-deps chromium firefox
       - name: Start empty-library server
         shell: bash
         run: |
@@ -214,10 +200,10 @@ jobs:
           done
           cat "$RUNNER_TEMP/autodj.log"
           exit 1
-      - name: Run Chromium assertions
+      - name: Run Chromium and Firefox assertions
         run: npm run audit:ci
         env:
-          AUTODJ_BROWSERS: chromium
+          AUTODJ_BROWSERS: chromium,firefox
           AUTODJ_URL: http://127.0.0.1:8080
       - name: Stop empty-library server
         if: always()

@@ -97,7 +97,6 @@ and 0.17.0, exist only as changelog entries.
 - `tests/unit/` — pure unit tests, no audio hardware.
 - `tests/integration/` — pipeline + server tests against mocks.
 - `tests/smoke/` — CLI end-to-end smoke tests.
-- `tests/fuzz/` — Hypothesis property tests; nightly Fuzz workflow only.
 - `tests/jsmodules/` — Vitest unit tests for the web UI ES modules.
 - `tests/playwright/` — cross-browser audits against a running server.
 
