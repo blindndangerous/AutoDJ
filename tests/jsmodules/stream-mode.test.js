@@ -28,7 +28,7 @@ function mediaError(audio, code) {
   Object.defineProperty(audio, "error", { configurable: true, value: { code } });
 }
 
-function setup({ fetchInfo } = {}) {
+function setup({ fetchInfo, beforePlay = vi.fn() } = {}) {
   document.body.innerHTML = `
     <audio id="stream-audio" hidden></audio>
     <button id="btn-listen" type="button" aria-pressed="false" hidden><span aria-hidden="true">🔊</span> Listen here</button>
@@ -47,6 +47,7 @@ function setup({ fetchInfo } = {}) {
     idleNote: document.getElementById("stream-idle-note"),
     srStatus: document.getElementById("sr-status"),
     fetchInfo: info,
+    beforePlay,
   });
   return { mode, audio, button, fetchInfo: info, sr: document.getElementById("sr-status") };
 }
@@ -109,6 +110,23 @@ describe("stream mode", () => {
     expect(button.getAttribute("aria-pressed")).toBe("false");
     expect(button.textContent.trim()).toContain("Listen here");
     expect(mode.isListening()).toBe(false);
+  });
+
+  it("sets the page level before every play, the silent retry included", async () => {
+    const order = [];
+    const beforePlay = vi.fn(() => order.push("level"));
+    const { mode, audio } = setup({ beforePlay });
+    audio.play = vi.fn(() => {
+      order.push("play");
+      return Promise.resolve();
+    });
+    mode.apply({ stream_mode: true, stream_state: "playing" });
+    await mode.toggleListen();
+    audio.dispatchEvent(new Event("playing"));
+    mediaError(audio, 2);
+    audio.dispatchEvent(new Event("error"));
+    await tick();
+    expect(order).toEqual(["level", "play", "level", "play"]);
   });
 
   it("marks the button pressed at once and fetches a fresh link each time", async () => {

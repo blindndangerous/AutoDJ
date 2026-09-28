@@ -322,6 +322,13 @@ export function setVolume(linear) {
   applyVolume();
 }
 
+export function setMuted(muted) {
+  const next = Boolean(muted);
+  if (next === _muted) return;
+  _muted = next;
+  applyVolume();
+}
+
 // Put the volume, or 0 while muted, on the master now, and 0 on the
 // music while paused.  Both sit after the deck gains, so a change never
 // disturbs a crossfade or a liner duck.  Without Web Audio the <audio>
@@ -329,7 +336,7 @@ export function setVolume(linear) {
 function applyVolume() {
   if (!_ctx) {
     if (!(window.AudioContext || window.webkitAudioContext)) {
-      for (const d of decks) d.audio.volume = _volume;
+      for (const d of decks) d.audio.volume = _muted ? 0 : _volume;
     }
     return;
   }

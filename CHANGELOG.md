@@ -382,6 +382,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - In browser playback, the crossfade that starts early when a track ends in silence stopped
   working after the first transition that used an effect. Setting up and removing an effect cut
   the deck off from the level meter that listens for the silence. The meter now stays connected.
+- In stream mode, Listen here could play at full volume while the volume slider showed a low
+  level, until the slider was moved. A page left at 5 % when the server restarted in stream mode
+  played the stream at 100 %, and a page opened in stream mode showed 100 % whatever the server
+  had saved. The page's volume and Mute now reach every sound it plays, the stream included,
+  before it starts and after every change, reconnect or update from the server. A page opened in
+  stream mode starts at the server's saved volume and Mute. The rule that a dropped connection
+  never brings back a louder volume still applies.
 
 ## [0.17.0] - 2026-09-26
 

@@ -57,7 +57,12 @@ function mediaFailureText(audio, hasPlayed) {
   return hasPlayed ? DROPPED_TEXT : NOT_LOADED_TEXT;
 }
 
-export function createStreamMode({ audio, button, idleNote, srStatus, fetchInfo }) {
+// beforePlay puts the page's volume and mute on the element; it runs
+// before every play(), so the stream never starts at the element's
+// default full volume.
+export function createStreamMode({
+  audio, button, idleNote, srStatus, fetchInfo, beforePlay,
+}) {
   let listening = false;
   // Bumped by every start and stop, so a start still waiting on the link
   // lookup can tell that the user has pressed the button again since.
@@ -119,6 +124,7 @@ export function createStreamMode({ audio, button, idleNote, srStatus, fetchInfo 
       const info = await fetchInfo();
       if (mine !== generation) return;
       audio.src = info.path;
+      beforePlay();
       await audio.play();
     } catch (err) {
       if (mine !== generation) return;

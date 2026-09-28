@@ -136,6 +136,8 @@ const streamMode = createStreamMode({
   idleNote: document.getElementById("stream-idle-note"),
   srStatus: document.getElementById("sr-status"),
   fetchInfo: () => requestJson("/api/stream"),
+  // The stream never starts before it has the page's volume and mute.
+  beforePlay: () => applyPageLevel(),
 });
 btnListen.addEventListener("click", () => void streamMode.toggleListen());
 // Settings > Stream.  This page speaks its own "Make new link"
@@ -220,6 +222,11 @@ function clearProtectedSessionData() {
   volSlider.value = volSlider.defaultValue;
   volPct.textContent = `${volSlider.value}%`;
   volSlider.setAttribute("aria-valuetext", `${volSlider.value}%`);
+  // Silent until the next session's first state says otherwise.
+  _pageGain = 0;
+  _pageMuted = false;
+  _pageLevelSet = false;
+  applyPageLevel();
   volAnnounce.textContent = "";
   for (const [slider, value] of [
     [eqLow, eqLowVal], [eqMid, eqMidVal], [eqHigh, eqHighVal],
@@ -533,30 +540,36 @@ function applyState(s) {
   // is actively dragging / arrow-keying so the in-flight POST round-trip
   // can't fight the input.
   // In stream mode the slider and Mute belong to this page's own
-  // listening, so the station's volume and mute are not mirrored.  With
+  // listening, so the station's volume and mute are not mirrored, except
+  // once: a page with no level of its own yet starts from the server's
+  // saved volume and mute, never from the slider's 100 % default.  With
   // --server-audio as well they drive the machine's speakers, and this
   // page's listening follows the server's volume and mute.
   const pageOnlyVolume = inStream && !_lastStreamServerAudio;
-  if (!pageOnlyVolume && Date.now() - _lastUserVolTs > 600) {
+  const takeServerLevel = !pageOnlyVolume || !_pageLevelSet;
+  if (takeServerLevel && Date.now() - _lastUserVolTs > 600) {
     // After the link has dropped, a server volume above the page's own
     // level is held at that level until the listener sets the volume
     // here: a restarted server once pushed 100 % (D15).
-    const gain = _volumeCeiling === null ? s.volume : Math.min(s.volume, _volumeCeiling);
+    // A push without a usable volume counts as silence, never as full.
+    const pushed = Number.isFinite(s.volume) ? Math.min(1, Math.max(0, s.volume)) : 0;
+    const gain = _volumeCeiling === null ? pushed : Math.min(pushed, _volumeCeiling);
     const volInt = _gainToSlider(gain);
     volSlider.value = volInt;
     volPct.textContent = volInt + "%";
     setAttributeIfChanged(volSlider, "aria-valuetext", `${volInt}%`);
-    // The deck engine takes the same volume the slider now shows, so
-    // browser audio never plays louder than the page says.
-    if (inStream) streamAudio.volume = gain;
-    else setVolume(gain);
+    // Every output takes the same volume the slider now shows, so the
+    // page never plays louder than it says.
+    _pageGain = gain;
+    _pageLevelSet = true;
   }
-  if (_lastStreamServerAudio) streamAudio.muted = s.is_muted;
+  if (takeServerLevel) _pageMuted = Boolean(s.is_muted);
+  applyPageLevel();
 
   // Mute is a toggle with a fixed name, so NVDA says "Mute, toggle
   // button, pressed" instead of the contradictory "Unmute, pressed".
   // Only the hidden glyph changes.
-  renderMute(pageOnlyVolume ? streamAudio.muted : s.is_muted);
+  renderMute(_pageMuted);
 
   // Up Next is not a live region: it changes in the same tick as the
   // title, and announcing both read two bare track names back to back.
@@ -1051,7 +1064,7 @@ function applyCamelotWheel(currentCell, harmonicMode) {
 // semantics so closures inside this file see updates without explicit
 // accessors.
 import {
-  setVolume, applyBrowserPlaybackState, startCrossfade, stopAllDecks,
+  setVolume, setMuted, applyBrowserPlaybackState, startCrossfade, stopAllDecks,
   applyEqState, loadCoverArt,
   resetTrackCaches, resetTransitionCaches,
   ensureAudioGraph, unlockAndPlay,
@@ -1249,6 +1262,7 @@ function connectWS() {
       reconnectDelayMs = RECONNECT_BASE_MS;
       setConnStatus("connected", "Live");
       if (recovered) showVisibleStatus("Reconnected.");
+      applyPageLevel();
       setPlaybackStale(false);
     }
   };
@@ -1575,9 +1589,10 @@ btnMute.addEventListener("click", async () => {
   // Stream mode: mute this page's listening only, never the station.
   // With --server-audio as well, the server's mute covers both.
   if (_lastStreamMode && !_lastStreamServerAudio) {
-    streamAudio.muted = !streamAudio.muted;
-    renderMute(streamAudio.muted);
-    sayMuteState(streamAudio.muted);
+    _pageMuted = !_pageMuted;
+    applyPageLevel();
+    renderMute(_pageMuted);
+    sayMuteState(_pageMuted);
     return;
   }
   const epoch = captureAuthenticatedRequestEpoch();
@@ -1593,7 +1608,8 @@ btnMute.addEventListener("click", async () => {
     return;
   }
   if (!isAuthenticatedRequestCurrent(epoch)) return;
-  if (_lastStreamMode) streamAudio.muted = data.muted;
+  _pageMuted = Boolean(data.muted);
+  applyPageLevel();
   renderMute(data.muted);
   sayMuteState(data.muted);
 });
@@ -1673,8 +1689,36 @@ let _volumeCeiling = null;
 
 function holdVolumeCeiling() {
   if (_lastState === null) return;
-  const gain = _sliderToGain(parseInt(volSlider.value, 10) || 0);
-  _volumeCeiling = _volumeCeiling === null ? gain : Math.min(_volumeCeiling, gain);
+  _volumeCeiling = _volumeCeiling === null ? _pageGain : Math.min(_volumeCeiling, _pageGain);
+}
+
+// The page's volume as a linear gain (the fader curve already applied)
+// and its mute.  The volume is 0 until the first state (or a slider
+// move) sets it, so nothing plays at full before the page knows its
+// level.  _pageLevelSet says whether the page has a level of its own.
+let _pageGain = 0;
+let _pageMuted = false;
+let _pageLevelSet = false;
+
+// The one place the page's volume and mute reach its audio outputs:
+// the Web Audio master (both decks, every transition effect and voice
+// liners play through it) and every <audio> or <video> in the page
+// that plays straight to the speakers (the stream's Listen here).  The
+// decks are left alone: their sound reaches the master through Web
+// Audio, where their own volume would apply the level twice.  Both a
+// GainNode's gain and a media element's volume scale the amplitude
+// linearly, so the same fader gain gives the same loudness on each.
+// Runs on every state push, slider move, mute change and reconnect,
+// and before any element starts playing.
+function applyPageLevel() {
+  setVolume(_pageGain);
+  setMuted(_pageMuted);
+  const deckElements = new Set(decks.map((deck) => deck.audio));
+  for (const element of document.querySelectorAll("audio, video")) {
+    if (deckElements.has(element)) continue;
+    if (element.volume !== _pageGain) element.volume = _pageGain;
+    if (element.muted !== _pageMuted) element.muted = _pageMuted;
+  }
 }
 
 volSlider.addEventListener("input", () => {
@@ -1690,8 +1734,9 @@ volSlider.addEventListener("input", () => {
   // Stream mode drives this page's listening, and goes to the server only
   // when --server-audio plays the mix on the machine's speakers too.  The
   // station's listeners never hear the change.
-  if (_lastStreamMode) streamAudio.volume = _sliderToGain(val);
-  else setVolume(_sliderToGain(val));
+  _pageGain = _sliderToGain(val);
+  _pageLevelSet = true;
+  applyPageLevel();
   if (!_lastStreamMode || _lastStreamServerAudio) sendVolume(val);
   // Polite announce for shortcut presses, debounced so holding the key
   // does not read every intermediate step.

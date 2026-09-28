@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -85,6 +85,7 @@ async function setupApp({
     resetTransitionCaches,
     setApplyState: vi.fn(),
     setLastBrowserPlayback,
+    setMuted: vi.fn(),
     setSrcOnDeck: vi.fn(),
     setVolume: vi.fn(),
     startCrossfade,
@@ -1831,7 +1832,8 @@ describe("stream mode", () => {
     expect(audio.volume).toBeCloseTo(10 ** (-30 / 20), 4);
     expect(slider.getAttribute("aria-valuetext")).toBe("50%");
     await vi.waitFor(() => expect(region.textContent).toBe("Volume 50%."));
-    expect(setVolume).not.toHaveBeenCalled();
+    // The unused deck engine's master holds the same level.
+    expect(setVolume).toHaveBeenLastCalledWith(audio.volume);
 
     // M and the Mute button toggle only this page's audio.
     mute.click();
@@ -1892,6 +1894,141 @@ describe("stream mode", () => {
     expect(mute.getAttribute("aria-pressed")).toBe("false");
   });
 
+  it("starts a fresh stream-mode page at the server's saved volume and mute", async () => {
+    const quiet = 10 ** (-57 / 20);   // 5 %
+    const { webSocket } = await setupApp({
+      initialState: { ...streamState, volume: quiet, is_muted: true },
+      onRequest: () => lyricsFor("a.mp3"),
+    });
+    const audio = document.getElementById("stream-audio");
+    const slider = document.querySelector("#vol");
+    const mute = document.querySelector("#btn-mute");
+    expect(slider.value).toBe("5");
+    expect(slider.getAttribute("aria-valuetext")).toBe("5%");
+    expect(audio.volume).toBeCloseTo(quiet, 6);
+    expect(audio.muted).toBe(true);
+    expect(mute.getAttribute("aria-pressed")).toBe("true");
+
+    // Seeded once: later station pushes leave the page's level alone.
+    await new Promise((resolve) => setTimeout(resolve, 650));
+    webSocket.onmessage({ data: JSON.stringify({ ...streamState, volume: 1, is_muted: false }) });
+    expect(slider.value).toBe("5");
+    expect(audio.volume).toBeCloseTo(quiet, 6);
+    expect(audio.muted).toBe(true);
+  });
+
+  it("never lets a page media element start playing above the page level (D18)", async () => {
+    const quiet = 10 ** (-57 / 20);   // 5 %
+    const half = 10 ** (-30 / 20);    // 50 %
+    // Every play() of any media element, with the level it started at.
+    const plays = [];
+    const mediaPrototype = globalThis.HTMLMediaElement.prototype;
+    vi.spyOn(mediaPrototype, "play").mockImplementation(function recordPlay() {
+      plays.push({ element: this, volume: this.volume, muted: this.muted });
+      return Promise.resolve();
+    });
+    try {
+      // The page was at 5 % in browser playback when the link dropped and
+      // the server came back in stream mode, pushing full volume.
+      const { webSocket, WebSocketImpl } = await setupApp({
+        initialState: { volume: quiet },
+        onRequest: (url) => url === "/api/stream"
+          ? jsonResponse({ path: "/stream/SECRET.mp3", m3u_path: "/stream/SECRET.m3u" })
+          : lyricsFor("a.mp3"),
+      });
+      const audio = document.getElementById("stream-audio");
+      audio.pause = vi.fn();
+      audio.load = vi.fn();
+      const slider = document.querySelector("#vol");
+      const mute = document.querySelector("#btn-mute");
+      const listen = document.getElementById("btn-listen");
+      const push = (state = {}) => webSocket.onmessage({ data: JSON.stringify({
+        ...streamState, volume: 1, is_muted: false, ...state,
+      }) });
+      vi.useFakeTimers();
+      const reconnect = async (count) => {
+        webSocket.onclose({ code: 1006, wasClean: false });
+        await vi.advanceTimersByTimeAsync(60000);
+        await vi.waitFor(() => expect(WebSocketImpl).toHaveBeenCalledTimes(count));
+        webSocket.onopen();
+      };
+
+      await reconnect(2);
+      expect(audio.volume).toBeCloseTo(quiet, 6);
+      push();
+      expect(slider.value).toBe("5");
+      expect(audio.volume).toBeCloseTo(quiet, 6);
+
+      listen.click();
+      await vi.waitFor(() => expect(plays).toHaveLength(1));
+      expect(plays[0].element).toBe(audio);
+      expect(plays[0].volume).toBeCloseTo(quiet, 6);
+      expect(plays[0].muted).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(700);
+      push();
+      expect(audio.volume).toBeCloseTo(quiet, 6);
+
+      slider.value = "50";
+      slider.dispatchEvent(new Event("input"));
+      expect(audio.volume).toBeCloseTo(half, 6);
+      mute.click();
+      expect(audio.muted).toBe(true);
+      expect(audio.volume).toBeCloseTo(half, 6);
+      mute.click();
+      expect(audio.muted).toBe(false);
+      expect(audio.volume).toBeCloseTo(half, 6);
+
+      // The dropped link stops listening; the level survives the return.
+      await reconnect(3);
+      expect(audio.volume).toBeCloseTo(half, 6);
+      await vi.advanceTimersByTimeAsync(700);
+      push();
+      expect(audio.volume).toBeCloseTo(half, 6);
+      listen.click();
+      await vi.waitFor(() => expect(plays).toHaveLength(2));
+      expect(plays[1].volume).toBeCloseTo(half, 6);
+      expect(plays[1].muted).toBe(false);
+    } finally {
+      mediaPrototype.play.mockRestore?.();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("plays sound only through outputs the page level reaches", () => {
+    const dir = join(process.cwd(), "src/autodj/static");
+    const files = ["app.js", ...readdirSync(join(dir, "modules")).map((name) => `modules/${name}`)]
+      .filter((name) => name.endsWith(".js"));
+    const found = { plays: [], destinations: [], detached: [] };
+    for (const name of files) {
+      const lines = readFileSync(join(dir, name), "utf8").split(/\r?\n/);
+      lines.forEach((line, index) => {
+        if (line.includes(".play()")) {
+          found.plays.push(`${name}: ${lines[index - 1].trim()} | ${line.trim()}`);
+        }
+        if (/\.destination\b/.test(line)) found.destinations.push(`${name}: ${line.trim()}`);
+      });
+      // A media element outside the document escapes applyPageLevel.
+      if (lines.some((line) => /new (?:Audio|Video)\(|createElement\(\s*["'](?:audio|video)["']/.test(line))) {
+        found.detached.push(name);
+      }
+    }
+    expect(found.detached).toEqual([]);
+    // Web Audio reaches the speakers through the master alone.
+    expect(found.destinations).toEqual([
+      "modules/audio-engine.js: _master.connect(_ctx.destination);",
+    ]);
+    // The decks play through the master; the stream sets the page level
+    // on its element first.  A new play() must be added here on purpose.
+    expect(found.plays.map((line) => line.replace(/^([^:]+):.*\| /, "$1: "))).toEqual([
+      "modules/audio-engine.js: return deck.audio.play().catch((err) => {",
+      "modules/audio-engine.js: await deck.audio.play();",
+      "modules/stream-mode.js: await audio.play();",
+    ]);
+    expect(found.plays.find((line) => line.startsWith("modules/stream-mode.js")))
+      .toBe("modules/stream-mode.js: beforePlay(); | await audio.play();");
+  });
+
   it("still sends volume and mute to the server outside stream mode", async () => {
     const { fetchImpl } = await setupApp({
       initialState: { current_track: { path: "a.mp3", title: "A" } },
@@ -1905,7 +2042,8 @@ describe("stream mode", () => {
     document.querySelector("#btn-mute").click();
     await vi.waitFor(() => expect(fetchImpl.mock.calls.map(([url]) => url))
       .toEqual(expect.arrayContaining(["/api/volume", "/api/mute"])));
-    expect(document.getElementById("stream-audio").muted).toBe(false);
+    // The page's mute reaches every output it owns, used or not.
+    expect(document.getElementById("stream-audio").muted).toBe(true);
   });
 
   it("sends the OS media Play and Pause keys to Listen here in stream mode", async () => {

@@ -499,6 +499,11 @@ describe("transition effect levels", () => {
     pushState(engine, { muted: false });
 
     expect(master.gain.value).toBe(0.5);
+    // The page's own Mute reaches the master at once, before any push.
+    engine.setMuted(true);
+    expect(master.gain.value).toBe(0);
+    engine.setMuted(false);
+    expect(master.gain.value).toBe(0.5);
     expect(deckEvents()).toEqual(before);
     engine.stopAllDecks();
   });
