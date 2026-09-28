@@ -103,8 +103,11 @@ describe("page shortcut scope", () => {
   beforeAll(() => {
     document.body.innerHTML = `
       <section id="panel-now"></section>
-      <dialog id="hotkey-help-modal" open>
+      <dialog id="hotkey-help-modal">
         <button id="btn-shortcuts-close"><span id="dialog-close-label">Close</span></button>
+      </dialog>
+      <dialog id="confirm-dialog">
+        <button id="confirm-cancel">Cancel</button>
       </dialog>
       <button id="btn-shortcuts">Keyboard shortcuts</button>
       <button id="native-button"><span id="native-button-label">Pause</span></button>
@@ -151,7 +154,7 @@ describe("page shortcut scope", () => {
     volumeInput.mockClear();
     document.querySelector("#volume").value = "50";
     document.querySelector("#panel-now").removeAttribute("hidden");
-    document.querySelector("#hotkey-help-modal").setAttribute("open", "");
+    document.querySelector("#hotkey-help-modal").removeAttribute("open");
     window.dispatchEvent(new Event("blur"));
   });
 
@@ -177,9 +180,11 @@ describe("page shortcut scope", () => {
   });
 
   it("does not latch keys from a dialog button or nested tab widget", () => {
+    document.querySelector("#hotkey-help-modal").setAttribute("open", "");
     const dialogEvent = keyEvent(
       document.querySelector("#dialog-close-label"), "n",
     );
+    document.querySelector("#hotkey-help-modal").close();
     const plainSkip = keyEvent(document.querySelector("#plain"), "n");
     window.dispatchEvent(new KeyboardEvent("keyup", { key: "n" }));
 
@@ -318,6 +323,34 @@ describe("page shortcut scope", () => {
     expect(spaceEvent.defaultPrevented).toBe(false);
     expect(volumeInput).not.toHaveBeenCalled();
     expect(togglePlay).not.toHaveBeenCalled();
+  });
+
+  it("keeps every shortcut inactive while another dialog is open", () => {
+    const confirm = document.querySelector("#confirm-dialog");
+    confirm.setAttribute("open", "");
+    const cancel = document.querySelector("#confirm-cancel");
+    const plain = document.querySelector("#plain");
+
+    for (const [target, key, init] of [
+      [cancel, "n"], [cancel, "k"], [cancel, "m"], [cancel, "s"], [cancel, ","],
+      [cancel, "T", { shiftKey: true }], [cancel, "?", { shiftKey: true }],
+      [plain, "n"], [plain, " "], [plain, "ArrowUp"],
+    ]) {
+      const event = keyEvent(target, key, init);
+      expect(event.defaultPrevented).toBe(false);
+      window.dispatchEvent(new KeyboardEvent("keyup", { key }));
+    }
+    expect(skipClick).not.toHaveBeenCalled();
+    expect(togglePlay).not.toHaveBeenCalled();
+    expect(muteClick).not.toHaveBeenCalled();
+    expect(shuffleClick).not.toHaveBeenCalled();
+    expect(seekDelta).not.toHaveBeenCalled();
+    expect(volumeInput).not.toHaveBeenCalled();
+    expect(document.querySelector("#hotkey-help-modal").open).toBe(false);
+
+    confirm.removeAttribute("open");
+    expect(keyEvent(plain, "n").defaultPrevented).toBe(true);
+    expect(skipClick).toHaveBeenCalledOnce();
   });
 
   it("does not latch keys suppressed inside the dialog when their keyup is missed", () => {

@@ -1735,12 +1735,39 @@ installMediaActionHandlers({
 });
 
 import { installSearch } from "./modules/search.js";
+
+// Play now on a search result is pressing Play on this page: a browser-
+// playback page that is not playing yet opts in and starts its deck in
+// the same click, on the chosen track.  Resolves true once it plays (or,
+// with nothing to start here, once the request is done); false when
+// unlockAndPlay has already said why nothing plays.  A failed request is
+// thrown for the caller to report.
+async function playNowHere(request) {
+  if (!_lastBrowserPlayback || playbackEnabled) {
+    await request();
+    return true;
+  }
+  let requested = false;
+  try {
+    const started = await unlockAndPlay(async () => {
+      await request();
+      requested = true;
+    });
+    if (started) _playOptedIn = true;
+    return started;
+  } catch (errorValue) {
+    if (!requested) throw errorValue;
+    return false;  // unlockAndPlay announced the error
+  }
+}
+
 installSearch({
   searchInput,
   btnSearch,
   searchResults,
   searchCount,
   queueAnnounce,
+  playNow: playNowHere,
 });
 
 // ----------------------------------------------------------------

@@ -2109,6 +2109,51 @@ describe("stream mode", () => {
     expect(unlockAndPlay).toHaveBeenCalledTimes(2);
   });
 
+  it("lets Play now on a search result, and nothing else there, start a page that never pressed Play", async () => {
+    // The mock plays the way the engine does: the unlock runs inside the
+    // click, then the Play now request, then the deck starts.
+    const unlockAndPlay = vi.fn(async (beforePlay) => {
+      if (beforePlay) await beforePlay();
+      return true;
+    });
+    const { fetchImpl } = await setupApp({
+      audio: { _lastBrowserPlayback: true, playbackEnabled: false, unlockAndPlay },
+      initialState: {
+        browser_playback: true,
+        current_track: { path: "current.mp3", title: "Current" },
+      },
+      onRequest: (url) => (url.startsWith("/api/search")
+        ? jsonResponse({ results: [{ path: "song.mp3", title: "Song", artist: "Band" }] })
+        : jsonResponse({ ok: true })),
+    });
+    const mediaSession = await import("../../src/autodj/static/modules/media-session.js");
+    const options = mediaSession.installMediaActionHandlers.mock.calls[0][0];
+    document.querySelector("#search-input").value = "song";
+    document.querySelector("#btn-search").click();
+    await vi.waitFor(() => expect(document.querySelectorAll(".result-btn")).toHaveLength(3));
+    const [playNow, playNext, addToQueue] = document.querySelectorAll(".result-btn");
+    const posts = () => fetchImpl.mock.calls.filter(([url]) => url === "/api/play-next"
+      || url === "/api/queue/add").map(([url, init]) => [url, JSON.parse(init.body)]);
+
+    playNext.click();
+    addToQueue.click();
+    await vi.waitFor(() => expect(posts()).toHaveLength(2));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(unlockAndPlay).not.toHaveBeenCalled();
+    expect(await options.onPlay()).toBe(true);
+    expect(unlockAndPlay).not.toHaveBeenCalled();
+
+    playNow.click();
+    // Synchronously, in the click, before the request is sent.
+    expect(unlockAndPlay).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(document.querySelector("#queue-announce").textContent)
+      .toContain("now."));
+    expect(posts().at(-1)).toEqual(["/api/play-next", { path: "song.mp3", now: true }]);
+    // The page opted in: the media Play key may now restart it.
+    expect(await options.onPlay()).toBe(true);
+    expect(unlockAndPlay).toHaveBeenCalledTimes(2);
+  });
+
   it("never lets the OS media Pause key unpause the server", async () => {
     const { webSocket } = await setupApp({ initialState: { is_paused: true } });
     const mediaSession = await import("../../src/autodj/static/modules/media-session.js");

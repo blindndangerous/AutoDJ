@@ -663,6 +663,50 @@ describe("page volume", () => {
     await expect(playing).resolves.toBe(true);
   });
 
+  it("starts the Play now track on a page that never pressed Play, at the page's volume", async () => {
+    let current = "current.mp3";
+    const fetchImpl = vi.fn(async () => jsonResponse({ current_track: { path: current } }));
+    vi.stubGlobal("fetch", fetchImpl);
+    const { context, engine } = await importEngine();
+    context.state = "suspended";
+    context.resume = vi.fn(() => {
+      context.state = "running";
+      return Promise.resolve();
+    });
+    engine.setVolume(quiet);
+    const deck = engine.decks[engine.activeIdx];
+    const played = [];
+    deck.audio.play = vi.fn(() => {
+      played.push([deck.path, engine._master.gain.value]);
+      return Promise.resolve();
+    });
+    const playNowRequest = vi.fn(async () => { current = "chosen.mp3"; });
+
+    const playing = engine.unlockAndPlay(playNowRequest);
+    // The unlock ran inside the click, before the Play now request.
+    expect(context.resume).toHaveBeenCalledOnce();
+    expect(deck.audio.play).toHaveBeenCalledOnce();
+    await expect(playing).resolves.toBe(true);
+
+    expect(playNowRequest).toHaveBeenCalledOnce();
+    expect(engine.playbackEnabled).toBe(true);
+    expect(context.state).toBe("running");
+    expect(deck.path).toBe("chosen.mp3");
+    expect(played.at(-1)).toEqual(["chosen.mp3", quiet]);
+  });
+
+  it("leaves the page stopped and says nothing when the Play now request fails", async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ current_track: { path: "current.mp3" } }));
+    vi.stubGlobal("fetch", fetchImpl);
+    const { engine } = await importEngine();
+
+    await expect(engine.unlockAndPlay(() => Promise.reject(new Error("Track gone"))))
+      .rejects.toThrow("Track gone");
+    expect(engine.playbackEnabled).toBe(false);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(document.querySelector("#sr-status").textContent).toBe("");
+  });
+
   it("says Play did not start, and does not report playing, when the deck refuses", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
       jsonResponse({ current_track: { path: "current.mp3" } }),

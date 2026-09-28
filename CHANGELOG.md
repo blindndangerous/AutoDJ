@@ -89,6 +89,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   about 9% late. Mixxx outro cues now count as outro markers (they were read as intro markers),
   and Mixxx's hidden "audible sound" range is no longer imported as an outro.
 
+## [0.18.1] - 2026-09-28
+
+### Fixed
+
+- Play now on a search result starts the music on a page that has not pressed Play yet. With the
+  browser playing the music, the server switched to the chosen track but the page stayed silent
+  until you went back to Now Playing and pressed Play. Play now now counts as pressing Play on that
+  page: it starts the chosen track at the page's volume, unpausing the station if it was paused,
+  and says "Playing" and the track name once the sound starts. Play next and Add to queue still
+  start nothing, and neither does the media Play key on a page where Play was never pressed.
+- Keyboard shortcuts no longer act while a dialog is open. With the Clear queue confirmation, the
+  Make new link confirmation or the sign-in dialog showing, pressing N skipped the track and the
+  other playback and status keys worked on the page behind the dialog. Now no shortcut acts until
+  the dialog closes; ? still closes the shortcut list.
+
 ## [0.18.0] - 2026-09-28
 
 ### Added
@@ -1004,7 +1019,8 @@ The "make it feel like a real radio station" release.
 
 AutoDJ is built and maintained by a blind developer.  Every change to the web UI runs through an accessibility review before it ships.  If you find a screen-reader bug or a keyboard trap, please file an issue.
 
-[Unreleased]: https://github.com/blindndangerous/AutoDJ/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/blindndangerous/AutoDJ/compare/v0.18.1...HEAD
+[0.18.1]: https://github.com/blindndangerous/AutoDJ/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/blindndangerous/AutoDJ/compare/v0.16.1...v0.18.0
 [0.17.0]: https://github.com/blindndangerous/AutoDJ/commit/6b6834ca6079d0942867d59f3779cb284c41580a
 [0.16.1]: https://github.com/blindndangerous/AutoDJ/compare/v0.16.0...v0.16.1
