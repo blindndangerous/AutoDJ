@@ -12,7 +12,7 @@ import pytest
 from click.testing import CliRunner
 
 from autodj.cli import _stage_serve_server, cli
-from autodj.config import ServerConfig, load_config
+from autodj.config import ServerConfig, StreamConfig, load_config
 from autodj.lan import load_or_create_access_token
 
 _DETECTED = ["127.0.0.1", "192.168.1.20", "::1", "localhost", "nas", "nas.local"]
@@ -33,6 +33,7 @@ def _cfg(tmp_path: Path, server: ServerConfig | None = None) -> MagicMock:
     cfg.index.name = "default"
     cfg.index.index_dir = tmp_path / "index"
     cfg.server = server or ServerConfig()
+    cfg.stream = StreamConfig()
     cfg.config_sources = ("defaults",)
     return cfg
 

@@ -86,6 +86,7 @@ def _make_cfg(beets_db=None) -> MagicMock:
     cfg.presets = {}
     cfg.index.name = "default"
     cfg.server = ServerConfig()
+    cfg.stream = StreamConfig()
     cfg.config_sources = ("defaults",)
     return cfg
 
