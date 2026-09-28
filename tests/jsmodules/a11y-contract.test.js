@@ -1705,15 +1705,17 @@ describe("static accessibility contracts", () => {
     expect(regressedDialog.closest('[role="tabpanel"]')).not.toBeNull();
   });
 
-  it("names options that use symbols in words", () => {
-    // NVDA drops these below its "some" punctuation level, so "±1" was
-    // heard as "1" and "major/minor" as "major minor".
+  it("writes option text in words, with no aria-label to lean on", () => {
+    // NVDA drops these symbols below its "some" punctuation level, so "±1"
+    // was heard as "1" and "major/minor" as "major minor".  An aria-label
+    // in words was not enough: Firefox's open drop-down list reads the
+    // option text, not its aria-label.
     installDocument({ html: htmlSource });
-    const symbolic = [...document.querySelectorAll("option")]
-      .filter((option) => /[±+×/#→]/.test(option.textContent));
-    expect(symbolic.length).toBeGreaterThan(0);
-    for (const option of symbolic) {
-      expect(option.getAttribute("aria-label"), option.textContent).toMatch(/^[^±+×/#→]+$/);
+    const options = [...document.querySelectorAll("option")];
+    expect(options.length).toBeGreaterThan(0);
+    for (const option of options) {
+      expect(option.textContent, option.value).toMatch(/^[^±+×/#→]+$/);
+      expect(option.hasAttribute("aria-label"), option.value).toBe(false);
     }
   });
 

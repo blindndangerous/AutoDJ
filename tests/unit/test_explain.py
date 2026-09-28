@@ -154,9 +154,35 @@ class TestExplainPick:
         """Same-side, far apart: covers line 91 fall-through label."""
         # 8B (C major) vs 12B (E major) — same side but +4 (not 1, 2, or 11)
         out = explain_pick(_entry(key=0, mode=1), _entry(key=4, mode=1))
-        assert any("Camelot key 8B → 12B" in s for s in out)
+        assert any("Camelot key 8B to 12B" in s for s in out)
 
     def test_energy_seed_only_known(self) -> None:
         """Prev energy 0 — line 99 path."""
         out = explain_pick(_entry(energy=0.0), _entry(energy=0.4))
         assert any("Energy 0.40" in s for s in out)
+
+
+def test_reasons_say_every_change_in_words() -> None:
+    """NVDA skips arrows, slashes and signs at low punctuation levels.
+
+    "Camelot key 8A → 12A" was heard as "Camelot key 8A 12A", with the
+    two values run together.
+    """
+    pairs = [
+        (
+            _entry(bpm=100.0, key=0, mode=1, energy=0.25),
+            _entry(bpm=130.0, key=9, mode=0, energy=0.26),
+        ),
+        (
+            _entry(bpm=130.0, key=0, mode=1, energy=0.7),
+            _entry(bpm=100.0, key=4, mode=1, energy=0.4),
+        ),
+    ]
+    for prev, cur in pairs:
+        out = explain_pick(prev, cur)
+        for sentence in out:
+            assert not set(sentence) & set("→/+±"), sentence
+    assert "BPM lifts 100 to 130, up 30." in explain_pick(*pairs[0])
+    assert "Energy similar (0.25 to 0.26)." in explain_pick(*pairs[0])
+    assert "Camelot key 8B to 8A: relative major or minor flip." in explain_pick(*pairs[0])
+    assert "BPM eases 130 to 100, down 30." in explain_pick(*pairs[1])

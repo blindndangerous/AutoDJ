@@ -16,8 +16,8 @@ Example:
     ...     print(r)
     Same genre — Trip-Hop.
     BPM holds steady at 92.
-    Camelot key 8A → 9A: one step around the wheel.
-    Energy lifts a touch (0.41 → 0.48).
+    Camelot key 8A to 9A: one step around the wheel.
+    Energy lifts a touch (0.41 to 0.48).
 """
 
 from __future__ import annotations
@@ -54,8 +54,8 @@ def _bpm_phrase(prev_bpm: float, cur_bpm: float) -> str | None:
     if abs(diff) < 2:
         return f"BPM holds steady at {round(cur_bpm)}."
     if diff > 0:
-        return f"BPM lifts {round(prev_bpm)} → {round(cur_bpm)} (+{round(diff)})."
-    return f"BPM eases {round(prev_bpm)} → {round(cur_bpm)} ({round(diff)})."
+        return f"BPM lifts {round(prev_bpm)} to {round(cur_bpm)}, up {round(diff)}."
+    return f"BPM eases {round(prev_bpm)} to {round(cur_bpm)}, down {round(-diff)}."
 
 
 def _camelot_phrase(prev: IndexEntry, cur: IndexEntry) -> str | None:
@@ -79,16 +79,16 @@ def _camelot_phrase(prev: IndexEntry, cur: IndexEntry) -> str | None:
     cn, cs = cur_pos
 
     if pn == cn and ps != cs:
-        return f"Camelot key {prev_label} → {cur_label}: relative major/minor flip."
+        return f"Camelot key {prev_label} to {cur_label}: relative major or minor flip."
 
     if ps == cs:
         diff = abs(pn - cn)
         if diff == 1 or diff == 11:
-            return f"Camelot key {prev_label} → {cur_label}: one step around the wheel."
+            return f"Camelot key {prev_label} to {cur_label}: one step around the wheel."
         if diff == 2 or diff == 10:
-            return f"Camelot key {prev_label} → {cur_label}: two-step energy lift."
+            return f"Camelot key {prev_label} to {cur_label}: two-step energy lift."
 
-    return f"Camelot key {prev_label} → {cur_label}."
+    return f"Camelot key {prev_label} to {cur_label}."
 
 
 def _energy_phrase(prev_e: float, cur_e: float) -> str | None:
@@ -99,10 +99,10 @@ def _energy_phrase(prev_e: float, cur_e: float) -> str | None:
         return f"Energy {cur_e:.2f}."
     diff = cur_e - prev_e
     if abs(diff) < 0.05:
-        return f"Energy similar ({prev_e:.2f} → {cur_e:.2f})."
+        return f"Energy similar ({prev_e:.2f} to {cur_e:.2f})."
     if diff > 0:
-        return f"Energy lifts ({prev_e:.2f} → {cur_e:.2f})."
-    return f"Energy eases ({prev_e:.2f} → {cur_e:.2f})."
+        return f"Energy lifts ({prev_e:.2f} to {cur_e:.2f})."
+    return f"Energy eases ({prev_e:.2f} to {cur_e:.2f})."
 
 
 # ---------------------------------------------------------------------------

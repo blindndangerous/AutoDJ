@@ -296,6 +296,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   known, turned it off. The preset is now skipped with a warning that names it, the unknown
   genres and the genres AutoDJ knows. A `genres` value that is not a string or a list is
   refused the same way instead of meaning no filter.
+- In Firefox's open drop-down lists, NVDA read the Harmonic mixing choices without their symbols
+  ("same side,  2 jump"), because Firefox reads an option's text there and ignores its
+  `aria-label`. The Harmonic mixing, Transition effect, Transition mode and Key notation choices
+  now say it in words on screen too, such as "plus or minus 1", "slice and reorder" and "Musical
+  (C, A minor, F sharp minor)", and carry no `aria-label`.
+- Why this track now says each change in words: "Camelot key 8A to 12A", "Energy similar (0.25
+  to 0.25)", "BPM lifts 100 to 130, up 30" and "relative major or minor flip". NVDA skipped the
+  arrow at its default punctuation level, so the two values ran together.
 - Browser playback started at full volume after the page loaded, whatever the volume slider
   showed, and stayed there until the slider was moved. Voice liners and the noise sweeps of some
   transition effects also played at full volume. They now all play at the volume the slider
