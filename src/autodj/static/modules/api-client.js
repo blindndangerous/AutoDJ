@@ -14,11 +14,10 @@ export function isAuthenticatedRequestCurrent(epoch) {
 }
 
 class ApiError extends Error {
-  constructor(message, { status = null, url = "", cause } = {}) {
+  constructor(message, { status = null, cause } = {}) {
     super(message, cause === undefined ? undefined : { cause });
     this.name = "ApiError";
     this.status = status;
-    this.url = url;
   }
 }
 
@@ -55,12 +54,8 @@ async function rawRequest(url, options) {
   } catch (cause) {
     // A cancelled request is the caller's own doing, not a failure.
     if (cause?.name === "AbortError") throw cause;
-    throw new ApiError(UNREACHABLE_TEXT, { url, cause });
+    throw new ApiError(UNREACHABLE_TEXT, { cause });
   }
-}
-
-function responseUrl(response, fallback) {
-  return fallback || response.url || "request";
 }
 
 function isJsonResponse(response) {
@@ -76,19 +71,10 @@ function mediaType(response) {
     .toLowerCase();
 }
 
-function requireMediaType(response, url, acceptedPrefixes) {
+function requireMediaType(response, acceptedPrefixes) {
   const type = mediaType(response);
-  if (!type) {
-    throw new ApiError(UNREADABLE_TEXT, {
-      status: response.status,
-      url,
-    });
-  }
-  if (!acceptedPrefixes.some((prefix) => type.startsWith(prefix))) {
-    throw new ApiError(UNREADABLE_TEXT, {
-      status: response.status,
-      url,
-    });
+  if (!type || !acceptedPrefixes.some((prefix) => type.startsWith(prefix))) {
+    throw new ApiError(UNREADABLE_TEXT, { status: response.status });
   }
 }
 
@@ -103,27 +89,23 @@ function payloadMessage(payload, fallback) {
   return fallback;
 }
 
-function notifyAuthenticationRequired() {
+// A 401 opens the shared authentication dialog and fails the request.
+function throwIfUnauthorized(response) {
+  if (response.status !== 401) return;
   try {
     Promise.resolve(authRequiredHandler()).catch(() => {});
   } catch (_) {
     // AuthenticationRequiredError remains the public request failure.
   }
+  throw new AuthenticationRequiredError("Authentication required", { status: 401 });
 }
 
-async function checkedResponse(response, { url = "" } = {}) {
-  const requestUrl = responseUrl(response, url);
-  if (response.status === 401) {
-    notifyAuthenticationRequired();
-    throw new AuthenticationRequiredError("Authentication required", {
-      status: 401,
-      url: requestUrl,
-    });
-  }
+async function checkedResponse(response) {
+  throwIfUnauthorized(response);
   if (!isJsonResponse(response)) {
     throw new ApiError(
       response.ok ? UNREADABLE_TEXT : httpFailureText(response.status),
-      { status: response.status, url: requestUrl },
+      { status: response.status },
     );
   }
 
@@ -131,24 +113,20 @@ async function checkedResponse(response, { url = "" } = {}) {
   try {
     payload = await response.json();
   } catch (cause) {
-    throw new ApiError(UNREADABLE_TEXT, {
-      status: response.status,
-      url: requestUrl,
-      cause,
-    });
+    throw new ApiError(UNREADABLE_TEXT, { status: response.status, cause });
   }
 
   if (!response.ok) {
     throw new ApiError(
       payloadMessage(payload, httpFailureText(response.status)),
-      { status: response.status, url: requestUrl },
+      { status: response.status },
     );
   }
   if (payload && typeof payload === "object"
       && (payload.ok === false || payload.success === false)) {
     throw new ApiError(
       payloadMessage(payload, NOT_ACCEPTED_TEXT),
-      { status: response.status, url: requestUrl },
+      { status: response.status },
     );
   }
   return payload;
@@ -156,7 +134,7 @@ async function checkedResponse(response, { url = "" } = {}) {
 
 export async function requestJson(url, options = {}) {
   const response = await rawRequest(url, options);
-  return checkedResponse(response, { url });
+  return checkedResponse(response);
 }
 
 export function requestJsonBestEffort(url, options = {}, reporter) {
@@ -183,21 +161,12 @@ export function postJsonBestEffort(url, body, reporter, options = {}) {
 
 export async function requestBinary(url, options = {}) {
   const response = await rawRequest(url, options);
-  if (response.status === 401) {
-    notifyAuthenticationRequired();
-    throw new AuthenticationRequiredError("Authentication required", {
-      status: 401,
-      url,
-    });
-  }
+  throwIfUnauthorized(response);
   if (!response.ok) {
-    if (isJsonResponse(response)) await checkedResponse(response, { url });
-    throw new ApiError(httpFailureText(response.status), {
-      status: response.status,
-      url,
-    });
+    if (isJsonResponse(response)) await checkedResponse(response);
+    throw new ApiError(httpFailureText(response.status), { status: response.status });
   }
-  requireMediaType(response, url, ["audio/", "application/octet-stream"]);
+  requireMediaType(response, ["audio/", "application/octet-stream"]);
   return response.arrayBuffer();
 }
 
@@ -205,21 +174,12 @@ export async function probeResource(url, options = {}) {
   const response = await rawRequest(url, options);
   try {
     if (response.status === 404) return false;
-    if (response.status === 401) {
-      notifyAuthenticationRequired();
-      throw new AuthenticationRequiredError("Authentication required", {
-        status: 401,
-        url,
-      });
-    }
+    throwIfUnauthorized(response);
     if (!response.ok) {
-      if (isJsonResponse(response)) await checkedResponse(response, { url });
-      throw new ApiError(httpFailureText(response.status), {
-        status: response.status,
-        url,
-      });
+      if (isJsonResponse(response)) await checkedResponse(response);
+      throw new ApiError(httpFailureText(response.status), { status: response.status });
     }
-    requireMediaType(response, url, ["image/"]);
+    requireMediaType(response, ["image/"]);
     return true;
   } finally {
     try {

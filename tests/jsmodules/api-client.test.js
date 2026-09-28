@@ -19,9 +19,9 @@ function jsonResponse(body, init = {}) {
 }
 
 // requestJson for a server that answers with *response*.
-function requestAnswered(response, url = "/api/test") {
+function requestAnswered(response) {
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response));
-  return requestJson(url);
+  return requestJson("/api/test");
 }
 
 describe("requestJson response checks", () => {
@@ -31,11 +31,10 @@ describe("requestJson response checks", () => {
   it("surfaces JSON detail from an HTTP error", async () => {
     await expect(requestAnswered(jsonResponse(
       { detail: "Index is empty" }, { status: 409 },
-    ), "/api/random-track")).rejects.toMatchObject({
+    ))).rejects.toMatchObject({
       name: "ApiError",
       message: "Index is empty",
       status: 409,
-      url: "/api/random-track",
     });
   });
 
