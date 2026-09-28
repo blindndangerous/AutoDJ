@@ -6,7 +6,6 @@
 // their own rules and are handled by name below.
 
 import { escHtml } from "./dom-helpers.js";
-import { applyShowWhen } from "./show-when.js";
 import { announceStatus } from "./live-region.js";
 import {
   captureAuthenticatedRequestEpoch,
@@ -66,7 +65,6 @@ export function resetSettingsState(els) {
   // Every N songs is only editable while discovery is on.
   if (els.discEvery) els.discEvery.disabled = !els.discEnabled?.checked;
   _lastPresetOptionsKey = "";
-  applyShowWhen();
 }
 
 export async function postSettings(url, body, { settingsStatus, control } = {}) {
@@ -83,7 +81,6 @@ export async function postSettings(url, body, { settingsStatus, control } = {}) 
   } catch (err) {
     if (!isAuthenticatedRequestCurrent(epoch)) return false;
     const reverted = revertAfterFailure(control);
-    if (reverted) applyShowWhen();
     // The settings card is several screens tall, so the failure has to
     // travel to the visible toast as well as the live region.
     announceStatus(settingsStatus,
@@ -235,5 +232,4 @@ export function applySettingsState(st, els) {
   for (const control of Object.values(els)) {
     if (control && control !== doc.activeElement) confirmValue(control);
   }
-  applyShowWhen();
 }

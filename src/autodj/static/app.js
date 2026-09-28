@@ -1895,15 +1895,6 @@ import { initViewRouter } from "./modules/tabs.js";
 
 initViewRouter();
 
-import {
-  applyShowWhen,
-  installShowWhenListener,
-} from "./modules/show-when.js";
-installShowWhenListener();
-// Apply once at load + after every state push (server may flip a
-// checkbox via WS without the user touching it).
-applyShowWhen();
-
 import { installLiners, bumpLinerTrackCount } from "./modules/liners.js";
 
 const _linerEls = {

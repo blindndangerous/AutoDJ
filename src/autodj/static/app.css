@@ -655,10 +655,20 @@
     }
     /* `hidden` attribute must win over author display rules
        (settings-row uses flex, setting-desc uses block; both beat the
-       UA [hidden] {display:none} on specificity).  Enforce spec
-       behaviour so data-show-when actually hides its targets. */
+       UA [hidden] {display:none} on specificity). */
     [hidden] {
       display: none !important;
+    }
+    /* A setting that only matters while another one is on shows only
+       then.  display: none also takes the label, field and description
+       out of the accessibility tree together. */
+    body:has(#dj-phrase-align:not(:checked)) [data-show-when="dj-phrase-align"],
+    body:has(#pb-replaygain:not(:checked)) [data-show-when="pb-replaygain"],
+    body:has(#pb-mood-arc:not(:checked)) [data-show-when="pb-mood-arc"],
+    body:has(#key-notation option[value="musical"]:not(:checked)) [data-show-when="key-notation=musical"],
+    body:has(#disc-enabled:not(:checked)) [data-show-when="disc-enabled"],
+    body:has(#ln-enabled:not(:checked)) [data-show-when="ln-enabled"] {
+      display: none;
     }
     .settings-row {
       display: flex;

@@ -9,7 +9,6 @@ import { confirmAction } from "./confirm-dialog.js";
 import { dbg, listRow, nextRowControl, rowButton } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 import { parseSettingValue, refusalText } from "./mix-settings.js";
-import { applyShowWhen } from "./show-when.js";
 import {
   captureAuthenticatedRequestEpoch,
   isAuthenticatedRequestCurrent,
@@ -102,7 +101,6 @@ async function _loadLibrary(els, epoch) {
   sync(els.lnRandMax,   c.random_max_minutes   != null ? c.random_max_minutes   : "");
   sync(els.lnPickMode,  c.pick_mode || "random");
   sync(els.lnDuckDb,    c.duck_db != null ? c.duck_db : -12);
-  applyShowWhen();
   return true;
 }
 
