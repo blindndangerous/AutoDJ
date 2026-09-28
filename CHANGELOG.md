@@ -315,6 +315,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - With the page opened as localhost in stream mode, the note that the stream address only works
   on this computer is now part of the description of the address field and Copy address, so it is
   heard when tabbing to them. Before, it was only found by reading on in browse mode.
+- Tabbing to the Library tools output log made NVDA read the whole log at once, about 3,400
+  characters for a Stats run. The log no longer takes focus and is no longer a scroll box; it
+  grows with the page and is read in browse mode a line per Down Arrow, as before. Its name now
+  carries the line count, such as "Output, 42 lines".
 - Browser playback started at full volume after the page loaded, whatever the volume slider
   showed, and stayed there until the slider was moved. Voice liners and the noise sweeps of some
   transition effects also played at full volume. They now all play at the volume the slider

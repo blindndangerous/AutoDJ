@@ -781,8 +781,6 @@
       border-radius: var(--radius);
       font-family: ui-monospace, Consolas, monospace;
       font-size: 0.85rem;
-      max-height: 16rem;
-      overflow: auto;
       border: 1px solid var(--border);
     }
     #library-log > div {

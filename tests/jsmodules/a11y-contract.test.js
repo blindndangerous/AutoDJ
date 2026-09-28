@@ -937,7 +937,8 @@ function libraryLogOwnershipIsScoped(html = htmlSource) {
     && liveOwners.size === 1
     && liveOwners.has(status)
     && log?.tagName === "DIV"
-    && log.getAttribute("tabindex") === "0"
+    // Not focusable: NVDA read a focused log whole, in one utterance.
+    && !log.hasAttribute("tabindex")
     && !log.hasAttribute("aria-live")
     // Named region (a bare <div> cannot carry a name), never a live role.
     && log.getAttribute("role") === "region"

@@ -1102,7 +1102,7 @@
            each; the full log stays scrollable, keyboard focusable, and read
            on demand.  One <div> per line (library-jobs.js adds them), so
            NVDA's browse mode reads one line per Down Arrow. -->
-      <h3 id="library-log-heading">Output</h3>
+      <h3 id="library-log-heading">Output<span id="library-log-count"></span></h3>
       <p id="lib-job-status" aria-live="polite" aria-atomic="true">Idle.</p>
       <!-- Ticking clock lives OUTSIDE the live region: aria-live="off"
            plus no role means NVDA never speaks it, so a two-hour index
@@ -1111,12 +1111,14 @@
            status on demand. -->
       <p id="lib-job-elapsed" aria-live="off"></p>
       <!-- Region role: a bare <div> maps to the generic role, which may
-           not be named.  A region is named, not live, and NVDA stays in
-           browse mode when it gets focus. -->
+           not be named.  A region is named ("Output, 42 lines"), not live.
+           It takes no focus and is no scroll box: NVDA read the whole log
+           in one breath whenever the focusable log got focus, whatever its
+           role, so the log is read in browse mode only, a line per Down
+           Arrow, and grows with the page. -->
       <div id="library-log"
            role="region"
-           aria-labelledby="library-log-heading"
-           tabindex="0"><p class="lib-log-empty">No job has run yet.</p></div>
+           aria-labelledby="library-log-heading"><p class="lib-log-empty">No job has run yet.</p></div>
     </details>
   </section>
 

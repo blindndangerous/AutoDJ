@@ -12,7 +12,8 @@
 //   #library-log is a named region, not a live one, holding one block
 //   element per line, so NVDA's browse mode reads it a line per Down
 //   Arrow.  Lines are appended, never rebuilt, so a reader inside the log
-//   keeps their reading cursor.
+//   keeps their reading cursor.  It takes no focus: a focused log was read
+//   whole.  Its name carries the line count ("Output, 42 lines").
 
 import {
   captureAuthenticatedRequestEpoch,
@@ -114,6 +115,16 @@ function updateJobStatus(job, jobStatus, jobElapsed) {
   if (!job.name) setJobPhase(jobStatus, "idle", "Idle.");
 }
 
+// The count rides in the log's heading, which also names the region, so
+// reaching either says how long the log is.  Not live: never spoken on
+// its own as lines arrive.
+function renderLogCount(libLog, count) {
+  const counter = libLog.ownerDocument.getElementById("library-log-count");
+  if (!counter) return;
+  const text = count ? `, ${count} line${count === 1 ? "" : "s"}` : "";
+  if (counter.textContent !== text) counter.textContent = text;
+}
+
 function emptyLogNote(libLog) {
   const note = libLog.ownerDocument.createElement("p");
   note.className = "lib-log-empty";
@@ -149,6 +160,7 @@ function renderLog(libLog, lines) {
   const previous = _logState.get(libLog);
   const rendered = previous ? previous.lines : null;
 
+  renderLogCount(libLog, lines.length);
   if (lines.length === 0) {
     if (!rendered || rendered.length !== 0) {
       libLog.replaceChildren(emptyLogNote(libLog));
@@ -157,8 +169,6 @@ function renderLog(libLog, lines) {
     return;
   }
 
-  const pinned = libLog.scrollTop + libLog.clientHeight
-    >= libLog.scrollHeight - 4;
   const offset = rendered && rendered.length ? slideOffset(rendered, lines) : -1;
   let kept = 0;
   if (offset < 0) {
@@ -173,7 +183,6 @@ function renderLog(libLog, lines) {
     libLog.appendChild(logLine(libLog, lines[i]));
   }
   _logState.set(libLog, { lines: lines.slice() });
-  if (pinned) libLog.scrollTop = libLog.scrollHeight;
 }
 
 // The websocket carries only the last 25 log lines, which cut a Stats
@@ -192,13 +201,11 @@ function renderFullLog(libLog, lines) {
     return;
   }
   if (head === 0) return;
-  const pinned = libLog.scrollTop + libLog.clientHeight
-    >= libLog.scrollHeight - 4;
+  renderLogCount(libLog, lines.length);
   const fragment = libLog.ownerDocument.createDocumentFragment();
   for (const line of lines.slice(0, head)) fragment.appendChild(logLine(libLog, line));
   libLog.insertBefore(fragment, libLog.firstChild);
   _logState.set(libLog, { lines: lines.slice() });
-  if (pinned) libLog.scrollTop = libLog.scrollHeight;
 }
 
 async function followUpFinishedJob(els, job) {

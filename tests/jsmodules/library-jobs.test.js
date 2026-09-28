@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 
 import { applyLibraryJobState, installLibraryJobs, libraryJobStatusText } from
@@ -263,6 +266,34 @@ describe("library job log", () => {
     expect(removed).toBe(1);
     expect(added).toBe(1);
     seen.stop();
+  });
+
+  it("names the log with its line count instead of taking focus", async () => {
+    // A focusable log was read whole, in one utterance, when it got focus.
+    // The log takes no focus; its heading, which names the region, says
+    // how many lines it holds.
+    const html = readFileSync(join(process.cwd(), "src/autodj/static/index.html"), "utf8");
+    const template = document.createElement("template");
+    template.innerHTML = html;
+    const log = template.content.querySelector("#library-log");
+    expect(log.hasAttribute("tabindex")).toBe(false);
+    const heading = template.content.querySelector(`#${log.getAttribute("aria-labelledby")}`);
+    expect(heading.querySelector("#library-log-count")).not.toBeNull();
+
+    const els = makeEls();
+    document.body.insertAdjacentHTML("afterbegin",
+      '<h3 id="heading">Output<span id="library-log-count"></span></h3>');
+    const name = () => document.querySelector("#heading").textContent;
+    applyLibraryJobState({ library_job: { name: "", running: false, lines: [] } }, els);
+    expect(name()).toBe("Output");
+    applyLibraryJobState({
+      library_job: { name: "stats", running: true, elapsed_seconds: 1, lines: ["one"] },
+    }, els);
+    expect(name()).toBe("Output, 1 line");
+    applyLibraryJobState({
+      library_job: { name: "stats", running: true, elapsed_seconds: 2, lines: ["one", "two"] },
+    }, els);
+    expect(name()).toBe("Output, 2 lines");
   });
 
   it("shows the empty note when no job has run", async () => {
