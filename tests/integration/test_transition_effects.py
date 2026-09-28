@@ -60,7 +60,7 @@ class TestAllowlistsAreDerived:
 
     def test_browser_engine_plays_every_real_effect(self) -> None:
         source = (_STATIC / "modules" / "audio-engine.js").read_text(encoding="utf-8")
-        catalogue = re.search(r"const real = \[(.*?)\];", source, re.S)
-        assert catalogue is not None
-        names = set(re.findall(r'"([a-z_]+)"', catalogue.group(1)))
+        table = re.search(r"^const _EFFECTS = \{$(.*?)^\};$", source, re.S | re.M)
+        assert table is not None
+        names = set(re.findall(r"^  ([a-z_]+)\(fx\) \{$", table.group(1), re.M))
         assert names == TRANSITION_EFFECT_NAMES - _META_MODES
