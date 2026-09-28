@@ -356,7 +356,7 @@ def test_serve_loader_classifies_failed_load_before_concurrent_publish(
 def test_player_waits_safely_for_first_index_generation() -> None:
     cfg = load_config(None, environ={})
     sim = SimilarityIndex.empty()
-    player = Player(cfg, sim, dry_run=True, no_keyboard=True)
+    player = Player(cfg, sim, dry_run=True)
     wait_event = _WaitSignallingEvent()
     player._skip_event = wait_event  # type: ignore[assignment]
     errors: list[BaseException] = []
@@ -384,7 +384,7 @@ def test_player_waits_safely_for_first_index_generation() -> None:
 def test_player_uses_first_published_generation_after_waiting(tmp_path: Path) -> None:
     cfg = load_config(None, environ={})
     sim = SimilarityIndex.empty()
-    player = Player(cfg, sim, dry_run=True, no_keyboard=True)
+    player = Player(cfg, sim, dry_run=True)
     wait_event = _WaitSignallingEvent()
     player._skip_event = wait_event  # type: ignore[assignment]
     progressed = threading.Event()

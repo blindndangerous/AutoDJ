@@ -125,17 +125,6 @@ class TestHelpText:
         assert "--limit" in result.output
         assert "--force" in result.output
 
-    def test_play_help(self, runner: CliRunner) -> None:
-        result = runner.invoke(cli, ["play", "--help"])
-        assert result.exit_code == 0
-        assert "--seed" in result.output
-        assert "--dry-run" in result.output
-        assert "--crossfade" in result.output
-        assert "--preset" in result.output
-        assert "--bpm-range" in result.output
-        assert "--discovery-every" in result.output
-        assert "--export-m3u" in result.output
-
     def test_serve_help(self, runner: CliRunner) -> None:
         result = runner.invoke(cli, ["serve", "--help"])
         assert result.exit_code == 0
@@ -192,106 +181,6 @@ class TestIndexCommand:
         # Verify --limit was forwarded correctly
         call_kwargs = mock_build.call_args.kwargs
         assert call_kwargs.get("limit") == 1
-
-
-# ---------------------------------------------------------------------------
-# play command (dry-run)
-# ---------------------------------------------------------------------------
-
-
-class TestPlayCommand:
-    def test_play_dry_run_exits_cleanly(self, runner: CliRunner, tmp_path: Path) -> None:
-        config_path = tmp_path / "config.toml"
-        _write_config(config_path, tmp_path)
-
-        # Pre-build index under index/default/ (named-index layout)
-        index_dir = tmp_path / "index" / "default"
-        index_dir.mkdir(parents=True, exist_ok=True)
-        entries = [
-            IndexEntry(
-                path=f"song_{i}.flac",
-                title=f"Song {i}",
-                artist="Artist",
-                album="Album",
-                genre="Rock",
-                bpm=120.0,
-                year=2000,
-                length=180.0,
-                energy=0.05,
-                key=0,
-                mode=1,
-                tempo_confidence=0.8,
-            )
-            for i in range(5)
-        ]
-        vectors = np.array([np.random.randn(FEATURE_DIM).astype(np.float32) for _ in range(5)])
-        vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
-        save_index(entries, vectors, index_dir)
-
-        # Player.run loops forever — limit to 1 iteration via side effect
-        call_count = {"n": 0}
-
-        def fake_run(seed_entry):
-            call_count["n"] += 1
-            if call_count["n"] >= 2:
-                raise KeyboardInterrupt
-
-        with patch("autodj.player.Player.run", side_effect=fake_run):
-            result = runner.invoke(
-                cli,
-                ["--config", str(config_path), "play", "--dry-run"],
-            )
-
-        assert result.exit_code == 0
-
-    def test_play_missing_index_exits_1(self, runner: CliRunner, tmp_path: Path) -> None:
-        config_path = tmp_path / "config.toml"
-        _write_config(config_path, tmp_path)
-        # Don't create the index directory
-
-        result = runner.invoke(cli, ["--config", str(config_path), "play"])
-        assert result.exit_code == 1
-        assert "Index not found" in result.output or "not found" in result.output.lower()
-
-    def test_play_missing_config_exits_1(self, runner: CliRunner, tmp_path: Path) -> None:
-        result = runner.invoke(cli, ["--config", str(tmp_path / "nope.toml"), "play"])
-        assert result.exit_code == 1
-
-    def test_play_invalid_bpm_range_exits_1(self, runner: CliRunner, project_dir: Path) -> None:
-        result = runner.invoke(
-            cli,
-            ["--config", str(project_dir / "config.toml"), "play", "--bpm-range", "bad"],
-        )
-        assert result.exit_code == 1
-
-    def test_play_invalid_preset_exits_1(self, runner: CliRunner, project_dir: Path) -> None:
-        result = runner.invoke(
-            cli,
-            [
-                "--config",
-                str(project_dir / "config.toml"),
-                "play",
-                "--preset",
-                "nonexistent_preset_xyz",
-            ],
-        )
-        assert result.exit_code == 1
-
-    def test_play_with_builtin_preset_runs(self, runner: CliRunner, project_dir: Path) -> None:
-        with patch("autodj.player.Player.run", side_effect=KeyboardInterrupt):
-            result = runner.invoke(
-                cli,
-                ["--config", str(project_dir / "config.toml"), "play", "--preset", "chill"],
-            )
-        assert result.exit_code == 0
-
-    def test_play_with_bpm_range_runs(self, runner: CliRunner, project_dir: Path) -> None:
-        with patch("autodj.player.Player.run", side_effect=KeyboardInterrupt):
-            result = runner.invoke(
-                cli,
-                ["--config", str(project_dir / "config.toml"), "play", "--bpm-range", "100-140"],
-            )
-        assert result.exit_code == 0
 
 
 # ---------------------------------------------------------------------------

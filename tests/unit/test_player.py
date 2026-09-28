@@ -1,6 +1,6 @@
 """Unit tests for autodj.player.
 
-sounddevice and pynput are mocked so tests run without audio hardware.
+sounddevice is mocked so tests run without audio hardware.
 Audio crossfade math is tested with real numpy arrays.
 """
 
@@ -23,7 +23,6 @@ from autodj.player import (
     _append_m3u_entry,
     _apply_crossfade,
     _apply_crossfade_ducked,
-    _fmt_time,
     _time_stretch,
     apply_filter_sweep,
     beatmatch_incoming,
@@ -316,38 +315,6 @@ class TestHistoryHelper:
 
 
 # ---------------------------------------------------------------------------
-# _fmt_time
-# ---------------------------------------------------------------------------
-
-
-class TestFmtTime:
-    def test_zero(self) -> None:
-        assert _fmt_time(0) == "00:00"
-
-    def test_negative_clamps_to_zero(self) -> None:
-        assert _fmt_time(-10) == "00:00"
-
-    def test_sub_minute(self) -> None:
-        assert _fmt_time(45) == "00:45"
-
-    def test_exact_minute(self) -> None:
-        assert _fmt_time(60) == "01:00"
-
-    def test_mixed_minutes_and_seconds(self) -> None:
-        assert _fmt_time(67) == "01:07"
-
-    def test_three_minutes(self) -> None:
-        assert _fmt_time(180) == "03:00"
-
-    def test_over_one_hour(self) -> None:
-        # 1 h 2 m 3 s = 3723 s → 62:03
-        assert _fmt_time(3723) == "62:03"
-
-    def test_float_truncated(self) -> None:
-        assert _fmt_time(90.9) == "01:30"
-
-
-# ---------------------------------------------------------------------------
 # load_audio
 # ---------------------------------------------------------------------------
 
@@ -381,7 +348,7 @@ class TestLoadAudio:
 
 
 # ---------------------------------------------------------------------------
-# Player construction and _build_status
+# Player construction
 # ---------------------------------------------------------------------------
 
 
@@ -433,57 +400,6 @@ class TestPlayerConstruction:
         preset.discovery_every = 7
         player = Player(_make_cfg_mock(), _make_sim_index(), preset=preset, discovery_every=3)
         assert player._discovery_every == 3
-
-
-class TestPlayerBuildStatus:
-    """_build_status is pure Rich panel building — verify it doesn't raise."""
-
-    def test_no_current_track(self) -> None:
-        player = Player(_make_cfg_mock(), _make_sim_index())
-        panel = player._build_status()
-        assert panel is not None
-
-    def test_with_current_track(self) -> None:
-        player = Player(_make_cfg_mock(), _make_sim_index())
-        player._state.current_track = _make_entry(0)
-        player._state.next_track = _make_entry(1)
-        panel = player._build_status()
-        assert panel is not None
-
-    def test_paused_state(self) -> None:
-        player = Player(_make_cfg_mock(), _make_sim_index())
-        player._state.current_track = _make_entry(0)
-        player._state.is_paused = True
-        panel = player._build_status()
-        assert panel is not None
-
-    def test_muted_state(self) -> None:
-        player = Player(_make_cfg_mock(), _make_sim_index())
-        player._state.current_track = _make_entry(0)
-        player._state.is_muted = True
-        panel = player._build_status()
-        assert panel is not None
-
-    def test_discovery_indicator_shown_when_configured(self) -> None:
-        player = Player(_make_cfg_mock(), _make_sim_index(), discovery_every=5)
-        player._state.discovery_enabled = True
-        panel = player._build_status()
-        assert panel is not None
-
-    def test_discovery_indicator_dim_when_toggle_off(self) -> None:
-        # discovery_every set but toggle OFF -> dim indicator (line 848)
-        player = Player(_make_cfg_mock(), _make_sim_index(), discovery_every=5)
-        player._state.discovery_enabled = False
-        panel = player._build_status()
-        assert panel is not None
-
-    def test_refresh_status_with_live_calls_update(self) -> None:
-        # _refresh_status only updates when _live is set (line 868)
-        player = Player(_make_cfg_mock(), _make_sim_index())
-        live = MagicMock()
-        player._live = live
-        player._refresh_status()
-        live.update.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -1098,150 +1014,6 @@ class TestRunHeadlessSeedHooks:
         pick_next.assert_not_called()
 
 
-class TestKeyboardHandler:
-    """Exercise the on_press inner closure of _setup_keyboard via a mock keyboard module."""
-
-    def _setup(self):
-        import sys
-
-        captured = {}
-        kb_mock = MagicMock()
-
-        class _FakeKey:
-            def __init__(self, name):
-                self.name = name
-
-        kb_mock.Key.space = _FakeKey("space")
-        kb_mock.Key.right = _FakeKey("right")
-        kb_mock.Key.left = _FakeKey("left")
-        kb_mock.Key.up = _FakeKey("up")
-        kb_mock.Key.down = _FakeKey("down")
-
-        listener_instance = MagicMock()
-
-        def _make_listener(on_press):
-            captured["on_press"] = on_press
-            return listener_instance
-
-        kb_mock.Listener.side_effect = _make_listener
-        pynput_mock = MagicMock()
-        pynput_mock.keyboard = kb_mock
-        sys_modules_patch = patch.dict(
-            sys.modules, {"pynput": pynput_mock, "pynput.keyboard": kb_mock}
-        )
-        return captured, kb_mock, sys_modules_patch
-
-    def test_space_toggles_pause(self) -> None:
-        captured, kb_mock, sysmod = self._setup()
-        with sysmod:
-            player = Player(_make_cfg_mock(), _make_sim_index())
-            player._setup_keyboard()
-            assert player._state.is_paused is False
-            captured["on_press"](kb_mock.Key.space)
-            assert player._state.is_paused is True
-            captured["on_press"](kb_mock.Key.space)
-            assert player._state.is_paused is False
-
-    def test_n_skips(self) -> None:
-        captured, _kb_mock, sysmod = self._setup()
-        with sysmod:
-            player = Player(_make_cfg_mock(), _make_sim_index(), dry_run=True)
-            player._setup_keyboard()
-            char_key = MagicMock()
-            char_key.char = "n"
-            captured["on_press"](char_key)
-            assert player._skip_event.is_set()
-
-    def test_n_skips_through_the_bus_when_playing(self) -> None:
-        captured, _kb_mock, sysmod = self._setup()
-        with sysmod:
-            player = Player(_make_cfg_mock(), _make_sim_index())
-            player.bus = MagicMock()
-            player._setup_keyboard()
-            char_key = MagicMock()
-            char_key.char = "n"
-            captured["on_press"](char_key)
-            player.bus.skip.assert_called_once_with()
-            assert not player._skip_event.is_set()
-
-    def test_q_stops(self) -> None:
-        captured, _kb_mock, sysmod = self._setup()
-        with sysmod:
-            player = Player(_make_cfg_mock(), _make_sim_index())
-            player._setup_keyboard()
-            char_key = MagicMock()
-            char_key.char = "q"
-            captured["on_press"](char_key)
-            assert player._state.should_stop is True
-
-    def test_arrows_seek(self) -> None:
-        captured, kb_mock, sysmod = self._setup()
-        with sysmod:
-            player = Player(_make_cfg_mock(), _make_sim_index())
-            player._setup_keyboard()
-            player._current_sr = 44100
-            player._playback_len = 44100 * 100
-            player._playback_pos[0] = 44100 * 30
-            captured["on_press"](kb_mock.Key.right)
-            assert player._playback_pos[0] > 44100 * 30
-            prev = player._playback_pos[0]
-            captured["on_press"](kb_mock.Key.left)
-            assert player._playback_pos[0] < prev
-
-    def test_volume_keys(self) -> None:
-        captured, kb_mock, sysmod = self._setup()
-        with sysmod:
-            player = Player(_make_cfg_mock(), _make_sim_index())
-            player._setup_keyboard()
-            player._state.volume = 0.5
-            captured["on_press"](kb_mock.Key.up)
-            assert player._state.volume > 0.5
-            captured["on_press"](kb_mock.Key.down)
-            captured["on_press"](kb_mock.Key.down)
-            assert player._state.volume < 0.5
-
-    def test_m_toggles_mute(self) -> None:
-        captured, _kb_mock, sysmod = self._setup()
-        with sysmod:
-            player = Player(_make_cfg_mock(), _make_sim_index())
-            player._setup_keyboard()
-            char_key = MagicMock()
-            char_key.char = "m"
-            assert player._state.is_muted is False
-            captured["on_press"](char_key)
-            assert player._state.is_muted is True
-
-    def test_d_toggles_discovery(self) -> None:
-        captured, _kb_mock, sysmod = self._setup()
-        with sysmod:
-            player = Player(_make_cfg_mock(), _make_sim_index(), discovery_every=5)
-            player._setup_keyboard()
-            char_key = MagicMock()
-            char_key.char = "d"
-            captured["on_press"](char_key)
-            assert player._state.discovery_enabled is True
-
-    def test_d_ignored_when_no_discovery_configured(self) -> None:
-        captured, _kb_mock, sysmod = self._setup()
-        with sysmod:
-            player = Player(_make_cfg_mock(), _make_sim_index())
-            player._setup_keyboard()
-            char_key = MagicMock()
-            char_key.char = "d"
-            captured["on_press"](char_key)
-            assert player._state.discovery_enabled is False
-
-    def test_unknown_char_ignored(self) -> None:
-        captured, _kb_mock, sysmod = self._setup()
-        with sysmod:
-            player = Player(_make_cfg_mock(), _make_sim_index())
-            player._setup_keyboard()
-            char_key = MagicMock()
-            char_key.char = "x"
-            # Should not raise
-            captured["on_press"](char_key)
-
-
 # ---------------------------------------------------------------------------
 # _render_track: loading edge cases
 # ---------------------------------------------------------------------------
@@ -1354,7 +1126,6 @@ class TestPlayerRun:
             return original_pick(current)
 
         player._pick_next = stopping_pick  # type: ignore[method-assign]
-        player._setup_keyboard = lambda: None  # skip pynput in tests
 
         with patch("autodj.player.time.sleep"):  # skip the 0.1 s dry-run sleep
             player.run(seed_entry=seed)
@@ -1369,7 +1140,6 @@ class TestPlayerRun:
     def test_run_sets_current_track(self) -> None:
         player = self._make_dry_player()
         seed = player._sim.entries[0]
-        player._setup_keyboard = lambda: None
         call_count = [0]
         original_pick = player._pick_next
 
@@ -1388,7 +1158,6 @@ class TestPlayerRun:
     def test_run_with_random_seed(self) -> None:
         """Passing seed_entry=None should pick a random track and not crash."""
         player = self._make_dry_player()
-        player._setup_keyboard = lambda: None
         player._state.should_stop = True  # stop before first iteration
 
         with patch("autodj.player.time.sleep"):
@@ -1421,30 +1190,6 @@ class TestPlayerRun:
         assert history.exists()
         obj = json.loads(history.read_text(encoding="utf-8").strip().splitlines()[0])
         assert "path" in obj
-
-
-# ---------------------------------------------------------------------------
-# _setup_keyboard
-# ---------------------------------------------------------------------------
-
-
-class TestSetupKeyboard:
-    def test_does_not_raise_on_any_platform(self) -> None:
-        """_setup_keyboard wraps everything in try/except — should never raise."""
-        player = Player(_make_cfg_mock(), _make_sim_index())
-        player._setup_keyboard()  # pynput may or may not work; must not raise
-
-    def test_keyboard_unavailable_is_swallowed(self) -> None:
-        """If pynput raises during import or setup, the error is logged, not raised."""
-        import sys
-
-        player = Player(_make_cfg_mock(), _make_sim_index())
-        # Simulate pynput being importable but Listener construction failing.
-        # Use patch.dict so the import inside _setup_keyboard sees our mock.
-        keyboard_mock = MagicMock()
-        keyboard_mock.Listener.side_effect = RuntimeError("no display")
-        with patch.dict(sys.modules, {"pynput": MagicMock(), "pynput.keyboard": keyboard_mock}):
-            player._setup_keyboard()  # should not raise
 
 
 # ---------------------------------------------------------------------------
@@ -1946,7 +1691,7 @@ class TestMinFxDurationCoverage:
     the legacy filter-only effects that don't need a min (highpass_sweep,
     lowpass_sweep, cross_eq_swap, bitcrusher, flanger, pitch_swell,
     pitch_fall, telephone, chorus, submerge, vinyl_wow, gate_stutter).
-    Catches drift between the Python CLI player + the JS browser player
+    Catches drift between the Python server mix + the JS browser player
     when new effects ship.
     """
 

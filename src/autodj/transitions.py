@@ -821,7 +821,7 @@ def freeze(
 
     Hands-down a worklet-friendly effect (the browser implementation runs
     in the AudioWorklet thread for sample-accuracy) — the numpy version
-    here mirrors the same logic for CLI playback.  Slight crossfade on
+    here mirrors the same logic for the server mix.  Slight crossfade on
     every loop seam prevents clicks.
 
     Args:

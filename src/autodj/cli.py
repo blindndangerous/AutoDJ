@@ -6,7 +6,7 @@ and then run:
 .. code-block:: bash
 
     uv run autodj index          # build or update the music library index
-    uv run autodj play           # start playing music
+    uv run autodj serve          # start the auto-DJ and its web page
 
 See each command's ``--help`` for full option documentation.
 """
@@ -324,16 +324,6 @@ def _can_import(name: str) -> bool:
     return True
 
 
-def _coerce_audio_device(value: str | None) -> str | int | None:
-    """Return *value* as int when numeric, else as substring (or None)."""
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except ValueError:
-        return value
-
-
 def _apply_serve_overrides(
     cfg: AutoDJConfig, kw: dict
 ) -> bool:  # pragma: no cover -- exercised by smoke tests
@@ -489,7 +479,6 @@ def _print_serve_banner(
     resolved_preset: Any,
     parsed_bpm_range: tuple[float, float] | None,
     discovery_every: int | None,
-    discovery_hint: str = "",
 ) -> None:  # pragma: no cover -- terminal banner
     """Print the index summary + active preset / BPM / discovery banner."""
     console_.print(
@@ -503,7 +492,7 @@ def _print_serve_banner(
     if parsed_bpm_range:
         console_.print(f"  BPM range  : {parsed_bpm_range[0]:.0f}–{parsed_bpm_range[1]:.0f}")
     if discovery_every:
-        console_.print(f"  Discovery  : every {discovery_every} tracks{discovery_hint}")
+        console_.print(f"  Discovery  : every {discovery_every} tracks")
 
 
 def _print_serve_url_banner(
@@ -1277,347 +1266,6 @@ def cmd_analyse(
 
 
 # ---------------------------------------------------------------------------
-# play subcommand
-# ---------------------------------------------------------------------------
-
-
-@cli.command("play")
-@click.option(
-    "--seed",
-    default=None,
-    type=str,
-    help=(
-        "Search term to choose the starting track (matched against title and artist). "
-        "If multiple tracks match, an interactive selection prompt is shown. "
-        "Omit to start from a random track."
-    ),
-)
-@click.option(
-    "--crossfade",
-    "crossfade_seconds",
-    default=None,
-    type=float,
-    help="Override the crossfade duration in seconds for this session.",
-)
-@click.option(
-    "--no-repeat",
-    "no_repeat_window",
-    default=None,
-    type=int,
-    help="Override the recently-played exclusion window for this session.",
-)
-@click.option(
-    "--preset",
-    default=None,
-    type=str,
-    help=(
-        "BPM-shaping preset name (e.g. wakeup, chill, party). "
-        "Built-in presets: wakeup, winddown, sleep, morning, slide, party, workout, chill, focus, driving. "
-        "User presets can be defined in config.toml under [presets.NAME]."
-    ),
-)
-@click.option(
-    "--export-m3u",
-    "export_m3u",
-    default=None,
-    type=click.Path(dir_okay=False, writable=True),
-    help="Write a live M3U playlist to this file as tracks play.",
-)
-@click.option(
-    "--bpm-range",
-    "bpm_range",
-    default=None,
-    type=str,
-    help="Hard BPM filter, e.g. '90-130'. Tracks outside this range are excluded.",
-)
-@click.option(
-    "--discovery-every",
-    "discovery_every",
-    default=None,
-    type=int,
-    help=(
-        "Inject a sonically distant track every N tracks. "
-        "Press D while playing to toggle discovery on/off."
-    ),
-)
-@click.option(
-    "--history-file",
-    "history_file",
-    default=None,
-    type=click.Path(dir_okay=False),
-    help="Append a JSON Lines play history entry for every track played.",
-)
-@click.option(
-    "--dry-run",
-    is_flag=True,
-    default=False,
-    help=(
-        "Print track selections without playing audio. "
-        "Useful for testing the similarity engine without speakers."
-    ),
-)
-@click.option(
-    "--smart-shuffle",
-    is_flag=True,
-    default=False,
-    help=(
-        "Pick the most sonically DISTANT next track instead of the closest. "
-        "Genuinely surprising sequences, opposite of the default DJ behaviour."
-    ),
-)
-@click.option(
-    "--pure-shuffle",
-    is_flag=True,
-    default=False,
-    help=(
-        "Pick a uniformly random next track (Random walk), ignoring "
-        "similarity entirely.  Toggle off mid-set and similarity resumes "
-        "from the current song."
-    ),
-)
-@click.option(
-    "--anchor-seed/--no-anchor-seed",
-    "anchor_to_seed",
-    default=None,
-    help=(
-        "Each next pick stays similar to the SEED track, not the last "
-        "track that played.  Prevents drift through chained hops."
-    ),
-)
-@click.option(
-    "--show-lyrics/--no-show-lyrics",
-    "show_lyrics",
-    default=None,
-    help=(
-        "Show LRC / plain lyrics in the CLI panel and web UI.  Overrides "
-        "[playback] show_lyrics in config.toml.  Default: on."
-    ),
-)
-@click.option(
-    "--daypart/--no-daypart",
-    "enable_daypart",
-    default=None,
-    help=(
-        "Pick BPM/energy targets from the current local time of day "
-        "(morning/midday/afternoon/evening/night).  Only active when no "
-        "explicit --preset and no --mood-arc are set."
-    ),
-)
-@click.option(
-    "--mood-arc/--no-mood-arc",
-    "enable_mood_arc",
-    default=None,
-    help=(
-        "Set-relative warmup -> peak -> cool envelope.  Anchored to the "
-        "current time; loops every --mood-arc-hours."
-    ),
-)
-@click.option(
-    "--mood-arc-hours",
-    type=float,
-    default=None,
-    help="Length of the mood-arc envelope in hours.  Default 3.",
-)
-@click.option(
-    "--import-external-cues/--no-import-external-cues",
-    "import_external_cues",
-    default=None,
-    help=(
-        "Auto-import cue points from Mixxx / Rekordbox / Traktor "
-        "libraries on first cache load.  Default: on."
-    ),
-)
-@click.option(
-    "--beat-sync-fx/--no-beat-sync-fx",
-    "beat_sync_fx",
-    default=None,
-    help=(
-        "Snap rhythmic transition FX (echo, stutter, beat_repeat, "
-        "sidechain_pump, halftime, scratch, ...) to the beat grid + "
-        "size to whole bars at a blended outgoing->incoming tempo.  "
-        "Default: on."
-    ),
-)
-@click.option(
-    "--key-sync-fx/--no-key-sync-fx",
-    "key_sync_fx",
-    default=None,
-    help=(
-        "Tune oscillator-based FX (pitch_swell, pitch_fall, dub_siren, "
-        "ring_modulator, air_horn) to the song's root note, lerping "
-        "outgoing -> incoming across the fade.  Default: on."
-    ),
-)
-@click.option(
-    "--harmonic-mode",
-    "harmonic_mode",
-    default=None,
-    type=click.Choice(HARMONIC_MODES, case_sensitive=False),
-    help="Harmonic-mixing rule for next-track picks; 'off' disables it (overrides config).",
-)
-@click.option(
-    "--beatmatch/--no-beatmatch",
-    default=None,
-    help="Pitch-stretch incoming track to match outgoing BPM during crossfade.",
-)
-@click.option(
-    "--phrase-align/--no-phrase-align",
-    default=None,
-    help="Snap crossfade start to nearest 8-bar phrase boundary.",
-)
-@click.option(
-    "--align-outro/--no-align-outro",
-    "outro_intro_align",
-    default=None,
-    help="Auto-detect outro of outgoing + intro of incoming and crossfade between them.",
-)
-@click.option(
-    "--filter-sweep/--no-filter-sweep",
-    default=None,
-    help="Apply a low-pass sweep on the outgoing tail during crossfade.",
-)
-@click.option(
-    "--transition",
-    "transition_fx",
-    default=None,
-    type=click.Choice(_TRANSITION_CHOICES, case_sensitive=False),
-    help="Transition effect layered on every crossfade (overrides config).",
-)
-@click.option(
-    "--transition-mode",
-    "transition_mode",
-    default=None,
-    type=click.Choice(_TRANSITION_MODE_CHOICES, case_sensitive=False),
-    help=(
-        "How the crossfade aligns with each track's intro/outro markers. "
-        "Mirrors Mixxx's AutoDJ TransitionMode.  Overrides [playback] "
-        "transition_mode."
-    ),
-)
-@click.option(
-    "--name",
-    "index_name",
-    default=None,
-    type=str,
-    help="Named index to play from (default: 'default').",
-)
-@click.option(
-    "--device",
-    "audio_device",
-    default=None,
-    type=str,
-    help=(
-        "Audio output device — index (e.g. '4') or substring of the "
-        "device name (e.g. 'USB Headphones').  Run "
-        "[bold]autodj list-devices[/] to see options.  Overrides "
-        "[playback] audio_device."
-    ),
-)
-@click.pass_context
-def cmd_play(  # pragma: no cover -- end-to-end orchestrator, exercised by smoke tests
-    ctx: click.Context,
-    seed: str | None,
-    crossfade_seconds: float | None,
-    no_repeat_window: int | None,
-    preset: str | None,
-    export_m3u: str | None,
-    bpm_range: str | None,
-    discovery_every: int | None,
-    history_file: str | None,
-    dry_run: bool,
-    smart_shuffle: bool,
-    pure_shuffle: bool,
-    anchor_to_seed: bool | None,
-    show_lyrics: bool | None,
-    enable_daypart: bool | None,
-    enable_mood_arc: bool | None,
-    mood_arc_hours: float | None,
-    import_external_cues: bool | None,
-    beat_sync_fx: bool | None,
-    key_sync_fx: bool | None,
-    harmonic_mode: str | None,
-    beatmatch: bool | None,
-    phrase_align: bool | None,
-    outro_intro_align: bool | None,
-    filter_sweep: bool | None,
-    transition_fx: str | None,
-    transition_mode: str | None,
-    index_name: str | None,
-    audio_device: str | None,
-) -> None:
-    """Start the auto-DJ playback loop.
-
-    Loads the library index and plays songs continuously, choosing each next
-    track based on sonic similarity to the current one.
-
-    \b
-    Controls while playing:
-      Space  — pause / resume
-      N      — skip to next track
-      D      — toggle discovery mode (requires --discovery-every)
-      Q      — quit
-
-    \b
-    Examples:
-      uv run autodj play
-      uv run autodj play --seed "Portishead"
-      uv run autodj play --preset wakeup
-      uv run autodj play --bpm-range 90-130 --discovery-every 10
-      uv run autodj play --export-m3u session.m3u --history-file history.jsonl
-      uv run autodj play --dry-run
-    """
-    from autodj.player import Player
-
-    cfg = _load_cfg_or_exit(ctx.obj["config_path"])
-    _apply_index_name(cfg, index_name)
-    _apply_serve_overrides(cfg, locals())
-    if crossfade_seconds is not None:
-        cfg.playback.crossfade_seconds = crossfade_seconds
-    if no_repeat_window is not None:
-        cfg.playback.no_repeat_window = no_repeat_window
-    if audio_device is not None:
-        cfg.playback.audio_device = _coerce_audio_device(audio_device)
-    sim = _load_index_or_exit(cfg)
-    resolved_preset = _resolve_preset_or_exit(cfg, preset)
-    parsed_bpm_range = _parse_bpm_range_or_exit(bpm_range)
-
-    _print_serve_banner(
-        console,
-        sim=sim,
-        resolved_preset=resolved_preset,
-        parsed_bpm_range=parsed_bpm_range,
-        discovery_every=discovery_every,
-        discovery_hint=" (press D to toggle)",
-    )
-
-    seed_entry = _resolve_seed(sim, cfg, seed, console)
-
-    player = Player(
-        cfg,
-        sim,
-        dry_run=dry_run,
-        preset=resolved_preset,
-        export_m3u=Path(export_m3u) if export_m3u else None,
-        history_file=Path(history_file) if history_file else cfg.playback.history_file,
-        discovery_every=discovery_every
-        if discovery_every is not None
-        else cfg.playback.discovery_every,
-        bpm_range=parsed_bpm_range,
-        smart_shuffle=smart_shuffle,
-        pure_shuffle=pure_shuffle,
-        anchor_to_seed=bool(anchor_to_seed),
-    )
-    # CLI play and the web `serve` UI are intentionally decoupled —
-    # the web UI persists its own settings (`web_state.json`) which
-    # the CLI ignores.  CLI behaviour is driven entirely by config +
-    # CLI flags.  Two surfaces, two state stores, no surprise overrides.
-    try:
-        player.run(seed_entry=seed_entry)
-    except KeyboardInterrupt:
-        console.print("\n[yellow]Stopped.[/]")
-
-
-# ---------------------------------------------------------------------------
 # serve subcommand
 # ---------------------------------------------------------------------------
 
@@ -1921,8 +1569,8 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
 
     Runs the AutoDJ player in the background and serves a web UI at
     http://HOST:PORT.  All playback controls (pause, skip, volume, mute,
-    discovery) are available from the browser.  Keyboard controls continue
-    to work in the terminal at the same time.
+    discovery) are available from the browser.  With --server-audio the
+    mix also plays on this machine's speakers, still controlled from the page.
 
     \b
     Examples:
@@ -1930,6 +1578,7 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
       uv run autodj serve --seed "Portishead" --open
       uv run autodj serve --lan
       uv run autodj serve --preset wakeup --discovery-every 10
+      uv run autodj serve --server-audio
     """
     from autodj.server import serve
 
@@ -2188,15 +1837,12 @@ def cmd_playlist(
 def cmd_list_devices() -> None:
     """List every audio output device sounddevice can see.
 
-    Use the index or a substring of the name with ``--device`` on the
-    ``play`` command, or set ``[playback] audio_device`` in
-    ``config.toml`` for a permanent default.
+    Set ``[playback] audio_device`` in ``config.toml`` to the index or a
+    substring of the name to choose where ``serve --server-audio`` plays.
 
     \b
     Examples:
       uv run autodj list-devices
-      uv run autodj play --device "USB Headphones"
-      uv run autodj play --device 4
     """
     try:
         import sounddevice as sd
@@ -2229,7 +1875,7 @@ def cmd_list_devices() -> None:
         console.print("[yellow]No output devices found.[/]")
     else:
         console.print(
-            '\n[dim]* = system default.  Pass --device <index> or --device "<substring>".[/]'
+            "\n[dim]* = system default.  Set [playback] audio_device to an index or name.[/]"
         )
 
 

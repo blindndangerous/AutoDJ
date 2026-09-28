@@ -44,10 +44,9 @@ class TestServerAcceptsEveryEffect:
 
 
 class TestAllowlistsAreDerived:
-    @pytest.mark.parametrize("command", ["play", "serve"])
-    def test_cli_choices_match_the_enum(self, command: str) -> None:
+    def test_cli_choices_match_the_enum(self) -> None:
         option = next(
-            param for param in cli.commands[command].params if param.name == "transition_fx"
+            param for param in cli.commands["serve"].params if param.name == "transition_fx"
         )
         assert set(option.type.choices) == TRANSITION_EFFECT_NAMES
 

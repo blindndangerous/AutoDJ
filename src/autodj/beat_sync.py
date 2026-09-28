@@ -1,6 +1,6 @@
-"""Beat- and key-synchronisation helpers shared by the web + CLI players.
+"""Beat- and key-synchronisation helpers shared by the browser and server mixes.
 
-The browser player (``static/app.js``) and the server-side CLI player both
+The browser player (``static/app.js``) and the server-side mix both
 need to align transition effects with the beat grid + root note of the
 tracks playing on each side of a crossfade.  This module owns the small
 amount of music-theory math used by both:

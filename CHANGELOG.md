@@ -27,6 +27,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `GET /api/settings` and `GET /api/profiles/{name}`. The web page never used them; the settings
   are in `GET /api/status` under `settings`.
+- The `autodj play` terminal player, with its keyboard keys (a global keyboard hook that also
+  caught keys typed in other windows), its terminal status panel and its terminal lyrics. To play
+  on the machine's own speakers, run `autodj serve --server-audio` and control it from the web
+  page; choose the output device with `[playback] audio_device`. The `play` extra no longer
+  installs `pynput`.
 
 ### Fixed
 

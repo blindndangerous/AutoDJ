@@ -6,10 +6,7 @@ BPM range, discovery rate — are written to
 ``<index_dir>/<name>/web_state.json``
 so the next `autodj serve` boot restores them.
 
-This file is **owned by the web UI**.  CLI ``autodj play`` deliberately
-does NOT read or write it — CLI playback is driven entirely by config
-+ command-line flags.  Two surfaces, two state stores, no surprise
-overrides.
+This file is **owned by the web UI**.
 
 The on-disk format mirrors the dict returned by
 ``PlayerBridge.get_settings()`` minus the ``available_presets`` list.

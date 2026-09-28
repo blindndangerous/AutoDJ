@@ -210,10 +210,6 @@ class TestCliConfigNotFound:
         result = CliRunner().invoke(cli, ["--config", self._missing(tmp_path), "index"])
         assert result.exit_code == 1
 
-    def test_play_exits_on_missing_config(self, tmp_path: Path) -> None:
-        result = CliRunner().invoke(cli, ["--config", self._missing(tmp_path), "play"])
-        assert result.exit_code == 1
-
     def test_stats_exits_on_missing_config(self, tmp_path: Path) -> None:
         result = CliRunner().invoke(cli, ["--config", self._missing(tmp_path), "stats"])
         assert result.exit_code == 1
@@ -482,11 +478,6 @@ class TestCliIndexNotFound:
         )
         return cfg
 
-    def test_play_exits_on_missing_index(self, tmp_path: Path) -> None:
-        cfg = self._write_minimal_config(tmp_path)
-        result = CliRunner().invoke(cli, ["--config", str(cfg), "play"])
-        assert result.exit_code == 1
-
     def test_stats_exits_on_missing_index(self, tmp_path: Path) -> None:
         cfg = self._write_minimal_config(tmp_path)
         result = CliRunner().invoke(cli, ["--config", str(cfg), "stats"])
@@ -499,112 +490,12 @@ class TestCliIndexNotFound:
 
 
 # ---------------------------------------------------------------------------
-# CLI — play / playlist --bpm-range validation
-# ---------------------------------------------------------------------------
-
-
-class TestCliBpmRangeValidation:
-    def _write_minimal_config(self, tmp_path: Path) -> Path:
-        cfg = tmp_path / "config.toml"
-        cfg.write_text(
-            '[library]\nmusic_dir = "Z:/Music"\n'
-            '[index]\nindex_dir = "Z:/no-such-index"\nmodel_dir = "models"\n'
-            "[playback]\ncrossfade_seconds = 3.0\nno_repeat_window = 50\n"
-            '[model]\nname = "OpenMuQ/MuQ-large-msd-iter"\n',
-            encoding="utf-8",
-        )
-        return cfg
-
-    def test_play_invalid_bpm_range_exits(self, tmp_path: Path) -> None:
-        """A bad --bpm-range should exit with code 1."""
-        # load_config and SimilarityIndex are imported inside the command function,
-        # so we patch at their definition sites.
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-            patch("autodj.player.Player.run"),
-        ):
-            result = CliRunner().invoke(cli, ["play", "--bpm-range", "bad-range"])
-        assert result.exit_code == 1
-
-
-# ---------------------------------------------------------------------------
 # CLI happy paths — real code, mocked heavy deps
 # ---------------------------------------------------------------------------
 
 
 class TestCliHappyPaths:
     """Cover the success branches of each command by mocking model/index/player."""
-
-    def test_play_exits_zero(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-            patch("autodj.player.Player.run"),
-        ):
-            result = CliRunner().invoke(cli, ["play"])
-        assert result.exit_code == 0
-
-    def test_play_crossfade_override_applied(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-            patch("autodj.player.Player.run"),
-        ):
-            CliRunner().invoke(cli, ["play", "--crossfade", "5.0"])
-        assert cfg_mock.playback.crossfade_seconds == 5.0
-
-    def test_play_no_repeat_override_applied(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-            patch("autodj.player.Player.run"),
-        ):
-            CliRunner().invoke(cli, ["play", "--no-repeat", "100"])
-        assert cfg_mock.playback.no_repeat_window == 100
-
-    def test_play_dry_run_exits_zero(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-            patch("autodj.player.Player.run"),
-        ):
-            result = CliRunner().invoke(cli, ["play", "--dry-run"])
-        assert result.exit_code == 0
-
-    def test_play_bpm_range_parsed_and_applied(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        player_init_kwargs = {}
-
-        from autodj.player import Player as RealPlayer
-
-        original_init = RealPlayer.__init__
-
-        def capturing_init(self, cfg, sim, **kwargs):
-            player_init_kwargs.update(kwargs)
-            original_init(self, cfg, sim, **kwargs)
-
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-            patch("autodj.player.Player.run"),
-            patch("autodj.player.Player.__init__", capturing_init),
-        ):
-            CliRunner().invoke(cli, ["play", "--bpm-range", "90-130"])
-
-        assert player_init_kwargs.get("bpm_range") == (90.0, 130.0)
 
     def test_stats_happy_path(self) -> None:
         cfg_mock = _make_cfg()
@@ -1276,18 +1167,6 @@ class TestCmdListIndexes:
 
 
 class TestNameValidation:
-    def test_play_rejects_path_separator(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-            patch("autodj.player.Player.run"),
-        ):
-            result = CliRunner().invoke(cli, ["play", "--name", "index/tracks.db"])
-        assert result.exit_code == 1
-        assert "path separators" in result.output.lower() or "Invalid" in result.output
-
     def test_serve_rejects_traversal(self) -> None:
         cfg_mock = _make_cfg()
         sim_mock = _make_sim()
@@ -1351,30 +1230,6 @@ class TestListDevices:
         assert "Mic In" not in result.output
 
 
-class TestPlayDeviceFlag:
-    def test_device_int_parsed(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-            patch("autodj.player.Player.run"),
-        ):
-            CliRunner().invoke(cli, ["play", "--device", "4"])
-        assert cfg_mock.playback.audio_device == 4
-
-    def test_device_string_kept(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-            patch("autodj.player.Player.run"),
-        ):
-            CliRunner().invoke(cli, ["play", "--device", "USB Headphones"])
-        assert cfg_mock.playback.audio_device == "USB Headphones"
-
-
 # ---------------------------------------------------------------------------
 # cmd_index — error paths
 # ---------------------------------------------------------------------------
@@ -1400,198 +1255,11 @@ class TestCmdIndex:
 
 
 # ---------------------------------------------------------------------------
-# cmd_play — DJ-mix overrides + transition + smart-shuffle
+# cmd_serve — playback overrides
 # ---------------------------------------------------------------------------
 
 
-class TestCmdPlayOverrides:
-    def test_play_harmonic_override(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-            patch("autodj.player.Player.run"),
-        ):
-            CliRunner().invoke(cli, ["play", "--harmonic-mode", "strict"])
-        assert cfg_mock.djmix.harmonic_mode == "strict"
-
-    def test_play_harmonic_mode_off_override(self) -> None:
-        cfg_mock = _make_cfg()
-        cfg_mock.djmix.harmonic_mode = "compatible"
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-            patch("autodj.player.Player.run"),
-        ):
-            CliRunner().invoke(cli, ["play", "--harmonic-mode", "off"])
-        assert cfg_mock.djmix.harmonic_mode == "off"
-
-    def test_play_beatmatch_override(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-            patch("autodj.player.Player.run"),
-        ):
-            CliRunner().invoke(cli, ["play", "--beatmatch"])
-        assert cfg_mock.djmix.beatmatch is True
-
-    def test_play_transition_override(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-            patch("autodj.player.Player.run"),
-        ):
-            CliRunner().invoke(cli, ["play", "--transition", "echo_out"])
-        assert cfg_mock.transitions.effect == "echo_out"
-
-    def test_play_phrase_align_override(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-            patch("autodj.player.Player.run"),
-        ):
-            CliRunner().invoke(cli, ["play", "--phrase-align"])
-        assert cfg_mock.djmix.phrase_align is True
-
-    def test_play_align_outro_override(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-            patch("autodj.player.Player.run"),
-        ):
-            CliRunner().invoke(cli, ["play", "--align-outro"])
-        assert cfg_mock.djmix.outro_intro_align is True
-
-    def test_play_filter_sweep_override(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-            patch("autodj.player.Player.run"),
-        ):
-            CliRunner().invoke(cli, ["play", "--filter-sweep"])
-        assert cfg_mock.djmix.filter_sweep is True
-
-    def test_play_with_discovery_every(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-            patch("autodj.player.Player.run"),
-        ):
-            result = CliRunner().invoke(cli, ["play", "--discovery-every", "12"])
-        assert result.exit_code == 0
-
-    def test_play_invalid_bpm_range(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-            patch("autodj.player.Player.run"),
-        ):
-            result = CliRunner().invoke(cli, ["play", "--bpm-range", "junk"])
-        assert result.exit_code == 1
-
-    def test_play_unknown_preset(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-            patch("autodj.player.Player.run"),
-        ):
-            result = CliRunner().invoke(cli, ["play", "--preset", "nosuchpreset_xyz"])
-        assert result.exit_code == 1
-
-    def test_play_pure_shuffle_flag(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-            patch("autodj.player.Player") as p_cls,
-        ):
-            p_cls.return_value.run = lambda *_a, **_k: None
-            result = CliRunner().invoke(cli, ["play", "--pure-shuffle"])
-        assert result.exit_code == 0
-        kwargs = p_cls.call_args.kwargs
-        assert kwargs.get("pure_shuffle") is True
-
-    def test_play_anchor_seed_flag(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-            patch("autodj.player.Player") as p_cls,
-        ):
-            p_cls.return_value.run = lambda *_a, **_k: None
-            result = CliRunner().invoke(cli, ["play", "--anchor-seed"])
-        assert result.exit_code == 0
-        kwargs = p_cls.call_args.kwargs
-        assert kwargs.get("anchor_to_seed") is True
-
-    def test_play_no_show_lyrics_flag(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-            patch("autodj.player.Player.run"),
-        ):
-            CliRunner().invoke(cli, ["play", "--no-show-lyrics"])
-        assert cfg_mock.playback.show_lyrics is False
-
-    def test_play_daypart_flag(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-            patch("autodj.player.Player.run"),
-        ):
-            CliRunner().invoke(cli, ["play", "--daypart"])
-        assert cfg_mock.playback.enable_daypart is True
-
-    def test_play_mood_arc_flag_with_hours(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-            patch("autodj.player.Player.run"),
-        ):
-            CliRunner().invoke(
-                cli,
-                ["play", "--mood-arc", "--mood-arc-hours", "1.5"],
-            )
-        assert cfg_mock.playback.enable_mood_arc is True
-        assert cfg_mock.playback.mood_arc_hours == 1.5
-
-    def test_play_no_import_external_cues_flag(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-            patch("autodj.player.Player.run"),
-        ):
-            CliRunner().invoke(cli, ["play", "--no-import-external-cues"])
-        assert cfg_mock.playback.import_external_cues is False
-
+class TestCmdServePlaybackOverrides:
     def test_serve_daypart_flag(self) -> None:
         cfg_mock = _make_cfg()
         sim_mock = _make_sim()

@@ -10,7 +10,7 @@ import numpy as np
 from click.testing import CliRunner
 
 from autodj.backup import BackupError
-from autodj.cli import _can_import, _coerce_audio_device, _resolve_seed, cli
+from autodj.cli import _can_import, _resolve_seed, cli
 from autodj.indexer import FEATURE_DIM, IndexEntry, save_index
 
 
@@ -60,22 +60,6 @@ def _cfg() -> MagicMock:
     cfg.playback.pick_temperature = 0.3
     cfg.presets = {}
     return cfg
-
-
-# ---------------------------------------------------------------------------
-# _coerce_audio_device
-# ---------------------------------------------------------------------------
-
-
-class TestCoerceAudioDevice:
-    def test_none(self) -> None:
-        assert _coerce_audio_device(None) is None
-
-    def test_int(self) -> None:
-        assert _coerce_audio_device("3") == 3
-
-    def test_str(self) -> None:
-        assert _coerce_audio_device("USB") == "USB"
 
 
 # ---------------------------------------------------------------------------

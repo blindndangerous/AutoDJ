@@ -314,8 +314,8 @@ class PlaybackConfig(_Section):
     # A#).  Default False = sharps, which matches the spelling most DJ
     # tag editors emit.
     key_prefer_flats: bool = False
-    # When False, the player never loads / renders lyrics (CLI panel + web
-    # UI lyric card both honour this).  Default True — opt-out, not opt-in.
+    # When False, the player never loads lyrics and the web UI hides its
+    # lyric card.  Default True — opt-out, not opt-in.
     show_lyrics: bool = True
     # Web-UI gapless prefetch — preload next track's bytes on the standby
     # deck as soon as the server picks it.  Off only for very tight
@@ -327,7 +327,7 @@ class PlaybackConfig(_Section):
     silence_trigger_crossfade: bool = True
     # Output device for sounddevice — None / "" = system default.
     # Either an int (sounddevice.query_devices() index) or a substring of
-    # the device name.  Set via [playback] audio_device or `--device` CLI.
+    # the device name.  Set via [playback] audio_device; used by server audio.
     audio_device: str | int | None = None
     # Wall-clock daypart targeting.  When True, the picker biases
     # candidate ranking toward the BPM/energy of the active built-in

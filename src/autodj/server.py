@@ -1059,7 +1059,7 @@ def create_app(
             # Graceful teardown.  Order matters:
             #   1. Tell the Player thread to leave its wait-loop.  It is
             #      a daemon thread so the process can exit either way,
-            #      but a clean stop lets pynput / sounddevice release
+            #      but a clean stop lets sounddevice release
             #      OS handles instead of being torn down mid-call.
             #   2. Join the main Player thread, then every registered
             #      background analysis worker before closing their cache.
@@ -2462,11 +2462,6 @@ def serve(
         smart_shuffle=smart_shuffle,
         pure_shuffle=pure_shuffle,
         anchor_to_seed=anchor_to_seed,
-        # The browser is the control surface in serve mode — disable
-        # the global pynput keyboard hook so keys typed in OTHER apps
-        # / tabs / windows don't accidentally pause / skip / mute the
-        # player.
-        no_keyboard=True,
     )
     bridge = PlayerBridge(player=player, sim=sim)
     # The mix bus announces every track it starts: session history, the

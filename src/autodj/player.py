@@ -1,25 +1,12 @@
-"""Crossfade audio player with keyboard controls and Rich terminal display.
+"""Auto-DJ player: next-track picking and the server-side crossfade mix.
 
-Server audio plays through a :class:`~autodj.mixbus.MixBus` fed by a
-render-ahead worker thread (:class:`~autodj.render_ahead.RenderAhead`): each
-track is rendered in stereo with the head of the next track crossfaded into
-its tail, and the bus streams the result to the sound card
-(:class:`~autodj.sound_output.SoundDeviceOutput`) in 20 ms blocks.
-
-Keyboard controls (via ``pynput``):
-- ``Space`` — pause / resume
-- ``N`` — skip to next song immediately
-- ``Q`` — quit
-
-Example:
-    >>> from autodj.config import load_config
-    >>> from autodj.model import load_model, download_model_if_needed
-    >>> from autodj.similarity import SimilarityIndex
-    >>> from autodj.player import Player
-    >>> cfg = load_config()
-    >>> sim = SimilarityIndex.from_index_dir(cfg.index.index_dir)
-    >>> wrapper = load_model(download_model_if_needed(cfg.model, cfg.index))
-    >>> Player(cfg, sim).run(seed_entry=None)
+``autodj serve`` drives the player; the web page is its control surface.
+Server audio (``--server-audio`` or ``--stream``) plays through a
+:class:`~autodj.mixbus.MixBus` fed by a render-ahead worker thread
+(:class:`~autodj.render_ahead.RenderAhead`): each track is rendered in stereo
+with the head of the next track crossfaded into its tail, and the bus streams
+the result to the sound card (:class:`~autodj.sound_output.SoundDeviceOutput`)
+or the stream encoder in 20 ms blocks.
 """
 
 from __future__ import annotations
@@ -37,8 +24,6 @@ from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import numpy as np
 from rich.console import Console
-from rich.live import Live
-from rich.panel import Panel
 from scipy.signal import butter, sosfilt
 
 # Heavy / platform-specific audio deps are imported with graceful None
@@ -78,25 +63,8 @@ logger = logging.getLogger(__name__)
 # Default output sample rate; sounddevice converts if the device differs.
 _DEFAULT_SR = 44_100
 
-# Keyboard seek step and volume increment
-_SEEK_SECONDS = 10
-_VOLUME_STEP = 0.05
-
-# Shared Rich console — used for the Live status panel and transient log lines
+# Rich console for transient terminal notes (the discovery marker).
 _CONSOLE = Console()
-
-
-def _fmt_time(seconds: float) -> str:
-    """Format a duration in seconds as ``MM:SS``.
-
-    Args:
-        seconds: Non-negative duration in seconds.
-
-    Returns:
-        String of the form ``"03:47"``.
-    """
-    m, s = divmod(max(0, int(seconds)), 60)
-    return f"{m:02d}:{s:02d}"
 
 
 # ---------------------------------------------------------------------------
@@ -643,7 +611,8 @@ class Player:
     Args:
         cfg: Full AutoDJ configuration (used for playback settings).
         sim_index: Loaded similarity index for next-track selection.
-        dry_run: If ``True``, print track selections without playing audio.
+        dry_run: Browser mode: pick tracks but play nothing on the server;
+            the web page plays the audio.
         preset: Optional BPM-shaping preset.
         export_m3u: Optional path to write a live M3U playlist as tracks play.
         history_file: Optional path to append JSON Lines play history.
@@ -669,7 +638,6 @@ class Player:
         smart_shuffle: bool = False,
         pure_shuffle: bool = False,
         anchor_to_seed: bool = False,
-        no_keyboard: bool = False,
         stream_mode: bool = False,
         server_audio_too: bool = False,
     ) -> None:
@@ -681,7 +649,7 @@ class Player:
         Args:
             cfg: Full :class:`~autodj.config.AutoDJConfig` instance.
             sim_index: Loaded :class:`~autodj.similarity.SimilarityIndex`.
-            dry_run: If ``True``, print track selections without playing audio.
+            dry_run: Browser mode: pick tracks but play nothing on the server.
             preset: Optional :class:`~autodj.presets.Preset` for BPM shaping.
             export_m3u: Optional :class:`~pathlib.Path` for live M3U export.
             history_file: Optional :class:`~pathlib.Path` for JSON Lines history.
@@ -697,7 +665,6 @@ class Player:
         self._dry_run = dry_run
         self._stream_mode = stream_mode
         self._server_audio_too = server_audio_too
-        self._no_keyboard = no_keyboard
         self._preset = preset
         self._export_m3u = export_m3u
         self._history_file = history_file
@@ -723,7 +690,7 @@ class Player:
         # consumed by the web UI via PlayerBridge.get_state().
         self._current_lyrics: list = []
         self._current_lyrics_plain: str = ""
-        # 3-band EQ state (1.0 = unity), mutated by web UI / keyboard
+        # 3-band EQ state (1.0 = unity), mutated by the web UI
         self._eq_low: float = 1.0
         self._eq_mid: float = 1.0
         self._eq_high: float = 1.0
@@ -796,13 +763,11 @@ class Player:
         )
         self._skip_event = threading.Event()
         self._lock = threading.Lock()
-        # Shared playback position (samples) — written by callback, read/written by
-        # keyboard seek handler.  Using a list so both sides share the same object.
+        # Shared playback position (samples) — written by the mix bus, read and
+        # written by seeks.  Using a list so both sides share the same object.
         self._playback_pos: list[int] = [0]
         self._playback_len: int = 0  # length of the current audio array in samples
         self._current_sr: int = _DEFAULT_SR
-        # Rich Live display — set inside run(), None between sessions
-        self._live: Live | None = None
         # Server audio: the mix bus that plays rendered tracks (created in
         # run() when not dry-run, or supplied by the stream station), and a
         # hook the bridge sets to hear about each track the bus starts.
@@ -855,60 +820,6 @@ class Player:
         if not dry_run:
             self._build_bus()
 
-    def _build_status(self) -> Panel:
-        """Build the Rich Panel rendered in the bottom status bar.
-
-        Returns:
-            A :class:`rich.panel.Panel` showing now-playing info, volume, and controls.
-        """
-        current = self._state.current_track
-        next_t = self._state.next_track
-
-        # --- Line 1: play state + current track + elapsed time ---
-        if current:
-            icon = "[yellow]⏸ PAUSED[/yellow]" if self._state.is_paused else "[green]▶[/green]"
-            elapsed = self._playback_pos[0] / max(1, self._current_sr)
-            total = current.length or 0.0
-            elapsed = min(elapsed, total)
-            bpm = f"  BPM {current.bpm:.0f}" if current.bpm else ""
-            pos = f"  {_fmt_time(elapsed)} / {_fmt_time(total)}" if total > 0 else ""
-            now_line = f"{icon} [bold]{current.display_name}[/bold][dim]{bpm}{pos}[/dim]"
-        else:
-            now_line = "[dim]Loading...[/dim]"
-
-        # --- Line 2: next track + volume bar + discovery indicator ---
-        vol_pct = round(self._state.volume * 100)
-        filled = round(self._state.volume * 10)
-        bar = "█" * filled + "░" * (10 - filled)
-        vol = "[red]MUTED[/red]" if self._state.is_muted else f"[cyan]{bar} {vol_pct}%[/cyan]"
-        nxt = f"[dim]Next:[/dim] {next_t.display_name}  " if next_t else ""
-        disc_indicator = ""
-        if self._discovery_every is not None:
-            if self._state.discovery_enabled:
-                disc_indicator = "  [bold cyan]\u25c8 Discovery[/bold cyan]"
-            else:
-                disc_indicator = "  [dim]\u25c8 Discovery[/dim]"
-        next_line = f"{nxt}[dim]Vol:[/dim] {vol}{disc_indicator}"
-
-        # --- Line 3: controls hint ---
-        disc_key = "  D=Discovery" if self._discovery_every is not None else ""
-        controls = (
-            f"[dim]Space=Pause  N=Skip{disc_key}  Q=Quit"
-            "  \u2190/\u2192=Seek\u00b110s  \u2191/\u2193=Volume  M=Mute[/dim]"
-        )
-
-        return Panel(
-            f"{now_line}\n{next_line}\n{controls}",
-            title="[bold blue]AutoDJ[/bold blue]",
-            border_style="blue",
-            padding=(0, 1),
-        )
-
-    def _refresh_status(self) -> None:
-        """Push an updated status panel to the Live display if it is active."""
-        if self._live is not None:
-            self._live.update(self._build_status())
-
     def stop(self) -> None:
         """Wake and stop the playback loop, including empty-library waiting."""
         self._state.should_stop = True
@@ -920,7 +831,7 @@ class Player:
 
         Plays *seed_entry* first (or picks a random track if ``None``), then
         queries the similarity index for each successive track.  Blocks until
-        the user presses ``Q`` or :attr:`PlayerState.should_stop` is set.
+        :attr:`PlayerState.should_stop` is set.
 
         Args:
             seed_entry: The track to start from.  ``None`` selects a random
@@ -943,16 +854,6 @@ class Player:
         # Remember the seed so anchored mode can keep coming back to it.
         self._seed_path = seed_entry.path
 
-        # Skip keyboard setup in dry-run / headless mode — pynput may be
-        # absent on a NAS, and there's no audio to control here anyway
-        # (the browser drives playback in this mode).
-        # pynput is a GLOBAL keyboard hook — captures keys typed in any
-        # application, browser tab, etc.  Skip it when (1) running
-        # headless / browser-driven OR (2) caller explicitly opted out
-        # (e.g. `serve` mode where the browser handles all controls).
-        if not self._dry_run and not self._no_keyboard:
-            self._setup_keyboard()
-
         # External-cue importer (Mixxx / Rekordbox / Traktor).  Runs
         # synchronously on this thread so the FastAPI event loop in
         # serve mode is never blocked by SQLite / XML I/O.
@@ -962,11 +863,7 @@ class Player:
         self._record_seed(seed_entry)
         current = seed_entry
 
-        # Headless / browser-driven mode: skip the Rich Live transport
-        # panel entirely.  In headless serve, the only useful output is
-        # the startup banner (already printed by cli.cmd_serve) and any
-        # error logging.  No keyboard, no terminal panel, no per-track
-        # noise.
+        # Browser mode: the page plays the audio; this thread only picks.
         if self._dry_run:
             self._run_headless(current)
             return
@@ -1032,8 +929,7 @@ class Player:
 
         A render-ahead worker keeps the next rendered track ready; the bus
         pulls it when the playing one ends.  Blocks until the player stops.
-        Not exercised in CI because it owns the terminal and a real sound
-        device; its parts (the worker, the bus, the output, the callbacks)
+        Not exercised in CI because it needs a real sound device; its parts (the worker, the bus, the output, the callbacks)
         are tested on their own.
         """
         from autodj.sound_output import SoundDeviceOutput
@@ -1046,29 +942,21 @@ class Player:
         watcher = threading.Thread(
             target=self._stop_when_requested, args=(stop,), name="autodj-bus-stop", daemon=True
         )
-        with Live(
-            self._build_status(),
-            console=_CONSOLE,
-            refresh_per_second=2,
-            vertical_overflow="visible",
-        ) as live:
-            self._live = live
-            try:
-                self._render_ahead.start()
-                deadline = time.monotonic() + 30.0
-                while not self._render_ahead.wait_ready(0.25):
-                    if self._state.should_stop:
-                        return
-                    if time.monotonic() >= deadline:
-                        logger.warning("No track rendered within 30 s; starting on silence")
-                        break
-                self.bus.start_set()
-                watcher.start()
-                self.bus.run(stop)
-            finally:
-                self._render_ahead.stop()
-                output.close()
-                self._live = None
+        try:
+            self._render_ahead.start()
+            deadline = time.monotonic() + 30.0
+            while not self._render_ahead.wait_ready(0.25):
+                if self._state.should_stop:
+                    return
+                if time.monotonic() >= deadline:
+                    logger.warning("No track rendered within 30 s; starting on silence")
+                    break
+            self.bus.start_set()
+            watcher.start()
+            self.bus.run(stop)
+        finally:
+            self._render_ahead.stop()
+            output.close()
 
     def _record_seed(self, seed: IndexEntry) -> None:
         """Make *seed* the current track and record it as played.
@@ -1090,8 +978,8 @@ class Player:
         """Set *stop* once the player is asked to stop.
 
         Until then, mirror ``PlayerState.is_paused`` onto the bus every
-        100 ms, so the keyboard and web pause toggles (which only flip that
-        flag) pause server audio too.
+        100 ms, so the web pause toggle (which only flips that flag) pauses
+        server audio too.
         """
         while not self._state.should_stop:
             if self.bus is not None:
@@ -1390,7 +1278,6 @@ class Player:
         self._current_lyrics = []
         self._current_lyrics_plain = ""
         self.load_lyrics_in_background(entry.path)
-        self._refresh_status()
         if self.on_track_started is not None:
             self.on_track_started(entry)
 
@@ -1400,7 +1287,7 @@ class Player:
         self._playback_pos[0] = frames + (playing.start_offset if playing else 0)
 
     def _run_headless(self, current: IndexEntry) -> None:
-        """Track-picking loop with no audio output and no terminal UI.
+        """Track-picking loop with no server audio output.
 
         Used by browser-driven ``serve`` (the default unless
         ``--server-audio`` is passed, and forced when audio deps are
@@ -1734,7 +1621,7 @@ class Player:
         )
 
         # Respect the lyric-display toggle — when off we skip ALL lyric
-        # work so the CLI panel stays compact and the web UI hides its card.
+        # work and the web UI hides its card.
         if not self._cfg.playback.show_lyrics:
             return [], ""
 
@@ -1778,25 +1665,6 @@ class Player:
         # of leading stamps, and cleans the plain branch instead.
         return parse_embedded_lyrics(plain)
 
-    def _print_lyrics_panel(self) -> None:
-        """Print the current lyrics as a terminal panel, once per track.
-
-        The web UI renders them below the now-playing card; this shows
-        them in the terminal too.  Skipped in dry-run / headless serve mode.
-        """
-        block = self._current_lyrics_plain or "\n".join(
-            line.text for line in self._current_lyrics if line.text
-        )
-        if block and not self._dry_run and not self._no_keyboard:
-            _CONSOLE.print(
-                Panel(
-                    block,
-                    title="[bold]Lyrics[/bold]",
-                    border_style="dim",
-                    padding=(0, 1),
-                ),
-            )
-
     def load_lyrics_in_background(self, path: str) -> None:
         """Load lyrics for *path* on a daemon thread.
 
@@ -1822,7 +1690,6 @@ class Player:
                 if current is not None and current.path == path:
                     self._current_lyrics = lyrics
                     self._current_lyrics_plain = plain
-                    self._print_lyrics_panel()
             except Exception as exc:  # pragma: no cover -- defensive thread guard
                 logger.debug("Background lyric load failed for %s: %s", path, exc)
             finally:
@@ -1869,7 +1736,7 @@ class Player:
         never blocked by SQLite reads or XML parses.  Imported cues
         merge into each cached :class:`~autodj.dj_meta.DjMeta` lazily
         when a track is first analysed -- so we pay the importer cost
-        exactly once per ``serve`` / ``play`` boot.
+        exactly once per ``serve`` boot.
         """
         if getattr(self, "_external_cues_loaded", False):
             return
@@ -2063,7 +1930,7 @@ class Player:
         """Resolve the active fade length for the configured transition_mode.
 
         Mirrors the browser's ``_resolveFadeSec`` in ``static/app.js`` so
-        the CLI player and the web UI sound the same.
+        the server mix and the web UI sound the same.
 
         Args:
             meta_a: Outgoing track's DJ-meta sidecar entry.
@@ -2493,62 +2360,3 @@ class Player:
             measured_ratio,
             start_offset=start_offset,
         )
-
-    def _setup_keyboard(self) -> None:  # pragma: no cover -- pynput hardware listener
-        """Start the pynput keyboard listener in a background thread."""
-        try:
-            from pynput import keyboard
-
-            def on_press(key) -> None:  # type: ignore[no-untyped-def]
-                try:
-                    char = key.char.lower() if hasattr(key, "char") and key.char else None
-                except Exception:
-                    char = None
-
-                if key == keyboard.Key.space:
-                    self._state.is_paused = not self._state.is_paused
-                    self._refresh_status()
-
-                elif char == "n":
-                    _CONSOLE.print("  [dim]→ Skip[/dim]")
-                    if self.bus is not None:
-                        self.bus.skip()
-                    else:
-                        self._skip_event.set()
-
-                elif char == "q":
-                    _CONSOLE.print("  [dim]Quit[/dim]")
-                    self._state.should_stop = True
-                    self._skip_event.set()
-
-                elif key == keyboard.Key.right:
-                    self.seek_relative(_SEEK_SECONDS)
-                    _CONSOLE.print(f"  [dim]Seek +{_SEEK_SECONDS}s[/dim]")
-
-                elif key == keyboard.Key.left:
-                    self.seek_relative(-_SEEK_SECONDS)
-                    _CONSOLE.print(f"  [dim]Seek -{_SEEK_SECONDS}s[/dim]")
-
-                elif key == keyboard.Key.up:
-                    self._state.volume = min(1.0, self._state.volume + _VOLUME_STEP)
-                    self._refresh_status()
-
-                elif key == keyboard.Key.down:
-                    self._state.volume = max(0.0, self._state.volume - _VOLUME_STEP)
-                    self._refresh_status()
-
-                elif char == "m":
-                    self._state.is_muted = not self._state.is_muted
-                    self._refresh_status()
-
-                elif char == "d" and self._discovery_every is not None:
-                    self._state.discovery_enabled = not self._state.discovery_enabled
-                    status = "ON" if self._state.discovery_enabled else "OFF"
-                    _CONSOLE.print(f"  [bold cyan]\u25c8 Discovery {status}[/bold cyan]")
-                    self._refresh_status()
-
-            listener = keyboard.Listener(on_press=on_press)
-            listener.daemon = True
-            listener.start()
-        except Exception as exc:
-            logger.warning("Keyboard controls unavailable: %s", exc)

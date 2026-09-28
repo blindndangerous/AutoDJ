@@ -375,8 +375,7 @@ class PlayerBridge:
 
         The ``Player`` thread parked in ``_run_headless`` is *not*
         consulted — its sole job is to hold the seed and keep the
-        process alive.  This keeps the web player and the (potential)
-        CLI player fully decoupled.
+        process alive.
         """
         p = self.player
         state = p._state
