@@ -66,8 +66,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from starlette.background import BackgroundTask
 from starlette.datastructures import Headers
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.staticfiles import NotModifiedResponse
-from starlette.types import Scope
+from starlette.types import Receive, Scope, Send
 
 # PlayerBridge lives in autodj._bridge so neither file balloons over
 # the 2000-line working budget.
@@ -361,6 +362,23 @@ class _RevalidatedStaticFiles(StaticFiles):
         if self.is_not_modified(response.headers, Headers(scope=scope)):
             return NotModifiedResponse(response.headers)
         return response
+
+
+class _GZipExceptStream(GZipMiddleware):
+    """Gzip responses, except the live /stream/ route.
+
+    Starlette leaves audio/*, images, 206 partial responses and bodies that
+    are already encoded alone.  But it holds back every response's headers
+    until the first body bytes, and a live stream's first bytes can take a
+    while, so /stream/ bypasses it: a speaker gets its 200 at once.
+    """
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Pass /stream/ requests straight through; gzip the rest."""
+        if scope["type"] == "http" and scope["path"].startswith("/stream/"):
+            await self.app(scope, receive, send)
+            return
+        await super().__call__(scope, receive, send)
 
 
 @functools.cache
@@ -1177,6 +1195,9 @@ def create_app(
         "/api/liners/upload": lambda: _liner_upload_max_bytes() + _MULTIPART_OVERHEAD_BYTES,
     }
     app.add_middleware(SecurityMiddleware, policy=policy, body_limits=body_limits)
+    # Compresses the page, scripts and JSON; audio, cover art and Range
+    # replies pass through as is.
+    app.add_middleware(_GZipExceptStream, minimum_size=1024, compresslevel=6)
 
     # ------------------------------------------------------------------
     # Static HTML

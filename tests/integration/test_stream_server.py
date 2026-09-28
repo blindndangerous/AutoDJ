@@ -780,3 +780,54 @@ def test_seed_becomes_the_first_sets_first_track(tmp_path: Path) -> None:
         bridge.stream.add_listener(icy=False)
         bridge.station.tick()
         bridge.player.begin_set.assert_called_once_with(seed, "seed")
+
+
+def test_stream_headers_go_out_before_the_first_audio(stream_app) -> None:
+    """A speaker gets the 200 at once, not when the encoder's first bytes arrive."""
+    import asyncio
+    import contextlib
+
+    client, secret, stream = stream_app
+
+    async def silent():
+        await asyncio.Event().wait()
+        yield b""
+
+    stream.add_listener.return_value.chunks = silent
+    path = f"/stream/{secret.value}.mp3"
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"host", b"testserver"), (b"accept-encoding", b"gzip")],
+        "client": ("127.0.0.1", 50000),
+        "server": ("testserver", 80),
+    }
+    sent: list[dict] = []
+
+    async def receive() -> dict:
+        await asyncio.Event().wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict) -> None:
+        sent.append(message)
+
+    async def run() -> None:
+        task = asyncio.create_task(client.app(scope, receive, send))
+        for _ in range(100):
+            if sent:
+                break
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+    assert sent[0]["type"] == "http.response.start"
+    assert sent[0]["status"] == 200

@@ -3383,6 +3383,8 @@ class TestAudioEndpoint:
         assert resp.status_code == 200
         assert resp.headers["content-type"] == "audio/mpeg"
         assert resp.headers["accept-ranges"] == "bytes"
+        # Sent as is even though the client (TestClient) accepts gzip.
+        assert "content-encoding" not in resp.headers
         assert int(resp.headers["content-length"]) == fake_mp3.stat().st_size
 
     def test_audio_range_request(self, tmp_path, bridge) -> None:
@@ -4038,6 +4040,11 @@ class TestStaticAssets:
         again = client.get(path, headers={"If-None-Match": resp.headers["etag"]})
         assert again.status_code == 304
         assert again.content == b""
+
+    def test_page_and_scripts_are_gzipped(self, client) -> None:
+        for path in ("/", "/app.js", "/modules/audio-engine.js"):
+            resp = client.get(path, headers={"Accept-Encoding": "gzip"})
+            assert resp.headers["content-encoding"] == "gzip", path
 
 
 # ---------------------------------------------------------------------------
