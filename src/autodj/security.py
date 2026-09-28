@@ -264,30 +264,40 @@ class SecurityPolicy:
         """Return whether the policy has an access token configured."""
         return self.config.access_token is not None
 
-    def current_pairing_code(self) -> str:
-        """Return short code authorizing browsers during current time window."""
+    def pairing_code_now(self) -> tuple[str, int, int]:
+        """Return the current code, seconds until it expires, and seconds until the next one.
+
+        All three come from one clock reading, so the code and its times
+        never straddle a window boundary.  A code is accepted for its own
+        window and the one after it, so it outlives the start of its
+        successor by one full window.
+
+        Raises:
+            RuntimeError: No access token is configured.
+        """
         token = self.config.access_token
         if token is None:
             raise RuntimeError("access token is not configured")
-        window = int(self.now()) // PAIRING_CODE_WINDOW_SECONDS
-        return self._pairing_code(token, window)
+        timestamp = int(self.now())
+        window = timestamp // PAIRING_CODE_WINDOW_SECONDS
+        next_start = (window + 1) * PAIRING_CODE_WINDOW_SECONDS
+        return (
+            self._pairing_code(token, window),
+            next_start + PAIRING_CODE_WINDOW_SECONDS - timestamp,
+            next_start - timestamp,
+        )
+
+    def current_pairing_code(self) -> str:
+        """Return short code authorizing browsers during current time window."""
+        return self.pairing_code_now()[0]
 
     def pairing_code_seconds_left(self) -> tuple[int, int]:
-        """Return seconds until the current code expires and until the next one starts.
+        """Return seconds until the current code expires and until the next one starts."""
+        _code, valid_for, next_code_in = self.pairing_code_now()
+        return valid_for, next_code_in
 
-        A code is accepted for its own window and the one after it, so it
-        outlives the start of its successor by one full window.
-        """
-        timestamp = int(self.now())
-        next_start = (timestamp // PAIRING_CODE_WINDOW_SECONDS + 1) * PAIRING_CODE_WINDOW_SECONDS
-        return next_start + PAIRING_CODE_WINDOW_SECONDS - timestamp, next_start - timestamp
-
-    def pairing_block(self, client: str) -> PairingBlock | None:
-        """Return why *client* may not try a code right now, or ``None``.
-
-        Checked before comparing, so a locked-out client or a paused server
-        answers the same way for right and wrong codes.
-        """
+    def pairing_paused(self) -> PairingBlock | None:
+        """Return why no code works right now after too many wrong ones, or ``None``."""
         timestamp = int(self.now())
         window = timestamp // PAIRING_CODE_WINDOW_SECONDS
         retry_after = (window + 1) * PAIRING_CODE_WINDOW_SECONDS - timestamp
@@ -299,6 +309,22 @@ class SecurityPolicy:
                     "Pairing is paused after too many wrong codes. "
                     f"Try again in {retry_after} seconds with a new code.",
                 )
+        return None
+
+    def pairing_block(self, client: str) -> PairingBlock | None:
+        """Return why *client* may not try a code right now, or ``None``.
+
+        Checked before comparing, so a locked-out client or a paused server
+        answers the same way for right and wrong codes.
+        """
+        paused = self.pairing_paused()
+        if paused is not None:
+            return paused
+        timestamp = int(self.now())
+        window = timestamp // PAIRING_CODE_WINDOW_SECONDS
+        retry_after = (window + 1) * PAIRING_CODE_WINDOW_SECONDS - timestamp
+        with self._pairing_lock:
+            self._reset_pairing_failures_if_new_window(window)
             if self._pairing_client_failures.get(client, 0) >= PAIRING_MAX_FAILURES_PER_CLIENT:
                 return PairingBlock(
                     retry_after,

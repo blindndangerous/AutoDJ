@@ -121,6 +121,22 @@ class DeviceRegistry:
             ).fetchall()
         return [PairedDevice(*row) for row in rows]
 
+    def rename(self, device_id: str, name: str) -> str | None:
+        """Rename one active device and return its stored name, or ``None`` if not paired.
+
+        Raises:
+            ValueError: *name* is not 1 to 64 printable characters.
+        """
+        normalized = self._name(name)
+        if not isinstance(device_id, str) or DEVICE_ID.fullmatch(device_id) is None:
+            return None
+        with self._connect() as connection:
+            changed = connection.execute(
+                "UPDATE paired_devices SET name = ? WHERE device_id = ? AND revoked_at IS NULL",
+                (normalized, device_id),
+            ).rowcount
+        return normalized if changed == 1 else None
+
     def revoke(self, device_id: str) -> bool:
         """Revoke one device and report whether active state changed."""
         if not isinstance(device_id, str) or DEVICE_ID.fullmatch(device_id) is None:

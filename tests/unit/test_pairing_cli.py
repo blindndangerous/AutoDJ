@@ -190,6 +190,32 @@ def test_devices_list_and_revoke_use_persistent_registry() -> None:
     assert not is_active
 
 
+def test_devices_rename_stores_a_valid_name_and_refuses_the_rest() -> None:
+    runner = CliRunner()
+
+    with runner.isolated_filesystem():
+        _write_config()
+        registry = DeviceRegistry(Path("index/.paired-devices.sqlite3"))
+        device = registry.pair("Kitchen tablet")
+
+        def rename(device_id: str, name: str):
+            args = ["--config", "config.toml", "devices", "rename", device_id, name]
+            return runner.invoke(cli, args)
+
+        renamed = rename(device.device_id, "Hall speaker")
+        too_long = rename(device.device_id, "x" * 65)
+        missing = rename("f" * 32, "Nobody")
+        names = [d.name for d in registry.list_devices()]
+
+    assert renamed.exit_code == 0
+    assert f"Renamed device {device.device_id} to Hall speaker." in renamed.output
+    assert too_long.exit_code == 1
+    assert "1 to 64 printable characters" in too_long.output
+    assert missing.exit_code == 1
+    assert "was not found" in missing.output
+    assert names == ["Hall speaker"]
+
+
 def test_devices_pairing_code_and_reset_manage_all_browsers() -> None:
     runner = CliRunner()
 
