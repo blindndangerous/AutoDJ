@@ -365,6 +365,44 @@ describe("transition effect levels", () => {
     expect(halfGain).toBeCloseTo(fullGain / 2, 9);
   });
 
+  // The page volume now sits on the master alone, so an effect's own
+  // envelope is the same at any volume.  At 5 % (the 2026-09-28 check)
+  // the reverse reverb swell read 3.6 times the deck, and the noise and
+  // spin tails ramped towards a fixed 0.001 that was above where they
+  // started, so they rose instead of fading.
+  const quiet = 10 ** (-57 / 20);
+
+  it("keeps the reverse reverb swell under the deck at a low volume", async () => {
+    const { ctx, engine } = await runEffect("reverse_reverb", { volume: quiet });
+    expect(engine._master.gain.value).toBe(quiet);
+    const gains = effectGains(ctx, engine).filter(({ source }) => source === "media");
+    expect(gains.length).toBeGreaterThan(0);
+    for (const { gain } of gains) expect(gain).toBeLessThanOrEqual(1);
+    engine.stopAllDecks();
+  });
+
+  for (const effect of ["noise_riser", "noise_drop", "backspin", "forward_spin", "vinyl_rewind"]) {
+    it(`${effect}: its tails fade out at a low volume instead of rising`, async () => {
+      const { ctx, engine } = await runEffect(effect, { volume: quiet });
+      const master = engine._master;
+      const deckGains = new Set(engine.decks.map((d) => d.gain));
+      const bus = ctx.nodes.find((n) => n.kind === "gain" && n !== master
+        && !deckGains.has(n) && n.outputs.has(master));
+      const layers = ctx.nodes.filter((n) => n.kind === "gain" && n.outputs.has(bus));
+      expect(layers.length).toBeGreaterThan(0);
+      for (const layer of layers) {
+        const events = layer.gain.events;
+        const peakAt = events.indexOf(Math.max(...events));
+        const tail = events.slice(peakAt);
+        for (let i = 1; i < tail.length; i++) {
+          expect(tail[i], `${effect} step ${i}`).toBeLessThanOrEqual(tail[i - 1]);
+        }
+        expect(events.at(-1)).toBeLessThanOrEqual(events[peakAt] / 100);
+      }
+      engine.stopAllDecks();
+    });
+  }
+
   it("silences effects with the music when muted", async () => {
     const { engine } = await runEffect("echo_out", { muted: true });
     expect(engine._master.gain.value).toBe(0);
