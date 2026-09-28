@@ -59,13 +59,12 @@ function updateJobStatus(job, jobStatus, jobElapsed) {
   }
   if (job.exit_code != null) {
     const seconds = Math.round(Number(job.elapsed_seconds) || 0);
-    setJobPhase(
-      jobStatus,
-      `finished:${job.name}:${job.exit_code}`,
-      job.exit_code === 0
-        ? `${job.name} finished cleanly in ${seconds} seconds.`
-        : `${job.name} exited with code ${job.exit_code} after ${seconds} seconds.`,
-    );
+    // A job the user stopped exits non-zero (1 on Windows), which is not
+    // a failure worth an exit code.
+    let text = `${job.name} exited with code ${job.exit_code} after ${seconds} seconds.`;
+    if (job.exit_code === 0) text = `${job.name} finished cleanly in ${seconds} seconds.`;
+    else if (job.stopped) text = `${job.name} stopped after ${seconds} seconds.`;
+    setJobPhase(jobStatus, `finished:${job.name}:${job.exit_code}`, text);
     return;
   }
   if (!job.name) setJobPhase(jobStatus, "idle", "Idle.");

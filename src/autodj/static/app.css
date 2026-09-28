@@ -242,10 +242,12 @@
       background: #e67e22;
       color: #000;
     }
-    /* aria-disabled: a focused button busy with a request keeps focus
-       (see withDisabled in modules/api-client.js) but must look busy. */
+    /* .is-pending: a focused button busy with a request keeps focus and
+       stays enabled (see withDisabled in modules/api-client.js) but must
+       look busy.  aria-disabled is the history pager's Prev / Next. */
     button:disabled,
-    button[aria-disabled="true"] {
+    button[aria-disabled="true"],
+    button.is-pending {
       opacity: 0.45;
       cursor: not-allowed;
     }
@@ -684,6 +686,14 @@
     }
     .settings-row + .setting-desc {
       margin-left: 10rem;
+    }
+    /* On-demand help under a control's one-sentence description. */
+    .setting-help > summary {
+      cursor: pointer;
+    }
+    .setting-help > ul {
+      margin: 0.3rem 0 0;
+      padding-left: 1.2rem;
     }
 
     /* ---- Collapsible cards (<details>/<summary>) ---- */

@@ -14,7 +14,6 @@ function lyricsResponse(path, text) {
 
 function lyricElements() {
   return {
-    lyricAnnounce: document.createElement("p"),
     lyricsCard: document.createElement("section"),
     lyricsList: document.createElement("ul"),
   };
@@ -26,37 +25,6 @@ afterEach(() => {
 });
 
 describe("lyrics request ownership", () => {
-  it("does not erase a current-line announcement when loading succeeds", async () => {
-    let resolveLyrics;
-    vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => {
-      resolveLyrics = resolve;
-    })));
-    const elements = lyricElements();
-    const loading = loadLyrics("current.flac", elements);
-    elements.lyricsList.innerHTML = "<li>Current line</li>";
-    applyLyricsState({
-      has_lyrics: true,
-      lyric_index: 0,
-      lyric_text: "Current line",
-    }, elements);
-    resolveLyrics(lyricsResponse("current.flac", "Current line"));
-    await loading;
-
-    expect(elements.lyricAnnounce.textContent).toBe("Current line");
-  });
-
-  it("announces a current-generation lyrics failure", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new globalThis.Response(
-      JSON.stringify({ detail: "Lyrics unavailable" }),
-      { status: 503, headers: { "Content-Type": "application/json" } },
-    )));
-    const elements = lyricElements();
-
-    await loadLyrics("failed.flac", elements);
-
-    expect(elements.lyricAnnounce.textContent).toContain("Lyrics unavailable");
-  });
-
   it("does not let stale lyrics replace the newest track response", async () => {
     const resolvers = [];
     vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => {
@@ -72,7 +40,6 @@ describe("lyrics request ownership", () => {
     await first;
 
     expect(elements.lyricsList.textContent).toBe("Newest lyrics");
-    expect(elements.lyricAnnounce.textContent).toBe("Lyrics loaded");
   });
 
   it("clears old lyrics while loading and requests the encoded track path", async () => {
@@ -89,7 +56,6 @@ describe("lyrics request ownership", () => {
 
     expect(elements.lyricsCard.hidden).toBe(true);
     expect(elements.lyricsList.children).toHaveLength(0);
-    expect(elements.lyricAnnounce.textContent).toBe("Loading lyrics");
     expect(fetchImpl).toHaveBeenCalledWith(
       "/api/lyrics?path=Z%3A%2FMusic%2FA%20%26%20B.flac",
       expect.objectContaining({ signal: expect.any(globalThis.AbortSignal) }),
@@ -98,7 +64,6 @@ describe("lyrics request ownership", () => {
     resolveLyrics(lyricsResponse("Z:/Music/A & B.flac", "Fresh lyrics"));
     await loading;
     expect(elements.lyricsList.textContent).toBe("Fresh lyrics");
-    expect(elements.lyricAnnounce.textContent).toBe("Lyrics loaded");
   });
 
   it("rejects a mismatched response path without rendering it", async () => {
@@ -111,10 +76,9 @@ describe("lyrics request ownership", () => {
 
     expect(elements.lyricsList.children).toHaveLength(0);
     expect(elements.lyricsCard.hidden).toBe(true);
-    expect(elements.lyricAnnounce.textContent).toContain("requested track");
   });
 
-  it("announces when the current track has no timed lyrics", async () => {
+  it("keeps the card hidden when the current track has no timed lyrics", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new globalThis.Response(
       JSON.stringify({ path: "empty.flac", lyrics: [] }),
       { headers: { "Content-Type": "application/json" } },
@@ -124,17 +88,15 @@ describe("lyrics request ownership", () => {
     await loadLyrics("empty.flac", elements);
 
     expect(elements.lyricsCard.hidden).toBe(true);
-    expect(elements.lyricAnnounce.textContent).toBe("No lyrics available");
   });
 
-  it("lets a later plain fallback claim an empty timed-request status", async () => {
+  it("shows a later plain fallback after an empty timed response", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new globalThis.Response(
       JSON.stringify({ path: "plain-after-empty.flac", lyrics: [] }),
       { headers: { "Content-Type": "application/json" } },
     )));
     const elements = lyricElements();
     await loadLyrics("plain-after-empty.flac", elements);
-    expect(elements.lyricAnnounce.textContent).toBe("No lyrics available");
 
     applyLyricsState({
       has_lyrics: false,
@@ -147,7 +109,6 @@ describe("lyrics request ownership", () => {
     expect(elements.lyricsList.querySelector(".plain-lyrics")?.textContent)
       .toBe("Plain lyrics arrived later");
     expect(elements.lyricsList.querySelector(".active")).toBeNull();
-    expect(elements.lyricAnnounce.textContent).toBe("Lyrics loaded");
   });
 
   it("applies the current line after state arrives before the lyric list", async () => {
@@ -171,7 +132,6 @@ describe("lyrics request ownership", () => {
     const line = elements.lyricsList.querySelector("li");
     expect(line.classList.contains("active")).toBe(true);
     expect(line.getAttribute("aria-current")).toBe("true");
-    expect(elements.lyricAnnounce.textContent).toBe("Arrived late");
   });
 
   it("does not let an empty timed response erase a newer plain-lyrics fallback", async () => {
@@ -197,7 +157,6 @@ describe("lyrics request ownership", () => {
     expect(elements.lyricsCard.hidden).toBe(false);
     expect(elements.lyricsList.querySelector(".plain-lyrics")?.textContent)
       .toBe("Plain lyrics remain visible");
-    expect(elements.lyricAnnounce.textContent).toBe("Lyrics loaded");
   });
 
   it("preserves request-owned timed lyrics across a transient no-lyrics state", async () => {
@@ -229,7 +188,6 @@ describe("lyrics request ownership", () => {
     expect(elements.lyricsList.children).toHaveLength(2);
     expect(elements.lyricsCard.hidden).toBe(false);
     expect(elements.lyricsList.querySelector(".active")).toBeNull();
-    expect(elements.lyricAnnounce.textContent).toBe("");
 
     applyLyricsState({
       has_lyrics: true,
@@ -238,7 +196,6 @@ describe("lyrics request ownership", () => {
     }, elements);
 
     expect(elements.lyricsList.querySelector(".active")?.textContent).toBe("First line");
-    expect(elements.lyricAnnounce.textContent).toBe("First line");
   });
 
   it("reset aborts the active request and clears the supplied lyric elements", async () => {
@@ -257,7 +214,6 @@ describe("lyrics request ownership", () => {
     expect(requestSignal.aborted).toBe(true);
     expect(elements.lyricsCard.hidden).toBe(true);
     expect(elements.lyricsList.children).toHaveLength(0);
-    expect(elements.lyricAnnounce.textContent).toBe("");
   });
 
   it.each([
@@ -290,7 +246,6 @@ describe("lyrics request ownership", () => {
       behavior: expectedBehavior,
     });
     expect(line.getAttribute("aria-current")).toBe("true");
-    expect(elements.lyricAnnounce.textContent).toBe("Line one");
   });
 
   it.each([
@@ -321,7 +276,6 @@ describe("lyrics request ownership", () => {
       top: expect.any(Number),
       behavior: "auto",
     });
-    expect(elements.lyricAnnounce.textContent).toBe("Line one");
   });
 });
 
@@ -413,34 +367,17 @@ describe("timed highlight from the local playback clock", () => {
     const items = elements.lyricsList.querySelectorAll("li");
     expect(items[1].classList.contains("active")).toBe(true);
     expect(items[1].getAttribute("aria-current")).toBe("true");
-    expect(elements.lyricAnnounce.textContent).toBe("Line one");
   });
 
-  it("advances to the next line and announces it once", async () => {
+  it("moves aria-current to the next line", async () => {
     const elements = await loaded();
-    const records = [];
-    new window.MutationObserver((r) => records.push(...r))
-      .observe(elements.lyricAnnounce, {
-        childList: true, characterData: true, subtree: true,
-      });
-
-    for (const elapsed of [20.5, 21, 30, 41.9]) {
-      applyLyricsState({ has_lyrics: true, lyric_index: null }, elements,
-        { elapsed, localClock: true });
-    }
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(elements.lyricAnnounce.textContent).toBe("Line one");
-    // Four ticks inside one line produce one announcement, not four.
-    const afterFirst = records.filter((r) => r.addedNodes.length > 0).length;
-    expect(afterFirst).toBe(1);
-
+    applyLyricsState({ has_lyrics: true, lyric_index: null }, elements,
+      { elapsed: 20.5, localClock: true });
     applyLyricsState({ has_lyrics: true, lyric_index: null }, elements,
       { elapsed: 42.1, localClock: true });
-    await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(elements.lyricAnnounce.textContent).toBe("Line two");
-    expect(records.filter((r) => r.addedNodes.length > 0).length)
-      .toBe(afterFirst + 1);
+    const current = elements.lyricsList.querySelectorAll('li[aria-current="true"]');
+    expect([...current].map((li) => li.textContent)).toEqual(["Line two"]);
   });
 
   it("highlights nothing before the first line's timestamp", async () => {
@@ -462,7 +399,6 @@ describe("timed highlight from the local playback clock", () => {
 
     const items = elements.lyricsList.querySelectorAll("li");
     expect(items[2].classList.contains("active")).toBe(true);
-    expect(elements.lyricAnnounce.textContent).toBe("Line two");
   });
 
   it("ignores the local clock when there are no timed lines", async () => {

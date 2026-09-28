@@ -62,10 +62,15 @@ function _onTabKeydown(e) {
       return;
   }
   e.preventDefault();
-  if (location.hash !== "#" + nextName) location.hash = nextName;
-  else applyView(nextName, true);
+  // Select first, then focus, as the APG tabs example does.  Focusing a
+  // tab that only becomes selected on the later hashchange made NVDA
+  // speak it twice: once unselected on focus, then again on the
+  // selection change.  The hashchange that follows finds the state
+  // already set and changes nothing.
+  applyView(nextName, false);
   const nextTab = _viewLinks.get(nextName);
   if (nextTab) nextTab.focus();
+  if (location.hash !== "#" + nextName) location.hash = nextName;
 }
 
 function applyView(name, userInitiated) {

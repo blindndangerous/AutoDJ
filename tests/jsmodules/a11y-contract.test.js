@@ -1709,6 +1709,24 @@ describe("static accessibility contracts", () => {
     expect(regressedDialog).not.toBeNull();
     expect(regressedDialog.closest('[role="tabpanel"]')).not.toBeNull();
   });
+
+  it("names the plus and plus-or-minus options in words", () => {
+    // NVDA's default punctuation level drops these, so "±1" was heard as "1".
+    installDocument({ html: htmlSource });
+    const symbolic = [...document.querySelectorAll("option")]
+      .filter((option) => /[±+]/.test(option.textContent));
+    expect(symbolic.length).toBeGreaterThan(0);
+    for (const option of symbolic) {
+      expect(option.getAttribute("aria-label"), option.textContent).toMatch(/^[^±+]+$/);
+    }
+  });
+
+  it("keeps the transition effect description to one sentence", () => {
+    // The per-effect list, about 450 words, was read on every focus.
+    installDocument({ html: htmlSource });
+    const desc = document.querySelector("#transition-desc").textContent.trim();
+    expect(desc.split(/\s+/).length).toBeLessThan(20);
+  });
 });
 
 describe("frontend CI gate", () => {

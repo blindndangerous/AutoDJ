@@ -118,6 +118,18 @@ describe("library job live region", () => {
     seen.stop();
   });
 
+  it("reports a job the user stopped as stopped, not as an exit code", () => {
+    const els = makeEls();
+    applyLibraryJobState({
+      library_job: {
+        name: "enrich", running: false, elapsed_seconds: 417, exit_code: 1,
+        stopped: true, lines: [],
+      },
+    }, els);
+
+    expect(els.jobStatus.textContent).toBe("enrich stopped after 417 seconds.");
+  });
+
   it("does not re-announce the start click on the next websocket tick", async () => {
     document.body.innerHTML = `
       <button id="run-index">Index</button>

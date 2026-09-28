@@ -89,6 +89,9 @@ class JobManager:
         self._name: str | None = None
         self._args: list[str] = []
         self._exit_code: int | None = None
+        # Set by stop(), so a user-requested stop is not reported as a
+        # failure: terminate() exits 1 on Windows and -15 on POSIX.
+        self._stopped = False
         self._started_at: float | None = None
         self._finished_at: float | None = None
 
@@ -211,6 +214,7 @@ class JobManager:
             self._name = name
             self._args = list(args or [])
             self._exit_code = None
+            self._stopped = False
             self._started_at = time.time()
             self._finished_at = None
             proc = self._spawn_proc(name, self._args)
@@ -255,6 +259,7 @@ class JobManager:
         with self._lock:
             if not self._proc or self._proc.poll() is not None:
                 return False
+            self._stopped = True
             with contextlib.suppress(OSError):
                 self._proc.terminate()
         return True
@@ -282,6 +287,7 @@ class JobManager:
             "args": list(self._args),
             "running": self.running,
             "exit_code": self._exit_code,
+            "stopped": self._stopped,
             "lines": list(self._lines),
             "started_at": self._started_at,
             "finished_at": self._finished_at,

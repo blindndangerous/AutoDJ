@@ -57,6 +57,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   log. Your web settings return to their defaults until you change one in the web page, which
   saves a new file. Earlier files stored a harmonic mode even when harmonic mixing was off, and
   reading it now would quietly turn key filtering on.
+- The web page no longer reads timed lyric lines aloud as they play. Screen reader users can
+  read them on demand in the Lyrics card, where the line playing now is marked as current. The
+  automatic reading only worked with the card open, which it is not by default.
 
 ### Removed
 
@@ -105,6 +108,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   skipped intro that had already played during the overlap.
 - `/api/history` stayed empty for the whole session with `--server-audio`, because tracks were
   never recorded as played through that output path.
+- In the web page, buttons that send a request (Play, Pause, Skip, Mute, Next, Refresh stats,
+  Stop running job and others) no longer make NVDA say "unavailable" while the request runs. The
+  button stays usable and a second press during the request is ignored.
+- Play and Pause now say "Playing" or "Paused" after the button or the Space and K keys change
+  the playback state. NVDA did not read the button's new label.
+- Moving between the section tabs with the arrow keys reads each tab once instead of twice.
+- Symbols that NVDA skips at its default punctuation level are now read in words: the question
+  mark key in the keyboard shortcuts help, "plus or minus" and "plus" in the Harmonic mixing
+  choices and descriptions, and the Beatmatch description. The text on screen is unchanged.
+- The Transition effect list's description is now one sentence. The notes on each effect, about
+  450 words that were read every time the list got focus, moved into a "Transition effect
+  details" section below it.
+- Stopping a library job with Stop running job now reports that the job stopped, instead of
+  "exited with code 1".
 
 ## [0.17.0] - 2026-09-26
 

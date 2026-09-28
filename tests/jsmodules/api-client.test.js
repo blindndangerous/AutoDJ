@@ -295,14 +295,16 @@ describe("request helpers", () => {
     }));
 
     expect(control.disabled).toBe(false);
-    expect(control.getAttribute("aria-disabled")).toBe("true");
+    // No aria-disabled: NVDA spoke it as "unavailable" on every press.
+    expect(control.hasAttribute("aria-disabled")).toBe(false);
+    expect(control.classList.contains("is-pending")).toBe(true);
     expect(document.activeElement).toBe(control);
     control.click();
     expect(clicked).not.toHaveBeenCalled();
 
     finish("done");
     await expect(pending).resolves.toBe("done");
-    expect(control.hasAttribute("aria-disabled")).toBe(false);
+    expect(control.classList.contains("is-pending")).toBe(false);
     expect(document.activeElement).toBe(control);
     control.click();
     expect(clicked).toHaveBeenCalledOnce();

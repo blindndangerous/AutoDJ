@@ -1,8 +1,8 @@
 // Lyrics rendering: timestamped LRC scroll + plain-text fallback.
-// Active line announced via the polite #lyric-announce live region;
-// pattern verified by accessibility-lead -- aria-live="polite" +
-// aria-atomic="true" is the right ARIA mechanism for time-coded line
-// updates that fire every few seconds.
+// Nothing here speaks.  Lyrics are read on demand in the Lyrics card;
+// the active line carries aria-current so a screen reader says
+// "current" on it.  The auto-read live region was removed in 0.18.0:
+// lines are not to be spoken over the music.
 
 import { escHtml } from "./dom-helpers.js";
 import { requestJson } from "./api-client.js";
@@ -10,9 +10,7 @@ import { createLatestRequestOwner } from "./latest-request.js";
 
 const state = {
   cached: [],          // full list, used by the visible scroll
-  lastIndex: null,     // suppress repeated lyric announcements
-  loadStatus: null,    // request status currently owned by the live region
-  currentLineAnnouncement: null,
+  lastIndex: null,     // skip the highlight work when the line is unchanged
 };
 const lyricsRequestOwner = createLatestRequestOwner();
 
@@ -20,32 +18,7 @@ export function resetLyricState(elements) {
   lyricsRequestOwner.cancel();
   state.lastIndex = null;
   state.cached = [];
-  state.loadStatus = null;
-  state.currentLineAnnouncement = null;
-  if (elements) {
-    renderLyricsList(elements);
-    if (elements.lyricAnnounce) elements.lyricAnnounce.textContent = "";
-  }
-}
-
-function beginLoadStatus(request, elements) {
-  state.currentLineAnnouncement = null;
-  state.loadStatus = { message: "Loading lyrics", request };
-  if (elements.lyricAnnounce) {
-    elements.lyricAnnounce.textContent = state.loadStatus.message;
-  }
-}
-
-function finishLoadStatus(request, elements, message) {
-  const owned = state.loadStatus;
-  if (!owned || owned.request !== request) return;
-  state.loadStatus = message === "No lyrics available"
-    ? { message, request }
-    : null;
-  const announce = elements.lyricAnnounce;
-  if (announce && announce.textContent === owned.message) {
-    announce.textContent = message;
-  }
+  if (elements) renderLyricsList(elements);
 }
 
 // Belt and braces for the raw-timestamp defect.  The server parses LRC
@@ -82,26 +55,11 @@ function hasPlainFallback(elements) {
   return elements.lyricsList.querySelector(".plain-lyrics") !== null;
 }
 
-function claimPlainLyricsStatus(elements) {
-  const owned = state.loadStatus;
-  state.loadStatus = null;
-  const announce = elements.lyricAnnounce;
-  if (announce && owned && announce.textContent === owned.message) {
-    announce.textContent = "Lyrics loaded";
-  }
-}
-
-function clearCurrentLine({ lyricsList, lyricAnnounce }) {
+function clearCurrentLine(lyricsList) {
   lyricsList.querySelectorAll("li").forEach((li) => {
     li.classList.remove("active");
     li.removeAttribute("aria-current");
   });
-  if (lyricAnnounce
-      && state.currentLineAnnouncement !== null
-      && lyricAnnounce.textContent === state.currentLineAnnouncement) {
-    lyricAnnounce.textContent = "";
-  }
-  state.currentLineAnnouncement = null;
 }
 
 // Scroll ONLY the lyrics box.  Element.scrollIntoView walks every
@@ -137,7 +95,6 @@ export async function loadLyrics(path, elements) {
   state.cached = [];
   state.lastIndex = null;
   renderLyricsList(elements);
-  beginLoadStatus(request, elements);
   try {
     const encodedPath = encodeURIComponent(path);
     const data = await requestJson(`/api/lyrics?path=${encodedPath}`, {
@@ -152,20 +109,12 @@ export async function loadLyrics(path, elements) {
       renderLyricsList(elements);
     }
     state.lastIndex = null;
-    finishLoadStatus(
-      request,
-      elements,
-      state.cached.length ? "Lyrics loaded" : "No lyrics available",
-    );
-  } catch (errorValue) {
+  } catch (_) {
+    // A failed load leaves the card as it was: hidden, or showing the
+    // plain-text fallback.
     if (!lyricsRequestOwner.isCurrent(request)) return;
     state.cached = [];
     if (!hasPlainFallback(elements)) renderLyricsList(elements);
-    finishLoadStatus(
-      request,
-      elements,
-      `Could not load lyrics: ${errorValue.message || errorValue}`,
-    );
   } finally {
     lyricsRequestOwner.finish(request);
   }
@@ -200,19 +149,18 @@ function lineIndexAt(lines, elapsed) {
 
 // `localClock` means the browser owns the audio clock.  In that mode the
 // server's own `elapsed` is 0.0 forever, so `lyric_index` never leaves
-// null and the highlight -- and the per-line announcement the blind owner
-// relies on -- could never fire.  The deck's currentTime is the real
+// null and the highlight could never move.  The deck's currentTime is the real
 // position, so resolve the line here instead of trusting the server.
 export function applyLyricsState(
   s,
-  { lyricsCard, lyricsList, lyricAnnounce },
+  { lyricsCard, lyricsList },
   { elapsed = null, localClock = false } = {},
 ) {
   // Plain (unsynced) beets lyrics fallback -- show as a single block
   // when we have no timestamped .lrc list.  Updated on every track
   // change.
   if (!s.has_lyrics && s.lyrics_plain) {
-    clearCurrentLine({ lyricsList, lyricAnnounce });
+    clearCurrentLine(lyricsList);
     if (state.cached.length || lyricsList.querySelector(".plain-lyrics") === null) {
       state.cached = [];
       lyricsCard.hidden = false;
@@ -220,11 +168,10 @@ export function applyLyricsState(
         `<li class="plain-lyrics" style="white-space:pre-wrap;list-style:none;padding-left:0">${escHtml(stripLyricTimestamps(s.lyrics_plain))}</li>`;
     }
     state.lastIndex = null;
-    claimPlainLyricsStatus({ lyricsList, lyricAnnounce });
     return;
   }
   if (!s.has_lyrics) {
-    clearCurrentLine({ lyricsList, lyricAnnounce });
+    clearCurrentLine(lyricsList);
     state.lastIndex = null;
     return;
   }
@@ -232,9 +179,6 @@ export function applyLyricsState(
     ? lineIndexAt(state.cached, elapsed)
     : null;
   const idx = local !== null ? local : s.lyric_index;
-  const text = local !== null
-    ? (state.cached[local] && state.cached[local].text) || null
-    : s.lyric_text;
   if (idx === state.lastIndex) return;
   state.lastIndex = idx;
 
@@ -248,10 +192,5 @@ export function applyLyricsState(
     li.classList.add("active");
     li.setAttribute("aria-current", "true");
     scrollActiveLineIntoView(lyricsList, li);
-    if (text && lyricAnnounce) {
-      state.loadStatus = null;
-      state.currentLineAnnouncement = text;
-      lyricAnnounce.textContent = text;
-    }
   }
 }

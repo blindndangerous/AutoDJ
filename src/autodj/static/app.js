@@ -60,7 +60,6 @@ const historyList  = document.getElementById("history-list");
 const whyList      = document.getElementById("why-list");
 const lyricsCard   = document.getElementById("lyrics-card");
 const lyricsList   = document.getElementById("lyrics-list");
-const lyricAnnounce= document.getElementById("lyric-announce");
 const queueList    = document.getElementById("queue-list");
 const queueCount   = document.getElementById("queue-count");
 const queueAnnounce= document.getElementById("queue-announce");
@@ -165,7 +164,6 @@ function clearProtectedSessionData() {
   historyRequestOwner.cancel();
   resetLyricState();
   renderLyricsList(_lyricEls);
-  lyricAnnounce.textContent = "";
   loadCoverArt(null);
   _lastState = null;
   lastTrackKey = null;
@@ -543,7 +541,7 @@ function applyState(s) {
     if (btnDiscovery.style.display !== "none") btnDiscovery.style.display = "none";
   }
 
-  // Lyrics \u2014 visible list highlight + announce only on line change
+  // Lyrics \u2014 visible list highlight and aria-current; nothing is spoken
   // Under browser-driven playback the server's own clock never moves, so
   // hand the lyrics module the position the deck is actually at.
   // `elapsed` above is already the deck's currentTime in that mode, and
@@ -1043,7 +1041,7 @@ import {
   resetLyricState,
 } from "./modules/lyrics.js";
 
-const _lyricEls = { lyricsCard, lyricsList, lyricAnnounce };
+const _lyricEls = { lyricsCard, lyricsList };
 
 // ----------------------------------------------------------------
 // Why this track? — plain-English explanation of the pick
@@ -1236,13 +1234,23 @@ function connectWS() {
 // state-applier mirrors to the active deck.  No `aria-pressed` is used \u2014
 // the visible label honestly conveys the next action ("Play" / "Pause"
 // / "Resume"), so a toggle role would be redundant.
+//
+// NVDA with Chrome does not speak a focused button's new label, and the
+// hotkey path has no focus on the button at all, so the new state is
+// said once through the status region.  Not mirrored: the button label
+// is already the visible copy.
+function announcePlayState(paused) {
+  announceStatus(document.getElementById("sr-status"), paused ? "Paused" : "Playing",
+    { dwellMs: 3000, force: true, mirror: false });
+}
+
 btnPause.addEventListener("click", async () => {
   const epoch = captureAuthenticatedRequestEpoch();
   // First-click unlock path \u2014 synchronous play() inside the click
   // handler is required for iOS autoplay grants.
   if (!playbackEnabled && _lastBrowserPlayback) {
     try {
-      await withDisabled(btnPause, unlockAndPlay);
+      if (await withDisabled(btnPause, unlockAndPlay)) announcePlayState(false);
     } catch (_) { /* unlockAndPlay already announced the error */ }
     return;
   }
@@ -1258,6 +1266,7 @@ btnPause.addEventListener("click", async () => {
     btnPause.innerHTML = isPaused
       ? '<span aria-hidden="true">\u25B6</span> Resume'
       : '<span aria-hidden="true">\u23F8</span> Pause';
+    announcePlayState(isPaused);
   } catch (errorValue) {
     if (!isAuthenticatedRequestCurrent(epoch)) return;
     reportBackgroundRequestError(errorValue);

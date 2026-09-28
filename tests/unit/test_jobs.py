@@ -92,6 +92,7 @@ class TestJobManagerStart:
         assert snap["running"] is False
         assert snap["lines"] == []
         assert snap["exit_code"] is None
+        assert snap["stopped"] is False
 
     def test_stop_idle_returns_false(self) -> None:
         mgr = JobManager()
@@ -230,6 +231,9 @@ class TestReadLoopAndStop:
         mgr._proc = proc
         assert mgr.stop() is True
         proc.terminate.assert_called_once()
+        # The web UI reports a stop the user asked for as stopped, not as
+        # "exited with code 1".
+        assert mgr.snapshot()["stopped"] is True
 
     def test_stop_swallows_terminate_oserror(self) -> None:
         """OSError from terminate() is suppressed."""

@@ -249,9 +249,12 @@ function isButtonLike(control) {
 // Setting `disabled` on the focused control throws focus to <body> in
 // Chromium, and a closed <select> loses the arrow key that follows, so a
 // control that holds focus is never really disabled:
-//   - a focused button is marked aria-disabled and a capture-phase guard
-//     swallows its clicks until the request settles, so a double press
-//     still sends one request and focus never moves;
+//   - a focused button stays enabled and a capture-phase guard swallows
+//     its clicks until the request settles, so a double press still sends
+//     one request and focus never moves.  It gets no aria-disabled: NVDA
+//     speaks a state change on the focused control, so every press was
+//     heard as "unavailable" and nothing else.  The pending look comes
+//     from the .is-pending class, which assistive tech never sees;
 //   - any other focused field keeps working, and its requests run one
 //     after another so the server sees the changes in the order made.
 // An unfocused control is disabled as before.
@@ -265,21 +268,19 @@ function startHold(control) {
     return { count: 0, mode: "serial", tail: Promise.resolve(), restore: () => {} };
   }
   const doc = control.ownerDocument;
-  const wasAriaDisabled = control.getAttribute("aria-disabled");
   const guard = (event) => {
     if (!control.contains(event.target)) return;
     event.preventDefault();
     event.stopImmediatePropagation();
   };
-  control.setAttribute("aria-disabled", "true");
+  control.classList.add("is-pending");
   doc.addEventListener("click", guard, true);
   return {
     count: 0,
-    mode: "aria",
+    mode: "guard",
     restore: () => {
       doc.removeEventListener("click", guard, true);
-      if (wasAriaDisabled === null) control.removeAttribute("aria-disabled");
-      else control.setAttribute("aria-disabled", wasAriaDisabled);
+      control.classList.remove("is-pending");
     },
   };
 }

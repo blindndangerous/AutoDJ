@@ -651,6 +651,27 @@ describe("app request behavior", () => {
     expect(WebSocketImpl).toHaveBeenCalledOnce();
   });
 
+  it("says the new play state once after Pause toggles", async () => {
+    let paused = false;
+    await setupApp({
+      initialState: {
+        current_track: { path: "current.mp3", title: "Current" },
+      },
+      onRequest: (url) => {
+        if (url !== "/api/pause") return jsonResponse({ ok: true });
+        paused = !paused;
+        return jsonResponse({ paused });
+      },
+    });
+    const status = document.querySelector("#sr-status");
+    const pause = document.querySelector("#btn-pause");
+
+    pause.click();
+    await vi.waitFor(() => expect(status.textContent).toBe("Paused"));
+    pause.click();
+    await vi.waitFor(() => expect(status.textContent).toBe("Playing"));
+  });
+
   it("stops transient socket activity without clearing recoverable session data", async () => {
     let linerDeps;
     const source = {
@@ -1446,7 +1467,8 @@ describe("stream mode", () => {
       ...streamState, has_lyrics: true, lyric_index: 2, lyric_text: "Three",
     }) });
     expect(document.getElementById("progress-bar-label").textContent).toBe("0:47 / 3:20");
-    expect(document.getElementById("lyric-announce").textContent).toBe("Two");
+    expect(document.querySelector('#lyrics-list li[aria-current="true"]').textContent)
+      .toBe("Two");
   });
 
   it("starts and stops listening from the button with a fresh link", async () => {

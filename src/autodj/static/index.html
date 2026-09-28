@@ -212,7 +212,8 @@
           <span aria-hidden="true">◈</span> Discovery
         </button>
         <button id="btn-shortcuts"
-                title="View keyboard shortcuts (or press ?)">
+                title="View keyboard shortcuts (or press ?)"
+                aria-description="View keyboard shortcuts, or press the question mark key">
           <span aria-hidden="true">⌨</span> Keyboard shortcuts
         </button>
       </div>
@@ -287,19 +288,13 @@
     <p id="next-track-text">—</p>
   </details>
 
-  <!-- Lyrics — collapsed by default; expands when the current track has
-       LRC / beets / embedded lyrics.  Active-line auto-read uses the
-       polite #lyric-announce region below; pattern verified by
-       accessibility-lead. -->
+  <!-- Lyrics — collapsed disclosure, shown only when the current track
+       has LRC / beets / embedded lyrics.  Read on demand: nothing speaks
+       lyric lines automatically.  The active line carries
+       aria-current="true", so reading the list says "current" on it. -->
   <details id="lyrics-card" class="card" hidden>
     <summary><h2>Lyrics</h2></summary>
     <ol id="lyrics-list" role="list" aria-label="Lyric lines"></ol>
-    <!-- Visually hidden live region: announces only the active line, only on
-         change (not on every WS tick).  aria-atomic so the full new line reads. -->
-    <div id="lyric-announce"
-         aria-live="polite"
-         aria-atomic="true"
-         class="visually-hidden"></div>
   </details>
 
   </section>
@@ -386,7 +381,7 @@
           <option value="submerge">submerge (underwater)</option>
           <option value="vinyl_wow">vinyl wow (pitch wobble)</option>
           <option value="freeze">freeze (granular loop)</option>
-          <option value="glitch">glitch (slice + reorder)</option>
+          <option value="glitch" aria-label="glitch (slice and reorder)">glitch (slice + reorder)</option>
           <option value="scratch">scratch (turntablist sweep)</option>
           <option value="beat_repeat">beat repeat (loop roll)</option>
           <option value="sidechain_pump">sidechain pump</option>
@@ -396,7 +391,7 @@
           <option value="transformer">transformer (DJ-fader cut pattern)</option>
           <option value="dub_siren">dub siren (smooth sine riser)</option>
           <option value="stutter_build">stutter build (accelerating gate)</option>
-          <option value="wow_flutter">wow + flutter (worn-cassette feel)</option>
+          <option value="wow_flutter" aria-label="wow and flutter (worn-cassette feel)">wow + flutter (worn-cassette feel)</option>
           <option value="phaser">phaser (4-stage allpass sweep)</option>
           <option value="ring_modulator">ring modulator (clangy bell tone)</option>
           <option value="dub_delay">dub delay (long lowpass feedback)</option>
@@ -407,44 +402,51 @@
       </div>
       <span class="setting-desc" id="transition-desc">
         Audio treatment layered on every crossfade.
-        <strong>echo out</strong> tail-throws the outgoing track with feedback delay;
-        <strong>reverb tail</strong> bleeds a 4 s hall reverb past the cut;
-        <strong>high-pass sweep</strong> introduces the new track muffled then opens up;
-        <strong>low-pass sweep</strong> filters the outgoing into a build;
-        <strong>tape stop</strong> slows the outgoing to a halt over 4 s;
-        <strong>gate stutter</strong> chops the outgoing into rhythmic bursts (sample-accurate worklet);
-        <strong>noise riser</strong> layers a synthesised white-noise build (bright);
-        <strong>noise drop</strong> opposite of the riser — bright crash falling to silence;
-        <strong>backspin</strong> reverses the outgoing tail with vinyl-friction decel (2.0×→0.05×);
-        <strong>forward spin</strong> push-forward release (1.0×→3.0× accel);
-        <strong>cross-EQ swap</strong> hands bass duties from the outgoing to the incoming track;
-        <strong>bitcrusher</strong> degrades bit-depth + sample-rate (8-bit-console feel, AudioWorklet);
-        <strong>flanger</strong> adds a swirly modulated delay;
-        <strong>pitch swell</strong> sweeps pitch upward (preservesPitch off);
-        <strong>pitch fall</strong> sweeps pitch downward to 0.3× (mirror of swell, preservesPitch off);
-        <strong>telephone</strong> 500-2800 Hz band-pass + tanh saturation (sounds like a phone call);
-        <strong>chorus</strong> three detuned voices for a thick double;
-        <strong>submerge</strong> heavy lowpass + reverb wash (underwater);
-        <strong>vinyl wow</strong> drunk-turntable pitch wobble (60 Hz polling, ±25 % depth);
-        <strong>freeze</strong> captures the last 150 ms and loops with fade-out (granular, AudioWorklet);
-        <strong>glitch</strong> random buffer slicing + reorder (ring-buffer worklet);
-        <strong>scratch</strong> turntablist 4-pass back-and-forth over a 250 ms slice;
-        <strong>beat repeat</strong> stamps a 250 ms slice 8 times across the tail (Pioneer Loop Roll);
-        <strong>sidechain pump</strong> rhythmic 4-on-the-floor amplitude duck @ 120 BPM;
-        <strong>reverse reverb</strong> reverse'd reverb tail that swells INTO the cut;
-        <strong>air horn</strong> synth dub-siren with 220-880 Hz pitch sweep, layered with the music.
-        <strong>vinyl rewind</strong> slow musical reverse with one-octave pitch drop (smoother than backspin);
-        <strong>transformer</strong> rapid 16-cps DJ-fader cut pattern with syncopated rhythm;
-        <strong>dub siren</strong> sine 440-1760 Hz riser with 5 Hz vibrato (sits behind the music vs air horn's crash);
-        <strong>stutter build</strong> gate frequency accelerates 4 Hz → 32 Hz across the fade for tension;
-        <strong>wow + flutter</strong> 1.5 Hz pitch wobble + 8 Hz tremolo (worn-cassette feel, distinct from vinyl wow's pitch-only).
-        <strong>phaser</strong> 4-stage allpass cascade with 0.5 Hz LFO sweep (sweepy notch, no metallic comb of flanger);
-        <strong>ring modulator</strong> multiplies the signal by a 173 Hz sine (clangy bell sidebands, sci-fi voice);
-        <strong>dub delay</strong> 1 s delay with lowpass on the feedback loop (each repeat darkens, classic Lee Perry sound);
-        <strong>halftime</strong> ramps tempo to 50 % keeping pitch intact (classic trap pre-drop, distinct from pitch fall).
-        <strong>random</strong> picks one per crossfade;
-        <strong>rotate</strong> cycles through every effect in order.
       </span>
+      <!-- Per-effect detail is read on demand, not on every focus of the
+           select: as the select's description it was about 450 words. -->
+      <details class="setting-desc setting-help">
+        <summary>Transition effect details</summary>
+        <ul>
+          <li><strong>echo out</strong> tail-throws the outgoing track with feedback delay</li>
+          <li><strong>reverb tail</strong> bleeds a 4 s hall reverb past the cut</li>
+          <li><strong>high-pass sweep</strong> introduces the new track muffled then opens up</li>
+          <li><strong>low-pass sweep</strong> filters the outgoing into a build</li>
+          <li><strong>tape stop</strong> slows the outgoing to a halt over 4 s</li>
+          <li><strong>gate stutter</strong> chops the outgoing into rhythmic bursts (sample-accurate worklet)</li>
+          <li><strong>noise riser</strong> layers a synthesised white-noise build (bright)</li>
+          <li><strong>noise drop</strong> opposite of the riser — bright crash falling to silence</li>
+          <li><strong>backspin</strong> reverses the outgoing tail with vinyl-friction decel (2.0×→0.05×)</li>
+          <li><strong>forward spin</strong> push-forward release (1.0×→3.0× accel)</li>
+          <li><strong>cross-EQ swap</strong> hands bass duties from the outgoing to the incoming track</li>
+          <li><strong>bitcrusher</strong> degrades bit-depth + sample-rate (8-bit-console feel, AudioWorklet)</li>
+          <li><strong>flanger</strong> adds a swirly modulated delay</li>
+          <li><strong>pitch swell</strong> sweeps pitch upward (preservesPitch off)</li>
+          <li><strong>pitch fall</strong> sweeps pitch downward to 0.3× (mirror of swell, preservesPitch off)</li>
+          <li><strong>telephone</strong> 500-2800 Hz band-pass + tanh saturation (sounds like a phone call)</li>
+          <li><strong>chorus</strong> three detuned voices for a thick double</li>
+          <li><strong>submerge</strong> heavy lowpass + reverb wash (underwater)</li>
+          <li><strong>vinyl wow</strong> drunk-turntable pitch wobble (60 Hz polling, <span aria-hidden="true">±</span><span class="visually-hidden">plus or minus </span>25 % depth)</li>
+          <li><strong>freeze</strong> captures the last 150 ms and loops with fade-out (granular, AudioWorklet)</li>
+          <li><strong>glitch</strong> random buffer slicing + reorder (ring-buffer worklet)</li>
+          <li><strong>scratch</strong> turntablist 4-pass back-and-forth over a 250 ms slice</li>
+          <li><strong>beat repeat</strong> stamps a 250 ms slice 8 times across the tail (Pioneer Loop Roll)</li>
+          <li><strong>sidechain pump</strong> rhythmic 4-on-the-floor amplitude duck @ 120 BPM</li>
+          <li><strong>reverse reverb</strong> reverse'd reverb tail that swells INTO the cut</li>
+          <li><strong>air horn</strong> synth dub-siren with 220-880 Hz pitch sweep, layered with the music</li>
+          <li><strong>vinyl rewind</strong> slow musical reverse with one-octave pitch drop (smoother than backspin)</li>
+          <li><strong>transformer</strong> rapid 16-cps DJ-fader cut pattern with syncopated rhythm</li>
+          <li><strong>dub siren</strong> sine 440-1760 Hz riser with 5 Hz vibrato (sits behind the music vs air horn's crash)</li>
+          <li><strong>stutter build</strong> gate frequency accelerates 4 Hz → 32 Hz across the fade for tension</li>
+          <li><strong>wow + flutter</strong> 1.5 Hz pitch wobble + 8 Hz tremolo (worn-cassette feel, distinct from vinyl wow's pitch-only)</li>
+          <li><strong>phaser</strong> 4-stage allpass cascade with 0.5 Hz LFO sweep (sweepy notch, no metallic comb of flanger)</li>
+          <li><strong>ring modulator</strong> multiplies the signal by a 173 Hz sine (clangy bell sidebands, sci-fi voice)</li>
+          <li><strong>dub delay</strong> 1 s delay with lowpass on the feedback loop (each repeat darkens, classic Lee Perry sound)</li>
+          <li><strong>halftime</strong> ramps tempo to 50 % keeping pitch intact (classic trap pre-drop, distinct from pitch fall)</li>
+          <li><strong>random</strong> picks one per crossfade</li>
+          <li><strong>rotate</strong> cycles through every effect in order</li>
+        </ul>
+      </details>
     </fieldset>
 
     <fieldset>
@@ -453,20 +455,20 @@
         <label for="harmonic-mode">Harmonic mixing</label>
         <select id="harmonic-mode" aria-describedby="dj-harmonic-desc">
           <option value="off">off (no key filter)</option>
-          <option value="compatible">compatible (Camelot match, ±1, relative)</option>
+          <option value="compatible" aria-label="compatible (Camelot match, plus or minus 1, relative)">compatible (Camelot match, ±1, relative)</option>
           <option value="strict">strict (same Camelot position only)</option>
-          <option value="neighbour">neighbour (same side, ±1 only)</option>
+          <option value="neighbour" aria-label="neighbour (same side, plus or minus 1 only)">neighbour (same side, ±1 only)</option>
           <option value="mood_change">mood change (relative major/minor only)</option>
-          <option value="energy_boost">energy boost (same side, +2 jump)</option>
+          <option value="energy_boost" aria-label="energy boost (same side, plus 2 jump)">energy boost (same side, +2 jump)</option>
         </select>
       </div>
       <span class="setting-desc" id="dj-harmonic-desc">
         Restrict next-track picks to harmonically related keys.
-        <strong>compatible</strong> is the classic Camelot rule (same position, ±1, or relative major/minor) — broadest pool.
+        <strong>compatible</strong> is the classic Camelot rule (same position, <span aria-hidden="true">±</span><span class="visually-hidden">plus or minus </span>1, or relative major/minor) — broadest pool.
         <strong>strict</strong> only allows the exact same key.
         <strong>neighbour</strong> walks the wheel one step at a time, no mode flips.
-        <strong>mood change</strong> swaps major↔minor only (energy stays, mood flips).
-        <strong>energy boost</strong> picks +2 around the wheel — each track is two semitones up, so the set lifts over time.  Pick <strong>off</strong> to disable the harmonic filter completely.
+        <strong>mood change</strong> swaps major<span aria-hidden="true">↔</span><span class="visually-hidden"> and </span>minor only (energy stays, mood flips).
+        <strong>energy boost</strong> picks <span aria-hidden="true">+</span><span class="visually-hidden">plus </span>2 around the wheel — each track is two semitones up, so the set lifts over time.  Pick <strong>off</strong> to disable the harmonic filter completely.
       </span>
 
       <div class="settings-check">
@@ -474,7 +476,7 @@
         <label for="dj-beatmatch">Beatmatch</label>
       </div>
       <span class="setting-desc" id="dj-beatmatch-desc">
-        Pitch-stretch the incoming track up to ±8 % so its BPM matches the outgoing track during the crossfade — beats line up like a real DJ deck.
+        Pitch-stretch the incoming track up to <span aria-hidden="true">±</span><span class="visually-hidden">plus or minus </span>8 % so its BPM matches the outgoing track during the crossfade — beats line up like a real DJ deck.
       </span>
 
       <div class="settings-check">
@@ -1007,7 +1009,7 @@
      while showModal() still made the rest of the page inert. -->
 <dialog id="hotkey-help-modal" aria-labelledby="hotkey-help-title">
   <h2 id="hotkey-help-title" style="margin-top:0">Keyboard shortcuts</h2>
-  <p>Transport keys work on the Now Playing tab. Status keys (Shift+letter) and <kbd>?</kbd> work from any tab. Letter and punctuation shortcuts work on focused buttons and sliders, but not while typing or using dropdown typeahead. Space activates a focused button; arrow keys operate the focused slider or tab.</p>
+  <p>Transport keys work on the Now Playing tab. Status keys (Shift+letter) and <kbd><span aria-hidden="true">?</span><span class="visually-hidden">question mark</span></kbd> work from any tab. Letter and punctuation shortcuts work on focused buttons and sliders, but not while typing or using dropdown typeahead. Space activates a focused button; arrow keys operate the focused slider or tab.</p>
   <p>If these single-key shortcuts get in your way, turn them all off with the <strong>Enable keyboard shortcuts</strong> checkbox under Settings, Keyboard. The choice is saved in this browser. This list stays available from the Keyboard shortcuts button.</p>
   <dl style="display:grid;grid-template-columns:max-content 1fr;column-gap:1rem;row-gap:0.25rem;margin:0">
     <dt><kbd>Space</kbd> / <kbd>k</kbd></dt><dd>Play or pause. In stream mode, start or stop listening on this page.</dd>
@@ -1016,7 +1018,7 @@
     <dt><kbd>M</kbd></dt><dd>Mute / unmute</dd>
     <dt><kbd>↑</kbd> / <kbd>↓</kbd></dt><dd>Volume up / down (5%)</dd>
     <dt><kbd>,</kbd> / <kbd>.</kbd></dt><dd>Seek back / forward 1 measure (BPM-derived; falls back to 5 s). Not available in stream mode.</dd>
-    <dt><kbd>?</kbd></dt><dd>Open / close this dialog</dd>
+    <dt><kbd><span aria-hidden="true">?</span><span class="visually-hidden">question mark</span></kbd></dt><dd>Open / close this dialog</dd>
     <dt><kbd>Esc</kbd></dt><dd>Close this dialog</dd>
     <dt style="margin-top:0.5rem"><kbd>Shift+T</kbd></dt><dd style="margin-top:0.5rem">Speak current track (artist – title)</dd>
     <dt><kbd>Shift+N</kbd></dt><dd>Speak next track (artist, title, BPM)</dd>
