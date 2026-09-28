@@ -18,8 +18,12 @@ import { createLatestRequestOwner } from "./latest-request.js";
 // Mirrors the `limit` default of GET /api/search (server.py).
 const SEARCH_RESULT_LIMIT = 100;
 
+// playNow(request) runs the Play now request and starts this page's
+// audio in the same click; it resolves false when it has already said
+// why nothing plays.
 export function installSearch({
   searchInput, btnSearch, searchResults, searchCount, queueAnnounce,
+  playNow = async (request) => { await request(); return true; },
 }) {
   if (!searchInput || !searchResults) return;
   const searchRequestOwner = createLatestRequestOwner();
@@ -128,12 +132,14 @@ export function installSearch({
     try {
       await withDisabled(btn, async () => {
       if (now) {
-        await requestJson("/api/play-next", {
+        // Called synchronously in the click: a page that never pressed
+        // Play unlocks its audio inside this gesture.
+        const started = await playNow(() => requestJson("/api/play-next", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ path, now: true }),
-        });
-        if (!isAuthenticatedRequestCurrent(epoch)) return;
+        }));
+        if (!isAuthenticatedRequestCurrent(epoch) || !started) return;
         announce(`Playing ${name} now.`);
       } else if (btn.dataset.next === "true") {
         // Plays straight after the current track, ahead of the queue.

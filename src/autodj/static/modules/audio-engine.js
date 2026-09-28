@@ -2361,7 +2361,12 @@ const BLOCKED_PLAY_TEXT = "The browser did not start playback. Press Play again.
 // Resolves true only once the deck is really playing, so the caller's
 // "Playing" is never said over silence; otherwise it says why and
 // resolves false.
-export async function unlockAndPlay() {
+//
+// beforePlay, when given, is the request that picks what plays (Play now
+// on a search result).  It runs after the unlock, which has to happen in
+// the click, and before the current track is read, so the deck starts on
+// the chosen track.  Its failure is thrown to the caller unannounced.
+export async function unlockAndPlay(beforePlay = null) {
   const epoch = captureAuthenticatedRequestEpoch();
   // Both calls run synchronously inside the click: Firefox only lets a
   // context resume, and a deck play, while the user gesture is current.
@@ -2370,6 +2375,16 @@ export async function unlockAndPlay() {
   // Start a silent play() on the active deck to satisfy iOS gesture rule.
   playOnDeck(deckActive());
 
+  if (beforePlay) {
+    try {
+      await beforePlay();
+    } catch (err) {
+      if (!playbackEnabled) {
+        try { deckActive().audio.pause(); } catch (_) {}
+      }
+      throw err;
+    }
+  }
   // Pull current state and load the active deck with the current track.
   if (resuming) {
     try { await resuming; } catch (_) { /* checked below, before Playing */ }
