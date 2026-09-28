@@ -659,6 +659,7 @@ function renderMute(isMuted) {
 
 import {
   applySettingsState,
+  installSettingsControls,
   postSettings as _postSettingsModule,
   resetSettingsState,
 } from "./modules/settings-panel.js";
@@ -680,113 +681,7 @@ function postSettings(url, body, control) {
   return _postSettingsModule(url, body, { settingsStatus, control });
 }
 
-presetSelect.addEventListener("change", (event) => {
-  void postSettings("/api/preset", { name: presetSelect.value || null }, event.currentTarget);
-});
-
-transitionSelect.addEventListener("change", (event) => {
-  void postSettings("/api/transition", { effect: transitionSelect.value }, event.currentTarget);
-});
-
-const _djToggleMap = [
-  [djBeatmatch,   "beatmatch"],
-  [djPhraseAlign, "phrase_align"],
-  [djOutroIntro,  "outro_intro_align"],
-];
-for (const [el, key] of _djToggleMap) {
-  el.addEventListener("change", (event) => {
-    void postSettings("/api/djmix", { [key]: el.checked }, event.currentTarget);
-  });
-}
-harmonicMode.addEventListener("change", (event) => {
-  void postSettings("/api/djmix", { harmonic_mode: harmonicMode.value }, event.currentTarget);
-});
-
-pbEqDuck.addEventListener("change", (event) => {
-  void postSettings("/api/playback-settings", { crossfade_eq_duck: pbEqDuck.checked }, event.currentTarget);
-});
-pbPickMode.addEventListener("change", (event) => {
-  // Three-way select projects to the server's two-flag shape.  Sending
-  // both flags every time keeps state consistent regardless of which
-  // option is chosen (no stale flag survives the switch).
-  const v = pbPickMode.value;
-  void postSettings("/api/playback-settings", {
-    smart_shuffle: v === "smart",
-    pure_shuffle: v === "pure",
-  }, event.currentTarget);
-});
-pbShowLyrics.addEventListener("change", (event) => {
-  void postSettings("/api/playback-settings", { show_lyrics: pbShowLyrics.checked }, event.currentTarget);
-});
-pbAnchorSeed.addEventListener("change", (event) => {
-  void postSettings("/api/playback-settings", { anchor_to_seed: pbAnchorSeed.checked }, event.currentTarget);
-});
-if (pbDaypart) {
-  pbDaypart.addEventListener("change", (event) => {
-    void postSettings("/api/playback-settings", { enable_daypart: pbDaypart.checked }, event.currentTarget);
-  });
-}
-if (pbMoodArc) {
-  pbMoodArc.addEventListener("change", (event) => {
-    void postSettings("/api/playback-settings", { enable_mood_arc: pbMoodArc.checked }, event.currentTarget);
-  });
-}
-if (pbMoodArcHours) {
-  pbMoodArcHours.addEventListener("change", (event) => {
-    const hrs = parseFloat(pbMoodArcHours.value);
-    if (isFinite(hrs) && hrs > 0) {
-      void postSettings("/api/playback-settings", { mood_arc_hours: hrs }, event.currentTarget);
-    }
-  });
-}
-if (pbImportCues) {
-  pbImportCues.addEventListener("change", (event) => {
-    void postSettings("/api/playback-settings", {
-      import_external_cues: pbImportCues.checked,
-    }, event.currentTarget);
-  });
-}
-if (pbBeatSyncFx) {
-  pbBeatSyncFx.addEventListener("change", (event) => {
-    void postSettings("/api/playback-settings", {
-      beat_sync_fx: pbBeatSyncFx.checked,
-    }, event.currentTarget);
-  });
-}
-if (pbKeySyncFx) {
-  pbKeySyncFx.addEventListener("change", (event) => {
-    void postSettings("/api/playback-settings", {
-      key_sync_fx: pbKeySyncFx.checked,
-    }, event.currentTarget);
-  });
-}
-if (pbBeatmatchSkip) {
-  pbBeatmatchSkip.addEventListener("change", (event) => {
-    void postSettings("/api/playback-settings", {
-      beatmatch_on_skip: pbBeatmatchSkip.checked,
-    }, event.currentTarget);
-  });
-}
-pbReplayGain.addEventListener("change", (event) => {
-  void postSettings("/api/playback-settings", { replaygain_enabled: pbReplayGain.checked }, event.currentTarget);
-});
-pbTransitionMode.addEventListener("change", (event) => {
-  void postSettings("/api/playback-settings", { transition_mode: pbTransitionMode.value }, event.currentTarget);
-});
-if (pbPostQueueSeed) {
-  pbPostQueueSeed.addEventListener("change", (event) => {
-    void postSettings("/api/playback-settings", { post_queue_seed: pbPostQueueSeed.value }, event.currentTarget);
-  });
-}
-// No extra announcement: the select and checkbox already speak their new
-// value, and the region these used to write sits inside the hidden Now
-// Playing panel while the user is on Settings.
-keyNotation.addEventListener("change", (event) => {
-  void postSettings("/api/playback-settings", { key_notation: keyNotation.value }, event.currentTarget);
-});
-keyPreferFlats.addEventListener("change", (event) => {
-  void postSettings("/api/playback-settings", { key_prefer_flats: keyPreferFlats.checked }, event.currentTarget);
-});
+installSettingsControls(_settingsEls(), postSettings);
 
 // ----------------------------------------------------------------
 // Audio output device selector (browser-only — server-side device is
@@ -995,46 +890,6 @@ if (audioDeviceSelect) {
     navigator.mediaDevices.addEventListener("devicechange", _refreshAudioDevices);
   }
 }
-pbCrossfade.addEventListener("change", (event) => {
-  const v = parseFloat(pbCrossfade.value);
-  if (!isNaN(v) && v >= 0) void postSettings(
-    "/api/playback-settings", { crossfade_seconds: v }, event.currentTarget,
-  );
-});
-pbFadeIn.addEventListener("change", (event) => {
-  const v = parseFloat(pbFadeIn.value);
-  if (!isNaN(v) && v >= 0) void postSettings(
-    "/api/playback-settings", { fade_in_seconds: v }, event.currentTarget,
-  );
-});
-
-function postBpmRange(control) {
-  const lo = parseFloat(bpmLo.value);
-  const hi = parseFloat(bpmHi.value);
-  void postSettings("/api/bpm-range", {
-    lo: isNaN(lo) ? null : lo,
-    hi: isNaN(hi) ? null : hi,
-  }, control);
-}
-bpmLo.addEventListener("change", (event) => postBpmRange(event.currentTarget));
-bpmHi.addEventListener("change", (event) => postBpmRange(event.currentTarget));
-
-function postDiscovery(control) {
-  const on = discEnabled.checked;
-  const v = parseInt(discEvery.value, 10);
-  void postSettings(
-    "/api/discovery",
-    { every: on && !isNaN(v) && v > 0 ? v : null },
-    control,
-  );
-}
-discEnabled.addEventListener("change", (event) => {
-  discEvery.disabled = !discEnabled.checked;
-  postDiscovery(event.currentTarget);
-});
-discEvery.addEventListener("change", (event) => {
-  if (discEnabled.checked) postDiscovery(event.currentTarget);
-});
 
 import {
   applyBadges, formatPersistentMetadata, trackChangeDetails,

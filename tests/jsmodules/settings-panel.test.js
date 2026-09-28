@@ -6,7 +6,7 @@
 // "Cannot reach server: els is undefined" even when the server was alive.
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { applySettingsState, postSettings } from
+import { applySettingsState, installSettingsControls, postSettings } from
   "../../src/autodj/static/modules/settings-panel.js";
 
 function makeEls() {
@@ -50,6 +50,7 @@ function makeEls() {
     pbKeySyncFx:     cb(),
     pbBeatmatchSkip: cb(),
     pbTransitionMode: sel(["full_intro_outro", "fixed"]),
+    pbPickMode:      sel(["similarity", "smart", "pure"]),
     pbCrossfade:     num(),
     bpmLo:           num(),
     bpmHi:           num(),
@@ -135,6 +136,40 @@ describe("applySettingsState", () => {
     els.harmonicMode.value = "compatible";
     applySettingsState({ djmix: { harmonic_mode: "off" } }, els);
     expect(els.harmonicMode.value).toBe("compatible");
+  });
+});
+
+describe("installSettingsControls", () => {
+  it("saves each control to its own endpoint and field", () => {
+    const els = makeEls();
+    const save = vi.fn();
+    installSettingsControls(els, save);
+    const change = (control, value) => {
+      if (control.type === "checkbox") control.checked = value;
+      else control.value = value;
+      control.dispatchEvent(new Event("change"));
+      return save.mock.calls.at(-1)?.slice(0, 2);
+    };
+
+    expect(change(els.djPhraseAlign, true)).toEqual(["/api/djmix", { phrase_align: true }]);
+    expect(change(els.pbReplayGain, true))
+      .toEqual(["/api/playback-settings", { replaygain_enabled: true }]);
+    expect(change(els.transitionSelect, "reverb_tail"))
+      .toEqual(["/api/transition", { effect: "reverb_tail" }]);
+    expect(change(els.pbCrossfade, "4.5"))
+      .toEqual(["/api/playback-settings", { crossfade_seconds: 4.5 }]);
+    expect(change(els.pbPickMode, "pure"))
+      .toEqual(["/api/playback-settings", { smart_shuffle: false, pure_shuffle: true }]);
+    expect(change(els.bpmLo, "90")).toEqual(["/api/bpm-range", { lo: 90, hi: null }]);
+    els.discEvery.value = "7";
+    expect(change(els.discEnabled, true)).toEqual(["/api/discovery", { every: 7 }]);
+    expect(els.discEvery.disabled).toBe(false);
+
+    // A value the server would refuse is not sent.
+    save.mockClear();
+    change(els.pbCrossfade, "-1");
+    change(els.pbMoodArcHours, "0");
+    expect(save).not.toHaveBeenCalled();
   });
 });
 
