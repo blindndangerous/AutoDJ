@@ -1936,7 +1936,7 @@ class Player:
         2. No-ops when the path is already in flight on another thread.
         3. Loads the audio file, runs :func:`analyse_audio` (which calls
            :func:`detect_cues` internally), merges any external Mixxx /
-           Rekordbox / Traktor cues, then writes the result back to
+           Rekordbox / Serato / Traktor cues, then writes the result back to
            ``self._dj_cache`` and forces a flush so the sidecar JSON
            grows incrementally on each track.
 
@@ -2030,12 +2030,20 @@ class Player:
     def _merge_external_cues_into(self, meta: DjMeta, path: str) -> None:
         """Merge externally-imported cues for *path* into *meta* in place.
 
-        No-op when the importer found nothing for this track.  Uses
+        Library imports come from :meth:`_ensure_external_cues`; Serato
+        cues are read from the file's own tags here.  No-op while
+        ``playback.import_external_cues`` is off or when neither source
+        has anything for this track.  Uses
         :func:`autodj.dj_meta.merge_cues` so user / DJ-software cues
         win on conflict but auto-detected cues survive when they're
         the only source for a region of the track.
         """
-        external = getattr(self, "_external_cues", {}).get(path)
+        if not self._cfg.playback.import_external_cues:
+            return
+        from autodj.dj_cues_import import import_from_serato_tags
+
+        external = list(getattr(self, "_external_cues", {}).get(path) or [])
+        external.extend(import_from_serato_tags(Path(path)))
         if not external:
             return
         from autodj.dj_meta import merge_cues

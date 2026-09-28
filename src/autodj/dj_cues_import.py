@@ -2,20 +2,33 @@
 
 AutoDJ auto-detects cues from raw audio (see :func:`autodj.dj_meta.detect_cues`),
 but if you already use Mixxx, Rekordbox, Serato, or Traktor on the same library
-this module pulls their cues straight from the canonical sources.
+this module pulls their cues straight from where those programs keep them.
 
-Discovery is fully automatic: :func:`auto_import_cues` walks a small list of
-well-known locations (Mixxx's user-data dir, Rekordbox's exported XML, the
-beets library directory, ID3 tags on each audio file) and merges everything
-it finds.  Nothing to install — every reader uses the standard library or
-``mutagen`` (already pinned in ``pyproject.toml`` for embedded album art).
+There are four readers:
+
+- Mixxx: the ``mixxxdb.sqlite`` library database.
+- Rekordbox: a ``Library.xml`` collection export (the live database is
+  encrypted, so the user has to export the XML from Rekordbox).
+- Traktor: ``collection.nml``.
+- Serato: the ``Serato Markers2`` tag inside each audio file (MP3, AIFF,
+  FLAC, MP4/M4A).  See :func:`import_from_serato_tags`.
+
+The first three are library files: :func:`auto_import_cues` looks for them
+in the music directory and each program's default location once per
+session.  Serato keeps its cues per file, so the player reads them with
+:func:`import_from_serato_tags` when it analyses a track.  Every reader uses
+the standard library or ``mutagen`` (a core dependency).
+
+The readers follow the published file formats; none has been checked
+against a real Mixxx, Rekordbox, Serato or Traktor library by the
+maintainer, and the tests use hand-built fixtures.
 
 Source ranking when two readers report a cue at the same time:
     user > mixxx == rekordbox == serato == traktor > auto
 
-Each reader is best-effort: failures are logged at DEBUG level and the
-empty list is returned, so a missing / corrupt source never breaks the
-overall import.
+The library readers are best-effort: a missing or corrupt file is logged at
+DEBUG level and yields no cues, so one bad source never breaks the overall
+import.  A Serato tag that is present but malformed is logged as a warning.
 
 Example:
     >>> from pathlib import Path
@@ -27,9 +40,12 @@ Example:
 
 from __future__ import annotations
 
+import base64
+import binascii
 import contextlib
 import logging
 import sqlite3
+import struct
 
 # DJ-software XML exports are user-owned files on the local filesystem
 # (Rekordbox, Traktor) -- there is no untrusted-network path to them.
@@ -303,6 +319,161 @@ def _traktor_cue_to_cue(cue: ET.Element, nml_type_map: dict[str, str]) -> Cue | 
         type=mapped,
         label=cue.get("NAME") or "",
         source="traktor",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Serato — "Serato Markers2" tag inside each audio file
+# ---------------------------------------------------------------------------
+#
+# Format reference: the serato-tags project's reverse-engineered notes,
+# https://github.com/Holzhaus/serato-tags/blob/main/docs/serato_markers2.md
+# and .../docs/fileformats.md (read 2026-09).
+#
+# Where the tag lives:
+#   MP3 / AIFF: ID3v2 GEOB frame, description "Serato Markers2".
+#   FLAC:       Vorbis comment SERATO_MARKERS_V2.
+#   MP4 / M4A:  freeform atom ----:com.serato.dj:markersv2.
+# FLAC and MP4 wrap the GEOB body: base64 of
+#   b"application/octet-stream\0" b"\0" b"Serato Markers2\0" <GEOB body>.
+# Ogg Vorbis is left out: serato-tags notes its format differs and is not
+# documented.
+#
+# GEOB body: b"\x01\x01", then base64 text (a linefeed every 72 chars,
+# sometimes one char past a multiple of 4), then NUL padding.  The decoded
+# payload is b"\x01\x01" followed by entries, each a NUL-terminated ASCII
+# type name, a big-endian uint32 length and that many bytes of data.  An
+# empty name ends the list.
+#
+# CUE data:  00, index u8, position ms u32, 00, RGB (3 bytes), 00 00,
+#            NUL-terminated UTF-8 name.
+# LOOP data: 00, index u8, start ms u32, end ms u32, ff ff ff ff,
+#            ARGB (4 bytes), 1 unknown byte, locked u8, NUL-terminated name
+#            (the byte layout of serato-tags' scripts/serato_markers2.py,
+#            struct ">cBII4s4sB?").
+# Other entry types (COLOR, BPMLOCK, FLIP) are skipped by length.
+
+_SERATO_GEOB_DESC = "Serato Markers2"
+_SERATO_FLAC_KEY = "SERATO_MARKERS_V2"
+_SERATO_MP4_KEY = "----:com.serato.dj:markersv2"
+_SERATO_ENVELOPE = b"application/octet-stream\x00\x00Serato Markers2\x00"
+_SERATO_VERSION = b"\x01\x01"
+# Fixed-size heads of the CUE and LOOP entries; the name follows.
+_SERATO_CUE_HEAD = struct.Struct(">xBIx3s2x")  # index, position ms, RGB
+_SERATO_LOOP_HEAD = struct.Struct(">xBII4x4s2x")  # index, start ms, end ms, ARGB
+
+
+def import_from_serato_tags(audio_path: Path) -> list[Cue]:
+    """Read Serato hot cues and saved loops from one audio file's tags.
+
+    Supports MP3, AIFF, FLAC and MP4/M4A (see the format notes above).
+    Each hot cue becomes a ``"user"`` cue at its position; each saved loop
+    becomes a ``"user"`` cue at the loop start.  Names and colours carry
+    over.
+
+    Args:
+        audio_path: The audio file to read.
+
+    Returns:
+        The file's Serato cues sorted by time.  Empty when the file cannot
+        be opened, has no Serato Markers2 tag, or the tag is malformed
+        (logged as a warning).
+    """
+    import mutagen
+
+    try:
+        audio = mutagen.File(audio_path)
+    except (mutagen.MutagenError, OSError) as exc:
+        logger.debug("Serato: cannot read tags of %s: %s", audio_path, exc)
+        return []
+    if audio is None or audio.tags is None:
+        return []
+    try:
+        body = _serato_markers2_body(audio)
+        cues = _parse_serato_markers2(body) if body is not None else []
+    except (ValueError, binascii.Error, struct.error) as exc:
+        logger.warning("Serato: malformed Markers2 tag in %s: %s", audio_path, exc)
+        return []
+    cues.sort(key=lambda c: c.time_s)
+    return cues
+
+
+def _serato_markers2_body(audio: Any) -> bytes | None:
+    """Return the GEOB-style Markers2 body from a mutagen file, or None."""
+    from mutagen.flac import FLAC
+    from mutagen.id3 import ID3
+    from mutagen.mp4 import MP4Tags
+
+    tags = audio.tags
+    if isinstance(tags, ID3):
+        frames = [f.data for f in tags.getall("GEOB") if f.desc == _SERATO_GEOB_DESC]
+        return bytes(frames[0]) if frames else None
+    if isinstance(audio, FLAC):
+        wrapped = [v.encode("ascii") for v in tags.get(_SERATO_FLAC_KEY, [])]
+    elif isinstance(tags, MP4Tags):
+        wrapped = [bytes(v) for v in tags.get(_SERATO_MP4_KEY, [])]
+    else:
+        return None
+    return _serato_unwrap(wrapped[0]) if wrapped else None
+
+
+def _serato_unwrap(text: bytes) -> bytes:
+    """Decode a FLAC / MP4 Serato field and strip its GEOB-like envelope."""
+    raw = _serato_b64decode(text)
+    if not raw.startswith(_SERATO_ENVELOPE):
+        raise ValueError("missing 'application/octet-stream' / 'Serato Markers2' header")
+    return raw[len(_SERATO_ENVELOPE) :]
+
+
+def _serato_b64decode(text: bytes) -> bytes:
+    """Base64-decode Serato's unpadded, line-wrapped text.
+
+    Serato sometimes writes one character past a multiple of four;
+    serato-tags documents appending ``A==`` in that case.
+    """
+    clean = b"".join(text.split())
+    padding = b"A==" if len(clean) % 4 == 1 else b"=" * (-len(clean) % 4)
+    return base64.b64decode(clean + padding, validate=True)
+
+
+def _parse_serato_markers2(body: bytes) -> list[Cue]:
+    """Parse a ``Serato Markers2`` GEOB body into cues, in tag order.
+
+    Raises:
+        ValueError: The body or its payload is not a Markers2 structure
+            (``binascii.Error`` and ``struct.error`` for bad base64 or
+            short entries).
+    """
+    end = body.find(b"\x00")
+    payload = _serato_b64decode(body[2 : end if end >= 0 else None])
+    if body[:2] != _SERATO_VERSION or payload[:2] != _SERATO_VERSION:
+        raise ValueError("not a version 1.1 Markers2 tag")
+    cues: list[Cue] = []
+    pos = 2
+    while name := payload[pos : payload.index(b"\x00", pos)]:
+        (length,) = struct.unpack_from(">I", payload, pos + len(name) + 1)
+        start = pos + len(name) + 5
+        data = payload[start : start + length]
+        if len(data) != length:
+            raise ValueError(f"{name!r} entry truncated")
+        pos = start + length
+        if name == b"CUE":
+            _index, ms, rgb = _SERATO_CUE_HEAD.unpack_from(data)
+            cues.append(_serato_cue(ms, rgb, data[_SERATO_CUE_HEAD.size :]))
+        elif name == b"LOOP":
+            _index, ms, _end_ms, argb = _SERATO_LOOP_HEAD.unpack_from(data)
+            cues.append(_serato_cue(ms, argb[1:], data[_SERATO_LOOP_HEAD.size :]))
+    return cues
+
+
+def _serato_cue(position_ms: int, rgb: bytes, name: bytes) -> Cue:
+    """Build a Serato cue; loops are placed at their start."""
+    return Cue(
+        time_s=position_ms / 1000.0,
+        type="user",
+        label=name.split(b"\x00", 1)[0].decode("utf-8", errors="replace"),
+        source="serato",
+        color="#" + rgb.hex(),
     )
 
 

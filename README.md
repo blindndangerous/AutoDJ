@@ -489,7 +489,7 @@ with `uv pip uninstall autodj`.
 - Audio analysis uses [librosa](https://librosa.org/) (ISC).
 - Vector search uses [FAISS](https://github.com/facebookresearch/faiss) (MIT).
 - The web UI uses [FastAPI](https://fastapi.tiangolo.com/) and a hand-written ES module front end (no React, no Vue, no framework).
-- Cue-point importers read [Mixxx](https://mixxx.org/), [Rekordbox](https://rekordbox.com/), and [Traktor](https://www.native-instruments.com/en/products/traktor/) library files.
+- Cue-point importers read [Mixxx](https://mixxx.org/), [Rekordbox](https://rekordbox.com/), and [Traktor](https://www.native-instruments.com/en/products/traktor/) library files, and the [Serato](https://serato.com/) cue tags inside audio files (format from the [serato-tags](https://github.com/Holzhaus/serato-tags) notes).
 
 If AutoDJ is useful to you, a star on GitHub is appreciated.  Issues and pull requests welcome.
 

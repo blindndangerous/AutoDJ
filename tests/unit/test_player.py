@@ -549,6 +549,23 @@ class TestPlayerExternalCues:
         player._merge_external_cues_into(meta, "unknown.mp3")
         assert meta.cues == []
 
+    def test_merge_external_cues_into_reads_serato_tags_while_enabled(self) -> None:
+        from autodj.dj_meta import Cue, DjMeta
+
+        player = self._make_player()
+        mixxx = Cue(time_s=5.0, type="user", source="mixxx", label="Hot 1")
+        player._external_cues = {"track.mp3": [mixxx]}
+        serato = Cue(time_s=20.0, type="user", source="serato", label="Hot A")
+        meta = DjMeta(intro_end_s=0.0, outro_start_s=0.0, beats=[], analysed=True)
+        with patch("autodj.dj_cues_import.import_from_serato_tags", return_value=[serato]) as rd:
+            player._cfg.playback.import_external_cues = False
+            player._merge_external_cues_into(meta, "track.mp3")
+            assert meta.cues == []
+            player._cfg.playback.import_external_cues = True
+            player._merge_external_cues_into(meta, "track.mp3")
+        rd.assert_called_once_with(Path("track.mp3"))
+        assert meta.cues == [mixxx, serato]
+
     def test_merge_external_cues_into_concats_external(self) -> None:
         from autodj.dj_meta import Cue, DjMeta
 
@@ -563,7 +580,9 @@ class TestPlayerExternalCues:
             analysed=True,
             cues=[Cue(time_s=10.0, type="drop", source="auto")],
         )
-        player._merge_external_cues_into(meta, "track.mp3")
+        player._cfg.playback.import_external_cues = True
+        with patch("autodj.dj_cues_import.import_from_serato_tags", return_value=[]):
+            player._merge_external_cues_into(meta, "track.mp3")
         # Both cues survive (different times beyond the 250 ms collision window).
         assert len(meta.cues) == 2
         sources = {c.source for c in meta.cues}

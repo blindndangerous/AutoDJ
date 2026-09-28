@@ -1423,8 +1423,8 @@ def cmd_analyse(
     "import_external_cues",
     default=None,
     help=(
-        "Auto-import cue points from Mixxx / Rekordbox / Traktor "
-        "libraries on first cache load.  Default: on."
+        "Import cue points from Mixxx / Rekordbox / Traktor libraries "
+        "and from Serato tags in the audio files.  Default: on."
     ),
 )
 @click.option(
@@ -1753,7 +1753,7 @@ def cmd_play(  # pragma: no cover -- end-to-end orchestrator, exercised by smoke
     "--import-external-cues/--no-import-external-cues",
     "import_external_cues",
     default=None,
-    help="Auto-import cues from Mixxx / Rekordbox / Traktor libraries.",
+    help="Import cues from Mixxx / Rekordbox / Traktor libraries and Serato file tags.",
 )
 @click.option(
     "--beat-sync-fx/--no-beat-sync-fx",

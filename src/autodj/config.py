@@ -342,8 +342,8 @@ class PlaybackConfig(_Section):
     # Hours over which the mood arc spans before looping.  Default 3 h
     # = standard club set length.
     mood_arc_hours: float = 3.0
-    # Auto-discover cue points from external DJ software (Mixxx,
-    # Rekordbox, Traktor) and merge with auto-detected cues.  Off
+    # Import cue points from external DJ software (Mixxx, Rekordbox,
+    # Traktor libraries; Serato file tags) and merge with auto-detected cues.  Off
     # only when the user wants the auto-detected cues alone.
     import_external_cues: bool = True
     # Beat-sync transition FX: rhythmic effects (beat_repeat,

@@ -208,7 +208,8 @@ enable_daypart = false
 enable_mood_arc = false
 mood_arc_hours = 3.0          # length of one arc before it loops
 
-# Merge cue points exported by Mixxx / Rekordbox / Traktor with the ones
+# Merge cue points from Mixxx, Rekordbox (Library.xml export) and Traktor
+# libraries, and from the Serato tags in each audio file, with the ones
 # AutoDJ detects itself.
 import_external_cues = true
 
