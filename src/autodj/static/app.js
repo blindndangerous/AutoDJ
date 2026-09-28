@@ -1954,8 +1954,10 @@ function startAuthenticatedApp(initialState) {
   installLiners(_linerEls, {
     postSettings: (url, body, control) => postSettings(url, body, control),
     canPlay: () => authenticatedActivityActive && !!_ctx && !!_lastBrowserPlayback,
-    // Stream mode: Test sends the liner into the stream via the server.
-    testOnServer: () => _lastStreamMode,
+    // Whenever the server mixes the audio (stream mode or --server-audio),
+    // Test asks the server to play the liner into that mix; only browser
+    // playback plays it on this page.
+    testOnServer: () => _lastStreamMode || _lastState?.browser_playback === false,
     playLiner: async (
       arrayBuf, duckDb, epoch = captureAuthenticatedRequestEpoch(),
     ) => {

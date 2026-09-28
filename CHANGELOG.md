@@ -181,6 +181,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   repeating the button name. Skip's said "the next sonically similar track", which was wrong
   with a queue or in random mode.
 - The section tabs are now inside a navigation landmark named Sections.
+- Voice liners' Test now button asks the server to play the liner whenever the server mixes the
+  audio, with `--server-audio` as well as in stream mode. Before, with plain `--server-audio` it
+  tried to play the liner in the browser, which is not playing anything, so nothing was heard.
 
 ## [0.17.0] - 2026-09-26
 

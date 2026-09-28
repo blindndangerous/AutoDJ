@@ -1584,7 +1584,7 @@ describe("stream mode", () => {
     expect(pauseClick).toHaveBeenCalledOnce();
   });
 
-  it("tells the liner controls to test through the server only in stream mode", async () => {
+  it("tests liners through the server whenever the server mixes the audio", async () => {
     let linerDeps;
     const { webSocket } = await setupApp({
       initialState: streamState,
@@ -1592,7 +1592,12 @@ describe("stream mode", () => {
       onRequest: () => lyricsFor("a.mp3"),
     });
     expect(linerDeps.testOnServer()).toBe(true);
+    // Plain --server-audio: no stream, and the browser does not play.
     webSocket.onmessage({ data: JSON.stringify({ ...streamState, stream_mode: false }) });
+    expect(linerDeps.testOnServer()).toBe(true);
+    webSocket.onmessage({ data: JSON.stringify({
+      ...streamState, stream_mode: false, browser_playback: true,
+    }) });
     expect(linerDeps.testOnServer()).toBe(false);
   });
 
