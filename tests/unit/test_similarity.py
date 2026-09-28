@@ -77,10 +77,10 @@ class TestSimilarityIndexConstruction:
     def test_public_entries_are_immutable_and_keep_path_mapping(self) -> None:
         from dataclasses import FrozenInstanceError
 
-        sim, vectors = _make_similarity_index(3)
+        sim, _ = _make_similarity_index(3)
         snapshot_entry = sim.entries_snapshot()[0]
         lookup_entry = sim.entry_for_path(snapshot_entry.path)
-        result = sim.find_next(vectors[0], deque([snapshot_entry.path]))
+        result = sim.find_next_for_path(sim.entries[0].path, deque([snapshot_entry.path]))
         by_path_result = sim.find_next_for_path(snapshot_entry.path, deque())
         distant_result = sim.find_distant(snapshot_entry.path, deque())
 
@@ -109,59 +109,59 @@ class TestSimilarityIndexConstruction:
 
 
 # ---------------------------------------------------------------------------
-# find_next
+# find_next_for_path: filters and ranking
 # ---------------------------------------------------------------------------
 
 
 class TestFindNext:
     def test_returns_an_entry(self) -> None:
-        sim, vectors = _make_similarity_index(10)
-        result = sim.find_next(
-            query_vector=vectors[0],
+        sim, _ = _make_similarity_index(10)
+        result = sim.find_next_for_path(
+            current_path=sim.entries[0].path,
             recently_played=deque(),
             n_candidates=5,
         )
         assert isinstance(result, IndexEntry)
 
     def test_does_not_return_current_track(self) -> None:
-        sim, vectors = _make_similarity_index(10)
+        sim, _ = _make_similarity_index(10)
         current_path = sim.entries[0].path
-        result = sim.find_next(
-            query_vector=vectors[0],
+        result = sim.find_next_for_path(
+            current_path=sim.entries[0].path,
             recently_played=deque([current_path]),
             n_candidates=5,
         )
         assert result.path != current_path
 
     def test_excludes_recently_played(self) -> None:
-        sim, vectors = _make_similarity_index(10)
+        sim, _ = _make_similarity_index(10)
         # Exclude tracks 0-7 — only 8 and 9 remain
         excluded = deque([sim.entries[i].path for i in range(8)])
-        result = sim.find_next(
-            query_vector=vectors[0],
+        result = sim.find_next_for_path(
+            current_path=sim.entries[0].path,
             recently_played=excluded,
             n_candidates=10,
         )
         assert result.path in {sim.entries[8].path, sim.entries[9].path}
 
     def test_raises_if_all_excluded(self) -> None:
-        sim, vectors = _make_similarity_index(5)
+        sim, _ = _make_similarity_index(5)
         all_excluded = deque([sim.entries[i].path for i in range(5)])
         with pytest.raises(SimilarityError, match="No candidates"):
-            sim.find_next(
-                query_vector=vectors[0],
+            sim.find_next_for_path(
+                current_path=sim.entries[0].path,
                 recently_played=all_excluded,
                 n_candidates=5,
             )
 
     def test_returns_closest_neighbor(self) -> None:
         """With no exclusions, the top result should be closest (highest dot product)."""
-        sim, vectors = _make_similarity_index(20)
+        sim, _ = _make_similarity_index(20)
         # The query is vector[5] itself — second-highest scoring (first is self)
         # We exclude track 5 so track 5's nearest neighbor comes through
         excluded = deque([sim.entries[5].path])
-        result = sim.find_next(
-            query_vector=vectors[5],
+        result = sim.find_next_for_path(
+            current_path=sim.entries[5].path,
             recently_played=excluded,
             n_candidates=20,
         )
@@ -170,10 +170,10 @@ class TestFindNext:
 
     def test_n_candidates_respected(self) -> None:
         """Only the top n_candidates results are considered."""
-        sim, vectors = _make_similarity_index(20)
+        sim, _ = _make_similarity_index(20)
         # With n_candidates=1 and no exclusions, result is the single nearest
-        result = sim.find_next(
-            query_vector=vectors[0],
+        result = sim.find_next_for_path(
+            current_path=sim.entries[0].path,
             recently_played=deque([sim.entries[0].path]),
             n_candidates=2,
         )
@@ -181,23 +181,23 @@ class TestFindNext:
 
     @pytest.mark.parametrize("invalid", [0, -1])
     def test_n_candidates_must_be_positive(self, invalid: int) -> None:
-        sim, vectors = _make_similarity_index(3)
+        sim, _ = _make_similarity_index(3)
 
         with pytest.raises(ValueError, match="positive integer"):
-            sim.find_next(vectors[0], deque(), n_candidates=invalid)
+            sim.find_next_for_path(sim.entries[0].path, deque(), n_candidates=invalid)
 
     @pytest.mark.parametrize("invalid", [True, 1.5])
     def test_n_candidates_rejects_bool_and_non_integer(self, invalid: object) -> None:
-        sim, vectors = _make_similarity_index(3)
+        sim, _ = _make_similarity_index(3)
 
         with pytest.raises(TypeError, match="positive integer"):
-            sim.find_next(vectors[0], deque(), n_candidates=invalid)  # type: ignore[arg-type]
+            sim.find_next_for_path(sim.entries[0].path, deque(), n_candidates=invalid)  # type: ignore[arg-type]
 
     def test_invert_smart_shuffle(self) -> None:
         """invert=True picks least-similar candidate."""
-        sim, vectors = _make_similarity_index(20)
-        result = sim.find_next(
-            query_vector=vectors[0],
+        sim, _ = _make_similarity_index(20)
+        result = sim.find_next_for_path(
+            current_path=sim.entries[0].path,
             recently_played=deque([sim.entries[0].path]),
             n_candidates=10,
             invert=True,
@@ -206,8 +206,6 @@ class TestFindNext:
 
     def test_smart_shuffle_finds_global_farthest_beyond_first_200(self) -> None:
         n = 257
-        query = np.zeros(FEATURE_DIM, dtype=np.float32)
-        query[0] = 1.0
         vectors = np.zeros((n, FEATURE_DIM), dtype=np.float32)
         vectors[:, 0] = np.linspace(1.0, -1.0, n, dtype=np.float32)
         vectors[:, 1] = np.sqrt(np.maximum(0.0, 1.0 - vectors[:, 0] ** 2))
@@ -216,33 +214,41 @@ class TestFindNext:
         sim = SimilarityIndex(index, [_make_entry(i) for i in range(n)])
 
         entries = sim.entries_snapshot()
-        result = sim.find_next(query, deque([entries[0].path]), invert=True, n_candidates=10)
+        result = sim.find_next_for_path(
+            entries[0].path, deque([entries[0].path]), invert=True, n_candidates=10
+        )
 
         assert result.path == entries[-1].path
 
+    @staticmethod
+    def _index_with_first_vector(value: float) -> SimilarityIndex:
+        vectors = np.array([_unit_vec(seed=i) for i in range(3)], dtype=np.float32)
+        vectors[0] = value
+        index = faiss.IndexFlatIP(FEATURE_DIM)
+        index.add(vectors)
+        return SimilarityIndex(index, [_make_entry(i) for i in range(3)])
+
     @pytest.mark.parametrize("bad_value", [0.0, np.nan])
     def test_empty_or_non_finite_query_is_rejected(self, bad_value: float) -> None:
-        sim, _vectors = _make_similarity_index(3)
-        query = np.full(FEATURE_DIM, bad_value, dtype=np.float32)
+        sim = self._index_with_first_vector(bad_value)
 
         with pytest.raises(SimilarityError, match="empty or non-finite"):
-            sim.find_next(query, deque())
+            sim.find_next_for_path(sim.entries[0].path, deque())
 
     def test_large_finite_query_is_normalized_without_overflow(self) -> None:
-        sim, _vectors = _make_similarity_index(3)
-        query = np.full(FEATURE_DIM, np.finfo(np.float32).max, dtype=np.float32)
+        sim = self._index_with_first_vector(float(np.finfo(np.float32).max))
 
-        result = sim.find_next(query, deque())
+        result = sim.find_next_for_path(sim.entries[0].path, deque())
 
         assert isinstance(result, IndexEntry)
 
     def test_excluded_artist_skipped(self) -> None:
-        sim, vectors = _make_similarity_index(8)
+        sim, _ = _make_similarity_index(8)
         # Force entry artists known
         for i, e in enumerate(sim.entries):
             e.artist = "Banned" if i < 4 else f"Artist {i}"
-        result = sim.find_next(
-            query_vector=vectors[0],
+        result = sim.find_next_for_path(
+            current_path=sim.entries[0].path,
             recently_played=deque([sim.entries[0].path]),
             n_candidates=8,
             excluded_artists={"banned"},
@@ -250,11 +256,11 @@ class TestFindNext:
         assert result.artist != "Banned"
 
     def test_excluded_album_skipped(self) -> None:
-        sim, vectors = _make_similarity_index(8)
+        sim, _ = _make_similarity_index(8)
         for i, e in enumerate(sim.entries):
             e.album = "Stale" if i < 4 else f"Album {i}"
-        result = sim.find_next(
-            query_vector=vectors[0],
+        result = sim.find_next_for_path(
+            current_path=sim.entries[0].path,
             recently_played=deque([sim.entries[0].path]),
             n_candidates=8,
             excluded_albums={"stale"},
@@ -262,11 +268,11 @@ class TestFindNext:
         assert result.album != "Stale"
 
     def test_excluded_title_skipped(self) -> None:
-        sim, vectors = _make_similarity_index(8)
+        sim, _ = _make_similarity_index(8)
         for i, e in enumerate(sim.entries):
             e.title = "Same Song" if i < 4 else f"Track {i}"
-        result = sim.find_next(
-            query_vector=vectors[0],
+        result = sim.find_next_for_path(
+            current_path=sim.entries[0].path,
             recently_played=deque([sim.entries[0].path]),
             n_candidates=8,
             excluded_titles={"same song"},
@@ -274,9 +280,9 @@ class TestFindNext:
         assert result.title != "Same Song"
 
     def test_bpm_range_filter(self) -> None:
-        sim, vectors = _make_similarity_index(8, bpms=[80.0] * 4 + [130.0] * 4)
-        result = sim.find_next(
-            query_vector=vectors[0],
+        sim, _ = _make_similarity_index(8, bpms=[80.0] * 4 + [130.0] * 4)
+        result = sim.find_next_for_path(
+            current_path=sim.entries[0].path,
             recently_played=deque(),
             n_candidates=8,
             bpm_range=(120.0, 140.0),
@@ -285,22 +291,22 @@ class TestFindNext:
         assert result.bpm == 130.0
 
     def test_empty_hard_bpm_filter_raises(self) -> None:
-        sim, vectors = _make_similarity_index(5, bpms=[80.0] * 5)
+        sim, _ = _make_similarity_index(5, bpms=[80.0] * 5)
         entries = sim.entries_snapshot()
         with pytest.raises(SimilarityError, match="hard filters"):
-            sim.find_next(
-                query_vector=vectors[0],
+            sim.find_next_for_path(
+                current_path=sim.entries[0].path,
                 recently_played=deque([entries[0].path]),
                 n_candidates=5,
                 bpm_range=(200.0, 220.0),
             )
 
     def test_target_energy_rerank(self) -> None:
-        sim, vectors = _make_similarity_index(8)
+        sim, _ = _make_similarity_index(8)
         for i, e in enumerate(sim.entries):
             e.energy = 0.1 * i
-        result = sim.find_next(
-            query_vector=vectors[0],
+        result = sim.find_next_for_path(
+            current_path=sim.entries[0].path,
             recently_played=deque([sim.entries[0].path]),
             n_candidates=8,
             target_energy=0.6,
@@ -308,15 +314,15 @@ class TestFindNext:
         assert isinstance(result, IndexEntry)
 
     def test_harmonic_only_filter(self) -> None:
-        sim, vectors = _make_similarity_index(6)
+        sim, _ = _make_similarity_index(6)
         for e in sim.entries:
             e.key = 0
             e.mode = 1  # 8B C major
-        result = sim.find_next(
-            query_vector=vectors[0],
+        result = sim.find_next_for_path(
+            current_path=sim.entries[0].path,
             recently_played=deque([sim.entries[0].path]),
             n_candidates=6,
-            harmonic_from=(0, 1),
+            harmonic_only=True,
             harmonic_mode="strict",
         )
         # Strict: result must be 8B too — it is, all entries have key=0, mode=1
@@ -345,17 +351,6 @@ class TestFindNextForPath:
                 current_path="unknown.flac",
                 recently_played=deque(),
             )
-
-    def test_result_consistent_with_find_next(self) -> None:
-        """find_next_for_path and find_next with the reconstructed vector agree."""
-        sim, _ = _make_similarity_index(20)
-        path = sim.entries[3].path
-
-        by_path = sim.find_next_for_path(path, recently_played=deque([path]))
-        reconstructed = sim.faiss_index.reconstruct(3)
-        by_vec = sim.find_next(reconstructed, recently_played=deque([path]))
-
-        assert by_path.path == by_vec.path
 
 
 # ---------------------------------------------------------------------------
@@ -626,7 +621,7 @@ class TestReloadFromDisk:
         assert len(sim.entries_snapshot()) == sim.ntotal == 5
 
     def test_reload_waits_for_public_find_before_swapping_generation(self, tmp_path: Path) -> None:
-        sim, vectors = _make_similarity_index(3)
+        sim, _ = _make_similarity_index(3)
         old_snapshot = sim.entries_snapshot()
         replacement_entries = [_make_entry(i + 10) for i in range(5)]
         replacement_vectors = np.array([_unit_vec(seed=i + 10) for i in range(5)], dtype=np.float32)
@@ -652,8 +647,8 @@ class TestReloadFromDisk:
         sim.faiss_index = blocking_index
         blocking_index.search.side_effect = blocking_search
         public = threading.Thread(
-            target=sim.find_next,
-            args=(vectors[0], deque([old_snapshot[0].path])),
+            target=sim.find_next_for_path,
+            args=(old_snapshot[0].path, deque([old_snapshot[0].path])),
         )
         with patch("autodj.similarity.load_index", side_effect=fake_load_index):
             public.start()
@@ -935,11 +930,11 @@ class TestBpmRangeFilter:
     def test_excludes_out_of_range_tracks(self) -> None:
         # Tracks: bpm=80 (out), 120 (in), 130 (in), 200 (out)
         bpms = [80.0, 120.0, 130.0, 200.0]
-        sim, vectors = _make_sim_with_bpms(bpms)
+        sim, _ = _make_sim_with_bpms(bpms)
         entries = sim.entries_snapshot()
         excluded = deque([entries[0].path])  # exclude bpm=80 ourselves
-        result = sim.find_next(
-            query_vector=vectors[0],
+        result = sim.find_next_for_path(
+            current_path=sim.entries[0].path,
             recently_played=excluded,
             bpm_range=(100.0, 150.0),
         )
@@ -947,10 +942,10 @@ class TestBpmRangeFilter:
 
     def test_unknown_bpm_is_excluded_by_hard_range(self) -> None:
         bpms = [110.0, 0.0, 125.0]
-        sim, vectors = _make_sim_with_bpms(bpms)
+        sim, _ = _make_sim_with_bpms(bpms)
         entries = sim.entries_snapshot()
-        result = sim.find_next(
-            query_vector=vectors[0],
+        result = sim.find_next_for_path(
+            current_path=sim.entries[0].path,
             recently_played=deque([entries[0].path]),
             bpm_range=(120.0, 130.0),
             n_candidates=1,
@@ -959,11 +954,11 @@ class TestBpmRangeFilter:
 
     def test_empty_hard_range_raises_instead_of_relaxing(self) -> None:
         bpms = [80.0, 82.0, 0.0]
-        sim, vectors = _make_sim_with_bpms(bpms)
+        sim, _ = _make_sim_with_bpms(bpms)
         entries = sim.entries_snapshot()
         with pytest.raises(SimilarityError, match="hard filters"):
-            sim.find_next(
-                query_vector=vectors[0],
+            sim.find_next_for_path(
+                current_path=sim.entries[0].path,
                 recently_played=deque([entries[0].path]),
                 bpm_range=(120.0, 130.0),
             )
@@ -971,11 +966,11 @@ class TestBpmRangeFilter:
 
 class TestHardFilterExpansion:
     def test_genre_filter_expands_until_match_outside_initial_window(self) -> None:
-        sim, vectors = _make_similarity_index(80, genres={70: "Ambient"})
+        sim, _ = _make_similarity_index(80, genres={70: "Ambient"})
         entries = sim.entries_snapshot()
 
-        result = sim.find_next(
-            vectors[0],
+        result = sim.find_next_for_path(
+            entries[0].path,
             deque([entries[0].path]),
             n_candidates=5,
             genre_filter=["ambient"],
@@ -984,11 +979,11 @@ class TestHardFilterExpansion:
         assert result.path == entries[70].path
 
     def test_single_candidate_request_expands_until_later_match(self) -> None:
-        sim, vectors = _make_similarity_index(80, genres={70: "Ambient"})
+        sim, _ = _make_similarity_index(80, genres={70: "Ambient"})
         entries = sim.entries_snapshot()
 
-        result = sim.find_next(
-            vectors[0],
+        result = sim.find_next_for_path(
+            entries[0].path,
             deque([entries[0].path]),
             n_candidates=1,
             genre_filter=["ambient"],
@@ -998,8 +993,6 @@ class TestHardFilterExpansion:
 
     def test_filter_expansion_collects_requested_pool_before_ranking(self) -> None:
         n = 80
-        query = np.zeros(FEATURE_DIM, dtype=np.float32)
-        query[0] = 1.0
         vectors = np.zeros((n, FEATURE_DIM), dtype=np.float32)
         vectors[:, 0] = np.linspace(1.0, -1.0, n, dtype=np.float32)
         vectors[:, 1] = np.sqrt(np.maximum(0.0, 1.0 - vectors[:, 0] ** 2))
@@ -1017,8 +1010,8 @@ class TestHardFilterExpansion:
             "autodj.similarity._softmax_pick",
             side_effect=lambda candidates, _top_k, _temperature: candidates[0][1],
         ) as choose:
-            sim.find_next(
-                query,
+            sim.find_next_for_path(
+                snapshot[0].path,
                 deque([snapshot[0].path]),
                 n_candidates=3,
                 genre_filter=["ambient"],
@@ -1039,11 +1032,11 @@ class TestBpmReranking:
         """With a high bpm_weight, tracks closer to target_bpm rank higher."""
         # Two groups: bpm ~90 and bpm ~140; query targets 90
         bpms = [90.0, 91.0, 92.0, 140.0, 141.0, 142.0]
-        sim, vectors = _make_sim_with_bpms(bpms)
+        sim, _ = _make_sim_with_bpms(bpms)
         # Use the 140-bpm cluster as the "current" track to exclude
         excluded = deque([sim.entries[3].path, sim.entries[4].path, sim.entries[5].path])
-        result = sim.find_next(
-            query_vector=vectors[3],
+        result = sim.find_next_for_path(
+            current_path=sim.entries[3].path,
             recently_played=excluded,
             n_candidates=10,
             target_bpm=90.0,
@@ -1053,10 +1046,10 @@ class TestBpmReranking:
 
     def test_no_reranking_when_target_bpm_none(self) -> None:
         """When target_bpm is None, result equals the nearest cosine neighbor."""
-        sim, vectors = _make_similarity_index(10)
+        sim, _ = _make_similarity_index(10)
         excluded = deque([sim.entries[0].path])
-        result = sim.find_next(
-            query_vector=vectors[0],
+        result = sim.find_next_for_path(
+            current_path=sim.entries[0].path,
             recently_played=excluded,
             n_candidates=10,
             target_bpm=None,
@@ -1066,12 +1059,12 @@ class TestBpmReranking:
     def test_energy_only_rerank_emits_clean_debug_log(self, caplog) -> None:
         import logging
 
-        sim, vectors = _make_similarity_index(5)
+        sim, _ = _make_similarity_index(5)
         entries = sim.entries_snapshot()
 
         with caplog.at_level(logging.DEBUG, logger="autodj.similarity"):
-            result = sim.find_next(
-                vectors[0],
+            result = sim.find_next_for_path(
+                entries[0].path,
                 deque([entries[0].path]),
                 target_energy=0.5,
             )
@@ -1189,16 +1182,16 @@ class TestSoftmaxPick:
 
 class TestPickTopKWiring:
     def test_find_next_top_k_one_is_deterministic(self) -> None:
-        sim, vectors = _make_similarity_index(20)
-        first = sim.find_next(
-            query_vector=vectors[0],
+        sim, _ = _make_similarity_index(20)
+        first = sim.find_next_for_path(
+            current_path=sim.entries[0].path,
             recently_played=deque(),
             n_candidates=10,
             pick_top_k=1,
         )
         for _ in range(5):
-            again = sim.find_next(
-                query_vector=vectors[0],
+            again = sim.find_next_for_path(
+                current_path=sim.entries[0].path,
                 recently_played=deque(),
                 n_candidates=10,
                 pick_top_k=1,
@@ -1206,11 +1199,11 @@ class TestPickTopKWiring:
             assert again.path == first.path
 
     def test_find_next_top_k_excludes_recents_under_variety(self) -> None:
-        sim, vectors = _make_similarity_index(30)
+        sim, _ = _make_similarity_index(30)
         excluded = deque([sim.entries[i].path for i in range(5)])
         for _ in range(20):
-            result = sim.find_next(
-                query_vector=vectors[0],
+            result = sim.find_next_for_path(
+                current_path=sim.entries[0].path,
                 recently_played=excluded,
                 n_candidates=10,
                 pick_top_k=8,
@@ -1231,11 +1224,11 @@ class TestPickTopKWiring:
 
     def test_genre_filter_matches(self) -> None:
         """genre_filter exercises the canonical-match branch."""
-        sim, vectors = _make_similarity_index(8)
+        sim, _ = _make_similarity_index(8)
         for i, e in enumerate(sim.entries):
             e.genre = "Electronic" if i % 2 == 0 else "Country"
-        result = sim.find_next(
-            query_vector=vectors[0],
+        result = sim.find_next_for_path(
+            current_path=sim.entries[0].path,
             recently_played=deque([sim.entries[0].path]),
             n_candidates=8,
             genre_filter=["electronic"],
@@ -1267,11 +1260,11 @@ class TestPickTopKWiring:
 
     def test_target_energy_zero_energy_entry(self) -> None:
         """Re-rank path: candidates with energy <= 0 fall through e_score=0 branch."""
-        sim, vectors = _make_similarity_index(8)
+        sim, _ = _make_similarity_index(8)
         for i, e in enumerate(sim.entries):
             e.energy = 0.0 if i < 4 else 0.1
-        result = sim.find_next(
-            query_vector=vectors[0],
+        result = sim.find_next_for_path(
+            current_path=sim.entries[0].path,
             recently_played=deque([sim.entries[0].path]),
             n_candidates=8,
             target_energy=0.1,
@@ -1279,13 +1272,13 @@ class TestPickTopKWiring:
         assert isinstance(result, IndexEntry)
 
     def test_top_k_variety_with_bpm_rerank(self) -> None:
-        sim, vectors = _make_similarity_index(20)
+        sim, _ = _make_similarity_index(20)
         # Vary BPM so re-ranking has actual signal.
         for i, e in enumerate(sim.entries):
             e.bpm = 100.0 + i * 2.0
         picks = {
-            sim.find_next(
-                query_vector=vectors[0],
+            sim.find_next_for_path(
+                current_path=sim.entries[0].path,
                 recently_played=deque(),
                 n_candidates=10,
                 target_bpm=120.0,
