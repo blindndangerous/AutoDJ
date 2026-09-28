@@ -83,10 +83,8 @@ class TestPerEffectSanity:
             beat_repeat,
             sidechain_pump,
             reverse_reverb,
-            air_horn,
             vinyl_rewind,
             transformer,
-            dub_siren,
             stutter_build,
             wow_flutter,
             phaser,
@@ -126,14 +124,72 @@ class TestPerEffectSanity:
         assert np.all(np.isfinite(head_full))
 
 
-class TestNoiseRiser:
-    def test_fixed_length(self) -> None:
-        layer = noise_riser(SR, SR)
+class TestSynthesisedLayers:
+    @pytest.mark.parametrize("fn", [noise_riser, air_horn, dub_siren])
+    def test_fixed_length(self, fn) -> None:
+        layer = fn(SR, SR)
         assert layer.shape == (SR,)
         assert np.all(np.isfinite(layer))
 
-    def test_zero_length(self) -> None:
-        assert noise_riser(0, SR).shape == (0,)
+    @pytest.mark.parametrize("fn", [noise_riser, air_horn, dub_siren])
+    def test_zero_length(self, fn) -> None:
+        assert fn(0, SR).shape == (0,)
+
+
+def _music(seconds: float, level: float, seed: int) -> np.ndarray:
+    """Music-like mono audio peaking at *level*: bass, chord and noise.
+
+    Sustained low tones are what feedback delays and combs pile up on,
+    so this finds an effect that builds past the music's peak.
+    """
+    rng = np.random.default_rng(seed)
+    t = np.arange(int(seconds * SR)) / SR
+    audio = sum(0.3 * np.sin(2 * np.pi * f * t + rng.uniform(0, 6)) for f in (55, 110, 220, 330))
+    audio = audio + 0.05 * rng.standard_normal(len(t))
+    return (audio * (level / np.abs(audio).max())).astype(np.float32)
+
+
+_CONCRETE_EFFECTS = [
+    fx for fx in TransitionFx if fx not in (TransitionFx.RANDOM, TransitionFx.ROTATE)
+]
+
+
+class TestEffectLevels:
+    """No effect is louder than the music it is mixed with.
+
+    The music here peaks at -8 dBFS, where ReplayGain typically leaves
+    a mastered track.
+    """
+
+    LEVEL = 10 ** (-8 / 20)
+
+    @pytest.mark.parametrize("effect", _CONCRETE_EFFECTS)
+    def test_no_effect_peaks_above_the_music(self, effect: TransitionFx) -> None:
+        tail = _music(2.0, self.LEVEL, seed=1)
+        head = _music(2.0, self.LEVEL * 0.9, seed=2)
+        out_tail, out_head, extra = apply_transition(tail, head, SR, effect, seed=3)
+        assert np.abs(out_tail).max() <= np.abs(tail).max() + 1e-7
+        assert np.abs(out_head).max() <= np.abs(head).max() + 1e-7
+        if extra.size:
+            assert np.abs(extra).max() <= self.LEVEL + 1e-7
+
+    @pytest.mark.parametrize(
+        "effect",
+        [
+            TransitionFx.NOISE_RISER,
+            TransitionFx.NOISE_DROP,
+            TransitionFx.AIR_HORN,
+            TransitionFx.DUB_SIREN,
+        ],
+    )
+    def test_layer_follows_the_music_level(self, effect: TransitionFx) -> None:
+        """Music turned down 8 dB by ReplayGain turns its layer down 8 dB."""
+        loud = _music(2.0, 1.0, seed=1)
+        quiet = loud * np.float32(self.LEVEL)
+        *_, loud_layer = apply_transition(loud, loud, SR, effect, seed=3)
+        *_, quiet_layer = apply_transition(quiet, quiet, SR, effect, seed=3)
+        ratio = np.abs(quiet_layer).max() / np.abs(loud_layer).max()
+        assert ratio == pytest.approx(self.LEVEL, rel=1e-5)
 
 
 class TestDispatcher:
@@ -290,13 +346,11 @@ class TestEdgeCaseInputs:
     @pytest.mark.parametrize(
         "fn",
         [
-            air_horn,
             backspin,
             beat_repeat,
             bitcrusher,
             chorus,
             dub_delay,
-            dub_siren,
             echo_out,
             flanger,
             freeze,
@@ -348,7 +402,6 @@ class TestEdgeCaseInputs:
             reverse_reverb,
             vinyl_rewind,
             transformer,
-            dub_siren,
             stutter_build,
             wow_flutter,
             phaser,
@@ -405,10 +458,8 @@ class TestEffectsEmptyBuffer:
             beat_repeat,
             sidechain_pump,
             reverse_reverb,
-            air_horn,
             vinyl_rewind,
             transformer,
-            dub_siren,
             stutter_build,
             wow_flutter,
             phaser,

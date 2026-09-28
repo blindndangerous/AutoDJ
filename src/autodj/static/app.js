@@ -1042,7 +1042,7 @@ import {
   applyEqState, loadCoverArt,
   resetTrackCaches, resetTransitionCaches,
   ensureAudioGraph, unlockAndPlay,
-  _ctx, decks, activeIdx, _volume, _lastBrowserPlayback, playbackEnabled,
+  _ctx, _master, decks, activeIdx, _lastBrowserPlayback, playbackEnabled,
   _outBpmCache, _inBpmCache,
   _crossfadeSecondsCache, _nextTrackPathCache,
   _beatmatchOnSkip, crossfading,
@@ -2002,20 +2002,18 @@ function startAuthenticatedApp(initialState) {
           || !isAuthenticatedRequestCurrent(epoch)) return false;
       const src = audioContext.createBufferSource();
       src.buffer = audioBuf;
-      // The liner follows the page volume like the music it ducks.
-      const gain = audioContext.createGain();
-      gain.gain.value = _volume;
-      src.connect(gain);
-      gain.connect(audioContext.destination);
+      // The liner goes through the master gain like the music it ducks,
+      // so it follows the page volume and Mute.
+      src.connect(_master);
       const duckLin = Math.pow(10, duckDb / 20);
       const dur = audioBuf.duration;
       const t0 = audioContext.currentTime;
       const active = decks[activeIdx];
       active.gain.gain.cancelScheduledValues(t0);
       active.gain.gain.setValueAtTime(active.gain.gain.value, t0);
-      active.gain.gain.linearRampToValueAtTime(_volume * duckLin, t0 + 0.2);
-      active.gain.gain.setValueAtTime(_volume * duckLin, t0 + dur - 0.2);
-      active.gain.gain.linearRampToValueAtTime(_volume, t0 + dur + 0.2);
+      active.gain.gain.linearRampToValueAtTime(duckLin, t0 + 0.2);
+      active.gain.gain.setValueAtTime(duckLin, t0 + dur - 0.2);
+      active.gain.gain.linearRampToValueAtTime(1, t0 + dur + 0.2);
       activeLinerSources.add(src);
       src.addEventListener("ended", () => activeLinerSources.delete(src), { once: true });
       src.start(t0);

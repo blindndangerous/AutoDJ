@@ -31,6 +31,7 @@ from autodj.player import (
     write_m3u,
 )
 from autodj.similarity import SimilarityError
+from autodj.transitions import TRANSITION_EFFECT_NAMES
 from tests.unit._fakes import make_cfg_mock as _make_cfg_mock
 from tests.unit._fakes import make_entry as _make_entry
 from tests.unit._fakes import make_sim_index as _make_sim_index
@@ -1786,6 +1787,50 @@ class TestRenderTrackFeatures:
     def test_transition_fx_unknown_falls_back_to_none(self) -> None:
         rendered = self._render(self._make_player_with_audio(transition_effect="banana"))
         assert rendered.transition_fx == "none"
+
+
+class TestRenderedEffectLevels:
+    """The server mix never plays an effect louder than the music.
+
+    Both tracks are rendered through ReplayGain (8 dB down) at a full
+    wet mix.  A treated tail or head stays at or under the music's peak,
+    so the whole render does; an effect that adds a synthesised layer
+    may add at most that layer's share of the music's peak on top.
+    """
+
+    @staticmethod
+    def _music(seconds: float) -> np.ndarray:
+        rng = np.random.default_rng(7)
+        t = np.arange(int(seconds * 44100)) / 44100
+        mono = sum(0.3 * np.sin(2 * np.pi * f * t + rng.uniform(0, 6)) for f in (55, 110, 220, 330))
+        mono = mono + 0.05 * rng.standard_normal(len(t))
+        mono = mono / np.abs(mono).max()
+        return np.stack([mono, mono * 0.9], axis=1).astype(np.float32)
+
+    @pytest.mark.parametrize(
+        "effect",
+        sorted(TRANSITION_EFFECT_NAMES - {"none", "random", "rotate"}),
+    )
+    def test_render_peaks_at_the_music_level(self, effect: str) -> None:
+        from autodj.audio_meta import ReplayGain
+        from autodj.transitions import _LAYER_LEVELS, TransitionFx
+
+        player = TestRenderTrackFeatures()._make_player_with_audio(
+            replaygain=True, transition_effect=effect
+        )
+        cur, nxt = player._sim.entries[0], player._sim.entries[1]
+        # -12 dB tag + (target -14 dB - reference -18 dB) = 8 dB down.
+        tag = ReplayGain(track_gain_db=-12.0, track_peak=1.0)
+        with (
+            patch("autodj.player.load_stereo", return_value=self._music(6.0)),
+            patch("autodj.audio_meta.read_replaygain", return_value=tag),
+        ):
+            rendered = player._render_track(cur, nxt, 0)
+        assert rendered is not None
+        assert rendered.transition_fx == effect
+        music_peak = 10 ** (-8 / 20)
+        allowed = music_peak * (1 + _LAYER_LEVELS.get(TransitionFx(effect), 0.0))
+        assert np.abs(rendered.audio).max() <= allowed + 1e-6
 
 
 class TestEffectiveCrossfadeSeconds:

@@ -537,9 +537,9 @@ describe("page volume", () => {
     const gainsAtPlay = [];
     for (const deck of engine.decks) {
       deck.audio.play = vi.fn(() => {
-        const live = engine.decks[engine.activeIdx].gain;
-        const scheduled = live.gain.setValueAtTime.mock.calls.at(-1);
-        gainsAtPlay.push(scheduled ? scheduled[0] : live.gain.value);
+        const master = engine._master.gain;
+        const scheduled = master.setValueAtTime.mock.calls.at(-1);
+        gainsAtPlay.push(scheduled ? scheduled[0] : master.value);
         return Promise.resolve();
       });
     }
@@ -550,10 +550,28 @@ describe("page volume", () => {
     expect(gainsAtPlay.length).toBeGreaterThan(0);
     for (const gain of gainsAtPlay) expect(gain).toBe(quiet);
     const live = engine.decks[engine.activeIdx].gain.gain;
-    expect(live.setValueAtTime).toHaveBeenLastCalledWith(quiet, 2);
+    expect(live.setValueAtTime).toHaveBeenLastCalledWith(1, 2);
   });
 
-  it("keeps a muted deck silent when the volume changes", async () => {
+  it("plays the live deck again when the server state returns after a hard stop", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      jsonResponse({ current_track: { path: "current.mp3" } }),
+    ));
+    const { engine } = await importEngine();
+    await expect(engine.unlockAndPlay()).resolves.toBe(true);
+    engine.stopAllDecks();
+    const live = engine.decks[engine.activeIdx].gain.gain;
+    live.setValueAtTime.mockClear();
+
+    engine.applyBrowserPlaybackState({
+      browser_playback: true, current_track: { path: "current.mp3" }, next_track: null,
+      is_muted: false, is_paused: false, settings: { playback: {} },
+    });
+
+    expect(live.setValueAtTime).toHaveBeenLastCalledWith(1, 2);
+  });
+
+  it("keeps the master silent while muted when the volume changes", async () => {
     vi.stubGlobal("fetch", vi.fn());
     const { engine } = await importEngine();
     engine.ensureAudioGraph();
@@ -563,7 +581,7 @@ describe("page volume", () => {
     });
 
     engine.setVolume(0.5);
-    expect(engine.decks[engine.activeIdx].gain.gain.setValueAtTime)
-      .toHaveBeenLastCalledWith(0, 2);
+    expect(engine._master.gain.value).toBe(0);
+    expect(engine._master.gain.setValueAtTime).not.toHaveBeenCalledWith(0.5, 2);
   });
 });

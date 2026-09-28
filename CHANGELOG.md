@@ -329,6 +329,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   volume to two decimal places, and on the slider's loudness curve every setting below 23 percent
   is under 0.005. The server now keeps and sends the exact value, so 1 to 22 percent can be set,
   are spoken and stay put.
+- Transition effects no longer play louder than the music. In browser playback, echo and reverb
+  tails, noise sweeps, horns, sirens and replayed audio went straight to the speakers, past the
+  volume, and kept sounding through Mute and Pause. Every sound the page makes, voice liners
+  included, now goes through one master volume, and each effect peaks at or under the deck it
+  works on: the dub delay, echo out and reverse reverb had been up to 8.5, 6.5 and 4 dB over the
+  music, several others 1 to 3 dB over, and the telephone effect about 6 dB louder than the
+  track. The Transition effect level setting now applies in browser playback too. With
+  `--server-audio` or `--stream`, the noise sweeps, air horn and dub siren were fixed levels that
+  stayed as loud when ReplayGain turned the music down, which put them 3 to 11 dB over it; they
+  are now set against the music they play over. The reverse reverb there was about 17 dB over the
+  music and clipped, and no server effect now peaks above the music it treats.
 - The m shortcut worked once and then did nothing when NVDA passed the keys to the page, until
   the browser window lost focus. The page waited for m's own key release, and keys passed through
   NVDA are released under the name "Unidentified". Any key release now lets every shortcut fire

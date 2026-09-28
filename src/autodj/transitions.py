@@ -23,6 +23,12 @@ a single dispatch surface.  All effects are stateless — they take a
 buffer in, return a buffer out — so they can be chained or swapped per
 crossfade with no setup cost.
 
+:func:`apply_transition` also holds every effect to the level of the
+music it works on: a treated tail or head never peaks above the audio
+it was made from, and a synthesised layer (noise, horn, siren) is set
+against the peak of the two tracks it is mixed over.  That audio has
+already had ReplayGain applied, so the effects follow it too.
+
 None of the effects raise on short / silent buffers.
 """
 
@@ -618,22 +624,21 @@ def noise_riser(
     sample_rate: int,
     cutoff_start_hz: float = 200.0,
     cutoff_end_hz: float = 16000.0,
-    peak_amplitude: float = 0.35,
     seed: int | None = None,
 ) -> np.ndarray:
     """Generate a synthesised white-noise riser of *n_samples* length.
 
     Output is white noise band-pass filtered with the cutoff sweeping up
-    from *cutoff_start_hz* to *cutoff_end_hz*, amplitude rising from 0
-    to *peak_amplitude*.  Designed to be ADDED to the crossfade overlap
-    so it crests right at the mix point.
+    from *cutoff_start_hz* to *cutoff_end_hz*, amplitude rising from 0.
+    Designed to be ADDED to the crossfade overlap so it crests right at
+    the mix point; :func:`apply_transition` sets its level against the
+    music.
 
     Args:
         n_samples: Length of the riser in samples.
         sample_rate: Sample rate in Hz.
         cutoff_start_hz: Low-pass cutoff at sample 0.
         cutoff_end_hz: Low-pass cutoff at the last sample.
-        peak_amplitude: Maximum amplitude reached at the end (0.0–1.0).
         seed: Optional RNG seed for reproducibility.
 
     Returns:
@@ -654,7 +659,7 @@ def noise_riser(
         filter_type="lowpass",
     )
     # Linear amplitude rise
-    env = np.linspace(0.0, peak_amplitude, n_samples, dtype=np.float32)
+    env = np.linspace(0.0, 1.0, n_samples, dtype=np.float32)
     return (swept * env).astype(np.float32)
 
 
@@ -1086,36 +1091,40 @@ def reverse_reverb(
     rng = np.random.default_rng(seed=0xA17DA)
     ir_len = max(1, int(reverb_seconds * sample_rate))
     decay = np.linspace(0.0, 1.0, ir_len, dtype=np.float32) ** 2  # reversed env
-    ir = rng.standard_normal(ir_len).astype(np.float32) * decay * 0.05
+    ir = rng.standard_normal(ir_len).astype(np.float32) * decay
+    # Unit energy: the wash comes out at about the level (RMS) of the
+    # audio going in.  The raw 0.05-scaled IR at 1.6x put it some 17 dB
+    # over the music and into hard clipping.
+    ir /= max(float(np.sqrt(np.sum(ir * ir))), 1e-12)
 
     # Convolve via numpy (slow for huge buffers but adequate for crossfade tails)
     convolved = np.convolve(tail, ir, mode="full")[:n].astype(np.float32)
-    # Mix wet over dry — full wet for the swell to be audible
-    out = (tail * 0.4 + convolved * 1.6).astype(np.float32)
+    # Wet-heavy mix so the swell is what is heard, at the music's level
+    out = (tail * 0.4 + convolved * 0.6).astype(np.float32)
     np.clip(out, -1.0, 1.0, out=out)
     return out
 
 
 def air_horn(
-    tail: np.ndarray,
+    n_samples: int,
     sample_rate: int,
 ) -> np.ndarray:
-    """Synth dub-siren / air-horn riser layered with the outgoing audio.
+    """Synth air-horn riser to layer over the crossfade.
 
-    Generates a square-wave horn that rises in pitch + volume across
-    the tail length, summed with the original audio.  Loud, classic
-    DJ build-up cliché.  Use sparingly.
+    Generates a square-wave horn that rises in pitch across
+    *n_samples*, peaking at 1.0; :func:`apply_transition` sets its level
+    against the music.  Classic DJ build-up cliché.  Use sparingly.
 
     Args:
-        tail: Mono float32 audio.
+        n_samples: Length of the horn in samples.
         sample_rate: Sample rate in Hz.
 
     Returns:
-        Float32 array of the same length as *tail*.
+        Float32 array of length *n_samples*.
     """
-    n = len(tail)
-    if n == 0:
-        return tail
+    n = n_samples
+    if n <= 0:
+        return np.zeros(0, dtype=np.float32)
     # Pitch sweep 220 → 880 Hz over the tail length
     freq = 220.0 + 660.0 * (np.arange(n) / max(1, n - 1))
     phase = np.cumsum(2 * np.pi * freq / sample_rate)
@@ -1129,10 +1138,8 @@ def air_horn(
         env[:fade_in] = np.linspace(0.0, 1.0, fade_in, dtype=np.float32)
     if fade_out_n > 0:
         env[-fade_out_n:] = np.linspace(1.0, 0.0, fade_out_n, dtype=np.float32)
-    horn *= env * 0.35  # peak ~0.35 so it sits with the music
-    out = (tail + horn).astype(np.float32)
-    np.clip(out, -1.0, 1.0, out=out)
-    return out
+    horn *= env
+    return horn
 
 
 def vinyl_rewind(
@@ -1218,26 +1225,26 @@ def transformer(
 
 
 def dub_siren(
-    tail: np.ndarray,
+    n_samples: int,
     sample_rate: int,
 ) -> np.ndarray:
     """Reggae-style sine siren riser (smoother than :func:`air_horn`).
 
     Air-horn uses a tanh-of-sine square-ish horn at 220-880 Hz with a hard
     fade-out.  Dub siren is a pure sine with vibrato (5 Hz, ±15 cents)
-    sweeping 440 → 1760 Hz with a slow fade-in and no abrupt cut — sits
-    behind the music rather than crashing on top.
+    sweeping 440 → 1760 Hz with a slow fade-in and no abrupt cut, peaking
+    at 1.0; :func:`apply_transition` sets it behind the music.
 
     Args:
-        tail: Mono float32 audio.
+        n_samples: Length of the siren in samples.
         sample_rate: Sample rate in Hz.
 
     Returns:
-        Float32 array of the same length as *tail*.
+        Float32 array of length *n_samples*.
     """
-    n = len(tail)
-    if n == 0:
-        return tail
+    n = n_samples
+    if n <= 0:
+        return np.zeros(0, dtype=np.float32)
     pos = np.arange(n, dtype=np.float32) / max(1, n - 1)
     # Pitch sweep with vibrato
     base_freq = 440.0 * (4.0**pos)  # exponential 440 → 1760 Hz
@@ -1245,12 +1252,10 @@ def dub_siren(
     freq = base_freq * (1.0 + vibrato.astype(np.float32))
     phase = np.cumsum(2 * np.pi * freq / sample_rate)
     siren = np.sin(phase).astype(np.float32)
-    # Slow fade-in over first half, hold; tail untouched at end
+    # Slow fade-in over first half, then hold
     env = np.minimum(1.0, 2.0 * pos).astype(np.float32)
-    siren *= env * 0.25  # peak ~0.25 — sits behind music
-    out = (tail + siren).astype(np.float32)
-    np.clip(out, -1.0, 1.0, out=out)
-    return out
+    siren *= env
+    return siren
 
 
 def stutter_build(
@@ -1544,6 +1549,44 @@ def halftime(
 # ---------------------------------------------------------------------------
 
 
+# Peak of each synthesised layer as a fraction of the music's peak.
+# Mastered music peaks some 12 to 14 dB above its RMS.  Gaussian noise
+# peaks about 13 dB above its own RMS, so noise at half the music's peak
+# sits roughly 6 to 8 dB under it; the horn and siren are near-square and
+# sine waves, as loud as their peaks, so they sit lower still.  Before,
+# these layers were fixed amplitudes, as loud after ReplayGain had turned
+# the music down 6 to 9 dB as before it.
+_LAYER_LEVELS: dict[TransitionFx, float] = {
+    TransitionFx.NOISE_RISER: 0.5,
+    TransitionFx.NOISE_DROP: 0.5,
+    TransitionFx.AIR_HORN: 0.15,
+    TransitionFx.DUB_SIREN: 0.15,
+}
+
+
+def _peak(audio: np.ndarray) -> float:
+    """Largest absolute sample of *audio*, 0.0 when it is empty."""
+    return float(np.max(np.abs(audio))) if audio.size else 0.0
+
+
+def _no_louder_than(audio: np.ndarray, limit: float) -> np.ndarray:
+    """Turn *audio* down, if needed, so its peak does not pass *limit*."""
+    peak = _peak(audio)
+    if peak <= limit:
+        return audio
+    out = (audio * (limit / peak)).astype(np.float32)
+    np.clip(out, -limit, limit, out=out)
+    return out
+
+
+def _level_layer(layer: np.ndarray, target_peak: float) -> np.ndarray:
+    """Scale a synthesised *layer* so it peaks at *target_peak*."""
+    peak = _peak(layer)
+    if peak == 0.0:
+        return layer
+    return (layer * (target_peak / peak)).astype(np.float32)
+
+
 def _noise_drop_extra(tail: np.ndarray, sample_rate: int, seed: int | None = None) -> np.ndarray:
     """Build the synthesised noise layer for ``NOISE_DROP``.
 
@@ -1564,7 +1607,7 @@ def _noise_drop_extra(tail: np.ndarray, sample_rate: int, seed: int | None = Non
     swept = apply_filter_sweep(
         noise, sample_rate, start_hz=16000, end_hz=150, filter_type="lowpass"
     )
-    env = np.linspace(0.4, 0.0, len(tail), dtype=np.float32)
+    env = np.linspace(1.0, 0.0, len(tail), dtype=np.float32)
     return (swept * env).astype(np.float32)
 
 
@@ -1598,10 +1641,8 @@ _TAIL_EFFECTS: dict[TransitionFx, Callable[[np.ndarray, int], np.ndarray]] = {
     TransitionFx.BEAT_REPEAT: beat_repeat,
     TransitionFx.SIDECHAIN_PUMP: sidechain_pump,
     TransitionFx.REVERSE_REVERB: reverse_reverb,
-    TransitionFx.AIR_HORN: air_horn,
     TransitionFx.VINYL_REWIND: vinyl_rewind,
     TransitionFx.TRANSFORMER: transformer,
-    TransitionFx.DUB_SIREN: dub_siren,
     TransitionFx.STUTTER_BUILD: stutter_build,
     TransitionFx.WOW_FLUTTER: wow_flutter,
     TransitionFx.PHASER: phaser,
@@ -1651,6 +1692,10 @@ def _apply_transition_mono(
         return _forward_spin_tail(tail), head, empty_extra
     if effect == TransitionFx.NOISE_RISER:
         return tail, head, noise_riser(len(tail), sample_rate, seed=seed)
+    if effect == TransitionFx.AIR_HORN:
+        return tail, head, air_horn(len(tail), sample_rate)
+    if effect == TransitionFx.DUB_SIREN:
+        return tail, head, dub_siren(len(tail), sample_rate)
     if effect == TransitionFx.CROSS_EQ_SWAP:
         t, h = cross_eq_swap(tail, head, sample_rate)
         return t, h, empty_extra
@@ -1674,6 +1719,11 @@ def apply_transition(
     Stereo input is processed one channel at a time with the same *seed*,
     so effects that use randomness treat both channels identically.
 
+    The results are held to the music's level: a treated tail or head
+    that peaks above the audio it came from is turned down to that
+    audio's peak, and a synthesised layer is set to a fixed fraction of
+    the louder of the two tracks' peaks (see ``_LAYER_LEVELS``).
+
     Args:
         tail: Outgoing tail, ``(n,)`` or ``(n, 2)``.
         head: Incoming head, same channel layout as *tail*.
@@ -1687,7 +1737,25 @@ def apply_transition(
         extra layer is empty (length 0) when the effect adds none.
     """
     if tail.ndim == 1:
-        return _apply_transition_mono(tail, head, sample_rate, effect, seed)
+        out_tail, out_head, extra = _apply_transition_mono(tail, head, sample_rate, effect, seed)
+    else:
+        out_tail, out_head, extra = _apply_transition_stereo(tail, head, sample_rate, effect, seed)
+    music_peak = max(_peak(tail), _peak(head))
+    return (
+        _no_louder_than(out_tail, _peak(tail)),
+        _no_louder_than(out_head, _peak(head)),
+        _level_layer(extra, _LAYER_LEVELS.get(effect, 0.0) * music_peak),
+    )
+
+
+def _apply_transition_stereo(
+    tail: np.ndarray,
+    head: np.ndarray,
+    sample_rate: int,
+    effect: TransitionFx,
+    seed: int | None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Apply *effect* to ``(n, channels)`` buffers one channel at a time."""
     shared_seed = seed if seed is not None else int(np.random.default_rng().integers(2**31))
     results = [
         _apply_transition_mono(
