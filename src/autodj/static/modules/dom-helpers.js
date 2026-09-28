@@ -129,13 +129,26 @@ export function isTypingTarget(el) {
   return false;
 }
 
-// Re-rendering a list removes the button that had focus, which drops focus
-// to <body>.  Put it on *target* in that case only; focus the user has moved
-// somewhere else while the request ran stays where it is.
-export function focusIfLost(target) {
-  const doc = target?.ownerDocument;
-  if (!doc) return;
-  const active = doc.activeElement;
-  if (active && active !== doc.body) return;
-  target.focus();
+// Swap a list's rows for *rows* after a row was deleted, without focus
+// passing through <body>.  Removing the focused Delete button first
+// dropped focus to the page for a moment, and NVDA read the page title
+// and the banner before focus landed.  So the new rows go in first; when
+// focus is still on *focus.from* (the pressed button) or already lost,
+// it moves to the control matching *focus.selector* at *focus.index* in
+// the new rows (the next row's, or the last), or to *focus.fallback* when
+// the list is empty; only then do the old rows go.  Focus the user moved
+// elsewhere while the request ran stays where it is.
+export function replaceRows(list, rows, focus = null) {
+  const doc = list.ownerDocument;
+  const old = Array.from(list.childNodes);
+  list.append(...rows);
+  if (focus) {
+    const active = doc.activeElement;
+    if (active === focus.from || !active || active === doc.body) {
+      const targets = rows.flatMap((row) => Array.from(row.querySelectorAll(focus.selector)));
+      const target = targets[Math.min(focus.index, targets.length - 1)] || focus.fallback;
+      if (target) target.focus();
+    }
+  }
+  for (const node of old) node.remove();
 }

@@ -12,7 +12,7 @@ import {
   requestJson,
 } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { focusIfLost } from "./dom-helpers.js";
+import { replaceRows } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 
 // profiles.validate_name on the server.
@@ -52,15 +52,16 @@ export function installProfiles(els, { getSettings }) {
     announceStatus(status, message, { dwellMs: tone === "error" ? 6000 : 3000, force: true, tone });
   };
 
-  function render() {
-    list.replaceChildren();
+  // `focus` comes from a delete: see replaceRows.
+  function render(focus = null) {
     if (names.length === 0) {
       const empty = doc.createElement("li");
       empty.className = "no-results";
       empty.textContent = "No saved profiles yet.";
-      list.appendChild(empty);
+      replaceRows(list, [empty], focus);
       return;
     }
+    const rows = [];
     for (const name of names) {
       const row = doc.createElement("li");
       const label = doc.createElement("span");
@@ -78,17 +79,18 @@ export function installProfiles(els, { getSettings }) {
       remove.setAttribute("aria-label", `Delete profile ${name}`);
       remove.addEventListener("click", () => void deleteProfile(name, remove));
       row.append(label, " ", apply, " ", remove);
-      list.appendChild(row);
+      rows.push(row);
     }
+    replaceRows(list, rows, focus);
   }
 
-  async function load() {
+  async function load(focus = null) {
     const epoch = captureAuthenticatedRequestEpoch();
     try {
       const body = await requestJson("/api/profiles");
       if (!isAuthenticatedRequestCurrent(epoch)) return false;
       names = Array.isArray(body.profiles) ? body.profiles : [];
-      render();
+      render(focus);
       return true;
     } catch (errorValue) {
       if (!isAuthenticatedRequestCurrent(epoch)) return false;
@@ -163,10 +165,8 @@ export function installProfiles(els, { getSettings }) {
     try {
       await requestJson(`/api/profiles/${encodeURIComponent(name)}`, { method: "DELETE" });
       if (!isAuthenticatedRequestCurrent(epoch)) return;
-      await load();
+      await load({ from: button, selector: "button[data-profile]", index, fallback: nameInput });
       if (!isAuthenticatedRequestCurrent(epoch)) return;
-      const remaining = Array.from(list.querySelectorAll("button[data-profile]"));
-      focusIfLost(remaining[Math.min(index, remaining.length - 1)] || nameInput);
       say(`Deleted profile ${name}.`);
     } catch (errorValue) {
       if (!isAuthenticatedRequestCurrent(epoch)) return;

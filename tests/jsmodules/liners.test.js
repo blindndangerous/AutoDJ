@@ -274,6 +274,7 @@ describe("liner file controls", () => {
     await vi.waitFor(() => expect(list.querySelectorAll("button")).toHaveLength(2));
     const originalButton = list.querySelectorAll("button")[0];
 
+    originalButton.focus();
     originalButton.click();
     await vi.waitFor(() => expect(status.textContent).toContain("inventory unavailable"));
 

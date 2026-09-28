@@ -306,6 +306,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Why this track now says each change in words: "Camelot key 8A to 12A", "Energy similar (0.25
   to 0.25)", "BPM lifts 100 to 130, up 30" and "relative major or minor flip". NVDA skipped the
   arrow at its default punctuation level, so the two values ran together.
+- Deleting the last saved profile dropped focus to the page for a moment, so NVDA read the page
+  title three times and the banner before reaching Profile name. The new rows now go in and focus
+  moves before the deleted row is removed. Deleting a voice liner and revoking a device work the
+  same way.
 - Browser playback started at full volume after the page loaded, whatever the volume slider
   showed, and stayed there until the slider was moved. Voice liners and the noise sweeps of some
   transition effects also played at full volume. They now all play at the volume the slider

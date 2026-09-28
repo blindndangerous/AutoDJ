@@ -138,6 +138,36 @@ describe("profiles", () => {
     expect(document.activeElement.getAttribute("aria-label")).toBe("Delete profile Late");
   });
 
+  it("never drops focus to the page while the last profile's row goes", async () => {
+    let names = ["Only"];
+    const fetchImpl = vi.fn((url, init = {}) => {
+      if (init.method === "DELETE") names = [];
+      return json({ profiles: names });
+    });
+    const { els, answer } = setup(fetchImpl);
+    await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(1));
+    const remove = els.list.querySelector('[aria-label="Delete profile Only"]');
+    // Focus as the list loses the pressed button: NVDA read the page title
+    // and banner when it passed through <body>.
+    const focusAtRemoval = [];
+    const observer = new window.MutationObserver((records) => {
+      if (records.some((record) => [...record.removedNodes].some((node) => node.contains(remove)))) {
+        focusAtRemoval.push(document.activeElement);
+      }
+    });
+    observer.observe(els.list, { childList: true });
+
+    remove.focus();
+    remove.click();
+    await answer("confirm");
+    await vi.waitFor(() => expect(els.status.textContent).toBe("Deleted profile Only."));
+    observer.disconnect();
+
+    expect(focusAtRemoval).toEqual([els.nameInput]);
+    expect(document.activeElement).toBe(els.nameInput);
+    expect(els.list.textContent).toBe("No saved profiles yet.");
+  });
+
   it("does not pull focus back to the list when the user moved on during a delete", async () => {
     let names = ["Early", "Late"];
     let finishDelete;

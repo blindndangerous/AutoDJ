@@ -12,7 +12,7 @@ import {
   requestJson,
 } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { focusIfLost } from "./dom-helpers.js";
+import { replaceRows } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 
 export const SIGNED_OUT_REASON =
@@ -38,8 +38,9 @@ export function installAccess(els, { onSignedOut }) {
     announceStatus(status, message, { dwellMs: tone === "error" ? 6000 : 3000, force: true, tone });
   };
 
-  function render() {
-    list.replaceChildren();
+  // `focus` comes from a revoke: see replaceRows.
+  function render(focus = null) {
+    const rows = [];
     for (const device of devices) {
       const row = doc.createElement("li");
       const text = doc.createElement("span");
@@ -54,11 +55,12 @@ export function installAccess(els, { onSignedOut }) {
       revoke.setAttribute("aria-label", `Revoke ${who}`);
       revoke.addEventListener("click", () => void revokeDevice(device, revoke));
       row.append(text, " ", revoke);
-      list.appendChild(row);
+      rows.push(row);
     }
+    replaceRows(list, rows, focus);
   }
 
-  async function load({ announce = false } = {}) {
+  async function load({ announce = false, focus = null } = {}) {
     const epoch = captureAuthenticatedRequestEpoch();
     try {
       const body = await requestJson("/api/devices");
@@ -67,7 +69,7 @@ export function installAccess(els, { onSignedOut }) {
       note.hidden = pairing;
       controls.hidden = !pairing;
       devices = pairing && Array.isArray(body.devices) ? body.devices : [];
-      render();
+      render(focus);
       if (announce) {
         const count = devices.length;
         say(`Device list refreshed.  ${count} paired ${count === 1 ? "device" : "devices"}.`);
@@ -127,10 +129,8 @@ export function installAccess(els, { onSignedOut }) {
       onSignedOut(REVOKED_REASON);
       return;
     }
-    await load();
+    await load({ focus: { from: button, selector: "button[data-device-id]", index, fallback: refresh } });
     if (!isAuthenticatedRequestCurrent(epoch)) return;
-    const remaining = Array.from(list.querySelectorAll("button[data-device-id]"));
-    focusIfLost(remaining[Math.min(index, remaining.length - 1)] || refresh);
     say(`Revoked ${device.name}.`);
   }
 

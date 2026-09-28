@@ -5,7 +5,7 @@
 // the audio-engine module and is injected via deps.playLiner so this
 // module stays free of AudioContext + decks state.
 
-import { dbg, focusIfLost } from "./dom-helpers.js";
+import { dbg, replaceRows } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 import { applyShowWhen } from "./show-when.js";
 import {
@@ -54,16 +54,17 @@ function _setStatus(els, msg, { force = false } = {}) {
   announceStatus(els.lnStatus, msg, { dwellMs: 4000, force });
 }
 
-export function renderLinerFileList(fileList, files, onDelete) {
+// `focus` comes from a delete: see replaceRows.
+export function renderLinerFileList(fileList, files, onDelete, focus = null) {
   if (!fileList) return;
-  fileList.replaceChildren();
   if (!files || files.length === 0) {
     const empty = document.createElement("li");
     empty.className = "no-results";
     empty.textContent = "No liner files yet.";
-    fileList.appendChild(empty);
+    replaceRows(fileList, [empty], focus);
     return;
   }
+  const rows = [];
   for (const name of files) {
     const li = document.createElement("li");
     const text = document.createElement("span");
@@ -76,11 +77,12 @@ export function renderLinerFileList(fileList, files, onDelete) {
     li.appendChild(text);
     li.appendChild(document.createTextNode(" "));
     li.appendChild(button);
-    fileList.appendChild(li);
+    rows.push(li);
   }
+  replaceRows(fileList, rows, focus);
 }
 
-async function _refreshLibrary(els) {
+async function _refreshLibrary(els, focus = null) {
   const epoch = captureAuthenticatedRequestEpoch();
   try {
     const body = await requestJson("/api/liners");
@@ -93,6 +95,7 @@ async function _refreshLibrary(els) {
       els.lnFileList,
       body.files,
       (name, button) => void _deleteLiner(els, name, button),
+      focus,
     );
     // Sync config inputs from server payload, leaving fields the user
     // is currently editing untouched.
@@ -133,12 +136,9 @@ async function _deleteLiner(els, name, control) {
     ));
     if (!isAuthenticatedRequestCurrent(epoch)) return;
     _setStatus(els, `Deleted ${name}`);
-    await _refreshLibrary(els);
-    if (!isAuthenticatedRequestCurrent(epoch)) return;
-    const remaining = els.lnFileList
-      ? Array.from(els.lnFileList.querySelectorAll("button"))
-      : [];
-    focusIfLost(remaining[Math.min(deletedIndex, remaining.length - 1)] || els.lnUploadSubmit);
+    await _refreshLibrary(els, {
+      from: control, selector: "button", index: deletedIndex, fallback: els.lnUploadSubmit,
+    });
   } catch (err) {
     if (!isAuthenticatedRequestCurrent(epoch)) return;
     _setStatus(els, `Delete failed: ${err.message}`);
