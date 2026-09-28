@@ -126,10 +126,8 @@ Every command takes `--help`, for example `uv run autodj serve --help`. The glob
 - `autodj list-indexes` lists the named indexes under `[index] index_dir`.
 - `autodj serve` starts the browser interface; `autodj serve --lan` opens it to your local
   network; `autodj serve --stream` also serves the live mix as an MP3 radio station.
-- `autodj play` starts terminal playback with server-side audio. It needs the `play` extra.
 - `autodj playlist` writes an offline M3U playlist from the similarity picker.
-- `autodj list-devices` lists the audio output devices available to `play` and `serve
-  --server-audio`.
+- `autodj list-devices` lists the audio output devices available to `serve --server-audio`.
 - `autodj doctor` checks configuration, paths, dependencies, the model, and security settings.
 - `autodj backup` and `autodj restore` archive and restore index and user data.
 - `autodj setup-lan` writes a `.env` for the authenticated Compose LAN service.
@@ -212,9 +210,9 @@ on and the choice lasts only until the page is reloaded.
 
 ### Browser and server audio
 
-The default `serve` mode is browser-driven: the server picks tracks; the browser plays them.  This means the volume in the browser is independent of any CLI volume, and switching audio output devices in the browser only affects the browser.
+The default `serve` mode is browser-driven: the server picks tracks; the browser plays them.  Switching audio output devices in the browser only affects the browser.
 
-If you want server-side audio output instead (for example to send sound to a Bluetooth speaker through ALSA on Linux), pass `--server-audio`.
+To play on the machine's own speakers instead (for example to send sound to a Bluetooth speaker through ALSA on Linux), run `autodj serve --server-audio` and control it from the web page. It needs the `play` extra. Pick the output device with `[playback] audio_device` in `config.toml`; `autodj list-devices` shows the choices.
 
 ## Voice liners
 
@@ -436,8 +434,8 @@ uv pip install "autodj[all] @ https://github.com/blindndangerous/AutoDJ/releases
 
 Keep `[all]` for the full application. The base dependency set also includes MuQ, librosa,
 mutagen, and the web server, so omitting extras does not produce a lightweight installation
-without model or analysis dependencies. The extras add local audio output (`play`) and explicit
-torch floors (`index`).
+without model or analysis dependencies. The extras add server-side audio output (`play`, for
+`serve --server-audio`) and explicit torch floors (`index`).
 
 Installing a wheel resolves dependencies fresh from PyPI instead of from `uv.lock`, so you give up
 the exact versions CI tested. The clone plus `uv sync --frozen --all-extras` above stays the
@@ -483,8 +481,7 @@ with `uv pip uninstall autodj`.
   support for another architecture. See [Model selection](docs/model-selection.md).
 - Dependencies have their own licenses. The base installation, and therefore the container
   image, includes `mutagen` under GPL-2.0-or-later and `librosa` with its LGPL-licensed `soxr`
-  dependency. The `play` and `all` extras add `pynput` under LGPL-3.0. Omitting extras does not
-  make every dependency permissively licensed. CI logs a dependency license inventory, and
+  dependency. Omitting extras does not make every dependency permissively licensed. CI logs a dependency license inventory, and
   container images include their installed dependencies.
 - Audio analysis uses [librosa](https://librosa.org/) (ISC).
 - Vector search uses [FAISS](https://github.com/facebookresearch/faiss) (MIT).

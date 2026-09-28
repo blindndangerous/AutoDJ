@@ -27,7 +27,7 @@ body:
     attributes:
       label: Surface
       options:
-        - CLI (autodj play / index / enrich / prune / stats)
+        - CLI (autodj index / enrich / prune / stats)
         - Web UI (autodj serve)
         - Both
     validations:

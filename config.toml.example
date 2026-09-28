@@ -70,7 +70,7 @@ supported_formats = ["mp3", "flac", "m4a"]
 # dj_meta.db (SQLite), web_state.json, and liner files.
 # Default liner path: <index_dir>/<name>/liners/.
 # Can be a local path or a NAS path — if you run `autodj index` on a GPU machine
-# and `autodj play` on another machine, point both configs here to the same NAS path.
+# and `autodj serve` on another machine, point both configs here to the same NAS path.
 # Example: "Z:/autodj-index"
 index_dir = "index"
 
@@ -132,8 +132,8 @@ no_repeat_window = 500
 # Block same artist / album / title within the last N picks.  0 = disabled.
 artist_repeat_window = 3
 
-# When true, the web UI hides the lyric card and the CLI panel skips
-# printing the per-track lyric block.  Default true (lyrics shown).
+# When false, AutoDJ loads no lyrics and the web UI hides the lyric card.
+# Default true (lyrics shown).
 show_lyrics = true
 
 # Web-UI gapless prefetch — as soon as the server picks the next track,
@@ -194,8 +194,9 @@ key_notation = "camelot"
 # Only read when key_notation = "musical": spell accidentals as flats.
 key_prefer_flats = false
 
-# Output device for server-side audio.  Leave unset for the system default;
-# otherwise a sounddevice index or a substring of the device name.
+# Output device for server-side audio (`autodj serve --server-audio`).  Leave
+# unset for the system default; otherwise a sounddevice index or a substring
+# of the device name, as listed by `autodj list-devices`.
 # audio_device = "Speakers"
 
 # Wall-clock daypart targeting — bias picks toward the BPM and energy of the
@@ -318,7 +319,7 @@ filter_sweep_floor_hz = 250.0
 #   "random"          pick uniformly at random per crossfade
 #   "rotate"          cycle through all real effects in order
 #
-# That list is a sample.  `autodj play --help` prints every accepted name,
+# That list is a sample.  `autodj serve --help` prints every accepted name,
 # and the Settings tab's Transition effect dropdown offers the same set.
 #
 # wet_mix is the outer wet/dry between dry overlap and effect-processed
