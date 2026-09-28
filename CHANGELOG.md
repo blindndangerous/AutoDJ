@@ -219,7 +219,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Stop running job and others) no longer make NVDA say "unavailable" while the request runs. The
   button stays usable and a second press during the request is ignored.
 - Play and Pause now say "Playing" or "Paused" after the button or the Space and K keys change
-  the playback state. NVDA did not read the button's new label.
+  the playback state. NVDA with Chrome did not read the button's new label, while Firefox read it
+  as well as the state ("Playing", "Pause"). The button is now always named "Play or Pause", with
+  only its symbol showing the state, so every browser says the new state once.
 - Moving between the section tabs with the arrow keys reads each tab once instead of twice.
   Each tab named its panel with `aria-controls`; showing that panel as the tab took focus made
   NVDA with Chrome speak the tab a second time. The tabs no longer carry `aria-controls`, and

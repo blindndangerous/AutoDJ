@@ -873,30 +873,37 @@ describe("app request behavior", () => {
     expect(nowPanel).not.toContain("key spelling");
   });
 
-  it("gives Pause a changing label and Mute a fixed label with pressed state", async () => {
+  it("keeps Play / Pause and Mute at fixed names, Mute with pressed state", async () => {
     const { webSocket } = await setupApp({
       initialState: { current_track: { path: "a.mp3", title: "A" } },
     });
     const pause = document.querySelector("#btn-pause");
     const mute = document.querySelector("#btn-mute");
-    const label = (button) => button.textContent.replace(/[^A-Za-z]/g, "");
+    // The accessible name: the button's text without its aria-hidden parts.
+    const name = (button) => [...button.childNodes]
+      .filter((node) => node.nodeType === 3 || !node.hasAttribute("aria-hidden"))
+      .map((node) => node.textContent).join("").replace(/\s+/g, " ").trim();
+    const glyph = (button) => button.querySelector('[aria-hidden="true"]').textContent;
 
     webSocket.onmessage({ data: JSON.stringify({
       current_track: { path: "a.mp3", title: "A" }, is_paused: true, is_muted: true,
       queue: [], eq: {}, volume: 1,
     }) });
-    expect(label(pause)).toBe("Resume");
+    // A label that changed with the state was spoken by Firefox on top of
+    // the "Paused" status, so the name stays put and only the glyph moves.
+    expect(name(pause)).toBe("Play or Pause");
+    const pausedGlyph = glyph(pause);
     expect(pause.hasAttribute("aria-pressed")).toBe(false);
-    expect(label(mute)).toBe("Mute");
+    expect(name(mute)).toBe("Mute");
     expect(mute.getAttribute("aria-pressed")).toBe("true");
 
     webSocket.onmessage({ data: JSON.stringify({
       current_track: { path: "a.mp3", title: "A" }, is_paused: false, is_muted: false,
       queue: [], eq: {}, volume: 1,
     }) });
-    expect(label(pause)).toBe("Pause");
-    expect(pause.hasAttribute("aria-pressed")).toBe(false);
-    expect(label(mute)).toBe("Mute");
+    expect(name(pause)).toBe("Play or Pause");
+    expect(glyph(pause)).not.toBe(pausedGlyph);
+    expect(name(mute)).toBe("Mute");
     expect(mute.getAttribute("aria-pressed")).toBe("false");
   });
 

@@ -206,7 +206,7 @@ function clearProtectedSessionData() {
     progressTrack.setAttribute("aria-valuetext", "0:00 of 0:00");
   }
   badgesRow.replaceChildren();
-  btnPause.innerHTML = '<span aria-hidden="true">▶</span> Play';
+  renderPlayPause(false);
   btnMute.innerHTML = '<span aria-hidden="true">🔊</span> Mute';
   btnMute.setAttribute("aria-pressed", "false");
   btnDiscovery.style.display = "none";
@@ -351,6 +351,14 @@ function flushProgressValue(track) {
 // transport buttons are only touched when their content really changes.
 function setButtonContent(button, html) {
   if (button.innerHTML !== html) button.innerHTML = html;
+}
+
+// Play / Pause is always named "Play or Pause"; only the hidden glyph
+// follows the state, so no browser speaks the button again when the
+// state flips, and announcePlayState says "Playing" or "Paused" once.
+function renderPlayPause(playing) {
+  setButtonContent(btnPause, `<span aria-hidden="true">${playing ? "\u23F8" : "\u25B6"}</span>`
+    + ' Play<span aria-hidden="true">/</span><span class="visually-hidden"> or </span>Pause');
 }
 
 function setAttributeIfChanged(element, name, value) {
@@ -499,27 +507,13 @@ function applyState(s) {
   // Snapshot for first-click unlock branch in btnPause handler
   setLastBrowserPlayback(browserMode);
 
-  // Unified Play / Pause / Resume button.  Three states:
-  //   1. No track yet \u2192 "Play", disabled
-  //   2. Browser-playback mode, audio not yet unlocked \u2192 "Play", enabled
-  //      (clicking unlocks AudioContext + starts deck)
-  //   3. Playing or paused \u2192 "Pause" / "Resume" toggle
-  // The label names the action the button will take, so it carries no
-  // aria-pressed: "Pause, pressed" contradicts itself.  Mute is the
-  // other pattern (fixed label plus aria-pressed), below.
-  const hasTrack = s.current_track != null;
-  if (!hasTrack) {
-    btnPause.disabled = true;
-    setButtonContent(btnPause, '<span aria-hidden="true">\u25B6</span> Play');
-  } else if (browserMode && !playbackEnabled) {
-    btnPause.disabled = false;
-    setButtonContent(btnPause, '<span aria-hidden="true">\u25B6</span> Play');
-  } else {
-    btnPause.disabled = false;
-    setButtonContent(btnPause, s.is_paused
-      ? '<span aria-hidden="true">\u25B6</span> Resume'
-      : '<span aria-hidden="true">\u23F8</span> Pause');
-  }
+  // Play / Pause keeps the name "Play or Pause" in every state; only the
+  // hidden glyph shows whether it is playing.  Disabled with no track;
+  // in browser mode before the first click, that click unlocks the
+  // AudioContext and starts the deck.
+  btnPause.disabled = s.current_track == null;
+  renderPlayPause(s.current_track != null && !s.is_paused
+    && !(browserMode && !playbackEnabled));
 
   // Volume — server stores the perceptual *gain* (post-curve), so invert
   // the fader curve before writing it back to the slider.  Without this
@@ -1309,17 +1303,16 @@ function connectWS() {
 // Button handlers
 // ----------------------------------------------------------------
 
-// Unified Play / Pause / Resume button.  In browser-playback mode the
-// FIRST click also unlocks the AudioContext (browsers require a user
-// gesture).  Subsequent clicks toggle pause via the server, which the
-// state-applier mirrors to the active deck.  No `aria-pressed` is used \u2014
-// the visible label honestly conveys the next action ("Play" / "Pause"
-// / "Resume"), so a toggle role would be redundant.
+// Unified Play / Pause button.  In browser-playback mode the FIRST click
+// also unlocks the AudioContext (browsers require a user gesture).
+// Subsequent clicks toggle pause via the server, which the state-applier
+// mirrors to the active deck.
 //
-// NVDA with Chrome does not speak a focused button's new label, and the
-// hotkey path has no focus on the button at all, so the new state is
-// said once through the status region.  Not mirrored: the button label
-// is already the visible copy.
+// The button's name stays "Play or Pause".  NVDA with Chrome did not speak
+// a focused button's new label while Firefox did, on top of this status,
+// and the hotkey path has no focus on the button at all, so the new
+// state is said once, through the status region, in every browser.  Not
+// mirrored: the glyph on the button is the visible copy.
 function announcePlayState(paused) {
   announceStatus(document.getElementById("sr-status"), paused ? "Paused" : "Playing",
     { dwellMs: 3000, force: true, mirror: false });
@@ -1344,9 +1337,7 @@ btnPause.addEventListener("click", async () => {
     );
     if (!isAuthenticatedRequestCurrent(epoch)) return;
     const isPaused = data.paused;
-    btnPause.innerHTML = isPaused
-      ? '<span aria-hidden="true">\u25B6</span> Resume'
-      : '<span aria-hidden="true">\u23F8</span> Pause';
+    renderPlayPause(!isPaused);
     announcePlayState(isPaused);
   } catch (errorValue) {
     if (!isAuthenticatedRequestCurrent(epoch)) return;

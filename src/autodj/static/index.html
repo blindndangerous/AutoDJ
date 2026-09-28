@@ -195,15 +195,15 @@
     <div role="group" aria-label="Playback controls">
       <div class="controls-row">
         <!-- Fix 2: emoji wrapped in aria-hidden so screen readers don't double-announce -->
-        <!-- Play / Pause / Resume: the label names the next action, so no
-             aria-pressed.  Mute and Discovery are the other pattern: a
-             fixed name plus aria-pressed. -->
+        <!-- Play / Pause keeps one name, "Play or Pause"; only the hidden
+             glyph shows the state.  A label that changed with the state was
+             spoken by Firefox as well as the "Playing" or "Paused" status,
+             and not at all by Chrome, so the status is the one path for the
+             new state.  Mute and Discovery are the other pattern: a fixed
+             name plus aria-pressed. -->
         <!-- No title attributes on Play, Skip and Mute: NVDA read each one
              as a description that only repeated the name. -->
-        <button id="btn-pause"
-                disabled>
-          <span aria-hidden="true">▶</span> Play
-        </button>
+        <button id="btn-pause" disabled><span aria-hidden="true">▶</span> Play<span aria-hidden="true">/</span><span class="visually-hidden"> or </span>Pause</button>
         <!-- Stream mode only.  Fixed name plus aria-pressed, like Mute:
              it plays the station in this browser, while Play / Pause
              pauses the station for every listener. -->
