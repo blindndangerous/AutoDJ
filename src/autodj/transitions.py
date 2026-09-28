@@ -101,42 +101,11 @@ surface and rejected by another.
 """
 
 
-# Catalogue used by RANDOM / ROTATE — excludes NONE and the meta-modes.
+# Catalogue used by RANDOM / ROTATE — every effect except NONE and the meta-modes.
 _REAL_EFFECTS: list[TransitionFx] = [
-    TransitionFx.ECHO_OUT,
-    TransitionFx.REVERB_TAIL,
-    TransitionFx.HIGHPASS_SWEEP,
-    TransitionFx.LOWPASS_SWEEP,
-    TransitionFx.TAPE_STOP,
-    TransitionFx.GATE_STUTTER,
-    TransitionFx.NOISE_RISER,
-    TransitionFx.CROSS_EQ_SWAP,
-    TransitionFx.BITCRUSHER,
-    TransitionFx.FLANGER,
-    TransitionFx.PITCH_SWELL,
-    TransitionFx.PITCH_FALL,
-    TransitionFx.TELEPHONE,
-    TransitionFx.NOISE_DROP,
-    TransitionFx.CHORUS,
-    TransitionFx.SUBMERGE,
-    TransitionFx.VINYL_WOW,
-    TransitionFx.FORWARD_SPIN,
-    TransitionFx.FREEZE,
-    TransitionFx.GLITCH,
-    TransitionFx.SCRATCH,
-    TransitionFx.BEAT_REPEAT,
-    TransitionFx.SIDECHAIN_PUMP,
-    TransitionFx.REVERSE_REVERB,
-    TransitionFx.AIR_HORN,
-    TransitionFx.VINYL_REWIND,
-    TransitionFx.TRANSFORMER,
-    TransitionFx.DUB_SIREN,
-    TransitionFx.STUTTER_BUILD,
-    TransitionFx.WOW_FLUTTER,
-    TransitionFx.PHASER,
-    TransitionFx.RING_MODULATOR,
-    TransitionFx.DUB_DELAY,
-    TransitionFx.HALFTIME,
+    fx
+    for fx in TransitionFx
+    if fx not in (TransitionFx.NONE, TransitionFx.RANDOM, TransitionFx.ROTATE)
 ]
 
 
