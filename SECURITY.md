@@ -31,16 +31,24 @@ In scope:
 - The background job runner (`autodj.jobs`).
 - Backup archive creation and restore validation.
 - Container build and runtime configuration, plus release artifacts.
+- AutoDJ serving TLS itself (`[server] ssl_certfile` and `ssl_keyfile`, or `--ssl-certfile` and
+  `--ssl-keyfile`) on a private LAN, including reloading renewed certificate files.
+- Remote access through a Cloudflare Tunnel that connects to AutoDJ over HTTPS (checking its
+  certificate with `originServerName`) with Cloudflare Access in front, as described in
+  [docs/operations.md](docs/operations.md#https-with-your-own-domain). This is the only
+  supported way to reach AutoDJ from the internet.
 
 Out of scope:
 
 - Vulnerabilities entirely within third-party dependencies. Report those upstream, but tell us if
   AutoDJ makes affected behavior reachable.
-- Public Internet hosting, even with AutoDJ's own TLS enabled. AutoDJ has token-based LAN
-  authentication, not multi-user authorization or an Internet-facing identity system.
-- Deployments behind a TLS-terminating reverse proxy. AutoDJ supports TLS only when it terminates
-  TLS itself with `--ssl-certfile` and `--ssl-keyfile`; that end-to-end TLS setup on a private LAN
-  is in scope.
+- Any Internet exposure without Cloudflare Access in front: port forwarding, a public bind, or a
+  tunnel or proxy without Access. AutoDJ has token-based pairing for a home network, not
+  multi-user authorization or an Internet-facing identity system, so never expose it that way.
+- A proxy that ends TLS and forwards to AutoDJ over plain HTTP. AutoDJ's `Secure` cookie flag and
+  origin checks follow its own TLS setting, so AutoDJ must terminate TLS itself.
+- Anyone who has passed Cloudflare Access and paired a browser; they are trusted like a paired
+  browser on the LAN.
 - Attacks that already control filesystem roots trusted through local operating-system ACLs.
   For example, a local process or share user who can write to the liner folder, index folder or
   music library can already change what AutoDJ reads and writes there; AutoDJ does not race-proof
