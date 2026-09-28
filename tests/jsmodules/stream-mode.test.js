@@ -484,6 +484,11 @@ const INFO = { path: "/stream/S.mp3", m3u_path: "/stream/S.m3u", bitrate: 320, l
 const NEW_INFO = { path: "/stream/NEW.mp3", m3u_path: "/stream/NEW.m3u", bitrate: 320, listeners: 0, state: "idle" };
 const MADE_TEXT = "New stream link made. The old link no longer works.";
 const COPY_FAIL = "Could not copy. Select the address and copy it yourself.";
+// The copy handler writes its answer on a zero-delay timer queued only
+// after the clipboard attempt settles, so a fixed tick() can win that
+// race on a loaded machine.  Wait for the text itself instead.
+const announced = (text) =>
+  vi.waitFor(() => expect(byId("sr-status").textContent).toBe(text));
 
 function settingsDom() {
   document.body.innerHTML = `
@@ -778,14 +783,12 @@ describe("stream settings", () => {
     ui.apply({ stream_mode: true, stream_listeners: 1 });
     await ui.refresh();
     byId("stream-copy").click();
-    await tick();
+    await announced("Stream address copied.");
     expect(writeText).toHaveBeenCalledWith(`${location.origin}/stream/S.mp3`);
-    expect(byId("sr-status").textContent).toBe("Stream address copied.");
     writeText.mockRejectedValueOnce(new Error("denied"));
     document.execCommand = vi.fn(() => false);
     byId("stream-copy").click();
-    await tick();
-    expect(byId("sr-status").textContent).toBe(COPY_FAIL);
+    await announced(COPY_FAIL);
     const url = byId("stream-url");
     expect(document.activeElement).toBe(url);
     expect(url.selectionStart).toBe(0);
@@ -800,15 +803,13 @@ describe("stream settings", () => {
     await ui.refresh();
     const sr = byId("sr-status");
     byId("stream-copy").click();
-    await tick();
-    expect(sr.textContent).toBe("Stream address copied.");
+    await announced("Stream address copied.");
     byId("stream-copy").click();
     // Forced: the region is emptied first so NVDA hears it again.
     await Promise.resolve();
     await Promise.resolve();
     expect(sr.textContent).toBe("");
-    await tick();
-    expect(sr.textContent).toBe("Stream address copied.");
+    await announced("Stream address copied.");
   });
 
   it("copies through the copy command without touching the address field", async () => {
@@ -832,11 +833,10 @@ describe("stream settings", () => {
     const copy = byId("stream-copy");
     copy.focus();
     copy.click();
-    await tick();
+    await announced("Stream address copied.");
     expect(document.execCommand).toHaveBeenCalledWith("copy");
     expect(setData).toHaveBeenCalledWith("text/plain", `${location.origin}/stream/S.mp3`);
     expect(prevented).toBe(true);
-    expect(byId("sr-status").textContent).toBe("Stream address copied.");
     // NVDA would read the whole secret address on focusing the field.
     expect(addressFocus).not.toHaveBeenCalled();
     expect(document.activeElement).toBe(copy);
@@ -855,8 +855,7 @@ describe("stream settings", () => {
     ui.apply({ stream_mode: true });
     await ui.refresh();
     byId("stream-copy").click();
-    await tick();
-    expect(byId("sr-status").textContent).toBe(COPY_FAIL);
+    await announced(COPY_FAIL);
     const url = byId("stream-url");
     expect(document.activeElement).toBe(url);
     expect(url.selectionEnd).toBe(url.value.length);
@@ -871,8 +870,7 @@ describe("stream settings", () => {
     ui.apply({ stream_mode: true });
     await ui.refresh();
     byId("stream-copy").click();
-    await tick();
-    expect(byId("sr-status").textContent).toBe(COPY_FAIL);
+    await announced(COPY_FAIL);
   });
 
   it("saves the quality once the choice settles and says 1 listener correctly", async () => {
