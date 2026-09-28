@@ -692,7 +692,7 @@ def _lan_network_check(cfg: AutoDJConfig) -> DoctorCheck:
         "detected_hosts": detect_lan_hosts(),
     }
     if server.access_token:
-        detail["access_token"] = "configured"
+        detail["access_token"] = "configured"  # nosec B105 -- status label, not the token
         return DoctorCheck("network-safety", CheckStatus.PASS, "LAN mode", detail)
     if server.insecure_lan:
         detail["access_token"] = None

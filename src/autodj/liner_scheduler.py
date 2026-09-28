@@ -18,7 +18,7 @@ from __future__ import annotations
 import io
 import logging
 import random
-import subprocess
+import subprocess  # nosec B404 -- ffmpeg decode fallback with fixed argv, no shell
 import threading
 import time
 from collections.abc import Callable

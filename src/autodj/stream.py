@@ -16,7 +16,7 @@ import collections
 import contextlib
 import io
 import logging
-import subprocess
+import subprocess  # nosec B404 -- ffmpeg MP3 encoder with fixed argv, no shell
 import threading
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
@@ -78,7 +78,7 @@ class _FfmpegEncoder:  # pragma: no cover -- exercised by tests/integration/test
             bitrate: The MP3 bitrate in kbps.
         """
         self.bitrate = bitrate
-        self._proc = subprocess.Popen(
+        self._proc = subprocess.Popen(  # nosec B603 B607 -- fixed argv, ffmpeg from PATH
             [
                 "ffmpeg",
                 "-hide_banner",
