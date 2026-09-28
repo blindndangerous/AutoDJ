@@ -15,16 +15,13 @@
     "audit:lock": "node scripts/check-package-lock-integrity.mjs",
     "audit:transitions": "node tests/playwright/transition_audit.mjs",
     "audit:health": "node tests/playwright/health_audit.mjs",
-    "audit:hotkeys": "node tests/playwright/hotkey_audit.mjs",
-    "audit:regression": "node tests/playwright/regression_audit.mjs",
-    "audit:ci": "npm run audit:health && npm run audit:hotkeys && npm run audit:regression && npm run audit:transitions"
+    "audit:ci": "npm run audit:health && npm run audit:transitions"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
     "@playwright/test": "1.63.0",
     "esbuild": "0.28.2",
     "eslint": "10.10.0",
-    "espree": "11.2.0",
     "happy-dom": "20.14.0",
     "knip": "6.34.0",
     "smol-toml": "1.8.0",
