@@ -312,6 +312,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   same way.
 - Voice liners' Test now said nothing and did nothing while browser playback was stopped. It now
   says "Liner not played: nothing is playing. Press Play first."
+- With the page opened as localhost in stream mode, the note that the stream address only works
+  on this computer is now part of the description of the address field and Copy address, so it is
+  heard when tabbing to them. Before, it was only found by reading on in browse mode.
 - Browser playback started at full volume after the page loaded, whatever the volume slider
   showed, and stayed there until the slider was moved. Voice liners and the noise sweeps of some
   transition effects also played at full volume. They now all play at the volume the slider

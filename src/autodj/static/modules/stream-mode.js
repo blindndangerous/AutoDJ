@@ -241,7 +241,8 @@ export function createStreamMode({ audio, button, idleNote, srStatus, fetchInfo 
 //   - The listener count and the "not loaded yet" note are plain text,
 //     never live regions, and are only rewritten when they change.
 //   - The "only works on this computer" note is fixed plain text, shown
-//     once at start-up when the page was opened on a loopback address.
+//     once at start-up when the page was opened on a loopback address,
+//     and then also describes the address field and Copy address.
 //   - Copy and "Make new link" are user actions, so their confirmations
 //     are forced: pressing Copy twice is heard twice.
 //   - Copy never moves focus through the address field on success: NVDA
@@ -299,7 +300,18 @@ export function createStreamSettings({
 }) {
   const fieldset = doc.getElementById("stream-settings");
   const loopbackNote = doc.getElementById("stream-loopback-note");
-  if (loopbackNote) loopbackNote.hidden = !isLoopbackHost(hostname);
+  if (loopbackNote && isLoopbackHost(hostname)) {
+    loopbackNote.hidden = false;
+    // Part of the address field's and Copy's descriptions, so tabbing to
+    // either says the address only works here.  Added only when shown: a
+    // description reads hidden text too.
+    for (const control of [doc.getElementById("stream-url"), doc.getElementById("stream-copy")]) {
+      if (!control) continue;
+      const ids = (control.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean);
+      if (!ids.includes(loopbackNote.id)) ids.push(loopbackNote.id);
+      control.setAttribute("aria-describedby", ids.join(" "));
+    }
+  }
   const url = doc.getElementById("stream-url");
   const note = doc.getElementById("stream-url-note");
   const copy = doc.getElementById("stream-copy");

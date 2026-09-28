@@ -474,7 +474,7 @@ function settingsDom() {
     <fieldset id="stream-settings" hidden>
       <legend>Stream</legend>
       <label for="stream-url">Stream address</label>
-      <input id="stream-url" type="text" readonly>
+      <input id="stream-url" type="text" readonly aria-describedby="stream-url-desc">
       <button type="button" id="stream-copy">Copy address</button>
       <p id="stream-url-note" hidden></p>
       <p id="stream-loopback-note" hidden>This address only works on this computer.</p>
@@ -531,6 +531,10 @@ describe("stream settings", () => {
       expect(note.hidden).toBe(false);
       expect(note.hasAttribute("aria-live")).toBe(false);
       expect(note.hasAttribute("role")).toBe(false);
+      // Heard when tabbing to the address or Copy, not only in browse mode.
+      expect(byId("stream-url").getAttribute("aria-describedby"))
+        .toBe("stream-url-desc stream-loopback-note");
+      expect(byId("stream-copy").getAttribute("aria-describedby")).toBe("stream-loopback-note");
     },
   );
 
@@ -540,6 +544,8 @@ describe("stream settings", () => {
       settingsDom();
       makeSettings({ hostname });
       expect(byId("stream-loopback-note").hidden).toBe(true);
+      expect(byId("stream-url").getAttribute("aria-describedby")).toBe("stream-url-desc");
+      expect(byId("stream-copy").hasAttribute("aria-describedby")).toBe(false);
     },
   );
 
