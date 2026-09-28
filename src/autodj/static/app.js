@@ -74,7 +74,6 @@ const eqLowVal     = document.getElementById("eq-low-value");
 const eqMidVal     = document.getElementById("eq-mid-value");
 const eqHighVal    = document.getElementById("eq-high-value");
 const eqAnnounce   = document.getElementById("eq-announce");
-// (enable-playback-card was removed — Play button is unified into btn-pause)
 // Settings card
 const presetSelect    = document.getElementById("preset-select");
 const transitionSelect= document.getElementById("transition-select");
@@ -311,7 +310,6 @@ function reportBackgroundRequestError(errorValue) {
 // ----------------------------------------------------------------
 
 let lastTrackKey = null;   // detect track changes for aria-live announce
-// lastLyricIndex + cachedLyrics moved into ./modules/lyrics.js.
 let lastNextKey  = null;   // suppress aria-live re-announce of unchanged next track
 
 // ----------------------------------------------------------------
@@ -624,7 +622,6 @@ function renderMute(isMuted) {
 // Settings card — mirror of CLI flags
 // ----------------------------------------------------------------
 
-// Settings panel sync moved to ./modules/settings-panel.js.
 import {
   applySettingsState,
   postSettings as _postSettingsModule,
@@ -1004,7 +1001,6 @@ discEvery.addEventListener("change", (event) => {
   if (discEnabled.checked) postDiscovery(event.currentTarget);
 });
 
-// Badges moved to ./modules/badges.js.
 import {
   applyBadges, formatPersistentMetadata, trackChangeDetails,
 } from "./modules/badges.js";
@@ -1014,7 +1010,6 @@ import {
 // Sighted users see colored ticks; AT users get the summary above.
 // ----------------------------------------------------------------
 
-// Cue strip rendering moved to ./modules/cues.js.
 import {
   applyCueSummary,
   renderCueLegend,
@@ -1028,7 +1023,6 @@ function renderCueStrip(track) {
   applyCueSummary(track, cueSummary, cueDetails);
 }
 
-// Camelot wheel rendering moved to ./modules/camelot-wheel.js.
 import { applyCamelotWheel as _applyCamelotWheelModule } from "./modules/camelot-wheel.js";
 
 const _camelotSectors = document.getElementById("camelot-sectors");
@@ -1041,7 +1035,7 @@ function applyCamelotWheel(currentCell, harmonicMode) {
   });
 }
 
-// Audio engine extracted to ./modules/audio-engine.js.  Named imports
+// Audio engine.  Named imports
 // for the bindings (`_ctx`, `decks`, ...) keep ES module live-binding
 // semantics so closures inside this file see updates without explicit
 // accessors.
@@ -1066,7 +1060,6 @@ setApplyState(applyState);
 
 
 
-// Lyrics rendering moved to ./modules/lyrics.js.
 import {
   loadLyrics, applyLyricsState, renderLyricsList,
   resetLyricState, currentLyricLine,
@@ -1101,7 +1094,6 @@ function applyWhyState(s) {
 
 
 
-// Queue (render + Up/Down/Remove buttons) moved to ./modules/queue.js.
 import {
   applyQueueState, installQueueButtons, resetQueueState,
 } from "./modules/queue.js";
@@ -1109,7 +1101,7 @@ import {
 const _queueEls = { queueList, queueCount, queueAnnounce };
 installQueueButtons(_queueEls);
 
-// Clear queue (asks first) lives in ./modules/queue.js too.
+// Clear queue (asks first).
 import { installQueueClear } from "./modules/queue.js";
 installQueueClear({
   ..._queueEls,
@@ -1133,7 +1125,7 @@ const _mixEls = {
   pbRgTarget:     document.getElementById("pb-rg-target"),
 };
 installMixSettings(_mixEls, {
-  postSettings: (url, body, control) => postSettings(url, body, control),
+  postSettings,
   settingsStatus,
 });
 
@@ -1708,7 +1700,7 @@ function sendVolume(val) {
 }
 
 // ----------------------------------------------------------------
-// Keyboard shortcuts moved to ./modules/hotkeys.js.  Wired here,
+// Keyboard shortcuts.  Wired here,
 // after every DOM ref it needs has been declared above.
 import {
   installHotkeys,
@@ -1716,7 +1708,6 @@ import {
 } from "./modules/hotkeys.js";
 
 installHotkeys({
-  btnPause,
   btnSkip,
   btnShuffle,
   btnMute,
@@ -1760,7 +1751,6 @@ installHotkeys({
 });
 
 
-// Media Session API moved to ./modules/media-session.js.
 import {
   updateMediaSession,
   installMediaActionHandlers,
@@ -1791,13 +1781,6 @@ installMediaActionHandlers({
   onRequestError: reportBackgroundRequestError,
 });
 
-// (Legacy duplicate keydown handler removed -- the canonical hotkey
-//  handler is the window-capture-phase listener defined earlier.  Two
-//  handlers fired every key twice + the legacy version's blanket
-//  suppression on every INPUT killed Space/M when focus was on the
-//  volume slider.)
-
-// Search moved to ./modules/search.js.
 import { installSearch } from "./modules/search.js";
 installSearch({
   searchInput,
@@ -1808,7 +1791,6 @@ installSearch({
 });
 
 // ----------------------------------------------------------------
-// Library tools panel moved to ./modules/library-jobs.js.
 import {
   installLibraryJobs,
   applyLibraryJobState,
@@ -1928,7 +1910,7 @@ function historyViewShown() {
   return (location.hash || "").replace(/^#/, "") === "history";
 }
 
-document.addEventListener("DOMContentLoaded", () => {
+{
   const stepPage = (button, delta) => {
     if (button.getAttribute("aria-disabled") === "true") return;
     void fetchHistory(_histPage + delta, { announce: true });
@@ -1950,22 +1932,16 @@ document.addEventListener("DOMContentLoaded", () => {
       if (v > 0) void fetchHistory(v, { announce: true });
     }
   });
-});
+}
 
 window.addEventListener("hashchange", () => {
   if (historyViewShown()) fetchHistory(1);
 });
 
-// Tab router moved to ./modules/tabs.js.
 import { initViewRouter } from "./modules/tabs.js";
 
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", initViewRouter, { once: true });
-} else {
-  initViewRouter();
-}
+initViewRouter();
 
-// data-show-when mechanism moved to ./modules/show-when.js.
 import {
   applyShowWhen,
   installShowWhenListener,
@@ -1975,7 +1951,6 @@ installShowWhenListener();
 // checkbox via WS without the user touching it).
 applyShowWhen();
 
-// Voice liners moved to ./modules/liners.js.
 import { installLiners, bumpLinerTrackCount } from "./modules/liners.js";
 
 const _linerEls = {
@@ -2015,7 +1990,7 @@ function startAuthenticatedApp(initialState) {
   // Audio dependencies are owned by the audio engine. Inject closures
   // that read its live bindings and stop liner playback after auth expiry.
   installLiners(_linerEls, {
-    postSettings: (url, body, control) => postSettings(url, body, control),
+    postSettings,
     canPlay: () => authenticatedActivityActive && !!_ctx && !!_lastBrowserPlayback,
     // Whenever the server mixes the audio (stream mode or --server-audio),
     // Test asks the server to play the liner into that mix; only browser

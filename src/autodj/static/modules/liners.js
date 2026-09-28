@@ -286,8 +286,7 @@ export function installLiners(els, deps) {
         _setStatus(els, "No liner files in folder.");
         return;
       }
-      const onServer = typeof deps.testOnServer === "function" && deps.testOnServer();
-      await withDisabled(event.currentTarget, () => (onServer
+      await withDisabled(event.currentTarget, () => (deps.testOnServer()
         ? _testOnServer(els, name)
         : _playByName(els, deps, name)));
     });
@@ -327,13 +326,4 @@ export function bumpLinerTrackCount(s) {
   if (!hadBaseline) return false;
   state.trackCount += 1;
   return true;
-}
-
-export function getLinerTrackCountForTest() {
-  return state.trackCount;
-}
-
-export function resetLinerStateForTest() {
-  state.trackCount = 0;
-  state.lastSeenPath = null;
 }

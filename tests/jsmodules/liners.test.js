@@ -11,42 +11,19 @@ describe("liner distinct-track cadence", () => {
   });
 
   it("counts only transitions after the first distinct track", async () => {
-    const {
-      bumpLinerTrackCount,
-      getLinerTrackCountForTest,
-      resetLinerStateForTest,
-    } = await import("../../src/autodj/static/modules/liners.js");
-    resetLinerStateForTest();
+    const { bumpLinerTrackCount } = await import(
+      "../../src/autodj/static/modules/liners.js"
+    );
 
     expect(bumpLinerTrackCount(null)).toBe(false);
     expect(bumpLinerTrackCount({})).toBe(false);
     expect(bumpLinerTrackCount({ current_track: {} })).toBe(false);
     expect(bumpLinerTrackCount({ current_track: { path: "one.mp3" } })).toBe(false);
-    expect(getLinerTrackCountForTest()).toBe(0);
     expect(bumpLinerTrackCount({ current_track: { path: "one.mp3" } })).toBe(false);
     expect(bumpLinerTrackCount({ current_track: null })).toBe(false);
     expect(bumpLinerTrackCount({ current_track: { path: "two.mp3" } })).toBe(true);
-    expect(getLinerTrackCountForTest()).toBe(1);
     expect(bumpLinerTrackCount({ current_track: { path: "two.mp3" } })).toBe(false);
     expect(bumpLinerTrackCount({ current_track: { path: "one.mp3" } })).toBe(true);
-    expect(getLinerTrackCountForTest()).toBe(2);
-  });
-
-  it("resets both the count and distinct-track baseline", async () => {
-    const {
-      bumpLinerTrackCount,
-      getLinerTrackCountForTest,
-      resetLinerStateForTest,
-    } = await import("../../src/autodj/static/modules/liners.js");
-    bumpLinerTrackCount({ current_track: { path: "one.mp3" } });
-    bumpLinerTrackCount({ current_track: { path: "two.mp3" } });
-    expect(getLinerTrackCountForTest()).toBe(1);
-
-    resetLinerStateForTest();
-
-    expect(getLinerTrackCountForTest()).toBe(0);
-    expect(bumpLinerTrackCount({ current_track: { path: "two.mp3" } })).toBe(false);
-    expect(getLinerTrackCountForTest()).toBe(0);
   });
 });
 
@@ -101,6 +78,7 @@ describe("liner authentication races", () => {
       canPlay: () => active,
       playLiner,
       postSettings: vi.fn(),
+      testOnServer: () => false,
     });
     await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce());
     await vi.waitFor(() => expect(fileList.textContent).toContain("station-id.mp3"));
@@ -176,7 +154,7 @@ describe("liner authentication races", () => {
       lnFileList: fileList,
       lnStatus: document.querySelector("#liner-status"),
       lnTestBtn: button,
-    }, { canPlay: () => true, playLiner, postSettings: vi.fn() });
+    }, { canPlay: () => true, playLiner, postSettings: vi.fn(), testOnServer: () => false });
     await vi.waitFor(() => expect(fileList.textContent).toContain("late.mp3"));
 
     button.click();

@@ -1,9 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import {
-  installHotkeys,
-  ownsNativeKeyboardBehavior,
-} from "../../src/autodj/static/modules/hotkeys.js";
+import { installHotkeys } from "../../src/autodj/static/modules/hotkeys.js";
 
 function keyEvent(target, key, options = {}) {
   const event = new window.KeyboardEvent("keydown", {
@@ -17,6 +14,40 @@ function keyEvent(target, key, options = {}) {
 }
 
 describe("native keyboard ownership", () => {
+  let togglePlay;
+  let keydown;
+  let keyup;
+
+  beforeAll(() => {
+    document.body.innerHTML = '<section id="panel-now"></section>';
+    togglePlay = vi.fn();
+    // Capture the handlers without registering them, so they cannot latch
+    // keys for the installs in later blocks.
+    const addEventListener = vi
+      .spyOn(window, "addEventListener")
+      .mockImplementation(() => {});
+    installHotkeys({ togglePlay });
+    const handler = (type) => addEventListener.mock.calls.find(([t]) => t === type)[1];
+    keydown = handler("keydown");
+    keyup = handler("keyup");
+    addEventListener.mockRestore();
+  });
+
+  // Whether Space pressed on *target* reaches the Play / Pause shortcut
+  // (false when the target owns Space natively).
+  function spaceReachesShortcut(target) {
+    togglePlay.mockClear();
+    keydown({
+      key: " ",
+      repeat: false,
+      target,
+      composedPath: () => [target],
+      preventDefault: vi.fn(),
+    });
+    keyup({ key: " " });
+    return togglePlay.mock.calls.length === 1;
+  }
+
   it("recognizes native controls and their nested content", () => {
     const examples = [
       '<button><span data-target>Button label</span></button>',
@@ -31,8 +62,7 @@ describe("native keyboard ownership", () => {
     for (const html of examples) {
       const host = document.createElement("div");
       host.innerHTML = html;
-      expect(ownsNativeKeyboardBehavior(host.querySelector("[data-target]")))
-        .toBe(true);
+      expect(spaceReachesShortcut(host.querySelector("[data-target]"))).toBe(false);
     }
   });
 
@@ -47,18 +77,18 @@ describe("native keyboard ownership", () => {
       widget.setAttribute("role", role);
       const child = document.createElement("span");
       widget.appendChild(child);
-      expect(ownsNativeKeyboardBehavior(child)).toBe(true);
+      expect(spaceReachesShortcut(child)).toBe(false);
     }
   });
 
-  it("rejects non-elements and plain content", () => {
+  it("treats non-elements and plain content as the page's", () => {
     const plain = document.createElement("div");
-    expect(ownsNativeKeyboardBehavior(null)).toBe(false);
-    expect(ownsNativeKeyboardBehavior(document)).toBe(false);
-    expect(ownsNativeKeyboardBehavior(document.createTextNode("text"))).toBe(false);
-    expect(ownsNativeKeyboardBehavior(plain)).toBe(false);
-    expect(ownsNativeKeyboardBehavior(document.createElement("a"))).toBe(false);
-    expect(ownsNativeKeyboardBehavior({ closest: () => plain })).toBe(false);
+    expect(spaceReachesShortcut(null)).toBe(true);
+    expect(spaceReachesShortcut(document)).toBe(true);
+    expect(spaceReachesShortcut(document.createTextNode("text"))).toBe(true);
+    expect(spaceReachesShortcut(plain)).toBe(true);
+    expect(spaceReachesShortcut(document.createElement("a"))).toBe(true);
+    expect(spaceReachesShortcut({ closest: () => plain })).toBe(true);
   });
 
   it("recognizes cross-realm-like elements and handles invalid closest safely", () => {
@@ -71,21 +101,13 @@ describe("native keyboard ownership", () => {
       closest: () => { throw new TypeError("invalid selector context"); },
     };
 
-    expect(ownsNativeKeyboardBehavior(crossRealmButton)).toBe(true);
-    expect(ownsNativeKeyboardBehavior(invalidElement)).toBe(false);
-  });
-
-  it("keeps other contenteditable modes outside the exact native selector", () => {
-    for (const value of ["", "plaintext-only"]) {
-      const editor = document.createElement("div");
-      editor.setAttribute("contenteditable", value);
-      expect(ownsNativeKeyboardBehavior(editor)).toBe(false);
-    }
+    expect(spaceReachesShortcut(crossRealmButton)).toBe(false);
+    expect(spaceReachesShortcut(invalidElement)).toBe(true);
   });
 });
 
 describe("page shortcut scope", () => {
-  let pauseClick;
+  let togglePlay;
   let skipClick;
   let shuffleClick;
   let muteClick;
@@ -106,7 +128,6 @@ describe("page shortcut scope", () => {
       <div role="slider" id="custom-seek-slider" tabindex="0"></div>
       <div id="shadow-host" tabindex="0">Shadow host</div>
       <div id="plain" tabindex="0">Plain content</div>
-      <button id="page-pause">Page pause</button>
       <button id="page-skip">Page skip</button>
       <button id="page-shuffle">Shuffle</button>
       <button id="page-mute">Mute</button>
@@ -114,12 +135,11 @@ describe("page shortcut scope", () => {
     const modal = document.querySelector("#hotkey-help-modal");
     modal.showModal = vi.fn(() => modal.setAttribute("open", ""));
     modal.close = vi.fn(() => modal.removeAttribute("open"));
-    const pause = document.querySelector("#page-pause");
     const skip = document.querySelector("#page-skip");
     const shuffle = document.querySelector("#page-shuffle");
     const mute = document.querySelector("#page-mute");
     const volume = document.querySelector("#volume");
-    pauseClick = vi.spyOn(pause, "click");
+    togglePlay = vi.fn();
     skipClick = vi.spyOn(skip, "click");
     shuffleClick = vi.spyOn(shuffle, "click");
     muteClick = vi.spyOn(mute, "click");
@@ -127,7 +147,7 @@ describe("page shortcut scope", () => {
     volumeInput = vi.fn();
     volume.addEventListener("input", volumeInput);
     installHotkeys({
-      btnPause: pause,
+      togglePlay,
       btnSkip: skip,
       btnShuffle: shuffle,
       btnMute: mute,
@@ -138,7 +158,7 @@ describe("page shortcut scope", () => {
   });
 
   beforeEach(() => {
-    pauseClick.mockClear();
+    togglePlay.mockClear();
     skipClick.mockClear();
     shuffleClick.mockClear();
     muteClick.mockClear();
@@ -165,7 +185,7 @@ describe("page shortcut scope", () => {
     expect(rangeDown.defaultPrevented).toBe(false);
     expect(selectEvent.defaultPrevented).toBe(false);
     expect(plainSkip.defaultPrevented).toBe(true);
-    expect(pauseClick).not.toHaveBeenCalled();
+    expect(togglePlay).not.toHaveBeenCalled();
     expect(skipClick).toHaveBeenCalledOnce();
     expect(document.querySelector("#volume").value).toBe("50");
     expect(volumeInput).not.toHaveBeenCalled();
@@ -295,7 +315,7 @@ describe("page shortcut scope", () => {
     expect(arrowEvent.defaultPrevented).toBe(false);
     expect(spaceEvent.defaultPrevented).toBe(false);
     expect(volumeInput).not.toHaveBeenCalled();
-    expect(pauseClick).not.toHaveBeenCalled();
+    expect(togglePlay).not.toHaveBeenCalled();
   });
 
   it("does not latch keys suppressed inside the dialog when their keyup is missed", () => {
@@ -315,14 +335,13 @@ describe("page shortcut scope", () => {
 
   it("uses the composed path for shadow-native ownership without latching", () => {
     const host = document.querySelector("#shadow-host");
-    const localPause = document.createElement("button");
-    const localPauseClick = vi.spyOn(localPause, "click");
+    const localToggle = vi.fn();
     const crossRealmButton = {
       nodeType: 1,
       closest: () => ({ role: "button" }),
     };
     const addEventListener = vi.spyOn(window, "addEventListener");
-    installHotkeys({ btnPause: localPause });
+    installHotkeys({ togglePlay: localToggle });
     const keydownHandler = addEventListener.mock.calls.find(
       ([type]) => type === "keydown",
     )[1];
@@ -348,17 +367,13 @@ describe("page shortcut scope", () => {
 
     expect(shadowEvent.preventDefault).not.toHaveBeenCalled();
     expect(plainEvent.preventDefault).toHaveBeenCalledOnce();
-    expect(localPauseClick).toHaveBeenCalledOnce();
+    expect(localToggle).toHaveBeenCalledOnce();
   });
 
-  it("sends Space and k to togglePlay instead of Play / Pause when given", () => {
-    // Stream mode passes togglePlay so the keys start or stop listening on
-    // this page rather than pausing the station for every listener.
-    const localPause = document.createElement("button");
-    const localPauseClick = vi.spyOn(localPause, "click");
+  it("sends Space and k to togglePlay", () => {
     const togglePlay = vi.fn();
     const addEventListener = vi.spyOn(window, "addEventListener");
-    installHotkeys({ btnPause: localPause, togglePlay });
+    installHotkeys({ togglePlay });
     const keydownHandler = addEventListener.mock.calls.find(
       ([type]) => type === "keydown",
     )[1];
@@ -379,7 +394,6 @@ describe("page shortcut scope", () => {
     }
 
     expect(togglePlay).toHaveBeenCalledTimes(2);
-    expect(localPauseClick).not.toHaveBeenCalled();
   });
 
   it("registers the page keydown handler in capture phase", () => {
@@ -427,7 +441,6 @@ describe("page shortcut scope", () => {
       keydownHandler(plainEvent);
       window.dispatchEvent(new KeyboardEvent("keyup", { key: "n" }));
 
-      expect(ownsNativeKeyboardBehavior(editor)).toBe(false);
       expect(editorEvent.preventDefault).not.toHaveBeenCalled();
       expect(plainEvent.preventDefault).toHaveBeenCalledOnce();
       expect(localSkipClick).toHaveBeenCalledOnce();
@@ -473,22 +486,20 @@ describe("keyboard shortcut toggle (WCAG 2.1.4)", () => {
   it("turns every page shortcut off and back on, and saves the choice", async () => {
     document.body.innerHTML = `
       <section id="panel-now"></section>
-      <button id="toggle-pause">Pause</button>
       <input type="checkbox" id="toggle" checked>
       <div id="toggle-plain" tabindex="0">Plain</div>`;
     const storage = memoryStorage();
     vi.stubGlobal("localStorage", storage);
     vi.resetModules();
     const hotkeys = await import("../../src/autodj/static/modules/hotkeys.js");
-    const pause = document.querySelector("#toggle-pause");
-    const click = vi.spyOn(pause, "click");
+    const click = vi.fn();
     const toggle = document.querySelector("#toggle");
     const plain = document.querySelector("#toggle-plain");
     const press = (key) => {
       keyEvent(plain, key);
       window.dispatchEvent(new window.KeyboardEvent("keyup", { key }));
     };
-    hotkeys.installHotkeys({ btnPause: pause, shortcutToggle: toggle });
+    hotkeys.installHotkeys({ togglePlay: click, shortcutToggle: toggle });
     expect(toggle.checked).toBe(true);
 
     toggle.checked = false;

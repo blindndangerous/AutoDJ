@@ -13,7 +13,7 @@ export function isAuthenticatedRequestCurrent(epoch) {
   return epoch === authenticatedRequestEpoch;
 }
 
-export class ApiError extends Error {
+class ApiError extends Error {
   constructor(message, { status = null, url = "", cause } = {}) {
     super(message, cause === undefined ? undefined : { cause });
     this.name = "ApiError";
@@ -111,7 +111,7 @@ function notifyAuthenticationRequired() {
   }
 }
 
-export async function checkedResponse(response, { url = "" } = {}) {
+async function checkedResponse(response, { url = "" } = {}) {
   const requestUrl = responseUrl(response, url);
   if (response.status === 401) {
     notifyAuthenticationRequired();

@@ -49,11 +49,6 @@ export default [
         Event: "readonly",
         CustomEvent: "readonly",
         AbortController: "readonly",
-        WeakMap: "readonly",
-        WeakSet: "readonly",
-        Set: "readonly",
-        Map: "readonly",
-        Promise: "readonly",
         setTimeout: "readonly",
         setInterval: "readonly",
         clearTimeout: "readonly",
@@ -79,9 +74,6 @@ export default [
         registerProcessor: "readonly",
         currentTime: "readonly",
         sampleRate: "readonly",
-        // Test runner globals (vitest + Playwright pull in their own).
-        process: "readonly",
-        Buffer: "readonly",
       },
     },
     rules: {

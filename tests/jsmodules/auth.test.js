@@ -581,15 +581,13 @@ describe("protected global callbacks", () => {
     document.body.innerHTML = `
       <section id="panel-now"></section>
       <div id="sr-status"></div>
-      <button id="pause">Pause</button>
     `;
-    const pause = document.querySelector("#pause");
-    const click = vi.spyOn(pause, "click");
+    const click = vi.fn();
     const { installHotkeys } = await import(
       "../../src/autodj/static/modules/hotkeys.js"
     );
     installHotkeys({
-      btnPause: pause,
+      togglePlay: click,
       isEnabled: () => false,
     });
 

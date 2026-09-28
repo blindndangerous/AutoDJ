@@ -32,6 +32,11 @@ function installDocument() {
   return dialog;
 }
 
+// How many track changes the liner cadence counted.
+function countedTracks(bump) {
+  return bump.mock.results.filter(({ value }) => value === true).length;
+}
+
 async function setupApp({
   audio = {},
   initialState = {},
@@ -44,7 +49,6 @@ async function setupApp({
   vi.resetModules();
   const dialog = installDocument();
   const linerModule = await vi.importActual(moduleMocks[1]);
-  linerModule.resetLinerStateForTest();
   const stopAllDecks = audio.stopAllDecks || vi.fn();
   const resetTrackCaches = audio.resetTrackCaches || vi.fn();
   const resetTransitionCaches = audio.resetTransitionCaches || vi.fn();
@@ -155,7 +159,6 @@ async function setupApp({
     bumpLinerTrackCount,
     dialog,
     fetchImpl,
-    getLinerTrackCountForTest: linerModule.getLinerTrackCountForTest,
     loadCoverArt,
     resetTrackCaches,
     resetTransitionCaches,
@@ -1321,7 +1324,6 @@ describe("app request behavior", () => {
     let resolveShuffle;
     const {
       bumpLinerTrackCount,
-      getLinerTrackCountForTest,
       webSocket,
     } = await setupApp({
       initialState: {
@@ -1360,7 +1362,7 @@ describe("app request behavior", () => {
     expect(document.querySelector("#now-playing-title").textContent)
       .not.toContain("Late Track B");
     webSocket.onmessage({ data: JSON.stringify(stateC) });
-    expect(getLinerTrackCountForTest()).toBe(1);
+    expect(countedTracks(bumpLinerTrackCount)).toBe(1);
     expect(bumpLinerTrackCount.mock.calls.map(
       ([state]) => state.current_track?.path ?? null,
     )).toEqual(["a.mp3", "c.mp3", "c.mp3"]);
@@ -1383,7 +1385,6 @@ describe("app request behavior", () => {
     };
     const {
       bumpLinerTrackCount,
-      getLinerTrackCountForTest,
     } = await setupApp({
       initialState: {
         current_track: { path: "a.mp3", title: "Track A" },
@@ -1398,7 +1399,7 @@ describe("app request behavior", () => {
       "#now-playing-title",
     ).textContent).toContain("Track B"));
 
-    expect(getLinerTrackCountForTest()).toBe(1);
+    expect(countedTracks(bumpLinerTrackCount)).toBe(1);
     expect(bumpLinerTrackCount).toHaveBeenLastCalledWith(shuffledState);
   });
 });

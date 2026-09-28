@@ -48,7 +48,7 @@ const NATIVE_KEYBOARD_SELECTOR = [
   '[role="tab"]',
 ].join(",");
 
-export function ownsNativeKeyboardBehavior(target) {
+function ownsNativeKeyboardBehavior(target) {
   if (!target || target.nodeType !== 1 || typeof target.closest !== "function") {
     return false;
   }
@@ -199,15 +199,15 @@ function installShortcutToggle(checkbox) {
 const _pressed = new Set();
 
 export function installHotkeys({
-  btnPause, btnSkip, btnShuffle, btnMute, volSlider,
+  btnSkip, btnShuffle, btnMute, volSlider,
   seekDelta, getBpm,
   getTrack, getNextTrack, getRemaining, getLyricLine,
   getPosition, getQueue, getJobStatus,
   isEnabled = () => true,
   shortcutToggle = null,
-  // Optional: what Space / k do instead of pressing Play / Pause.  Stream
-  // mode uses it to start or stop listening on this page.
-  togglePlay = null,
+  // What Space / k do: Play / Pause, or in stream mode start or stop
+  // listening on this page.
+  togglePlay,
 }) {
   installShortcutToggle(shortcutToggle);
   const active = () => isEnabled() && shortcutsEnabled();
@@ -262,8 +262,7 @@ export function installHotkeys({
       case " ":
       case "Spacebar":
       case "k":
-        if (togglePlay) togglePlay();
-        else if (btnPause) btnPause.click();
+        togglePlay();
         break;
       case "n":
         if (btnSkip) btnSkip.click();

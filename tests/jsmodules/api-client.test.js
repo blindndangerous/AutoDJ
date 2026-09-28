@@ -1,9 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
-  ApiError,
   AuthenticationRequiredError,
-  checkedResponse,
   makeSingleFlight,
   probeResource,
   requestBinary,
@@ -20,13 +18,20 @@ function jsonResponse(body, init = {}) {
   });
 }
 
-describe("checkedResponse", () => {
+// requestJson for a server that answers with *response*.
+function requestAnswered(response, url = "/api/test") {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response));
+  return requestJson(url);
+}
+
+describe("requestJson response checks", () => {
   beforeEach(() => setAuthRequiredHandler(() => {}));
+  afterEach(() => vi.unstubAllGlobals());
 
   it("surfaces JSON detail from an HTTP error", async () => {
-    await expect(checkedResponse(jsonResponse(
+    await expect(requestAnswered(jsonResponse(
       { detail: "Index is empty" }, { status: 409 },
-    ), { url: "/api/random-track" })).rejects.toMatchObject({
+    ), "/api/random-track")).rejects.toMatchObject({
       name: "ApiError",
       message: "Index is empty",
       status: 409,
@@ -43,27 +48,23 @@ describe("checkedResponse", () => {
       headers: { "Content-Type": "application/json" },
     });
 
-    await expect(checkedResponse(html, { url: "/api/status" }))
-      .rejects.toBeInstanceOf(ApiError);
-    await expect(checkedResponse(malformed, { url: "/api/status" }))
+    await expect(requestAnswered(html))
+      .rejects.toMatchObject({ name: "ApiError", status: 502 });
+    await expect(requestAnswered(malformed))
       .rejects.toThrow("The AutoDJ server sent a reply this page cannot read.");
-    await expect(checkedResponse(jsonResponse({ success: false, error: "No track" }), {
-      url: "/api/advance",
-    })).rejects.toThrow("No track");
-    await expect(checkedResponse(jsonResponse({ ok: false }), {
-      url: "/api/queue/add",
-    })).rejects.toThrow("The AutoDJ server did not accept that request.");
+    await expect(requestAnswered(jsonResponse({ success: false, error: "No track" })))
+      .rejects.toThrow("No track");
+    await expect(requestAnswered(jsonResponse({ ok: false })))
+      .rejects.toThrow("The AutoDJ server did not accept that request.");
   });
 
   it("opens the shared authentication dialog on a mid-session 401", async () => {
     const showAuth = vi.fn();
     setAuthRequiredHandler(showAuth);
 
-    await expect(checkedResponse(jsonResponse(
+    await expect(requestAnswered(jsonResponse(
       { detail: "Authentication required" }, { status: 401 },
-    ), { url: "/api/status" })).rejects.toBeInstanceOf(
-      AuthenticationRequiredError,
-    );
+    ))).rejects.toBeInstanceOf(AuthenticationRequiredError);
     expect(showAuth).toHaveBeenCalledOnce();
   });
 
@@ -77,24 +78,21 @@ describe("checkedResponse", () => {
       const response = new globalThis.Response('{"ok":true}', {
         headers: { "Content-Type": type },
       });
-      await expect(checkedResponse(response, { url: "/api/test" }))
-        .resolves.toEqual({ ok: true });
+      await expect(requestAnswered(response)).resolves.toEqual({ ok: true });
     }
-    await expect(checkedResponse(new globalThis.Response("{}", {
+    await expect(requestAnswered(new globalThis.Response("{}", {
       headers: { "Content-Type": "text/json" },
-    }), { url: "/api/test" })).rejects.toThrow("cannot read");
+    }))).rejects.toThrow("cannot read");
   });
 
   it("preserves AuthenticationRequiredError when the auth handler fails", async () => {
     setAuthRequiredHandler(() => { throw new Error("dialog crashed"); });
-    await expect(checkedResponse(jsonResponse({}, { status: 401 }), {
-      url: "/api/status",
-    })).rejects.toBeInstanceOf(AuthenticationRequiredError);
+    await expect(requestAnswered(jsonResponse({}, { status: 401 })))
+      .rejects.toBeInstanceOf(AuthenticationRequiredError);
 
     setAuthRequiredHandler(() => Promise.reject(new Error("dialog rejected")));
-    await expect(checkedResponse(jsonResponse({}, { status: 401 }), {
-      url: "/api/status",
-    })).rejects.toBeInstanceOf(AuthenticationRequiredError);
+    await expect(requestAnswered(jsonResponse({}, { status: 401 })))
+      .rejects.toBeInstanceOf(AuthenticationRequiredError);
     await Promise.resolve();
   });
 });
