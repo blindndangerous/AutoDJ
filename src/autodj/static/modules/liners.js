@@ -6,7 +6,7 @@
 // module stays free of AudioContext + decks state.
 
 import { confirmAction } from "./confirm-dialog.js";
-import { dbg } from "./dom-helpers.js";
+import { dbg, listRow, nextRowControl, rowButton } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 import { parseSettingValue, refusalText } from "./mix-settings.js";
 import { applyShowWhen } from "./show-when.js";
@@ -69,22 +69,8 @@ export function renderLinerFileList(fileList, files, onDelete) {
     fileList.replaceChildren(empty);
     return;
   }
-  const rows = [];
-  for (const name of files) {
-    const li = document.createElement("li");
-    const text = document.createElement("span");
-    text.textContent = name;
-    const button = document.createElement("button");
-    button.type = "button";
-    button.textContent = "Delete";
-    button.setAttribute("aria-label", `Delete ${name}`);
-    button.addEventListener("click", () => onDelete(name, button));
-    li.appendChild(text);
-    li.appendChild(document.createTextNode(" "));
-    li.appendChild(button);
-    rows.push(li);
-  }
-  fileList.replaceChildren(...rows);
+  fileList.replaceChildren(...files.map((name) => listRow(document, name, "",
+    rowButton(document, "Delete", `Delete ${name}`, (button) => onDelete(name, button)))));
 }
 
 // Loads the liner folder and config into the page.  False when the
@@ -161,8 +147,7 @@ async function _deleteLiner(els, name, button) {
         return button;
       }
       result = `Deleted ${name}`;
-      const targets = Array.from(list.querySelectorAll("button"));
-      return targets[Math.min(index, targets.length - 1)] || els.lnUploadSubmit;
+      return nextRowControl(list, "button", index, els.lnUploadSubmit);
     },
   });
   if (!confirmed) {

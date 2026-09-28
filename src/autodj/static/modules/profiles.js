@@ -12,6 +12,7 @@ import {
   requestJson,
 } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
+import { listRow, nextRowControl, rowButton } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 
 // profiles.validate_name on the server.
@@ -59,27 +60,13 @@ export function installProfiles(els, { getSettings }) {
       list.replaceChildren(empty);
       return;
     }
-    const rows = [];
-    for (const name of names) {
-      const row = doc.createElement("li");
-      const label = doc.createElement("span");
-      label.className = "profile-name";
-      label.textContent = name;
-      const apply = doc.createElement("button");
-      apply.type = "button";
-      apply.textContent = "Apply";
-      apply.setAttribute("aria-label", `Apply profile ${name}`);
-      apply.addEventListener("click", () => void applyProfile(name));
-      const remove = doc.createElement("button");
-      remove.type = "button";
-      remove.textContent = "Delete";
+    list.replaceChildren(...names.map((name) => {
+      const apply = rowButton(doc, "Apply", `Apply profile ${name}`, () => void applyProfile(name));
+      const remove = rowButton(doc, "Delete", `Delete profile ${name}`,
+        (button) => void deleteProfile(name, button));
       remove.dataset.profile = name;
-      remove.setAttribute("aria-label", `Delete profile ${name}`);
-      remove.addEventListener("click", () => void deleteProfile(name, remove));
-      row.append(label, " ", apply, " ", remove);
-      rows.push(row);
-    }
-    list.replaceChildren(...rows);
+      return listRow(doc, name, "profile-name", apply, remove);
+    }));
   }
 
   async function load() {
@@ -170,8 +157,7 @@ export function installProfiles(els, { getSettings }) {
           await load();
           if (!isAuthenticatedRequestCurrent(epoch)) return null;
           result = [`Deleted profile ${name}.`];
-          const targets = Array.from(list.querySelectorAll("button[data-profile]"));
-          return targets[Math.min(index, targets.length - 1)] || nameInput;
+          return nextRowControl(list, "button[data-profile]", index, nameInput);
         } catch (errorValue) {
           if (!isAuthenticatedRequestCurrent(epoch)) return null;
           result = [`Could not delete profile ${name}: ${errorValue.message}`, "error"];

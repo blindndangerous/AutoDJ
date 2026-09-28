@@ -128,3 +128,36 @@ export function isTypingTarget(el) {
   }
   return false;
 }
+
+// ----------------------------------------------------------------
+// Settings lists: saved profiles, paired devices, voice liners.
+// ----------------------------------------------------------------
+
+// A button for one row, named for that row: "Delete" on screen, "Delete
+// profile Early" to a screen reader.
+export function rowButton(doc, label, name, onClick) {
+  const button = doc.createElement("button");
+  button.type = "button";
+  button.textContent = label;
+  button.setAttribute("aria-label", name);
+  button.addEventListener("click", () => onClick(button));
+  return button;
+}
+
+// One row: the text in a span, then its buttons.
+export function listRow(doc, text, textClass, ...buttons) {
+  const row = doc.createElement("li");
+  const span = doc.createElement("span");
+  if (textClass) span.className = textClass;
+  span.textContent = text;
+  row.append(span);
+  for (const button of buttons) row.append(" ", button);
+  return row;
+}
+
+// After a row's delete, the control that gets focus: the same control in
+// the row that took its place, else the last row's, else *fallback*.
+export function nextRowControl(list, selector, index, fallback) {
+  const controls = list.querySelectorAll(selector);
+  return controls[Math.min(index, controls.length - 1)] || fallback;
+}
