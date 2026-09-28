@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import errno
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -207,22 +207,6 @@ def test_null_discovery_clears_existing_cadence(tmp_path: Path) -> None:
     assert player._discovery_every is None
 
 
-def test_temporary_state_cleanup_failure_is_warned_after_publish(
-    tmp_path: Path, monkeypatch, caplog
-) -> None:
-    def fail_unlink(self, *, missing_ok=False):
-        raise OSError("cleanup failed")
-
-    monkeypatch.setattr(Path, "unlink", fail_unlink)
-
-    save_from_player({"preset": "chill"}, tmp_path)
-
-    assert (
-        json.loads((tmp_path / "web_state.json").read_text(encoding="utf-8"))["preset"] == "chill"
-    )
-    assert "Failed to clean temporary web_state.json" in caplog.text
-
-
 class TestStateFile:
     def test_returns_path_when_index_dir_set(self, tmp_path) -> None:
         path = state_file_for(tmp_path)
@@ -404,46 +388,8 @@ class TestSaveFrom:
     def test_atomic_write_via_tmp_rename(self, tmp_path) -> None:
         save_from_player({"preset": "chill"}, tmp_path)
         # Tmp file should not linger after successful rename
-        assert not (tmp_path / "web_state.json.tmp").exists()
+        assert not list(tmp_path.glob("*.tmp"))
         assert (tmp_path / "web_state.json").exists()
-
-    def test_fsyncs_file_before_replace_and_parent_after(
-        self,
-        tmp_path,
-        monkeypatch,
-    ) -> None:
-        import autodj.runtime_state as runtime_state
-
-        events: list[str] = []
-        real_replace = runtime_state.os.replace
-
-        def record_file_fsync(_fd: int) -> None:
-            events.append("file_fsync")
-
-        def record_replace(source, destination) -> None:
-            events.append("replace")
-            real_replace(source, destination)
-
-        def record_directory_fsync(path) -> None:
-            assert path == tmp_path
-            events.append("directory_fsync")
-
-        monkeypatch.setattr(runtime_state.os, "fsync", record_file_fsync)
-        monkeypatch.setattr(runtime_state.os, "replace", record_replace)
-        monkeypatch.setattr(
-            runtime_state,
-            "_fsync_directory",
-            record_directory_fsync,
-            raising=False,
-        )
-
-        save_from_player({"preset": "chill"}, tmp_path)
-
-        assert events == ["file_fsync", "replace", "directory_fsync"]
-        assert (
-            json.loads((tmp_path / "web_state.json").read_text(encoding="utf-8"))["preset"]
-            == "chill"
-        )
 
     def test_file_fsync_failure_preserves_old_state_and_cleans_temp(
         self,
@@ -451,7 +397,6 @@ class TestSaveFrom:
         monkeypatch,
         caplog,
     ) -> None:
-        import autodj.runtime_state as runtime_state
 
         path = tmp_path / "web_state.json"
         path.write_text('{"preset": "old"}', encoding="utf-8")
@@ -459,13 +404,13 @@ class TestSaveFrom:
         def fail_fsync(_fd: int) -> None:
             raise OSError("storage flush failed")
 
-        monkeypatch.setattr(runtime_state.os, "fsync", fail_fsync)
+        monkeypatch.setattr(os, "fsync", fail_fsync)
 
         with caplog.at_level("WARNING"):
             save_from_player({"preset": "new"}, tmp_path)
 
         assert json.loads(path.read_text(encoding="utf-8"))["preset"] == "old"
-        assert not (tmp_path / "web_state.json.tmp").exists()
+        assert not list(tmp_path.glob("*.tmp"))
         assert len([record for record in caplog.records if "Failed to save" in record.message]) == 1
 
     def test_base_exception_during_file_fsync_cleans_temp_and_propagates(
@@ -473,7 +418,6 @@ class TestSaveFrom:
         tmp_path,
         monkeypatch,
     ) -> None:
-        import autodj.runtime_state as runtime_state
 
         path = tmp_path / "web_state.json"
         path.write_text('{"preset": "old"}', encoding="utf-8")
@@ -481,106 +425,13 @@ class TestSaveFrom:
         def interrupt_fsync(_fd: int) -> None:
             raise KeyboardInterrupt
 
-        monkeypatch.setattr(runtime_state.os, "fsync", interrupt_fsync)
+        monkeypatch.setattr(os, "fsync", interrupt_fsync)
 
         with pytest.raises(KeyboardInterrupt):
             save_from_player({"preset": "new"}, tmp_path)
 
         assert json.loads(path.read_text(encoding="utf-8"))["preset"] == "old"
-        assert not (tmp_path / "web_state.json.tmp").exists()
-
-    def test_directory_fsync_failure_keeps_published_state(
-        self,
-        tmp_path,
-        monkeypatch,
-        caplog,
-    ) -> None:
-        import autodj.runtime_state as runtime_state
-
-        path = tmp_path / "web_state.json"
-        path.write_text('{"preset": "old"}', encoding="utf-8")
-
-        def fail_directory_fsync(_path) -> None:
-            raise OSError("directory flush failed")
-
-        monkeypatch.setattr(
-            runtime_state,
-            "_fsync_directory",
-            fail_directory_fsync,
-            raising=False,
-        )
-
-        with caplog.at_level("WARNING"):
-            save_from_player({"preset": "new"}, tmp_path)
-
-        assert json.loads(path.read_text(encoding="utf-8"))["preset"] == "new"
-        assert not (tmp_path / "web_state.json.tmp").exists()
-        assert len([record for record in caplog.records if "durability" in record.message]) == 1
-
-    def test_directory_fsync_is_no_op_when_directory_open_is_unavailable(
-        self,
-        tmp_path,
-        monkeypatch,
-    ) -> None:
-        import autodj.runtime_state as runtime_state
-
-        def unexpected_open(_path, _flags) -> int:
-            pytest.fail("os.open must not run without O_DIRECTORY support")
-
-        monkeypatch.delattr(runtime_state.os, "O_DIRECTORY", raising=False)
-        monkeypatch.setattr(runtime_state.os, "open", unexpected_open)
-
-        runtime_state._fsync_directory(tmp_path)
-
-    @pytest.mark.parametrize("error_number", [errno.EACCES, errno.EIO])
-    def test_directory_fsync_propagates_supported_open_failure(
-        self,
-        tmp_path,
-        monkeypatch,
-        error_number,
-    ) -> None:
-        import autodj.runtime_state as runtime_state
-
-        def fail_open(_path, _flags) -> int:
-            raise OSError(error_number, "directory open failed")
-
-        monkeypatch.setattr(runtime_state.os, "O_DIRECTORY", 0x10000, raising=False)
-        monkeypatch.setattr(runtime_state.os, "open", fail_open)
-
-        with pytest.raises(OSError) as exc_info:
-            runtime_state._fsync_directory(tmp_path)
-
-        assert exc_info.value.errno == error_number
-
-    def test_directory_fsync_closes_descriptor_when_fsync_fails(
-        self,
-        tmp_path,
-        monkeypatch,
-    ) -> None:
-        import autodj.runtime_state as runtime_state
-
-        events: list[tuple[str, int]] = []
-
-        def record_open(_path, _flags) -> int:
-            events.append(("open", 41))
-            return 41
-
-        def fail_fsync(descriptor: int) -> None:
-            events.append(("fsync", descriptor))
-            raise OSError(errno.EIO, "directory flush failed")
-
-        def record_close(descriptor: int) -> None:
-            events.append(("close", descriptor))
-
-        monkeypatch.setattr(runtime_state.os, "O_DIRECTORY", 0x10000, raising=False)
-        monkeypatch.setattr(runtime_state.os, "open", record_open)
-        monkeypatch.setattr(runtime_state.os, "fsync", fail_fsync)
-        monkeypatch.setattr(runtime_state.os, "close", record_close)
-
-        with pytest.raises(OSError, match="directory flush failed"):
-            runtime_state._fsync_directory(tmp_path)
-
-        assert events == [("open", 41), ("fsync", 41), ("close", 41)]
+        assert not list(tmp_path.glob("*.tmp"))
 
     def test_no_index_dir_is_no_op(self) -> None:
         # Should not raise

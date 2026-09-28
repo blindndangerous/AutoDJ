@@ -607,35 +607,6 @@ def test_manifest_revision_cannot_exceed_publication_state(tmp_path: Path) -> No
         read_manifest(tmp_path)
 
 
-def test_fsync_directory_ignores_open_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import autodj.index_manifest as manifest_module
-
-    fsync = MagicMock()
-    monkeypatch.setattr(manifest_module.os, "open", MagicMock(side_effect=OSError("denied")))
-    monkeypatch.setattr(manifest_module.os, "fsync", fsync)
-
-    manifest_module.fsync_directory(tmp_path)
-
-    fsync.assert_not_called()
-
-
-def test_fsync_directory_closes_descriptor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import autodj.index_manifest as manifest_module
-
-    fsync = MagicMock()
-    close = MagicMock()
-    monkeypatch.setattr(manifest_module.os, "open", MagicMock(return_value=91))
-    monkeypatch.setattr(manifest_module.os, "fsync", fsync)
-    monkeypatch.setattr(manifest_module.os, "close", close)
-
-    manifest_module.fsync_directory(tmp_path)
-
-    fsync.assert_called_once_with(91)
-    close.assert_called_once_with(91)
-
-
 def test_checkpoint_rejects_busy_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import autodj.index_manifest as manifest_module
 

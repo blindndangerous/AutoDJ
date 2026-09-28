@@ -21,11 +21,11 @@ from __future__ import annotations
 import json
 import logging
 import math
-import os
 from pathlib import Path
 from typing import Any, TypedDict, TypeGuard
 
 from autodj.dj_meta import HARMONIC_MODES
+from autodj.fsutil import atomic_write
 from autodj.liners import LINER_PICK_MODES
 from autodj.transitions import TRANSITION_EFFECT_NAMES
 
@@ -111,18 +111,6 @@ def state_file_for(index_dir: Path | None) -> Path | None:
     if index_dir is None:
         return None
     return Path(index_dir) / "web_state.json"
-
-
-def _fsync_directory(path: Path) -> None:
-    """Durably publish a directory entry where the filesystem supports it."""
-    directory_flag = getattr(os, "O_DIRECTORY", None)
-    if directory_flag is None:
-        return
-    descriptor = os.open(path, os.O_RDONLY | directory_flag)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
 def _warn(field: str, value: object) -> None:
@@ -558,25 +546,8 @@ def save_from_player(settings: dict, index_dir: Path | None) -> None:
         "bpm_range": settings.get("bpm_range", {"lo": None, "hi": None}),
         "discovery_every": settings.get("discovery_every"),
     }
-    tmp = path.with_suffix(".json.tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        with tmp.open("w", encoding="utf-8") as handle:
-            json.dump(payload, handle, indent=2, ensure_ascii=False)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp, path)
-        try:
-            _fsync_directory(path.parent)
-        except OSError as exc:
-            logger.warning(
-                "Saved web_state.json but parent directory durability flush failed: %s",
-                exc,
-            )
+        atomic_write(path, json.dumps(payload, indent=2, ensure_ascii=False))
     except OSError as exc:
         logger.warning("Failed to save web_state.json: %s", exc)
-    finally:
-        try:
-            tmp.unlink(missing_ok=True)
-        except OSError as exc:
-            logger.warning("Failed to clean temporary web_state.json: %s", exc)

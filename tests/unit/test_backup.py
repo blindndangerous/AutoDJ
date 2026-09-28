@@ -473,7 +473,7 @@ def test_forced_create_directory_fsync_failure_restores_existing_archive(
             raise OSError("sync failed")
 
     with (
-        patch("autodj.backup._fsync_directory", side_effect=fail_published_sync),
+        patch("autodj.backup.fsync_directory", side_effect=fail_published_sync),
         pytest.raises(BackupError, match="directory sync"),
     ):
         create_backup(cfg, destination, online=False, force=True)
@@ -579,7 +579,7 @@ def test_forced_backup_reconciles_populated_recovery_after_control_exception(
             "autodj.backup._reserved_move_completed",
             side_effect=reconcile_then_interrupt,
         ),
-        patch("autodj.backup._fsync_directory", side_effect=interrupt_post_replace_sync),
+        patch("autodj.backup.fsync_directory", side_effect=interrupt_post_replace_sync),
         pytest.raises(KeyboardInterrupt, match="stop after"),
     ):
         create_backup(cfg, destination, online=False, force=True)
@@ -754,7 +754,7 @@ def test_first_create_directory_fsync_failure_removes_published_archive(tmp_path
     destination = tmp_path / "backup.zip"
 
     with (
-        patch("autodj.backup._fsync_directory", side_effect=OSError("sync failed")),
+        patch("autodj.backup.fsync_directory", side_effect=OSError("sync failed")),
         pytest.raises(BackupError, match="directory sync"),
     ):
         create_backup(cfg, destination, online=False)
@@ -789,7 +789,7 @@ def test_first_create_fsync_failure_moves_unremovable_archive_out_of_destination
         real_replace(source, target)
 
     with (
-        patch("autodj.backup._fsync_directory", side_effect=OSError("sync failed")),
+        patch("autodj.backup.fsync_directory", side_effect=OSError("sync failed")),
         patch("autodj.backup.Path.unlink", new=block_destination_unlink),
         patch("autodj.backup.os.replace", side_effect=observe_replace),
         pytest.raises(BackupError, match="new archive retained at") as raised,
@@ -824,7 +824,7 @@ def test_failed_quarantine_move_cleans_empty_reservation_and_reports_destination
         real_replace(source, target)
 
     with (
-        patch("autodj.backup._fsync_directory", side_effect=OSError("sync failed")),
+        patch("autodj.backup.fsync_directory", side_effect=OSError("sync failed")),
         patch("autodj.backup.Path.unlink", new=block_destination_unlink),
         patch("autodj.backup.os.replace", side_effect=fail_quarantine_move),
         pytest.raises(BackupError, match="new archive remains at") as raised,
@@ -858,7 +858,7 @@ def test_failed_quarantine_move_reports_unremovable_empty_reservation(
         real_replace(source, target)
 
     with (
-        patch("autodj.backup._fsync_directory", side_effect=OSError("sync failed")),
+        patch("autodj.backup.fsync_directory", side_effect=OSError("sync failed")),
         patch("autodj.backup.Path.unlink", new=block_cleanup),
         patch("autodj.backup.os.replace", side_effect=fail_quarantine_move),
         pytest.raises(BackupError, match="empty quarantine reservation retained at") as raised,
@@ -1798,7 +1798,7 @@ def test_post_install_directory_fsync_failure_is_success_warning(tmp_path: Path)
     archive = create_backup(source, tmp_path / "backup.zip", online=False)
     target = _config(tmp_path / "target")
     _published_index(target, title="Old")
-    with patch("autodj.backup._fsync_directory", side_effect=OSError("sync failed")):
+    with patch("autodj.backup.fsync_directory", side_effect=OSError("sync failed")):
         result = restore_backup(target, archive, force=True)
     assert any("directory sync" in warning for warning in result.warnings)
 
@@ -3958,40 +3958,6 @@ def test_sqlite_snapshot_rejects_identity_change_after_real_copy(tmp_path: Path)
         assert connection.execute("SELECT value FROM data").fetchone() == ("value",)
 
 
-@pytest.mark.parametrize("sync_failure", [False, True])
-def test_posix_directory_fsync_always_closes_descriptor(tmp_path: Path, sync_failure: bool) -> None:
-    events: list[object] = []
-
-    def open_directory(path: Path, flags: int) -> int:
-        events.append(("open", path, flags))
-        return 42
-
-    def sync_directory(descriptor: int) -> None:
-        events.append(("fsync", descriptor))
-        if sync_failure:
-            raise OSError("sync denied")
-
-    def close_directory(descriptor: int) -> None:
-        events.append(("close", descriptor))
-
-    with (
-        patch("autodj.backup.os.name", "posix"),
-        patch("autodj.backup.os.open", side_effect=open_directory),
-        patch("autodj.backup.os.fsync", side_effect=sync_directory),
-        patch("autodj.backup.os.close", side_effect=close_directory),
-    ):
-        if sync_failure:
-            with pytest.raises(OSError, match="sync denied"):
-                backup._fsync_directory(tmp_path)
-        else:
-            backup._fsync_directory(tmp_path)
-    assert events == [
-        ("open", tmp_path, os.O_RDONLY),
-        ("fsync", 42),
-        ("close", 42),
-    ]
-
-
 def test_stopped_state_capture_wraps_inspection_error(tmp_path: Path) -> None:
     with (
         patch("autodj.backup.Path.lstat", side_effect=PermissionError("state denied")),
@@ -4132,7 +4098,7 @@ def test_cleanup_rollback_directory_sync_failure_reports_old_archive_restored(
     destination = tmp_path / "backup.zip"
     destination.write_bytes(b"old")
     real_unlink = Path.unlink
-    real_fsync = backup._fsync_directory
+    real_fsync = backup.fsync_directory
 
     def retain_old_copy(path: Path, *args: object, **kwargs: object) -> None:
         if ".backup-old-" in path.name:
@@ -4146,7 +4112,7 @@ def test_cleanup_rollback_directory_sync_failure_reports_old_archive_restored(
 
     with (
         patch("autodj.backup.Path.unlink", new=retain_old_copy),
-        patch("autodj.backup._fsync_directory", side_effect=fail_after_old_archive_restored),
+        patch("autodj.backup.fsync_directory", side_effect=fail_after_old_archive_restored),
         pytest.raises(BackupError, match=r"old destination was restored.*sync failed"),
     ):
         create_backup(cfg, destination, online=False, force=True)

@@ -19,6 +19,7 @@ from typing import Any
 
 from filelock import FileLock
 
+from autodj.fsutil import atomic_write, fsync_directory
 from autodj.sqlite_utils import readonly_uri
 
 SCHEMA_VERSION = 2
@@ -241,18 +242,8 @@ def _read_publication_state(index_dir: Path) -> _PublicationState | None:
 
 
 def _atomic_json_write(path: Path, payload: dict[str, Any]) -> None:
-    """Atomically replace *path* with *payload* and flush the directory when supported."""
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        with temporary.open("x", encoding="utf-8", newline="\n") as handle:
-            json.dump(payload, handle, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-        fsync_directory(path.parent)
-    finally:
-        temporary.unlink(missing_ok=True)
+    """Atomically replace *path* with *payload* as sorted, newline-terminated JSON."""
+    atomic_write(path, json.dumps(payload, sort_keys=True) + "\n")
 
 
 def _write_publication_state(index_dir: Path, state: _PublicationState) -> None:
@@ -522,19 +513,6 @@ def publication_lock(index_dir: Path) -> Iterator[None]:
     )
     with lock:
         yield
-
-
-def fsync_directory(path: Path) -> None:
-    """Flush directory metadata when the platform supports it."""
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-    try:
-        fd = os.open(path, flags)
-    except OSError:
-        return
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
 
 
 def _durable_copy(source: Path, destination: Path) -> None:
