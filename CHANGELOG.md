@@ -372,6 +372,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   been left paused; the second press worked. Seen in Firefox and Edge. Play now unpauses the
   server before it starts the music, says "Playing" only once the music has really started, and
   otherwise says "The browser did not start playback. Press Play again."
+- With `--server-audio` or `--stream`, the level jumped where a transition effect began or
+  ended. Holding an effect under the music turned its whole tail down whenever any part of it
+  peaked too high, so a dub delay's tail started 1.5 to 3 dB under the audio just before it, and
+  several effects started at their own level: echo out dropped 9 dB at the join, the telephone,
+  sidechain pump and reverse reverb 7 to 8 dB. A treated tail now starts as the untouched track
+  and blends into the effect over a quarter of a second, a treated head blends back into the track
+  the same way, and only the moments that peak too high are turned down.
 - In browser playback, the crossfade that starts early when a track ends in silence stopped
   working after the first transition that used an effect. Setting up and removing an effect cut
   the deck off from the level meter that listens for the silence. The meter now stays connected.

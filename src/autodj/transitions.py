@@ -1569,12 +1569,61 @@ def _peak(audio: np.ndarray) -> float:
     return float(np.max(np.abs(audio))) if audio.size else 0.0
 
 
-def _no_louder_than(audio: np.ndarray, limit: float) -> np.ndarray:
-    """Turn *audio* down, if needed, so its peak does not pass *limit*."""
-    peak = _peak(audio)
-    if peak <= limit:
+# Width of the smoothing around each peak that has to come down.
+_HOLD_SMOOTHING_S = 0.02
+# Length of the S-curve that joins a treated tail or head to the
+# untouched track it continues.
+_SEAM_S = 0.25
+
+
+def _join_seam(dry: np.ndarray, treated: np.ndarray, sample_rate: int, *, tail: bool) -> np.ndarray:
+    """Blend *treated* into the untouched *dry* audio where the two meet.
+
+    A tail follows the outgoing track, so it starts as the dry audio and
+    turns into the effect; a head leads into the rest of the incoming
+    track, so it ends as the dry audio.  Many effects start or end at
+    another level than the music (echo out's first repeat comes
+    375 ms after its dry part drops to 0.35), which was a step at the
+    join.  The curve is a raised cosine, so the first and last 50 ms
+    stay within a few percent of the dry audio.
+    """
+    n = len(treated)
+    m = min(int(sample_rate * _SEAM_S), n // 4)
+    if m < 2 or treated is dry:
+        return treated
+    ramp = (0.5 - 0.5 * np.cos(np.linspace(0.0, np.pi, m))).astype(np.float32)
+    part = slice(0, m) if tail else slice(n - m, n)
+    effect_share = ramp if tail else ramp[::-1]
+    if treated.ndim > 1:
+        effect_share = effect_share[:, None]
+    out = treated.astype(np.float32, copy=True)
+    out[part] = dry[part] * (1.0 - effect_share) + treated[part] * effect_share
+    return out
+
+
+def _no_louder_than(audio: np.ndarray, limit: float, sample_rate: int) -> np.ndarray:
+    """Turn *audio* down where it passes *limit*, and nowhere else.
+
+    One constant gain for the whole buffer put a level step where the
+    treated audio meets the untouched track: a dub delay whose repeats
+    build up late turned the start of its tail down 1.5 to 3 dB against
+    the audio just before it.  The gain here is 1 wherever the audio is
+    under the limit and eases down around each peak over it (a minimum
+    filter then a moving average of the same width, which never rises
+    above the gain a sample needs), so the seams stay at the music's
+    level unless a peak sits right at them.
+    """
+    if _peak(audio) <= limit:
         return audio
-    out = (audio * (limit / peak)).astype(np.float32)
+    from scipy.ndimage import minimum_filter1d, uniform_filter1d
+
+    magnitude = np.abs(audio) if audio.ndim == 1 else np.max(np.abs(audio), axis=1)
+    needed = np.minimum(1.0, limit / np.maximum(magnitude, 1e-12))
+    width = 2 * max(1, int(sample_rate * _HOLD_SMOOTHING_S / 2)) + 1
+    gain = uniform_filter1d(minimum_filter1d(needed, width, mode="nearest"), width, mode="nearest")
+    if audio.ndim > 1:
+        gain = gain[:, None]
+    out = (audio * gain).astype(np.float32)
     np.clip(out, -limit, limit, out=out)
     return out
 
@@ -1719,10 +1768,13 @@ def apply_transition(
     Stereo input is processed one channel at a time with the same *seed*,
     so effects that use randomness treat both channels identically.
 
-    The results are held to the music's level: a treated tail or head
-    that peaks above the audio it came from is turned down to that
-    audio's peak, and a synthesised layer is set to a fixed fraction of
-    the louder of the two tracks' peaks (see ``_LAYER_LEVELS``).
+    The results are held to the music's level: a treated tail starts as
+    the untouched audio and a treated head ends as it (``_join_seam``),
+    so no level step is heard where they meet the track; wherever either
+    peaks above the audio it came from, it is turned down around that
+    peak (``_no_louder_than``); and a synthesised layer is set to a fixed
+    fraction of the louder of the two tracks' peaks (see
+    ``_LAYER_LEVELS``).
 
     Args:
         tail: Outgoing tail, ``(n,)`` or ``(n, 2)``.
@@ -1741,9 +1793,11 @@ def apply_transition(
     else:
         out_tail, out_head, extra = _apply_transition_stereo(tail, head, sample_rate, effect, seed)
     music_peak = max(_peak(tail), _peak(head))
+    out_tail = _join_seam(tail, out_tail, sample_rate, tail=True)
+    out_head = _join_seam(head, out_head, sample_rate, tail=False)
     return (
-        _no_louder_than(out_tail, _peak(tail)),
-        _no_louder_than(out_head, _peak(head)),
+        _no_louder_than(out_tail, _peak(tail), sample_rate),
+        _no_louder_than(out_head, _peak(head), sample_rate),
         _level_layer(extra, _LAYER_LEVELS.get(effect, 0.0) * music_peak),
     )
 

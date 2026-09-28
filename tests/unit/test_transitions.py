@@ -5,6 +5,7 @@ import pytest
 
 from autodj.transitions import (
     TransitionFx,
+    _no_louder_than,
     air_horn,
     apply_transition,
     backspin,
@@ -172,6 +173,46 @@ class TestEffectLevels:
         assert np.abs(out_head).max() <= np.abs(head).max() + 1e-7
         if extra.size:
             assert np.abs(extra).max() <= self.LEVEL + 1e-7
+
+    @staticmethod
+    def _db(treated: np.ndarray, dry: np.ndarray) -> float:
+        power = np.mean(treated.astype(np.float64) ** 2) / np.mean(dry.astype(np.float64) ** 2)
+        return float(10 * np.log10(power))
+
+    @pytest.mark.parametrize("effect", _CONCRETE_EFFECTS)
+    def test_no_level_step_where_the_treated_audio_meets_the_track(
+        self, effect: TransitionFx
+    ) -> None:
+        """A treated tail starts, and a treated head ends, at the music's level.
+
+        One constant turn-down for the whole tail dropped a dub delay's
+        start 1.5 to 3 dB under the audio just before it, and echo out's
+        dry part fell straight to 0.35 (-9 dB) at the join.
+        """
+        tail = _music(2.0, self.LEVEL, seed=1)
+        head = _music(2.0, self.LEVEL * 0.9, seed=2)
+        out_tail, out_head, _ = apply_transition(tail, head, SR, effect, seed=3)
+        edge = int(0.05 * SR)
+        assert abs(self._db(out_tail[:edge], tail[:edge])) <= 0.5
+        assert abs(self._db(out_head[-edge:], head[-edge:])) <= 0.5
+
+    def test_stereo_joins_both_channels(self) -> None:
+        tail = np.stack([_music(2.0, self.LEVEL, 1), _music(2.0, self.LEVEL, 4)], axis=1)
+        head = np.stack([_music(2.0, self.LEVEL, 2), _music(2.0, self.LEVEL, 5)], axis=1)
+        out_tail, _, _ = apply_transition(tail, head, SR, TransitionFx.ECHO_OUT, seed=3)
+        edge = int(0.05 * SR)
+        for channel in range(2):
+            assert abs(self._db(out_tail[:edge, channel], tail[:edge, channel])) <= 0.5
+        assert np.abs(out_tail).max() <= np.abs(tail).max() + 1e-7
+
+    def test_a_late_peak_is_held_without_turning_the_rest_down(self) -> None:
+        """Only the audio around a peak over the limit comes down."""
+        audio = np.full(SR, 0.5, dtype=np.float32)
+        audio[SR // 2] = 1.0
+        held = _no_louder_than(audio, 0.5, SR)
+        assert np.abs(held).max() <= 0.5
+        assert np.all(held[: SR // 4] == audio[: SR // 4])
+        assert np.all(held[-SR // 4 :] == audio[-SR // 4 :])
 
     @pytest.mark.parametrize(
         "effect",
