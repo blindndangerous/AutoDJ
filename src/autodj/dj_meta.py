@@ -481,19 +481,6 @@ def key_spoken(
 # Cue points — hot/memory cues, drops, breakdowns, phrase markers
 # ---------------------------------------------------------------------------
 
-# Recognised cue types.  Auto-detected types are emitted by
-# :func:`detect_cues`; user / DJ-software types are emitted by the
-# importer module ``autodj.dj_cues_import``.
-CUE_TYPES: tuple[str, ...] = (
-    "first_downbeat",
-    "drop",
-    "breakdown",
-    "build",
-    "phrase",
-    "outro_downbeat",
-    "user",
-)
-
 
 @dataclass
 class Cue:
@@ -501,9 +488,12 @@ class Cue:
 
     Attributes:
         time_s: Cue timestamp in seconds from track start.
-        type: One of :data:`CUE_TYPES` (or any custom string from a
-            DJ-software import — the player only special-cases the
-            built-ins; unknown types render as plain markers).
+        type: ``"first_downbeat"``, ``"drop"``, ``"breakdown"``,
+            ``"build"``, ``"phrase"`` or ``"outro_downbeat"`` from
+            :func:`detect_cues`, ``"user"``, or any custom string from a
+            DJ-software import (``autodj.dj_cues_import``) — the player
+            only special-cases the built-ins; unknown types render as
+            plain markers.
         label: Optional human label.  ``""`` for auto-detected cues.
         source: Provenance — ``"auto"`` (librosa), ``"mixxx"``,
             ``"rekordbox"``, ``"serato"``, ``"traktor"``, or ``"user"``.

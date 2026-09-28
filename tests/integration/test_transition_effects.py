@@ -14,8 +14,7 @@ from pathlib import Path
 import pytest
 
 from autodj.cli import cli
-from autodj.runtime_state import TRANSITION_EFFECTS
-from autodj.transitions import TRANSITION_EFFECT_NAMES, TransitionFx
+from autodj.transitions import TRANSITION_EFFECT_NAMES
 
 _STATIC = Path(__file__).resolve().parents[2] / "src" / "autodj" / "static"
 _META_MODES = frozenset({"none", "random", "rotate"})
@@ -45,9 +44,6 @@ class TestServerAcceptsEveryEffect:
 
 
 class TestAllowlistsAreDerived:
-    def test_persisted_state_allowlist_matches_the_enum(self) -> None:
-        assert frozenset(fx.value for fx in TransitionFx) == TRANSITION_EFFECTS
-
     @pytest.mark.parametrize("command", ["play", "serve"])
     def test_cli_choices_match_the_enum(self, command: str) -> None:
         option = next(

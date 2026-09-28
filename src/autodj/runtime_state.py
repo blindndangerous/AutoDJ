@@ -35,7 +35,6 @@ logger = logging.getLogger(__name__)
 #: harmonic mixing on, so a version 1 file (which stored "compatible" next to
 #: ``harmonic_mixing: false``) would silently switch key filtering on.
 STATE_VERSION = 2
-TRANSITION_EFFECTS = TRANSITION_EFFECT_NAMES
 
 
 class PlaybackState(TypedDict, total=False):
@@ -255,7 +254,7 @@ def _restore_transition(cfg: Any, data: dict) -> None:
     if "transition" not in data:
         return
     value = data["transition"]
-    if isinstance(value, str) and value.lower() in TRANSITION_EFFECTS:
+    if isinstance(value, str) and value.lower() in TRANSITION_EFFECT_NAMES:
         cfg.transitions.effect = value.lower()
     else:
         _warn("transition", value)

@@ -1024,10 +1024,10 @@ def create_app(
                 asyncio.get_running_loop(),
                 stream_first_track,
             )
-            stream_ticker = asyncio.create_task(_stream_tick_loop())
+            stream_ticker = asyncio.create_task(_tick_stream_workers(bridge))
         elif server_audio:
             await asyncio.to_thread(_start_server_audio_liners, bridge, _resolve_liner_folder())
-            stream_ticker = asyncio.create_task(_stream_tick_loop())
+            stream_ticker = asyncio.create_task(_tick_stream_workers(bridge))
         broadcast = asyncio.create_task(_broadcast_loop())
         watcher = asyncio.create_task(_index_watcher_loop())
         try:
@@ -2505,10 +2505,6 @@ def create_app(
                 continue
             payload = json.dumps(bridge.get_state())
             await _broadcast_and_prune(_ws_clients, _ws_lock, payload)
-
-    async def _stream_tick_loop() -> None:  # pragma: no cover — long-running task
-        """Tick the station and liner scheduler once a second (server mixing)."""
-        await _tick_stream_workers(bridge)
 
     async def _index_watcher_loop() -> None:  # pragma: no cover — long-running task
         """Reload each newly published index generation every 10 seconds."""

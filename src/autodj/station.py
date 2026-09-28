@@ -105,11 +105,6 @@ class Station:
             elif now - self._empty_since >= self._grace:
                 self._stop()
 
-    def start_new_set(self) -> None:
-        """Start a set from the user's next pick, or a fresh shuffle pick."""
-        with self._lock:
-            self._start()
-
     def start_with(self, entry: Any, pick_mode: str) -> bool:
         """Make *entry* the first track of the next set, if the station is idle.
 

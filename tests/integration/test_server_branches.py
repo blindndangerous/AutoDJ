@@ -182,7 +182,7 @@ def test_pairing_rate_limiter_is_bounded_isolated_and_expires() -> None:
     assert not limiter.reserve("one").allowed
     assert limiter.reserve("two").allowed
     assert limiter.reserve("three").allowed
-    assert limiter.tracked_clients <= 2
+    assert len(limiter._clients) <= 2
     assert not limiter.reserve("four").allowed
     now[0] = 111.0
     assert limiter.reserve("one").allowed

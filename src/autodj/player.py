@@ -804,7 +804,6 @@ class Player:
             no_repeat_window=effective,
             artist_repeat_window=cfg.playback.artist_repeat_window,
         )
-        self._crossfade_samples: dict[int, int] = {}  # populated per-track based on SR
         self._skip_event = threading.Event()
         self._lock = threading.Lock()
         # Shared playback position (samples) — written by callback, read/written by

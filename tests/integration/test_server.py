@@ -2442,20 +2442,6 @@ class TestLibraryEndpoints:
         tc.post("/api/preset", json={"name": "test"})
         assert bridge.player._discovery_every == 15
 
-    def test_current_lyrics_returns_serialised_lines(self, bridge) -> None:
-        """Bridge.current_lyrics serialises LyricLine into dicts."""
-        from autodj.audio_meta import LyricLine
-
-        bridge.player._current_lyrics = [
-            LyricLine(time_s=0.5, text="hello"),
-            LyricLine(time_s=1.0, text="world"),
-        ]
-        result = bridge.current_lyrics()
-        assert result == [
-            {"time_s": 0.5, "text": "hello"},
-            {"time_s": 1.0, "text": "world"},
-        ]
-
     def test_lyrics_for_reads_and_serialises_the_requested_path(self, bridge) -> None:
         from autodj.audio_meta import LyricLine
 
@@ -2696,7 +2682,8 @@ class TestServerAudioNextTrack:
 
     def test_queue_add_keeps_already_chosen_next_track(self, bridge) -> None:
         chosen = _make_entry(900)
-        bridge.player._dry_run = False
+        bridge.player.bus = MagicMock()
+        bridge.player._playing_render = MagicMock(next_entry=chosen)
         bridge.player._state.next_track = chosen
         bridge.player._pick_next.reset_mock()
 
@@ -2709,7 +2696,8 @@ class TestServerAudioNextTrack:
     def test_queue_remove_and_reorder_do_not_repick(self, bridge) -> None:
         chosen = _make_entry(901)
         e0, e1 = bridge.sim.entries[:2]
-        bridge.player._dry_run = False
+        bridge.player.bus = MagicMock()
+        bridge.player._playing_render = MagicMock(next_entry=chosen)
         bridge.player._state.next_track = chosen
         bridge.player._state.queue.extend([e0, e1])
         bridge.player._pick_next.reset_mock()

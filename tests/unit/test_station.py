@@ -338,13 +338,6 @@ def test_real_player_first_listener_plays_queue_head_then_stops_cleanly() -> Non
         player._render_ahead.stop(timeout=WAIT)
 
 
-def test_start_new_set_can_be_called_directly() -> None:
-    rig = _Rig()
-    rig.station.start_new_set()
-    rig.player.begin_set.assert_called_once_with(rig.shuffle_pick, "seed")
-    assert rig.station.state == "playing"
-
-
 def test_start_with_sets_the_next_sets_first_track_while_idle() -> None:
     head, chosen = MagicMock(name="head"), MagicMock(name="chosen")
     rig = _Rig(queue=[head], queued_next=MagicMock(name="play-next"))

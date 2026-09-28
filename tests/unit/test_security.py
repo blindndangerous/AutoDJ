@@ -18,6 +18,7 @@ from autodj.security import (
     SecurityPolicy,
     audit_record,
     new_request_id,
+    peer_address,
 )
 
 _TOKEN = "test-access-token-that-is-32-bytes-long"
@@ -501,7 +502,7 @@ def test_host_policy_rejects_empty_or_invalid_dns_name(host: str) -> None:
 
 
 def test_security_middleware_unknown_peer_and_malformed_length() -> None:
-    assert SecurityMiddleware._peer({"type": "http"}) == "<unknown>"
+    assert peer_address({"type": "http"}) == "<unknown>"
     assert SecurityMiddleware._declared_pairing_body_too_large(
         {"type": "http", "headers": [(b"content-length", b"invalid")]}
     )

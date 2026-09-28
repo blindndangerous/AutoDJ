@@ -973,8 +973,6 @@ class PlayerBridge:
         if state.queued_next is not None:
             state.next_track = state.queued_next
             return
-        if not getattr(self.player, "_dry_run", False):
-            return
         if state.queue:
             state.next_track = state.queue[0]
             return
@@ -1124,11 +1122,6 @@ class PlayerBridge:
         if art is None:
             return None
         return art.data, art.mime_type
-
-    def current_lyrics(self) -> list[dict]:
-        """Return the currently-loaded lyrics as a list of dicts."""
-        lyrics = getattr(self.player, "_current_lyrics", []) or []
-        return [{"time_s": ll.time_s, "text": ll.text} for ll in lyrics]
 
     def lyrics_for(self, path: str) -> list[dict]:
         """Read timed lyrics for *path* without depending on current-track state."""

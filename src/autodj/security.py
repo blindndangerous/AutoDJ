@@ -173,12 +173,6 @@ class PairingRateLimiter:
         with self._lock:
             self._clients.pop(peer, None)
 
-    @property
-    def tracked_clients(self) -> int:
-        """Return the number of peers currently tracked by the limiter."""
-        with self._lock:
-            return len(self._clients)
-
 
 def _parse_host_header(value: object) -> str | None:
     """Return a normalized host header name or ``None`` when invalid."""
@@ -645,11 +639,6 @@ class SecurityMiddleware:
         return limiter if isinstance(limiter, PairingRateLimiter) else None
 
     @staticmethod
-    def _peer(scope: Scope) -> str:
-        """Return a bounded client address string for rate-limit tracking."""
-        return peer_address(scope)
-
-    @staticmethod
     def _declared_pairing_body_too_large(scope: Scope) -> bool:
         """Return whether Content-Length is malformed or exceeds pairing body limit."""
         values = _raw_header_values(scope, b"content-length")
@@ -731,7 +720,7 @@ class SecurityMiddleware:
             return
 
         pairing_limiter = self._pairing_limiter(scope) if is_pairing else None
-        peer = self._peer(scope)
+        peer = peer_address(scope)
         if pairing_limiter is not None:
             decision = pairing_limiter.reserve(peer)
             if not decision.allowed:
