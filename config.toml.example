@@ -244,11 +244,6 @@ liners_duck_db = -12.0                 # how far the music ducks under a liner
 # are skipped with a log line.  Browser playback has no limit.
 server_max_track_minutes = 15.0
 
-# Per-file dayparts.  Accepted by the config loader and archived by
-# `autodj backup`, but the picker still uses the five built-in profiles —
-# nothing loads this folder yet.
-# dayparts_dir = "~/.autodj/dayparts"
-
 # ---------------------------------------------------------------------------
 # ReplayGain loudness normalisation
 # ---------------------------------------------------------------------------

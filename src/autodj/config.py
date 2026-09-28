@@ -382,12 +382,6 @@ class PlaybackConfig:
     # Longer tracks are skipped with a log line so a one-hour mix cannot
     # exhaust a small machine's memory.  Browser playback has no limit.
     server_max_track_minutes: float = 15.0
-    # Per-file daypart directory.  ``autodj.daypart.load_dayparts_from_dir``
-    # can turn one TOML per file into a daypart (each may declare
-    # ``indexes = [...]`` to scope itself to specific index names), and
-    # ``autodj backup`` archives the folder, but nothing in the playback path
-    # calls the loader yet: the picker always uses the built-in DAYPARTS list.
-    dayparts_dir: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> PlaybackConfig:
@@ -490,7 +484,6 @@ class PlaybackConfig:
             ),
             liners_duck_db=float(data.get("liners_duck_db", -12.0)),
             server_max_track_minutes=float(max_minutes),
-            dayparts_dir=(data.get("dayparts_dir") or None),
         )
 
 

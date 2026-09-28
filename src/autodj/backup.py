@@ -63,7 +63,7 @@ _DERIVED_MAPPINGS = {
     "derived/index-manifest.json": "active/index-manifest.json",
     "derived/dj_meta.db": "active/dj_meta.db",
 }
-_UNIQUE_LABELS = frozenset({"web_state", "liners", "profiles", "dayparts", "history"})
+_UNIQUE_LABELS = frozenset({"web_state", "liners", "profiles", "history"})
 _EOCD_SIGNATURE = b"PK\x05\x06"
 _ZIP64_EOCD_SIGNATURE = b"PK\x06\x06"
 _ZIP64_LOCATOR_SIGNATURE = b"PK\x06\x07"
@@ -352,8 +352,6 @@ def _unique_roots(cfg: AutoDJConfig) -> list[tuple[Path, str]]:
         ),
         (active.parent / "profiles", "profiles"),
     ]
-    if cfg.playback.dayparts_dir:
-        roots.append((Path(cfg.playback.dayparts_dir), "dayparts"))
     if cfg.playback.history_file:
         roots.append((cfg.playback.history_file, "history"))
     return roots
@@ -1364,11 +1362,6 @@ def _destination_root(cfg: AutoDJConfig, label: str) -> Path:
             Path(cfg.playback.liners_folder) if cfg.playback.liners_folder else active / "liners"
         ),
         "profiles": active.parent / "profiles",
-        "dayparts": (
-            Path(cfg.playback.dayparts_dir)
-            if cfg.playback.dayparts_dir
-            else active.parent / "dayparts"
-        ),
         "history": (
             cfg.playback.history_file.parent if cfg.playback.history_file else active.parent
         ),

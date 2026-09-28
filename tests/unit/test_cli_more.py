@@ -171,7 +171,7 @@ class TestIndexCommand:
             patch("autodj.model.load_model", return_value=MagicMock()),
             patch("autodj.indexer.build_index"),
         ):
-            result = CliRunner().invoke(cli, ["--config", str(cfg), "index", "--enrich"])
+            result = CliRunner().invoke(cli, ["--config", str(cfg), "index"])
         assert result.exit_code == 0
         assert "skipped" in result.output
 
@@ -187,7 +187,7 @@ class TestIndexCommand:
             patch("autodj.indexer.build_index"),
             patch("autodj.indexer.enrich_from_beets", return_value=(3, 10)),
         ):
-            result = CliRunner().invoke(cli, ["--config", str(cfg), "index", "--enrich"])
+            result = CliRunner().invoke(cli, ["--config", str(cfg), "index"])
         assert result.exit_code == 0
         assert "Enrich" in result.output
 
@@ -203,7 +203,7 @@ class TestIndexCommand:
             patch("autodj.indexer.build_index"),
             patch("autodj.indexer.enrich_from_beets", side_effect=RuntimeError("nope")),
         ):
-            result = CliRunner().invoke(cli, ["--config", str(cfg), "index", "--enrich"])
+            result = CliRunner().invoke(cli, ["--config", str(cfg), "index"])
         # Enrich error should not propagate -- index exits 0
         assert result.exit_code == 0
         assert "Enrich failed" in result.output
@@ -243,7 +243,7 @@ class TestIndexCommand:
             patch("autodj.model.load_model", return_value=MagicMock()),
             patch("autodj.indexer.build_index"),
         ):
-            result = CliRunner().invoke(cli, ["--config", str(cfg), "index", "--analyse"])
+            result = CliRunner().invoke(cli, ["--config", str(cfg), "index"])
         assert result.exit_code == 0
         assert "skipped" in result.output
 
@@ -264,7 +264,7 @@ class TestIndexCommand:
             patch("autodj.indexer.build_index"),
             patch("autodj.indexer._backfill_dj_meta") as bf,
         ):
-            result = CliRunner().invoke(cli, ["--config", str(cfg), "index", "--analyse"])
+            result = CliRunner().invoke(cli, ["--config", str(cfg), "index"])
         assert result.exit_code == 0
         bf.assert_called_once()
 
@@ -283,7 +283,7 @@ class TestIndexCommand:
             patch("autodj.indexer.build_index"),
             patch("autodj.indexer._backfill_dj_meta", side_effect=RuntimeError("x")),
         ):
-            result = CliRunner().invoke(cli, ["--config", str(cfg), "index", "--analyse"])
+            result = CliRunner().invoke(cli, ["--config", str(cfg), "index"])
         assert result.exit_code == 0
         assert "Analyse failed" in result.output
 

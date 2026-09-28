@@ -899,48 +899,19 @@ def cmd_restore(ctx: click.Context, archive: Path, force: bool) -> None:
     ),
 )
 @click.option(
-    "-a",
-    "do_analyse",
-    flag_value=True,
-    help="Alias for --analyse.",
-)
-@click.option(
-    "--analyse",
-    "do_analyse",
-    flag_value=True,
-    default=True,
-    help=(
-        "Run DJ-meta backfill after the embed pass. This is the default; "
-        "kept as an explicit flag for scripts."
-    ),
-)
-@click.option(
     "--no-analyse",
-    "do_analyse",
-    flag_value=False,
-    help="Skip DJ-meta backfill after indexing.",
-)
-@click.option(
-    "-e",
-    "do_enrich",
-    flag_value=True,
-    help="Alias for --enrich.",
-)
-@click.option(
-    "--enrich",
-    "do_enrich",
-    flag_value=True,
-    default=True,
-    help=(
-        "Refresh beets ``initial_key`` data after indexing. This is the "
-        "default when [library] beets_db is configured."
-    ),
+    "skip_analyse",
+    is_flag=True,
+    help="Skip the DJ-meta backfill that runs after the embed pass.",
 )
 @click.option(
     "--no-enrich",
-    "do_enrich",
-    flag_value=False,
-    help="Skip beets metadata enrichment after indexing.",
+    "skip_enrich",
+    is_flag=True,
+    help=(
+        "Skip refreshing beets ``initial_key`` data after indexing (done by "
+        "default when [library] beets_db is configured)."
+    ),
 )
 @click.pass_context
 def cmd_index(
@@ -949,8 +920,8 @@ def cmd_index(
     force: bool,
     index_name: str | None,
     workers: int | None,
-    do_analyse: bool,
-    do_enrich: bool,
+    skip_analyse: bool,
+    skip_enrich: bool,
 ) -> None:
     """Build or update the FAISS index for the music library.
 
@@ -1012,9 +983,9 @@ def cmd_index(
     if force:
         console.print("  Mode       : [yellow]FORCE REBUILD[/]")
     post_passes: list[str] = []
-    if do_enrich:
+    if not skip_enrich:
         post_passes.append("[green]+ enrich[/] (beets key/mode)")
-    if do_analyse:
+    if not skip_analyse:
         post_passes.append("[green]+ analyse[/] (intro/outro/beat/cues)")
     if post_passes:
         console.print(f"  Post-pass  : {'; '.join(post_passes)}")
@@ -1036,9 +1007,9 @@ def cmd_index(
         console.print(f"[bold red]Indexing failed:[/] {exc}")
         sys.exit(1)
 
-    if do_enrich:
+    if not skip_enrich:
         if not cfg.library.beets_db:
-            console.print("[yellow]--enrich skipped: no [library] beets_db configured.[/]")
+            console.print("[yellow]Enrich skipped: no [library] beets_db configured.[/]")
         else:
             from autodj.indexer import enrich_from_beets
 
@@ -1052,7 +1023,7 @@ def cmd_index(
             except Exception as exc:
                 console.print(f"[bold red]Enrich failed:[/] {exc}")
 
-    if do_analyse:
+    if not skip_analyse:
         from autodj.indexer import _backfill_dj_meta, load_index
 
         try:

@@ -169,7 +169,6 @@ dev = [
     { name = "pytest-cov" },
     { name = "pytest-timeout" },
     { name = "pytest-xdist" },
-    { name = "radon" },
     { name = "ruff" },
     { name = "vulture" },
     { name = "xenon" },
@@ -205,7 +204,7 @@ requires-dist = [
     { name = "transformers", specifier = ">=5.16.1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.29.0" },
 ]
-provides-extras = ["index", "play", "web", "all"]
+provides-extras = ["index", "play", "all"]
 
 [package.metadata.requires-dev]
 build = [{ name = "hatchling", specifier = "==1.31.0" }]
@@ -227,7 +226,6 @@ dev = [
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "pytest-timeout", specifier = ">=2.3.0" },
     { name = "pytest-xdist", specifier = ">=3.6.0" },
-    { name = "radon", specifier = ">=6.0" },
     { name = "ruff", specifier = ">=0.15.10" },
     { name = "vulture", specifier = ">=2.16" },
     { name = "xenon", specifier = ">=0.9" },

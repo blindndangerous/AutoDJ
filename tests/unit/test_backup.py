@@ -376,7 +376,7 @@ def test_backup_rejects_unique_root_with_symlink_ancestor(tmp_path: Path) -> Non
         create_backup(cfg, tmp_path / "backup.zip", online=False)
 
 
-@pytest.mark.parametrize("label", ["profiles", "liners", "dayparts"])
+@pytest.mark.parametrize("label", ["profiles", "liners"])
 def test_backup_rejects_existing_destination_inside_unique_source_root(
     tmp_path: Path, label: str
 ) -> None:
@@ -386,8 +386,7 @@ def test_backup_rejects_existing_destination_inside_unique_source_root(
         root = cfg.index.active_dir.parent / "profiles"
     else:
         root = tmp_path / label
-        field = "liners_folder" if label == "liners" else "dayparts_dir"
-        cfg = replace(cfg, playback=replace(cfg.playback, **{field: root}))
+        cfg = replace(cfg, playback=replace(cfg.playback, liners_folder=root))
     root.mkdir(parents=True, exist_ok=True)
     destination = root / "backup.zip"
     destination.write_bytes(b"prior archive")
@@ -2493,23 +2492,15 @@ def test_open_regular_source_rejects_escape_and_closes_descriptor_on_validation_
     close.assert_called_once()
 
 
-def test_backup_includes_nested_dayparts_and_history_file(tmp_path: Path) -> None:
+def test_backup_includes_history_file(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
-    dayparts = tmp_path / "dayparts"
-    nested = dayparts / "weekend"
-    nested.mkdir(parents=True)
-    (nested / "night.json").write_text("{}", encoding="utf-8")
     history = tmp_path / "history.jsonl"
     history.write_bytes(b'{"track": "one"}\n')
-    cfg = replace(
-        cfg,
-        playback=replace(cfg.playback, dayparts_dir=dayparts, history_file=history),
-    )
+    cfg = replace(cfg, playback=replace(cfg.playback, history_file=history))
 
     archive = create_backup(cfg, tmp_path / "backup.zip", online=False)
 
     with zipfile.ZipFile(archive) as zf:
-        assert zf.read("unique/dayparts/weekend/night.json") == b"{}"
         assert zf.read("unique/history/history.jsonl") == b'{"track": "one"}\n'
 
 
@@ -3044,11 +3035,11 @@ def test_distinct_manifest_destinations_cannot_resolve_to_same_target(tmp_path: 
     shared.mkdir()
     cfg = replace(
         cfg,
-        playback=replace(cfg.playback, liners_folder=shared, dayparts_dir=shared),
+        playback=replace(cfg.playback, liners_folder=shared, history_file=shared / "history.jsonl"),
     )
     payloads = [
         ("unique/liners/same.wav", b"liner"),
-        ("unique/dayparts/same.wav", b"daypart"),
+        ("unique/history/same.wav", b"history"),
     ]
     items = [
         _item(name, f"{name.split('/')[1]}/same.wav", data, classification="unique")

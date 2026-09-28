@@ -174,6 +174,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The `index_name` field of a saved profile. It was stored but never applied. `POST
   /api/profiles` now answers 422 when a request still sends it, and a profile file that still has
   it is refused when it is loaded or applied; save the profile again.
+- The empty `web` extra. The browser UI's dependencies have been in the core set for a while,
+  so install `autodj` or `autodj[all]` instead of `autodj[web]`.
+- `autodj index -a`, `-e`, `--analyse` and `--enrich`. They only restated the default: indexing
+  already runs the analyse pass and, when `[library] beets_db` is set, the beets enrich pass.
+  Passing any of them is now an error; `--no-analyse` and `--no-enrich` still skip the passes.
+- The `[playback] dayparts_dir` setting. Nothing ever loaded that folder (the picker always uses
+  the five built-in dayparts), so `autodj backup` no longer archives it and a leftover
+  `dayparts_dir` line is an unknown key that stops AutoDJ; delete it. A backup that holds a
+  `dayparts` folder can no longer be restored.
 
 - Upgrade note: an index made before the index manifest format (a folder with `tracks.db`
   and `vectors.index` but no `index-manifest.json`), or one that stores absolute track paths,

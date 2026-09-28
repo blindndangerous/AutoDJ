@@ -19,8 +19,7 @@ Built-in profiles:
 - ``evening`` (18:00-22:00)   — peak, 115-140 BPM, high energy
 - ``night``   (22:00-06:00)   — chill / late-night, 70-110 BPM
 
-``playback.dayparts_dir`` is accepted by the config loader and archived by
-``autodj backup``, but the picker always uses the five built-ins above.
+The picker always uses the five built-ins above.
 
 Example:
     >>> from autodj.daypart import current_daypart_target

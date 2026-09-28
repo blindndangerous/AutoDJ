@@ -55,10 +55,6 @@ play = [
     "pynput>=1.7.6",             # keyboard listener
 ]
 
-# `web` is kept so `autodj[web]` still resolves; the browser UI's
-# dependencies are all in the core set now.
-web = []
-
 # Convenience meta-group: every extra above.
 all = [
     "torch>=2.2.0", "torchaudio>=2.2.0", "soundfile>=0.12.0",
@@ -252,7 +248,6 @@ dev = [
     "deptry>=0.20",          # dep declaration auditor
     "xenon>=0.9",            # cyclomatic complexity gate
     "interrogate>=1.7",      # docstring coverage gate
-    "radon>=6.0",            # complexity / maintainability metrics (xenon backend)
     "pytest-xdist>=3.6.0",   # parallel test execution
     "pip-licenses>=5.0",     # license auditor
     "mutmut>=3.0",           # mutation testing (weekly workflow only)
