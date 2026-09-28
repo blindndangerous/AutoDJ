@@ -119,8 +119,7 @@ jobs:
       # AGPL is the class that would actually change AutoDJ's obligations as a
       # network service. The known copyleft dependencies are disclosed in README:
       # mutagen (GPL-2.0-or-later) and soxr (LGPL, via librosa) are in the base
-      # install, and pynput (LGPL-3.0) is in the play extra. This gate exists to
-      # catch a new AGPL dependency arriving unnoticed.
+      # install. This gate exists to catch a new AGPL dependency arriving unnoticed.
       - name: pip-licenses — reject AGPL dependencies
         run: >-
           uv run pip-licenses

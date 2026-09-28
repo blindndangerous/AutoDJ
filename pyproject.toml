@@ -48,18 +48,16 @@ index = [
     "soundfile>=0.12.0",         # audio file decoding
 ]
 
-# `play` adds local audio output and the terminal keyboard listener.  pynput
-# needs evdev (built from source) on Linux, so the container leaves it out.
+# `play` adds server-side audio output for `serve --server-audio`.
 play = [
     "soundfile>=0.12.0",         # decode FLAC / WAV
     "sounddevice>=0.4.6",        # cross-platform audio output
-    "pynput>=1.7.6",             # keyboard listener
 ]
 
 # Convenience meta-group: every extra above.
 all = [
     "torch>=2.2.0", "torchaudio>=2.2.0", "soundfile>=0.12.0",
-    "sounddevice>=0.4.6", "pynput>=1.7.6",
+    "sounddevice>=0.4.6",
 ]
 
 [project.scripts]
