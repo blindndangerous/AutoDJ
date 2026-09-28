@@ -35,7 +35,7 @@ Example:
     >>> from autodj.dj_cues_import import auto_import_cues
     >>> by_path = auto_import_cues(library_root=Path("/music"))
     >>> by_path["/music/track.mp3"]
-    [Cue(time_s=12.5, type='drop', source='rekordbox', label='Drop'), ...]
+    [Cue(time_s=12.5, type='user', label='Drop', source='rekordbox', color=''), ...]
 """
 
 from __future__ import annotations
@@ -70,18 +70,17 @@ def import_from_mixxx(db_path: Path) -> dict[str, list[Cue]]:
     """Read cues from a Mixxx ``mixxx.db`` SQLite library.
 
     The Mixxx schema (as of 2.3+) stores tracks in ``library`` and cues
-    in ``cues`` keyed by ``track_id``.  Cue ``type`` is an enum:
+    in ``cues`` keyed by ``track_id``.  ``cues.position`` is an engine
+    sample position (stereo frames times two) at the track's own
+    ``library.samplerate``.  Cue ``type`` is Mixxx's ``CueType`` enum
+    (src/track/cueinfo.h):
 
-    - 0 = invalid (skip)
-    - 1 = hot cue
-    - 2 = main cue / load cue
-    - 3 = beat
-    - 4 = loop
-    - 5 = jump
-    - 6 = intro start, 7 = intro end
-    - 8 = outro start, 9 = outro end
+    - 0 = invalid, 3 = beat (unused), 8 = N60dBSound (not shown): skipped
+    - 1 = hot cue, 4 = loop, 5 = jump: ``"user"``
+    - 2 = main cue, 6 = intro (position = intro start): ``"first_downbeat"``
+    - 7 = outro (position = outro start): ``"outro_downbeat"``
 
-    We map all of these to AutoDJ cue types where it makes sense.
+    Cues on tracks without a known sample rate are skipped.
 
     Args:
         db_path: Path to the Mixxx SQLite database.
@@ -100,10 +99,8 @@ def import_from_mixxx(db_path: Path) -> dict[str, list[Cue]]:
         2: "first_downbeat",  # main / load cue ≈ where the DJ wants to start
         4: "user",  # loop — surface as a cue marker
         5: "user",  # jump
-        6: "first_downbeat",  # intro start
-        7: "first_downbeat",  # intro end
-        8: "outro_downbeat",  # outro start
-        9: "outro_downbeat",  # outro end
+        6: "first_downbeat",  # intro range; position is its start
+        7: "outro_downbeat",  # outro range; position is its start
     }
 
     try:
@@ -116,7 +113,8 @@ def import_from_mixxx(db_path: Path) -> dict[str, list[Cue]]:
     try:
         cur = con.cursor()
         cur.execute(
-            "SELECT track_locations.location, cues.position, cues.type, cues.label "
+            "SELECT track_locations.location, cues.position, cues.type, cues.label, "
+            "library.samplerate "
             "FROM cues "
             "JOIN library ON library.id = cues.track_id "
             "JOIN track_locations ON track_locations.id = library.location",
@@ -141,14 +139,14 @@ def _mixxx_row_to_cue(
     type_map: dict[int, str],
 ) -> tuple[str, Cue] | None:
     """Convert one Mixxx ``cues`` row into ``(track_path, Cue)`` or None."""
-    location, position, ctype, label = row
-    if not location or position is None:
+    location, position, ctype, label, samplerate = row
+    if not location or position is None or not samplerate:
         return None
     mapped = type_map.get(int(ctype) if ctype is not None else 0)
     if mapped is None:
         return None
-    # Mixxx stores cue position in samples (44100 Hz stereo => 2 samples/frame).
-    time_s = float(position) / (44100.0 * 2.0)
+    # Engine samples are interleaved stereo: two per frame.
+    time_s = float(position) / (float(samplerate) * 2.0)
     if time_s < 0:
         return None
     return (
@@ -492,8 +490,9 @@ def auto_import_cues(
 
     1. Explicit *extra_paths* (absolute paths to ``mixxx.db`` /
         Rekordbox XML / Traktor NML files).  Always checked first.
-    2. ``<library_root>/mixxx.db`` and ``<library_root>/Library.xml`` —
-        a few users keep these next to their music tree.
+    2. ``mixxx.db``, ``mixxxdb.sqlite``, ``Library.xml`` and
+        ``collection.nml`` directly inside *library_root* — a few users
+        keep these next to their music tree.
     3. Default per-OS user-data locations:
 
         - Mixxx:     ``~/AppData/Local/Mixxx/mixxxdb.sqlite`` (Win),
@@ -508,8 +507,8 @@ def auto_import_cues(
     and is silently skipped (DEBUG-logged).
 
     Args:
-        library_root: Optional directory to scan first (typically the
-            beets ``music_dir``).  Pass ``None`` to skip step 2.
+        library_root: Optional directory to scan first (the configured
+            ``[library] music_dir``).  Pass ``None`` to skip step 2.
         extra_paths: Explicit override paths.  Use this when the user
             has supplied a non-default location.
 

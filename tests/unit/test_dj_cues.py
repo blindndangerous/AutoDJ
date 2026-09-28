@@ -252,17 +252,17 @@ def _build_mixxx_db(path: Path) -> None:
     cur.executescript(
         """
         CREATE TABLE track_locations (id INTEGER PRIMARY KEY, location TEXT);
-        CREATE TABLE library (id INTEGER PRIMARY KEY, location INTEGER);
+        CREATE TABLE library (id INTEGER PRIMARY KEY, location INTEGER, samplerate INTEGER);
         CREATE TABLE cues (
             track_id INTEGER, position INTEGER, type INTEGER, label TEXT
         );
         INSERT INTO track_locations VALUES (1, '/music/song.mp3');
-        INSERT INTO library VALUES (10, 1);
+        INSERT INTO library VALUES (10, 1, 44100);
         -- type 1 = hot cue, position is in stereo samples at 44.1 kHz
         -- 10 s * 44100 * 2 = 882000
         INSERT INTO cues VALUES (10, 882000, 1, 'Hot 1');
-        -- type 8 = outro start, at 60 s
-        INSERT INTO cues VALUES (10, 5292000, 8, 'Outro');
+        -- type 7 = outro (position is its start), at 60 s
+        INSERT INTO cues VALUES (10, 5292000, 7, 'Outro');
         """,
     )
     con.commit()

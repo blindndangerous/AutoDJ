@@ -40,7 +40,11 @@ from autodj.dj_meta import Cue
 # ---------------------------------------------------------------------------
 
 
-def _make_mixxx_db(path: Path, rows: list[tuple[str, float, int, str | None]]) -> None:
+def _make_mixxx_db(
+    path: Path,
+    rows: list[tuple[str, float, int, str | None]],
+    samplerate: int | None = 44100,
+) -> None:
     """Build a tiny Mixxx-compatible SQLite db with the rows given.
 
     Each row = (location, position_in_samples, cue_type, label).
@@ -49,7 +53,7 @@ def _make_mixxx_db(path: Path, rows: list[tuple[str, float, int, str | None]]) -
     cur = con.cursor()
     cur.executescript(
         """
-        CREATE TABLE library (id INTEGER PRIMARY KEY, location INTEGER);
+        CREATE TABLE library (id INTEGER PRIMARY KEY, location INTEGER, samplerate INTEGER);
         CREATE TABLE track_locations (id INTEGER PRIMARY KEY, location TEXT);
         CREATE TABLE cues (
             track_id INTEGER, position REAL, type INTEGER, label TEXT
@@ -58,7 +62,7 @@ def _make_mixxx_db(path: Path, rows: list[tuple[str, float, int, str | None]]) -
     )
     for i, (loc, pos, ctype, label) in enumerate(rows, start=1):
         cur.execute("INSERT INTO track_locations VALUES (?, ?)", (i, loc))
-        cur.execute("INSERT INTO library VALUES (?, ?)", (i, i))
+        cur.execute("INSERT INTO library VALUES (?, ?, ?)", (i, i, samplerate))
         cur.execute(
             "INSERT INTO cues (track_id, position, type, label) VALUES (?, ?, ?, ?)",
             (i, pos, ctype, label),
@@ -74,14 +78,14 @@ class TestImportFromMixxx:
 
     def test_parses_intro_outro_cues(self, tmp_path) -> None:
         db = tmp_path / "m.db"
-        # type 6 = intro start, type 8 = outro start
-        # position is in samples assuming 44100 Hz stereo, so 88200/sample
+        # type 6 = intro, type 7 = outro; position in stereo samples at 48 kHz
         _make_mixxx_db(
             db,
             [
-                ("/music/a.flac", 44100.0 * 2.0 * 5.0, 6, "intro"),  # 5.0s
-                ("/music/a.flac", 44100.0 * 2.0 * 200.0, 8, "outro"),  # 200.0s
+                ("/music/a.flac", 48000.0 * 2.0 * 5.0, 6, "intro"),  # 5.0s
+                ("/music/a.flac", 48000.0 * 2.0 * 200.0, 7, "outro"),  # 200.0s
             ],
+            samplerate=48000,
         )
         result = import_from_mixxx(db)
         cues = result.get(str(Path("/music/a.flac")), [])
@@ -92,6 +96,17 @@ class TestImportFromMixxx:
         assert cues[0].source == "mixxx"
         assert cues[1].time_s == pytest.approx(200.0)
         assert cues[1].type == "outro_downbeat"
+
+    def test_skips_n60db_sound_range(self, tmp_path) -> None:
+        # type 8 is Mixxx's hidden "audible sound" range, not an outro
+        db = tmp_path / "m.db"
+        _make_mixxx_db(db, [("/music/x.flac", 88200.0, 8, None)])
+        assert import_from_mixxx(db) == {}
+
+    def test_skips_track_without_samplerate(self, tmp_path) -> None:
+        db = tmp_path / "m.db"
+        _make_mixxx_db(db, [("/music/x.flac", 88200.0, 1, None)], samplerate=None)
+        assert import_from_mixxx(db) == {}
 
     def test_skips_unmapped_type_zero(self, tmp_path) -> None:
         db = tmp_path / "m.db"
