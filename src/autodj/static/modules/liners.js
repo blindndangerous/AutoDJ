@@ -25,14 +25,6 @@ const state = {
   lastSeenPath: null,
 };
 
-// Initialise lastFireAt lazily on first use so SSR / test environments
-// without `performance` do not crash at module-eval time.
-function _now() {
-  return typeof performance !== "undefined" && performance.now
-    ? performance.now()
-    : Date.now();
-}
-
 function _intOrNull(el) {
   if (!el || el.value === "" || el.value == null) return null;
   const n = parseInt(el.value, 10);
@@ -197,7 +189,7 @@ async function _playByName(els, deps, name) {
       _setStatus(els, "Liner playback skipped (audio context not ready).");
       return;
     }
-    state.lastFireAt   = _now();
+    state.lastFireAt   = performance.now();
     state.trackCount   = 0;
     state.randomTarget = _rollRandomTarget();
     _setStatus(els, `Liner playing: ${name}`);
@@ -236,7 +228,7 @@ async function _testOnServer(els, name) {
 }
 
 export function installLiners(els, deps) {
-  state.lastFireAt = _now();
+  state.lastFireAt = performance.now();
   let scheduledPlayback = null;
 
   if (els.lnUploadSubmit) {
@@ -297,7 +289,7 @@ export function installLiners(els, deps) {
     if (!state.lib.config || !state.lib.config.enabled) return;
     if (!deps.canPlay()) return;
     const c = state.lib.config;
-    const minsSince = (_now() - state.lastFireAt) / 60000;
+    const minsSince = (performance.now() - state.lastFireAt) / 60000;
     let fire = false;
     if (c.every_n_songs && state.trackCount >= c.every_n_songs) fire = true;
     if (c.every_minutes && minsSince >= c.every_minutes) fire = true;

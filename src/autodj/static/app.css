@@ -290,7 +290,6 @@
     #vol-label-text { font-size: 0.875rem; min-width: 3.5rem; }
 
     input[type="range"] {
-      -webkit-appearance: none;
       appearance: none;
       flex: 1;
       min-width: 120px;

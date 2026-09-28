@@ -10,6 +10,14 @@ import {
   STREAM_DELAY_ESTIMATE_S,
 } from "../../src/autodj/static/modules/stream-mode.js";
 
+// happy-dom has no MediaError; the codes are fixed by the HTML standard.
+globalThis.MediaError ??= {
+  MEDIA_ERR_ABORTED: 1,
+  MEDIA_ERR_NETWORK: 2,
+  MEDIA_ERR_DECODE: 3,
+  MEDIA_ERR_SRC_NOT_SUPPORTED: 4,
+};
+
 const IDLE_TEXT =
   "Waiting for a listener. Press Listen here, or start the AutoDJ station on a speaker.";
 const NOT_LOADED = "The stream did not load. It may be full or not running.";

@@ -62,6 +62,7 @@ export default [
         performance: "readonly",
         confirm: "readonly",
         MediaMetadata: "readonly",
+        MediaError: "readonly",
         CSS: "readonly",
         HTMLMediaElement: "readonly",
         AudioWorkletNode: "readonly",

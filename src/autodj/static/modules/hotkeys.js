@@ -111,7 +111,7 @@ function _shouldDeferToNativeKeyboard(event) {
   if (_eventTargetOwnsTypeahead(event)) return true;
 
   const key = event.key || "";
-  const nativeKey = key === " " || key === "Spacebar" || key.startsWith("Arrow");
+  const nativeKey = key === " " || key.startsWith("Arrow");
   return nativeKey
     && _eventPathMatches(event, ownsNativeKeyboardBehavior);
 }
@@ -150,12 +150,7 @@ export function toggleShortcutsModal() {
   if (modal.open) {
     modal.close();
   } else {
-    if (typeof modal.showModal === "function") {
-      modal.showModal();
-    } else {
-      // Older browsers: fall back to the open attribute (no focus trap).
-      modal.setAttribute("open", "");
-    }
+    modal.showModal();
     // Focus the Close button explicitly -- browsers vary on default focus.
     const closeBtn = document.getElementById("btn-shortcuts-close");
     if (closeBtn) {
@@ -253,14 +248,12 @@ export function installHotkeys({
     if (e.ctrlKey || e.metaKey || e.altKey) return;
 
     const key = e.key;
-    const scrollsPage = key === " " || key === "Spacebar"
-      || key === "ArrowUp" || key === "ArrowDown";
+    const scrollsPage = key === " " || key === "ArrowUp" || key === "ArrowDown";
     if (!nowVisible && scrollsPage) return;
 
     let bumpVol = 0;
     switch (key) {
       case " ":
-      case "Spacebar":
       case "k":
         togglePlay();
         break;

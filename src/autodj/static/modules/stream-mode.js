@@ -33,8 +33,6 @@ const DROPPED_TEXT = "The stream connection dropped.";
 const STALLED_TEXT = "The stream stopped responding.";
 // A stalled or waiting stream that has not played again by then is dead.
 const STALL_TIMEOUT_MS = 15000;
-// MediaError codes (numeric so this works where MediaError is undefined).
-const MEDIA_ERR_NETWORK = 2;
 
 // A failed start, from play() or the link lookup, in plain words.
 function startFailureText(err) {
@@ -54,7 +52,7 @@ function startFailureText(err) {
 // to load.
 function mediaFailureText(audio, hasPlayed) {
   const code = audio.error && audio.error.code;
-  if (code === MEDIA_ERR_NETWORK) return DROPPED_TEXT;
+  if (code === MediaError.MEDIA_ERR_NETWORK) return DROPPED_TEXT;
   if (code) return NOT_LOADED_TEXT;
   return hasPlayed ? DROPPED_TEXT : NOT_LOADED_TEXT;
 }
@@ -88,7 +86,7 @@ export function createStreamMode({ audio, button, idleNote, srStatus, fetchInfo 
   function release() {
     audio.pause();
     audio.removeAttribute("src");
-    audio.load?.();
+    audio.load();
   }
 
   function clearStall() {
