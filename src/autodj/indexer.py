@@ -1163,7 +1163,7 @@ def backfill_dj_meta(
         entries: Every track in the index, with absolute paths.
         limit: Analyse at most this many of the tracks that need it.
     """
-    from autodj.dj_meta import get_cache, merge_cues
+    from autodj.dj_meta import get_cache
 
     cache = get_cache(cfg.index.active_dir, music_dir=cfg.library.music_dir)
     if cache is None:  # pragma: no cover - get_cache with an index_dir always builds one
@@ -1180,7 +1180,7 @@ def backfill_dj_meta(
     library_cues: dict[str, list[Any]] = {}
     import_cues = cfg.playback.import_external_cues
     if import_cues:
-        from autodj.dj_cues_import import auto_import_cues, import_from_serato_tags
+        from autodj.dj_cues_import import auto_import_cues, merge_imported_cues
 
         library_cues = auto_import_cues(library_root=cfg.library.music_dir)
         logger.info("Imported cues for %d tracks from DJ software", len(library_cues))
@@ -1199,9 +1199,7 @@ def backfill_dj_meta(
                 meta = None
             if meta is not None:
                 if import_cues:
-                    external = [*library_cues.get(path, ()), *import_from_serato_tags(Path(path))]
-                    if external:
-                        meta.cues = merge_cues(meta.cues, external)
+                    merge_imported_cues(meta, path, library_cues)
                 cache.set(path, meta)
                 done += 1
                 cache.flush()

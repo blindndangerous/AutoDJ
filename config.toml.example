@@ -212,8 +212,8 @@ key_prefer_flats = false
 # Merge cue points from Mixxx, Rekordbox (Library.xml export) and Traktor
 # libraries, and from the Serato tags in each audio file, with the ones
 # AutoDJ detects itself.  Read by `autodj index` and `autodj analyse` when
-# they analyse a track; the web page has no switch for it.  A track the
-# player has to analyse while playing gets only the detected cues.
+# they analyse a track, and by the player when it has to analyse a track
+# while playing; the web page has no switch for it.
 import_external_cues = true
 
 # Beat-sync transition FX — rhythmic effects (beat_repeat, gate_stutter,

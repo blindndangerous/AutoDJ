@@ -1643,6 +1643,39 @@ class TestOutgoingMetaCached:
         assert got is analysed_meta
         fake_cache.set.assert_not_called()
 
+    @pytest.mark.parametrize("import_cues", [True, False])
+    def test_merges_serato_cues_when_the_import_is_on(
+        self, tmp_path: Path, monkeypatch, import_cues: bool
+    ) -> None:
+        """A track analysed while playing is stored with its imported cues.
+
+        ``autodj analyse`` skips an analysed track, so without the merge here
+        the Serato cue would never reach it.
+        """
+        from autodj.dj_meta import Cue, DjMeta
+        from tests.unit._fakes import write_serato_flac
+
+        track = tmp_path / "tagged.flac"
+        serato = write_serato_flac(track)
+        auto = Cue(time_s=40.0, type="drop", source="auto")
+        player = Player(_make_cfg_mock(), _make_sim_index(2))
+        player._cfg.playback.import_external_cues = import_cues
+        player._cfg.playback.transition_mode = "fixed"
+        player._cfg.djmix.outro_intro_align = True
+        fake_cache = MagicMock()
+        fake_cache.get.return_value = DjMeta(analysed=False)
+        player._dj_cache = fake_cache
+        monkeypatch.setattr(
+            "autodj.dj_meta.analyse_audio", lambda _a, _sr: DjMeta(analysed=True, cues=[auto])
+        )
+        monkeypatch.setattr("autodj.dj_cues_import.auto_import_cues", lambda **_kw: {})
+
+        meta = player._outgoing_meta(np.zeros(4410, dtype=np.float32), 44100, str(track))
+
+        assert meta is not None
+        assert meta.cues == ([serato, auto] if import_cues else [auto])
+        fake_cache.set.assert_called_once_with(str(track), meta)
+
 
 class TestComputeCrossfadeStart:
     """Cover phrase-align + outro-intro alignment in _compute_crossfade_start."""

@@ -17,6 +17,7 @@ import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
@@ -52,7 +53,7 @@ from autodj.stereo import (
 
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig
-    from autodj.dj_meta import DjMeta
+    from autodj.dj_meta import Cue, DjMeta
     from autodj.presets import Preset
     from autodj.similarity import SimilarityIndex
 
@@ -1569,8 +1570,6 @@ class Player:
         data: ``djmix.outro_intro_align``, ``djmix.phrase_align``, or any
         marker-driven transition_mode (everything except ``"fixed"``).
         """
-        from autodj.dj_meta import analyse_audio
-
         cfg_dj = self._cfg.djmix
         marker_mode = self._cfg.playback.transition_mode != "fixed"
         if self._dj_cache is None or not (
@@ -1579,10 +1578,35 @@ class Player:
             return None
         meta = self._dj_cache.get(path)
         if not meta.analysed:
-            meta = analyse_audio(mono(audio_a), sr_a)
+            meta = self._analyse(mono(audio_a), sr_a, path)
             self._dj_cache.set(path, meta)
             self._dj_cache.flush(batch=10)
         return meta
+
+    def _analyse(self, audio: np.ndarray, sr: int, path: str) -> DjMeta:
+        """Analyse *path*'s audio the way ``autodj analyse`` does.
+
+        Runs :func:`autodj.dj_meta.analyse_audio`, then merges cues imported
+        from DJ software through the same function as ``autodj analyse``
+        when ``[playback] import_external_cues`` is on.  The result is
+        stored as analysed, so ``autodj analyse`` later skips the track.
+        """
+        from autodj.dj_meta import analyse_audio
+
+        meta = analyse_audio(audio, sr)
+        if self._cfg.playback.import_external_cues:
+            from autodj.dj_cues_import import merge_imported_cues
+
+            merge_imported_cues(meta, path, self._library_cues)
+        return meta
+
+    @cached_property
+    def _library_cues(self) -> dict[str, list[Cue]]:
+        """Cues from Mixxx, Rekordbox and Traktor libraries, read on first use."""
+        from autodj.dj_cues_import import auto_import_cues
+
+        music_dir = self._cfg.library.music_dir
+        return auto_import_cues(library_root=music_dir if isinstance(music_dir, Path) else None)
 
     def analyse_track_in_background(self, path: str) -> None:
         """Run analyse_audio + detect_cues for *path* on a background thread.
@@ -1598,10 +1622,10 @@ class Player:
            (sidecar hit, or a previous background pass populated it).
         2. No-ops when the path is already in flight on another thread.
         3. Loads the audio file, runs :func:`analyse_audio` (which calls
-           :func:`detect_cues` internally), then writes the result back to
+           :func:`detect_cues` internally) and merges cues imported from DJ
+           software (see :meth:`_analyse`), then writes the result back to
            ``self._dj_cache`` and forces a flush so ``dj_meta.db`` grows
-           track by track.  Cues imported from DJ software are merged only
-           by ``autodj index`` and ``autodj analyse``, not here.
+           track by track.
 
         Errors at any stage (file gone, decode error, librosa failure)
         are logged at debug and swallowed -- the cue panel just stays
@@ -1618,10 +1642,8 @@ class Player:
 
         def _worker() -> None:  # pragma: no cover -- background thread
             try:
-                from autodj.dj_meta import analyse_audio
-
                 audio, sr = load_audio(path)
-                meta = analyse_audio(audio, sr)
+                meta = self._analyse(audio, sr, path)
                 if self._dj_cache is not None:
                     self._dj_cache.set(path, meta)
                     self._dj_cache.flush(force=True)
@@ -1864,15 +1886,13 @@ class Player:
         Triggered by either ``djmix.outro_intro_align`` or any marker-aware
         transition_mode (``full_intro_outro`` / ``fixed_skip_silence``).
         """
-        from autodj.dj_meta import analyse_audio
-
         mode = self._cfg.playback.transition_mode
         marker_skip = mode in ("full_intro_outro", "fixed_skip_silence")
         if self._dj_cache is None or not (self._cfg.djmix.outro_intro_align or marker_skip):
             return 0
         meta_b = self._dj_cache.get(next_entry.path)
         if not meta_b.analysed:
-            meta_b = analyse_audio(mono(audio_b), sr_a)
+            meta_b = self._analyse(mono(audio_b), sr_a, next_entry.path)
             self._dj_cache.set(next_entry.path, meta_b)
             self._dj_cache.flush(batch=10)
         if meta_b.intro_end_s <= 0.5:

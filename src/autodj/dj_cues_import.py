@@ -15,8 +15,9 @@ There are four readers:
 
 The first three are library files: :func:`auto_import_cues` looks for them
 in the music directory and each program's default location once per
-session.  Serato keeps its cues per file, so the player reads them with
-:func:`import_from_serato_tags` when it analyses a track.  Every reader uses
+session.  Serato keeps its cues per file, so they are read with
+:func:`import_from_serato_tags` whenever a track is analysed, and
+:func:`merge_imported_cues` merges both into the analysis.  Every reader uses
 the standard library or ``mutagen`` (a core dependency).
 
 The readers follow the published file formats; none has been checked
@@ -52,10 +53,11 @@ import struct
 # `defusedxml` would add a runtime dependency that the user has to
 # install separately for a feature with no real attack surface.
 import xml.etree.ElementTree as ET  # nosec B405
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from autodj.dj_meta import Cue
+from autodj.dj_meta import Cue, DjMeta, merge_cues
 from autodj.sqlite_utils import readonly_uri
 
 logger = logging.getLogger(__name__)
@@ -526,6 +528,20 @@ def auto_import_cues(
         for track_path, cues in _import_one(path).items():
             merged.setdefault(track_path, []).extend(cues)
     return merged
+
+
+def merge_imported_cues(meta: DjMeta, path: str, library_cues: Mapping[str, list[Cue]]) -> None:
+    """Merge the cues DJ software holds for *path* into *meta* in place.
+
+    *library_cues* is what :func:`auto_import_cues` found; the Serato cues
+    are read from the file's own tags here.  :func:`autodj.dj_meta.merge_cues`
+    lets imported cues win on conflict and keeps detected ones elsewhere.
+    ``autodj index``, ``autodj analyse`` and the player all merge through
+    this when ``[playback] import_external_cues`` is on.
+    """
+    external = [*library_cues.get(path, ()), *import_from_serato_tags(Path(path))]
+    if external:
+        meta.cues = merge_cues(meta.cues, external)
 
 
 def _gather_candidate_paths(

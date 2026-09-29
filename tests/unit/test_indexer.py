@@ -1229,27 +1229,14 @@ class TestBackfillDjMeta:
     def test_serato_cues_are_merged_when_the_import_is_on(
         self, tmp_path: Path, import_cues: bool
     ) -> None:
-        import base64
-        import struct
-
-        import soundfile as sf
-        from mutagen.flac import FLAC
-
         from autodj.dj_meta import Cue, DjMeta, get_cache
         from autodj.indexer import backfill_dj_meta
+        from tests.unit._fakes import write_serato_flac
 
         cfg = _backfill_cfg(tmp_path, import_cues=import_cues)
         cfg.library.music_dir.mkdir()
         track = cfg.library.music_dir / "tagged.flac"
-        sf.write(track, np.zeros(4410, dtype="float32"), 44100)
-        # One Serato hot cue at 12.5 s named "Drop", in the FLAC comment layout.
-        cue = b"\x00\x00" + struct.pack(">I", 12500) + b"\x00\xcc\x00\x00\x00\x00Drop\x00"
-        payload = b"\x01\x01" + b"CUE\x00" + struct.pack(">I", len(cue)) + cue + b"\x00"
-        body = b"\x01\x01" + base64.b64encode(payload).replace(b"=", b"A")
-        wrapped = b"application/octet-stream\x00\x00Serato Markers2\x00" + body.ljust(470, b"\x00")
-        tags = FLAC(track)
-        tags["SERATO_MARKERS_V2"] = base64.b64encode(wrapped).decode("ascii").rstrip("=")
-        tags.save()
+        serato = write_serato_flac(track)
         auto = Cue(time_s=40.0, type="drop", source="auto")
 
         with (
@@ -1263,7 +1250,6 @@ class TestBackfillDjMeta:
         cache = get_cache()
         assert cache is not None
         cues = cache.get(str(track)).cues
-        serato = Cue(time_s=12.5, type="user", label="Drop", source="serato", color="#cc0000")
         assert cues == ([serato, auto] if import_cues else [auto])
 
 

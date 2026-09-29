@@ -6,14 +6,38 @@ never from another test module.
 
 from __future__ import annotations
 
+import base64
+import struct
 import threading
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import faiss
 import numpy as np
 
+from autodj.dj_meta import Cue
 from autodj.indexer import FEATURE_DIM, IndexEntry
 from autodj.similarity import SimilarityIndex
+
+
+def write_serato_flac(path: Path) -> Cue:
+    """Write a short silent FLAC at *path* with one Serato hot cue in its tags.
+
+    Returns the cue :func:`autodj.dj_cues_import.import_from_serato_tags`
+    should read back: 12.5 s, named "Drop".
+    """
+    import soundfile as sf
+    from mutagen.flac import FLAC
+
+    sf.write(path, np.zeros(4410, dtype="float32"), 44100)
+    cue = b"\x00\x00" + struct.pack(">I", 12500) + b"\x00\xcc\x00\x00\x00\x00Drop\x00"
+    payload = b"\x01\x01" + b"CUE\x00" + struct.pack(">I", len(cue)) + cue + b"\x00"
+    body = b"\x01\x01" + base64.b64encode(payload).replace(b"=", b"A")
+    wrapped = b"application/octet-stream\x00\x00Serato Markers2\x00" + body.ljust(470, b"\x00")
+    tags = FLAC(path)
+    tags["SERATO_MARKERS_V2"] = base64.b64encode(wrapped).decode("ascii").rstrip("=")
+    tags.save()
+    return Cue(time_s=12.5, type="user", label="Drop", source="serato", color="#cc0000")
 
 
 def make_entry(i: int = 0) -> IndexEntry:
@@ -49,6 +73,7 @@ def make_cfg_mock() -> MagicMock:
     cfg.playback.pick_top_k = 1
     cfg.playback.pick_temperature = 0.0
     cfg.playback.server_max_track_minutes = 15.0
+    cfg.playback.import_external_cues = False
     cfg.replaygain.enabled = False
     cfg.replaygain.target_db = -14.0
     cfg.replaygain.max_clip_safe_gain = 1.0
