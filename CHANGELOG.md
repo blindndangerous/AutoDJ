@@ -29,6 +29,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   every five minutes and new connections get the new certificate, so a Let's Encrypt renewal
   needs no restart. A half-copied or mismatched pair is refused with a warning and the old
   certificate stays in use.
+- `autodj doctor` has a `beets-db` check that warns when `[library] beets_db` names a missing
+  file, and its FFmpeg warning now says that indexing skips `.m4a`, `.mp4` and `.aac` files and
+  stream mode cannot start without FFmpeg.
+- The operations guide has a section on HTTPS on a home network with a self-signed certificate,
+  and the README covers FFmpeg for `.m4a` files, the Windows PowerShell folder command,
+  `config.local.toml.example`, pairing-code lifetime, the firewall, and what plain HTTP from
+  another device leaves out.
 - The operations guide has a new section, "HTTPS with your own domain": a Let's Encrypt
   certificate through certbot's Cloudflare DNS plugin, copying it on renewal, home DNS so
   traffic stays on the LAN, and a Cloudflare Tunnel with Cloudflare Access for remote use.
@@ -201,6 +208,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   already did in the server mix. The page used to play a 3 second fade instead. With 0 there is no
   transition effect either. In the Full intro and outro and Outro fade modes, tracks with detected
   markers still fade for 1 to 12 seconds, in the page and in the server mix alike.
+- Error messages on the command line keep their config section names. A misspelled key printed
+  "unknown  keys: ['bogus_key']" with the section missing; it now prints
+  "unknown [playback] keys: ['bogus_key']". The same applied to the enrich and list-devices hints.
+- `autodj serve --lan` printed `http://0.0.0.0:8080` as the Web UI address, which the Host
+  allowlist refuses, and `--open` opened it. It now prints and opens `http://localhost:8080`, and
+  says that other devices use the addresses listed below it. An IPv6 bind address is shown in
+  brackets.
+- `autodj enrich` with a `[library] beets_db` file that does not exist said the index was
+  already in sync with beets. It now fails with "Beets library not found", and `autodj index`
+  reports "Enrich failed" with the same message.
+- Every command started with faiss logging a `ModuleNotFoundError` while it picked its CPU build,
+  and `autodj index` logged each model-download request. Those lines now show only with `-v`.
 
 ## [0.18.2] - 2026-09-29
 

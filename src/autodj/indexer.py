@@ -932,9 +932,11 @@ def enrich_from_beets(
     Returns:
         ``(updated, total)`` — count of entries with at least one field
         changed, and the total entries scanned.
+
+    Raises:
+        BeetsNotFoundError: If *beets_db* does not exist.
     """
     from autodj.beets import (
-        BeetsNotFoundError,
         _items_columns,
         _open_db,
         _path_candidates,
@@ -946,12 +948,7 @@ def enrich_from_beets(
     except FileNotFoundError:
         return (0, 0)
 
-    try:
-        conn = _open_db(beets_db)
-    except BeetsNotFoundError:
-        logger.warning("Beets DB not found at %s", beets_db)
-        return (0, len(entries))
-
+    conn = _open_db(beets_db)
     text_cols: tuple[str, ...] = ("title", "artist", "album", "genre")
     num_cols: tuple[str, ...] = ("bpm", "year", "length")
     has_initial_key = False

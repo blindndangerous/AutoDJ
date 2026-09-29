@@ -23,9 +23,12 @@ uploaded to a cloud service.
 
 ## Quick start
 
-Install Git and uv first. The project requires Python 3.14; `uv sync` can install that
-interpreter. Running AutoDJ does not need Node.js; the server serves the web UI files as they are
-in the checkout.
+Install [Git](https://git-scm.com/downloads) and
+[uv](https://docs.astral.sh/uv/getting-started/installation/) first. The project requires Python
+3.14; `uv sync` can install that interpreter. Running AutoDJ does not need Node.js; the server
+serves the web UI files as they are in the checkout. Install [FFmpeg](https://ffmpeg.org/download.html)
+and put it on the PATH if your library has `.m4a`, `.mp4` or `.aac` files: AutoDJ decodes those
+with FFmpeg, and without it `autodj index` skips them with a warning. Stream mode also needs it.
 
 ```bash
 git clone https://github.com/blindndangerous/AutoDJ
@@ -35,6 +38,9 @@ cd AutoDJ
 uv sync --frozen --all-extras
 mkdir -p music index models
 ```
+
+In Windows PowerShell, create the folders with
+`New-Item -ItemType Directory -Force music, index, models` instead of `mkdir -p`.
 
 This is the supported install. `--frozen` gives you the exact dependency versions CI tested.
 
@@ -57,8 +63,11 @@ cp config.toml.example config.toml
 ```
 
 If you created `config.toml`, set `[library] music_dir` for your music folder. Set
-`[library] beets_db` to your beets database, or clear it if you do not use beets. Run doctor before
-indexing and serving:
+`[library] beets_db` to your beets database, or set it to `""` if you do not use beets. Settings
+for one machine, such as its paths and `[server]` section, can go in `config.local.toml`, which
+AutoDJ reads only when `config.toml` exists: copy `config.local.toml.example`, then delete every
+line you do not want to change, because each value in it replaces the one in `config.toml`. Run
+doctor before indexing and serving:
 
 ```bash
 # Check configuration, paths, dependencies, and security settings without writing the index.
@@ -89,19 +98,31 @@ uv run autodj serve --lan
 ```
 
 Startup prints the addresses to open, such as `http://nas:8080` and `http://192.168.1.20:8080`,
-and an 8-digit pairing code. Open one of the addresses on the other device and enter the code once;
-that browser stays paired. Run `uv run autodj devices pairing-code` for a fresh code later. In the
+and an 8-digit pairing code with how many seconds it stays valid; the code changes every five
+minutes. Open one of the addresses on the other device and enter the code once; that browser
+stays paired. Run `uv run autodj devices pairing-code` for the current code later. In the
 web page, Settings, Browser access lists the paired devices with Rename and Revoke buttons, shows
 the current pairing code for adding another device, and **Sign out this browser** ends this
 browser's pairing. To make
-it permanent, set `[server] lan = true` in `config.toml` or `AUTODJ_LAN=1`.
+it permanent, set `[server] lan = true` in `config.toml` or `config.local.toml`, or
+`AUTODJ_LAN=1`.
+
+If the other device cannot connect, check the firewall on the AutoDJ machine. Windows can show a
+Windows Security alert the first time Python listens on the network; allow access on private
+networks. On Linux, open the port in your firewall, for example `sudo ufw allow 8080/tcp`.
 
 `--lan` listens on all interfaces, allows only this machine's own names and addresses in the
 browser's address bar, and keeps pairing on. It creates the pairing secret in
 `index/.access-token` the first time. On Linux and macOS only you can read that file. On Windows
 it gets the index folder's permissions, and if the index folder is on a network share, anyone who
-can read the share can read the token. For HTTPS, add `--ssl-certfile` and `--ssl-keyfile`. See [Operations](docs/operations.md) for containers, custom DNS names and other
-advanced overrides.
+can read the share can read the token.
+
+Over plain HTTP from another device, the gate stutter, bitcrusher, freeze and glitch transition
+effects play as a plain crossfade in that browser, because browsers give those effects only to
+HTTPS pages and to `localhost`; Settings says so under the transition effect. For HTTPS, set
+`[server] ssl_certfile` and `ssl_keyfile`, or add `--ssl-certfile` and `--ssl-keyfile`; every
+device must trust the certificate. [Operations](docs/operations.md#https-on-your-home-network) shows how to make one for
+your home network, and covers containers, custom DNS names and other advanced overrides.
 
 ## Play on Sonos or any network player
 
@@ -282,7 +303,10 @@ generates its server secret, and prints an 8-digit pairing code during startup. 
 once in each browser. Paired browsers receive distinct, persistent device sessions and do not
 need to sign in again unless revoked or expired.
 
-For native serving, equivalent settings can be stored in gitignored `config.local.toml`:
+For a native LAN server, use `--lan` or `[server] lan = true` as described under
+[Use it from other devices](#use-it-from-other-devices); it creates and keeps the server secret
+for you. Set the secret yourself only when you configure the allowlists by hand without LAN mode,
+for example in gitignored `config.local.toml`:
 
 ```toml
 [server]
@@ -290,14 +314,19 @@ host = "0.0.0.0"
 access_token = "generate-at-least-32-random-bytes"  # Internal pairing/session secret.
 allowed_hosts = ["radio.local"]
 allowed_origins = ["https://radio.local:8080"]
+ssl_certfile = "/srv/autodj/tls/radio.pem"
+ssl_keyfile = "/srv/autodj/tls/radio-key.pem"
 ```
 
 The server secret must contain at least 32 UTF-8 bytes. Do not enter it in a browser or copy the
-placeholder above. Start the native server with a certificate and matching private key:
+placeholder above. To generate one, run:
 
 ```bash
-uv run autodj serve --ssl-certfile radio.pem --ssl-keyfile radio-key.pem
+uv run python -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
+
+The certificate and matching private key make the server use HTTPS; `--ssl-certfile` and
+`--ssl-keyfile` on `autodj serve` do the same.
 
 `config.toml` and its local variants are gitignored. Never pass the server secret as a CLI
 argument because shell history and process listings can expose it. AutoDJ derives short-lived
@@ -358,6 +387,11 @@ variables and CLI flags still take precedence.
 ## Troubleshooting
 
 **The first index run is taking forever.**  This is the slow pass.  AutoDJ has to listen to every file and remember what it sounds like.  On a CPU it can take many hours for a 10000-track library.  A compatible GPU can speed up the embedding step.  In one small, repeated benchmark on a Ryzen AI 7 PRO 350 with Radeon 860M graphics, the GPU was about 1.9x faster than CPU after warmup; that smoke-test result does not predict full-library time.  See [Windows AMD GPU setup](docs/windows-amd.md) for the tested configuration.  Run with `--limit 50` first to confirm it works, then leave the full run going overnight.
+
+**The first index run on Windows warns about symlinks.**  The Hugging Face download library
+prints a warning that your machine does not support symlinks in the model folder.  The download
+still works; the cache only takes more disk space.  Turning on Windows Developer Mode removes the
+warning.
 
 **No sound from the web UI.**  Click the **Play** button once -- browsers require a user gesture before they will play audio.  After the first click, AutoDJ unlocks its audio context and plays normally for the rest of the session.
 

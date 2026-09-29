@@ -714,6 +714,18 @@ class TestEnrichFromBeets:
         self._make_beets(beets, [])
         assert enrich_from_beets(tmp_path / "noidx", music_dir=None, beets_db=beets) == (0, 0)
 
+    def test_missing_beets_db_raises_instead_of_reporting_in_sync(self, tmp_path: Path) -> None:
+        from autodj.beets import BeetsNotFoundError
+        from autodj.indexer import enrich_from_beets, save_index
+
+        entries, vectors = self._make_distinctive_index(tmp_path)
+        idx = tmp_path / "idx"
+        idx.mkdir()
+        save_index(entries, vectors, idx, music_dir=tmp_path, base_generation=0)
+
+        with pytest.raises(BeetsNotFoundError, match="Beets library not found"):
+            enrich_from_beets(idx, music_dir=tmp_path, beets_db=tmp_path / "missing.db")
+
     def test_enrich_rejects_generation_race_without_overwriting_newer_snapshot(
         self,
         tmp_path: Path,
@@ -843,38 +855,6 @@ class TestEnrichFromBeets:
         self._make_beets(beets, [{"path": str(path), "initial_key": "Am"}])
 
         updated, total = enrich_from_beets(idx, music_dir=tmp_path, beets_db=beets)
-        assert updated == 0
-        assert total == 1
-
-    def test_missing_beets_db_returns_zero_updated(self, tmp_path: Path) -> None:
-        from autodj.indexer import enrich_from_beets, save_index
-
-        path = tmp_path / "song.flac"
-        path.write_bytes(b"")
-        entries = [
-            IndexEntry(
-                path=str(path),
-                title="T",
-                artist="A",
-                album="L",
-                genre="G",
-                bpm=100.0,
-                year=2020,
-                length=180.0,
-                energy=0.05,
-                key=0,
-                mode=1,
-                tempo_confidence=0.5,
-            )
-        ]
-        vectors = np.random.randn(1, FEATURE_DIM).astype(np.float32)
-        vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
-        idx = tmp_path / "idx"
-        idx.mkdir()
-        save_index(entries, vectors, idx, music_dir=tmp_path, base_generation=0)
-        updated, total = enrich_from_beets(
-            idx, music_dir=tmp_path, beets_db=tmp_path / "missing.db"
-        )
         assert updated == 0
         assert total == 1
 

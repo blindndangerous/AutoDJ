@@ -159,6 +159,22 @@ def _path_check(name: str, path: Path, *, writable: bool) -> DoctorCheck:
     return DoctorCheck(name, CheckStatus.FAIL, str(path), "path does not exist")
 
 
+def _beets_db_check(cfg: AutoDJConfig) -> DoctorCheck:
+    """Check that a configured beets database file exists."""
+    path = cfg.library.beets_db
+    if path is None:
+        return DoctorCheck("beets-db", CheckStatus.PASS, "not configured; indexing scans the files")
+    if path.is_file():
+        return DoctorCheck("beets-db", CheckStatus.PASS, str(path))
+    return DoctorCheck(
+        "beets-db",
+        CheckStatus.WARN,
+        str(path),
+        "not found; indexing scans the files instead and enrich fails. "
+        "Fix [library] beets_db or set it to an empty string.",
+    )
+
+
 def _index_check(cfg: AutoDJConfig) -> DoctorCheck:
     """Load the index with the loader ``serve`` uses and report the outcome."""
     index_dir = cfg.index.active_dir
@@ -243,7 +259,9 @@ def _dependency_check() -> DoctorCheck:
     if not ffmpeg:
         issues.append("FFmpeg missing")
         details.append(
-            "Optional ALAC browser transcoding is unavailable; raw ALAC fallback remains available."
+            "Install FFmpeg to index .m4a, .mp4 and .aac files, which are skipped without it, "
+            "and to use stream mode. Optional ALAC browser transcoding is unavailable; "
+            "raw ALAC fallback remains available."
         )
     return DoctorCheck(
         "dependencies",
@@ -387,6 +405,7 @@ def run_doctor(
             _configuration_check(cfg),
             _python_check(python_version),
             _path_check("music-path", cfg.library.music_dir, writable=False),
+            _beets_db_check(cfg),
             _path_check("index-path", cfg.index.index_dir, writable=True),
             _path_check("model-path", cfg.index.model_dir, writable=True),
             _index_check(cfg),

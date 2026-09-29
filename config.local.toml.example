@@ -1,10 +1,11 @@
 # Per-machine overrides, loaded only when a sibling base configuration file is loaded.
 # Copy to config.local.toml; this example remains safe to commit.
 # Only sections and keys from config.toml.example are accepted; any other is an error.
+# Every value here replaces the one in config.toml, so delete the lines you do not need.
 
 [library]
 music_dir = "/srv/music"
-beets_db = "/srv/beets/library.db"
+# beets_db = "/srv/beets/library.db"
 
 [index]
 # Each named index directory <index_dir>/<name>/ holds index-manifest.json, the
@@ -17,7 +18,9 @@ model_dir = "/srv/autodj/models"
 [server]
 host = "127.0.0.1"
 port = 8080
-# Supply access_token through AUTODJ_ACCESS_TOKEN; never commit it here.
+# With lan = true AutoDJ creates the server secret itself.  Without it, a
+# non-loopback host needs access_token here or in AUTODJ_ACCESS_TOKEN; never
+# put a real secret in this example.
 # HTTPS for your own domain on the LAN and through a Cloudflare Tunnel with Cloudflare
 # Access (see "HTTPS with your own domain" in docs/operations.md).  The same as
 # `autodj serve --lan --allowed-host autodj.example.net
