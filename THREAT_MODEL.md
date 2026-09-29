@@ -78,8 +78,8 @@ When `server.access_token` or `AUTODJ_ACCESS_TOKEN` is set:
 - A paired browser can also show the current pairing code (`GET /api/pairing-code`), so any
   paired device can pair another one. The route needs a valid session, answers 409 when pairing
   is off, and never logs the code.
-- "Sign out this browser" (`POST /api/logout`) revokes the calling device as well as deleting its cookie, so
-  a copied cookie stops working at once instead of lasting out its 90 days.
+- "Sign out this browser" (`POST /api/logout`) revokes the calling device as well as deleting its
+  cookie, so a copied cookie stops working at once instead of lasting out its 90 days.
 - The pairing body is limited to 4096 bytes before downstream parsing.
 - Wrong, well-formed codes are counted per client address within each 300-second code window. A
   client that sends ten is locked out until the window ends: `/api/pair` answers 429 with
