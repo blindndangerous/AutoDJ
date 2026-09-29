@@ -17,7 +17,6 @@ import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
@@ -603,18 +602,6 @@ class Player:
         self._eq_low: float = 1.0
         self._eq_mid: float = 1.0
         self._eq_high: float = 1.0
-        # Energy ramp target for the current pick (None = disabled)
-        self._target_energy: float | None = None
-        # Mood-arc state.  Lazy-init: set when the user enables the
-        # arc via config / CLI / web UI so unattended playback ramps
-        # warmup -> peak -> cool over a session-relative window.
-        self._mood_arc: Any = None
-        if cfg.playback.enable_mood_arc:
-            from autodj.mood_arc import make_default_arc
-
-            self._mood_arc = make_default_arc(
-                duration_hours=cfg.playback.mood_arc_hours,
-            )
         # DJ meta cache — initialised lazily on first use so tests with
         # mock configs don't trip on the cache load.
         from autodj.dj_meta import DjMetaCache as _DjMetaCache
@@ -1337,31 +1324,6 @@ class Player:
         except SimilarityError:
             return None
 
-    def _resolve_bpm_target(self, track_number: int) -> tuple[float | None, float, float | None]:
-        """Pick the active BPM/energy target (preset > mood arc > daypart)."""
-        target_energy = self._target_energy
-        if self._preset is not None:
-            return (
-                self._preset.target_bpm(track_number),
-                self._preset.bpm_weight,
-                target_energy,
-            )
-        if self._cfg.playback.enable_mood_arc and self._mood_arc:
-            from autodj.mood_arc import current_arc_target
-
-            target = current_arc_target(self._mood_arc)
-            return (
-                target.target_bpm,
-                target.bpm_weight,
-                target.target_energy if target_energy is None else target_energy,
-            )
-        if self._cfg.playback.enable_daypart:
-            from autodj.daypart import daypart_target
-
-            bpm, weight, energy = daypart_target(datetime.now().hour)
-            return (bpm, weight, energy if target_energy is None else target_energy)
-        return (None, 0.2, target_energy)
-
     def _resolve_query_path(self, current_path: str) -> tuple[str, str]:
         """Choose the query path and its pick mode (anchor / smart-shuffle / similarity)."""
         if self._anchor_to_seed and self._seed_path:
@@ -1420,7 +1382,9 @@ class Player:
         if discovery is not None:
             return discovery, "discovery"
 
-        target_bpm, bpm_weight, target_energy = self._resolve_bpm_target(context.track_number)
+        preset = self._preset
+        target_bpm = preset.target_bpm(context.track_number) if preset else None
+        bpm_weight = preset.bpm_weight if preset else 0.2
         n_candidates = 50 if (target_bpm is not None or self._bpm_range is not None) else 30
         genre_filter = self._preset.genres if self._preset and self._preset.genres else None
         harmonic_mode = self._cfg.djmix.harmonic_mode
@@ -1437,7 +1401,6 @@ class Player:
             "invert": self._smart_shuffle,
             "harmonic_only": harmonic_only,
             "harmonic_mode": harmonic_mode,
-            "target_energy": target_energy,
             "excluded_artists": context.artists,
             "excluded_albums": context.albums,
             "excluded_titles": context.titles,

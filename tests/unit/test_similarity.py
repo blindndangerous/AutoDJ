@@ -301,18 +301,6 @@ class TestFindNext:
                 bpm_range=(200.0, 220.0),
             )
 
-    def test_target_energy_rerank(self) -> None:
-        sim, _ = _make_similarity_index(8)
-        for i, e in enumerate(sim.entries):
-            e.energy = 0.1 * i
-        result = sim.find_next_for_path(
-            current_path=sim.entries[0].path,
-            recently_played=deque([sim.entries[0].path]),
-            n_candidates=8,
-            target_energy=0.6,
-        )
-        assert isinstance(result, IndexEntry)
-
     def test_harmonic_only_filter(self) -> None:
         sim, _ = _make_similarity_index(6)
         for e in sim.entries:
@@ -933,22 +921,6 @@ class TestBpmReranking:
         )
         assert isinstance(result, IndexEntry)
 
-    def test_energy_only_rerank_emits_clean_debug_log(self, caplog) -> None:
-        import logging
-
-        sim, _ = _make_similarity_index(5)
-        entries = sim.entries_snapshot()
-
-        with caplog.at_level(logging.DEBUG, logger="autodj.similarity"):
-            result = sim.find_next_for_path(
-                entries[0].path,
-                deque([entries[0].path]),
-                target_energy=0.5,
-            )
-
-        assert isinstance(result, IndexEntry)
-        assert any("energy re-ranked" in message for message in caplog.messages)
-
 
 def test_no_candidates_error_names_every_active_hard_filter() -> None:
     sim, _ = _make_similarity_index(6)
@@ -1134,19 +1106,6 @@ class TestPickTopKWiring:
         )
         # Strict mode allows only the same key+mode as the seed.
         assert (result.key, result.mode) == (0, 1)
-
-    def test_target_energy_zero_energy_entry(self) -> None:
-        """Re-rank path: candidates with energy <= 0 fall through e_score=0 branch."""
-        sim, _ = _make_similarity_index(8)
-        for i, e in enumerate(sim.entries):
-            e.energy = 0.0 if i < 4 else 0.1
-        result = sim.find_next_for_path(
-            current_path=sim.entries[0].path,
-            recently_played=deque([sim.entries[0].path]),
-            n_candidates=8,
-            target_energy=0.1,
-        )
-        assert isinstance(result, IndexEntry)
 
     def test_top_k_variety_with_bpm_rerank(self) -> None:
         sim, _ = _make_similarity_index(20)

@@ -442,9 +442,6 @@ class ProfileSaveBody(BaseModel):
     smart_shuffle: bool | None = None
     pure_shuffle: bool | None = None
     anchor_to_seed: bool | None = None
-    enable_daypart: bool | None = None
-    enable_mood_arc: bool | None = None
-    mood_arc_hours: FiniteFloat | None = None
     liners_enabled: bool | None = None
     liners_pick_mode: str | None = None
 

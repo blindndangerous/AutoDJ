@@ -58,11 +58,6 @@ class TestNonFiniteRejected:
         assert resp.status_code == 422
         _assert_status_healthy(client)
 
-    def test_mood_arc_hours(self, client, token: str) -> None:
-        resp = _post_raw(client, "/api/playback-settings", f'{{"mood_arc_hours": {token}}}')
-        assert resp.status_code == 422
-        _assert_status_healthy(client)
-
     def test_liners_duck_db(self, client, token: str) -> None:
         resp = _post_raw(client, "/api/playback-settings", f'{{"liners_duck_db": {token}}}')
         assert resp.status_code == 422

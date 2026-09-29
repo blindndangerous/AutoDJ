@@ -361,36 +361,17 @@ class SimilarityIndex:
             logger.info("Expanding candidate search from %d to %d tracks", k, next_k)
             k = next_k
 
-    @staticmethod
-    def _energy_score(entry: IndexEntry, target_energy: float) -> float:
-        """Gaussian energy similarity (sigma=0.15); 0.0 when entry energy unknown."""
-        if entry.energy <= 0:
-            return 0.0
-        diff = abs(entry.energy - target_energy) / 0.15
-        return float(np.exp(-0.5 * diff * diff))
-
     def _rerank(
         self,
         candidates: list[tuple[float, IndexEntry]],
-        target_bpm: float | None,
+        target_bpm: float,
         bpm_weight: float,
-        target_energy: float | None,
-        energy_weight: float,
     ) -> list[tuple[float, IndexEntry]]:
-        """Blend cosine + BPM + energy scores; return the rescored list, score-descending."""
-        cosine_w = max(
-            0.0,
-            1.0
-            - (bpm_weight if target_bpm is not None else 0.0)
-            - (energy_weight if target_energy is not None else 0.0),
-        )
+        """Blend cosine and BPM scores; return the rescored list, score-descending."""
+        cosine_w = max(0.0, 1.0 - bpm_weight)
         out: list[tuple[float, IndexEntry]] = []
         for cosine_score, entry in candidates:
-            blended = cosine_score * cosine_w
-            if target_bpm is not None:
-                blended += _bpm_score(entry.bpm, target_bpm) * bpm_weight
-            if target_energy is not None:
-                blended += self._energy_score(entry, target_energy) * energy_weight
+            blended = cosine_score * cosine_w + _bpm_score(entry.bpm, target_bpm) * bpm_weight
             out.append((blended, entry))
         out.sort(key=lambda x: x[0], reverse=True)
         return out
@@ -407,8 +388,6 @@ class SimilarityIndex:
         invert: bool = False,
         harmonic_only: bool = False,
         harmonic_mode: str = "compatible",
-        target_energy: float | None = None,
-        energy_weight: float = 0.15,
         excluded_artists: set[str] | None = None,
         excluded_albums: set[str] | None = None,
         excluded_titles: set[str] | None = None,
@@ -536,34 +515,20 @@ class SimilarityIndex:
                 logger.debug("Smart-shuffle next: %s", best.display_name)
                 return self._public_entry(best)
 
-            if target_bpm is None and target_energy is None:
+            if target_bpm is None:
                 candidates.sort(key=lambda x: x[0], reverse=True)
                 best = _softmax_pick(candidates, pick_top_k, pick_temperature)
                 logger.debug("Next track: %s", best.display_name)
                 return self._public_entry(best)
 
-            reranked = self._rerank(
-                candidates,
-                target_bpm,
-                bpm_weight,
-                target_energy,
-                energy_weight,
-            )
+            reranked = self._rerank(candidates, target_bpm, bpm_weight)
             best = _softmax_pick(reranked, pick_top_k, pick_temperature)
-            if target_bpm is not None:
-                logger.debug(
-                    "Next track (BPM re-ranked): %s (bpm=%.0f, target=%.0f)",
-                    best.display_name,
-                    best.bpm,
-                    target_bpm,
-                )
-            else:
-                logger.debug(
-                    "Next track (energy re-ranked): %s (energy=%.2f, target=%.2f)",
-                    best.display_name,
-                    best.energy,
-                    target_energy,
-                )
+            logger.debug(
+                "Next track (BPM re-ranked): %s (bpm=%.0f, target=%.0f)",
+                best.display_name,
+                best.bpm,
+                target_bpm,
+            )
             return self._public_entry(best)
 
     def find_distant(

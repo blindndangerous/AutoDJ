@@ -76,9 +76,6 @@ class ProfileSnapshot:
         smart_shuffle: Smart-shuffle toggle.
         pure_shuffle: Pure-shuffle toggle.
         anchor_to_seed: Anchor-to-seed toggle.
-        enable_daypart: Daypart toggle.
-        enable_mood_arc: Mood-arc toggle.
-        mood_arc_hours: Mood-arc duration.
         liners_enabled: Voice liner master toggle.
         liners_pick_mode: Liner rotation mode.
     """
@@ -98,9 +95,6 @@ class ProfileSnapshot:
     smart_shuffle: bool | None = None
     pure_shuffle: bool | None = None
     anchor_to_seed: bool | None = None
-    enable_daypart: bool | None = None
-    enable_mood_arc: bool | None = None
-    mood_arc_hours: float | None = None
     liners_enabled: bool | None = None
     liners_pick_mode: str | None = None
 

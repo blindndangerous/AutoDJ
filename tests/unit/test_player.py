@@ -454,28 +454,6 @@ class TestPlayerPickNext:
         assert isinstance(result, IndexEntry)
         preset.target_bpm.assert_called_once()
 
-    def test_mood_arc_target_used(self) -> None:
-        """enable_mood_arc=True -> picker pulls a target from current_arc_target."""
-        player = self._make_player(n=10)
-        player._cfg.playback.enable_mood_arc = True
-        # Provide a real-ish mood arc shape.  current_arc_target reads
-        # ``start`` + ``hours`` to interpolate; any populated arc is fine.
-        from autodj.mood_arc import MoodArc
-
-        player._mood_arc = MoodArc(start_time_s=0.0, duration_s=3 * 3600.0)
-        current = player._sim.entries[0]
-        result = player._pick_next(current)
-        assert isinstance(result, IndexEntry)
-
-    def test_daypart_target_used(self) -> None:
-        """enable_daypart=True (and no preset / mood arc) pulls a daypart target."""
-        player = self._make_player(n=10)
-        player._cfg.playback.enable_daypart = True
-        player._cfg.playback.enable_mood_arc = False
-        current = player._sim.entries[0]
-        result = player._pick_next(current)
-        assert isinstance(result, IndexEntry)
-
     def test_pure_shuffle_picks_from_pool(self) -> None:
         """Pure shuffle ignores similarity and picks any non-recent track."""
         player = self._make_player(n=8, pure_shuffle=True)

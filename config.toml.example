@@ -209,16 +209,6 @@ key_prefer_flats = false
 # of the device name, as listed by `autodj list-devices`.
 # audio_device = "Speakers"
 
-# Wall-clock daypart targeting — bias picks toward the BPM and energy of the
-# current built-in daypart (morning / midday / afternoon / evening / night).
-# Only applied while no explicit preset is active.
-enable_daypart = false
-
-# Set-relative mood arc (warm up, peak, cool down).  Takes priority over
-# daypart while a session is running.
-enable_mood_arc = false
-mood_arc_hours = 3.0          # length of one arc before it loops
-
 # Merge cue points from Mixxx, Rekordbox (Library.xml export) and Traktor
 # libraries, and from the Serato tags in each audio file, with the ones
 # AutoDJ detects itself, whenever a track is analysed: by `autodj index`,

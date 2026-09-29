@@ -1132,9 +1132,6 @@ class PlayerBridge:
                 "key_notation": pb.key_notation,
                 "key_prefer_flats": bool(pb.key_prefer_flats),
                 "show_lyrics": pb.show_lyrics,
-                "enable_daypart": pb.enable_daypart,
-                "enable_mood_arc": pb.enable_mood_arc,
-                "mood_arc_hours": pb.mood_arc_hours,
                 "import_external_cues": pb.import_external_cues,
                 "beat_sync_fx": bool(pb.beat_sync_fx),
                 "no_repeat_window": int(pb.no_repeat_window),
@@ -1258,16 +1255,6 @@ class PlayerBridge:
             from autodj.player import apply_repeat_windows
 
             apply_repeat_windows(player)
-        if "enable_mood_arc" in values or (
-            "mood_arc_hours" in values and cfg.playback.enable_mood_arc
-        ):
-            from autodj.mood_arc import make_default_arc
-
-            player._mood_arc = (
-                make_default_arc(duration_hours=cfg.playback.mood_arc_hours)
-                if cfg.playback.enable_mood_arc
-                else None
-            )
 
     def set_bpm_range(self, lo: float | None, hi: float | None) -> None:
         """Set the hard BPM filter; pass both null to clear."""

@@ -135,9 +135,6 @@ class PlaybackSettingsBody(BaseModel):
     key_notation: str | None = None
     key_prefer_flats: bool | None = None
     show_lyrics: bool | None = None
-    enable_daypart: bool | None = None
-    enable_mood_arc: bool | None = None
-    mood_arc_hours: Annotated[float, Field(ge=0.25, allow_inf_nan=False)] | None = None
     import_external_cues: bool | None = None
     beat_sync_fx: bool | None = None
     key_sync_fx: bool | None = None
