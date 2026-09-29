@@ -1145,6 +1145,7 @@ class PlayerBridge:
                 "hi": bpm_range[1] if bpm_range else None,
             },
             "discovery_every": p._discovery_every,
+            "discovery_enabled": p._state.discovery_enabled,
         }
 
     def set_preset(self, name: str | None) -> None:

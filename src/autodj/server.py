@@ -1913,8 +1913,10 @@ def create_app(
 
     @app.post("/api/discovery/toggle")
     async def api_discovery_toggle() -> dict[str, bool]:
-        """Turn discovery on or off for this run (the Now Playing Discovery button)."""
-        return {"discovery_enabled": bridge.toggle_discovery()}
+        """Turn discovery on or off and remember it (the Now Playing Discovery button)."""
+        enabled = bridge.toggle_discovery()
+        bridge.save_persistent_state()
+        return {"discovery_enabled": enabled}
 
     # ------------------------------------------------------------------
     # 3-band EQ

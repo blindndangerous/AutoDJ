@@ -2,7 +2,7 @@
 
 Settings the user changes in the **browser** — preset, transition
 effect, DJ-mix options, playback settings, volume and mute, stream
-bitrate, BPM range, discovery rate — are written to
+bitrate, BPM range, discovery rate and whether discovery is on — are written to
 ``<index_dir>/<name>/web_state.json`` so the next `autodj serve` boot
 restores them.
 
@@ -64,7 +64,16 @@ _LINER_TRIGGERS = frozenset(
     }
 )
 _TOP_LEVEL_FIELDS = frozenset(
-    {"schema_version", "preset", "transition", "djmix", "playback", "bpm_range", "discovery_every"}
+    {
+        "schema_version",
+        "preset",
+        "transition",
+        "djmix",
+        "playback",
+        "bpm_range",
+        "discovery_every",
+        "discovery_enabled",
+    }
 )
 _INVALID = object()
 _STRICT_BOOL = TypeAdapter(bool)
@@ -216,6 +225,16 @@ def load_into_bridge(bridge: PlayerBridge, index_dir: Path | None) -> None:
             # The same setter as the route, so a saved rate also turns the
             # Discovery button on and the rate fires after a restart.
             bridge.set_discovery_every(every)
+    if "discovery_enabled" in data:
+        # The Discovery button has no request body, so like ``is_muted`` the
+        # saved value only has to be a real Boolean.  It stays off without a rate.
+        try:
+            enabled = _STRICT_BOOL.validate_python(data["discovery_enabled"], strict=True)
+        except ValidationError:
+            _warn("discovery_enabled", data["discovery_enabled"])
+        else:
+            player = bridge.player
+            player._state.discovery_enabled = enabled and player._discovery_every is not None
 
 
 def save_from_player(settings: dict, index_dir: Path | None) -> None:
@@ -245,6 +264,7 @@ def save_from_player(settings: dict, index_dir: Path | None) -> None:
         "playback": persisted_playback,
         "bpm_range": settings.get("bpm_range", {"lo": None, "hi": None}),
         "discovery_every": settings.get("discovery_every"),
+        "discovery_enabled": settings.get("discovery_enabled", False),
     }
     try:
         path.parent.mkdir(parents=True, exist_ok=True)

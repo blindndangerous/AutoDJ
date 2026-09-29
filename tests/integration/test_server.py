@@ -15,6 +15,7 @@ budget.  Shared fixtures ``client`` / ``bridge`` come from
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -1066,6 +1067,17 @@ class TestDiscoveryToggle:
         assert client.post("/api/discovery/toggle").json() == {"discovery_enabled": True}
         assert bridge.player._state.discovery_enabled is True
         assert client.post("/api/discovery/toggle").json() == {"discovery_enabled": False}
+
+    def test_toggle_route_saves_the_button_state(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        bridge.player._cfg.index.active_dir = tmp_path
+        client = TestClient(create_app(bridge))
+        client.post("/api/discovery", json={"every": 7})
+        client.post("/api/discovery/toggle")
+        saved = json.loads((tmp_path / "web_state.json").read_text(encoding="utf-8"))
+        assert saved["discovery_every"] == 7
+        assert saved["discovery_enabled"] is False
 
 
 # ---------------------------------------------------------------------------

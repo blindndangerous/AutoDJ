@@ -195,6 +195,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Mixxx cue import uses each track's own sample rate, so cues on 48 kHz tracks no longer land
   about 9% late. Mixxx outro cues now count as outro markers (they were read as intro markers),
   and Mixxx's hidden "audible sound" range is no longer imported as an outro.
+- Discovery stays off after a restart when you turned it off with the Discovery button. AutoDJ
+  saved only the discovery rate, so a saved rate turned discovery back on every time it started.
 - Crossfade seconds set to 0 now cuts from one track to the next in the web page too, as it
   already did in the server mix. The page used to play a 3 second fade instead. With 0 there is no
   transition effect either. In the Full intro and outro and Outro fade modes, tracks with detected

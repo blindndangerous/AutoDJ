@@ -127,6 +127,7 @@ def _warnings(caplog: pytest.LogCaptureFixture, field: str) -> int:
         ({"bpm_range": None}, "bpm_range"),
         ({"bpm_range": {"lo": 90.0, "hi": float("inf")}}, "bpm_range"),
         ({"discovery_every": "invalid"}, "discovery_every"),
+        ({"discovery_enabled": "false"}, "discovery_enabled"),
         ({"quantum_crossfade": True}, "quantum_crossfade"),
     ],
 )
@@ -285,6 +286,19 @@ class TestLoadInto:
         assert p._discovery_every == 7
         assert p._state.discovery_enabled is True
 
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_discovery_button_state_survives_a_restart(self, tmp_path, enabled) -> None:
+        p1 = _make_player()
+        bridge = PlayerBridge(p1, p1._sim)
+        bridge.set_discovery_every(7)
+        if not enabled:
+            bridge.toggle_discovery()
+        save_from_player(bridge.get_settings(), tmp_path)
+        p2 = _make_player()
+        _load(p2, tmp_path)
+        assert p2._discovery_every == 7
+        assert p2._state.discovery_enabled is enabled
+
     def test_load_restores_a_saved_preset(self, tmp_path) -> None:
         from autodj.presets import BUILTIN_PRESETS
 
@@ -399,6 +413,7 @@ class TestRoundTrip:
             "playback",
             "bpm_range",
             "discovery_every",
+            "discovery_enabled",
         }
         assert set(saved["djmix"]) == {
             "harmonic_mode",
