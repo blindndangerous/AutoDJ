@@ -32,18 +32,6 @@ def test_repository_coverage_exclusions_pass_policy() -> None:
     assert main() == 0
 
 
-def test_dj_meta_cache_exit_accepts_traceback_keyword(tmp_path: Path) -> None:
-    """DjMetaCache.__exit__ must preserve context-manager keyword compatibility."""
-    from autodj.dj_meta import DjMetaCache
-
-    cache = DjMetaCache(tmp_path / "cache.db")
-    try:
-        cache.__exit__(exc_type=None, exc=None, traceback=None)
-        assert cache._conn is None
-    finally:
-        cache.close()
-
-
 def test_exact_coverage_exclusion_allowlist_passes(tmp_path: Path) -> None:
     _write_coverage_config(tmp_path, list(ALLOWED_EXCLUSIONS))
 

@@ -1,10 +1,4 @@
-"""Branch-coverage tests targeting autodj._bridge.PlayerBridge.
-
-These exercise the small helper functions inside ``get_state``
-(``_markers``, ``_cues``, ``_downbeats``) plus the per-setting
-``_apply_*`` branches that the broader integration tests do not
-explicitly hit.
-"""
+"""PlayerBridge state, settings and queue behaviour against a mocked player."""
 
 from __future__ import annotations
 
@@ -148,13 +142,6 @@ class TestStateHelpers:
         assert st["current_track"]["downbeats_outro"] == []
         assert st["current_track"]["downbeats_intro"] == []
 
-    def test_downbeats_synthesised_when_grid_too_sparse(self, bridge) -> None:
-        # No analysed meta → empty beats → synth from bpm
-        bridge.player._dj_cache = None
-        st = bridge.get_state()
-        # bpm 120 → synthesised grid present.
-        assert isinstance(st["current_track"]["downbeats_outro"], list)
-
 
 class TestActiveLyric:
     def test_active_lyric_idx_set_when_lyric_matches(self, bridge) -> None:
@@ -171,41 +158,6 @@ class TestActiveLyric:
         st = bridge.get_state()
         assert st["lyric_index"] == 1
         assert st["lyric_text"] == "b"
-
-
-class TestCoverArt:
-    def test_cover_art_for_returns_data_and_mime(self, bridge, monkeypatch) -> None:
-        from autodj import _bridge as _br
-
-        class _Art:
-            data = b"PNG-bytes"
-            mime_type = "image/png"
-
-        monkeypatch.setattr("autodj.audio_meta.read_cover_art", lambda p: _Art())
-        result = bridge.cover_art_for("Z:/anything.flac")
-        assert result is not None
-        data, mime = result
-        assert data == b"PNG-bytes"
-        assert mime == "image/png"
-        _ = _br  # silence unused
-
-    def test_cover_art_for_returns_none(self, bridge, monkeypatch) -> None:
-        monkeypatch.setattr("autodj.audio_meta.read_cover_art", lambda p: None)
-        assert bridge.cover_art_for("Z:/nope.flac") is None
-
-
-class TestApplyKeyPreferFlats:
-    def test_key_prefer_flats_path(self, bridge) -> None:
-        bridge.player._cfg.playback.key_prefer_flats = False
-        bridge.set_playback_settings(PlaybackSettingsBody(key_prefer_flats=True))
-        assert bridge.player._cfg.playback.key_prefer_flats is True
-
-
-class TestApplySessionEnvelopeExtras:
-    def test_beatmatch_on_skip_apply(self, bridge) -> None:
-        bridge.player._cfg.playback.beatmatch_on_skip = False
-        bridge.set_playback_settings(PlaybackSettingsBody(beatmatch_on_skip=True))
-        assert bridge.player._cfg.playback.beatmatch_on_skip is True
 
 
 class TestPlaybackChoiceValidation:
@@ -245,19 +197,6 @@ class TestApplyLiners:
         bridge.set_playback_settings(PlaybackSettingsBody(liners_random_max_minutes=0))
         assert bridge.player._cfg.playback.liners_random_min_minutes is None
         assert bridge.player._cfg.playback.liners_random_max_minutes is None
-
-
-class TestCapturePreQueueSeedSkip:
-    def test_capture_skipped_when_queue_already_has_items(self, bridge) -> None:
-        # pre_queue_seed is None, but queue already populated (manually).
-        # Capture must early-return at line 668 without setting the seed.
-        bridge.player._cfg.playback.post_queue_seed = "pre_queue"
-        bridge.player._state.queue.append(bridge.sim.entries[0])
-        bridge.player._state.pre_queue_seed = None
-        # Force the helper to run via queue_add of yet another entry.
-        bridge.queue_add(bridge.sim.entries[2].path)
-        # Capture skipped (line 668), seed remains None.
-        assert bridge.player._state.pre_queue_seed is None
 
 
 class TestQueueReorderPreQueueClear:

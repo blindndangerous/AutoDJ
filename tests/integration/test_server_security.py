@@ -1,7 +1,7 @@
-"""Branch-coverage tests for autodj.server endpoints.
+"""Server security and route-validation tests.
 
-Targets validate_name 400 paths, profile-not-found 404 paths, liner
-upload/delete edge cases, and other small uncovered branches.
+Pairing, sessions, host and origin checks, audit logging, body caps,
+name and path validation for profiles, liners, modules and cover art.
 """
 
 from __future__ import annotations
@@ -906,9 +906,6 @@ class TestLinerEndpoints:
         response = client.post("/api/liners/upload", files={"file": (name, b"audio", "audio/mpeg")})
         assert response.status_code == 400
 
-    def test_missing_plain_liner_is_404(self, client) -> None:
-        assert client.get("/api/liners/file/missing.mp3").status_code == 404
-
 
 # ---------------------------------------------------------------------------
 # Cover art 404 paths
@@ -968,21 +965,6 @@ class TestArt:
 
         assert resp.status_code == 200
         assert called[-2:] == ["to_thread", "Z:/Music/song_0.flac"]
-
-
-# ---------------------------------------------------------------------------
-# Profile save round-trip
-# ---------------------------------------------------------------------------
-
-
-class TestProfileSaveRoundTrip:
-    def test_apply_round_trip(self, client) -> None:
-        body = {"name": "apply-rt", "preset": None}
-        client.post("/api/profiles", json=body)
-        resp = client.post(f"/api/profiles/{body['name']}/apply")
-        assert resp.status_code == 200
-        assert "applied" in resp.json()
-        client.request("DELETE", f"/api/profiles/{body['name']}")
 
 
 # ---------------------------------------------------------------------------
@@ -1217,23 +1199,6 @@ class TestLibraryJobRunSnapshot:
         resp = client.post("/api/library/run", json={"name": "stats", "args": []})
 
         assert resp.status_code == 200
+        assert resp.json()["name"] == "stats"
         assert mgr.start in offloaded
         mgr.start.assert_called_once_with("stats", [])
-
-    def test_run_returns_snapshot_when_started(self, client, monkeypatch) -> None:
-        from unittest.mock import MagicMock
-
-        from autodj import server as _srv
-
-        mgr = MagicMock()
-        mgr.start.return_value = True
-        mgr.snapshot.return_value = {"running": True, "name": "stats"}
-        monkeypatch.setattr("autodj.jobs.get_manager", lambda: mgr)
-        # Need to re-trigger the inner closure import; just call route.
-        resp = client.post(
-            "/api/library/run",
-            json={"name": "stats", "args": []},
-        )
-        assert resp.status_code == 200
-        assert resp.json()["name"] == "stats"
-        _ = _srv

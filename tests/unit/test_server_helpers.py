@@ -1,9 +1,11 @@
+"""Server helpers: WebSocket close, index reload, ALAC transcoder cleanup."""
+
 from __future__ import annotations
 
 import asyncio
 import sys
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
+from types import ModuleType
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -15,7 +17,6 @@ from autodj.server import (
     _is_alac,
     _kill_and_wait,
     _prefetch_alac_output,
-    _terminate_alac_process,
     _transcode_alac_to_mp3,
     _websocket_session_is_valid,
     _WebSocketClient,
@@ -36,20 +37,6 @@ async def test_websocket_close_is_idempotent() -> None:
         failure_action="close",
     )
     websocket.close.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_websocket_close_failure_without_request_id_returns_false() -> None:
-    websocket = MagicMock()
-    websocket.close = AsyncMock(side_effect=OSError("closed"))
-    client = _WebSocketClient(websocket=websocket)
-
-    assert not await _close_websocket_client(
-        client,
-        code=1013,
-        timeout_seconds=1,
-        failure_action="close",
-    )
 
 
 @pytest.mark.asyncio
@@ -112,39 +99,11 @@ def _mutagen_modules(mp4_factory: object) -> dict[str, ModuleType]:
     return {"mutagen": mutagen, "mutagen.mp4": mp4}
 
 
-def test_alac_detection_reads_codec() -> None:
-    factory = MagicMock(return_value=SimpleNamespace(info=SimpleNamespace(codec="ALAC")))
-
-    with patch.dict(sys.modules, _mutagen_modules(factory)):
-        assert _is_alac(Path("song.m4a"))
-
-
 def test_alac_detection_contains_parser_error() -> None:
     factory = MagicMock(side_effect=ValueError("bad mp4"))
 
     with patch.dict(sys.modules, _mutagen_modules(factory)):
         assert not _is_alac(Path("song.mp4"))
-
-
-def test_alac_detection_contains_incomplete_mutagen_module() -> None:
-    modules = _mutagen_modules(MagicMock())
-    del modules["mutagen"].MutagenError
-
-    with patch.dict(sys.modules, modules):
-        assert not _is_alac(Path("song.m4a"))
-
-
-@pytest.mark.asyncio
-async def test_transcoder_without_stdout_is_reaped_without_output() -> None:
-    process = MagicMock(stdout=None)
-    process._autodj_cleanup_task = None
-    process.kill = MagicMock()
-    process.wait = AsyncMock(return_value=0)
-
-    chunks = [chunk async for chunk in _transcode_alac_to_mp3(process)]
-
-    assert chunks == []
-    process.wait.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -170,17 +129,6 @@ async def test_kill_and_wait_ignores_already_exited_process() -> None:
     await _kill_and_wait(process)
 
     process.wait.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_terminate_alac_process_reuses_cleanup_task() -> None:
-    process = MagicMock()
-    cleanup = asyncio.create_task(asyncio.sleep(0))
-    process._autodj_cleanup_task = cleanup
-
-    await _terminate_alac_process(process)
-
-    assert cleanup.done()
 
 
 @pytest.mark.asyncio

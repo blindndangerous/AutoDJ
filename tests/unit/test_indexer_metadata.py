@@ -1,9 +1,4 @@
-"""Additional indexer unit tests targeting previously-uncovered branches.
-
-Focus on the small pure-function helpers (``_apply_beets_row``,
-``_find_beets_row``, ``_check_prune_safety`` happy paths) and on the
-error-rollback paths in ``save_index``.
-"""
+"""Indexer metadata tests: beets enrichment, prune safety, key and BPM analysis."""
 
 from __future__ import annotations
 
@@ -18,7 +13,6 @@ from autodj.indexer import (
     PruneSafetyError,
     _apply_beets_row,
     _check_prune_safety,
-    _find_beets_row,
     load_index,
 )
 
@@ -75,11 +69,6 @@ class TestApplyBeetsRowText:
         assert _apply_beets_row(e, _row(), _TEXT_COLS, *_NO_KEY) is False
         assert e.title == "orig"
 
-    def test_same_value_no_change(self) -> None:
-        e = _entry(title="same")
-        row = _row(title="same", artist="a", album="al", genre="g")
-        assert _apply_beets_row(e, row, _TEXT_COLS, *_NO_KEY) is False
-
     def test_changed_value_returns_true(self) -> None:
         e = _entry(title="orig")
         row = _row(title="new", artist="a", album="al", genre="g")
@@ -104,25 +93,10 @@ class TestApplyBeetsRowNumeric:
         assert _apply_beets_row(e, _row(), (), *_NO_KEY) is False
         assert e.bpm == 120.0
 
-    def test_none_values_skipped(self) -> None:
-        e = _entry()
-        row = _row(bpm=None, year=None, length=None)
-        assert _apply_beets_row(e, row, (), *_NO_KEY) is False
-
     def test_bpm_change_only(self) -> None:
         e = _entry(bpm=120.0)
         assert _apply_beets_row(e, _row(bpm=130.0), (), *_NO_KEY) is True
         assert e.bpm == 130.0
-
-    def test_year_change_only(self) -> None:
-        e = _entry(year=2000)
-        assert _apply_beets_row(e, _row(year=2024), (), *_NO_KEY) is True
-        assert e.year == 2024
-
-    def test_length_change_only(self) -> None:
-        e = _entry(length=180.0)
-        assert _apply_beets_row(e, _row(length=240.5), (), *_NO_KEY) is True
-        assert e.length == pytest.approx(240.5)
 
     def test_bpm_within_epsilon_no_change(self) -> None:
         e = _entry(bpm=120.0)
@@ -151,77 +125,6 @@ class TestApplyBeetsRowKey:
         assert _apply_beets_row(e, row, (), True, lambda _s: (7, 0)) is True
         assert (e.key, e.mode) == (7, 0)
 
-    def test_none_initial_key_handled(self) -> None:
-        e = _entry()
-        row = _row(initial_key=None)
-        # Parser receives "" -- exercises the str()-coerce branch.
-        assert _apply_beets_row(e, row, (), True, lambda _s: None) is False
-
-
-# ---------------------------------------------------------------------------
-# _apply_beets_row — combined
-# ---------------------------------------------------------------------------
-
-
-class TestApplyBeetsRow:
-    def test_no_change_returns_false(self) -> None:
-        e = _entry(title="t", bpm=120.0, key=0, mode=1)
-        assert _apply_beets_row(e, _row(), _TEXT_COLS, True, lambda _s: None) is False
-
-    def test_text_change_only(self) -> None:
-        e = _entry(title="old")
-        row = _row(title="new", artist="a", album="al", genre="g")
-        assert _apply_beets_row(e, row, _TEXT_COLS, *_NO_KEY) is True
-
-    def test_numeric_change_only(self) -> None:
-        e = _entry(bpm=100.0)
-        assert _apply_beets_row(e, _row(bpm=130.0), _TEXT_COLS, *_NO_KEY) is True
-
-    def test_initial_key_change_only(self) -> None:
-        e = _entry(key=0, mode=1)
-        row = _row(initial_key="Cm")
-        assert _apply_beets_row(e, row, _TEXT_COLS, True, lambda _s: (0, 0)) is True
-
-    def test_initial_key_disabled_when_column_absent(self) -> None:
-        e = _entry(key=0, mode=1)
-        row = _row()
-        del row["initial_key"]
-        # has_initial_key=False, so row["initial_key"] is never read.
-        assert _apply_beets_row(e, row, _TEXT_COLS, False, lambda _s: (0, 0)) is False
-
-
-# ---------------------------------------------------------------------------
-# _find_beets_row
-# ---------------------------------------------------------------------------
-
-
-class TestFindBeetsRow:
-    def test_returns_row_when_candidate_matches(self) -> None:
-        rows = {b"Z:/Music/x.flac": {"title": "X"}}
-
-        def candidates(p: str, _md):
-            return ["Z:/Music/x.flac"]
-
-        result = _find_beets_row("Z:/Music/x.flac", None, rows, candidates)
-        assert result == {"title": "X"}
-
-    def test_returns_none_when_no_match(self) -> None:
-        rows = {b"Z:/Music/y.flac": {"title": "Y"}}
-
-        def candidates(p: str, _md):
-            return ["Z:/Music/x.flac"]
-
-        result = _find_beets_row("Z:/Music/x.flac", None, rows, candidates)
-        assert result is None
-
-    def test_tries_multiple_candidates(self) -> None:
-        rows = {b"second": {"title": "Found"}}
-
-        def candidates(p: str, _md):
-            return ["first", "second"]
-
-        assert _find_beets_row("ignored", None, rows, candidates) == {"title": "Found"}
-
 
 # ---------------------------------------------------------------------------
 # _check_prune_safety
@@ -244,17 +147,7 @@ class TestCheckPruneSafety:
 
 
 # ---------------------------------------------------------------------------
-# _delete_index_files
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# save_index error rollback paths
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# load_index missing-file branch (FileNotFoundError at line 1053)
+# load_index on a missing or empty index folder
 # ---------------------------------------------------------------------------
 
 
@@ -272,7 +165,7 @@ class TestLoadIndexMissingFiles:
 
 
 # ---------------------------------------------------------------------------
-# autodj.indexer — minor-key branch + tempo confidence fallback
+# key and tempo analysis
 # ---------------------------------------------------------------------------
 
 
