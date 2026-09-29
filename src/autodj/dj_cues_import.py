@@ -612,9 +612,9 @@ def _default_search_paths(home: Path) -> list[Path]:
 def _normalise_keys(by_path: dict[str, list[Cue]]) -> dict[str, list[Cue]]:
     """Normalise importer output keys to match index path strings.
 
-    The FAISS index stores ``str(Path(absolute_path))`` -- native OS
-    separators (``\\`` on Windows, ``/`` on POSIX) -- whereas the DJ-
-    software importers emit forward-slashed paths regardless of host.
+    Tracks are looked up by their runtime ``str(Path(absolute_path))`` --
+    native OS separators (``\\`` on Windows, ``/`` on POSIX) -- whereas the
+    DJ-software importers emit forward-slashed paths regardless of host.
     Without this normalisation, :func:`autodj.indexer.backfill_dj_meta`
     looks up the track path (e.g. ``C:\\music\\track.mp3``) but the dict
     keys are ``C:/music/track.mp3`` and the lookup silently misses.
@@ -632,7 +632,8 @@ def _normalise_keys(by_path: dict[str, list[Cue]]) -> dict[str, list[Cue]]:
             key = raw
         cues.sort(key=lambda c: c.time_s)
         # Two importer entries pointing at the same normalised path
-        # (e.g. mixed case on Windows) get their cue lists concatenated.
+        # (e.g. one written with / and one with \ on Windows) get their
+        # cue lists concatenated.
         out.setdefault(key, []).extend(cues)
     return out
 

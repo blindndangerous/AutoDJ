@@ -12,15 +12,20 @@ commodity hardware, with no external services.
 
 Use FAISS with `IndexFlatIP` over L2-normalised vectors.  This gives
 us exact cosine similarity in a process-local file (`vectors.index`)
-that ships next to the metadata sidecar.
+that ships next to the metadata sidecar. (Superseded in part: each
+index generation is now a `vectors.g<number>.index` and
+`tracks.g<number>.db` pair named by `index-manifest.json`, published
+atomically by `index_manifest.publish_generation`.)
 
 ## Consequences
 
 - One C++ dependency (`faiss-cpu`); pre-built wheels available for
   Linux / macOS / Windows.
 - Exact search; no recall vs latency tuning needed at this scale.
-- Switching to ANN later requires only changing the index type, not
-  the vector storage layout.
+- Switching to ANN later keeps the vector storage layout. (Superseded:
+  the search code now relies on a flat index, reading vectors back with
+  `reconstruct()` and asking some searches for every vector, so ANN would
+  need those paths rewritten too.)
 - Index files are atomic-rename safe; partial writes can't corrupt
   the on-disk index (see `indexer.save_index`).
 

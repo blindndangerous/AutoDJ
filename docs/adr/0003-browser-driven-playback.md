@@ -2,7 +2,8 @@
 
 Date: 2026-05-05
 Status: Accepted. Superseded in part by [ADR 4](0004-server-mix-bus-and-stream-mode.md):
-the server-side modes and where their playback effects live.
+the server-side modes and where their playback effects live. The `autodj play` command this
+record mentions was removed in 0.19.0; the notes marked "Superseded" below say what holds now.
 
 ## Context
 
@@ -25,11 +26,14 @@ that should play through their own sound card.
 ## Consequences
 
 - The web UI and the CLI `play` loop are now fully decoupled — they
-  never share a soundcard.
+  never share a soundcard. (Superseded: `autodj play` no longer exists,
+  and `serve --server-audio` plays on the host's sound card.)
 - In browser playback, all playback effects (crossfade, transitions,
   volume, device selection) live in the browser's Web Audio graph.
-  `--server-audio` and stream mode apply them on the server mix bus
-  instead (ADR 4).
+  (Superseded, ADR 4: `--server-audio` and stream mode apply crossfades,
+  transitions, EQ and liners on the server mix bus; volume, mute and the
+  output device are applied only in the sound-card output, and stream
+  mode applies no volume.)
 - `AudioContext.setSinkId` is the only working route-changing API
   once Web Audio intercepts the `<audio>` element; the element-level
   `setSinkId` becomes a Firefox-only fallback.
@@ -38,7 +42,7 @@ that should play through their own sound card.
   audio host.
 - The server is no longer a single point of failure for audio
   output; a web-UI page reload doesn't affect a parallel CLI
-  session.
+  session. (Superseded: there is no CLI playback session any more.)
 
 ## Alternatives considered
 

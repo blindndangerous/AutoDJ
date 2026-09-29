@@ -1,6 +1,7 @@
 """Tag, album art, and lyric extraction helpers for AutoDJ.
 
-Wraps :mod:`mutagen` to expose three small APIs used at play time:
+Wraps :mod:`mutagen`.  Among its helpers (tag reading for the indexer,
+plain and embedded lyrics, the ReplayGain multiplier) are:
 
 - :func:`read_replaygain` — return the ReplayGain track-gain (dB) + peak
   embedded in the file (if any), used by the player to normalise loudness
@@ -10,7 +11,7 @@ Wraps :mod:`mutagen` to expose three small APIs used at play time:
 - :func:`load_lrc_for` — return parsed timestamped lyrics from a sibling
   ``.lrc`` file, used by the web UI scrolling-lyrics panel.
 
-All three return ``None`` (or empty list) when the data is missing.  None
+These three return ``None`` (or an empty list) when the data is missing.  None
 of them raise on malformed files — broken tags are treated as "no tag".
 
 Example:
@@ -193,12 +194,13 @@ def replaygain_multiplier(
         target_db: Desired output reference level in dB.  Higher = louder
             output overall.  ``-18.0`` = original ReplayGain reference
             (quiet); ``-14.0`` ≈ Spotify/YouTube reference (default).
-        max_clip_safe_gain: Hard cap on the linear gain so peaks never
-            exceed this fraction of full-scale (default 1.0 = no clipping).
+        max_clip_safe_gain: Caps the gain so the tagged peak times the gain
+            stays at or below this fraction of full scale (default 1.0 =
+            no clipping).  A peak of 0 means no cap.
 
     Returns:
-        A linear gain multiplier in ``(0.0, max_clip_safe_gain]``.
-        ``1.0`` is returned when *rg* is ``None``.
+        A non-negative linear gain multiplier; it can exceed 1.0 when the
+        track is quiet.  ``1.0`` is returned when *rg* is ``None``.
     """
     if rg is None:
         return 1.0

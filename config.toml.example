@@ -79,6 +79,10 @@ index_dir = "index"
 # Directory where the MuQ model checkpoint is cached after download
 model_dir = "models"
 
+# The named index to use, kept in <index_dir>/<name>/.  `--name` on index,
+# prune, enrich, analyse, serve and stats replaces it for that command.
+# name = "default"
+
 # Pause before each track that `autodj index` embeds and that `autodj index` and
 # `autodj analyse` analyse, in milliseconds, to give network drives a rest on
 # long runs.  0 = no pause.
@@ -93,7 +97,9 @@ port = 8080
 # pairing.  Without access_token, a token is created in index_dir/.access-token.
 lan = false
 insecure_lan = false
-# LAN and wildcard binds must set both lists, for example:
+# lan = true fills both lists with this machine's names and addresses, and a
+# single-address host allows itself.  A wildcard host (0.0.0.0 or ::) without
+# lan = true must set both lists, for example:
 # allowed_hosts = ["radio.local"]
 # allowed_origins = ["https://radio.local:8080"]
 session_ttl_seconds = 7776000  # 90 days; revoke paired browsers with `autodj devices`.
@@ -132,8 +138,10 @@ max_listeners = 8
 station_name = "AutoDJ"
 
 [playback]
-# Duration of the crossfade between tracks, in seconds.
-# Set to 0.0 to disable crossfade (instant cuts).
+# Duration of the crossfade between tracks, in seconds.  In the
+# "full_intro_outro" and "outro_fade" modes below, a track with detected
+# markers fades for 1 to 12 s instead.  The server mix treats 0 as a cut;
+# the browser treats 0 as the default 3 s.
 crossfade_seconds = 3.0
 
 # How many recently played tracks to exclude from the next-song candidates.
@@ -164,26 +172,32 @@ prefetch_next_track = true
 # cut atmospheric tracks short on quiet mid-song passages.
 silence_trigger_crossfade = true
 
-# Optional — inject a sonically distant ("discovery") track every N tracks.
-# Press D in the terminal or click the Discovery button in the web UI to toggle.
+# Optional — how often discovery plays a sonically distant track: every N
+# tracks.  Discovery starts off; the Discovery button on the page turns it on
+# and off, and setting the interval under Settings turns it on.
 # discovery_every = 20
 
 # Pro-DJ crossfade: applies a Butterworth high-pass sweep on the outgoing
 # track during the overlap so its bass doesn't clash with the incoming
 # track's bass.  Eliminates muddy "two-kicks-at-once" feel.  Tiny CPU cost.
+# Server mix only (--server-audio, --stream); the browser ignores it.
 crossfade_eq_duck = false
 crossfade_bass_cutoff_hz = 180.0     # frequency below which outgoing track is attenuated
 
-# Fade-in applied to the very first track of a session, in seconds.
+# Browser crossfades: how long the incoming track takes to reach full volume,
+# in seconds, at most the crossfade length.  0 = it starts at full volume.
+# The server mix ignores it.
 fade_in_seconds = 3.0
 
 # How the crossfade lines up with each track's intro_end / outro_start
 # markers from the DJ-meta sidecar:
-#   "full_intro_outro"   incoming intro starts where outgoing outro starts;
-#                        fade length = min(intro, outro), clamped to 12 s
-#   "outro_fade"         fade begins at outro_start, lasts the outro
-#   "fixed_skip_silence" fixed crossfade_seconds, but trims leading and
-#                        trailing silence
+#   "full_intro_outro"   the fade starts at the outgoing outro_start and the
+#                        incoming track enters at its intro_end (its quiet
+#                        intro is skipped); fade length = min(intro, outro),
+#                        clamped to 1-12 s
+#   "outro_fade"         fade begins at outro_start, lasts the outro (1-12 s)
+#   "fixed_skip_silence" fixed crossfade_seconds at the track end; the
+#                        incoming track enters at its intro_end
 #   "fixed"              plain fixed crossfade_seconds at the track end
 transition_mode = "full_intro_outro"
 
@@ -213,15 +227,17 @@ key_prefer_flats = false
 # libraries, and from the Serato tags in each audio file, with the ones
 # AutoDJ detects itself.  Read by `autodj index` and `autodj analyse` when
 # they analyse a track, and by the player when it has to analyse a track
-# while playing; the web page has no switch for it.
+# while playing (`autodj serve` reads the three libraries once at startup,
+# in the background); the web page has no switch for it.
 import_external_cues = true
 
-# Beat-sync transition FX — rhythmic effects (beat_repeat, gate_stutter,
-# echo_out, dub_delay, sidechain_pump, halftime, stutter_build, scratch) snap
-# to the next downbeat and size themselves in whole bars.
+# Beat-sync transition FX, browser crossfades only: effect lengths round to
+# whole bars at the outgoing tempo when its BPM and outro are known, and scratch, beat_repeat, sidechain_pump,
+# transformer and stutter_build start on the next downbeat.  The server mix
+# ignores it.
 beat_sync_fx = true
-# Key-sync pitched FX — oscillator effects (pitch_swell, pitch_fall,
-# dub_siren, ring_modulator, air_horn) tune to the song's root note.
+# Key-sync pitched FX, browser crossfades only: air_horn, dub_siren and
+# ring_modulator tune to the song's root note.  The server mix ignores it.
 key_sync_fx = true
 
 # Beatmatch when the user presses Skip: the browser pitch-preserves the new
@@ -254,22 +270,26 @@ server_max_track_minutes = 15.0
 [replaygain]
 # When true, AutoDJ reads embedded ReplayGain track-gain + peak tags
 # (FLAC, MP3, M4A) and applies a clip-safe linear gain so all tracks play
-# at consistent loudness.  Tracks without tags play unchanged.
+# at consistent loudness.  Tracks without tags play unchanged.  Server mix
+# only (--server-audio, --stream); the browser plays files as they are.
 enabled = false
 
 # Output reference loudness in dB.  -18 = original ReplayGain reference
 # (quiet).  -14 ≈ Spotify / YouTube.  Higher = louder overall.
 target_db = -14.0
 
-# Hard cap on the linear gain so peaks never exceed this fraction of full-scale.
+# Caps the gain so a track's tagged peak times the gain stays at or below this
+# fraction of full scale.
 # 1.0 = no clipping, 0.95 = small headroom.
 max_clip_safe_gain = 1.0
 
 # ---------------------------------------------------------------------------
 # Pro-DJ mixing layer (beatmatch, harmonic, phrase-align, outro/intro,
-# filter sweep).  Every option is opt-in.  Any track-specific analysis
-# (intro/outro times + beat grid) is detected lazily on first play and
-# cached in `index/dj_meta.db` — no re-indexing required.
+# filter sweep).  Every option is opt-in.  harmonic_mode steers the picker
+# in every mode; the other options shape the server mix only (--server-audio,
+# --stream), and the browser ignores them.  Track analysis (intro/outro
+# times + beat grid) comes from `autodj index` / `autodj analyse`, or is
+# done on first play, and is cached in <index_dir>/<name>/dj_meta.db.
 # ---------------------------------------------------------------------------
 [djmix]
 # Restrict next-track candidates to harmonically-compatible keys.  Tracks
@@ -281,7 +301,7 @@ max_clip_safe_gain = 1.0
 #   "strict"       only the exact same Camelot position.
 #   "neighbour"    same side of the wheel, ±1 only (no mode flips).
 #   "mood_change"  relative major/minor only (same number, opposite side).
-#   "energy_boost" same side, +2 around the wheel — set lifts over time.
+#   "energy_boost" same side, two steps up the wheel — set lifts over time.
 harmonic_mode = "off"
 
 # Pitch-stretch the incoming track so its BPM matches the outgoing track
@@ -293,8 +313,8 @@ beatmatch_max_stretch = 0.08      # ±8% — typical DJ practice
 # crossfade between them, so cold-cuts into a 4-bar intro never happen.
 outro_intro_align = false
 
-# Snap the crossfade start time to the nearest 8-bar phrase boundary
-# using the cached beat grid.  Pro-feel transitions on rhythmic music.
+# Snap the crossfade start time to the nearest phrase_bars-bar phrase
+# boundary using the cached beat grid.  Pro-feel transitions on rhythmic music.
 phrase_align = false
 phrase_bars  = 8
 
@@ -322,8 +342,8 @@ filter_sweep_floor_hz = 250.0
 #   "random"          pick uniformly at random per crossfade
 #   "rotate"          cycle through all real effects in order
 #
-# That list is a sample.  `autodj serve --help` prints every accepted name,
-# and the Settings tab's Transition effect dropdown offers the same set.
+# That list is a sample.  The Settings tab's Transition effect dropdown
+# offers every accepted name.
 #
 # wet_mix is the outer wet/dry between dry overlap and effect-processed
 # overlap.  1.0 = full effect; 0.5 = subtle; 0.0 = effect inaudible.

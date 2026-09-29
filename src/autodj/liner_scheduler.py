@@ -2,8 +2,8 @@
 
 The browser evaluates liner triggers locally when it owns the audio
 element (``autodj/static/modules/liners.js``).  In server-mixed modes
-(``--server-audio``) the :class:`~autodj.mixbus.MixBus` owns the audio
-clock instead, so the same trigger/pick logic needs a server-side home
+(``--server-audio`` or ``--stream``) the :class:`~autodj.mixbus.MixBus`
+owns the audio clock instead, so the same trigger/pick logic needs a server-side home
 that can decode a clip and hand it to the bus. This module is that home.
 
 :class:`LinerScheduler` wraps :class:`~autodj.liners.LinerTrigger` and
@@ -64,6 +64,9 @@ def decode_liner(
 
     Raises:
         LinerDecodeError: If neither soundfile nor ffmpeg can decode it.
+        InvalidLinerName: If *name* is not a plain liner file name.
+        FileNotFoundError: If the file is gone, or ffmpeg is not installed.
+        subprocess.TimeoutExpired: If ffmpeg takes longer than 30 seconds.
     """
     opened = open_liner_file(root, name)
     try:

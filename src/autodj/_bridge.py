@@ -1,7 +1,7 @@
 """PlayerBridge — thread-safe adapter between Player and FastAPI app.
 
-Kept separate from ``autodj.server`` so neither file balloons over the
-2000-line working budget.
+Kept in its own module to keep ``autodj.server`` (the routes) apart from
+the player-facing adapter; ``autodj.server`` re-exports it.
 
 Most attribute / module references inside the methods are deferred via
 local ``import`` statements; that keeps the minimal-install path light
@@ -45,7 +45,7 @@ def _build_why(player: Any) -> list[str]:
 
 
 def _library_job_snapshot() -> dict:
-    """Return current library-job state.  Empty dict when nothing has run."""
+    """Return current library-job state (``name`` is None before any job has run)."""
     from autodj.jobs import get_manager
 
     snap = get_manager().snapshot()
@@ -71,9 +71,10 @@ class PlayerBridge:
     """Thread-safe adapter between :class:`~autodj.player.Player` and FastAPI.
 
     Exposes playback control methods that can be called from the asyncio
-    event loop while the Player runs in a separate thread.  All access to
-    ``PlayerState`` is single-field reads/writes protected by Python's GIL —
-    no additional locking is required.
+    event loop while the Player runs in a separate thread.  Queue edits hold
+    ``PlayerState.queue_lock``, the history and event lists have their own
+    locks, and the remaining ``PlayerState`` access is single-field reads
+    and writes that rely on Python's GIL.
 
     Attributes:
         player: The running :class:`~autodj.player.Player` instance.
@@ -374,8 +375,8 @@ class PlayerBridge:
             if not self._play_history and cur is not None:
                 self._play_history.append(_history_entry(cur))
             self._play_history.append(_history_entry(nxt))
-        # Browser-driven mode skips _play_track, so without an explicit
-        # call here the lyric panel would stay frozen on the previous
+        # Browser-driven mode never renders on the server, so without an
+        # explicit call here the lyric panel would stay frozen on the previous
         # track's words.  Lyric lookup can touch slow audio/tag storage,
         # so run it off the request thread.
         try:
@@ -384,7 +385,7 @@ class PlayerBridge:
             logger.debug("advance_now: background lyric load spawn failed", exc_info=True)
         # Spawn a background thread to populate the DJ-meta cache (cue
         # points, intro_end_s, outro_start_s, beat grid) for the new
-        # track.  Browser-driven mode skips _play_track entirely, so
+        # track.  Browser-driven mode never renders on the server, so
         # without this hook the cue strip / cue list stay empty and the
         # full intro/outro markers Mixxx-style transition modes rely on
         # never get computed.  No-op when the cache already has the
@@ -533,8 +534,8 @@ class PlayerBridge:
         """Return a JSON-serialisable snapshot of the current player state.
 
         Returns:
-            Dict with keys: ``current_track``, ``next_track``, ``is_paused``,
-            ``volume``, ``is_muted``, ``elapsed``, ``duration``.
+            Dict including ``current_track``, ``next_track``, ``is_paused``,
+            ``volume``, ``is_muted``, ``elapsed`` and ``duration``.
         """
         state = self.player._state
         pos = self.player._playback_pos[0]
@@ -564,7 +565,7 @@ class PlayerBridge:
 
         # Pull the DJ-meta sidecar (if any) so we can surface the
         # outgoing track's outro length to the browser — the per-effect
-        # transition-length scaler in app.js uses it to size effects to
+        # transition-length scaler in static/modules/audio-engine.js uses it to size effects to
         # the song's actual outro instead of a fixed crossfade window.
         with contextlib.suppress(Exception):  # cache is best-effort
             self.player._ensure_dj_cache()
@@ -802,8 +803,8 @@ class PlayerBridge:
             limit: Maximum number of results to return.  Default 100.
 
         Returns:
-            List of track dicts (same shape as the ``current_track``
-            dict in :meth:`get_state`).
+            List of track dicts with the keys ``path``, ``title``,
+            ``artist``, ``album``, ``bpm``, ``length`` and ``display_name``.
         """
         tokens = [t for t in query.lower().split() if t]
         if not tokens:
@@ -874,16 +875,7 @@ class PlayerBridge:
         pre-queue similarity pick (computed when the previous track
         started) so the crossfade lands on the wrong audio.
 
-        Only browser-driven mode recomputes from the queue.  With
-        ``--server-audio`` the audio thread picks (and pops) the next entry
-        when the current track starts and plays it regardless of later queue
-        edits, so ``next_track`` already names what plays next; rewriting it
-        to ``queue[0]`` announced a track that actually plays one later, and
-        calling ``_pick_next`` here raced the audio thread's own pick.  The
-        one exception is ``queued_next``, which that loop does honour at the
-        transition.
-
-        On the mix bus the next track is already mixed into the playing
+        Only browser-driven mode recomputes from the queue.  On the mix bus the next track is already mixed into the playing
         track's tail, so queue edits (including ``queued_next``) only ever
         affect the track after it: Up Next is the playing render's
         ``next_entry``, whatever the queue says.
@@ -1295,8 +1287,3 @@ class PlayerBridge:
         if cfg is None:
             return self.sim.ntotal
         return self.sim.reload_from_disk(cfg.index.active_dir, music_dir=cfg.library.music_dir)
-
-
-# ---------------------------------------------------------------------------
-# FastAPI application factory
-# ---------------------------------------------------------------------------

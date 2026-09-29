@@ -1,7 +1,8 @@
 """Profile bundles — saved snapshots of preset + DJ-mix + playback settings.
 
-A "profile" is a JSON file under ``<config_dir>/profiles/`` that
-records every user-tunable knob from a single AutoDJ session so the
+A "profile" is a JSON file under ``<index_dir>/profiles/`` that
+records the preset, BPM range, harmonic mode and main playback choices
+(the fields of :class:`ProfileSnapshot`) so the
 user can switch between, say, *Wakeup*, *Workout*, and *Late night*
 without manually toggling thirty checkboxes each time.
 
@@ -19,7 +20,7 @@ Example::
 
     >>> snap = ProfileSnapshot(
     ...     name="Late night",
-    ...     preset="wind_down",
+    ...     preset="winddown",
     ...     bpm_lo=70, bpm_hi=110,
     ...     harmonic_mode="compatible",
     ...     transition_mode="full_intro_outro",
@@ -65,14 +66,16 @@ class ProfileSnapshot:
 
     Attributes:
         name: User-facing label.  Doubles as the filename stem.
-        preset: Built-in preset name, or ``None``.
+        preset: Preset name (built-in or from ``[presets.*]``), or ``None``.
         bpm_lo, bpm_hi: BPM range filter.
         harmonic_mode: Camelot harmonic-mode key.
         transition_mode: Transition mode key.
+        post_queue_seed: Where to seed from after the queue empties.
         beat_sync_fx: Beat-sync FX toggle.
         key_sync_fx: Key-sync FX toggle.
         beatmatch_on_skip: Beatmatch-on-skip toggle.
         crossfade_seconds: Crossfade window length.
+        fade_in_seconds: Incoming track's fade-in length.
         smart_shuffle: Smart-shuffle toggle.
         pure_shuffle: Pure-shuffle toggle.
         anchor_to_seed: Anchor-to-seed toggle.
@@ -157,7 +160,7 @@ class ProfileStore:
         return out
 
     def save(self, snapshot: ProfileSnapshot) -> Path:
-        """Write *snapshot* to disk; returns the resolved path."""
+        """Write *snapshot* to disk; returns the path written."""
         target = self._path_for(snapshot.name)
         self.root.mkdir(parents=True, exist_ok=True)
         target.write_text(

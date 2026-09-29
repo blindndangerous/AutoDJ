@@ -62,7 +62,7 @@ class Preset:
         discovery_every: If set, a sonically distant "discovery" track is
             injected every *discovery_every* tracks.  ``None`` disables
             discovery for this preset.  The user must also toggle discovery
-            ON at runtime (``D`` key or web UI button) before it fires.
+            ON at runtime (the web page's Discovery button) before it fires.
     """
 
     name: str

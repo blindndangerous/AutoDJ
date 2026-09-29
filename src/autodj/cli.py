@@ -164,27 +164,37 @@ def _load_index_for_serve(
 
 def _scan_index_rows(
     base: Path, active_name: str
-) -> list[tuple[str, int, str]]:  # pragma: no cover
-    """Walk *base* for indexed-library directories; return display rows."""
-    import sqlite3
+) -> list[tuple[str, str, str]]:  # pragma: no cover
+    """Walk *base* for index directories; return (name, track count, path) rows.
 
-    rows: list[tuple[str, int, str]] = []
+    The track count comes from each index's ``index-manifest.json``.  An
+    index from before the manifest format shows as needing a rebuild.
+    """
+    from autodj.index_manifest import (
+        IndexConsistencyError,
+        UnsupportedIndexError,
+        read_manifest,
+    )
+
+    rows: list[tuple[str, str, str]] = []
     for entry in sorted(base.iterdir()):
         if not entry.is_dir():
             continue
-        db_path = entry / "tracks.db"
-        if not db_path.exists():
-            continue
         try:
-            conn = sqlite3.connect(db_path)
-            try:
-                count = int(conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0])
-            finally:
-                conn.close()
-        except sqlite3.DatabaseError:
-            count = -1
+            manifest = read_manifest(entry)
+        except UnsupportedIndexError:
+            status = "[red]old format: rebuild with autodj index --force[/red]"
+        except IndexConsistencyError:
+            status = "[red]corrupt[/red]"
+        else:
+            if manifest is None:
+                if not (entry / "tracks.db").exists():
+                    continue
+                status = "[red]old format: rebuild with autodj index --force[/red]"
+            else:
+                status = f"{manifest.vector_count} tracks"
         active_marker = "  *" if entry.name == active_name else "   "
-        rows.append((active_marker + entry.name, count, str(entry)))
+        rows.append((active_marker + entry.name, status, str(entry)))
     return rows
 
 
@@ -718,7 +728,7 @@ def cmd_restore(ctx: click.Context, archive: Path, force: bool) -> None:
     "skip_enrich",
     is_flag=True,
     help=(
-        "Skip refreshing beets ``initial_key`` data after indexing (done by "
+        "Skip refreshing tags and key data from beets after indexing (done by "
         "default when [library] beets_db is configured)."
     ),
 )
@@ -866,7 +876,7 @@ def cmd_index(
     "index_name",
     default=None,
     type=str,
-    help="Named index to operate on (default: 'default').",
+    help="Named index to operate on (default: [index] name, which is 'default' unless set).",
 )
 @click.pass_context
 def cmd_prune(
@@ -923,17 +933,18 @@ def cmd_prune(
     "index_name",
     default=None,
     type=str,
-    help="Named index to operate on (default: 'default').",
+    help="Named index to operate on (default: [index] name, which is 'default' unless set).",
 )
 @click.pass_context
 def cmd_enrich(ctx: click.Context, index_name: str | None) -> None:
-    """Refresh the index's key / mode from beets ``initial_key`` data.
+    """Refresh the index's tags and key / mode from the beets database.
 
-    Walks every entry in the existing index, looks it up in your beets
-    database, parses the ``initial_key`` field (set by the beets
-    keyfinder plugin), and replaces the librosa-detected key with the
-    beets value when one is present.  No re-embedding required —
-    completes in seconds even for huge libraries.
+    Walks every entry in the existing index and looks it up in your beets
+    database.  Title, artist, album, genre, BPM, year and length are
+    replaced by the beets values when beets has them, and the
+    librosa-detected key and mode by the parsed ``initial_key`` field
+    (set by the beets keyfinder plugin) when it is present.  No
+    re-embedding required — completes in seconds even for huge libraries.
 
     ``autodj index`` already runs this by default.  Use this standalone
     command when you want to refresh beets metadata without embedding or
@@ -970,7 +981,7 @@ def cmd_enrich(ctx: click.Context, index_name: str | None) -> None:
             f"[green]Index already in sync with beets[/] ({total} entries scanned, 0 changed)."
         )
     else:
-        console.print(f"[green]Updated key/mode on {updated} of {total} tracks[/] from beets.")
+        console.print(f"[green]Updated {updated} of {total} tracks[/] from beets.")
 
 
 # ---------------------------------------------------------------------------
@@ -984,7 +995,7 @@ def cmd_enrich(ctx: click.Context, index_name: str | None) -> None:
     "index_name",
     default=None,
     type=str,
-    help="Named index to operate on (default: 'default').",
+    help="Named index to operate on (default: [index] name, which is 'default' unless set).",
 )
 @click.option(
     "--limit",
@@ -1011,7 +1022,7 @@ def cmd_analyse(
     numpy.  Run this on the NAS / listening host after a GPU host has
     finished the embedding pass; transition fades will then use the
     real per-track outro_start_s / intro_end_s instead of falling back
-    to the bar-rounded defaults.
+    to crossfade_seconds.
 
     \b
     Examples:
@@ -1135,7 +1146,7 @@ def cmd_analyse(
     "index_name",
     default=None,
     type=str,
-    help="Named index to play from (default: 'default').",
+    help="Named index to play from (default: [index] name, which is 'default' unless set).",
 )
 @click.option(
     "--server-audio/--no-server-audio",
@@ -1377,9 +1388,8 @@ def cmd_list_indexes(ctx: click.Context) -> None:  # pragma: no cover -- filesys
         )
         return
     console.print(f"[bold]Indexes under[/] {base}  [dim](* = active)[/]\n")
-    for name, count, path in rows:
-        count_str = f"{count} tracks" if count >= 0 else "[red]corrupt[/red]"
-        console.print(f"  {name:24s}  {count_str:18s}  [dim]{path}[/dim]")
+    for name, status, path in rows:
+        console.print(f"  {name:24s}  {status:18s}  [dim]{path}[/dim]")
 
 
 # ---------------------------------------------------------------------------
@@ -1393,16 +1403,15 @@ def cmd_list_indexes(ctx: click.Context) -> None:  # pragma: no cover -- filesys
     "index_name",
     default=None,
     type=str,
-    help="Named index to inspect (default: 'default').",
+    help="Named index to inspect (default: [index] name, which is 'default' unless set).",
 )
 @click.pass_context
 def cmd_stats(ctx: click.Context, index_name: str | None) -> None:
     """Print a statistical overview of the indexed music library.
 
-    Loads only the metadata index (no FAISS vectors, no model) and displays
-    BPM distribution, genres, decades, track lengths, and top artists.
-    If the library has been enriched (via 'autodj enrich'), also shows
-    key distribution, major/minor split, and energy histogram.
+    Loads the index (not the model) and displays BPM distribution, genres,
+    decades, track lengths, top artists, key distribution, major/minor
+    split, and energy histogram.
 
     \b
     Examples:

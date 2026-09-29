@@ -1,9 +1,11 @@
 // Cross-browser audit of AutoDJ transition effects.
 //
-// Loads the live web UI, captures console output, polls the in-page
-// `_workletReady` map, and triggers each effect via /api/transition.
-// Output is written as a JSON report so we can diff worklet-load
-// success and crossfade trigger logs across Chromium / Firefox / WebKit.
+// Loads the live web UI, captures console output, waits for an <audio>
+// element, loads each worklet module into a fresh AudioContext to see
+// whether it loads, and posts each effect to /api/transition.  The page's
+// own worklet state is module-private and not read.  Output is written as
+// a JSON report so we can diff worklet-load success and crossfade trigger
+// logs across Chromium / Firefox / WebKit.
 
 import { runAudit, validateTransitionAudit } from "./audit_helpers.mjs";
 
@@ -34,11 +36,9 @@ export async function audit(name, launcher) {
   await page.click("body");
   await page.waitForTimeout(300);
 
-  // Wait for worklets to register.
+  // Wait for the page's <audio> element (reported as workletReady).
   const workletReady = await page.waitForFunction(() => {
     if (typeof window === "undefined") return false;
-    // Worklet readiness flags live in module scope — expose for inspection
-    // by reading the audio-graph state after a fake user gesture.
     return new Promise((resolve) => {
       const check = () => {
         const audio = document.querySelector("audio");
@@ -49,9 +49,8 @@ export async function audit(name, launcher) {
     });
   }, null, { timeout: 10000 }).catch(() => null);
 
-  // Read worklet-ready state via a backdoor — the script tag exposes
-  // some globals.  We instead probe via creating our own audio context
-  // and trying to load the same worklet URLs.
+  // The page's worklet state is module-private, so probe by loading the
+  // same worklet URLs into our own audio context.
   const probe = await page.evaluate(async (origin) => {
     const out = { worklets: {}, audio_state: null, errors: [] };
     try {

@@ -99,15 +99,17 @@ class IndexConfig(_Section):
     AutoDJ supports **named indexes** so you can keep multiple curated
     libraries side-by-side — a "workout" index of high-BPM tracks, a
     "chill" index for evening listening, etc.  Each named index lives
-    in its own sub-directory ``<index_dir>/<name>/`` so they share
-    nothing (independent FAISS files, metadata, runtime state, dj-meta
-    cache).
+    in its own sub-directory ``<index_dir>/<name>/`` with its own FAISS
+    files, metadata, web state, liners and dj-meta cache.  Profiles, paired
+    browsers, the stream secret and the access token live in
+    ``<index_dir>`` and are shared by every named index.
 
     Attributes:
         index_dir: Base directory holding all named indexes.
         model_dir: Directory where the MuQ model checkpoint is cached.
         name: Active index name.  Files live in ``<index_dir>/<name>/``.
-            Override with ``--name`` on any CLI subcommand.
+            ``--name`` on ``index``, ``prune``, ``enrich``, ``analyse``,
+            ``serve`` and ``stats`` overrides it.
         throttle_ms: Pause before each track that ``autodj index`` embeds
             and ``autodj analyse`` analyses, in milliseconds.  ``0`` = none.
     """
@@ -281,13 +283,13 @@ class PlaybackConfig(_Section):
     # Mixxx-style transition mode.  Controls how the crossfade aligns
     # with each track's intro_end / outro_start markers from the
     # DJ-meta sidecar.
-    #   - "full_intro_outro" (default): start of incoming intro lines up
-    #     with start of outgoing outro; fade length = min(intro_len,
-    #     outro_len) clamped to [_MIN_FX_DURATION_S, 12 s].
-    #   - "outro_fade":  begin fade at outro_start, length = outro_len.
-    #     Ignores intro_end.
-    #   - "fixed_skip_silence": fixed crossfade_seconds, but trim
-    #     leading silence on incoming + trailing silence on outgoing.
+    #   - "full_intro_outro" (default): the fade starts at the outgoing
+    #     outro and the incoming track enters at its intro end; fade
+    #     length = min(intro_len, outro_len) clamped to 1-12 s.
+    #   - "outro_fade":  begin fade at outro_start, length = outro_len
+    #     (1-12 s).  Ignores intro_end.
+    #   - "fixed_skip_silence": fixed crossfade_seconds; the incoming
+    #     track enters at its intro end.
     #   - "fixed": plain fixed crossfade_seconds at the
     #     end of the outgoing track.  No marker alignment.
     transition_mode: str = "full_intro_outro"
@@ -360,15 +362,15 @@ class PlaybackConfig(_Section):
     # track joins the existing groove instead of cold-cutting at its
     # native tempo.  Reverts at fade-out.  Off by default — keeps the
     # "skip = clean break" behaviour for users who want it.
-    # CLI server-audio skip path cannot pitch-stretch on the fly so
-    # it cold-cuts regardless of this flag.
+    # Server-mixed playback ignores this flag: a skip there is a short
+    # fade-out.
     beatmatch_on_skip: bool = False
     # Voice liners — DJ-style spoken drops layered over the live mix.
-    # ``liners_folder`` is the source directory (default
-    # ``<index_dir>/liners`` resolved at server startup).  Trigger
-    # parameters are evaluated client-side in the browser; the server
-    # exposes the file list via ``GET /api/liners`` and raw bytes via
-    # ``GET /api/liners/file/<name>``.
+    # ``liners_folder`` is the source directory (``~`` is expanded; default
+    # ``<index_dir>/<name>/liners``).  The browser evaluates the triggers
+    # when it plays the audio, fetching the list from ``GET /api/liners``
+    # and each file from ``GET /api/liners/file/<name>``; in the
+    # server-mixed modes (--server-audio, --stream) LinerScheduler does.
     liners_enabled: bool = False
     liners_folder: str | None = None
     liners_every_n_songs: int | None = None
@@ -389,8 +391,10 @@ class PlaybackConfig(_Section):
 
         Raises:
             TypeError: If ``server_max_track_minutes`` is not a number.
-            ValueError: If ``crossfade_seconds``, ``fade_in_seconds`` or
-                ``no_repeat_window`` is negative, a choice is not one of its
+            ValueError: If ``crossfade_seconds``, ``fade_in_seconds``,
+                ``no_repeat_window``, ``artist_repeat_window``,
+                ``pick_temperature`` or a liner trigger is negative,
+                ``pick_top_k`` is below 1, a choice is not one of its
                 options, or ``server_max_track_minutes`` is outside 1-600.
         """
         self.crossfade_seconds = float(self.crossfade_seconds)
@@ -412,13 +416,15 @@ class PlaybackConfig(_Section):
                 f"playback.server_max_track_minutes must be between 1 and 600, got {max_minutes}"
             )
         self.server_max_track_minutes = float(max_minutes)
-        self.artist_repeat_window = max(0, int(self.artist_repeat_window))
+        self.artist_repeat_window = int(self.artist_repeat_window)
         self.discovery_every = _optional(int, self.discovery_every)
         self.crossfade_bass_cutoff_hz = float(self.crossfade_bass_cutoff_hz)
         self.transition_mode = _validate_transition_mode(str(self.transition_mode))
         self.post_queue_seed = _validate_post_queue_seed(str(self.post_queue_seed))
-        self.pick_top_k = max(1, int(self.pick_top_k))
-        self.pick_temperature = max(0.0, float(self.pick_temperature))
+        self.pick_top_k = int(self.pick_top_k)
+        if self.pick_top_k < 1:
+            raise ValueError(f"playback.pick_top_k must be >= 1, got {self.pick_top_k}")
+        self.pick_temperature = float(self.pick_temperature)
         self.key_notation = _validate_key_notation(str(self.key_notation))
         self.audio_device = self.audio_device or None
         for name in (
@@ -434,11 +440,24 @@ class PlaybackConfig(_Section):
             "liners_enabled",
         ):
             setattr(self, name, bool(getattr(self, name)))
-        self.liners_folder = self.liners_folder or None
+        self.liners_folder = (
+            str(Path(self.liners_folder).expanduser()) if self.liners_folder else None
+        )
         self.liners_every_n_songs = _optional(int, self.liners_every_n_songs)
         self.liners_every_minutes = _optional(float, self.liners_every_minutes)
         self.liners_random_min_minutes = _optional(float, self.liners_random_min_minutes)
         self.liners_random_max_minutes = _optional(float, self.liners_random_max_minutes)
+        for name in (
+            "artist_repeat_window",
+            "pick_temperature",
+            "liners_every_n_songs",
+            "liners_every_minutes",
+            "liners_random_min_minutes",
+            "liners_random_max_minutes",
+        ):
+            value = getattr(self, name)
+            if value is not None and value < 0:
+                raise ValueError(f"playback.{name} must be >= 0, got {value}")
         self.liners_pick_mode = _one_of(
             str(self.liners_pick_mode), LINER_PICK_MODES, "playback.liners_pick_mode"
         )
@@ -562,7 +581,7 @@ class ReplayGainConfig(_Section):
         target_db: Output reference level in dB.  ``-18.0`` is the original
             ReplayGain reference (quiet).  ``-14.0`` matches Spotify /
             YouTube loudness (default).  Higher = louder overall.
-        max_clip_safe_gain: Hard cap on the linear gain so peaks never
+        max_clip_safe_gain: Caps the linear gain so tagged peaks never
             exceed this fraction of full-scale.  Default ``1.0`` = no
             clipping.  Lower it (e.g. ``0.95``) for extra headroom.
     """
@@ -1013,8 +1032,14 @@ class AutoDJConfig:
         playback: Playback behaviour settings.
         model: MuQ model settings.
         huggingface: HuggingFace Hub access settings.
-        presets: User-defined BPM presets loaded from ``[presets.*]`` sections.
         config_path: Path to the config file this instance was loaded from.
+        presets: User-defined BPM presets loaded from ``[presets.*]`` sections.
+        replaygain: ReplayGain settings.
+        djmix: DJ-mix layer settings.
+        transitions: Transition effect settings.
+        server: Web server, LAN and HTTPS settings.
+        stream: Radio stream settings.
+        config_sources: Where the values came from, in load order.
     """
 
     library: LibraryConfig

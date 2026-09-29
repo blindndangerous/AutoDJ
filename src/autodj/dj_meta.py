@@ -5,11 +5,14 @@ similarity engine:
 
 - :func:`detect_intro_outro` — find the seconds at which the perceived
   intro ends and the outro starts, used for outro→intro-aligned crossfade.
-- :func:`detect_beat_grid` — extract beat + downbeat positions, used for
-  phrase-aligned crossfade (snap mix point to an 8-bar boundary).
+- :func:`detect_beat_grid` — extract beat positions, used for
+  phrase-aligned crossfade (snap mix point to a phrase boundary).
+  Downbeats are taken as every 4th beat
+  (:func:`autodj.beat_sync.extract_downbeats`).
 - :func:`harmonic_compatible` — Camelot wheel test that lets the picker
   filter candidates to harmonically-compatible keys.
-- :class:`DjMetaCache` — SQLite-backed cache (``index/dj_meta.db``) so
+- :class:`DjMetaCache` — SQLite-backed cache
+  (``<index_dir>/<name>/dj_meta.db``) so
   the heavy librosa analysis only runs once per track, then is reused.
 
 All detection is opt-in (the player invokes it lazily when a feature that
@@ -286,19 +289,19 @@ HARMONIC_MODES: tuple[str, ...] = (
 )
 
 
-# Each harmonic mode is the set of ``(same Camelot side, wheel distance)``
-# pairs it accepts.  Camelot numbers run 1-12, so ``abs(a - b)`` is 0-11 and
-# a ±1 step shows up as either 1 or 11.
+# Each harmonic mode is the set of ``(same Camelot side, steps)`` pairs it
+# accepts, where steps is how far B is from A going up the wheel:
+# ``(b - a) % 12``, so +1 is 1 and -1 is 11.
 #   strict       — identical position.
 #   mood_change  — relative major/minor: same number, opposite side.
 #   neighbour    — same side, ±1 around the wheel.
-#   energy_boost — same side, ±2 around the wheel.
+#   energy_boost — same side, +2 around the wheel (two semitones up).
 #   compatible   — union of strict + mood_change + neighbour.
 _HARMONIC_RULES: dict[str, frozenset[tuple[bool, int]]] = {
     "strict": frozenset({(True, 0)}),
     "mood_change": frozenset({(False, 0)}),
     "neighbour": frozenset({(True, 1), (True, 11)}),
-    "energy_boost": frozenset({(True, 2), (True, 10)}),
+    "energy_boost": frozenset({(True, 2)}),
     "compatible": frozenset({(True, 0), (False, 0), (True, 1), (True, 11)}),
 }
 
@@ -322,7 +325,7 @@ def harmonic_compatible(
     ):  # pragma: no cover — pre-validated keys always map to Camelot
         return True
     allowed = _HARMONIC_RULES.get(mode, _HARMONIC_RULES["compatible"])
-    return (pos_a[1] == pos_b[1], abs(pos_a[0] - pos_b[0])) in allowed
+    return (pos_a[1] == pos_b[1], (pos_b[0] - pos_a[0]) % 12) in allowed
 
 
 def camelot_label(key: int, mode: int) -> str:
@@ -453,8 +456,8 @@ class DjMeta:
     Attributes:
         intro_end_s: Seconds at which the intro ends.  ``0.0`` = no intro
             detected (or detection has not been run yet).
-        outro_start_s: Seconds at which the outro starts.  ``0.0`` = no
-            outro detected.
+        outro_start_s: Seconds at which the outro starts; the track length
+            when no outro was detected.  ``0.0`` = not analysed yet.
         beats: Beat-onset timestamps in seconds.  Empty list = unanalysed.
         analysed: ``True`` once detection has run, even if results are
             empty / zero — distinguishes "we tried and there's nothing"
@@ -581,8 +584,8 @@ class DjMetaCache:
         first_init = not self._path.exists()
         # ``check_same_thread=False`` is safe because every read/write is
         # guarded by ``self._lock``; ``isolation_level=None`` puts the
-        # connection in autocommit mode so our explicit ``with conn:``
-        # blocks bracket each transaction cleanly.
+        # connection in autocommit mode so our explicit
+        # ``immediate_transaction`` blocks bracket each transaction cleanly.
         self._conn = sqlite3.connect(self._path, check_same_thread=False, isolation_level=None)
         self._conn.executescript(self._SCHEMA)
         # WAL = concurrent reader while the writer flushes; NORMAL sync

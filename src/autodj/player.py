@@ -17,7 +17,6 @@ import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
@@ -242,7 +241,7 @@ def beatmatch_incoming(
     change).
 
     Args:
-        audio_b: Mono float32 audio of the incoming track.
+        audio_b: Mono or stereo float32 audio of the incoming track.
         bpm_a: BPM of the outgoing track.  Anything ``<= 0`` disables matching.
         bpm_b: BPM of the incoming track.  Anything ``<= 0`` disables matching.
         max_stretch: Maximum allowed ``|ratio - 1|``.  0.08 = ±8 %.
@@ -501,15 +500,16 @@ def load_audio(path: str, target_sr: int = _DEFAULT_SR) -> tuple[np.ndarray, int
 
     Args:
         path: Absolute path to the audio file.
-        target_sr: Target sample rate.  If the file's native rate differs,
-            librosa resamples to *target_sr*.
+        target_sr: Target sample rate for the librosa fallback, which
+            resamples to it.  A file soundfile reads keeps its native rate.
 
     Returns:
         A tuple ``(audio, sample_rate)`` where *audio* is a mono float32
         array and *sample_rate* is the actual rate after any resampling.
 
     Raises:
-        OSError: If the file cannot be read.
+        RuntimeError: ``soundfile.LibsndfileError`` when neither decoder can
+            read the file.
     """
     try:
         audio, sr = sf.read(path, dtype="float32", always_2d=False)
@@ -609,15 +609,19 @@ class Player:
 
         self._dj_cache: _DjMetaCache | None = None
         self._dj_cache_initialised = False
-        # Browser-driven mode never enters _play_track, so the only path
-        # that ever called analyse_audio (and therefore detect_cues) was
-        # dead code in serve mode.  Track in-flight background analyses
+        # Browser-driven mode never renders on the server, so tracks are
+        # analysed on background threads instead.  Track in-flight analyses
         # by path so a flurry of advances does not spawn duplicate
         # workers for the same track.  Lock guards the set; the heavy
         # I/O happens off-lock.
         self._bg_analysis_inflight: set[str] = set()
         self._bg_analysis_threads: set[threading.Thread] = set()
         self._bg_analysis_lock = threading.Lock()
+        # Cues from DJ-software libraries: None until load_library_cues has
+        # read them; tracks analysed before then are listed for a late merge.
+        self._library_cues: dict[str, list[Cue]] | None = None
+        self._analysed_before_library_cues: list[str] = []
+        self._library_cues_lock = threading.Lock()
         self._bg_lyrics_inflight: set[str] = set()
         self._bg_lyrics_lock = threading.Lock()
         # Current track's beatmatch ratio (1.0 = no stretch) — exposed via state
@@ -660,8 +664,8 @@ class Player:
         self._playback_pos: list[int] = [0]
         self._playback_len: int = 0  # length of the current audio array in samples
         self._current_sr: int = _DEFAULT_SR
-        # Server audio: the mix bus that plays rendered tracks (created in
-        # run() when not dry-run, or supplied by the stream station), and a
+        # Server audio: the mix bus that plays rendered tracks (built at the
+        # end of __init__ unless dry-run), and a
         # hook the bridge sets to hear about each track the bus starts.
         self.bus: MixBus | None = None
         self.on_track_started: Callable[[IndexEntry], None] | None = None
@@ -1172,7 +1176,7 @@ class Player:
         self._state.current_track = current
         if self._state.next_track is None:
             self._state.next_track = self._pick_next(current)
-        # Browser-driven mode never enters _play_track, so lyrics and
+        # Browser-driven mode never renders on the server, so lyrics and
         # DJ meta (cue points, intro_end_s, outro_start_s, beat grid)
         # would otherwise stay empty for the seed track and the web UI
         # would hide its lyrics card / show an empty cue list even when
@@ -1579,40 +1583,70 @@ class Player:
         meta = self._dj_cache.get(path)
         if not meta.analysed:
             meta = self._analyse(mono(audio_a), sr_a, path)
-            self._dj_cache.set(path, meta)
             self._dj_cache.flush(batch=10)
         return meta
 
     def _analyse(self, audio: np.ndarray, sr: int, path: str) -> DjMeta:
-        """Analyse *path*'s audio the way ``autodj analyse`` does.
+        """Analyse *path*'s audio the way ``autodj analyse`` does, and cache it.
 
         Runs :func:`autodj.dj_meta.analyse_audio`, then merges cues imported
         from DJ software through the same function as ``autodj analyse``
-        when ``[playback] import_external_cues`` is on.  The result is
-        stored as analysed, so ``autodj analyse`` later skips the track.
+        when ``[playback] import_external_cues`` is on, and stores the
+        result in the DJ-meta cache (the caller flushes).  It is stored as
+        analysed, so ``autodj analyse`` later skips the track.
+
+        Never reads the DJ-software libraries itself: it uses what
+        :meth:`load_library_cues` has read.  A track analysed before that
+        read finishes gets its library cues merged when it does.
         """
         from autodj.dj_meta import analyse_audio
 
         meta = analyse_audio(audio, sr)
-        if self._cfg.playback.import_external_cues:
-            from autodj.dj_cues_import import merge_imported_cues
+        import_cues = self._cfg.playback.import_external_cues
+        # Merge and store under the lock, so load_library_cues either sees
+        # this track in the cache or has already handed over its cues.
+        with self._library_cues_lock:
+            if import_cues:
+                from autodj.dj_cues_import import merge_imported_cues
 
-            merge_imported_cues(meta, path, self._library_cues)
+                if self._library_cues is None:
+                    self._analysed_before_library_cues.append(path)
+                merge_imported_cues(meta, path, self._library_cues or {})
+            if self._dj_cache is not None:
+                self._dj_cache.set(path, meta)
         return meta
 
-    @cached_property
-    def _library_cues(self) -> dict[str, list[Cue]]:
-        """Cues from Mixxx, Rekordbox and Traktor libraries, read on first use."""
+    def load_library_cues(self) -> None:
+        """Read the Mixxx, Rekordbox and Traktor libraries once.
+
+        ``autodj serve`` runs this on its own thread at startup when
+        ``[playback] import_external_cues`` is on, so neither playback nor
+        pacing waits on a large library file.  Tracks :meth:`_analyse`
+        stored before the read finished have their library cues merged here.
+        """
         from autodj.dj_cues_import import auto_import_cues
+        from autodj.dj_meta import merge_cues
 
         music_dir = self._cfg.library.music_dir
-        return auto_import_cues(library_root=music_dir if isinstance(music_dir, Path) else None)
+        found = auto_import_cues(library_root=music_dir if isinstance(music_dir, Path) else None)
+        with self._library_cues_lock:
+            self._library_cues = found
+            waiting, self._analysed_before_library_cues = self._analysed_before_library_cues, []
+            cache = self._dj_cache
+            late = [path for path in waiting if found.get(path)]
+            if cache is None or not late:
+                return
+            for path in late:
+                meta = cache.get(path)
+                meta.cues = merge_cues(meta.cues, found[path])
+                cache.set(path, meta)
+        cache.flush(force=True)
 
     def analyse_track_in_background(self, path: str) -> None:
         """Run analyse_audio + detect_cues for *path* on a background thread.
 
         Browser-driven mode (``serve`` without ``--server-audio``) never
-        enters :meth:`_play_track`, so without this hook the DJ-meta
+        renders a track on the server, so without this hook the DJ-meta
         cache for the playing track stays at ``analysed=False`` and the
         web UI's cue strip + screen-reader cue summary stay empty.
 
@@ -1645,7 +1679,6 @@ class Player:
                 audio, sr = load_audio(path)
                 meta = self._analyse(audio, sr, path)
                 if self._dj_cache is not None:
-                    self._dj_cache.set(path, meta)
                     self._dj_cache.flush(force=True)
                 # BPM + Camelot key live on the IndexEntry, not on
                 # DjMeta -- look them up so the log line carries the
@@ -1731,7 +1764,8 @@ class Player:
     ) -> float:
         """Resolve the active fade length for the configured transition_mode.
 
-        Mirrors the browser's ``_resolveFadeSec`` in ``static/app.js`` so
+        Mirrors the browser's ``_resolveFadeSec`` in
+        ``static/modules/audio-engine.js`` so
         the server mix and the web UI sound the same.
 
         Args:
@@ -1858,7 +1892,7 @@ class Player:
         current: IndexEntry,
         next_entry: IndexEntry,
     ) -> np.ndarray:
-        """Pitch-stretch audio_b to match the outgoing BPM (if configured).
+        """Time-stretch audio_b to match the outgoing BPM (if configured).
 
         Leaves ``self._beatmatch_ratio`` alone: this runs while rendering
         ahead, and that attribute describes the *playing* track (see
@@ -1893,7 +1927,6 @@ class Player:
         meta_b = self._dj_cache.get(next_entry.path)
         if not meta_b.analysed:
             meta_b = self._analyse(mono(audio_b), sr_a, next_entry.path)
-            self._dj_cache.set(next_entry.path, meta_b)
             self._dj_cache.flush(batch=10)
         if meta_b.intro_end_s <= 0.5:
             return 0
@@ -1940,9 +1973,8 @@ class Player:
         "sidechain_pump": 4.0,  # 8 beats of pump @ 120 BPM
         "reverse_reverb": 3.0,  # swell-in needs time to build
         "air_horn": 3.0,  # full pitch sweep
-        # New effects shipped in feat/transitions + transitions-v2.
-        # Values mirror the JS table in app.js so CLI + browser feel
-        # identical (verified by tests/unit/test_player.py).
+        # The same values as the browser's _MIN_FX_DURATION_S in
+        # static/modules/audio-engine.js, kept in step by hand.
         "vinyl_rewind": 3.5,  # slow musical reverse + pitch drop
         "transformer": 2.5,  # syncopated 16-cps fader cuts
         "dub_siren": 3.0,  # smooth sine riser w/ vibrato

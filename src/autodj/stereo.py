@@ -122,7 +122,8 @@ def load_stereo(
         ``(frames, 2)`` float32 audio.
 
     Raises:
-        OSError: If neither decoder can read the file.
+        RuntimeError: ``soundfile.LibsndfileError`` when neither decoder can
+            read the file.
         TrackTooLongError: If the track is longer than *max_seconds*.
     """
     try:

@@ -732,10 +732,13 @@ class TestDjMetaHarmonic:
         args = _key_for(1, "A") + _key_for(1, "B")
         assert harmonic_compatible(*args, "energy_boost") is False
 
-    def test_energy_boost_same_side_within_range(self) -> None:
+    def test_energy_boost_goes_two_steps_up_only(self) -> None:
         assert harmonic_compatible(*_key_for(1, "A"), *_key_for(3, "A"), "energy_boost") is True
-        # diff == 10 wraps
-        assert harmonic_compatible(*_key_for(1, "A"), *_key_for(11, "A"), "energy_boost") is True
+        # 11A -> 1A is +2 across the wrap.
+        assert harmonic_compatible(*_key_for(11, "A"), *_key_for(1, "A"), "energy_boost") is True
+        # Two steps down lowers the energy, so it is not a boost.
+        assert harmonic_compatible(*_key_for(3, "A"), *_key_for(1, "A"), "energy_boost") is False
+        assert harmonic_compatible(*_key_for(1, "A"), *_key_for(11, "A"), "energy_boost") is False
 
     def test_energy_boost_same_side_too_far(self) -> None:
         assert harmonic_compatible(*_key_for(1, "A"), *_key_for(5, "A"), "energy_boost") is False

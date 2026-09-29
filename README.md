@@ -107,7 +107,8 @@ advanced overrides.
 
 `autodj serve --lan --stream` also serves the live mix as an MP3 radio station, with AutoDJ's
 own crossfades, EQ and voice liners already mixed in, that Sonos, VLC and other network players
-can open directly. Find the address, and a downloadable `.m3u` playlist, under Settings, Stream
+can open directly. Stream mode needs `ffmpeg` on the PATH; AutoDJ refuses to start it without
+ffmpeg. Find the address, and a downloadable `.m3u` playlist, under Settings, Stream
 on the web page. See [Operations](docs/operations.md#radio-stream-sonos-vlc-and-other-players)
 for adding the station to Sonos and VLC, what the playback controls do while streaming, and
 troubleshooting.
@@ -220,7 +221,8 @@ Drop short spoken clips into a folder.  AutoDJ will fade the music down for a co
 1. Open the **Settings** tab.
 2. Tick **Enable voice liners**.
 3. The Trigger / Mix / Library boxes appear.
-4. Click the **Choose liner file** button to upload an MP3 / WAV / OGG / M4A / FLAC / AAC.  To
+4. Pick an MP3 / WAV / OGG / M4A / FLAC / AAC file with **Choose liner file**, then press
+   **Upload**.  To
    swap in a new recording under a name that is already there, tick **Replace existing file**
    first; without it the upload is refused so nothing is overwritten by accident.
 5. Set how often you want them to play.
@@ -239,7 +241,7 @@ state that still says `weighted` is rejected, so pick one of the two.
 
 ## How well does this work?
 
-It works well when your library has the genre clustering you expect.  Pop tracks pick more pop, jazz picks more jazz, an acoustic intro picks acoustic, a heavy drop picks something else heavy.  For what the picker actually computes, from the 1040-number track vector to the final softmax draw, see [How AutoDJ picks the next track](docs/track-selection.md).
+It works well when your library has the genre clustering you expect.  Pop tracks pick more pop, jazz picks more jazz, an acoustic intro picks acoustic, a heavy drop picks something else heavy.  For what the picker actually computes, from the 1040-number track vector to the final pick, see [How AutoDJ picks the next track](docs/track-selection.md).
 
 It does not work well when:
 
@@ -361,7 +363,7 @@ variables and CLI flags still take precedence.
 
 **Voice liner upload button is missing.**  The whole "Library" panel hides until you tick the **Enable voice liners** checkbox.  Tick it first, then the upload form appears.
 
-**Cue point list is empty.**  AutoDJ analyses each track in the background after it starts playing.  Wait a few seconds; the cue strip on the progress bar should fill in.  Pass `autodj -v serve` to see "Background analysis done: ... -> 5 cues" log lines as they finish.
+**Cue point list is empty.**  AutoDJ analyses each track in the background after it starts playing.  Wait a few seconds; the cue strip on the progress bar should fill in.  The server log shows a "Background analysis done: ... -> 5 cues" line as each one finishes.
 
 **Lyrics card never appears.**  AutoDJ checks three places, in order: an LRC file next to the audio file (timestamped, scrolls), the `lyrics` field in the beets database, the embedded ID3 / Vorbis / MP4 lyric tag.  If none of those is present, the lyrics card stays hidden.
 

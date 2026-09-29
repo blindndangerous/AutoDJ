@@ -5,8 +5,8 @@ Architecture
 ``autodj serve`` runs a single process:
 
 - :class:`Player` runs in a background daemon thread (blocking loop).
-- :class:`PlayerBridge` is a thin, thread-safe adapter between the Player and
-  the FastAPI app.
+- :class:`PlayerBridge` (in :mod:`autodj._bridge`) is the thread-safe adapter
+  between the Player and the FastAPI app.
 - FastAPI + uvicorn run on the main thread (asyncio event loop).
 - A startup asyncio task broadcasts the current player state to all connected
   WebSocket clients once per second.
@@ -70,8 +70,7 @@ from starlette.middleware.gzip import GZipMiddleware
 from starlette.staticfiles import NotModifiedResponse
 from starlette.types import Receive, Scope, Send
 
-# PlayerBridge lives in autodj._bridge so neither file balloons over
-# the 2000-line working budget.
+# PlayerBridge lives in autodj._bridge; it is re-exported here.
 from autodj._bridge import (
     STREAM_SEEK_UNAVAILABLE,
     PlayerBridge,
@@ -376,7 +375,7 @@ def _version_info() -> dict[str, str]:
     """Return {version, commit, built_at} for the running build.
 
     Cached on first call.  ``built_at`` is the modification time of the
-    served ``app.js``, or the process start time when it is missing.
+    served ``app.js``, or the time of the first call when it is missing.
     Commit is the short SHA from `git rev-parse` when the source tree
     is a git checkout, else "unknown".
     """
@@ -1345,13 +1344,11 @@ def create_app(
         page: int = Query(1, ge=1),
         per_page: int = Query(50, ge=1, le=500),
     ) -> JSONResponse:
-        """Return the persisted play history (newest first).
+        """Return this session's play history (newest first), one page.
 
-        History is a bounded ``deque`` (cap 500 — see PlayerBridge) so
-        this endpoint cannot grow unbounded across a long-running
-        ``serve``.  We compute the slice indices directly against the
-        deque rather than copying the whole thing to a reversed list on
-        every request.
+        History is an in-memory ``deque`` capped at 500 (see PlayerBridge),
+        so this endpoint cannot grow unbounded across a long-running
+        ``serve``.
         """
         hist = bridge.history_snapshot()
         total = len(hist)
@@ -1366,7 +1363,6 @@ def create_app(
         else:
             hi = total - start
             lo = max(0, total - end)
-            # Reverse-slice without copying the whole deque to a list.
             items = list(reversed([hist[i] for i in range(lo, hi)]))
         return JSONResponse({"items": items, "total": total, "page": page, "pages": pages})
 
@@ -1493,12 +1489,11 @@ def create_app(
         return bridge.stream_info()
 
     def _profile_store() -> Any:
-        """Return a ProfileStore anchored under the active index dir."""
+        """Return the ProfileStore in ``<index_dir>/profiles``."""
         from autodj.profiles import ProfileStore
 
         cfg = bridge.player._cfg
-        # Default location: <index_dir>/../profiles to keep host config
-        # local but adjacent to indexes.
+        # <index_dir>/profiles: shared by every named index.
         root = Path(cfg.index.active_dir).parent / "profiles"
         return ProfileStore(root)
 
@@ -1596,7 +1591,7 @@ def create_app(
 
         cfg = bridge.player._cfg
         folder = _resolve_liner_folder()
-        # from_folder walks the configured directory with rglob.  That
+        # from_folder lists the configured directory (not recursive).  That
         # directory is operator-controlled and may live on a slow mount, so
         # keep the walk off the event loop.
         lib = await asyncio.to_thread(LinerLibrary.from_folder, folder)
@@ -1910,7 +1905,7 @@ def create_app(
 
     @app.post("/api/discovery")
     async def api_discovery(body: DiscoveryBody) -> dict:
-        """Toggle discovery injection."""
+        """Set the discovery rate (null turns discovery off)."""
         bridge.set_discovery_every(body.every)
         bridge.save_persistent_state()
         return bridge.get_settings()
@@ -1935,14 +1930,14 @@ def create_app(
 
     @app.get("/api/library/job")
     async def api_library_job_status() -> dict:
-        """Return the live indexer / prune job status."""
+        """Return the live library job status."""
         from autodj.jobs import get_manager
 
         return get_manager().snapshot()
 
     @app.post("/api/library/run")
     async def api_library_run(body: LibraryJobBody) -> dict:
-        """Kick off an indexer / prune job."""
+        """Start one of the allowed library CLI jobs."""
         from autodj.jobs import get_manager
 
         mgr = get_manager()
@@ -2253,6 +2248,12 @@ def serve(
     # re-tick everything on restart.
     bridge.load_persistent_state()
 
+    if cfg.playback.import_external_cues:
+        # Read the DJ-software libraries once, off the playback thread.
+        threading.Thread(
+            target=player.load_library_cues, name="autodj-library-cues", daemon=True
+        ).start()
+
     # Start Player in a daemon thread — it blocks internally on playback
     player_thread = threading.Thread(
         target=player.run,
@@ -2314,8 +2315,8 @@ def serve(
 
     # ssl_certfile / ssl_keyfile flip uvicorn into HTTPS mode, which is
     # required by browsers to expose AudioWorklet on non-localhost hosts.
-    # Without HTTPS the freeze / glitch / bitcrusher worklets fall back
-    # to BufferSource / WaveShaper approximations.
+    # Without HTTPS the gate stutter / freeze / glitch / bitcrusher
+    # worklets are skipped and those transitions play a plain crossfade.
     uvicorn_kwargs: dict = {
         "host": host,
         "port": port,

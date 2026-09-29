@@ -1,4 +1,4 @@
-// Section router -- single-page nav across the four views.  Audio
+// Section router -- single-page nav across the five views.  Audio
 // graph + crossfade state survive every navigation because the
 // document never reloads; only the `hidden` attribute toggles on
 // each <section>.  Tablist arrow / Home / End navigation follows

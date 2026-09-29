@@ -914,22 +914,19 @@ class TestCmdListIndexes:
         assert "No indexes found" in result.output
 
     def test_lists_named_indexes(self, tmp_path: Path) -> None:
-        # Build two named index dirs with tracks.db each
-        import sqlite3 as _sql
+        import numpy as np
 
-        from autodj.indexer import _TRACKS_SCHEMA
+        from autodj.indexer import FEATURE_DIM, save_index
+        from tests.unit._fakes import make_entry
 
         for n, count in (("default", 5), ("workout", 12)):
             d = tmp_path / "idx" / n
             d.mkdir(parents=True)
-            conn = _sql.connect(d / "tracks.db")
-            conn.executescript(_TRACKS_SCHEMA)
-            conn.executemany(
-                "INSERT INTO tracks (vec_row, path) VALUES (?, ?)",
-                [(i, f"x{i}") for i in range(count)],
-            )
-            conn.commit()
-            conn.close()
+            entries = [make_entry(i) for i in range(count)]
+            for entry in entries:
+                entry.path = f"song_{entry.title}.flac"
+            vectors = np.zeros((count, FEATURE_DIM), dtype=np.float32)
+            save_index(entries, vectors, d, base_generation=0)
         cfg_mock = _make_cfg()
         cfg_mock.index.index_dir = tmp_path / "idx"
         cfg_mock.index.name = "workout"
@@ -940,6 +937,17 @@ class TestCmdListIndexes:
         assert "workout" in result.output
         assert "5 tracks" in result.output
         assert "12 tracks" in result.output
+
+    def test_old_format_index_needs_a_rebuild(self, tmp_path: Path) -> None:
+        d = tmp_path / "idx" / "old"
+        d.mkdir(parents=True)
+        (d / "tracks.db").write_bytes(b"")
+        cfg_mock = _make_cfg()
+        cfg_mock.index.index_dir = tmp_path / "idx"
+        with patch("autodj.config.load_config", return_value=cfg_mock):
+            result = CliRunner().invoke(cli, ["list-indexes"])
+        assert result.exit_code == 0
+        assert "rebuild with autodj index --force" in result.output
 
     def test_skips_empty_index_dir(self, tmp_path: Path) -> None:
         (tmp_path / "idx").mkdir()
@@ -953,8 +961,7 @@ class TestCmdListIndexes:
     def test_corrupt_metadata_marked(self, tmp_path: Path) -> None:
         d = tmp_path / "idx" / "broken"
         d.mkdir(parents=True)
-        # Garbage bytes that sqlite3 will refuse to open as a database.
-        (d / "tracks.db").write_bytes(b"not a sqlite db")
+        (d / "index-manifest.json").write_text("{", encoding="utf-8")
         cfg_mock = _make_cfg()
         cfg_mock.index.index_dir = tmp_path / "idx"
         with patch("autodj.config.load_config", return_value=cfg_mock):
