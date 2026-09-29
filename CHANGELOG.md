@@ -119,6 +119,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The session logs: `serve --export-m3u`, `serve --history-file`, `[playback] history_file` and
   the `autodj playlist` command. A `config.toml` that still sets `history_file` is refused; delete
   the line. The History tab in the web page stays. Backups no longer hold a play history file.
+- The playback and DJ-mix options of `autodj serve`: `--preset`, `--bpm-range`,
+  `--discovery-every`, `--smart-shuffle`, `--pure-shuffle`, `--anchor-seed`, `--show-lyrics`,
+  `--import-external-cues`, `--beat-sync-fx`, `--key-sync-fx`, `--harmonic-mode`,
+  `--transition-mode`, `--beatmatch`, `--phrase-align`, `--align-outro`, `--filter-sweep` and
+  `--transition`, with their `--no-` forms. Set these in the web page, which saves them, or in
+  `config.toml`. `serve` keeps its server options (`--seed`, `--lan`, `--host`, `--port`,
+  `--insecure-lan`, `--open`, `--name`, `--server-audio`, `--stream` and the TLS options).
 
 ### Fixed
 

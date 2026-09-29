@@ -361,7 +361,8 @@ revision = "main"
 # Optional: user-defined BPM presets
 # ---------------------------------------------------------------------------
 # Add named BPM-shaping presets that bias the next-song picker toward a
-# target tempo (constant, linear ramp, or sine arch). Use with `--preset NAME`.
+# target tempo (constant, linear ramp, or sine arch). Pick one under Settings in the
+# web page.
 # In this file each preset is a [presets.NAME] table.  If a presets.toml sits
 # next to this file, it is used instead and these tables are ignored; there
 # each preset is a bare [NAME] table (see presets.toml.example).

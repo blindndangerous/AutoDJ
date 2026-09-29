@@ -542,10 +542,6 @@ class Player:
         sim_index: Loaded similarity index for next-track selection.
         dry_run: Browser mode: pick tracks but play nothing on the server;
             the web page plays the audio.
-        preset: Optional BPM-shaping preset.
-        discovery_every: Override discovery rate (tracks between injections).
-            When ``None``, falls back to ``preset.discovery_every`` if set.
-        bpm_range: Hard BPM filter ``(lo, hi)`` applied to every track pick.
         stream_mode: Serve the mix as a radio stream: the mix bus is built
             up front and a :class:`~autodj.station.Station` starts and stops
             sets as listeners come and go.
@@ -557,12 +553,6 @@ class Player:
         cfg: AutoDJConfig,
         sim_index: SimilarityIndex,
         dry_run: bool = False,
-        preset: Preset | None = None,
-        discovery_every: int | None = None,
-        bpm_range: tuple[float, float] | None = None,
-        smart_shuffle: bool = False,
-        pure_shuffle: bool = False,
-        anchor_to_seed: bool = False,
         stream_mode: bool = False,
         server_audio_too: bool = False,
     ) -> None:
@@ -575,10 +565,6 @@ class Player:
             cfg: Full :class:`~autodj.config.AutoDJConfig` instance.
             sim_index: Loaded :class:`~autodj.similarity.SimilarityIndex`.
             dry_run: Browser mode: pick tracks but play nothing on the server.
-            preset: Optional :class:`~autodj.presets.Preset` for BPM shaping.
-            discovery_every: Tracks between discovery injections.  Overrides
-                ``preset.discovery_every`` when both are set.
-            bpm_range: Hard ``(lo, hi)`` BPM filter for every track pick.
             stream_mode: Build the mix bus now and leave starting sets to
                 the stream station (see :meth:`begin_set`).
             server_audio_too: In stream mode, also open the sound card.
@@ -588,15 +574,17 @@ class Player:
         self._dry_run = dry_run
         self._stream_mode = stream_mode
         self._server_audio_too = server_audio_too
-        self._preset = preset
-        self._bpm_range = bpm_range
-        self._smart_shuffle = smart_shuffle
+        # Picker settings.  They start off (discovery at the configured
+        # rate) and the web page's settings routes change them.
+        self._preset: Preset | None = None
+        self._bpm_range: tuple[float, float] | None = None
+        self._smart_shuffle = False
         # Anchored mode: when True, every similarity query uses the SEED
         # vector rather than the currently-playing track.  Prevents the
         # session from drifting away from where the user started — each
         # next track is similar to the seed, not to the previous track.
-        # Off by default; toggle from web UI / `--anchor-seed` CLI flag.
-        self._anchor_to_seed: bool = anchor_to_seed
+        # Off by default; toggled from the web UI.
+        self._anchor_to_seed = False
         # Path of the seed track — set in run() / set externally by the
         # bridge when the user picks a fresh seed.  Used by anchored mode.
         self._seed_path: str | None = None
@@ -606,7 +594,7 @@ class Player:
         # the next pick uses similarity from the current track — so they can
         # use shuffle to stumble onto a song they like, then "lock in" by
         # toggling shuffle off and let the auto-DJ continue from there.
-        self._pure_shuffle = pure_shuffle
+        self._pure_shuffle = False
         # Lyrics for the current track — populated when each track loads,
         # consumed by the web UI via PlayerBridge.get_state().
         self._current_lyrics: list = []
@@ -658,12 +646,7 @@ class Player:
         # Previous track played — kept so the explainer can compute deltas
         # against the current pick.
         self._previous_track: IndexEntry | None = None
-        # Discovery rate: CLI override takes precedence over preset
-        self._discovery_every: int | None = (
-            discovery_every
-            if discovery_every is not None
-            else (preset.discovery_every if preset and preset.discovery_every else None)
-        )
+        self._discovery_every: int | None = cfg.playback.discovery_every
         # Clamp no_repeat_window to the library size so the picker never
         # has zero candidates available.  Without this, a library of 200
         # tracks with the default window of 500 would refuse to repeat

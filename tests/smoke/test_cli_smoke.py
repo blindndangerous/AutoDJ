@@ -128,9 +128,9 @@ class TestHelpText:
     def test_serve_help(self, runner: CliRunner) -> None:
         result = runner.invoke(cli, ["serve", "--help"])
         assert result.exit_code == 0
-        assert "--preset" in result.output
-        assert "--bpm-range" in result.output
-        assert "--discovery-every" in result.output
+        assert "--lan" in result.output
+        assert "--stream" in result.output
+        assert "--server-audio" in result.output
 
     def test_stats_help(self, runner: CliRunner) -> None:
         result = runner.invoke(cli, ["stats", "--help"])

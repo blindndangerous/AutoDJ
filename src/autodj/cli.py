@@ -20,9 +20,8 @@ import secrets
 import shutil
 import socket
 import sys
-from copy import deepcopy
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 # Force UTF-8 output on Windows (default terminal encoding is cp1252 which
 # cannot print Unicode box-drawing characters or em-dashes used in track names).
@@ -39,18 +38,7 @@ import click
 from rich.console import Console
 from rich.panel import Panel
 
-from autodj.config import TRANSITION_MODES
-from autodj.dj_meta import HARMONIC_MODES
 from autodj.stream_secret import paired_devices_path
-from autodj.transitions import TRANSITION_EFFECT_NAMES
-
-# Sorted so `--help` lists the effects in a stable order.  Derived from the
-# enum so the CLI can never offer fewer effects than the web UI.
-_TRANSITION_CHOICES = sorted(TRANSITION_EFFECT_NAMES)
-# Declaration order, not sorted: --help must keep listing the modes in the
-# order config.TRANSITION_MODES declares them.
-_TRANSITION_MODE_CHOICES = list(TRANSITION_MODES)
-
 
 if TYPE_CHECKING:
     from autodj.beets import Track
@@ -65,36 +53,6 @@ console = Console()
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
-
-
-def _parse_bpm_range(value: str) -> tuple[float, float]:
-    """Parse a BPM range string like ``"90-130"`` into ``(90.0, 130.0)``.
-
-    Accepts both ASCII hyphen ``-`` and en-dash ``–`` as separators.
-
-    Args:
-        value: Range string, e.g. ``"90-130"`` or ``"90–130"``.
-
-    Returns:
-        ``(lo, hi)`` floats.
-
-    Raises:
-        click.BadParameter: If the string cannot be parsed.
-    """
-    # Allow en-dash as well as regular hyphen
-    normalized = value.replace("\u2013", "-").replace("\u2014", "-")
-    parts = normalized.split("-")
-    if len(parts) != 2:
-        raise click.BadParameter(
-            f"BPM range must be in the format 'MIN-MAX', e.g. '90-130'. Got: '{value}'"
-        )
-    try:
-        lo, hi = float(parts[0]), float(parts[1])
-    except ValueError as err:
-        raise click.BadParameter(f"BPM range values must be numbers. Got: '{value}'") from err
-    if lo >= hi:
-        raise click.BadParameter(f"BPM range MIN must be less than MAX. Got: {lo}–{hi}")
-    return lo, hi
 
 
 def _resolve_seed(
@@ -204,32 +162,6 @@ def _load_index_for_serve(
         return _SI.empty()
 
 
-def _resolve_preset_or_exit(cfg: AutoDJConfig, preset: str | None) -> Any:  # pragma: no cover
-    """Resolve *preset* by name, exiting on ValueError; ``None`` when not requested."""
-    if preset is None:
-        return None
-    from autodj.presets import get_preset
-
-    try:
-        return get_preset(preset, cfg.presets)
-    except ValueError as exc:
-        console.print(f"[bold red]Unknown preset:[/] {exc}")
-        sys.exit(1)
-
-
-def _parse_bpm_range_or_exit(
-    bpm_range: str | None,
-) -> tuple[float, float] | None:  # pragma: no cover
-    """Parse ``--bpm-range`` or exit on click.BadParameter."""
-    if bpm_range is None:
-        return None
-    try:
-        return _parse_bpm_range(bpm_range)
-    except click.BadParameter as exc:
-        console.print(f"[bold red]Invalid --bpm-range:[/] {exc}")
-        sys.exit(1)
-
-
 def _scan_index_rows(
     base: Path, active_name: str
 ) -> list[tuple[str, int, str]]:  # pragma: no cover
@@ -263,101 +195,6 @@ def _can_import(name: str) -> bool:
     except ImportError:
         return False
     return True
-
-
-#: ``serve`` options that set a web-page setting, and that setting's name in
-#: ``web_state.json``.  Given on the command line, they win over the saved value.
-_SERVE_SAVED_SETTINGS = {
-    "preset": "preset",
-    "bpm_range": "bpm_range",
-    "discovery_every": "discovery_every",
-    "smart_shuffle": "smart_shuffle",
-    "pure_shuffle": "pure_shuffle",
-    "anchor_to_seed": "anchor_to_seed",
-    "show_lyrics": "show_lyrics",
-    "enable_daypart": "enable_daypart",
-    "enable_mood_arc": "enable_mood_arc",
-    "mood_arc_hours": "mood_arc_hours",
-    "import_external_cues": "import_external_cues",
-    "beat_sync_fx": "beat_sync_fx",
-    "key_sync_fx": "key_sync_fx",
-    "harmonic_mode": "harmonic_mode",
-    "transition_mode": "transition_mode",
-    "beatmatch": "beatmatch",
-    "phrase_align": "phrase_align",
-    "outro_intro_align": "outro_intro_align",
-    "filter_sweep": "filter_sweep",
-    "transition_fx": "transition",
-}
-
-
-def _serve_cli_settings(ctx: click.Context) -> frozenset[str]:
-    """Return the saved web settings this ``serve`` command line sets."""
-    from click.core import ParameterSource
-
-    return frozenset(
-        setting
-        for option, setting in _SERVE_SAVED_SETTINGS.items()
-        if ctx.get_parameter_source(option) is ParameterSource.COMMANDLINE
-    )
-
-
-def _apply_serve_overrides(
-    cfg: AutoDJConfig, kw: dict
-) -> bool:  # pragma: no cover -- exercised by smoke tests
-    """Apply CLI overrides for ``serve`` onto *cfg* in place.
-
-    *kw* is the local mapping captured at the top of ``cmd_serve``;
-    every key matches a click option name.
-    """
-    djmix_keys = (
-        "harmonic_mode",
-        "beatmatch",
-        "phrase_align",
-        "outro_intro_align",
-        "filter_sweep",
-    )
-    playback_keys = (
-        "enable_daypart",
-        "enable_mood_arc",
-        "import_external_cues",
-        "beat_sync_fx",
-        "key_sync_fx",
-        "show_lyrics",
-    )
-    validated_transition_mode: str | None = None
-    if kw.get("transition_mode") is not None:
-        from autodj.config import _validate_transition_mode
-
-        try:
-            validated_transition_mode = _validate_transition_mode(kw["transition_mode"])
-        except ValueError as exc:
-            console.print(f"[bold red]Invalid --transition-mode:[/] {exc}")
-            sys.exit(1)
-
-    changed = False
-    for section, keys in ((cfg.djmix, djmix_keys), (cfg.playback, playback_keys)):
-        for key in keys:
-            if kw.get(key) is not None and getattr(section, key) != kw[key]:
-                setattr(section, key, kw[key])
-                changed = True
-    if kw.get("mood_arc_hours") is not None:
-        value = max(0.25, float(kw["mood_arc_hours"]))
-        if cfg.playback.mood_arc_hours != value:
-            cfg.playback.mood_arc_hours = value
-            changed = True
-    if kw.get("transition_fx") is not None:
-        value = kw["transition_fx"]
-        if cfg.transitions.effect != value:
-            cfg.transitions.effect = value
-            changed = True
-    if (
-        validated_transition_mode is not None
-        and cfg.playback.transition_mode != validated_transition_mode
-    ):
-        cfg.playback.transition_mode = validated_transition_mode
-        changed = True
-    return changed
 
 
 def _require_ffmpeg_for_stream(cfg: AutoDJConfig) -> None:
@@ -459,26 +296,10 @@ def _stage_serve_server(
 
 
 def _print_serve_banner(
-    console_: Console,
-    *,
-    sim: SimilarityIndex,
-    resolved_preset: Any,
-    parsed_bpm_range: tuple[float, float] | None,
-    discovery_every: int | None,
+    console_: Console, sim: SimilarityIndex
 ) -> None:  # pragma: no cover -- terminal banner
-    """Print the index summary + active preset / BPM / discovery banner."""
-    console_.print(
-        Panel(
-            f"[bold green]AutoDJ[/] — {sim.ntotal} tracks indexed",
-            expand=False,
-        )
-    )
-    if resolved_preset:
-        console_.print(f"  Preset     : {resolved_preset.name}")
-    if parsed_bpm_range:
-        console_.print(f"  BPM range  : {parsed_bpm_range[0]:.0f}–{parsed_bpm_range[1]:.0f}")
-    if discovery_every:
-        console_.print(f"  Discovery  : every {discovery_every} tracks")
+    """Print the index summary banner."""
+    console_.print(Panel(f"[bold green]AutoDJ[/] — {sim.ntotal} tracks indexed", expand=False))
 
 
 def _print_serve_url_banner(
@@ -1310,113 +1131,6 @@ def cmd_analyse(
     help="Open the web UI in the default browser after starting.",
 )
 @click.option(
-    "--preset",
-    default=None,
-    type=str,
-    help="BPM-shaping preset name (e.g. wakeup, chill, party).",
-)
-@click.option(
-    "--bpm-range",
-    "bpm_range",
-    default=None,
-    type=str,
-    help="Hard BPM filter, e.g. '90-130'. Tracks outside this range are excluded.",
-)
-@click.option(
-    "--discovery-every",
-    "discovery_every",
-    default=None,
-    type=int,
-    help=(
-        "Inject a sonically distant track every N tracks. "
-        "Toggle via the discovery button in the web UI."
-    ),
-)
-@click.option(
-    "--smart-shuffle",
-    is_flag=True,
-    default=False,
-    help="Pick the most sonically DISTANT next track instead of the closest.",
-)
-@click.option(
-    "--daypart/--no-daypart",
-    "enable_daypart",
-    default=None,
-    help="Pick BPM/energy targets from local time of day.",
-)
-@click.option(
-    "--mood-arc/--no-mood-arc",
-    "enable_mood_arc",
-    default=None,
-    help="Set-relative warmup -> peak -> cool envelope.",
-)
-@click.option(
-    "--mood-arc-hours",
-    type=float,
-    default=None,
-    help="Length of the mood-arc envelope in hours.  Default 3.",
-)
-@click.option(
-    "--import-external-cues/--no-import-external-cues",
-    "import_external_cues",
-    default=None,
-    help="Import cues from Mixxx / Rekordbox / Traktor libraries and Serato file tags.",
-)
-@click.option(
-    "--beat-sync-fx/--no-beat-sync-fx",
-    "beat_sync_fx",
-    default=None,
-    help="Snap rhythmic transition FX to the beat grid + size to whole bars.",
-)
-@click.option(
-    "--key-sync-fx/--no-key-sync-fx",
-    "key_sync_fx",
-    default=None,
-    help="Tune oscillator FX (pitch_swell, dub_siren, ...) to song root note.",
-)
-@click.option(
-    "--harmonic-mode",
-    "harmonic_mode",
-    default=None,
-    type=click.Choice(HARMONIC_MODES, case_sensitive=False),
-    help="Harmonic-mixing rule for next-track picks; 'off' disables it.",
-)
-@click.option(
-    "--transition-mode",
-    "transition_mode",
-    default=None,
-    type=click.Choice(_TRANSITION_MODE_CHOICES, case_sensitive=False),
-    help="Crossfade alignment mode for the web-UI auto-DJ.",
-)
-@click.option(
-    "--beatmatch/--no-beatmatch",
-    default=None,
-    help="Pitch-stretch incoming track to match outgoing BPM during crossfade.",
-)
-@click.option(
-    "--phrase-align/--no-phrase-align",
-    default=None,
-    help="Snap crossfade start to nearest 8-bar phrase boundary.",
-)
-@click.option(
-    "--align-outro/--no-align-outro",
-    "outro_intro_align",
-    default=None,
-    help="Crossfade between detected outro of A and intro of B.",
-)
-@click.option(
-    "--filter-sweep/--no-filter-sweep",
-    default=None,
-    help="Low-pass sweep on outgoing tail during crossfade.",
-)
-@click.option(
-    "--transition",
-    "transition_fx",
-    default=None,
-    type=click.Choice(_TRANSITION_CHOICES, case_sensitive=False),
-    help="Transition effect layered on every crossfade.",
-)
-@click.option(
     "--name",
     "index_name",
     default=None,
@@ -1431,33 +1145,6 @@ def cmd_analyse(
         "Play audio from the server process.  Off by default: "
         "the browser is the audio output so skipping / volume / device "
         "changes only touch the local browser, never the server thread."
-    ),
-)
-@click.option(
-    "--pure-shuffle",
-    is_flag=True,
-    default=False,
-    help=(
-        "Random walk — uniformly random next pick, ignores similarity.  "
-        "Toggle off mid-set to seed similarity from the current song."
-    ),
-)
-@click.option(
-    "--anchor-seed/--no-anchor-seed",
-    "anchor_to_seed",
-    default=None,
-    help=(
-        "Each next pick stays similar to the SEED, not the last track.  "
-        "Prevents drift through chained similarity hops."
-    ),
-)
-@click.option(
-    "--show-lyrics/--no-show-lyrics",
-    "show_lyrics",
-    default=None,
-    help=(
-        "Show LRC / plain lyrics in the web UI.  Overrides "
-        "[playback] show_lyrics in config.toml.  Default: on."
     ),
 )
 @click.option(
@@ -1497,26 +1184,6 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
     allowed_hosts: tuple[str, ...],
     allowed_origins: tuple[str, ...],
     open_browser: bool,
-    preset: str | None,
-    bpm_range: str | None,
-    discovery_every: int | None,
-    smart_shuffle: bool,
-    pure_shuffle: bool,
-    anchor_to_seed: bool | None,
-    show_lyrics: bool | None,
-    enable_daypart: bool | None,
-    enable_mood_arc: bool | None,
-    mood_arc_hours: float | None,
-    import_external_cues: bool | None,
-    beat_sync_fx: bool | None,
-    key_sync_fx: bool | None,
-    harmonic_mode: str | None,
-    beatmatch: bool | None,
-    phrase_align: bool | None,
-    outro_intro_align: bool | None,
-    filter_sweep: bool | None,
-    transition_fx: str | None,
-    transition_mode: str | None,
     index_name: str | None,
     server_audio: bool,
     stream: bool | None,
@@ -1535,7 +1202,6 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
       uv run autodj serve
       uv run autodj serve --seed "Portishead" --open
       uv run autodj serve --lan
-      uv run autodj serve --preset wakeup --discovery-every 10
       uv run autodj serve --server-audio
     """
     from autodj.server import serve
@@ -1584,10 +1250,6 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
             console.print(f"[bold red]Invalid --name:[/] {exc}")
             sys.exit(1)
         selected_index_name = index_name
-    staged_override_cfg = deepcopy(cfg)
-    general_cli_override = _apply_serve_overrides(staged_override_cfg, locals())
-    resolved_preset = _resolve_preset_or_exit(cfg, preset)
-    parsed_bpm_range = _parse_bpm_range_or_exit(bpm_range)
     from autodj.index_manifest import IndexConsistencyError
 
     try:
@@ -1601,24 +1263,14 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
         and not is_loopback_bind(staged_server.host)
     ):
         console.print("[yellow]WARNING: LAN access is unauthenticated (--insecure-lan).[/]")
-    _print_serve_banner(
-        console,
-        sim=sim,
-        resolved_preset=resolved_preset,
-        parsed_bpm_range=parsed_bpm_range,
-        discovery_every=discovery_every,
-    )
+    _print_serve_banner(console, sim)
     seed_entry = _resolve_seed(sim, cfg, seed, console)
     url = _print_serve_url_banner(console, host, port, staged_server.ssl_certfile is not None)
-    cfg.djmix = staged_override_cfg.djmix
-    cfg.playback = staged_override_cfg.playback
-    cfg.transitions = staged_override_cfg.transitions
     cfg.server = staged_server
     if stream is not None:
         cfg.stream.enabled = stream
-        general_cli_override = True
     _apply_index_name(cfg, index_name)
-    if general_cli_override or server_cli_override:
+    if stream is not None or server_cli_override:
         _append_cli_source(cfg)
     _require_ffmpeg_for_stream(cfg)
     if open_browser:
@@ -1635,18 +1287,9 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
             seed_entry=seed_entry,
             host=host,
             port=port,
-            preset=resolved_preset,
-            discovery_every=discovery_every
-            if discovery_every is not None
-            else cfg.playback.discovery_every,
-            bpm_range=parsed_bpm_range,
-            smart_shuffle=smart_shuffle,
-            pure_shuffle=pure_shuffle,
-            anchor_to_seed=bool(anchor_to_seed),
             no_playback=not server_audio,
             stream=cfg.stream.enabled,
             lan_configured_hosts=lan_configured_hosts,
-            cli_settings=_serve_cli_settings(ctx),
         )
     except KeyboardInterrupt:
         console.print("\n[yellow]Stopped.[/]")

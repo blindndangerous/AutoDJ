@@ -83,8 +83,8 @@ def _write_state(index_dir: Path, payload: object) -> None:
     (index_dir / "web_state.json").write_text(json.dumps(payload), encoding="utf-8")
 
 
-def _load(player: SimpleNamespace, index_dir: Path, skip: frozenset[str] = frozenset()) -> None:
-    load_into_bridge(PlayerBridge(player, player._sim), index_dir, skip)
+def _load(player: SimpleNamespace, index_dir: Path) -> None:
+    load_into_bridge(PlayerBridge(player, player._sim), index_dir)
 
 
 def _warnings(caplog: pytest.LogCaptureFixture, field: str) -> int:
@@ -189,35 +189,6 @@ def test_non_object_state_root_is_warned_and_ignored(tmp_path: Path, caplog) -> 
     _load(_make_player(), tmp_path)
 
     assert "root is not an object" in caplog.text
-
-
-def test_settings_given_on_the_command_line_are_not_restored(tmp_path: Path) -> None:
-    player = _make_player()
-    player._cfg.transitions.effect = "echo_out"
-    player._cfg.djmix.beatmatch = True
-    player._cfg.playback.show_lyrics = False
-    player._bpm_range = (100.0, 120.0)
-    _write_state(
-        tmp_path,
-        {
-            "transition": "rotate",
-            "djmix": {"beatmatch": False, "phrase_align": True},
-            "playback": {"show_lyrics": True, "crossfade_seconds": 7.0},
-            "bpm_range": {"lo": 80.0, "hi": 90.0},
-            "discovery_every": 9,
-        },
-    )
-
-    _load(player, tmp_path, frozenset({"transition", "beatmatch", "show_lyrics", "bpm_range"}))
-
-    assert player._cfg.transitions.effect == "echo_out"
-    assert player._cfg.djmix.beatmatch is True
-    assert player._cfg.playback.show_lyrics is False
-    assert player._bpm_range == (100.0, 120.0)
-    # Everything the command line did not set still comes back.
-    assert player._cfg.djmix.phrase_align is True
-    assert player._cfg.playback.crossfade_seconds == 7.0
-    assert player._discovery_every == 9
 
 
 def test_mood_arc_follows_the_restored_switch(tmp_path: Path) -> None:

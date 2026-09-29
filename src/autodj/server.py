@@ -116,7 +116,6 @@ from autodj.version import current_version
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig
     from autodj.indexer import IndexEntry
-    from autodj.presets import Preset
     from autodj.similarity import SimilarityIndex
     from autodj.stream import StreamOutput
 
@@ -2162,16 +2161,9 @@ def serve(
     seed_entry: IndexEntry | None,
     host: str | None = None,
     port: int | None = None,
-    preset: Preset | None = None,
-    discovery_every: int | None = None,
-    bpm_range: tuple[float, float] | None = None,
-    smart_shuffle: bool = False,
-    pure_shuffle: bool = False,
-    anchor_to_seed: bool = False,
     no_playback: bool = False,
     stream: bool = False,
     lan_configured_hosts: list[str] | None = None,
-    cli_settings: frozenset[str] = frozenset(),
 ) -> None:
     """Start the Player thread and the FastAPI/uvicorn web server.
 
@@ -2184,9 +2176,6 @@ def serve(
             for a random track.
         host: Interface to bind uvicorn to.
         port: Port to bind uvicorn to.
-        preset: Optional BPM-shaping preset (forwarded to Player).
-        discovery_every: Discovery injection rate (forwarded to Player).
-        bpm_range: Hard BPM filter ``(lo, hi)`` (forwarded to Player).
         no_playback: Skip server-side audio playback (browser drives audio).
             With *stream*, ``False`` also plays the mix on the sound card.
         stream: Serve the live mix as an MP3 radio stream: the server mixes,
@@ -2196,8 +2185,6 @@ def serve(
         lan_configured_hosts: In LAN mode, the allowed hosts configured before
             detection was merged in; inside a container these are the only
             addresses printed, because container addresses are unreachable.
-        cli_settings: Saved web settings (``web_state.json`` names) given on
-            the command line; they keep their command-line value this run.
 
     HTTPS is on when ``cfg.server.ssl_certfile`` and ``ssl_keyfile`` are set;
     a :class:`~autodj.tls.CertificateReloader` then loads renewed files into
@@ -2259,21 +2246,15 @@ def serve(
         dry_run=no_playback and not stream,
         stream_mode=stream,
         server_audio_too=stream and not no_playback,
-        preset=preset,
-        discovery_every=discovery_every,
-        bpm_range=bpm_range,
-        smart_shuffle=smart_shuffle,
-        pure_shuffle=pure_shuffle,
-        anchor_to_seed=anchor_to_seed,
     )
     bridge = PlayerBridge(player=player, sim=sim)
     # The mix bus announces every track it starts: session history, the
     # stream title and liner counting all hang off this hook.
     player.on_track_started = bridge.on_track_started
 
-    # Restore the settings saved from the web page, except the ones this
-    # command line sets, so the user doesn't re-tick everything on restart.
-    bridge.load_persistent_state(cli_settings)
+    # Restore the settings saved from the web page, so the user doesn't
+    # re-tick everything on restart.
+    bridge.load_persistent_state()
 
     # Start Player in a daemon thread — it blocks internally on playback
     player_thread = threading.Thread(

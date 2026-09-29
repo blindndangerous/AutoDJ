@@ -16,7 +16,6 @@ import logging
 import secrets
 import threading
 from collections import deque
-from collections.abc import Collection
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -1086,16 +1085,11 @@ class PlayerBridge:
     # Persistence — settings survive serve restarts
     # ------------------------------------------------------------------
 
-    def load_persistent_state(self, skip: Collection[str] = frozenset()) -> None:
-        """Restore previously-saved settings from web_state.json.
-
-        Args:
-            skip: Saved setting names this run's command line set; their
-                saved values are not restored.
-        """
+    def load_persistent_state(self) -> None:
+        """Restore previously-saved settings from web_state.json."""
         from autodj.runtime_state import load_into_bridge
 
-        load_into_bridge(self, self.player._cfg.index.active_dir, skip)
+        load_into_bridge(self, self.player._cfg.index.active_dir)
 
     def save_persistent_state(self) -> None:
         """Write current settings to web_state.json (atomic)."""

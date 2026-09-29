@@ -252,10 +252,10 @@ It does not work well when:
 
 AutoDJ starts with validated defaults. If `config.toml` exists in the working directory, AutoDJ
 loads it, then loads sibling `config.local.toml`. Environment variables override files, and
-explicit CLI flags override all other sources. `autodj serve` also restores the settings last
-saved from the web page (`web_state.json`), which override the files and environment variables;
-a setting given as a `serve` flag keeps the flag's value for that run, and the page saves it with
-the others the next time you change a setting there. Omitting `--config` is valid. Passing
+command-line options such as `--host` or `--stream` override both. `autodj serve` also restores
+the settings last saved from the web page (`web_state.json`), which override the files and
+environment variables. The playback and DJ-mix settings have no `serve` options; change them in
+the web page or in `config.toml`. Omitting `--config` is valid. Passing
 `--config /path/to/config.toml` makes that file explicit, so a missing path is an error. Shipped
 `config.toml.example` lists supported environment variables and settings. Every key and section
 in `config.toml` and `config.local.toml` must be one AutoDJ knows: a removed or misspelled setting

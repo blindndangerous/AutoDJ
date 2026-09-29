@@ -1,9 +1,9 @@
-"""Every transition effect must be offered and accepted by all four surfaces.
+"""Every transition effect must be offered and accepted by every surface.
 
-The web UI dropdown, the browser audio engine, the CLI ``--transition`` choice
-list and the server allowlist were maintained by hand, and the last three had
-drifted ten effects behind the enum: choosing one of them in the browser was
-accepted with a 200, ignored, and silently reverted on the next state push.
+The web UI dropdown, the browser audio engine and the server allowlist were
+maintained by hand and had drifted ten effects behind the enum: choosing one
+of them in the browser was accepted with a 200, ignored, and silently reverted
+on the next state push.
 """
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ from pathlib import Path
 
 import pytest
 
-from autodj.cli import cli
 from autodj.transitions import TRANSITION_EFFECT_NAMES
 
 _STATIC = Path(__file__).resolve().parents[2] / "src" / "autodj" / "static"
@@ -44,12 +43,6 @@ class TestServerAcceptsEveryEffect:
 
 
 class TestAllowlistsAreDerived:
-    def test_cli_choices_match_the_enum(self) -> None:
-        option = next(
-            param for param in cli.commands["serve"].params if param.name == "transition_fx"
-        )
-        assert set(option.type.choices) == TRANSITION_EFFECT_NAMES
-
     def test_settings_dropdown_lists_every_effect(self) -> None:
         html = (_STATIC / "index.html").read_text(encoding="utf-8")
         select = re.search(r'<select id="transition-select".*?</select>', html, re.S)

@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Collection
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -95,13 +94,13 @@ def _checked(model: type[BaseModel], field: str, value: object, saved_as: str | 
         return _INVALID
 
 
-def _section(data: dict, name: str, skip: Collection[str]) -> dict[str, Any]:
-    """Return saved section *name* without the fields in *skip*."""
+def _section(data: dict, name: str) -> dict[str, Any]:
+    """Return saved section *name*, or an empty one when it is not an object."""
     section = data.get(name, {})
     if not isinstance(section, dict):
         _warn(name, section)
         return {}
-    return {field: value for field, value in section.items() if field not in skip}
+    return section
 
 
 def _restore_preset(bridge: PlayerBridge, value: object) -> None:
@@ -155,9 +154,7 @@ def _restore_playback(bridge: PlayerBridge, playback: dict[str, Any]) -> None:
     bridge.set_playback_settings(PlaybackSettingsBody.model_validate(values))
 
 
-def load_into_bridge(
-    bridge: PlayerBridge, index_dir: Path | None, skip: Collection[str] = frozenset()
-) -> None:
+def load_into_bridge(bridge: PlayerBridge, index_dir: Path | None) -> None:
     """Restore previously-saved settings through *bridge*.
 
     No-op when no state file exists, it's unreadable, or its
@@ -166,8 +163,6 @@ def load_into_bridge(
     Args:
         bridge: The :class:`~autodj._bridge.PlayerBridge` of a live player.
         index_dir: Directory housing ``web_state.json``.
-        skip: Saved field names (top-level, ``djmix`` or ``playback`` keys)
-            to leave alone, because this run's command line set them.
     """
     path = state_file_for(index_dir)
     if path is None or not path.exists():
@@ -191,33 +186,32 @@ def load_into_bridge(
         return
     for field in data.keys() - _TOP_LEVEL_FIELDS:
         _warn(field, data[field])
-    saved = {field: value for field, value in data.items() if field not in skip}
 
-    if "preset" in saved:
-        _restore_preset(bridge, saved["preset"])
-    if "transition" in saved:
-        effect = _checked(TransitionBody, "effect", saved["transition"], "transition")
+    if "preset" in data:
+        _restore_preset(bridge, data["preset"])
+    if "transition" in data:
+        effect = _checked(TransitionBody, "effect", data["transition"], "transition")
         if effect is not _INVALID:
             try:
                 bridge.set_transition(effect)
             except ValueError:
                 _warn("transition", effect)
     djmix: dict[str, Any] = {}
-    for field, value in _section(saved, "djmix", skip).items():
+    for field, value in _section(data, "djmix").items():
         checked = _checked(DjMixBody, field, value)
         if checked is not _INVALID:
             djmix[field] = checked
     bridge.set_djmix(**djmix)
-    _restore_playback(bridge, _section(saved, "playback", skip))
-    if "bpm_range" in saved:
+    _restore_playback(bridge, _section(data, "playback"))
+    if "bpm_range" in data:
         try:
-            bpm = BpmRangeBody.model_validate(saved["bpm_range"], strict=True)
+            bpm = BpmRangeBody.model_validate(data["bpm_range"], strict=True)
         except ValidationError:
-            _warn("bpm_range", saved["bpm_range"])
+            _warn("bpm_range", data["bpm_range"])
         else:
             bridge.set_bpm_range(bpm.lo, bpm.hi)
-    if "discovery_every" in saved:
-        every = _checked(DiscoveryBody, "every", saved["discovery_every"], "discovery_every")
+    if "discovery_every" in data:
+        every = _checked(DiscoveryBody, "every", data["discovery_every"], "discovery_every")
         if every is not _INVALID:
             # Only the rate: the Discovery button still starts off after a restart.
             bridge.player._discovery_every = every if every and every > 0 else None

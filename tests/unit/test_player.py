@@ -265,21 +265,11 @@ class TestPlayerConstruction:
         # 5 is well below library size; no clamp.
         assert player._state.no_repeat_window == 5
 
-    def test_discovery_every_from_arg(self) -> None:
-        player = Player(_make_cfg_mock(), _make_sim_index(), discovery_every=5)
+    def test_discovery_every_from_config(self) -> None:
+        cfg = _make_cfg_mock()
+        cfg.playback.discovery_every = 5
+        player = Player(cfg, _make_sim_index())
         assert player._discovery_every == 5
-
-    def test_discovery_every_from_preset(self) -> None:
-        preset = MagicMock()
-        preset.discovery_every = 7
-        player = Player(_make_cfg_mock(), _make_sim_index(), preset=preset)
-        assert player._discovery_every == 7
-
-    def test_discovery_every_arg_overrides_preset(self) -> None:
-        preset = MagicMock()
-        preset.discovery_every = 7
-        player = Player(_make_cfg_mock(), _make_sim_index(), preset=preset, discovery_every=3)
-        assert player._discovery_every == 3
 
 
 # ---------------------------------------------------------------------------
@@ -386,8 +376,11 @@ class TestPlayerExternalCues:
 
 
 class TestPlayerPickNext:
-    def _make_player(self, n: int = 10, **kwargs) -> Player:
-        return Player(_make_cfg_mock(), _make_sim_index(n), **kwargs)
+    def _make_player(self, n: int = 10, **settings) -> Player:
+        player = Player(_make_cfg_mock(), _make_sim_index(n))
+        for name, value in settings.items():
+            setattr(player, f"_{name}", value)
+        return player
 
     def test_returns_index_entry(self) -> None:
         player = self._make_player()
@@ -506,12 +499,9 @@ class TestPlayerPickNext:
 
     def test_pure_shuffle_does_not_admit_unknown_or_out_of_range_bpm(self) -> None:
         sim = _make_sim_index(4, bpms=[110.0, 0.0, 150.0, 125.0])
-        player = Player(
-            _make_cfg_mock(),
-            sim,
-            pure_shuffle=True,
-            bpm_range=(120.0, 130.0),
-        )
+        player = Player(_make_cfg_mock(), sim)
+        player._pure_shuffle = True
+        player._bpm_range = (120.0, 130.0)
         entries = sim.entries_snapshot()
         player._state.current_track = entries[0]
 
@@ -519,12 +509,9 @@ class TestPlayerPickNext:
 
     def test_pure_shuffle_raises_when_no_track_satisfies_hard_bpm(self) -> None:
         sim = _make_sim_index(3, bpms=[0.0] * 3)
-        player = Player(
-            _make_cfg_mock(),
-            sim,
-            pure_shuffle=True,
-            bpm_range=(120.0, 130.0),
-        )
+        player = Player(_make_cfg_mock(), sim)
+        player._pure_shuffle = True
+        player._bpm_range = (120.0, 130.0)
         entries = sim.entries_snapshot()
         player._state.current_track = entries[0]
 
@@ -1881,7 +1868,8 @@ class TestPlayerCoverageErrorPaths:
         assert np.all(np.isfinite(result))
 
     def test_discovery_similarity_failure_returns_none(self) -> None:
-        player = Player(_make_cfg_mock(), _make_sim_index(3), discovery_every=1)
+        player = Player(_make_cfg_mock(), _make_sim_index(3))
+        player._discovery_every = 1
         player._state.discovery_enabled = True
         player._state.track_number = 1
         current = player._sim.entries[0]

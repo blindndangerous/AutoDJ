@@ -45,6 +45,7 @@ def make_cfg_mock() -> MagicMock:
     cfg.playback.show_lyrics = True
     cfg.playback.prefetch_next_track = True
     cfg.playback.silence_trigger_crossfade = True
+    cfg.playback.discovery_every = None
     cfg.playback.enable_daypart = False
     cfg.playback.enable_mood_arc = False
     cfg.playback.mood_arc_hours = 3.0
