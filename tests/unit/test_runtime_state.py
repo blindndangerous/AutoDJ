@@ -372,6 +372,8 @@ class TestLoadInto:
         p = _make_player()
         load_into_player(p, tmp_path)
         assert p._discovery_every == 25
+        # A saved rate must fire after a restart, as it did when set.
+        assert p._state.discovery_enabled is True
 
     def test_clears_discovery_on_zero(self, tmp_path) -> None:
         (tmp_path / "web_state.json").write_text(
@@ -380,8 +382,10 @@ class TestLoadInto:
         )
         p = _make_player()
         p._discovery_every = 20
+        p._state.discovery_enabled = True
         load_into_player(p, tmp_path)
         assert p._discovery_every is None
+        assert p._state.discovery_enabled is False
 
 
 class TestSaveFrom:

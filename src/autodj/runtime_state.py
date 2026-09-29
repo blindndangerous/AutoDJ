@@ -462,16 +462,19 @@ def _restore_bpm_range(player: Any, data: dict) -> None:
 
 
 def _restore_discovery(player: Any, data: dict) -> None:
-    """Restore a nonnegative discovery interval or clear it when null."""
+    """Restore a nonnegative discovery interval or clear it when null.
+
+    Arms the runtime toggle the same way the Settings rate does, so a saved
+    rate keeps firing after a restart.
+    """
     if "discovery_every" not in data:
         return
     value = data["discovery_every"]
-    if value is None:
-        player._discovery_every = None
-    elif type(value) is int and value >= 0:
-        player._discovery_every = value or None
-    else:
+    if value is not None and not (type(value) is int and value >= 0):
         _warn("discovery_every", value)
+        return
+    player._discovery_every = value or None
+    player._state.discovery_enabled = player._discovery_every is not None
 
 
 def load_into_player(player: Any, index_dir: Path | None) -> None:
