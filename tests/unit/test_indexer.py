@@ -16,6 +16,7 @@ from autodj.beets import Track
 from autodj.indexer import (
     FEATURE_DIM,
     IndexEntry,
+    _collect_tracks_to_index,
     _combine_features,
     _extract_librosa_features,
     _resolve_beets_path,
@@ -59,7 +60,7 @@ class TestWalkMusicDir:
         (tmp_path / "a.mp3").touch()
         (tmp_path / "b.flac").touch()
         (tmp_path / "c.txt").touch()
-        paths = walk_music_dir(tmp_path, ["mp3", "flac"])
+        paths = list(walk_music_dir(tmp_path, ["mp3", "flac"]))
         assert Path(tmp_path / "a.mp3") in paths
         assert Path(tmp_path / "b.flac") in paths
         assert Path(tmp_path / "c.txt") not in paths
@@ -68,11 +69,11 @@ class TestWalkMusicDir:
         sub = tmp_path / "Artist" / "Album"
         sub.mkdir(parents=True)
         (sub / "song.flac").touch()
-        paths = walk_music_dir(tmp_path, ["flac"])
+        paths = list(walk_music_dir(tmp_path, ["flac"]))
         assert sub / "song.flac" in paths
 
     def test_empty_dir_returns_empty_list(self, tmp_path: Path) -> None:
-        assert walk_music_dir(tmp_path, ["mp3"]) == []
+        assert list(walk_music_dir(tmp_path, ["mp3"])) == []
 
     def test_raises_if_dir_missing(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError):
@@ -1127,6 +1128,26 @@ def _backfill_cfg(tmp_path: Path, *, throttle_ms: float = 0.0, import_cues: bool
         huggingface=HuggingFaceConfig(),
         config_path=None,
     )
+
+
+def test_index_limit_reads_only_the_tags_it_needs(tmp_path: Path) -> None:
+    # `autodj index --limit 60` read the tags of all 76,728 tracks on a NAS
+    # before applying the limit.  Indexed tracks are skipped unread too.
+    from autodj.audio_meta import FileTags
+
+    cfg = _backfill_cfg(tmp_path)
+    for album in ("A", "B", "C"):
+        (cfg.library.music_dir / album).mkdir(parents=True)
+        for n in range(4):
+            (cfg.library.music_dir / album / f"{n}.flac").touch()
+    indexed = {str(cfg.library.music_dir / "A" / "0.flac")}
+
+    with patch("autodj.audio_meta.read_file_tags", return_value=FileTags()) as read:
+        tracks = _collect_tracks_to_index(cfg, indexed, limit=3)
+
+    wanted = [cfg.library.music_dir / "A" / f"{n}.flac" for n in (1, 2, 3)]
+    assert [t.path for t in tracks] == wanted
+    assert [c.args[0] for c in read.call_args_list] == wanted
 
 
 class TestBackfillDjMeta:

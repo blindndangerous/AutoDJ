@@ -241,6 +241,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   symlinks, but its parallel downloads tried a symlink before it had found that out. AutoDJ now
   downloads the model files one at a time, which avoids that. The model folder layout is
   unchanged.
+- `autodj index --limit N` without a beets database read the tags of every file in the music
+  folder before applying the limit, which took more than 30 minutes on a 76,000-track network
+  share. It now stops looking once it has found N tracks that are not in the index yet. Every
+  `autodj index` run also skips reading the tags of tracks that are already indexed.
 
 ## [0.18.2] - 2026-09-29
 
