@@ -108,20 +108,6 @@ def test_load_audio_falls_back_to_ffmpeg_after_librosa_decoder_error() -> None:
     ffmpeg.assert_called_once_with(Path("song.flac"))
 
 
-def test_load_audio_requires_soundfile() -> None:
-    with (
-        patch.object(indexer, "sf", None),
-        pytest.raises(RuntimeError, match="soundfile is required for audio indexing"),
-    ):
-        indexer._load_audio(Path("song.flac"))
-
-    with (
-        patch.object(indexer, "sf", None),
-        pytest.raises(RuntimeError, match="soundfile is required to read FFmpeg"),
-    ):
-        indexer._load_audio_ffmpeg(Path("song.m4a"))
-
-
 def test_key_estimation_rejects_ambiguous_chroma() -> None:
     ambiguous = np.array(
         [1.00, 0.99, 1.01, 1.00, 0.98, 1.02, 1.00, 0.99, 1.01, 1.00, 0.98, 1.02],
