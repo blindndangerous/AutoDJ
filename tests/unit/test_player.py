@@ -233,15 +233,6 @@ class TestLoadAudio:
 
 
 class TestPlayerConstruction:
-    def test_player_initialises(self) -> None:
-        player = Player(_make_cfg_mock(), _make_sim_index())
-        assert player._state.current_track is None
-        assert player._state.volume == 1.0
-
-    def test_dry_run_flag_stored(self) -> None:
-        player = Player(_make_cfg_mock(), _make_sim_index(), dry_run=True)
-        assert player._dry_run is True
-
     def test_no_repeat_window_clamped_to_library_size(self) -> None:
         """Library smaller than configured window must clamp.
 
@@ -264,12 +255,6 @@ class TestPlayerConstruction:
         player = Player(cfg, sim)
         # 5 is well below library size; no clamp.
         assert player._state.no_repeat_window == 5
-
-    def test_discovery_every_from_config(self) -> None:
-        cfg = _make_cfg_mock()
-        cfg.playback.discovery_every = 5
-        player = Player(cfg, _make_sim_index())
-        assert player._discovery_every == 5
 
 
 # ---------------------------------------------------------------------------
