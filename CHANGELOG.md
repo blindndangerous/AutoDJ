@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-09-29
+
+### Fixed
+
+- `autodj index` no longer tries the same missing files on every run when the beets library still
+  lists tracks that were deleted from disk. It skips them and prints one warning with the count, a
+  few example paths and a hint to run `beet update -M` so beets drops them. Before, each run pruned
+  them from the index, queued them again as new and failed every one in ffmpeg.
+
 ## [0.19.0] - 2026-09-29
 
 ### Added
@@ -1191,7 +1200,8 @@ The "make it feel like a real radio station" release.
 
 AutoDJ is built and maintained by a blind developer.  Every change to the web UI runs through an accessibility review before it ships.  If you find a screen-reader bug or a keyboard trap, please file an issue.
 
-[Unreleased]: https://github.com/blindndangerous/AutoDJ/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/blindndangerous/AutoDJ/compare/v0.19.1...HEAD
+[0.19.1]: https://github.com/blindndangerous/AutoDJ/compare/v0.19.0...v0.19.1
 [0.19.0]: https://github.com/blindndangerous/AutoDJ/compare/v0.18.2...v0.19.0
 [0.18.2]: https://github.com/blindndangerous/AutoDJ/compare/v0.18.1...v0.18.2
 [0.18.1]: https://github.com/blindndangerous/AutoDJ/compare/v0.18.0...v0.18.1
