@@ -251,7 +251,9 @@ class PlaybackConfig(_Section):
 
     Attributes:
         crossfade_seconds: Duration of the crossfade between tracks in seconds.
-            Set to ``0.0`` to disable crossfade entirely.
+            ``0.0`` cuts from one track to the next.  In the
+            ``full_intro_outro`` and ``outro_fade`` transition modes a track
+            with detected markers fades for 1-12 s instead, even at ``0.0``.
         no_repeat_window: Number of recently played tracks excluded from the
             next-song candidate pool.
         discovery_every: Default discovery rate: inject a sonically distant

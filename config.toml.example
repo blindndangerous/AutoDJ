@@ -140,8 +140,8 @@ station_name = "AutoDJ"
 [playback]
 # Duration of the crossfade between tracks, in seconds.  In the
 # "full_intro_outro" and "outro_fade" modes below, a track with detected
-# markers fades for 1 to 12 s instead.  The server mix treats 0 as a cut;
-# the browser treats 0 as the default 3 s.
+# markers fades for 1 to 12 s instead, even at 0.  Otherwise 0 cuts from one
+# track to the next, in the server mix and in the browser.
 crossfade_seconds = 3.0
 
 # How many recently played tracks to exclude from the next-song candidates.
