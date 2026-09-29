@@ -209,6 +209,15 @@ class TestEdgeCases:
             out = _TAIL_EFFECTS[effect](short, SR)
             assert out.shape == short.shape
 
+    @pytest.mark.parametrize("length", [0, 1, 10])
+    def test_no_effect_raises_on_tiny_buffers(self, length: int) -> None:
+        """The module promises no effect raises on short or silent buffers."""
+        from autodj.transitions import apply_transition
+
+        silent = np.zeros(length, dtype=np.float32)
+        for effect in TransitionFx:
+            apply_transition(silent, silent, SR, effect, seed=1)
+
     @pytest.mark.parametrize(
         "effect", [TransitionFx.PITCH_FALL, TransitionFx.FORWARD_SPIN], ids=str
     )

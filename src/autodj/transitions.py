@@ -7,8 +7,10 @@ add energy lifts.  An effect treats the outgoing tail, the incoming
 head, or both (typically 1–8 bars), or synthesises a layer (noise, horn,
 siren) to mix over them.
 
-Each effect is one row in the tables near the end of this module: a
-function plus the parameters that make it that effect.  Effects that
+Each effect is one row in the tables near the end of this module (a
+function plus the parameters that make it that effect), except glitch,
+highpass_sweep and cross_eq_swap, which :func:`apply_transition` handles
+in branches of their own.  Effects that
 differ only in their settings share one function:
 
 - :func:`_delay` — feedback delays: echo_out, flanger, dub_delay
@@ -79,7 +81,7 @@ class TransitionFx(StrEnum):
     BEAT_REPEAT = "beat_repeat"  # capture short slice, retrigger N times
     SIDECHAIN_PUMP = "sidechain_pump"  # rhythmic 4-on-the-floor amplitude pump
     REVERSE_REVERB = "reverse_reverb"  # reverse'd reverb tail swelling INTO the cut
-    AIR_HORN = "air_horn"  # synth dub-siren riser layered with the music
+    AIR_HORN = "air_horn"  # square-wave horn rising 220 -> 880 Hz over the music
     VINYL_REWIND = "vinyl_rewind"  # slow musical reverse + pitch drop (vs harsh backspin)
     TRANSFORMER = "transformer"  # tempo-cut DJ-fader transformer pattern
     DUB_SIREN = "dub_siren"  # sine-wave reggae siren (smoother than air_horn)
@@ -96,7 +98,7 @@ class TransitionFx(StrEnum):
 TRANSITION_EFFECT_NAMES: frozenset[str] = frozenset(fx.value for fx in TransitionFx)
 """Every selectable effect name, including ``none``, ``random`` and ``rotate``.
 
-Single source of truth for the CLI choice list, the web-UI allowlist and the
+Single source of truth for the web-UI allowlist and the
 persisted web-state validator, so a new enum member cannot be offered by one
 surface and rejected by another.
 """
@@ -237,8 +239,10 @@ def _spin(
 ) -> np.ndarray:
     """Read *tail* at a changing speed: tape stop, pitch ramps and the spins.
 
-    ``speed(n)`` gives the playback speed for each of the *n* samples
-    read, with pitch following speed.  With *lead_in* k the first 1/k of
+    ``speed(n)`` gives the shape of the playback speed for each of the *n*
+    samples read, with pitch following speed.  The read is scaled to span
+    the source (see :func:`_resample_by_rate`), so only the ratios between
+    speeds hold, not the absolute values.  With *lead_in* k the first 1/k of
     *tail* plays untouched and the rest is read from that stretch (a
     backspin throws back what was just heard); otherwise the whole tail
     is read.  *reverse* reads it backwards.  The last *fade_s* seconds,
@@ -425,6 +429,8 @@ def _cross_eq_swap(
     """
     from scipy.signal import sosfilt
 
+    if len(tail) == 0 or len(head) == 0:
+        return tail, head
     hp = _butter("high", crossover_hz, sample_rate)
     lp = _butter("low", crossover_hz, sample_rate)
     tail_treble = cast(np.ndarray, sosfilt(hp, tail)).astype(np.float32)
@@ -648,7 +654,7 @@ def _phaser(
     """Allpass-cascade phaser: moving notches, without a flanger's comb.
 
     *stages* first-order allpasses whose break frequency an LFO sweeps
-    between 200 and 1600 Hz, fed back at *feedback* and mixed 50/50 with
+    within 200-1600 Hz (the full range at *depth* 1), fed back at *feedback* and mixed 50/50 with
     the dry tail.
     """
     n = len(tail)
@@ -847,7 +853,7 @@ def _level_layer(layer: np.ndarray, target_peak: float) -> np.ndarray:
 _TAIL_EFFECTS: dict[TransitionFx, Callable[[np.ndarray, int], np.ndarray]] = {
     # Feedback delays.  echo_out: 375 ms (a quarter note at 160 BPM,
     # which sits loosely on most tempos); dub_delay: a slow 1 s with each
-    # repeat darker; flanger: a 1 to 6 ms swept comb.
+    # repeat darker; flanger: a comb swept from one sample to 6 ms.
     TransitionFx.ECHO_OUT: partial(_delay, delay_ms=375.0, feedback=0.55, wet=0.65),
     TransitionFx.DUB_DELAY: partial(
         _delay, delay_ms=1000.0, feedback=0.55, wet=0.55, damping_hz=1500.0, direct=True
@@ -861,11 +867,11 @@ _TAIL_EFFECTS: dict[TransitionFx, Callable[[np.ndarray, int], np.ndarray]] = {
     TransitionFx.PITCH_FALL: partial(
         _spin, speed=lambda n: np.linspace(1.0, 0.4, n, dtype=np.float32), shortest=4
     ),
-    # Push forward: speed rises 1 to 2.5 times, most of it at the end.
+    # Push forward: speed rises 2.5-fold, most of it at the end.
     TransitionFx.FORWARD_SPIN: partial(
         _spin, speed=lambda n: 1.0 + _ramp(n) ** 3 * 1.5, shortest=4
     ),
-    # Walkman rewind: the whole tail backwards, slowing from 1 to 0.5 times.
+    # Walkman rewind: the whole tail backwards, slowing to half its start speed.
     TransitionFx.VINYL_REWIND: partial(
         _spin,
         speed=lambda n: 1.0 - 0.5 * _ramp(n),
@@ -874,8 +880,8 @@ _TAIL_EFFECTS: dict[TransitionFx, Callable[[np.ndarray, int], np.ndarray]] = {
         fade_share=8,
         shortest=2,
     ),
-    # Backspin: a third plays on, then the record is thrown back at 2x
-    # and friction slows it to 0.05x (the Pioneer DJM / Numark envelope).
+    # Backspin: a third plays on, then the record is thrown back fast and
+    # friction slows it about fortyfold (the Pioneer DJM / Numark envelope).
     TransitionFx.BACKSPIN: partial(
         _spin,
         speed=lambda n: 2.0 * (1.0 - _ramp(n) ** 2) + 0.05,
