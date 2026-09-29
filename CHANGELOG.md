@@ -227,6 +227,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   why, like the other number fields, the server refuses it too, a saved profile or web setting
   outside that range is not applied, and AutoDJ refuses to start with either one outside 0 to 20
   in `config.toml`.
+- Why this track could get its BPM sums wrong, such as "BPM lifts 129 to 133, up 3.", because it
+  rounded the two tempos and their difference separately. The difference is now worked out from
+  the two numbers it says.
 
 ## [0.18.2] - 2026-09-29
 
