@@ -119,7 +119,8 @@ def download_model_if_needed(
 
     If ``model_cfg.manual_path`` is set, that folder is used as-is.  Otherwise
     :func:`huggingface_hub.snapshot_download` fetches the configured revision
-    into the HuggingFace cache layout under ``index_cfg.model_dir``; it only
+    into the HuggingFace cache layout under ``index_cfg.model_dir``, one file
+    at a time so it also works where symlinks need a privilege; it only
     downloads missing files and falls back to the cached copy when the Hub
     cannot be reached.
 
@@ -148,6 +149,13 @@ def download_model_if_needed(
             cache_dir=index_cfg.model_dir,
             token=hf_token,
             ignore_patterns=_IGNORE_PATTERNS,
+            # One file at a time.  Where symlinks need a privilege (Windows
+            # without Developer Mode) huggingface_hub copies files instead,
+            # but it tests for symlinks on the first file and, with several
+            # download threads, the others try a symlink before the test
+            # has finished and fail with WinError 1314.  The weights are one
+            # large file, so parallel downloads saved nothing.
+            max_workers=1,
         )
     except Exception as exc:
         raise ModelLoadError(f"Failed to download model '{model_cfg.name}': {exc}") from exc

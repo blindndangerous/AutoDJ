@@ -236,6 +236,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Changing the stream Quality no longer writes a "ValueError: I/O operation on closed file"
   traceback to the server log. The old encoder's output ended while it was being read, which is
   expected there; the stream carried on normally before and still does.
+- The first model download could fail on Windows without Developer Mode with "[WinError 1314] A
+  required privilege is not held by the client". Hugging Face copies files where it cannot make
+  symlinks, but its parallel downloads tried a symlink before it had found that out. AutoDJ now
+  downloads the model files one at a time, which avoids that. The model folder layout is
+  unchanged.
 
 ## [0.18.2] - 2026-09-29
 
