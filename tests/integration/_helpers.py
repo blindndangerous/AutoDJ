@@ -108,7 +108,6 @@ def _make_player_mock(entry: IndexEntry | None = None) -> MagicMock:
     cfg.playback.show_lyrics = True
     cfg.playback.prefetch_next_track = True
     cfg.playback.silence_trigger_crossfade = True
-    cfg.playback.import_external_cues = True
     cfg.playback.beat_sync_fx = True
     cfg.playback.key_sync_fx = True
     cfg.playback.beatmatch_on_skip = False

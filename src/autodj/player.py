@@ -745,11 +745,7 @@ class Player:
         # Remember the seed so anchored mode can keep coming back to it.
         self._seed_path = seed_entry.path
 
-        # External-cue importer (Mixxx / Rekordbox / Traktor).  Runs
-        # synchronously on this thread so the FastAPI event loop in
-        # serve mode is never blocked by SQLite / XML I/O.
         self._ensure_dj_cache()
-        self._ensure_external_cues()
 
         self._record_seed(seed_entry)
         current = seed_entry
@@ -793,7 +789,6 @@ class Player:
         bus = self.bus
         assert bus is not None  # built in __init__ for stream mode
         self._ensure_dj_cache()
-        self._ensure_external_cues()
         output = None
         if self._server_audio_too:
             output = SoundDeviceOutput(self._state, self._cfg.playback.audio_device or None)
@@ -1546,10 +1541,9 @@ class Player:
     def _ensure_dj_cache(self) -> None:
         """Lazy-init the DJ-meta cache on first real use.
 
-        Cheap by design: a single sidecar JSON read.  Safe to call from
+        Cheap by design: it only opens ``dj_meta.db``.  Safe to call from
         an asyncio handler (e.g. ``PlayerBridge.get_state``) without
-        blocking the event loop.  External cue import is deliberately
-        NOT done here -- see :meth:`_ensure_external_cues`.
+        blocking the event loop.
         """
         if self._dj_cache_initialised:
             return
@@ -1567,43 +1561,6 @@ class Player:
         except (OSError, ValueError) as exc:
             logger.warning("DJ cache unavailable: %s", exc)
             self._dj_cache = None
-
-    def _ensure_external_cues(self) -> None:
-        """One-shot import of cues from Mixxx / Rekordbox / Traktor.
-
-        Runs synchronously on the *player thread* (called from
-        :meth:`run`) so the asyncio event loop in the FastAPI server is
-        never blocked by SQLite reads or XML parses.  Imported cues
-        merge into each cached :class:`~autodj.dj_meta.DjMeta` lazily
-        when a track is first analysed -- so we pay the importer cost
-        exactly once per ``serve`` boot.
-        """
-        if getattr(self, "_external_cues_loaded", False):
-            return
-        self._external_cues_loaded = True
-        self._external_cues: dict[str, list[Any]] = {}
-        if not self._cfg.playback.import_external_cues:
-            return
-        try:
-            from autodj.dj_cues_import import auto_import_cues
-
-            self._external_cues = auto_import_cues(
-                library_root=self._cfg.library.music_dir
-                if isinstance(self._cfg.library.music_dir, Path)
-                else None,
-            )
-            if self._external_cues:
-                logger.info(
-                    "Imported cues for %d tracks from external DJ software",
-                    len(self._external_cues),
-                )
-            else:
-                logger.info(
-                    "No external DJ-software libraries found (Mixxx / Rekordbox / "
-                    "Traktor); cues will be auto-detected from raw audio instead.",
-                )
-        except (OSError, ValueError, ImportError) as exc:
-            logger.debug("External cue import failed: %s", exc)
 
     def _outgoing_meta(self, audio_a: np.ndarray, sr_a: int, path: str) -> DjMeta | None:
         """Get / compute DjMeta for the outgoing track when needed for alignment.
@@ -1623,7 +1580,6 @@ class Player:
         meta = self._dj_cache.get(path)
         if not meta.analysed:
             meta = analyse_audio(mono(audio_a), sr_a)
-            self._merge_external_cues_into(meta, path)
             self._dj_cache.set(path, meta)
             self._dj_cache.flush(batch=10)
         return meta
@@ -1642,10 +1598,10 @@ class Player:
            (sidecar hit, or a previous background pass populated it).
         2. No-ops when the path is already in flight on another thread.
         3. Loads the audio file, runs :func:`analyse_audio` (which calls
-           :func:`detect_cues` internally), merges any external Mixxx /
-           Rekordbox / Serato / Traktor cues, then writes the result back to
-           ``self._dj_cache`` and forces a flush so the sidecar JSON
-           grows incrementally on each track.
+           :func:`detect_cues` internally), then writes the result back to
+           ``self._dj_cache`` and forces a flush so ``dj_meta.db`` grows
+           track by track.  Cues imported from DJ software are merged only
+           by ``autodj index`` and ``autodj analyse``, not here.
 
         Errors at any stage (file gone, decode error, librosa failure)
         are logged at debug and swallowed -- the cue panel just stays
@@ -1666,7 +1622,6 @@ class Player:
 
                 audio, sr = load_audio(path)
                 meta = analyse_audio(audio, sr)
-                self._merge_external_cues_into(meta, path)
                 if self._dj_cache is not None:
                     self._dj_cache.set(path, meta)
                     self._dj_cache.flush(force=True)
@@ -1733,29 +1688,6 @@ class Player:
                 if remaining <= 0:
                     return False
                 worker.join(remaining)
-
-    def _merge_external_cues_into(self, meta: DjMeta, path: str) -> None:
-        """Merge externally-imported cues for *path* into *meta* in place.
-
-        Library imports come from :meth:`_ensure_external_cues`; Serato
-        cues are read from the file's own tags here.  No-op while
-        ``playback.import_external_cues`` is off or when neither source
-        has anything for this track.  Uses
-        :func:`autodj.dj_meta.merge_cues` so user / DJ-software cues
-        win on conflict but auto-detected cues survive when they're
-        the only source for a region of the track.
-        """
-        if not self._cfg.playback.import_external_cues:
-            return
-        from autodj.dj_cues_import import import_from_serato_tags
-
-        external = list(getattr(self, "_external_cues", {}).get(path) or [])
-        external.extend(import_from_serato_tags(Path(path)))
-        if not external:
-            return
-        from autodj.dj_meta import merge_cues
-
-        meta.cues = merge_cues(meta.cues, external)
 
     def _peek_incoming_meta(self, next_entry: IndexEntry) -> DjMeta | None:
         """Cache-only DjMeta peek for the incoming track (no audio decode).
@@ -1941,7 +1873,6 @@ class Player:
         meta_b = self._dj_cache.get(next_entry.path)
         if not meta_b.analysed:
             meta_b = analyse_audio(mono(audio_b), sr_a)
-            self._merge_external_cues_into(meta_b, next_entry.path)
             self._dj_cache.set(next_entry.path, meta_b)
             self._dj_cache.flush(batch=10)
         if meta_b.intro_end_s <= 0.5:

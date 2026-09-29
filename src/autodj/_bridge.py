@@ -1132,7 +1132,6 @@ class PlayerBridge:
                 "key_notation": pb.key_notation,
                 "key_prefer_flats": bool(pb.key_prefer_flats),
                 "show_lyrics": pb.show_lyrics,
-                "import_external_cues": pb.import_external_cues,
                 "beat_sync_fx": bool(pb.beat_sync_fx),
                 "no_repeat_window": int(pb.no_repeat_window),
                 "artist_repeat_window": int(pb.artist_repeat_window),

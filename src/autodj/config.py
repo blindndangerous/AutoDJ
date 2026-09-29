@@ -336,7 +336,8 @@ class PlaybackConfig(_Section):
     # the device name.  Set via [playback] audio_device; used by server audio.
     audio_device: str | int | None = None
     # Import cue points from external DJ software (Mixxx, Rekordbox,
-    # Traktor libraries; Serato file tags) and merge with auto-detected cues.  Off
+    # Traktor libraries; Serato file tags) and merge them with the detected
+    # cues when `autodj index` or `autodj analyse` analyses a track.  Off
     # only when the user wants the auto-detected cues alone.
     import_external_cues: bool = True
     # Beat-sync transition FX: rhythmic effects (beat_repeat,

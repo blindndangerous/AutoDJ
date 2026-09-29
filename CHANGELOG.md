@@ -136,6 +136,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `presets.toml`. Define presets as `[presets.NAME]` tables in `config.toml`. AutoDJ refuses to
   start while a `presets.toml` sits next to `config.toml`: move each `[NAME]` table into
   `config.toml` as `[presets.NAME]`, then delete the file. `presets.toml.example` is gone too.
+- The player's own merge of cues imported from DJ software. `autodj index` and `autodj analyse`
+  merge them. A track the player has to analyse while it plays is stored with only the cues AutoDJ
+  detects, and `autodj analyse` then skips it as done, so run `autodj analyse` before playing newly
+  indexed tracks. The web settings route no
+  longer takes `import_external_cues`, since the running server has nothing left for it to change;
+  set `[playback] import_external_cues` in `config.toml`.
 
 ### Fixed
 

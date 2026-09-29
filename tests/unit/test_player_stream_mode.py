@@ -97,7 +97,6 @@ def test_parked_worker_renders_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _run_stream_in_thread(player: Player) -> threading.Thread:
     player._ensure_dj_cache = MagicMock()  # type: ignore[method-assign]
-    player._ensure_external_cues = MagicMock()  # type: ignore[method-assign]
     thread = threading.Thread(target=player._run_stream, daemon=True)
     thread.start()
     return thread
@@ -126,7 +125,7 @@ def test_run_stream_runs_the_bus_idle_until_stopped() -> None:
         thread.join(WAIT)
     assert not thread.is_alive()
     sound.assert_not_called()
-    player._ensure_external_cues.assert_called_once()
+    player._ensure_dj_cache.assert_called_once()
 
 
 def test_run_stream_mirrors_pause_onto_the_bus() -> None:

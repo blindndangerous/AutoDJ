@@ -29,7 +29,6 @@ def _make_player() -> SimpleNamespace:
         key_notation="camelot",
         key_prefer_flats=False,
         show_lyrics=True,
-        import_external_cues=True,
         beat_sync_fx=True,
         key_sync_fx=True,
         beatmatch_on_skip=False,
@@ -362,7 +361,6 @@ class TestRoundTrip:
         p1._cfg.playback.key_notation = "musical"
         p1._cfg.playback.key_prefer_flats = True
         p1._cfg.playback.show_lyrics = False
-        p1._cfg.playback.import_external_cues = False
         p1._cfg.playback.beat_sync_fx = False
         p1._cfg.playback.key_sync_fx = False
         p1._cfg.playback.beatmatch_on_skip = True
@@ -414,7 +412,6 @@ class TestRoundTrip:
             "key_notation",
             "key_prefer_flats",
             "show_lyrics",
-            "import_external_cues",
             "beat_sync_fx",
             "key_sync_fx",
             "beatmatch_on_skip",

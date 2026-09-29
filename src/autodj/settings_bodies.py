@@ -135,7 +135,6 @@ class PlaybackSettingsBody(BaseModel):
     key_notation: str | None = None
     key_prefer_flats: bool | None = None
     show_lyrics: bool | None = None
-    import_external_cues: bool | None = None
     beat_sync_fx: bool | None = None
     key_sync_fx: bool | None = None
     beatmatch_on_skip: bool | None = None

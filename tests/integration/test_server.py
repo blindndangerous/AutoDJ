@@ -2830,10 +2830,6 @@ class TestMisc:
         assert bridge.player._state.current_track is None
         bridge.player._pick_next.assert_not_called()
 
-    def test_set_playback_settings_toggles_external_cues(self, bridge) -> None:
-        bridge.set_playback_settings(PlaybackSettingsBody(import_external_cues=False))
-        assert bridge.player._cfg.playback.import_external_cues is False
-
     def test_advance_now_recovers_when_next_pick_fails(self, bridge) -> None:
         """If refreshing next_track raises (empty index, FAISS error),
         advance_now logs and clears next_track but keeps current_track

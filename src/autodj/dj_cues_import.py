@@ -599,8 +599,8 @@ def _normalise_keys(by_path: dict[str, list[Cue]]) -> dict[str, list[Cue]]:
     The FAISS index stores ``str(Path(absolute_path))`` -- native OS
     separators (``\\`` on Windows, ``/`` on POSIX) -- whereas the DJ-
     software importers emit forward-slashed paths regardless of host.
-    Without this normalisation, ``_merge_external_cues_into`` looks up
-    ``next_entry.path`` (e.g. ``C:\\music\\track.mp3``) but the dict
+    Without this normalisation, :func:`autodj.indexer.backfill_dj_meta`
+    looks up the track path (e.g. ``C:\\music\\track.mp3``) but the dict
     keys are ``C:/music/track.mp3`` and the lookup silently misses.
 
     Sorts each cue list in place so the merge step gets monotonically

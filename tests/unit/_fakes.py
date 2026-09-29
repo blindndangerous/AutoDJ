@@ -46,7 +46,6 @@ def make_cfg_mock() -> MagicMock:
     cfg.playback.prefetch_next_track = True
     cfg.playback.silence_trigger_crossfade = True
     cfg.playback.discovery_every = None
-    cfg.playback.import_external_cues = False  # tests opt-in per-case
     cfg.playback.pick_top_k = 1
     cfg.playback.pick_temperature = 0.0
     cfg.playback.server_max_track_minutes = 15.0
