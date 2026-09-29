@@ -942,20 +942,16 @@ class PlayerBridge:
     # ------------------------------------------------------------------
 
     def reseed_random(self) -> bool:
-        """Pick a fresh random track from the index and play it next.
+        """Pick a fresh random track that is not silent and play it next.
 
         Unlike :meth:`skip` (which advances via similarity from the
         current track), this reseeds the auto-DJ session from a random
         starting point — useful when the user doesn't like the seed the
         server picked at startup or wants to jump to an unrelated genre.
         """
-        import random as _random
-
-        similarity = self.sim
-        entries = similarity.entries_snapshot()
-        if not entries:
+        chosen = self.sim.random_entry()
+        if chosen is None:
             return False
-        chosen = _random.choice(entries)  # nosec B311 — non-security
         if self.stream_mode and self.station.start_with(chosen, "seed"):
             return True  # idle station: the next set starts with it
         if self._bus_mode():
@@ -1115,7 +1111,6 @@ class PlayerBridge:
                 "crossfade_seconds": pb.crossfade_seconds,
                 "fade_in_seconds": pb.fade_in_seconds,
                 "crossfade_eq_duck": pb.crossfade_eq_duck,
-                "smart_shuffle": p._smart_shuffle,
                 "pure_shuffle": p._pure_shuffle,
                 "anchor_to_seed": p._anchor_to_seed,
                 "replaygain_enabled": cfg.replaygain.enabled,
@@ -1213,7 +1208,6 @@ class PlayerBridge:
         player = self.player
         cfg = player._cfg
         targets = {
-            "smart_shuffle": (player, "_smart_shuffle"),
             "pure_shuffle": (player, "_pure_shuffle"),
             "anchor_to_seed": (player, "_anchor_to_seed"),
             "replaygain_enabled": (cfg.replaygain, "enabled"),

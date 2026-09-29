@@ -155,6 +155,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `[playback] import_external_cues` in `config.toml`.
 - The page's stand-in versions of the gate stutter, bitcrusher, freeze and glitch effects used when
   AudioWorklet was missing.
+- The Entropy walk pick mode, which picked the track least like the one playing and so wandered
+  away from the seed. Pick mode now offers Similarity and Random walk. A set saved with Entropy
+  walk now follows Similarity. The settings route and saved profiles no longer take
+  `smart_shuffle`: a profile that still holds it is refused when applied, so delete it and save it
+  again, and `smart_shuffle` in `config.toml` is refused like any unknown key; delete the line.
+  Saved web settings still load, and the old field is skipped with a warning in the server log.
 
 ### Fixed
 
@@ -189,6 +195,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Mixxx cue import uses each track's own sample rate, so cues on 48 kHz tracks no longer land
   about 9% late. Mixxx outro cues now count as outro markers (they were read as intro markers),
   and Mixxx's hidden "audible sound" range is no longer imported as an outro.
+- A discovery rate saved from the web page now turns discovery on after a restart, and the
+  Discovery button says so. It used to restore only the rate, with discovery off, so no discovery
+  track played until the button was pressed again.
+- AutoDJ no longer picks silent tracks by itself, such as the few seconds of pregap filler
+  titled "[silence]" that some rips contain. A track counts as silent when its loudness measured
+  by `autodj index` is below about -60 dBFS. Similarity, anchored and random picks, discovery,
+  the first track of a set (also in stream mode) and the Shuffle button all skip them. A silent
+  track still plays when you choose it in search with Play now, Play next or Add to queue.
+- Crossfade seconds set to 0 now cuts from one track to the next in the web page too, as it
+  already did in the server mix. The page used to play a 3 second fade instead. With 0 there is no
+  transition effect either. In the Full intro and outro and Outro fade modes, tracks with detected
+  markers still fade for 1 to 12 seconds, in the page and in the server mix alike.
 
 ## [0.18.1] - 2026-09-28
 

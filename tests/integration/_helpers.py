@@ -72,7 +72,6 @@ def _make_player_mock(entry: IndexEntry | None = None) -> MagicMock:
     player._last_transition_fx = "none"
     player._dry_run = False
     player._server_audio_too = False
-    player._smart_shuffle = False
     player._pure_shuffle = False
     player._anchor_to_seed = False
     player._seed_path = None
@@ -137,6 +136,9 @@ def _make_sim_mock(entries: list[IndexEntry] | None = None) -> MagicMock:
     sim.entry_for_path.side_effect = lambda path: next(
         (entry for entry in sim.entries if entry.path == path),
         None,
+    )
+    sim.random_entry.side_effect = lambda: next(
+        (entry for entry in sim.entries if not entry.is_silent), None
     )
     type(sim).ntotal = PropertyMock(side_effect=lambda: len(sim.entries))
     return sim

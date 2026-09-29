@@ -578,7 +578,6 @@ class Player:
         # rate) and the web page's settings routes change them.
         self._preset: Preset | None = None
         self._bpm_range: tuple[float, float] | None = None
-        self._smart_shuffle = False
         # Anchored mode: when True, every similarity query uses the SEED
         # vector rather than the currently-playing track.  Prevents the
         # session from drifting away from where the user started — each
@@ -589,8 +588,7 @@ class Player:
         # bridge when the user picks a fresh seed.  Used by anchored mode.
         self._seed_path: str | None = None
         # Pure shuffle: pick random next track, completely ignore similarity.
-        # Distinct from smart_shuffle (which inverts similarity to find the
-        # MOST distant track).  When the user disables pure-shuffle mid-set,
+        # When the user disables pure-shuffle mid-set,
         # the next pick uses similarity from the current track — so they can
         # use shuffle to stumble onto a song they like, then "lock in" by
         # toggling shuffle off and let the auto-DJ continue from there.
@@ -763,11 +761,8 @@ class Player:
         self._run_server_audio(current)
 
     def _random_start_entry(self) -> IndexEntry | None:
-        """Pick a starting track the way Shuffle does, or ``None`` if the library is empty."""
-        import random
-
-        entries = self._sim.entries_snapshot()
-        return random.choice(entries) if entries else None  # nosec B311
+        """Pick a starting track the way Shuffle does, or ``None`` if there is none."""
+        return self._sim.random_entry()
 
     def _build_bus(self) -> MixBus:
         """Create the mix bus, fed by the render-ahead worker, as :attr:`bus`."""
@@ -1278,7 +1273,10 @@ class Player:
         )
 
     def _pick_pure_shuffle(self, recent: deque) -> IndexEntry:
-        """Random pick from tracks not in *recent*, honouring the hard BPM range."""
+        """Random pick from tracks not in *recent*, honouring the hard BPM range.
+
+        Silent tracks are never picked.
+        """
         import random as _rnd
 
         from autodj.similarity import SimilarityError
@@ -1286,6 +1284,8 @@ class Player:
         excluded = set(recent)
 
         def eligible(entry: IndexEntry) -> bool:
+            if entry.is_silent:
+                return False
             if self._bpm_range is None:
                 return True
             lo, hi = self._bpm_range
@@ -1325,10 +1325,10 @@ class Player:
             return None
 
     def _resolve_query_path(self, current_path: str) -> tuple[str, str]:
-        """Choose the query path and its pick mode (anchor / smart-shuffle / similarity)."""
+        """Choose the query path and its pick mode (anchored or similarity)."""
         if self._anchor_to_seed and self._seed_path:
             return self._seed_path, "anchored"
-        return current_path, "smart_shuffle" if self._smart_shuffle else "similarity"
+        return current_path, "similarity"
 
     def _pick_next(self, current: IndexEntry) -> IndexEntry:
         """Select the next track now and show how it was picked.
@@ -1396,7 +1396,6 @@ class Player:
             "target_bpm": target_bpm,
             "bpm_weight": bpm_weight,
             "bpm_range": self._bpm_range,
-            "invert": self._smart_shuffle,
             "harmonic_only": harmonic_only,
             "harmonic_mode": harmonic_mode,
             "excluded_artists": context.artists,

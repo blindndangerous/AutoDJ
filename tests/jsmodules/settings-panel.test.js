@@ -46,7 +46,7 @@ function makeEls() {
     pbKeySyncFx:     cb(),
     pbBeatmatchSkip: cb(),
     pbTransitionMode: sel(["full_intro_outro", "fixed"]),
-    pbPickMode:      sel(["similarity", "smart", "pure"]),
+    pbPickMode:      sel(["similarity", "pure"]),
     pbCrossfade:     num(),
     bpmLo:           num(),
     bpmHi:           num(),
@@ -82,7 +82,6 @@ describe("applySettingsState", () => {
       },
       playback: {
         crossfade_eq_duck: true,
-        smart_shuffle: false,
         pure_shuffle: false,
         show_lyrics: true,
         anchor_to_seed: false,
@@ -151,7 +150,7 @@ describe("installSettingsControls", () => {
     expect(change(els.pbCrossfade, "4.5"))
       .toEqual(["/api/playback-settings", { crossfade_seconds: 4.5 }]);
     expect(change(els.pbPickMode, "pure"))
-      .toEqual(["/api/playback-settings", { smart_shuffle: false, pure_shuffle: true }]);
+      .toEqual(["/api/playback-settings", { pure_shuffle: true }]);
     expect(change(els.bpmLo, "90")).toEqual(["/api/bpm-range", { lo: 90, hi: null }]);
     els.discEvery.value = "7";
     expect(change(els.discEnabled, true)).toEqual(["/api/discovery", { every: 7 }]);

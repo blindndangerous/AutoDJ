@@ -76,7 +76,6 @@ class ProfileSnapshot:
         beatmatch_on_skip: Beatmatch-on-skip toggle.
         crossfade_seconds: Crossfade window length.
         fade_in_seconds: Incoming track's fade-in length.
-        smart_shuffle: Smart-shuffle toggle.
         pure_shuffle: Pure-shuffle toggle.
         anchor_to_seed: Anchor-to-seed toggle.
         liners_enabled: Voice liner master toggle.
@@ -95,7 +94,6 @@ class ProfileSnapshot:
     beatmatch_on_skip: bool | None = None
     crossfade_seconds: float | None = None
     fade_in_seconds: float | None = None
-    smart_shuffle: bool | None = None
     pure_shuffle: bool | None = None
     anchor_to_seed: bool | None = None
     liners_enabled: bool | None = None

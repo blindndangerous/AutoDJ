@@ -8,6 +8,7 @@ import ast
 import threading
 import time
 from collections import deque
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -189,33 +190,6 @@ class TestFindNext:
 
         with pytest.raises(TypeError, match="positive integer"):
             sim.find_next_for_path(sim.entries[0].path, deque(), n_candidates=invalid)  # type: ignore[arg-type]
-
-    def test_invert_smart_shuffle(self) -> None:
-        """invert=True picks least-similar candidate."""
-        sim, _ = _make_similarity_index(20)
-        result = sim.find_next_for_path(
-            current_path=sim.entries[0].path,
-            recently_played=deque([sim.entries[0].path]),
-            n_candidates=10,
-            invert=True,
-        )
-        assert isinstance(result, IndexEntry)
-
-    def test_smart_shuffle_finds_global_farthest_beyond_first_200(self) -> None:
-        n = 257
-        vectors = np.zeros((n, FEATURE_DIM), dtype=np.float32)
-        vectors[:, 0] = np.linspace(1.0, -1.0, n, dtype=np.float32)
-        vectors[:, 1] = np.sqrt(np.maximum(0.0, 1.0 - vectors[:, 0] ** 2))
-        index = faiss.IndexFlatIP(FEATURE_DIM)
-        index.add(vectors)
-        sim = SimilarityIndex(index, [_make_entry(i) for i in range(n)])
-
-        entries = sim.entries_snapshot()
-        result = sim.find_next_for_path(
-            entries[0].path, deque([entries[0].path]), invert=True, n_candidates=10
-        )
-
-        assert result.path == entries[-1].path
 
     @staticmethod
     def _index_with_first_vector(value: float) -> SimilarityIndex:
@@ -991,6 +965,55 @@ class TestFindDistant:
                 current_path=sim.entries[0].path,
                 recently_played=all_excluded,
             )
+
+
+class TestSilentTracksAreNeverPicked:
+    """Pregap filler and "[silence]" tracks (energy 0) never play by themselves."""
+
+    @staticmethod
+    def _index_with_one_audible(n: int = 12, audible: int = 7) -> SimilarityIndex:
+        vectors = np.array([_unit_vec(seed=i) for i in range(n)], dtype=np.float32)
+        faiss_index = faiss.IndexFlatIP(FEATURE_DIM)
+        faiss_index.add(vectors)
+        entries = [_make_entry(i) for i in range(n)]
+        for i, entry in enumerate(entries):
+            entry.energy = 0.05 if i in (0, audible) else 0.0
+        return SimilarityIndex(faiss_index=faiss_index, entries=entries)
+
+    def test_similarity_skips_silent_tracks(self) -> None:
+        sim = self._index_with_one_audible()
+        current = sim.entries[0].path
+        result = sim.find_next_for_path(current, deque([current]), n_candidates=5)
+        assert result.path == "song_7.flac"
+
+    def test_similarity_raises_when_only_silent_tracks_are_left(self) -> None:
+        sim = self._index_with_one_audible()
+        played = deque([sim.entries[0].path, "song_7.flac"])
+        with pytest.raises(SimilarityError):
+            sim.find_next_for_path(sim.entries[0].path, played)
+
+    def test_discovery_skips_silent_tracks(self) -> None:
+        sim = self._index_with_one_audible()
+        current = sim.entries[0].path
+        for _ in range(10):
+            assert sim.find_distant(current, deque([current])).path == "song_7.flac"
+
+    def test_random_entry_skips_silent_tracks(self) -> None:
+        sim = self._index_with_one_audible()
+        picks = {sim.random_entry().path for _ in range(30)}  # type: ignore[union-attr]
+        assert picks <= {"song_0.flac", "song_7.flac"}
+
+    def test_random_entry_is_none_when_every_track_is_silent(self) -> None:
+        sim, _ = _make_similarity_index(3)
+        silent = SimilarityIndex(
+            faiss_index=sim.faiss_index,
+            entries=[replace(e, energy=0.0) for e in sim.entries],
+        )
+        assert silent.random_entry() is None
+
+    def test_quiet_music_is_not_silent(self) -> None:
+        assert not replace(_make_entry(0), energy=0.002).is_silent
+        assert replace(_make_entry(0), energy=0.0004).is_silent
 
 
 # ---------------------------------------------------------------------------

@@ -261,6 +261,10 @@ def source_mtime(path: str | Path) -> float:
 # Data types
 # ---------------------------------------------------------------------------
 
+#: Mean RMS (about -60 dBFS) below which a track counts as silent: pregap
+#: filler and "[silence]" tracks, not quiet music.
+SILENT_ENERGY: float = 0.001
+
 
 @dataclass
 class IndexEntry:
@@ -275,7 +279,10 @@ class IndexEntry:
         bpm: Beats per minute (from beets or estimated by librosa).
         year: Release year.
         length: Track duration in seconds.
-        energy: RMS loudness from indexing, 0.0 = unknown (analysis failed).
+        energy: Mean RMS loudness of the whole track, measured when it is
+            indexed.  Every indexed track has one: a track whose analysis
+            fails is not indexed.  Below :data:`SILENT_ENERGY` the track is
+            silent (see :attr:`is_silent`).
         key: Chromatic key 0–11 (C=0, C#=1, …, B=11), -1 = unknown.
         mode: 1 = major, 0 = minor, -1 = unknown.
         tempo_confidence: Librosa beat-tracking confidence 0.0–1.0,
@@ -336,6 +343,14 @@ class IndexEntry:
             tempo_confidence=0.0,
             embedded_at=embedded_at,
         )
+
+    @property
+    def is_silent(self) -> bool:
+        """Whether the track is silent, so AutoDJ never picks it by itself.
+
+        Search can still play it when the user asks for it.
+        """
+        return self.energy < SILENT_ENERGY
 
     @property
     def display_name(self) -> str:

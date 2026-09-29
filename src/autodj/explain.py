@@ -123,7 +123,7 @@ def explain_pick(
         prev: The previously-played track, or ``None`` (e.g. seed pick).
         cur: The freshly-picked track to explain.
         mode: Picker mode label.  One of ``"similarity"`` (default),
-            ``"pure_shuffle"``, ``"smart_shuffle"``, ``"anchored"``,
+            ``"pure_shuffle"``, ``"anchored"``,
             ``"discovery"``, ``"queue"``, ``"seed"``.
 
     Returns:
@@ -143,8 +143,6 @@ def explain_pick(
         out.append("Discovery pick — sonically distant on purpose.")
     elif mode == "pure_shuffle":
         out.append("Random walk — uniformly random, no similarity filter.")
-    elif mode == "smart_shuffle":
-        out.append("Entropy walk — picked the most sonically distant candidate.")
     elif mode == "anchored":
         out.append("Anchored to the session seed — similarity from the seed track.")
     else:

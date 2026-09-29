@@ -60,10 +60,6 @@ class TestExplainPick:
         out = explain_pick(_entry(), _entry(), mode="anchored")
         assert "anchor" in out[0].lower() or "seed" in out[0].lower()
 
-    def test_smart_shuffle_label(self) -> None:
-        out = explain_pick(_entry(), _entry(), mode="smart_shuffle")
-        assert "entropy" in out[0].lower() or "distant" in out[0].lower()
-
     def test_shared_genre_single(self) -> None:
         prev = _entry(genre="Trip-Hop")
         cur = _entry(genre="trip-hop")

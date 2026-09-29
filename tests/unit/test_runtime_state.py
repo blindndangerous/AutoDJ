@@ -61,7 +61,6 @@ def _make_player() -> SimpleNamespace:
     )
     return SimpleNamespace(
         _cfg=cfg,
-        _smart_shuffle=False,
         _pure_shuffle=False,
         _anchor_to_seed=False,
         _bpm_range=None,
@@ -109,6 +108,8 @@ def _warnings(caplog: pytest.LogCaptureFixture, field: str) -> int:
         ({"playback": {"crossfade_eq_duck": "false"}}, "crossfade_eq_duck"),
         # A 0.18 file still holds the removed mood-arc switch.
         ({"playback": {"enable_mood_arc": True}}, "enable_mood_arc"),
+        # And the removed Entropy walk.
+        ({"playback": {"smart_shuffle": False}}, "smart_shuffle"),
         ({"playback": {"stream_bitrate": 100}}, "stream_bitrate"),
         ({"playback": {"stream_bitrate": "320"}}, "stream_bitrate"),
         ({"playback": {"stream_bitrate": True}}, "stream_bitrate"),
@@ -275,6 +276,13 @@ class TestLoadInto:
         _load(p, tmp_path)
         assert p._discovery_every is None
 
+    def test_saved_discovery_rate_turns_discovery_on(self, tmp_path) -> None:
+        _write_state(tmp_path, {"discovery_every": 7})
+        p = _make_player()
+        _load(p, tmp_path)
+        assert p._discovery_every == 7
+        assert p._state.discovery_enabled is True
+
     def test_load_restores_a_saved_preset(self, tmp_path) -> None:
         from autodj.presets import BUILTIN_PRESETS
 
@@ -352,7 +360,6 @@ class TestRoundTrip:
         p1._cfg.playback.crossfade_seconds = 6.0
         p1._cfg.playback.fade_in_seconds = 1.5
         p1._cfg.playback.crossfade_eq_duck = True
-        p1._smart_shuffle = True
         p1._pure_shuffle = True
         p1._anchor_to_seed = True
         p1._cfg.replaygain.enabled = True
@@ -403,7 +410,6 @@ class TestRoundTrip:
             "crossfade_seconds",
             "fade_in_seconds",
             "crossfade_eq_duck",
-            "smart_shuffle",
             "pure_shuffle",
             "anchor_to_seed",
             "replaygain_enabled",
