@@ -61,7 +61,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `models/MuQ-large-msd-iter-e891ff924c0b7fe8`, and the `.lock` file beside it. To keep using that folder instead, set
   `[model] manual_path` to it.
 - Playback settings out of range are refused instead of quietly adjusted: a negative crossfade,
-  fade-in or liner trigger. Applying a saved profile with
+  fade-in, liner trigger, artist repeat window or pick temperature, or a `pick_top_k` below 1, in
+  `config.toml` stops AutoDJ with an error naming the key. Applying a saved profile with
   such a value, or with NaN or Infinity in it, now fails with an error and changes nothing.
 - Deleting a voice liner asks in the page's own confirmation dialog, like deleting a profile,
   instead of the browser's pop-up. After the delete, focus goes to the next liner's Delete button,

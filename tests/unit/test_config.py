@@ -382,6 +382,22 @@ class TestPlaybackConfig:
         with pytest.raises(ValueError):
             PlaybackConfig.from_dict({"fade_in_seconds": -1.0})
 
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [
+            ("liners_every_n_songs", -1),
+            ("liners_every_minutes", -1.0),
+            ("liners_random_min_minutes", -1.0),
+            ("liners_random_max_minutes", -1.0),
+            ("artist_repeat_window", -1),
+            ("pick_temperature", -0.1),
+            ("pick_top_k", 0),
+        ],
+    )
+    def test_out_of_range_values_are_refused_not_adjusted(self, key: str, value: float) -> None:
+        with pytest.raises(ValueError, match=key):
+            PlaybackConfig.from_dict({key: value})
+
     def test_server_max_track_minutes_accepts_an_integer(self) -> None:
         pb = PlaybackConfig.from_dict({"server_max_track_minutes": 30})
         assert pb.server_max_track_minutes == 30.0

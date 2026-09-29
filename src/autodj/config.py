@@ -389,8 +389,10 @@ class PlaybackConfig(_Section):
 
         Raises:
             TypeError: If ``server_max_track_minutes`` is not a number.
-            ValueError: If ``crossfade_seconds``, ``fade_in_seconds`` or
-                ``no_repeat_window`` is negative, a choice is not one of its
+            ValueError: If ``crossfade_seconds``, ``fade_in_seconds``,
+                ``no_repeat_window``, ``artist_repeat_window``,
+                ``pick_temperature`` or a liner trigger is negative,
+                ``pick_top_k`` is below 1, a choice is not one of its
                 options, or ``server_max_track_minutes`` is outside 1-600.
         """
         self.crossfade_seconds = float(self.crossfade_seconds)
@@ -412,13 +414,15 @@ class PlaybackConfig(_Section):
                 f"playback.server_max_track_minutes must be between 1 and 600, got {max_minutes}"
             )
         self.server_max_track_minutes = float(max_minutes)
-        self.artist_repeat_window = max(0, int(self.artist_repeat_window))
+        self.artist_repeat_window = int(self.artist_repeat_window)
         self.discovery_every = _optional(int, self.discovery_every)
         self.crossfade_bass_cutoff_hz = float(self.crossfade_bass_cutoff_hz)
         self.transition_mode = _validate_transition_mode(str(self.transition_mode))
         self.post_queue_seed = _validate_post_queue_seed(str(self.post_queue_seed))
-        self.pick_top_k = max(1, int(self.pick_top_k))
-        self.pick_temperature = max(0.0, float(self.pick_temperature))
+        self.pick_top_k = int(self.pick_top_k)
+        if self.pick_top_k < 1:
+            raise ValueError(f"playback.pick_top_k must be >= 1, got {self.pick_top_k}")
+        self.pick_temperature = float(self.pick_temperature)
         self.key_notation = _validate_key_notation(str(self.key_notation))
         self.audio_device = self.audio_device or None
         for name in (
@@ -439,6 +443,17 @@ class PlaybackConfig(_Section):
         self.liners_every_minutes = _optional(float, self.liners_every_minutes)
         self.liners_random_min_minutes = _optional(float, self.liners_random_min_minutes)
         self.liners_random_max_minutes = _optional(float, self.liners_random_max_minutes)
+        for name in (
+            "artist_repeat_window",
+            "pick_temperature",
+            "liners_every_n_songs",
+            "liners_every_minutes",
+            "liners_random_min_minutes",
+            "liners_random_max_minutes",
+        ):
+            value = getattr(self, name)
+            if value is not None and value < 0:
+                raise ValueError(f"playback.{name} must be >= 0, got {value}")
         self.liners_pick_mode = _one_of(
             str(self.liners_pick_mode), LINER_PICK_MODES, "playback.liners_pick_mode"
         )
