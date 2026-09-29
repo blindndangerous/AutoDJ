@@ -387,6 +387,21 @@ class TestPlayerPickNext:
 
         assert player._pick_next(entries[0]).path == entries[3].path
 
+    def test_pure_shuffle_never_picks_a_silent_track(self) -> None:
+        from autodj.similarity import SimilarityIndex
+
+        entries = [_make_entry(i) for i in range(6)]
+        for entry in entries[1:5]:
+            entry.energy = 0.0
+        sim = SimilarityIndex(faiss_index=_make_sim_index(6).faiss_index, entries=entries)
+        player = Player(_make_cfg_mock(), sim)
+        player._pure_shuffle = True
+        current = sim.entries_snapshot()[0]
+        player._state.current_track = current
+        player._state.record_played(current)
+        for _ in range(20):
+            assert player._pick_next(current).path == entries[5].path
+
     def test_pure_shuffle_raises_when_no_track_satisfies_hard_bpm(self) -> None:
         sim = _make_sim_index(3, bpms=[0.0] * 3)
         player = Player(_make_cfg_mock(), sim)

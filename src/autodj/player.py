@@ -763,11 +763,8 @@ class Player:
         self._run_server_audio(current)
 
     def _random_start_entry(self) -> IndexEntry | None:
-        """Pick a starting track the way Shuffle does, or ``None`` if the library is empty."""
-        import random
-
-        entries = self._sim.entries_snapshot()
-        return random.choice(entries) if entries else None  # nosec B311
+        """Pick a starting track the way Shuffle does, or ``None`` if there is none."""
+        return self._sim.random_entry()
 
     def _build_bus(self) -> MixBus:
         """Create the mix bus, fed by the render-ahead worker, as :attr:`bus`."""
@@ -1278,7 +1275,10 @@ class Player:
         )
 
     def _pick_pure_shuffle(self, recent: deque) -> IndexEntry:
-        """Random pick from tracks not in *recent*, honouring the hard BPM range."""
+        """Random pick from tracks not in *recent*, honouring the hard BPM range.
+
+        Silent tracks are never picked.
+        """
         import random as _rnd
 
         from autodj.similarity import SimilarityError
@@ -1286,6 +1286,8 @@ class Player:
         excluded = set(recent)
 
         def eligible(entry: IndexEntry) -> bool:
+            if entry.is_silent:
+                return False
             if self._bpm_range is None:
                 return True
             lo, hi = self._bpm_range

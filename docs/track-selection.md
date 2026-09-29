@@ -55,7 +55,10 @@ is not optional.
 `find_next_for_path` builds one predicate (`_build_predicate`) and applies it before
 any scoring. In order:
 
-1. Path is not in `recently_played`.
+1. Path is not in `recently_played`, and the track is not silent: its
+   `energy` (the mean RMS measured at index time) is at least
+   `SILENT_ENERGY`, 0.001, about -60 dBFS. Every indexed track has a measured
+   energy, because a track whose analysis fails is not indexed.
 2. If a hard `bpm_range` is set: `entry.bpm` is known (greater than 0) and
    inside the range. Unknown tempo is rejected.
 3. If `harmonic_mode` is not `"off"` (the player then passes
@@ -125,6 +128,11 @@ Two mechanisms deliberately leave similarity behind:
   chooses at random from the bottom quartile of the cosine ranking.
 - `smart_shuffle` (`invert=True`) negates the query vector and returns the
   single farthest eligible track.
+
+Silent tracks are left out of every pick AutoDJ makes by itself: similarity,
+anchored, pure shuffle, discovery, the first track of a set and the Shuffle
+button (`SimilarityIndex.random_entry`). A silent track still plays when the
+user picks it in search (Play now, Play next, Add to queue).
 
 ## Explaining a pick
 

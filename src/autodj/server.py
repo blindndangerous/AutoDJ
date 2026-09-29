@@ -1855,10 +1855,12 @@ def create_app(
 
         Status code distinguishes success from an empty index:
         ``200`` when a track was picked, ``409 Conflict`` when the
-        index has nothing to reseed from.
+        index has nothing to reseed from (no tracks, or only silent ones).
         """
         if not bridge.reseed_random():
-            raise HTTPException(status_code=409, detail="Index is empty")
+            raise HTTPException(
+                status_code=409, detail="The index has no tracks that are not silent"
+            )
         return JSONResponse(bridge.get_state())
 
     # ------------------------------------------------------------------

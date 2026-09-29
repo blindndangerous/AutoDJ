@@ -138,5 +138,8 @@ def _make_sim_mock(entries: list[IndexEntry] | None = None) -> MagicMock:
         (entry for entry in sim.entries if entry.path == path),
         None,
     )
+    sim.random_entry.side_effect = lambda: next(
+        (entry for entry in sim.entries if not entry.is_silent), None
+    )
     type(sim).ntotal = PropertyMock(side_effect=lambda: len(sim.entries))
     return sim

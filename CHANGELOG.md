@@ -192,6 +192,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A discovery rate saved from the web page now turns discovery on after a restart, and the
   Discovery button says so. It used to restore only the rate, with discovery off, so no discovery
   track played until the button was pressed again.
+- AutoDJ no longer picks silent tracks by itself, such as the few seconds of pregap filler
+  titled "[silence]" that some rips contain. A track counts as silent when its loudness measured
+  by `autodj index` is below about -60 dBFS. Similarity, anchored and random picks, discovery,
+  the first track of a set (also in stream mode) and the Shuffle button all skip them. A silent
+  track still plays when you choose it in search with Play now, Play next or Add to queue.
 
 ## [0.18.1] - 2026-09-28
 

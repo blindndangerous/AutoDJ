@@ -293,7 +293,7 @@ class SimilarityIndex:
         ex_ttl = {t.lower() for t in (excluded_titles or set()) if t}
 
         def _ok(entry: IndexEntry) -> bool:
-            if entry.path in excluded:
+            if entry.path in excluded or entry.is_silent:
                 return False
             if bpm_range is not None:
                 lo, hi = bpm_range
@@ -392,7 +392,8 @@ class SimilarityIndex:
         queries FAISS for nearest neighbours by cosine similarity, expanding to
         the full index when needed to satisfy active filters and the requested
         candidate-pool size. Smart shuffle (*invert*) searches the full index
-        for the global farthest eligible track.
+        for the global farthest eligible track.  Silent tracks are never
+        candidates.
 
         Args:
             current_path: The file path string of the currently playing track,
@@ -531,6 +532,7 @@ class SimilarityIndex:
         a random non-excluded entry from the bottom quartile by cosine score
         (i.e., the least similar tracks).  Falls back to a random non-excluded
         entry from the entire library if the bottom quartile is fully excluded.
+        Silent tracks are never picked.
 
         Args:
             current_path: Path of the currently playing track.
@@ -541,7 +543,7 @@ class SimilarityIndex:
 
         Raises:
             SimilarityError: If *current_path* is not in the index or if no
-                non-excluded track exists.
+                non-excluded track that is not silent exists.
         """
         with self._reload_lock:
             excluded = set(recently_played)
@@ -572,8 +574,11 @@ class SimilarityIndex:
             bottom_start = max(0, int(n_total * 0.75))
             bottom_quartile = all_valid[bottom_start:]
 
+            def eligible(entry: IndexEntry) -> bool:
+                return entry.path not in excluded and not entry.is_silent
+
             distant_candidates = [
-                self.entries[i] for _, i in bottom_quartile if self.entries[i].path not in excluded
+                self.entries[i] for _, i in bottom_quartile if eligible(self.entries[i])
             ]
 
             if distant_candidates:
@@ -583,11 +588,22 @@ class SimilarityIndex:
                 return self._public_entry(chosen)
 
             # Fallback: any non-excluded track (full library)
-            fallback = [e for e in self.entries if e.path not in excluded]
+            fallback = [e for e in self.entries if eligible(e)]
             if fallback:
                 # Non-security fallback pick.
                 return self._public_entry(random.choice(fallback))  # nosec B311
 
             raise SimilarityError(
-                "No candidates available for discovery — all tracks are in recently_played."
+                "No candidates available for discovery — every track that is not silent "
+                "is in recently_played."
             )
+
+    def random_entry(self) -> IndexEntry | None:
+        """Return a random track that is not silent, or ``None`` when there is none.
+
+        The first track of a set and the Shuffle button pick with this.
+        """
+        with self._reload_lock:
+            audible = [e for e in self._public_entries if not e.is_silent]
+        # Non-security pick of a starting track.
+        return random.choice(audible) if audible else None  # nosec B311

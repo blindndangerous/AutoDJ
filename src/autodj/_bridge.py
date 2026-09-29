@@ -942,20 +942,16 @@ class PlayerBridge:
     # ------------------------------------------------------------------
 
     def reseed_random(self) -> bool:
-        """Pick a fresh random track from the index and play it next.
+        """Pick a fresh random track that is not silent and play it next.
 
         Unlike :meth:`skip` (which advances via similarity from the
         current track), this reseeds the auto-DJ session from a random
         starting point — useful when the user doesn't like the seed the
         server picked at startup or wants to jump to an unrelated genre.
         """
-        import random as _random
-
-        similarity = self.sim
-        entries = similarity.entries_snapshot()
-        if not entries:
+        chosen = self.sim.random_entry()
+        if chosen is None:
             return False
-        chosen = _random.choice(entries)  # nosec B311 — non-security
         if self.stream_mode and self.station.start_with(chosen, "seed"):
             return True  # idle station: the next set starts with it
         if self._bus_mode():
