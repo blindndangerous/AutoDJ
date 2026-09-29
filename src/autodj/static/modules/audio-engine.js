@@ -631,49 +631,47 @@ const _ABS_MIN_FX_DURATION_S = 1.0;
 
 // --- FX bar-length table (the browser owns this; there is no Python copy) ---
 //
-// Each entry is [bars, snapToDownbeat]:
-//   bars              integer bar count used by _effectDurationFor when
-//                     beat-sync is enabled.  fadeSec rounds to N bars at
-//                     the blended outgoing->incoming tempo.
-//   snapToDownbeat    when true, the effect's first scheduled event lands
-//                     on the next outgoing downbeat (≤ 1 bar of latency).
-//                     Pure ambient envelope FX get false.
+// Each entry is the bar count _effectDurationFor rounds the effect's
+// length to when beat-sync is on and the outgoing BPM and outro are known.
+// Which effects start on the next downbeat is decided in each effect's
+// builder below (scratch, beat_repeat, sidechain_pump, transformer and
+// stutter_build call _BS.nextDownbeat), not here.
 const _FX_BAR_TABLE = {
-  beat_repeat:    [4, true],
-  gate_stutter:   [4, true],
-  stutter_build:  [4, true],
-  sidechain_pump: [8, true],
-  halftime:       [4, true],
-  transformer:    [2, true],
-  echo_out:       [4, true],
-  dub_delay:      [8, true],
-  scratch:        [2, true],
-  noise_riser:    [4, true],
-  noise_drop:     [4, true],
-  reverse_reverb: [4, true],
-  air_horn:       [2, true],
-  dub_siren:      [4, true],
-  highpass_sweep: [4, false],
-  lowpass_sweep:  [4, false],
-  cross_eq_swap:  [4, false],
-  submerge:       [4, false],
-  telephone:      [4, false],
-  chorus:         [4, false],
-  phaser:         [4, false],
-  flanger:        [4, false],
-  wow_flutter:    [4, false],
-  vinyl_wow:      [4, false],
-  ring_modulator: [4, false],
-  bitcrusher:     [4, false],
-  pitch_swell:    [2, true],
-  pitch_fall:     [2, true],
-  tape_stop:      [2, true],
-  backspin:       [2, true],
-  forward_spin:   [2, true],
-  vinyl_rewind:   [4, true],
-  freeze:         [2, true],
-  glitch:         [4, true],
-  reverb_tail:    [4, false],
+  beat_repeat:    4,
+  gate_stutter:   4,
+  stutter_build:  4,
+  sidechain_pump: 8,
+  halftime:       4,
+  transformer:    2,
+  echo_out:       4,
+  dub_delay:      8,
+  scratch:        2,
+  noise_riser:    4,
+  noise_drop:     4,
+  reverse_reverb: 4,
+  air_horn:       2,
+  dub_siren:      4,
+  highpass_sweep: 4,
+  lowpass_sweep:  4,
+  cross_eq_swap:  4,
+  submerge:       4,
+  telephone:      4,
+  chorus:         4,
+  phaser:         4,
+  flanger:        4,
+  wow_flutter:    4,
+  vinyl_wow:      4,
+  ring_modulator: 4,
+  bitcrusher:     4,
+  pitch_swell:    2,
+  pitch_fall:     2,
+  tape_stop:      2,
+  backspin:       2,
+  forward_spin:   2,
+  vinyl_rewind:   4,
+  freeze:         2,
+  glitch:         4,
+  reverb_tail:    4,
 };
 
 // --- _BS: BeatSync helper.  Refreshed at the start of every crossfade
@@ -780,7 +778,7 @@ function _effectDurationFor(effect, fadeSec, outroLen) {
   // BPM, round the target up to the nearest whole bar count from the
   // FX_BAR_TABLE so rhythmic effects fit an integer number of bars.
   if (_beatSyncEnabled && _outBpmCache > 0 && _FX_BAR_TABLE[effect]) {
-    const bars = _FX_BAR_TABLE[effect][0];
+    const bars = _FX_BAR_TABLE[effect];
     const barSec = 60 * 4 / _outBpmCache;     // outgoing-track bar length
     // Pick the bar count whose total duration is closest to `dur` while
     // staying inside the [lo, _MAX_FX_DURATION_S] envelope.  Snapping to
