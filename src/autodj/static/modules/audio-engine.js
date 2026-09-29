@@ -7,8 +7,8 @@
 // are exposed as ES-module live bindings so consumers (transport
 // handlers, liners scheduler, websocket reset) see the latest value
 // without explicit accessors.  Reassignment must happen inside this
-// module; resetTrackCaches() handles the WebSocket-reconnect reset
-// that previously inlined three direct assignments.
+// module; resetTransitionCaches() handles the WebSocket-reconnect reset
+// and resetTrackCaches() the full reset after the session expires.
 
 import { dbg } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
@@ -555,8 +555,8 @@ async function _decodeFor(path) {
 }
 // Industry-standard minimum effect lengths (seconds).  Sourced from
 // commercial DJ-tool defaults (Pioneer DJM, Reloop RMX, Numark NS).
-// Mirrors Player._MIN_FX_DURATION_S on the Python side so CLI and
-// browser playback feel identical.
+// Player._MIN_FX_DURATION_S on the Python side holds the same values
+// for the server mix; the two are kept in step by hand.
 const _MIN_FX_DURATION_S = {
   tape_stop:      4.0,
   backspin:       2.5,
@@ -675,8 +675,8 @@ const _FX_BAR_TABLE = {
 };
 
 // --- _BS: BeatSync helper.  Refreshed at the start of every crossfade
-// from the server-emitted track payload (downbeats_outro / downbeats_intro
-// / key_hz) plus the cached BPMs.  All accessors take an AudioContext
+// from the server-emitted track payload (downbeats_outro and key_hz)
+// plus the cached BPMs.  All accessors take an AudioContext
 // time so the math stays sample-accurate. ---
 const _BS = {
   enabled: false,
@@ -992,6 +992,8 @@ function _decodedReplays(fx, build, onError) {
   });
 }
 
+// _decodeFor has already announced a failed request, so an effect whose
+// replay cannot be decoded only logs it: one announcement per failure.
 const _warnReplayFailed = (err) => console.warn("effect replay decode failed:", err);
 
 // Playback-rate glide from `from` to `to` over `sec`.
@@ -1403,7 +1405,7 @@ const _EFFECTS = {
         sources.push({ src, g });
       }
       return sources;
-    }, announceRequestError);
+    }, _warnReplayFailed);
   },
 
   beat_repeat(fx) {
@@ -1432,7 +1434,7 @@ const _EFFECTS = {
         sources.push({ src, g });
       }
       return sources;
-    }, announceRequestError);
+    }, _warnReplayFailed);
   },
 
   sidechain_pump(fx) {
@@ -2033,8 +2035,6 @@ export let _inBpmCache = 0;
 let _outDownbeatsCache = [];
 let _outKeyHzCache = null;
 let _inKeyHzCache = null;
-
-// _libraryWarned moved into ./modules/settings-panel.js.
 
 // Mixxx-style fade-length picker.  Mirrors AutoDJProcessor's
 // TransitionMode enum -- see CHANGELOG entry for 0.12.3.
