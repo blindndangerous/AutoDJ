@@ -3,8 +3,8 @@
 An archive is a plain ZIP file holding ``manifest.json`` (the AutoDJ version
 that wrote it and the list of files) and these members:
 
-- ``index/tracks.db``, ``index/vectors.index`` and ``index/index-manifest.json``:
-  the published index generation, under the canonical names.
+- ``index/index-manifest.json`` and the two generation files it names
+  (``tracks.gN.db`` and ``vectors.gN.index``): the live index generation.
 - ``index/dj_meta.db`` and ``index/web_state.json`` from the active index folder.
 - ``liners/...`` and ``profiles/...``: every file in those folders.
 - ``history``: the ``[playback] history_file``, when one is configured.
@@ -31,8 +31,8 @@ from autodj.version import current_version
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig
 
-# Installed in this order, so the index manifest only changes once its files are in place.
-INDEX_FILES = ("tracks.db", "vectors.index", "dj_meta.db", "web_state.json", im.MANIFEST_NAME)
+# Files of the index folder a backup holds besides the generation files.
+INDEX_FILES = ("dj_meta.db", "web_state.json", im.MANIFEST_NAME)
 _FOLDERS = ("liners", "profiles")
 
 
@@ -54,23 +54,28 @@ def _roots(cfg: AutoDJConfig) -> dict[str, Path]:
 
 
 def _snapshot_index(active: Path, snapshot: Path) -> None:
-    """Copy the published index generation and ``dj_meta.db`` into *snapshot*."""
-    try:
-        if im.read_manifest(active) is not None:
-            im.copy_published_snapshot(active, snapshot)
-        else:
-            im.require_current_format(active)
-            if any((active / name).exists() for name in ("tracks.db", "vectors.index")):
-                raise BackupError(
-                    f"the index has no published manifest; rebuild it with `{im.REBUILD_COMMAND}`"
-                )
-    except im.UnsupportedIndexError as exc:
-        raise BackupError(str(exc)) from exc
-    except im.IndexConsistencyError as exc:
-        raise BackupError(f"the published index is invalid: {exc}") from exc
+    """Copy the live index generation, its manifest and ``dj_meta.db`` into *snapshot*."""
+    snapshot.mkdir(parents=True)
+    with im.publication_lock(active):
+        try:
+            manifest: im.IndexManifest | None = im.require_manifest(active)
+        except FileNotFoundError:
+            manifest = None
+        except im.UnsupportedIndexError as exc:
+            raise BackupError(str(exc)) from exc
+        except im.IndexConsistencyError as exc:
+            raise BackupError(f"the published index is invalid: {exc}") from exc
+        if manifest is not None:
+            for name, digest in (
+                (manifest.tracks_file, manifest.tracks_sha256),
+                (manifest.vectors_file, manifest.vectors_sha256),
+            ):
+                shutil.copyfile(active / name, snapshot / name)
+                if im.sha256_file(snapshot / name) != digest:
+                    raise BackupError(f"{active / name} does not match its SHA-256 in the manifest")
+            shutil.copyfile(active / im.MANIFEST_NAME, snapshot / im.MANIFEST_NAME)
     dj_meta = active / "dj_meta.db"
     if dj_meta.is_file():
-        snapshot.mkdir(parents=True, exist_ok=True)
         with (
             closing(sqlite3.connect(readonly_uri(dj_meta), uri=True)) as source,
             closing(sqlite3.connect(snapshot / "dj_meta.db")) as target,
@@ -82,7 +87,8 @@ def create_backup(cfg: AutoDJConfig, destination: Path, *, force: bool) -> Path:
     """Write a backup archive to *destination* and return its absolute path.
 
     Safe while AutoDJ serves: the index is copied under its publication lock
-    and ``dj_meta.db`` through SQLite's backup API.
+    and checked against its manifest, and ``dj_meta.db`` is copied through
+    SQLite's backup API.
 
     Raises:
         BackupError: If *destination* exists without *force*, or the index is
@@ -155,7 +161,11 @@ def _target(roots: dict[str, Path], name: str) -> Path:
     if not parts or "/".join(parts) != name or ".." in parts or "\\" in name or ":" in name:
         raise BackupError(f"unsafe file name in archive: {name!r}")
     top, rest = parts[0], parts[1:]
-    if top == "index" and len(rest) == 1 and rest[0] in INDEX_FILES:
+    if (
+        top == "index"
+        and len(rest) == 1
+        and (rest[0] in INDEX_FILES or im.GENERATION_FILE_RE.match(rest[0]))
+    ):
         return roots["index"] / rest[0]
     if top in _FOLDERS and rest:
         return roots[top].joinpath(*rest)
@@ -167,31 +177,34 @@ def _target(roots: dict[str, Path], name: str) -> Path:
 
 
 def _check_index(stage: Path) -> None:
-    """Refuse a staged index that is damaged, incomplete or made by an older AutoDJ."""
+    """Refuse a staged index that the loader would refuse."""
+    from autodj.indexer import load_index
+
     try:
-        im.require_current_format(stage)
-        manifest = im.read_manifest(stage)
+        load_index(stage)
+    except FileNotFoundError:
+        return  # the backup holds no index
     except im.UnsupportedIndexError as exc:
         raise BackupError(str(im.UnsupportedIndexError("this backup", exc.reason))) from exc
     except im.IndexConsistencyError as exc:
         raise BackupError(f"the index in this backup is invalid: {exc}") from exc
-    if manifest and not all((stage / name).is_file() for name in INDEX_FILES[:2]):
-        raise BackupError("the index in this backup is incomplete")
 
 
 def _install(top: str, root: Path, stage: Path) -> None:
     """Move one staged part of a backup into place and drop what it supersedes."""
     if top == "index":
-        restored = {path.name for path in stage.iterdir()}
-        stale = [root / f"{db}{suffix}" for db in restored for suffix in ("-wal", "-shm")]
-        # The backup's generation replaces the whole publication history.
-        if im.MANIFEST_NAME in restored:
-            stale += [*root.glob("tracks.g*.db"), *root.glob("vectors.g*.index")]
-            stale.append(root / im.PUBLICATION_STATE_NAME)
-        for path in stale:
-            path.unlink(missing_ok=True)
-        for name in (name for name in INDEX_FILES if name in restored):
+        restored = sorted(path.name for path in stage.iterdir())
+        for name in restored:
+            for suffix in ("-wal", "-shm"):
+                (root / f"{name}{suffix}").unlink(missing_ok=True)
+        # The manifest goes last, so it only names files that are in place.
+        for name in sorted(restored, key=lambda name: name == im.MANIFEST_NAME):
             os.replace(stage / name, root / name)
+        if im.MANIFEST_NAME in restored:
+            # The backup's generation replaces every other one.
+            for path in root.iterdir():
+                if im.GENERATION_FILE_RE.match(path.name) and path.name not in restored:
+                    path.unlink()
     elif top == "history":
         os.replace(stage / "history", root)
     else:

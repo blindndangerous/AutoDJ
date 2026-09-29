@@ -20,6 +20,7 @@ from autodj.config import (
     ModelConfig,
     PlaybackConfig,
 )
+from autodj.index_manifest import read_manifest
 from autodj.indexer import FEATURE_DIM, build_index, load_index
 from autodj.model import EMBEDDING_DIM
 
@@ -113,8 +114,10 @@ class TestIndexPipeline:
             _setup_librosa_mock(mock_librosa)
             build_index(fake_config, wrapper=wrapper, limit=None, force=False)
 
-        assert (fake_config.index.active_dir / "vectors.index").exists()
-        assert (fake_config.index.active_dir / "tracks.db").exists()
+        manifest = read_manifest(fake_config.index.active_dir)
+        assert manifest is not None
+        assert (fake_config.index.active_dir / manifest.vectors_file).exists()
+        assert (fake_config.index.active_dir / manifest.tracks_file).exists()
 
     def test_build_index_indexes_all_tracks(self, fake_config: AutoDJConfig) -> None:
         wrapper = _fake_wrapper()
@@ -127,7 +130,7 @@ class TestIndexPipeline:
             _setup_librosa_mock(mock_librosa)
             build_index(fake_config, wrapper=wrapper, limit=None, force=False)
 
-        entries, faiss_index = load_index(fake_config.index.active_dir)
+        entries, faiss_index, _ = load_index(fake_config.index.active_dir)
         assert len(entries) == 10
         assert faiss_index.ntotal == 10
 
@@ -142,7 +145,7 @@ class TestIndexPipeline:
             _setup_librosa_mock(mock_librosa)
             build_index(fake_config, wrapper=wrapper, limit=3, force=False)
 
-        entries, faiss_index = load_index(fake_config.index.active_dir)
+        entries, faiss_index, _ = load_index(fake_config.index.active_dir)
         assert len(entries) == 3
         assert faiss_index.ntotal == 3
 
@@ -168,7 +171,7 @@ class TestIndexPipeline:
         # Only 5 new tracks were embedded in the second run
         assert second_call_count == 10
 
-        entries, _ = load_index(fake_config.index.active_dir)
+        entries, _, _ = load_index(fake_config.index.active_dir)
         assert len(entries) == 10
 
     def test_force_rebuild_reindexes_everything(self, fake_config: AutoDJConfig) -> None:
@@ -183,12 +186,12 @@ class TestIndexPipeline:
             build_index(fake_config, wrapper=wrapper, limit=5, force=False)
             build_index(fake_config, wrapper=wrapper, limit=None, force=True)
 
-        entries, _ = load_index(fake_config.index.active_dir)
+        entries, _, _ = load_index(fake_config.index.active_dir)
         assert len(entries) == 10
         # force=True means all 10 were re-embedded (5 + 10 = 15 total calls)
         assert wrapper.embed_array.call_count == 15
 
-    def test_force_reordered_checkpoint_preserves_vector_path_mapping_when_final_save_fails(
+    def test_force_rebuild_in_a_new_order_keeps_each_path_with_its_vector(
         self, fake_config: AutoDJConfig
     ) -> None:
         from autodj.beets import get_all_tracks
@@ -220,17 +223,9 @@ class TestIndexPipeline:
             mock_sf.read.side_effect = fake_read
             _setup_librosa_mock(mock_librosa)
             build_index(fake_config, wrapper=wrapper, limit=None, force=False)
+            build_index(fake_config, wrapper=wrapper, limit=None, force=True)
 
-            with (
-                patch(
-                    "autodj.indexer.save_index",
-                    side_effect=OSError("final save failed"),
-                ),
-                pytest.raises(OSError, match="final save failed"),
-            ):
-                build_index(fake_config, wrapper=wrapper, limit=None, force=True)
-
-        entries, faiss_index = load_index(fake_config.index.active_dir)
+        entries, faiss_index, _ = load_index(fake_config.index.active_dir)
         assert [Path(entry.path).stem for entry in entries] == [
             f"song_{index}" for index in reversed(range(10))
         ]
@@ -251,7 +246,7 @@ class TestIndexPipeline:
             _setup_librosa_mock(mock_librosa)
             build_index(fake_config, wrapper=wrapper, limit=None, force=False)
 
-        _, faiss_index = load_index(fake_config.index.active_dir)
+        _, faiss_index, _ = load_index(fake_config.index.active_dir)
 
         # Query the index with the first entry's vector
         query = np.random.randn(1, FEATURE_DIM).astype(np.float32)

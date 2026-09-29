@@ -4,16 +4,14 @@ Walks the music library (via beets or filesystem), extracts MuQ embeddings
 and librosa audio features per track, combines them into a single
 L2-normalized vector, and stores the result in a FAISS nearest-neighbor index.
 
-Index files written to ``index_dir``:
-- ``index-manifest.json`` — names the live generation and its checksums
-- ``tracks.gNNN.db`` / ``vectors.gNNN.index`` — the published generation
-  (SQLite metadata, one row per track; FAISS ``IndexFlatIP`` vectors).
-  Every reader loads these.
-- ``tracks.db`` / ``vectors.index`` — working copies the indexer edits and
-  then publishes as the next generation.
+Index files in ``index_dir`` (see :mod:`autodj.index_manifest`):
+- ``index-manifest.json`` names the live generation and its checksums.
+- ``tracks.gN.db`` (SQLite metadata, one row per track) and
+  ``vectors.gN.index`` (FAISS ``IndexFlatIP`` vectors) hold generation N.
 
-Subsequent runs are **incremental**: tracks already present in
-``tracks.db`` are skipped.  Pass ``force=True`` to rebuild from scratch.
+Every change is written as a new generation.  Subsequent runs are
+**incremental**: tracks already in the live generation are skipped.  Pass
+``force=True`` to rebuild from scratch.
 
 Example:
     >>> from autodj.config import load_config
@@ -46,35 +44,25 @@ from typing import TYPE_CHECKING, Any, cast
 import faiss
 import librosa
 import numpy as np
-from tqdm import tqdm
 
 from autodj.beets import BeetsNotFoundError, Track, get_all_tracks
 from autodj.config import AutoDJConfig
 from autodj.fsutil import fsync_directory
 from autodj.index_manifest import (
     MANIFEST_NAME,
+    REBUILD_COMMAND,
     IndexConsistencyError,
     IndexManifest,
-    IndexSnapshotToken,
     UnsupportedIndexError,
-    _immutable_sqlite_uri,
-    current_snapshot_token,
-    discard_publication_record,
     is_absolute_storage,
     publication_lock,
-    publish_manifest,
+    publish_generation,
     read_manifest,
     relative_storage_path,
-    require_current_format,
-    require_no_orphan_generations,
-    require_snapshot_token,
-    reserve_first_publication,
-    restore_working_snapshot,
+    require_manifest,
     sha256_file,
-    snapshot_token_for_manifest,
-    tombstone_publication,
 )
-from autodj.sqlite_utils import immediate_transaction
+from autodj.sqlite_utils import readonly_uri
 
 # soundfile is an optional extra, so the lighter commands (`enrich`,
 # `prune`, `stats`, `playlist`) work on minimal installs that omit it.
@@ -104,27 +92,33 @@ _LIBROSA_DIM = 16
 # Combined feature vector dimension: 1024 (MuQ) + 16 (librosa)
 FEATURE_DIM = EMBEDDING_DIM + _LIBROSA_DIM
 
-# How often the embed loop rewrites the monolithic FAISS file during a
-# long ``autodj index`` run.  The whole file (~290 MB at 70k tracks) is
-# rebuilt and rewritten on every flush, so per-track rewrites pummel NAS
-# spindles -- ~2.4 TB of writes over a full reindex.  Metadata deltas flush
-# only after the matching vector checkpoint lands, keeping published rows
-# aligned.  On startup, ``_load_existing_index`` defensively clamps either
-# file to their common prefix after an interrupted write.
+# How often a long ``autodj index`` run publishes the tracks embedded so
+# far as a new generation.  Each publication rewrites the whole vectors file
+# (~290 MB at 70k tracks), so publishing after every track would pummel NAS
+# drives; an interrupted run resumes from the last publication.
 FAISS_CHECKPOINT_EVERY: int = 100
+
+# Per-track work (embedding, DJ analysis) logs one progress line per this
+# many tracks; file checks log one per _STAT_PROGRESS_EVERY files.
+PROGRESS_EVERY: int = 25
+_STAT_PROGRESS_EVERY: int = 5000
+
+
+def _log_progress(phase: str, done: int, total: int, every: int = PROGRESS_EVERY) -> None:
+    """Log ``phase: done of total`` every *every* items and at the end."""
+    if done == total or done % every == 0:
+        logger.info("%s: %d of %d", phase, done, total)
+
 
 # ---------------------------------------------------------------------------
 # Tracks SQLite store
 # ---------------------------------------------------------------------------
 #
-# Indexed track metadata lives in ``index/tracks.db`` (SQLite WAL mode).
-# Incremental UPSERTs touch only dirty pages and preserve existing row identity.
-#
 # Schema mirrors :class:`IndexEntry` one-to-one.  ``vec_row`` is the stable
 # identity linking each metadata row to its corresponding FAISS vector.
 
 _TRACKS_SCHEMA = """
-    CREATE TABLE IF NOT EXISTS tracks (
+    CREATE TABLE tracks (
         vec_row INTEGER NOT NULL UNIQUE,
         path TEXT NOT NULL UNIQUE,
         title TEXT NOT NULL DEFAULT '', artist TEXT NOT NULL DEFAULT '',
@@ -148,42 +142,6 @@ _TRACKS_SELECT_SQL = (
     "SELECT path, title, artist, album, genre, bpm, year, length, energy, "
     "key, mode, tempo_confidence, embedded_at FROM tracks ORDER BY vec_row ASC"
 )
-
-# Fixed SQL fragment; all row values remain parameter-bound.
-_TRACKS_UPSERT_SQL = _TRACKS_INSERT_SQL + (
-    " ON CONFLICT(vec_row) DO UPDATE SET path=excluded.path, "  # nosec B608
-    "title=excluded.title, artist=excluded.artist, album=excluded.album, "
-    "genre=excluded.genre, bpm=excluded.bpm, year=excluded.year, "
-    "length=excluded.length, energy=excluded.energy, key=excluded.key, "
-    "mode=excluded.mode, tempo_confidence=excluded.tempo_confidence, "
-    "embedded_at=excluded.embedded_at"
-)
-
-
-def _tracks_db_path(index_dir: Path) -> Path:
-    """Return the SQLite tracks-db path for *index_dir*."""
-    return index_dir / "tracks.db"
-
-
-def _open_tracks_db(index_dir: Path) -> sqlite3.Connection:
-    """Open (creating if needed) the tracks SQLite store for *index_dir*.
-
-    Uses WAL journal mode + NORMAL sync — same trade-off as DjMetaCache:
-    the index is re-derivable from the library if a crash corrupts an
-    uncommitted write, so we prefer the throughput.
-    """
-    index_dir.mkdir(parents=True, exist_ok=True)
-    db_path = _tracks_db_path(index_dir)
-    conn = sqlite3.connect(db_path, isolation_level=None, check_same_thread=False)
-    try:
-        conn.executescript(_TRACKS_SCHEMA)
-    except BaseException:
-        conn.close()
-        raise
-    with contextlib.suppress(sqlite3.DatabaseError):
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-    return conn
 
 
 def _entry_to_row(entry: IndexEntry, music_dir: Path | None, vec_row: int) -> dict[str, object]:
@@ -229,51 +187,14 @@ def _row_to_entry(row: tuple) -> IndexEntry:
     )
 
 
-def _replace_tracks_rows(
-    conn: sqlite3.Connection,
-    entries: list[IndexEntry],
-    music_dir: Path | None,
-) -> None:
-    """Atomically replace rows when vector order intentionally changes."""
-    rows = [_entry_to_row(entry, music_dir, vec_row) for vec_row, entry in enumerate(entries)]
-    with immediate_transaction(conn):
-        conn.execute("DELETE FROM tracks")
-        if rows:
-            conn.executemany(_TRACKS_INSERT_SQL, rows)
-
-
-def _upsert_tracks_metadata(
-    entries: list[IndexEntry],
-    index_dir: Path,
-    first_vec_row: int,
-    music_dir: Path | None,
-    baseline_entries: list[IndexEntry] | None = None,
-) -> None:
-    """Publish a metadata delta, reconciling its baseline when requested."""
-    rows = [
-        _entry_to_row(entry, music_dir, first_vec_row + offset)
-        for offset, entry in enumerate(entries)
-    ]
-    baseline_rows = (
-        [_entry_to_row(entry, music_dir, vec_row) for vec_row, entry in enumerate(baseline_entries)]
-        if baseline_entries is not None
-        else None
-    )
-    conn = _open_tracks_db(index_dir)
+def _write_tracks_file(rows: list[dict[str, object]], path: Path) -> None:
+    """Create a new SQLite tracks database at *path* holding *rows*."""
+    conn = sqlite3.connect(path, isolation_level=None)
     try:
-        with immediate_transaction(conn):
-            if baseline_rows is not None:
-                actual_baseline = conn.execute(
-                    "SELECT vec_row, path FROM tracks ORDER BY vec_row"
-                ).fetchall()
-                expected_baseline = [
-                    (int(cast(int, row["vec_row"])), str(row["path"])) for row in baseline_rows
-                ]
-                if actual_baseline != expected_baseline:
-                    conn.execute("DELETE FROM tracks")
-                    if baseline_rows:
-                        conn.executemany(_TRACKS_INSERT_SQL, baseline_rows)
-            conn.executemany(_TRACKS_UPSERT_SQL, rows)
+        conn.executescript(_TRACKS_SCHEMA)
+        conn.execute("BEGIN")
+        conn.executemany(_TRACKS_INSERT_SQL, rows)
+        conn.execute("COMMIT")
     finally:
         conn.close()
 
@@ -797,194 +718,87 @@ def _write_faiss_chunked(index: faiss.Index, path: Path, chunk_size: int = 1 << 
             os.fsync(fh.fileno())
 
 
-def _save_vectors(vectors: np.ndarray, index_dir: Path) -> None:
-    """Write only ``vectors.index`` atomically (tmp+rename).
-
-    Used by the checkpoint pipeline before publishing its matching metadata
-    delta, so readers never observe metadata without a corresponding vector.
-    """
-    index_dir.mkdir(parents=True, exist_ok=True)
-    vectors_final = index_dir / "vectors.index"
-    vectors_tmp = index_dir / "vectors.index.tmp"
-    try:
-        faiss_index = build_faiss_index(vectors)
-        _write_faiss_chunked(faiss_index, vectors_tmp)
-        os.replace(vectors_tmp, vectors_final)
-    except Exception:
-        if vectors_tmp.exists():
-            with contextlib.suppress(OSError):
-                vectors_tmp.unlink()
-        raise
-
-
-def _save_tracks_metadata(
-    entries: list[IndexEntry],
-    index_dir: Path,
-    music_dir: Path | None,
-) -> None:
-    """Replace the ``tracks.db`` rows in one transaction.
-
-    Used when the complete vector order changes or a full index save must
-    publish the complete metadata set.
-    """
-    index_dir.mkdir(parents=True, exist_ok=True)
-    conn = _open_tracks_db(index_dir)
-    try:
-        _replace_tracks_rows(conn, entries, music_dir)
-    finally:
-        conn.close()
-
-
-def _publish_full_snapshot(
-    entries: list[IndexEntry],
-    vectors: np.ndarray,
-    index_dir: Path,
-    music_dir: Path | None,
-    *,
-    expected_snapshot: IndexSnapshotToken | None = None,
-) -> IndexManifest:
-    """Publish vectors and metadata together as one immutable generation."""
-    with publication_lock(index_dir):
-        if expected_snapshot is not None:
-            require_snapshot_token(index_dir, expected_snapshot)
-        reserve_first_publication(index_dir)
-        _save_vectors(vectors, index_dir)
-        _save_tracks_metadata(entries, index_dir, music_dir)
-        return publish_manifest(index_dir, len(entries))
-
-
-def _publish_metadata_snapshot(
-    entries: list[IndexEntry],
-    index_dir: Path,
-    music_dir: Path | None,
-    *,
-    expected_snapshot: IndexSnapshotToken | None = None,
-) -> IndexManifest:
-    """Publish metadata paired with the last published vector artifact."""
-    with publication_lock(index_dir):
-        current = read_manifest(index_dir)
-        if expected_snapshot is not None:
-            current = require_snapshot_token(index_dir, expected_snapshot)
-        if current is not None:
-            restore_working_snapshot(index_dir, expected_generation=current.generation)
-        reserve_first_publication(index_dir)
-        _save_tracks_metadata(entries, index_dir, music_dir)
-        return publish_manifest(index_dir, len(entries))
-
-
-@dataclass
-class IncrementalCheckpoint:
-    """Publish aligned FAISS vectors and metadata at throttled checkpoints."""
-
-    index_dir: Path
-    music_dir: Path | None
-    existing_entries: list[IndexEntry]
-    existing_vectors: list[np.ndarray]
-    total_new: int
-    expected_snapshot: IndexSnapshotToken
-    baseline_requires_reconcile: bool = False
-    flush_every: int = FAISS_CHECKPOINT_EVERY
-    published_new_count: int = 0
-    baseline_published: bool = False
-
-    def write(self, new_entries: list[IndexEntry], new_vectors: list[np.ndarray]) -> None:
-        """Publish a due checkpoint of aligned entries and vectors."""
-        if not new_entries:
-            return
-        due = len(new_entries) == self.total_new or len(new_entries) % self.flush_every == 0
-        if not due:
-            return
-
-        all_vectors = (
-            np.vstack(
-                [
-                    np.asarray(self.existing_vectors, dtype=np.float32),
-                    np.asarray(new_vectors, dtype=np.float32),
-                ]
-            )
-            if self.existing_vectors
-            else np.asarray(new_vectors, dtype=np.float32)
-        )
-        pending = new_entries[self.published_new_count :]
-        with publication_lock(self.index_dir):
-            require_snapshot_token(self.index_dir, self.expected_snapshot)
-            if self.expected_snapshot.generation:
-                restore_working_snapshot(
-                    self.index_dir,
-                    expected_generation=self.expected_snapshot.generation,
-                )
-            reserve_first_publication(self.index_dir)
-            _save_vectors(all_vectors, self.index_dir)
-            _upsert_tracks_metadata(
-                pending,
-                self.index_dir,
-                first_vec_row=len(self.existing_entries) + self.published_new_count,
-                music_dir=self.music_dir,
-                baseline_entries=(
-                    self.existing_entries
-                    if self.baseline_requires_reconcile and not self.baseline_published
-                    else None
-                ),
-            )
-            try:
-                published = publish_manifest(
-                    self.index_dir,
-                    len(self.existing_entries) + len(new_entries),
-                )
-            except Exception:
-                # A failed first publication consumes an ID but leaves no
-                # live manifest.  Retrying the exact checkpoint must carry
-                # that reservation epoch, while concurrent work remains
-                # excluded by this publication lock.
-                if self.expected_snapshot.generation == 0:
-                    self.expected_snapshot = current_snapshot_token(self.index_dir)
-                raise
-        self.expected_snapshot = snapshot_token_for_manifest(published)
-        self.baseline_published = True
-        self.published_new_count = len(new_entries)
-
-
 def save_index(
     entries: list[IndexEntry],
     vectors: np.ndarray,
     index_dir: Path,
     music_dir: Path | None = None,
     *,
-    expected_snapshot: IndexSnapshotToken | None = None,
-) -> None:
-    """Write the FAISS index and tracks DB to *index_dir* atomically.
-
-    Files written:
-    - ``vectors.index``  — FAISS binary file
-    - ``tracks.db``      — SQLite metadata (one row per track, in row order
-      matching the FAISS index)
-
-    The FAISS file is written to a ``*.tmp`` sibling and renamed over the
-    original.  The tracks DB is updated inside a single SQLite transaction
-    (``DELETE FROM tracks`` then bulk ``INSERT``), so a crash mid-write
-    leaves the existing on-disk DB intact instead of corrupting it.
+    base_generation: int,
+) -> IndexManifest:
+    """Publish *entries* and *vectors* as the next index generation.
 
     Paths are stored relative to *music_dir* (forward-slashed), making the
     index portable across machines that mount the library at a different
     absolute path.  A path outside *music_dir* raises ``ValueError``.
     Runtime ``entry.path`` values are not mutated.
 
-    The row order of *entries* must match the row order of *vectors*.
-
     Args:
-        entries: List of :class:`IndexEntry` objects, one per track.
+        entries: One :class:`IndexEntry` per track, in the row order of *vectors*.
         vectors: float32 array of shape ``(len(entries), FEATURE_DIM)``.
-        index_dir: Directory to write files into (must already exist).
+        index_dir: The index directory.
         music_dir: Library root — when set, paths are relativized for storage.
+        base_generation: The generation *entries* were built from, or 0.
+
+    Returns:
+        The new manifest.
+
+    Raises:
+        IndexConsistencyError: If another command published since
+            *base_generation*.
     """
-    _publish_full_snapshot(
-        entries,
-        vectors,
+    rows = [_entry_to_row(entry, music_dir, vec_row) for vec_row, entry in enumerate(entries)]
+    matrix = np.asarray(vectors, dtype=np.float32).reshape(len(entries), FEATURE_DIM)
+
+    def write_files(tracks_path: Path, vectors_path: Path) -> None:
+        _write_tracks_file(rows, tracks_path)
+        _write_faiss_chunked(build_faiss_index(matrix), vectors_path)
+
+    manifest = publish_generation(
         index_dir,
-        music_dir,
-        expected_snapshot=expected_snapshot,
+        base_generation=base_generation,
+        vector_count=len(entries),
+        write_files=write_files,
     )
-    logger.info("Saved index with %d tracks to %s", len(entries), index_dir)
+    logger.info(
+        "Published index generation %d with %d tracks to %s",
+        manifest.generation,
+        len(entries),
+        index_dir,
+    )
+    return manifest
+
+
+@dataclass
+class IncrementalCheckpoint:
+    """Publish the tracks embedded so far every ``flush_every`` new tracks."""
+
+    index_dir: Path
+    music_dir: Path | None
+    existing_entries: list[IndexEntry]
+    existing_vectors: list[np.ndarray]
+    base_generation: int
+    flush_every: int = FAISS_CHECKPOINT_EVERY
+    published_count: int = 0
+
+    def write(self, new_entries: list[IndexEntry], new_vectors: list[np.ndarray]) -> None:
+        """Publish when another ``flush_every`` new tracks are ready."""
+        if len(new_entries) - self.published_count >= self.flush_every:
+            self.finish(new_entries, new_vectors)
+
+    def finish(self, new_entries: list[IndexEntry], new_vectors: list[np.ndarray]) -> None:
+        """Publish every new track not yet published."""
+        if len(new_entries) == self.published_count:
+            return
+        manifest = save_index(
+            self.existing_entries + new_entries,
+            np.asarray([*self.existing_vectors, *new_vectors], dtype=np.float32),
+            self.index_dir,
+            self.music_dir,
+            base_generation=self.base_generation,
+        )
+        self.base_generation = manifest.generation
+        self.published_count = len(new_entries)
 
 
 class PruneSafetyError(RuntimeError):
@@ -1071,7 +885,7 @@ def enrich_from_beets(
 ) -> tuple[int, int]:
     """Refresh existing index entries with whatever beets has on each track.
 
-    Walks ``tracks.db``, looks up each track in *beets_db* by path, and
+    Walks the index, looks up each track in *beets_db* by path, and
     overwrites a curated set of fields when beets has values for them.
     This is the upgrade path for users who indexed without beets and
     later add a ``library.db`` — they get title / artist / album /
@@ -1093,7 +907,7 @@ def enrich_from_beets(
     left untouched.
 
     Args:
-        index_dir: Directory containing ``vectors.index`` + ``tracks.db``.
+        index_dir: The index directory.
         music_dir: Library root (used to resolve relative stored paths).
         beets_db: Path to the beets ``library.db``.
 
@@ -1109,16 +923,10 @@ def enrich_from_beets(
         parse_initial_key,
     )
 
-    source_snapshot: IndexSnapshotToken
-    with publication_lock(index_dir):
-        current = read_manifest(index_dir)
-        source_snapshot = current_snapshot_token(index_dir)
-        if current is None:
-            require_no_orphan_generations(index_dir)
-            return (0, 0)
-        entries, _loaded = load_index(
-            index_dir, music_dir=music_dir, expected_generation=current.generation
-        )
+    try:
+        entries, loaded, manifest = load_index(index_dir, music_dir=music_dir)
+    except FileNotFoundError:
+        return (0, 0)
 
     try:
         conn = _open_db(beets_db)
@@ -1154,14 +962,7 @@ def enrich_from_beets(
             f"[AutoDJ] Phase: Enriching — scanning {len(entries)} tracks against beets.",
             flush=True,
         )
-        for e in tqdm(
-            entries,
-            total=len(entries),
-            desc="Enriching",
-            unit="track",
-            disable=False,
-            dynamic_ncols=True,
-        ):
+        for e in entries:
             row = _find_beets_row(e.path, music_dir, all_rows, _path_candidates)
             if row is None:
                 continue
@@ -1174,13 +975,12 @@ def enrich_from_beets(
         logger.info("Enrich: no changes from beets")
         return (0, len(entries))
 
-    # Metadata-only update: the vectors are unchanged, so only tracks.db is
-    # replaced (in one transaction) and republished.
-    _publish_metadata_snapshot(
+    save_index(
         entries,
+        loaded.reconstruct_n(0, loaded.ntotal),
         index_dir,
         music_dir,
-        expected_snapshot=source_snapshot,
+        base_generation=manifest.generation,
     )
     logger.info("Enrich: updated %d/%d tracks", updated, len(entries))
     return (updated, len(entries))
@@ -1201,48 +1001,17 @@ def _check_prune_safety(removed: int, total: int, allow_mass_prune: bool) -> Non
     )
 
 
-def _delete_index_files(
-    index_dir: Path,
-    *,
-    expected_snapshot: IndexSnapshotToken | None = None,
-) -> None:
-    """Remove the index files (called when prune empties the library).
-
-    Cleans up canonical working files, published generations, the manifest,
-    and SQLite sidecars so the next index run starts from a clean slate.
-    """
-    with publication_lock(index_dir):
-        if expected_snapshot is not None:
-            require_snapshot_token(index_dir, expected_snapshot)
-        tombstone_publication(index_dir)
-        paths = [
-            index_dir / "vectors.index",
-            index_dir / "tracks.db",
-            index_dir / "tracks.db-wal",
-            index_dir / "tracks.db-shm",
-            index_dir / MANIFEST_NAME,
-            *index_dir.glob("tracks.g*.db"),
-            *index_dir.glob("vectors.g*.index"),
-        ]
-        for path in paths:
-            path.unlink(missing_ok=True)
-        fsync_directory(index_dir)
-
-
 def prune_index(
     index_dir: Path,
     music_dir: Path | None = None,
     allow_mass_prune: bool = False,
-    throttle_ms: float = 0.0,
-    stat_workers: int = 8,
 ) -> tuple[int, int]:
     """Remove index entries whose audio files no longer exist on disk.
 
-    Loads ``tracks.db`` and ``vectors.index``, resolves each stored
-    path against *music_dir*, drops every row whose audio file is
-    missing, and publishes the rest as a new generation.  If every track
-    is gone, the index files are deleted instead.  No-op when no index
-    exists or nothing is missing.
+    Resolves each stored path against *music_dir*, drops every row whose
+    audio file is missing, and publishes the rest as a new generation (an
+    empty one when every track is gone).  No-op when no index exists or
+    nothing is missing.
 
     Safety: if more than :data:`PRUNE_SAFETY_THRESHOLD` of the entries
     would be removed, raises :class:`PruneSafetyError` instead of touching
@@ -1250,7 +1019,7 @@ def prune_index(
     confirming you really did delete most of your library).
 
     Args:
-        index_dir: Directory containing ``vectors.index`` and ``tracks.db``.
+        index_dir: The index directory.
         music_dir: Library root for resolving relative paths.
         allow_mass_prune: If ``True``, skip the safety check and prune
             even if it would remove most of the index.
@@ -1262,67 +1031,31 @@ def prune_index(
         PruneSafetyError: If the prune would exceed the safety threshold
             and ``allow_mass_prune`` is not set.
     """
-    source_snapshot: IndexSnapshotToken
-    with publication_lock(index_dir):
-        current = read_manifest(index_dir)
-        source_snapshot = current_snapshot_token(index_dir)
-        if current is None:
-            require_no_orphan_generations(index_dir)
-            return (0, 0)
-        entries, loaded = load_index(
-            index_dir, music_dir=music_dir, expected_generation=current.generation
-        )
+    try:
+        entries, loaded, manifest = load_index(index_dir, music_dir=music_dir)
+    except FileNotFoundError:
+        return (0, 0)
 
-    # Existence check is RTT-bound on NFS/SMB libraries — at 70k+ tracks the
-    # serial loop dominates the whole `index` command.  Fan out across a
-    # thread pool so the kernel can pipeline stat() RPCs.
     print(
         f"[AutoDJ] Phase: Pruning — checking {len(entries)} indexed files on disk.",
         flush=True,
     )
-
-    throttle_s = max(0.0, throttle_ms) / 1000.0
-    pool_size = max(1, stat_workers)
-
-    def _exists_throttled(e: IndexEntry) -> bool:
-        if throttle_s:
-            time.sleep(throttle_s)
-        return Path(e.path).exists()
-
-    with ThreadPoolExecutor(max_workers=pool_size) as pool:
-        keep_mask = list(
-            tqdm(
-                pool.map(_exists_throttled, entries),
-                total=len(entries),
-                desc="Pruning",
-                unit="file",
-                dynamic_ncols=True,
-            )
-        )
-    removed = sum(1 for k in keep_mask if not k)
+    keep_mask = [mtime is not None for mtime in _stat_mtimes(entries)]
+    removed = keep_mask.count(False)
     _check_prune_safety(removed, len(entries), allow_mass_prune)
-
-    surviving_entries = [e for e, k in zip(entries, keep_mask, strict=False) if k]
-    if not surviving_entries and removed:
-        _delete_index_files(index_dir, expected_snapshot=source_snapshot)
-        logger.info("Pruned all %d entries — index is now empty", removed)
-        return (removed, 0)
-
     if removed == 0:
         return (0, len(entries))
 
-    # Batch reconstruct: one FAISS call returns the whole (N, dim) array,
-    # then we slice with a numpy mask.  ~70 000 per-entry reconstruct()
-    # calls were the dominant cost of prune on large libraries.
+    surviving_entries = [e for e, k in zip(entries, keep_mask, strict=True) if k]
+    # One FAISS call returns the whole (N, dim) array; a numpy mask slices it.
     all_vectors = loaded.reconstruct_n(0, loaded.ntotal)
-    mask = np.fromiter(keep_mask, dtype=bool, count=len(keep_mask))
-    surviving_vectors = np.asarray(all_vectors[mask], dtype=np.float32)
-    _publish_full_snapshot(
+    surviving_vectors = all_vectors[np.asarray(keep_mask, dtype=bool)]
+    save_index(
         surviving_entries,
         surviving_vectors,
         index_dir,
         music_dir,
-        expected_snapshot=source_snapshot,
+        base_generation=manifest.generation,
     )
     logger.info("Pruned %d missing tracks (%d remain)", removed, len(surviving_entries))
     return (removed, len(surviving_entries))
@@ -1331,85 +1064,67 @@ def prune_index(
 def load_index(
     index_dir: Path,
     music_dir: Path | None = None,
-    *,
-    expected_generation: int | None = None,
-) -> tuple[list[IndexEntry], faiss.IndexFlatIP]:
-    """Load the FAISS index and metadata from *index_dir*.
+) -> tuple[list[IndexEntry], faiss.IndexFlatIP, IndexManifest]:
+    """Load the live generation named by ``index-manifest.json``.
 
-    When *music_dir* is provided, the relative stored paths are joined to
-    it, so ``entry.path`` is an absolute runtime path on return.
+    Both files are checked against the manifest's SHA-256 digests and track
+    count.  When *music_dir* is provided, the relative stored paths are
+    joined to it, so ``entry.path`` is an absolute runtime path on return.
 
     Args:
-        index_dir: Directory containing ``vectors.index`` and ``tracks.db``.
+        index_dir: The index directory.
         music_dir: Library root for resolving relative paths.
 
     Returns:
-        A tuple of ``(entries, faiss_index)`` where *entries* is a list of
-        :class:`IndexEntry` objects in the same row order as the FAISS index.
+        ``(entries, faiss_index, manifest)``, entries in FAISS row order.
 
     Raises:
-        FileNotFoundError: If *index_dir* or its required files are missing.
+        FileNotFoundError: If the directory holds no index.
+        UnsupportedIndexError: If the index was made by an older AutoDJ.
+        IndexConsistencyError: If a file the manifest names is missing or
+            does not match it.
     """
     with publication_lock(index_dir):
-        before = read_manifest(index_dir)
-        if expected_generation is not None and (
-            before is None or before.generation != expected_generation
+        manifest = require_manifest(index_dir)
+        tracks_path = index_dir / manifest.tracks_file
+        vectors_path = index_dir / manifest.vectors_file
+        for path, digest in (
+            (tracks_path, manifest.tracks_sha256),
+            (vectors_path, manifest.vectors_sha256),
         ):
+            if not path.is_file():
+                problem = "is missing"
+            elif sha256_file(path) != digest:
+                problem = "does not match its SHA-256 in the manifest"
+            else:
+                continue
             raise IndexConsistencyError(
-                f"expected generation {expected_generation}, got "
-                f"{getattr(before, 'generation', None)}"
+                f"{path} {problem}; copy the index again, or rebuild it with `{REBUILD_COMMAND}`"
             )
-        if before is None:
-            require_no_orphan_generations(index_dir)
-            raise FileNotFoundError(f"No published index in {index_dir}; run `autodj index`")
-        tracks_path = index_dir / before.tracks_file
-        vectors_path = index_dir / before.vectors_file
-        if not tracks_path.is_file() or not vectors_path.is_file():
-            raise FileNotFoundError(
-                f"Index files missing: {tracks_path.name} + {vectors_path.name}"
-            )
-        pre_hashes = (sha256_file(tracks_path), sha256_file(vectors_path))
-
         faiss_index = cast("faiss.IndexFlatIP", faiss.read_index(str(vectors_path)))
-        conn = sqlite3.connect(_immutable_sqlite_uri(tracks_path), uri=True)
+        conn = sqlite3.connect(readonly_uri(tracks_path, immutable=True), uri=True)
         try:
             entries = _load_tracks_rows(conn)
         finally:
             conn.close()
-
-        post_hashes = (sha256_file(tracks_path), sha256_file(vectors_path))
-        after = read_manifest(index_dir)
-        if after != before:
-            raise IndexConsistencyError("manifest changed during load; retry generation")
-        if pre_hashes != post_hashes:
-            raise IndexConsistencyError("index artifact changed during load; retry generation")
-
-        sqlite_count = len(entries)
-        faiss_count = int(faiss_index.ntotal)
-        if sqlite_count != before.vector_count or faiss_count != before.vector_count:
-            raise IndexConsistencyError(
-                f"index count mismatch: manifest={before.vector_count}, "
-                f"sqlite={sqlite_count}, faiss={faiss_count}"
-            )
-        if pre_hashes != (before.tracks_sha256, before.vectors_sha256):
-            tracks_hash, vectors_hash = pre_hashes
-            if tracks_hash != before.tracks_sha256:
-                raise IndexConsistencyError("tracks SHA-256 mismatch")
-            if vectors_hash != before.vectors_sha256:
-                raise IndexConsistencyError("vectors SHA-256 mismatch")
-        absolute = next((e.path for e in entries if is_absolute_storage(e.path)), None)
-        if absolute is not None:
-            raise UnsupportedIndexError(index_dir, f"tracks.db stores the absolute path {absolute}")
-        if music_dir is not None:
-            for entry in entries:
-                entry.path = str(music_dir / entry.path)
-        logger.info(
-            "Loaded index generation %s with %d tracks from %s",
-            before.generation,
-            len(entries),
-            index_dir,
+    if len(entries) != manifest.vector_count or faiss_index.ntotal != manifest.vector_count:
+        raise IndexConsistencyError(
+            f"index count mismatch: manifest={manifest.vector_count}, "
+            f"tracks={len(entries)}, vectors={faiss_index.ntotal}"
         )
-        return entries, faiss_index
+    absolute = next((e.path for e in entries if is_absolute_storage(e.path)), None)
+    if absolute is not None:
+        raise UnsupportedIndexError(index_dir, f"it stores the absolute path {absolute}")
+    if music_dir is not None:
+        for entry in entries:
+            entry.path = str(music_dir / entry.path)
+    logger.info(
+        "Loaded index generation %d with %d tracks from %s",
+        manifest.generation,
+        len(entries),
+        index_dir,
+    )
+    return entries, faiss_index, manifest
 
 
 # ---------------------------------------------------------------------------
@@ -1417,267 +1132,95 @@ def load_index(
 # ---------------------------------------------------------------------------
 
 
-def _analyse_one_track(path_str: str) -> tuple[str, Any | None, str | None]:
-    """Worker: decode audio, run :func:`analyse_audio`, return ``(path, meta, err)``.
-
-    Top-level (picklable) so a thread / process pool can dispatch it.
-    Returns the resolved :class:`autodj.dj_meta.DjMeta` on success, or an
-    error string on failure -- never raises.  Empty / unreadable files
-    return ``(path, None, None)`` so the caller can skip silently.
-    """
+def _analyse_one_track(path: str) -> Any | None:
+    """Decode *path* and return its :class:`autodj.dj_meta.DjMeta`, or ``None`` when silent."""
     from autodj.dj_meta import analyse_audio
 
-    try:
-        audio, sr = _load_audio(Path(path_str))
-        if len(audio) == 0:
-            return (path_str, None, None)
-        return (path_str, analyse_audio(audio, sr), None)
-    except Exception as exc:
-        return (path_str, None, f"{type(exc).__name__}: {exc}")
+    audio, sr = _load_audio(Path(path))
+    if len(audio) == 0:
+        return None
+    return analyse_audio(audio, sr)
 
 
-def _backfill_dj_meta(
+def backfill_dj_meta(
+    cfg: AutoDJConfig,
     entries: list[IndexEntry],
-    index_dir: Path,
-    workers: int | None = None,
-    throttle_ms: float = 0.0,
-    music_dir: Path | None = None,
 ) -> None:
-    """Fill in DJ-meta for already-indexed tracks that have no sidecar entry.
+    """Analyse DJ metadata (intro/outro, beats, cues) for tracks that lack it.
 
-    Decodes every track whose cache entry is missing or has
-    ``analysed=False``, runs :func:`autodj.dj_meta.analyse_audio` in a
-    worker pool, and writes the result.  librosa + soundfile release the
-    GIL during their BLAS / decoder calls so a thread pool gets near-
-    linear speedup on multi-core hosts.  Flushes every 25 results
-    (atomic temp+rename) so a Ctrl+C never loses more than the current
-    batch.
+    First drops ``dj_meta.db`` rows of tracks no longer in *entries*.  Then
+    decodes each track whose row is missing or not analysed, one at a
+    time, runs :func:`autodj.dj_meta.analyse_audio` and stores the result.  Rows are flushed every 25 tracks, so an interrupted
+    run loses at most that many.  ``[index] throttle_ms`` pauses before each
+    track.
 
     Args:
-        entries: Indexed track entries (with absolute paths already
-            resolved by the caller).
-        index_dir: Active index directory — receives ``dj_meta.db``.
-        workers: Thread-pool size.  ``None`` uses one worker because long
-            full-track transforms can consume many GiB of RAM.  Higher values
-            require enough memory for each concurrent decode and analysis.
-        throttle_ms: Optional idle gap (milliseconds) inserted before each
-            new task submission / serial step.  ``0`` = no throttle.
-            Use to give NAS spindles cool-down breathing room on long
-            sustained passes — e.g. ``500`` cuts effective duty cycle
-            sharply with little wall-clock cost when paired with a low
-            worker count.
-        music_dir: Library root used to store DJ-meta keys portably.
+        cfg: Configuration naming the index, the library and the settings above.
+        entries: Every track in the index, with absolute paths.
     """
     from autodj.dj_meta import get_cache
 
-    cache = get_cache(index_dir, music_dir=music_dir)
-    if cache is None:
+    cache = get_cache(cfg.index.active_dir, music_dir=cfg.library.music_dir)
+    if cache is None:  # pragma: no cover - get_cache with an index_dir always builds one
         return
-    prune_to_paths = getattr(cache, "prune_to_paths", None)
-    if callable(prune_to_paths):
-        removed_stale = prune_to_paths({e.path for e in entries})
-        if removed_stale:
-            print(f"[AutoDJ] DJ-meta cache pruned {removed_stale} stale entries.", flush=True)
-    pending = [e for e in entries if not cache.get(e.path).analysed]
+    removed_stale = cache.prune_to_paths({e.path for e in entries})
+    if removed_stale:
+        print(f"[AutoDJ] DJ-meta cache pruned {removed_stale} stale entries.", flush=True)
+    pending = [e.path for e in entries if not cache.get(e.path).analysed]
     if not pending:
         print("[AutoDJ] DJ-meta cache already covers every indexed track.")
         return
-    if workers is None:
-        # One 76-minute mix can peak above 14 GiB during librosa transforms;
-        # even two concurrent analyses can exhaust a 32 GiB indexing host.
-        workers = 1
     total = len(pending)
-    print(
-        f"[AutoDJ] Phase: Analysing — DJ-meta backfill for {total} tracks ({workers} workers).",
-        flush=True,
-    )
+    print(f"[AutoDJ] Phase: Analysing — DJ-meta backfill for {total} tracks.", flush=True)
+    throttle_s = cfg.index.throttle_ms / 1000.0
     done = 0
-
-    bar = tqdm(
-        total=total,
-        desc="Analysing",
-        unit="track",
-        disable=False,
-        dynamic_ncols=True,
-    )
-
-    # Adaptive throttle state.  We track the wall time between successive
-    # task completions over a 20-sample rolling window.  The first 10
-    # samples establish a baseline (per-completion cadence under healthy
-    # I/O).  After that, if the rolling median grows past 2x baseline we
-    # interpret it as drives thermally throttling or otherwise saturated,
-    # and insert a proportional cool-down sleep before each new submission.
-    # The throttle relaxes automatically when cadence recovers.  Manual
-    # ``throttle_ms`` (if any) is treated as a floor.
-    import statistics as _stats
-
-    _intervals: deque[float] = deque(maxlen=20)
-    _baseline: list[float | None] = [None]  # nonlocal-via-list trick
-    _adaptive_s: list[float] = [0.0]
-    _last_completion: list[float] = [0.0]
-    _last_log_done: list[int] = [0]
-
-    def _update_throttle() -> (
-        None
-    ):  # pragma: no cover - NAS thermal-throttle controller, exercised on real hardware only
-        now = time.monotonic()
-        if _last_completion[0] > 0:
-            _intervals.append(now - _last_completion[0])
-        _last_completion[0] = now
-        if _baseline[0] is None:
-            if len(_intervals) >= 10:
-                _baseline[0] = _stats.median(_intervals)
-            return
-        if len(_intervals) < 5:
-            return
-        current = _stats.median(_intervals)
-        baseline = _baseline[0]
-        if baseline <= 0:
-            return
-        ratio = current / baseline
-        prev = _adaptive_s[0]
-        if ratio > 2.0:
-            # Proportional cool-down: aim to give drives roughly the
-            # extra-latency budget back as idle time.  Capped at 5 s so
-            # one transient stall can't park the whole run.
-            target = min(5.0, (ratio - 1.5) * baseline)
-            _adaptive_s[0] = max(prev, target)
-        elif ratio < 1.3 and prev > 0:
-            _adaptive_s[0] = prev * 0.5 if prev > 0.05 else 0.0
-        # Log throttle transitions sparsely so the user can see what the
-        # adaptive controller is doing without spam.
-        if abs(_adaptive_s[0] - prev) > 0.05 and (done - _last_log_done[0]) >= 25:
-            _last_log_done[0] = done
-            logger.info(
-                "Adaptive throttle: median %.2fs/track (baseline %.2fs, ratio %.2f) -> sleep %.2fs",
-                current,
-                baseline,
-                ratio,
-                _adaptive_s[0],
-            )
-
-    def _record(path_str: str, meta: Any | None, err: str | None) -> None:
-        nonlocal done
-        if err:
-            logger.warning("DJ-meta backfill failed for %s: %s", path_str, err)
-        elif meta is not None:
-            cache.set(path_str, meta)
-            done += 1
-            if done % 25 == 0:
-                cache.flush()
-        with contextlib.suppress(Exception):
-            bar.update(1)
-        _update_throttle()
-
-    manual_throttle_s = max(0.0, throttle_ms) / 1000.0
-
-    def _sleep_before_submit() -> None:
-        gap = max(manual_throttle_s, _adaptive_s[0])
-        if gap > 0:
-            time.sleep(gap)
-
     try:
-        if workers == 1:
-            for entry in pending:
-                _sleep_before_submit()
-                _, meta, err = _analyse_one_track(entry.path)
-                _record(entry.path, meta, err)
-        else:
-            # Sliding-window submission — keeps at most ``workers * 2``
-            # futures in flight so a Ctrl+C can drain quickly instead of
-            # waiting for the executor to shut down 70 000 queued tasks.
-            inflight: deque = deque()
-            it = iter(pending)
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                try:
-                    for _ in range(workers * 2):
-                        try:
-                            entry = next(it)
-                        except StopIteration:
-                            break
-                        _sleep_before_submit()
-                        inflight.append(pool.submit(_analyse_one_track, entry.path))
-
-                    while inflight:
-                        fut = inflight.popleft()
-                        path_str, meta, err = fut.result()
-                        _record(path_str, meta, err)
-                        try:
-                            entry = next(it)
-                            _sleep_before_submit()
-                            inflight.append(pool.submit(_analyse_one_track, entry.path))
-                        except StopIteration:
-                            pass
-                except KeyboardInterrupt:  # pragma: no cover - Ctrl+C drain path
-                    with contextlib.suppress(Exception):
-                        bar.close()
-                    print(
-                        "\n[AutoDJ] Ctrl+C — cancelling pending workers, flushing cache...",
-                        flush=True,
-                    )
-                    for f in inflight:
-                        f.cancel()
-                    pool.shutdown(wait=False, cancel_futures=True)
-                    cache.flush(force=True)
-                    raise
-    except KeyboardInterrupt:  # pragma: no cover - Ctrl+C drain path
+        for count, path in enumerate(pending, start=1):
+            if throttle_s:
+                time.sleep(throttle_s)
+            try:
+                meta = _analyse_one_track(path)
+            except Exception as exc:
+                logger.warning("DJ-meta analysis failed for %s: %s", path, exc)
+                meta = None
+            if meta is not None:
+                cache.set(path, meta)
+                done += 1
+                cache.flush()
+            _log_progress("Analysing", count, total)
+    except KeyboardInterrupt:  # pragma: no cover - Ctrl+C
+        cache.flush(force=True)
         print(
             f"[AutoDJ] DJ-meta interrupted: {done}/{total} analysed.  "
             "Re-run `autodj analyse` to resume.",
             flush=True,
         )
         return
-    finally:
-        with contextlib.suppress(Exception):
-            bar.close()
-
     cache.flush(force=True)
     print(f"[AutoDJ] DJ-meta backfill done: {done}/{total} tracks analysed.", flush=True)
 
 
-def _stat_mtimes(
-    entries: list[IndexEntry],
-    *,
-    throttle_ms: float = 0.0,
-    stat_workers: int = 8,
-    desc: str = "Stat",
-) -> list[float | None]:
-    """Fan out stat() across *entries*, return mtime-or-None per entry.
+def _stat_mtimes(entries: list[IndexEntry]) -> list[float | None]:
+    """Return each entry's file mtime, or ``None`` when the file is missing.
 
-    None means the file is missing (OSError on stat).  One network RTT per
-    file on NAS; the thread pool pipelines them.  Used by both the
-    standalone prune path and the fused prune+stale-check in
-    ``_load_existing_index``.
+    One network round trip per file on a NAS; eight threads pipeline them.
     """
-    throttle_s = max(0.0, throttle_ms) / 1000.0
-    pool_size = max(1, stat_workers)
 
     def _mtime(p: str) -> float | None:
-        if throttle_s:
-            time.sleep(throttle_s)
         try:
             return Path(p).stat().st_mtime
         except OSError:
             return None
 
-    with ThreadPoolExecutor(max_workers=pool_size) as pool:
-        return list(
-            tqdm(
-                pool.map(_mtime, [e.path for e in entries]),
-                total=len(entries),
-                desc=desc,
-                unit="file",
-                dynamic_ncols=True,
-            )
-        )
+    mtimes: list[float | None] = []
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        for mtime in pool.map(_mtime, [e.path for e in entries]):
+            mtimes.append(mtime)
+            _log_progress("Checking files", len(mtimes), len(entries), _STAT_PROGRESS_EVERY)
+    return mtimes
 
 
-def _detect_stale_entries(
-    entries: list[IndexEntry],
-    throttle_ms: float = 0.0,
-    stat_workers: int = 8,
-    mtimes: list[float | None] | None = None,
-) -> set[str]:
+def _detect_stale_entries(entries: list[IndexEntry], mtimes: list[float | None]) -> set[str]:
     """Find indexed entries whose audio file has been replaced on disk.
 
     For every entry whose file still exists, compare its mtime against the
@@ -1688,170 +1231,101 @@ def _detect_stale_entries(
     re-embedded, while a file whose own mtime is the epoch keeps the 0
     stamp it was embedded with and is not re-embedded on every run.
 
-    Stat() calls are fanned out across a 32-thread pool because the typical
-    case is an NFS/SMB-mounted library where each call costs an RTT.
-
     Args:
-        entries: Existing index entries (with absolute paths already
-            resolved by the caller).
+        entries: Existing index entries (with absolute paths).
+        mtimes: :func:`_stat_mtimes` of *entries*.
 
     Returns:
         The set of entry paths to drop and re-embed.
     """
-
-    if mtimes is None:
-        mtimes = _stat_mtimes(
-            entries,
-            throttle_ms=throttle_ms,
-            stat_workers=stat_workers,
-            desc="Stale-check",
-        )
-
-    stale: set[str] = set()
-    for e, mt in zip(entries, mtimes, strict=False):
-        if mt is None:
-            continue  # missing file — prune handles it
-        if mt > e.embedded_at + 1.0:
-            stale.add(e.path)
-    return stale
+    return {
+        e.path
+        for e, mt in zip(entries, mtimes, strict=True)
+        if mt is not None and mt > e.embedded_at + 1.0
+    }
 
 
-def _discard_working_files(index_dir: Path) -> None:
-    """Remove unpublished working files so the next publication starts clean."""
-    for name in ("tracks.db", "tracks.db-wal", "tracks.db-shm", "vectors.index"):
-        (index_dir / name).unlink(missing_ok=True)
-    fsync_directory(index_dir)
-
-
-def _load_existing_artifacts(
-    index_dir: Path,
-    music_dir: Path,
-) -> tuple[list[IndexEntry], list[np.ndarray], IndexSnapshotToken]:
-    """Load one coherent baseline and restore its canonical working files."""
-    with publication_lock(index_dir):
-        manifest = read_manifest(index_dir)
-        snapshot = current_snapshot_token(index_dir)
-        if manifest is not None:
-            manifest_entries, manifest_index = load_index(
-                index_dir,
-                music_dir=music_dir,
-                expected_generation=manifest.generation,
-            )
-            vectors = [
-                np.asarray(row, dtype=np.float32)
-                for row in manifest_index.reconstruct_n(0, manifest_index.ntotal)
-            ]
-            restore_working_snapshot(index_dir, expected_generation=manifest.generation)
-            return manifest_entries, vectors, snapshot
-
-        # A manifest-free directory is empty, or holds leftovers of a prune
-        # that emptied the index or of a first publication that never committed.
-        require_current_format(index_dir)
-        _discard_working_files(index_dir)
-        return [], [], snapshot
-
-
-def _load_existing_index(  # pragma: no cover -- exercised via build_index integration runs
+def _load_existing_index(
     index_dir: Path,
     music_dir: Path,
     force: bool,
-    throttle_ms: float = 0.0,
-    stat_workers: int = 8,
-) -> tuple[list[IndexEntry], list[np.ndarray], set[str], bool, IndexSnapshotToken]:
-    """Load existing entries + vectors, drop missing and replaced files.
+) -> tuple[list[IndexEntry], list[np.ndarray], int]:
+    """Load the live generation, dropping missing and replaced files.
 
-    Fused single-pass: one stat() per entry returns both existence (None
-    means missing -> prune) and mtime (compared against ``embedded_at``
-    -> stale).  Halves NAS RTT compared with running ``prune_index`` and
-    then ``_detect_stale_entries`` back-to-back.
+    One stat() per entry gives both existence (missing files are pruned)
+    and mtime (replaced files are dropped so they are embedded again).
+
+    Returns:
+        ``(entries, vectors, base_generation)``.  With *force*, no entries;
+        an index this release cannot read is deleted so it can be rebuilt.
     """
     if force:
         with publication_lock(index_dir):
             try:
                 manifest = read_manifest(index_dir)
-                snapshot = current_snapshot_token(index_dir)
             except IndexConsistencyError as exc:
-                # --force is how an unreadable or old index is rebuilt, so the
-                # publication record it replaces must not stop it.
-                logger.warning("Discarding the unreadable index record in %s: %s", index_dir, exc)
-                discard_publication_record(index_dir)
+                # --force is how an unreadable or old index is rebuilt.
+                logger.warning("Discarding the unreadable index in %s: %s", index_dir, exc)
                 manifest = None
-                snapshot = current_snapshot_token(index_dir)
+                (index_dir / MANIFEST_NAME).unlink()
             if manifest is None:
-                _discard_working_files(index_dir)
-        return [], [], set(), True, snapshot
+                # Files of an index from before the manifest format.
+                for name in ("tracks.db", "tracks.db-wal", "tracks.db-shm", "vectors.index"):
+                    (index_dir / name).unlink(missing_ok=True)
+                fsync_directory(index_dir)
+        return [], [], 0 if manifest is None else manifest.generation
 
-    existing_entries, existing_vectors, snapshot = _load_existing_artifacts(index_dir, music_dir)
-    if not existing_entries:
-        return [], [], set(), False, snapshot
-    logger.info("Incremental mode: %d tracks already indexed", len(existing_entries))
+    try:
+        entries, loaded, manifest = load_index(index_dir, music_dir=music_dir)
+    except FileNotFoundError:
+        return [], [], 0
+    base_generation = manifest.generation
+    vectors = list(loaded.reconstruct_n(0, loaded.ntotal))
+    if not entries:
+        return [], [], base_generation
+    logger.info("Incremental mode: %d tracks already indexed", len(entries))
 
     print(
-        f"[AutoDJ] Phase: Prune + stale-check — stat'ing {len(existing_entries)} files.",
+        f"[AutoDJ] Phase: Prune + stale-check — checking {len(entries)} files.",
         flush=True,
     )
-    mtimes = _stat_mtimes(
-        existing_entries,
-        throttle_ms=throttle_ms,
-        stat_workers=stat_workers,
-        desc="Prune+stale",
-    )
-    missing_paths = {e.path for e, mt in zip(existing_entries, mtimes, strict=False) if mt is None}
+    mtimes = _stat_mtimes(entries)
+    missing_paths = {e.path for e, mt in zip(entries, mtimes, strict=True) if mt is None}
     try:
-        _check_prune_safety(len(missing_paths), len(existing_entries), allow_mass_prune=False)
+        _check_prune_safety(len(missing_paths), len(entries), allow_mass_prune=False)
     except PruneSafetyError as exc:
         print(f"[AutoDJ] Skipping auto-prune (safety check): {exc}")
         missing_paths = set()  # keep everything; safety failure means user config is wrong
 
-    stale = _detect_stale_entries(existing_entries, mtimes=mtimes)
-
+    stale = _detect_stale_entries(entries, mtimes)
     drop_paths = missing_paths | stale
-    if drop_paths:
-        if missing_paths:
-            print(
-                f"[AutoDJ] Pruned {len(missing_paths)} missing tracks "
-                f"({len(existing_entries) - len(missing_paths)} remain).",
-                flush=True,
-            )
-        if stale:
-            print(
-                f"[AutoDJ] Stale-check — dropping {len(stale)} replaced "
-                "tracks; they will be re-embedded.",
-                flush=True,
-            )
-        kept_pairs = [
-            (e, v)
-            for e, v in zip(existing_entries, existing_vectors, strict=False)
-            if e.path not in drop_paths
-        ]
-        existing_entries = [e for e, _ in kept_pairs]
-        existing_vectors = [v for _, v in kept_pairs]
-        if missing_paths:
-            # Persist the prune (mirrors what standalone prune_index does).
-            # Stale-only drops don't need this -- those entries will get
-            # re-embedded and the indexer's normal checkpoint flow rewrites
-            # the files.
-            if not existing_entries:
-                _delete_index_files(index_dir, expected_snapshot=snapshot)
-                snapshot = current_snapshot_token(index_dir)
-            else:
-                vectors_arr = np.asarray(np.stack(existing_vectors), dtype=np.float32)
-                published = _publish_full_snapshot(
-                    existing_entries,
-                    vectors_arr,
-                    index_dir,
-                    music_dir,
-                    expected_snapshot=snapshot,
-                )
-                snapshot = snapshot_token_for_manifest(published)
-
-    return (
-        existing_entries,
-        existing_vectors,
-        {e.path for e in existing_entries},
-        bool(drop_paths),
-        snapshot,
+    if not drop_paths:
+        return entries, vectors, base_generation
+    if missing_paths:
+        print(
+            f"[AutoDJ] Pruned {len(missing_paths)} missing tracks "
+            f"({len(entries) - len(missing_paths)} remain).",
+            flush=True,
+        )
+    if stale:
+        print(
+            f"[AutoDJ] Stale-check — dropping {len(stale)} replaced "
+            "tracks; they will be re-embedded.",
+            flush=True,
+        )
+    kept = [(e, v) for e, v in zip(entries, vectors, strict=True) if e.path not in drop_paths]
+    entries = [e for e, _ in kept]
+    vectors = [v for _, v in kept]
+    # Publish the drops now, so an interrupted run does not serve replaced
+    # files with their old vectors.
+    manifest = save_index(
+        entries,
+        np.asarray(vectors, dtype=np.float32),
+        index_dir,
+        music_dir,
+        base_generation=base_generation,
     )
+    return entries, vectors, manifest.generation
 
 
 def _collect_tracks_to_index(  # pragma: no cover -- exercised via build_index integration runs
@@ -1923,9 +1397,9 @@ def _embed_new_tracks(  # pragma: no cover -- threaded indexer pipeline
     wrapper: MuqWrapper,
     workers: int | None,
     checkpoint: Callable[[list[IndexEntry], list[np.ndarray]], None],
-    throttle_ms: float = 0.0,
+    throttle_ms: float,
 ) -> tuple[list[IndexEntry], list[np.ndarray]]:
-    """Run the producer/consumer embedding loop with prefetch threadpool."""
+    """Embed *new_tracks*, decoding the next ones on a prefetch pool meanwhile."""
     new_entries: list[IndexEntry] = []
     new_vectors: list[np.ndarray] = []
 
@@ -1934,42 +1408,33 @@ def _embed_new_tracks(  # pragma: no cover -- threaded indexer pipeline
         # and high-rate masters.  Parallel decoding caused the kernel OOM
         # killer to terminate otherwise healthy full-library runs.
         workers = 1
-    PREFETCH = max(1, workers)
-    throttle_s = max(0.0, throttle_ms) / 1000.0
+    prefetch = max(1, workers)
+    throttle_s = throttle_ms / 1000.0
     track_iter = iter(new_tracks)
     pending: deque[tuple[Track, float, Future]] = deque()
 
-    with ThreadPoolExecutor(max_workers=PREFETCH) as pool:
+    with ThreadPoolExecutor(max_workers=prefetch) as pool:
 
         def _submit_next() -> None:
-            try:
-                t = next(track_iter)
-                if throttle_s:
-                    time.sleep(throttle_s)
-                # Stat before decoding so a file edited mid-run is still seen
-                # as stale on the next pass.
-                pending.append(
-                    (t, source_mtime(t.path), pool.submit(_extract_librosa_features, t.path))
-                )
-            except StopIteration:
-                pass
+            t = next(track_iter, None)
+            if t is None:
+                return
+            if throttle_s:
+                time.sleep(throttle_s)
+            # Stat before decoding so a file edited mid-run is still seen
+            # as stale on the next pass.
+            pending.append(
+                (t, source_mtime(t.path), pool.submit(_extract_librosa_features, t.path))
+            )
 
-        for _ in range(PREFETCH):
+        for _ in range(prefetch):
             _submit_next()
 
-        for _ in tqdm(
-            range(len(new_tracks)),
-            total=len(new_tracks),
-            desc="Indexing",
-            unit="track",
-            disable=False,
-            dynamic_ncols=True,
-        ):
-            if not pending:
-                break
+        done = 0
+        while pending:
             track, mtime, future = pending.popleft()
             _submit_next()
-
+            done += 1
             try:
                 librosa_vec, audio, sr, extra_meta = future.result()
                 embedding_vec = wrapper.embed_array(audio, sample_rate=sr)
@@ -1992,6 +1457,8 @@ def _embed_new_tracks(  # pragma: no cover -- threaded indexer pipeline
             except Exception as exc:
                 logger.warning("Skipping %s: %s", track.path, exc)
                 continue
+            finally:
+                _log_progress("Indexing", done, len(new_tracks))
             checkpoint(new_entries, new_vectors)
 
     return new_entries, new_vectors
@@ -2003,14 +1470,13 @@ def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integr
     limit: int | None,
     force: bool,
     workers: int | None = None,
-    throttle_ms: float = 0.0,
-    stat_workers: int = 8,
 ) -> None:
     """Build or incrementally update the FAISS index for the music library.
 
     Reads track list from beets (if configured) or walks the filesystem.
     Skips tracks already present in the existing index unless *force* is set.
-    Writes updated index files on completion.
+    Publishes a new generation every :data:`FAISS_CHECKPOINT_EVERY` new
+    tracks and at the end.  ``[index] throttle_ms`` pauses before each track.
 
     Args:
         cfg: Full AutoDJ configuration.
@@ -2030,19 +1496,10 @@ def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integr
     index_dir.mkdir(parents=True, exist_ok=True)
     music_dir = cfg.library.music_dir
 
-    (
-        existing_entries,
-        existing_vectors,
-        existing_paths,
-        baseline_requires_reconcile,
-        snapshot,
-    ) = _load_existing_index(
-        index_dir,
-        music_dir,
-        force,
-        throttle_ms=throttle_ms,
-        stat_workers=stat_workers,
+    existing_entries, existing_vectors, base_generation = _load_existing_index(
+        index_dir, music_dir, force
     )
+    existing_paths = {e.path for e in existing_entries}
 
     tracks = _collect_tracks_to_index(cfg)
 
@@ -2070,16 +1527,12 @@ def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integr
         music_dir=music_dir,
         existing_entries=existing_entries,
         existing_vectors=existing_vectors,
-        total_new=len(new_tracks),
-        expected_snapshot=snapshot,
-        baseline_requires_reconcile=baseline_requires_reconcile,
+        base_generation=base_generation,
     )
-
     new_entries, new_vectors = _embed_new_tracks(
-        new_tracks, wrapper, workers, checkpoint.write, throttle_ms=throttle_ms
+        new_tracks, wrapper, workers, checkpoint.write, cfg.index.throttle_ms
     )
 
-    # --- merge and save ---
     if not new_entries:  # pragma: no cover -- empty / failed-indexing CLI report path
         if not existing_entries:
             print(
@@ -2096,23 +1549,6 @@ def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integr
         )
         return
 
-    all_entries = existing_entries + new_entries
-
-    if existing_vectors:
-        all_vectors = np.vstack(
-            [
-                np.array(existing_vectors, dtype=np.float32),
-                np.array(new_vectors, dtype=np.float32),
-            ]
-        )
-    else:
-        all_vectors = np.array(new_vectors, dtype=np.float32)
-
-    save_index(
-        all_entries,
-        all_vectors,
-        index_dir,
-        music_dir=music_dir,
-        expected_snapshot=checkpoint.expected_snapshot,
-    )
-    print(f"[AutoDJ] Index updated: {len(new_entries)} new tracks added, {len(all_entries)} total.")
+    checkpoint.finish(new_entries, new_vectors)
+    total = len(existing_entries) + len(new_entries)
+    print(f"[AutoDJ] Index updated: {len(new_entries)} new tracks added, {total} total.")

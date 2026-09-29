@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import math
 import os
 import shutil
 import sqlite3
@@ -16,69 +15,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from autodj.config import is_loopback_bind
-from autodj.index_manifest import (
-    IndexConsistencyError,
-    IndexManifest,
-    OldDjMetaCacheError,
-    UnsupportedIndexError,
-    current_snapshot_token,
-    first_absolute_path,
-    is_absolute_storage,
-    publication_is_tombstoned,
-    read_manifest,
-    require_current_format,
-    sha256_file,
-)
+from autodj.index_manifest import OldDjMetaCacheError, first_absolute_path
 from autodj.sqlite_utils import readonly_uri
 
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig, IndexConfig, ModelConfig
     from autodj.model import ModelCacheStatus
-
-
-_TRACKS_SCHEMA_SIGNATURE = (
-    ("vec_row", "INTEGER", 1, None, 0),
-    ("path", "TEXT", 1, None, 0),
-    ("title", "TEXT", 1, "''", 0),
-    ("artist", "TEXT", 1, "''", 0),
-    ("album", "TEXT", 1, "''", 0),
-    ("genre", "TEXT", 1, "''", 0),
-    ("bpm", "REAL", 1, "0", 0),
-    ("year", "INTEGER", 1, "0", 0),
-    ("length", "REAL", 1, "0", 0),
-    ("energy", "REAL", 1, "0", 0),
-    ("key", "INTEGER", 1, "-1", 0),
-    ("mode", "INTEGER", 1, "-1", 0),
-    ("tempo_confidence", "REAL", 1, "0", 0),
-    ("embedded_at", "REAL", 1, "0", 0),
-)
-_DJ_META_SCHEMA_SIGNATURE = (
-    ("path", "TEXT", 0, None, 1),
-    ("intro_end_s", "REAL", 1, "0", 0),
-    ("outro_start_s", "REAL", 1, "0", 0),
-    ("analysed", "INTEGER", 1, "0", 0),
-    ("beats", "TEXT", 0, None, 0),
-    ("cues", "TEXT", 0, None, 0),
-)
-_TRACKS_COLUMNS = frozenset(column[0] for column in _TRACKS_SCHEMA_SIGNATURE)
-_DJ_META_COLUMNS = frozenset(column[0] for column in _DJ_META_SCHEMA_SIGNATURE)
-_SCHEMA_SIGNATURES = {
-    "tracks": _TRACKS_SCHEMA_SIGNATURE,
-    "dj_meta": _DJ_META_SCHEMA_SIGNATURE,
-}
-#: Derived from the tracks schema signature so the row reader, the storage-class
-#: expectations and the SELECT can never drift from the declared columns.
-_TRACK_ROW_COLUMNS = tuple(column[0] for column in _TRACKS_SCHEMA_SIGNATURE)
-_TRACK_STORAGE_CLASSES = tuple(column[1].lower() for column in _TRACKS_SCHEMA_SIGNATURE)
-_TRACK_REAL_POSITIONS = tuple(
-    position for position, column in enumerate(_TRACKS_SCHEMA_SIGNATURE) if column[1] == "REAL"
-)
-# Identifiers come from the module-level schema signature, never from input.
-_TRACK_ROW_SELECT = (
-    "SELECT "  # nosec B608
-    + ", ".join((*_TRACK_ROW_COLUMNS, *(f"typeof({name})" for name in _TRACK_ROW_COLUMNS)))
-    + " FROM tracks ORDER BY vec_row"
-)
 
 
 def inspect_model_cache(model_cfg: ModelConfig, index_cfg: IndexConfig) -> ModelCacheStatus:
@@ -212,381 +154,32 @@ def _path_check(name: str, path: Path, *, writable: bool) -> DoctorCheck:
     return DoctorCheck(name, CheckStatus.FAIL, str(path), "path does not exist")
 
 
-def _validate_schema(
-    conn: sqlite3.Connection,
-    table: str,
-    required: frozenset[str],
-) -> None:
-    """Validate a SQLite table against its runtime schema contract."""
-    schema_query = {
-        "tracks": "PRAGMA table_info(tracks)",
-        "dj_meta": "PRAGMA table_info(dj_meta)",
-    }[table]
-    rows = conn.execute(schema_query).fetchall()
-    columns = {str(row[1]) for row in rows}
-    missing = sorted(required - columns)
-    if missing:
-        raise sqlite3.DatabaseError("missing required columns: " + ", ".join(missing))
-    actual = tuple(
-        (
-            str(row[1]),
-            str(row[2]).strip().upper(),
-            int(row[3]),
-            None if row[4] is None else str(row[4]),
-            int(row[5]),
-        )
-        for row in rows
-    )
-    if actual != _SCHEMA_SIGNATURES[table]:
-        raise sqlite3.DatabaseError(f"{table} schema does not match the runtime contract")
-    if table != "tracks":
-        return
-    unique_single_columns: set[str] = set()
-    for index_row in conn.execute("PRAGMA index_list(tracks)"):
-        if int(index_row[2]) != 1 or (len(index_row) > 4 and int(index_row[4]) != 0):
-            continue
-        index_name = str(index_row[1]).replace('"', '""')
-        index_columns = [
-            str(row[2])
-            for row in conn.execute(  # nosec B608
-                f'PRAGMA index_info("{index_name}")'
-            )
-        ]
-        if len(index_columns) == 1:
-            unique_single_columns.add(index_columns[0])
-    if not {"vec_row", "path"}.issubset(unique_single_columns):
-        raise sqlite3.DatabaseError("tracks schema is missing required unique identities")
-
-
-def _published_index_counts(index_dir: Path, manifest: IndexManifest) -> tuple[int, int]:
-    """Optimistically inspect one manifest-selected generation without locking."""
-    tracks_path = index_dir / manifest.tracks_file
-    vectors_path = index_dir / manifest.vectors_file
-    before_sidecars = _sidecar_snapshots(tracks_path)
-    if any(snapshot[0] for snapshot in before_sidecars):
-        raise IndexConsistencyError(
-            "published tracks WAL/SHM sidecars indicate unpublished database state"
-        )
-    before_hashes = (sha256_file(tracks_path), sha256_file(vectors_path))
-    if before_hashes != (manifest.tracks_sha256, manifest.vectors_sha256):
-        raise IndexConsistencyError("published artifact SHA-256 mismatch")
-
-    with closing(_open_readonly_sqlite(tracks_path, immutable=True)) as conn:
-        _validate_schema(conn, "tracks", _TRACKS_COLUMNS)
-        rows = conn.execute(_TRACK_ROW_SELECT).fetchall()
-    for expected_row, row in enumerate(rows):
-        values = row[: len(_TRACK_ROW_COLUMNS)]
-        storage_classes = row[len(_TRACK_ROW_COLUMNS) :]
-        for position, (name, actual, expected) in enumerate(
-            zip(
-                _TRACK_ROW_COLUMNS,
-                storage_classes,
-                _TRACK_STORAGE_CLASSES,
-                strict=True,
-            )
-        ):
-            if actual != expected:
-                value_detail = ""
-                if expected in {"integer", "real"}:
-                    value_detail = f" ({values[position]!r})"
-                raise ValueError(
-                    f"{name} storage class must be {expected}, got {actual}{value_detail}"
-                )
-        if values[0] != expected_row:
-            raise IndexConsistencyError("tracks vec_row identity is not canonical")
-        if is_absolute_storage(values[1]):
-            raise UnsupportedIndexError(
-                index_dir, f"tracks.db stores the absolute path {values[1]}"
-            )
-        for position in _TRACK_REAL_POSITIONS:
-            if not math.isfinite(values[position]):
-                raise ValueError(f"{_TRACK_ROW_COLUMNS[position]} must be finite")
-
-    import faiss
-
-    from autodj.indexer import FEATURE_DIM
-
-    vectors_index = faiss.read_index(str(vectors_path))
-    if type(vectors_index) is not faiss.IndexFlatIP:
-        raise IndexConsistencyError(
-            f"FAISS index type must be IndexFlatIP, got {type(vectors_index).__name__}"
-        )
-    if int(vectors_index.d) != FEATURE_DIM:
-        raise IndexConsistencyError(f"FAISS dimension must be {FEATURE_DIM}, got {vectors_index.d}")
-    if int(vectors_index.metric_type) != int(faiss.METRIC_INNER_PRODUCT):
-        raise IndexConsistencyError("FAISS metric must be inner product")
-    if not vectors_index.is_trained:
-        raise IndexConsistencyError("FAISS IndexFlatIP must be trained")
-    vector_count = int(vectors_index.ntotal)
-    after_sidecars = _sidecar_snapshots(tracks_path)
-    if any(snapshot[0] for snapshot in after_sidecars):
-        raise IndexConsistencyError(
-            "published tracks WAL/SHM sidecars appeared during inspection; retry"
-        )
-    after_hashes = (sha256_file(tracks_path), sha256_file(vectors_path))
-    after_manifest = read_manifest(index_dir)
-    if (
-        after_manifest != manifest
-        or after_hashes != before_hashes
-        or after_sidecars != before_sidecars
-    ):
-        raise IndexConsistencyError("published generation changed during inspection; retry")
-    if len(rows) != manifest.vector_count or vector_count != manifest.vector_count:
-        raise IndexConsistencyError(
-            f"index count mismatch: manifest={manifest.vector_count}, "
-            f"sqlite={len(rows)}, faiss={vector_count}"
-        )
-    return len(rows), vector_count
-
-
 def _index_check(cfg: AutoDJConfig) -> DoctorCheck:
-    """Validate one coherent index generation without migration or repair."""
+    """Load the index with the loader ``serve`` uses and report the outcome."""
     index_dir = cfg.index.active_dir
     if not index_dir.exists():
         return DoctorCheck(
-            "index-coherence",
-            CheckStatus.WARN,
-            "empty index",
-            f"{index_dir}; run `autodj index` before playback",
-        )
-    if not index_dir.is_dir():
-        return DoctorCheck(
-            "index-coherence",
-            CheckStatus.FAIL,
-            "partial published index",
-            f"{index_dir} is not a directory; run `autodj index` to republish",
+            "index", CheckStatus.WARN, "no index", f"{index_dir}; run `autodj index`"
         )
     try:
-        manifest = read_manifest(index_dir)
-        if manifest is None:
-            if publication_is_tombstoned(index_dir):
-                return DoctorCheck(
-                    "index-coherence",
-                    CheckStatus.WARN,
-                    "empty index",
-                    "coherently tombstoned; run `autodj index` when music is available",
-                )
-            require_current_format(index_dir)
-            if current_snapshot_token(index_dir).state_revision:
-                return DoctorCheck(
-                    "index-coherence",
-                    CheckStatus.FAIL,
-                    "unreadable published generation",
-                    "manifest missing despite publication history; run `autodj index --force`",
-                )
-            if any(index_dir.glob("tracks.g*.db")) or any(index_dir.glob("vectors.g*.index")):
-                return DoctorCheck(
-                    "index-coherence",
-                    CheckStatus.FAIL,
-                    "partial published index",
-                    "generation files lack a manifest; run `autodj index --force`",
-                )
-            return DoctorCheck(
-                "index-coherence",
-                CheckStatus.WARN,
-                "empty index",
-                f"{index_dir}; run `autodj index` before playback",
-            )
-        lock_path = index_dir / ".index-publication.lock"
-        if not lock_path.is_file():
-            return DoctorCheck(
-                "index-coherence",
-                CheckStatus.FAIL,
-                "unreadable published generation",
-                "publication lock missing; run `autodj index` to restore it",
-            )
-        entry_count, vector_count = _published_index_counts(index_dir, manifest)
-        if entry_count != vector_count:
-            raise IndexConsistencyError(f"tracks={entry_count}, vectors={vector_count}")
-    except UnsupportedIndexError as exc:
-        return DoctorCheck("index-coherence", CheckStatus.FAIL, "old index format", str(exc))
-    except ImportError:
-        return DoctorCheck(
-            "index-coherence",
-            CheckStatus.FAIL,
-            "index dependencies unavailable",
-            "install AutoDJ index dependencies and retry",
-        )
-    except (
-        FileNotFoundError,
-        IndexConsistencyError,
-        OSError,
-        RuntimeError,
-        sqlite3.DatabaseError,
-        ValueError,
-    ) as exc:
-        return DoctorCheck(
-            "index-coherence",
-            CheckStatus.FAIL,
-            "unreadable published generation",
-            f"{exc}; run `autodj index` to republish the index",
-        )
-    if entry_count == 0:
-        return DoctorCheck(
-            "index-coherence",
-            CheckStatus.WARN,
-            "empty index",
-            "run `autodj index` after adding music",
-        )
-    return DoctorCheck(
-        "index-coherence",
-        CheckStatus.PASS,
-        f"generation {manifest.generation}: {entry_count} vectors and rows",
-    )
+        from autodj.similarity import SimilarityIndex
 
-
-def _open_readonly_sqlite(path: Path, *, immutable: bool = False) -> sqlite3.Connection:
-    """Open a query-only SQLite connection and close it if setup fails."""
-    conn = sqlite3.connect(readonly_uri(path, immutable=immutable), uri=True)
-    try:
-        conn.execute("PRAGMA query_only=ON")
-    except BaseException:
-        conn.close()
-        raise
-    return conn
-
-
-type _FileSnapshot = tuple[bool, int | None, int | None, str | None]
-type _SidecarSnapshot = tuple[
-    bool,
-    int | None,
-    int | None,
-    int | None,
-    int | None,
-    int | None,
-]
-
-
-def _file_snapshot(path: Path) -> _FileSnapshot:
-    """Capture file presence, size, time, and content hash."""
-    try:
-        stat = path.stat()
-    except FileNotFoundError:
-        return False, None, None, None
-    return True, stat.st_size, stat.st_mtime_ns, sha256_file(path)
-
-
-def _sidecar_snapshot(path: Path) -> _SidecarSnapshot:
-    """Capture identity metadata for one SQLite sidecar path."""
-    try:
-        stat = path.lstat()
-    except FileNotFoundError:
-        return False, None, None, None, None, None
-    return (
-        True,
-        stat.st_mode,
-        stat.st_size,
-        stat.st_mtime_ns,
-        stat.st_ctime_ns,
-        stat.st_ino,
-    )
-
-
-def _sidecar_snapshots(path: Path) -> tuple[_SidecarSnapshot, _SidecarSnapshot]:
-    """Capture WAL and shared-memory sidecar identities."""
-    return (
-        _sidecar_snapshot(Path(f"{path}-wal")),
-        _sidecar_snapshot(Path(f"{path}-shm")),
-    )
-
-
-def _validate_sqlite(
-    path: Path,
-    table: str,
-    required: frozenset[str],
-) -> int:
-    """Validate an unchanged SQLite file and return its row count.
-
-    Raises:
-        sqlite3.DatabaseError: The file is damaged, has the wrong schema, or changed.
-        UnsupportedIndexError: ``tracks`` stores an absolute path.
-        OldDjMetaCacheError: ``dj_meta`` stores an absolute path.
-    """
-    count_query = {
-        "tracks": "SELECT COUNT(*) FROM tracks",
-        "dj_meta": "SELECT COUNT(*) FROM dj_meta",
-    }[table]
-    before_sidecars = _sidecar_snapshots(path)
-    if any(snapshot[0] for snapshot in before_sidecars):
-        raise sqlite3.DatabaseError(
-            "active SQLite WAL sidecars cannot be safely validated read-only; "
-            "close writers and retry"
-        )
-    before_database = _file_snapshot(path)
-    with closing(_open_readonly_sqlite(path, immutable=True)) as conn:
-        integrity = [str(row[0]) for row in conn.execute("PRAGMA integrity_check").fetchall()]
-        if integrity != ["ok"]:
-            raise sqlite3.DatabaseError("integrity_check: " + "; ".join(integrity))
-        _validate_schema(conn, table, required)
-        count = int(conn.execute(count_query).fetchone()[0])
-        # Serve and index refuse stored absolute paths; report them the same way.
-        absolute = first_absolute_path(conn, table)
-    after_sidecars = _sidecar_snapshots(path)
-    if any(snapshot[0] for snapshot in after_sidecars):
-        raise sqlite3.DatabaseError("SQLite files changed during validation; retry when idle")
-    if _file_snapshot(path) != before_database or after_sidecars != before_sidecars:
-        raise sqlite3.DatabaseError("SQLite files changed during validation; retry when idle")
-    if absolute is not None:
-        if table == "tracks":
-            raise UnsupportedIndexError(
-                path.parent, f"tracks.db stores the absolute path {absolute}"
-            )
-        raise OldDjMetaCacheError(path, absolute)
-    return count
-
-
-def _tracks_database_check(cfg: AutoDJConfig) -> DoctorCheck:
-    """Validate the security-selected tracks database in read-only SQLite mode."""
-    index_dir = cfg.index.active_dir
-    try:
-        manifest = read_manifest(index_dir) if index_dir.is_dir() else None
-        tombstoned = index_dir.is_dir() and publication_is_tombstoned(index_dir)
-        if manifest is None and index_dir.is_dir():
-            require_current_format(index_dir)
-            if not tombstoned and current_snapshot_token(index_dir).state_revision:
-                raise IndexConsistencyError("publication history has no active manifest")
-    except UnsupportedIndexError as exc:
-        return DoctorCheck("tracks-db", CheckStatus.FAIL, "old index format", str(exc))
-    except (IndexConsistencyError, OSError) as exc:
-        return DoctorCheck(
-            "tracks-db",
-            CheckStatus.FAIL,
-            "integrity/schema check failed",
-            f"{exc}; run `autodj index --force`",
-        )
-    path = index_dir / (manifest.tracks_file if manifest is not None else "tracks.db")
-    if tombstoned:
-        return DoctorCheck(
-            "tracks-db",
-            CheckStatus.WARN,
-            "database absent",
-            f"{path}; run `autodj index` when music is available",
-        )
-    if manifest is None or not path.is_file():
-        return DoctorCheck(
-            "tracks-db",
-            CheckStatus.WARN,
-            "database absent",
-            f"{path}; run `autodj index`",
-        )
-    try:
-        count = _validate_sqlite(path, "tracks", _TRACKS_COLUMNS)
-    except UnsupportedIndexError as exc:
-        return DoctorCheck("tracks-db", CheckStatus.FAIL, "old index format", str(exc))
-    except (OSError, sqlite3.DatabaseError) as exc:
-        return DoctorCheck(
-            "tracks-db",
-            CheckStatus.FAIL,
-            "integrity/schema check failed",
-            f"{exc}; run `autodj index --force`",
-        )
-    return DoctorCheck(
-        "tracks-db", CheckStatus.PASS, "integrity and schema valid", f"{path}; rows={count}"
-    )
+        sim = SimilarityIndex.from_index_dir(index_dir, music_dir=cfg.library.music_dir)
+    except FileNotFoundError as exc:
+        return DoctorCheck("index", CheckStatus.WARN, "no index", str(exc))
+    except Exception as exc:  # report whatever serve would fail with
+        return DoctorCheck("index", CheckStatus.FAIL, type(exc).__name__, str(exc))
+    manifest = sim.manifest
+    assert manifest is not None  # from_index_dir always sets it
+    summary = f"generation {manifest.generation}: {sim.ntotal} tracks"
+    detail = f"published {manifest.published_at}"
+    if sim.ntotal == 0:
+        return DoctorCheck("index", CheckStatus.WARN, summary, f"{detail}; the index is empty")
+    return DoctorCheck("index", CheckStatus.PASS, summary, detail)
 
 
 def _dj_meta_database_check(cfg: AutoDJConfig) -> DoctorCheck:
-    """Validate the active optional DJ metadata cache without creating it."""
+    """Check the active DJ metadata cache read-only, without creating it."""
     path = cfg.index.active_dir / "dj_meta.db"
     if not path.is_file():
         return DoctorCheck(
@@ -596,19 +189,25 @@ def _dj_meta_database_check(cfg: AutoDJConfig) -> DoctorCheck:
             f"{path}; run `autodj analyse` when DJ metadata is needed",
         )
     try:
-        count = _validate_sqlite(path, "dj_meta", _DJ_META_COLUMNS)
+        conn = sqlite3.connect(readonly_uri(path), uri=True)
+        with closing(conn):
+            integrity = [str(row[0]) for row in conn.execute("PRAGMA integrity_check")]
+            if integrity != ["ok"]:
+                raise sqlite3.DatabaseError("integrity_check: " + "; ".join(integrity))
+            count = int(conn.execute("SELECT COUNT(*) FROM dj_meta").fetchone()[0])
+            absolute = first_absolute_path(conn, "dj_meta")
+        if absolute is not None:
+            raise OldDjMetaCacheError(path, absolute)
     except OldDjMetaCacheError as exc:
         return DoctorCheck("dj-meta-db", CheckStatus.FAIL, "old DJ metadata cache", str(exc))
     except (OSError, sqlite3.DatabaseError) as exc:
         return DoctorCheck(
             "dj-meta-db",
             CheckStatus.FAIL,
-            "integrity/schema check failed",
+            "integrity check failed",
             f"{exc}; rebuild it with `autodj analyse`",
         )
-    return DoctorCheck(
-        "dj-meta-db", CheckStatus.PASS, "integrity and schema valid", f"{path}; rows={count}"
-    )
+    return DoctorCheck("dj-meta-db", CheckStatus.PASS, "integrity valid", f"{path}; rows={count}")
 
 
 def _module_available(name: str) -> bool:
@@ -786,7 +385,6 @@ def run_doctor(
             _path_check("index-path", cfg.index.index_dir, writable=True),
             _path_check("model-path", cfg.index.model_dir, writable=True),
             _index_check(cfg),
-            _tracks_database_check(cfg),
             _dj_meta_database_check(cfg),
             _dependency_check(),
             _model_cache_check(cfg),

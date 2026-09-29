@@ -14,8 +14,36 @@ key in either file, such as a setting a newer AutoDJ removed, is an error that n
 ## Diagnose before serving
 
 Run `uv run autodj doctor`. Use `uv run autodj doctor --json` for automation. A required failed
-check returns exit 1. Doctor does not write the index and redacts both server and Hugging Face
-tokens.
+check returns exit 1. Doctor redacts both server and Hugging Face tokens and writes nothing,
+except that its index check takes the index lock, as `serve` does.
+
+The `index` check loads the index with the same code `serve` uses. It passes with the generation
+number and track count, warns when there is no index yet or the index is empty, and otherwise
+fails with the name and message of the error `serve` would stop with, for example
+`UnsupportedIndexError` for an index made by an older AutoDJ. The `dj-meta-db` check runs SQLite's
+integrity check on `dj_meta.db` without changing it.
+
+## Indexing and DJ analysis
+
+`autodj index` embeds new tracks, then by default enriches them from beets and runs the DJ
+analysis that `autodj analyse` also runs: intro and outro, beat grid and cue points for every
+track that has none yet. Both commands print one progress line every 25 tracks, and the file
+checks one every 5000 files, so the log in the web page's library tools stays readable.
+
+Each run publishes the tracks embedded so far as a new index generation every 100 tracks and at
+the end, so an interrupted run resumes where it stopped. `autodj analyse` saves its results every
+25 tracks.
+
+To give network drives a rest during a long run, set a pause before each track, in milliseconds,
+in `config.toml`:
+
+```toml
+[index]
+throttle_ms = 500
+```
+
+It applies to the tracks `autodj index` embeds and the tracks `autodj index` and
+`autodj analyse` analyse. The default, 0, means no pause.
 
 ## Local network access
 
@@ -446,14 +474,17 @@ another. Copy only the derived files, and never the whole `index/` folder, becau
 holds files that belong to the machine that made them.
 
 Stop AutoDJ, and any `autodj index` or `autodj analyse` run, on both machines first. Then copy
-these files from `index/<name>/` on the source to `index/<name>/` on the destination, all of them
-together:
+these files from `index/<name>/` on the source to `index/<name>/` on the destination:
 
-- `index-manifest.json` and `.index-publication-state.json`, which say which generation is
-  current.
-- The generation files it names, `tracks.g<number>.db` and `vectors.g<number>.index`.
-- The working `tracks.db` and `vectors.index`.
+- The generation files named in `index-manifest.json`, `tracks.g<number>.db` and
+  `vectors.g<number>.index`. The number is the manifest's `generation` written with 20 digits.
 - `dj_meta.db`, the intro, outro, beat grid and cue cache.
+- `index-manifest.json` last, after the files it names are in place. AutoDJ loads only what the
+  manifest names and checks both files against the SHA-256 in it, so a missing or half-copied file
+  is refused with an error instead of being served.
+
+The destination may still hold older generation files. They are ignored, and deleted the next
+time AutoDJ publishes an index generation in that folder.
 
 Do not copy these; they belong to the machine that made them:
 
@@ -464,7 +495,7 @@ Do not copy these; they belong to the machine that made them:
   one machine use the other.
 - `index/.paired-devices.sqlite3`, the paired browsers and their sessions.
 - `index/.stream-secret`, the secret in the radio stream address.
-- Any `-wal`, `-shm`, `.lock` or `.tmp` file.
+- Any `-wal`, `-shm`, `.lock` or `.tmp` file. The index lock file is made when it is needed.
 
 Run `uv run autodj doctor` on the destination before serving. Copying replaces the destination's
 index, so the next `autodj index` there starts from the copied one.
@@ -473,7 +504,8 @@ index, so the next `autodj index` there starts from the copied one.
 
 `autodj backup` writes one ZIP file holding:
 
-- The published index: `tracks.db`, `vectors.index` and `index-manifest.json`.
+- The live index generation: `index-manifest.json` and the `tracks.g<number>.db` and
+  `vectors.g<number>.index` files it names.
 - `dj_meta.db`, the intro, outro, beat grid and cue cache.
 - `web_state.json`, the settings chosen in the web page.
 - Every file in the liners folder (`[playback] liners_folder`, or `index/<name>/liners`) and in
@@ -561,7 +593,8 @@ These steps apply to a native installation from a source checkout.
 5. Read the "Removed" and "Changed" sections of every release since yours in
    [CHANGELOG.md](../CHANGELOG.md). A configuration key that a release removed now stops AutoDJ at
    startup, so delete or rename it in your configuration files first.
-6. Run `uv run autodj doctor`. If it reports "old index format", run
-   `uv run autodj index --force` to rebuild it, then run doctor again.
+6. Run `uv run autodj doctor`. If its index check fails with `UnsupportedIndexError`, the index
+   was made by an older AutoDJ: run `uv run autodj index --force` to rebuild it, then run doctor
+   again.
 7. Start loopback-only and check that the version in the page footer is the release you checked
    out before enabling LAN access.

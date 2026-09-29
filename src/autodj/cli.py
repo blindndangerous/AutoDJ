@@ -225,42 +225,19 @@ def _load_index_or_exit(
 def _load_index_for_serve(
     cfg: AutoDJConfig, *, active_dir: Path | None = None
 ) -> SimilarityIndex:  # pragma: no cover
-    """Load an index for web serving, allowing only known logical-empty states."""
-    from autodj.index_manifest import (
-        IndexConsistencyError,
-        publication_is_pristine,
-        publication_is_tombstoned,
-        publication_lock,
-    )
+    """Load an index for web serving; a directory without one serves an empty index."""
     from autodj.similarity import SimilarityIndex as _SI
 
-    index_dir = cfg.index.active_dir if active_dir is None else active_dir
-    if not isinstance(index_dir, Path):
+    try:
         return _SI.from_index_dir(
-            index_dir,
+            cfg.index.active_dir if active_dir is None else active_dir,
             music_dir=cfg.library.music_dir,
         )
-
-    with publication_lock(index_dir):
-        if publication_is_tombstoned(index_dir):
-            console.print(
-                "[yellow]Index is empty; the web UI will stay ready while you run autodj index.[/]"
-            )
-            return _SI.empty()
-        try:
-            return _SI.from_index_dir(
-                index_dir,
-                music_dir=cfg.library.music_dir,
-            )
-        except (FileNotFoundError, IndexConsistencyError):
-            tombstoned = publication_is_tombstoned(index_dir)
-            pristine = publication_is_pristine(index_dir)
-            if not tombstoned and not pristine:
-                raise
-            console.print(
-                "[yellow]Index is empty; the web UI will stay ready while you run autodj index.[/]"
-            )
-            return _SI.empty()
+    except FileNotFoundError:
+        console.print(
+            "[yellow]Index is empty; the web UI will stay ready while you run autodj index.[/]"
+        )
+        return _SI.empty()
 
 
 def _resolve_preset_or_exit(cfg: AutoDJConfig, preset: str | None) -> Any:  # pragma: no cover
@@ -875,9 +852,8 @@ def cmd_restore(ctx: click.Context, archive: Path, force: bool) -> None:
     default=None,
     type=str,
     help=(
-        "Named index to write to.  Files land at "
-        "<index_dir>/<NAME>/vectors.index etc.  Use this to keep multiple "
-        "curated libraries side-by-side (e.g. 'workout', 'chill').  "
+        "Named index to write to.  Files land in <index_dir>/<NAME>/.  Use this "
+        "to keep multiple curated libraries side-by-side (e.g. 'workout', 'chill').  "
         "Default: 'default' (or [index] name in config.toml)."
     ),
 )
@@ -890,8 +866,7 @@ def cmd_restore(ctx: click.Context, archive: Path, force: bool) -> None:
     help=(
         "Audio-loader prefetch threads for the embed pass "
         "(default: 1 to bound full-track analysis memory).  Higher values "
-        "require enough RAM for multiple decoded tracks.  Passed through "
-        "to the analyse phase too."
+        "require enough RAM for multiple decoded tracks."
     ),
 )
 @click.option(
@@ -1020,19 +995,11 @@ def cmd_index(
                 console.print(f"[bold red]Enrich failed:[/] {exc}")
 
     if not skip_analyse:
-        from autodj.indexer import _backfill_dj_meta, load_index
+        from autodj.indexer import backfill_dj_meta, load_index
 
         try:
-            entries, _ = load_index(
-                cfg.index.active_dir,
-                music_dir=cfg.library.music_dir,
-            )
-            _backfill_dj_meta(
-                entries,
-                cfg.index.active_dir,
-                workers=workers,
-                music_dir=cfg.library.music_dir,
-            )
+            entries, _, _ = load_index(cfg.index.active_dir, music_dir=cfg.library.music_dir)
+            backfill_dj_meta(cfg, entries)
         except FileNotFoundError:
             console.print("[yellow]--analyse skipped: no index found.[/]")
         except Exception as exc:
@@ -1187,30 +1154,20 @@ def cmd_enrich(ctx: click.Context, index_name: str | None) -> None:
     type=int,
     help="Stop after this many tracks (test mode).",
 )
-@click.option(
-    "-j",
-    "--workers",
-    default=None,
-    type=int,
-    help=(
-        "Parallel worker threads (default: 1 to bound full-track analysis "
-        "memory).  Higher values require enough RAM for each concurrent "
-        "decode and librosa transform."
-    ),
-)
 @click.pass_context
 def cmd_analyse(
     ctx: click.Context,
     index_name: str | None,
     limit: int | None,
-    workers: int | None,
 ) -> None:
     """Backfill DJ-meta (intro/outro/beat grid/cues) for indexed tracks.
 
     Walks the existing FAISS index and, for every entry whose
     ``dj_meta.db`` cache is missing or has ``analysed=False``, decodes
-    the audio, runs :func:`autodj.dj_meta.analyse_audio`, and writes the
-    result.  Skips entries already analysed so repeated runs are cheap.
+    the audio, runs :func:`autodj.dj_meta.analyse_audio`, merges cues
+    imported from DJ software (``[playback] import_external_cues``), and
+    writes the result.  Skips entries already analysed so repeated runs
+    are cheap.
 
     No GPU and no MuQ model required -- pure CPU work via librosa +
     numpy.  Run this on the NAS / listening host after a GPU host has
@@ -1236,20 +1193,17 @@ def cmd_analyse(
 
     _apply_index_name(cfg, index_name)
 
-    from autodj.index_manifest import UnsupportedIndexError
-    from autodj.indexer import _backfill_dj_meta, load_index
+    from autodj.index_manifest import IndexConsistencyError
+    from autodj.indexer import backfill_dj_meta, load_index
 
     try:
-        entries, _ = load_index(
-            cfg.index.active_dir,
-            music_dir=cfg.library.music_dir,
-        )
+        entries, _, _ = load_index(cfg.index.active_dir, music_dir=cfg.library.music_dir)
     except FileNotFoundError:
         console.print(
             f"[bold red]No index at {cfg.index.active_dir}.[/]  Run `autodj index` first."
         )
         sys.exit(1)
-    except UnsupportedIndexError as exc:
+    except IndexConsistencyError as exc:
         console.print(f"[bold red]{exc}[/]")
         sys.exit(1)
     if limit is not None:
@@ -1261,12 +1215,7 @@ def cmd_analyse(
     console.print()
 
     try:
-        _backfill_dj_meta(
-            entries,
-            cfg.index.active_dir,
-            workers=workers,
-            music_dir=cfg.library.music_dir,
-        )
+        backfill_dj_meta(cfg, entries)
     except Exception as exc:
         console.print(f"[bold red]Analyse failed:[/] {exc}")
         sys.exit(1)
@@ -1638,11 +1587,11 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
     general_cli_override = _apply_serve_overrides(staged_override_cfg, locals())
     resolved_preset = _resolve_preset_or_exit(cfg, preset)
     parsed_bpm_range = _parse_bpm_range_or_exit(bpm_range)
-    from autodj.index_manifest import UnsupportedIndexError
+    from autodj.index_manifest import IndexConsistencyError
 
     try:
         sim = _load_index_for_serve(cfg, active_dir=cfg.index.index_dir / selected_index_name)
-    except UnsupportedIndexError as exc:
+    except IndexConsistencyError as exc:
         console.print(f"[bold red]{exc}[/]")
         sys.exit(1)
     if (
@@ -1950,7 +1899,7 @@ def cmd_stats(ctx: click.Context, index_name: str | None) -> None:
     Examples:
       uv run autodj stats
     """
-    from autodj.index_manifest import UnsupportedIndexError
+    from autodj.index_manifest import IndexConsistencyError
     from autodj.indexer import load_index
     from autodj.stats import print_stats
 
@@ -1959,14 +1908,11 @@ def cmd_stats(ctx: click.Context, index_name: str | None) -> None:
     _apply_index_name(cfg, index_name)
 
     try:
-        entries, _ = load_index(
-            cfg.index.active_dir,
-            music_dir=cfg.library.music_dir,
-        )
+        entries, _, _ = load_index(cfg.index.active_dir, music_dir=cfg.library.music_dir)
     except FileNotFoundError as exc:
         console.print(f"[bold red]Index not found:[/] {exc}")
         sys.exit(1)
-    except UnsupportedIndexError as exc:
+    except IndexConsistencyError as exc:
         console.print(f"[bold red]{exc}[/]")
         sys.exit(1)
 

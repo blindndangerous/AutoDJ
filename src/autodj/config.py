@@ -106,9 +106,10 @@ class IndexConfig(_Section):
     Attributes:
         index_dir: Base directory holding all named indexes.
         model_dir: Directory where the MuQ model checkpoint is cached.
-        name: Active index name.  Files live at
-            ``<index_dir>/<name>/vectors.index`` etc.  Override with
-            ``--name`` on any CLI subcommand.
+        name: Active index name.  Files live in ``<index_dir>/<name>/``.
+            Override with ``--name`` on any CLI subcommand.
+        throttle_ms: Pause before each track that ``autodj index`` embeds
+            and ``autodj analyse`` analyses, in milliseconds.  ``0`` = none.
     """
 
     SECTION: ClassVar[str] = "index"
@@ -116,18 +117,26 @@ class IndexConfig(_Section):
     index_dir: Path = field(default_factory=lambda: Path("index"))
     model_dir: Path = field(default_factory=lambda: Path("models"))
     name: str = "default"
+    throttle_ms: float = 0.0
 
     def __post_init__(self) -> None:
-        """Expand the paths and validate the index name.
+        """Expand the paths and validate the index name and throttle.
 
         Raises:
             ValueError: If ``name`` contains path separators / traversal /
-                leading dot — names are bare identifiers, not paths.
+                leading dot — names are bare identifiers, not paths — or
+                ``throttle_ms`` is negative.
+            TypeError: If ``throttle_ms`` is not a number.
         """
         self.index_dir = Path(self.index_dir).expanduser()
         self.model_dir = Path(self.model_dir).expanduser()
         self.name = str(self.name).strip() or "default"
         validate_index_name(self.name)
+        if isinstance(self.throttle_ms, bool) or not isinstance(self.throttle_ms, int | float):
+            raise TypeError("index.throttle_ms must be a number")
+        self.throttle_ms = float(self.throttle_ms)
+        if self.throttle_ms < 0:
+            raise ValueError(f"index.throttle_ms must be >= 0, got {self.throttle_ms}")
 
     @property
     def active_dir(self) -> Path:

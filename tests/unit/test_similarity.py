@@ -364,75 +364,22 @@ class TestFromIndexDir:
 
         entries = [_make_entry(i) for i in range(5)]
         vectors = np.array([_unit_vec(seed=i) for i in range(5)], dtype=np.float32)
-        save_index(entries, vectors, tmp_path)
+        save_index(entries, vectors, tmp_path, base_generation=0)
 
         sim = SimilarityIndex.from_index_dir(tmp_path)
         assert sim.ntotal == 5
 
-    def test_manifested_load_records_validated_generation(self, tmp_path: Path) -> None:
+    def test_load_records_the_loaded_manifest(self, tmp_path: Path) -> None:
         from autodj.index_manifest import read_manifest
         from autodj.indexer import save_index
 
         entries = [_make_entry(0)]
         vectors = np.array([_unit_vec(seed=0)], dtype=np.float32)
-        save_index(entries, vectors, tmp_path)
-        manifest = read_manifest(tmp_path)
-        assert manifest is not None
+        save_index(entries, vectors, tmp_path, base_generation=0)
 
         sim = SimilarityIndex.from_index_dir(tmp_path)
 
-        assert sim._generation == manifest.generation
-
-    def test_concurrent_publish_waits_and_cannot_mislabel_loaded_generation(
-        self, tmp_path: Path
-    ) -> None:
-        import autodj.similarity as similarity_module
-        from autodj.index_manifest import read_manifest
-        from autodj.indexer import save_index
-
-        initial_entries = [_make_entry(0)]
-        initial_vectors = np.array([_unit_vec(seed=0)], dtype=np.float32)
-        save_index(initial_entries, initial_vectors, tmp_path)
-        initial_manifest = read_manifest(tmp_path)
-        assert initial_manifest is not None
-        loaded = threading.Event()
-        release = threading.Event()
-        publish_started = threading.Event()
-        publish_done = threading.Event()
-        result: list[SimilarityIndex] = []
-        original_load_index = similarity_module.load_index
-
-        def blocking_load_index(*args, **kwargs):
-            value = original_load_index(*args, **kwargs)
-            loaded.set()
-            assert release.wait(timeout=1)
-            return value
-
-        def load() -> None:
-            result.append(SimilarityIndex.from_index_dir(tmp_path))
-
-        def publish() -> None:
-            publish_started.set()
-            save_index([_make_entry(9)], np.array([_unit_vec(seed=9)], dtype=np.float32), tmp_path)
-            publish_done.set()
-
-        with patch("autodj.similarity.load_index", side_effect=blocking_load_index):
-            loader = threading.Thread(target=load)
-            loader.start()
-            assert loaded.wait(timeout=1)
-            publisher = threading.Thread(target=publish)
-            publisher.start()
-            assert publish_started.wait(timeout=1)
-            time.sleep(0.05)
-            assert not publish_done.is_set()
-            release.set()
-            loader.join(timeout=10)
-            publisher.join(timeout=10)
-
-        assert not loader.is_alive()
-        assert not publisher.is_alive()
-        assert result[0]._generation == initial_manifest.generation
-        assert result[0].ntotal == 1
+        assert sim.manifest == read_manifest(tmp_path)
 
     def test_raises_if_index_missing(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError):
@@ -440,101 +387,27 @@ class TestFromIndexDir:
 
 
 class TestReloadFromDisk:
-    def test_tombstone_cannot_be_followed_by_stale_reload_swap(self, tmp_path: Path) -> None:
-        from autodj.index_manifest import current_snapshot_token, tombstone_publication
-        from autodj.indexer import save_index
-
-        entries = [_make_entry(0)]
-        vectors = np.array([_unit_vec(seed=0)], dtype=np.float32)
-        save_index(entries, vectors, tmp_path)
-        sim = SimilarityIndex.from_index_dir(tmp_path)
-        initial = sim.snapshot_token
-        candidate_ready = threading.Event()
-        tombstone_done = threading.Event()
-        original_load = __import__("autodj.similarity", fromlist=["load_index"]).load_index
-
-        def gated_load(*args, **kwargs):
-            result = original_load(*args, **kwargs)
-            if threading.current_thread().name == "old-reload":
-                candidate_ready.set()
-            return result
-
-        old = threading.Thread(
-            target=lambda: sim.reload_from_disk(tmp_path, expected_snapshot=initial),
-            name="old-reload",
-        )
-
-        def tombstone() -> None:
-            tombstone_publication(tmp_path)
-            tombstone_done.set()
-
-        with patch("autodj.similarity.load_index", side_effect=gated_load):
-            with sim._reload_lock:
-                old.start()
-                assert candidate_ready.wait(timeout=1)
-                newer = threading.Thread(target=tombstone, name="new-tombstone")
-                newer.start()
-                time.sleep(0.05)
-                assert not tombstone_done.is_set()
-            old.join(timeout=1)
-            newer.join(timeout=1)
-
-        assert not old.is_alive()
-        assert tombstone_done.is_set()
-        latest = current_snapshot_token(tmp_path)
-        sim.reload_from_disk(tmp_path, expected_snapshot=latest)
-        assert sim.snapshot_token == latest
-        assert sim.ntotal == 0
-
-    def test_uncommitted_first_publish_preserves_live_state_then_loads_publish(
+    def test_reload_without_an_index_keeps_live_state_then_loads_a_publish(
         self, tmp_path: Path
     ) -> None:
-        from autodj.index_manifest import (
-            IndexSnapshotToken,
-            _PublicationState,
-            _write_publication_state,
-            current_snapshot_token,
-        )
         from autodj.indexer import save_index
 
         sim, _ = _make_similarity_index(1)
         index_dir = tmp_path / "default"
         index_dir.mkdir()
-        _write_publication_state(index_dir, _PublicationState(high_water=1, tombstone_revision=0))
-        pending = current_snapshot_token(index_dir)
 
         with pytest.raises(FileNotFoundError):
-            sim.reload_from_disk(index_dir, expected_snapshot=pending)
+            sim.reload_from_disk(index_dir)
 
         assert sim.ntotal == 1
-        assert sim.snapshot_token == IndexSnapshotToken(0, 0)
+        assert sim.manifest is None
         entries = [_make_entry(5)]
         vectors = np.array([_unit_vec(seed=5)], dtype=np.float32)
-        save_index(entries, vectors, index_dir)
-        published = current_snapshot_token(index_dir)
+        published = save_index(entries, vectors, index_dir, base_generation=0)
 
-        assert sim.reload_from_disk(index_dir, expected_snapshot=published) == 1
-        assert sim.snapshot_token == published
+        assert sim.reload_from_disk(index_dir) == 1
+        assert sim.manifest == published
         assert sim.entry_for_path(entries[0].path) is not None
-
-    def test_tombstone_reload_clears_live_entries_atomically(self, tmp_path: Path) -> None:
-        from autodj.index_manifest import current_snapshot_token, tombstone_publication
-        from autodj.indexer import save_index
-
-        entries = [_make_entry(0)]
-        vectors = np.array([_unit_vec(seed=0)], dtype=np.float32)
-        save_index(entries, vectors, tmp_path)
-        sim = SimilarityIndex.from_index_dir(tmp_path)
-        old_token = sim.snapshot_token
-        tombstone_publication(tmp_path)
-        expected = current_snapshot_token(tmp_path)
-
-        assert expected != old_token
-        assert sim.reload_from_disk(tmp_path, expected_snapshot=expected) == 0
-        assert sim.snapshot_token == expected
-        assert sim.ntotal == 0
-        assert sim.entries_snapshot() == ()
-        assert sim.entry_for_path(entries[0].path) is None
 
     def test_reload_picks_up_new_entries(self, tmp_path: Path) -> None:
         from autodj.indexer import save_index
@@ -542,14 +415,14 @@ class TestReloadFromDisk:
         # Initial index with 3 tracks
         e1 = [_make_entry(i) for i in range(3)]
         v1 = np.array([_unit_vec(seed=i) for i in range(3)], dtype=np.float32)
-        save_index(e1, v1, tmp_path)
+        save_index(e1, v1, tmp_path, base_generation=0)
         sim = SimilarityIndex.from_index_dir(tmp_path)
         assert sim.ntotal == 3
 
         # Concurrent indexer adds more — write a bigger snapshot
         e2 = [_make_entry(i) for i in range(7)]
         v2 = np.array([_unit_vec(seed=i) for i in range(7)], dtype=np.float32)
-        save_index(e2, v2, tmp_path)
+        save_index(e2, v2, tmp_path, base_generation=1)
 
         new_total = sim.reload_from_disk(tmp_path)
         assert new_total == 7
@@ -560,32 +433,36 @@ class TestReloadFromDisk:
 
         e1 = [_make_entry(0)]
         v1 = np.array([_unit_vec(seed=0)], dtype=np.float32)
-        save_index(e1, v1, tmp_path)
+        save_index(e1, v1, tmp_path, base_generation=0)
         sim = SimilarityIndex.from_index_dir(tmp_path)
         # New entry that wasn't in the original index
         e2 = [_make_entry(0), _make_entry(99)]
         v2 = np.array([_unit_vec(seed=i) for i in (0, 99)], dtype=np.float32)
-        save_index(e2, v2, tmp_path)
+        save_index(e2, v2, tmp_path, base_generation=1)
         sim.reload_from_disk(tmp_path)
         # _path_to_idx should now know about song_99
         assert "song_99.flac" in sim._path_to_idx
 
-    def test_failed_expected_generation_keeps_live_state(self, tmp_path: Path) -> None:
+    def test_failed_reload_keeps_live_state(self, tmp_path: Path) -> None:
         from autodj.index_manifest import IndexConsistencyError
         from autodj.indexer import save_index
 
         entries = [_make_entry(i) for i in range(3)]
         vectors = np.array([_unit_vec(seed=i) for i in range(3)], dtype=np.float32)
-        save_index(entries, vectors, tmp_path)
+        save_index(entries, vectors, tmp_path, base_generation=0)
         sim = SimilarityIndex.from_index_dir(tmp_path)
         old_entries = sim.entries_snapshot()
         old_faiss_index = sim.faiss_index
+        old_manifest = sim.manifest
+        newer = save_index(entries[:2], vectors[:2], tmp_path, base_generation=1)
+        (tmp_path / newer.vectors_file).write_bytes(b"torn copy")
 
-        with pytest.raises(IndexConsistencyError, match="expected generation 2"):
-            sim.reload_from_disk(tmp_path, expected_generation=2)
+        with pytest.raises(IndexConsistencyError, match="SHA-256"):
+            sim.reload_from_disk(tmp_path)
 
         assert sim.entries_snapshot() == old_entries
         assert sim.faiss_index is old_faiss_index
+        assert sim.manifest == old_manifest
         assert sim.ntotal == 3
 
     def test_reload_swaps_entries_and_index_under_one_lock(self, tmp_path: Path) -> None:
@@ -599,7 +476,7 @@ class TestReloadFromDisk:
 
         def fake_load_index(*args, **kwargs):
             loaded.set()
-            return replacement_entries, replacement_index
+            return replacement_entries, replacement_index, None
 
         def reload() -> None:
             try:
@@ -642,7 +519,7 @@ class TestReloadFromDisk:
 
         def fake_load_index(*args, **kwargs):
             reload_loaded.set()
-            return replacement_entries, replacement_index
+            return replacement_entries, replacement_index, None
 
         sim.faiss_index = blocking_index
         blocking_index.search.side_effect = blocking_search

@@ -17,7 +17,7 @@ from autodj.indexer import FEATURE_DIM, IndexEntry, save_index
 def _publish_one_entry(index_dir: Path) -> None:
     entry = _entry(0)
     entry.path = "song_0.flac"
-    save_index([entry], np.zeros((1, FEATURE_DIM), dtype=np.float32), index_dir)
+    save_index([entry], np.zeros((1, FEATURE_DIM), dtype=np.float32), index_dir, base_generation=0)
 
 
 def _entry(i: int = 0) -> IndexEntry:
@@ -116,7 +116,7 @@ class TestStatsNameFlag:
         cfg_mock = _cfg()
         with (
             patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.indexer.load_index", return_value=([_entry(0)], None)),
+            patch("autodj.indexer.load_index", return_value=([_entry(0)], None, None)),
         ):
             result = CliRunner().invoke(cli, ["--config", str(cfg), "stats", "--name", "workout"])
         assert result.exit_code == 0
@@ -211,7 +211,7 @@ class TestIndexCommand:
             patch("autodj.model.load_model", return_value=MagicMock()),
             patch("autodj.indexer.build_index"),
             patch("autodj.indexer.enrich_from_beets", return_value=(1, 1)) as enrich,
-            patch("autodj.indexer._backfill_dj_meta") as backfill,
+            patch("autodj.indexer.backfill_dj_meta") as backfill,
         ):
             result = CliRunner().invoke(cli, ["--config", str(cfg), "index"])
 
@@ -249,7 +249,7 @@ class TestIndexCommand:
             patch("autodj.model.download_model_if_needed", return_value=tmp_path / "m"),
             patch("autodj.model.load_model", return_value=MagicMock()),
             patch("autodj.indexer.build_index"),
-            patch("autodj.indexer._backfill_dj_meta") as bf,
+            patch("autodj.indexer.backfill_dj_meta") as bf,
         ):
             result = CliRunner().invoke(cli, ["--config", str(cfg), "index"])
         assert result.exit_code == 0
@@ -268,7 +268,7 @@ class TestIndexCommand:
             patch("autodj.model.download_model_if_needed", return_value=tmp_path / "m"),
             patch("autodj.model.load_model", return_value=MagicMock()),
             patch("autodj.indexer.build_index"),
-            patch("autodj.indexer._backfill_dj_meta", side_effect=RuntimeError("x")),
+            patch("autodj.indexer.backfill_dj_meta", side_effect=RuntimeError("x")),
         ):
             result = CliRunner().invoke(cli, ["--config", str(cfg), "index"])
         assert result.exit_code == 0

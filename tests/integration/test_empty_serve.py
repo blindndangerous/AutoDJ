@@ -1,5 +1,4 @@
 import threading
-from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,12 +9,7 @@ from fastapi.testclient import TestClient
 
 from autodj.cli import _load_index_for_serve, _load_index_or_exit, cli
 from autodj.config import ServerConfig, load_config
-from autodj.index_manifest import (
-    IndexConsistencyError,
-    UnsupportedIndexError,
-    read_manifest,
-    tombstone_publication,
-)
+from autodj.index_manifest import IndexConsistencyError, UnsupportedIndexError, read_manifest
 from autodj.indexer import FEATURE_DIM, IndexEntry, save_index
 from autodj.player import Player
 from autodj.server import PlayerBridge, create_app
@@ -64,10 +58,9 @@ def test_empty_similarity_index_reloads_a_published_generation(tmp_path: Path) -
     )
     vectors = np.zeros((1, FEATURE_DIM), dtype=np.float32)
     vectors[0, 0] = 1.0
-    save_index([entry], vectors, tmp_path)
-    manifest = read_manifest(tmp_path)
-    assert manifest is not None
-    assert sim.reload_from_disk(tmp_path, expected_generation=manifest.generation) == 1
+    manifest = save_index([entry], vectors, tmp_path, base_generation=0)
+    assert sim.reload_from_disk(tmp_path) == 1
+    assert sim.manifest == manifest
     assert sim.ntotal == 1
     assert sim.entries_snapshot() == (entry,)
 
@@ -82,7 +75,7 @@ def test_serve_loader_refuses_index_without_manifest(tmp_path: Path) -> None:
         _load_index_for_serve(cfg, active_dir=index_dir)
 
 
-def test_serve_loader_propagates_missing_published_artifact(tmp_path: Path) -> None:
+def test_serve_loader_refuses_a_manifest_whose_file_is_missing(tmp_path: Path) -> None:
     cfg = load_config(None, environ={})
     entry = IndexEntry(
         path="song.flac",
@@ -98,27 +91,13 @@ def test_serve_loader_propagates_missing_published_artifact(tmp_path: Path) -> N
         mode=-1,
         tempo_confidence=0.0,
     )
-    save_index([entry], np.zeros((1, FEATURE_DIM), dtype=np.float32), tmp_path)
+    save_index([entry], np.zeros((1, FEATURE_DIM), dtype=np.float32), tmp_path, base_generation=0)
     manifest = read_manifest(tmp_path)
     assert manifest is not None
     (tmp_path / manifest.vectors_file).unlink()
 
-    with pytest.raises(FileNotFoundError):
+    with pytest.raises(IndexConsistencyError, match="is missing; copy the index again"):
         _load_index_for_serve(cfg, active_dir=tmp_path)
-
-
-def test_serve_loader_accepts_tombstoned_index(tmp_path: Path) -> None:
-    cfg = load_config(None, environ={})
-    tombstone_publication(tmp_path)
-    (tmp_path / "tracks.db").write_bytes(b"stale")
-    (tmp_path / "vectors.index").write_bytes(b"stale")
-
-    with patch(
-        "autodj.similarity.SimilarityIndex.from_index_dir",
-        side_effect=AssertionError("tombstoned cores must not be loaded"),
-    ) as load_index:
-        assert _load_index_for_serve(cfg, active_dir=tmp_path).ntotal == 0
-    load_index.assert_not_called()
 
 
 def test_play_loader_prints_the_rebuild_message_for_an_old_manifest(
@@ -149,208 +128,6 @@ def test_serve_loader_names_generation_files_without_manifest(
 
     with pytest.raises(IndexConsistencyError, match=r"no index-manifest\.json.*index --force"):
         _load_index_for_serve(cfg, active_dir=tmp_path)
-
-
-@pytest.mark.parametrize(
-    "orphan_name",
-    [
-        ".index-manifest.json.0123456789abcdef0123456789abcdef.tmp",
-        "..index-publication-state.json.0123456789abcdef0123456789abcdef.tmp",
-        ".tracks.g00000000000000000001.db.0123456789abcdef0123456789abcdef.tmp",
-        "tracks.db-wal",
-        "vectors.index.tmp",
-    ],
-)
-def test_serve_loader_rejects_orphan_publication_artifact(
-    tmp_path: Path,
-    orphan_name: str,
-) -> None:
-    cfg = load_config(None, environ={})
-    (tmp_path / orphan_name).touch()
-
-    with pytest.raises(FileNotFoundError):
-        _load_index_for_serve(cfg, active_dir=tmp_path)
-
-
-def test_serve_loader_rejects_uncommitted_generation_reservation(tmp_path: Path) -> None:
-    cfg = load_config(None, environ={})
-    (tmp_path / ".index-publication-state.json").write_text(
-        '{"high_water": 1, "tombstone_revision": 0}',
-        encoding="utf-8",
-    )
-
-    with pytest.raises(FileNotFoundError, match="No published index"):
-        _load_index_for_serve(cfg, active_dir=tmp_path)
-
-
-def test_serve_loader_serializes_tombstone_between_check_and_load(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import autodj.index_manifest as manifest_module
-
-    cfg = load_config(None, environ={})
-    entry = IndexEntry(
-        path="song.flac",
-        title="Song",
-        artist="Artist",
-        album="",
-        genre="",
-        bpm=0.0,
-        year=0,
-        length=1.0,
-        energy=0.0,
-        key=-1,
-        mode=-1,
-        tempo_confidence=0.0,
-    )
-    save_index([entry], np.zeros((1, FEATURE_DIM), dtype=np.float32), tmp_path)
-    original_factory = SimilarityIndex.from_index_dir
-    original_lock = manifest_module.publication_lock
-    loader_entered = threading.Event()
-    release_loader = threading.Event()
-    tombstone_attempted = threading.Event()
-    tombstone_acquired = threading.Event()
-    tombstone_done = threading.Event()
-    loaded: list[SimilarityIndex] = []
-    errors: list[BaseException] = []
-
-    def gated_factory(*args, **kwargs) -> SimilarityIndex:
-        loader_entered.set()
-        assert release_loader.wait(timeout=2)
-        return original_factory(*args, **kwargs)
-
-    @contextmanager
-    def observed_lock(index_dir: Path):
-        if threading.current_thread().name == "test-tombstone":
-            tombstone_attempted.set()
-        with original_lock(index_dir):
-            if threading.current_thread().name == "test-tombstone":
-                tombstone_acquired.set()
-            yield
-
-    def load_for_serve() -> None:
-        try:
-            loaded.append(_load_index_for_serve(cfg, active_dir=tmp_path))
-        except BaseException as exc:
-            errors.append(exc)
-
-    def tombstone() -> None:
-        try:
-            tombstone_publication(tmp_path)
-        except BaseException as exc:
-            errors.append(exc)
-        finally:
-            tombstone_done.set()
-
-    monkeypatch.setattr(manifest_module, "publication_lock", observed_lock)
-    with patch.object(SimilarityIndex, "from_index_dir", side_effect=gated_factory):
-        loader_thread = threading.Thread(target=load_for_serve, name="test-serve-loader")
-        tombstone_thread = threading.Thread(target=tombstone, name="test-tombstone")
-        loader_thread.start()
-        try:
-            assert loader_entered.wait(timeout=2)
-            tombstone_thread.start()
-            assert tombstone_attempted.wait(timeout=2)
-            assert not tombstone_acquired.wait(timeout=0.2)
-        finally:
-            release_loader.set()
-            loader_thread.join(timeout=2)
-            tombstone_thread.join(timeout=2)
-
-    if errors:
-        raise AssertionError("concurrent index operation failed") from errors[0]
-    assert tombstone_done.is_set()
-    assert len(loaded) == 1
-    assert loaded[0].ntotal == 1
-    assert not loader_thread.is_alive()
-    assert not tombstone_thread.is_alive()
-
-
-def test_serve_loader_classifies_failed_load_before_concurrent_publish(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import autodj.index_manifest as manifest_module
-
-    cfg = load_config(None, environ={})
-    original_lock = manifest_module.publication_lock
-    load_failed = threading.Event()
-    publisher_acquired = threading.Event()
-    publish_done = threading.Event()
-    lock_depth = threading.local()
-    loaded: list[SimilarityIndex] = []
-    errors: list[BaseException] = []
-    entry = IndexEntry(
-        path="song.flac",
-        title="Song",
-        artist="Artist",
-        album="",
-        genre="",
-        bpm=0.0,
-        year=0,
-        length=1.0,
-        energy=0.0,
-        key=-1,
-        mode=-1,
-        tempo_confidence=0.0,
-    )
-
-    def failing_factory(*_args, **_kwargs) -> SimilarityIndex:
-        load_failed.set()
-        raise FileNotFoundError("simulated missing cores")
-
-    @contextmanager
-    def ordered_lock(index_dir: Path):
-        is_loader = threading.current_thread().name == "test-failed-loader"
-        depth = getattr(lock_depth, "value", 0)
-        with original_lock(index_dir):
-            lock_depth.value = depth + 1
-            try:
-                yield
-            finally:
-                lock_depth.value = depth
-        if is_loader and depth == 0:
-            assert publisher_acquired.wait(timeout=2)
-
-    def load_for_serve() -> None:
-        try:
-            loaded.append(_load_index_for_serve(cfg, active_dir=tmp_path))
-        except BaseException as exc:
-            errors.append(exc)
-
-    def publish() -> None:
-        try:
-            assert load_failed.wait(timeout=2)
-            with ordered_lock(tmp_path):
-                publisher_acquired.set()
-                save_index(
-                    [entry],
-                    np.zeros((1, FEATURE_DIM), dtype=np.float32),
-                    tmp_path,
-                )
-        except BaseException as exc:
-            errors.append(exc)
-        finally:
-            publish_done.set()
-
-    monkeypatch.setattr(manifest_module, "publication_lock", ordered_lock)
-    with patch.object(SimilarityIndex, "from_index_dir", side_effect=failing_factory):
-        loader_thread = threading.Thread(target=load_for_serve, name="test-failed-loader")
-        publisher_thread = threading.Thread(target=publish, name="test-publisher")
-        publisher_thread.start()
-        loader_thread.start()
-        loader_thread.join(timeout=3)
-        publisher_thread.join(timeout=3)
-
-    if errors:
-        raise AssertionError("concurrent index operation failed") from errors[0]
-    assert len(loaded) == 1
-    assert loaded[0].ntotal == 0
-    assert publish_done.is_set()
-    assert SimilarityIndex.from_index_dir(tmp_path).ntotal == 1
-    assert not loader_thread.is_alive()
-    assert not publisher_thread.is_alive()
 
 
 def test_player_waits_safely_for_first_index_generation() -> None:
@@ -425,10 +202,8 @@ def test_player_uses_first_published_generation_after_waiting(tmp_path: Path) ->
         ]
         vectors = np.zeros((2, FEATURE_DIM), dtype=np.float32)
         vectors[:, 0] = 1.0
-        save_index(entries, vectors, tmp_path)
-        manifest = read_manifest(tmp_path)
-        assert manifest is not None
-        assert sim.reload_from_disk(tmp_path, expected_generation=manifest.generation) == 2
+        save_index(entries, vectors, tmp_path, base_generation=0)
+        assert sim.reload_from_disk(tmp_path) == 2
         wait_event.set()
         advanced = progressed.wait(timeout=2)
     except BaseException as exc:
@@ -497,44 +272,3 @@ def test_serve_uses_empty_index_when_files_are_absent(tmp_path: Path) -> None:
         result = CliRunner().invoke(cli, ["serve"])
     assert result.exit_code == 0, result.output
     assert serve_mock.call_args.kwargs["sim"].ntotal == 0
-
-
-def test_bridge_reload_refuses_a_snapshot_that_moved_on(tmp_path: Path) -> None:
-    """The watcher saw generation N; a reload after N+1 published must not swap it in."""
-    from types import SimpleNamespace
-    from unittest.mock import MagicMock
-
-    from autodj.index_manifest import current_snapshot_token
-
-    def entry(name: str) -> IndexEntry:
-        return IndexEntry(
-            path=f"{name}.flac",
-            title=name,
-            artist="Artist",
-            album="",
-            genre="",
-            bpm=0.0,
-            year=0,
-            length=1.0,
-            energy=0.0,
-            key=-1,
-            mode=-1,
-            tempo_confidence=0.0,
-        )
-
-    vectors = np.zeros((2, FEATURE_DIM), dtype=np.float32)
-    vectors[:, 0] = 1.0
-    save_index([entry("one")], vectors[:1], tmp_path)
-    seen = current_snapshot_token(tmp_path)
-    save_index([entry("one"), entry("two")], vectors, tmp_path)
-    sim = SimilarityIndex.empty()
-    player = MagicMock()
-    player._cfg = SimpleNamespace(
-        index=SimpleNamespace(active_dir=tmp_path), library=SimpleNamespace(music_dir=None)
-    )
-    bridge = PlayerBridge(player=player, sim=sim)
-
-    with pytest.raises(IndexConsistencyError, match="expected generation"):
-        bridge.reload_index_from_disk(expected_snapshot=seen)
-    assert sim.ntotal == 0
-    assert bridge.reload_index_from_disk(expected_snapshot=current_snapshot_token(tmp_path)) == 2

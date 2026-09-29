@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from autodj.index_manifest import IndexSnapshotToken
 from autodj.server import (
     _close_alac_stream,
     _close_and_cancel_websocket,
@@ -79,27 +78,27 @@ def test_websocket_session_validation_defaults_true_and_contains_callback_failur
 
 
 @pytest.mark.asyncio
-async def test_reload_generation_without_config_preserves_observed() -> None:
-    observed = IndexSnapshotToken(1, 1)
+async def test_reload_generation_without_config_does_nothing() -> None:
     bridge = MagicMock()
     bridge.player = object()
 
-    assert await reload_published_generation_once(bridge, observed) == observed
+    assert await reload_published_generation_once(bridge) is False
 
 
 @pytest.mark.asyncio
-async def test_reload_generation_skips_unchanged_snapshot(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(("on_disk", "reloaded"), [("same", False), ("newer", True), (None, False)])
+async def test_reload_generation_only_when_the_manifest_changed(
+    monkeypatch: pytest.MonkeyPatch, on_disk: str | None, reloaded: bool
 ) -> None:
     import autodj.server as server
 
-    observed = IndexSnapshotToken(1, 1)
     bridge = MagicMock()
     bridge.player._cfg.index.active_dir = "index"
-    monkeypatch.setattr(server, "current_snapshot_token", MagicMock(return_value=observed))
+    bridge.sim.manifest = "same"
+    monkeypatch.setattr(server, "read_manifest", MagicMock(return_value=on_disk))
 
-    assert await reload_published_generation_once(bridge, observed) == observed
-    bridge.reload_index_from_disk.assert_not_called()
+    assert await reload_published_generation_once(bridge) is reloaded
+    assert bridge.reload_index_from_disk.called is reloaded
 
 
 def _mutagen_modules(mp4_factory: object) -> dict[str, ModuleType]:

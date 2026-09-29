@@ -9,7 +9,7 @@ No FAISS index or MuQ model is needed — only ``tracks.db`` is read.
 Example:
     >>> from autodj.stats import print_stats
     >>> from autodj.indexer import load_index
-    >>> entries, _ = load_index(index_dir)
+    >>> entries, _, _ = load_index(index_dir)
     >>> print_stats(entries, console)
 """
 

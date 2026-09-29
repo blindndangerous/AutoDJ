@@ -22,7 +22,6 @@ from httpx2 import Headers
 from starlette.websockets import WebSocketDisconnect
 
 from autodj.config import ServerConfig
-from autodj.index_manifest import IndexSnapshotToken
 from autodj.security import COOKIE_NAME, PairingRateLimiter, SecurityPolicy
 from autodj.server import PlayerBridge, create_app
 
@@ -1382,24 +1381,15 @@ class TestLinerUploadDelete:
 
 
 @pytest.mark.parametrize(
-    ("tokens", "entries", "status"),
+    ("manifests", "entries", "status"),
     [
-        ([IndexSnapshotToken(1, 1), IndexSnapshotToken(2, 2)], [object()], 409),
-        ([IndexSnapshotToken(1, 1)] * 3, [object(), None], 404),
-        (
-            [
-                IndexSnapshotToken(1, 1),
-                IndexSnapshotToken(1, 1),
-                IndexSnapshotToken(1, 1),
-                IndexSnapshotToken(2, 2),
-            ],
-            [object(), object()],
-            409,
-        ),
+        (["generation 1", "generation 2"], [object()], 409),
+        (["generation 1"], [None], 404),
+        (["generation 1", "generation 1"], [object()], 200),
     ],
 )
-def test_lyrics_revalidates_snapshot_and_membership(
-    tokens: list[IndexSnapshotToken],
+def test_lyrics_refuses_a_result_from_a_replaced_index(
+    manifests: list[str],
     entries: list[object | None],
     status: int,
 ) -> None:
@@ -1407,7 +1397,7 @@ def test_lyrics_revalidates_snapshot_and_membership(
 
     player = _make_player_mock()
     sim = _make_sim_mock()
-    type(sim).snapshot_token = PropertyMock(side_effect=tokens)
+    type(sim).manifest = PropertyMock(side_effect=manifests)
     sim.entry_for_path.side_effect = entries
     bridge = PlayerBridge(player=player, sim=sim)
     bridge.lyrics_for = MagicMock(return_value=[])

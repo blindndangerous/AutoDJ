@@ -34,14 +34,7 @@ import faiss
 import numpy as np
 import numpy.typing as npt
 
-from autodj.index_manifest import (
-    IndexConsistencyError,
-    IndexSnapshotToken,
-    current_snapshot_token,
-    publication_is_tombstoned,
-    publication_lock,
-    read_manifest,
-)
+from autodj.index_manifest import IndexManifest
 from autodj.indexer import IndexEntry, load_index
 
 logger = logging.getLogger(__name__)
@@ -165,8 +158,7 @@ class SimilarityIndex:
     def __post_init__(self) -> None:
         """Validate consistency and build the path → FAISS index position map."""
         self._reload_lock = threading.RLock()
-        self._generation = 0
-        self._snapshot_token = IndexSnapshotToken(0, 0)
+        self._manifest: IndexManifest | None = None
         if self.faiss_index.ntotal != len(self.entries):
             raise ValueError(
                 f"Index/metadata mismatch: FAISS has {self.faiss_index.ntotal} vectors "
@@ -187,10 +179,10 @@ class SimilarityIndex:
             return len(self.entries)
 
     @property
-    def snapshot_token(self) -> IndexSnapshotToken:
-        """Exact publication identity currently loaded by this reader."""
+    def manifest(self) -> IndexManifest | None:
+        """Manifest of the loaded generation; ``None`` for :meth:`empty`."""
         with self._reload_lock:
-            return self._snapshot_token
+            return self._manifest
 
     def entries_snapshot(self) -> tuple[IndexEntry, ...]:
         """Return immutable view of entries from one index generation."""
@@ -225,64 +217,28 @@ class SimilarityIndex:
 
         return cls(faiss_index=faiss.IndexFlatIP(FEATURE_DIM), entries=[])
 
-    def reload_from_disk(
-        self,
-        index_dir: Path,
-        music_dir: Path | None = None,
-        *,
-        expected_generation: int | None = None,
-        expected_snapshot: IndexSnapshotToken | None = None,
-    ) -> int:
-        """Re-read the index from disk, replacing in-memory state in place.
+    def reload_from_disk(self, index_dir: Path, music_dir: Path | None = None) -> int:
+        """Load the live generation from disk, replacing in-memory state in place.
 
         Used by the server's background watcher so a long-running
-        ``autodj serve`` picks up tracks that ``autodj index`` (running
-        in parallel) has just finished embedding.  Index writes are
-        atomic (tmp + ``os.replace``) so a reload always sees a
-        consistent snapshot.
+        ``autodj serve`` picks up each generation that ``autodj index``
+        publishes, or that is copied in from another machine.
 
         Args:
-            index_dir: Directory containing ``vectors.index`` and
-                ``tracks.db``.
+            index_dir: The index directory.
             music_dir: Library root for resolving relative paths.
 
         Returns:
             New track count after reload.
         """
-        # Lock order is always publication then reload.  Keep both through
-        # candidate construction and swap so an older candidate cannot win
-        # after a newer publication has already reloaded.
-        with publication_lock(index_dir):
-            snapshot = current_snapshot_token(index_dir)
-            if expected_snapshot is not None and snapshot != expected_snapshot:
-                raise IndexConsistencyError(
-                    f"expected generation {expected_snapshot.generation}/"
-                    f"{expected_snapshot.state_revision}, got {snapshot.generation}/"
-                    f"{snapshot.state_revision}"
-                )
-            if expected_generation is not None and snapshot.generation != expected_generation:
-                raise IndexConsistencyError(
-                    f"expected generation {expected_generation}, got {snapshot.generation}"
-                )
-            if snapshot.generation == 0 and publication_is_tombstoned(index_dir):
-                with self._reload_lock:
-                    dimension = self.faiss_index.d
-                candidate = SimilarityIndex(faiss.IndexFlatIP(dimension), [])
-            else:
-                entries, faiss_index = load_index(
-                    index_dir,
-                    music_dir=music_dir,
-                    expected_generation=snapshot.generation or None,
-                )
-                candidate = SimilarityIndex(faiss_index=faiss_index, entries=entries)
-            with self._reload_lock:
-                self.entries = candidate.entries
-                self.faiss_index = candidate.faiss_index
-                self._path_to_idx = candidate._path_to_idx
-                self._public_entries = candidate._public_entries
-                self._generation = snapshot.generation
-                self._snapshot_token = snapshot
-                return len(self.entries)
+        candidate = SimilarityIndex.from_index_dir(index_dir, music_dir)
+        with self._reload_lock:
+            self.entries = candidate.entries
+            self.faiss_index = candidate.faiss_index
+            self._path_to_idx = candidate._path_to_idx
+            self._public_entries = candidate._public_entries
+            self._manifest = candidate._manifest
+            return len(self.entries)
 
     @classmethod
     def from_index_dir(
@@ -292,13 +248,13 @@ class SimilarityIndex:
     ) -> SimilarityIndex:
         """Load a :class:`SimilarityIndex` from the index directory on disk.
 
-        When *music_dir* is provided, the relative paths stored in
-        ``tracks.db`` are resolved against it, so one index works on any
-        machine that mounts the library at a different location.
+        This is the loader ``autodj serve`` and ``autodj doctor`` use.  When
+        *music_dir* is provided, the relative paths stored in the index are
+        resolved against it, so one index works on any machine that mounts
+        the library at a different location.
 
         Args:
-            index_dir: Directory containing ``vectors.index`` and
-                ``tracks.db`` as written by
+            index_dir: The index directory, as written by
                 :func:`autodj.indexer.save_index`.
             music_dir: Library root for resolving relative paths.
 
@@ -306,24 +262,15 @@ class SimilarityIndex:
             A fully populated :class:`SimilarityIndex`.
 
         Raises:
-            FileNotFoundError: If *index_dir* or its files are missing.
+            FileNotFoundError: If the directory holds no index.
+            IndexConsistencyError: See :func:`autodj.indexer.load_index`.
 
         Example:
             >>> sim = SimilarityIndex.from_index_dir(Path("index"))
         """
-        with publication_lock(index_dir):
-            manifest = read_manifest(index_dir)
-            expected_generation = manifest.generation if manifest is not None else None
-            entries, faiss_index = load_index(
-                index_dir,
-                music_dir=music_dir,
-                expected_generation=expected_generation,
-            )
-            snapshot = current_snapshot_token(index_dir)
-            generation = snapshot.generation
+        entries, faiss_index, manifest = load_index(index_dir, music_dir=music_dir)
         sim = cls(faiss_index=faiss_index, entries=entries)
-        sim._generation = generation
-        sim._snapshot_token = snapshot
+        sim._manifest = manifest
         return sim
 
     # ------------------------------------------------------------------

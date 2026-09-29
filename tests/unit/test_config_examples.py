@@ -29,9 +29,8 @@ def test_local_example_is_a_valid_overlay(tmp_path: Path) -> None:
 def test_examples_describe_optional_current_index_artifacts() -> None:
     for filename in ("config.toml.example", "config.local.toml.example"):
         text = (ROOT / filename).read_text(encoding="utf-8")
-        assert "may contain" in text
-        assert "vectors.index" in text
-        assert "tracks.db (SQLite)" in text
+        assert "index-manifest.json" in text
+        assert "tracks.g<number>.db and vectors.g<number>.index" in text
         assert "dj_meta.db (SQLite)" in text
         assert "web_state.json" in text
         assert "<index_dir>/<name>/liners/" in text

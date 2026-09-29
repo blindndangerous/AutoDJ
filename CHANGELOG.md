@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `[index] throttle_ms` sets a pause before each track that `autodj index` and `autodj analyse`
+  process, to give network drives a rest.
 - Serato hot cues and saved loops are imported from the tags inside MP3, AIFF, FLAC and MP4/M4A
   files when `import_external_cues` is on, next to the Mixxx, Rekordbox and Traktor imports. The
   reader follows the published format notes of the serato-tags project and has only been tested
@@ -28,6 +30,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The index is stored in a new, simpler format (manifest schema 3). An index made by an older
+  AutoDJ is refused with a message to rebuild it: run `autodj index --force` once, on the machine
+  that indexes, and copy the result again. `dj_meta.db` is kept and needs no new analysis.
+- An index folder now holds only `index-manifest.json` and the two generation files it names,
+  `tracks.g<number>.db` and `vectors.g<number>.index`, plus `dj_meta.db`, web settings and liners.
+  The working `tracks.db` and `vectors.index` and `.index-publication-state.json` are no longer
+  written. A script that copies an index to another machine should copy the two generation files
+  and `dj_meta.db`, then `index-manifest.json` last, and no longer needs to create
+  `.index-publication.lock`. The operations guide's "Copying an index to another machine" has the
+  details.
+- A running `autodj serve` loads a new index generation within 10 seconds whenever
+  `index-manifest.json` changes, including one copied in from another machine, and logs a warning
+  when the new generation cannot be loaded.
+- `autodj doctor` checks the index by loading it the way `serve` does and reports either the
+  generation and track count or the exact error `serve` would stop with. Its separate `tracks-db`
+  check is gone and the `index-coherence` check is now called `index`.
+- `autodj index` and `autodj analyse` print a plain progress line every 25 tracks instead of
+  progress bars, which also reads cleanly in the web page's job log. `autodj analyse` analyses one
+  track at a time.
 - The MuQ model is now kept in Hugging Face's own cache layout inside `models/` (or your
   `[index] model_dir`), and `autodj index` asks Hugging Face for it on every run, which only
   downloads what is missing and uses the saved copy when offline. The first `autodj index` after
@@ -58,6 +79,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Removed
 
+- `autodj analyse -j/--workers`. Analysis runs one track at a time; `autodj index -j` still sets
+  how many tracks are decoded ahead while embedding.
 - `autodj backup --online`. Every backup now reads the index and the DJ metadata safely while
   AutoDJ runs.
 - `GET /api/settings` and `GET /api/profiles/{name}`. The web page never used them; the settings

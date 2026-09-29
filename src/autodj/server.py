@@ -80,7 +80,7 @@ from autodj._bridge import (
     validate_playback_choices,
 )
 from autodj.icy import METAINT
-from autodj.index_manifest import IndexConsistencyError, IndexSnapshotToken, current_snapshot_token
+from autodj.index_manifest import IndexConsistencyError, read_manifest
 from autodj.lan import format_lan_banner, lan_urls, running_in_container
 from autodj.pairing import DeviceRegistry
 from autodj.security import (
@@ -275,21 +275,21 @@ async def _close_and_prune_websocket(
     return closed
 
 
-async def reload_published_generation_once(
-    bridge: PlayerBridge, observed: IndexSnapshotToken
-) -> IndexSnapshotToken:
-    """Reload one changed publication token, preserving observed on failure/no change."""
+async def reload_published_generation_once(bridge: PlayerBridge) -> bool:
+    """Reload the index when its manifest differs from the loaded one.
+
+    Returns:
+        Whether a new generation was loaded.  A missing manifest keeps the
+        loaded index.
+    """
     cfg = getattr(bridge.player, "_cfg", None)
     if cfg is None:
-        return observed
-    snapshot = await asyncio.to_thread(current_snapshot_token, cfg.index.active_dir)
-    if snapshot == observed:
-        return observed
-    await asyncio.to_thread(
-        bridge.reload_index_from_disk,
-        expected_snapshot=snapshot,
-    )
-    return snapshot
+        return False
+    manifest = await asyncio.to_thread(read_manifest, cfg.index.active_dir)
+    if manifest is None or manifest == bridge.sim.manifest:
+        return False
+    await asyncio.to_thread(bridge.reload_index_from_disk)
+    return True
 
 
 def _quiesce_cache_writers(
@@ -1891,17 +1891,11 @@ def create_app(
     async def api_lyrics(path: str) -> dict[str, object]:
         """Return timed lyric lines for one exact indexed track path."""
         similarity = bridge.sim
-        authorized_snapshot = similarity.snapshot_token
+        authorized_manifest = similarity.manifest
         if similarity.entry_for_path(path) is None:
             raise HTTPException(status_code=404, detail="Track not in index")
-        if similarity.snapshot_token != authorized_snapshot:
-            raise HTTPException(status_code=409, detail="Track index changed")
         lyrics = await _read_lyrics_owned(path)
-        if similarity.snapshot_token != authorized_snapshot:
-            raise HTTPException(status_code=409, detail="Track index changed")
-        if similarity.entry_for_path(path) is None:
-            raise HTTPException(status_code=404, detail="Track not in index")
-        if similarity.snapshot_token != authorized_snapshot:
+        if similarity.manifest != authorized_manifest:
             raise HTTPException(status_code=409, detail="Track index changed")
         return {"path": path, "lyrics": lyrics}
 
@@ -2273,15 +2267,12 @@ def create_app(
 
     async def _index_watcher_loop() -> None:  # pragma: no cover — long-running task
         """Reload each newly published index generation every 10 seconds."""
-        observed = bridge.sim.snapshot_token
         while True:
             try:
-                previous = observed
-                observed = await reload_published_generation_once(bridge, observed)
-                if observed != previous:
+                if await reload_published_generation_once(bridge):
                     logger.info("Index reloaded — %d tracks now available", bridge.sim.ntotal)
             except (IndexConsistencyError, OSError, ValueError) as exc:
-                logger.debug("Index watcher: %s", exc)
+                logger.warning("Index watcher: %s", exc)
             await asyncio.sleep(10)
 
     return app

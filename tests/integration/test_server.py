@@ -3259,15 +3259,11 @@ class TestMisc:
     def test_lyrics_endpoint_rejects_result_after_index_generation_swap(self, bridge) -> None:
         from fastapi.testclient import TestClient
 
-        from autodj.index_manifest import IndexSnapshotToken
-
         path = bridge.sim.entries[0].path
-        authorized = IndexSnapshotToken(1, 10)
-        replacement = IndexSnapshotToken(2, 20)
-        bridge.sim.snapshot_token = authorized
+        bridge.sim.manifest = "generation 1"
 
         def swap_index_generation(_path: str) -> list[dict]:
-            bridge.sim.snapshot_token = replacement
+            bridge.sim.manifest = "generation 2"
             bridge.sim.entries = bridge.sim.entries[1:]
             return [{"time": 0.0, "text": "stale secret"}]
 
@@ -4093,51 +4089,40 @@ class TestPersistenceHelpers:
 
 
 class TestReloadIndexFromDisk:
-    def test_watcher_reconciles_publish_after_live_token_seed(self, monkeypatch, tmp_path) -> None:
+    def test_watcher_reloads_a_changed_manifest(self, monkeypatch, tmp_path) -> None:
         from threading import Event
 
         from fastapi.testclient import TestClient
 
-        from autodj.index_manifest import IndexSnapshotToken
-
-        old = IndexSnapshotToken(1, 1)
-        published = IndexSnapshotToken(2, 2)
         reloaded = Event()
         bridge = MagicMock()
         bridge.player._cfg.index.active_dir = tmp_path
-        bridge.sim.snapshot_token = old
+        bridge.sim.manifest = "generation 1"
         bridge.sim.ntotal = 5
-        bridge.reload_index_from_disk.side_effect = lambda **kwargs: reloaded.set()
-        monkeypatch.setattr("autodj.server.current_snapshot_token", lambda _: published)
+        bridge.reload_index_from_disk.side_effect = lambda: reloaded.set()
+        monkeypatch.setattr("autodj.server.read_manifest", lambda _: "generation 2")
 
         with TestClient(create_app(bridge)):
             assert reloaded.wait(timeout=1)
-        bridge.reload_index_from_disk.assert_called_once_with(expected_snapshot=published)
+        bridge.reload_index_from_disk.assert_called_with()
 
-    def test_watcher_retries_same_snapshot_token_after_consistency_failure(
-        self, monkeypatch, tmp_path
-    ) -> None:
+    def test_watcher_retries_a_manifest_whose_load_failed(self, monkeypatch, tmp_path) -> None:
         import asyncio
 
-        from autodj.index_manifest import IndexConsistencyError, IndexSnapshotToken
+        from autodj.index_manifest import IndexConsistencyError
         from autodj.server import reload_published_generation_once
 
-        token = IndexSnapshotToken(1, 3)
-        monkeypatch.setattr("autodj.server.current_snapshot_token", lambda _: token)
+        monkeypatch.setattr("autodj.server.read_manifest", lambda _: "generation 2")
         bridge = MagicMock()
         bridge.player._cfg.index.active_dir = tmp_path
-        bridge.reload_index_from_disk.side_effect = [
-            IndexConsistencyError("snapshot changed"),
-            5,
-        ]
+        bridge.sim.manifest = "generation 1"
+        bridge.reload_index_from_disk.side_effect = [IndexConsistencyError("torn copy"), 5]
 
         with pytest.raises(IndexConsistencyError):
-            asyncio.run(reload_published_generation_once(bridge, IndexSnapshotToken(0, 0)))
-        observed = asyncio.run(reload_published_generation_once(bridge, IndexSnapshotToken(0, 0)))
+            asyncio.run(reload_published_generation_once(bridge))
 
-        assert observed == token
+        assert asyncio.run(reload_published_generation_once(bridge)) is True
         assert bridge.reload_index_from_disk.call_count == 2
-        bridge.reload_index_from_disk.assert_called_with(expected_snapshot=token)
 
     def test_reload_no_cfg_returns_current_total(self) -> None:
         sim = MagicMock()
@@ -4152,40 +4137,8 @@ class TestReloadIndexFromDisk:
         cfg.index.active_dir = tmp_path
         cfg.library.music_dir = None
         bridge = PlayerBridge(player=MagicMock(_cfg=cfg), sim=sim)
-        result = bridge.reload_index_from_disk(expected_generation=7)
-        assert result == 42
-        sim.reload_from_disk.assert_called_once_with(
-            tmp_path,
-            music_dir=None,
-            expected_generation=7,
-        )
-
-    def test_watcher_retries_same_generation_after_consistency_failure(
-        self, monkeypatch, tmp_path
-    ) -> None:
-        import asyncio
-
-        from autodj.index_manifest import IndexConsistencyError, IndexSnapshotToken
-        from autodj.server import reload_published_generation_once
-
-        token = IndexSnapshotToken(1, 1)
-        monkeypatch.setattr("autodj.server.current_snapshot_token", lambda _: token)
-        bridge = MagicMock()
-        bridge.player._cfg.index.active_dir = tmp_path
-        bridge.reload_index_from_disk.side_effect = [
-            IndexConsistencyError("generation changed"),
-            5,
-        ]
-
-        with pytest.raises(IndexConsistencyError):
-            asyncio.run(reload_published_generation_once(bridge, observed=IndexSnapshotToken(0, 0)))
-        observed = asyncio.run(
-            reload_published_generation_once(bridge, observed=IndexSnapshotToken(0, 0))
-        )
-
-        assert observed == token
-        assert bridge.reload_index_from_disk.call_count == 2
-        bridge.reload_index_from_disk.assert_called_with(expected_snapshot=token)
+        assert bridge.reload_index_from_disk() == 42
+        sim.reload_from_disk.assert_called_once_with(tmp_path, music_dir=None)
 
 
 # ---------------------------------------------------------------------------

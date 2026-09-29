@@ -26,7 +26,6 @@ dependencies = [
     "rich>=13.0.0", # terminal UI (panels, tables)
     "python-multipart>=0.0.27", # form uploads (liners)
     "librosa>=0.11.0", # spectral / chroma feature extraction
-    "tqdm>=4.67.3", # progress bars
     "fastapi>=0.136.3", # web UI
     "starlette~=1.6.0", # imported by the security middleware; patch releases only
     "pydantic>=2.0.0", # request/response models in server.py

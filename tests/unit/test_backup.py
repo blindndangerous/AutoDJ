@@ -59,7 +59,9 @@ def _publish(cfg: AutoDJConfig, title: str) -> None:
         tempo_confidence=0.0,
     )
     vectors = np.zeros((1, FEATURE_DIM), dtype=np.float32)
-    save_index([entry], vectors, cfg.index.active_dir, cfg.library.music_dir)
+    live = read_manifest(cfg.index.active_dir)
+    base = 0 if live is None else live.generation
+    save_index([entry], vectors, cfg.index.active_dir, cfg.library.music_dir, base_generation=base)
 
 
 def _indexed_title(cfg: AutoDJConfig) -> str:
@@ -125,6 +127,10 @@ def test_restore_reproduces_what_was_backed_up(tmp_path: Path) -> None:
     assert restored.exit_code == 0, restored.output
     assert "Restored 8 files." in restored.output
     assert _indexed_title(cfg) == "Kept"
+    assert sorted(path.name for path in active.glob("*.g*")) == [
+        "tracks.g00000000000000000001.db",
+        "vectors.g00000000000000000001.index",
+    ]
     assert (active / "web_state.json").read_text(encoding="utf-8") == '{"volume": 1}'
     assert sorted(path.name for path in liners.iterdir()) == ["station.mp3"]
     assert (profiles / "night" / "profile.json").read_text(encoding="utf-8") == "{}"
@@ -178,10 +184,10 @@ def test_restore_refuses_unsafe_member_names(tmp_path: Path, name: str) -> None:
 
 def test_restore_refuses_an_old_format_index(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
-    old_manifest = json.dumps({"schema_version": 1}).encode()
+    old_manifest = json.dumps({"schema_version": 2}).encode()
     files = {
-        "index/tracks.db": b"old",
-        "index/vectors.index": b"old",
+        "index/tracks.g00000000000000000001.db": b"old",
+        "index/vectors.g00000000000000000001.index": b"old",
         "index/index-manifest.json": old_manifest,
     }
     archive = _archive(tmp_path / "old.zip", files)
@@ -189,7 +195,7 @@ def test_restore_refuses_an_old_format_index(tmp_path: Path) -> None:
     with pytest.raises(BackupError, match=r"this backup was made by an older AutoDJ.*--force`"):
         restore_backup(cfg, archive, force=True)
 
-    assert not (cfg.index.active_dir / "tracks.db").exists()
+    assert list(cfg.index.active_dir.iterdir()) == []
 
 
 def test_backup_refuses_an_old_format_index(tmp_path: Path) -> None:

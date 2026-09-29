@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import sqlite3
-import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -12,7 +11,6 @@ import numpy as np
 import pytest
 
 import autodj.indexer as indexer
-from autodj.index_manifest import IndexConsistencyError, IndexSnapshotToken
 
 
 def _entry(path: str, *, artist: str = "Artist") -> indexer.IndexEntry:
@@ -36,20 +34,6 @@ def _vector() -> np.ndarray:
     vector = np.zeros((1, indexer.FEATURE_DIM), dtype=np.float32)
     vector[0, 7] = 1.0
     return vector
-
-
-def _create_legacy_cores(parent: Path, *, vector_in: Path | None = None) -> None:
-    entry = _entry(str(parent / "song.flac"))
-    connection = indexer._open_tracks_db(parent)
-    try:
-        connection.execute(
-            indexer._TRACKS_INSERT_SQL,
-            indexer._entry_to_row(entry, music_dir=None, vec_row=0),
-        )
-    finally:
-        connection.close()
-    destination = parent / "vectors.index" if vector_in is None else vector_in
-    faiss.write_index(indexer.build_faiss_index(_vector()), str(destination))
 
 
 def test_display_name_falls_back_to_title_without_artist() -> None:
@@ -188,51 +172,25 @@ def test_chunked_faiss_write_survives_unsupported_fsync(tmp_path: Path) -> None:
     assert np.array_equal(restored.reconstruct(0), _vector()[0])
 
 
-def test_empty_checkpoint_write_leaves_storage_untouched(tmp_path: Path) -> None:
+def test_checkpoint_with_nothing_new_publishes_nothing(tmp_path: Path) -> None:
     checkpoint = indexer.IncrementalCheckpoint(
         index_dir=tmp_path,
         music_dir=None,
         existing_entries=[],
         existing_vectors=[],
-        total_new=1,
-        expected_snapshot=IndexSnapshotToken(0),
+        base_generation=0,
     )
 
     checkpoint.write([], [])
+    checkpoint.finish([], [])
 
     assert list(tmp_path.iterdir()) == []
-
-
-def test_failed_first_checkpoint_refreshes_retry_token(tmp_path: Path) -> None:
-    checkpoint = indexer.IncrementalCheckpoint(
-        index_dir=tmp_path,
-        music_dir=None,
-        existing_entries=[],
-        existing_vectors=[],
-        total_new=1,
-        expected_snapshot=IndexSnapshotToken(0),
-        flush_every=1,
-    )
-    refreshed = IndexSnapshotToken(0, 1)
-
-    with (
-        patch.object(indexer, "require_snapshot_token", return_value=None),
-        patch.object(indexer, "_save_vectors"),
-        patch.object(indexer, "_upsert_tracks_metadata"),
-        patch.object(indexer, "publish_manifest", side_effect=OSError("publish failed")),
-        patch.object(indexer, "current_snapshot_token", return_value=refreshed),
-        pytest.raises(OSError, match="publish failed"),
-    ):
-        checkpoint.write([_entry("song.flac")], [_vector()[0]])
-
-    assert checkpoint.expected_snapshot == refreshed
-    assert checkpoint.published_new_count == 0
 
 
 def test_enrich_skips_index_entries_absent_from_beets(tmp_path: Path) -> None:
     index_dir = tmp_path / "index"
     entry = _entry(str(tmp_path / "indexed.flac"))
-    indexer.save_index([entry], _vector(), index_dir, music_dir=tmp_path)
+    indexer.save_index([entry], _vector(), index_dir, music_dir=tmp_path, base_generation=0)
     beets_db = tmp_path / "beets.db"
     connection = sqlite3.connect(beets_db)
     try:
@@ -254,93 +212,11 @@ def test_enrich_skips_index_entries_absent_from_beets(tmp_path: Path) -> None:
     assert indexer.enrich_from_beets(index_dir, music_dir=tmp_path, beets_db=beets_db) == (0, 1)
 
 
-def test_prune_applies_requested_stat_throttle(tmp_path: Path) -> None:
-    track = tmp_path / "song.flac"
-    track.touch()
-    index_dir = tmp_path / "index"
-    indexer.save_index([_entry(str(track))], _vector(), index_dir, music_dir=tmp_path)
-    sleeps: list[float] = []
-
-    with patch.object(time, "sleep", side_effect=sleeps.append):
-        result = indexer.prune_index(index_dir, throttle_ms=5.0, stat_workers=1, music_dir=tmp_path)
-
-    assert result == (0, 1)
-    assert sleeps == [0.005]
-
-
-def test_load_rejects_wrong_expected_generation(tmp_path: Path) -> None:
-    with pytest.raises(IndexConsistencyError, match="expected generation 1, got None"):
-        indexer.load_index(tmp_path, expected_generation=1)
-
-
-def test_load_detects_artifact_changed_during_read(tmp_path: Path) -> None:
-    indexer.save_index([_entry("song.flac")], _vector(), tmp_path)
-    stable_hash = "a" * 64
-    changed_hash = "b" * 64
-
-    with (
-        patch.object(
-            indexer,
-            "sha256_file",
-            side_effect=[stable_hash, stable_hash, changed_hash, stable_hash],
-        ),
-        pytest.raises(IndexConsistencyError, match="artifact changed during load"),
-    ):
-        indexer.load_index(tmp_path)
-
-
-def test_load_rejects_faiss_count_mismatch(tmp_path: Path) -> None:
-    indexer.save_index([_entry("song.flac")], _vector(), tmp_path)
-    empty_index = faiss.IndexFlatIP(indexer.FEATURE_DIM)
-
-    with (
-        patch.object(indexer.faiss, "read_index", return_value=empty_index),
-        pytest.raises(IndexConsistencyError, match="index count mismatch"),
-    ):
-        indexer.load_index(tmp_path)
-
-
-def test_stat_mtimes_throttles_existing_and_missing_files(tmp_path: Path) -> None:
+def test_stat_mtimes_reports_missing_files_as_none(tmp_path: Path) -> None:
     existing = tmp_path / "existing.flac"
     existing.touch()
     entries = [_entry(str(existing)), _entry(str(tmp_path / "missing.flac"))]
-    sleeps: list[float] = []
 
-    with patch.object(time, "sleep", side_effect=sleeps.append):
-        mtimes = indexer._stat_mtimes(entries, throttle_ms=5.0, stat_workers=1)
+    mtimes = indexer._stat_mtimes(entries)
 
-    assert mtimes[0] == existing.stat().st_mtime
-    assert mtimes[1] is None
-    assert sleeps == [0.005, 0.005]
-
-
-def test_backfill_flushes_a_durable_checkpoint_after_25_tracks(tmp_path: Path) -> None:
-    class Cache:
-        def __init__(self) -> None:
-            self.stored: list[str] = []
-            self.flushes: list[bool] = []
-
-        def get(self, _path: str):
-            return MagicMock(analysed=False)
-
-        def set(self, path: str, _meta: object) -> None:
-            self.stored.append(path)
-
-        def flush(self, *, force: bool = False) -> None:
-            self.flushes.append(force)
-
-    cache = Cache()
-    entries = [_entry(f"song-{number}.flac") for number in range(25)]
-
-    with (
-        patch("autodj.dj_meta.get_cache", return_value=cache),
-        patch.object(
-            indexer,
-            "_analyse_one_track",
-            side_effect=lambda path: (path, object(), None),
-        ),
-    ):
-        indexer._backfill_dj_meta(entries, tmp_path, workers=1)
-
-    assert cache.stored == [entry.path for entry in entries]
-    assert cache.flushes == [False, True]
+    assert mtimes == [existing.stat().st_mtime, None]

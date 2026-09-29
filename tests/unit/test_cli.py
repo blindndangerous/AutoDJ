@@ -502,7 +502,7 @@ class TestCliHappyPaths:
         entries = [_make_entry(i) for i in range(5)]
         with (
             patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.indexer.load_index", return_value=(entries, None)),
+            patch("autodj.indexer.load_index", return_value=(entries, None, None)),
         ):
             result = CliRunner().invoke(cli, ["stats"])
         assert result.exit_code == 0
@@ -1468,7 +1468,9 @@ class TestCmdAnalyse:
             )
             for i in range(entries)
         ]
-        save_index(rows, np.zeros((entries, FEATURE_DIM), dtype=np.float32), idx_dir)
+        save_index(
+            rows, np.zeros((entries, FEATURE_DIM), dtype=np.float32), idx_dir, base_generation=0
+        )
         cfg = _make_cfg()
         cfg.index.active_dir = idx_dir
         cfg.index.name = "default"
@@ -1514,31 +1516,24 @@ class TestCmdAnalyse:
         cfg = self._cfg_with_index(tmp_path, entries=3)
         captured = {}
 
-        def fake_backfill(
-            entries,
-            index_dir,
-            workers=None,
-            music_dir=None,
-        ):
+        def fake_backfill(config, entries):
+            captured["cfg"] = config
             captured["entries"] = list(entries)
-            captured["workers"] = workers
-            captured["music_dir"] = music_dir
 
         with (
             patch("autodj.config.load_config", return_value=cfg),
-            patch("autodj.indexer._backfill_dj_meta", fake_backfill),
+            patch("autodj.indexer.backfill_dj_meta", fake_backfill),
         ):
-            result = CliRunner().invoke(cli, ["analyse", "--limit", "2", "-j", "1"])
+            result = CliRunner().invoke(cli, ["analyse", "--limit", "2"])
         assert result.exit_code == 0
+        assert captured["cfg"] is cfg
         assert len(captured["entries"]) == 2
-        assert captured["workers"] == 1
-        assert captured["music_dir"] == cfg.library.music_dir
 
     def test_backfill_exception_exits_one(self, tmp_path: Path) -> None:
         cfg = self._cfg_with_index(tmp_path)
         with (
             patch("autodj.config.load_config", return_value=cfg),
-            patch("autodj.indexer._backfill_dj_meta", side_effect=RuntimeError("boom")),
+            patch("autodj.indexer.backfill_dj_meta", side_effect=RuntimeError("boom")),
         ):
             result = CliRunner().invoke(cli, ["analyse"])
         assert result.exit_code == 1
@@ -1548,7 +1543,7 @@ class TestCmdAnalyse:
         cfg = self._cfg_with_index(tmp_path)
         with (
             patch("autodj.config.load_config", return_value=cfg),
-            patch("autodj.indexer._backfill_dj_meta") as bf,
+            patch("autodj.indexer.backfill_dj_meta") as bf,
         ):
             result = CliRunner().invoke(cli, ["analyse", "--name", "workout"])
         assert result.exit_code == 0

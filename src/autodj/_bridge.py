@@ -23,7 +23,6 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from autodj.index_manifest import IndexSnapshotToken
     from autodj.indexer import IndexEntry
     from autodj.server import PlaybackSettingsBody
 
@@ -1338,13 +1337,8 @@ class PlayerBridge:
     # Hot-reload — pick up new tracks while a parallel `index` runs
     # ------------------------------------------------------------------
 
-    def reload_index_from_disk(
-        self,
-        expected_generation: int | None = None,
-        *,
-        expected_snapshot: IndexSnapshotToken | None = None,
-    ) -> int:
-        """Re-read ``tracks.db`` + ``vectors.index`` into the live sim.
+    def reload_index_from_disk(self) -> int:
+        """Load the live index generation into the live sim.
 
         Used by the background watcher in :func:`create_app` so a long-
         running ``serve`` picks up tracks that ``autodj index`` (running
@@ -1357,14 +1351,7 @@ class PlayerBridge:
         cfg = getattr(self.player, "_cfg", None)
         if cfg is None:
             return self.sim.ntotal
-        kwargs: dict[str, Any] = {"expected_generation": expected_generation}
-        if expected_snapshot is not None:
-            kwargs["expected_snapshot"] = expected_snapshot
-        return self.sim.reload_from_disk(
-            cfg.index.active_dir,
-            music_dir=cfg.library.music_dir,
-            **kwargs,
-        )
+        return self.sim.reload_from_disk(cfg.index.active_dir, music_dir=cfg.library.music_dir)
 
 
 # ---------------------------------------------------------------------------

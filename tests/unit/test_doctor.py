@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import builtins
 import gc
 import json
-import shutil
 import sqlite3
 import subprocess
 import sys
@@ -39,8 +37,8 @@ from autodj.doctor import (
     render_text,
     run_doctor,
 )
-from autodj.index_manifest import sha256_file, tombstone_publication
-from autodj.indexer import FEATURE_DIM, IndexEntry, save_index
+from autodj.index_manifest import read_manifest, sha256_file
+from autodj.indexer import FEATURE_DIM, IndexEntry, build_faiss_index, save_index
 
 
 def _config(tmp_path: Path, *, host: str = "127.0.0.2") -> AutoDJConfig:
@@ -82,30 +80,9 @@ def _write_index(cfg: AutoDJConfig) -> None:
     )
     vector = np.ones((1, FEATURE_DIM), dtype=np.float32)
     vector /= np.linalg.norm(vector, axis=1, keepdims=True)
-    save_index([entry], vector, cfg.index.active_dir, music_dir=cfg.library.music_dir)
-
-
-def _mutate_published_track(cfg: AutoDJConfig, column: str, value: object) -> None:
-    manifest_path = cfg.index.active_dir / "index-manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    tracks = cfg.index.active_dir / manifest["tracks_file"]
-    with closing(sqlite3.connect(tracks)) as conn:
-        conn.execute("PRAGMA journal_mode=DELETE")
-        conn.execute(f'UPDATE tracks SET "{column}" = ?', (value,))
-        conn.commit()
-    manifest["tracks_sha256"] = sha256_file(tracks)
-    manifest_path.write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
-
-
-def _replace_published_vectors(cfg: AutoDJConfig, index: object) -> None:
-    import faiss
-
-    manifest_path = cfg.index.active_dir / "index-manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    vectors = cfg.index.active_dir / manifest["vectors_file"]
-    faiss.write_index(index, str(vectors))
-    manifest["vectors_sha256"] = sha256_file(vectors)
-    manifest_path.write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
+    save_index(
+        [entry], vector, cfg.index.active_dir, music_dir=cfg.library.music_dir, base_generation=0
+    )
 
 
 def _write_dj_meta(path: Path) -> None:
@@ -133,11 +110,13 @@ def _tree_snapshot(root: Path) -> dict[Path, tuple[bool, int, int, str | None]]:
         path.relative_to(root): (
             path.is_dir(),
             path.stat().st_size,
-            path.stat().st_mtime_ns,
+            # The index check takes the index lock, as serve does, which
+            # touches the lock file and its folder.
+            None if path.is_dir() else path.stat().st_mtime_ns,
             None if path.is_dir() else sha256_file(path),
         )
         for path in paths
-        if path.exists()
+        if path.exists() and path.name != ".index-publication.lock"
     }
 
 
@@ -200,227 +179,14 @@ def test_index_without_manifest_fails_actionably(tmp_path: Path, remaining: str)
 def test_corrupt_published_index_fails(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     _write_index(cfg)
-    manifest = json.loads(
-        (cfg.index.active_dir / "index-manifest.json").read_text(encoding="utf-8")
-    )
-    (cfg.index.active_dir / manifest["vectors_file"]).write_bytes(b"corrupt")
+    manifest = read_manifest(cfg.index.active_dir)
+    assert manifest is not None
+    (cfg.index.active_dir / manifest.vectors_file).write_bytes(b"corrupt")
 
     check = doctor._index_check(cfg)
 
     assert check.status is doctor.CheckStatus.FAIL
     assert "autodj index" in check.detail
-
-
-def test_malformed_published_numeric_metadata_fails_actionably(tmp_path: Path) -> None:
-    cfg = _config(tmp_path)
-    _write_index(cfg)
-    manifest_path = cfg.index.active_dir / "index-manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    tracks = cfg.index.active_dir / manifest["tracks_file"]
-    with closing(sqlite3.connect(tracks)) as conn:
-        conn.execute("PRAGMA journal_mode=DELETE")
-        conn.execute("UPDATE tracks SET bpm = 'not-a-number'")
-        conn.commit()
-    manifest["tracks_sha256"] = sha256_file(tracks)
-    manifest_path.write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
-
-    check = doctor._index_check(cfg)
-
-    assert check.status is doctor.CheckStatus.FAIL
-    assert "not-a-number" in check.detail
-    assert "autodj index" in check.detail
-
-
-@pytest.mark.parametrize(
-    ("column", "value"),
-    [
-        ("path", sqlite3.Binary(b"blob-path")),
-        ("title", sqlite3.Binary(b"blob-title")),
-        ("artist", sqlite3.Binary(b"blob-artist")),
-        ("album", sqlite3.Binary(b"blob-album")),
-        ("genre", sqlite3.Binary(b"blob-genre")),
-        ("vec_row", 0.5),
-        ("year", 0.5),
-        ("key", 0.5),
-        ("mode", 0.5),
-    ],
-    ids=[
-        "blob-path",
-        "blob-title",
-        "blob-artist",
-        "blob-album",
-        "blob-genre",
-        "fractional-vec-row",
-        "fractional-year",
-        "fractional-key",
-        "fractional-mode",
-    ],
-)
-def test_published_rows_require_exact_runtime_storage_classes(
-    tmp_path: Path,
-    column: str,
-    value: object,
-) -> None:
-    cfg = _config(tmp_path)
-    _write_index(cfg)
-    _mutate_published_track(cfg, column, value)
-
-    check = doctor._index_check(cfg)
-
-    assert check.status is doctor.CheckStatus.FAIL
-    assert column in check.detail
-
-
-@pytest.mark.parametrize(
-    "column",
-    ["bpm", "length", "energy", "tempo_confidence", "embedded_at"],
-)
-def test_published_rows_reject_infinite_runtime_numerics(
-    tmp_path: Path,
-    column: str,
-) -> None:
-    cfg = _config(tmp_path)
-    _write_index(cfg)
-    _mutate_published_track(cfg, column, float("inf"))
-
-    check = doctor._index_check(cfg)
-
-    assert check.status is doctor.CheckStatus.FAIL
-    assert column in check.detail
-
-
-def test_published_rows_reject_nan_runtime_numeric(tmp_path: Path) -> None:
-    cfg = _config(tmp_path)
-    _write_index(cfg)
-    _mutate_published_track(cfg, "bpm", "NaN")
-
-    check = doctor._index_check(cfg)
-
-    assert check.status is doctor.CheckStatus.FAIL
-    assert "bpm" in check.detail
-
-
-@pytest.mark.parametrize(
-    "kind",
-    ["wrong-dimension", "wrong-metric", "unsupported-index-type"],
-)
-def test_published_vectors_require_runtime_faiss_contract(
-    tmp_path: Path,
-    kind: str,
-) -> None:
-    import faiss
-
-    cfg = _config(tmp_path)
-    _write_index(cfg)
-    if kind == "wrong-dimension":
-        index = faiss.IndexFlatIP(FEATURE_DIM - 1)
-        index.add(np.ones((1, FEATURE_DIM - 1), dtype=np.float32))
-    elif kind == "wrong-metric":
-        index = faiss.IndexFlatIP(FEATURE_DIM)
-        index.add(np.ones((1, FEATURE_DIM), dtype=np.float32))
-        index.metric_type = faiss.METRIC_L2
-    else:
-        index = faiss.IndexIDMap(faiss.IndexFlatIP(FEATURE_DIM))
-        index.add_with_ids(
-            np.ones((1, FEATURE_DIM), dtype=np.float32),
-            np.array([0], dtype=np.int64),
-        )
-    _replace_published_vectors(cfg, index)
-
-    check = doctor._index_check(cfg)
-
-    assert check.status is doctor.CheckStatus.FAIL
-    assert "FAISS" in check.detail
-
-
-def test_tracks_schema_ignores_non_unique_lookup_indexes(tmp_path: Path) -> None:
-    cfg = _config(tmp_path)
-    _write_index(cfg)
-    manifest = doctor.read_manifest(cfg.index.active_dir)
-    tracks = cfg.index.active_dir / manifest.tracks_file
-    with closing(sqlite3.connect(tracks)) as conn:
-        conn.execute("CREATE INDEX tracks_title_lookup ON tracks(title)")
-        doctor._validate_schema(conn, "tracks", doctor._TRACKS_COLUMNS)
-
-
-def test_published_index_rejects_generation_change(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from dataclasses import replace
-
-    cfg = _config(tmp_path)
-    _write_index(cfg)
-    manifest = doctor.read_manifest(cfg.index.active_dir)
-    monkeypatch.setattr(
-        doctor,
-        "read_manifest",
-        lambda _index_dir: replace(manifest, generation=manifest.generation + 1),
-    )
-
-    with pytest.raises(doctor.IndexConsistencyError, match="generation changed"):
-        doctor._published_index_counts(cfg.index.active_dir, manifest)
-
-
-def test_published_index_rejects_manifest_count_mismatch(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from dataclasses import replace
-
-    cfg = _config(tmp_path)
-    _write_index(cfg)
-    manifest = replace(
-        doctor.read_manifest(cfg.index.active_dir),
-        vector_count=2,
-    )
-    monkeypatch.setattr(doctor, "read_manifest", lambda _index_dir: manifest)
-
-    with pytest.raises(doctor.IndexConsistencyError, match="index count mismatch"):
-        doctor._published_index_counts(cfg.index.active_dir, manifest)
-
-
-@pytest.mark.parametrize("unavailable", ["faiss", "autodj.indexer"])
-def test_published_index_import_errors_are_actionable_failures(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    unavailable: str,
-) -> None:
-    cfg = _config(tmp_path)
-    _write_index(cfg)
-    original_import = builtins.__import__
-
-    def guarded_import(name: str, *args: object, **kwargs: object):
-        if name == unavailable:
-            raise ImportError(f"{unavailable} unavailable")
-        return original_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", guarded_import)
-
-    check = doctor._index_check(cfg)
-
-    assert check.status is doctor.CheckStatus.FAIL
-    assert check.name == "index-coherence"
-    assert "install" in check.detail.lower()
-
-
-def test_published_index_import_does_not_catch_system_exit(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    cfg = _config(tmp_path)
-    _write_index(cfg)
-    original_import = builtins.__import__
-
-    def guarded_import(name: str, *args: object, **kwargs: object):
-        if name == "faiss":
-            raise SystemExit(7)
-        return original_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", guarded_import)
-
-    with pytest.raises(SystemExit, match="7"):
-        doctor._index_check(cfg)
 
 
 def test_corrupt_dj_meta_fails_without_touching_file(tmp_path: Path) -> None:
@@ -438,16 +204,27 @@ def test_corrupt_dj_meta_fails_without_touching_file(tmp_path: Path) -> None:
 
 
 def test_published_absolute_track_path_fails_like_serve(tmp_path: Path) -> None:
-    """Serve refuses a tracks.db with absolute paths, so doctor must not pass it."""
-    cfg = _config(tmp_path)
-    _write_index(cfg)
-    _mutate_published_track(cfg, "path", "C:/Music/song.flac")
+    """Serve refuses an index with absolute paths, so doctor reports the same error."""
+    from autodj.index_manifest import publish_generation
+    from autodj.indexer import _entry_to_row, _write_faiss_chunked, _write_tracks_file
 
-    for check in (doctor._index_check(cfg), doctor._tracks_database_check(cfg)):
-        assert check.status is doctor.CheckStatus.FAIL
-        assert check.summary == "old index format"
-        assert "absolute path C:/Music/song.flac" in check.detail
-        assert "autodj index --force" in check.detail
+    cfg = _config(tmp_path)
+    entry = IndexEntry("song.flac", "Song", "", "", "", 0, 0, 0, 0, -1, -1, 0)
+    vector = np.ones((1, FEATURE_DIM), dtype=np.float32)
+
+    def write(tracks: Path, vectors: Path) -> None:
+        row = _entry_to_row(entry, None, 0) | {"path": "C:/Music/song.flac"}
+        _write_tracks_file([row], tracks)
+        _write_faiss_chunked(build_faiss_index(vector), vectors)
+
+    publish_generation(cfg.index.active_dir, base_generation=0, vector_count=1, write_files=write)
+
+    check = doctor._index_check(cfg)
+
+    assert check.status is doctor.CheckStatus.FAIL
+    assert check.summary == "UnsupportedIndexError"
+    assert "absolute path C:/Music/song.flac" in check.detail
+    assert "autodj index --force" in check.detail
 
 
 def test_dj_meta_with_absolute_key_fails_like_serve(tmp_path: Path) -> None:
@@ -480,370 +257,32 @@ def test_sqlite_checks_close_read_only_connections(tmp_path: Path) -> None:
     assert not [warning for warning in caught if "unclosed database" in str(warning.message)]
 
 
-def test_active_wal_database_is_refused_without_mutation(tmp_path: Path) -> None:
+def test_dj_meta_failed_integrity_check_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     cfg = _config(tmp_path)
     cfg.index.active_dir.mkdir()
-    db = cfg.index.active_dir / "dj_meta.db"
-    with closing(sqlite3.connect(db)) as writer:
-        assert writer.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
-        writer.execute(
-            """CREATE TABLE dj_meta (
-                path TEXT PRIMARY KEY,
-                intro_end_s REAL NOT NULL DEFAULT 0,
-                outro_start_s REAL NOT NULL DEFAULT 0,
-                analysed INTEGER NOT NULL DEFAULT 0,
-                beats TEXT,
-                cues TEXT
-            )"""
-        )
-        writer.execute("INSERT INTO dj_meta (path) VALUES ('current.flac')")
-        writer.commit()
-        before = _tree_snapshot(tmp_path)
-
-        check = doctor._dj_meta_database_check(cfg)
-
-        assert check.status is doctor.CheckStatus.FAIL
-        assert "WAL" in check.detail
-        assert before == _tree_snapshot(tmp_path)
-
-
-def test_wal_without_shm_refuses_without_creating_sidecars(tmp_path: Path) -> None:
-    cfg = _config(tmp_path)
-    cfg.index.active_dir.mkdir()
-    source = tmp_path / "source.db"
-    with closing(sqlite3.connect(source)) as writer:
-        assert writer.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
-        writer.execute(
-            """CREATE TABLE dj_meta (
-                path TEXT PRIMARY KEY,
-                intro_end_s REAL NOT NULL DEFAULT 0,
-                outro_start_s REAL NOT NULL DEFAULT 0,
-                analysed INTEGER NOT NULL DEFAULT 0,
-                beats TEXT,
-                cues TEXT
-            )"""
-        )
-        writer.execute("INSERT INTO dj_meta (path) VALUES ('current.flac')")
-        writer.commit()
-        source_wal = Path(f"{source}-wal")
-        assert source_wal.stat().st_size > 0
-        db = cfg.index.active_dir / "dj_meta.db"
-        shutil.copyfile(source, db)
-        shutil.copyfile(source_wal, Path(f"{db}-wal"))
-        before = _tree_snapshot(tmp_path)
-
-        check = doctor._dj_meta_database_check(cfg)
-
-        assert check.status is doctor.CheckStatus.FAIL
-        assert "WAL" in check.detail
-        assert not Path(f"{db}-shm").exists()
-        assert before == _tree_snapshot(tmp_path)
-
-
-def test_sqlite_validation_rejects_concurrent_sidecar_change(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    db = tmp_path / "dj_meta.db"
-    _write_dj_meta(db)
-    wal = Path(f"{db}-wal")
-    original_open = doctor._open_readonly_sqlite
-    original_hash = doctor.sha256_file
-    original_path_open = Path.open
-
-    class TouchingConnection:
-        def __init__(self, *, immutable: bool):
-            self._conn = original_open(db, immutable=immutable)
-            self._touched = False
-
-        def execute(self, query: str):
-            if not self._touched:
-                wal.write_bytes(b"appeared concurrently")
-                self._touched = True
-            return self._conn.execute(query)
-
-        def close(self) -> None:
-            self._conn.close()
-
-    monkeypatch.setattr(
-        doctor,
-        "_open_readonly_sqlite",
-        lambda _path, *, immutable=False: TouchingConnection(immutable=immutable),
-    )
-
-    def guarded_hash(path: Path) -> str:
-        if path == wal:
-            raise AssertionError("doctor hashed a concurrently created WAL")
-        return original_hash(path)
-
-    def guarded_path_open(path: Path, *args: object, **kwargs: object):
-        mode = str(args[0] if args else kwargs.get("mode", "r"))
-        if path == wal and "r" in mode:
-            raise AssertionError("doctor opened a concurrently created WAL for reading")
-        return original_path_open(path, *args, **kwargs)
-
-    monkeypatch.setattr(doctor, "sha256_file", guarded_hash)
-    monkeypatch.setattr(Path, "open", guarded_path_open)
-
-    with pytest.raises(sqlite3.DatabaseError, match="changed during validation"):
-        doctor._validate_sqlite(db, "dj_meta", doctor._DJ_META_COLUMNS)
-
-
-def test_file_snapshot_reports_missing_file(tmp_path: Path) -> None:
-    assert doctor._file_snapshot(tmp_path / "missing.db") == (False, None, None, None)
-
-
-def test_sqlite_validation_rejects_failed_integrity_check(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    db = tmp_path / "dj_meta.db"
-    _write_dj_meta(db)
-    original_open = doctor._open_readonly_sqlite
+    _write_dj_meta(cfg.index.active_dir / "dj_meta.db")
+    real_connect = sqlite3.connect
 
     class FailedIntegrityConnection:
-        def __init__(self) -> None:
-            self._conn = original_open(db, immutable=True)
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self._conn = real_connect(*args, **kwargs)
 
         def execute(self, query: str):
             if query == "PRAGMA integrity_check":
-                return SimpleNamespace(fetchall=lambda: [("corrupt page",)])
+                return [("corrupt page",)]
             return self._conn.execute(query)
 
         def close(self) -> None:
             self._conn.close()
 
-    monkeypatch.setattr(
-        doctor,
-        "_open_readonly_sqlite",
-        lambda _path, *, immutable=False: FailedIntegrityConnection(),
-    )
-
-    with pytest.raises(sqlite3.DatabaseError, match="integrity_check: corrupt page"):
-        doctor._validate_sqlite(db, "dj_meta", doctor._DJ_META_COLUMNS)
-
-
-def test_sqlite_validation_rejects_database_file_change(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    db = tmp_path / "dj_meta.db"
-    _write_dj_meta(db)
-    original_snapshot = doctor._file_snapshot
-    calls = 0
-
-    def changed_snapshot(path: Path):
-        nonlocal calls
-        calls += 1
-        exists, size, modified, digest = original_snapshot(path)
-        if calls == 2:
-            assert size is not None
-            return exists, size + 1, modified, digest
-        return exists, size, modified, digest
-
-    monkeypatch.setattr(doctor, "_file_snapshot", changed_snapshot)
-
-    with pytest.raises(sqlite3.DatabaseError, match="changed during validation"):
-        doctor._validate_sqlite(db, "dj_meta", doctor._DJ_META_COLUMNS)
-
-
-@pytest.mark.parametrize(
-    "error",
-    [PermissionError("sidecar permission denied"), OSError("sidecar stat I/O failed")],
-)
-def test_sqlite_sidecar_stat_errors_are_actionable_failures(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    error: OSError,
-) -> None:
-    cfg = _config(tmp_path)
-    cfg.index.active_dir.mkdir()
-    db = cfg.index.active_dir / "dj_meta.db"
-    _write_dj_meta(db)
-    blocked_sidecar = Path(f"{db}-wal")
-    original_lstat = Path.lstat
-
-    def guarded_lstat(path: Path, *args: object, **kwargs: object):
-        if path == blocked_sidecar:
-            raise error
-        return original_lstat(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "lstat", guarded_lstat)
+    monkeypatch.setattr(doctor.sqlite3, "connect", FailedIntegrityConnection)
 
     check = doctor._dj_meta_database_check(cfg)
 
     assert check.status is doctor.CheckStatus.FAIL
-    assert str(error) in check.detail
-
-
-def test_existing_sqlite_sidecar_is_rejected_without_opening_or_hashing(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    cfg = _config(tmp_path)
-    cfg.index.active_dir.mkdir()
-    db = cfg.index.active_dir / "dj_meta.db"
-    _write_dj_meta(db)
-    wal = Path(f"{db}-wal")
-    wal.write_bytes(b"existing WAL contents")
-    original_hash = doctor.sha256_file
-    original_open = Path.open
-
-    def guarded_hash(path: Path) -> str:
-        if path == wal:
-            raise AssertionError("doctor hashed an existing WAL")
-        return original_hash(path)
-
-    def guarded_open(path: Path, *args: object, **kwargs: object):
-        if path == wal:
-            raise AssertionError("doctor opened an existing WAL")
-        return original_open(path, *args, **kwargs)
-
-    monkeypatch.setattr(doctor, "sha256_file", guarded_hash)
-    monkeypatch.setattr(Path, "open", guarded_open)
-
-    check = doctor._dj_meta_database_check(cfg)
-
-    assert check.status is doctor.CheckStatus.FAIL
-    assert "WAL" in check.detail
-
-
-@pytest.mark.parametrize("dangling", [False, True], ids=["target", "dangling"])
-def test_sqlite_sidecar_symlink_is_rejected_without_following(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    dangling: bool,
-) -> None:
-    cfg = _config(tmp_path)
-    cfg.index.active_dir.mkdir()
-    db = cfg.index.active_dir / "dj_meta.db"
-    _write_dj_meta(db)
-    target = tmp_path / "sidecar-target"
-    if not dangling:
-        target.write_bytes(b"target contents")
-    wal = Path(f"{db}-wal")
-    try:
-        wal.symlink_to(target)
-    except (NotImplementedError, OSError) as exc:
-        pytest.skip(f"symlinks unavailable: {exc}")
-    original_hash = doctor.sha256_file
-    original_open = Path.open
-
-    def guarded_hash(path: Path) -> str:
-        if path == wal:
-            raise AssertionError("doctor followed or hashed a WAL symlink")
-        return original_hash(path)
-
-    def guarded_open(path: Path, *args: object, **kwargs: object):
-        if path == wal:
-            raise AssertionError("doctor followed or opened a WAL symlink")
-        return original_open(path, *args, **kwargs)
-
-    monkeypatch.setattr(doctor, "sha256_file", guarded_hash)
-    monkeypatch.setattr(Path, "open", guarded_open)
-
-    check = doctor._dj_meta_database_check(cfg)
-
-    assert check.status is doctor.CheckStatus.FAIL
-    assert "WAL" in check.detail
-
-
-def test_published_sidecar_stat_error_is_an_actionable_failure(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    cfg = _config(tmp_path)
-    _write_index(cfg)
-    manifest = json.loads(
-        (cfg.index.active_dir / "index-manifest.json").read_text(encoding="utf-8")
-    )
-    blocked_sidecar = Path(f"{cfg.index.active_dir / manifest['tracks_file']}-shm")
-    original_lstat = Path.lstat
-
-    def guarded_lstat(path: Path, *args: object, **kwargs: object):
-        if path == blocked_sidecar:
-            raise PermissionError("published sidecar permission denied")
-        return original_lstat(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "lstat", guarded_lstat)
-
-    check = doctor._index_check(cfg)
-
-    assert check.status is doctor.CheckStatus.FAIL
-    assert "published sidecar permission denied" in check.detail
-
-
-def test_published_sidecar_is_rejected_without_hashing(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    cfg = _config(tmp_path)
-    _write_index(cfg)
-    manifest = json.loads(
-        (cfg.index.active_dir / "index-manifest.json").read_text(encoding="utf-8")
-    )
-    wal = Path(f"{cfg.index.active_dir / manifest['tracks_file']}-wal")
-    wal.write_bytes(b"existing unpublished WAL")
-    original_hash = doctor.sha256_file
-
-    def guarded_hash(path: Path) -> str:
-        if path == wal:
-            raise AssertionError("doctor hashed a published-index WAL")
-        return original_hash(path)
-
-    monkeypatch.setattr(doctor, "sha256_file", guarded_hash)
-
-    check = doctor._index_check(cfg)
-
-    assert check.status is doctor.CheckStatus.FAIL
-    assert "WAL" in check.detail
-
-
-def test_published_tracks_wal_is_not_ignored_or_mutated(tmp_path: Path) -> None:
-    cfg = _config(tmp_path)
-    _write_index(cfg)
-    manifest = json.loads(
-        (cfg.index.active_dir / "index-manifest.json").read_text(encoding="utf-8")
-    )
-    db = cfg.index.active_dir / manifest["tracks_file"]
-    with closing(sqlite3.connect(db)) as writer:
-        assert writer.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
-        writer.execute("PRAGMA wal_autocheckpoint=0")
-        writer.execute("DROP TABLE tracks")
-        writer.execute("CREATE TABLE tracks (path TEXT PRIMARY KEY)")
-        writer.commit()
-        before = _tree_snapshot(tmp_path)
-
-        check = doctor._tracks_database_check(cfg)
-
-        assert check.status is doctor.CheckStatus.FAIL
-        assert "WAL" in check.detail
-        assert before == _tree_snapshot(tmp_path)
-
-
-def test_unpublished_metadata_wal_never_passes_published_checks(tmp_path: Path) -> None:
-    cfg = _config(tmp_path)
-    _write_index(cfg)
-    manifest = json.loads(
-        (cfg.index.active_dir / "index-manifest.json").read_text(encoding="utf-8")
-    )
-    db = cfg.index.active_dir / manifest["tracks_file"]
-    with closing(sqlite3.connect(db)) as writer:
-        assert writer.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
-        writer.execute("PRAGMA wal_autocheckpoint=0")
-        writer.execute("UPDATE tracks SET title = 'unpublished metadata'")
-        writer.commit()
-        assert Path(f"{db}-wal").stat().st_size > 0
-        before = _tree_snapshot(tmp_path)
-
-        index_check = doctor._index_check(cfg)
-        tracks_check = doctor._tracks_database_check(cfg)
-
-        assert index_check.status is doctor.CheckStatus.FAIL
-        assert tracks_check.status is doctor.CheckStatus.FAIL
-        assert "WAL" in index_check.detail
-        assert "WAL" in tracks_check.detail
-        assert before == _tree_snapshot(tmp_path)
+    assert "integrity_check: corrupt page" in check.detail
 
 
 def test_missing_ffmpeg_warns_with_alac_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1011,73 +450,6 @@ def test_missing_index_and_model_paths_are_not_created(tmp_path: Path) -> None:
     assert not cfg.index.model_dir.exists()
 
 
-def test_empty_active_index_directory_remains_byte_for_byte_empty(tmp_path: Path) -> None:
-    cfg = _config(tmp_path)
-    cfg.index.active_dir.mkdir()
-
-    doctor.run_doctor(cfg, python_version=(3, 14))
-
-    assert list(cfg.index.active_dir.iterdir()) == []
-
-
-def test_missing_publication_lock_fails_without_recreating_it(tmp_path: Path) -> None:
-    cfg = _config(tmp_path)
-    _write_index(cfg)
-    lock = cfg.index.active_dir / ".index-publication.lock"
-    lock.unlink()
-
-    check = doctor._index_check(cfg)
-
-    assert check.status is doctor.CheckStatus.FAIL
-    assert "lock" in check.detail.lower()
-    assert not lock.exists()
-
-
-def test_published_index_check_never_acquires_publication_lock(tmp_path: Path) -> None:
-    cfg = _config(tmp_path)
-    _write_index(cfg)
-
-    with patch(
-        "autodj.indexer.publication_lock",
-        side_effect=AssertionError("doctor acquired publication lock"),
-    ):
-        check = doctor._index_check(cfg)
-
-    assert check.status is doctor.CheckStatus.PASS
-
-
-def test_tracks_db_uses_manifest_generation_file(tmp_path: Path) -> None:
-    cfg = _config(tmp_path)
-    _write_index(cfg)
-    # The mutable working DB is not the security-owned published generation.
-    (cfg.index.active_dir / "tracks.db").write_bytes(b"corrupt working copy")
-
-    check = doctor._tracks_database_check(cfg)
-
-    assert check.status is doctor.CheckStatus.PASS
-
-
-def test_tombstoned_publication_is_logically_empty_not_stale_legacy(tmp_path: Path) -> None:
-    cfg = _config(tmp_path)
-    _write_index(cfg)
-    tombstone_publication(cfg.index.active_dir)
-
-    assert doctor._index_check(cfg).status is doctor.CheckStatus.WARN
-    assert doctor._tracks_database_check(cfg).status is doctor.CheckStatus.WARN
-
-
-def test_missing_manifest_with_publication_history_fails(tmp_path: Path) -> None:
-    cfg = _config(tmp_path)
-    _write_index(cfg)
-    (cfg.index.active_dir / "index-manifest.json").unlink()
-    for pattern in ("tracks.g*.db", "vectors.g*.index"):
-        for generated in cfg.index.active_dir.glob(pattern):
-            generated.unlink()
-
-    assert doctor._index_check(cfg).status is doctor.CheckStatus.FAIL
-    assert doctor._tracks_database_check(cfg).status is doctor.CheckStatus.FAIL
-
-
 def test_explicit_insecure_lan_is_warning(tmp_path: Path) -> None:
     cfg = _config(tmp_path, host="192.168.1.21")
     cfg.server.access_token = None
@@ -1097,8 +469,7 @@ def test_run_doctor_check_order(tmp_path: Path) -> None:
         "music-path",
         "index-path",
         "model-path",
-        "index-coherence",
-        "tracks-db",
+        "index",
         "dj-meta-db",
         "dependencies",
         "model-cache",
@@ -1170,120 +541,6 @@ def test_generation_artifacts_without_manifest_fail(tmp_path: Path) -> None:
 
     assert check.status is doctor.CheckStatus.FAIL
     assert "manifest" in check.detail
-
-
-def test_readonly_sqlite_closes_connection_when_query_only_fails(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-
-    class BrokenConnection:
-        closed = False
-
-        def execute(self, _query: str):
-            raise RuntimeError("query-only unavailable")
-
-        def close(self) -> None:
-            self.closed = True
-
-    connection = BrokenConnection()
-    monkeypatch.setattr(doctor.sqlite3, "connect", lambda *_args, **_kwargs: connection)
-
-    with pytest.raises(RuntimeError, match="query-only unavailable"):
-        doctor._open_readonly_sqlite(Path("unused.db"))
-    assert connection.closed
-
-
-def test_dj_meta_schema_mismatch_fails(tmp_path: Path) -> None:
-    cfg = _config(tmp_path)
-    cfg.index.active_dir.mkdir()
-    db = cfg.index.active_dir / "dj_meta.db"
-    with closing(sqlite3.connect(db)) as conn:
-        conn.execute("CREATE TABLE dj_meta (path TEXT PRIMARY KEY)")
-        conn.commit()
-
-    check = doctor._dj_meta_database_check(cfg)
-
-    assert check.status is doctor.CheckStatus.FAIL
-    assert "missing required columns" in check.detail
-
-
-@pytest.mark.parametrize(
-    ("original", "replacement"),
-    [
-        ("vec_row INTEGER NOT NULL UNIQUE", "vec_row TEXT NOT NULL UNIQUE"),
-        ("title TEXT NOT NULL DEFAULT ''", "title TEXT DEFAULT ''"),
-        ("path TEXT NOT NULL UNIQUE", "path TEXT NOT NULL"),
-    ],
-    ids=["wrong-type", "nullable", "missing-unique"],
-)
-def test_tracks_db_rejects_runtime_schema_contract_drift(
-    tmp_path: Path,
-    original: str,
-    replacement: str,
-) -> None:
-    from autodj.indexer import _TRACKS_SCHEMA
-
-    cfg = _config(tmp_path)
-    _write_index(cfg)
-    manifest_path = cfg.index.active_dir / "index-manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    tracks = cfg.index.active_dir / manifest["tracks_file"]
-    tracks.unlink()
-    with closing(sqlite3.connect(tracks)) as conn:
-        conn.executescript(_TRACKS_SCHEMA.replace(original, replacement))
-        conn.commit()
-    manifest["tracks_sha256"] = sha256_file(tracks)
-    manifest_path.write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
-
-    check = doctor._tracks_database_check(cfg)
-
-    assert check.status is doctor.CheckStatus.FAIL
-    assert "schema" in check.summary
-
-
-@pytest.mark.parametrize(
-    ("original", "replacement"),
-    [
-        ("path TEXT PRIMARY KEY", "path INTEGER PRIMARY KEY"),
-        ("path TEXT PRIMARY KEY", "path TEXT"),
-        ("intro_end_s REAL NOT NULL DEFAULT 0", "intro_end_s REAL DEFAULT 0"),
-    ],
-    ids=["wrong-type", "missing-primary-key", "nullable"],
-)
-def test_dj_meta_db_rejects_runtime_schema_contract_drift(
-    tmp_path: Path,
-    original: str,
-    replacement: str,
-) -> None:
-    cfg = _config(tmp_path)
-    cfg.index.active_dir.mkdir()
-    schema = """CREATE TABLE dj_meta (
-        path TEXT PRIMARY KEY,
-        intro_end_s REAL NOT NULL DEFAULT 0,
-        outro_start_s REAL NOT NULL DEFAULT 0,
-        analysed INTEGER NOT NULL DEFAULT 0,
-        beats TEXT,
-        cues TEXT
-    )""".replace(original, replacement)
-    with closing(sqlite3.connect(cfg.index.active_dir / "dj_meta.db")) as conn:
-        conn.execute(schema)
-        conn.commit()
-
-    check = doctor._dj_meta_database_check(cfg)
-
-    assert check.status is doctor.CheckStatus.FAIL
-    assert "schema" in check.summary
-
-
-def test_tracks_db_rejects_invalid_manifest_before_opening_db(tmp_path: Path) -> None:
-    cfg = _config(tmp_path)
-    cfg.index.active_dir.mkdir()
-    (cfg.index.active_dir / "index-manifest.json").write_text("not json", encoding="utf-8")
-
-    check = doctor._tracks_database_check(cfg)
-
-    assert check.status is doctor.CheckStatus.FAIL
-    assert "invalid index manifest" in check.detail
 
 
 def test_module_probe_handles_normal_and_invalid_specs(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1417,36 +674,15 @@ def test_configuration_detail_is_structured_and_redacted(tmp_path: Path) -> None
     assert cfg.huggingface.token not in check.summary
 
 
-def test_run_doctor_uses_planned_stable_identifiers(tmp_path: Path) -> None:
+def test_missing_index_and_dj_meta_warn_explicitly(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
 
-    report = doctor.run_doctor(cfg, python_version=(3, 14))
-
-    assert [check.name for check in report.checks] == [
-        "configuration",
-        "python",
-        "music-path",
-        "index-path",
-        "model-path",
-        "index-coherence",
-        "tracks-db",
-        "dj-meta-db",
-        "dependencies",
-        "model-cache",
-        "network-safety",
-        "stream",
-    ]
-
-
-def test_missing_rederivable_databases_warn_explicitly(tmp_path: Path) -> None:
-    cfg = _config(tmp_path)
-
-    tracks = doctor._tracks_database_check(cfg)
+    index = doctor._index_check(cfg)
     dj_meta = doctor._dj_meta_database_check(cfg)
 
-    assert tracks.status is doctor.CheckStatus.WARN
+    assert index.status is doctor.CheckStatus.WARN
     assert dj_meta.status is doctor.CheckStatus.WARN
-    assert tracks.summary == "database absent"
+    assert index.summary == "no index"
     assert dj_meta.summary == "database absent"
 
 
@@ -1604,23 +840,12 @@ def test_configuration_check_shows_lan_setting(
 
 def test_published_empty_index_warns_instead_of_passing(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
-    cfg.index.active_dir.mkdir(parents=True)
-    save_index([], np.zeros((0, FEATURE_DIM), dtype=np.float32), cfg.index.active_dir)
+    save_index(
+        [], np.zeros((0, FEATURE_DIM), dtype=np.float32), cfg.index.active_dir, base_generation=0
+    )
 
     check = doctor._index_check(cfg)
 
     assert check.status is doctor.CheckStatus.WARN
-    assert check.summary == "empty index"
-    assert "autodj index" in check.detail
-
-
-def test_tracks_db_without_a_manifest_is_the_old_index_format(tmp_path: Path) -> None:
-    cfg = _config(tmp_path)
-    cfg.index.active_dir.mkdir(parents=True)
-    (cfg.index.active_dir / "tracks.db").touch()
-
-    check = doctor._tracks_database_check(cfg)
-
-    assert check.status is doctor.CheckStatus.FAIL
-    assert check.summary == "old index format"
-    assert "autodj index --force" in check.detail
+    assert check.summary == "generation 1: 0 tracks"
+    assert "empty" in check.detail

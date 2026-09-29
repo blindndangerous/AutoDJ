@@ -14,15 +14,12 @@ import numpy as np
 import pytest
 
 from autodj.indexer import (
-    FEATURE_DIM,
     IndexEntry,
     PruneSafetyError,
     _apply_beets_row,
     _check_prune_safety,
-    _delete_index_files,
     _find_beets_row,
     load_index,
-    save_index,
 )
 
 
@@ -251,105 +248,9 @@ class TestCheckPruneSafety:
 # ---------------------------------------------------------------------------
 
 
-class TestDeleteIndexFiles:
-    def test_unlinks_all_known_index_files(self, tmp_path: Path) -> None:
-        for name in (
-            "vectors.index",
-            "tracks.db",
-            "tracks.db-wal",
-            "tracks.db-shm",
-        ):
-            (tmp_path / name).write_bytes(b"x")
-        _delete_index_files(tmp_path)
-        for name in (
-            "vectors.index",
-            "tracks.db",
-            "tracks.db-wal",
-            "tracks.db-shm",
-        ):
-            assert not (tmp_path / name).exists()
-
-    def test_missing_files_is_noop(self, tmp_path: Path) -> None:
-        # Idempotent — no error when nothing is there.
-        _delete_index_files(tmp_path)
-
-
 # ---------------------------------------------------------------------------
 # save_index error rollback paths
 # ---------------------------------------------------------------------------
-
-
-class TestSaveIndexErrorPaths:
-    def _entries_vectors(self, n: int = 2) -> tuple[list[IndexEntry], np.ndarray]:
-        entries = [_entry(path=f"x{i}.flac") for i in range(n)]
-        v = np.random.randn(n, FEATURE_DIM).astype(np.float32)
-        v /= np.linalg.norm(v, axis=1, keepdims=True)
-        return entries, v
-
-    def test_rolls_back_vectors_tmp_on_failure(self, tmp_path: Path) -> None:
-        entries, vectors = self._entries_vectors()
-        idx = tmp_path / "idx"
-        idx.mkdir()
-
-        # Force the chunked-write replace step to blow up after the temp file exists.
-        with patch("autodj.indexer._write_faiss_chunked", side_effect=OSError("boom")) as wfc:
-            # Pre-create the tmp file so the cleanup branch executes
-            (idx / "vectors.index.tmp").write_bytes(b"partial")
-            with pytest.raises(OSError):
-                save_index(entries, vectors, idx)
-        wfc.assert_called_once()
-        assert not (idx / "vectors.index.tmp").exists()
-        assert not (idx / "vectors.index").exists()
-
-    def test_rolls_back_when_tracks_db_write_fails(self, tmp_path: Path) -> None:
-        entries, vectors = self._entries_vectors()
-        idx = tmp_path / "idx"
-        idx.mkdir()
-
-        # Allow vectors to write fine, but make the SQLite replacement fail.
-        with (
-            patch(
-                "autodj.indexer._replace_tracks_rows",
-                side_effect=RuntimeError("boom"),
-            ),
-            pytest.raises(RuntimeError),
-        ):
-            save_index(entries, vectors, idx)
-        # FAISS index landed (it writes first)...
-        assert (idx / "vectors.index").exists()
-        # ... and tracks.db was created (sqlite3.connect makes the file),
-        # but the failed transaction left zero rows.
-        import sqlite3 as _sql
-
-        conn = _sql.connect(idx / "tracks.db")
-        try:
-            count = conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
-        finally:
-            conn.close()
-        assert count == 0
-
-    def test_replace_tracks_rows_rolls_back_mid_batch(self, tmp_path: Path) -> None:
-        import sqlite3
-
-        from autodj.indexer import _open_tracks_db, _replace_tracks_rows
-
-        original, _ = self._entries_vectors(2)
-        replacement, _ = self._entries_vectors(3)
-        replacement[1].path = "explode.flac"
-        conn = _open_tracks_db(tmp_path)
-        try:
-            _replace_tracks_rows(conn, original, music_dir=None)
-            conn.execute(
-                "CREATE TRIGGER reject_explode BEFORE INSERT ON tracks "
-                "WHEN NEW.path = 'explode.flac' BEGIN "
-                "SELECT RAISE(ABORT, 'injected'); END"
-            )
-            with pytest.raises(sqlite3.IntegrityError, match="injected"):
-                _replace_tracks_rows(conn, replacement, music_dir=None)
-            paths = conn.execute("SELECT path FROM tracks ORDER BY vec_row").fetchall()
-        finally:
-            conn.close()
-        assert paths == [(original[0].path,), (original[1].path,)]
 
 
 # ---------------------------------------------------------------------------
@@ -428,7 +329,6 @@ class TestIndexerExtract:
 
     def test_extract_returns_estimated_bpm_metadata(self) -> None:
         from pathlib import Path
-        from unittest.mock import patch
 
         import numpy as np
 
@@ -470,7 +370,6 @@ class TestIndexerExtract:
     @pytest.mark.parametrize("invalid_tempo", [np.nan, np.inf, -1.0, 0.0])
     def test_invalid_tempo_has_zero_bpm_and_confidence(self, invalid_tempo: float) -> None:
         from pathlib import Path
-        from unittest.mock import patch
 
         import numpy as np
 
@@ -496,7 +395,6 @@ class TestIndexerExtract:
     def test_tempo_confidence_exception_fallback(self) -> None:
         """beat_track raising means tempo_confidence falls back to 0.0."""
         from pathlib import Path
-        from unittest.mock import patch
 
         import numpy as np
 
@@ -515,7 +413,6 @@ class TestIndexerExtract:
 
     def test_extract_raises_on_empty_audio(self) -> None:
         from pathlib import Path
-        from unittest.mock import patch
 
         import numpy as np
         import pytest

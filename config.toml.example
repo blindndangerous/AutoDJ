@@ -66,7 +66,8 @@ beets_db = "C:/Users/you/.config/beets/library.db"
 supported_formats = ["mp3", "flac", "m4a"]
 
 [index]
-# Each named index directory may contain vectors.index, tracks.db (SQLite),
+# Each named index directory <index_dir>/<name>/ holds index-manifest.json, the
+# index generation it names (tracks.g<number>.db and vectors.g<number>.index),
 # dj_meta.db (SQLite), web_state.json, and liner files.
 # Default liner path: <index_dir>/<name>/liners/.
 # Can be a local path or a NAS path — if you run `autodj index` on a GPU machine
@@ -76,6 +77,11 @@ index_dir = "index"
 
 # Directory where the MuQ model checkpoint is cached after download
 model_dir = "models"
+
+# Pause before each track that `autodj index` embeds and that `autodj index` and
+# `autodj analyse` analyse, in milliseconds, to give network drives a rest on
+# long runs.  0 = no pause.
+throttle_ms = 0
 
 [server]
 host = "127.0.0.1"

@@ -87,7 +87,7 @@ def project_dir(tmp_path: Path) -> Path:
     vectors = np.array([np.random.randn(FEATURE_DIM).astype(np.float32) for _ in range(5)])
     norms = np.linalg.norm(vectors, axis=1, keepdims=True)
     vectors /= norms
-    save_index(entries, vectors, index_dir)
+    save_index(entries, vectors, index_dir, base_generation=0)
 
     return tmp_path
 
