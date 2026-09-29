@@ -61,6 +61,9 @@ def test_download_caches_under_model_dir_and_returns_snapshot(
     assert (kwargs["repo_id"], kwargs["revision"]) == (REPO, "v1")
     assert kwargs["cache_dir"] == index_config.model_dir
     assert kwargs["token"] == "hf_x"
+    # Parallel download threads raced huggingface_hub's symlink test on
+    # Windows without Developer Mode and failed with WinError 1314.
+    assert kwargs["max_workers"] == 1
 
 
 def test_download_failure_raises_model_load_error(index_config: IndexConfig) -> None:

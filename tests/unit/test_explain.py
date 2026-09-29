@@ -137,6 +137,13 @@ class TestExplainPick:
         out = explain_pick(_entry(bpm=0.0), _entry(bpm=128.0))
         assert any("BPM is 128" in s for s in out)
 
+    def test_bpm_difference_matches_the_spoken_numbers(self) -> None:
+        # The 0.19.0 sample heard "BPM lifts 129 to 133, up 3."
+        out = explain_pick(_entry(bpm=129.4), _entry(bpm=132.6))
+        assert "BPM lifts 129 to 133, up 4." in out
+        out = explain_pick(_entry(bpm=132.6), _entry(bpm=129.4))
+        assert "BPM eases 133 to 129, down 4." in out
+
     def test_camelot_position_unknown_falls_to_label(self) -> None:
         """Both labels valid but position resolution fails — line 73 path."""
         # (key=0, mode=1) → 8B; force key 0 mode 1 vs an out-of-table key

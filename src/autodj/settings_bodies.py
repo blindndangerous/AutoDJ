@@ -13,6 +13,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from autodj.config import MAX_FADE_SECONDS
+
 
 def validate_playback_choices(values: Mapping[str, Any]) -> None:
     """Raise ``ValueError`` if any choice field in *values* is not allowed.
@@ -53,6 +55,8 @@ one non-finite value stored in the player config turns every later
 unparseable payload until the process restarts.  Reject them at the edge.
 """
 NonNegativeFloat = Annotated[float, Field(ge=0.0, allow_inf_nan=False)]
+FadeSeconds = Annotated[float, Field(ge=0.0, le=MAX_FADE_SECONDS, allow_inf_nan=False)]
+"""Crossfade or fade-in length: the range the Settings page and config.toml use."""
 
 
 class VolumeBody(BaseModel):
@@ -123,8 +127,8 @@ class PlaybackSettingsBody(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    crossfade_seconds: NonNegativeFloat | None = None
-    fade_in_seconds: NonNegativeFloat | None = None
+    crossfade_seconds: FadeSeconds | None = None
+    fade_in_seconds: FadeSeconds | None = None
     crossfade_eq_duck: bool | None = None
     pure_shuffle: bool | None = None
     anchor_to_seed: bool | None = None

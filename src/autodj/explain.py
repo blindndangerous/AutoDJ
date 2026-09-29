@@ -49,14 +49,17 @@ def _bpm_phrase(prev_bpm: float, cur_bpm: float) -> str | None:
     """Render BPM relationship as a sentence, or None if unknown."""
     if cur_bpm <= 0:
         return None
+    cur = round(cur_bpm)
     if prev_bpm <= 0:
-        return f"BPM is {round(cur_bpm)}."
-    diff = cur_bpm - prev_bpm
+        return f"BPM is {cur}."
+    # The difference of the spoken numbers, so it always adds up.
+    prev = round(prev_bpm)
+    diff = cur - prev
     if abs(diff) < 2:
-        return f"BPM holds steady at {round(cur_bpm)}."
+        return f"BPM holds steady at {cur}."
     if diff > 0:
-        return f"BPM lifts {round(prev_bpm)} to {round(cur_bpm)}, up {round(diff)}."
-    return f"BPM eases {round(prev_bpm)} to {round(cur_bpm)}, down {round(-diff)}."
+        return f"BPM lifts {prev} to {cur}, up {diff}."
+    return f"BPM eases {prev} to {cur}, down {-diff}."
 
 
 def _camelot_phrase(prev: IndexEntry, cur: IndexEntry) -> str | None:

@@ -138,7 +138,7 @@ max_listeners = 8
 station_name = "AutoDJ"
 
 [playback]
-# Duration of the crossfade between tracks, in seconds.  In the
+# Duration of the crossfade between tracks, in seconds, 0 to 20.  In the
 # "full_intro_outro" and "outro_fade" modes below, a track with detected
 # markers fades for 1 to 12 s instead, even at 0.  Otherwise 0 cuts from one
 # track to the next, in the server mix and in the browser.
@@ -185,7 +185,8 @@ crossfade_eq_duck = false
 crossfade_bass_cutoff_hz = 180.0     # frequency below which outgoing track is attenuated
 
 # Browser crossfades: how long the incoming track takes to reach full volume,
-# in seconds, at most the crossfade length.  0 = it starts at full volume.
+# in seconds, 0 to 20 and at most the crossfade length.  0 = it starts at
+# full volume.
 # The server mix ignores it.
 fade_in_seconds = 3.0
 

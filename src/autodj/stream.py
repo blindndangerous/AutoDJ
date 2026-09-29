@@ -337,9 +337,20 @@ class StreamOutput:
             self._install_encoder(new_encoder)
 
     def _read_loop(self, encoder: FfmpegEncoder) -> None:
-        """Drain *encoder*'s MP3 output and restart it if it exits."""
+        """Drain *encoder*'s MP3 output and restart it if it exits.
+
+        A read that fails because the encoder's pipe is already closed is
+        that encoder's end, like end of file: :meth:`set_bitrate`, a
+        restart and :meth:`close` close the old encoder's pipes while this
+        thread may still be between two reads.  Its output was no longer
+        going to anyone by then.
+        """
         while True:
-            data = encoder.read(4096)
+            try:
+                data = encoder.read(4096)
+            except (OSError, ValueError):
+                logger.debug("Stream encoder output closed while reading", exc_info=True)
+                data = b""
             if not data:
                 break
             self._on_encoded(encoder, data)

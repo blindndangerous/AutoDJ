@@ -222,6 +222,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reports "Enrich failed" with the same message.
 - Every command started with faiss logging a `ModuleNotFoundError` while it picked its CPU build,
   and `autodj index` logged each model-download request. Those lines now show only with `-v`.
+- Crossfade seconds and Fade-in seconds in Settings saved any length, such as 99 seconds, without
+  a word, although the fields go up to 20. The page now refuses a value outside 0 to 20 and says
+  why, like the other number fields, the server refuses it too, a saved profile or web setting
+  outside that range is not applied, and AutoDJ refuses to start with either one outside 0 to 20
+  in `config.toml`.
+- Why this track could get its BPM sums wrong, such as "BPM lifts 129 to 133, up 3.", because it
+  rounded the two tempos and their difference separately. The difference is now worked out from
+  the two numbers it says.
+- Shift+K on a track with no detected key said only "unknown". It now says "Key unknown". For such
+  a track, the announcement when the track changes now leaves the key out instead of ending in
+  "key unknown".
+- Changing the stream Quality no longer writes a "ValueError: I/O operation on closed file"
+  traceback to the server log. The old encoder's output ended while it was being read, which is
+  expected there; the stream carried on normally before and still does.
+- The first model download could fail on Windows without Developer Mode with "[WinError 1314] A
+  required privilege is not held by the client". Hugging Face copies files where it cannot make
+  symlinks, but its parallel downloads tried a symlink before it had found that out. AutoDJ now
+  downloads the model files one at a time, which avoids that. The model folder layout is
+  unchanged.
+- `autodj index --limit N` without a beets database read the tags of every file in the music
+  folder before applying the limit, which took more than 30 minutes on a 76,000-track network
+  share. It now stops looking once it has found N tracks that are not in the index yet. Every
+  `autodj index` run also skips reading the tags of tracks that are already indexed.
 
 ## [0.18.2] - 2026-09-29
 

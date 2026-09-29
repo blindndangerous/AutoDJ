@@ -1,5 +1,6 @@
-// Settings added for the DJ: repeat windows, phrase length, filter sweep,
-// transition effect level and the ReplayGain target.
+// Settings number fields: crossfade and fade-in length, repeat windows,
+// phrase length, transition effect level and the ReplayGain target, plus
+// the filter sweep switch.
 //
 // Each number field carries the same range the server accepts
 // (PlaybackSettingsBody / DjMixBody in settings_bodies.py), so a value the server
@@ -10,6 +11,16 @@
 import { announceStatus } from "./live-region.js";
 
 const NUMBER_FIELDS = [
+  {
+    key: "pbCrossfade", url: "/api/playback-settings", field: "crossfade_seconds",
+    label: "Crossfade seconds", min: 0, max: 20, integer: false,
+    read: (st) => st.playback?.crossfade_seconds,
+  },
+  {
+    key: "pbFadeIn", url: "/api/playback-settings", field: "fade_in_seconds",
+    label: "Fade-in seconds", min: 0, max: 20, integer: false,
+    read: (st) => st.playback?.fade_in_seconds,
+  },
   {
     key: "pbNoRepeat", url: "/api/playback-settings", field: "no_repeat_window",
     label: "Tracks before a song can repeat", min: 0, max: 100000, integer: true,

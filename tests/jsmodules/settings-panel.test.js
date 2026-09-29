@@ -47,7 +47,6 @@ function makeEls() {
     pbBeatmatchSkip: cb(),
     pbTransitionMode: sel(["full_intro_outro", "fixed"]),
     pbPickMode:      sel(["similarity", "pure"]),
-    pbCrossfade:     num(),
     bpmLo:           num(),
     bpmHi:           num(),
     discEnabled:     cb(),
@@ -90,7 +89,6 @@ describe("applySettingsState", () => {
         key_sync_fx: false,
         beatmatch_on_skip: false,
         transition_mode: "full_intro_outro",
-        crossfade_seconds: 6,
       },
       bpm_range: { lo: 90, hi: 130 },
       discovery_every: 5,
@@ -101,7 +99,6 @@ describe("applySettingsState", () => {
     expect(els.transitionSelect.value).toBe("echo_out");
     expect(els.harmonicMode.value).toBe("compatible");
     expect(els.djBeatmatch.checked).toBe(true);
-    expect(els.pbCrossfade.value).toBe("6");
     expect(els.discEnabled.checked).toBe(true);
     expect(els.discEvery.value).toBe("5");
   });
@@ -147,19 +144,12 @@ describe("installSettingsControls", () => {
       .toEqual(["/api/playback-settings", { replaygain_enabled: true }]);
     expect(change(els.transitionSelect, "reverb_tail"))
       .toEqual(["/api/transition", { effect: "reverb_tail" }]);
-    expect(change(els.pbCrossfade, "4.5"))
-      .toEqual(["/api/playback-settings", { crossfade_seconds: 4.5 }]);
     expect(change(els.pbPickMode, "pure"))
       .toEqual(["/api/playback-settings", { pure_shuffle: true }]);
     expect(change(els.bpmLo, "90")).toEqual(["/api/bpm-range", { lo: 90, hi: null }]);
     els.discEvery.value = "7";
     expect(change(els.discEnabled, true)).toEqual(["/api/discovery", { every: 7 }]);
     expect(els.discEvery.disabled).toBe(false);
-
-    // A value the server would refuse is not sent.
-    save.mockClear();
-    change(els.pbCrossfade, "-1");
-    expect(save).not.toHaveBeenCalled();
   });
 });
 

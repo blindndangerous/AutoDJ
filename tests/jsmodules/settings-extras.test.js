@@ -98,6 +98,32 @@ describe("mix settings", () => {
     expect(postSettings).not.toHaveBeenCalled();
   });
 
+  it("refuses a crossfade longer than 20 seconds instead of saving it", async () => {
+    document.body.innerHTML = `
+      <input type="number" id="crossfade" min="0" max="20" value="3">
+      <p id="settings-status"></p><div id="status-toast" hidden></div>`;
+    const els = { pbCrossfade: document.querySelector("#crossfade") };
+    const settingsStatus = document.querySelector("#settings-status");
+    const postSettings = vi.fn().mockResolvedValue(true);
+    installMixSettings(els, { postSettings, settingsStatus });
+    applyMixSettings({ playback: { crossfade_seconds: 4 } }, els);
+
+    els.pbCrossfade.value = "99";
+    els.pbCrossfade.dispatchEvent(new Event("change"));
+
+    await vi.waitFor(() => expect(settingsStatus.textContent).toBe(
+      "Could not save Crossfade seconds: enter a number from 0 to 20.  It is still 4.",
+    ));
+    expect(els.pbCrossfade.value).toBe("4");
+    expect(postSettings).not.toHaveBeenCalled();
+
+    els.pbCrossfade.value = "4.5";
+    els.pbCrossfade.dispatchEvent(new Event("change"));
+    await vi.waitFor(() => expect(postSettings).toHaveBeenCalledWith(
+      "/api/playback-settings", { crossfade_seconds: 4.5 }, els.pbCrossfade,
+    ));
+  });
+
   it("sends the effect level as a fraction", async () => {
     const postSettings = vi.fn().mockResolvedValue(true);
     const { els } = setup(postSettings);

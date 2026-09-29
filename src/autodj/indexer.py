@@ -35,7 +35,7 @@ import tempfile
 import time
 import warnings
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -371,8 +371,11 @@ class IndexEntry:
 # ---------------------------------------------------------------------------
 
 
-def walk_music_dir(music_dir: Path, formats: list[str]) -> list[Path]:
-    """Recursively find all audio files under *music_dir* matching *formats*.
+def walk_music_dir(music_dir: Path, formats: list[str]) -> Iterator[Path]:
+    """Yield the audio files under *music_dir* matching *formats*.
+
+    The walk is lazy, folder by folder in name order, so a caller that
+    needs only a few files can stop without listing a whole library.
 
     Args:
         music_dir: Root directory to search.
@@ -380,20 +383,23 @@ def walk_music_dir(music_dir: Path, formats: list[str]) -> list[Path]:
             e.g. ``["mp3", "flac", "m4a"]``).
 
     Returns:
-        Sorted list of absolute :class:`~pathlib.Path` objects for each match.
+        An iterator of :class:`~pathlib.Path` objects under *music_dir*.
 
     Raises:
         FileNotFoundError: If *music_dir* does not exist.
     """
     if not music_dir.exists():
         raise FileNotFoundError(f"Music directory not found: {music_dir}")
-
     extensions = {f".{ext.lower()}" for ext in formats}
-    found: list[Path] = []
-    for path in music_dir.rglob("*"):
-        if path.is_file() and path.suffix.lower() in extensions:
-            found.append(path)
-    return sorted(found)
+
+    def walk() -> Iterator[Path]:
+        for root, dirs, files in os.walk(music_dir):
+            dirs.sort()
+            for name in sorted(files):
+                if os.path.splitext(name)[1].lower() in extensions:
+                    yield Path(root, name)
+
+    return walk()
 
 
 # ---------------------------------------------------------------------------
@@ -1359,10 +1365,18 @@ def _load_existing_index(
     return entries, vectors, manifest.generation
 
 
-def _collect_tracks_to_index(  # pragma: no cover -- exercised via build_index integration runs
-    cfg: AutoDJConfig,
+def _collect_tracks_to_index(
+    cfg: AutoDJConfig, indexed: set[str], limit: int | None
 ) -> list[Track]:
-    """Read track list from beets if available, else filesystem scan."""
+    """Return the tracks not in *indexed*, from beets if available, else the folder.
+
+    Args:
+        cfg: Full AutoDJ configuration.
+        indexed: Paths already in the index; they are skipped.
+        limit: Return at most this many tracks.  The folder scan stops as
+            soon as it has them, so ``--limit`` on a large library reads
+            only that many files' tags.  ``None`` means no limit.
+    """
     tracks: list[Track] = []
     if cfg.library.beets_db and cfg.library.beets_db.exists():
         try:
@@ -1399,13 +1413,18 @@ def _collect_tracks_to_index(  # pragma: no cover -- exercised via build_index i
                 len(tracks),
                 cfg.library.music_dir,
             )
-        return inside
+        new = [t for t in inside if str(t.path) not in indexed]
+        return new if limit is None else new[:limit]
 
     # No beets database — fall back to filesystem scan + ID3/Vorbis tag reads.
     from autodj.audio_meta import read_file_tags
 
     paths = walk_music_dir(cfg.library.music_dir, cfg.library.supported_formats)
     for p in paths:
+        if limit is not None and len(tracks) >= limit:
+            break
+        if str(p) in indexed:
+            continue
         tags = read_file_tags(p)
         tracks.append(
             Track(
@@ -1419,7 +1438,7 @@ def _collect_tracks_to_index(  # pragma: no cover -- exercised via build_index i
                 length=tags.length,
             )
         )
-    logger.info("Filesystem scan + ID3 read found %d tracks", len(tracks))
+    logger.info("Filesystem scan + tag read found %d new tracks", len(tracks))
     return tracks
 
 
@@ -1532,11 +1551,7 @@ def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integr
     )
     existing_paths = {e.path for e in existing_entries}
 
-    tracks = _collect_tracks_to_index(cfg)
-
-    new_tracks = [t for t in tracks if str(t.path) not in existing_paths]
-    if limit is not None:
-        new_tracks = new_tracks[:limit]
+    new_tracks = _collect_tracks_to_index(cfg, existing_paths, limit)
 
     logger.info(
         "%d new tracks to index%s",

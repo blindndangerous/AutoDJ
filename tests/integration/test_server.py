@@ -2016,6 +2016,22 @@ class TestSettingsEndpoints:
         assert resp.status_code == 422
         assert bridge.player._cfg.playback.fade_in_seconds == pytest.approx(1.5)
 
+    @pytest.mark.parametrize("name", ["crossfade_seconds", "fade_in_seconds"])
+    def test_post_playback_settings_refuses_fade_above_maximum(
+        self, bridge, tmp_path, name
+    ) -> None:
+        # The 0.19.0 sample saved 99 seconds from a field whose maximum is 20.
+        from fastapi.testclient import TestClient
+
+        bridge.player._cfg.index.active_dir = tmp_path
+        setattr(bridge.player._cfg.playback, name, 3.0)
+        tc = TestClient(create_app(bridge))
+        assert tc.post("/api/playback-settings", json={name: 99}).status_code == 422
+        assert tc.post("/api/profiles", json={"name": "long", name: 99}).status_code == 422
+        assert getattr(bridge.player._cfg.playback, name) == 3.0
+        assert tc.post("/api/playback-settings", json={name: 20}).status_code == 200
+        assert getattr(bridge.player._cfg.playback, name) == 20.0
+
     def test_post_playback_pure_shuffle(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
