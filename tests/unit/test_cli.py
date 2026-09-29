@@ -1516,9 +1516,10 @@ class TestCmdAnalyse:
         cfg = self._cfg_with_index(tmp_path, entries=3)
         captured = {}
 
-        def fake_backfill(config, entries):
+        def fake_backfill(config, entries, *, limit=None):
             captured["cfg"] = config
             captured["entries"] = list(entries)
+            captured["limit"] = limit
 
         with (
             patch("autodj.config.load_config", return_value=cfg),
@@ -1527,7 +1528,9 @@ class TestCmdAnalyse:
             result = CliRunner().invoke(cli, ["analyse", "--limit", "2"])
         assert result.exit_code == 0
         assert captured["cfg"] is cfg
-        assert len(captured["entries"]) == 2
+        # Every indexed track goes in, so rows past the limit are not pruned.
+        assert len(captured["entries"]) == 3
+        assert captured["limit"] == 2
 
     def test_backfill_exception_exits_one(self, tmp_path: Path) -> None:
         cfg = self._cfg_with_index(tmp_path)

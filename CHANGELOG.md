@@ -98,6 +98,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `autodj analyse --limit N` deleted the DJ data (intro, outro, beat grid and cues, imported cues
+  included) of every indexed track past the first N. It now keeps all of it and analyses at most N
+  of the tracks that still need analysis. A limit below 1 is refused.
 - The liner ducking level (Duck depth) now only accepts -30 to 0 dB. A positive value used to
   boost the music, not quieten it, while a liner played. AutoDJ refuses to start with
   `liners_duck_db` outside that range in the config file, the server refuses it, a saved value

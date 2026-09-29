@@ -1145,6 +1145,8 @@ def _analyse_one_track(path: str) -> Any | None:
 def backfill_dj_meta(
     cfg: AutoDJConfig,
     entries: list[IndexEntry],
+    *,
+    limit: int | None = None,
 ) -> None:
     """Analyse DJ metadata (intro/outro, beats, cues) for tracks that lack it.
 
@@ -1157,6 +1159,7 @@ def backfill_dj_meta(
     Args:
         cfg: Configuration naming the index, the library and the settings above.
         entries: Every track in the index, with absolute paths.
+        limit: Analyse at most this many of the tracks that need it.
     """
     from autodj.dj_meta import get_cache
 
@@ -1167,6 +1170,8 @@ def backfill_dj_meta(
     if removed_stale:
         print(f"[AutoDJ] DJ-meta cache pruned {removed_stale} stale entries.", flush=True)
     pending = [e.path for e in entries if not cache.get(e.path).analysed]
+    if limit is not None:
+        pending = pending[:limit]
     if not pending:
         print("[AutoDJ] DJ-meta cache already covers every indexed track.")
         return

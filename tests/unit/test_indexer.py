@@ -1185,6 +1185,29 @@ class TestBackfillDjMeta:
         assert not cache.get(entries[1].path).analysed
         assert not cache.get(gone).analysed
 
+    def test_limit_analyses_only_that_many_and_keeps_every_other_row(self, tmp_path: Path) -> None:
+        """``analyse --limit`` used to delete the DJ data of every track past the limit."""
+        from autodj.dj_meta import Cue, DjMeta, get_cache
+        from autodj.indexer import backfill_dj_meta
+
+        cfg = _backfill_cfg(tmp_path)
+        cache = get_cache(cfg.index.active_dir, music_dir=cfg.library.music_dir)
+        assert cache is not None
+        entries = self._entries(cfg, "done.flac", "next.flac", "later.flac")
+        imported = DjMeta(analysed=True, cues=[Cue(time_s=4.0, source="mixxx")])
+        cache.set(entries[0].path, imported)
+        cache.flush(force=True)
+
+        with patch(
+            "autodj.indexer._analyse_one_track", return_value=DjMeta(analysed=True)
+        ) as analyse:
+            backfill_dj_meta(cfg, entries, limit=1)
+
+        assert [c.args[0] for c in analyse.call_args_list] == [entries[1].path]
+        assert cache.get(entries[0].path) == imported
+        assert cache.get(entries[1].path).analysed
+        assert not cache.get(entries[2].path).analysed
+
     @pytest.mark.parametrize(("throttle_ms", "sleeps"), [(250.0, [0.25, 0.25]), (0.0, [])])
     def test_throttle_pauses_before_each_track(
         self, tmp_path: Path, throttle_ms: float, sleeps: list[float]

@@ -1151,8 +1151,8 @@ def cmd_enrich(ctx: click.Context, index_name: str | None) -> None:
 @click.option(
     "--limit",
     default=None,
-    type=int,
-    help="Stop after this many tracks (test mode).",
+    type=click.IntRange(min=1),
+    help="Analyse at most this many of the tracks that need it.",
 )
 @click.pass_context
 def cmd_analyse(
@@ -1167,7 +1167,7 @@ def cmd_analyse(
     the audio, runs :func:`autodj.dj_meta.analyse_audio`, merges cues
     imported from DJ software (``[playback] import_external_cues``), and
     writes the result.  Skips entries already analysed so repeated runs
-    are cheap.
+    are cheap.  Rows of tracks no longer in the index are deleted.
 
     No GPU and no MuQ model required -- pure CPU work via librosa +
     numpy.  Run this on the NAS / listening host after a GPU host has
@@ -1179,7 +1179,7 @@ def cmd_analyse(
     Examples:
       uv run autodj analyse
       uv run autodj analyse --name workout
-      uv run autodj analyse --limit 100   # smoke-test on a small batch
+      uv run autodj analyse --limit 100   # analyse only the next 100
     """
     missing = [name for name in ("librosa", "soundfile") if not _can_import(name)]
     if missing:
@@ -1206,16 +1206,16 @@ def cmd_analyse(
     except IndexConsistencyError as exc:
         console.print(f"[bold red]{exc}[/]")
         sys.exit(1)
-    if limit is not None:
-        entries = entries[:limit]
 
     console.print(Panel("[bold green]AutoDJ DJ-meta backfill[/]", expand=False))
     console.print(f"  Index dir : {cfg.index.active_dir}")
     console.print(f"  Tracks    : {len(entries)}")
+    if limit is not None:
+        console.print(f"  Limit     : {limit}")
     console.print()
 
     try:
-        backfill_dj_meta(cfg, entries)
+        backfill_dj_meta(cfg, entries, limit=limit)
     except Exception as exc:
         console.print(f"[bold red]Analyse failed:[/] {exc}")
         sys.exit(1)
