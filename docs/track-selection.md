@@ -57,7 +57,8 @@ any scoring. In order:
 
 1. Path is not in `recently_played`, and the track is not silent: its
    `energy` (the mean RMS measured at index time) is at least
-   `SILENT_ENERGY`, 0.001, about -60 dBFS. Every indexed track has a measured
+   `SILENT_ENERGY`, 0.0001, about -80 dBFS. The quietest music sits around
+   0.001 (-60 dBFS), well above it. Every indexed track has a measured
    energy, because a track whose analysis fails is not indexed.
 2. If a hard `bpm_range` is set: `entry.bpm` is known (greater than 0) and
    inside the range. Unknown tempo is rejected.

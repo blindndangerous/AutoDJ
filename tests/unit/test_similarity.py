@@ -1028,8 +1028,9 @@ class TestSilentTracksAreNeverPicked:
         assert silent.random_entry() is None
 
     def test_quiet_music_is_not_silent(self) -> None:
-        assert not replace(_make_entry(0), energy=0.002).is_silent
-        assert replace(_make_entry(0), energy=0.0004).is_silent
+        # The quietest real music sits around 0.001 (-60 dBFS).
+        assert not replace(_make_entry(0), energy=0.001).is_silent
+        assert replace(_make_entry(0), energy=0.00005).is_silent
 
 
 # ---------------------------------------------------------------------------

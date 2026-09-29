@@ -261,9 +261,11 @@ def source_mtime(path: str | Path) -> float:
 # Data types
 # ---------------------------------------------------------------------------
 
-#: Mean RMS (about -60 dBFS) below which a track counts as silent: pregap
-#: filler and "[silence]" tracks, not quiet music.
-SILENT_ENERGY: float = 0.001
+#: Mean RMS (about -80 dBFS) below which a track counts as silent: pregap
+#: filler and "[silence]" tracks.  A digitally silent file measures 0.0 and
+#: dithered silence stays far under it, while the quietest music sits
+#: around 0.001 (-60 dBFS), so quiet music is never taken for silence.
+SILENT_ENERGY: float = 1e-4
 
 
 @dataclass
