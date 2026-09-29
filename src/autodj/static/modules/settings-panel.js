@@ -153,11 +153,9 @@ export function installSettingsControls(els, save) {
     });
   }
   const { pbPickMode, bpmLo, bpmHi, discEnabled, discEvery } = els;
-  // The three-way select projects to the server's two flags.  Sending
-  // both every time leaves no stale flag behind.
+  // The pick mode select is the server's pure_shuffle flag.
   pbPickMode?.addEventListener("change", () => {
-    const v = pbPickMode.value;
-    void save(PLAYBACK, { smart_shuffle: v === "smart", pure_shuffle: v === "pure" }, pbPickMode);
+    void save(PLAYBACK, { pure_shuffle: pbPickMode.value === "pure" }, pbPickMode);
   });
   const saveBpmRange = (control) => {
     const lo = parseFloat(bpmLo.value);
@@ -204,10 +202,7 @@ export function applySettingsState(st, els) {
     else if (doc.activeElement !== control && control.value !== String(value)) control.value = value;
   }
   if (pbPickMode && doc.activeElement !== pbPickMode) {
-    let mode = "similarity";
-    if (st.playback?.pure_shuffle) mode = "pure";
-    else if (st.playback?.smart_shuffle) mode = "smart";
-    pbPickMode.value = mode;
+    pbPickMode.value = st.playback?.pure_shuffle ? "pure" : "similarity";
   }
   if (st.bpm_range && bpmLo && doc.activeElement !== bpmLo) bpmLo.value = st.bpm_range.lo ?? "";
   if (st.bpm_range && bpmHi && doc.activeElement !== bpmHi) bpmHi.value = st.bpm_range.hi ?? "";

@@ -126,8 +126,8 @@ Two mechanisms deliberately leave similarity behind:
 
 - `discovery_every = N` makes every Nth pick call `find_distant`, which
   chooses at random from the bottom quartile of the cosine ranking.
-- `smart_shuffle` (`invert=True`) negates the query vector and returns the
-  single farthest eligible track.
+- Pure shuffle (the Random walk pick mode) picks at random from every eligible
+  track; only the hard BPM range and the repeat window apply.
 
 Silent tracks are left out of every pick AutoDJ makes by itself: similarity,
 anchored, pure shuffle, discovery, the first track of a set and the Shuffle

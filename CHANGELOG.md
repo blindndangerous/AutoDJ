@@ -155,6 +155,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `[playback] import_external_cues` in `config.toml`.
 - The page's stand-in versions of the gate stutter, bitcrusher, freeze and glitch effects used when
   AudioWorklet was missing.
+- The Entropy walk pick mode, which picked the track least like the one playing and so wandered
+  away from the seed. Pick mode now offers Similarity and Random walk. A set saved with Entropy
+  walk now follows Similarity. The settings route and saved profiles no longer take
+  `smart_shuffle`: a profile that still holds it is refused when applied, so delete it and save it
+  again, and `smart_shuffle` in `config.toml` is refused like any unknown key; delete the line.
+  Saved web settings still load, and the old field is skipped with a warning in the server log.
 
 ### Fixed
 

@@ -438,7 +438,6 @@ class ProfileSaveBody(BaseModel):
     beatmatch_on_skip: bool | None = None
     crossfade_seconds: FiniteFloat | None = None
     fade_in_seconds: FiniteFloat | None = None
-    smart_shuffle: bool | None = None
     pure_shuffle: bool | None = None
     anchor_to_seed: bool | None = None
     liners_enabled: bool | None = None

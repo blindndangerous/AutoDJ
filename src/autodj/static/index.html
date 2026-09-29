@@ -552,12 +552,11 @@
         <label for="pb-pick-mode">Pick mode</label>
         <select id="pb-pick-mode" aria-describedby="pb-pick-mode-desc">
           <option value="similarity">Similarity (default)</option>
-          <option value="smart">Entropy walk (anti-similarity)</option>
           <option value="pure">Random walk (uniform random)</option>
         </select>
       </div>
       <span class="setting-desc" id="pb-pick-mode-desc">
-        How AutoDJ picks the next track.  <em>Similarity</em> picks the closest sonic neighbour to whatever just played.  <em>Entropy walk</em> picks the most sonically distant track instead — <span aria-hidden="true">A → far(A) → far(far(A)) → …</span><span class="visually-hidden">A, then the track farthest from A, then the track farthest from that, and so on</span> — so the set drifts through the library rather than clustering around the seed.  <em>Random walk</em> picks uniformly at random and ignores similarity, key and energy; only the BPM range still applies.  Switch back to <em>Similarity</em> mid-set and AutoDJ resumes from the song currently playing.
+        How AutoDJ picks the next track.  <em>Similarity</em> picks the closest sonic neighbour to whatever just played.  <em>Random walk</em> picks uniformly at random and ignores similarity and key; only the BPM range still applies.  Neither mode picks a silent track.  Switch back to <em>Similarity</em> mid-set and AutoDJ resumes from the song currently playing.
       </span>
 
       <div class="settings-check">

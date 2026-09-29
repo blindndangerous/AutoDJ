@@ -72,7 +72,6 @@ def _make_player_mock(entry: IndexEntry | None = None) -> MagicMock:
     player._last_transition_fx = "none"
     player._dry_run = False
     player._server_audio_too = False
-    player._smart_shuffle = False
     player._pure_shuffle = False
     player._anchor_to_seed = False
     player._seed_path = None

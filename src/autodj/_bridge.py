@@ -1111,7 +1111,6 @@ class PlayerBridge:
                 "crossfade_seconds": pb.crossfade_seconds,
                 "fade_in_seconds": pb.fade_in_seconds,
                 "crossfade_eq_duck": pb.crossfade_eq_duck,
-                "smart_shuffle": p._smart_shuffle,
                 "pure_shuffle": p._pure_shuffle,
                 "anchor_to_seed": p._anchor_to_seed,
                 "replaygain_enabled": cfg.replaygain.enabled,
@@ -1209,7 +1208,6 @@ class PlayerBridge:
         player = self.player
         cfg = player._cfg
         targets = {
-            "smart_shuffle": (player, "_smart_shuffle"),
             "pure_shuffle": (player, "_pure_shuffle"),
             "anchor_to_seed": (player, "_anchor_to_seed"),
             "replaygain_enabled": (cfg.replaygain, "enabled"),

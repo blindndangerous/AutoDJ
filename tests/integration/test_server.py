@@ -1951,13 +1951,13 @@ class TestSettingsEndpoints:
             json={
                 "crossfade_seconds": 5.5,
                 "crossfade_eq_duck": True,
-                "smart_shuffle": True,
+                "pure_shuffle": True,
                 "replaygain_enabled": True,
             },
         )
         assert bridge.player._cfg.playback.crossfade_seconds == 5.5
         assert bridge.player._cfg.playback.crossfade_eq_duck is True
-        assert bridge.player._smart_shuffle is True
+        assert bridge.player._pure_shuffle is True
         assert bridge.player._cfg.replaygain.enabled is True
 
     def test_post_playback_settings_transition_mode(self, bridge, tmp_path) -> None:

@@ -377,7 +377,6 @@ class SimilarityIndex:
         target_bpm: float | None = None,
         bpm_weight: float = 0.2,
         bpm_range: tuple[float, float] | None = None,
-        invert: bool = False,
         harmonic_only: bool = False,
         harmonic_mode: str = "compatible",
         excluded_artists: set[str] | None = None,
@@ -391,9 +390,7 @@ class SimilarityIndex:
         Uses the stored embedding for *current_path* (no model inference) and
         queries FAISS for nearest neighbours by cosine similarity, expanding to
         the full index when needed to satisfy active filters and the requested
-        candidate-pool size. Smart shuffle (*invert*) searches the full index
-        for the global farthest eligible track.  Silent tracks are never
-        candidates.
+        candidate-pool size.  Silent tracks are never candidates.
 
         Args:
             current_path: The file path string of the currently playing track,
@@ -447,17 +444,14 @@ class SimilarityIndex:
             if not np.isfinite(norm) or norm <= 0.0:
                 raise SimilarityError("Query vector is empty or non-finite.")
             query = (query64 / norm).astype(np.float32)
-            if invert:
-                query = -query
 
-            # Over-fetch so the post-filters still have candidates left.  The
-            # invert branch already queries the whole index above.
+            # Over-fetch so the post-filters still have candidates left.
             fetch = (
                 max(25, n_candidates)
                 if (target_bpm is not None or bpm_range is not None)
                 else n_candidates
             )
-            initial_k = self.ntotal if invert else min(self.ntotal, fetch + len(excluded) + 1)
+            initial_k = min(self.ntotal, fetch + len(excluded) + 1)
             predicate = self._build_predicate(
                 excluded,
                 bpm_range,
@@ -498,12 +492,6 @@ class SimilarityIndex:
                     active.append("harmonic mode " + harmonic_mode)
                 detail = "; ".join(active) or "recent-track exclusion"
                 raise SimilarityError(f"No candidates satisfy hard filters: {detail}.")
-
-            if invert:
-                candidates.sort(key=lambda item: item[0], reverse=True)
-                best = candidates[0][1]
-                logger.debug("Smart-shuffle next: %s", best.display_name)
-                return self._public_entry(best)
 
             if target_bpm is None:
                 candidates.sort(key=lambda x: x[0], reverse=True)
