@@ -581,7 +581,7 @@ class ReplayGainConfig(_Section):
         target_db: Output reference level in dB.  ``-18.0`` is the original
             ReplayGain reference (quiet).  ``-14.0`` matches Spotify /
             YouTube loudness (default).  Higher = louder overall.
-        max_clip_safe_gain: Hard cap on the linear gain so peaks never
+        max_clip_safe_gain: Caps the linear gain so tagged peaks never
             exceed this fraction of full-scale.  Default ``1.0`` = no
             clipping.  Lower it (e.g. ``0.95``) for extra headroom.
     """
