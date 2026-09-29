@@ -92,6 +92,10 @@ class TestParseLRC:
     def test_garbage_input_returns_empty(self) -> None:
         assert parse_lrc("not an LRC file at all") == []
 
+    def test_malformed_seconds_skip_only_that_line(self) -> None:
+        lines = parse_lrc("[01:1.2.3]bad\n[01:.]bad\n[02:03]valid")
+        assert [(line.time_s, line.text) for line in lines] == [(123.0, "valid")]
+
 
 # ---------------------------------------------------------------------------
 # load_lrc_for sidecar lookup
@@ -659,6 +663,26 @@ class TestReadPlainLyrics:
 
         _patch_mutagen_file(monkeypatch, _FakeMP4File())
         assert read_plain_lyrics(tmp_path / "x.m4a") == "mp4 lyrics here"
+
+    def test_unsyncedlyrics_tag(self, monkeypatch, tmp_path) -> None:
+        from autodj.audio_meta import read_plain_lyrics
+
+        _patch_mutagen_file(monkeypatch, _FakeMutagenVorbis({"unsyncedlyrics": ["plain text"]}))
+        assert read_plain_lyrics(tmp_path / "x.flac") == "plain text"
+
+    def test_unreadable_file_returns_empty(self, monkeypatch, tmp_path) -> None:
+        import sys
+
+        from autodj.audio_meta import read_plain_lyrics
+
+        def _raise(_path):
+            raise OSError("bad")
+
+        fake_module = type(sys)("mutagen")
+        fake_module.File = _raise  # type: ignore[attr-defined]
+        fake_module.MutagenError = type("MutagenError", (Exception,), {})  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "mutagen", fake_module)
+        assert read_plain_lyrics(tmp_path / "x.flac") == ""
 
     def test_no_module_returns_empty(self, tmp_path, monkeypatch) -> None:
         import sys
