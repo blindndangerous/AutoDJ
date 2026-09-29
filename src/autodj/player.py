@@ -17,7 +17,6 @@ import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
@@ -618,6 +617,11 @@ class Player:
         self._bg_analysis_inflight: set[str] = set()
         self._bg_analysis_threads: set[threading.Thread] = set()
         self._bg_analysis_lock = threading.Lock()
+        # Cues from DJ-software libraries: None until load_library_cues has
+        # read them; tracks analysed before then are listed for a late merge.
+        self._library_cues: dict[str, list[Cue]] | None = None
+        self._analysed_before_library_cues: list[str] = []
+        self._library_cues_lock = threading.Lock()
         self._bg_lyrics_inflight: set[str] = set()
         self._bg_lyrics_lock = threading.Lock()
         # Current track's beatmatch ratio (1.0 = no stretch) — exposed via state
@@ -1579,34 +1583,64 @@ class Player:
         meta = self._dj_cache.get(path)
         if not meta.analysed:
             meta = self._analyse(mono(audio_a), sr_a, path)
-            self._dj_cache.set(path, meta)
             self._dj_cache.flush(batch=10)
         return meta
 
     def _analyse(self, audio: np.ndarray, sr: int, path: str) -> DjMeta:
-        """Analyse *path*'s audio the way ``autodj analyse`` does.
+        """Analyse *path*'s audio the way ``autodj analyse`` does, and cache it.
 
         Runs :func:`autodj.dj_meta.analyse_audio`, then merges cues imported
         from DJ software through the same function as ``autodj analyse``
-        when ``[playback] import_external_cues`` is on.  The result is
-        stored as analysed, so ``autodj analyse`` later skips the track.
+        when ``[playback] import_external_cues`` is on, and stores the
+        result in the DJ-meta cache (the caller flushes).  It is stored as
+        analysed, so ``autodj analyse`` later skips the track.
+
+        Never reads the DJ-software libraries itself: it uses what
+        :meth:`load_library_cues` has read.  A track analysed before that
+        read finishes gets its library cues merged when it does.
         """
         from autodj.dj_meta import analyse_audio
 
         meta = analyse_audio(audio, sr)
-        if self._cfg.playback.import_external_cues:
-            from autodj.dj_cues_import import merge_imported_cues
+        import_cues = self._cfg.playback.import_external_cues
+        # Merge and store under the lock, so load_library_cues either sees
+        # this track in the cache or has already handed over its cues.
+        with self._library_cues_lock:
+            if import_cues:
+                from autodj.dj_cues_import import merge_imported_cues
 
-            merge_imported_cues(meta, path, self._library_cues)
+                if self._library_cues is None:
+                    self._analysed_before_library_cues.append(path)
+                merge_imported_cues(meta, path, self._library_cues or {})
+            if self._dj_cache is not None:
+                self._dj_cache.set(path, meta)
         return meta
 
-    @cached_property
-    def _library_cues(self) -> dict[str, list[Cue]]:
-        """Cues from Mixxx, Rekordbox and Traktor libraries, read on first use."""
+    def load_library_cues(self) -> None:
+        """Read the Mixxx, Rekordbox and Traktor libraries once.
+
+        ``autodj serve`` runs this on its own thread at startup when
+        ``[playback] import_external_cues`` is on, so neither playback nor
+        pacing waits on a large library file.  Tracks :meth:`_analyse`
+        stored before the read finished have their library cues merged here.
+        """
         from autodj.dj_cues_import import auto_import_cues
+        from autodj.dj_meta import merge_cues
 
         music_dir = self._cfg.library.music_dir
-        return auto_import_cues(library_root=music_dir if isinstance(music_dir, Path) else None)
+        found = auto_import_cues(library_root=music_dir if isinstance(music_dir, Path) else None)
+        with self._library_cues_lock:
+            self._library_cues = found
+            waiting, self._analysed_before_library_cues = self._analysed_before_library_cues, []
+            cache = self._dj_cache
+            late = [path for path in waiting if found.get(path)]
+            if cache is None or not late:
+                return
+            for path in late:
+                meta = cache.get(path)
+                meta.cues = merge_cues(meta.cues, found[path])
+                cache.set(path, meta)
+        cache.flush(force=True)
 
     def analyse_track_in_background(self, path: str) -> None:
         """Run analyse_audio + detect_cues for *path* on a background thread.
@@ -1645,7 +1679,6 @@ class Player:
                 audio, sr = load_audio(path)
                 meta = self._analyse(audio, sr, path)
                 if self._dj_cache is not None:
-                    self._dj_cache.set(path, meta)
                     self._dj_cache.flush(force=True)
                 # BPM + Camelot key live on the IndexEntry, not on
                 # DjMeta -- look them up so the log line carries the
@@ -1893,7 +1926,6 @@ class Player:
         meta_b = self._dj_cache.get(next_entry.path)
         if not meta_b.analysed:
             meta_b = self._analyse(mono(audio_b), sr_a, next_entry.path)
-            self._dj_cache.set(next_entry.path, meta_b)
             self._dj_cache.flush(batch=10)
         if meta_b.intro_end_s <= 0.5:
             return 0

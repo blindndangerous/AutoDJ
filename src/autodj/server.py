@@ -2253,6 +2253,12 @@ def serve(
     # re-tick everything on restart.
     bridge.load_persistent_state()
 
+    if cfg.playback.import_external_cues:
+        # Read the DJ-software libraries once, off the playback thread.
+        threading.Thread(
+            target=player.load_library_cues, name="autodj-library-cues", daemon=True
+        ).start()
+
     # Start Player in a daemon thread — it blocks internally on playback
     player_thread = threading.Thread(
         target=player.run,

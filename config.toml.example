@@ -213,7 +213,8 @@ key_prefer_flats = false
 # libraries, and from the Serato tags in each audio file, with the ones
 # AutoDJ detects itself.  Read by `autodj index` and `autodj analyse` when
 # they analyse a track, and by the player when it has to analyse a track
-# while playing; the web page has no switch for it.
+# while playing (`autodj serve` reads the three libraries once at startup,
+# in the background); the web page has no switch for it.
 import_external_cues = true
 
 # Beat-sync transition FX — rhythmic effects (beat_repeat, gate_stutter,

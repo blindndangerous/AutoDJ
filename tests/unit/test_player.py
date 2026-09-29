@@ -1668,13 +1668,49 @@ class TestOutgoingMetaCached:
         monkeypatch.setattr(
             "autodj.dj_meta.analyse_audio", lambda _a, _sr: DjMeta(analysed=True, cues=[auto])
         )
-        monkeypatch.setattr("autodj.dj_cues_import.auto_import_cues", lambda **_kw: {})
+
+        def _no_library_scan(**_kw):
+            raise AssertionError("the playback thread must not read DJ-software libraries")
+
+        monkeypatch.setattr("autodj.dj_cues_import.auto_import_cues", _no_library_scan)
 
         meta = player._outgoing_meta(np.zeros(4410, dtype=np.float32), 44100, str(track))
 
         assert meta is not None
         assert meta.cues == ([serato, auto] if import_cues else [auto])
         fake_cache.set.assert_called_once_with(str(track), meta)
+
+    def test_library_cues_read_later_reach_a_track_analysed_before(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A track analysed before the startup library read still gets its cues.
+
+        It is stored as analysed, so nothing would analyse it again.
+        """
+        from autodj.dj_meta import Cue, DjMeta
+
+        track = str(tmp_path / "early.flac")
+        auto = Cue(time_s=40.0, type="drop", source="auto")
+        mixxx = Cue(time_s=10.0, type="user", label="Hot", source="mixxx")
+        player = Player(_make_cfg_mock(), _make_sim_index(2))
+        player._cfg.playback.import_external_cues = True
+        stored: dict[str, DjMeta] = {}
+        fake_cache = MagicMock()
+        fake_cache.get.side_effect = lambda p: stored.get(p, DjMeta(analysed=False))
+        fake_cache.set.side_effect = stored.__setitem__
+        player._dj_cache = fake_cache
+        monkeypatch.setattr(
+            "autodj.dj_meta.analyse_audio", lambda _a, _sr: DjMeta(analysed=True, cues=[auto])
+        )
+        monkeypatch.setattr(
+            "autodj.dj_cues_import.auto_import_cues", lambda **_kw: {track: [mixxx]}
+        )
+
+        player._analyse(np.zeros(4410, dtype=np.float32), 44100, track)
+        assert stored[track].cues == [auto]
+        player.load_library_cues()
+
+        assert stored[track].cues == [mixxx, auto]
 
 
 class TestComputeCrossfadeStart:
