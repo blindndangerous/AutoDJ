@@ -61,7 +61,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `models/MuQ-large-msd-iter-e891ff924c0b7fe8`, and the `.lock` file beside it. To keep using that folder instead, set
   `[model] manual_path` to it.
 - Playback settings out of range are refused instead of quietly adjusted: a negative crossfade,
-  fade-in or liner trigger, or a mood arc shorter than 15 minutes. Applying a saved profile with
+  fade-in or liner trigger. Applying a saved profile with
   such a value, or with NaN or Infinity in it, now fails with an error and changes nothing.
 - Deleting a voice liner asks in the page's own confirmation dialog, like deleting a profile,
   instead of the browser's pop-up. After the delete, focus goes to the next liner's Delete button,
@@ -152,9 +152,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The player's own merge of cues imported from DJ software. `autodj index` and `autodj analyse`
   merge them. A track the player has to analyse while it plays is stored with only the cues AutoDJ
   detects, and `autodj analyse` then skips it as done, so run `autodj analyse` before playing newly
-  indexed tracks. The web settings route no
-  longer takes `import_external_cues`, since the running server has nothing left for it to change;
-  set `[playback] import_external_cues` in `config.toml`.
+  indexed tracks.
+- The Auto-import DJ-software cues switch in the web page's Settings. The settings route no longer
+  takes `import_external_cues` and the settings in `GET /api/status` no longer show it; set
+  `[playback] import_external_cues` in `config.toml`.
 - The page's stand-in versions of the gate stutter, bitcrusher, freeze and glitch effects used when
   AudioWorklet was missing.
 
@@ -163,7 +164,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Cue points imported from Mixxx, Rekordbox, Traktor and Serato only reached tracks the player
   analysed itself, never tracks analysed by `autodj index` or `autodj analyse`, which analyse the
   whole library. Those commands now merge them too when `[playback] import_external_cues` is on in
-  `config.toml` (the switch in the web page applies to the player only). Tracks analysed before
+  `config.toml`. Tracks analysed before
   keep the cues they have; to redo them with imported cues, delete `dj_meta.db` and run
   `autodj analyse`.
 - `autodj analyse --limit N` deleted the DJ data (intro, outro, beat grid and cues, imported cues

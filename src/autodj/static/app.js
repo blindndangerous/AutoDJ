@@ -85,7 +85,6 @@ const pbPickMode      = document.getElementById("pb-pick-mode");
 const pbShowLyrics    = document.getElementById("pb-show-lyrics");
 const pbAnchorSeed    = document.getElementById("pb-anchor-seed");
 const pbReplayGain    = document.getElementById("pb-replaygain");
-const pbImportCues    = document.getElementById("pb-import-cues");
 const pbBeatSyncFx    = document.getElementById("pb-beat-sync-fx");
 const pbKeySyncFx     = document.getElementById("pb-key-sync-fx");
 const pbBeatmatchSkip = document.getElementById("pb-beatmatch-on-skip");
@@ -666,7 +665,6 @@ const _settingsEls = () => ({
   djBeatmatch, djPhraseAlign, djOutroIntro,
   pbEqDuck, pbPickMode, pbShowLyrics, pbAnchorSeed,
   pbReplayGain,
-  pbImportCues,
   pbBeatSyncFx, pbKeySyncFx, pbBeatmatchSkip,
   pbTransitionMode, pbPostQueueSeed, pbCrossfade, pbFadeIn,
   keyNotation, keyPreferFlats,

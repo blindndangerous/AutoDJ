@@ -121,7 +121,6 @@ const FIELDS = [
     read: (st) => Boolean(st.playback) && st.playback.show_lyrics !== false },
   { key: "pbAnchorSeed", field: "anchor_to_seed" },
   { key: "pbReplayGain", field: "replaygain_enabled" },
-  { key: "pbImportCues", field: "import_external_cues" },
   { key: "pbBeatSyncFx", field: "beat_sync_fx" },
   { key: "pbKeySyncFx", field: "key_sync_fx" },
   { key: "pbBeatmatchSkip", field: "beatmatch_on_skip",
