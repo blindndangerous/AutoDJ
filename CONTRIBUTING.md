@@ -22,9 +22,9 @@ npm run lint
 npm test
 ```
 
-Full suite must remain green. `scripts/ci_pytest.py` enforces at least 99.1% line coverage and 94.7%
-branch coverage. `pyproject.toml` also rejects an incomplete test run below its combined coverage
-floor. New behavior needs focused tests.
+Full suite must remain green. `scripts/ci_pytest.py` fails below 90% line coverage (`fail_under` in
+`pyproject.toml`); there is no branch floor. Add a test only for a defect it would catch, not to
+raise the number. New behavior needs focused tests.
 
 ## Branching + commits
 
