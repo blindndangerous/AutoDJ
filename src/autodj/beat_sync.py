@@ -1,9 +1,10 @@
-"""Beat- and key-synchronisation helpers shared by the browser and server mixes.
+"""Beat- and key-synchronisation data for the browser's transition effects.
 
-The browser player (``static/app.js``) and the server-side mix both
-need to align transition effects with the beat grid + root note of the
-tracks playing on each side of a crossfade.  This module owns the small
-amount of music-theory math used by both:
+The browser engine (``static/modules/audio-engine.js``) aligns transition
+effects with the beat grid and root note of the tracks on each side of a
+crossfade.  The server computes that data for it here, and the web state
+payload (:mod:`autodj._bridge`) is this module's only caller; the server
+mix does not use it:
 
 - :func:`extract_downbeats` — subsample a dense beat grid to one
   timestamp per bar (every 4 beats by default).

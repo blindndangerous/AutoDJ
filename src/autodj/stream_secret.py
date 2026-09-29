@@ -1,4 +1,8 @@
-"""Listen-only secret for the radio stream URL."""
+"""Secret files under ``<index_dir>``: the radio stream's listen-only secret.
+
+Also holds the paths of the paired-devices database and the saved access
+token, and the private-file helpers :mod:`autodj.lan` uses for the token.
+"""
 
 from __future__ import annotations
 
@@ -127,7 +131,7 @@ class StreamSecret:
                 or a value being replaced).
 
         Raises:
-            StreamSecretError: If the file exists but cannot be read.
+            StreamSecretError: If the file cannot be read or written.
         """
         value = load_or_create_secret(
             path,

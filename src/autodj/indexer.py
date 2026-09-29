@@ -275,14 +275,15 @@ class IndexEntry:
         bpm: Beats per minute (from beets or estimated by librosa).
         year: Release year.
         length: Track duration in seconds.
-        energy: RMS loudness, 0.0 = unknown / not yet enriched.
+        energy: RMS loudness from indexing, 0.0 = unknown (analysis failed).
         key: Chromatic key 0–11 (C=0, C#=1, …, B=11), -1 = unknown.
-        mode: 1 = major, 0 = minor, -1 = unknown / not yet enriched.
+        mode: 1 = major, 0 = minor, -1 = unknown.
         tempo_confidence: Librosa beat-tracking confidence 0.0–1.0,
-            0.0 = unknown / not yet enriched.
-        embedded_at: Unix timestamp when this entry was embedded.  Used to
-            detect replaced files: if ``file.mtime > embedded_at`` on the
-            next ``index`` run the entry is dropped and re-embedded.
+            0.0 = unknown (analysis failed).
+        embedded_at: The source file's mtime when this entry was embedded.
+            Used to detect replaced files: if ``file.mtime > embedded_at +
+            1`` on the next ``index`` run the entry is dropped and
+            re-embedded.
             ``0.0`` = never stamped; the next ``index`` run re-embeds it.
     """
 
@@ -694,15 +695,15 @@ def _write_faiss_chunked(index: faiss.Index, path: Path, chunk_size: int = 1 << 
        file-object ``write``, which the SMB driver handles much more
        reliably.
     3. ``fsync`` after the last chunk so the data is durably committed
-       before the caller does an ``os.replace`` over the live file.
+       before the caller renames it to its generation name.
 
     Memory cost: an extra ~Nbytes copy of the index during write.  For a
     300 MB FAISS index that's 300 MB peak — easy on any reasonable host.
 
     Args:
         index: The FAISS index to save.
-        path: Destination path (typically a ``*.tmp`` sibling that the
-            caller will rename over the live file).
+        path: Destination path (typically a ``*.tmp`` file that the caller
+            renames to the new generation's name).
         chunk_size: Bytes per write call.  1 MB is a good balance —
             small enough that each ``write`` round-trips quickly on SMB,
             large enough to amortise per-call overhead.

@@ -270,7 +270,7 @@ class MixBus:
             self._drop_liner()
 
     def stop_set(self) -> None:
-        """Drop the current and queued tracks; emit silence until restarted."""
+        """Drop the current track, any skip fade and liner; emit silence until restarted."""
         with self._lock:
             self._playing = False
             self._current = None

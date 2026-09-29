@@ -5,11 +5,14 @@ similarity engine:
 
 - :func:`detect_intro_outro` — find the seconds at which the perceived
   intro ends and the outro starts, used for outro→intro-aligned crossfade.
-- :func:`detect_beat_grid` — extract beat + downbeat positions, used for
-  phrase-aligned crossfade (snap mix point to an 8-bar boundary).
+- :func:`detect_beat_grid` — extract beat positions, used for
+  phrase-aligned crossfade (snap mix point to a phrase boundary).
+  Downbeats are taken as every 4th beat
+  (:func:`autodj.beat_sync.extract_downbeats`).
 - :func:`harmonic_compatible` — Camelot wheel test that lets the picker
   filter candidates to harmonically-compatible keys.
-- :class:`DjMetaCache` — SQLite-backed cache (``index/dj_meta.db``) so
+- :class:`DjMetaCache` — SQLite-backed cache
+  (``<index_dir>/<name>/dj_meta.db``) so
   the heavy librosa analysis only runs once per track, then is reused.
 
 All detection is opt-in (the player invokes it lazily when a feature that
@@ -453,8 +456,8 @@ class DjMeta:
     Attributes:
         intro_end_s: Seconds at which the intro ends.  ``0.0`` = no intro
             detected (or detection has not been run yet).
-        outro_start_s: Seconds at which the outro starts.  ``0.0`` = no
-            outro detected.
+        outro_start_s: Seconds at which the outro starts; the track length
+            when no outro was detected.  ``0.0`` = not analysed yet.
         beats: Beat-onset timestamps in seconds.  Empty list = unanalysed.
         analysed: ``True`` once detection has run, even if results are
             empty / zero — distinguishes "we tried and there's nothing"
@@ -581,8 +584,8 @@ class DjMetaCache:
         first_init = not self._path.exists()
         # ``check_same_thread=False`` is safe because every read/write is
         # guarded by ``self._lock``; ``isolation_level=None`` puts the
-        # connection in autocommit mode so our explicit ``with conn:``
-        # blocks bracket each transaction cleanly.
+        # connection in autocommit mode so our explicit
+        # ``immediate_transaction`` blocks bracket each transaction cleanly.
         self._conn = sqlite3.connect(self._path, check_same_thread=False, isolation_level=None)
         self._conn.executescript(self._SCHEMA)
         # WAL = concurrent reader while the writer flushes; NORMAL sync

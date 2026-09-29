@@ -92,8 +92,7 @@ def apply_eq(
 
     Splits *chunk* into low / mid / high bands via the filters returned
     by :func:`make_eq_filters`, scales each by its gain, and sums them
-    back together.  Designed to be called from a sounddevice output
-    callback.
+    back together.  Called by the mix bus once per 20 ms block.
 
     Pass *state* from :func:`make_eq_state` when filtering a stream one
     block at a time.  Without it every block restarts each biquad from

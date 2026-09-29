@@ -8,9 +8,10 @@ to give the impression of a real station.  This module owns:
 - Trigger evaluation (every N tracks, every X minutes, random window).
 - Pick rotation (random / sequential).
 
-Playback itself happens in the browser (Web Audio decoding the raw
-file bytes from ``GET /api/liners/file/<name>`` and ducking the active deck
-during the overlay).  This module is dependency-free apart from the
+Playback happens in the browser when it plays the audio (Web Audio
+decoding the raw file bytes from ``GET /api/liners/file/<name>`` and ducking
+the active deck during the overlay), and on the server mix bus in the
+server-mixed modes (see :mod:`autodj.liner_scheduler`).  This module is dependency-free apart from the
 stdlib so it can be unit-tested without spinning up a player.
 
 Example:
@@ -18,7 +19,7 @@ Example:
     >>> lib = LinerLibrary.from_folder(Path("./liners"))
     >>> trigger = LinerTrigger(every_n_songs=5, every_minutes=None,
     ...                         random_min_minutes=None,
-    ...                         random_max_minutes=None)
+    ...                         random_max_minutes=None, enabled=True)
     >>> trigger.should_fire(track_count=5, minutes_since_last=2.0)
     True
 """
@@ -125,7 +126,7 @@ class LinerLibrary:
     The rotation modes match what the web UI exposes:
 
     - ``random``: pick uniformly at random each time.
-    - ``sequential``: play in directory-listing order, wrap at end.
+    - ``sequential``: play in case-insensitive name order, wrap at end.
 
     Attributes:
         folder: Source directory.  ``None`` when the library was

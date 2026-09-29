@@ -85,14 +85,14 @@ def _softmax_pick(
 def _bpm_score(entry_bpm: float, target_bpm: float, sigma: float = 15.0) -> float:
     """Return a Gaussian similarity score between *entry_bpm* and *target_bpm*.
 
-    Returns 0.0 for unknown BPM (entry_bpm == 0.0) so unknown-BPM tracks
-    get a neutral boost — they are neither promoted nor penalised.
+    Returns 0.0, the lowest score, for unknown BPM (entry_bpm == 0.0), so
+    unknown-BPM tracks rank as if their tempo were as far off as possible.
 
     Args:
         entry_bpm: BPM of the candidate track (0.0 = unknown).
         target_bpm: Desired BPM for the current session position.
         sigma: Standard deviation of the Gaussian window in BPM units.
-            Default 15.0 ≈ ±15 BPM half-width at half-maximum.
+            Default 15.0 ≈ ±17.7 BPM half-width at half-maximum.
 
     Returns:
         Float in ``[0.0, 1.0]``.  1.0 means perfect BPM match.
@@ -398,7 +398,8 @@ class SimilarityIndex:
             current_path: The file path string of the currently playing track,
                 as stored in :attr:`IndexEntry.path`.
             recently_played: Deque of file path strings to exclude.
-            n_candidates: Minimum neighbour pool size before filtering.
+            n_candidates: How many neighbours must pass the filters; the
+                search widens until that many do or the index runs out.
             target_bpm: Desired BPM for re-ranking.
             bpm_weight: BPM-vs-cosine blend weight.
             bpm_range: Hard ``(lo, hi)`` BPM filter.

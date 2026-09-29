@@ -1,6 +1,6 @@
 // Vitest configuration for the JS module unit tests.
 //
-// Runs in jsdom so DOM-using modules (live-region, lyrics, cues) can
+// Runs in happy-dom so DOM-using modules (live-region, lyrics, cues) can
 // assert against a fake document.  Pure-function modules
 // (dom-helpers, camelot-wheel adjacency rules) work in either env.
 

@@ -339,7 +339,7 @@ def load_model(model_path: Path) -> MuqWrapper:
     """Load the MuQ model from a local directory and return a :class:`MuqWrapper`.
 
     Automatically selects CUDA if available, falls back to CPU otherwise.
-    The model is set to eval mode and gradient computation is disabled.
+    The model is set to eval mode; embedding runs under ``torch.no_grad``.
 
     Args:
         model_path: Path to the local HuggingFace MuQ model directory

@@ -2,8 +2,8 @@
 // trigger evaluation, scheduler.
 //
 // Audio playback (Web Audio decode + duck the active deck) lives in
-// the audio-engine module and is injected via deps.playLiner so this
-// module stays free of AudioContext + decks state.
+// app.js and is injected via deps.playLiner so this module stays free
+// of AudioContext + decks state.
 
 import { confirmAction } from "./confirm-dialog.js";
 import { dbg, listRow, nextRowControl, rowButton } from "./dom-helpers.js";

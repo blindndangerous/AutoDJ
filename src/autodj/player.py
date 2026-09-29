@@ -241,7 +241,7 @@ def beatmatch_incoming(
     change).
 
     Args:
-        audio_b: Mono float32 audio of the incoming track.
+        audio_b: Mono or stereo float32 audio of the incoming track.
         bpm_a: BPM of the outgoing track.  Anything ``<= 0`` disables matching.
         bpm_b: BPM of the incoming track.  Anything ``<= 0`` disables matching.
         max_stretch: Maximum allowed ``|ratio - 1|``.  0.08 = ±8 %.
@@ -500,15 +500,16 @@ def load_audio(path: str, target_sr: int = _DEFAULT_SR) -> tuple[np.ndarray, int
 
     Args:
         path: Absolute path to the audio file.
-        target_sr: Target sample rate.  If the file's native rate differs,
-            librosa resamples to *target_sr*.
+        target_sr: Target sample rate for the librosa fallback, which
+            resamples to it.  A file soundfile reads keeps its native rate.
 
     Returns:
         A tuple ``(audio, sample_rate)`` where *audio* is a mono float32
         array and *sample_rate* is the actual rate after any resampling.
 
     Raises:
-        OSError: If the file cannot be read.
+        RuntimeError: ``soundfile.LibsndfileError`` when neither decoder can
+            read the file.
     """
     try:
         audio, sr = sf.read(path, dtype="float32", always_2d=False)
@@ -608,9 +609,8 @@ class Player:
 
         self._dj_cache: _DjMetaCache | None = None
         self._dj_cache_initialised = False
-        # Browser-driven mode never enters _play_track, so the only path
-        # that ever called analyse_audio (and therefore detect_cues) was
-        # dead code in serve mode.  Track in-flight background analyses
+        # Browser-driven mode never renders on the server, so tracks are
+        # analysed on background threads instead.  Track in-flight analyses
         # by path so a flurry of advances does not spawn duplicate
         # workers for the same track.  Lock guards the set; the heavy
         # I/O happens off-lock.
@@ -664,8 +664,8 @@ class Player:
         self._playback_pos: list[int] = [0]
         self._playback_len: int = 0  # length of the current audio array in samples
         self._current_sr: int = _DEFAULT_SR
-        # Server audio: the mix bus that plays rendered tracks (created in
-        # run() when not dry-run, or supplied by the stream station), and a
+        # Server audio: the mix bus that plays rendered tracks (built at the
+        # end of __init__ unless dry-run), and a
         # hook the bridge sets to hear about each track the bus starts.
         self.bus: MixBus | None = None
         self.on_track_started: Callable[[IndexEntry], None] | None = None
@@ -1176,7 +1176,7 @@ class Player:
         self._state.current_track = current
         if self._state.next_track is None:
             self._state.next_track = self._pick_next(current)
-        # Browser-driven mode never enters _play_track, so lyrics and
+        # Browser-driven mode never renders on the server, so lyrics and
         # DJ meta (cue points, intro_end_s, outro_start_s, beat grid)
         # would otherwise stay empty for the seed track and the web UI
         # would hide its lyrics card / show an empty cue list even when
@@ -1646,7 +1646,7 @@ class Player:
         """Run analyse_audio + detect_cues for *path* on a background thread.
 
         Browser-driven mode (``serve`` without ``--server-audio``) never
-        enters :meth:`_play_track`, so without this hook the DJ-meta
+        renders a track on the server, so without this hook the DJ-meta
         cache for the playing track stays at ``analysed=False`` and the
         web UI's cue strip + screen-reader cue summary stay empty.
 
@@ -1764,7 +1764,8 @@ class Player:
     ) -> float:
         """Resolve the active fade length for the configured transition_mode.
 
-        Mirrors the browser's ``_resolveFadeSec`` in ``static/app.js`` so
+        Mirrors the browser's ``_resolveFadeSec`` in
+        ``static/modules/audio-engine.js`` so
         the server mix and the web UI sound the same.
 
         Args:
@@ -1891,7 +1892,7 @@ class Player:
         current: IndexEntry,
         next_entry: IndexEntry,
     ) -> np.ndarray:
-        """Pitch-stretch audio_b to match the outgoing BPM (if configured).
+        """Time-stretch audio_b to match the outgoing BPM (if configured).
 
         Leaves ``self._beatmatch_ratio`` alone: this runs while rendering
         ahead, and that attribute describes the *playing* track (see
@@ -1972,9 +1973,8 @@ class Player:
         "sidechain_pump": 4.0,  # 8 beats of pump @ 120 BPM
         "reverse_reverb": 3.0,  # swell-in needs time to build
         "air_horn": 3.0,  # full pitch sweep
-        # New effects shipped in feat/transitions + transitions-v2.
-        # Values mirror the JS table in app.js so CLI + browser feel
-        # identical (verified by tests/unit/test_player.py).
+        # The same values as the browser's _MIN_FX_DURATION_S in
+        # static/modules/audio-engine.js, kept in step by hand.
         "vinyl_rewind": 3.5,  # slow musical reverse + pitch drop
         "transformer": 2.5,  # syncopated 16-cps fader cuts
         "dub_siren": 3.0,  # smooth sine riser w/ vibrato

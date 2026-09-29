@@ -25,8 +25,7 @@ class Station:
     second and :meth:`start_with` on request threads, so both decide under
     one short lock.  Starting or stopping a set only moves the render
     cursor and flips the bus, which is quick, so neither call blocks for
-    long.  The bus and the render cursor are never touched while the
-    player's queue lock is held.
+    long.  The station itself never holds the player's queue lock.
     """
 
     def __init__(

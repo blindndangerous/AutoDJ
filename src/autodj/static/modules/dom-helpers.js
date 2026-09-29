@@ -11,13 +11,8 @@ import { announceStatus } from "./live-region.js";
 // easy to filter in DevTools.
 // ----------------------------------------------------------------
 
-// Lazy-evaluated so module import does not touch `localStorage`.
-// Node's native webstorage runtime (used under jsdom and accessed by
-// vitest's environment shim) emits a noisy
-// "--localstorage-file was provided without a valid path" warning the
-// first time anything reads localStorage, regardless of try/catch.
-// Module init now stays clean; the cost is one extra function call
-// per debug-checked code path (negligible).
+// Lazy-evaluated so module import does not touch `localStorage`; the
+// cost is one extra function call per debug-checked code path.
 let _debugCached = null;
 export function isDebug() {
   if (_debugCached !== null) return _debugCached;

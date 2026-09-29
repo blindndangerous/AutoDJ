@@ -1,4 +1,9 @@
-"""Read-only installation and runtime diagnostics for AutoDJ."""
+"""Installation and runtime diagnostics for AutoDJ.
+
+The checks repair nothing and write no data.  Loading the index takes its
+publication lock, which creates ``.index-publication.lock`` in the index
+directory when it is not there yet.
+"""
 
 from __future__ import annotations
 
@@ -376,7 +381,7 @@ def run_doctor(
     *,
     python_version: tuple[int, int] | None = None,
 ) -> DoctorReport:
-    """Run all checks in stable order without repairing or creating state."""
+    """Run all checks in stable order without repairing anything."""
     return DoctorReport(
         (
             _configuration_check(cfg),

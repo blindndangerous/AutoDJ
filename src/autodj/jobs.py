@@ -18,7 +18,9 @@ Example:
     >>> mgr = get_manager()
     >>> mgr.start("index", ["--limit", "20"])
     >>> mgr.snapshot()
-    {'name': 'index', 'running': True, 'lines': [...], 'exit_code': None}
+    {'name': 'index', 'args': ['--limit', '20'], 'running': True, 'exit_code': None,
+     'stopped': False, 'lines': [...], 'started_at': ..., 'finished_at': None,
+     'elapsed_seconds': 0.4}
 """
 
 from __future__ import annotations
@@ -300,8 +302,7 @@ class JobManager:
         }
 
 
-# Process-wide singleton — the web server attaches its bridge to this
-# instance on startup.
+# Process-wide singleton — the web server configures it before each run.
 _MANAGER: JobManager | None = None
 _MANAGER_LOCK = threading.Lock()
 

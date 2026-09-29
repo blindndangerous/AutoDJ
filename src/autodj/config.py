@@ -99,15 +99,17 @@ class IndexConfig(_Section):
     AutoDJ supports **named indexes** so you can keep multiple curated
     libraries side-by-side — a "workout" index of high-BPM tracks, a
     "chill" index for evening listening, etc.  Each named index lives
-    in its own sub-directory ``<index_dir>/<name>/`` so they share
-    nothing (independent FAISS files, metadata, runtime state, dj-meta
-    cache).
+    in its own sub-directory ``<index_dir>/<name>/`` with its own FAISS
+    files, metadata, web state, liners and dj-meta cache.  Profiles, paired
+    browsers, the stream secret and the access token live in
+    ``<index_dir>`` and are shared by every named index.
 
     Attributes:
         index_dir: Base directory holding all named indexes.
         model_dir: Directory where the MuQ model checkpoint is cached.
         name: Active index name.  Files live in ``<index_dir>/<name>/``.
-            Override with ``--name`` on any CLI subcommand.
+            ``--name`` on ``index``, ``prune``, ``enrich``, ``analyse``,
+            ``serve`` and ``stats`` overrides it.
         throttle_ms: Pause before each track that ``autodj index`` embeds
             and ``autodj analyse`` analyses, in milliseconds.  ``0`` = none.
     """
@@ -281,13 +283,13 @@ class PlaybackConfig(_Section):
     # Mixxx-style transition mode.  Controls how the crossfade aligns
     # with each track's intro_end / outro_start markers from the
     # DJ-meta sidecar.
-    #   - "full_intro_outro" (default): start of incoming intro lines up
-    #     with start of outgoing outro; fade length = min(intro_len,
-    #     outro_len) clamped to [_MIN_FX_DURATION_S, 12 s].
-    #   - "outro_fade":  begin fade at outro_start, length = outro_len.
-    #     Ignores intro_end.
-    #   - "fixed_skip_silence": fixed crossfade_seconds, but trim
-    #     leading silence on incoming + trailing silence on outgoing.
+    #   - "full_intro_outro" (default): the fade starts at the outgoing
+    #     outro and the incoming track enters at its intro end; fade
+    #     length = min(intro_len, outro_len) clamped to 1-12 s.
+    #   - "outro_fade":  begin fade at outro_start, length = outro_len
+    #     (1-12 s).  Ignores intro_end.
+    #   - "fixed_skip_silence": fixed crossfade_seconds; the incoming
+    #     track enters at its intro end.
     #   - "fixed": plain fixed crossfade_seconds at the
     #     end of the outgoing track.  No marker alignment.
     transition_mode: str = "full_intro_outro"
@@ -360,8 +362,8 @@ class PlaybackConfig(_Section):
     # track joins the existing groove instead of cold-cutting at its
     # native tempo.  Reverts at fade-out.  Off by default — keeps the
     # "skip = clean break" behaviour for users who want it.
-    # CLI server-audio skip path cannot pitch-stretch on the fly so
-    # it cold-cuts regardless of this flag.
+    # Server-mixed playback ignores this flag: a skip there is a short
+    # fade-out.
     beatmatch_on_skip: bool = False
     # Voice liners — DJ-style spoken drops layered over the live mix.
     # ``liners_folder`` is the source directory (``~`` is expanded; default
@@ -1030,8 +1032,14 @@ class AutoDJConfig:
         playback: Playback behaviour settings.
         model: MuQ model settings.
         huggingface: HuggingFace Hub access settings.
-        presets: User-defined BPM presets loaded from ``[presets.*]`` sections.
         config_path: Path to the config file this instance was loaded from.
+        presets: User-defined BPM presets loaded from ``[presets.*]`` sections.
+        replaygain: ReplayGain settings.
+        djmix: DJ-mix layer settings.
+        transitions: Transition effect settings.
+        server: Web server, LAN and HTTPS settings.
+        stream: Radio stream settings.
+        config_sources: Where the values came from, in load order.
     """
 
     library: LibraryConfig

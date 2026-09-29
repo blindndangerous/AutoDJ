@@ -6,7 +6,7 @@ compatibility (Camelot wheel), energy delta, and the picker mode (similarity
 / pure shuffle / anchored / discovery / queue).
 
 Inspired by the Music Genome Project's "Why this song?" surface — but
-working from the metadata we already store in the FAISS index, no separate
+working from the track metadata we already store in ``tracks.db``, no separate
 human-curated genome required.
 
 Example:
@@ -14,10 +14,11 @@ Example:
     >>> reasons = explain_pick(prev, current, mode="similarity")
     >>> for r in reasons:
     ...     print(r)
+    Sonically similar to the previous track.
     Same genre — Trip-Hop.
     BPM holds steady at 92.
     Camelot key 8A to 9A: one step around the wheel.
-    Energy lifts a touch (0.41 to 0.48).
+    Energy lifts (0.41 to 0.48).
 """
 
 from __future__ import annotations

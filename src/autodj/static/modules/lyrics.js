@@ -42,7 +42,8 @@ export function currentLyricLine() {
 // Belt and braces for the raw-timestamp defect.  The server parses LRC
 // out of sidecars and embedded tags now, but any plain text that still
 // arrives carrying cue syntax must not print it on screen or read it
-// aloud.  Mirrors audio_meta.strip_lyric_timestamps exactly:
+// aloud.  Follows audio_meta.strip_lyric_timestamps (which accepts any
+// number of digits where these patterns cap them):
 //   * only a LEADING stamp run is removed, so "meet me at [10:30]
 //     tonight" survives intact instead of becoming "meet me at tonight";
 //   * a line that is nothing but an "[xx:value]" header is dropped;

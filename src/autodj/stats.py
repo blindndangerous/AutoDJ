@@ -4,7 +4,8 @@ Reads the index metadata and renders a Rich overview of the library:
 BPM distribution, top genres, decade breakdown, track-length histogram,
 top artists, key distribution, major/minor split, and energy histogram.
 
-No FAISS index or MuQ model is needed — only ``tracks.db`` is read.
+No MuQ model is needed.  ``autodj stats`` loads the index with
+:func:`autodj.indexer.load_index`, which also reads and checks the vectors.
 
 Example:
     >>> from autodj.stats import print_stats
@@ -60,7 +61,7 @@ _ENERGY_LABELS = [
 
 
 def _bar(count: int, max_count: int, width: int = _BAR_WIDTH) -> str:
-    """Return an ASCII bar of *width* characters proportional to count/max."""
+    """Return a text bar of *width* characters proportional to count/max."""
     if max_count == 0:
         return _EMPTY * width
     filled = round(count * width / max_count)
