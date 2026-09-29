@@ -94,6 +94,7 @@ from autodj.settings_bodies import (
     BpmRangeBody,
     DiscoveryBody,
     DjMixBody,
+    FadeSeconds,
     FiniteFloat,
     PlaybackSettingsBody,
     PresetBody,
@@ -436,8 +437,8 @@ class ProfileSaveBody(BaseModel):
     beat_sync_fx: bool | None = None
     key_sync_fx: bool | None = None
     beatmatch_on_skip: bool | None = None
-    crossfade_seconds: FiniteFloat | None = None
-    fade_in_seconds: FiniteFloat | None = None
+    crossfade_seconds: FadeSeconds | None = None
+    fade_in_seconds: FadeSeconds | None = None
     pure_shuffle: bool | None = None
     anchor_to_seed: bool | None = None
     liners_enabled: bool | None = None

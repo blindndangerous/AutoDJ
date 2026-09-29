@@ -189,6 +189,9 @@ KEY_NOTATIONS: tuple[str, ...] = (
 
 
 POST_QUEUE_SEED_MODES = ("last_queued", "pre_queue")
+# The longest crossfade or fade-in, in seconds; the Settings page, the web
+# routes and config.toml all use this range.
+MAX_FADE_SECONDS = 20.0
 
 
 def _one_of(value: str, options: tuple[str, ...], field_name: str) -> str:
@@ -393,23 +396,22 @@ class PlaybackConfig(_Section):
 
         Raises:
             TypeError: If ``server_max_track_minutes`` is not a number.
-            ValueError: If ``crossfade_seconds``, ``fade_in_seconds``,
-                ``no_repeat_window``, ``artist_repeat_window``,
+            ValueError: If ``crossfade_seconds`` or ``fade_in_seconds`` is
+                outside 0-20, ``no_repeat_window``, ``artist_repeat_window``,
                 ``pick_temperature`` or a liner trigger is negative,
                 ``pick_top_k`` is below 1, a choice is not one of its
                 options, or ``server_max_track_minutes`` is outside 1-600.
         """
-        self.crossfade_seconds = float(self.crossfade_seconds)
-        if self.crossfade_seconds < 0:
-            raise ValueError(
-                f"playback.crossfade_seconds must be >= 0, got {self.crossfade_seconds}"
-            )
+        for name in ("crossfade_seconds", "fade_in_seconds"):
+            seconds = float(getattr(self, name))
+            if not 0 <= seconds <= MAX_FADE_SECONDS:
+                raise ValueError(
+                    f"playback.{name} must be between 0 and {MAX_FADE_SECONDS:g}, got {seconds}"
+                )
+            setattr(self, name, seconds)
         self.no_repeat_window = int(self.no_repeat_window)
         if self.no_repeat_window < 0:
             raise ValueError(f"playback.no_repeat_window must be >= 0, got {self.no_repeat_window}")
-        self.fade_in_seconds = float(self.fade_in_seconds)
-        if self.fade_in_seconds < 0:
-            raise ValueError(f"playback.fade_in_seconds must be >= 0, got {self.fade_in_seconds}")
         max_minutes = self.server_max_track_minutes
         if isinstance(max_minutes, bool) or not isinstance(max_minutes, int | float):
             raise TypeError("playback.server_max_track_minutes must be a number")

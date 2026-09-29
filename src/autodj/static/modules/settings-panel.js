@@ -93,12 +93,6 @@ export async function postSettings(url, body, { settingsStatus, control } = {}) 
 const PLAYBACK = "/api/playback-settings";
 const DJMIX = "/api/djmix";
 
-// A number the server accepts, or undefined to send nothing.
-const atLeastZero = (text) => {
-  const v = parseFloat(text);
-  return isNaN(v) || v < 0 ? undefined : v;
-};
-
 // key: the control in els.  url: where it saves (playback settings when
 // absent) and field: the body key.  A checkbox saves its checked state;
 // any other control saves send(value), its value when there is no send,
@@ -127,8 +121,6 @@ const FIELDS = [
     read: (st) => st.playback?.beatmatch_on_skip === true },
   { key: "pbTransitionMode", field: "transition_mode" },
   { key: "pbPostQueueSeed", field: "post_queue_seed" },
-  { key: "pbCrossfade", field: "crossfade_seconds", send: atLeastZero },
-  { key: "pbFadeIn", field: "fade_in_seconds", send: atLeastZero },
   // No extra announcement for these two: the select and checkbox already
   // speak their new value.
   { key: "keyNotation", field: "key_notation" },

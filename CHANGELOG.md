@@ -222,6 +222,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reports "Enrich failed" with the same message.
 - Every command started with faiss logging a `ModuleNotFoundError` while it picked its CPU build,
   and `autodj index` logged each model-download request. Those lines now show only with `-v`.
+- Crossfade seconds and Fade-in seconds in Settings saved any length, such as 99 seconds, without
+  a word, although the fields go up to 20. The page now refuses a value outside 0 to 20 and says
+  why, like the other number fields, the server refuses it too, a saved profile or web setting
+  outside that range is not applied, and AutoDJ refuses to start with either one outside 0 to 20
+  in `config.toml`.
 
 ## [0.18.2] - 2026-09-29
 

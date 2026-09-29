@@ -90,8 +90,6 @@ const pbKeySyncFx     = document.getElementById("pb-key-sync-fx");
 const pbBeatmatchSkip = document.getElementById("pb-beatmatch-on-skip");
 const pbTransitionMode = document.getElementById("pb-transition-mode");
 const pbPostQueueSeed  = document.getElementById("pb-post-queue-seed");
-const pbCrossfade     = document.getElementById("pb-crossfade");
-const pbFadeIn        = document.getElementById("pb-fade-in");
 const keyNotation     = document.getElementById("key-notation");
 const keyPreferFlats  = document.getElementById("key-prefer-flats");
 const bpmLo           = document.getElementById("bpm-lo");
@@ -666,7 +664,7 @@ const _settingsEls = () => ({
   pbEqDuck, pbPickMode, pbShowLyrics, pbAnchorSeed,
   pbReplayGain,
   pbBeatSyncFx, pbKeySyncFx, pbBeatmatchSkip,
-  pbTransitionMode, pbPostQueueSeed, pbCrossfade, pbFadeIn,
+  pbTransitionMode, pbPostQueueSeed,
   keyNotation, keyPreferFlats,
   bpmLo, bpmHi,
   discEnabled, discEvery,
@@ -994,14 +992,16 @@ installQueueClear({
 });
 
 // ----------------------------------------------------------------
-// Settings: repeat windows, phrase length, filter sweep, effect level,
-// ReplayGain target -- ./modules/mix-settings.js.
+// Settings: crossfade and fade-in, repeat windows, phrase length, filter
+// sweep, effect level, ReplayGain target -- ./modules/mix-settings.js.
 // ----------------------------------------------------------------
 import {
   applyMixSettings, installMixSettings, resetMixSettings,
 } from "./modules/mix-settings.js";
 
 const _mixEls = {
+  pbCrossfade:    document.getElementById("pb-crossfade"),
+  pbFadeIn:       document.getElementById("pb-fade-in"),
   pbNoRepeat:     document.getElementById("pb-no-repeat"),
   pbArtistRepeat: document.getElementById("pb-artist-repeat"),
   djPhraseBars:   document.getElementById("dj-phrase-bars"),

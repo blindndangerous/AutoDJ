@@ -370,6 +370,13 @@ class TestPlaybackConfig:
         with pytest.raises(ValueError):
             PlaybackConfig.from_dict({"crossfade_seconds": -1.0})
 
+    @pytest.mark.parametrize("name", ["crossfade_seconds", "fade_in_seconds"])
+    def test_fade_lengths_stop_at_the_settings_page_maximum(self, name: str) -> None:
+        # The Settings page and the web routes allow 0 to 20 seconds.
+        assert getattr(PlaybackConfig.from_dict({name: 20}), name) == 20.0
+        with pytest.raises(ValueError, match="between 0 and 20"):
+            PlaybackConfig.from_dict({name: 20.5})
+
     def test_fade_in_seconds_default(self) -> None:
         pb = PlaybackConfig.from_dict({})
         assert pb.fade_in_seconds == 3.0
