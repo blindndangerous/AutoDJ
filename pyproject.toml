@@ -43,7 +43,6 @@ dependencies = [
 # `index` pins floors for the torch stack MuQ runs on (CPU or CUDA).
 index = [
     "torch>=2.2.0",              # MuQ inference (CPU or CUDA)
-    "torchaudio>=2.2.0",         # GPU mel-spec for beat-grid (optional fast path)
     "soundfile>=0.12.0",         # audio file decoding
 ]
 
@@ -55,7 +54,7 @@ play = [
 
 # Convenience meta-group: every extra above.
 all = [
-    "torch>=2.2.0", "torchaudio>=2.2.0", "soundfile>=0.12.0",
+    "torch>=2.2.0", "soundfile>=0.12.0",
     "sounddevice>=0.4.6",
 ]
 

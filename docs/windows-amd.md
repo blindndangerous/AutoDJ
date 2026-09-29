@@ -64,11 +64,11 @@ the usual `uv run autodj serve` starts the standard environment, which uses CPU 
 The launcher can use a different environment for testing by setting `AUTODJ_AMD_ENV`; a relative
 path is resolved from the repository root.
 
-AMD uses the same automatic GPU selection, embedding pipeline, and GPU-eligible analysis steps as
-NVIDIA. PyTorch's ROCm build exposes these through `torch.cuda`, so the indexer currently prints
-`CUDA (GPU)` for AMD too. If no usable GPU is detected, AutoDJ falls back to CPU. To force CPU for
-one PowerShell session, set `$env:AUTODJ_GPU = "0"`; remove it with `Remove-Item Env:AUTODJ_GPU`
-to restore automatic selection.
+AMD uses the same automatic GPU selection and embedding pipeline as NVIDIA. PyTorch's ROCm build
+exposes the GPU through `torch.cuda`, so the indexer prints `CUDA (GPU)` for AMD too. If no usable
+GPU is detected, AutoDJ falls back to CPU. Only MuQ embedding uses the GPU; beat grids and other DJ
+analysis run on the CPU with librosa. To index on the CPU instead, run the standard
+`uv run autodj index` rather than the launcher.
 
 Existing indexed tracks do not need to be re-embedded. Normal incremental indexing skips unchanged
 files on either device. GPU processing improves throughput rather than embedding quality; small

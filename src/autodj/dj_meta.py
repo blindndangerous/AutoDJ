@@ -32,7 +32,6 @@ import atexit
 import contextlib
 import json
 import logging
-import os
 import sqlite3
 import threading
 from collections.abc import Set as AbstractSet
@@ -138,59 +137,12 @@ def detect_intro_outro(
 # ---------------------------------------------------------------------------
 
 
-def _gpu_onset_envelope(audio: np.ndarray, sr: int) -> tuple[np.ndarray, int] | None:
-    """Compute a log-mel onset envelope on GPU via torchaudio.
-
-    Returns ``(envelope, hop_length)`` so the caller can hand it to
-    librosa's CPU-side beat tracker (the DP step is cheap; the mel
-    spectrogram is the bulk of the cost).  Returns ``None`` when CUDA
-    or torchaudio is unavailable, or the user has disabled GPU work
-    (``AUTODJ_GPU=0`` global, ``AUTODJ_DJMETA_GPU=0`` per-step).
-    """
-    from autodj.compute import gpu_available
-
-    if os.environ.get("AUTODJ_DJMETA_GPU", "1") == "0":
-        return None
-    if not gpu_available():
-        return None
-    try:  # pragma: no cover — CUDA-only GPU envelope path; CPU path is the tested branch
-        import torch
-        import torchaudio
-    except ImportError:
-        return None
-
-    hop = 512
-    n_fft = 2048
-    try:  # pragma: no cover — CUDA-only GPU envelope path
-        mel = torchaudio.transforms.MelSpectrogram(
-            sample_rate=sr,
-            n_fft=n_fft,
-            hop_length=hop,
-            n_mels=80,
-            power=1.0,
-        ).to("cuda")
-        with torch.no_grad():
-            x = torch.from_numpy(np.ascontiguousarray(audio, dtype=np.float32)).to("cuda")
-            S = mel(x.unsqueeze(0)).clamp_min(1e-10).log()
-            diff = (S[..., 1:] - S[..., :-1]).clamp_min(0.0)
-            env = diff.mean(dim=1).squeeze(0).contiguous().cpu().numpy()
-        return env.astype(np.float32, copy=False), hop
-    except Exception as exc:  # pragma: no cover — GPU runtime errors
-        logger.debug("GPU onset envelope failed, falling back to CPU: %s", exc)
-        return None
-
-
 def detect_beat_grid(audio: np.ndarray, sr: int) -> list[float]:
     """Return a list of beat-onset timestamps in seconds.
 
     Wraps :func:`librosa.beat.beat_track` with sane defaults.  The
     returned grid is dense — one entry per beat — so phrase-aligned
     crossfade can snap to any 8 / 16 / 32 -beat boundary.
-
-    On hosts with CUDA + torchaudio, the mel-spectrogram / onset
-    envelope step runs on GPU (typically the bulk of beat-track cost)
-    and the cheap DP beat tracker still runs on CPU via librosa.
-    Disable with ``AUTODJ_DJMETA_GPU=0``.
 
     Args:
         audio: Mono float32 audio array.
@@ -203,25 +155,11 @@ def detect_beat_grid(audio: np.ndarray, sr: int) -> list[float]:
     if len(audio) < sr:  # Less than 1 second of audio
         return []
 
-    try:
-        import librosa
-    except ImportError:  # pragma: no cover — librosa required by full install
-        logger.warning(
-            "librosa is not installed; beat / cue detection skipped.  "
-            "Install with: uv add librosa  (or: uv sync --extra all).",
-        )
-        return []
+    import librosa
 
-    gpu_env = _gpu_onset_envelope(audio, sr)
     try:  # pragma: no cover — librosa internals
-        if gpu_env is not None:
-            env, hop = gpu_env
-            _tempo, beat_frames = librosa.beat.beat_track(onset_envelope=env, sr=sr, hop_length=hop)
-            beat_times = librosa.frames_to_time(beat_frames, sr=sr, hop_length=hop)
-        else:
-            _tempo, beat_frames = librosa.beat.beat_track(y=audio, sr=sr)
-            beat_times = librosa.frames_to_time(beat_frames, sr=sr)
-        return [float(t) for t in beat_times]
+        _tempo, beat_frames = librosa.beat.beat_track(y=audio, sr=sr)
+        return [float(t) for t in librosa.frames_to_time(beat_frames, sr=sr)]
     except Exception as exc:  # pragma: no cover — librosa internals
         logger.debug("Beat detection failed: %s", exc)
         return []

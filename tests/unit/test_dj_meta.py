@@ -568,25 +568,6 @@ class TestDjMetaInternalHelpers:
         audio = np.zeros(100, dtype=np.float32)
         assert detect_beat_grid(audio, 44100) == []
 
-    def test_gpu_onset_envelope_disabled_via_env(self, monkeypatch) -> None:
-        from autodj.dj_meta import _gpu_onset_envelope
-
-        monkeypatch.setenv("AUTODJ_DJMETA_GPU", "0")
-        audio = np.zeros(1024, dtype=np.float32)
-        assert _gpu_onset_envelope(audio, 22050) is None
-
-    def test_gpu_onset_envelope_returns_none_when_gpu_unavailable(self, monkeypatch) -> None:
-        from autodj import dj_meta as _dm
-
-        monkeypatch.setenv("AUTODJ_DJMETA_GPU", "1")
-        monkeypatch.setattr(_dm, "logger", _dm.logger)
-        # Force gpu_available() to return False
-        import autodj.compute as _compute
-
-        monkeypatch.setattr(_compute, "gpu_available", lambda: False)
-        audio = np.zeros(1024, dtype=np.float32)
-        assert _dm._gpu_onset_envelope(audio, 22050) is None
-
     def test_detect_first_downbeat_no_match_returns_none(self) -> None:
         from autodj.dj_meta import _detect_first_downbeat
 
