@@ -230,6 +230,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Why this track could get its BPM sums wrong, such as "BPM lifts 129 to 133, up 3.", because it
   rounded the two tempos and their difference separately. The difference is now worked out from
   the two numbers it says.
+- Shift+K on a track with no detected key said only "unknown". It now says "Key unknown". For such
+  a track, the announcement when the track changes now leaves the key out instead of ending in
+  "key unknown".
 
 ## [0.18.2] - 2026-09-29
 

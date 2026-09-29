@@ -401,11 +401,14 @@ def key_spoken(
         prefer_flats: Only meaningful when ``notation == "musical"``.
 
     Returns:
-        The spoken key, or ``"unknown"`` for unknown input.
+        The spoken key, or ``""`` for unknown input.  The page leaves an
+        unknown key out of the track-change announcement and says "Key
+        unknown" for Shift+K; a bare "unknown" said nothing about what
+        was unknown.
     """
     label = key_label(key, mode, notation, prefer_flats=prefer_flats)
     if label == "--":
-        return "unknown"
+        return ""
     if notation != "musical":
         return label
     table = _MUSICAL_NAMES_FLAT if prefer_flats else _MUSICAL_NAMES_SHARP

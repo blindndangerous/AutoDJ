@@ -109,7 +109,9 @@ def test_key_spoken_spells_out_accidentals_for_screen_readers() -> None:
     assert key_spoken(10, 0, "musical", prefer_flats=True) == "B flat minor"
     assert key_spoken(11, 1, "musical", prefer_flats=True) == "B major"
     assert key_spoken(9, 0, "camelot") == "8A"
-    assert key_spoken(-1, 1, "musical") == "unknown"
+    # Empty, so Shift+K says "Key unknown" rather than a bare "unknown".
+    assert key_spoken(-1, 1, "musical") == ""
+    assert key_spoken(-1, -1, "camelot") == ""
 
 
 class TestHarmonicCompatible:
