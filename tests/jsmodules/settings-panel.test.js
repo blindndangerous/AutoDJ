@@ -42,9 +42,6 @@ function makeEls() {
     pbShowLyrics:    cb(),
     pbAnchorSeed:    cb(),
     pbReplayGain:    cb(),
-    pbDaypart:       cb(),
-    pbMoodArc:       cb(),
-    pbMoodArcHours:  num(),
     pbImportCues:    cb(),
     pbBeatSyncFx:    cb(),
     pbKeySyncFx:     cb(),
@@ -91,9 +88,6 @@ describe("applySettingsState", () => {
         show_lyrics: true,
         anchor_to_seed: false,
         replaygain_enabled: false,
-        enable_daypart: false,
-        enable_mood_arc: false,
-        mood_arc_hours: 4,
         import_external_cues: true,
         beat_sync_fx: true,
         key_sync_fx: false,
@@ -168,7 +162,6 @@ describe("installSettingsControls", () => {
     // A value the server would refuse is not sent.
     save.mockClear();
     change(els.pbCrossfade, "-1");
-    change(els.pbMoodArcHours, "0");
     expect(save).not.toHaveBeenCalled();
   });
 });

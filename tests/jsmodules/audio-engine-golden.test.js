@@ -99,13 +99,13 @@ function recBuffer(channels, length, sampleRate, fill) {
 }
 
 class RecContext {
-  constructor({ worklets }) {
+  constructor() {
     this.nodes = [];
     this.sampleRate = SAMPLE_RATE;
     this.currentTime = 2;
     this.state = "running";
     this.destination = new RecNode(this, "destination");
-    if (worklets) this.audioWorklet = { addModule: () => Promise.resolve() };
+    this.audioWorklet = { addModule: () => Promise.resolve() };
   }
   resume() { return Promise.resolve(); }
   createGain() { const n = new RecNode(this, "gain"); n.param("gain", 1); return n; }
@@ -235,28 +235,24 @@ async function settle() {
 const SCENARIOS = [
   {
     name: "tempo and key known, wet 1",
-    worklets: true,
     wetMix: 1,
     current: { bpm: 124, key_hz: 220, downbeats_outro: [20.4, 22.3, 24.2, 26.1] },
     next: { bpm: 128, key_hz: 247 },
   },
   {
-    name: "tempo and key known, no worklets, wet 0.6, outro known",
-    worklets: false,
+    name: "tempo and key known, wet 0.6, outro known",
     wetMix: 0.6,
     current: { bpm: 96, key_hz: 196, outro_len: 9 },
     next: { bpm: 100, key_hz: 262 },
   },
   {
-    name: "nothing known, worklets",
-    worklets: true,
+    name: "nothing known, wet 0.8",
     wetMix: 0.8,
     current: {},
     next: {},
   },
   {
-    name: "nothing known, no worklets, wet 1",
-    worklets: false,
+    name: "nothing known, wet 1",
     wetMix: 1,
     current: {},
     next: {},
@@ -278,7 +274,7 @@ async function record(load, effect, scenario) {
   vi.stubGlobal("setInterval", (fn, ms) => { intervals.push({ fn, ms, live: true }); return intervals.length; });
   vi.stubGlobal("clearInterval", (handle) => { if (intervals[handle - 1]) intervals[handle - 1].live = false; });
   vi.stubGlobal("AudioContext", vi.fn(function AudioContextMock() {
-    ctx = new RecContext({ worklets: scenario.worklets });
+    ctx = new RecContext();
     return ctx;
   }));
   window.AudioContext = globalThis.AudioContext;

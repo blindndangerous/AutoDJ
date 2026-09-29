@@ -182,14 +182,17 @@ export let crossfading = false;
 let _playbackGeneration = 0;
 let _pendingCrossfade = null;
 
-// Per-worklet readiness flags so a single failed module doesn't disable
-// all four effects.  Settled individually via Promise.allSettled below.
-const _workletReady = {
-  bitcrusher: false,
-  stutter: false,
-  freeze: false,
-  glitch: false,
+// The effects that run in an AudioWorklet, and the module each needs.
+// AudioWorklet exists only on an HTTPS or localhost page; where it is
+// missing, or a module fails to load, the effect is skipped and the
+// transition is a plain crossfade.
+const _WORKLET_OF = {
+  gate_stutter: "stutter",
+  bitcrusher: "bitcrusher",
+  freeze: "freeze",
+  glitch: "glitch",
 };
+const _workletReady = {};
 
 export function ensureAudioGraph() {
   if (_ctx) return _ctx;
@@ -236,19 +239,15 @@ export function ensureAudioGraph() {
   // a page load already matches the slider.
   decks[0].gain.gain.value = 1;
   decks[1].gain.gain.value = 0;
-  // Load AudioWorklets asynchronously.  Effects fall back to vanilla
-  // Web Audio nodes (WaveShaper, GainNode automation) if a worklet
-  // isn't ready in time.
+  // Load the AudioWorklet modules in the background.  An effect whose
+  // module isn't ready yet is skipped (see _WORKLET_OF).
   if (_ctx.audioWorklet) {
-    const _load = (name, url) =>
-      _ctx.audioWorklet.addModule(url).then(
+    for (const name of Object.values(_WORKLET_OF)) {
+      _ctx.audioWorklet.addModule(`/${name}-worklet.js`).then(
         () => { _workletReady[name] = true; },
         (err) => { console.warn(`AudioWorklet load failed for ${name}:`, err); },
       );
-    _load("bitcrusher", "/bitcrusher-worklet.js");
-    _load("stutter",    "/stutter-worklet.js");
-    _load("freeze",     "/freeze-worklet.js");
-    _load("glitch",     "/glitch-worklet.js");
+    }
   }
   return _ctx;
 }
@@ -373,14 +372,18 @@ function restoreDeckGains() {
 let _lastTransitionFx = "none";
 let _rotateCursor = -1;
 
+// Random and rotate pick only effects that can run; a chosen effect
+// that can't is played as a plain crossfade.
+const _canRun = (name) => !Object.hasOwn(_WORKLET_OF, name) || _workletReady[_WORKLET_OF[name]] === true;
+
 function _resolveTransition(name) {
-  const real = Object.keys(_EFFECTS);
+  const real = Object.keys(_EFFECTS).filter(_canRun);
   if (name === "random") return real[Math.floor(Math.random() * real.length)];
   if (name === "rotate") {
     _rotateCursor = (_rotateCursor + 1) % real.length;
     return real[_rotateCursor];
   }
-  return name || "none";
+  return name && _canRun(name) ? name : "none";
 }
 
 // disconnect() drops every output of the deck's source, the silence
@@ -538,7 +541,7 @@ async function _decodeFor(path) {
     .catch((errorValue) => {
       // Decoded-audio effects are invoked on demand at transition time.
       // Surface a failed audio request just as other client requests do,
-      // while preserving the rejection for the effect's fallback handler.
+      // while preserving the rejection for the effect's own error handler.
       announceRequestError(errorValue);
       throw errorValue;
     })
@@ -966,8 +969,7 @@ function _copyFrames(ctx, buf, start, len, reverse = false) {
 }
 
 // Replays cut from the decoded outgoing track (spins, tape stop, scratch,
-// beat repeat, and the freeze / glitch fallbacks where worklets are
-// unavailable).  They go to the effect bus, not deck.gain, or the
+// beat repeat).  They go to the effect bus, not deck.gain, or the
 // crossfade ramp would silence them; the deck keeps only its dry share,
 // so at a full wet mix the replay is what is heard.  `build(buf,
 // currentT)` schedules them once the file is decoded and returns
@@ -1164,26 +1166,9 @@ const _EFFECTS = {
   gate_stutter(fx) {
     // Tempo-synced gate accelerating from 1/8 to 1/16 notes (8 -> 16 Hz
     // when the BPM is unknown), open a quarter of each cycle.  The
-    // worklet puts raised-cosine fades on every edge; without it the
-    // gain steps are scheduled directly.
+    // worklet puts raised-cosine fades on every edge.
     const { ctx, t0, tEnd } = fx;
     const beatHz = (_BS.outBpm > 0 ? _BS.outBpm : 120) / 60;
-    if (!_workletReady.stutter) {
-      _gainGate(fx, (gain) => {
-        gain.setValueAtTime(1, t0);
-        let t = _BS.nextDownbeat(t0);
-        let rate = beatHz * 2;
-        const maxRate = beatHz * 4;
-        while (t < tEnd) {
-          const cycle = 1 / rate;
-          gain.setValueAtTime(1, t);
-          gain.setValueAtTime(0, t + cycle * 0.25);
-          t += cycle;
-          rate = Math.min(maxRate, rate * 1.05);
-        }
-      });
-      return;
-    }
     const node = new AudioWorkletNode(ctx, "stutter");
     const rateParam = node.parameters.get("rate");
     rateParam.setValueAtTime(beatHz * 2, t0);
@@ -1236,26 +1221,6 @@ const _EFFECTS = {
     // the 8-bit console sound.  The deck holds full level so the lo-fi
     // character isn't masked by the crossfade ramp.
     const { ctx, t0, tEnd, fadeSec } = fx;
-    if (!_workletReady.bitcrusher) {
-      // WaveShaper fallback: quantises amplitude only (no sample-and-hold)
-      // but still crunches, so the effect is never silent where the
-      // worklet fails to load.
-      console.warn("bitcrusher worklet not ready; falling back to WaveShaper.");
-      const shaper = ctx.createWaveShaper();
-      const N = 4096;
-      const curve = new Float32Array(N);
-      const levels = 4;  // 3-bit quantise
-      for (let i = 0; i < N; i++) {
-        const x = (i / (N - 1)) * 2 - 1;
-        curve[i] = Math.round(x * levels) / levels;
-      }
-      shaper.curve = curve;
-      shaper.oversample = "none";
-      _inline(fx, fx.outDeck, shaper);
-      _holdThenDrop(fx, 0.3);
-      fx.teardowns.push(() => _disconnectAll(shaper));
-      return;
-    }
     const node = _stereoWorklet(ctx, "bitcrusher");
     _holdThenDrop(fx, 0.3);
     // Peak crush at 25 % of the fade: by halfway the crossfade has the
@@ -1391,75 +1356,18 @@ const _EFFECTS = {
 
   freeze(fx) {
     // Capture the last 150 ms and loop it, fading out over the effect.
-    const { ctx, t0, tEnd, fadeSec } = fx;
-    if (_workletReady.freeze) {
-      _workletToBus(fx, "freeze", { grainMs: 150, fadeOutSec: fadeSec },
-        (gain) => gain.setValueAtTime(1, t0));
-      return;
-    }
-    // No worklet (non-secure context, http:// over a LAN): loop the
-    // last 150 ms of the decoded track instead.
-    console.warn("freeze worklet unavailable; using BufferSource fallback");
-    _decodedReplays(fx, (buf, currentT) => {
-      const sr = buf.sampleRate;
-      const grainLen = Math.floor(0.15 * sr);
-      const startSamp = Math.max(0, Math.floor(currentT * sr) - grainLen);
-      const src = ctx.createBufferSource();
-      src.buffer = _copyFrames(ctx, buf, startSamp, grainLen);
-      src.loop = true;
-      const g = ctx.createGain();
-      g.gain.setValueAtTime(1, t0);
-      g.gain.linearRampToValueAtTime(0.0, tEnd);
-      src.connect(g); g.connect(_fxBus);
-      src.start();
-      return [{ src, g }];
-    }, _warnReplayFailed);
+    _workletToBus(fx, "freeze", { grainMs: 150, fadeOutSec: fx.fadeSec },
+      (gain) => gain.setValueAtTime(1, fx.t0));
   },
 
   glitch(fx) {
     // 80 ms slices of the recent audio replayed in random order.
-    const { ctx, t0, tEnd, fadeSec } = fx;
-    if (_workletReady.glitch) {
-      _workletToBus(fx, "glitch", { sliceMs: 80, density: 0.85 }, (gain) => {
-        gain.setValueAtTime(1, t0);
-        gain.setValueAtTime(1, t0 + fadeSec * 0.7);
-        gain.linearRampToValueAtTime(0, tEnd);
-      });
-      return;
-    }
-    // No worklet: schedule decoded slices from the last half second or
-    // so, each with a 5 ms attack and release so the seams don't click.
-    console.warn("glitch worklet unavailable; using BufferSource fallback");
-    const sliceSec = 0.08;
-    const totalSec = Math.max(fadeSec, 2.0);
-    _decodedReplays(fx, (buf, currentT) => {
-      const sr = buf.sampleRate;
-      const sliceLen = Math.floor(sliceSec * sr);
-      const winLen = Math.max(sliceLen * 6, Math.floor(0.5 * sr));
-      const winStart = Math.max(0, Math.floor(currentT * sr) - winLen);
-      const nSrcSlices = Math.max(1, Math.floor(winLen / sliceLen));
-      const nSlots = Math.ceil(totalSec / sliceSec);
-      const ramp = 0.005;
-      const sources = [];
-      for (let i = 0; i < nSlots; i++) {
-        const idx = Math.floor(Math.random() * nSrcSlices);
-        const sStart = winStart + idx * sliceLen;
-        if (sStart + sliceLen > buf.length) continue;
-        const src = ctx.createBufferSource();
-        src.buffer = _copyFrames(ctx, buf, sStart, sliceLen);
-        const g = ctx.createGain();
-        const tStart = t0 + i * sliceSec;
-        g.gain.setValueAtTime(0, tStart);
-        g.gain.linearRampToValueAtTime(1, tStart + ramp);
-        g.gain.setValueAtTime(1, tStart + sliceSec - ramp);
-        g.gain.linearRampToValueAtTime(0, tStart + sliceSec);
-        src.connect(g); g.connect(_fxBus);
-        src.start(tStart);
-        src.stop(tStart + sliceSec + 0.01);
-        sources.push({ src, g });
-      }
-      return sources;
-    }, _warnReplayFailed);
+    const { t0, tEnd, fadeSec } = fx;
+    _workletToBus(fx, "glitch", { sliceMs: 80, density: 0.85 }, (gain) => {
+      gain.setValueAtTime(1, t0);
+      gain.setValueAtTime(1, t0 + fadeSec * 0.7);
+      gain.linearRampToValueAtTime(0, tEnd);
+    });
   },
 
   scratch(fx) {

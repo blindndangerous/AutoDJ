@@ -93,6 +93,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   session like the other controls, instead of a message on the WebSocket. The WebSocket only sends
   state to the page and ignores anything the page sends on it. The button also works while the
   WebSocket is reconnecting.
+- The gate stutter, bitcrusher, freeze and glitch transition effects in crossfades the browser
+  plays need the page to be opened over HTTPS or on localhost, where the browser allows
+  AudioWorklet. On a plain-HTTP page they are skipped: that crossfade plays without an effect, and
+  random and rotate leave them out. Settings says so under the transition effect. Stream mode and
+  server audio are not affected.
 
 ### Removed
 
@@ -136,7 +141,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   arc. `[playback] enable_daypart`, `enable_mood_arc` and `mood_arc_hours` are refused in
   `config.toml`; delete them. The settings routes refuse these fields too. Every profile saved by
   0.18 holds them, so it no longer applies: delete it and save it again. Saved web settings still
-  load; the three old fields are skipped with a warning in the server log.
+  load; the three old fields are skipped with a warning in the server log. The Wall-clock daypart,
+  Mood arc and mood arc length settings are gone from the web page's Settings, and a profile saved
+  from the page no longer includes them.
 - The `genres` filter of presets. A preset that still sets `genres` is skipped with a warning
   naming the unknown key, like any other invalid preset.
 - `presets.toml`. Define presets as `[presets.NAME]` tables in `config.toml`. AutoDJ refuses to
@@ -148,6 +155,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   indexed tracks. The web settings route no
   longer takes `import_external_cues`, since the running server has nothing left for it to change;
   set `[playback] import_external_cues` in `config.toml`.
+- The page's stand-in versions of the gate stutter, bitcrusher, freeze and glitch effects used when
+  AudioWorklet was missing.
 
 ### Fixed
 

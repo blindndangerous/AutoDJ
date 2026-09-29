@@ -85,9 +85,6 @@ const pbPickMode      = document.getElementById("pb-pick-mode");
 const pbShowLyrics    = document.getElementById("pb-show-lyrics");
 const pbAnchorSeed    = document.getElementById("pb-anchor-seed");
 const pbReplayGain    = document.getElementById("pb-replaygain");
-const pbDaypart       = document.getElementById("pb-daypart");
-const pbMoodArc       = document.getElementById("pb-mood-arc");
-const pbMoodArcHours  = document.getElementById("pb-mood-arc-hours");
 const pbImportCues    = document.getElementById("pb-import-cues");
 const pbBeatSyncFx    = document.getElementById("pb-beat-sync-fx");
 const pbKeySyncFx     = document.getElementById("pb-key-sync-fx");
@@ -106,6 +103,10 @@ const settingsStatus  = document.getElementById("settings-status");
 const volAnnounce     = document.getElementById("vol-announce");
 const btnListen       = document.getElementById("btn-listen");
 const streamAudio     = document.getElementById("stream-audio");
+
+// The browser gives an AudioWorklet only to an HTTPS or localhost page;
+// without one the audio engine skips the four effects built on it.
+document.getElementById("fx-https-note").hidden = "AudioWorkletNode" in window;
 
 // Settings > Announcements.  Kept per browser, like the shortcut switch;
 // off (the default) speaks a new track only while Now Playing shows.
@@ -665,7 +666,7 @@ const _settingsEls = () => ({
   djBeatmatch, djPhraseAlign, djOutroIntro,
   pbEqDuck, pbPickMode, pbShowLyrics, pbAnchorSeed,
   pbReplayGain,
-  pbDaypart, pbMoodArc, pbMoodArcHours, pbImportCues,
+  pbImportCues,
   pbBeatSyncFx, pbKeySyncFx, pbBeatmatchSkip,
   pbTransitionMode, pbPostQueueSeed, pbCrossfade, pbFadeIn,
   keyNotation, keyPreferFlats,

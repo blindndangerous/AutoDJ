@@ -336,33 +336,48 @@ afterEach(() => {
 });
 
 describe("transition effect levels", () => {
-  for (const worklets of [true, false]) {
-    const mode = worklets ? "with worklets" : "without worklets";
-    for (const effect of EFFECTS) {
-      it(`${effect} ${mode}: every sound goes through the master volume`, async () => {
-        const { ctx, engine } = await runEffect(effect, { worklets });
-        const master = engine._master;
-        expect(master.kind).toBe("gain");
-        expect(master.gain.value).toBe(0.5);
-        const intoSpeakers = ctx.nodes.filter((n) => n.outputs.has(ctx.destination));
-        expect(intoSpeakers).toEqual([master]);
-        for (const node of ctx.nodes) {
-          if (node === master || node === ctx.destination || node.kind === "analyser") continue;
-          if (node.outputs.size === 0 || drivesOnlyParams(node)) continue;
-          expect(reaches(node, master), `${node.kind} in ${effect}`).toBe(true);
-        }
-        engine.stopAllDecks();
-      });
+  for (const effect of EFFECTS) {
+    it(`${effect}: every sound goes through the master volume`, async () => {
+      const { ctx, engine } = await runEffect(effect);
+      const master = engine._master;
+      expect(master.kind).toBe("gain");
+      expect(master.gain.value).toBe(0.5);
+      const intoSpeakers = ctx.nodes.filter((n) => n.outputs.has(ctx.destination));
+      expect(intoSpeakers).toEqual([master]);
+      for (const node of ctx.nodes) {
+        if (node === master || node === ctx.destination || node.kind === "analyser") continue;
+        if (node.outputs.size === 0 || drivesOnlyParams(node)) continue;
+        expect(reaches(node, master), `${node.kind} in ${effect}`).toBe(true);
+      }
+      engine.stopAllDecks();
+    });
 
-      it(`${effect} ${mode}: no louder than the deck it treats`, async () => {
-        const { ctx, engine } = await runEffect(effect, { worklets });
-        const gains = effectGains(ctx, engine);
-        for (const { source, gain } of gains) {
-          expect(gain, `${source} in ${effect}`).toBeLessThanOrEqual(1 + 1e-9);
-        }
-        engine.stopAllDecks();
-      });
-    }
+    it(`${effect}: no louder than the deck it treats`, async () => {
+      const { ctx, engine } = await runEffect(effect);
+      const gains = effectGains(ctx, engine);
+      for (const { source, gain } of gains) {
+        expect(gain, `${source} in ${effect}`).toBeLessThanOrEqual(1 + 1e-9);
+      }
+      engine.stopAllDecks();
+    });
+  }
+
+  // A plain-HTTP page has no AudioWorklet.  The effects built on one are
+  // skipped: the crossfade still runs, through the master, quietly.
+  for (const effect of ["gate_stutter", "bitcrusher", "freeze", "glitch"]) {
+    it(`${effect} without AudioWorklet: a plain crossfade`, async () => {
+      const warn = vi.spyOn(console, "warn");
+      const { ctx, engine } = await runEffect(effect, { worklets: false });
+      expect(ctx.nodes.filter((n) => n.kind === "worklet")).toEqual([]);
+      expect(engine.decks.map((d) => d.gain.gain.events.at(-1))).toEqual([0, 1]);
+      for (const deck of engine.decks) {
+        expect(deck.source.outputs.has(deck.gain)).toBe(true);
+        expect(reaches(deck.gain, engine._master)).toBe(true);
+      }
+      expect(engine._master.gain.value).toBe(0.5);
+      expect(warn).not.toHaveBeenCalled();
+      engine.stopAllDecks();
+    });
   }
 
   it("scales effect sound by the wet mix", async () => {

@@ -98,10 +98,6 @@ const atLeastZero = (text) => {
   const v = parseFloat(text);
   return isNaN(v) || v < 0 ? undefined : v;
 };
-const aboveZero = (text) => {
-  const v = parseFloat(text);
-  return isFinite(v) && v > 0 ? v : undefined;
-};
 
 // key: the control in els.  url: where it saves (playback settings when
 // absent) and field: the body key.  A checkbox saves its checked state;
@@ -125,9 +121,6 @@ const FIELDS = [
     read: (st) => Boolean(st.playback) && st.playback.show_lyrics !== false },
   { key: "pbAnchorSeed", field: "anchor_to_seed" },
   { key: "pbReplayGain", field: "replaygain_enabled" },
-  { key: "pbDaypart", field: "enable_daypart" },
-  { key: "pbMoodArc", field: "enable_mood_arc" },
-  { key: "pbMoodArcHours", field: "mood_arc_hours", send: aboveZero },
   { key: "pbImportCues", field: "import_external_cues" },
   { key: "pbBeatSyncFx", field: "beat_sync_fx" },
   { key: "pbKeySyncFx", field: "key_sync_fx" },
