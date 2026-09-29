@@ -132,6 +132,35 @@ async def test_set_bitrate_restarts_and_disconnects(output: StreamOutput) -> Non
     assert output._encoder.bitrate == 192
 
 
+async def test_set_bitrate_ends_the_old_reader_quietly_when_its_pipe_is_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 0.19.0 sample: each Quality change logged "ValueError: I/O operation
+    # on closed file" from the old encoder's reader thread.
+    class ClosedPipe(FakeEncoder):
+        def read(self, n: int) -> bytes:
+            data = super().read(n)
+            if self._closed:
+                raise ValueError("I/O operation on closed file.")
+            return data
+
+    crashes: list[threading.ExceptHookArgs] = []
+    monkeypatch.setattr(threading, "excepthook", crashes.append)
+    out = StreamOutput(320, 8, encoder_factory=ClosedPipe, loop=asyncio.get_running_loop())
+    try:
+        old_reader = out._reader
+        out.set_bitrate(192)
+        old_reader.join(timeout=2.0)
+        assert not old_reader.is_alive()
+        assert crashes == []
+        assert not out._failures
+        listener = out.add_listener(icy=False)
+        out.write(_block())
+        assert len(await _collect(listener, 64)) >= 64
+    finally:
+        out.close()
+
+
 # --- Additional coverage: controller-mandated non-blocking write, thread
 # safety, restart, drop-oldest, and branch coverage the brief's own test
 # list does not exercise. ---

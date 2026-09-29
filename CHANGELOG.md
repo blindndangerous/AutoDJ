@@ -233,6 +233,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Shift+K on a track with no detected key said only "unknown". It now says "Key unknown". For such
   a track, the announcement when the track changes now leaves the key out instead of ending in
   "key unknown".
+- Changing the stream Quality no longer writes a "ValueError: I/O operation on closed file"
+  traceback to the server log. The old encoder's output ended while it was being read, which is
+  expected there; the stream carried on normally before and still does.
 
 ## [0.18.2] - 2026-09-29
 
