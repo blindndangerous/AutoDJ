@@ -619,10 +619,10 @@ def cmd_devices_pairing_code(ctx: click.Context) -> None:
 @click.option("--force", is_flag=True, help="Replace an existing archive at DESTINATION.")
 @click.pass_context
 def cmd_backup(ctx: click.Context, destination: Path, force: bool) -> None:
-    """Write the index, DJ metadata, web settings, liners, profiles and history to a ZIP file.
+    """Write the index, DJ metadata, web settings, liners and profiles to a ZIP file.
 
-    Safe while AutoDJ is serving.  config.toml, config.local.toml and
-    presets.toml are not included; copy them yourself.
+    Safe while AutoDJ is serving.  config.toml and config.local.toml are not
+    included; copy them yourself.
     """
     from autodj.backup import BackupError, create_backup
 

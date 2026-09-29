@@ -530,20 +530,6 @@ class TestDeepMergeAndOverlays:
         with pytest.raises(ValueError, match=message):
             load_config(base)
 
-    def test_presets_sidecar_loaded(self, tmp_path: Path) -> None:
-        base = tmp_path / "config.toml"
-        base.write_text(
-            '[library]\nmusic_dir = "Z:/Music"\n[index]\n[playback]\n',
-            encoding="utf-8",
-        )
-        sidecar = tmp_path / "presets.toml"
-        sidecar.write_text(
-            "[chill]\nbpm_target = 75\nbpm_weight = 0.2\n",
-            encoding="utf-8",
-        )
-        cfg = load_config(base)
-        assert "chill" in cfg.presets
-
     def test_non_table_presets_value_is_a_load_error(self, tmp_path: Path) -> None:
         base = tmp_path / "config.toml"
         base.write_text('presets = 5\n[library]\nmusic_dir = "Z:/Music"\n', encoding="utf-8")
@@ -559,6 +545,14 @@ class TestDeepMergeAndOverlays:
         )
         cfg = load_config(base)
         assert "evening" in cfg.presets
+
+    def test_leftover_presets_toml_is_refused(self, tmp_path: Path) -> None:
+        """Ignoring it would drop its presets without a word."""
+        base = tmp_path / "config.toml"
+        base.write_text('[library]\nmusic_dir = "Z:/Music"\n', encoding="utf-8")
+        (tmp_path / "presets.toml").write_text("[chill]\nbpm_target = 75\n", encoding="utf-8")
+        with pytest.raises(ValueError, match=r"presets\.toml is no longer read"):
+            load_config(base)
 
 
 class TestAutoDJConfig:

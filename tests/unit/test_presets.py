@@ -235,13 +235,13 @@ class TestLoadUserPresets:
         assert "broken" not in result
         assert "ok" in result
 
-    def test_wrapped_form_in_the_sidecar_is_skipped_with_a_clear_warning(self, caplog) -> None:
-        """presets.toml takes bare tables only; [presets.name] there is not a preset."""
+    def test_nested_table_is_skipped_with_a_clear_warning(self, caplog) -> None:
+        """[presets.presets.wakeup] is not a preset called wakeup."""
         raw = {"presets": {"wakeup": {"bpm_target": 90}}}
         with caplog.at_level("WARNING"):
             result = load_user_presets(raw)
         assert result == {}
-        assert "nested tables ['wakeup'] are not presets" in caplog.text
+        assert "nested tables ['wakeup'] are not preset keys" in caplog.text
 
     def test_removed_slide_keys_are_rejected(self, caplog) -> None:
         """bpm_low / bpm_peak are gone; they must not silently fall back to 80-130."""

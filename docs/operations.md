@@ -525,7 +525,7 @@ index, so the next `autodj index` there starts from the copied one.
   `index/profiles`.
 - `manifest.json`, which records the AutoDJ version that made the archive and lists its files.
 
-Backups do not include `config.toml`, `config.local.toml` or `presets.toml`. Copy those yourself
+Backups do not include `config.toml` or `config.local.toml`. Copy those yourself
 and keep them with the archive. Backups also leave out the pairing secret, the paired browsers and
 the stream secret, so after a restore on a new machine you pair your browsers again and use the new
 stream address.

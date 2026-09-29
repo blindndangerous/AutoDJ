@@ -1112,11 +1112,11 @@ def _build_config(
     *,
     config_path: Path | None,
     sources: list[str],
-    presets_raw: Any,
 ) -> AutoDJConfig:
     """Validate raw sections and construct the typed application configuration."""
     from autodj.presets import load_user_presets
 
+    presets_raw = raw.get("presets", {})
     if not isinstance(presets_raw, Mapping):
         raise TypeError("presets section must be a table")
 
@@ -1141,6 +1141,11 @@ def load_config(
 
     An omitted path uses ``config.toml`` when present and otherwise keeps
     validated defaults. An explicitly supplied missing path remains an error.
+
+    Raises:
+        ValueError: A ``presets.toml`` sits where ``config.toml`` is looked
+            for.  AutoDJ no longer reads it, and ignoring it would drop its
+            presets without a word.
     """
     environment = os.environ if environ is None else environ
     explicit = path is not None
@@ -1169,16 +1174,10 @@ def load_config(
         raw = _deep_merge(raw, env_raw)
         sources.append("environment")
 
-    sidecar_root = loaded_path.parent if loaded_path is not None else Path.cwd()
-    presets_path = sidecar_root / "presets.toml"
+    presets_path = candidate.parent / "presets.toml"
     if presets_path.exists():
-        with presets_path.open("rb") as fh:
-            presets_raw = tomllib.load(fh)
-    else:
-        presets_raw = raw.get("presets", {})
-    return _build_config(
-        raw,
-        config_path=loaded_path,
-        sources=sources,
-        presets_raw=presets_raw,
-    )
+        raise ValueError(
+            f"{presets_path} is no longer read: move each [NAME] table into config.toml "
+            "as [presets.NAME], then delete presets.toml"
+        )
+    return _build_config(raw, config_path=loaded_path, sources=sources)

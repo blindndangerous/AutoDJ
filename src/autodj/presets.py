@@ -4,9 +4,8 @@ A preset steers which tracks the DJ picks next by biasing the FAISS
 similarity search toward a target BPM that may evolve over time.
 
 Built-in presets cover common scenarios (wakeup, workout, etc.).
-Users can add their own in ``config.toml`` under ``[presets.*]`` sections,
-or as bare ``[name]`` tables in a ``presets.toml`` sidecar.  Only one field
-is required, the rest are inferred:
+Users can add their own in ``config.toml`` under ``[presets.*]`` sections.
+Only one field is required, the rest are inferred:
 
 .. code-block:: toml
 
@@ -237,8 +236,8 @@ def preset_from_config(name: str, section: dict[str, Any]) -> Preset:
     nested = sorted(key for key, value in section.items() if isinstance(value, dict))
     if nested:
         raise ValueError(
-            f"Preset '{name}': nested tables {nested} are not presets; presets.toml "
-            "takes bare [name] tables and config.toml takes [presets.name] tables."
+            f"Preset '{name}': nested tables {nested} are not preset keys; each preset "
+            "is one [presets.NAME] table in config.toml."
         )
     unknown = sorted(set(section) - _PRESET_KEYS)
     if unknown:
@@ -287,11 +286,7 @@ def preset_from_config(name: str, section: dict[str, Any]) -> Preset:
 
 
 def load_user_presets(sections: Mapping[str, Any]) -> dict[str, Preset]:
-    """Load user-defined presets from a mapping of preset name to table.
-
-    Each file has one layout.  ``presets.toml`` holds bare ``[name]``
-    tables, so the whole parsed file is passed in; ``config.toml`` holds
-    ``[presets.name]`` tables, so its ``presets`` table is passed in.
+    """Load user-defined presets from ``config.toml``'s ``presets`` table.
 
     Sections that fail to parse are skipped with a warning so a typo
     in one preset doesn't kill the whole load.

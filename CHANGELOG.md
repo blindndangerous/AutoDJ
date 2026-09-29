@@ -133,6 +133,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   load; the three old fields are skipped with a warning in the server log.
 - The `genres` filter of presets. A preset that still sets `genres` is skipped with a warning
   naming the unknown key, like any other invalid preset.
+- `presets.toml`. Define presets as `[presets.NAME]` tables in `config.toml`. AutoDJ refuses to
+  start while a `presets.toml` sits next to `config.toml`: move each `[NAME]` table into
+  `config.toml` as `[presets.NAME]`, then delete the file. `presets.toml.example` is gone too.
 
 ### Fixed
 

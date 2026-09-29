@@ -12,9 +12,8 @@ uploaded to a cloud service.
 - Automatic track selection with configurable repeat avoidance and discovery.
 - Crossfades with optional EQ ducking and transition effects.
 - A browser interface for playback, album art, lyrics, search, and queue management.
-- Mood presets that adjust tempo targets during a set. To define your own, copy
-  `presets.toml.example` to `presets.toml` next to your `config.toml` (or in the working
-  directory when you have no config file).
+- Mood presets that adjust tempo targets during a set. To define your own, add
+  `[presets.NAME]` tables to `config.toml`; `config.toml.example` shows how.
 - Voice liners that play spoken clips over the music on a schedule.
 - Lyrics from sidecar files or tags, with scrolling and highlighting when timestamps are available.
 - Offline use after installing dependencies and downloading the model. The first indexing run
@@ -445,7 +444,7 @@ then delete what you no longer want:
   web state.
 - `models/` (or your `[index] model_dir`) holds the downloaded model weights. Hugging Face can
   also keep files in its own cache, `~/.cache/huggingface` or the directory named by `HF_HOME`.
-- `config.toml`, `config.local.toml`, `presets.toml`, and `.env` hold your settings and the LAN
+- `config.toml`, `config.local.toml`, and `.env` hold your settings and the LAN
   server secret.
 - `music/` holds whatever audio you copied there. Keep it if it is your only copy.
 
