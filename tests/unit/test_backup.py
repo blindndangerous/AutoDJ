@@ -191,7 +191,10 @@ def test_restore_refuses_an_old_format_index(tmp_path: Path) -> None:
     with pytest.raises(BackupError, match=r"this backup was made by an older AutoDJ.*--force`"):
         restore_backup(cfg, archive, force=True)
 
-    assert list(cfg.index.active_dir.iterdir()) == []
+    # Nothing from the archive is installed.  The index's own publication
+    # lock file may remain: filelock keeps it on POSIX and removes it on Windows.
+    leftovers = [p.name for p in cfg.index.active_dir.iterdir()]
+    assert leftovers in ([], [".index-publication.lock"])
 
 
 def test_backup_refuses_an_old_format_index(tmp_path: Path) -> None:
