@@ -164,27 +164,37 @@ def _load_index_for_serve(
 
 def _scan_index_rows(
     base: Path, active_name: str
-) -> list[tuple[str, int, str]]:  # pragma: no cover
-    """Walk *base* for indexed-library directories; return display rows."""
-    import sqlite3
+) -> list[tuple[str, str, str]]:  # pragma: no cover
+    """Walk *base* for index directories; return (name, track count, path) rows.
 
-    rows: list[tuple[str, int, str]] = []
+    The track count comes from each index's ``index-manifest.json``.  An
+    index from before the manifest format shows as needing a rebuild.
+    """
+    from autodj.index_manifest import (
+        IndexConsistencyError,
+        UnsupportedIndexError,
+        read_manifest,
+    )
+
+    rows: list[tuple[str, str, str]] = []
     for entry in sorted(base.iterdir()):
         if not entry.is_dir():
             continue
-        db_path = entry / "tracks.db"
-        if not db_path.exists():
-            continue
         try:
-            conn = sqlite3.connect(db_path)
-            try:
-                count = int(conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0])
-            finally:
-                conn.close()
-        except sqlite3.DatabaseError:
-            count = -1
+            manifest = read_manifest(entry)
+        except UnsupportedIndexError:
+            status = "[red]old format: rebuild with autodj index --force[/red]"
+        except IndexConsistencyError:
+            status = "[red]corrupt[/red]"
+        else:
+            if manifest is None:
+                if not (entry / "tracks.db").exists():
+                    continue
+                status = "[red]old format: rebuild with autodj index --force[/red]"
+            else:
+                status = f"{manifest.vector_count} tracks"
         active_marker = "  *" if entry.name == active_name else "   "
-        rows.append((active_marker + entry.name, count, str(entry)))
+        rows.append((active_marker + entry.name, status, str(entry)))
     return rows
 
 
@@ -1377,9 +1387,8 @@ def cmd_list_indexes(ctx: click.Context) -> None:  # pragma: no cover -- filesys
         )
         return
     console.print(f"[bold]Indexes under[/] {base}  [dim](* = active)[/]\n")
-    for name, count, path in rows:
-        count_str = f"{count} tracks" if count >= 0 else "[red]corrupt[/red]"
-        console.print(f"  {name:24s}  {count_str:18s}  [dim]{path}[/dim]")
+    for name, status, path in rows:
+        console.print(f"  {name:24s}  {status:18s}  [dim]{path}[/dim]")
 
 
 # ---------------------------------------------------------------------------
