@@ -273,8 +273,10 @@ class TestLoadInto:
         _write_state(tmp_path, {"discovery_every": 0})
         p = _make_player()
         p._discovery_every = 20
+        p._state.discovery_enabled = True
         _load(p, tmp_path)
         assert p._discovery_every is None
+        assert p._state.discovery_enabled is False
 
     def test_saved_discovery_rate_turns_discovery_on(self, tmp_path) -> None:
         _write_state(tmp_path, {"discovery_every": 7})

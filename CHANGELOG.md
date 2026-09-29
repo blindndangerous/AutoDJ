@@ -195,18 +195,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Mixxx cue import uses each track's own sample rate, so cues on 48 kHz tracks no longer land
   about 9% late. Mixxx outro cues now count as outro markers (they were read as intro markers),
   and Mixxx's hidden "audible sound" range is no longer imported as an outro.
-- A discovery rate saved from the web page now turns discovery on after a restart, and the
-  Discovery button says so. It used to restore only the rate, with discovery off, so no discovery
-  track played until the button was pressed again.
-- AutoDJ no longer picks silent tracks by itself, such as the few seconds of pregap filler
-  titled "[silence]" that some rips contain. A track counts as silent when its loudness measured
-  by `autodj index` is below about -60 dBFS. Similarity, anchored and random picks, discovery,
-  the first track of a set (also in stream mode) and the Shuffle button all skip them. A silent
-  track still plays when you choose it in search with Play now, Play next or Add to queue.
 - Crossfade seconds set to 0 now cuts from one track to the next in the web page too, as it
   already did in the server mix. The page used to play a 3 second fade instead. With 0 there is no
   transition effect either. In the Full intro and outro and Outro fade modes, tracks with detected
   markers still fade for 1 to 12 seconds, in the page and in the server mix alike.
+
+## [0.18.2] - 2026-09-29
+
+### Fixed
+
+- AutoDJ no longer picks silent tracks by itself. Some libraries hold silent files, such as the
+  short "[silence]" tracks some albums use as a gap before the next song. In the Entropy walk pick
+  mode those sound as far from music as anything can, so every other track was silence; in
+  Similarity mode one silent track led to more. Now no pick mode chooses a silent track, and
+  neither do discovery, Shuffle, the first track of a set or the playlist command. You can still
+  play or queue one from search. Entropy walk is meant to drift across the library; if you want
+  the set to stay close to the track you started with, choose Similarity as the Pick mode.
+- The discovery rate you saved in Settings works again after a restart. AutoDJ remembered the rate
+  but left discovery switched off, so no discovery tracks played and the Discovery button and the
+  Settings checkbox both showed it off.
 
 ## [0.18.1] - 2026-09-28
 
@@ -1138,7 +1145,8 @@ The "make it feel like a real radio station" release.
 
 AutoDJ is built and maintained by a blind developer.  Every change to the web UI runs through an accessibility review before it ships.  If you find a screen-reader bug or a keyboard trap, please file an issue.
 
-[Unreleased]: https://github.com/blindndangerous/AutoDJ/compare/v0.18.1...HEAD
+[Unreleased]: https://github.com/blindndangerous/AutoDJ/compare/v0.18.2...HEAD
+[0.18.2]: https://github.com/blindndangerous/AutoDJ/compare/v0.18.1...v0.18.2
 [0.18.1]: https://github.com/blindndangerous/AutoDJ/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/blindndangerous/AutoDJ/compare/v0.16.1...v0.18.0
 [0.17.0]: https://github.com/blindndangerous/AutoDJ/commit/6b6834ca6079d0942867d59f3779cb284c41580a

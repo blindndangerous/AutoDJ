@@ -998,6 +998,22 @@ class TestSilentTracksAreNeverPicked:
         for _ in range(10):
             assert sim.find_distant(current, deque([current])).path == "song_7.flac"
 
+    def test_discovery_falls_back_when_the_distant_tracks_are_silent(self) -> None:
+        # Each track is farther from track 0 than the last and tracks 2 to 7
+        # are silent, so the bottom quartile has nothing left to offer.
+        n = 8
+        vectors = np.zeros((n, FEATURE_DIM), dtype=np.float32)
+        vectors[:, 0] = np.linspace(1.0, -1.0, n, dtype=np.float32)
+        vectors[:, 1] = np.sqrt(np.maximum(0.0, 1.0 - vectors[:, 0] ** 2))
+        faiss_index = faiss.IndexFlatIP(FEATURE_DIM)
+        faiss_index.add(vectors)
+        entries = [_make_entry(i) for i in range(n)]
+        for entry in entries[2:]:
+            entry.energy = 0.0
+        sim = SimilarityIndex(faiss_index=faiss_index, entries=entries)
+        current = sim.entries[0].path
+        assert sim.find_distant(current, deque([current])).path == "song_1.flac"
+
     def test_random_entry_skips_silent_tracks(self) -> None:
         sim = self._index_with_one_audible()
         picks = {sim.random_entry().path for _ in range(30)}  # type: ignore[union-attr]

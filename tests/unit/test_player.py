@@ -377,6 +377,14 @@ class TestPlayerPickNext:
         assert isinstance(result, IndexEntry)
         assert result.path != current.path
 
+    def test_queued_silent_track_still_plays(self) -> None:
+        """The silence filter is for automatic picks; a user's queue is obeyed."""
+        player = self._make_player(n=4)
+        silent = player._sim.entries[2]
+        silent.energy = 0.0
+        player._state.queue.append(silent)
+        assert player._pick_next(player._sim.entries[0]).path == silent.path
+
     def test_pure_shuffle_does_not_admit_unknown_or_out_of_range_bpm(self) -> None:
         sim = _make_sim_index(4, bpms=[110.0, 0.0, 150.0, 125.0])
         player = Player(_make_cfg_mock(), sim)
