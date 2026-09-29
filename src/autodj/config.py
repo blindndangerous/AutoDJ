@@ -364,11 +364,11 @@ class PlaybackConfig(_Section):
     # it cold-cuts regardless of this flag.
     beatmatch_on_skip: bool = False
     # Voice liners — DJ-style spoken drops layered over the live mix.
-    # ``liners_folder`` is the source directory (default
-    # ``<index_dir>/liners`` resolved at server startup).  Trigger
-    # parameters are evaluated client-side in the browser; the server
-    # exposes the file list via ``GET /api/liners`` and raw bytes via
-    # ``GET /api/liners/file/<name>``.
+    # ``liners_folder`` is the source directory (``~`` is expanded; default
+    # ``<index_dir>/<name>/liners``).  The browser evaluates the triggers
+    # when it plays the audio, fetching the list from ``GET /api/liners``
+    # and each file from ``GET /api/liners/file/<name>``; in the
+    # server-mixed modes (--server-audio, --stream) LinerScheduler does.
     liners_enabled: bool = False
     liners_folder: str | None = None
     liners_every_n_songs: int | None = None
@@ -438,7 +438,9 @@ class PlaybackConfig(_Section):
             "liners_enabled",
         ):
             setattr(self, name, bool(getattr(self, name)))
-        self.liners_folder = self.liners_folder or None
+        self.liners_folder = (
+            str(Path(self.liners_folder).expanduser()) if self.liners_folder else None
+        )
         self.liners_every_n_songs = _optional(int, self.liners_every_n_songs)
         self.liners_every_minutes = _optional(float, self.liners_every_minutes)
         self.liners_random_min_minutes = _optional(float, self.liners_random_min_minutes)

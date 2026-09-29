@@ -286,19 +286,19 @@ HARMONIC_MODES: tuple[str, ...] = (
 )
 
 
-# Each harmonic mode is the set of ``(same Camelot side, wheel distance)``
-# pairs it accepts.  Camelot numbers run 1-12, so ``abs(a - b)`` is 0-11 and
-# a ±1 step shows up as either 1 or 11.
+# Each harmonic mode is the set of ``(same Camelot side, steps)`` pairs it
+# accepts, where steps is how far B is from A going up the wheel:
+# ``(b - a) % 12``, so +1 is 1 and -1 is 11.
 #   strict       — identical position.
 #   mood_change  — relative major/minor: same number, opposite side.
 #   neighbour    — same side, ±1 around the wheel.
-#   energy_boost — same side, ±2 around the wheel.
+#   energy_boost — same side, +2 around the wheel (two semitones up).
 #   compatible   — union of strict + mood_change + neighbour.
 _HARMONIC_RULES: dict[str, frozenset[tuple[bool, int]]] = {
     "strict": frozenset({(True, 0)}),
     "mood_change": frozenset({(False, 0)}),
     "neighbour": frozenset({(True, 1), (True, 11)}),
-    "energy_boost": frozenset({(True, 2), (True, 10)}),
+    "energy_boost": frozenset({(True, 2)}),
     "compatible": frozenset({(True, 0), (False, 0), (True, 1), (True, 11)}),
 }
 
@@ -322,7 +322,7 @@ def harmonic_compatible(
     ):  # pragma: no cover — pre-validated keys always map to Camelot
         return True
     allowed = _HARMONIC_RULES.get(mode, _HARMONIC_RULES["compatible"])
-    return (pos_a[1] == pos_b[1], abs(pos_a[0] - pos_b[0])) in allowed
+    return (pos_a[1] == pos_b[1], (pos_b[0] - pos_a[0]) % 12) in allowed
 
 
 def camelot_label(key: int, mode: int) -> str:

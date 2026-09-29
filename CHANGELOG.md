@@ -158,6 +158,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Harmonic mixing set to energy boost picked keys two steps down the Camelot wheel as well as two
+  steps up, so the set could drop instead of lift. It now picks only two steps up, and the key
+  wheel on the page marks only those keys.
+- `liners_folder` in `config.toml` now expands `~` to the home folder, as the example shows; it
+  used to look for a folder literally named `~`.
 - Cue points imported from Mixxx, Rekordbox, Traktor and Serato only reached tracks the player
   analysed itself, never tracks analysed by `autodj index` or `autodj analyse`, which analyse the
   whole library. Those commands now merge them too when `[playback] import_external_cues` is on in

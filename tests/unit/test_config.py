@@ -398,6 +398,10 @@ class TestPlaybackConfig:
         with pytest.raises(ValueError, match=key):
             PlaybackConfig.from_dict({key: value})
 
+    def test_liners_folder_expands_the_home_directory(self) -> None:
+        pb = PlaybackConfig.from_dict({"liners_folder": "~/liners"})
+        assert pb.liners_folder == str(Path.home() / "liners")
+
     def test_server_max_track_minutes_accepts_an_integer(self) -> None:
         pb = PlaybackConfig.from_dict({"server_max_track_minutes": 30})
         assert pb.server_max_track_minutes == 30.0

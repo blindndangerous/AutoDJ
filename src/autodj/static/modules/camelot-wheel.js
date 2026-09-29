@@ -105,7 +105,7 @@ function _compatibleSet(current, mode) {
     return out;
   }
   if (mode === "energy_boost") {
-    out.add(`${wrap(num - 2)}${side}`);
+    // Two steps up only, as the server's picker does.
     out.add(`${wrap(num + 2)}${side}`);
     return out;
   }
