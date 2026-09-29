@@ -34,8 +34,8 @@ export function profileFromSettings(name, st) {
   for (const key of [
     "transition_mode", "post_queue_seed", "beat_sync_fx", "key_sync_fx",
     "beatmatch_on_skip", "crossfade_seconds", "fade_in_seconds",
-    "smart_shuffle", "pure_shuffle", "anchor_to_seed", "enable_daypart",
-    "enable_mood_arc", "mood_arc_hours", "liners_enabled", "liners_pick_mode",
+    "smart_shuffle", "pure_shuffle", "anchor_to_seed", "liners_enabled",
+    "liners_pick_mode",
   ]) {
     body[key] = pb[key] ?? null;
   }

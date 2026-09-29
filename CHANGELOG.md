@@ -116,6 +116,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   wrong-code lockout still stops guessing: ten wrong pairing codes lock an address out until the
   code changes, and fifty from all addresses pause pairing. A wrong stream link now always
   answers "not found"; its 256-bit secret cannot be guessed.
+- The Wall-clock daypart and Mood arc settings, with the mood arc length, from the web page's
+  Settings. A profile saved from the page no longer includes them.
 
 ### Fixed
 
