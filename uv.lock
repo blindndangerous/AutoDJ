@@ -124,12 +124,10 @@ all = [
     { name = "sounddevice" },
     { name = "soundfile" },
     { name = "torch" },
-    { name = "torchaudio" },
 ]
 index = [
     { name = "soundfile" },
     { name = "torch" },
-    { name = "torchaudio" },
 ]
 play = [
     { name = "sounddevice" },
@@ -181,8 +179,6 @@ requires-dist = [
     { name = "starlette", specifier = "~=1.6.0" },
     { name = "torch", marker = "extra == 'all'", specifier = ">=2.2.0" },
     { name = "torch", marker = "extra == 'index'", specifier = ">=2.2.0" },
-    { name = "torchaudio", marker = "extra == 'all'", specifier = ">=2.2.0" },
-    { name = "torchaudio", marker = "extra == 'index'", specifier = ">=2.2.0" },
     { name = "transformers", specifier = ">=5.16.1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.47.0" },
 ]

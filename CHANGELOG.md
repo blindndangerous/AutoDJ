@@ -116,6 +116,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   wrong-code lockout still stops guessing: ten wrong pairing codes lock an address out until the
   code changes, and fifty from all addresses pause pairing. A wrong stream link now always
   answers "not found"; its 256-bit secret cannot be guessed.
+- The GPU beat-grid path and the `AUTODJ_GPU` and `AUTODJ_DJMETA_GPU` environment variables. Beat
+  grids are always found by librosa on the CPU, so every machine finds the same grid for the same
+  file. MuQ embedding still uses a CUDA or ROCm GPU whenever PyTorch sees one. Beat grids already
+  saved in `dj_meta.db` by the old GPU path stay in use until that track is analysed again; AutoDJ
+  does not recompute them by itself. The `index` extra no longer lists `torchaudio`; MuQ still
+  installs it.
 
 ### Fixed
 

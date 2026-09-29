@@ -986,9 +986,9 @@ def cmd_index(
     _apply_index_name(cfg, index_name)
 
     # Detect compute device + warn about CPU performance for big libraries.
-    from autodj.compute import gpu_available
+    from autodj.compute import device_string
 
-    device = "CUDA (GPU)" if gpu_available() else "CPU"
+    device = "CUDA (GPU)" if device_string() == "cuda" else "CPU"
 
     console.print(Panel("[bold green]AutoDJ Indexer[/]", expand=False))
     console.print(f"  Music dir  : {cfg.library.music_dir}")
