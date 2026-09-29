@@ -1152,7 +1152,9 @@ def backfill_dj_meta(
 
     First drops ``dj_meta.db`` rows of tracks no longer in *entries*.  Then
     decodes each track whose row is missing or not analysed, one at a
-    time, runs :func:`autodj.dj_meta.analyse_audio` and stores the result.  Rows are flushed every 25 tracks, so an interrupted
+    time, runs :func:`autodj.dj_meta.analyse_audio`, merges cues imported
+    from DJ software when ``[playback] import_external_cues`` is on, and
+    stores the result.  Rows are flushed every 25 tracks, so an interrupted
     run loses at most that many.  ``[index] throttle_ms`` pauses before each
     track.
 
@@ -1161,7 +1163,7 @@ def backfill_dj_meta(
         entries: Every track in the index, with absolute paths.
         limit: Analyse at most this many of the tracks that need it.
     """
-    from autodj.dj_meta import get_cache
+    from autodj.dj_meta import get_cache, merge_cues
 
     cache = get_cache(cfg.index.active_dir, music_dir=cfg.library.music_dir)
     if cache is None:  # pragma: no cover - get_cache with an index_dir always builds one
@@ -1175,6 +1177,13 @@ def backfill_dj_meta(
     if not pending:
         print("[AutoDJ] DJ-meta cache already covers every indexed track.")
         return
+    library_cues: dict[str, list[Any]] = {}
+    import_cues = cfg.playback.import_external_cues
+    if import_cues:
+        from autodj.dj_cues_import import auto_import_cues, import_from_serato_tags
+
+        library_cues = auto_import_cues(library_root=cfg.library.music_dir)
+        logger.info("Imported cues for %d tracks from DJ software", len(library_cues))
     total = len(pending)
     print(f"[AutoDJ] Phase: Analysing — DJ-meta backfill for {total} tracks.", flush=True)
     throttle_s = cfg.index.throttle_ms / 1000.0
@@ -1189,6 +1198,10 @@ def backfill_dj_meta(
                 logger.warning("DJ-meta analysis failed for %s: %s", path, exc)
                 meta = None
             if meta is not None:
+                if import_cues:
+                    external = [*library_cues.get(path, ()), *import_from_serato_tags(Path(path))]
+                    if external:
+                        meta.cues = merge_cues(meta.cues, external)
                 cache.set(path, meta)
                 done += 1
                 cache.flush()

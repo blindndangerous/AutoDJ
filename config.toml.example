@@ -223,7 +223,8 @@ mood_arc_hours = 3.0          # length of one arc before it loops
 
 # Merge cue points from Mixxx, Rekordbox (Library.xml export) and Traktor
 # libraries, and from the Serato tags in each audio file, with the ones
-# AutoDJ detects itself.
+# AutoDJ detects itself, whenever a track is analysed: by `autodj index`,
+# `autodj analyse` or the player.
 import_external_cues = true
 
 # Beat-sync transition FX — rhythmic effects (beat_repeat, gate_stutter,

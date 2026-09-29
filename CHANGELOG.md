@@ -98,6 +98,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Cue points imported from Mixxx, Rekordbox, Traktor and Serato only reached tracks the player
+  analysed itself, never tracks analysed by `autodj index` or `autodj analyse`, which analyse the
+  whole library. Those commands now merge them too when `[playback] import_external_cues` is on in
+  `config.toml` (the switch in the web page applies to the player only). Tracks analysed before
+  keep the cues they have; to redo them with imported cues, delete `dj_meta.db` and run
+  `autodj analyse`.
 - `autodj analyse --limit N` deleted the DJ data (intro, outro, beat grid and cues, imported cues
   included) of every indexed track past the first N. It now keeps all of it and analyses at most N
   of the tracks that still need analysis. A limit below 1 is refused.
