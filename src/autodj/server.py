@@ -535,6 +535,12 @@ class PairBody(BaseModel):
     device_name: str
 
 
+class DeviceRenameBody(BaseModel):
+    """New operator-visible name for one paired browser."""
+
+    name: str
+
+
 _MIME_BY_SUFFIX = {
     ".mp3": "audio/mpeg",
     ".flac": "audio/flac",
@@ -1275,6 +1281,42 @@ def create_app(
             payload["signed_out"] = True
             return _signed_out_response(request_policy, payload)
         return JSONResponse(payload)
+
+    @app.patch("/api/devices/{device_id}")
+    async def api_device_rename(device_id: str, body: DeviceRenameBody) -> dict[str, str]:
+        """Rename one paired browser."""
+        registry = device_registry
+        if registry is None or not policy.authentication_required:
+            raise HTTPException(status_code=409, detail="Pairing is not enabled")
+        try:
+            name = await asyncio.to_thread(registry.rename, device_id, body.name)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if name is None:
+            raise HTTPException(status_code=404, detail="That device is not paired")
+        return {"device_id": device_id, "name": name}
+
+    @app.get("/api/pairing-code")
+    async def api_pairing_code() -> JSONResponse:
+        """Show the current pairing code to an already paired browser.
+
+        Any paired browser may pair another one, the same as the operator
+        running ``autodj devices pairing-code``.  The code is never logged.
+        """
+        if device_registry is None or not policy.authentication_required:
+            raise HTTPException(status_code=409, detail="Pairing is not enabled")
+        paused = policy.pairing_paused()
+        if paused is not None:
+            raise HTTPException(
+                status_code=429,
+                detail=paused.detail,
+                headers={"Retry-After": str(paused.retry_after)},
+            )
+        code, valid_for, next_code_in = policy.pairing_code_now()
+        return JSONResponse(
+            {"code": code, "valid_seconds": valid_for, "next_code_seconds": next_code_in},
+            headers=_NO_STORE,
+        )
 
     @app.get("/api/version")
     async def api_version(request: Request) -> JSONResponse:

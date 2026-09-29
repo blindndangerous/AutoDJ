@@ -54,6 +54,9 @@ Before every release, a person must manually sample each flow below with either 
 - Search, queue additions, reordering, removal, and empty states.
 - Now-playing changes, persistent metadata, cue descriptions, and timed lyrics.
 - Settings changes and their status or error feedback.
+- Settings, Browser access: renaming a device (focus back on its Rename, the new name said
+  once), and Show pairing code (the code said once, the countdown silent, a device that pairs
+  meanwhile said once).
 - Library-job status and review of the persistent output log. Leave a job running for several
   minutes and confirm the status is spoken once at the start and once at the end, not repeatedly.
 - Stream mode (`serve --stream`): the Settings, Stream section, Copy address, the

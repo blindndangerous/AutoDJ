@@ -714,7 +714,7 @@ def cmd_setup_lan(host_name: str | None) -> None:
 
 @cli.group("devices")
 def devices_group() -> None:
-    """List and revoke browsers paired with this AutoDJ instance."""
+    """List, rename and revoke browsers paired with this AutoDJ instance."""
 
 
 def _device_registry(ctx: click.Context) -> tuple[AutoDJConfig, DeviceRegistry]:
@@ -748,6 +748,22 @@ def cmd_devices_revoke(ctx: click.Context, device_id: str) -> None:
     if not registry.revoke(device_id):
         raise click.ClickException("Active paired device was not found.")
     click.echo(f"Revoked device {device_id}.")
+
+
+@devices_group.command("rename")
+@click.argument("device_id")
+@click.argument("name")
+@click.pass_context
+def cmd_devices_rename(ctx: click.Context, device_id: str, name: str) -> None:
+    """Give one paired browser a new name."""
+    _cfg, registry = _device_registry(ctx)
+    try:
+        stored = registry.rename(device_id, name)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if stored is None:
+        raise click.ClickException("Active paired device was not found.")
+    click.echo(f"Renamed device {device_id} to {stored}.")
 
 
 @devices_group.command("reset")

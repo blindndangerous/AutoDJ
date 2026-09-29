@@ -288,3 +288,60 @@ def test_sign_out_revokes_this_device(bridge, tmp_path) -> None:
 def test_device_routes_without_pairing_say_so(client) -> None:
     assert client.get("/api/devices").json() == {"pairing": False, "devices": []}
     assert client.delete(f"/api/devices/{'a' * 32}").status_code == 409
+    assert client.patch(f"/api/devices/{'a' * 32}", json={"name": "Phone"}).status_code == 409
+    assert client.get("/api/pairing-code").status_code == 409
+
+
+def test_rename_device_needs_a_session_and_validates_the_name(bridge, tmp_path) -> None:
+    client, registry = _paired_client(bridge, tmp_path)
+    other = registry.pair("Old phone")
+    url = f"/api/devices/{other.device_id}"
+    assert client.patch(url, json={"name": "Hall speaker"}).status_code == 401
+
+    _pair(client, "Kitchen tablet")
+    renamed = client.patch(url, json={"name": "  Hall speaker "})
+
+    assert renamed.json() == {"device_id": other.device_id, "name": "Hall speaker"}
+    assert [d["name"] for d in client.get("/api/devices").json()["devices"]] == [
+        "Hall speaker",
+        "Kitchen tablet",
+    ]
+    for bad in ("", "   ", "x" * 65, "two\nlines"):
+        assert client.patch(url, json={"name": bad}).status_code == 422
+    registry.revoke(other.device_id)
+    assert client.patch(url, json={"name": "Back again"}).status_code == 404
+    assert client.patch(f"/api/devices/{'f' * 32}", json={"name": "Nobody"}).status_code == 404
+    assert client.patch("/api/devices/not-a-device", json={"name": "Nobody"}).status_code == 404
+
+
+def test_paired_browser_can_show_the_pairing_code(bridge, tmp_path) -> None:
+    client, _registry = _paired_client(bridge, tmp_path)
+    policy = client.app.state.security_policy
+    assert client.get("/api/pairing-code").status_code == 401
+
+    _pair(client, "Kitchen tablet")
+    response = client.get("/api/pairing-code")
+
+    assert response.headers["cache-control"] == "no-store"
+    # now() is 1000: window 900..1200, then the grace window to 1500.
+    assert response.json() == {
+        "code": policy.current_pairing_code(),
+        "valid_seconds": 500,
+        "next_code_seconds": 200,
+    }
+
+
+def test_pairing_code_while_paused_says_to_wait(bridge, tmp_path) -> None:
+    from autodj.security import PAIRING_MAX_FAILURES_PER_WINDOW
+
+    client, _registry = _paired_client(bridge, tmp_path)
+    _pair(client, "Kitchen tablet")
+    policy = client.app.state.security_policy
+    for index in range(PAIRING_MAX_FAILURES_PER_WINDOW):
+        policy.verify_pairing_code("00000000", f"10.0.0.{index}")
+
+    response = client.get("/api/pairing-code")
+
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == "200"
+    assert "paused" in response.json()["detail"]

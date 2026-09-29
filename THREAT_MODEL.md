@@ -72,8 +72,12 @@ When `server.access_token` or `AUTODJ_ACCESS_TOKEN` is set:
 - Every request revalidates the signature, the expiry, and whether the device is still active, so
   `autodj devices revoke` and `autodj devices reset` take effect immediately, including on already
   connected WebSockets.
-- A paired browser can list paired devices (`GET /api/devices`) and revoke any of them
-  (`DELETE /api/devices/{id}`) from Settings, Browser access. Both need a valid session. "Sign out
+- A paired browser can list paired devices (`GET /api/devices`), rename any of them
+  (`PATCH /api/devices/{id}`) and revoke any of them (`DELETE /api/devices/{id}`) from Settings,
+  Browser access. All three need a valid session.
+- A paired browser can also show the current pairing code (`GET /api/pairing-code`), so any
+  paired device can pair another one. The route needs a valid session, answers 409 when pairing
+  is off, and never logs the code. "Sign out
   this browser" (`POST /api/logout`) revokes the calling device as well as deleting its cookie, so
   a copied cookie stops working at once instead of lasting out its 90 days.
 - The pairing body is limited to 4096 bytes before downstream parsing.

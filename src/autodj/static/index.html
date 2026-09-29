@@ -976,6 +976,21 @@
       <h3 id="device-list-heading">Paired devices</h3>
       <button type="button" id="access-refresh">Refresh device list</button>
       <ul id="device-list" aria-labelledby="device-list-heading"></ul>
+      <h3>Pair a new device</h3>
+      <button type="button" id="pair-toggle" aria-expanded="false" aria-controls="pair-panel"
+              aria-describedby="pair-toggle-desc">Show pairing code</button>
+      <span class="setting-desc" id="pair-toggle-desc">
+        Type the code on the new device when it asks.  The code changes by itself every five minutes.
+      </span>
+      <!-- Not a live region.  The code changes on its own and the countdown
+           ticks while this is open; #access-status says the code once, when
+           it is shown or refreshed. -->
+      <div id="pair-panel" hidden>
+        <p>Pairing code <strong id="pair-code" class="pair-code"></strong></p>
+        <p id="pair-countdown" aria-live="off"></p>
+        <button type="button" id="pair-copy">Copy code</button>
+        <button type="button" id="pair-refresh">Refresh code</button>
+      </div>
     </div>
   </details>
 
@@ -1138,6 +1153,25 @@
     <div class="dialog-actions">
       <button type="submit" id="confirm-cancel" value="cancel">Cancel</button>
       <button type="submit" id="confirm-accept" value="confirm"></button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Rename one paired device, opened from its Rename button in Settings,
+     Browser access.  modules/devices.js fills in the title and the name;
+     the error line lives inside the dialog because the page behind a modal
+     dialog is inert and its status region would not be heard. -->
+<dialog id="device-rename-dialog" aria-labelledby="device-rename-title">
+  <form id="device-rename-form" method="dialog" novalidate>
+    <h2 id="device-rename-title">Rename device</h2>
+    <label for="device-rename-name">Device name</label>
+    <input id="device-rename-name" type="text" maxlength="64" autocomplete="off"
+           spellcheck="false" aria-describedby="device-rename-desc device-rename-error">
+    <p class="setting-desc" id="device-rename-desc">1 to 64 characters.</p>
+    <p id="device-rename-error" role="status" aria-live="polite" aria-atomic="true"></p>
+    <div class="dialog-actions">
+      <button type="button" id="device-rename-cancel">Cancel</button>
+      <button type="submit" id="device-rename-save">Save</button>
     </div>
   </form>
 </dialog>

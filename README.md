@@ -92,8 +92,9 @@ uv run autodj serve --lan
 Startup prints the addresses to open, such as `http://nas:8080` and `http://192.168.1.20:8080`,
 and an 8-digit pairing code. Open one of the addresses on the other device and enter the code once;
 that browser stays paired. Run `uv run autodj devices pairing-code` for a fresh code later. In the
-web page, Settings, Browser access lists the paired devices with a Revoke button each, and **Sign
-out this browser** ends this browser's pairing. To make
+web page, Settings, Browser access lists the paired devices with Rename and Revoke buttons, shows
+the current pairing code for adding another device, and **Sign out this browser** ends this
+browser's pairing. To make
 it permanent, set `[server] lan = true` in `config.toml` or `AUTODJ_LAN=1`.
 
 `--lan` listens on all interfaces, allows only this machine's own names and addresses in the
@@ -131,7 +132,7 @@ Every command takes `--help`, for example `uv run autodj serve --help`. The glob
 - `autodj doctor` checks configuration, paths, dependencies, the model, and security settings.
 - `autodj backup` and `autodj restore` archive and restore index and user data.
 - `autodj setup-lan` writes a `.env` for the authenticated Compose LAN service.
-- `autodj devices list`, `revoke`, `reset`, and `pairing-code` manage paired browsers.
+- `autodj devices list`, `rename`, `revoke`, `reset`, and `pairing-code` manage paired browsers.
 
 ## Containers
 
@@ -166,7 +167,7 @@ After `autodj serve`, point a browser at `http://localhost:8080`.  Five tabs:
 - **Now Playing.**  What is playing, the next track, album art, lyrics, the cue strip on the progress bar.
 - **Queue & Search.**  Find any track in your library and choose Play now, Play next (straight after the current track) or Add to queue (at the end).  Move queued tracks up, down or to the top, remove them, or clear the whole queue; each move says the new position, such as "Moved Alpha to position 2 of 5".
 - **History.**  What has played, newest first, one page at a time.  Times get a date when the page holds tracks from before today.  Refresh history reloads the page you are on.
-- **Settings.**  Pick a preset, change the crossfade length, switch transition effects and their level, set a BPM range, set how soon a song or an artist may repeat, toggle voice liners, choose an audio output device.  **Profiles** saves the current settings under a name to apply later.  **Browser access** (with `--lan`) signs this browser out or revokes another paired device.
+- **Settings.**  Pick a preset, change the crossfade length, switch transition effects and their level, set a BPM range, set how soon a song or an artist may repeat, toggle voice liners, choose an audio output device.  **Profiles** saves the current settings under a name to apply later.  **Browser access** (with `--lan`) signs this browser out, renames or revokes paired devices, and shows the pairing code for adding another.
 - **Library tools.**  Run index, enrich, analyse, prune and stats jobs without leaving the page.  One job runs at a time; the index stats and the full job log refresh when it finishes.
 
 ### Keyboard shortcuts
@@ -301,7 +302,7 @@ uv run autodj serve --ssl-certfile radio.pem --ssl-keyfile radio-key.pem
 `config.toml` and its local variants are gitignored. Never pass the server secret as a CLI
 argument because shell history and process listings can expose it. AutoDJ derives short-lived
 pairing codes from that secret and exchanges a valid code for a device-bound HttpOnly cookie.
-Use `autodj devices list`, `revoke`, `reset`, and `pairing-code` to manage browsers. TLS protects
+Use `autodj devices list`, `rename`, `revoke`, `reset`, and `pairing-code` to manage browsers. TLS protects
 pairing codes and session cookies on the wire.
 
 For non-loopback bindings, including LAN access, authentication can be disabled only with an explicit trusted-LAN acknowledgement.  This still enforces the Host and Origin allowlists that `--lan` detects:

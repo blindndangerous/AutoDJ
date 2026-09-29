@@ -460,6 +460,9 @@
     .profile-name,
     .device-text { flex: 1; min-width: 0; }
     #access-refresh { margin-top: 0.5rem; }
+    #pair-panel { margin-top: 0.5rem; }
+    #pair-panel p { margin: 0.4rem 0; }
+    .pair-code { font-size: 1.5rem; letter-spacing: 0.1em; font-variant-numeric: tabular-nums; }
 
     /* ---- Library tools: index stats ----
        <dl> with no CSS rendered as eight identical lines because the
@@ -1197,7 +1200,8 @@
 /* Hotkey help modal -------------------------------------------------- */
 
 #hotkey-help-modal,
-#confirm-dialog {
+#confirm-dialog,
+#device-rename-dialog {
   /* `*, *::before, *::after { margin: 0 }` overrides the UA
      `dialog:modal { margin: auto }`, which pinned this dialog to the
      top-left corner of the viewport.  #auth-dialog already restores it. */
@@ -1211,7 +1215,8 @@
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
 }
 #hotkey-help-modal::backdrop,
-#confirm-dialog::backdrop {
+#confirm-dialog::backdrop,
+#device-rename-dialog::backdrop {
   background: rgba(0, 0, 0, 0.55);
 }
 #hotkey-help-modal kbd {
@@ -1263,13 +1268,22 @@
 .stream-detail {
   margin: 0.4rem 0;
 }
-#confirm-dialog h2 {
+#confirm-dialog h2,
+#device-rename-dialog h2 {
   margin-top: 0;
 }
 #confirm-dialog p {
   margin: 0.75rem 0 1rem;
 }
-#confirm-dialog .dialog-actions {
+#device-rename-dialog label { display: block; margin-top: 0.75rem; }
+#device-rename-name {
+  width: 100%;
+  min-height: 44px;
+  margin: 0.25rem 0;
+}
+#device-rename-error { margin: 0.5rem 0 1rem; color: #ffaaa0; }
+#confirm-dialog .dialog-actions,
+#device-rename-dialog .dialog-actions {
   display: flex;
   justify-content: flex-end;
   gap: 0.75rem;
