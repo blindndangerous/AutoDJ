@@ -1386,7 +1386,6 @@ class Player:
         target_bpm = preset.target_bpm(context.track_number) if preset else None
         bpm_weight = preset.bpm_weight if preset else 0.2
         n_candidates = 50 if (target_bpm is not None or self._bpm_range is not None) else 30
-        genre_filter = self._preset.genres if self._preset and self._preset.genres else None
         harmonic_mode = self._cfg.djmix.harmonic_mode
         harmonic_only = harmonic_mode != "off"
         query_path, mode = self._resolve_query_path(current.path)
@@ -1397,7 +1396,6 @@ class Player:
             "target_bpm": target_bpm,
             "bpm_weight": bpm_weight,
             "bpm_range": self._bpm_range,
-            "genre_filter": genre_filter,
             "invert": self._smart_shuffle,
             "harmonic_only": harmonic_only,
             "harmonic_mode": harmonic_mode,

@@ -58,14 +58,13 @@ any scoring. In order:
 1. Path is not in `recently_played`.
 2. If a hard `bpm_range` is set: `entry.bpm` is known (greater than 0) and
    inside the range. Unknown tempo is rejected.
-3. If a `genre_filter` is set: genre matches.
-4. If `harmonic_mode` is not `"off"` (the player then passes
+3. If `harmonic_mode` is not `"off"` (the player then passes
    `harmonic_only=True`): `dj_meta.harmonic_compatible` accepts the pair under
    that mode.
    Unknown key or mode (-1) is accepted, not rejected.
-5. Artist, album, and title are not in their exclusion sets.
+4. Artist, album, and title are not in their exclusion sets.
 
-Note the asymmetry between 2 and 4. An un-analysed track passes harmonic
+Note the asymmetry between 2 and 3. An un-analysed track passes harmonic
 mixing and fails a BPM range. If you set a BPM range and half your library
 has no tempo tag, half your library is invisible until `autodj analyse` runs.
 

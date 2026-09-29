@@ -128,9 +128,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `--insecure-lan`, `--open`, `--name`, `--server-audio`, `--stream` and the TLS options).
 - Daypart and Mood arc, which steered the tempo of picks by the time of day or over a three-hour
   arc. `[playback] enable_daypart`, `enable_mood_arc` and `mood_arc_hours` are refused in
-  `config.toml`; delete them. The settings routes refuse these fields too, and a saved profile that
-  holds them no longer applies: delete it and save it again. Saved web settings still load; the
-  three old fields are skipped with a warning in the server log.
+  `config.toml`; delete them. The settings routes refuse these fields too. Every profile saved by
+  0.18 holds them, so it no longer applies: delete it and save it again. Saved web settings still
+  load; the three old fields are skipped with a warning in the server log.
+- The `genres` filter of presets. A preset that still sets `genres` is skipped with a warning
+  naming the unknown key, like any other invalid preset.
 
 ### Fixed
 

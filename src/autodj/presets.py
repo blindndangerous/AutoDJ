@@ -44,9 +44,6 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from autodj.genres import CANONICAL_GENRES
-from autodj.genres import normalise as normalise_genre
-
 logger = logging.getLogger(__name__)
 
 
@@ -67,17 +64,12 @@ class Preset:
             injected every *discovery_every* tracks.  ``None`` disables
             discovery for this preset.  The user must also toggle discovery
             ON at runtime (``D`` key or web UI button) before it fires.
-        genres: Optional list of genre substrings to restrict picks to.
-            Case-insensitive substring match against ``IndexEntry.genre``.
-            Example: ``["electronic", "house"]`` matches "Deep House",
-            "Electronica", etc.  Empty list = no filter.
     """
 
     name: str
     bpm_weight: float
     _curve: Callable[[int], float | None] = field(repr=False)
     discovery_every: int | None = None
-    genres: list[str] = field(default_factory=list)
 
     def target_bpm(self, track_number: int) -> float | None:
         """Return the target BPM at *track_number* in the session.
@@ -216,7 +208,6 @@ _PRESET_KEYS = frozenset(
         "bpm_weight",
         "horizon_tracks",
         "discovery_every",
-        "genres",
     }
 )
 
@@ -257,21 +248,6 @@ def preset_from_config(name: str, section: dict[str, Any]) -> Preset:
     discovery_every: int | None = (
         int(discovery_every_raw) if discovery_every_raw is not None else None
     )
-    genres_raw = section.get("genres", [])
-    if isinstance(genres_raw, str):
-        genres = [genres_raw]
-    elif isinstance(genres_raw, list):
-        genres = [str(g) for g in genres_raw]
-    else:
-        raise ValueError(f"Preset '{name}': genres must be a string or a list of strings")
-    # The picker canonicalises the filter and drops anything that maps to no
-    # bucket, so an unknown name would quietly narrow or switch off the filter.
-    unknown_genres = [g for g in genres if not normalise_genre(g)]
-    if unknown_genres:
-        raise ValueError(
-            f"Preset '{name}': unknown genres {unknown_genres}; "
-            f"known genres are {', '.join(CANONICAL_GENRES)}"
-        )
 
     curve_name: str | None = section.get("curve")
     bpm_target = section.get("bpm_target")
@@ -307,7 +283,6 @@ def preset_from_config(name: str, section: dict[str, Any]) -> Preset:
         bpm_weight=weight,
         _curve=curve,
         discovery_every=discovery_every,
-        genres=genres,
     )
 
 

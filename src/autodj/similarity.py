@@ -281,7 +281,6 @@ class SimilarityIndex:
         self,
         excluded: set[str],
         bpm_range: tuple[float, float] | None,
-        genre_filter: list[str] | None,
         harmonic_from: tuple[int, int] | None,
         harmonic_mode: str,
         excluded_artists: set[str] | None,
@@ -289,10 +288,6 @@ class SimilarityIndex:
         excluded_titles: set[str] | None,
     ) -> Callable[[IndexEntry], bool]:
         """Compose a single ``entry -> bool`` predicate from every active filter."""
-        from autodj.genres import canonicalise_list
-        from autodj.genres import matches as _genre_matches
-
-        canonical_filter = canonicalise_list(genre_filter)
         ex_art = {a.lower() for a in (excluded_artists or set()) if a}
         ex_alb = {a.lower() for a in (excluded_albums or set()) if a}
         ex_ttl = {t.lower() for t in (excluded_titles or set()) if t}
@@ -304,8 +299,6 @@ class SimilarityIndex:
                 lo, hi = bpm_range
                 if entry.bpm <= 0 or not (lo <= entry.bpm <= hi):
                     return False
-            if canonical_filter and not _genre_matches(entry.genre, canonical_filter):
-                return False
             if harmonic_from is not None:
                 from autodj.dj_meta import harmonic_compatible
 
@@ -384,7 +377,6 @@ class SimilarityIndex:
         target_bpm: float | None = None,
         bpm_weight: float = 0.2,
         bpm_range: tuple[float, float] | None = None,
-        genre_filter: list[str] | None = None,
         invert: bool = False,
         harmonic_only: bool = False,
         harmonic_mode: str = "compatible",
@@ -467,7 +459,6 @@ class SimilarityIndex:
             predicate = self._build_predicate(
                 excluded,
                 bpm_range,
-                genre_filter,
                 harmonic_from,
                 harmonic_mode,
                 excluded_artists,
@@ -484,7 +475,6 @@ class SimilarityIndex:
                 predicate = self._build_predicate(
                     excluded,
                     bpm_range,
-                    genre_filter,
                     harmonic_from,
                     harmonic_mode,
                     None,
@@ -502,8 +492,6 @@ class SimilarityIndex:
                 active = []
                 if bpm_range is not None:
                     active.append(f"BPM {bpm_range[0]:g}-{bpm_range[1]:g}, known values only")
-                if genre_filter:
-                    active.append("genre " + ", ".join(genre_filter))
                 if harmonic_from is not None:
                     active.append("harmonic mode " + harmonic_mode)
                 detail = "; ".join(active) or "recent-track exclusion"
