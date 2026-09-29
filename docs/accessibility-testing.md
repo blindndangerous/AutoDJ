@@ -1,17 +1,18 @@
 # Accessibility testing
 
-AutoDJ uses automated checks and requires a manual sample before release to catch accessibility regressions. The results apply only to the paths that the checks exercise. They do not certify the whole application.
+AutoDJ uses automated checks and requires a screen-reader sample before release to catch accessibility regressions. The results apply only to the paths that the checks exercise. They do not certify the whole application.
 
 ## Published evidence
 
 For 0.18.0, the release sample is recorded in [accessibility-samples/0.18.0.md](accessibility-samples/0.18.0.md).
 It was taken on 2026-09-27 and 2026-09-28 on Windows 11 with NVDA 2026.2 and Google Chrome
-153.0.8010.53 (all twelve flows below), Mozilla Firefox 156.0.1 and Microsoft Edge 154.0.4258.37
+153.0.8010.53 (the twelve flows listed at the time; Settings, Browser access was added later), Mozilla Firefox 156.0.1 and Microsoft Edge 154.0.4258.37
 (a subset of flows). Narrator was not sampled. No person listened: an automated agent sent keys to
 the page and captured NVDA's speech through the screen-reader-testing MCP server, in place of
-sampling by hand. The record lists each flow's steps, what NVDA spoke, the results, eighteen
+sampling by hand. The record lists the flows sampled with a pass or fail per browser, eighteen
 defects with their status after four later runs on 2026-09-28 that checked the fixes (the last
-on master cfb3ac7), and the limits of that method. It starts with a summary of what 0.18.0 ships
+on master cfb3ac7), and the limits of that method. The step-by-step speech transcripts are in the
+git history of that file. It starts with a summary of what 0.18.0 ships
 with: D4 (the pairing dialog's name read twice) is accepted, and D14 (NVDA reads a stray line
 from the top of the page when the page's confirmation dialog closes) is accepted as a known NVDA and Chrome quirk.
 It covers only those pairings and flows. This repository has no sampling record for earlier
@@ -30,8 +31,10 @@ rewritten with text a screen reader has already heard is the single most common 
 interface repeating itself.
 
 - A live region is written only when its message actually changes. `announceStatus()` in
-  `src/autodj/static/modules/live-region.js` is the shared writer for that; it returns false and
-  touches nothing when the region already carries the text.
+  `src/autodj/static/modules/live-region.js` is the shared writer for that; by default it returns
+  false and touches nothing when the region already carries the text. The one exception is
+  `force: true`, for the result of something the user just did (pressing Move up twice, the same
+  search twice): the region is cleared and the same text written again, so it is heard again.
 - A value that ticks -- an elapsed-seconds counter, a playback position -- never lives inside a
   region that speaks. It goes in a sibling marked `aria-live="off"`, or on an attribute that is
   refreshed only while the control is not focused. `#lib-job-elapsed` next to `#lib-job-status` is
@@ -46,7 +49,7 @@ When adding a status message, write it through `announceStatus()` rather than as
 
 ## Release sampling
 
-Before every release, a person must manually sample each flow below with either NVDA and Firefox or NVDA and Chrome:
+Before every release, each flow below must be sampled with either NVDA and Firefox or NVDA and Chrome, by a person or by an agent that drives the page and captures NVDA's speech; the record says which:
 
 - Authentication, session expiry, and connection-status changes.
 - Section-tab and disclosure navigation using the keyboard, including focus placement.
@@ -61,7 +64,7 @@ Before every release, a person must manually sample each flow below with either 
   minutes and confirm the status is spoken once at the start and once at the end, not repeatedly.
 - Stream mode (`serve --stream`): the Settings, Stream section, Copy address, the
   quality choice and listener count, and Listen here starting and stopping the stream in the page.
-- Voice liners: uploading a liner, Test liner, and each rotation mode, including the spoken
+- Voice liners: uploading a liner, Test now, and each rotation mode, including the spoken
   result when an upload or test fails.
 - EQ: each band's slider, its spoken value, and resetting the bands.
 - History: the History tab's table read with table navigation, its pagination, and the empty state.

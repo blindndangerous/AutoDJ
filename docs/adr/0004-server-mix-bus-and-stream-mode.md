@@ -22,8 +22,9 @@ One clock-paced stereo mix bus (`autodj.mixbus.MixBus`) does all
 server-side playback. It plays rendered tracks in 20 ms blocks and hands
 each block to every attached output. `RenderAhead` renders the next
 track (decode, beat-match, transition effect, crossfade overlap) on a
-background thread so the bus never waits. EQ, volume and voice liners
-are applied on the bus.
+background thread so the bus never waits. EQ and voice liners are
+applied on the bus. Volume and mute are applied only in the sound-card
+output, so stream listeners get the full level.
 
 - `--server-audio` attaches one long-lived sound-card output
   (`SoundDeviceOutput`).
@@ -43,8 +44,8 @@ Browser playback from ADR 3 stays the default for `autodj serve`.
 - Crossfades, transition effects, EQ and liners exist twice: in the
   browser's Web Audio graph and on the server mix bus. A change to one
   playback effect has to be made, and tested, in both places.
-- In the server modes the browser is a remote control. The page's "Test
-  liner" and "Listen here" use the server; seeking is refused while
+- In the server modes the browser is a remote control. The page's liner
+  "Test now" and "Listen here" use the server; seeking is refused while
   streaming, since every listener hears the same mix.
 - Stream mode needs ffmpeg on the server and more CPU than browser
   playback, because the server decodes, mixes and encodes the whole set.

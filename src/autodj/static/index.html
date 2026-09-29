@@ -362,7 +362,7 @@
     <div id="settings-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
 
     <fieldset>
-      <legend>Mood</legend>
+      <legend>Preset and transition</legend>
       <div class="settings-row">
         <label for="preset-select">Preset</label>
         <select id="preset-select" aria-describedby="preset-desc">
@@ -427,7 +427,7 @@
                inputmode="decimal" aria-describedby="tx-wet-mix-desc">
       </div>
       <span class="setting-desc" id="tx-wet-mix-desc">
-        How much of the transition effect sits on top of the plain crossfade, from 0 (plain crossfade only) to 100 (full effect).  Used when the server does the mixing, in stream mode or with server audio; crossfades played by this browser ignore it.
+        How much of the transition effect sits on top of the plain crossfade, from 0 (plain crossfade only) to 100 (full effect).
       </span>
       <!-- Per-effect detail is read on demand, not on every focus of the
            select: as the select's description it was about 450 words. -->
@@ -443,7 +443,7 @@
           <li><strong>noise riser</strong> layers a synthesised white-noise build (bright)</li>
           <li><strong>noise drop</strong> opposite of the riser — bright crash falling to silence</li>
           <li><strong>backspin</strong> reverses the outgoing tail with vinyl-friction decel (<span aria-hidden="true">2.0×→0.05×</span><span class="visually-hidden">2.0 times to 0.05 times speed</span>)</li>
-          <li><strong>forward spin</strong> push-forward release (<span aria-hidden="true">1.0×→3.0×</span><span class="visually-hidden">1.0 times to 3.0 times speed</span> accel)</li>
+          <li><strong>forward spin</strong> push-forward release (<span aria-hidden="true">0.05×→2.5×</span><span class="visually-hidden">0.05 times to 2.5 times speed</span> accel)</li>
           <li><strong>cross-EQ swap</strong> hands bass duties from the outgoing to the incoming track</li>
           <li><strong>bitcrusher</strong> degrades bit-depth <span aria-hidden="true">+</span><span class="visually-hidden">and</span> sample-rate (8-bit-console feel, AudioWorklet)</li>
           <li><strong>flanger</strong> adds a swirly modulated delay</li>
@@ -455,11 +455,11 @@
           <li><strong>vinyl wow</strong> drunk-turntable pitch wobble (60 Hz polling, <span aria-hidden="true">±</span><span class="visually-hidden">plus or minus </span>25 % depth)</li>
           <li><strong>freeze</strong> captures the last 150 ms and loops with fade-out (granular, AudioWorklet)</li>
           <li><strong>glitch</strong> random buffer slicing <span aria-hidden="true">+</span><span class="visually-hidden">and</span> reorder (ring-buffer worklet)</li>
-          <li><strong>scratch</strong> turntablist 4-pass back-and-forth over a 250 ms slice</li>
-          <li><strong>beat repeat</strong> stamps a 250 ms slice 8 times across the tail (Pioneer Loop Roll)</li>
-          <li><strong>sidechain pump</strong> rhythmic 4-on-the-floor amplitude duck <span aria-hidden="true">@</span><span class="visually-hidden">at</span> 120 BPM</li>
+          <li><strong>scratch</strong> turntablist 4-pass back-and-forth over a one-beat slice</li>
+          <li><strong>beat repeat</strong> stamps a half-beat slice again and again across the tail (Pioneer Loop Roll)</li>
+          <li><strong>sidechain pump</strong> rhythmic 4-on-the-floor amplitude duck on every beat</li>
           <li><strong>reverse reverb</strong> reverse'd reverb tail that swells INTO the cut</li>
-          <li><strong>air horn</strong> synth dub-siren with 220-880 Hz pitch sweep, layered with the music</li>
+          <li><strong>air horn</strong> square-wave horn sweeping up two octaves (220-880 Hz, or from the song's key with key-sync), layered with the music</li>
           <li><strong>vinyl rewind</strong> slow musical reverse with one-octave pitch drop (smoother than backspin)</li>
           <li><strong>transformer</strong> rapid 16-cps DJ-fader cut pattern with syncopated rhythm</li>
           <li><strong>dub siren</strong> sine 440-1760 Hz riser with 5 Hz vibrato (sits behind the music vs air horn's crash)</li>
@@ -467,7 +467,7 @@
           <li><strong>wow <span aria-hidden="true">+</span><span class="visually-hidden">and</span> flutter</strong> 1.5 Hz pitch wobble <span aria-hidden="true">+</span><span class="visually-hidden">and</span> 8 Hz tremolo (worn-cassette feel, distinct from vinyl wow's pitch-only)</li>
           <li><strong>phaser</strong> 4-stage allpass cascade with 0.5 Hz LFO sweep (sweepy notch, no metallic comb of flanger)</li>
           <li><strong>ring modulator</strong> multiplies the signal by a 173 Hz sine (clangy bell sidebands, sci-fi voice)</li>
-          <li><strong>dub delay</strong> 1 s delay with lowpass on the feedback loop (each repeat darkens, classic Lee Perry sound)</li>
+          <li><strong>dub delay</strong> one-beat delay with lowpass on the feedback loop (each repeat darkens, classic Lee Perry sound)</li>
           <li><strong>halftime</strong> ramps tempo to 50 % keeping pitch intact (classic trap pre-drop, distinct from pitch fall)</li>
           <li><strong>random</strong> picks one per crossfade</li>
           <li><strong>rotate</strong> cycles through every effect in order</li>
@@ -494,7 +494,7 @@
         <strong>strict</strong> only allows the exact same key.
         <strong>neighbour</strong> walks the wheel one step at a time, no mode flips.
         <strong>mood change</strong> swaps major<span aria-hidden="true">↔</span><span class="visually-hidden"> and </span>minor only (energy stays, mood flips).
-        <strong>energy boost</strong> picks <span aria-hidden="true">+</span><span class="visually-hidden">plus </span>2 around the wheel — each track is two semitones up, so the set lifts over time.  Pick <strong>off</strong> to disable the harmonic filter completely.
+        <strong>energy boost</strong> picks two steps up the wheel — each track is two semitones up, so the set lifts over time.  Pick <strong>off</strong> to disable the harmonic filter completely.
       </span>
 
       <div class="settings-check">
@@ -502,7 +502,7 @@
         <label for="dj-beatmatch">Beatmatch</label>
       </div>
       <span class="setting-desc" id="dj-beatmatch-desc">
-        Pitch-stretch the incoming track up to <span aria-hidden="true">±</span><span class="visually-hidden">plus or minus </span>8 % so its BPM matches the outgoing track during the crossfade — beats line up like a real DJ deck.
+        Pitch-stretch the incoming track up to <span aria-hidden="true">±</span><span class="visually-hidden">plus or minus </span>8 % so its BPM matches the outgoing track during the crossfade — beats line up like a real DJ deck.  Used when the server does the mixing, in stream mode or with server audio; crossfades played by this browser ignore it.
       </span>
 
       <div class="settings-check">
@@ -510,7 +510,7 @@
         <label for="dj-phrase-align">Phrase align</label>
       </div>
       <span class="setting-desc" id="dj-phrase-desc">
-        Snap the crossfade start to the nearest phrase boundary using the cached beat grid.  Keeps transitions on musical phrase ends instead of mid-bar.
+        Snap the crossfade start to the nearest phrase boundary using the cached beat grid.  Keeps transitions on musical phrase ends instead of mid-bar.  Used when the server does the mixing, in stream mode or with server audio; crossfades played by this browser ignore it.
       </span>
       <div class="settings-row" data-show-when="dj-phrase-align">
         <label for="dj-phrase-bars">Phrase length (bars)</label>
@@ -526,7 +526,7 @@
         <label for="dj-outro-intro">Outro <span aria-hidden="true">/</span><span class="visually-hidden">and</span> intro align</label>
       </div>
       <span class="setting-desc" id="dj-outro-desc">
-        Auto-detect each track's outro start <span aria-hidden="true">+</span><span class="visually-hidden">and</span> intro end on first play.  Crossfade lands between them so the new track's first downbeat replaces the old track's outro — no cold cuts into 4-bar intros.
+        Auto-detect each track's outro start <span aria-hidden="true">+</span><span class="visually-hidden">and</span> intro end on first play.  Crossfade lands between them so the new track's first downbeat replaces the old track's outro — no cold cuts into 4-bar intros.  Used when the server does the mixing, in stream mode or with server audio; crossfades played by this browser ignore it.
       </span>
 
       <div class="settings-check">
@@ -545,7 +545,7 @@
         <label for="pb-eq-duck">EQ-ducked crossfade</label>
       </div>
       <span class="setting-desc" id="pb-eq-duck-desc">
-        Bass-cut the outgoing track during the overlap so its kicks don't muddy the incoming track's bass.  The trick pro DJs use when manually mixing.
+        Bass-cut the outgoing track during the overlap so its kicks don't muddy the incoming track's bass.  The trick pro DJs use when manually mixing.  Used when the server does the mixing, in stream mode or with server audio; crossfades played by this browser ignore it.
       </span>
 
       <div class="settings-row">
@@ -557,7 +557,7 @@
         </select>
       </div>
       <span class="setting-desc" id="pb-pick-mode-desc">
-        How AutoDJ picks the next track.  <em>Similarity</em> picks the closest sonic neighbour to whatever just played.  <em>Entropy walk</em> picks the most sonically distant track instead — <span aria-hidden="true">A → far(A) → far(far(A)) → …</span><span class="visually-hidden">A, then the track farthest from A, then the track farthest from that, and so on</span> — so the set drifts through the library rather than clustering around the seed.  <em>Random walk</em> picks uniformly at random and ignores similarity, key, BPM, and energy entirely.  Switch back to <em>Similarity</em> mid-set and AutoDJ resumes from the song currently playing.
+        How AutoDJ picks the next track.  <em>Similarity</em> picks the closest sonic neighbour to whatever just played.  <em>Entropy walk</em> picks the most sonically distant track instead — <span aria-hidden="true">A → far(A) → far(far(A)) → …</span><span class="visually-hidden">A, then the track farthest from A, then the track farthest from that, and so on</span> — so the set drifts through the library rather than clustering around the seed.  <em>Random walk</em> picks uniformly at random and ignores similarity, key and energy; only the BPM range still applies.  Switch back to <em>Similarity</em> mid-set and AutoDJ resumes from the song currently playing.
       </span>
 
       <div class="settings-check">
@@ -599,7 +599,7 @@
         <label for="pb-replaygain">ReplayGain normalisation</label>
       </div>
       <span class="setting-desc" id="pb-rg-desc">
-        Apply embedded ReplayGain track-gain tags so every track plays at a consistent loudness.  Tracks without tags play unchanged.
+        Apply embedded ReplayGain track-gain tags so every track plays at a consistent loudness.  Tracks without tags play unchanged.  Used when the server does the mixing, in stream mode or with server audio; crossfades played by this browser ignore it.
       </span>
       <div class="settings-row" data-show-when="pb-replaygain">
         <label for="pb-rg-target">ReplayGain target loudness (decibels)</label>
@@ -615,7 +615,7 @@
         <label for="pb-beat-sync-fx">Beat-sync transition FX</label>
       </div>
       <span class="setting-desc" id="pb-beat-sync-fx-desc">
-        Snap rhythmic transition effects (echo, dub delay, beat repeat, gate stutter, stutter build, sidechain pump, transformer, scratch) to the beat grid <span aria-hidden="true">+</span><span class="visually-hidden">and</span> size their internal events to whole bars at a tempo blended from the outgoing track to the incoming track.  Envelope effects (sweeps, risers, drops, reverbs) bar-round their fade duration.  Falls back to seconds-based timing when no beat grid or BPM is known.
+        Snap rhythmic transition effects (echo, dub delay, beat repeat, gate stutter, stutter build, sidechain pump, transformer, scratch) to the beat grid <span aria-hidden="true">+</span><span class="visually-hidden">and</span> size their internal events to whole bars at a tempo blended from the outgoing track to the incoming track.  Envelope effects (sweeps, risers, drops, reverbs) bar-round their fade duration.  Falls back to seconds-based timing when no beat grid or BPM is known.  Browser crossfades only; the server mix ignores it.
       </span>
 
       <div class="settings-check">
@@ -623,7 +623,7 @@
         <label for="pb-key-sync-fx">Key-sync pitched FX</label>
       </div>
       <span class="setting-desc" id="pb-key-sync-fx-desc">
-        Tune oscillator-based effects (air horn, dub siren, ring modulator) to the song's root note, lerping outgoing-to-incoming root in log space across the fade.  Effects on tracks with no detected key fall back to their hardcoded reference frequency.
+        Tune oscillator-based effects (air horn, dub siren, ring modulator) to the song's root note, lerping outgoing-to-incoming root in log space across the fade.  Effects on tracks with no detected key fall back to their hardcoded reference frequency.  Browser crossfades only; the server mix ignores it.
       </span>
 
       <div class="settings-check">
@@ -631,7 +631,7 @@
         <label for="pb-beatmatch-on-skip">Beatmatch on skip</label>
       </div>
       <span class="setting-desc" id="pb-beatmatch-on-skip-desc">
-        When you press Skip, pitch-stretch the incoming track so its tempo matches the outgoing one (preserves musical pitch).  Without this, skipping mid-track cold-cuts to the new tempo.  Capped at <span aria-hidden="true">+-</span><span class="visually-hidden">plus or minus </span>15% so wildly mismatched tracks don't sound silly.  Browser-only — CLI server-audio mode can't pitch-stretch on the fly.
+        When you press Skip, pitch-stretch the incoming track so its tempo matches the outgoing one (preserves musical pitch).  Without this, the skip crossfades into the new track at its own tempo.  Capped at <span aria-hidden="true">+-</span><span class="visually-hidden">plus or minus </span>15% so wildly mismatched tracks don't sound silly.  Browser only: when the server does the mixing, a skip is a short fade-out.
       </span>
 
       <div class="settings-row">
@@ -646,9 +646,10 @@
       </div>
       <span class="setting-desc" id="audio-device-desc">
         Pick which sound card <span aria-hidden="true">/</span><span class="visually-hidden">or</span> headphones the browser plays through.
-        Works in Chromium <span aria-hidden="true">/</span><span class="visually-hidden">and</span> Edge (full support) and Firefox 116<span aria-hidden="true">+</span><span class="visually-hidden"> or later</span>.  Safari has
-        <em>not</em> shipped <code>setSinkId</code> yet — it falls back to the
-        system default.  Browsers hide device <em>names</em> until you grant
+        Works in Chromium <span aria-hidden="true">/</span><span class="visually-hidden">and</span> Edge.  Firefox only lets a page move a
+        single audio element, which the page's crossfade mixing bypasses, so
+        there the sound stays on the system default; Safari has
+        <em>not</em> shipped <code>setSinkId</code> yet either.  Browsers hide device <em>names</em> until you grant
         microphone permission once: click <em>Show device names</em> to do
         that (the permission is released immediately, no audio is captured).
         Selection saved per browser in <code>localStorage</code>; server
@@ -666,7 +667,7 @@
         </select>
       </div>
       <span class="setting-desc" id="pb-transition-mode-desc">
-        Mirrors Mixxx's AutoDJ transition modes.  <em>Full intro<span aria-hidden="true">/</span><span class="visually-hidden"> and </span>outro</em> aligns the start of the incoming intro with the start of the outgoing outro and sizes the fade to whichever marker is shorter — best when both tracks have detected intro and outro markers.  <em>Outro fade</em> begins the fade at the outgoing outro_start and uses outro length only.  <em>Fixed (skip silence)</em> uses the Crossfade-seconds value but trims leading silence on the incoming track and trailing silence on the outgoing.  <em>Fixed</em> fades for the Crossfade-seconds value at the end of the outgoing track, with no marker alignment.
+        Mirrors Mixxx's AutoDJ transition modes.  <em>Full intro<span aria-hidden="true">/</span><span class="visually-hidden"> and </span>outro</em> starts the fade at the outgoing outro, brings the incoming track in at the end of its intro, and sizes the fade to whichever is shorter, 1 to 12 seconds — best when both tracks have detected intro and outro markers.  <em>Outro fade</em> begins the fade at the outgoing outro_start and uses outro length only.  <em>Fixed (skip silence)</em> uses the Crossfade-seconds value and brings the incoming track in at the end of its quiet intro.  <em>Fixed</em> fades for the Crossfade-seconds value at the end of the outgoing track, with no marker alignment.
       </span>
 
       <div class="settings-row">
@@ -703,7 +704,7 @@
         <input type="number" id="pb-crossfade" min="0" max="20" step="0.5" value="3" aria-describedby="pb-crossfade-desc">
       </div>
       <span class="setting-desc" id="pb-crossfade-desc">
-        How long the gain ramp between tracks lasts.  2-3 s feels natural for most music; 5-8 s for ambient or testing transition effects.  0 <span aria-hidden="true">=</span><span class="visually-hidden">means</span> instant cut.
+        How long the gain ramp between tracks lasts.  2-3 s feels natural for most music; 5-8 s for ambient or testing transition effects.  In Full intro and outro and Outro fade modes, tracks with detected markers fade for 1 to 12 seconds instead.  0 cuts when the server does the mixing; this browser uses 3 seconds instead of 0.
       </span>
 
       <div class="settings-row">
@@ -913,7 +914,7 @@
   <details class="card" id="profiles-card">
     <summary><h2>Profiles</h2></summary>
     <p class="card-desc">
-      A profile saves the current preset, BPM range, harmonic mixing, transition mode, crossfade and fade-in, pick mode, anchor to seed, the effect sync options and the voice liner switch and rotation, so a whole set-up comes back with one press.
+      A profile saves the current preset, BPM range, harmonic mixing, transition mode, where to seed from after the queue empties, crossfade and fade-in, pick mode, anchor to seed, the effect sync options, beatmatch on skip and the voice liner switch and rotation, so a whole set-up comes back with one press.
     </p>
     <div id="profiles-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
     <fieldset>
@@ -1058,8 +1059,9 @@
           <button type="button" id="lib-run-index">Index</button>
         </div>
         <p class="setting-desc" id="lib-index-desc">
-          Walk the library and embed every audio file, or limit to the
-          first N for a smoke test.  Slow on CPU — run on a GPU host.
+          Embed the tracks not yet in the index (a limit caps how many new
+          ones), then refresh key data from beets when it is set up and
+          analyse intros, outros and cues.  Slow on CPU — run on a GPU host.
         </p>
 
         <div class="settings-row">

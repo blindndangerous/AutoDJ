@@ -7,7 +7,8 @@ the repository on a WSL filesystem so UID 10001 and POSIX modes have their docum
 ## Configuration precedence
 
 AutoDJ resolves defaults, `config.toml`, sibling `config.local.toml`, environment variables, then
-explicit CLI flags. Omitting `--config` is valid. Explicitly naming a missing file is an error. Put
+explicit CLI flags. `config.local.toml` is read only when a `config.toml` was loaded next to it;
+on its own it is ignored. Omitting `--config` is valid. Explicitly naming a missing file is an error. Put
 access tokens only in ignored local configuration or `AUTODJ_ACCESS_TOKEN`. An unknown section or
 key in either file, such as a setting a newer AutoDJ removed, is an error that names it.
 
@@ -475,8 +476,9 @@ this on each machine:
 uv run autodj index
 ```
 
-`autodj index` only embeds tracks it has not seen and files changed since they were embedded, then
-enriches from beets, prunes entries for deleted files, and analyses new tracks. Each machine keeps
+`autodj index` first drops entries for deleted files (unless more than a fifth of the library is
+missing, which usually means a wrong `music_dir`), then embeds tracks it has not seen and files
+changed since they were embedded, enriches from beets, and analyses new tracks. Each machine keeps
 its own web settings, liners, profiles and paired browsers, and neither can overwrite the other.
 Use `autodj index --force` only when you want to rebuild an index from nothing.
 

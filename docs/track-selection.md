@@ -97,7 +97,7 @@ score at most `cosine * (1 - bpm_weight)` and sits level with a track whose
 tempo is maximally wrong.
 
 Built-in preset `bpm_weight` values in `src/autodj/presets.py` range from 0.10
-(`focus`) to 0.40 (`workout`). At 0.30 (`wakeup`, `party`) a perfect tempo
+(`focus`) to 0.40 (`workout`). At 0.30 (`wakeup`, `winddown`, `party`) a perfect tempo
 match in a different genre can outrank every track in the current track's own
 sonic cluster.
 

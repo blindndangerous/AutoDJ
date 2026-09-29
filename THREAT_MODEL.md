@@ -6,15 +6,15 @@ Last reviewed: 2026-09-07. Re-review every major release.
 
 AutoDJ is a single-user local music player with these exposed surfaces:
 
-- CLI commands read local audio and configuration, then write index, profile, liner, history, or
-  backup data as the invoking user.
+- CLI commands read local audio and configuration, then write index, profile, liner or backup
+  data as the invoking user. Play history is kept in memory only.
 - The web UI uses FastAPI and WebSocket. The default host process binds to `127.0.0.1:8080`.
   The default Compose service listens on container-internal `0.0.0.0` but publishes only on host
   `127.0.0.1`.
 - LAN mode requires either an access token or explicit `--insecure-lan`, plus exact Host and Origin
   allowlists. `AUTODJ_ACCESS_TOKEN` is supported for secret injection. `serve --lan` fills in
   both allowlists and the token automatically; see "Automatic LAN mode" below.
-- Backup and restore trust the configured index, liners, profiles and history locations. Restore
+- Backup and restore trust the configured index, liners and profiles locations. Restore
   checks member names and the AutoDJ version before it replaces anything.
 
 Cloud sync, multi-user roles, billing, and public Internet hosting are out of scope. Use TLS for any
@@ -47,7 +47,7 @@ half-copied or mismatched pair is refused and the previous certificate keeps bei
   serializes secret fields as `<redacted>` and does not write index state.
 - Background jobs accept a fixed subcommand allowlist, and each subcommand accepts only the flags
   the web UI sends: currently `index --limit <positive integer>`, and no flags for `enrich`,
-  `prune`, `stats`, or `list-indexes`. Anything else, such as `--force` or a second `--config`
+  `analyse`, `prune`, `stats`, or `list-indexes`. Anything else, such as `--force` or a second `--config`
   or `--name`, is refused. They run with `shell=False` and a UTF-8 child pipe.
 
 ## Web request policy
@@ -77,8 +77,8 @@ When `server.access_token` or `AUTODJ_ACCESS_TOKEN` is set:
   Browser access. All three need a valid session.
 - A paired browser can also show the current pairing code (`GET /api/pairing-code`), so any
   paired device can pair another one. The route needs a valid session, answers 409 when pairing
-  is off, and never logs the code. "Sign out
-  this browser" (`POST /api/logout`) revokes the calling device as well as deleting its cookie, so
+  is off, and never logs the code.
+- "Sign out this browser" (`POST /api/logout`) revokes the calling device as well as deleting its cookie, so
   a copied cookie stops working at once instead of lasting out its 90 days.
 - The pairing body is limited to 4096 bytes before downstream parsing.
 - Wrong, well-formed codes are counted per client address within each 300-second code window. A
@@ -200,7 +200,7 @@ single-user incident review but do not provide per-user attribution.
 ## Backup and restore boundary
 
 A backup is a plain ZIP file: the published index generation, `dj_meta.db`, `web_state.json`,
-the liners and profiles folders, the optional play history, and a `manifest.json` naming the
+the liners and profiles folders, and a `manifest.json` naming the
 AutoDJ version and the files. It is safe to make while AutoDJ serves: the index is copied under
 its publication lock and `dj_meta.db` through SQLite's backup API. The archive is written to a
 temporary file and renamed into place, and it may not be written inside the liners or profiles
@@ -208,15 +208,14 @@ folder.
 
 Restore requires a backup from the same major and minor version. It refuses member names that
 are absolute, contain `..`, backslashes or drive letters, or fall outside the known index files,
-liners, profiles and history, and it refuses an archive whose files differ from its manifest.
+liners and profiles, and it refuses an archive whose files differ from its manifest.
 Every file is unpacked beside its destination and the index is checked before anything is
-replaced. Restored liners and profiles folders replace the current ones whole. There are no
-digests, free-space checks or rollback: an interrupted restore is run again. The operator must
+replaced. Restored liners and profiles folders replace the current ones whole. The index files
+are checked against the SHA-256 digests in their manifest; other files have no digests, and there
+are no free-space checks or rollback: an interrupted restore is run again. The operator must
 stop AutoDJ first, because restore cannot tell whether it runs. Filesystem locations remain
 trusted through operating-system ACLs. AutoDJ does not defend against an attacker who already
 controls them and can race filesystem operations.
-
-ace filesystem operations.
 
 ## Container and dependency controls
 
