@@ -275,6 +275,13 @@ class TestLoadInto:
         _load(p, tmp_path)
         assert p._discovery_every is None
 
+    def test_saved_discovery_rate_turns_discovery_on(self, tmp_path) -> None:
+        _write_state(tmp_path, {"discovery_every": 7})
+        p = _make_player()
+        _load(p, tmp_path)
+        assert p._discovery_every == 7
+        assert p._state.discovery_enabled is True
+
     def test_load_restores_a_saved_preset(self, tmp_path) -> None:
         from autodj.presets import BUILTIN_PRESETS
 

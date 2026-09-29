@@ -213,8 +213,9 @@ def load_into_bridge(bridge: PlayerBridge, index_dir: Path | None) -> None:
     if "discovery_every" in data:
         every = _checked(DiscoveryBody, "every", data["discovery_every"], "discovery_every")
         if every is not _INVALID:
-            # Only the rate: the Discovery button still starts off after a restart.
-            bridge.player._discovery_every = every if every and every > 0 else None
+            # The same setter as the route, so a saved rate also turns the
+            # Discovery button on and the rate fires after a restart.
+            bridge.set_discovery_every(every)
 
 
 def save_from_player(settings: dict, index_dir: Path | None) -> None:
