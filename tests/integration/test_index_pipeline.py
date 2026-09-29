@@ -77,6 +77,10 @@ def _fake_wrapper():
 @pytest.fixture
 def fake_config(tmp_path: Path) -> AutoDJConfig:
     beets_db = _create_beets_db(tmp_path / "library.db", n_tracks=10)
+    # Decoding is mocked, but the indexer skips beets items with no file.
+    (tmp_path / "Music").mkdir()
+    for i in range(10):
+        (tmp_path / "Music" / f"song_{i}.flac").touch()
     index_dir = tmp_path / "index"
     index_dir.mkdir()
 

@@ -1365,10 +1365,27 @@ def _load_existing_index(
     return entries, vectors, manifest.generation
 
 
+def _warn_missing_beets_files(missing: list[Path]) -> None:
+    """Log one warning naming beets items whose files are gone from disk."""
+    examples = "\n".join(f"  {p}" for p in missing[:5])
+    more = f"\n  ... and {len(missing) - 5} more" if len(missing) > 5 else ""
+    logger.warning(
+        "Skipping %d beets items whose files do not exist:\n%s%s\n"
+        "Run `beet update -M` to drop them from the beets library "
+        "(`beet update -p` previews the changes first).",
+        len(missing),
+        examples,
+        more,
+    )
+
+
 def _collect_tracks_to_index(
     cfg: AutoDJConfig, indexed: set[str], limit: int | None
 ) -> list[Track]:
     """Return the tracks not in *indexed*, from beets if available, else the folder.
+
+    Beets items whose file is gone are skipped with one warning per run, so
+    a stale beets library does not queue the same dead paths every run.
 
     Args:
         cfg: Full AutoDJ configuration.
@@ -1413,8 +1430,20 @@ def _collect_tracks_to_index(
                 len(tracks),
                 cfg.library.music_dir,
             )
-        new = [t for t in inside if str(t.path) not in indexed]
-        return new if limit is None else new[:limit]
+        new: list[Track] = []
+        missing: list[Path] = []
+        for t in inside:
+            if limit is not None and len(new) >= limit:
+                break
+            if str(t.path) in indexed:
+                continue
+            if t.path.is_file():
+                new.append(t)
+            else:
+                missing.append(t.path)
+        if missing:
+            _warn_missing_beets_files(missing)
+        return new
 
     # No beets database — fall back to filesystem scan + ID3/Vorbis tag reads.
     from autodj.audio_meta import read_file_tags

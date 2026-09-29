@@ -1150,6 +1150,40 @@ def test_index_limit_reads_only_the_tags_it_needs(tmp_path: Path) -> None:
     assert [c.args[0] for c in read.call_args_list] == wanted
 
 
+def test_beets_items_with_missing_files_are_skipped_with_one_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Beets listed 11 deleted files; every `autodj index` pruned them, then
+    # queued them again as new and failed all 11 in ffmpeg.
+    import dataclasses
+    import sqlite3
+
+    base = _backfill_cfg(tmp_path)
+    music = base.library.music_dir
+    (music / "A").mkdir(parents=True)
+    (music / "A" / "real.flac").touch()
+    beets = tmp_path / "library.db"
+    with sqlite3.connect(beets) as conn:
+        conn.execute(
+            "CREATE TABLE items (path BLOB, title TEXT, artist TEXT, album TEXT,"
+            " genre TEXT, bpm REAL, year INTEGER, length REAL)"
+        )
+        conn.executemany(
+            "INSERT INTO items (path) VALUES (?)", [(b"A/gone.flac",), (b"A/real.flac",)]
+        )
+    conn.close()
+    cfg = dataclasses.replace(base, library=dataclasses.replace(base.library, beets_db=beets))
+
+    with caplog.at_level("WARNING", logger="autodj.indexer"):
+        tracks = _collect_tracks_to_index(cfg, set(), limit=None)
+
+    assert [t.path for t in tracks] == [music / "A" / "real.flac"]
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "1 beets items" in warnings[0]
+    assert "gone.flac" in warnings[0]
+
+
 class TestBackfillDjMeta:
     @pytest.fixture(autouse=True)
     def _fresh_cache(self):
