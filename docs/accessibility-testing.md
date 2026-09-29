@@ -4,6 +4,16 @@ AutoDJ uses automated checks and requires a screen-reader sample before release 
 
 ## Published evidence
 
+For 0.19.0, the release sample is recorded in [accessibility-samples/0.19.0.md](accessibility-samples/0.19.0.md).
+It was taken on 2026-09-29 on the release commit b437a2c, on Windows 11 with NVDA 2026.2 and Google
+Chrome 154.0.8037.58 (all thirteen flows listed below), Mozilla Firefox 156.0.1 and Microsoft Edge
+154.0.4258.37 (a subset of flows), each in a temporary profile, over HTTPS with a self-signed
+certificate. Narrator was not sampled. No person listened: an automated agent sent real key presses
+and read what NVDA spoke from NVDA's own log. The record starts with a summary of what 0.19.0 ships
+with, lists the flows with a pass or fail per browser, the checks of playback made by reading the
+page's audio state behind a zero-gain stage, five new defects (D1 to D5, none a blocker) and the
+limits of the method. It covers only those pairings and flows.
+
 For 0.18.0, the release sample is recorded in [accessibility-samples/0.18.0.md](accessibility-samples/0.18.0.md).
 It was taken on 2026-09-27 and 2026-09-28 on Windows 11 with NVDA 2026.2 and Google Chrome
 153.0.8010.53 (the twelve flows listed at the time; Settings, Browser access was added later), Mozilla Firefox 156.0.1 and Microsoft Edge 154.0.4258.37
