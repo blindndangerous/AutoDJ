@@ -1029,13 +1029,9 @@ class PlayerBridge:
         starting point — useful when the user doesn't like the seed the
         server picked at startup or wants to jump to an unrelated genre.
         """
-        import random as _random
-
-        similarity = self.sim
-        entries = similarity.entries_snapshot()
-        if not entries:
+        chosen = self.sim.random_entry()
+        if chosen is None:
             return False
-        chosen = _random.choice(entries)  # nosec B311 — non-security
         if self.stream_mode and self.station.start_with(chosen, "seed"):
             return True  # idle station: the next set starts with it
         if self._bus_mode():

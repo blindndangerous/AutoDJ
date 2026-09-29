@@ -30,7 +30,7 @@ from autodj.player import (
     load_audio,
     write_m3u,
 )
-from autodj.similarity import SimilarityError
+from autodj.similarity import SimilarityError, SimilarityIndex
 from autodj.transitions import TRANSITION_EFFECT_NAMES
 from tests.unit._fakes import make_cfg_mock as _make_cfg_mock
 from tests.unit._fakes import make_entry as _make_entry
@@ -688,6 +688,25 @@ class TestPlayerPickNext:
             result = player._pick_next(current)
         assert isinstance(result, IndexEntry)
         assert result.path != current.path
+
+    def test_pure_shuffle_skips_silent_tracks(self) -> None:
+        built = _make_sim_index(4)
+        for entry in built.entries[1:3]:
+            entry.energy = 0.0
+        sim = SimilarityIndex(built.faiss_index, built.entries)
+        entries = sim.entries_snapshot()
+        player = Player(_make_cfg_mock(), sim, pure_shuffle=True)
+        player._state.current_track = entries[0]
+        picks = {player._pick_next(entries[0]).path for _ in range(20)}
+        assert picks <= {entries[0].path, entries[3].path}
+
+    def test_queued_silent_track_still_plays(self) -> None:
+        """The silence filter is for automatic picks; a user's queue is obeyed."""
+        player = self._make_player(n=4)
+        silent = player._sim.entries[2]
+        silent.energy = 0.0
+        player._state.queue.append(silent)
+        assert player._pick_next(player._sim.entries[0]).path == silent.path
 
     def test_pure_shuffle_does_not_admit_unknown_or_out_of_range_bpm(self) -> None:
         sim = _make_sim_index(4, bpms=[110.0, 0.0, 150.0, 125.0])

@@ -1265,19 +1265,6 @@ class TestPickTopKWiring:
         # Strict mode allows only the same key+mode as the seed.
         assert (result.key, result.mode) == (0, 1)
 
-    def test_target_energy_zero_energy_entry(self) -> None:
-        """Re-rank path: candidates with energy <= 0 fall through e_score=0 branch."""
-        sim, vectors = _make_similarity_index(8)
-        for i, e in enumerate(sim.entries):
-            e.energy = 0.0 if i < 4 else 0.1
-        result = sim.find_next(
-            query_vector=vectors[0],
-            recently_played=deque([sim.entries[0].path]),
-            n_candidates=8,
-            target_energy=0.1,
-        )
-        assert isinstance(result, IndexEntry)
-
     def test_top_k_variety_with_bpm_rerank(self) -> None:
         sim, vectors = _make_similarity_index(20)
         # Vary BPM so re-ranking has actual signal.
@@ -1295,3 +1282,47 @@ class TestPickTopKWiring:
             for _ in range(30)
         }
         assert len(picks) >= 2
+
+
+# ---------------------------------------------------------------------------
+# Silent tracks ("[silence]" pregaps) are never picked automatically
+# ---------------------------------------------------------------------------
+
+
+def _line_index(n: int, silent: set[int]) -> SimilarityIndex:
+    """Track 0 is the query; each later track is farther from it than the last."""
+    vectors = np.zeros((n, FEATURE_DIM), dtype=np.float32)
+    vectors[:, 0] = np.linspace(1.0, -1.0, n, dtype=np.float32)
+    vectors[:, 1] = np.sqrt(np.maximum(0.0, 1.0 - vectors[:, 0] ** 2))
+    index = faiss.IndexFlatIP(FEATURE_DIM)
+    index.add(vectors)
+    entries = [_make_entry(i) for i in range(n)]
+    for i in silent:
+        entries[i].energy = 0.0
+    return SimilarityIndex(index, entries)
+
+
+class TestSilentTracksAreNeverPicked:
+    def test_smart_shuffle_skips_the_farthest_track_when_it_is_silent(self) -> None:
+        sim = _line_index(8, silent={7})
+        first = sim.entries_snapshot()[0]
+        result = sim.find_next_for_path(first.path, deque([first.path]), invert=True)
+        assert result.path == "song_6.flac"
+
+    def test_similarity_skips_the_nearest_track_when_it_is_silent(self) -> None:
+        sim = _line_index(8, silent={1})
+        first = sim.entries_snapshot()[0]
+        result = sim.find_next_for_path(first.path, deque([first.path]))
+        assert result.path == "song_2.flac"
+
+    def test_discovery_falls_back_to_a_non_silent_track(self) -> None:
+        sim = _line_index(8, silent={2, 3, 4, 5, 6, 7})
+        first = sim.entries_snapshot()[0]
+        assert sim.find_distant(first.path, deque([first.path])).path == "song_1.flac"
+
+    def test_random_entry_skips_silent_tracks(self) -> None:
+        sim = _line_index(4, silent={0, 1, 3})
+        assert {sim.random_entry().path for _ in range(20)} == {"song_2.flac"}  # type: ignore[union-attr]
+
+    def test_random_entry_is_none_when_every_track_is_silent(self) -> None:
+        assert _line_index(3, silent={0, 1, 2}).random_entry() is None

@@ -2114,7 +2114,6 @@ def cmd_playlist(
       uv run autodj playlist --seed "Portishead" --tracks 20
       uv run autodj playlist --preset wakeup --bpm-range 80-150 --output wakeup.m3u
     """
-    import random
     from collections import deque
 
     from autodj.player import write_m3u
@@ -2131,13 +2130,15 @@ def cmd_playlist(
     playlist: list = []
     recently_played: deque = deque(maxlen=cfg.playback.no_repeat_window)
 
-    similarity = sim
     # Start with seed or random
     if seed_entry is not None:
         current = seed_entry
     else:
-        # Non-security playlist seeding — random.choice is fine here.
-        current = random.choice(similarity.entries_snapshot())  # nosec B311
+        random_entry = sim.random_entry()
+        if random_entry is None:
+            console.print("[red]No playable tracks in the index.[/red]")
+            sys.exit(1)
+        current = random_entry
 
     playlist.append(current)
     recently_played.append(current.path)

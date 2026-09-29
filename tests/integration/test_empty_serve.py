@@ -416,7 +416,7 @@ def test_player_uses_first_published_generation_after_waiting(tmp_path: Path) ->
                 bpm=0.0,
                 year=0,
                 length=1.0,
-                energy=0.0,
+                energy=0.05,
                 key=-1,
                 mode=-1,
                 tempo_confidence=0.0,

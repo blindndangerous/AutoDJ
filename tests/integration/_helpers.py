@@ -135,6 +135,7 @@ def _make_sim_mock(entries: list[IndexEntry] | None = None) -> MagicMock:
     sim = MagicMock()
     sim.entries = entries if entries is not None else [_make_entry(i) for i in range(5)]
     sim.entries_snapshot.side_effect = lambda: tuple(sim.entries)
+    sim.random_entry.side_effect = lambda: sim.entries[0] if sim.entries else None
     sim.entry_for_path.side_effect = lambda path: next(
         (entry for entry in sim.entries if entry.path == path),
         None,

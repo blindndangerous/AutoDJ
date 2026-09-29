@@ -104,6 +104,12 @@ _LIBROSA_DIM = 16
 # Combined feature vector dimension: 1024 (MuQ) + 16 (librosa)
 FEATURE_DIM = EMBEDDING_DIM + _LIBROSA_DIM
 
+# Mean RMS below this (about -80 dBFS) is silence: every indexed track is
+# analysed, so a digitally silent file (a "[silence]" pregap, an empty hidden
+# track) measures 0.0 and dithered silence stays far under it.  The quietest
+# music sits around -60 dBFS (0.001).  Automatic picks skip these tracks.
+SILENT_ENERGY = 1e-4
+
 # How often the embed loop rewrites the monolithic FAISS file during a
 # long ``autodj index`` run.  The whole file (~290 MB at 70k tracks) is
 # rebuilt and rewritten on every flush, so per-track rewrites pummel NAS
@@ -354,7 +360,8 @@ class IndexEntry:
         bpm: Beats per minute (from beets or estimated by librosa).
         year: Release year.
         length: Track duration in seconds.
-        energy: RMS loudness, 0.0 = unknown / not yet enriched.
+        energy: Mean RMS loudness measured when the track was indexed.
+            Below :data:`SILENT_ENERGY` the track is silent.
         key: Chromatic key 0–11 (C=0, C#=1, …, B=11), -1 = unknown.
         mode: 1 = major, 0 = minor, -1 = unknown / not yet enriched.
         tempo_confidence: Librosa beat-tracking confidence 0.0–1.0,
@@ -425,6 +432,11 @@ class IndexEntry:
         if self.artist:
             return f"{self.artist} \u2014 {self.title}"
         return self.title
+
+    @property
+    def is_silent(self) -> bool:
+        """True when the track measured as silence; automatic picks skip it."""
+        return self.energy < SILENT_ENERGY
 
 
 # ---------------------------------------------------------------------------

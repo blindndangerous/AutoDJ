@@ -10,6 +10,7 @@ import pytest
 
 from autodj.mixbus import MixBus, RenderedTrack
 from autodj.player import Player
+from autodj.similarity import SimilarityIndex
 from tests.unit._fakes import make_cfg_mock, make_sim_index
 
 WAIT = 5.0
@@ -41,8 +42,7 @@ def test_random_start_entry_picks_from_the_library() -> None:
 
 def test_random_start_entry_is_none_for_an_empty_library() -> None:
     player = _player()
-    player._sim = MagicMock()
-    player._sim.entries_snapshot.return_value = ()
+    player._sim = SimilarityIndex.empty()
     assert player._random_start_entry() is None
 
 

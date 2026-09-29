@@ -56,6 +56,7 @@ def _make_entry(i: int = 0) -> IndexEntry:
 
 def _configure_sim_api(sim: MagicMock) -> MagicMock:
     sim.entries_snapshot.side_effect = lambda: tuple(sim.entries)
+    sim.random_entry.side_effect = lambda: sim.entries[0] if sim.entries else None
     sim.entry_for_path.side_effect = lambda path: next(
         (entry for entry in sim.entries if entry.path == path),
         None,

@@ -197,6 +197,13 @@ class SimilarityIndex:
         with self._reload_lock:
             return self._public_entries
 
+    def random_entry(self) -> IndexEntry | None:
+        """Return a random non-silent track, or ``None`` when there is none."""
+        with self._reload_lock:
+            playable = [e for e in self._public_entries if not e.is_silent]
+        # Non-security pick.
+        return random.choice(playable) if playable else None  # nosec B311
+
     def entry_for_path(self, path: str) -> IndexEntry | None:
         """Return entry for *path* from one index generation, if present."""
         with self._reload_lock:
@@ -341,7 +348,11 @@ class SimilarityIndex:
         excluded_albums: set[str] | None,
         excluded_titles: set[str] | None,
     ) -> Callable[[IndexEntry], bool]:
-        """Compose a single ``entry -> bool`` predicate from every active filter."""
+        """Compose a single ``entry -> bool`` predicate from every active filter.
+
+        Silent tracks never pass: in smart shuffle their vectors are the
+        farthest from any music, so they would win every other pick.
+        """
         from autodj.genres import canonicalise_list
         from autodj.genres import matches as _genre_matches
 
@@ -351,7 +362,7 @@ class SimilarityIndex:
         ex_ttl = {t.lower() for t in (excluded_titles or set()) if t}
 
         def _ok(entry: IndexEntry) -> bool:
-            if entry.path in excluded:
+            if entry.path in excluded or entry.is_silent:
                 return False
             if bpm_range is not None:
                 lo, hi = bpm_range
@@ -416,9 +427,7 @@ class SimilarityIndex:
 
     @staticmethod
     def _energy_score(entry: IndexEntry, target_energy: float) -> float:
-        """Gaussian energy similarity (sigma=0.15); 0.0 when entry energy unknown."""
-        if entry.energy <= 0:
-            return 0.0
+        """Gaussian energy similarity (sigma=0.15)."""
         diff = abs(entry.energy - target_energy) / 0.15
         return float(np.exp(-0.5 * diff * diff))
 
@@ -734,7 +743,9 @@ class SimilarityIndex:
             bottom_quartile = all_valid[bottom_start:]
 
             distant_candidates = [
-                self.entries[i] for _, i in bottom_quartile if self.entries[i].path not in excluded
+                self.entries[i]
+                for _, i in bottom_quartile
+                if self.entries[i].path not in excluded and not self.entries[i].is_silent
             ]
 
             if distant_candidates:
@@ -744,7 +755,7 @@ class SimilarityIndex:
                 return self._public_entry(chosen)
 
             # Fallback: any non-excluded track (full library)
-            fallback = [e for e in self.entries if e.path not in excluded]
+            fallback = [e for e in self.entries if e.path not in excluded and not e.is_silent]
             if fallback:
                 # Non-security fallback pick.
                 return self._public_entry(random.choice(fallback))  # nosec B311
