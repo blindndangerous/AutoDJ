@@ -22,7 +22,10 @@ The `index` check loads the index with the same code `serve` uses. It passes wit
 number and track count, warns when there is no index yet or the index is empty, and otherwise
 fails with the name and message of the error `serve` would stop with, for example
 `UnsupportedIndexError` for an index made by an older AutoDJ. The `dj-meta-db` check runs SQLite's
-integrity check on `dj_meta.db` without changing it.
+integrity check on `dj_meta.db` without changing it. The `beets-db` check warns when
+`[library] beets_db` names a file that does not exist: indexing then scans the music folder
+instead, and `autodj enrich` fails. The `dependencies` check warns when FFmpeg is not on the
+PATH: indexing then skips `.m4a`, `.mp4` and `.aac` files, and stream mode cannot start.
 
 ## Indexing and DJ analysis
 
@@ -77,6 +80,44 @@ uv run autodj serve --lan --ssl-certfile radio.pem --ssl-keyfile radio-key.pem
 
 `--lan --insecure-lan` keeps the detected allowlists but turns pairing off; use it only on a
 trusted network. `--insecure-lan` without `--lan` still needs explicit allowlists.
+
+### HTTPS on your home network
+
+A browser trusts a certificate only when the certificate names the address in the address bar
+and the device trusts whoever signed it. Without a domain of your own, make a self-signed
+certificate and install it as trusted on each device that opens AutoDJ. With a domain,
+[HTTPS with your own domain](#https-with-your-own-domain) gets a certificate that browsers
+already trust.
+
+List every name and address you open AutoDJ by in `subjectAltName`; startup of
+`autodj serve --lan` prints them, and `localhost` is the address it gives for this machine. This
+example is for a machine called `nas` at `192.168.1.20`:
+
+```bash
+openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+  -subj "/CN=nas" \
+  -addext "subjectAltName=DNS:nas,DNS:nas.local,DNS:localhost,IP:192.168.1.20" \
+  -keyout autodj-key.pem -out autodj.pem
+```
+
+On Windows, Git for Windows includes OpenSSL as `C:\Program Files\Git\usr\bin\openssl.exe`; in
+PowerShell, put the command on one line without the trailing backslashes. Keep
+`autodj-key.pem` where only the account that runs AutoDJ can read it, and point `[server]` at
+both files, for example in `config.local.toml`:
+
+```toml
+[server]
+lan = true
+ssl_certfile = "/srv/autodj/tls/autodj.pem"
+ssl_keyfile = "/srv/autodj/tls/autodj-key.pem"
+```
+
+Startup then prints `https://` addresses, and LAN mode allows their `https://` origins. Copy
+`autodj.pem`, never the key, to each device and install it as a trusted certificate; each
+operating system, and Firefox, has its own place for that. Until a device trusts it, its browser
+shows a certificate warning. The certificate above expires after 365 days; before then, make a
+new one, replace the two files, and install the new certificate on each device. AutoDJ picks up
+the replaced files within five minutes.
 
 ### Paired devices
 
