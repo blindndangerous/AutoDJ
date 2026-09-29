@@ -36,6 +36,7 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import click
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 
 from autodj.stream_secret import paired_devices_path
@@ -116,7 +117,7 @@ def _load_cfg_or_exit(
         return load_config(config_path)
     except (OSError, KeyError, TypeError, ValueError) as exc:
         if show_error:
-            console.print(f"[bold red]Config not found or invalid:[/] {exc}")
+            console.print(f"[bold red]Config not found or invalid:[/] {escape(str(exc))}")
         raise click.exceptions.Exit(1) from exc
 
 
@@ -135,7 +136,7 @@ def _apply_index_name(cfg: AutoDJConfig, index_name: str | None) -> bool:  # pra
     try:
         validate_index_name(index_name)
     except ValueError as exc:
-        console.print(f"[bold red]Invalid --name:[/] {exc}")
+        console.print(f"[bold red]Invalid --name:[/] {escape(str(exc))}")
         sys.exit(1)
     if cfg.index.name == index_name:
         return False
@@ -312,35 +313,52 @@ def _print_serve_banner(
     console_.print(Panel(f"[bold green]AutoDJ[/] — {sim.ntotal} tracks indexed", expand=False))
 
 
+def _serve_url(server: ServerConfig) -> str:
+    """Return the address a browser on this machine should open.
+
+    A wildcard bind address is not one the Host allowlist accepts, so the URL
+    names ``localhost`` when it is allowed, otherwise the first allowed host.
+    """
+    scheme = "https" if server.ssl_certfile is not None else "http"
+    name = server.host
+    if name in ("0.0.0.0", "::"):  # nosec B104 -- comparison only
+        allowed = server.effective_allowed_hosts()
+        name = "localhost" if "localhost" in allowed else next(iter(allowed), name)
+    if ":" in name:
+        name = f"[{name}]"
+    return f"{scheme}://{name}:{server.port}"
+
+
 def _print_serve_url_banner(
-    console_: Console,
-    host: str,
-    port: int,
-    tls: bool,
+    console_: Console, server: ServerConfig
 ) -> str:  # pragma: no cover -- terminal banner
     """Print the web-UI URL + reachability hint; return the URL."""
-    scheme = "https" if tls else "http"
-    url = f"{scheme}://{host}:{port}"
-    console_.print(f"  Web UI  : [link={url}]{url}[/link]")
-    if scheme == "https":
+    from autodj.config import is_loopback_bind
+
+    url = _serve_url(server)
+    console_.print(f"  Web UI  : [link={url}]{escape(url)}[/link]")
+    if server.ssl_certfile is not None:
         console_.print(
             "  [dim](TLS active — AudioWorklet effects work on remote hosts.  "
             "Trust the certificate's CA on every listening device.)[/]",
         )
-    if host in ("127.0.0.1", "localhost", "::1"):
+    if is_loopback_bind(server.host):
         console_.print(
             "  [dim](Reachable from this machine only.  "
             "Use [bold]--lan[/] to open it to your local network.)[/]",
         )
-    elif host == "0.0.0.0":  # nosec B104 -- explicit user intent for LAN bind
+    elif server.host in ("0.0.0.0", "::"):  # nosec B104 -- comparison only
+        where = (
+            "the addresses listed below"
+            if server.lan
+            else f"this machine's name or address from {escape('[server]')} allowed_hosts"
+        )
         console_.print(
-            "  [dim](Listening on all interfaces — open the URL above "
-            "from any device on your LAN.  Use the machine's actual IP "
-            "instead of 0.0.0.0 from a remote browser.)[/]",
+            f"  [dim](Listening on all interfaces.  Other devices open {where}.)[/]",
         )
     else:
         console_.print(
-            f"  [dim](Listening on [bold]{host}[/].  "
+            f"  [dim](Listening on [bold]{escape(server.host)}[/].  "
             "Reachable from devices that can route to this address.)[/]",
         )
     console_.print("  Press [bold]Ctrl+C[/] to quit\n")
@@ -392,6 +410,11 @@ def cli(ctx: click.Context, config_path: str | None, verbose: bool) -> None:
     # level from a prior import.  Set it explicitly so the configured
     # level takes effect regardless of import order.
     logging.getLogger().setLevel(level)
+    # At INFO these read as errors or noise: faiss logs a ModuleNotFoundError
+    # each time it picks its CPU build, and httpx logs every model-download
+    # request.  -v shows them again.
+    for name in ("faiss.loader", "httpx"):
+        logging.getLogger(name).setLevel(logging.NOTSET if verbose else logging.WARNING)
 
 
 # ---------------------------------------------------------------------------
@@ -823,12 +846,14 @@ def cmd_index(
             workers=workers,
         )
     except Exception as exc:
-        console.print(f"[bold red]Indexing failed:[/] {exc}")
+        console.print(f"[bold red]Indexing failed:[/] {escape(str(exc))}")
         sys.exit(1)
 
     if not skip_enrich:
         if not cfg.library.beets_db:
-            console.print("[yellow]Enrich skipped: no [library] beets_db configured.[/]")
+            console.print(
+                f"[yellow]Enrich skipped: no {escape('[library]')} beets_db configured.[/]"
+            )
         else:
             from autodj.indexer import enrich_from_beets
 
@@ -840,7 +865,7 @@ def cmd_index(
                 )
                 console.print(f"[green]Enrich:[/] {updated} of {total} tracks updated.")
             except Exception as exc:
-                console.print(f"[bold red]Enrich failed:[/] {exc}")
+                console.print(f"[bold red]Enrich failed:[/] {escape(str(exc))}")
 
     if not skip_analyse:
         from autodj.indexer import backfill_dj_meta, load_index
@@ -851,7 +876,7 @@ def cmd_index(
         except FileNotFoundError:
             console.print("[yellow]--analyse skipped: no index found.[/]")
         except Exception as exc:
-            console.print(f"[bold red]Analyse failed:[/] {exc}")
+            console.print(f"[bold red]Analyse failed:[/] {escape(str(exc))}")
 
 
 # ---------------------------------------------------------------------------
@@ -908,10 +933,10 @@ def cmd_prune(
             allow_mass_prune=force,
         )
     except PruneSafetyError as exc:
-        console.print(f"[bold red]Prune aborted (safety check):[/]\n{exc}")
+        console.print(f"[bold red]Prune aborted (safety check):[/]\n{escape(str(exc))}")
         sys.exit(2)
     except Exception as exc:
-        console.print(f"[bold red]Prune failed:[/] {exc}")
+        console.print(f"[bold red]Prune failed:[/] {escape(str(exc))}")
         sys.exit(1)
 
     if removed == 0 and kept == 0:
@@ -961,7 +986,9 @@ def cmd_enrich(ctx: click.Context, index_name: str | None) -> None:
     _apply_index_name(cfg, index_name)
 
     if not cfg.library.beets_db:
-        console.print("[bold red]No [library] beets_db in config — enrich requires beets.[/]")
+        console.print(
+            f"[bold red]No {escape('[library]')} beets_db in config — enrich requires beets.[/]"
+        )
         sys.exit(1)
 
     try:
@@ -971,7 +998,7 @@ def cmd_enrich(ctx: click.Context, index_name: str | None) -> None:
             beets_db=cfg.library.beets_db,
         )
     except Exception as exc:
-        console.print(f"[bold red]Enrich failed:[/] {exc}")
+        console.print(f"[bold red]Enrich failed:[/] {escape(str(exc))}")
         sys.exit(1)
 
     if total == 0:
@@ -1053,7 +1080,7 @@ def cmd_analyse(
         )
         sys.exit(1)
     except IndexConsistencyError as exc:
-        console.print(f"[bold red]{exc}[/]")
+        console.print(f"[bold red]{escape(str(exc))}[/]")
         sys.exit(1)
 
     console.print(Panel("[bold green]AutoDJ DJ-meta backfill[/]", expand=False))
@@ -1066,7 +1093,7 @@ def cmd_analyse(
     try:
         backfill_dj_meta(cfg, entries, limit=limit)
     except Exception as exc:
-        console.print(f"[bold red]Analyse failed:[/] {exc}")
+        console.print(f"[bold red]Analyse failed:[/] {escape(str(exc))}")
         sys.exit(1)
 
 
@@ -1258,7 +1285,7 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
         try:
             validate_index_name(index_name)
         except ValueError as exc:
-            console.print(f"[bold red]Invalid --name:[/] {exc}")
+            console.print(f"[bold red]Invalid --name:[/] {escape(str(exc))}")
             sys.exit(1)
         selected_index_name = index_name
     from autodj.index_manifest import IndexConsistencyError
@@ -1266,7 +1293,7 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
     try:
         sim = _load_index_for_serve(cfg, active_dir=cfg.index.index_dir / selected_index_name)
     except IndexConsistencyError as exc:
-        console.print(f"[bold red]{exc}[/]")
+        console.print(f"[bold red]{escape(str(exc))}[/]")
         sys.exit(1)
     if (
         staged_server.insecure_lan
@@ -1276,7 +1303,7 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
         console.print("[yellow]WARNING: LAN access is unauthenticated (--insecure-lan).[/]")
     _print_serve_banner(console, sim)
     seed_entry = _resolve_seed(sim, cfg, seed, console)
-    url = _print_serve_url_banner(console, host, port, staged_server.ssl_certfile is not None)
+    url = _print_serve_url_banner(console, staged_server)
     cfg.server = staged_server
     if stream is not None:
         cfg.stream.enabled = stream
@@ -1353,7 +1380,8 @@ def cmd_list_devices() -> None:
         console.print("[yellow]No output devices found.[/]")
     else:
         console.print(
-            "\n[dim]* = system default.  Set [playback] audio_device to an index or name.[/]"
+            f"\n[dim]* = system default.  Set {escape('[playback]')} audio_device "
+            "to an index or name.[/]"
         )
 
 
@@ -1428,10 +1456,10 @@ def cmd_stats(ctx: click.Context, index_name: str | None) -> None:
     try:
         entries, _, _ = load_index(cfg.index.active_dir, music_dir=cfg.library.music_dir)
     except FileNotFoundError as exc:
-        console.print(f"[bold red]Index not found:[/] {exc}")
+        console.print(f"[bold red]Index not found:[/] {escape(str(exc))}")
         sys.exit(1)
     except IndexConsistencyError as exc:
-        console.print(f"[bold red]{exc}[/]")
+        console.print(f"[bold red]{escape(str(exc))}[/]")
         sys.exit(1)
 
     print_stats(entries, console)

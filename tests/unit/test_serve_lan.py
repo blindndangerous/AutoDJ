@@ -11,7 +11,7 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from autodj.cli import _stage_serve_server, cli
+from autodj.cli import _serve_url, _stage_serve_server, cli
 from autodj.config import ServerConfig, StreamConfig, load_config
 from autodj.lan import load_or_create_access_token
 
@@ -74,6 +74,30 @@ def test_config_lan_is_used_without_the_flag(tmp_path: Path) -> None:
 
     assert staged.host == "0.0.0.0"
     assert "http://nas:9000" in (staged.allowed_origins or [])
+
+
+def test_serve_url_for_a_lan_wildcard_bind_passes_the_host_allowlist(tmp_path: Path) -> None:
+    staged = _stage(_cfg(tmp_path), lan=True)
+
+    # http://0.0.0.0:8080 was printed and opened by --open, and the Host
+    # allowlist refuses 0.0.0.0 with 403.
+    assert _serve_url(staged) == "http://localhost:8080"
+    assert "localhost" in staged.effective_allowed_hosts()
+
+
+def test_serve_url_for_a_wildcard_bind_without_lan_uses_an_allowed_host() -> None:
+    server = ServerConfig(
+        host="0.0.0.0",  # nosec B104 -- test value
+        access_token=_TOKEN,
+        allowed_hosts=["radio.local"],
+        allowed_origins=["http://radio.local:8080"],
+    )
+
+    assert _serve_url(server) == "http://radio.local:8080"
+
+
+def test_serve_url_brackets_an_ipv6_bind_address() -> None:
+    assert _serve_url(ServerConfig(host="::1")) == "http://[::1]:8080"
 
 
 def test_without_lan_nothing_is_detected(tmp_path: Path) -> None:

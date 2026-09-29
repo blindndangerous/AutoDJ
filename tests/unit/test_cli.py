@@ -261,6 +261,16 @@ class TestCliConfigSelection:
         assert "Config not found or invalid" in result.output
         assert f"{section} section must be a table" in result.output
 
+    def test_unknown_key_error_names_its_section(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[playback]\nbogus_key = 1\n", encoding="utf-8")
+
+        result = CliRunner().invoke(cli, ["--config", str(config_path), "stats"])
+
+        assert result.exit_code == 1
+        # Rich markup used to swallow "[playback]" as a style tag.
+        assert "unknown [playback] keys: ['bogus_key']" in result.output
+
     def test_omitted_config_passes_none_to_loader(self) -> None:
         cfg = _make_cfg()
         with (
@@ -1292,3 +1302,15 @@ class TestCmdAnalyse:
             result = CliRunner().invoke(cli, ["analyse"])
         assert result.exit_code == 1
         assert "missing packages" in result.output
+
+
+def test_third_party_info_logs_are_quiet_unless_verbose() -> None:
+    import logging
+
+    CliRunner().invoke(cli, ["doctor", "--help"])
+    for name in ("faiss.loader", "httpx"):
+        assert logging.getLogger(name).getEffectiveLevel() == logging.WARNING
+
+    CliRunner().invoke(cli, ["-v", "doctor", "--help"])
+    for name in ("faiss.loader", "httpx"):
+        assert logging.getLogger(name).getEffectiveLevel() == logging.DEBUG
