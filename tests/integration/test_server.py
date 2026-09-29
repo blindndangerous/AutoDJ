@@ -2540,8 +2540,6 @@ class TestPostQueueSeed:
 
     def test_default_last_queued_uses_just_played(self, bridge) -> None:
         bridge.player._dry_run = True
-        bridge.player._export_m3u = None
-        bridge.player._history_file = None
         bridge.player._cfg.playback.post_queue_seed = "last_queued"
         last_queued = _make_entry(50)
         bridge.player._state.queue.append(last_queued)
@@ -2554,8 +2552,6 @@ class TestPostQueueSeed:
 
     def test_pre_queue_mode_rewinds_to_pre_queue_track(self, bridge) -> None:
         bridge.player._dry_run = True
-        bridge.player._export_m3u = None
-        bridge.player._history_file = None
         bridge.player._cfg.playback.post_queue_seed = "pre_queue"
         # Simulate the user adding a track while track A is playing.
         pre_queue = bridge.player._state.current_track
@@ -2654,8 +2650,6 @@ class TestMisc:
         from fastapi.testclient import TestClient
 
         bridge.player._dry_run = True
-        bridge.player._export_m3u = None
-        bridge.player._history_file = None
         # next_track refresh after advance returns a real entry (not a
         # MagicMock) so _track_dict can serialise the response.
         bridge.player._pick_next.return_value = _make_entry(99)
@@ -2690,8 +2684,6 @@ class TestMisc:
         from fastapi.testclient import TestClient
 
         bridge.player._dry_run = True
-        bridge.player._export_m3u = None
-        bridge.player._history_file = None
         # _pick_next returns a fresh entry so next_track gets refreshed.
         bridge.player._pick_next.return_value = _make_entry(99)
 
@@ -2716,8 +2708,6 @@ class TestMisc:
         from fastapi.testclient import TestClient
 
         bridge.player._dry_run = True
-        bridge.player._export_m3u = None
-        bridge.player._history_file = None
         bridge.player._pick_next.return_value = _make_entry(42)
 
         tc = TestClient(create_app(bridge))
@@ -2787,8 +2777,6 @@ class TestMisc:
     def test_advance_now_uses_queued_next(self, bridge) -> None:
         """queued_next (search -> Now / reseed_random) wins over next_track."""
         bridge.player._dry_run = True
-        bridge.player._export_m3u = None
-        bridge.player._history_file = None
         queued = _make_entry(123)
         bridge.player._state.queued_next = queued
         bridge.player._pick_next.return_value = _make_entry(7)
@@ -2802,8 +2790,6 @@ class TestMisc:
     def test_advance_now_pops_queue(self, bridge) -> None:
         """User-ordered queue (drag-reorder) drains FIFO when no queued_next."""
         bridge.player._dry_run = True
-        bridge.player._export_m3u = None
-        bridge.player._history_file = None
         bridge.player._state.queued_next = None
         head = _make_entry(55)
         tail = _make_entry(56)
@@ -2819,8 +2805,6 @@ class TestMisc:
     def test_advance_now_picks_when_no_next_track(self, bridge) -> None:
         """No queued_next, no queue, no next_track -> falls back to _pick_next."""
         bridge.player._dry_run = True
-        bridge.player._export_m3u = None
-        bridge.player._history_file = None
         bridge.player._state.queued_next = None
         bridge.player._state.next_track = None
         # cur is set; queue empty.
@@ -2837,8 +2821,6 @@ class TestMisc:
     def test_advance_now_no_op_when_index_empty(self, bridge) -> None:
         """No current, no next, no queue -> early return, no state mutation."""
         bridge.player._dry_run = True
-        bridge.player._export_m3u = None
-        bridge.player._history_file = None
         bridge.player._state.queued_next = None
         bridge.player._state.current_track = None
         bridge.player._state.next_track = None
@@ -2884,8 +2866,6 @@ class TestMisc:
         usable so the browser can keep playing.
         """
         bridge.player._dry_run = True
-        bridge.player._export_m3u = None
-        bridge.player._history_file = None
 
         # First pick succeeds (there's a next_track precomputed).  Second
         # call (refreshing next) blows up.
@@ -2903,8 +2883,6 @@ class TestMisc:
         between calls), advance_now leaves state untouched.
         """
         bridge.player._dry_run = True
-        bridge.player._export_m3u = None
-        bridge.player._history_file = None
         # No queued_next, no queue, no next_track -> falls back to picker.
         bridge.player._state.queued_next = None
         bridge.player._state.next_track = None
@@ -2914,26 +2892,6 @@ class TestMisc:
         bridge.advance_now()
         # Current unchanged, no record_played call, no track_number bump.
         assert bridge.player._state.current_track is before_cur
-
-    def test_advance_now_writes_m3u_and_history(self, bridge, tmp_path) -> None:
-        """Side-effect parity with the Live audio loop -- per-track
-        append to the M3U export and the history file.
-        """
-        bridge.player._dry_run = True
-        m3u = tmp_path / "live.m3u"
-        history = tmp_path / "history.tsv"
-        bridge.player._export_m3u = m3u
-        bridge.player._history_file = history
-        bridge.player._pick_next.return_value = _make_entry(11)
-
-        next_entry = bridge.player._state.next_track  # what advance picks
-        bridge.advance_now()
-
-        m3u_text = m3u.read_text(encoding="utf-8")
-        hist_text = history.read_text(encoding="utf-8")
-        assert next_entry.path in m3u_text
-        # History line carries the track path + an ISO timestamp.
-        assert next_entry.path in hist_text
 
     def test_websocket_connect_and_disconnect_log_at_info(self, caplog) -> None:
         """Server logs every WS connect / disconnect at INFO with the
@@ -2962,8 +2920,6 @@ class TestMisc:
         previous track's words.
         """
         bridge.player._dry_run = True
-        bridge.player._export_m3u = None
-        bridge.player._history_file = None
         bridge.player._state.queued_next = None
         picked = _make_entry(404)
         bridge.player._state.next_track = picked
@@ -2979,8 +2935,6 @@ class TestMisc:
         entire track-change path.
         """
         bridge.player._dry_run = True
-        bridge.player._export_m3u = None
-        bridge.player._history_file = None
         bridge.player._state.queued_next = None
         picked = _make_entry(406)
         bridge.player._state.next_track = picked
@@ -2999,8 +2953,6 @@ class TestMisc:
         even though detect_cues works fine from raw audio.
         """
         bridge.player._dry_run = True
-        bridge.player._export_m3u = None
-        bridge.player._history_file = None
         bridge.player._state.queued_next = None
         picked = _make_entry(501)
         nxt2 = _make_entry(502)

@@ -127,7 +127,6 @@ Every command takes `--help`, for example `uv run autodj serve --help`. The glob
 - `autodj list-indexes` lists the named indexes under `[index] index_dir`.
 - `autodj serve` starts the browser interface; `autodj serve --lan` opens it to your local
   network; `autodj serve --stream` also serves the live mix as an MP3 radio station.
-- `autodj playlist` writes an offline M3U playlist from the similarity picker.
 - `autodj list-devices` lists the audio output devices available to `serve --server-audio`.
 - `autodj doctor` checks configuration, paths, dependencies, the model, and security settings.
 - `autodj backup` and `autodj restore` archive and restore index and user data.
@@ -437,8 +436,8 @@ supported path; reach for the wheel only when you want AutoDJ without a source t
 ## Uninstall
 
 AutoDJ keeps everything in directories you chose; it installs no system service. To remove a
-source checkout, stop AutoDJ, run `autodj backup` first if you want to keep profiles, liners, or
-history, then delete what you no longer want:
+source checkout, stop AutoDJ, run `autodj backup` first if you want to keep profiles or liners,
+then delete what you no longer want:
 
 - `.venv/` holds the Python dependencies, and `node_modules/` the Node development tools if you
   installed them.

@@ -70,7 +70,7 @@ def _make_sim(n: int = 5) -> MagicMock:
     sim.entries = entries
     _configure_sim_api(sim)
     sim.ntotal = n
-    # Return a real IndexEntry so callers that serialize it (write_m3u, etc.) don't crash
+    # Return a real IndexEntry so callers that serialize it do not crash
     sim.find_next_for_path.return_value = entries[0]
     return sim
 
@@ -81,7 +81,6 @@ def _make_cfg(beets_db=None) -> MagicMock:
     cfg.playback.no_repeat_window = 50
     cfg.playback.artist_repeat_window = 3
     cfg.playback.crossfade_seconds = 3.0
-    cfg.playback.history_file = None
     cfg.playback.discovery_every = None
     cfg.presets = {}
     cfg.index.name = "default"
@@ -167,31 +166,31 @@ class TestResolveSeed:
 
     def test_exact_title_match(self) -> None:
         sim = _make_sim()
-        result = _resolve_seed(sim, _make_cfg(), "Song 0", MagicMock(), interactive=False)
+        result = _resolve_seed(sim, _make_cfg(), "Song 0", MagicMock())
         assert result is not None
         assert result.path == sim.entries[0].path
 
     def test_partial_title_match(self) -> None:
         sim = _make_sim()
-        result = _resolve_seed(sim, _make_cfg(), "ong 0", MagicMock(), interactive=False)
+        result = _resolve_seed(sim, _make_cfg(), "ong 0", MagicMock())
         assert result is not None
 
     def test_artist_match(self) -> None:
         sim = _make_sim()
-        result = _resolve_seed(sim, _make_cfg(), "Artist 0", MagicMock(), interactive=False)
+        result = _resolve_seed(sim, _make_cfg(), "Artist 0", MagicMock())
         assert result is not None
 
-    def test_multiple_matches_non_interactive_takes_first(self) -> None:
-        """With interactive=False and multiple hits, the first match is chosen."""
+    def test_multiple_matches_takes_first(self) -> None:
+        """With multiple hits, the first match is chosen."""
         sim = _make_sim(5)
         # "Song" matches all 5 entries
-        result = _resolve_seed(sim, _make_cfg(), "Song", MagicMock(), interactive=False)
+        result = _resolve_seed(sim, _make_cfg(), "Song", MagicMock())
         assert result is not None
         assert result.path == sim.entries[0].path
 
     def test_case_insensitive_match(self) -> None:
         sim = _make_sim()
-        result = _resolve_seed(sim, _make_cfg(), "song 0", MagicMock(), interactive=False)
+        result = _resolve_seed(sim, _make_cfg(), "song 0", MagicMock())
         assert result is not None
 
 
@@ -212,10 +211,6 @@ class TestCliConfigNotFound:
 
     def test_stats_exits_on_missing_config(self, tmp_path: Path) -> None:
         result = CliRunner().invoke(cli, ["--config", self._missing(tmp_path), "stats"])
-        assert result.exit_code == 1
-
-    def test_playlist_exits_on_missing_config(self, tmp_path: Path) -> None:
-        result = CliRunner().invoke(cli, ["--config", self._missing(tmp_path), "playlist"])
         assert result.exit_code == 1
 
     def test_serve_exits_on_missing_config(self, tmp_path: Path) -> None:
@@ -514,11 +509,6 @@ class TestCliIndexNotFound:
         result = CliRunner().invoke(cli, ["--config", str(cfg), "stats"])
         assert result.exit_code == 1
 
-    def test_playlist_exits_on_missing_index(self, tmp_path: Path) -> None:
-        cfg = self._write_minimal_config(tmp_path)
-        result = CliRunner().invoke(cli, ["--config", str(cfg), "playlist"])
-        assert result.exit_code == 1
-
 
 # ---------------------------------------------------------------------------
 # CLI happy paths — real code, mocked heavy deps
@@ -537,48 +527,6 @@ class TestCliHappyPaths:
         ):
             result = CliRunner().invoke(cli, ["stats"])
         assert result.exit_code == 0
-
-    def test_playlist_exits_zero(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-        ):
-            result = CliRunner().invoke(cli, ["playlist", "--tracks", "3"])
-        assert result.exit_code == 0
-
-    def test_playlist_writes_m3u_file(self, tmp_path: Path) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        out = tmp_path / "out.m3u"
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-        ):
-            result = CliRunner().invoke(cli, ["playlist", "--tracks", "3", "--output", str(out)])
-        assert result.exit_code == 0
-        assert out.exists()
-
-    def test_playlist_with_preset(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-        ):
-            result = CliRunner().invoke(cli, ["playlist", "--preset", "chill", "--tracks", "3"])
-        assert result.exit_code == 0
-
-    def test_playlist_unknown_preset_exits_one(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-        ):
-            result = CliRunner().invoke(cli, ["playlist", "--preset", "nosuchpreset_xyz"])
-        assert result.exit_code == 1
 
 
 # ---------------------------------------------------------------------------
@@ -633,7 +581,7 @@ class TestResolveSeedBeets:
 
         cfg = _make_cfg(beets_db=db)
 
-        result = _resolve_seed(sim, cfg, "Portishead", MagicMock(), interactive=False)
+        result = _resolve_seed(sim, cfg, "Portishead", MagicMock())
         assert result is not None
         assert "Portishead" in result.path
 

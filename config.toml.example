@@ -164,9 +164,6 @@ prefetch_next_track = true
 # cut atmospheric tracks short on quiet mid-song passages.
 silence_trigger_crossfade = true
 
-# Optional — append a JSON Lines record for every track played.
-# history_file = "~/.autodj/history.jsonl"
-
 # Optional — inject a sonically distant ("discovery") track every N tracks.
 # Press D in the terminal or click the Discovery button in the web UI to toggle.
 # discovery_every = 20

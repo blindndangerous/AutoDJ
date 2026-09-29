@@ -484,18 +484,6 @@ class PlayerBridge:
         )
         p._playback_pos[0] = 0
 
-        # M3U / history side effects (mirror the Live-loop behaviour).
-        if p._export_m3u:
-            from autodj.player import _append_m3u_entry
-
-            _append_m3u_entry(p._export_m3u, nxt)
-        if p._history_file:
-            from datetime import datetime as _dt
-
-            from autodj.player import _append_history_entry
-
-            _append_history_entry(p._history_file, nxt, _dt.now())
-
     def pause(self) -> bool:
         """Toggle pause/resume.
 

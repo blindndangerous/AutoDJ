@@ -2163,8 +2163,6 @@ def serve(
     host: str | None = None,
     port: int | None = None,
     preset: Preset | None = None,
-    export_m3u: Path | None = None,
-    history_file: Path | None = None,
     discovery_every: int | None = None,
     bpm_range: tuple[float, float] | None = None,
     smart_shuffle: bool = False,
@@ -2187,8 +2185,6 @@ def serve(
         host: Interface to bind uvicorn to.
         port: Port to bind uvicorn to.
         preset: Optional BPM-shaping preset (forwarded to Player).
-        export_m3u: Optional path for live M3U export (forwarded to Player).
-        history_file: Optional path for play history (forwarded to Player).
         discovery_every: Discovery injection rate (forwarded to Player).
         bpm_range: Hard BPM filter ``(lo, hi)`` (forwarded to Player).
         no_playback: Skip server-side audio playback (browser drives audio).
@@ -2264,8 +2260,6 @@ def serve(
         stream_mode=stream,
         server_audio_too=stream and not no_playback,
         preset=preset,
-        export_m3u=export_m3u,
-        history_file=history_file,
         discovery_every=discovery_every,
         bpm_range=bpm_range,
         smart_shuffle=smart_shuffle,

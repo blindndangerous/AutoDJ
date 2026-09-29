@@ -523,7 +523,6 @@ index, so the next `autodj index` there starts from the copied one.
 - `web_state.json`, the settings chosen in the web page.
 - Every file in the liners folder (`[playback] liners_folder`, or `index/<name>/liners`) and in
   `index/profiles`.
-- The play history file, when `[playback] history_file` is set.
 - `manifest.json`, which records the AutoDJ version that made the archive and lists its files.
 
 Backups do not include `config.toml`, `config.local.toml` or `presets.toml`. Copy those yourself
@@ -575,7 +574,7 @@ files the manifest does not list, and an index made by an older AutoDJ.
 Without `--force`, restore refuses when anything it would replace already exists. With it:
 
 - The index in the archive replaces the current index, including its older generations.
-- `dj_meta.db`, `web_state.json` and the history file are replaced when the archive has them.
+- `dj_meta.db` and `web_state.json` are replaced when the archive has them.
 - The liners folder and `index/profiles` are replaced whole: files that are not in the backup are
   deleted. Parts the archive does not hold are left alone.
 

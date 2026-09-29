@@ -19,15 +19,12 @@ from autodj.indexer import IndexEntry
 from autodj.player import (
     Player,
     PlayerState,
-    _append_history_entry,
-    _append_m3u_entry,
     _apply_crossfade,
     _apply_crossfade_ducked,
     _time_stretch,
     apply_filter_sweep,
     beatmatch_incoming,
     load_audio,
-    write_m3u,
 )
 from autodj.similarity import SimilarityError
 from autodj.transitions import TRANSITION_EFFECT_NAMES
@@ -195,123 +192,6 @@ class TestPlayerState:
         state.track_number += 1
         state.track_number += 1
         assert state.track_number == 2
-
-
-# ---------------------------------------------------------------------------
-# M3U helpers
-# ---------------------------------------------------------------------------
-
-
-class TestM3UHelpers:
-    def test_append_m3u_entry_creates_file(self, tmp_path: Path) -> None:
-        path = tmp_path / "playlist.m3u"
-        entry = _make_entry(0)
-        _append_m3u_entry(path, entry)
-        assert path.exists()
-
-    def test_append_m3u_entry_format(self, tmp_path: Path) -> None:
-        path = tmp_path / "playlist.m3u"
-        entry = _make_entry(0)  # length=180.0, display_name="Artist — Song 0"
-        _append_m3u_entry(path, entry)
-        content = path.read_text(encoding="utf-8")
-        assert "#EXTINF:180," in content
-        assert entry.path in content
-
-    def test_write_m3u_header(self, tmp_path: Path) -> None:
-        path = tmp_path / "playlist.m3u"
-        entries = [_make_entry(i) for i in range(3)]
-        write_m3u(entries, path)
-        content = path.read_text(encoding="utf-8")
-        assert content.startswith("#EXTM3U")
-
-    def test_write_m3u_all_entries_present(self, tmp_path: Path) -> None:
-        path = tmp_path / "playlist.m3u"
-        entries = [_make_entry(i) for i in range(3)]
-        write_m3u(entries, path)
-        content = path.read_text(encoding="utf-8")
-        for entry in entries:
-            assert entry.path in content
-
-    def test_append_m3u_entry_appends(self, tmp_path: Path) -> None:
-        path = tmp_path / "playlist.m3u"
-        _append_m3u_entry(path, _make_entry(0))
-        _append_m3u_entry(path, _make_entry(1))
-        content = path.read_text(encoding="utf-8")
-        assert "Z:/Music/song_0.flac" in content
-        assert "Z:/Music/song_1.flac" in content
-
-    def test_m3u_unknown_length_uses_minus_one(self, tmp_path: Path) -> None:
-        path = tmp_path / "playlist.m3u"
-        entry = IndexEntry(
-            path="Z:/Music/unknown.flac",
-            title="Unknown",
-            artist="Artist",
-            album="",
-            genre="",
-            bpm=0.0,
-            year=0,
-            length=0.0,
-            energy=0.0,
-            key=-1,
-            mode=-1,
-            tempo_confidence=0.0,
-        )
-        _append_m3u_entry(path, entry)
-        content = path.read_text(encoding="utf-8")
-        assert "#EXTINF:-1," in content
-
-
-# ---------------------------------------------------------------------------
-# History helper
-# ---------------------------------------------------------------------------
-
-
-class TestHistoryHelper:
-    def test_append_history_creates_file(self, tmp_path: Path) -> None:
-        from datetime import datetime
-
-        path = tmp_path / "history.jsonl"
-        entry = _make_entry(0)
-        _append_history_entry(path, entry, datetime.now())
-        assert path.exists()
-
-    def test_append_history_is_valid_json(self, tmp_path: Path) -> None:
-        import json
-        from datetime import datetime
-
-        path = tmp_path / "history.jsonl"
-        entry = _make_entry(0)
-        _append_history_entry(path, entry, datetime.now())
-        lines = path.read_text(encoding="utf-8").strip().splitlines()
-        assert len(lines) == 1
-        obj = json.loads(lines[0])
-        assert obj["path"] == entry.path
-        assert obj["title"] == entry.title
-        assert obj["artist"] == entry.artist
-
-    def test_append_history_has_timestamp(self, tmp_path: Path) -> None:
-        import json
-        from datetime import datetime
-
-        path = tmp_path / "history.jsonl"
-        entry = _make_entry(0)
-        ts = datetime(2026, 4, 11, 14, 30, 0)
-        _append_history_entry(path, entry, ts)
-        obj = json.loads(path.read_text(encoding="utf-8").strip())
-        assert "2026-04-11" in obj["timestamp"]
-
-    def test_append_history_multiple_entries(self, tmp_path: Path) -> None:
-        import json
-        from datetime import datetime
-
-        path = tmp_path / "history.jsonl"
-        for i in range(3):
-            _append_history_entry(path, _make_entry(i), datetime.now())
-        lines = path.read_text(encoding="utf-8").strip().splitlines()
-        assert len(lines) == 3
-        # Each line is valid JSON
-        for line in lines:
-            json.loads(line)
 
 
 # ---------------------------------------------------------------------------
@@ -1182,34 +1062,6 @@ class TestPlayerRun:
         with patch("autodj.player.time.sleep"):
             player.run(seed_entry=None)  # should not raise
 
-    def test_run_exports_m3u(self, tmp_path: Path) -> None:
-        m3u_path = tmp_path / "session.m3u"
-        player = Player(
-            _make_cfg_mock(),
-            _make_sim_index(n=10),
-            dry_run=True,
-            export_m3u=m3u_path,
-        )
-        self._run_one_track(player)
-        assert m3u_path.exists()
-        content = m3u_path.read_text(encoding="utf-8")
-        assert content.startswith("#EXTM3U")
-
-    def test_run_appends_history(self, tmp_path: Path) -> None:
-        import json
-
-        history = tmp_path / "history.jsonl"
-        player = Player(
-            _make_cfg_mock(),
-            _make_sim_index(n=10),
-            dry_run=True,
-            history_file=history,
-        )
-        self._run_one_track(player)
-        assert history.exists()
-        obj = json.loads(history.read_text(encoding="utf-8").strip().splitlines()[0])
-        assert "path" in obj
-
 
 # ---------------------------------------------------------------------------
 # beatmatch_incoming
@@ -1422,27 +1274,6 @@ class TestApplyCrossfadeDucked:
         b = np.ones(10000, dtype=np.float32) * 0.9
         out = _apply_crossfade_ducked(a, b, 4000, 44100)
         assert np.abs(out).max() <= 1.0 + 1e-6
-
-
-# ---------------------------------------------------------------------------
-# write_m3u + history (already partially covered, fill gaps)
-# ---------------------------------------------------------------------------
-
-
-class TestWriteM3u:
-    def test_writes_header_and_entries(self, tmp_path: Path) -> None:
-        out = tmp_path / "list.m3u"
-        write_m3u([_make_entry(0), _make_entry(1)], out)
-        content = out.read_text(encoding="utf-8")
-        assert content.startswith("#EXTM3U")
-        assert "Song 0" in content
-        assert "Song 1" in content
-
-    def test_empty_list_writes_header_only(self, tmp_path: Path) -> None:
-        out = tmp_path / "list.m3u"
-        write_m3u([], out)
-        content = out.read_text(encoding="utf-8")
-        assert "#EXTM3U" in content
 
 
 # ---------------------------------------------------------------------------
@@ -2290,20 +2121,13 @@ def _rendered(entry, next_entry=None, frames=44100, fx="echo_out", ratio=0.97):
 
 
 class TestOnTrackStart:
-    def _player(self, tmp_path: Path | None = None) -> Player:
-        kwargs = {}
-        if tmp_path is not None:
-            kwargs = {
-                "export_m3u": tmp_path / "set.m3u",
-                "history_file": tmp_path / "history.jsonl",
-            }
-        player = Player(_make_cfg_mock(), _make_sim_index(4), **kwargs)
+    def _player(self) -> Player:
+        player = Player(_make_cfg_mock(), _make_sim_index(4))
         player.load_lyrics_in_background = MagicMock()  # type: ignore[method-assign]
         return player
 
-    def test_state_describes_the_track_that_started(self, tmp_path) -> None:
-        player = self._player(tmp_path)
-        (tmp_path / "set.m3u").write_text("#EXTM3U\n", encoding="utf-8")
+    def test_state_describes_the_track_that_started(self) -> None:
+        player = self._player()
         before, entry, nxt = player._sim.entries[:3]
         player._state.current_track = before
         player._current_sr = 22050
@@ -2323,12 +2147,10 @@ class TestOnTrackStart:
         assert player._beatmatch_ratio == pytest.approx(0.97)
         assert player._state.track_number == 1
         assert entry.path in player._state.recently_played
-        assert entry.path in (tmp_path / "set.m3u").read_text(encoding="utf-8")
-        assert entry.path in (tmp_path / "history.jsonl").read_text(encoding="utf-8")
         player.load_lyrics_in_background.assert_called_once_with(entry.path)
         assert started == [entry]
 
-    def test_without_callback_or_exports(self) -> None:
+    def test_without_callback(self) -> None:
         player = self._player()
         entry = player._sim.entries[0]
         player._on_track_start(_rendered(entry, None, fx=""))
@@ -2336,8 +2158,8 @@ class TestOnTrackStart:
         assert player._state.next_track is None
         assert player._last_transition_fx == ""
 
-    def test_seed_recorded_once(self, tmp_path) -> None:
-        player = self._player(tmp_path)
+    def test_seed_recorded_once(self) -> None:
+        player = self._player()
         seed, second = player._sim.entries[:2]
         recorded = []
         original = player._state.record_played
@@ -2355,10 +2177,6 @@ class TestOnTrackStart:
         assert recorded == [seed, second]
         assert player._state.track_number == 1
         assert player._previous_track is seed
-        m3u = (tmp_path / "set.m3u").read_text(encoding="utf-8")
-        assert m3u.count(seed.path) == 1
-        history = (tmp_path / "history.jsonl").read_text(encoding="utf-8")
-        assert history.count(seed.path) == 1
 
     def test_on_position_tracks_bus_progress(self) -> None:
         player = self._player()
@@ -2645,25 +2463,6 @@ class TestTrackStartRobustness:
         player._on_track_start(_rendered_with(player._sim.entries[1]))
         assert player._current_lyrics == []
         assert player._current_lyrics_plain == ""
-
-    def test_export_failure_still_updates_state_and_calls_hook(self, tmp_path, caplog) -> None:
-        sim = _make_sim_index(3)
-        player = Player(
-            _make_cfg_mock(),
-            sim,
-            export_m3u=tmp_path,  # a directory: appending to it fails
-            history_file=tmp_path,
-        )
-        player.load_lyrics_in_background = MagicMock()  # type: ignore[method-assign]
-        started = []
-        player.on_track_started = started.append
-        entry = sim.entries[1]
-        with caplog.at_level("ERROR", logger="autodj.player"):
-            player._on_track_start(_rendered_with(entry))
-        assert player._state.current_track is entry
-        assert entry.path in player._state.recently_played
-        assert started == [entry]
-        assert "Recording" in caplog.text
 
     def test_slow_pick_does_not_delay_track_start(self) -> None:
         import threading

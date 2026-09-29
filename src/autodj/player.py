@@ -11,7 +11,6 @@ or the stream encoder in 20 ms blocks.
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
 import time
@@ -527,76 +526,6 @@ def load_audio(path: str, target_sr: int = _DEFAULT_SR) -> tuple[np.ndarray, int
 
 
 # ---------------------------------------------------------------------------
-# M3U export helpers
-# ---------------------------------------------------------------------------
-
-
-def _write_m3u_header(path: Path) -> None:
-    """Write (or overwrite) a new M3U file containing only the ``#EXTM3U`` header."""
-    path.write_text("#EXTM3U\n", encoding="utf-8")
-
-
-def _m3u_entry_lines(entry: IndexEntry) -> str:
-    """Return the ``#EXTINF`` + path lines for a single track."""
-    duration = int(entry.length) if entry.length > 0 else -1
-    display = f"{entry.artist} - {entry.title}" if entry.artist else entry.title
-    return f"#EXTINF:{duration},{display}\n{entry.path}\n"
-
-
-def _append_m3u_entry(path: Path, entry: IndexEntry) -> None:
-    """Append a single ``#EXTINF`` + path line to an existing M3U file.
-
-    Args:
-        path: Path to the M3U file.
-        entry: Track to append.
-    """
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(_m3u_entry_lines(entry))
-
-
-def write_m3u(entries: list[IndexEntry], path: Path) -> None:
-    """Write a complete M3U playlist file for *entries*.
-
-    Overwrites *path* if it already exists.
-
-    Args:
-        entries: Ordered list of tracks for the playlist.
-        path: Destination file path.
-    """
-    body = "".join(_m3u_entry_lines(entry) for entry in entries)
-    path.write_text("#EXTM3U\n" + body, encoding="utf-8")
-
-
-# ---------------------------------------------------------------------------
-# Play history helpers
-# ---------------------------------------------------------------------------
-
-
-def _append_history_entry(path: Path, entry: IndexEntry, played_at: datetime) -> None:
-    """Append a JSON Lines record to the play history file.
-
-    Creates the file (and any missing parent directories) if it does not exist.
-
-    Args:
-        path: Path to the JSON Lines history file.
-        entry: Track that was played.
-        played_at: UTC/local timestamp when playback began.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    record = {
-        "timestamp": played_at.isoformat(timespec="seconds"),
-        "path": entry.path,
-        "title": entry.title,
-        "artist": entry.artist,
-        "album": entry.album,
-        "bpm": entry.bpm,
-        "length": entry.length,
-    }
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
-
-
-# ---------------------------------------------------------------------------
 # Player
 # ---------------------------------------------------------------------------
 
@@ -614,8 +543,6 @@ class Player:
         dry_run: Browser mode: pick tracks but play nothing on the server;
             the web page plays the audio.
         preset: Optional BPM-shaping preset.
-        export_m3u: Optional path to write a live M3U playlist as tracks play.
-        history_file: Optional path to append JSON Lines play history.
         discovery_every: Override discovery rate (tracks between injections).
             When ``None``, falls back to ``preset.discovery_every`` if set.
         bpm_range: Hard BPM filter ``(lo, hi)`` applied to every track pick.
@@ -631,8 +558,6 @@ class Player:
         sim_index: SimilarityIndex,
         dry_run: bool = False,
         preset: Preset | None = None,
-        export_m3u: Path | None = None,
-        history_file: Path | None = None,
         discovery_every: int | None = None,
         bpm_range: tuple[float, float] | None = None,
         smart_shuffle: bool = False,
@@ -651,8 +576,6 @@ class Player:
             sim_index: Loaded :class:`~autodj.similarity.SimilarityIndex`.
             dry_run: Browser mode: pick tracks but play nothing on the server.
             preset: Optional :class:`~autodj.presets.Preset` for BPM shaping.
-            export_m3u: Optional :class:`~pathlib.Path` for live M3U export.
-            history_file: Optional :class:`~pathlib.Path` for JSON Lines history.
             discovery_every: Tracks between discovery injections.  Overrides
                 ``preset.discovery_every`` when both are set.
             bpm_range: Hard ``(lo, hi)`` BPM filter for every track pick.
@@ -666,8 +589,6 @@ class Player:
         self._stream_mode = stream_mode
         self._server_audio_too = server_audio_too
         self._preset = preset
-        self._export_m3u = export_m3u
-        self._history_file = history_file
         self._bpm_range = bpm_range
         self._smart_shuffle = smart_shuffle
         # Anchored mode: when True, every similarity query uses the SEED
@@ -901,9 +822,6 @@ class Player:
 
         bus = self.bus
         assert bus is not None  # built in __init__ for stream mode
-        if self._export_m3u:
-            # Every track, including each set's first, is appended as it starts.
-            _write_m3u_header(self._export_m3u)
         self._ensure_dj_cache()
         self._ensure_external_cues()
         output = None
@@ -961,15 +879,9 @@ class Player:
     def _record_seed(self, seed: IndexEntry) -> None:
         """Make *seed* the current track and record it as played.
 
-        Writes the M3U header and the seed's M3U / history lines.  The
-        mix bus later announces the seed through :meth:`_on_track_start`,
+        The mix bus later announces the seed through :meth:`_on_track_start`,
         which skips recording it again.
         """
-        if self._export_m3u:
-            _write_m3u_header(self._export_m3u)
-            _append_m3u_entry(self._export_m3u, seed)
-        if self._history_file:
-            _append_history_entry(self._history_file, seed, datetime.now())
         self._state.current_track = seed
         self._state.record_played(seed)
         self._seed_awaiting_start = seed
@@ -1223,20 +1135,6 @@ class Player:
             return head is None or track.next_entry is None or head.path != track.next_entry.path
         return head is not None
 
-    def _record_track_files(self, entry: IndexEntry) -> None:
-        """Append *entry* to the M3U export and history file, if enabled.
-
-        A write failure is logged, never raised: it must not stop the rest
-        of the track-start bookkeeping (or the mix bus block it runs in).
-        """
-        try:
-            if self._export_m3u:
-                _append_m3u_entry(self._export_m3u, entry)
-            if self._history_file:
-                _append_history_entry(self._history_file, entry, datetime.now())
-        except OSError:
-            logger.exception("Recording %s to the M3U / history file failed", entry.path)
-
     def _on_track_start(self, rendered: RenderedTrack) -> None:
         """Update state when the mix bus starts playing *rendered*.
 
@@ -1273,8 +1171,6 @@ class Player:
                 else:
                     self._state.record_played(entry)
                     self._state.track_number += 1
-        if not seed_start:
-            self._record_track_files(entry)
         self._current_lyrics = []
         self._current_lyrics_plain = ""
         self.load_lyrics_in_background(entry.path)

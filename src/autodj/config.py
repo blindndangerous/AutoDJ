@@ -252,8 +252,6 @@ class PlaybackConfig(_Section):
             Set to ``0.0`` to disable crossfade entirely.
         no_repeat_window: Number of recently played tracks excluded from the
             next-song candidate pool.
-        history_file: Optional path to a JSON Lines file where every played
-            track is appended with a timestamp.  ``None`` disables history.
         discovery_every: Default discovery rate: inject a sonically distant
             track every *N* tracks.  ``None`` disables discovery by default.
             The user must also toggle discovery ON at runtime.
@@ -277,7 +275,6 @@ class PlaybackConfig(_Section):
     # few thousand tracks; bump higher for larger collections.
     no_repeat_window: int = 500
     artist_repeat_window: int = 3
-    history_file: Path | None = None
     discovery_every: int | None = None
     crossfade_eq_duck: bool = False
     crossfade_bass_cutoff_hz: float = 180.0
@@ -428,7 +425,6 @@ class PlaybackConfig(_Section):
             )
         self.server_max_track_minutes = float(max_minutes)
         self.artist_repeat_window = max(0, int(self.artist_repeat_window))
-        self.history_file = Path(self.history_file).expanduser() if self.history_file else None
         self.discovery_every = _optional(int, self.discovery_every)
         self.crossfade_bass_cutoff_hz = float(self.crossfade_bass_cutoff_hz)
         self.transition_mode = _validate_transition_mode(str(self.transition_mode))

@@ -102,17 +102,16 @@ def _resolve_seed(
     cfg: AutoDJConfig,
     seed: str | None,
     console_: Console,
-    interactive: bool = True,
 ) -> IndexEntry | None:
     """Resolve a seed string to an :class:`~autodj.indexer.IndexEntry`.
+
+    When several indexed tracks match, the first one is used.
 
     Args:
         sim: Loaded :class:`~autodj.similarity.SimilarityIndex`.
         cfg: Full :class:`~autodj.config.AutoDJConfig`.
         seed: User-supplied search term, or ``None`` for no seed.
         console_: Rich console for printing messages.
-        interactive: If ``True`` and multiple matches exist, prompt the user
-            to choose.  If ``False``, silently take the first match.
 
     Returns:
         The chosen :class:`~autodj.indexer.IndexEntry`, or ``None`` if no
@@ -140,25 +139,11 @@ def _resolve_seed(
         console_.print(f"[yellow]No indexed tracks match '{seed}'. Starting random.[/yellow]")
         return None
 
-    if len(candidates) == 1 or not interactive:
-        chosen = candidates[0]
-        display = getattr(chosen, "display_name", str(chosen))
-        console_.print(f"Seed: [bold]{display}[/bold]")
-        path_str = str(getattr(chosen, "path", chosen))
-        return next((e for e in entries if e.path == path_str), None)
-
-    console_.print(f"\nMultiple matches for '{seed}':")
-    for i, c in enumerate(candidates[:10], 1):
-        name = getattr(c, "display_name", str(c))
-        console_.print(f"  {i}. {name}")
-    try:
-        choice = click.prompt("Choose (number)", type=click.IntRange(1, min(len(candidates), 10)))
-        chosen = candidates[choice - 1]
-        path_str = str(getattr(chosen, "path", chosen))
-        return next((e for e in entries if e.path == path_str), None)
-    except (click.Abort, EOFError):
-        console_.print("[yellow]Cancelled — starting random.[/yellow]")
-        return None
+    chosen = candidates[0]
+    display = getattr(chosen, "display_name", str(chosen))
+    console_.print(f"Seed: [bold]{display}[/bold]")
+    path_str = str(getattr(chosen, "path", chosen))
+    return next((e for e in entries if e.path == path_str), None)
 
 
 def _load_cfg_or_exit(
@@ -199,27 +184,6 @@ def _apply_index_name(cfg: AutoDJConfig, index_name: str | None) -> bool:  # pra
     cfg.index.name = index_name
     _append_cli_source(cfg)
     return True
-
-
-def _load_index_or_exit(
-    cfg: AutoDJConfig, *, active_dir: Path | None = None
-) -> SimilarityIndex:  # pragma: no cover
-    """Load the similarity index for *cfg*, exiting when it is missing or too old."""
-    from autodj.index_manifest import IndexConsistencyError
-    from autodj.similarity import SimilarityIndex as _SI
-
-    try:
-        return _SI.from_index_dir(
-            cfg.index.active_dir if active_dir is None else active_dir,
-            music_dir=cfg.library.music_dir,
-        )
-    except FileNotFoundError as exc:
-        console.print(f"[bold red]Index not found:[/] {exc}")
-        sys.exit(1)
-    except IndexConsistencyError as exc:
-        # Covers UnsupportedIndexError, whose message already names the rebuild.
-        console.print(f"[bold red]{exc}[/]")
-        sys.exit(1)
 
 
 def _load_index_for_serve(
@@ -1352,13 +1316,6 @@ def cmd_analyse(
     help="BPM-shaping preset name (e.g. wakeup, chill, party).",
 )
 @click.option(
-    "--export-m3u",
-    "export_m3u",
-    default=None,
-    type=click.Path(dir_okay=False, writable=True),
-    help="Write a live M3U playlist to this file as tracks play.",
-)
-@click.option(
     "--bpm-range",
     "bpm_range",
     default=None,
@@ -1374,13 +1331,6 @@ def cmd_analyse(
         "Inject a sonically distant track every N tracks. "
         "Toggle via the discovery button in the web UI."
     ),
-)
-@click.option(
-    "--history-file",
-    "history_file",
-    default=None,
-    type=click.Path(dir_okay=False),
-    help="Append a JSON Lines play history entry for every track played.",
 )
 @click.option(
     "--smart-shuffle",
@@ -1548,10 +1498,8 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
     allowed_origins: tuple[str, ...],
     open_browser: bool,
     preset: str | None,
-    export_m3u: str | None,
     bpm_range: str | None,
     discovery_every: int | None,
-    history_file: str | None,
     smart_shuffle: bool,
     pure_shuffle: bool,
     anchor_to_seed: bool | None,
@@ -1660,7 +1608,7 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
         parsed_bpm_range=parsed_bpm_range,
         discovery_every=discovery_every,
     )
-    seed_entry = _resolve_seed(sim, cfg, seed, console, interactive=False)
+    seed_entry = _resolve_seed(sim, cfg, seed, console)
     url = _print_serve_url_banner(console, host, port, staged_server.ssl_certfile is not None)
     cfg.djmix = staged_override_cfg.djmix
     cfg.playback = staged_override_cfg.playback
@@ -1688,8 +1636,6 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
             host=host,
             port=port,
             preset=resolved_preset,
-            export_m3u=Path(export_m3u) if export_m3u else None,
-            history_file=Path(history_file) if history_file else cfg.playback.history_file,
             discovery_every=discovery_every
             if discovery_every is not None
             else cfg.playback.discovery_every,
@@ -1704,140 +1650,6 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
         )
     except KeyboardInterrupt:
         console.print("\n[yellow]Stopped.[/]")
-
-
-# ---------------------------------------------------------------------------
-# playlist subcommand
-# ---------------------------------------------------------------------------
-
-
-@cli.command("playlist")
-@click.option(
-    "--seed",
-    default=None,
-    type=str,
-    help="Search term to choose the starting track. Omit for a random start.",
-)
-@click.option(
-    "--tracks",
-    "n_tracks",
-    default=20,
-    show_default=True,
-    type=int,
-    help="Number of tracks to include in the playlist.",
-)
-@click.option(
-    "--preset",
-    default=None,
-    type=str,
-    help="BPM-shaping preset name (e.g. wakeup, chill, party).",
-)
-@click.option(
-    "--bpm-range",
-    "bpm_range",
-    default=None,
-    type=str,
-    help="Hard BPM filter, e.g. '90-130'. Tracks outside this range are excluded.",
-)
-@click.option(
-    "--output",
-    "output_file",
-    default=None,
-    type=click.Path(dir_okay=False, writable=True),
-    help="Write M3U playlist to this file. Prints to stdout if omitted.",
-)
-@click.option(
-    "--name",
-    "index_name",
-    default=None,
-    type=str,
-    help="Named index to draw tracks from (default: 'default').",
-)
-@click.pass_context
-def cmd_playlist(
-    ctx: click.Context,
-    seed: str | None,
-    n_tracks: int,
-    preset: str | None,
-    bpm_range: str | None,
-    output_file: str | None,
-    index_name: str | None,
-) -> None:
-    """Generate an offline M3U playlist using the similarity engine.
-
-    Simulates the auto-DJ selection logic for N tracks without playing audio.
-    Useful for previewing what a session would look like or generating playlists
-    for use in other players.
-
-    \b
-    Examples:
-      uv run autodj playlist --tracks 30 --output morning.m3u
-      uv run autodj playlist --seed "Portishead" --tracks 20
-      uv run autodj playlist --preset wakeup --bpm-range 80-150 --output wakeup.m3u
-    """
-    import random
-    from collections import deque
-
-    from autodj.player import write_m3u
-
-    cfg = _load_cfg_or_exit(ctx.obj["config_path"])
-    _apply_index_name(cfg, index_name)
-    sim = _load_index_or_exit(cfg)
-    resolved_preset = _resolve_preset_or_exit(cfg, preset)
-    parsed_bpm_range = _parse_bpm_range_or_exit(bpm_range)
-
-    seed_entry = _resolve_seed(sim, cfg, seed, console, interactive=True)
-
-    # Build playlist by simulating the selection loop
-    playlist: list = []
-    recently_played: deque = deque(maxlen=cfg.playback.no_repeat_window)
-
-    similarity = sim
-    # Start with seed or random
-    if seed_entry is not None:
-        current = seed_entry
-    else:
-        # Non-security playlist seeding — random.choice is fine here.
-        current = random.choice(similarity.entries_snapshot())  # nosec B311
-
-    playlist.append(current)
-    recently_played.append(current.path)
-
-    for track_number in range(1, n_tracks):
-        try:
-            target_bpm = None
-            bpm_weight = 0.2
-            if resolved_preset:
-                target_bpm = resolved_preset.target_bpm(track_number)
-                bpm_weight = resolved_preset.bpm_weight
-
-            current = sim.find_next_for_path(
-                current.path,
-                recently_played,
-                target_bpm=target_bpm,
-                bpm_weight=bpm_weight,
-                bpm_range=parsed_bpm_range,
-                pick_top_k=cfg.playback.pick_top_k,
-                pick_temperature=cfg.playback.pick_temperature,
-            )
-            playlist.append(current)
-            recently_played.append(current.path)
-        except Exception as exc:
-            console.print(f"[yellow]Stopping early: {exc}[/]")
-            break
-
-    if output_file:
-        out_path = Path(output_file)
-        write_m3u(playlist, out_path)
-        console.print(f"[green]Wrote {len(playlist)} tracks to {out_path}[/]")
-    else:
-        # Print M3U to stdout
-        print("#EXTM3U")
-        for entry in playlist:
-            dur = int(entry.length) if entry.length else -1
-            display = entry.display_name
-            print(f"#EXTINF:{dur},{display}")
-            print(entry.path)
 
 
 # ---------------------------------------------------------------------------

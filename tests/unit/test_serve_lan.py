@@ -27,7 +27,6 @@ def _fixed_hosts(monkeypatch: pytest.MonkeyPatch) -> None:
 def _cfg(tmp_path: Path, server: ServerConfig | None = None) -> MagicMock:
     cfg = MagicMock()
     cfg.library.beets_db = None
-    cfg.playback.history_file = None
     cfg.playback.discovery_every = None
     cfg.presets = {}
     cfg.index.name = "default"

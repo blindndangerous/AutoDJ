@@ -116,6 +116,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   wrong-code lockout still stops guessing: ten wrong pairing codes lock an address out until the
   code changes, and fifty from all addresses pause pairing. A wrong stream link now always
   answers "not found"; its 256-bit secret cannot be guessed.
+- The session logs: `serve --export-m3u`, `serve --history-file`, `[playback] history_file` and
+  the `autodj playlist` command. A `config.toml` that still sets `history_file` is refused; delete
+  the line. The History tab in the web page stays. Backups no longer hold a play history file.
 
 ### Fixed
 
