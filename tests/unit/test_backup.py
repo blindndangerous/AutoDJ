@@ -34,7 +34,7 @@ def _config(root: Path) -> AutoDJConfig:
     cfg = AutoDJConfig(
         library=LibraryConfig(root / "music", None, ["flac"]),
         index=IndexConfig(root / "index", root / "models", "default"),
-        playback=PlaybackConfig(history_file=root / "history.jsonl"),
+        playback=PlaybackConfig(),
         model=ModelConfig(),
         huggingface=HuggingFaceConfig(None),
         config_path=root / "config.toml",
@@ -98,8 +98,6 @@ def test_restore_reproduces_what_was_backed_up(tmp_path: Path) -> None:
     (liners / "station.mp3").write_bytes(b"liner")
     (profiles / "night").mkdir(parents=True)
     (profiles / "night" / "profile.json").write_text("{}", encoding="utf-8")
-    assert cfg.playback.history_file is not None
-    cfg.playback.history_file.write_text('{"track": "one"}\n', encoding="utf-8")
     dj_meta = _dj_meta(cfg)
     dj_meta.execute("INSERT INTO cues VALUES ('in the WAL')")
     dj_meta.commit()
@@ -111,7 +109,6 @@ def test_restore_reproduces_what_was_backed_up(tmp_path: Path) -> None:
     _publish(cfg, "Replaced")
     (active / "web_state.json").write_text('{"volume": 0}', encoding="utf-8")
     (liners / "extra.mp3").write_bytes(b"new")
-    cfg.playback.history_file.unlink()
     with closing(_dj_meta(cfg)) as conn:
         conn.execute("DELETE FROM cues")
         conn.commit()
@@ -125,7 +122,7 @@ def test_restore_reproduces_what_was_backed_up(tmp_path: Path) -> None:
 
     assert "pass --force" in refused.output
     assert restored.exit_code == 0, restored.output
-    assert "Restored 8 files." in restored.output
+    assert "Restored 7 files." in restored.output
     assert _indexed_title(cfg) == "Kept"
     assert sorted(path.name for path in active.glob("*.g*")) == [
         "tracks.g00000000000000000001.db",
@@ -134,7 +131,6 @@ def test_restore_reproduces_what_was_backed_up(tmp_path: Path) -> None:
     assert (active / "web_state.json").read_text(encoding="utf-8") == '{"volume": 1}'
     assert sorted(path.name for path in liners.iterdir()) == ["station.mp3"]
     assert (profiles / "night" / "profile.json").read_text(encoding="utf-8") == "{}"
-    assert cfg.playback.history_file.read_text(encoding="utf-8") == '{"track": "one"}\n'
     with closing(sqlite3.connect(active / "dj_meta.db")) as conn:
         assert conn.execute("SELECT value FROM cues").fetchall() == [("in the WAL",)]
     assert not list(active.parent.glob(".*restore-*"))

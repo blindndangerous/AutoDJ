@@ -58,15 +58,14 @@ any scoring. In order:
 1. Path is not in `recently_played`.
 2. If a hard `bpm_range` is set: `entry.bpm` is known (greater than 0) and
    inside the range. Unknown tempo is rejected.
-3. If a `genre_filter` is set: genre matches.
-4. If `harmonic_mode` is not `"off"` (the player then passes
+3. If `harmonic_mode` is not `"off"` (the player then passes
    `harmonic_only=True`): `dj_meta.harmonic_compatible` accepts the pair under
    that mode.
    Unknown key or mode (-1) is accepted, not rejected.
-5. Artist, album, and title are not in their exclusion sets.
+4. Artist, album, and title are not in their exclusion sets.
 
-Note the asymmetry between 2 and 4. An un-analysed track passes harmonic
-mixing and fails a BPM range. If a preset sets a range and half your library
+Note the asymmetry between 2 and 3. An un-analysed track passes harmonic
+mixing and fails a BPM range. If you set a BPM range and half your library
 has no tempo tag, half your library is invisible until `autodj analyse` runs.
 
 `_search_with_expansion` asks FAISS for `k` neighbours, applies the predicate,
@@ -82,24 +81,23 @@ to just the current track.
 
 ## The score
 
-With no `target_bpm` and no `target_energy`, candidates are sorted by cosine
-and handed to `_softmax_pick`. Otherwise `_rerank` blends:
+Without a preset there is no `target_bpm`, and candidates are sorted by
+cosine and handed to `_softmax_pick`. With a preset, `target_bpm` comes from
+its tempo curve and `_rerank` blends:
 
 ```
-cosine_w = max(0, 1 - bpm_weight [if target_bpm] - energy_weight [if target_energy])
-score    = cosine * cosine_w
-         + _bpm_score(entry.bpm, target_bpm) * bpm_weight
-         + _energy_score(entry, target_energy) * energy_weight
+score = cosine * max(0, 1 - bpm_weight)
+      + _bpm_score(entry.bpm, target_bpm) * bpm_weight
 ```
 
 The weights partition 1.0. They are not bonuses. `_bpm_score` is a Gaussian
-with sigma 15 BPM: 1.0 at an exact match, about 0.17 at 28 BPM off. `_energy_score`
-uses sigma 0.15. Both return 0.0 when the entry's value is unknown, so an
-un-analysed track can score at most `cosine * (1 - bpm_weight)` and sits level
-with a track whose tempo is maximally wrong.
+with sigma 15 BPM: 1.0 at an exact match, about 0.17 at 28 BPM off. It
+returns 0.0 when the entry's tempo is unknown, so an un-analysed track can
+score at most `cosine * (1 - bpm_weight)` and sits level with a track whose
+tempo is maximally wrong.
 
-Preset `bpm_weight` values in `src/autodj/presets.py` range from 0.15
-(`morning`) to 0.40 (`workout`). At 0.30 (`wakeup`, `party`) a perfect tempo
+Built-in preset `bpm_weight` values in `src/autodj/presets.py` range from 0.10
+(`focus`) to 0.40 (`workout`). At 0.30 (`wakeup`, `party`) a perfect tempo
 match in a different genre can outrank every track in the current track's own
 sonic cluster.
 

@@ -12,9 +12,8 @@ uploaded to a cloud service.
 - Automatic track selection with configurable repeat avoidance and discovery.
 - Crossfades with optional EQ ducking and transition effects.
 - A browser interface for playback, album art, lyrics, search, and queue management.
-- Mood presets that adjust tempo targets during a set. To define your own, copy
-  `presets.toml.example` to `presets.toml` next to your `config.toml` (or in the working
-  directory when you have no config file).
+- Mood presets that adjust tempo targets during a set. To define your own, add
+  `[presets.NAME]` tables to `config.toml`; `config.toml.example` shows how.
 - Voice liners that play spoken clips over the music on a schedule.
 - Lyrics from sidecar files or tags, with scrolling and highlighting when timestamps are available.
 - Offline use after installing dependencies and downloading the model. The first indexing run
@@ -127,7 +126,6 @@ Every command takes `--help`, for example `uv run autodj serve --help`. The glob
 - `autodj list-indexes` lists the named indexes under `[index] index_dir`.
 - `autodj serve` starts the browser interface; `autodj serve --lan` opens it to your local
   network; `autodj serve --stream` also serves the live mix as an MP3 radio station.
-- `autodj playlist` writes an offline M3U playlist from the similarity picker.
 - `autodj list-devices` lists the audio output devices available to `serve --server-audio`.
 - `autodj doctor` checks configuration, paths, dependencies, the model, and security settings.
 - `autodj backup` and `autodj restore` archive and restore index and user data.
@@ -253,10 +251,10 @@ It does not work well when:
 
 AutoDJ starts with validated defaults. If `config.toml` exists in the working directory, AutoDJ
 loads it, then loads sibling `config.local.toml`. Environment variables override files, and
-explicit CLI flags override all other sources. `autodj serve` also restores the settings last
-saved from the web page (`web_state.json`), which override the files and environment variables;
-a setting given as a `serve` flag keeps the flag's value for that run, and the page saves it with
-the others the next time you change a setting there. Omitting `--config` is valid. Passing
+command-line options such as `--host` or `--stream` override both. `autodj serve` also restores
+the settings last saved from the web page (`web_state.json`), which override the files and
+environment variables. The playback and DJ-mix settings have no `serve` options; change them in
+the web page or in `config.toml`. Omitting `--config` is valid. Passing
 `--config /path/to/config.toml` makes that file explicit, so a missing path is an error. Shipped
 `config.toml.example` lists supported environment variables and settings. Every key and section
 in `config.toml` and `config.local.toml` must be one AutoDJ knows: a removed or misspelled setting
@@ -437,8 +435,8 @@ supported path; reach for the wheel only when you want AutoDJ without a source t
 ## Uninstall
 
 AutoDJ keeps everything in directories you chose; it installs no system service. To remove a
-source checkout, stop AutoDJ, run `autodj backup` first if you want to keep profiles, liners, or
-history, then delete what you no longer want:
+source checkout, stop AutoDJ, run `autodj backup` first if you want to keep profiles or liners,
+then delete what you no longer want:
 
 - `.venv/` holds the Python dependencies, and `node_modules/` the Node development tools if you
   installed them.
@@ -446,7 +444,7 @@ history, then delete what you no longer want:
   web state.
 - `models/` (or your `[index] model_dir`) holds the downloaded model weights. Hugging Face can
   also keep files in its own cache, `~/.cache/huggingface` or the directory named by `HF_HOME`.
-- `config.toml`, `config.local.toml`, `presets.toml`, and `.env` hold your settings and the LAN
+- `config.toml`, `config.local.toml`, and `.env` hold your settings and the LAN
   server secret.
 - `music/` holds whatever audio you copied there. Keep it if it is your only copy.
 

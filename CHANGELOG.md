@@ -122,6 +122,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   saved in `dj_meta.db` by the old GPU path stay in use until that track is analysed again; AutoDJ
   does not recompute them by itself. The `index` extra no longer lists `torchaudio`; MuQ still
   installs it.
+- The session logs: `serve --export-m3u`, `serve --history-file`, `[playback] history_file` and
+  the `autodj playlist` command. A `config.toml` that still sets `history_file` is refused; delete
+  the line. The History tab in the web page stays. Backups no longer hold a play history file.
+- The playback and DJ-mix options of `autodj serve`: `--preset`, `--bpm-range`,
+  `--discovery-every`, `--smart-shuffle`, `--pure-shuffle`, `--anchor-seed`, `--show-lyrics`,
+  `--import-external-cues`, `--beat-sync-fx`, `--key-sync-fx`, `--harmonic-mode`,
+  `--transition-mode`, `--beatmatch`, `--phrase-align`, `--align-outro`, `--filter-sweep` and
+  `--transition`, with their `--no-` forms. Set these in the web page, which saves them, or in
+  `config.toml`. `serve` keeps its server options (`--seed`, `--lan`, `--host`, `--port`,
+  `--insecure-lan`, `--open`, `--name`, `--server-audio`, `--stream` and the TLS options).
+- Daypart and Mood arc, which steered the tempo of picks by the time of day or over a three-hour
+  arc. `[playback] enable_daypart`, `enable_mood_arc` and `mood_arc_hours` are refused in
+  `config.toml`; delete them. The settings routes refuse these fields too. Every profile saved by
+  0.18 holds them, so it no longer applies: delete it and save it again. Saved web settings still
+  load; the three old fields are skipped with a warning in the server log.
+- The `genres` filter of presets. A preset that still sets `genres` is skipped with a warning
+  naming the unknown key, like any other invalid preset.
+- `presets.toml`. Define presets as `[presets.NAME]` tables in `config.toml`. AutoDJ refuses to
+  start while a `presets.toml` sits next to `config.toml`: move each `[NAME]` table into
+  `config.toml` as `[presets.NAME]`, then delete the file. `presets.toml.example` is gone too.
+- The player's own merge of cues imported from DJ software. `autodj index` and `autodj analyse`
+  merge them. A track the player has to analyse while it plays is stored with only the cues AutoDJ
+  detects, and `autodj analyse` then skips it as done, so run `autodj analyse` before playing newly
+  indexed tracks. The web settings route no
+  longer takes `import_external_cues`, since the running server has nothing left for it to change;
+  set `[playback] import_external_cues` in `config.toml`.
 
 ### Fixed
 

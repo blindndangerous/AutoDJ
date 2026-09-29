@@ -29,10 +29,6 @@ def _make_player() -> SimpleNamespace:
         key_notation="camelot",
         key_prefer_flats=False,
         show_lyrics=True,
-        enable_daypart=False,
-        enable_mood_arc=False,
-        mood_arc_hours=3.0,
-        import_external_cues=True,
         beat_sync_fx=True,
         key_sync_fx=True,
         beatmatch_on_skip=False,
@@ -71,7 +67,6 @@ def _make_player() -> SimpleNamespace:
         _bpm_range=None,
         _preset=None,
         _discovery_every=None,
-        _mood_arc=None,
         _state=PlayerState(no_repeat_window=20),
         _sim=SimpleNamespace(entries_snapshot=lambda: (), ntotal=0),
     )
@@ -83,8 +78,8 @@ def _write_state(index_dir: Path, payload: object) -> None:
     (index_dir / "web_state.json").write_text(json.dumps(payload), encoding="utf-8")
 
 
-def _load(player: SimpleNamespace, index_dir: Path, skip: frozenset[str] = frozenset()) -> None:
-    load_into_bridge(PlayerBridge(player, player._sim), index_dir, skip)
+def _load(player: SimpleNamespace, index_dir: Path) -> None:
+    load_into_bridge(PlayerBridge(player, player._sim), index_dir)
 
 
 def _warnings(caplog: pytest.LogCaptureFixture, field: str) -> int:
@@ -112,7 +107,8 @@ def _warnings(caplog: pytest.LogCaptureFixture, field: str) -> int:
         ({"playback": {"crossfade_seconds": float("inf")}}, "crossfade_seconds"),
         ({"playback": {"crossfade_seconds": None}}, "crossfade_seconds"),
         ({"playback": {"crossfade_eq_duck": "false"}}, "crossfade_eq_duck"),
-        ({"playback": {"enable_mood_arc": "false"}}, "enable_mood_arc"),
+        # A 0.18 file still holds the removed mood-arc switch.
+        ({"playback": {"enable_mood_arc": True}}, "enable_mood_arc"),
         ({"playback": {"stream_bitrate": 100}}, "stream_bitrate"),
         ({"playback": {"stream_bitrate": "320"}}, "stream_bitrate"),
         ({"playback": {"stream_bitrate": True}}, "stream_bitrate"),
@@ -189,46 +185,6 @@ def test_non_object_state_root_is_warned_and_ignored(tmp_path: Path, caplog) -> 
     _load(_make_player(), tmp_path)
 
     assert "root is not an object" in caplog.text
-
-
-def test_settings_given_on_the_command_line_are_not_restored(tmp_path: Path) -> None:
-    player = _make_player()
-    player._cfg.transitions.effect = "echo_out"
-    player._cfg.djmix.beatmatch = True
-    player._cfg.playback.show_lyrics = False
-    player._bpm_range = (100.0, 120.0)
-    _write_state(
-        tmp_path,
-        {
-            "transition": "rotate",
-            "djmix": {"beatmatch": False, "phrase_align": True},
-            "playback": {"show_lyrics": True, "crossfade_seconds": 7.0},
-            "bpm_range": {"lo": 80.0, "hi": 90.0},
-            "discovery_every": 9,
-        },
-    )
-
-    _load(player, tmp_path, frozenset({"transition", "beatmatch", "show_lyrics", "bpm_range"}))
-
-    assert player._cfg.transitions.effect == "echo_out"
-    assert player._cfg.djmix.beatmatch is True
-    assert player._cfg.playback.show_lyrics is False
-    assert player._bpm_range == (100.0, 120.0)
-    # Everything the command line did not set still comes back.
-    assert player._cfg.djmix.phrase_align is True
-    assert player._cfg.playback.crossfade_seconds == 7.0
-    assert player._discovery_every == 9
-
-
-def test_mood_arc_follows_the_restored_switch(tmp_path: Path) -> None:
-    player = _make_player()
-    _write_state(tmp_path, {"playback": {"enable_mood_arc": True, "mood_arc_hours": 2.5}})
-    _load(player, tmp_path)
-    assert player._mood_arc is not None
-
-    _write_state(tmp_path, {"playback": {"enable_mood_arc": False}})
-    _load(player, tmp_path)
-    assert player._mood_arc is None
 
 
 def test_null_discovery_clears_existing_cadence(tmp_path: Path) -> None:
@@ -405,10 +361,6 @@ class TestRoundTrip:
         p1._cfg.playback.key_notation = "musical"
         p1._cfg.playback.key_prefer_flats = True
         p1._cfg.playback.show_lyrics = False
-        p1._cfg.playback.enable_daypart = True
-        p1._cfg.playback.enable_mood_arc = True
-        p1._cfg.playback.mood_arc_hours = 2.5
-        p1._cfg.playback.import_external_cues = False
         p1._cfg.playback.beat_sync_fx = False
         p1._cfg.playback.key_sync_fx = False
         p1._cfg.playback.beatmatch_on_skip = True
@@ -460,10 +412,6 @@ class TestRoundTrip:
             "key_notation",
             "key_prefer_flats",
             "show_lyrics",
-            "enable_daypart",
-            "enable_mood_arc",
-            "mood_arc_hours",
-            "import_external_cues",
             "beat_sync_fx",
             "key_sync_fx",
             "beatmatch_on_skip",

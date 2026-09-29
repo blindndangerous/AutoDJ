@@ -235,13 +235,13 @@ class TestLoadUserPresets:
         assert "broken" not in result
         assert "ok" in result
 
-    def test_wrapped_form_in_the_sidecar_is_skipped_with_a_clear_warning(self, caplog) -> None:
-        """presets.toml takes bare tables only; [presets.name] there is not a preset."""
+    def test_nested_table_is_skipped_with_a_clear_warning(self, caplog) -> None:
+        """[presets.presets.wakeup] is not a preset called wakeup."""
         raw = {"presets": {"wakeup": {"bpm_target": 90}}}
         with caplog.at_level("WARNING"):
             result = load_user_presets(raw)
         assert result == {}
-        assert "nested tables ['wakeup'] are not presets" in caplog.text
+        assert "nested tables ['wakeup'] are not preset keys" in caplog.text
 
     def test_removed_slide_keys_are_rejected(self, caplog) -> None:
         """bpm_low / bpm_peak are gone; they must not silently fall back to 80-130."""
@@ -297,25 +297,3 @@ class TestPresetTargetBpm:
     def test_discovery_every_none_by_default(self) -> None:
         p = Preset(name="test", bpm_weight=0.2, _curve=constant_curve(100.0))
         assert p.discovery_every is None
-
-
-class TestPresetGenresFromSection:
-    def test_string_genre_wrapped_in_list(self) -> None:
-        p = preset_from_config(
-            "x",
-            {"bpm_target": 100, "bpm_weight": 0.2, "genres": "rock"},
-        )
-        assert p.genres == ["rock"]
-
-    def test_invalid_genres_type_is_rejected(self) -> None:
-        with pytest.raises(ValueError, match="genres must be a string or a list"):
-            preset_from_config("x", {"bpm_target": 100, "genres": 42})
-
-    def test_unknown_genre_skips_the_preset_with_a_warning(self, caplog) -> None:
-        """An unknown genre used to be dropped, turning the genre filter off."""
-        raw = {"late": {"bpm_target": 100, "genres": ["rock", "vaporwav"]}}
-        with caplog.at_level("WARNING"):
-            result = load_user_presets(raw)
-        assert result == {}
-        assert "Skipping invalid preset 'late'" in caplog.text
-        assert "unknown genres ['vaporwav']" in caplog.text

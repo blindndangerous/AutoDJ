@@ -128,17 +128,9 @@ class TestHelpText:
     def test_serve_help(self, runner: CliRunner) -> None:
         result = runner.invoke(cli, ["serve", "--help"])
         assert result.exit_code == 0
-        assert "--preset" in result.output
-        assert "--bpm-range" in result.output
-        assert "--discovery-every" in result.output
-
-    def test_playlist_help(self, runner: CliRunner) -> None:
-        result = runner.invoke(cli, ["playlist", "--help"])
-        assert result.exit_code == 0
-        assert "--tracks" in result.output
-        assert "--preset" in result.output
-        assert "--bpm-range" in result.output
-        assert "--output" in result.output
+        assert "--lan" in result.output
+        assert "--stream" in result.output
+        assert "--server-audio" in result.output
 
     def test_stats_help(self, runner: CliRunner) -> None:
         result = runner.invoke(cli, ["stats", "--help"])
@@ -181,63 +173,6 @@ class TestIndexCommand:
         # Verify --limit was forwarded correctly
         call_kwargs = mock_build.call_args.kwargs
         assert call_kwargs.get("limit") == 1
-
-
-# ---------------------------------------------------------------------------
-# playlist command
-# ---------------------------------------------------------------------------
-
-
-class TestPlaylistCommand:
-    def test_playlist_stdout(self, runner: CliRunner, project_dir: Path) -> None:
-        result = runner.invoke(
-            cli,
-            ["--config", str(project_dir / "config.toml"), "playlist", "--tracks", "3"],
-        )
-        assert result.exit_code == 0, f"Output:\n{result.output}"
-        assert "#EXTM3U" in result.output
-
-    def test_playlist_output_file(
-        self, runner: CliRunner, project_dir: Path, tmp_path: Path
-    ) -> None:
-        out_file = tmp_path / "out.m3u"
-        result = runner.invoke(
-            cli,
-            [
-                "--config",
-                str(project_dir / "config.toml"),
-                "playlist",
-                "--tracks",
-                "3",
-                "--output",
-                str(out_file),
-            ],
-        )
-        assert result.exit_code == 0, f"Output:\n{result.output}"
-        assert out_file.exists()
-        content = out_file.read_text(encoding="utf-8")
-        assert "#EXTM3U" in content
-
-    def test_playlist_with_preset(self, runner: CliRunner, project_dir: Path) -> None:
-        result = runner.invoke(
-            cli,
-            [
-                "--config",
-                str(project_dir / "config.toml"),
-                "playlist",
-                "--tracks",
-                "3",
-                "--preset",
-                "chill",
-            ],
-        )
-        assert result.exit_code == 0, f"Output:\n{result.output}"
-
-    def test_playlist_missing_index_exits_1(self, runner: CliRunner, tmp_path: Path) -> None:
-        config_path = tmp_path / "config.toml"
-        _write_config(config_path, tmp_path)
-        result = runner.invoke(cli, ["--config", str(config_path), "playlist"])
-        assert result.exit_code == 1
 
 
 # ---------------------------------------------------------------------------

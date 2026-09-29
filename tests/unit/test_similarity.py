@@ -50,7 +50,6 @@ def _make_similarity_index(
     n: int,
     *,
     bpms: list[float] | None = None,
-    genres: dict[int, str] | None = None,
 ) -> tuple[SimilarityIndex, np.ndarray]:
     """Build a SimilarityIndex with *n* deterministic tracks."""
     if bpms is not None and len(bpms) != n:
@@ -62,8 +61,6 @@ def _make_similarity_index(
     if bpms is not None:
         for entry, bpm in zip(entries, bpms, strict=True):
             entry.bpm = bpm
-    for idx, genre in (genres or {}).items():
-        entries[idx].genre = genre
     sim_index = SimilarityIndex(faiss_index=faiss_index, entries=entries)
     return sim_index, vectors
 
@@ -300,18 +297,6 @@ class TestFindNext:
                 n_candidates=5,
                 bpm_range=(200.0, 220.0),
             )
-
-    def test_target_energy_rerank(self) -> None:
-        sim, _ = _make_similarity_index(8)
-        for i, e in enumerate(sim.entries):
-            e.energy = 0.1 * i
-        result = sim.find_next_for_path(
-            current_path=sim.entries[0].path,
-            recently_played=deque([sim.entries[0].path]),
-            n_candidates=8,
-            target_energy=0.6,
-        )
-        assert isinstance(result, IndexEntry)
 
     def test_harmonic_only_filter(self) -> None:
         sim, _ = _make_similarity_index(6)
@@ -842,28 +827,28 @@ class TestBpmRangeFilter:
 
 
 class TestHardFilterExpansion:
-    def test_genre_filter_expands_until_match_outside_initial_window(self) -> None:
-        sim, _ = _make_similarity_index(80, genres={70: "Ambient"})
+    def test_bpm_range_expands_until_match_outside_initial_window(self) -> None:
+        sim, _ = _make_similarity_index(80, bpms=[150.0 if i == 70 else 100.0 for i in range(80)])
         entries = sim.entries_snapshot()
 
         result = sim.find_next_for_path(
             entries[0].path,
             deque([entries[0].path]),
             n_candidates=5,
-            genre_filter=["ambient"],
+            bpm_range=(140.0, 160.0),
         )
 
         assert result.path == entries[70].path
 
     def test_single_candidate_request_expands_until_later_match(self) -> None:
-        sim, _ = _make_similarity_index(80, genres={70: "Ambient"})
+        sim, _ = _make_similarity_index(80, bpms=[150.0 if i == 70 else 100.0 for i in range(80)])
         entries = sim.entries_snapshot()
 
         result = sim.find_next_for_path(
             entries[0].path,
             deque([entries[0].path]),
             n_candidates=1,
-            genre_filter=["ambient"],
+            bpm_range=(140.0, 160.0),
         )
 
         assert result.path == entries[70].path
@@ -877,9 +862,9 @@ class TestHardFilterExpansion:
         index.add(vectors)
         entries = [_make_entry(i) for i in range(n)]
         for entry in entries:
-            entry.genre = "Rock"
+            entry.bpm = 100.0
         for idx in (20, 40, 70):
-            entries[idx].genre = "Ambient"
+            entries[idx].bpm = 150.0
         sim = SimilarityIndex(index, entries)
         snapshot = sim.entries_snapshot()
 
@@ -891,12 +876,12 @@ class TestHardFilterExpansion:
                 snapshot[0].path,
                 deque([snapshot[0].path]),
                 n_candidates=3,
-                genre_filter=["ambient"],
+                bpm_range=(140.0, 160.0),
             )
 
         ranked_pool = choose.call_args.args[0]
         assert len(ranked_pool) >= 3
-        assert all(entry.genre == "Ambient" for _score, entry in ranked_pool)
+        assert all(entry.bpm == 150.0 for _score, entry in ranked_pool)
 
 
 # ---------------------------------------------------------------------------
@@ -933,22 +918,6 @@ class TestBpmReranking:
         )
         assert isinstance(result, IndexEntry)
 
-    def test_energy_only_rerank_emits_clean_debug_log(self, caplog) -> None:
-        import logging
-
-        sim, _ = _make_similarity_index(5)
-        entries = sim.entries_snapshot()
-
-        with caplog.at_level(logging.DEBUG, logger="autodj.similarity"):
-            result = sim.find_next_for_path(
-                entries[0].path,
-                deque([entries[0].path]),
-                target_energy=0.5,
-            )
-
-        assert isinstance(result, IndexEntry)
-        assert any("energy re-ranked" in message for message in caplog.messages)
-
 
 def test_no_candidates_error_names_every_active_hard_filter() -> None:
     sim, _ = _make_similarity_index(6)
@@ -956,14 +925,12 @@ def test_no_candidates_error_names_every_active_hard_filter() -> None:
         sim.find_next_for_path(
             sim.entries[0].path,
             recently_played=deque(),
-            bpm_range=(118.0, 122.0),
-            genre_filter=["Jazz"],
+            bpm_range=(200.0, 210.0),
             harmonic_only=True,
             harmonic_mode="strict",
         )
     assert str(caught.value) == (
-        "No candidates satisfy hard filters: BPM 118-122, known values only; "
-        "genre Jazz; harmonic mode strict."
+        "No candidates satisfy hard filters: BPM 200-210, known values only; harmonic mode strict."
     )
 
 
@@ -1099,19 +1066,6 @@ class TestPickTopKWiring:
         )
         assert isinstance(result, IndexEntry)
 
-    def test_genre_filter_matches(self) -> None:
-        """genre_filter exercises the canonical-match branch."""
-        sim, _ = _make_similarity_index(8)
-        for i, e in enumerate(sim.entries):
-            e.genre = "Electronic" if i % 2 == 0 else "Country"
-        result = sim.find_next_for_path(
-            current_path=sim.entries[0].path,
-            recently_played=deque([sim.entries[0].path]),
-            n_candidates=8,
-            genre_filter=["electronic"],
-        )
-        assert result.genre == "Electronic"
-
     def test_harmonic_only_filters_incompatible_keys(self) -> None:
         """harmonic_only=True restricts to harmonically compatible keys."""
         sim, _ = _make_similarity_index(12)
@@ -1134,19 +1088,6 @@ class TestPickTopKWiring:
         )
         # Strict mode allows only the same key+mode as the seed.
         assert (result.key, result.mode) == (0, 1)
-
-    def test_target_energy_zero_energy_entry(self) -> None:
-        """Re-rank path: candidates with energy <= 0 fall through e_score=0 branch."""
-        sim, _ = _make_similarity_index(8)
-        for i, e in enumerate(sim.entries):
-            e.energy = 0.0 if i < 4 else 0.1
-        result = sim.find_next_for_path(
-            current_path=sim.entries[0].path,
-            recently_played=deque([sim.entries[0].path]),
-            n_candidates=8,
-            target_energy=0.1,
-        )
-        assert isinstance(result, IndexEntry)
 
     def test_top_k_variety_with_bpm_rerank(self) -> None:
         sim, _ = _make_similarity_index(20)

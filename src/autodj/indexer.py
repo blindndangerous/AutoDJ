@@ -65,7 +65,7 @@ from autodj.index_manifest import (
 from autodj.sqlite_utils import readonly_uri
 
 # soundfile is an optional extra, so the lighter commands (`enrich`,
-# `prune`, `stats`, `playlist`) work on minimal installs that omit it.
+# `prune`, `stats`) work on minimal installs that omit it.
 # _load_audio() guards against None at runtime so minimal commands can still
 # import this module without the playback/indexing extra.
 try:

@@ -11,14 +11,12 @@ or the stream encoder in 20 ms blocks.
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
 import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
@@ -527,76 +525,6 @@ def load_audio(path: str, target_sr: int = _DEFAULT_SR) -> tuple[np.ndarray, int
 
 
 # ---------------------------------------------------------------------------
-# M3U export helpers
-# ---------------------------------------------------------------------------
-
-
-def _write_m3u_header(path: Path) -> None:
-    """Write (or overwrite) a new M3U file containing only the ``#EXTM3U`` header."""
-    path.write_text("#EXTM3U\n", encoding="utf-8")
-
-
-def _m3u_entry_lines(entry: IndexEntry) -> str:
-    """Return the ``#EXTINF`` + path lines for a single track."""
-    duration = int(entry.length) if entry.length > 0 else -1
-    display = f"{entry.artist} - {entry.title}" if entry.artist else entry.title
-    return f"#EXTINF:{duration},{display}\n{entry.path}\n"
-
-
-def _append_m3u_entry(path: Path, entry: IndexEntry) -> None:
-    """Append a single ``#EXTINF`` + path line to an existing M3U file.
-
-    Args:
-        path: Path to the M3U file.
-        entry: Track to append.
-    """
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(_m3u_entry_lines(entry))
-
-
-def write_m3u(entries: list[IndexEntry], path: Path) -> None:
-    """Write a complete M3U playlist file for *entries*.
-
-    Overwrites *path* if it already exists.
-
-    Args:
-        entries: Ordered list of tracks for the playlist.
-        path: Destination file path.
-    """
-    body = "".join(_m3u_entry_lines(entry) for entry in entries)
-    path.write_text("#EXTM3U\n" + body, encoding="utf-8")
-
-
-# ---------------------------------------------------------------------------
-# Play history helpers
-# ---------------------------------------------------------------------------
-
-
-def _append_history_entry(path: Path, entry: IndexEntry, played_at: datetime) -> None:
-    """Append a JSON Lines record to the play history file.
-
-    Creates the file (and any missing parent directories) if it does not exist.
-
-    Args:
-        path: Path to the JSON Lines history file.
-        entry: Track that was played.
-        played_at: UTC/local timestamp when playback began.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    record = {
-        "timestamp": played_at.isoformat(timespec="seconds"),
-        "path": entry.path,
-        "title": entry.title,
-        "artist": entry.artist,
-        "album": entry.album,
-        "bpm": entry.bpm,
-        "length": entry.length,
-    }
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
-
-
-# ---------------------------------------------------------------------------
 # Player
 # ---------------------------------------------------------------------------
 
@@ -613,12 +541,6 @@ class Player:
         sim_index: Loaded similarity index for next-track selection.
         dry_run: Browser mode: pick tracks but play nothing on the server;
             the web page plays the audio.
-        preset: Optional BPM-shaping preset.
-        export_m3u: Optional path to write a live M3U playlist as tracks play.
-        history_file: Optional path to append JSON Lines play history.
-        discovery_every: Override discovery rate (tracks between injections).
-            When ``None``, falls back to ``preset.discovery_every`` if set.
-        bpm_range: Hard BPM filter ``(lo, hi)`` applied to every track pick.
         stream_mode: Serve the mix as a radio stream: the mix bus is built
             up front and a :class:`~autodj.station.Station` starts and stops
             sets as listeners come and go.
@@ -630,14 +552,6 @@ class Player:
         cfg: AutoDJConfig,
         sim_index: SimilarityIndex,
         dry_run: bool = False,
-        preset: Preset | None = None,
-        export_m3u: Path | None = None,
-        history_file: Path | None = None,
-        discovery_every: int | None = None,
-        bpm_range: tuple[float, float] | None = None,
-        smart_shuffle: bool = False,
-        pure_shuffle: bool = False,
-        anchor_to_seed: bool = False,
         stream_mode: bool = False,
         server_audio_too: bool = False,
     ) -> None:
@@ -650,12 +564,6 @@ class Player:
             cfg: Full :class:`~autodj.config.AutoDJConfig` instance.
             sim_index: Loaded :class:`~autodj.similarity.SimilarityIndex`.
             dry_run: Browser mode: pick tracks but play nothing on the server.
-            preset: Optional :class:`~autodj.presets.Preset` for BPM shaping.
-            export_m3u: Optional :class:`~pathlib.Path` for live M3U export.
-            history_file: Optional :class:`~pathlib.Path` for JSON Lines history.
-            discovery_every: Tracks between discovery injections.  Overrides
-                ``preset.discovery_every`` when both are set.
-            bpm_range: Hard ``(lo, hi)`` BPM filter for every track pick.
             stream_mode: Build the mix bus now and leave starting sets to
                 the stream station (see :meth:`begin_set`).
             server_audio_too: In stream mode, also open the sound card.
@@ -665,17 +573,17 @@ class Player:
         self._dry_run = dry_run
         self._stream_mode = stream_mode
         self._server_audio_too = server_audio_too
-        self._preset = preset
-        self._export_m3u = export_m3u
-        self._history_file = history_file
-        self._bpm_range = bpm_range
-        self._smart_shuffle = smart_shuffle
+        # Picker settings.  They start off (discovery at the configured
+        # rate) and the web page's settings routes change them.
+        self._preset: Preset | None = None
+        self._bpm_range: tuple[float, float] | None = None
+        self._smart_shuffle = False
         # Anchored mode: when True, every similarity query uses the SEED
         # vector rather than the currently-playing track.  Prevents the
         # session from drifting away from where the user started — each
         # next track is similar to the seed, not to the previous track.
-        # Off by default; toggle from web UI / `--anchor-seed` CLI flag.
-        self._anchor_to_seed: bool = anchor_to_seed
+        # Off by default; toggled from the web UI.
+        self._anchor_to_seed = False
         # Path of the seed track — set in run() / set externally by the
         # bridge when the user picks a fresh seed.  Used by anchored mode.
         self._seed_path: str | None = None
@@ -685,7 +593,7 @@ class Player:
         # the next pick uses similarity from the current track — so they can
         # use shuffle to stumble onto a song they like, then "lock in" by
         # toggling shuffle off and let the auto-DJ continue from there.
-        self._pure_shuffle = pure_shuffle
+        self._pure_shuffle = False
         # Lyrics for the current track — populated when each track loads,
         # consumed by the web UI via PlayerBridge.get_state().
         self._current_lyrics: list = []
@@ -694,18 +602,6 @@ class Player:
         self._eq_low: float = 1.0
         self._eq_mid: float = 1.0
         self._eq_high: float = 1.0
-        # Energy ramp target for the current pick (None = disabled)
-        self._target_energy: float | None = None
-        # Mood-arc state.  Lazy-init: set when the user enables the
-        # arc via config / CLI / web UI so unattended playback ramps
-        # warmup -> peak -> cool over a session-relative window.
-        self._mood_arc: Any = None
-        if cfg.playback.enable_mood_arc:
-            from autodj.mood_arc import make_default_arc
-
-            self._mood_arc = make_default_arc(
-                duration_hours=cfg.playback.mood_arc_hours,
-            )
         # DJ meta cache — initialised lazily on first use so tests with
         # mock configs don't trip on the cache load.
         from autodj.dj_meta import DjMetaCache as _DjMetaCache
@@ -737,12 +633,7 @@ class Player:
         # Previous track played — kept so the explainer can compute deltas
         # against the current pick.
         self._previous_track: IndexEntry | None = None
-        # Discovery rate: CLI override takes precedence over preset
-        self._discovery_every: int | None = (
-            discovery_every
-            if discovery_every is not None
-            else (preset.discovery_every if preset and preset.discovery_every else None)
-        )
+        self._discovery_every: int | None = cfg.playback.discovery_every
         # Clamp no_repeat_window to the library size so the picker never
         # has zero candidates available.  Without this, a library of 200
         # tracks with the default window of 500 would refuse to repeat
@@ -854,11 +745,7 @@ class Player:
         # Remember the seed so anchored mode can keep coming back to it.
         self._seed_path = seed_entry.path
 
-        # External-cue importer (Mixxx / Rekordbox / Traktor).  Runs
-        # synchronously on this thread so the FastAPI event loop in
-        # serve mode is never blocked by SQLite / XML I/O.
         self._ensure_dj_cache()
-        self._ensure_external_cues()
 
         self._record_seed(seed_entry)
         current = seed_entry
@@ -901,11 +788,7 @@ class Player:
 
         bus = self.bus
         assert bus is not None  # built in __init__ for stream mode
-        if self._export_m3u:
-            # Every track, including each set's first, is appended as it starts.
-            _write_m3u_header(self._export_m3u)
         self._ensure_dj_cache()
-        self._ensure_external_cues()
         output = None
         if self._server_audio_too:
             output = SoundDeviceOutput(self._state, self._cfg.playback.audio_device or None)
@@ -961,15 +844,9 @@ class Player:
     def _record_seed(self, seed: IndexEntry) -> None:
         """Make *seed* the current track and record it as played.
 
-        Writes the M3U header and the seed's M3U / history lines.  The
-        mix bus later announces the seed through :meth:`_on_track_start`,
+        The mix bus later announces the seed through :meth:`_on_track_start`,
         which skips recording it again.
         """
-        if self._export_m3u:
-            _write_m3u_header(self._export_m3u)
-            _append_m3u_entry(self._export_m3u, seed)
-        if self._history_file:
-            _append_history_entry(self._history_file, seed, datetime.now())
         self._state.current_track = seed
         self._state.record_played(seed)
         self._seed_awaiting_start = seed
@@ -1223,20 +1100,6 @@ class Player:
             return head is None or track.next_entry is None or head.path != track.next_entry.path
         return head is not None
 
-    def _record_track_files(self, entry: IndexEntry) -> None:
-        """Append *entry* to the M3U export and history file, if enabled.
-
-        A write failure is logged, never raised: it must not stop the rest
-        of the track-start bookkeeping (or the mix bus block it runs in).
-        """
-        try:
-            if self._export_m3u:
-                _append_m3u_entry(self._export_m3u, entry)
-            if self._history_file:
-                _append_history_entry(self._history_file, entry, datetime.now())
-        except OSError:
-            logger.exception("Recording %s to the M3U / history file failed", entry.path)
-
     def _on_track_start(self, rendered: RenderedTrack) -> None:
         """Update state when the mix bus starts playing *rendered*.
 
@@ -1273,8 +1136,6 @@ class Player:
                 else:
                     self._state.record_played(entry)
                     self._state.track_number += 1
-        if not seed_start:
-            self._record_track_files(entry)
         self._current_lyrics = []
         self._current_lyrics_plain = ""
         self.load_lyrics_in_background(entry.path)
@@ -1458,31 +1319,6 @@ class Player:
         except SimilarityError:
             return None
 
-    def _resolve_bpm_target(self, track_number: int) -> tuple[float | None, float, float | None]:
-        """Pick the active BPM/energy target (preset > mood arc > daypart)."""
-        target_energy = self._target_energy
-        if self._preset is not None:
-            return (
-                self._preset.target_bpm(track_number),
-                self._preset.bpm_weight,
-                target_energy,
-            )
-        if self._cfg.playback.enable_mood_arc and self._mood_arc:
-            from autodj.mood_arc import current_arc_target
-
-            target = current_arc_target(self._mood_arc)
-            return (
-                target.target_bpm,
-                target.bpm_weight,
-                target.target_energy if target_energy is None else target_energy,
-            )
-        if self._cfg.playback.enable_daypart:
-            from autodj.daypart import daypart_target
-
-            bpm, weight, energy = daypart_target(datetime.now().hour)
-            return (bpm, weight, energy if target_energy is None else target_energy)
-        return (None, 0.2, target_energy)
-
     def _resolve_query_path(self, current_path: str) -> tuple[str, str]:
         """Choose the query path and its pick mode (anchor / smart-shuffle / similarity)."""
         if self._anchor_to_seed and self._seed_path:
@@ -1541,9 +1377,10 @@ class Player:
         if discovery is not None:
             return discovery, "discovery"
 
-        target_bpm, bpm_weight, target_energy = self._resolve_bpm_target(context.track_number)
+        preset = self._preset
+        target_bpm = preset.target_bpm(context.track_number) if preset else None
+        bpm_weight = preset.bpm_weight if preset else 0.2
         n_candidates = 50 if (target_bpm is not None or self._bpm_range is not None) else 30
-        genre_filter = self._preset.genres if self._preset and self._preset.genres else None
         harmonic_mode = self._cfg.djmix.harmonic_mode
         harmonic_only = harmonic_mode != "off"
         query_path, mode = self._resolve_query_path(current.path)
@@ -1554,11 +1391,9 @@ class Player:
             "target_bpm": target_bpm,
             "bpm_weight": bpm_weight,
             "bpm_range": self._bpm_range,
-            "genre_filter": genre_filter,
             "invert": self._smart_shuffle,
             "harmonic_only": harmonic_only,
             "harmonic_mode": harmonic_mode,
-            "target_energy": target_energy,
             "excluded_artists": context.artists,
             "excluded_albums": context.albums,
             "excluded_titles": context.titles,
@@ -1706,10 +1541,9 @@ class Player:
     def _ensure_dj_cache(self) -> None:
         """Lazy-init the DJ-meta cache on first real use.
 
-        Cheap by design: a single sidecar JSON read.  Safe to call from
+        Cheap by design: it only opens ``dj_meta.db``.  Safe to call from
         an asyncio handler (e.g. ``PlayerBridge.get_state``) without
-        blocking the event loop.  External cue import is deliberately
-        NOT done here -- see :meth:`_ensure_external_cues`.
+        blocking the event loop.
         """
         if self._dj_cache_initialised:
             return
@@ -1727,43 +1561,6 @@ class Player:
         except (OSError, ValueError) as exc:
             logger.warning("DJ cache unavailable: %s", exc)
             self._dj_cache = None
-
-    def _ensure_external_cues(self) -> None:
-        """One-shot import of cues from Mixxx / Rekordbox / Traktor.
-
-        Runs synchronously on the *player thread* (called from
-        :meth:`run`) so the asyncio event loop in the FastAPI server is
-        never blocked by SQLite reads or XML parses.  Imported cues
-        merge into each cached :class:`~autodj.dj_meta.DjMeta` lazily
-        when a track is first analysed -- so we pay the importer cost
-        exactly once per ``serve`` boot.
-        """
-        if getattr(self, "_external_cues_loaded", False):
-            return
-        self._external_cues_loaded = True
-        self._external_cues: dict[str, list[Any]] = {}
-        if not self._cfg.playback.import_external_cues:
-            return
-        try:
-            from autodj.dj_cues_import import auto_import_cues
-
-            self._external_cues = auto_import_cues(
-                library_root=self._cfg.library.music_dir
-                if isinstance(self._cfg.library.music_dir, Path)
-                else None,
-            )
-            if self._external_cues:
-                logger.info(
-                    "Imported cues for %d tracks from external DJ software",
-                    len(self._external_cues),
-                )
-            else:
-                logger.info(
-                    "No external DJ-software libraries found (Mixxx / Rekordbox / "
-                    "Traktor); cues will be auto-detected from raw audio instead.",
-                )
-        except (OSError, ValueError, ImportError) as exc:
-            logger.debug("External cue import failed: %s", exc)
 
     def _outgoing_meta(self, audio_a: np.ndarray, sr_a: int, path: str) -> DjMeta | None:
         """Get / compute DjMeta for the outgoing track when needed for alignment.
@@ -1783,7 +1580,6 @@ class Player:
         meta = self._dj_cache.get(path)
         if not meta.analysed:
             meta = analyse_audio(mono(audio_a), sr_a)
-            self._merge_external_cues_into(meta, path)
             self._dj_cache.set(path, meta)
             self._dj_cache.flush(batch=10)
         return meta
@@ -1802,10 +1598,10 @@ class Player:
            (sidecar hit, or a previous background pass populated it).
         2. No-ops when the path is already in flight on another thread.
         3. Loads the audio file, runs :func:`analyse_audio` (which calls
-           :func:`detect_cues` internally), merges any external Mixxx /
-           Rekordbox / Serato / Traktor cues, then writes the result back to
-           ``self._dj_cache`` and forces a flush so the sidecar JSON
-           grows incrementally on each track.
+           :func:`detect_cues` internally), then writes the result back to
+           ``self._dj_cache`` and forces a flush so ``dj_meta.db`` grows
+           track by track.  Cues imported from DJ software are merged only
+           by ``autodj index`` and ``autodj analyse``, not here.
 
         Errors at any stage (file gone, decode error, librosa failure)
         are logged at debug and swallowed -- the cue panel just stays
@@ -1826,7 +1622,6 @@ class Player:
 
                 audio, sr = load_audio(path)
                 meta = analyse_audio(audio, sr)
-                self._merge_external_cues_into(meta, path)
                 if self._dj_cache is not None:
                     self._dj_cache.set(path, meta)
                     self._dj_cache.flush(force=True)
@@ -1893,29 +1688,6 @@ class Player:
                 if remaining <= 0:
                     return False
                 worker.join(remaining)
-
-    def _merge_external_cues_into(self, meta: DjMeta, path: str) -> None:
-        """Merge externally-imported cues for *path* into *meta* in place.
-
-        Library imports come from :meth:`_ensure_external_cues`; Serato
-        cues are read from the file's own tags here.  No-op while
-        ``playback.import_external_cues`` is off or when neither source
-        has anything for this track.  Uses
-        :func:`autodj.dj_meta.merge_cues` so user / DJ-software cues
-        win on conflict but auto-detected cues survive when they're
-        the only source for a region of the track.
-        """
-        if not self._cfg.playback.import_external_cues:
-            return
-        from autodj.dj_cues_import import import_from_serato_tags
-
-        external = list(getattr(self, "_external_cues", {}).get(path) or [])
-        external.extend(import_from_serato_tags(Path(path)))
-        if not external:
-            return
-        from autodj.dj_meta import merge_cues
-
-        meta.cues = merge_cues(meta.cues, external)
 
     def _peek_incoming_meta(self, next_entry: IndexEntry) -> DjMeta | None:
         """Cache-only DjMeta peek for the incoming track (no audio decode).
@@ -2101,7 +1873,6 @@ class Player:
         meta_b = self._dj_cache.get(next_entry.path)
         if not meta_b.analysed:
             meta_b = analyse_audio(mono(audio_b), sr_a)
-            self._merge_external_cues_into(meta_b, next_entry.path)
             self._dj_cache.set(next_entry.path, meta_b)
             self._dj_cache.flush(batch=10)
         if meta_b.intro_end_s <= 0.5:

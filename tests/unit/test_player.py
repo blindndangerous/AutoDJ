@@ -19,15 +19,12 @@ from autodj.indexer import IndexEntry
 from autodj.player import (
     Player,
     PlayerState,
-    _append_history_entry,
-    _append_m3u_entry,
     _apply_crossfade,
     _apply_crossfade_ducked,
     _time_stretch,
     apply_filter_sweep,
     beatmatch_incoming,
     load_audio,
-    write_m3u,
 )
 from autodj.similarity import SimilarityError
 from autodj.transitions import TRANSITION_EFFECT_NAMES
@@ -198,123 +195,6 @@ class TestPlayerState:
 
 
 # ---------------------------------------------------------------------------
-# M3U helpers
-# ---------------------------------------------------------------------------
-
-
-class TestM3UHelpers:
-    def test_append_m3u_entry_creates_file(self, tmp_path: Path) -> None:
-        path = tmp_path / "playlist.m3u"
-        entry = _make_entry(0)
-        _append_m3u_entry(path, entry)
-        assert path.exists()
-
-    def test_append_m3u_entry_format(self, tmp_path: Path) -> None:
-        path = tmp_path / "playlist.m3u"
-        entry = _make_entry(0)  # length=180.0, display_name="Artist — Song 0"
-        _append_m3u_entry(path, entry)
-        content = path.read_text(encoding="utf-8")
-        assert "#EXTINF:180," in content
-        assert entry.path in content
-
-    def test_write_m3u_header(self, tmp_path: Path) -> None:
-        path = tmp_path / "playlist.m3u"
-        entries = [_make_entry(i) for i in range(3)]
-        write_m3u(entries, path)
-        content = path.read_text(encoding="utf-8")
-        assert content.startswith("#EXTM3U")
-
-    def test_write_m3u_all_entries_present(self, tmp_path: Path) -> None:
-        path = tmp_path / "playlist.m3u"
-        entries = [_make_entry(i) for i in range(3)]
-        write_m3u(entries, path)
-        content = path.read_text(encoding="utf-8")
-        for entry in entries:
-            assert entry.path in content
-
-    def test_append_m3u_entry_appends(self, tmp_path: Path) -> None:
-        path = tmp_path / "playlist.m3u"
-        _append_m3u_entry(path, _make_entry(0))
-        _append_m3u_entry(path, _make_entry(1))
-        content = path.read_text(encoding="utf-8")
-        assert "Z:/Music/song_0.flac" in content
-        assert "Z:/Music/song_1.flac" in content
-
-    def test_m3u_unknown_length_uses_minus_one(self, tmp_path: Path) -> None:
-        path = tmp_path / "playlist.m3u"
-        entry = IndexEntry(
-            path="Z:/Music/unknown.flac",
-            title="Unknown",
-            artist="Artist",
-            album="",
-            genre="",
-            bpm=0.0,
-            year=0,
-            length=0.0,
-            energy=0.0,
-            key=-1,
-            mode=-1,
-            tempo_confidence=0.0,
-        )
-        _append_m3u_entry(path, entry)
-        content = path.read_text(encoding="utf-8")
-        assert "#EXTINF:-1," in content
-
-
-# ---------------------------------------------------------------------------
-# History helper
-# ---------------------------------------------------------------------------
-
-
-class TestHistoryHelper:
-    def test_append_history_creates_file(self, tmp_path: Path) -> None:
-        from datetime import datetime
-
-        path = tmp_path / "history.jsonl"
-        entry = _make_entry(0)
-        _append_history_entry(path, entry, datetime.now())
-        assert path.exists()
-
-    def test_append_history_is_valid_json(self, tmp_path: Path) -> None:
-        import json
-        from datetime import datetime
-
-        path = tmp_path / "history.jsonl"
-        entry = _make_entry(0)
-        _append_history_entry(path, entry, datetime.now())
-        lines = path.read_text(encoding="utf-8").strip().splitlines()
-        assert len(lines) == 1
-        obj = json.loads(lines[0])
-        assert obj["path"] == entry.path
-        assert obj["title"] == entry.title
-        assert obj["artist"] == entry.artist
-
-    def test_append_history_has_timestamp(self, tmp_path: Path) -> None:
-        import json
-        from datetime import datetime
-
-        path = tmp_path / "history.jsonl"
-        entry = _make_entry(0)
-        ts = datetime(2026, 4, 11, 14, 30, 0)
-        _append_history_entry(path, entry, ts)
-        obj = json.loads(path.read_text(encoding="utf-8").strip())
-        assert "2026-04-11" in obj["timestamp"]
-
-    def test_append_history_multiple_entries(self, tmp_path: Path) -> None:
-        import json
-        from datetime import datetime
-
-        path = tmp_path / "history.jsonl"
-        for i in range(3):
-            _append_history_entry(path, _make_entry(i), datetime.now())
-        lines = path.read_text(encoding="utf-8").strip().splitlines()
-        assert len(lines) == 3
-        # Each line is valid JSON
-        for line in lines:
-            json.loads(line)
-
-
-# ---------------------------------------------------------------------------
 # load_audio
 # ---------------------------------------------------------------------------
 
@@ -385,21 +265,11 @@ class TestPlayerConstruction:
         # 5 is well below library size; no clamp.
         assert player._state.no_repeat_window == 5
 
-    def test_discovery_every_from_arg(self) -> None:
-        player = Player(_make_cfg_mock(), _make_sim_index(), discovery_every=5)
+    def test_discovery_every_from_config(self) -> None:
+        cfg = _make_cfg_mock()
+        cfg.playback.discovery_every = 5
+        player = Player(cfg, _make_sim_index())
         assert player._discovery_every == 5
-
-    def test_discovery_every_from_preset(self) -> None:
-        preset = MagicMock()
-        preset.discovery_every = 7
-        player = Player(_make_cfg_mock(), _make_sim_index(), preset=preset)
-        assert player._discovery_every == 7
-
-    def test_discovery_every_arg_overrides_preset(self) -> None:
-        preset = MagicMock()
-        preset.discovery_every = 7
-        player = Player(_make_cfg_mock(), _make_sim_index(), preset=preset, discovery_every=3)
-        assert player._discovery_every == 3
 
 
 # ---------------------------------------------------------------------------
@@ -407,107 +277,12 @@ class TestPlayerConstruction:
 # ---------------------------------------------------------------------------
 
 
-class TestPlayerExternalCues:
-    """External-cue importer hooks (Mixxx / Rekordbox / Traktor)."""
-
-    def _make_player(self, **kwargs) -> Player:
-        return Player(_make_cfg_mock(), _make_sim_index(3), **kwargs)
-
-    def test_ensure_external_cues_skips_when_disabled(self) -> None:
-        player = self._make_player()
-        player._cfg.playback.import_external_cues = False
-        player._ensure_external_cues()
-        assert player._external_cues == {}
-        assert player._external_cues_loaded is True
-
-    def test_ensure_external_cues_runs_once(self) -> None:
-        player = self._make_player()
-        player._cfg.playback.import_external_cues = False
-        player._ensure_external_cues()
-        # Second call should be a no-op even if config flips on.
-        player._cfg.playback.import_external_cues = True
-        player._ensure_external_cues()
-        # No second import attempted; flag still set.
-        assert player._external_cues == {}
-
-    def test_ensure_external_cues_swallows_importer_failure(self) -> None:
-        player = self._make_player()
-        player._cfg.playback.import_external_cues = True
-        with patch("autodj.dj_cues_import.auto_import_cues", side_effect=OSError("boom")):
-            player._ensure_external_cues()
-        # Failure logs at DEBUG and leaves _external_cues empty.
-        assert player._external_cues == {}
-
-    def test_ensure_external_cues_logs_when_no_libraries_found(self) -> None:
-        """auto_import_cues returns {} -> hit the 'no libraries found' log (line 1309)."""
-        player = self._make_player()
-        player._cfg.playback.import_external_cues = True
-        with patch("autodj.dj_cues_import.auto_import_cues", return_value={}):
-            player._ensure_external_cues()
-        assert player._external_cues == {}
-
-    def test_ensure_external_cues_imports_cues_into_dict(self) -> None:
-        from autodj.dj_meta import Cue
-
-        player = self._make_player()
-        player._cfg.playback.import_external_cues = True
-        fake = {"track.mp3": [Cue(time_s=10.0, type="drop", source="rekordbox")]}
-        with patch("autodj.dj_cues_import.auto_import_cues", return_value=fake):
-            player._ensure_external_cues()
-        assert player._external_cues == fake
-
-    def test_merge_external_cues_into_no_op_when_no_match(self) -> None:
-        from autodj.dj_meta import DjMeta
-
-        player = self._make_player()
-        player._external_cues = {}
-        meta = DjMeta(intro_end_s=0.0, outro_start_s=0.0, beats=[], analysed=True)
-        player._merge_external_cues_into(meta, "unknown.mp3")
-        assert meta.cues == []
-
-    def test_merge_external_cues_into_reads_serato_tags_while_enabled(self) -> None:
-        from autodj.dj_meta import Cue, DjMeta
-
-        player = self._make_player()
-        mixxx = Cue(time_s=5.0, type="user", source="mixxx", label="Hot 1")
-        player._external_cues = {"track.mp3": [mixxx]}
-        serato = Cue(time_s=20.0, type="user", source="serato", label="Hot A")
-        meta = DjMeta(intro_end_s=0.0, outro_start_s=0.0, beats=[], analysed=True)
-        with patch("autodj.dj_cues_import.import_from_serato_tags", return_value=[serato]) as rd:
-            player._cfg.playback.import_external_cues = False
-            player._merge_external_cues_into(meta, "track.mp3")
-            assert meta.cues == []
-            player._cfg.playback.import_external_cues = True
-            player._merge_external_cues_into(meta, "track.mp3")
-        rd.assert_called_once_with(Path("track.mp3"))
-        assert meta.cues == [mixxx, serato]
-
-    def test_merge_external_cues_into_concats_external(self) -> None:
-        from autodj.dj_meta import Cue, DjMeta
-
-        player = self._make_player()
-        player._external_cues = {
-            "track.mp3": [Cue(time_s=12.0, type="user", source="mixxx", label="Hot 1")],
-        }
-        meta = DjMeta(
-            intro_end_s=0.0,
-            outro_start_s=0.0,
-            beats=[],
-            analysed=True,
-            cues=[Cue(time_s=10.0, type="drop", source="auto")],
-        )
-        player._cfg.playback.import_external_cues = True
-        with patch("autodj.dj_cues_import.import_from_serato_tags", return_value=[]):
-            player._merge_external_cues_into(meta, "track.mp3")
-        # Both cues survive (different times beyond the 250 ms collision window).
-        assert len(meta.cues) == 2
-        sources = {c.source for c in meta.cues}
-        assert "auto" in sources and "mixxx" in sources
-
-
 class TestPlayerPickNext:
-    def _make_player(self, n: int = 10, **kwargs) -> Player:
-        return Player(_make_cfg_mock(), _make_sim_index(n), **kwargs)
+    def _make_player(self, n: int = 10, **settings) -> Player:
+        player = Player(_make_cfg_mock(), _make_sim_index(n))
+        for name, value in settings.items():
+            setattr(player, f"_{name}", value)
+        return player
 
     def test_returns_index_entry(self) -> None:
         player = self._make_player()
@@ -581,28 +356,6 @@ class TestPlayerPickNext:
         assert isinstance(result, IndexEntry)
         preset.target_bpm.assert_called_once()
 
-    def test_mood_arc_target_used(self) -> None:
-        """enable_mood_arc=True -> picker pulls a target from current_arc_target."""
-        player = self._make_player(n=10)
-        player._cfg.playback.enable_mood_arc = True
-        # Provide a real-ish mood arc shape.  current_arc_target reads
-        # ``start`` + ``hours`` to interpolate; any populated arc is fine.
-        from autodj.mood_arc import MoodArc
-
-        player._mood_arc = MoodArc(start_time_s=0.0, duration_s=3 * 3600.0)
-        current = player._sim.entries[0]
-        result = player._pick_next(current)
-        assert isinstance(result, IndexEntry)
-
-    def test_daypart_target_used(self) -> None:
-        """enable_daypart=True (and no preset / mood arc) pulls a daypart target."""
-        player = self._make_player(n=10)
-        player._cfg.playback.enable_daypart = True
-        player._cfg.playback.enable_mood_arc = False
-        current = player._sim.entries[0]
-        result = player._pick_next(current)
-        assert isinstance(result, IndexEntry)
-
     def test_pure_shuffle_picks_from_pool(self) -> None:
         """Pure shuffle ignores similarity and picks any non-recent track."""
         player = self._make_player(n=8, pure_shuffle=True)
@@ -626,12 +379,9 @@ class TestPlayerPickNext:
 
     def test_pure_shuffle_does_not_admit_unknown_or_out_of_range_bpm(self) -> None:
         sim = _make_sim_index(4, bpms=[110.0, 0.0, 150.0, 125.0])
-        player = Player(
-            _make_cfg_mock(),
-            sim,
-            pure_shuffle=True,
-            bpm_range=(120.0, 130.0),
-        )
+        player = Player(_make_cfg_mock(), sim)
+        player._pure_shuffle = True
+        player._bpm_range = (120.0, 130.0)
         entries = sim.entries_snapshot()
         player._state.current_track = entries[0]
 
@@ -639,12 +389,9 @@ class TestPlayerPickNext:
 
     def test_pure_shuffle_raises_when_no_track_satisfies_hard_bpm(self) -> None:
         sim = _make_sim_index(3, bpms=[0.0] * 3)
-        player = Player(
-            _make_cfg_mock(),
-            sim,
-            pure_shuffle=True,
-            bpm_range=(120.0, 130.0),
-        )
+        player = Player(_make_cfg_mock(), sim)
+        player._pure_shuffle = True
+        player._bpm_range = (120.0, 130.0)
         entries = sim.entries_snapshot()
         player._state.current_track = entries[0]
 
@@ -877,9 +624,10 @@ class TestAnalyseTrackInBackground:
         worker_exception_seen = threading.Event()
         worker_errors: list[BaseException] = []
 
-        def pause_before_write(_meta: DjMeta, _path: str) -> None:
+        def pause_before_write(_audio: np.ndarray, _sr: int) -> DjMeta:
             paused_before_write.set()
             assert release_worker.wait(2.0)
+            return DjMeta(analysed=True)
 
         original_set = cache.set
 
@@ -894,10 +642,7 @@ class TestAnalyseTrackInBackground:
             worker_exception_seen.set()
 
         monkeypatch.setattr("autodj.player.load_audio", lambda _path: (np.zeros(8), 8))
-        monkeypatch.setattr(
-            "autodj.dj_meta.analyse_audio", lambda _audio, _sr: DjMeta(analysed=True)
-        )
-        monkeypatch.setattr(player, "_merge_external_cues_into", pause_before_write)
+        monkeypatch.setattr("autodj.dj_meta.analyse_audio", pause_before_write)
         monkeypatch.setattr(cache, "set", tracked_set)
         monkeypatch.setattr(threading, "excepthook", capture_thread_error)
 
@@ -958,18 +703,16 @@ class TestAnalyseTrackInBackground:
         release_worker = threading.Event()
         worker_errors: list[BaseException] = []
 
-        def block_before_write(_meta: DjMeta, _path: str) -> None:
+        def block_before_write(_audio: np.ndarray, _sr: int) -> DjMeta:
             worker_blocked.set()
             release_worker.wait()
+            return DjMeta(analysed=True)
 
         def capture_thread_error(args: threading.ExceptHookArgs) -> None:
             worker_errors.append(args.exc_value)
 
         monkeypatch.setattr("autodj.player.load_audio", lambda _path: (np.zeros(8), 8))
-        monkeypatch.setattr(
-            "autodj.dj_meta.analyse_audio", lambda _audio, _sr: DjMeta(analysed=True)
-        )
-        monkeypatch.setattr(player, "_merge_external_cues_into", block_before_write)
+        monkeypatch.setattr("autodj.dj_meta.analyse_audio", block_before_write)
         monkeypatch.setattr(threading, "excepthook", capture_thread_error)
         monkeypatch.setattr("autodj.server._SHUTDOWN_TIMEOUT_S", 0.05)
         app = create_app(PlayerBridge(player=player, sim=player._sim))
@@ -1181,34 +924,6 @@ class TestPlayerRun:
 
         with patch("autodj.player.time.sleep"):
             player.run(seed_entry=None)  # should not raise
-
-    def test_run_exports_m3u(self, tmp_path: Path) -> None:
-        m3u_path = tmp_path / "session.m3u"
-        player = Player(
-            _make_cfg_mock(),
-            _make_sim_index(n=10),
-            dry_run=True,
-            export_m3u=m3u_path,
-        )
-        self._run_one_track(player)
-        assert m3u_path.exists()
-        content = m3u_path.read_text(encoding="utf-8")
-        assert content.startswith("#EXTM3U")
-
-    def test_run_appends_history(self, tmp_path: Path) -> None:
-        import json
-
-        history = tmp_path / "history.jsonl"
-        player = Player(
-            _make_cfg_mock(),
-            _make_sim_index(n=10),
-            dry_run=True,
-            history_file=history,
-        )
-        self._run_one_track(player)
-        assert history.exists()
-        obj = json.loads(history.read_text(encoding="utf-8").strip().splitlines()[0])
-        assert "path" in obj
 
 
 # ---------------------------------------------------------------------------
@@ -1422,27 +1137,6 @@ class TestApplyCrossfadeDucked:
         b = np.ones(10000, dtype=np.float32) * 0.9
         out = _apply_crossfade_ducked(a, b, 4000, 44100)
         assert np.abs(out).max() <= 1.0 + 1e-6
-
-
-# ---------------------------------------------------------------------------
-# write_m3u + history (already partially covered, fill gaps)
-# ---------------------------------------------------------------------------
-
-
-class TestWriteM3u:
-    def test_writes_header_and_entries(self, tmp_path: Path) -> None:
-        out = tmp_path / "list.m3u"
-        write_m3u([_make_entry(0), _make_entry(1)], out)
-        content = out.read_text(encoding="utf-8")
-        assert content.startswith("#EXTM3U")
-        assert "Song 0" in content
-        assert "Song 1" in content
-
-    def test_empty_list_writes_header_only(self, tmp_path: Path) -> None:
-        out = tmp_path / "list.m3u"
-        write_m3u([], out)
-        content = out.read_text(encoding="utf-8")
-        assert "#EXTM3U" in content
 
 
 # ---------------------------------------------------------------------------
@@ -2050,7 +1744,8 @@ class TestPlayerCoverageErrorPaths:
         assert np.all(np.isfinite(result))
 
     def test_discovery_similarity_failure_returns_none(self) -> None:
-        player = Player(_make_cfg_mock(), _make_sim_index(3), discovery_every=1)
+        player = Player(_make_cfg_mock(), _make_sim_index(3))
+        player._discovery_every = 1
         player._state.discovery_enabled = True
         player._state.track_number = 1
         current = player._sim.entries[0]
@@ -2290,20 +1985,13 @@ def _rendered(entry, next_entry=None, frames=44100, fx="echo_out", ratio=0.97):
 
 
 class TestOnTrackStart:
-    def _player(self, tmp_path: Path | None = None) -> Player:
-        kwargs = {}
-        if tmp_path is not None:
-            kwargs = {
-                "export_m3u": tmp_path / "set.m3u",
-                "history_file": tmp_path / "history.jsonl",
-            }
-        player = Player(_make_cfg_mock(), _make_sim_index(4), **kwargs)
+    def _player(self) -> Player:
+        player = Player(_make_cfg_mock(), _make_sim_index(4))
         player.load_lyrics_in_background = MagicMock()  # type: ignore[method-assign]
         return player
 
-    def test_state_describes_the_track_that_started(self, tmp_path) -> None:
-        player = self._player(tmp_path)
-        (tmp_path / "set.m3u").write_text("#EXTM3U\n", encoding="utf-8")
+    def test_state_describes_the_track_that_started(self) -> None:
+        player = self._player()
         before, entry, nxt = player._sim.entries[:3]
         player._state.current_track = before
         player._current_sr = 22050
@@ -2323,12 +2011,10 @@ class TestOnTrackStart:
         assert player._beatmatch_ratio == pytest.approx(0.97)
         assert player._state.track_number == 1
         assert entry.path in player._state.recently_played
-        assert entry.path in (tmp_path / "set.m3u").read_text(encoding="utf-8")
-        assert entry.path in (tmp_path / "history.jsonl").read_text(encoding="utf-8")
         player.load_lyrics_in_background.assert_called_once_with(entry.path)
         assert started == [entry]
 
-    def test_without_callback_or_exports(self) -> None:
+    def test_without_callback(self) -> None:
         player = self._player()
         entry = player._sim.entries[0]
         player._on_track_start(_rendered(entry, None, fx=""))
@@ -2336,8 +2022,8 @@ class TestOnTrackStart:
         assert player._state.next_track is None
         assert player._last_transition_fx == ""
 
-    def test_seed_recorded_once(self, tmp_path) -> None:
-        player = self._player(tmp_path)
+    def test_seed_recorded_once(self) -> None:
+        player = self._player()
         seed, second = player._sim.entries[:2]
         recorded = []
         original = player._state.record_played
@@ -2355,10 +2041,6 @@ class TestOnTrackStart:
         assert recorded == [seed, second]
         assert player._state.track_number == 1
         assert player._previous_track is seed
-        m3u = (tmp_path / "set.m3u").read_text(encoding="utf-8")
-        assert m3u.count(seed.path) == 1
-        history = (tmp_path / "history.jsonl").read_text(encoding="utf-8")
-        assert history.count(seed.path) == 1
 
     def test_on_position_tracks_bus_progress(self) -> None:
         player = self._player()
@@ -2645,25 +2327,6 @@ class TestTrackStartRobustness:
         player._on_track_start(_rendered_with(player._sim.entries[1]))
         assert player._current_lyrics == []
         assert player._current_lyrics_plain == ""
-
-    def test_export_failure_still_updates_state_and_calls_hook(self, tmp_path, caplog) -> None:
-        sim = _make_sim_index(3)
-        player = Player(
-            _make_cfg_mock(),
-            sim,
-            export_m3u=tmp_path,  # a directory: appending to it fails
-            history_file=tmp_path,
-        )
-        player.load_lyrics_in_background = MagicMock()  # type: ignore[method-assign]
-        started = []
-        player.on_track_started = started.append
-        entry = sim.entries[1]
-        with caplog.at_level("ERROR", logger="autodj.player"):
-            player._on_track_start(_rendered_with(entry))
-        assert player._state.current_track is entry
-        assert entry.path in player._state.recently_played
-        assert started == [entry]
-        assert "Recording" in caplog.text
 
     def test_slow_pick_does_not_delay_track_start(self) -> None:
         import threading

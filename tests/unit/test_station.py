@@ -372,11 +372,8 @@ def test_start_with_is_refused_while_a_set_plays() -> None:
     assert rig.player.begin_set.call_args_list[-1].args == (rig.shuffle_pick, "seed")
 
 
-def test_real_player_ignores_a_track_start_left_over_from_a_stopped_set(tmp_path) -> None:
+def test_real_player_ignores_a_track_start_left_over_from_a_stopped_set() -> None:
     player, bridge, stream, station, now, _sim = _real_rig()
-    export = tmp_path / "live.m3u"
-    export.write_text("#EXTM3U\n", encoding="utf-8")
-    player._export_m3u = export
     player._render_ahead.start()
     try:
         stream.listener_count = 1
@@ -390,11 +387,9 @@ def test_real_player_ignores_a_track_start_left_over_from_a_stopped_set(tmp_path
         station.tick()
         now[0] = 31.0
         station.tick()
-        m3u_before = export.read_text(encoding="utf-8")
         player._on_track_start(leftover)  # its callback runs after the stop
         assert player._state.current_track is None
         assert player._state.track_number == numbered
         assert bridge.history_snapshot() == []
-        assert export.read_text(encoding="utf-8") == m3u_before
     finally:
         player._render_ahead.stop(timeout=WAIT)

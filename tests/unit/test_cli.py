@@ -1,6 +1,6 @@
 """Unit tests for autodj.cli.
 
-Tests the pure helper functions (_parse_bpm_range, _resolve_seed) and the
+Tests the pure helper functions (_resolve_seed and others) and the
 Click commands' error-path behaviour using CliRunner — no real audio, model,
 or index required.
 """
@@ -17,8 +17,6 @@ from click.testing import CliRunner
 
 import autodj.cli as cli_module
 from autodj.cli import (
-    _apply_serve_overrides,
-    _parse_bpm_range,
     _require_ffmpeg_for_stream,
     _resolve_seed,
     cli,
@@ -70,7 +68,7 @@ def _make_sim(n: int = 5) -> MagicMock:
     sim.entries = entries
     _configure_sim_api(sim)
     sim.ntotal = n
-    # Return a real IndexEntry so callers that serialize it (write_m3u, etc.) don't crash
+    # Return a real IndexEntry so callers that serialize it do not crash
     sim.find_next_for_path.return_value = entries[0]
     return sim
 
@@ -81,7 +79,6 @@ def _make_cfg(beets_db=None) -> MagicMock:
     cfg.playback.no_repeat_window = 50
     cfg.playback.artist_repeat_window = 3
     cfg.playback.crossfade_seconds = 3.0
-    cfg.playback.history_file = None
     cfg.playback.discovery_every = None
     cfg.presets = {}
     cfg.index.name = "default"
@@ -89,65 +86,6 @@ def _make_cfg(beets_db=None) -> MagicMock:
     cfg.stream = StreamConfig()
     cfg.config_sources = ("defaults",)
     return cfg
-
-
-# ---------------------------------------------------------------------------
-# _parse_bpm_range
-# ---------------------------------------------------------------------------
-
-
-class TestParseBpmRange:
-    def test_integer_range(self) -> None:
-        assert _parse_bpm_range("90-130") == (90.0, 130.0)
-
-    def test_float_range(self) -> None:
-        lo, hi = _parse_bpm_range("90.5-130.5")
-        assert lo == pytest.approx(90.5)
-        assert hi == pytest.approx(130.5)
-
-    def test_en_dash_separator(self) -> None:
-        """U+2013 EN DASH should be treated like a hyphen."""
-        assert _parse_bpm_range("90\u2013130") == (90.0, 130.0)
-
-    def test_em_dash_separator(self) -> None:
-        """U+2014 EM DASH should be treated like a hyphen."""
-        assert _parse_bpm_range("90\u2014130") == (90.0, 130.0)
-
-    def test_wrong_separator_raises(self) -> None:
-        import click
-
-        with pytest.raises(click.BadParameter):
-            _parse_bpm_range("90:130")
-
-    def test_three_parts_raises(self) -> None:
-        import click
-
-        with pytest.raises(click.BadParameter):
-            _parse_bpm_range("80-100-130")
-
-    def test_non_numeric_lo_raises(self) -> None:
-        import click
-
-        with pytest.raises(click.BadParameter):
-            _parse_bpm_range("abc-130")
-
-    def test_non_numeric_hi_raises(self) -> None:
-        import click
-
-        with pytest.raises(click.BadParameter):
-            _parse_bpm_range("90-xyz")
-
-    def test_lo_equals_hi_raises(self) -> None:
-        import click
-
-        with pytest.raises(click.BadParameter):
-            _parse_bpm_range("120-120")
-
-    def test_lo_greater_than_hi_raises(self) -> None:
-        import click
-
-        with pytest.raises(click.BadParameter):
-            _parse_bpm_range("130-90")
 
 
 # ---------------------------------------------------------------------------
@@ -167,31 +105,31 @@ class TestResolveSeed:
 
     def test_exact_title_match(self) -> None:
         sim = _make_sim()
-        result = _resolve_seed(sim, _make_cfg(), "Song 0", MagicMock(), interactive=False)
+        result = _resolve_seed(sim, _make_cfg(), "Song 0", MagicMock())
         assert result is not None
         assert result.path == sim.entries[0].path
 
     def test_partial_title_match(self) -> None:
         sim = _make_sim()
-        result = _resolve_seed(sim, _make_cfg(), "ong 0", MagicMock(), interactive=False)
+        result = _resolve_seed(sim, _make_cfg(), "ong 0", MagicMock())
         assert result is not None
 
     def test_artist_match(self) -> None:
         sim = _make_sim()
-        result = _resolve_seed(sim, _make_cfg(), "Artist 0", MagicMock(), interactive=False)
+        result = _resolve_seed(sim, _make_cfg(), "Artist 0", MagicMock())
         assert result is not None
 
-    def test_multiple_matches_non_interactive_takes_first(self) -> None:
-        """With interactive=False and multiple hits, the first match is chosen."""
+    def test_multiple_matches_takes_first(self) -> None:
+        """With multiple hits, the first match is chosen."""
         sim = _make_sim(5)
         # "Song" matches all 5 entries
-        result = _resolve_seed(sim, _make_cfg(), "Song", MagicMock(), interactive=False)
+        result = _resolve_seed(sim, _make_cfg(), "Song", MagicMock())
         assert result is not None
         assert result.path == sim.entries[0].path
 
     def test_case_insensitive_match(self) -> None:
         sim = _make_sim()
-        result = _resolve_seed(sim, _make_cfg(), "song 0", MagicMock(), interactive=False)
+        result = _resolve_seed(sim, _make_cfg(), "song 0", MagicMock())
         assert result is not None
 
 
@@ -212,10 +150,6 @@ class TestCliConfigNotFound:
 
     def test_stats_exits_on_missing_config(self, tmp_path: Path) -> None:
         result = CliRunner().invoke(cli, ["--config", self._missing(tmp_path), "stats"])
-        assert result.exit_code == 1
-
-    def test_playlist_exits_on_missing_config(self, tmp_path: Path) -> None:
-        result = CliRunner().invoke(cli, ["--config", self._missing(tmp_path), "playlist"])
         assert result.exit_code == 1
 
     def test_serve_exits_on_missing_config(self, tmp_path: Path) -> None:
@@ -370,100 +304,6 @@ class TestCliConfigSelection:
         assert result.exit_code == 0
         assert cfg.config_sources == original_sources
 
-    def test_invalid_transition_does_not_partially_apply_general_overrides(self) -> None:
-        cfg = _make_cfg()
-        cfg.djmix.harmonic_mode = "off"
-
-        with pytest.raises(SystemExit):
-            _apply_serve_overrides(
-                cfg,
-                {"harmonic_mode": "strict", "transition_mode": "invalid"},
-            )
-
-        assert cfg.djmix.harmonic_mode == "off"
-
-    def test_failed_late_serve_validation_does_not_mutate_effective_config(self) -> None:
-        cfg = _make_cfg()
-        original_server = cfg.server
-        cfg.djmix.harmonic_mode = "off"
-        with (
-            patch("autodj.config.load_config", return_value=cfg),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=_make_sim()),
-            patch("autodj.server.serve"),
-        ):
-            result = CliRunner().invoke(
-                cli,
-                [
-                    "serve",
-                    "--host",
-                    "127.0.0.2",
-                    "--name",
-                    "alternate",
-                    "--harmonic-mode",
-                    "strict",
-                    "--preset",
-                    "missing",
-                ],
-            )
-
-        assert result.exit_code == 1
-        assert cfg.server is original_server
-        assert cfg.index.name == "default"
-        assert cfg.djmix.harmonic_mode == "off"
-        assert cfg.config_sources == ("defaults",)
-
-    def test_transition_validation_precedes_serve_startup_side_effects(self) -> None:
-        cfg = _make_cfg()
-        with (
-            patch("autodj.config.load_config", return_value=cfg),
-            patch(
-                "autodj.config._validate_transition_mode",
-                side_effect=ValueError("semantic transition error"),
-            ),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir") as load_index,
-            patch("autodj.cli._resolve_seed") as resolve_seed,
-            patch("autodj.server.serve") as serve_mock,
-        ):
-            result = CliRunner().invoke(cli, ["serve", "--transition-mode", "fixed"])
-
-        assert result.exit_code == 1
-        assert "semantic transition error" in result.output
-        assert "AutoDJ —" not in result.output
-        load_index.assert_not_called()
-        resolve_seed.assert_not_called()
-        serve_mock.assert_not_called()
-
-    def test_serve_flags_given_on_the_command_line_win_over_saved_web_settings(self) -> None:
-        """Only flags typed on this command line are kept from the web_state.json restore."""
-        cfg = _make_cfg()
-        with (
-            patch("autodj.config.load_config", return_value=cfg),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=_make_sim()),
-            patch("autodj.server.serve") as serve_mock,
-        ):
-            result = CliRunner().invoke(
-                cli,
-                [
-                    "serve",
-                    "--preset",
-                    "chill",
-                    "--no-beatmatch",
-                    "--transition",
-                    "echo_out",
-                    "--smart-shuffle",
-                    "--bpm-range",
-                    "90-130",
-                ],
-            )
-        assert result.exit_code == 0, result.output
-        assert serve_mock.call_args.kwargs["cli_settings"] == {
-            "preset",
-            "beatmatch",
-            "transition",
-            "smart_shuffle",
-            "bpm_range",
-        }
-
     def test_name_override_appends_cli_source_exactly_once(self) -> None:
         cfg = _make_cfg()
         with (
@@ -514,11 +354,6 @@ class TestCliIndexNotFound:
         result = CliRunner().invoke(cli, ["--config", str(cfg), "stats"])
         assert result.exit_code == 1
 
-    def test_playlist_exits_on_missing_index(self, tmp_path: Path) -> None:
-        cfg = self._write_minimal_config(tmp_path)
-        result = CliRunner().invoke(cli, ["--config", str(cfg), "playlist"])
-        assert result.exit_code == 1
-
 
 # ---------------------------------------------------------------------------
 # CLI happy paths — real code, mocked heavy deps
@@ -537,48 +372,6 @@ class TestCliHappyPaths:
         ):
             result = CliRunner().invoke(cli, ["stats"])
         assert result.exit_code == 0
-
-    def test_playlist_exits_zero(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-        ):
-            result = CliRunner().invoke(cli, ["playlist", "--tracks", "3"])
-        assert result.exit_code == 0
-
-    def test_playlist_writes_m3u_file(self, tmp_path: Path) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        out = tmp_path / "out.m3u"
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-        ):
-            result = CliRunner().invoke(cli, ["playlist", "--tracks", "3", "--output", str(out)])
-        assert result.exit_code == 0
-        assert out.exists()
-
-    def test_playlist_with_preset(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-        ):
-            result = CliRunner().invoke(cli, ["playlist", "--preset", "chill", "--tracks", "3"])
-        assert result.exit_code == 0
-
-    def test_playlist_unknown_preset_exits_one(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-        ):
-            result = CliRunner().invoke(cli, ["playlist", "--preset", "nosuchpreset_xyz"])
-        assert result.exit_code == 1
 
 
 # ---------------------------------------------------------------------------
@@ -633,7 +426,7 @@ class TestResolveSeedBeets:
 
         cfg = _make_cfg(beets_db=db)
 
-        result = _resolve_seed(sim, cfg, "Portishead", MagicMock(), interactive=False)
+        result = _resolve_seed(sim, cfg, "Portishead", MagicMock())
         assert result is not None
         assert "Portishead" in result.path
 
@@ -689,28 +482,6 @@ class TestCmdServe:
         ):
             result = CliRunner().invoke(cli, ["serve"])
         assert result.exit_code == 0
-
-    def test_serve_invalid_bpm_range_exits_one(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-            patch("autodj.server.serve"),
-        ):
-            result = CliRunner().invoke(cli, ["serve", "--bpm-range", "bad"])
-        assert result.exit_code == 1
-
-    def test_serve_unknown_preset_exits_one(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-            patch("autodj.server.serve"),
-        ):
-            result = CliRunner().invoke(cli, ["serve", "--preset", "nosuchpreset_xyz"])
-        assert result.exit_code == 1
 
     def test_serve_prints_web_ui_url(self) -> None:
         cfg_mock = _make_cfg()
@@ -1283,90 +1054,6 @@ class TestCmdIndex:
             result = CliRunner().invoke(cli, ["index"])
         assert result.exit_code == 1
         assert "Indexing failed" in result.output
-
-
-# ---------------------------------------------------------------------------
-# cmd_serve — playback overrides
-# ---------------------------------------------------------------------------
-
-
-class TestCmdServePlaybackOverrides:
-    def test_serve_daypart_flag(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-            patch("autodj.server.serve"),
-        ):
-            CliRunner().invoke(cli, ["serve", "--daypart"])
-        assert cfg_mock.playback.enable_daypart is True
-
-    def test_serve_mood_arc_with_hours(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-            patch("autodj.server.serve"),
-        ):
-            CliRunner().invoke(
-                cli,
-                ["serve", "--mood-arc", "--mood-arc-hours", "1.0"],
-            )
-        assert cfg_mock.playback.enable_mood_arc is True
-        assert cfg_mock.playback.mood_arc_hours == 1.0
-
-    def test_serve_no_import_external_cues(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-            patch("autodj.server.serve"),
-        ):
-            CliRunner().invoke(cli, ["serve", "--no-import-external-cues"])
-        assert cfg_mock.playback.import_external_cues is False
-
-
-# ---------------------------------------------------------------------------
-# cmd_serve — DJ-mix overrides
-# ---------------------------------------------------------------------------
-
-
-class TestCmdServeOverrides:
-    def test_serve_harmonic_override(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-            patch("autodj.server.serve"),
-        ):
-            CliRunner().invoke(cli, ["serve", "--harmonic-mode", "neighbour"])
-        assert cfg_mock.djmix.harmonic_mode == "neighbour"
-
-    def test_serve_transition_override(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-            patch("autodj.server.serve"),
-        ):
-            CliRunner().invoke(cli, ["serve", "--transition", "tape_stop"])
-        assert cfg_mock.transitions.effect == "tape_stop"
-
-    def test_serve_with_discovery(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-            patch("autodj.server.serve"),
-        ):
-            result = CliRunner().invoke(cli, ["serve", "--discovery-every", "20"])
-        assert result.exit_code == 0
 
 
 @pytest.mark.skipif(not LIBRARY_DB.exists(), reason="library.db not present")

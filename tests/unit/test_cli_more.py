@@ -10,7 +10,7 @@ import numpy as np
 from click.testing import CliRunner
 
 from autodj.backup import BackupError
-from autodj.cli import _can_import, _resolve_seed, cli
+from autodj.cli import _can_import, cli
 from autodj.indexer import FEATURE_DIM, IndexEntry, save_index
 
 
@@ -54,38 +54,11 @@ def _cfg() -> MagicMock:
     cfg.playback.no_repeat_window = 50
     cfg.playback.artist_repeat_window = 3
     cfg.playback.crossfade_seconds = 3.0
-    cfg.playback.history_file = None
     cfg.playback.discovery_every = None
     cfg.playback.pick_top_k = 1
     cfg.playback.pick_temperature = 0.3
     cfg.presets = {}
     return cfg
-
-
-# ---------------------------------------------------------------------------
-# _resolve_seed interactive prompt path
-# ---------------------------------------------------------------------------
-
-
-class TestResolveSeedInteractive:
-    def test_prompt_choice_picks_match(self) -> None:
-        sim = MagicMock()
-        sim.entries = [_entry(0), _entry(1), _entry(2)]
-        _configure_sim_api(sim)
-        # Simulate `click.prompt` returning the second choice.
-        with patch("autodj.cli.click.prompt", return_value=2):
-            chosen = _resolve_seed(sim, _cfg(), "Song", MagicMock(), interactive=True)
-        assert chosen is not None
-        # second entry chosen
-        assert chosen.path == sim.entries[1].path
-
-    def test_prompt_eof_aborts_to_none(self) -> None:
-        sim = MagicMock()
-        sim.entries = [_entry(0), _entry(1)]
-        _configure_sim_api(sim)
-        with patch("autodj.cli.click.prompt", side_effect=EOFError()):
-            chosen = _resolve_seed(sim, _cfg(), "Song", MagicMock(), interactive=True)
-        assert chosen is None
 
 
 # ---------------------------------------------------------------------------
@@ -422,61 +395,3 @@ class TestEnrichValidName:
         ):
             result = CliRunner().invoke(cli, ["--config", str(cfg), "enrich", "--name", "workout"])
         assert result.exit_code == 0
-
-
-# ---------------------------------------------------------------------------
-# playlist random seed path (no seed found)
-# ---------------------------------------------------------------------------
-
-
-class TestPlaylistRandomSeed:
-    def test_playlist_with_no_seed_picks_random(self) -> None:
-        cfg_mock = _cfg()
-        sim_mock = MagicMock()
-        sim_mock.entries = [_entry(i) for i in range(5)]
-        _configure_sim_api(sim_mock)
-        sim_mock.find_next_for_path.return_value = sim_mock.entries[0]
-
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
-        ):
-            # No --seed -> _resolve_seed returns None -> random.choice path (line 1735+)
-            result = CliRunner().invoke(cli, ["playlist", "--tracks", "2"])
-        assert result.exit_code == 0
-
-    def test_playlist_uses_resolved_seed(self) -> None:
-        cfg_mock = _cfg()
-        sim_mock = MagicMock()
-        sim_mock.entries = [_entry(0)]
-        _configure_sim_api(sim_mock)
-
-        with (
-            patch("autodj.cli._load_cfg_or_exit", return_value=cfg_mock),
-            patch("autodj.cli._load_index_or_exit", return_value=sim_mock),
-            patch("autodj.cli._resolve_seed", return_value=sim_mock.entries[0]),
-        ):
-            result = CliRunner().invoke(
-                cli,
-                ["playlist", "--seed", "Song 0", "--tracks", "1"],
-            )
-
-        assert result.exit_code == 0
-        assert "Z:/Music/song_0.flac" in result.output
-
-    def test_playlist_stops_cleanly_when_selection_fails(self) -> None:
-        cfg_mock = _cfg()
-        sim_mock = MagicMock()
-        sim_mock.entries = [_entry(0)]
-        _configure_sim_api(sim_mock)
-        sim_mock.find_next_for_path.side_effect = RuntimeError("no candidate")
-
-        with (
-            patch("autodj.cli._load_cfg_or_exit", return_value=cfg_mock),
-            patch("autodj.cli._load_index_or_exit", return_value=sim_mock),
-            patch("autodj.cli._resolve_seed", return_value=sim_mock.entries[0]),
-        ):
-            result = CliRunner().invoke(cli, ["playlist", "--tracks", "2"])
-
-        assert result.exit_code == 0
-        assert "Stopping early: no candidate" in result.output

@@ -489,8 +489,8 @@ class TestKeyNormalisation:
 
     Index entries store ``str(Path(absolute_path))`` -- native separators.
     Importers emit forward slashes regardless of host.  Without
-    normalisation, the path matching in ``_merge_external_cues_into``
-    silently misses on Windows.
+    normalisation, the path matching in the DJ-meta backfill silently
+    misses on Windows.
     """
 
     def test_rekordbox_keys_match_native_path_style(self, tmp_path: Path) -> None:

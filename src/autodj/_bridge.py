@@ -16,7 +16,6 @@ import logging
 import secrets
 import threading
 from collections import deque
-from collections.abc import Collection
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -483,18 +482,6 @@ class PlayerBridge:
             (nxt.length if nxt.length and nxt.length > 0 else 5.0) * _DEFAULT_SR,
         )
         p._playback_pos[0] = 0
-
-        # M3U / history side effects (mirror the Live-loop behaviour).
-        if p._export_m3u:
-            from autodj.player import _append_m3u_entry
-
-            _append_m3u_entry(p._export_m3u, nxt)
-        if p._history_file:
-            from datetime import datetime as _dt
-
-            from autodj.player import _append_history_entry
-
-            _append_history_entry(p._history_file, nxt, _dt.now())
 
     def pause(self) -> bool:
         """Toggle pause/resume.
@@ -1098,16 +1085,11 @@ class PlayerBridge:
     # Persistence — settings survive serve restarts
     # ------------------------------------------------------------------
 
-    def load_persistent_state(self, skip: Collection[str] = frozenset()) -> None:
-        """Restore previously-saved settings from web_state.json.
-
-        Args:
-            skip: Saved setting names this run's command line set; their
-                saved values are not restored.
-        """
+    def load_persistent_state(self) -> None:
+        """Restore previously-saved settings from web_state.json."""
         from autodj.runtime_state import load_into_bridge
 
-        load_into_bridge(self, self.player._cfg.index.active_dir, skip)
+        load_into_bridge(self, self.player._cfg.index.active_dir)
 
     def save_persistent_state(self) -> None:
         """Write current settings to web_state.json (atomic)."""
@@ -1150,10 +1132,6 @@ class PlayerBridge:
                 "key_notation": pb.key_notation,
                 "key_prefer_flats": bool(pb.key_prefer_flats),
                 "show_lyrics": pb.show_lyrics,
-                "enable_daypart": pb.enable_daypart,
-                "enable_mood_arc": pb.enable_mood_arc,
-                "mood_arc_hours": pb.mood_arc_hours,
-                "import_external_cues": pb.import_external_cues,
                 "beat_sync_fx": bool(pb.beat_sync_fx),
                 "no_repeat_window": int(pb.no_repeat_window),
                 "artist_repeat_window": int(pb.artist_repeat_window),
@@ -1276,16 +1254,6 @@ class PlayerBridge:
             from autodj.player import apply_repeat_windows
 
             apply_repeat_windows(player)
-        if "enable_mood_arc" in values or (
-            "mood_arc_hours" in values and cfg.playback.enable_mood_arc
-        ):
-            from autodj.mood_arc import make_default_arc
-
-            player._mood_arc = (
-                make_default_arc(duration_hours=cfg.playback.mood_arc_hours)
-                if cfg.playback.enable_mood_arc
-                else None
-            )
 
     def set_bpm_range(self, lo: float | None, hi: float | None) -> None:
         """Set the hard BPM filter; pass both null to clear."""

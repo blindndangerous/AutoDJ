@@ -7,7 +7,6 @@ that wrote it and the list of files) and these members:
   (``tracks.gN.db`` and ``vectors.gN.index``): the live index generation.
 - ``index/dj_meta.db`` and ``index/web_state.json`` from the active index folder.
 - ``liners/...`` and ``profiles/...``: every file in those folders.
-- ``history``: the ``[playback] history_file``, when one is configured.
 """
 
 from __future__ import annotations
@@ -43,14 +42,11 @@ class BackupError(RuntimeError):
 def _roots(cfg: AutoDJConfig) -> dict[str, Path]:
     """Map each top-level archive name to where it lives with this configuration."""
     active = cfg.index.active_dir
-    roots = {
+    return {
         "index": active,
         "liners": Path(cfg.playback.liners_folder or active / "liners"),
         "profiles": active.parent / "profiles",
     }
-    if cfg.playback.history_file:
-        roots["history"] = cfg.playback.history_file
-    return roots
 
 
 def _snapshot_index(active: Path, snapshot: Path) -> None:
@@ -115,8 +111,6 @@ def create_backup(cfg: AutoDJConfig, destination: Path, *, force: bool) -> Path:
                 for path in sorted(roots[top].rglob("*")):
                     if path.is_file():
                         members[f"{top}/{path.relative_to(roots[top]).as_posix()}"] = path
-            if "history" in roots and roots["history"].is_file():
-                members["history"] = roots["history"]
             with partial.open("xb") as handle:
                 with zipfile.ZipFile(handle, "w", zipfile.ZIP_DEFLATED) as archive:
                     for name, path in members.items():
@@ -169,10 +163,6 @@ def _target(roots: dict[str, Path], name: str) -> Path:
         return roots["index"] / rest[0]
     if top in _FOLDERS and rest:
         return roots[top].joinpath(*rest)
-    if top == "history" and not rest:
-        if "history" not in roots:
-            raise BackupError("this backup holds a play history; set [playback] history_file")
-        return roots["history"]
     raise BackupError(f"unknown file in archive: {name!r}")
 
 
@@ -205,8 +195,6 @@ def _install(top: str, root: Path, stage: Path) -> None:
             for path in root.iterdir():
                 if im.GENERATION_FILE_RE.match(path.name) and path.name not in restored:
                     path.unlink()
-    elif top == "history":
-        os.replace(stage / "history", root)
     else:
         old = root.with_name(f".{root.name}.old-{uuid.uuid4().hex}")
         if root.exists():
@@ -235,7 +223,7 @@ def _restore(archive: zipfile.ZipFile, roots: dict[str, Path], *, force: bool) -
         try:
             for name in files:
                 top, *rest = name.split("/")
-                destination = stages[top].joinpath(*(rest or [top]))
+                destination = stages[top].joinpath(*rest)
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 with archive.open(name) as source, destination.open("xb") as target:
                     shutil.copyfileobj(source, target)

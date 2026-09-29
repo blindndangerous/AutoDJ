@@ -252,8 +252,6 @@ class PlaybackConfig(_Section):
             Set to ``0.0`` to disable crossfade entirely.
         no_repeat_window: Number of recently played tracks excluded from the
             next-song candidate pool.
-        history_file: Optional path to a JSON Lines file where every played
-            track is appended with a timestamp.  ``None`` disables history.
         discovery_every: Default discovery rate: inject a sonically distant
             track every *N* tracks.  ``None`` disables discovery by default.
             The user must also toggle discovery ON at runtime.
@@ -277,7 +275,6 @@ class PlaybackConfig(_Section):
     # few thousand tracks; bump higher for larger collections.
     no_repeat_window: int = 500
     artist_repeat_window: int = 3
-    history_file: Path | None = None
     discovery_every: int | None = None
     crossfade_eq_duck: bool = False
     crossfade_bass_cutoff_hz: float = 180.0
@@ -338,21 +335,9 @@ class PlaybackConfig(_Section):
     # Either an int (sounddevice.query_devices() index) or a substring of
     # the device name.  Set via [playback] audio_device; used by server audio.
     audio_device: str | int | None = None
-    # Wall-clock daypart targeting.  When True, the picker biases
-    # candidate ranking toward the BPM/energy of the active built-in
-    # daypart (morning/midday/afternoon/evening/night) -- only applied
-    # when no explicit preset is active.  Lets unattended playback
-    # follow time of day automatically.
-    enable_daypart: bool = False
-    # Set-relative mood arc (warmup -> peak -> cool envelope).  When
-    # both daypart and arc are enabled, arc takes priority while a
-    # session is in progress; daypart is the idle-baseline.
-    enable_mood_arc: bool = False
-    # Hours over which the mood arc spans before looping.  Default 3 h
-    # = standard club set length.
-    mood_arc_hours: float = 3.0
     # Import cue points from external DJ software (Mixxx, Rekordbox,
-    # Traktor libraries; Serato file tags) and merge with auto-detected cues.  Off
+    # Traktor libraries; Serato file tags) and merge them with the detected
+    # cues when `autodj index` or `autodj analyse` analyses a track.  Off
     # only when the user wants the auto-detected cues alone.
     import_external_cues: bool = True
     # Beat-sync transition FX: rhythmic effects (beat_repeat,
@@ -428,7 +413,6 @@ class PlaybackConfig(_Section):
             )
         self.server_max_track_minutes = float(max_minutes)
         self.artist_repeat_window = max(0, int(self.artist_repeat_window))
-        self.history_file = Path(self.history_file).expanduser() if self.history_file else None
         self.discovery_every = _optional(int, self.discovery_every)
         self.crossfade_bass_cutoff_hz = float(self.crossfade_bass_cutoff_hz)
         self.transition_mode = _validate_transition_mode(str(self.transition_mode))
@@ -437,15 +421,12 @@ class PlaybackConfig(_Section):
         self.pick_temperature = max(0.0, float(self.pick_temperature))
         self.key_notation = _validate_key_notation(str(self.key_notation))
         self.audio_device = self.audio_device or None
-        self.mood_arc_hours = max(0.25, float(self.mood_arc_hours))
         for name in (
             "crossfade_eq_duck",
             "key_prefer_flats",
             "show_lyrics",
             "prefetch_next_track",
             "silence_trigger_crossfade",
-            "enable_daypart",
-            "enable_mood_arc",
             "import_external_cues",
             "beat_sync_fx",
             "key_sync_fx",
@@ -1132,11 +1113,11 @@ def _build_config(
     *,
     config_path: Path | None,
     sources: list[str],
-    presets_raw: Any,
 ) -> AutoDJConfig:
     """Validate raw sections and construct the typed application configuration."""
     from autodj.presets import load_user_presets
 
+    presets_raw = raw.get("presets", {})
     if not isinstance(presets_raw, Mapping):
         raise TypeError("presets section must be a table")
 
@@ -1161,6 +1142,11 @@ def load_config(
 
     An omitted path uses ``config.toml`` when present and otherwise keeps
     validated defaults. An explicitly supplied missing path remains an error.
+
+    Raises:
+        ValueError: A ``presets.toml`` sits where ``config.toml`` is looked
+            for.  AutoDJ no longer reads it, and ignoring it would drop its
+            presets without a word.
     """
     environment = os.environ if environ is None else environ
     explicit = path is not None
@@ -1189,16 +1175,10 @@ def load_config(
         raw = _deep_merge(raw, env_raw)
         sources.append("environment")
 
-    sidecar_root = loaded_path.parent if loaded_path is not None else Path.cwd()
-    presets_path = sidecar_root / "presets.toml"
+    presets_path = candidate.parent / "presets.toml"
     if presets_path.exists():
-        with presets_path.open("rb") as fh:
-            presets_raw = tomllib.load(fh)
-    else:
-        presets_raw = raw.get("presets", {})
-    return _build_config(
-        raw,
-        config_path=loaded_path,
-        sources=sources,
-        presets_raw=presets_raw,
-    )
+        raise ValueError(
+            f"{presets_path} is no longer read: move each [NAME] table into config.toml "
+            "as [presets.NAME], then delete presets.toml"
+        )
+    return _build_config(raw, config_path=loaded_path, sources=sources)

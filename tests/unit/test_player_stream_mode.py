@@ -97,7 +97,6 @@ def test_parked_worker_renders_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _run_stream_in_thread(player: Player) -> threading.Thread:
     player._ensure_dj_cache = MagicMock()  # type: ignore[method-assign]
-    player._ensure_external_cues = MagicMock()  # type: ignore[method-assign]
     thread = threading.Thread(target=player._run_stream, daemon=True)
     thread.start()
     return thread
@@ -126,7 +125,7 @@ def test_run_stream_runs_the_bus_idle_until_stopped() -> None:
         thread.join(WAIT)
     assert not thread.is_alive()
     sound.assert_not_called()
-    player._ensure_external_cues.assert_called_once()
+    player._ensure_dj_cache.assert_called_once()
 
 
 def test_run_stream_mirrors_pause_onto_the_bus() -> None:
@@ -178,18 +177,6 @@ def test_run_stream_renders_ahead_once_a_set_begins() -> None:
             player._state.should_stop = True
             thread.join(WAIT)
     assert not thread.is_alive()
-
-
-def test_run_stream_starts_a_fresh_m3u_export(tmp_path) -> None:
-    export = tmp_path / "live.m3u"
-    export.write_text("stale\n", encoding="utf-8")
-    player = _player(stream_mode=True, export_m3u=export)
-    with patch("autodj.sound_output.SoundDeviceOutput"):
-        thread = _run_stream_in_thread(player)
-        player._state.should_stop = True
-        thread.join(WAIT)
-    assert not thread.is_alive()
-    assert export.read_text(encoding="utf-8") == "#EXTM3U\n"
 
 
 def test_end_set_returns_the_track_it_cut_short() -> None:
