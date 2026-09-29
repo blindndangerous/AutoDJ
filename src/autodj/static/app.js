@@ -104,6 +104,10 @@ const volAnnounce     = document.getElementById("vol-announce");
 const btnListen       = document.getElementById("btn-listen");
 const streamAudio     = document.getElementById("stream-audio");
 
+// The browser gives an AudioWorklet only to an HTTPS or localhost page;
+// without one the audio engine skips the four effects built on it.
+document.getElementById("fx-https-note").hidden = "AudioWorkletNode" in window;
+
 // Settings > Announcements.  Kept per browser, like the shortcut switch;
 // off (the default) speaks a new track only while Now Playing shows.
 const ANNOUNCE_ALL_TABS_KEY = "autodj.announceTrackChangesEverywhere";

@@ -93,6 +93,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   session like the other controls, instead of a message on the WebSocket. The WebSocket only sends
   state to the page and ignores anything the page sends on it. The button also works while the
   WebSocket is reconnecting.
+- The gate stutter, bitcrusher, freeze and glitch transition effects in crossfades the browser
+  plays need the page to be opened over HTTPS or on localhost, where the browser allows
+  AudioWorklet. On a plain-HTTP page they are skipped: that crossfade plays without an effect, and
+  random and rotate leave them out. Settings says so under the transition effect. Stream mode and
+  server audio are not affected.
 
 ### Removed
 
@@ -118,6 +123,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   answers "not found"; its 256-bit secret cannot be guessed.
 - The Wall-clock daypart and Mood arc settings, with the mood arc length, from the web page's
   Settings. A profile saved from the page no longer includes them.
+- The page's stand-in versions of the gate stutter, bitcrusher, freeze and glitch effects used when
+  AudioWorklet was missing.
 
 ### Fixed
 
