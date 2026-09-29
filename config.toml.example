@@ -26,7 +26,8 @@
 #   beets_db  = "Z:/Music/.config/beets/library.db"
 #
 # Configuration precedence:
-# defaults < config.toml < config.local.toml < environment < CLI
+# defaults < config.toml < config.local.toml < environment
+#   < settings saved from the web page (web_state.json, serve only) < CLI
 #
 # Both files accept only the sections and keys shown in this file.  An unknown
 # section or key (for example a setting a newer AutoDJ removed) stops AutoDJ

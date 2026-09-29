@@ -433,6 +433,37 @@ class TestCliConfigSelection:
         resolve_seed.assert_not_called()
         serve_mock.assert_not_called()
 
+    def test_serve_flags_given_on_the_command_line_win_over_saved_web_settings(self) -> None:
+        """Only flags typed on this command line are kept from the web_state.json restore."""
+        cfg = _make_cfg()
+        with (
+            patch("autodj.config.load_config", return_value=cfg),
+            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=_make_sim()),
+            patch("autodj.server.serve") as serve_mock,
+        ):
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "serve",
+                    "--preset",
+                    "chill",
+                    "--no-beatmatch",
+                    "--transition",
+                    "echo_out",
+                    "--smart-shuffle",
+                    "--bpm-range",
+                    "90-130",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        assert serve_mock.call_args.kwargs["cli_settings"] == {
+            "preset",
+            "beatmatch",
+            "transition",
+            "smart_shuffle",
+            "bpm_range",
+        }
+
     def test_name_override_appends_cli_source_exactly_once(self) -> None:
         cfg = _make_cfg()
         with (

@@ -77,8 +77,6 @@ When `server.access_token` or `AUTODJ_ACCESS_TOKEN` is set:
   this browser" (`POST /api/logout`) revokes the calling device as well as deleting its cookie, so
   a copied cookie stops working at once instead of lasting out its 90 days.
 - The pairing body is limited to 4096 bytes before downstream parsing.
-- A fixed-window limiter permits five attempts per client and 100 total attempts per 60 seconds,
-  with bounded state for 1024 clients.
 - Wrong, well-formed codes are counted per client address within each 300-second code window. A
   client that sends ten is locked out until the window ends: `/api/pair` answers 429 with
   `Retry-After` for right and wrong codes alike, and the server logs a warning naming the address.
@@ -88,10 +86,12 @@ When `server.access_token` or `AUTODJ_ACCESS_TOKEN` is set:
   saying to try again with a new code, and the server logs a warning. `autodj devices pairing-code`
   prints how long its code stays valid and when the next one starts, which is the one to use after
   a pause.
-- These limits cap one address at about ten guesses per window, roughly a 2 percent chance per
-  year of nonstop guessing, and many addresses together at about fifty per window, roughly 10
-  percent per year, instead of about 65 percent under the request limiter alone. An attacker with
-  many LAN addresses can keep pairing paused, but already paired devices keep working.
+- This lockout is the guard against guessing; there is no separate request-rate limit. It caps
+  one address at about ten guesses per window, roughly a 2 percent chance per year of nonstop
+  guessing, and many addresses together at about fifty per window, roughly 10 percent per year.
+  An attacker with many LAN addresses can keep pairing paused, but already paired devices keep
+  working. In the supported remote setup Cloudflare Access stands in front of the public address,
+  so only people who passed Access can reach the pairing screen from outside.
 - Rotating the token invalidates every outstanding pairing code and every existing session at once.
 - The HTTP API and WebSocket both enforce session, Host, and Origin policy.
 
@@ -111,9 +111,10 @@ the folder against a local process or network-share user who can already write t
 user can change the liners directly, so AutoDJ uses plain file operations there and does not
 require the folder to be private (a group-writable NAS share works).
 The liner *root directory* comes only from configuration. `/api/playback-settings` rejects
-`liners_folder`, like any other unknown field, with 422 before applying anything, and
-`liners_folder` is not part of the `PlaybackState` schema that `PERSISTED_PLAYBACK_FIELDS`
-derives from, so `web_state.json` never stores it. Treat a paired browser as trusted.
+`liners_folder`, like any other unknown field, with 422 before applying anything.
+`web_state.json` keeps only fields a settings route accepts, and on restart each saved value
+must pass that route's field rule, so the file can neither store nor restore `liners_folder`.
+Treat a paired browser as trusted.
 
 ### Automatic LAN mode
 
@@ -167,9 +168,8 @@ one-line playlist naming the same URL. The secret is a bearer credential for lis
   cookie check for that reason, but every other check in `SecurityMiddleware` still applies,
   including the Host allowlist, so the name typed into the player must be one this AutoDJ
   instance is configured to accept.
-- A wrong secret returns 404, is compared in constant time, and counts toward its own rate
-  limiter of the same kind that guards pairing-code guesses. It is a separate instance with its
-  own independent budget: wrong stream secrets do not consume pairing attempts, or the reverse.
+- A wrong secret returns 404 and is compared in constant time. Wrong secrets are not rate
+  limited: the secret is 256 random bits, so guessing it is hopeless at any request rate.
 - "Make new link" (`POST /api/stream/rotate`, authenticated, from the Settings, Stream section)
   replaces the secret, disconnects every current listener, and makes the old URL 404
   immediately. Rotation is the revocation mechanism: use it if the link is shared somewhere it
@@ -188,12 +188,14 @@ Audit records use fixed JSON fields for request ID, action, outcome, method, rou
 status. They do not include tokens, request bodies, query strings, client-supplied filenames, or
 music paths.
 
-Rejected requests and rate-limit transitions are audited. Successful or rejected unsafe HTTP
-actions are audited after response status is known. WebSocket connection, control, error, and
-disconnect events are audited. These records support single-user incident review but do not provide
-per-user attribution.
+Rejected requests are audited. Successful or rejected unsafe HTTP actions are audited after
+response status is known. The WebSocket only pushes state; frames a browser sends on it are
+ignored. WebSocket connection, error, and disconnect events are audited. These records support
+single-user incident review but do not provide per-user attribution.
 
-## BA backup is a plain ZIP file: the published index generation, `dj_meta.db`, `web_state.json`,
+## Backup and restore boundary
+
+A backup is a plain ZIP file: the published index generation, `dj_meta.db`, `web_state.json`,
 the liners and profiles folders, the optional play history, and a `manifest.json` naming the
 AutoDJ version and the files. It is safe to make while AutoDJ serves: the index is copied under
 its publication lock and `dj_meta.db` through SQLite's backup API. The archive is written to a

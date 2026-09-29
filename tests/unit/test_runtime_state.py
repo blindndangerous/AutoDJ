@@ -6,15 +6,14 @@ import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 
+from autodj._bridge import PlayerBridge
 from autodj.player import PlayerState
 from autodj.runtime_state import (
     STATE_VERSION,
-    _is_finite_number,
-    load_into_player,
+    load_into_bridge,
     save_from_player,
     state_file_for,
 )
@@ -84,117 +83,151 @@ def _write_state(index_dir: Path, payload: object) -> None:
     (index_dir / "web_state.json").write_text(json.dumps(payload), encoding="utf-8")
 
 
-def test_huge_integer_is_not_a_finite_runtime_number() -> None:
-    assert _is_finite_number(10**10000) is False
+def _load(player: SimpleNamespace, index_dir: Path, skip: frozenset[str] = frozenset()) -> None:
+    load_into_bridge(PlayerBridge(player, player._sim), index_dir, skip)
+
+
+def _warnings(caplog: pytest.LogCaptureFixture, field: str) -> int:
+    return len([r for r in caplog.records if f"invalid {field} " in r.message])
 
 
 @pytest.mark.parametrize(
-    "payload",
+    ("payload", "field"),
     [
-        {"preset": 12},
-        {"transition": 12},
-        {"playback": {"transition_mode": 12}},
-        {"playback": {"liners_pick_mode": "invalid"}},
-        {"playback": {"liners_duck_db": 1.0}},
-        {"playback": {"liners_duck_db": -45.0}},
-        {"playback": {"stream_bitrate": 100}},
-        {"playback": {"stream_bitrate": "320"}},
-        {"playback": {"stream_bitrate": True}},
-        {"playback": {"stream_bitrate": 320.0}},
-        {"bpm_range": "invalid"},
-        {"discovery_every": "invalid"},
-        {"djmix": {"phrase_bars": 0}},
-        {"playback": {"no_repeat_window": -1}},
-        {"playback": {"artist_repeat_window": 2.5}},
-        {"playback": {"transition_wet_mix": 2.0}},
-        {"playback": {"replaygain_target_db": "loud"}},
-        {"playback": {"volume": 1.5}},
-        {"playback": {"volume": -0.1}},
-        {"playback": {"volume": True}},
-        {"playback": {"volume": "0.5"}},
-        {"playback": {"is_muted": "true"}},
+        ({"preset": 12}, "preset"),
+        ({"preset": "nosuchpreset_xyz"}, "preset"),
+        ({"transition": 12}, "transition"),
+        ({"transition": "no_such_effect"}, "transition"),
+        ({"djmix": {"harmonic_mode": "same_key"}}, "harmonic_mode"),
+        ({"djmix": {"harmonic_mode": True}}, "harmonic_mode"),
+        ({"djmix": {"phrase_bars": 0}}, "phrase_bars"),
+        ({"djmix": {"beatmatch": "true"}}, "beatmatch"),
+        ({"playback": {"transition_mode": 12}}, "transition_mode"),
+        ({"playback": {"transition_mode": "garbage-mode"}}, "transition_mode"),
+        ({"playback": {"key_notation": "alien"}}, "key_notation"),
+        ({"playback": {"liners_pick_mode": "invalid"}}, "liners_pick_mode"),
+        ({"playback": {"liners_duck_db": 1.0}}, "liners_duck_db"),
+        ({"playback": {"liners_duck_db": -45.0}}, "liners_duck_db"),
+        ({"playback": {"liners_every_minutes": float("inf")}}, "liners_every_minutes"),
+        ({"playback": {"crossfade_seconds": float("inf")}}, "crossfade_seconds"),
+        ({"playback": {"crossfade_seconds": None}}, "crossfade_seconds"),
+        ({"playback": {"crossfade_eq_duck": "false"}}, "crossfade_eq_duck"),
+        ({"playback": {"enable_mood_arc": "false"}}, "enable_mood_arc"),
+        ({"playback": {"stream_bitrate": 100}}, "stream_bitrate"),
+        ({"playback": {"stream_bitrate": "320"}}, "stream_bitrate"),
+        ({"playback": {"stream_bitrate": True}}, "stream_bitrate"),
+        ({"playback": {"no_repeat_window": -1}}, "no_repeat_window"),
+        ({"playback": {"artist_repeat_window": 2.5}}, "artist_repeat_window"),
+        ({"playback": {"transition_wet_mix": 2.0}}, "transition_wet_mix"),
+        ({"playback": {"replaygain_target_db": "loud"}}, "replaygain_target_db"),
+        ({"playback": {"volume": True}}, "volume"),
+        ({"playback": {"volume": "0.5"}}, "volume"),
+        ({"playback": {"is_muted": "true"}}, "is_muted"),
+        # Config-only options are not web settings, so they are never restored.
+        ({"playback": {"prefetch_next_track": False}}, "prefetch_next_track"),
+        ({"playback": "invalid"}, "playback"),
+        ({"bpm_range": "invalid"}, "bpm_range"),
+        ({"bpm_range": None}, "bpm_range"),
+        ({"bpm_range": {"lo": 90.0, "hi": float("inf")}}, "bpm_range"),
+        ({"discovery_every": "invalid"}, "discovery_every"),
+        ({"quantum_crossfade": True}, "quantum_crossfade"),
     ],
 )
-def test_invalid_state_field_is_warned_and_ignored(tmp_path: Path, caplog, payload) -> None:
-    player = _make_player()
-    _write_state(tmp_path, payload)
-
-    load_into_player(player, tmp_path)
-
-    assert "ignoring invalid" in caplog.text
-
-
-@pytest.mark.parametrize("version", [None, 0, "invalid", True])
-def test_state_without_the_current_schema_version_is_ignored(
-    tmp_path: Path, caplog, version
+def test_one_invalid_field_is_warned_and_the_rest_still_apply(
+    tmp_path: Path, caplog, payload, field
 ) -> None:
-    """A file from before schema versioning (or a bad version) restores nothing."""
-    state: dict = {"transition": "echo_out"}
+    player = _make_player()
+    before = PlayerBridge(player, player._sim).get_settings()
+    playback = payload.get("playback", {})
+    rest = {"crossfade_seconds": 7.0} if isinstance(playback, dict) else {}
+    _write_state(
+        tmp_path,
+        {
+            "discovery_every": 11,
+            **payload,
+            "playback": {**rest, **playback} if isinstance(playback, dict) else playback,
+        },
+    )
+
+    with caplog.at_level("WARNING"):
+        _load(player, tmp_path)
+
+    after = PlayerBridge(player, player._sim).get_settings()
+    assert _warnings(caplog, field) == 1
+    if field != "discovery_every":
+        assert after["discovery_every"] == 11
+    if rest and field != "crossfade_seconds":
+        assert after["playback"]["crossfade_seconds"] == 7.0
+    for key in ("preset", "transition", "djmix", "bpm_range"):
+        assert after[key] == before[key]
+    unchanged = {k for k in before["playback"] if k != "crossfade_seconds"}
+    assert {k: after["playback"][k] for k in unchanged} == {
+        k: before["playback"][k] for k in unchanged
+    }
+
+
+@pytest.mark.parametrize("version", [None, 0, 1, 3, "2", True])
+def test_state_with_another_schema_version_is_ignored(tmp_path: Path, caplog, version) -> None:
+    """Only version 2 is read; version 1 stored "compatible" beside
+    ``harmonic_mixing: false``, so reading it would turn key filtering on."""
+    state: dict = {"transition": "echo_out", "djmix": {"harmonic_mode": "compatible"}}
     if version is not None:
         state["schema_version"] = version
     (tmp_path / "web_state.json").write_text(json.dumps(state), encoding="utf-8")
     player = _make_player()
 
-    load_into_player(player, tmp_path)
+    _load(player, tmp_path)
 
     assert player._cfg.transitions.effect == "none"
-    assert "ignoring web_state.json: schema_version" in caplog.text
-
-
-def test_version_1_state_does_not_switch_harmonic_mixing_on(tmp_path: Path, caplog) -> None:
-    """Version 1 stored "compatible" beside ``harmonic_mixing: false`` for users
-    who never enabled it; reading that mode now would turn key filtering on.
-    """
-    state = {
-        "schema_version": 1,
-        "djmix": {"harmonic_mixing": False, "harmonic_mode": "compatible"},
-    }
-    (tmp_path / "web_state.json").write_text(json.dumps(state), encoding="utf-8")
-    player = _make_player()
-
-    with caplog.at_level("WARNING"):
-        load_into_player(player, tmp_path)
-
     assert player._cfg.djmix.harmonic_mode == "off"
-    assert len([r for r in caplog.records if "schema_version" in r.message]) == 1
+    assert "ignoring web_state.json: schema_version" in caplog.text
 
 
 def test_non_object_state_root_is_warned_and_ignored(tmp_path: Path, caplog) -> None:
     _write_state(tmp_path, ["not", "an", "object"])
 
-    load_into_player(_make_player(), tmp_path)
+    _load(_make_player(), tmp_path)
 
     assert "root is not an object" in caplog.text
 
 
-def test_partial_random_window_rejects_invalid_current_other_bound(tmp_path: Path, caplog) -> None:
+def test_settings_given_on_the_command_line_are_not_restored(tmp_path: Path) -> None:
     player = _make_player()
-    player._cfg.playback.liners_random_max_minutes = "invalid"
-    _write_state(tmp_path, {"playback": {"liners_random_min_minutes": 2.0}})
+    player._cfg.transitions.effect = "echo_out"
+    player._cfg.djmix.beatmatch = True
+    player._cfg.playback.show_lyrics = False
+    player._bpm_range = (100.0, 120.0)
+    _write_state(
+        tmp_path,
+        {
+            "transition": "rotate",
+            "djmix": {"beatmatch": False, "phrase_align": True},
+            "playback": {"show_lyrics": True, "crossfade_seconds": 7.0},
+            "bpm_range": {"lo": 80.0, "hi": 90.0},
+            "discovery_every": 9,
+        },
+    )
 
-    load_into_player(player, tmp_path)
+    _load(player, tmp_path, frozenset({"transition", "beatmatch", "show_lyrics", "bpm_range"}))
 
-    assert "invalid current liners_random_max_minutes" in caplog.text
+    assert player._cfg.transitions.effect == "echo_out"
+    assert player._cfg.djmix.beatmatch is True
+    assert player._cfg.playback.show_lyrics is False
+    assert player._bpm_range == (100.0, 120.0)
+    # Everything the command line did not set still comes back.
+    assert player._cfg.djmix.phrase_align is True
+    assert player._cfg.playback.crossfade_seconds == 7.0
+    assert player._discovery_every == 9
 
 
-def test_partial_random_window_restores_only_maximum(tmp_path: Path) -> None:
+def test_mood_arc_follows_the_restored_switch(tmp_path: Path) -> None:
     player = _make_player()
-    player._cfg.playback.liners_random_min_minutes = 1.0
-    _write_state(tmp_path, {"playback": {"liners_random_max_minutes": 5.0}})
+    _write_state(tmp_path, {"playback": {"enable_mood_arc": True, "mood_arc_hours": 2.5}})
+    _load(player, tmp_path)
+    assert player._mood_arc is not None
 
-    load_into_player(player, tmp_path)
-
-    assert player._cfg.playback.liners_random_min_minutes == 1.0
-    assert player._cfg.playback.liners_random_max_minutes == 5.0
-
-
-def test_disabling_mood_arc_clears_live_arc(tmp_path: Path) -> None:
-    player = _make_player()
-    player._mood_arc = object()
     _write_state(tmp_path, {"playback": {"enable_mood_arc": False}})
-
-    load_into_player(player, tmp_path)
-
+    _load(player, tmp_path)
     assert player._mood_arc is None
 
 
@@ -203,9 +236,36 @@ def test_null_discovery_clears_existing_cadence(tmp_path: Path) -> None:
     player._discovery_every = 4
     _write_state(tmp_path, {"discovery_every": None})
 
-    load_into_player(player, tmp_path)
+    _load(player, tmp_path)
 
     assert player._discovery_every is None
+
+
+def test_null_clears_every_nullable_liner_cadence(tmp_path) -> None:
+    """The saved settings store a switched-off liner trigger as null."""
+    player = _make_player()
+    player._cfg.playback.liners_every_n_songs = 2
+    player._cfg.playback.liners_every_minutes = 5.0
+    player._cfg.playback.liners_random_min_minutes = 7.0
+    player._cfg.playback.liners_random_max_minutes = 12.0
+    _write_state(
+        tmp_path,
+        {
+            "playback": {
+                "liners_every_n_songs": None,
+                "liners_every_minutes": None,
+                "liners_random_min_minutes": None,
+                "liners_random_max_minutes": None,
+            },
+        },
+    )
+
+    _load(player, tmp_path)
+
+    assert player._cfg.playback.liners_every_n_songs is None
+    assert player._cfg.playback.liners_every_minutes is None
+    assert player._cfg.playback.liners_random_min_minutes is None
+    assert player._cfg.playback.liners_random_max_minutes is None
 
 
 class TestStateFile:
@@ -220,13 +280,13 @@ class TestStateFile:
 class TestLoadInto:
     def test_no_file_is_no_op(self, tmp_path) -> None:
         p = _make_player()
-        load_into_player(p, tmp_path)  # no state file present
+        _load(p, tmp_path)  # no state file present
         assert p._cfg.transitions.effect == "none"
 
     def test_unreadable_file_is_no_op(self, tmp_path) -> None:
         (tmp_path / "web_state.json").write_text("not json {{{", encoding="utf-8")
         p = _make_player()
-        load_into_player(p, tmp_path)
+        _load(p, tmp_path)
         assert p._cfg.transitions.effect == "none"
 
     def test_invalid_utf8_is_warned_and_ignored(self, tmp_path, caplog) -> None:
@@ -234,139 +294,44 @@ class TestLoadInto:
         p = _make_player()
 
         with caplog.at_level("WARNING"):
-            load_into_player(p, tmp_path)
+            _load(p, tmp_path)
 
         assert p._cfg.transitions.effect == "none"
         assert len([record for record in caplog.records if "unreadable" in record.message]) == 1
 
-    def test_loads_transition(self, tmp_path) -> None:
-        (tmp_path / "web_state.json").write_text(
-            json.dumps({"schema_version": STATE_VERSION, "transition": "echo_out"}),
-            encoding="utf-8",
-        )
-        p = _make_player()
-        load_into_player(p, tmp_path)
-        assert p._cfg.transitions.effect == "echo_out"
-
-    def test_loads_djmix_toggles(self, tmp_path) -> None:
-        (tmp_path / "web_state.json").write_text(
-            json.dumps(
-                {
-                    "schema_version": STATE_VERSION,
-                    "djmix": {"harmonic_mode": "strict", "beatmatch": True},
-                }
-            ),
-            encoding="utf-8",
-        )
-        p = _make_player()
-        load_into_player(p, tmp_path)
-        assert p._cfg.djmix.harmonic_mode == "strict"
-        assert p._cfg.djmix.beatmatch is True
-        assert p._cfg.djmix.phrase_align is False  # untouched
-
-    def test_loads_playback_settings(self, tmp_path) -> None:
-        (tmp_path / "web_state.json").write_text(
-            json.dumps(
-                {
-                    "schema_version": STATE_VERSION,
-                    "playback": {
-                        "crossfade_seconds": 4.5,
-                        "crossfade_eq_duck": True,
-                        "smart_shuffle": True,
-                        "replaygain_enabled": True,
-                    },
-                }
-            ),
-            encoding="utf-8",
-        )
-        p = _make_player()
-        load_into_player(p, tmp_path)
-        assert p._cfg.playback.crossfade_seconds == 4.5
-        assert p._cfg.playback.crossfade_eq_duck is True
-        assert p._smart_shuffle is True
-        assert p._cfg.replaygain.enabled is True
-
-    def test_loads_daypart_arc_import_cues(self, tmp_path) -> None:
-        """Regression: 0.14.0 added enable_daypart / enable_mood_arc /
-        mood_arc_hours / import_external_cues to PlaybackConfig.  Without
-        their entries in load_into_player, web-UI toggles silently
-        revert on serve restart even though save_from_player writes them.
-        """
-        (tmp_path / "web_state.json").write_text(
-            json.dumps(
-                {
-                    "schema_version": STATE_VERSION,
-                    "playback": {
-                        "enable_daypart": True,
-                        "enable_mood_arc": True,
-                        "mood_arc_hours": 2.5,
-                        "import_external_cues": False,
-                        "pure_shuffle": True,
-                        "anchor_to_seed": True,
-                        "show_lyrics": False,
-                    },
-                }
-            ),
-            encoding="utf-8",
-        )
-        p = _make_player()
-        # Pre-existing fields that the loader now also honours.
-        p._pure_shuffle = False
-        p._anchor_to_seed = False
-        p._cfg.playback.show_lyrics = True
-        p._cfg.playback.enable_daypart = False
-        p._cfg.playback.enable_mood_arc = False
-        p._cfg.playback.mood_arc_hours = 3.0
-        p._cfg.playback.import_external_cues = True
-        load_into_player(p, tmp_path)
-        assert p._cfg.playback.enable_daypart is True
-        assert p._cfg.playback.enable_mood_arc is True
-        assert p._cfg.playback.mood_arc_hours == 2.5
-        assert p._cfg.playback.import_external_cues is False
-        assert p._pure_shuffle is True
-        assert p._anchor_to_seed is True
-        assert p._cfg.playback.show_lyrics is False
-        # Mood arc was anchored to "now" by the loader so the user
-        # always begins with warmup -- not mid-arc.
-        assert p._mood_arc is not None
-
     def test_loads_bpm_range(self, tmp_path) -> None:
-        (tmp_path / "web_state.json").write_text(
-            json.dumps({"schema_version": STATE_VERSION, "bpm_range": {"lo": 90, "hi": 140}}),
-            encoding="utf-8",
-        )
+        _write_state(tmp_path, {"bpm_range": {"lo": 90, "hi": 140}})
         p = _make_player()
-        load_into_player(p, tmp_path)
+        _load(p, tmp_path)
         assert p._bpm_range == (90.0, 140.0)
 
-    def test_clears_bpm_range_on_null(self, tmp_path) -> None:
-        (tmp_path / "web_state.json").write_text(
-            json.dumps({"schema_version": STATE_VERSION, "bpm_range": {"lo": None, "hi": None}}),
-            encoding="utf-8",
-        )
+    def test_clears_bpm_range_on_null_bounds(self, tmp_path) -> None:
+        _write_state(tmp_path, {"bpm_range": {"lo": None, "hi": None}})
         p = _make_player()
-        p._bpm_range = (90.0, 140.0)  # pre-set
-        load_into_player(p, tmp_path)
+        p._bpm_range = (90.0, 140.0)
+        _load(p, tmp_path)
         assert p._bpm_range is None
 
-    def test_loads_discovery(self, tmp_path) -> None:
-        (tmp_path / "web_state.json").write_text(
-            json.dumps({"schema_version": STATE_VERSION, "discovery_every": 25}),
-            encoding="utf-8",
-        )
-        p = _make_player()
-        load_into_player(p, tmp_path)
-        assert p._discovery_every == 25
-
     def test_clears_discovery_on_zero(self, tmp_path) -> None:
-        (tmp_path / "web_state.json").write_text(
-            json.dumps({"schema_version": STATE_VERSION, "discovery_every": 0}),
-            encoding="utf-8",
-        )
+        _write_state(tmp_path, {"discovery_every": 0})
         p = _make_player()
         p._discovery_every = 20
-        load_into_player(p, tmp_path)
+        _load(p, tmp_path)
         assert p._discovery_every is None
+
+    def test_load_restores_a_saved_preset(self, tmp_path) -> None:
+        from autodj.presets import BUILTIN_PRESETS
+
+        _write_state(tmp_path, {"preset": "wakeup"})
+        p = _make_player()
+        _load(p, tmp_path)
+        assert p._preset is BUILTIN_PRESETS["wakeup"]
+
+    def test_stream_bitrate_is_restored_into_the_stream_config(self, tmp_path) -> None:
+        player = _make_player()
+        _write_state(tmp_path, {"playback": {"stream_bitrate": 128}})
+        _load(player, tmp_path)
+        assert player._cfg.stream.bitrate == 128
 
 
 class TestSaveFrom:
@@ -386,19 +351,12 @@ class TestSaveFrom:
         assert data["djmix"]["beatmatch"] is True
         assert "available_presets" not in data  # stripped
 
-    def test_atomic_write_via_tmp_rename(self, tmp_path) -> None:
-        save_from_player({"preset": "chill"}, tmp_path)
-        # Tmp file should not linger after successful rename
-        assert not list(tmp_path.glob("*.tmp"))
-        assert (tmp_path / "web_state.json").exists()
-
     def test_file_fsync_failure_preserves_old_state_and_cleans_temp(
         self,
         tmp_path,
         monkeypatch,
         caplog,
     ) -> None:
-
         path = tmp_path / "web_state.json"
         path.write_text('{"preset": "old"}', encoding="utf-8")
 
@@ -414,59 +372,8 @@ class TestSaveFrom:
         assert not list(tmp_path.glob("*.tmp"))
         assert len([record for record in caplog.records if "Failed to save" in record.message]) == 1
 
-    def test_base_exception_during_file_fsync_cleans_temp_and_propagates(
-        self,
-        tmp_path,
-        monkeypatch,
-    ) -> None:
-
-        path = tmp_path / "web_state.json"
-        path.write_text('{"preset": "old"}', encoding="utf-8")
-
-        def interrupt_fsync(_fd: int) -> None:
-            raise KeyboardInterrupt
-
-        monkeypatch.setattr(os, "fsync", interrupt_fsync)
-
-        with pytest.raises(KeyboardInterrupt):
-            save_from_player({"preset": "new"}, tmp_path)
-
-        assert json.loads(path.read_text(encoding="utf-8"))["preset"] == "old"
-        assert not list(tmp_path.glob("*.tmp"))
-
     def test_no_index_dir_is_no_op(self) -> None:
-        # Should not raise
         save_from_player({"preset": "chill"}, None)
-
-    def test_save_oserror_logged_not_raised(self, tmp_path, monkeypatch) -> None:
-        """When os.replace raises OSError, save logs and returns silently."""
-        import os as _os
-
-        def _bad(_a, _b):
-            raise OSError("disk full")
-
-        monkeypatch.setattr(_os, "replace", _bad)
-        # No exception bubbles
-        save_from_player({"preset": "chill"}, tmp_path)
-
-    def test_load_unknown_preset_is_warned_and_skipped(self, tmp_path, caplog) -> None:
-        from autodj.runtime_state import load_into_player
-
-        _write_state(tmp_path, {"preset": "nosuchpreset_xyz", "transition": "echo_out"})
-        p = _make_player()
-        load_into_player(p, tmp_path)
-        assert p._preset is None
-        assert "ignoring invalid" in caplog.text
-        assert p._cfg.transitions.effect == "echo_out"  # the rest still loads
-
-    def test_load_restores_a_saved_preset(self, tmp_path) -> None:
-        from autodj.presets import BUILTIN_PRESETS
-        from autodj.runtime_state import load_into_player
-
-        _write_state(tmp_path, {"preset": "wakeup"})
-        p = _make_player()
-        load_into_player(p, tmp_path)
-        assert p._preset is BUILTIN_PRESETS["wakeup"]
 
 
 class TestRoundTrip:
@@ -474,8 +381,6 @@ class TestRoundTrip:
         self,
         tmp_path,
     ) -> None:
-        from autodj._bridge import PlayerBridge
-
         p1 = _make_player()
         p1._cfg.djmix.harmonic_mode = "strict"
         p1._cfg.djmix.beatmatch = True
@@ -590,14 +495,23 @@ class TestRoundTrip:
         assert "available_presets" not in stored
         assert "library_size" not in stored["playback"]
         assert "liners_folder" not in stored["playback"]
+        # Config-only options stay with config.toml.
+        assert "prefetch_next_track" not in stored["playback"]
+        assert "silence_trigger_crossfade" not in stored["playback"]
 
         p2 = _make_player()
-        load_into_player(p2, tmp_path)
+        _load(p2, tmp_path)
         restored = PlayerBridge(p2, p2._sim).get_settings()
         expected_playback = {
             key: value
             for key, value in saved["playback"].items()
-            if key not in {"library_size", "liners_folder"}
+            if key
+            not in {
+                "library_size",
+                "liners_folder",
+                "prefetch_next_track",
+                "silence_trigger_crossfade",
+            }
         }
         assert restored["transition"] == saved["transition"]
         assert restored["djmix"] == saved["djmix"]
@@ -607,364 +521,3 @@ class TestRoundTrip:
         # The running player's history windows follow the restored values.
         assert p2._state.recently_played.maxlen == 50
         assert p2._state.recently_played_artists.maxlen == 5
-
-
-def test_string_false_is_rejected_instead_of_coerced(tmp_path, caplog) -> None:
-    _write_state(
-        tmp_path,
-        {"schema_version": STATE_VERSION, "playback": {"prefetch_next_track": "false"}},
-    )
-    player = _make_player()
-
-    with caplog.at_level("WARNING"):
-        load_into_player(player, tmp_path)
-
-    assert player._cfg.playback.prefetch_next_track is True
-    assert [record for record in caplog.records if "prefetch_next_track" in record.message]
-
-
-@pytest.mark.parametrize("value", ["same_key", True, False])
-def test_invalid_harmonic_mode_warns_once_and_keeps_default(tmp_path, caplog, value) -> None:
-    """A Boolean from the old on/off setting is as invalid as an unknown mode name."""
-    _write_state(
-        tmp_path,
-        {"schema_version": STATE_VERSION, "djmix": {"harmonic_mode": value}},
-    )
-    player = _make_player()
-    player._cfg.djmix.harmonic_mode = "strict"
-
-    with caplog.at_level("WARNING"):
-        load_into_player(player, tmp_path)
-
-    assert player._cfg.djmix.harmonic_mode == "strict"
-    assert len([record for record in caplog.records if "harmonic_mode" in record.message]) == 1
-
-
-def test_invalid_enable_mood_arc_warns_once_and_keeps_default(tmp_path, caplog) -> None:
-    _write_state(
-        tmp_path,
-        {"schema_version": STATE_VERSION, "playback": {"enable_mood_arc": "false"}},
-    )
-    player = _make_player()
-
-    with caplog.at_level("WARNING"):
-        load_into_player(player, tmp_path)
-
-    assert player._cfg.playback.enable_mood_arc is False
-    assert len([record for record in caplog.records if "enable_mood_arc" in record.message]) == 1
-
-
-def test_future_version_warns_but_restores_known_fields(tmp_path, caplog) -> None:
-    _write_state(
-        tmp_path,
-        {"schema_version": 99, "playback": {"prefetch_next_track": False}},
-    )
-    player = _make_player()
-
-    with caplog.at_level("WARNING"):
-        load_into_player(player, tmp_path)
-
-    assert player._cfg.playback.prefetch_next_track is False
-    assert len([record for record in caplog.records if "schema_version 99" in record.message]) == 1
-
-
-def test_unknown_future_field_is_ignored(tmp_path) -> None:
-    _write_state(
-        tmp_path,
-        {"schema_version": STATE_VERSION, "playback": {"quantum_crossfade": True}},
-    )
-    player = _make_player()
-
-    load_into_player(player, tmp_path)
-
-    assert not hasattr(player._cfg.playback, "quantum_crossfade")
-
-
-def test_null_clears_every_nullable_liner_cadence(tmp_path) -> None:
-    player = _make_player()
-    player._cfg.playback.liners_every_n_songs = 2
-    player._cfg.playback.liners_every_minutes = 5.0
-    player._cfg.playback.liners_random_min_minutes = 7.0
-    player._cfg.playback.liners_random_max_minutes = 12.0
-    _write_state(
-        tmp_path,
-        {
-            "schema_version": STATE_VERSION,
-            "playback": {
-                "liners_every_n_songs": None,
-                "liners_every_minutes": None,
-                "liners_random_min_minutes": None,
-                "liners_random_max_minutes": None,
-            },
-        },
-    )
-
-    load_into_player(player, tmp_path)
-
-    assert player._cfg.playback.liners_every_n_songs is None
-    assert player._cfg.playback.liners_every_minutes is None
-    assert player._cfg.playback.liners_random_min_minutes is None
-    assert player._cfg.playback.liners_random_max_minutes is None
-
-
-def test_reversed_random_liner_window_warns_and_leaves_pair_unchanged(
-    tmp_path,
-    caplog,
-) -> None:
-    from random import Random
-
-    from autodj.liners import LinerTrigger
-
-    player = _make_player()
-    player._cfg.playback.liners_random_min_minutes = 8.0
-    player._cfg.playback.liners_random_max_minutes = 14.0
-    _write_state(
-        tmp_path,
-        {
-            "schema_version": STATE_VERSION,
-            "playback": {
-                "liners_random_min_minutes": 16.0,
-                "liners_random_max_minutes": 10.0,
-            },
-        },
-    )
-
-    with caplog.at_level("WARNING"):
-        load_into_player(player, tmp_path)
-
-    playback = player._cfg.playback
-    assert playback.liners_random_min_minutes == 8.0
-    assert playback.liners_random_max_minutes == 14.0
-    assert (
-        len([record for record in caplog.records if "random liner window" in record.message]) == 1
-    )
-    trigger = LinerTrigger(
-        enabled=True,
-        random_min_minutes=playback.liners_random_min_minutes,
-        random_max_minutes=playback.liners_random_max_minutes,
-    )
-    target = trigger.roll_random_target(rng=Random(0))
-    assert target is not None
-    assert 8.0 <= target <= 14.0
-
-
-def test_partial_random_liner_min_validates_against_current_max(
-    tmp_path,
-    caplog,
-) -> None:
-    player = _make_player()
-    player._cfg.playback.liners_random_min_minutes = 8.0
-    player._cfg.playback.liners_random_max_minutes = 14.0
-    _write_state(
-        tmp_path,
-        {
-            "schema_version": STATE_VERSION,
-            "playback": {"liners_random_min_minutes": 15.0},
-        },
-    )
-
-    with caplog.at_level("WARNING"):
-        load_into_player(player, tmp_path)
-
-    assert player._cfg.playback.liners_random_min_minutes == 8.0
-    assert player._cfg.playback.liners_random_max_minutes == 14.0
-    assert (
-        len([record for record in caplog.records if "random liner window" in record.message]) == 1
-    )
-
-
-def test_partial_random_liner_max_validates_against_current_min(
-    tmp_path,
-    caplog,
-) -> None:
-    player = _make_player()
-    player._cfg.playback.liners_random_min_minutes = 8.0
-    player._cfg.playback.liners_random_max_minutes = 14.0
-    _write_state(
-        tmp_path,
-        {
-            "schema_version": STATE_VERSION,
-            "playback": {"liners_random_max_minutes": 7.0},
-        },
-    )
-
-    with caplog.at_level("WARNING"):
-        load_into_player(player, tmp_path)
-
-    assert player._cfg.playback.liners_random_min_minutes == 8.0
-    assert player._cfg.playback.liners_random_max_minutes == 14.0
-    assert (
-        len([record for record in caplog.records if "random liner window" in record.message]) == 1
-    )
-
-
-def test_partial_valid_random_liner_bound_is_restored(tmp_path) -> None:
-    player = _make_player()
-    player._cfg.playback.liners_random_min_minutes = 8.0
-    player._cfg.playback.liners_random_max_minutes = 14.0
-    _write_state(
-        tmp_path,
-        {
-            "schema_version": STATE_VERSION,
-            "playback": {"liners_random_min_minutes": 10.0},
-        },
-    )
-
-    load_into_player(player, tmp_path)
-
-    assert player._cfg.playback.liners_random_min_minutes == 10.0
-    assert player._cfg.playback.liners_random_max_minutes == 14.0
-
-
-def test_null_random_liner_bound_clears_only_present_field(tmp_path) -> None:
-    player = _make_player()
-    player._cfg.playback.liners_random_min_minutes = 8.0
-    player._cfg.playback.liners_random_max_minutes = 14.0
-    _write_state(
-        tmp_path,
-        {
-            "schema_version": STATE_VERSION,
-            "playback": {"liners_random_min_minutes": None},
-        },
-    )
-
-    load_into_player(player, tmp_path)
-
-    assert player._cfg.playback.liners_random_min_minutes is None
-    assert player._cfg.playback.liners_random_max_minutes == 14.0
-
-
-@pytest.mark.parametrize("invalid", ["bad", float("inf"), 0, True])
-def test_invalid_random_liner_bound_leaves_both_values_unchanged(
-    tmp_path,
-    caplog,
-    invalid,
-) -> None:
-    player = _make_player()
-    player._cfg.playback.liners_random_min_minutes = 8.0
-    player._cfg.playback.liners_random_max_minutes = 14.0
-    _write_state(
-        tmp_path,
-        {
-            "schema_version": STATE_VERSION,
-            "playback": {
-                "liners_random_min_minutes": invalid,
-                "liners_random_max_minutes": 12.0,
-            },
-        },
-    )
-
-    with caplog.at_level("WARNING"):
-        load_into_player(player, tmp_path)
-
-    assert player._cfg.playback.liners_random_min_minutes == 8.0
-    assert player._cfg.playback.liners_random_max_minutes == 14.0
-    assert (
-        len([record for record in caplog.records if "liners_random_min_minutes" in record.message])
-        == 1
-    )
-
-
-def test_null_bpm_range_clears_an_existing_range(tmp_path) -> None:
-    player = _make_player()
-    player._bpm_range = (90.0, 130.0)
-    _write_state(tmp_path, {"schema_version": STATE_VERSION, "bpm_range": None})
-
-    load_into_player(player, tmp_path)
-
-    assert player._bpm_range is None
-
-
-def test_infinite_playback_number_warns_and_keeps_default(tmp_path, caplog) -> None:
-    _write_state(
-        tmp_path,
-        {"schema_version": STATE_VERSION, "playback": {"crossfade_seconds": float("inf")}},
-    )
-    player = _make_player()
-
-    with caplog.at_level("WARNING"):
-        load_into_player(player, tmp_path)
-
-    assert player._cfg.playback.crossfade_seconds == 3.0
-    assert len([record for record in caplog.records if "crossfade_seconds" in record.message]) == 1
-
-
-def test_infinite_liner_cadence_warns_and_keeps_default(tmp_path, caplog) -> None:
-    _write_state(
-        tmp_path,
-        {"schema_version": STATE_VERSION, "playback": {"liners_every_minutes": float("inf")}},
-    )
-    player = _make_player()
-    player._cfg.playback.liners_every_minutes = 5.0
-
-    with caplog.at_level("WARNING"):
-        load_into_player(player, tmp_path)
-
-    assert player._cfg.playback.liners_every_minutes == 5.0
-    assert (
-        len([record for record in caplog.records if "liners_every_minutes" in record.message]) == 1
-    )
-
-
-def test_infinite_bpm_bound_warns_and_keeps_existing_range(tmp_path, caplog) -> None:
-    _write_state(
-        tmp_path,
-        {"schema_version": STATE_VERSION, "bpm_range": {"lo": 90.0, "hi": float("inf")}},
-    )
-    player = _make_player()
-    player._bpm_range = (100.0, 120.0)
-
-    with caplog.at_level("WARNING"):
-        load_into_player(player, tmp_path)
-
-    assert player._bpm_range == (100.0, 120.0)
-    assert len([record for record in caplog.records if "bpm_range" in record.message]) == 1
-
-
-# ---------------------------------------------------------------------------
-# autodj.runtime_state — _restore_validated_strings invalid branches
-# ---------------------------------------------------------------------------
-
-
-class TestRuntimeStateValidation:
-    def test_invalid_transition_mode_logged_not_raised(self, caplog) -> None:
-        from autodj.runtime_state import _restore_validated_strings
-
-        cfg = MagicMock()
-        cfg.playback.transition_mode = "full_intro_outro"
-        with caplog.at_level("WARNING"):
-            _restore_validated_strings(cfg, {"transition_mode": "garbage-mode"})
-        assert any("transition_mode" in r.message for r in caplog.records)
-        # Unchanged
-        assert cfg.playback.transition_mode == "full_intro_outro"
-
-    def test_invalid_key_notation_logged_not_raised(self, caplog) -> None:
-        from autodj.runtime_state import _restore_validated_strings
-
-        cfg = MagicMock()
-        cfg.playback.key_notation = "camelot"
-        with caplog.at_level("WARNING"):
-            _restore_validated_strings(cfg, {"key_notation": "alien"})
-        assert any("key_notation" in r.message for r in caplog.records)
-
-    def test_valid_transition_mode_applied(self) -> None:
-        from autodj.runtime_state import _restore_validated_strings
-
-        cfg = MagicMock()
-        _restore_validated_strings(cfg, {"transition_mode": "fixed"})
-        assert cfg.playback.transition_mode == "fixed"
-
-
-def test_stream_bitrate_is_restored_into_the_stream_config(tmp_path) -> None:
-    player = _make_player()
-    _write_state(tmp_path, {"playback": {"stream_bitrate": 128}})
-    load_into_player(player, tmp_path)
-    assert player._cfg.stream.bitrate == 128
-
-
-def test_invalid_stream_bitrate_keeps_the_configured_one(tmp_path, caplog) -> None:
-    player = _make_player()
-    _write_state(tmp_path, {"playback": {"stream_bitrate": 64}})
-    load_into_player(player, tmp_path)
-    assert player._cfg.stream.bitrate == 320
-    assert "ignoring invalid stream_bitrate" in caplog.text

@@ -48,7 +48,7 @@ import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator
 from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, BinaryIO, Literal
+from typing import TYPE_CHECKING, Any, BinaryIO
 
 from fastapi import (
     FastAPI,
@@ -59,12 +59,11 @@ from fastapi import (
     Response,
     UploadFile,
     WebSocket,
-    WebSocketDisconnect,
 )
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 from starlette.background import BackgroundTask
 from starlette.datastructures import Headers
 from starlette.middleware.gzip import GZipMiddleware
@@ -77,7 +76,6 @@ from autodj._bridge import (
     STREAM_SEEK_UNAVAILABLE,
     PlayerBridge,
     StreamSeekUnavailable,
-    validate_playback_choices,
 )
 from autodj.icy import METAINT
 from autodj.index_manifest import IndexConsistencyError, read_manifest
@@ -86,13 +84,24 @@ from autodj.pairing import DeviceRegistry
 from autodj.security import (
     COOKIE_NAME,
     PAIRING_BODY_MAX_BYTES,
-    PairingRateLimiter,
     SecurityMiddleware,
     SecurityPolicy,
     _raw_header_values,
     emit_audit,
     new_request_id,
     peer_address,
+)
+from autodj.settings_bodies import (
+    BpmRangeBody,
+    DiscoveryBody,
+    DjMixBody,
+    FiniteFloat,
+    PlaybackSettingsBody,
+    PresetBody,
+    StreamSettingsBody,
+    TransitionBody,
+    VolumeBody,
+    validate_playback_choices,
 )
 from autodj.stream import EncoderUnavailableError, ListenerLimitError
 from autodj.stream_secret import (
@@ -255,26 +264,6 @@ async def _broadcast_and_prune(
     return dead
 
 
-async def _close_and_prune_websocket(
-    client: _WebSocketClient,
-    clients: set[_WebSocketClient],
-    clients_lock: asyncio.Lock,
-    *,
-    code: int,
-    timeout_seconds: float = _WS_SEND_TIMEOUT_SECONDS,
-) -> bool:
-    """Close a WebSocket client and remove it from the shared client set."""
-    closed = await _close_websocket_client(
-        client,
-        code=code,
-        timeout_seconds=timeout_seconds,
-        failure_action="websocket_close",
-    )
-    async with clients_lock:
-        clients.discard(client)
-    return closed
-
-
 async def reload_published_generation_once(bridge: PlayerBridge) -> bool:
     """Reload the index when its manifest differs from the loaded one.
 
@@ -429,23 +418,6 @@ def _version_info() -> dict[str, str]:
 __all__ = ["PlayerBridge", "create_app", "serve"]
 
 
-FiniteFloat = Annotated[float, Field(allow_inf_nan=False)]
-"""Float that refuses the ``NaN``/``Infinity`` JSON tokens.
-
-pydantic accepts them by default, but they cannot be re-encoded as JSON:
-one non-finite value stored in the player config turns every later
-``/api/status`` and WebSocket frame into a 500 or an
-unparseable payload until the process restarts.  Reject them at the edge.
-"""
-NonNegativeFloat = Annotated[float, Field(ge=0.0, allow_inf_nan=False)]
-
-
-class VolumeBody(BaseModel):
-    """Request body for POST /api/volume."""
-
-    volume: FiniteFloat
-
-
 class ProfileSaveBody(BaseModel):
     """Request body for POST /api/profiles.
 
@@ -537,20 +509,6 @@ class EqBody(BaseModel):
     high: FiniteFloat | None = None
 
 
-class PresetBody(BaseModel):
-    """Request body for POST /api/preset — empty / null name clears."""
-
-    name: str | None = None
-
-
-class StreamSettingsBody(BaseModel):
-    """Request body for POST /api/stream/settings."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    bitrate: Literal[128, 192, 256, 320]
-
-
 class LinerTestBody(BaseModel):
     """Request body for POST /api/liners/test.
 
@@ -561,96 +519,6 @@ class LinerTestBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str | None = None
-
-
-class TransitionBody(BaseModel):
-    """Request body for POST /api/transition."""
-
-    effect: str
-
-
-class DjMixBody(BaseModel):
-    """Request body for POST /api/djmix — only set fields are applied.
-
-    Unknown fields are rejected, so a stale client still sending the removed
-    ``harmonic_mixing`` switch gets a 422 instead of being silently ignored.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    harmonic_mode: str | None = None
-    beatmatch: bool | None = None
-    phrase_align: bool | None = None
-    outro_intro_align: bool | None = None
-    filter_sweep: bool | None = None
-    phrase_bars: Annotated[int, Field(ge=1, le=64)] | None = None
-
-
-class PlaybackSettingsBody(BaseModel):
-    """Request body for POST /api/playback-settings.
-
-    Unknown fields are rejected rather than ignored.  In particular the liner
-    root (``playback.liners_folder``) is configuration-only: the liner fetch
-    and delete routes resolve names under it, so letting a request move it
-    would let any client that can reach this route point those routes at the
-    config or index directory.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    crossfade_seconds: NonNegativeFloat | None = None
-    fade_in_seconds: NonNegativeFloat | None = None
-    crossfade_eq_duck: bool | None = None
-    smart_shuffle: bool | None = None
-    pure_shuffle: bool | None = None
-    anchor_to_seed: bool | None = None
-    replaygain_enabled: bool | None = None
-    transition_mode: str | None = None
-    post_queue_seed: str | None = None
-    key_notation: str | None = None
-    key_prefer_flats: bool | None = None
-    show_lyrics: bool | None = None
-    enable_daypart: bool | None = None
-    enable_mood_arc: bool | None = None
-    mood_arc_hours: Annotated[float, Field(ge=0.25, allow_inf_nan=False)] | None = None
-    import_external_cues: bool | None = None
-    beat_sync_fx: bool | None = None
-    key_sync_fx: bool | None = None
-    beatmatch_on_skip: bool | None = None
-    liners_enabled: bool | None = None
-    # 0 turns a liner trigger off.
-    liners_every_n_songs: Annotated[int, Field(ge=0)] | None = None
-    liners_every_minutes: NonNegativeFloat | None = None
-    liners_random_min_minutes: NonNegativeFloat | None = None
-    liners_random_max_minutes: NonNegativeFloat | None = None
-    liners_pick_mode: str | None = None
-    liners_duck_db: Annotated[float, Field(ge=-30.0, le=0.0, allow_inf_nan=False)] | None = None
-    # The ranges here are the ones the Settings panel's number fields use.
-    no_repeat_window: Annotated[int, Field(ge=0, le=100_000)] | None = None
-    artist_repeat_window: Annotated[int, Field(ge=0, le=100)] | None = None
-    transition_wet_mix: Annotated[float, Field(ge=0.0, le=1.0, allow_inf_nan=False)] | None = None
-    replaygain_target_db: Annotated[float, Field(ge=-30.0, le=0.0, allow_inf_nan=False)] | None = (
-        None
-    )
-
-    @model_validator(mode="after")
-    def _check_choices(self) -> PlaybackSettingsBody:
-        """Reject an unknown choice before any field is applied."""
-        validate_playback_choices(self.model_dump())
-        return self
-
-
-class BpmRangeBody(BaseModel):
-    """Request body for POST /api/bpm-range — both null = clear filter."""
-
-    lo: FiniteFloat | None = None
-    hi: FiniteFloat | None = None
-
-
-class DiscoveryBody(BaseModel):
-    """Request body for POST /api/discovery — null disables."""
-
-    every: int | None = None
 
 
 class LibraryJobBody(BaseModel):
@@ -1003,7 +871,6 @@ def create_app(
     player_thread: threading.Thread | None = None,
     *,
     secure_cookie: bool = False,
-    pairing_rate_limiter: PairingRateLimiter | None = None,
     stream_secret: StreamSecret | None = None,
     stream_first_track: IndexEntry | None = None,
     server_audio: bool = False,
@@ -1190,7 +1057,6 @@ def create_app(
     # routes and the middleware use these same objects directly.
     app.state.security_policy = policy
     app.state.device_registry = device_registry
-    app.state.pairing_rate_limiter = pairing_rate_limiter or PairingRateLimiter()
     # Request bodies the middleware caps before any route parses them.
     body_limits: dict[str, Callable[[], int]] = {
         "/api/pair": lambda: PAIRING_BODY_MAX_BYTES,
@@ -1487,11 +1353,12 @@ def create_app(
     # Radio stream (stream mode only; 404 otherwise)
     # ------------------------------------------------------------------
 
-    # Wrong or malformed stream secrets count here, separately from pairing.
-    stream_limiter = PairingRateLimiter()
+    def _stream_name(name: str) -> str:
+        """Return ``"mp3"`` or ``"m3u"`` for a valid secret; else 404.
 
-    def _stream_name(request: Request, name: str) -> str:
-        """Return ``"mp3"`` or ``"m3u"`` for a valid secret; else 404 or 429."""
+        The secret is 256 random bits compared in constant time, so a wrong
+        one is just not found; there is nothing worth rate limiting.
+        """
         match = _STREAM_NAME.match(name)
         if (
             bridge.stream_mode
@@ -1499,13 +1366,6 @@ def create_app(
             and bridge.stream_secret.matches(match["secret"])
         ):
             return match["ext"]
-        decision = stream_limiter.reserve(peer_address(request.scope))
-        if not decision.allowed:
-            raise HTTPException(
-                status_code=429,
-                detail="Too many attempts",
-                headers={"Retry-After": str(decision.retry_after)},
-            )
         raise HTTPException(status_code=404, detail="Not Found")
 
     def _require_stream_mode() -> None:
@@ -1520,7 +1380,7 @@ def create_app(
         ``HEAD`` answers with the same checks and headers but no body and
         without becoming a listener.
         """
-        ext = _stream_name(request, name)
+        ext = _stream_name(name)
         head = request.method == "HEAD"
         headers = {"Cache-Control": "no-store"}
         if ext == "m3u":
@@ -2017,6 +1877,11 @@ def create_app(
         bridge.save_persistent_state()
         return bridge.get_settings()
 
+    @app.post("/api/discovery/toggle")
+    async def api_discovery_toggle() -> dict[str, bool]:
+        """Turn discovery on or off for this run (the Now Playing Discovery button)."""
+        return {"discovery_enabled": bridge.toggle_discovery()}
+
     # ------------------------------------------------------------------
     # 3-band EQ
     # ------------------------------------------------------------------
@@ -2177,62 +2042,12 @@ def create_app(
         )
         disconnect_code = 1000
         try:
+            # The socket only pushes state; frames the page sends are ignored.
             while True:
                 message = await websocket.receive()
                 if message["type"] == "websocket.disconnect":
-                    raise WebSocketDisconnect(
-                        code=message.get("code", 1000),
-                        reason=message.get("reason", ""),
-                    )
-                text = message.get("text")
-                if not isinstance(text, str):
-                    continue
-                if not _websocket_session_is_valid(client):
-                    disconnect_code = 4401
-                    await _close_and_prune_websocket(
-                        client,
-                        _ws_clients,
-                        _ws_lock,
-                        code=disconnect_code,
-                    )
-                    return
-                # Handle incoming control commands from the client
-                try:
-                    msg = json.loads(text)
-                    if isinstance(msg, dict) and msg.get("type") == "toggle_discovery":
-                        try:
-                            bridge.toggle_discovery()
-                        except Exception:
-                            disconnect_code = 1011
-                            emit_audit(
-                                request_id,
-                                "toggle_discovery",
-                                "rejected",
-                                method="WS",
-                                route=route,
-                                status=500,
-                                level=logging.WARNING,
-                            )
-                            await _close_and_prune_websocket(
-                                client,
-                                _ws_clients,
-                                _ws_lock,
-                                code=disconnect_code,
-                            )
-                            return
-                        emit_audit(
-                            request_id,
-                            "toggle_discovery",
-                            "success",
-                            method="WS",
-                            route=route,
-                            status=200,
-                        )
-                except (json.JSONDecodeError, AttributeError):
-                    pass
-        except WebSocketDisconnect as exc:
-            disconnect_code = exc.code
-            pass
+                    disconnect_code = message.get("code", 1000)
+                    break
         except asyncio.CancelledError:
             if client.failure_code is None:
                 raise
@@ -2316,6 +2131,7 @@ def serve(
     no_playback: bool = False,
     stream: bool = False,
     lan_configured_hosts: list[str] | None = None,
+    cli_settings: frozenset[str] = frozenset(),
 ) -> None:
     """Start the Player thread and the FastAPI/uvicorn web server.
 
@@ -2342,6 +2158,8 @@ def serve(
         lan_configured_hosts: In LAN mode, the allowed hosts configured before
             detection was merged in; inside a container these are the only
             addresses printed, because container addresses are unreachable.
+        cli_settings: Saved web settings (``web_state.json`` names) given on
+            the command line; they keep their command-line value this run.
 
     HTTPS is on when ``cfg.server.ssl_certfile`` and ``ssl_keyfile`` are set;
     a :class:`~autodj.tls.CertificateReloader` then loads renewed files into
@@ -2417,9 +2235,9 @@ def serve(
     # stream title and liner counting all hang off this hook.
     player.on_track_started = bridge.on_track_started
 
-    # Restore previously-saved settings (preset, transition, EQ, etc.)
-    # so the user doesn't have to re-tick everything on each `serve` restart.
-    bridge.load_persistent_state()
+    # Restore the settings saved from the web page, except the ones this
+    # command line sets, so the user doesn't re-tick everything on restart.
+    bridge.load_persistent_state(cli_settings)
 
     # Start Player in a daemon thread — it blocks internally on playback
     player_thread = threading.Thread(

@@ -5,7 +5,6 @@ from unittest.mock import MagicMock
 from fastapi.testclient import TestClient
 
 from autodj.pairing import DeviceRegistry
-from autodj.security import PairingRateLimiter
 from autodj.server import create_app
 
 _SECRET = "pairing-secret-that-is-at-least-32-bytes"
@@ -66,37 +65,6 @@ def test_revoked_device_loses_api_access_without_server_restart(bridge, tmp_path
     status = client.get("/api/auth/status").json()
     assert status["authenticated"] is False
     assert status["device_id"] is None
-
-
-def test_pairing_attempts_share_bounded_authentication_limiter(bridge, tmp_path) -> None:
-    bridge.player._cfg.server.access_token = _SECRET
-    bridge.player._cfg.index.active_dir = tmp_path
-    bridge.player._cfg.index.index_dir = tmp_path
-    app = create_app(
-        bridge,
-        pairing_rate_limiter=PairingRateLimiter(per_client_limit=1, global_limit=10),
-    )
-    app.state.security_policy.now = lambda: 1_000
-    client = TestClient(app)
-
-    assert (
-        client.post(
-            "/api/pair",
-            json={"code": "00000000", "device_name": "Unknown browser"},
-        ).status_code
-        == 401
-    )
-    assert (
-        client.post(
-            "/api/pair",
-            json={
-                "code": app.state.security_policy.current_pairing_code(),
-                "device_name": "Kitchen tablet",
-            },
-        ).status_code
-        == 429
-    )
-    assert app.state.device_registry.list_devices() == []
 
 
 def test_pairing_rejects_oversized_body_before_json_parsing(bridge, tmp_path) -> None:
@@ -209,8 +177,6 @@ def test_locked_out_client_gets_429_with_retry_after_even_for_the_right_code(
     from autodj.security import PAIRING_MAX_FAILURES_PER_CLIENT
 
     client, registry = _paired_client(bridge, tmp_path)
-    # Only the per-client lockout is under test, not the request-rate limiter.
-    client.app.state.pairing_rate_limiter = PairingRateLimiter(per_client_limit=1_000)
     policy = client.app.state.security_policy
     code = policy.current_pairing_code()
     wrong = "00000000" if code != "00000000" else "11111111"

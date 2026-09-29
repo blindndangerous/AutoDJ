@@ -16,7 +16,7 @@ import logging
 import secrets
 import threading
 from collections import deque
-from collections.abc import Callable, Mapping
+from collections.abc import Collection
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from autodj.indexer import IndexEntry
-    from autodj.server import PlaybackSettingsBody
+    from autodj.settings_bodies import PlaybackSettingsBody
 
 logger = logging.getLogger(__name__)
 
@@ -33,36 +33,6 @@ STREAM_SEEK_UNAVAILABLE = "Seeking is not available while streaming."
 
 class StreamSeekUnavailable(Exception):
     """Seeking was asked for while serving the mix as a radio stream."""
-
-
-def validate_playback_choices(values: Mapping[str, Any]) -> None:
-    """Raise ``ValueError`` if any choice field in *values* is not allowed.
-
-    The playback setters apply one field at a time, so a check made inside
-    them let a request with one bad choice change every field ahead of it and
-    then fail.  Callers run this first so a bad request changes nothing.
-    ``None`` means "leave unchanged" and is skipped.
-    """
-    from autodj.config import (
-        _validate_key_notation,
-        _validate_post_queue_seed,
-        _validate_transition_mode,
-    )
-    from autodj.liners import LINER_PICK_MODES
-
-    checks: tuple[tuple[str, Callable[[str], str]], ...] = (
-        ("transition_mode", _validate_transition_mode),
-        ("post_queue_seed", _validate_post_queue_seed),
-        ("key_notation", _validate_key_notation),
-    )
-    for key, check in checks:
-        if (value := values.get(key)) is not None:
-            check(str(value))
-    pick_mode = values.get("liners_pick_mode")
-    if pick_mode is not None and str(pick_mode) not in LINER_PICK_MODES:
-        raise ValueError(
-            f"playback.liners_pick_mode must be one of {LINER_PICK_MODES}, got {pick_mode!r}"
-        )
 
 
 def _build_why(player: Any) -> list[str]:
@@ -1128,11 +1098,16 @@ class PlayerBridge:
     # Persistence — settings survive serve restarts
     # ------------------------------------------------------------------
 
-    def load_persistent_state(self) -> None:
-        """Restore previously-saved settings from web_state.json."""
-        from autodj.runtime_state import load_into_player
+    def load_persistent_state(self, skip: Collection[str] = frozenset()) -> None:
+        """Restore previously-saved settings from web_state.json.
 
-        load_into_player(self.player, self.player._cfg.index.active_dir)
+        Args:
+            skip: Saved setting names this run's command line set; their
+                saved values are not restored.
+        """
+        from autodj.runtime_state import load_into_bridge
+
+        load_into_bridge(self, self.player._cfg.index.active_dir, skip)
 
     def save_persistent_state(self) -> None:
         """Write current settings to web_state.json (atomic)."""

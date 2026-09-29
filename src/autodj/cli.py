@@ -301,6 +301,43 @@ def _can_import(name: str) -> bool:
     return True
 
 
+#: ``serve`` options that set a web-page setting, and that setting's name in
+#: ``web_state.json``.  Given on the command line, they win over the saved value.
+_SERVE_SAVED_SETTINGS = {
+    "preset": "preset",
+    "bpm_range": "bpm_range",
+    "discovery_every": "discovery_every",
+    "smart_shuffle": "smart_shuffle",
+    "pure_shuffle": "pure_shuffle",
+    "anchor_to_seed": "anchor_to_seed",
+    "show_lyrics": "show_lyrics",
+    "enable_daypart": "enable_daypart",
+    "enable_mood_arc": "enable_mood_arc",
+    "mood_arc_hours": "mood_arc_hours",
+    "import_external_cues": "import_external_cues",
+    "beat_sync_fx": "beat_sync_fx",
+    "key_sync_fx": "key_sync_fx",
+    "harmonic_mode": "harmonic_mode",
+    "transition_mode": "transition_mode",
+    "beatmatch": "beatmatch",
+    "phrase_align": "phrase_align",
+    "outro_intro_align": "outro_intro_align",
+    "filter_sweep": "filter_sweep",
+    "transition_fx": "transition",
+}
+
+
+def _serve_cli_settings(ctx: click.Context) -> frozenset[str]:
+    """Return the saved web settings this ``serve`` command line sets."""
+    from click.core import ParameterSource
+
+    return frozenset(
+        setting
+        for option, setting in _SERVE_SAVED_SETTINGS.items()
+        if ctx.get_parameter_source(option) is ParameterSource.COMMANDLINE
+    )
+
+
 def _apply_serve_overrides(
     cfg: AutoDJConfig, kw: dict
 ) -> bool:  # pragma: no cover -- exercised by smoke tests
@@ -1647,6 +1684,7 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
             no_playback=not server_audio,
             stream=cfg.stream.enabled,
             lan_configured_hosts=lan_configured_hosts,
+            cli_settings=_serve_cli_settings(ctx),
         )
     except KeyboardInterrupt:
         console.print("\n[yellow]Stopped.[/]")

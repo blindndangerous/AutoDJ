@@ -1,4 +1,4 @@
-"""Request authentication, origin checks, audit logging, and pairing rate limiting."""
+"""Request authentication, origin checks, audit logging, and the pairing lockout."""
 
 from __future__ import annotations
 
@@ -8,13 +8,11 @@ import hmac
 import ipaddress
 import json
 import logging
-import math
 import re
 import secrets
 import threading
 import time
 import uuid
-from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
@@ -55,11 +53,10 @@ _DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
 _BRACKETED_HOST = re.compile(r"\[([^\]]+)\](?::([0-9]+))?\Z")
 PAIRING_BODY_MAX_BYTES = 4096
 PAIRING_CODE_WINDOW_SECONDS = 300
-# Wrong well-formed codes tolerated per code window.  The rate limiter alone
-# still allowed 100 guesses a minute against a 10^8 space with two live codes.
-# One client address that reaches the per-client limit is locked out until the
-# window ends; only when all clients together reach the global limit are the
-# live codes burned for everyone, as a last resort against many addresses.
+# Wrong well-formed codes tolerated per code window.  One client address that
+# reaches the per-client limit is locked out until the window ends; only when
+# all clients together reach the global limit are the live codes burned for
+# everyone, as a last resort against many addresses.
 PAIRING_MAX_FAILURES_PER_CLIENT = 10
 PAIRING_MAX_FAILURES_PER_WINDOW = 50
 
@@ -70,108 +67,6 @@ class PairingBlock:
 
     retry_after: int
     detail: str
-
-
-@dataclass(frozen=True)
-class PairingLimitDecision:
-    """Result of reserving capacity for one pairing attempt."""
-
-    allowed: bool
-    retry_after: int = 0
-    audit: bool = False
-
-
-@dataclass
-class _PairingClientState:
-    """Fixed-window pairing attempt state tracked for one peer."""
-
-    window_started: float
-    attempts: int = 0
-    blocked_audited: bool = False
-
-
-class PairingRateLimiter:
-    """Fixed-window pairing limiter with bounded peer state."""
-
-    def __init__(
-        self,
-        *,
-        now: Callable[[], float] = time.monotonic,
-        per_client_limit: int = 5,
-        global_limit: int = 100,
-        window_seconds: int = 60,
-        max_clients: int = 1024,
-    ) -> None:
-        if min(per_client_limit, global_limit, window_seconds, max_clients) < 1:
-            raise ValueError("pairing rate-limit settings must be positive")
-        self._now = now
-        self._per_client_limit = per_client_limit
-        self._global_limit = global_limit
-        self._window_seconds = window_seconds
-        self._max_clients = max_clients
-        self._clients: OrderedDict[str, _PairingClientState] = OrderedDict()
-        self._global_started = self._time()
-        self._global_attempts = 0
-        self._global_blocked_audited = False
-        self._lock = threading.Lock()
-
-    def _time(self) -> float:
-        """Return the configured monotonic time after validating it is finite."""
-        value = float(self._now())
-        if not math.isfinite(value):
-            raise ValueError("pairing limiter clock returned an invalid value")
-        return value
-
-    def _reset_global_if_expired(self, current: float) -> None:
-        """Reset global and client counters after the shared window expires."""
-        if current - self._global_started >= self._window_seconds:
-            self._global_started = current
-            self._global_attempts = 0
-            self._global_blocked_audited = False
-            self._clients.clear()
-
-    def _retry_after(self, current: float, started: float) -> int:
-        """Return whole seconds remaining in the rate-limit window."""
-        return max(1, math.ceil(self._window_seconds - (current - started)))
-
-    def reserve(self, peer: str) -> PairingLimitDecision:
-        """Atomically admit and count one pairing attempt before any body work."""
-        with self._lock:
-            current = self._time()
-            self._reset_global_if_expired(current)
-            if self._global_attempts >= self._global_limit:
-                audit = not self._global_blocked_audited
-                self._global_blocked_audited = True
-                return PairingLimitDecision(
-                    False, self._retry_after(current, self._global_started), audit
-                )
-
-            state = self._clients.get(peer)
-            if state is not None and current - state.window_started >= self._window_seconds:
-                del self._clients[peer]
-                state = None
-            if state is not None and state.attempts >= self._per_client_limit:
-                self._clients.move_to_end(peer)
-                audit = not state.blocked_audited
-                state.blocked_audited = True
-                return PairingLimitDecision(
-                    False, self._retry_after(current, state.window_started), audit
-                )
-
-            if state is None:
-                state = _PairingClientState(current)
-                self._clients[peer] = state
-            state.attempts += 1
-            self._global_attempts += 1
-            self._clients.move_to_end(peer)
-            while len(self._clients) > self._max_clients:
-                self._clients.popitem(last=False)
-            return PairingLimitDecision(True)
-
-    def record_success(self, peer: str) -> None:
-        """Clear tracked attempts for a peer after successful pairing."""
-        with self._lock:
-            self._clients.pop(peer, None)
 
 
 def _parse_host_header(value: object) -> str | None:
@@ -589,14 +484,6 @@ class SecurityMiddleware:
         self._body_limits = body_limits
 
     @staticmethod
-    def _pairing_limiter(scope: Scope) -> PairingRateLimiter | None:
-        """Return application pairing limiter when it has expected type."""
-        app = scope.get("app")
-        state = getattr(app, "state", None)
-        limiter = getattr(state, "pairing_rate_limiter", None)
-        return limiter if isinstance(limiter, PairingRateLimiter) else None
-
-    @staticmethod
     def _declared_body_too_large(scope: Scope, cap: int) -> bool:
         """Return whether Content-Length is malformed or exceeds *cap*."""
         values = _raw_header_values(scope, b"content-length")
@@ -643,7 +530,6 @@ class SecurityMiddleware:
         state["request_id"] = request_id
         method = str(scope.get("method", "")).upper()
         path = str(scope.get("path", ""))
-        is_pairing = method == "POST" and path == "/api/pair"
         route = _route_template(scope)
         policy = self._policy
         host_values = _raw_header_values(scope, b"host")
@@ -680,32 +566,6 @@ class SecurityMiddleware:
                 level=logging.WARNING,
             )
             return
-
-        pairing_limiter = self._pairing_limiter(scope) if is_pairing else None
-        peer = peer_address(scope)
-        if pairing_limiter is not None:
-            decision = pairing_limiter.reserve(peer)
-            if not decision.allowed:
-                response = JSONResponse(
-                    {"detail": "Too many pairing attempts"},
-                    status_code=429,
-                    headers={
-                        "X-Request-ID": request_id,
-                        "Retry-After": str(decision.retry_after),
-                    },
-                )
-                await response(scope, receive, send)
-                if decision.audit:
-                    emit_audit(
-                        request_id,
-                        route,
-                        "rejected",
-                        method=method,
-                        route=route,
-                        status=429,
-                        level=logging.WARNING,
-                    )
-                return
 
         body_limit = self._body_limits.get(path) if method == "POST" else None
         downstream_receive = receive
@@ -753,12 +613,6 @@ class SecurityMiddleware:
             )
             await response(scope, receive, send)
             return
-        if (
-            pairing_limiter is not None
-            and response_status is not None
-            and 200 <= response_status < 300
-        ):
-            pairing_limiter.record_success(peer)
         if method in _UNSAFE_METHODS and response_status is not None:
             emit_audit(
                 request_id,

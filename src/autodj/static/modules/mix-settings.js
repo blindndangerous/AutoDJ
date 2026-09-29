@@ -2,7 +2,7 @@
 // transition effect level and the ReplayGain target.
 //
 // Each number field carries the same range the server accepts
-// (PlaybackSettingsBody / DjMixBody in server.py), so a value the server
+// (PlaybackSettingsBody / DjMixBody in settings_bodies.py), so a value the server
 // would refuse is caught here and said in words instead of arriving as a
 // 422.  A refused or failed value goes straight back to what the server
 // has, so the field never shows a setting that is not in effect.

@@ -9,9 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -22,7 +20,7 @@ from httpx2 import Headers
 from starlette.websockets import WebSocketDisconnect
 
 from autodj.config import ServerConfig
-from autodj.security import COOKIE_NAME, PairingRateLimiter, SecurityPolicy
+from autodj.security import COOKIE_NAME, SecurityPolicy
 from autodj.server import PlayerBridge, create_app
 
 from ._helpers import _make_player_mock, _make_sim_mock
@@ -149,163 +147,6 @@ def test_security_policy_snapshots_mutable_configuration() -> None:
     replacement = SecurityPolicy(original)
     assert replacement.verify_pairing_code(replacement.current_pairing_code())
     assert replacement.host_allowed("rotated.local")
-
-
-def test_pairing_rate_limiter_is_bounded_isolated_and_expires() -> None:
-    now = [100.0]
-    limiter = PairingRateLimiter(
-        now=lambda: now[0], per_client_limit=2, global_limit=4, window_seconds=10, max_clients=2
-    )
-    assert limiter.reserve("one").allowed
-    assert limiter.reserve("one").allowed
-    assert not limiter.reserve("one").allowed
-    assert limiter.reserve("two").allowed
-    assert limiter.reserve("three").allowed
-    assert len(limiter._clients) <= 2
-    assert not limiter.reserve("four").allowed
-    now[0] = 111.0
-    assert limiter.reserve("one").allowed
-
-
-def test_pairing_throttle_bypasses_body_and_code_compare(
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    limiter = PairingRateLimiter(per_client_limit=1, global_limit=10)
-    app = _security_app()
-    app.state.pairing_rate_limiter = limiter
-    client = TestClient(
-        app,
-        headers={
-            "Host": "testserver",
-            "Origin": "http://testserver",
-            "X-Forwarded-For": "203.0.113.1",
-        },
-    )
-    policy = app.state.security_policy
-    checked = MagicMock(wraps=policy.verify_pairing_code)
-    monkeypatch.setattr(policy, "verify_pairing_code", checked)
-
-    invalid = {"code": "00000000", "device_name": "Unknown browser"}
-    assert client.post("/api/pair", json=invalid).status_code == 401
-    with caplog.at_level(logging.WARNING, logger="autodj.audit"):
-        first = client.post("/api/pair", content=b"x" * 5000)
-        second = client.post(
-            "/api/pair",
-            json=invalid,
-            headers={"X-Forwarded-For": "198.51.100.2"},
-        )
-
-    assert first.status_code == second.status_code == 429
-    assert first.headers["Retry-After"]
-    assert checked.call_count == 1
-    limited = [record for record in caplog.records if '"status":429' in record.message]
-    assert len(limited) == 1
-    assert "wrong" not in caplog.text
-
-
-def test_pairing_throttle_rejects_without_reading_request_body() -> None:
-    limiter = PairingRateLimiter(per_client_limit=1, global_limit=10)
-    assert limiter.reserve("127.0.0.1").allowed
-    app = _security_app()
-    app.state.pairing_rate_limiter = limiter
-
-    messages = _call_http_without_body_read(
-        path="/api/pair",
-        headers=[
-            (b"host", b"testserver"),
-            (b"origin", b"http://testserver"),
-            (b"content-length", b"5000"),
-        ],
-        app=app,
-    )
-
-    assert _response_status(messages) == 429
-
-
-def test_concurrent_pairing_guesses_reserve_capacity_before_comparison(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    limiter = PairingRateLimiter(per_client_limit=2, global_limit=2)
-    app = _security_app()
-    app.state.pairing_rate_limiter = limiter
-    policy: SecurityPolicy = app.state.security_policy
-    compare_barrier = threading.Barrier(2)
-    compare_calls = 0
-    compare_lock = threading.Lock()
-
-    def compare(_candidate: str, _client: str = "") -> bool:
-        nonlocal compare_calls
-        with compare_lock:
-            compare_calls += 1
-        compare_barrier.wait(timeout=5)
-        return False
-
-    monkeypatch.setattr(policy, "verify_pairing_code", compare)
-
-    def attempt(_index: int) -> int:
-        with TestClient(
-            app,
-            headers={"Host": "testserver", "Origin": "http://testserver"},
-        ) as client:
-            return client.post(
-                "/api/pair",
-                json={"code": "00000000", "device_name": "Unknown browser"},
-            ).status_code
-
-    with ThreadPoolExecutor(max_workers=6) as executor:
-        statuses = list(executor.map(attempt, range(6)))
-
-    assert statuses.count(401) == 2
-    assert statuses.count(429) == 4
-    assert compare_calls == 2
-
-
-def test_malformed_and_oversized_pairing_consume_bounded_attempt_budget(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    limiter = PairingRateLimiter(per_client_limit=2, global_limit=10)
-    app = _security_app()
-    app.state.pairing_rate_limiter = limiter
-    client = TestClient(app, headers={"Host": "testserver", "Origin": "http://testserver"})
-
-    with caplog.at_level(logging.INFO, logger="autodj.audit"):
-        oversized = client.post("/api/pair", content=b"x" * 5000)
-        malformed = client.post(
-            "/api/pair", content=b"{", headers={"Content-Type": "application/json"}
-        )
-        invalid = {"code": "00000000", "device_name": "Unknown browser"}
-        blocked = client.post("/api/pair", json=invalid)
-        blocked_again = client.post("/api/pair", json=invalid)
-
-    assert [
-        response.status_code for response in (oversized, malformed, blocked, blocked_again)
-    ] == [
-        413,
-        422,
-        429,
-        429,
-    ]
-    statuses = [
-        json.loads(record.message)["status"]
-        for record in caplog.records
-        if record.name == "autodj.audit"
-    ]
-    assert statuses == [413, 422, 429]
-
-
-def test_successful_pairing_resets_per_client_failures() -> None:
-    limiter = PairingRateLimiter(per_client_limit=2, global_limit=100)
-    app = _security_app()
-    app.state.pairing_rate_limiter = limiter
-    client = TestClient(app, headers={"Host": "testserver", "Origin": "http://testserver"})
-
-    invalid = {"code": "00000000", "device_name": "Unknown browser"}
-    assert client.post("/api/pair", json=invalid).status_code == 401
-    assert _pair(client).status_code == 200
-    client.cookies.clear()
-    assert client.post("/api/pair", json=invalid).status_code == 401
-    assert _pair(client, name="Second browser").status_code == 200
 
 
 @pytest.mark.parametrize(
@@ -779,6 +620,7 @@ def test_options_has_no_cors_bypass() -> None:
         ("post", "/api/playback-settings"),
         ("post", "/api/bpm-range"),
         ("post", "/api/discovery"),
+        ("post", "/api/discovery/toggle"),
         ("post", "/api/eq"),
         ("post", "/api/library/stop"),
     ],
@@ -953,80 +795,25 @@ def test_websocket_closes_when_an_established_session_expires() -> None:
     assert expired.value.code == 4401
 
 
-def test_websocket_rejects_mutation_after_session_expiry() -> None:
-    now = [1000.0]
-    client, bridge = _security_client_and_bridge(session_ttl_seconds=60)
-    client.app.state.security_policy.now = lambda: now[0]
-    initial = bridge.player._state.discovery_enabled
-    assert _pair(client).status_code == 200
-
-    with client.websocket_connect("/ws") as websocket:
-        now[0] = 1061.0
-        websocket.send_json({"type": "toggle_discovery"})
-        with pytest.raises(WebSocketDisconnect) as expired:
-            websocket.receive_text()
-
-    assert expired.value.code == 4401
-    assert bridge.player._state.discovery_enabled is initial
-
-
-def test_websocket_audits_connect_mutation_and_disconnect(
+def test_websocket_ignores_inbound_frames_and_audits_connect_and_disconnect(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    client = _security_client()
+    """The socket only pushes state: a frame from the page changes nothing."""
+    client, bridge = _security_client_and_bridge()
     assert _pair(client).status_code == 200
+    initial = bridge.player._state.discovery_enabled
     with (
         caplog.at_level(logging.INFO, logger="autodj.audit"),
         client.websocket_connect("/ws") as websocket,
     ):
         websocket.send_text("not-json")
-        websocket.send_json({"type": "toggle_discovery"})
-    records = [json.loads(item.message) for item in caplog.records if item.name == "autodj.audit"]
-    assert [record["outcome"] for record in records[-3:]] == [
-        "connected",
-        "success",
-        "disconnected",
-    ]
-    assert records[-2]["action"] == "toggle_discovery"
-    assert all(record["route"] == "/ws" for record in records[-3:])
-
-
-def test_websocket_ignores_binary_frame_then_processes_mutation() -> None:
-    client, bridge = _security_client_and_bridge()
-    assert _pair(client).status_code == 200
-    initial = bridge.player._state.discovery_enabled
-
-    with client.websocket_connect("/ws") as websocket:
-        websocket.send_bytes(b"not-a-text-command")
+        websocket.send_bytes(b"binary")
         websocket.send_json({"type": "toggle_discovery"})
         time.sleep(0.05)
-
-    assert bridge.player._state.discovery_enabled is not initial
-
-
-def test_websocket_bridge_failure_closes_and_audits_cleanup(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    client, bridge = _security_client_and_bridge()
-    bridge.toggle_discovery = MagicMock(side_effect=RuntimeError("private failure details"))
-    assert _pair(client).status_code == 200
-    caplog.clear()
-
-    with (
-        caplog.at_level(logging.INFO, logger="autodj.audit"),
-        client.websocket_connect("/ws") as websocket,
-    ):
-        websocket.send_json({"type": "toggle_discovery"})
-        with pytest.raises(WebSocketDisconnect) as closed:
-            websocket.receive_text()
-    assert closed.value.code == 1011
+    assert bridge.player._state.discovery_enabled is initial
     records = [json.loads(item.message) for item in caplog.records if item.name == "autodj.audit"]
-    assert [(record["action"], record["outcome"], record["status"]) for record in records] == [
-        ("/ws", "connected", 101),
-        ("toggle_discovery", "rejected", 500),
-        ("/ws", "disconnected", 1011),
-    ]
-    assert "private failure details" not in caplog.text
+    assert [record["outcome"] for record in records[-2:]] == ["connected", "disconnected"]
+    assert all(record["route"] == "/ws" for record in records[-2:])
 
 
 # ---------------------------------------------------------------------------

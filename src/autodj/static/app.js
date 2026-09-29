@@ -595,11 +595,7 @@ function applyState(s) {
   // Discovery button — show only when discovery is configured
   if (s.discovery_available) {
     if (btnDiscovery.style.display !== "") btnDiscovery.style.display = "";
-    const isOn = s.discovery_enabled;
-    setAttributeIfChanged(btnDiscovery, "aria-pressed", isOn ? "true" : "false");
-    setButtonContent(btnDiscovery, isOn
-      ? '<span aria-hidden="true">\u25c8</span> Discovery <small aria-hidden="true">ON</small>'
-      : '<span aria-hidden="true">\u25c8</span> Discovery');
+    renderDiscovery(s.discovery_enabled);
   } else {
     if (btnDiscovery.style.display !== "none") btnDiscovery.style.display = "none";
   }
@@ -1496,15 +1492,30 @@ if (btnShortcutsClose) {
   });
 }
 
-// Discovery toggle — sent via WebSocket so the server can push updated state
-btnDiscovery.addEventListener("click", () => {
-  if (_ws && _ws.readyState === WebSocket.OPEN) {
-    _ws.send(JSON.stringify({ type: "toggle_discovery" }));
-  } else {
-    reportBackgroundRequestError(
-      new Error("Discovery is unavailable while disconnected."),
+function renderDiscovery(isOn) {
+  setAttributeIfChanged(btnDiscovery, "aria-pressed", isOn ? "true" : "false");
+  setButtonContent(btnDiscovery, isOn
+    ? '<span aria-hidden="true">\u25c8</span> Discovery <small aria-hidden="true">ON</small>'
+    : '<span aria-hidden="true">\u25c8</span> Discovery');
+}
+
+// Discovery toggle.  The button keeps focus, so NVDA reads its new pressed
+// state; nothing else is announced.
+btnDiscovery.addEventListener("click", async () => {
+  const epoch = captureAuthenticatedRequestEpoch();
+  let data;
+  try {
+    data = await withDisabled(
+      btnDiscovery,
+      () => requestJson("/api/discovery/toggle", { method: "POST" }),
     );
+  } catch (errorValue) {
+    if (!isAuthenticatedRequestCurrent(epoch)) return;
+    reportBackgroundRequestError(errorValue);
+    return;
   }
+  if (!isAuthenticatedRequestCurrent(epoch)) return;
+  renderDiscovery(Boolean(data.discovery_enabled));
 });
 
 // Volume slider — debounced to avoid flooding server + announce only on

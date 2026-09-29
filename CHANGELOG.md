@@ -76,6 +76,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   needed to run the JavaScript tests, lint and browser audits.
 - The page's scripts and stylesheet are now checked with the server on each page load and reused
   from the browser cache when unchanged, instead of being downloaded again every time.
+- Settings saved by the web page (`web_state.json`) are checked on restart by the same rules the
+  settings page's requests must pass, one setting at a time: a bad value is skipped with a
+  warning and the other saved settings still apply. A file with any `schema_version` other than
+  2 is ignored instead of partly applied. `prefetch_next_track` and `silence_trigger_crossfade`
+  are no longer saved there, since the page cannot change them, so the values in `config.toml`
+  apply; an older file that still has them logs a warning for each until the page next saves.
+- An unknown harmonic mode sent to `POST /api/djmix` is refused with an error instead of being
+  ignored.
+- The Now Playing Discovery button now uses `POST /api/discovery/toggle`, which needs a paired
+  session like the other controls, instead of a message on the WebSocket. The WebSocket only sends
+  state to the page and ignores anything the page sends on it. The button also works while the
+  WebSocket is reconnecting.
 
 ### Removed
 
@@ -95,6 +107,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   untracked. `autodj doctor` no longer has a `frontend-bundle` check.
 - The `/static/` URLs. The page never used them; it loads its files from `/`, `/app.css`,
   `/app.js`, `/modules/` and the worklet URLs, which stay.
+- The request-rate limit on pairing (five tries a minute per address) and on stream links. The
+  wrong-code lockout still stops guessing: ten wrong pairing codes lock an address out until the
+  code changes, and fifty from all addresses pause pairing. A wrong stream link now always
+  answers "not found"; its 256-bit secret cannot be guessed.
 
 ### Fixed
 
@@ -107,6 +123,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `autodj analyse --limit N` deleted the DJ data (intro, outro, beat grid and cues, imported cues
   included) of every indexed track past the first N. It now keeps all of it and analyses at most N
   of the tracks that still need analysis. A limit below 1 is refused.
+- `autodj serve` flags now win over the settings saved from the web page, as the README says.
+  `--preset`, `--bpm-range`, `--discovery-every`, `--transition`, the DJ-mix flags and the other
+  playback flags used to be replaced by the saved value on start. Settings not given on the
+  command line are still restored from `web_state.json`.
 - The liner ducking level (Duck depth) now only accepts -30 to 0 dB. A positive value used to
   boost the music, not quieten it, while a liner played. AutoDJ refuses to start with
   `liners_duck_db` outside that range in the config file, the server refuses it, a saved value

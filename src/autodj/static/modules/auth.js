@@ -3,9 +3,6 @@ import {
   requestJson,
 } from "./api-client.js";
 
-// The request limiter's generic 429 detail.  It says less than the
-// Retry-After wording below, so it does not replace it.
-const GENERIC_RATE_LIMIT_DETAIL = "Too many pairing attempts";
 const MAX_SERVER_DETAIL_LENGTH = 200;
 // Shown when a session this browser had is revoked or expires.
 export const SIGNED_OUT_TEXT = "This browser was signed out. Enter a new pairing code.";
@@ -20,7 +17,6 @@ async function pairingLockoutDetail(response) {
     if (typeof detail !== "string") return null;
     const text = detail.trim();
     if (!text || text.length > MAX_SERVER_DETAIL_LENGTH) return null;
-    if (text === GENERIC_RATE_LIMIT_DETAIL) return null;
     return text;
   } catch (_) {
     return null;
