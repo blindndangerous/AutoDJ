@@ -3,7 +3,7 @@
 ## Supported versions
 
 Only the latest tagged release on `master` receives security updates. The current supported line is
-`0.18.x`. Versions before 0.18 no longer receive security fixes.
+`0.19.x`. Versions before 0.19 no longer receive security fixes.
 
 ## Reporting a vulnerability
 

@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-09-29
+
 ### Added
 
 - `[index] throttle_ms` sets a pause before each track that `autodj index` and `autodj analyse`
@@ -1166,7 +1168,8 @@ The "make it feel like a real radio station" release.
 
 AutoDJ is built and maintained by a blind developer.  Every change to the web UI runs through an accessibility review before it ships.  If you find a screen-reader bug or a keyboard trap, please file an issue.
 
-[Unreleased]: https://github.com/blindndangerous/AutoDJ/compare/v0.18.2...HEAD
+[Unreleased]: https://github.com/blindndangerous/AutoDJ/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/blindndangerous/AutoDJ/compare/v0.18.2...v0.19.0
 [0.18.2]: https://github.com/blindndangerous/AutoDJ/compare/v0.18.1...v0.18.2
 [0.18.1]: https://github.com/blindndangerous/AutoDJ/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/blindndangerous/AutoDJ/compare/v0.16.1...v0.18.0
