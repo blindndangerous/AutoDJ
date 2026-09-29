@@ -1716,9 +1716,6 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
   if (!ctx || effect === "none" || !effect) return () => {};
   // Caller (startCrossfade) resolves the effect-preferred duration and
   // passes it in so the gain ramp and the effect share one timeline.
-  if (fadeSec == null || !(fadeSec > 0)) {
-    fadeSec = _effectDurationFor(effect, 3.0, _currentOutroLenCache);
-  }
   const t0 = ctx.currentTime;
   const wet = _wetMixCache;
   const teardowns = [];
@@ -1832,16 +1829,19 @@ export function startCrossfade(nextPath, fadeSec, serverLed = false) {
 
   const active = deckActive();
   const t0 = _ctx.currentTime;
+  // A fade of 0 (crossfade seconds 0) is a cut, as in the server mix:
+  // no transition effect, the incoming deck at full at once.
+  const cut = !(fadeSec > 0);
 
   // Resolve + apply the chosen transition effect over the fade window.
-  const fxName = _resolveTransition(_lastTransitionFx);
+  const fxName = cut ? "none" : _resolveTransition(_lastTransitionFx);
   // Resolve effect-preferred duration UP FRONT so the gain ramp, the
   // effect scheduling, and the cleanup setTimeout all use the SAME
   // timeline.  Earlier code resolved this inside applyTransitionFx
   // which left the gain ramp ending before / after the effect tail and
   // caused audible cuts (effect-shorter-than-fade) or trailing silence
   // (effect-longer-than-fade).
-  const effectDur = _effectDurationFor(fxName, fadeSec, _currentOutroLenCache);
+  const effectDur = cut ? 0 : _effectDurationFor(fxName, fadeSec, _currentOutroLenCache);
   // Refresh the beat-sync cache up front so applyTransitionFx can read
   // _BS.beatSec / barSec / nextDownbeat / rootHzAt while scheduling.
   _BS.refresh(active, t0, effectDur);
@@ -1854,16 +1854,20 @@ export function startCrossfade(nextPath, fadeSec, serverLed = false) {
   // deck.gain.setValueAtTime(0, t0+0.001) for freeze / glitch /
   // bitcrusher) aren't wiped out by a later cancelScheduledValues(t0).
   active.gain.gain.cancelScheduledValues(t0);
-  active.gain.gain.setValueAtTime(active.gain.gain.value, t0);
-  active.gain.gain.linearRampToValueAtTime(0, t0 + effectDur);
-
   standby.gain.gain.cancelScheduledValues(t0);
-  standby.gain.gain.setValueAtTime(0, t0);
-  if (_fadeInSecondsCache <= 0) {
+  if (cut) {
+    active.gain.gain.setValueAtTime(0, t0);
     standby.gain.gain.setValueAtTime(1, t0);
   } else {
-    const fadeInDur = Math.min(_fadeInSecondsCache, effectDur);
-    standby.gain.gain.linearRampToValueAtTime(1, t0 + fadeInDur);
+    active.gain.gain.setValueAtTime(active.gain.gain.value, t0);
+    active.gain.gain.linearRampToValueAtTime(0, t0 + effectDur);
+    standby.gain.gain.setValueAtTime(0, t0);
+    if (_fadeInSecondsCache <= 0) {
+      standby.gain.gain.setValueAtTime(1, t0);
+    } else {
+      const fadeInDur = Math.min(_fadeInSecondsCache, effectDur);
+      standby.gain.gain.linearRampToValueAtTime(1, t0 + fadeInDur);
+    }
   }
 
   // Pass the resolved duration so applyTransitionFx no longer recomputes
@@ -2144,8 +2148,10 @@ export function applyBrowserPlaybackState(s) {
   // the way (no decks fired up, no crossfade, no advance posts).
   if (!s.browser_playback) return;
 
-  _crossfadeSecondsCache = (s.settings && s.settings.playback &&
-    s.settings.playback.crossfade_seconds) || 3.0;
+  // 0 is a real setting (cut between tracks), not a missing one.
+  const crossfade = s.settings && s.settings.playback
+    && s.settings.playback.crossfade_seconds;
+  _crossfadeSecondsCache = typeof crossfade === "number" && crossfade >= 0 ? crossfade : 3.0;
   _fadeInSecondsCache = (s.settings && s.settings.playback &&
     typeof s.settings.playback.fade_in_seconds === "number")
     ? s.settings.playback.fade_in_seconds : 3.0;

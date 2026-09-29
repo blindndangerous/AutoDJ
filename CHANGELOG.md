@@ -203,6 +203,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   by `autodj index` is below about -60 dBFS. Similarity, anchored and random picks, discovery,
   the first track of a set (also in stream mode) and the Shuffle button all skip them. A silent
   track still plays when you choose it in search with Play now, Play next or Add to queue.
+- Crossfade seconds set to 0 now cuts from one track to the next in the web page too, as it
+  already did in the server mix. The page used to play a 3 second fade instead. With 0 there is no
+  transition effect either. In the Full intro and outro and Outro fade modes, tracks with detected
+  markers still fade for 1 to 12 seconds, in the page and in the server mix alike.
 
 ## [0.18.1] - 2026-09-28
 

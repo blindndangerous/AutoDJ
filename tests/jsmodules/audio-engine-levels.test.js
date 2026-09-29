@@ -31,13 +31,16 @@ class FakeParam {
   constructor(value) {
     this._value = value;
     this.events = [];
+    this.ramps = [];
     this.inputs = new Set();
   }
   get value() { return this._value; }
   set value(v) { this._value = v; this.events.push(v); }
   setValueAtTime(v) { this._value = v; this.events.push(v); return this; }
-  linearRampToValueAtTime(v) { this._value = v; this.events.push(v); return this; }
-  exponentialRampToValueAtTime(v) { this._value = v; this.events.push(v); return this; }
+  linearRampToValueAtTime(v) { this._value = v; this.events.push(v); this.ramps.push(v); return this; }
+  exponentialRampToValueAtTime(v) {
+    this._value = v; this.events.push(v); this.ramps.push(v); return this;
+  }
   setTargetAtTime(v) { this._value = v; this.events.push(v); return this; }
   cancelScheduledValues() { return this; }
   // The default only counts when the engine never sets the parameter.
@@ -258,7 +261,7 @@ async function settle() {
 
 // Run one transition and return the engine and the graph it built.
 async function runEffect(effect, {
-  volume = 0.5, wetMix = 1, worklets = true, muted = false, unlock = false,
+  volume = 0.5, wetMix = 1, worklets = true, muted = false, unlock = false, crossfade = 6,
 } = {}) {
   installDom();
   let ctx = null;
@@ -285,7 +288,7 @@ async function runEffect(effect, {
     is_paused: false,
     settings: {
       transition: effect,
-      playback: { fade_in_seconds: 0, transition_wet_mix: wetMix },
+      playback: { crossfade_seconds: crossfade, fade_in_seconds: 0, transition_wet_mix: wetMix },
     },
   });
   engine.ensureAudioGraph();
@@ -293,9 +296,11 @@ async function runEffect(effect, {
   // Play pressed, so the decks follow pause and resume.
   if (unlock) await engine.unlockAndPlay();
   engine.setSrcOnDeck(engine.decks[0], "current.mp3");
-  void engine.startCrossfade("next.mp3", 6, true);
+  const nodesBefore = ctx.nodes.length;
+  // The fade the server-led path uses: the page's crossfade setting.
+  void engine.startCrossfade("next.mp3", engine._crossfadeSecondsCache, true);
   await settle();
-  return { ctx, engine };
+  return { ctx, engine, nodesBefore };
 }
 
 // Worst-case gain from each source to the master when that source alone
@@ -443,6 +448,23 @@ describe("transition effect levels", () => {
         expect(deck.source.outputs.has(deck.analyser), `${effect} after`).toBe(true);
         expect(deck.source.outputs.has(deck.gain), `${effect} after`).toBe(true);
       }
+    });
+  }
+
+  // Crossfade seconds 0 cuts, as the server mix does: no ramp, no effect,
+  // and the incoming deck at the same deck level, under the page volume.
+  for (const effect of ["none", "echo_out", "rotate"]) {
+    it(`${effect} with crossfade 0: a cut from one deck to the other`, async () => {
+      const { ctx, engine, nodesBefore } = await runEffect(effect, { crossfade: 0 });
+      expect(engine._crossfadeSecondsCache).toBe(0);
+      expect(ctx.nodes.length).toBe(nodesBefore);
+      expect(engine.decks.map((d) => d.gain.gain.events.at(-1))).toEqual([0, 1]);
+      for (const deck of engine.decks) {
+        expect(deck.gain.gain.ramps).toEqual([]);
+        expect(deck.gain.gain.highest).toBeLessThanOrEqual(1);
+      }
+      expect(engine._master.gain.highest).toBeLessThanOrEqual(0.5);
+      engine.stopAllDecks();
     });
   }
 
