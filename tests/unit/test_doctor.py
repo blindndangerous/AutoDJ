@@ -292,8 +292,23 @@ def test_missing_ffmpeg_warns_with_alac_fallback(monkeypatch: pytest.MonkeyPatch
     check = doctor._dependency_check()
 
     assert check.status is doctor.CheckStatus.WARN
-    assert "ALAC" in check.detail
     assert "raw ALAC fallback" in check.detail
+    # The indexer decodes these through FFmpeg and skips them without it.
+    assert ".m4a, .mp4 and .aac files, which are skipped" in check.detail
+
+
+def test_missing_beets_db_warns_and_unset_passes(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    assert doctor._beets_db_check(cfg).status is doctor.CheckStatus.PASS
+
+    cfg.library.beets_db = tmp_path / "missing" / "library.db"
+    check = doctor._beets_db_check(cfg)
+    assert check.status is doctor.CheckStatus.WARN
+    assert "enrich fails" in check.detail
+
+    cfg.library.beets_db = tmp_path / "library.db"
+    cfg.library.beets_db.write_bytes(b"")
+    assert doctor._beets_db_check(cfg).status is doctor.CheckStatus.PASS
 
 
 def test_network_rejects_unsafe_bind_and_accepts_loopback_alternates(tmp_path: Path) -> None:
@@ -467,6 +482,7 @@ def test_run_doctor_check_order(tmp_path: Path) -> None:
         "configuration",
         "python",
         "music-path",
+        "beets-db",
         "index-path",
         "model-path",
         "index",
