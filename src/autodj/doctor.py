@@ -259,9 +259,9 @@ def _dependency_check() -> DoctorCheck:
     if not ffmpeg:
         issues.append("FFmpeg missing")
         details.append(
-            "Install FFmpeg to index .m4a, .mp4 and .aac files, which are skipped without it, "
-            "and to use stream mode. Optional ALAC browser transcoding is unavailable; "
-            "raw ALAC fallback remains available."
+            "Install FFmpeg to index, analyse and mix .m4a, .mp4 and .aac files, which are "
+            "skipped without it, and to use stream mode. Optional ALAC browser transcoding is "
+            "unavailable; raw ALAC fallback remains available."
         )
     return DoctorCheck(
         "dependencies",

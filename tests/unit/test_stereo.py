@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -70,6 +72,70 @@ def test_load_stereo_keeps_two_channels(tmp_path: Path) -> None:
     out = stereo.load_stereo(str(path))
     np.testing.assert_allclose(out[:, 0], left, atol=1e-4)
     np.testing.assert_allclose(out[:, 1], right, atol=1e-4)
+
+
+def _fake_ffmpeg(decoded: np.ndarray, sr: int):
+    """Patchers that make FFmpeg "decode" any file to *decoded* at *sr*."""
+    return (
+        patch.object(stereo.shutil, "which", return_value="/usr/bin/ffmpeg"),
+        patch.object(stereo.subprocess, "run", return_value=MagicMock(returncode=0, stderr=b"")),
+        patch.object(stereo.sf, "read", return_value=(decoded, sr)),
+    )
+
+
+def test_load_stereo_decodes_m4a_with_ffmpeg_at_the_target_rate() -> None:
+    decoded = np.zeros((44100, 2), dtype=np.float32)
+    which, run, read = _fake_ffmpeg(decoded, 44100)
+    with which, run as ran, read:
+        out = stereo.load_stereo("song.m4a", 44100, max_seconds=60.0)
+
+    command = ran.call_args.args[0]
+    assert command[command.index("-i") + 1] == "song.m4a"
+    assert command[command.index("-ac") + 1] == "2"
+    assert command[command.index("-ar") + 1] == "44100"
+    assert command[command.index("-t") + 1] == "61.000"
+    assert out.shape == (44100, 2)
+
+
+def test_load_stereo_refuses_an_m4a_longer_than_max_seconds() -> None:
+    decoded = np.zeros((44100 * 3, 2), dtype=np.float32)
+    which, run, read = _fake_ffmpeg(decoded, 44100)
+    with which, run, read, pytest.raises(stereo.TrackTooLongError):
+        stereo.load_stereo("song.m4a", 44100, max_seconds=2.0)
+
+
+def test_player_load_audio_decodes_m4a_with_ffmpeg() -> None:
+    decoded = np.zeros(4800, dtype=np.float32)
+    which, run, read = _fake_ffmpeg(decoded, 48000)
+    with which, run as ran, read:
+        audio, sr = player.load_audio("song.m4a")
+
+    command = ran.call_args.args[0]
+    assert command[command.index("-ac") + 1] == "1"
+    assert "-ar" not in command
+    assert sr == 48000
+    assert audio.shape == (4800,)
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs FFmpeg to encode ALAC")
+def test_alac_file_loads_for_the_server_mix_and_analysis(tmp_path: Path) -> None:
+    source = tmp_path / "tone.wav"
+    left, right = _tone(44100), -_tone(44100)
+    sf.write(source, np.stack([left, right], axis=1), 44100)
+    alac = tmp_path / "tone.m4a"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(source), "-c:a", "alac", str(alac)],
+        check=True,
+    )
+
+    mixed = stereo.load_stereo(str(alac), 44100, max_seconds=60.0)
+    assert mixed.shape == (44100, 2)
+    np.testing.assert_allclose(mixed[:, 0], left, atol=1e-3)
+    np.testing.assert_allclose(mixed[:, 1], right, atol=1e-3)
+
+    analysed, sr = player.load_audio(str(alac))
+    assert sr == 44100
+    assert analysed.shape == (44100,)
 
 
 @pytest.mark.parametrize("ducked", [False, True])
@@ -152,5 +218,5 @@ def test_load_stereo_fallback_decodes_at_most_a_second_past_the_limit() -> None:
         patch("librosa.load", return_value=(too_long, 22050)) as load,
         pytest.raises(stereo.TrackTooLongError),
     ):
-        stereo.load_stereo("mix.m4a", target_sr=22050, max_seconds=2.0)
+        stereo.load_stereo("mix.mp3", target_sr=22050, max_seconds=2.0)
     assert load.call_args.kwargs["duration"] == 3.0

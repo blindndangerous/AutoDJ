@@ -28,10 +28,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
-import shutil
 import sqlite3
-import subprocess  # nosec B404 -- FFmpeg uses fixed argv without a shell
-import tempfile
 import time
 import warnings
 from collections import deque
@@ -408,54 +405,20 @@ def walk_music_dir(music_dir: Path, formats: list[str]) -> Iterator[Path]:
 
 # Formats handled natively by soundfile (fast C library, no Python overhead).
 _SOUNDFILE_FORMATS = {".flac", ".wav", ".ogg", ".aif", ".aiff"}
-_FFMPEG_FORMATS = {".aac", ".m4a", ".mp4"}
+_FFMPEG_FORMATS = {".aac", ".m4a", ".mp4"}  # keep in step with autodj.stereo.FFMPEG_FORMATS
 
 
 def _load_audio_ffmpeg(path: Path) -> tuple[np.ndarray, int]:
     """Decode *path* through FFmpeg into a mono float32 array."""
     if sf is None:
         raise RuntimeError("soundfile is required to read FFmpeg decoder output")
-    ffmpeg = shutil.which("ffmpeg")
-    if ffmpeg is None:
-        raise RuntimeError(
-            f"FFmpeg is required to decode {path.suffix or 'this audio format'} files"
-        )
+    # autodj.stereo needs soundfile, so it is imported only once that is known.
+    from autodj.stereo import load_with_ffmpeg
 
-    # Spool larger decodes to disk so the WAV byte stream does not duplicate a
-    # full track in RAM alongside the numpy array.  The returned array remains
-    # valid after the temporary file closes.
-    with tempfile.SpooledTemporaryFile(max_size=16 * 1024 * 1024) as decoded:
-        result = subprocess.run(  # nosec B603 -- fixed argv, no shell
-            [
-                ffmpeg,
-                "-v",
-                "error",
-                "-nostdin",
-                "-i",
-                str(path),
-                "-map",
-                "0:a:0",
-                "-ac",
-                "1",
-                "-c:a",
-                "pcm_f32le",
-                "-f",
-                "wav",
-                "pipe:1",
-            ],
-            stdout=decoded,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
-        if result.returncode != 0:
-            detail = result.stderr.decode("utf-8", errors="replace").strip()
-            raise RuntimeError(f"FFmpeg could not decode {path}: {detail or 'unknown error'}")
-        decoded.seek(0)
-        audio, sr = sf.read(decoded, dtype="float32", always_2d=False)
-
+    audio, sr = load_with_ffmpeg(path, channels=1)
     if audio.ndim == 2:
         audio = audio.mean(axis=1)
-    return audio, int(sr)
+    return audio, sr
 
 
 def _load_audio(path: Path) -> tuple[np.ndarray, int]:

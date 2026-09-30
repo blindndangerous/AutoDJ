@@ -41,10 +41,12 @@ from autodj.indexer import IndexEntry
 from autodj.mixbus import BusEvents, MixBus, RenderedTrack
 from autodj.render_ahead import RenderAhead
 from autodj.stereo import (
+    FFMPEG_FORMATS,
     SAMPLE_RATE,
     TrackTooLongError,
     envelope,
     load_stereo,
+    load_with_ffmpeg,
     mono,
     per_channel,
     to_stereo,
@@ -495,8 +497,8 @@ class _PickContext:
 def load_audio(path: str, target_sr: int = _DEFAULT_SR) -> tuple[np.ndarray, int]:
     """Load an audio file as a mono float32 array.
 
-    Uses ``soundfile`` for lossless formats (FLAC, WAV) and falls back to
-    ``librosa`` for MP3 and M4A.
+    Uses FFmpeg for MP4-container audio such as ALAC, ``soundfile`` for
+    the rest, and falls back to ``librosa`` for files soundfile rejects.
 
     Args:
         path: Absolute path to the audio file.
@@ -509,8 +511,10 @@ def load_audio(path: str, target_sr: int = _DEFAULT_SR) -> tuple[np.ndarray, int
 
     Raises:
         RuntimeError: ``soundfile.LibsndfileError`` when neither decoder can
-            read the file.
+            read the file, or FFmpeg's error for MP4-container audio.
     """
+    if Path(path).suffix.lower() in FFMPEG_FORMATS:
+        return load_with_ffmpeg(path, channels=1)
     try:
         audio, sr = sf.read(path, dtype="float32", always_2d=False)
         # Mix down to mono if stereo

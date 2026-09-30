@@ -7,12 +7,20 @@ helpers let that code run on each channel without rewriting it.
 
 from __future__ import annotations
 
+import shutil
+import subprocess  # nosec B404 -- FFmpeg runs with a fixed argv and no shell
+import tempfile
 from collections.abc import Callable
+from pathlib import Path
 
 import numpy as np
 import soundfile as sf
 
 SAMPLE_RATE = 44_100
+
+# MP4-container audio (ALAC, AAC).  libsndfile cannot open it and librosa 1.0
+# has no other decoder, so FFmpeg decodes it.
+FFMPEG_FORMATS = frozenset({".aac", ".m4a", ".mp4"})
 
 
 def to_stereo(audio: np.ndarray) -> np.ndarray:
@@ -100,18 +108,72 @@ class TrackTooLongError(ValueError):
         self.seconds = seconds
 
 
+def load_with_ffmpeg(
+    path: str | Path,
+    *,
+    channels: int,
+    sample_rate: int | None = None,
+    max_seconds: float | None = None,
+) -> tuple[np.ndarray, int]:
+    """Decode *path*'s first audio stream through FFmpeg into float32.
+
+    Args:
+        path: Audio file path.
+        channels: Output channels.  ``1`` returns ``(frames,)``; more
+            returns ``(frames, channels)``.
+        sample_rate: Output rate in Hz, or ``None`` for the file's own.
+        max_seconds: Decode at most this many seconds, or ``None`` for all.
+
+    Returns:
+        ``(audio, sample_rate)``.
+
+    Raises:
+        RuntimeError: If FFmpeg is not installed or cannot decode the file.
+    """
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise RuntimeError(
+            f"FFmpeg is required to decode {Path(path).suffix or 'this audio format'} files"
+        )
+    command = [ffmpeg, "-v", "error", "-nostdin", "-i", str(path), "-map", "0:a:0"]
+    command += ["-ac", str(channels)]
+    if sample_rate is not None:
+        command += ["-ar", str(sample_rate)]
+    if max_seconds is not None:
+        command += ["-t", f"{max_seconds:.3f}"]
+    command += ["-c:a", "pcm_f32le", "-f", "wav", "pipe:1"]
+
+    # Spool larger decodes to disk so the WAV byte stream does not duplicate a
+    # full track in RAM alongside the numpy array.  The returned array remains
+    # valid after the temporary file closes.
+    with tempfile.SpooledTemporaryFile(max_size=16 * 1024 * 1024) as decoded:
+        result = subprocess.run(  # nosec B603 -- fixed argv, no shell
+            command,
+            stdout=decoded,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if result.returncode != 0:
+            detail = result.stderr.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(f"FFmpeg could not decode {path}: {detail or 'unknown error'}")
+        decoded.seek(0)
+        audio, sr = sf.read(decoded, dtype="float32", always_2d=channels > 1)
+    return audio, int(sr)
+
+
 def load_stereo(
     path: str, target_sr: int = SAMPLE_RATE, max_seconds: float | None = None
 ) -> np.ndarray:
     """Load an audio file as stereo float32 at *target_sr*.
 
-    Uses soundfile first and falls back to librosa for formats soundfile
-    cannot read.  Both paths resample to *target_sr*.
+    Uses FFmpeg for MP4-container audio such as ALAC, and soundfile for
+    the rest, falling back to librosa for formats soundfile cannot read.
+    All paths resample to *target_sr*.
 
     A decoded track costs about 21 MB per minute (stereo float32 at
     44.1 kHz), so *max_seconds* refuses longer files before decoding
-    them: soundfile reads the length from the header, and the librosa
-    fallback decodes at most a second past the limit.
+    them: soundfile reads the length from the header, and FFmpeg and the
+    librosa fallback decode at most a second past the limit.
 
     Args:
         path: Audio file path.
@@ -123,9 +185,17 @@ def load_stereo(
 
     Raises:
         RuntimeError: ``soundfile.LibsndfileError`` when neither decoder can
-            read the file.
+            read the file, or FFmpeg's error for MP4-container audio.
         TrackTooLongError: If the track is longer than *max_seconds*.
     """
+    if Path(path).suffix.lower() in FFMPEG_FORMATS:
+        duration = None if max_seconds is None else max_seconds + 1.0
+        decoded, rate = load_with_ffmpeg(
+            path, channels=2, sample_rate=target_sr, max_seconds=duration
+        )
+        if max_seconds is not None and len(decoded) > max_seconds * rate:
+            raise TrackTooLongError(path, len(decoded) / rate)
+        return to_stereo(decoded)
     try:
         with sf.SoundFile(path) as source:
             seconds = source.frames / source.samplerate

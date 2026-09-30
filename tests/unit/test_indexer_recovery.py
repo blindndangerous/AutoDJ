@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 import autodj.indexer as indexer
+import autodj.stereo as stereo_mod
 
 
 def _entry(path: str, *, artist: str = "Artist") -> indexer.IndexEntry:
@@ -55,8 +56,8 @@ def test_load_audio_decodes_m4a_with_ffmpeg() -> None:
     completed = MagicMock(returncode=0, stderr=b"")
 
     with (
-        patch.object(indexer.shutil, "which", return_value="/usr/bin/ffmpeg"),
-        patch.object(indexer.subprocess, "run", return_value=completed) as run,
+        patch.object(stereo_mod.shutil, "which", return_value="/usr/bin/ffmpeg"),
+        patch.object(stereo_mod.subprocess, "run", return_value=completed) as run,
         patch.object(indexer.sf, "read", return_value=(stereo, 44_100)) as read,
     ):
         audio, sample_rate = indexer._load_audio(Path("song.m4a"))
@@ -72,7 +73,7 @@ def test_load_audio_decodes_m4a_with_ffmpeg() -> None:
 
 def test_load_audio_ffmpeg_reports_missing_binary() -> None:
     with (
-        patch.object(indexer.shutil, "which", return_value=None),
+        patch.object(stereo_mod.shutil, "which", return_value=None),
         pytest.raises(RuntimeError, match=r"FFmpeg is required to decode \.m4a"),
     ):
         indexer._load_audio_ffmpeg(Path("song.m4a"))
@@ -86,8 +87,8 @@ def test_load_audio_ffmpeg_reports_decoder_failure(stderr: bytes, message: str) 
     completed = MagicMock(returncode=1, stderr=stderr)
 
     with (
-        patch.object(indexer.shutil, "which", return_value="/usr/bin/ffmpeg"),
-        patch.object(indexer.subprocess, "run", return_value=completed),
+        patch.object(stereo_mod.shutil, "which", return_value="/usr/bin/ffmpeg"),
+        patch.object(stereo_mod.subprocess, "run", return_value=completed),
         pytest.raises(RuntimeError, match=message),
     ):
         indexer._load_audio_ffmpeg(Path("song.m4a"))
