@@ -3,6 +3,8 @@
 This module powers the pro-DJ features layered on top of the basic
 similarity engine:
 
+- :func:`detect_intro_start` — find the first sound, where the incoming
+  track starts during a crossfade (leading silence is skipped).
 - :func:`detect_intro_outro` — find the seconds at which the perceived
   intro ends and the outro starts, used for outro→intro-aligned crossfade.
 - :func:`detect_beat_grid` — extract beat positions, used for
@@ -57,6 +59,34 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Intro / outro detection
 # ---------------------------------------------------------------------------
+
+# Mixxx's analyser treats samples below -60 dBFS as silence.
+_SILENCE_AMPLITUDE = 10 ** (-60 / 20)
+
+
+def detect_intro_start(audio: np.ndarray, sr: int) -> float:
+    """Return the seconds of the first sample louder than -60 dBFS.
+
+    This is where a track enters during a crossfade: only leading silence
+    is skipped, never a quiet intro, so a verse sung over it stays whole.
+
+    Args:
+        audio: Float audio array, mono or ``(samples, channels)``.
+        sr: Sample rate in Hz.
+
+    Returns:
+        The first-sound time in seconds, ``0.0`` for an empty or silent
+        track.
+    """
+    if len(audio) == 0:
+        return 0.0
+    loud = np.abs(audio) >= _SILENCE_AMPLITUDE
+    if loud.ndim > 1:
+        loud = loud.any(axis=1)
+    first = int(np.argmax(loud))
+    if not loud[first]:
+        return 0.0
+    return first / max(1, sr)
 
 
 def detect_intro_outro(
@@ -457,6 +487,9 @@ class DjMeta:
     """Per-track DJ analysis cache entry.
 
     Attributes:
+        intro_start_s: Seconds of the first sound, where the track enters
+            in a crossfade.  ``None`` = not measured (tracks analysed
+            before this field existed); treat it as ``0.0``.
         intro_end_s: Seconds at which the intro ends.  ``0.0`` = no intro
             detected (or detection has not been run yet).
         outro_start_s: Seconds at which the outro starts; the track length
@@ -475,6 +508,7 @@ class DjMeta:
     beats: list[float] = field(default_factory=list)
     analysed: bool = False
     cues: list[Cue] = field(default_factory=list)
+    intro_start_s: float | None = None
 
 
 class DjMetaCache:
@@ -497,7 +531,8 @@ class DjMetaCache:
             outro_start_s REAL NOT NULL DEFAULT 0,
             analysed      INTEGER NOT NULL DEFAULT 0,
             beats         TEXT,  -- JSON list of floats
-            cues          TEXT   -- JSON list of Cue dicts
+            cues          TEXT,  -- JSON list of Cue dicts
+            intro_start_s REAL   -- NULL = not measured yet
         );
 
     Beats + cues stay JSON-encoded inside a single row because they are
@@ -519,7 +554,8 @@ class DjMetaCache:
             outro_start_s REAL NOT NULL DEFAULT 0,
             analysed      INTEGER NOT NULL DEFAULT 0,
             beats         TEXT,
-            cues          TEXT
+            cues          TEXT,
+            intro_start_s REAL
         );
     """
 
@@ -591,6 +627,11 @@ class DjMetaCache:
         # ``immediate_transaction`` blocks bracket each transaction cleanly.
         self._conn = sqlite3.connect(self._path, check_same_thread=False, isolation_level=None)
         self._conn.executescript(self._SCHEMA)
+        # Caches written before intro_start_s existed lack the column; NULL
+        # marks their rows as not measured.
+        columns = {row[1] for row in self._conn.execute("PRAGMA table_info(dj_meta)")}
+        if "intro_start_s" not in columns:
+            self._conn.execute("ALTER TABLE dj_meta ADD COLUMN intro_start_s REAL")
         # WAL = concurrent reader while the writer flushes; NORMAL sync
         # is the standard pragma for long-running app stores (durability
         # trade-off is fine — we re-derive on missing rows anyway).
@@ -610,7 +651,7 @@ class DjMetaCache:
 
     def _row_to_meta(self, row: tuple) -> DjMeta:
         """Decode one SQLite row into DJ metadata."""
-        intro, outro, analysed, beats_json, cues_json = row
+        intro, outro, analysed, beats_json, cues_json, intro_start = row
         try:
             beats = json.loads(beats_json or "[]")
             cue_dicts = json.loads(cues_json or "[]")
@@ -623,6 +664,7 @@ class DjMetaCache:
             beats=[float(b) for b in beats],
             analysed=bool(analysed),
             cues=cues,
+            intro_start_s=None if intro_start is None else float(intro_start),
         )
 
     def get(self, path: str) -> DjMeta:
@@ -635,7 +677,7 @@ class DjMetaCache:
                 return self._mem_cache[key]
             assert self._conn is not None
             row = self._conn.execute(
-                "SELECT intro_end_s, outro_start_s, analysed, beats, cues "
+                "SELECT intro_end_s, outro_start_s, analysed, beats, cues, intro_start_s "
                 "FROM dj_meta WHERE path = ?",
                 (key,),
             ).fetchone()
@@ -666,14 +708,15 @@ class DjMetaCache:
                 int(bool(meta.analysed)),
                 json.dumps([float(beat) for beat in meta.beats]),
                 json.dumps([asdict(cue) for cue in meta.cues]),
+                None if meta.intro_start_s is None else float(meta.intro_start_s),
             )
             for path, meta in self._buf.items()
         ]
         if rows:
             self._conn.executemany(
                 "INSERT OR REPLACE INTO dj_meta "
-                "(path, intro_end_s, outro_start_s, analysed, beats, cues) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "(path, intro_end_s, outro_start_s, analysed, beats, cues, intro_start_s) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 rows,
             )
 
@@ -969,6 +1012,7 @@ def analyse_audio(audio: np.ndarray, sr: int) -> DjMeta:
     beats = detect_beat_grid(audio, sr)
     cues = detect_cues(audio, sr, intro_end, outro_start, beats)
     return DjMeta(
+        intro_start_s=detect_intro_start(audio, sr),
         intro_end_s=intro_end,
         outro_start_s=outro_start,
         beats=beats,

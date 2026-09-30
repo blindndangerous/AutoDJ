@@ -34,7 +34,7 @@ class RenderedTrack:
         next_entry: The track mixed into the tail, or ``None`` when this is
             the last track (or there was no room for a crossfade).
         next_start_offset: Samples of *next_entry*'s audio already played in
-            the overlap (including any skipped intro), so the following
+            the overlap (including any skipped leading silence), so the following
             render call knows where to continue without replaying them.
             Expressed in *next_entry*'s own, as-loaded-fresh timeline (i.e.
             already converted back out of any beat-match stretch).

@@ -43,7 +43,7 @@ def renderer(monkeypatch: pytest.MonkeyPatch) -> player_mod.Player:
     p._effective_crossfade_seconds = lambda *_a: 2.0
     p._crossfade_start_in_a = lambda audio_a, _sr, _meta, cf: len(audio_a) - cf
     p._maybe_beatmatch = lambda audio_b, *_a: audio_b
-    p._skip_incoming_intro_samples = lambda _audio_b, _sr, _e: 0
+    p._skip_incoming_silence_samples = lambda _audio_b, _sr: 0
     p._apply_outgoing_filter_sweep = lambda a, *_a: a
     p._apply_transition_effect = lambda a, _b, head, *_a: (
         a,
@@ -133,12 +133,12 @@ def test_crossfade_trimmed_to_fit_track_end(renderer: player_mod.Player) -> None
     assert out.next_start_offset == 100
 
 
-def test_incoming_too_short_after_intro_skip_falls_back_to_no_overlap(
+def test_incoming_too_short_after_silence_skip_falls_back_to_no_overlap(
     renderer: player_mod.Player,
 ) -> None:
-    """When skipping the incoming track's intro leaves less than one
+    """When skipping the incoming track's leading silence leaves less than one
     crossfade window, the render falls back to a plain cut."""
-    renderer._skip_incoming_intro_samples = lambda *_a: 44100 * 10 - 1000
+    renderer._skip_incoming_silence_samples = lambda *_a: 44100 * 10 - 1000
     out = renderer._render_track(_entry("a"), _entry("b"), start_offset=0)
     assert out is not None
     assert out.transition_fx == ""

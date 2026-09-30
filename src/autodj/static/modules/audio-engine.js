@@ -1792,22 +1792,23 @@ export function startCrossfade(nextPath, fadeSec, serverLed = false) {
   let cleanupMetadata = () => {};
   setSrcOnDeck(standby, nextPath);
   standby.gain.gain.setValueAtTime(0, _ctx.currentTime);
-  // Mixxx-style intro alignment / leading-silence skip — when the
-  // server has reported intro_end_s for the next track and the user has
-  // chosen full_intro_outro or fixed_skip_silence, seek the standby
-  // deck to that marker so the dry-quiet intro doesn't waste fade
-  // headroom.  outro_fade + fixed leave the deck at 0 (legacy behaviour).
-  const skipIntro = (_transitionMode === "full_intro_outro"
-                     || _transitionMode === "fixed_skip_silence")
-                    && typeof _nextTrackIntroEndCache === "number"
-                    && _nextTrackIntroEndCache > 0;
-  if (skipIntro) {
+  // Mixxx-style leading-silence skip — when the server has reported
+  // intro_start_s (the first sound) for the next track and the user has
+  // chosen full_intro_outro or fixed_skip_silence, seek the standby deck
+  // to it.  The intro itself plays under the outgoing outro: skipping to
+  // intro_end_s cut into verses sung over a quiet intro.  outro_fade +
+  // fixed leave the deck at 0.
+  const skipSilence = (_transitionMode === "full_intro_outro"
+                       || _transitionMode === "fixed_skip_silence")
+                      && typeof _nextTrackIntroStartCache === "number"
+                      && _nextTrackIntroStartCache > 0;
+  if (skipSilence) {
     // Wait for the loaded-metadata event so currentTime can be set.  Clamp
     // the seek target against the actual duration once metadata is known
-    // — server-side intro_end_s can outrun the real track length when the
+    // — a server-side marker can outrun the real track length when the
     // FAISS index has stale or wrong-length entries, and an out-of-range
     // assignment seeks to the end + decode tail (silent crossfade).
-    const seekTarget = _nextTrackIntroEndCache;
+    const seekTarget = _nextTrackIntroStartCache;
     const seekIfReady = () => {
       if (operationGeneration !== _playbackGeneration) return;
       try {
@@ -1963,7 +1964,7 @@ for (const d of decks) {
     const baseFade = _crossfadeSecondsCache;
     const fadeSec = _resolveFadeSec(
       _transitionMode, baseFade,
-      _currentOutroLenCache, _nextTrackIntroEndCache,
+      _currentOutroLenCache, _nextTrackIntroEndCache, _nextTrackIntroStartCache,
     );
     // For outro_fade + full_intro_outro, the fade should begin AT the
     // outgoing outro_start (when known) rather than just "fadeSec from
@@ -2022,6 +2023,7 @@ let _fadeInSecondsCache = 3.0;
 export let _currentOutroLenCache = null;
 export let _currentOutroStartCache = null;   // active deck's outro_start_s
 export let _nextTrackIntroEndCache = null;   // incoming track's intro_end_s
+export let _nextTrackIntroStartCache = null; // incoming track's intro_start_s
 export let _nextTrackPathCache = null;
 let _transitionMode = "full_intro_outro";
 let _prefetchEnabled = true;
@@ -2044,17 +2046,20 @@ let _inKeyHzCache = null;
 // TransitionMode enum -- see CHANGELOG entry for 0.12.3.
 //
 // - full_intro_outro: align outgoing outro start with incoming intro
-//   start; fade length = min(outroLen, nextIntroEnd) clamped 1.0-12.0 s.
-// - outro_fade: fade length = outroLen (clamped); ignore nextIntroEnd.
+//   start; fade length = min(outroLen, intro length) clamped 1.0-12.0 s,
+//   where the intro runs from nextIntroStart (0 when unknown) to
+//   nextIntroEnd.
+// - outro_fade: fade length = outroLen (clamped); ignore the intro.
 // - fixed_skip_silence: baseFade as-is; the leading-silence skip is
 //   applied to the standby deck in startCrossfade().
 // - fixed (and fallback): plain fixed-length crossfade.
-function _resolveFadeSec(mode, baseFade, outroLen, nextIntroEnd) {
+export function _resolveFadeSec(mode, baseFade, outroLen, nextIntroEnd, nextIntroStart = null) {
   const clamp = (v) => Math.max(1.0, Math.min(12.0, v));
   if (mode === "full_intro_outro"
       && typeof outroLen === "number" && outroLen > 0
       && typeof nextIntroEnd === "number" && nextIntroEnd > 0) {
-    return clamp(Math.min(outroLen, nextIntroEnd));
+    const introStart = typeof nextIntroStart === "number" ? nextIntroStart : 0;
+    return clamp(Math.min(outroLen, nextIntroEnd - introStart));
   }
   if (mode === "outro_fade" && typeof outroLen === "number" && outroLen > 0) {
     return clamp(outroLen);
@@ -2173,6 +2178,9 @@ export function applyBrowserPlaybackState(s) {
   _nextTrackIntroEndCache = (s.next_track
       && typeof s.next_track.intro_end_s === "number")
     ? s.next_track.intro_end_s : null;
+  _nextTrackIntroStartCache = (s.next_track
+      && typeof s.next_track.intro_start_s === "number")
+    ? s.next_track.intro_start_s : null;
   // Beat- and key-sync metadata for transition FX scheduling.  Server
   // emits per-track downbeat windows + key_hz; we cache them here so
   // _BS.refresh() (called in startCrossfade) has fresh data without
@@ -2332,6 +2340,7 @@ export function resetTransitionCaches() {
   _currentOutroLenCache    = null;
   _currentOutroStartCache  = null;
   _nextTrackIntroEndCache  = null;
+  _nextTrackIntroStartCache = null;
   _nextTrackPathCache      = null;
 }
 

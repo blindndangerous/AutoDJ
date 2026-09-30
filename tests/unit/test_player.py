@@ -565,6 +565,43 @@ class TestAnalyseTrackInBackground:
             thread.assert_not_called()
         assert "/track.flac" not in player._bg_analysis_inflight
 
+    def test_track_without_intro_start_gets_it_measured(self, tmp_path) -> None:
+        """An analysed track from before intro_start_s existed keeps its
+        analysis and only gains the first-sound time."""
+        from unittest.mock import patch
+
+        from autodj.dj_meta import Cue, DjMeta, DjMetaCache
+
+        player = self._make()
+        cache = DjMetaCache(tmp_path / "dj_meta.db")
+        player._dj_cache = cache
+        player._dj_cache_initialised = True
+        old = DjMeta(
+            intro_end_s=10.0,
+            outro_start_s=200.0,
+            beats=[1.0, 1.5],
+            analysed=True,
+            cues=[Cue(time_s=10.0, type="drop", source="user")],
+        )
+        cache.set("track.flac", old)
+        audio = np.zeros(4000, dtype=np.float32)
+        audio[1000:] = 0.5
+        try:
+            with (
+                patch("autodj.player.load_audio", return_value=(audio, 1000)),
+                patch.object(player, "_analyse") as analyse,
+            ):
+                player.analyse_track_in_background("track.flac")
+                assert player.wait_for_background_analysis(timeout=10)
+            analyse.assert_not_called()
+            meta = cache.get("track.flac")
+            assert meta.intro_start_s == pytest.approx(1.0)
+            assert meta.intro_end_s == 10.0
+            assert meta.beats == [1.0, 1.5]
+            assert meta.cues == old.cues
+        finally:
+            cache.close()
+
     def test_inflight_dedupes_concurrent_calls(self) -> None:
         """Second call for the same path while the first is still running
         must not spawn a duplicate worker."""
@@ -1347,6 +1384,20 @@ class TestEffectiveCrossfadeSeconds:
             == 4.0
         )
 
+    def test_full_intro_outro_measures_intro_from_first_sound(self) -> None:
+        from autodj.dj_meta import DjMeta
+
+        p = self._player(mode="full_intro_outro", base=3.0)
+        # outro_len = 10; intro runs 2 s -> 8 s = 6 s; min = 6
+        assert (
+            p._effective_crossfade_seconds(
+                DjMeta(intro_end_s=0.0, outro_start_s=190.0, analysed=True),
+                DjMeta(intro_start_s=2.0, intro_end_s=8.0, outro_start_s=0.0, analysed=True),
+                outgoing_length_s=200.0,
+            )
+            == 6.0
+        )
+
     def test_full_intro_outro_clamps_high(self) -> None:
         from autodj.dj_meta import DjMeta
 
@@ -1404,6 +1455,54 @@ class TestEffectiveCrossfadeSeconds:
             )
             == 4.0
         )
+
+
+class TestSkipIncomingSilenceSamples:
+    """The incoming track starts at its first sound, never past its intro."""
+
+    def _player(self, mode: str, outro_intro_align: bool = False):
+        from types import SimpleNamespace
+
+        from autodj.player import Player
+
+        p = Player.__new__(Player)
+        p._cfg = SimpleNamespace(
+            playback=SimpleNamespace(transition_mode=mode),
+            djmix=SimpleNamespace(outro_intro_align=outro_intro_align),
+        )
+        return p
+
+    @staticmethod
+    def _quiet_intro_track(sr: int) -> np.ndarray:
+        # 0.5 s silence, a quiet sung intro to 10 s, then the loud band.
+        audio = np.zeros((sr * 20, 2), dtype=np.float32)
+        audio[sr // 2 : sr * 10] = 0.01
+        audio[sr * 10 :] = 0.5
+        return audio
+
+    @pytest.mark.parametrize("mode", ["full_intro_outro", "fixed_skip_silence"])
+    def test_marker_modes_skip_only_leading_silence(self, mode: str) -> None:
+        sr = 1000
+        p = self._player(mode)
+        assert p._skip_incoming_silence_samples(self._quiet_intro_track(sr), sr) == sr // 2
+
+    def test_outro_intro_align_skips_only_leading_silence(self) -> None:
+        sr = 1000
+        p = self._player("fixed", outro_intro_align=True)
+        assert p._skip_incoming_silence_samples(self._quiet_intro_track(sr), sr) == sr // 2
+
+    @pytest.mark.parametrize("mode", ["fixed", "outro_fade"])
+    def test_other_modes_start_at_zero(self, mode: str) -> None:
+        sr = 1000
+        p = self._player(mode)
+        assert p._skip_incoming_silence_samples(self._quiet_intro_track(sr), sr) == 0
+
+    def test_never_skips_more_than_half_the_track(self) -> None:
+        sr = 1000
+        audio = np.zeros((sr * 4, 2), dtype=np.float32)
+        audio[sr * 3 :] = 0.5
+        p = self._player("full_intro_outro")
+        assert p._skip_incoming_silence_samples(audio, sr) == sr * 2
 
 
 class TestMinFxDurationCoverage:

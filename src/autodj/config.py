@@ -286,15 +286,15 @@ class PlaybackConfig(_Section):
     crossfade_eq_duck: bool = False
     crossfade_bass_cutoff_hz: float = 180.0
     # Mixxx-style transition mode.  Controls how the crossfade aligns
-    # with each track's intro_end / outro_start markers from the
-    # DJ-meta sidecar.
+    # with each track's intro / outro markers from the DJ-meta sidecar.
     #   - "full_intro_outro" (default): the fade starts at the outgoing
-    #     outro and the incoming track enters at its intro end; fade
-    #     length = min(intro_len, outro_len) clamped to 1-12 s.
+    #     outro and the incoming track enters at its first sound, so its
+    #     intro plays under the outro; fade length = min(intro_len,
+    #     outro_len) clamped to 1-12 s.
     #   - "outro_fade":  begin fade at outro_start, length = outro_len
-    #     (1-12 s).  Ignores intro_end.
+    #     (1-12 s).  Ignores the intro.
     #   - "fixed_skip_silence": fixed crossfade_seconds; the incoming
-    #     track enters at its intro end.
+    #     track enters at its first sound.
     #   - "fixed": plain fixed crossfade_seconds at the
     #     end of the outgoing track.  No marker alignment.
     transition_mode: str = "full_intro_outro"
@@ -487,10 +487,9 @@ class DjMixConfig(_Section):
             to have a known BPM in the index.
         beatmatch_max_stretch: Maximum allowed stretch ratio deviation
             from 1.0.  ``0.08`` = ±8 % (typical DJ practice).
-        outro_intro_align: When ``True``, the crossfade is positioned
-            against the outgoing track's outro start and incoming
-            track's intro end (auto-detected on first play).  Avoids
-            cold-cutting into a 4-bar intro.
+        outro_intro_align: When ``True``, the crossfade starts at the
+            outgoing track's outro start (auto-detected on first play)
+            and the incoming track enters at its first sound.
         phrase_align: When ``True``, the crossfade start time is snapped
             to the nearest 8-bar phrase boundary (uses the cached beat
             grid).
