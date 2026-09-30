@@ -86,10 +86,24 @@ class TestStateHelpers:
         )
         _attach_cache(bridge, cache)
         st = bridge.get_state()
+        assert st["current_track"]["intro_start_s"] is None
         assert st["current_track"]["intro_end_s"] == 4.0
         assert st["current_track"]["outro_start_s"] == 170.0
         # outro_len = 180 - 170 = 10
         assert st["current_track"]["outro_len"] == pytest.approx(10.0)
+
+    def test_markers_include_intro_start(self, bridge) -> None:
+        cache = _StaticCache(
+            {
+                bridge.player._state.current_track.path: DjMeta(
+                    analysed=True, intro_start_s=0.4567, intro_end_s=4.0, outro_start_s=170.0
+                )
+            }
+        )
+        _attach_cache(bridge, cache)
+        st = bridge.get_state()
+        assert st["current_track"]["intro_start_s"] == 0.457
+        assert st["current_track"]["intro_end_s"] == 4.0
 
     def test_cues_empty_when_no_cache(self, bridge) -> None:
         bridge.player._ensure_dj_cache = lambda: None

@@ -526,7 +526,7 @@
         <label for="dj-outro-intro">Outro <span aria-hidden="true">/</span><span class="visually-hidden">and</span> intro align</label>
       </div>
       <span class="setting-desc" id="dj-outro-desc">
-        Auto-detect each track's outro start <span aria-hidden="true">+</span><span class="visually-hidden">and</span> intro end on first play.  Crossfade lands between them so the new track's first downbeat replaces the old track's outro — no cold cuts into 4-bar intros.  Used when the server does the mixing, in stream mode or with server audio; crossfades played by this browser ignore it.
+        Auto-detect each track's outro start on first play and start the crossfade there, with the new track coming in at its first sound.  Used when the server does the mixing, in stream mode or with server audio; crossfades played by this browser ignore it.
       </span>
 
       <div class="settings-check">
@@ -666,7 +666,7 @@
         </select>
       </div>
       <span class="setting-desc" id="pb-transition-mode-desc">
-        Mirrors Mixxx's AutoDJ transition modes.  <em>Full intro<span aria-hidden="true">/</span><span class="visually-hidden"> and </span>outro</em> starts the fade at the outgoing outro, brings the incoming track in at the end of its intro, and sizes the fade to whichever is shorter, 1 to 12 seconds — best when both tracks have detected intro and outro markers.  <em>Outro fade</em> begins the fade at the outgoing outro_start and uses outro length only.  <em>Fixed (skip silence)</em> uses the Crossfade-seconds value and brings the incoming track in at the end of its quiet intro.  <em>Fixed</em> fades for the Crossfade-seconds value at the end of the outgoing track, with no marker alignment.
+        Mirrors Mixxx's AutoDJ transition modes.  <em>Full intro<span aria-hidden="true">/</span><span class="visually-hidden"> and </span>outro</em> starts the fade at the outgoing outro, brings the incoming track in at its first sound so its intro plays under the outro, and sizes the fade to whichever is shorter, 1 to 12 seconds — best when both tracks have detected intro and outro markers.  <em>Outro fade</em> begins the fade at the outgoing outro_start and uses outro length only.  <em>Fixed (skip silence)</em> uses the Crossfade-seconds value and brings the incoming track in at its first sound, skipping leading silence.  <em>Fixed</em> fades for the Crossfade-seconds value at the end of the outgoing track, with no marker alignment.
       </span>
 
       <div class="settings-row">

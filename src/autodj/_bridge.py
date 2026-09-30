@@ -571,25 +571,32 @@ class PlayerBridge:
             self.player._ensure_dj_cache()
         dj_cache = getattr(self.player, "_dj_cache", None)
 
-        def _markers(entry: IndexEntry | None) -> tuple[float | None, float | None, float | None]:
-            """Return ``(intro_end_s, outro_start_s, outro_len)`` from the
-            DJ-meta sidecar, or ``(None, None, None)`` when unanalysed.
+        def _markers(
+            entry: IndexEntry | None,
+        ) -> tuple[float | None, float | None, float | None, float | None]:
+            """Return ``(intro_start_s, intro_end_s, outro_start_s, outro_len)``
+            from the DJ-meta sidecar, or all ``None`` when unanalysed.
+
+            ``intro_start_s`` (the first sound) is ``None`` for a track
+            analysed before it was measured.
             """
             if entry is None or dj_cache is None or not entry.length:
-                return (None, None, None)
+                return (None, None, None, None)
             try:
                 meta = dj_cache.get(entry.path)
             except Exception:  # pragma: no cover -- defensive log-only path
-                return (None, None, None)
+                return (None, None, None, None)
             if not getattr(meta, "analysed", False):
-                return (None, None, None)
+                return (None, None, None, None)
+            intro_start_raw = getattr(meta, "intro_start_s", None)
+            intro_start = float(intro_start_raw) if intro_start_raw is not None else None
             intro_end_raw = float(getattr(meta, "intro_end_s", 0.0) or 0.0)
             outro_start_raw = float(getattr(meta, "outro_start_s", 0.0) or 0.0)
             intro_end = intro_end_raw if intro_end_raw > 0 else None
             if outro_start_raw <= 0:
-                return (intro_end, None, None)
+                return (intro_start, intro_end, None, None)
             outro_len = max(0.0, float(entry.length) - outro_start_raw)
-            return (intro_end, outro_start_raw, outro_len)
+            return (intro_start, intro_end, outro_start_raw, outro_len)
 
         def _cues(entry: IndexEntry | None) -> list[dict]:
             """Cue list for the entry, or empty when uncached / unanalysed.
@@ -686,7 +693,7 @@ class PlayerBridge:
         def _track_dict(entry: IndexEntry | None) -> dict | None:
             if entry is None:
                 return None
-            intro_end, outro_start, outro_len = _markers(entry)
+            intro_start, intro_end, outro_start, outro_len = _markers(entry)
             d_out, d_in = _downbeats(entry, outro_start, intro_end)
             key_hz = key_to_hz(entry.key) if entry.key is not None else None
             return {
@@ -713,6 +720,7 @@ class PlayerBridge:
                     prefer_flats=_key_prefer_flats,
                 ),
                 "energy": round(entry.energy, 3) if entry.energy else 0.0,
+                "intro_start_s": round(intro_start, 3) if intro_start is not None else None,
                 "intro_end_s": round(intro_end, 2) if intro_end is not None else None,
                 "outro_start_s": round(outro_start, 2) if outro_start is not None else None,
                 "outro_len": round(outro_len, 2) if outro_len is not None else None,

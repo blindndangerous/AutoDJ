@@ -1660,6 +1660,10 @@ class Player:
            ``self._dj_cache`` and forces a flush so ``dj_meta.db`` grows
            track by track.
 
+        A track analysed before ``intro_start_s`` was measured only gets
+        that measured (see :meth:`_record_intro_start`); the rest of its
+        analysis is kept.
+
         Errors at any stage (file gone, decode error, librosa failure)
         are logged at debug and swallowed -- the cue panel just stays
         empty for that track instead of crashing the advance.
@@ -1670,12 +1674,16 @@ class Player:
         if self._dj_cache is None:
             return
         existing = self._dj_cache.get(path)
-        if existing.analysed:
+        if existing.analysed and existing.intro_start_s is not None:
             return
+        intro_start_only = existing.analysed
 
         def _worker() -> None:  # pragma: no cover -- background thread
             try:
                 audio, sr = load_audio(path)
+                if intro_start_only:
+                    self._record_intro_start(path, audio, sr)
+                    return
                 meta = self._analyse(audio, sr, path)
                 if self._dj_cache is not None:
                     self._dj_cache.flush(force=True)
@@ -1726,6 +1734,25 @@ class Player:
                 self._bg_analysis_threads.discard(thread)
                 raise
 
+    def _record_intro_start(self, path: str, audio: np.ndarray, sr: int) -> None:
+        """Store the first-sound time of an already analysed track.
+
+        Tracks analysed before ``intro_start_s`` existed have ``None``
+        there; measuring it is cheap, so it is filled in when the track
+        comes up instead of re-running the whole analysis.
+        """
+        from autodj.dj_meta import detect_intro_start
+
+        intro_start = detect_intro_start(audio, sr)
+        cache = self._dj_cache
+        if cache is None:
+            return
+        # Same lock as _analyse, so a library-cue merge is not overwritten.
+        with self._library_cues_lock:
+            cache.set(path, replace(cache.get(path), intro_start_s=intro_start))
+        cache.flush(force=True)
+        logger.debug("Measured first sound of %s at %.2fs", Path(path).name, intro_start)
+
     def wait_for_background_analysis(self, timeout: float | None = None) -> bool:
         """Wait for registered DJ-metadata workers within one total timeout."""
         deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
@@ -1746,7 +1773,7 @@ class Player:
     def _peek_incoming_meta(self, next_entry: IndexEntry) -> DjMeta | None:
         """Cache-only DjMeta peek for the incoming track (no audio decode).
 
-        Used by :meth:`_effective_crossfade_seconds` to read intro_end_s
+        Used by :meth:`_effective_crossfade_seconds` to read the intro markers
         before the heavy audio load.  Returns ``None`` when the sidecar
         cache is uninitialised or the track has not been analysed yet.
         """
@@ -1783,15 +1810,16 @@ class Player:
         outro_len: float | None = None
         if meta_a and meta_a.outro_start_s > 0 and outgoing_length_s > 0:
             outro_len = max(0.0, outgoing_length_s - meta_a.outro_start_s)
-        intro_end: float | None = None
+        # The incoming intro runs from its first sound to intro_end_s.
+        intro_len: float | None = None
         if meta_b and meta_b.intro_end_s > 0:
-            intro_end = float(meta_b.intro_end_s)
+            intro_len = float(meta_b.intro_end_s) - float(meta_b.intro_start_s or 0.0)
 
         def _clamp(v: float) -> float:
             return max(1.0, min(12.0, v))
 
-        if mode == "full_intro_outro" and outro_len is not None and intro_end is not None:
-            return _clamp(min(outro_len, intro_end))
+        if mode == "full_intro_outro" and outro_len is not None and intro_len is not None:
+            return _clamp(min(outro_len, intro_len))
         if mode == "outro_fade" and outro_len is not None:
             return _clamp(outro_len)
         # fixed_skip_silence + fallback for missing markers in the other modes
@@ -1908,28 +1936,24 @@ class Player:
         )
         return audio_b
 
-    def _skip_incoming_intro_samples(  # pragma: no cover -- audio analysis, exercised by integration
-        self,
-        audio_b: np.ndarray,
-        sr_a: int,
-        next_entry: IndexEntry,
-    ) -> int:
-        """Return how many of *audio_b*'s leading samples to drop as intro.
+    def _skip_incoming_silence_samples(self, audio_b: np.ndarray, sr_a: int) -> int:
+        """Return how many of *audio_b*'s leading samples to drop as silence.
 
-        Triggered by either ``djmix.outro_intro_align`` or any marker-aware
-        transition_mode (``full_intro_outro`` / ``fixed_skip_silence``).
+        ``djmix.outro_intro_align`` and the marker-aware transition modes
+        (``full_intro_outro`` / ``fixed_skip_silence``) start the incoming
+        track at its first sound, as Mixxx does.  The intro itself plays
+        under the outgoing outro, so a verse sung over it stays whole.
+        Measured on *audio_b* itself, so the offset stays right after a
+        beatmatch stretch.
         """
+        from autodj.dj_meta import detect_intro_start
+
         mode = self._cfg.playback.transition_mode
         marker_skip = mode in ("full_intro_outro", "fixed_skip_silence")
-        if self._dj_cache is None or not (self._cfg.djmix.outro_intro_align or marker_skip):
+        if not (self._cfg.djmix.outro_intro_align or marker_skip):
             return 0
-        meta_b = self._dj_cache.get(next_entry.path)
-        if not meta_b.analysed:
-            meta_b = self._analyse(mono(audio_b), sr_a, next_entry.path)
-            self._dj_cache.flush(batch=10)
-        if meta_b.intro_end_s <= 0.5:
-            return 0
-        return min(int(meta_b.intro_end_s * sr_a), len(audio_b) // 2)
+        first_sound = int(detect_intro_start(audio_b, sr_a) * sr_a)
+        return min(first_sound, len(audio_b) // 2)
 
     def _apply_outgoing_filter_sweep(
         self,
@@ -2096,7 +2120,7 @@ class Player:
             current: Track to render.
             next_entry: Track mixed into the tail, or ``None`` for no overlap.
             start_offset: Samples of *current* already played by the previous
-                overlap (including any skipped intro).
+                overlap (including any skipped leading silence).
 
         Returns:
             The rendered track, or ``None`` when *current* cannot be loaded,
@@ -2160,7 +2184,7 @@ class Player:
                 return n
             return int(n * pre_stretch_len / post_stretch_len)
 
-        intro = self._skip_incoming_intro_samples(audio_b, SAMPLE_RATE, next_entry)
+        intro = self._skip_incoming_silence_samples(audio_b, SAMPLE_RATE)
         audio_b = audio_b[intro:]
         if a_start + crossfade > len(audio_a):
             crossfade = max(0, len(audio_a) - a_start)

@@ -190,15 +190,15 @@ crossfade_bass_cutoff_hz = 180.0     # frequency below which outgoing track is a
 # The server mix ignores it.
 fade_in_seconds = 3.0
 
-# How the crossfade lines up with each track's intro_end / outro_start
-# markers from the DJ-meta sidecar:
+# How the crossfade lines up with each track's intro / outro markers from
+# the DJ-meta sidecar, as in Mixxx:
 #   "full_intro_outro"   the fade starts at the outgoing outro_start and the
-#                        incoming track enters at its intro_end (its quiet
-#                        intro is skipped); fade length = min(intro, outro),
-#                        clamped to 1-12 s
+#                        incoming track enters at its first sound, so its
+#                        intro plays under the outro; fade length =
+#                        min(intro, outro), clamped to 1-12 s
 #   "outro_fade"         fade begins at outro_start, lasts the outro (1-12 s)
 #   "fixed_skip_silence" fixed crossfade_seconds at the track end; the
-#                        incoming track enters at its intro_end
+#                        incoming track enters at its first sound
 #   "fixed"              plain fixed crossfade_seconds at the track end
 transition_mode = "full_intro_outro"
 
@@ -310,8 +310,8 @@ harmonic_mode = "off"
 beatmatch = false
 beatmatch_max_stretch = 0.08      # ±8% — typical DJ practice
 
-# Auto-detect each track's outro start + intro end and place the
-# crossfade between them, so cold-cuts into a 4-bar intro never happen.
+# Auto-detect each track's outro start and start the crossfade there, with
+# the incoming track entering at its first sound.
 outro_intro_align = false
 
 # Snap the crossfade start time to the nearest phrase_bars-bar phrase

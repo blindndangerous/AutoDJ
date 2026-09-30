@@ -10,9 +10,11 @@ import pytest
 from autodj.dj_meta import (
     DjMeta,
     DjMetaCache,
+    analyse_audio,
     camelot_label,
     camelot_position,
     detect_intro_outro,
+    detect_intro_start,
     harmonic_compatible,
     key_label,
     key_spoken,
@@ -175,6 +177,45 @@ class TestDetectIntroOutro:
         assert outro == 0.0
 
 
+class TestDetectIntroStart:
+    def test_skips_leading_silence_only(self) -> None:
+        # 1.5 s of silence, a quiet 10 s intro (-40 dBFS), then the loud band.
+        sr = 22050
+        rng = np.random.default_rng(0)
+        audio = np.zeros(sr * 20, dtype=np.float32)
+        audio[int(sr * 1.5) : sr * 12] = 0.01
+        audio[sr * 12 :] = rng.standard_normal(sr * 8).astype(np.float32) * 0.4
+        assert detect_intro_start(audio, sr) == pytest.approx(1.5, abs=0.01)
+        # The quiet intro is still an intro: its loud entry is far later.
+        assert detect_intro_outro(audio, sr)[0] > 10.0
+
+    def test_stereo_uses_the_first_loud_channel(self) -> None:
+        sr = 1000
+        audio = np.zeros((3000, 2), dtype=np.float32)
+        audio[2000:, 0] = 0.5
+        audio[500:, 1] = 0.5
+        assert detect_intro_start(audio, sr) == pytest.approx(0.5)
+
+    def test_noise_below_minus_60_dbfs_counts_as_silence(self) -> None:
+        sr = 1000
+        audio = np.full(3000, 0.0005, dtype=np.float32)
+        audio[1200:] = 0.5
+        assert detect_intro_start(audio, sr) == pytest.approx(1.2)
+
+    def test_silent_and_empty_audio_start_at_zero(self) -> None:
+        assert detect_intro_start(np.zeros(1000, dtype=np.float32), 1000) == 0.0
+        assert detect_intro_start(np.zeros(0, dtype=np.float32), 1000) == 0.0
+
+    def test_analyse_audio_records_the_first_sound(self, monkeypatch) -> None:
+        import autodj.dj_meta as dj_meta
+
+        monkeypatch.setattr(dj_meta, "detect_beat_grid", lambda _audio, _sr: [])
+        sr = 1000
+        audio = np.zeros(5000, dtype=np.float32)
+        audio[250:] = 0.5
+        assert analyse_audio(audio, sr).intro_start_s == pytest.approx(0.25)
+
+
 # ---------------------------------------------------------------------------
 # Phrase boundary snapping
 # ---------------------------------------------------------------------------
@@ -277,6 +318,7 @@ class TestDjMetaCache:
             assert meta.outro_start_s == 180.0
             assert meta.beats == [0.5, 1.0, 1.5]
             assert meta.analysed is True
+            assert meta.intro_start_s is None
 
     def test_flush_persists_to_db(self, tmp_path) -> None:
         path = tmp_path / "cache.db"
@@ -288,6 +330,39 @@ class TestDjMetaCache:
             meta = cache2.get("foo.flac")
             assert meta.intro_end_s == 1.0
             assert meta.analysed is True
+
+    def test_intro_start_survives_a_reopen(self, tmp_path) -> None:
+        path = tmp_path / "cache.db"
+        with DjMetaCache(path) as cache:
+            cache.set("foo.flac", DjMeta(intro_start_s=0.75, intro_end_s=9.0, analysed=True))
+            cache.set("bar.flac", DjMeta(intro_end_s=4.0, analysed=True))
+        with DjMetaCache(path) as cache2:
+            assert cache2.get("foo.flac").intro_start_s == 0.75
+            assert cache2.get("bar.flac").intro_start_s is None
+
+    def test_cache_without_intro_start_column_is_upgraded(self, tmp_path) -> None:
+        path = tmp_path / "cache.db"
+        conn = sqlite3.connect(path)
+        conn.execute(
+            "CREATE TABLE dj_meta (path TEXT PRIMARY KEY, "
+            "intro_end_s REAL NOT NULL DEFAULT 0, outro_start_s REAL NOT NULL DEFAULT 0, "
+            "analysed INTEGER NOT NULL DEFAULT 0, beats TEXT, cues TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO dj_meta (path, intro_end_s, outro_start_s, analysed, beats, cues) "
+            "VALUES ('old.flac', 10.0, 200.0, 1, '[]', '[]')"
+        )
+        conn.commit()
+        conn.close()
+
+        with DjMetaCache(path) as cache:
+            old = cache.get("old.flac")
+            assert old.analysed is True
+            assert old.intro_end_s == 10.0
+            assert old.intro_start_s is None
+            cache.set("new.flac", DjMeta(intro_start_s=0.5, analysed=True))
+        with DjMetaCache(path) as cache2:
+            assert cache2.get("new.flac").intro_start_s == 0.5
 
     def test_flush_skips_when_not_dirty_enough(self, tmp_path) -> None:
         path = tmp_path / "cache.db"

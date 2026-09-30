@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- In the Full intro and outro and Fixed (skip silence) transition modes, and with Outro and intro
+  align on, the next track no longer starts partway into its first verse. AutoDJ skipped
+  everything before the point where a track first got loud, so a verse sung over a quiet intro was
+  cut, often in the middle of a word. The next track now starts at its first sound, and its intro
+  plays under the end of the outgoing track, as in Mixxx. In Full intro and outro mode the fade is
+  sized from that first sound to the intro's end. Tracks analysed before this release have their
+  first sound measured when they come up to play; the rest of their analysis is kept.
+  `dj_meta.db` gains an `intro_start_s` column the first time this release opens it.
+
 ## [0.19.1] - 2026-09-29
 
 ### Fixed

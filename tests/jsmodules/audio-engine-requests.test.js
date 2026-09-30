@@ -133,12 +133,13 @@ describe("audio engine request recovery", () => {
       },
       is_muted: false,
       is_paused: false,
-      next_track: { intro_end_s: 3, path: "next.mp3" },
+      next_track: { intro_start_s: 0.25, intro_end_s: 3, path: "next.mp3" },
       settings: { playback: {} },
     });
     expect(engine._currentOutroLenCache).toBe(4);
     expect(engine._currentOutroStartCache).toBe(100);
     expect(engine._nextTrackIntroEndCache).toBe(3);
+    expect(engine._nextTrackIntroStartCache).toBe(0.25);
     expect(engine._nextTrackPathCache).toBe("next.mp3");
 
     engine.resetTransitionCaches();
@@ -146,7 +147,60 @@ describe("audio engine request recovery", () => {
     expect(engine._currentOutroLenCache).toBeNull();
     expect(engine._currentOutroStartCache).toBeNull();
     expect(engine._nextTrackIntroEndCache).toBeNull();
+    expect(engine._nextTrackIntroStartCache).toBeNull();
     expect(engine._nextTrackPathCache).toBeNull();
+  });
+
+  // Crossfade into next.mp3 and return every seek made on either deck.
+  async function incomingSeeks(mode, nextTrack) {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ ok: true })));
+    const { engine } = await importEngine();
+    const seeks = [];
+    for (const deck of engine.decks) {
+      Object.defineProperty(deck.audio, "currentTime", {
+        configurable: true,
+        get: () => 0,
+        set: (value) => { seeks.push(value); },
+      });
+    }
+    engine.applyBrowserPlaybackState({
+      browser_playback: true,
+      current_track: { path: "current.mp3" },
+      is_muted: false,
+      is_paused: false,
+      next_track: { path: "next.mp3", ...nextTrack },
+      settings: { transition: "none", playback: { transition_mode: mode } },
+    });
+    engine.ensureAudioGraph();
+    await flushPromises();
+    engine.setSrcOnDeck(engine.decks[0], "current.mp3");
+    void engine.startCrossfade("next.mp3", 1, true);
+    for (const deck of engine.decks) deck.audio.dispatchEvent(new Event("loadedmetadata"));
+    return seeks;
+  }
+
+  it.each(["full_intro_outro", "fixed_skip_silence"])(
+    "%s starts the incoming track at its first sound, not its intro end",
+    async (mode) => {
+      const seeks = await incomingSeeks(mode, { intro_start_s: 0.4, intro_end_s: 10 });
+      expect(seeks).toEqual([0.4]);
+    },
+  );
+
+  it("leaves the incoming track at 0 when its first sound is unknown", async () => {
+    const seeks = await incomingSeeks(
+      "full_intro_outro", { intro_start_s: null, intro_end_s: 10 },
+    );
+    expect(seeks).toEqual([]);
+  });
+
+  it("sizes the full intro and outro fade from the intro's first sound to its end", async () => {
+    const { engine } = await importEngine();
+    // Intro 2.5 s -> 10 s is 7.5 s long; outro 9 s; min = 7.5.
+    expect(engine._resolveFadeSec("full_intro_outro", 3, 9, 10, 2.5)).toBe(7.5);
+    // Unknown first sound counts the intro from 0.
+    expect(engine._resolveFadeSec("full_intro_outro", 3, 9, 6, null)).toBe(6);
+    expect(engine._resolveFadeSec("fixed_skip_silence", 3, 9, 6, 1)).toBe(3);
   });
 
   it("retries advance after a rejected single-flight request settles", async () => {
