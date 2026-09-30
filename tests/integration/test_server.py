@@ -1778,7 +1778,7 @@ class TestServeFunction:
             headers={"Host": "radio.local", "Origin": origin},
         )
         if tls:
-            code = app.state.security_policy.current_pairing_code()
+            code = app.state.request_pairing_code()[0]
             assert (
                 client.post(
                     "/api/pair",
@@ -1790,6 +1790,44 @@ class TestServeFunction:
         else:
             assert client.get("/api/auth/status").status_code == 200
             assert client.post("/api/login", json={"token": "unused"}).status_code == 404
+
+    def test_startup_shows_a_code_only_while_no_browser_is_paired(
+        self, caplog, tmp_path: Path
+    ) -> None:
+        import logging
+        from unittest.mock import MagicMock, patch
+
+        from autodj.pairing import DeviceRegistry
+        from autodj.server import serve
+
+        cfg = MagicMock()
+        cfg.index.index_dir = tmp_path
+        cfg.server = ServerConfig(access_token="s" * 32)
+        cfg.playback.no_repeat_window = 50
+        cfg.playback.artist_repeat_window = 3
+        cfg.playback.crossfade_seconds = 3.0
+
+        def start() -> tuple[str, object]:
+            caplog.clear()
+            with (
+                patch("autodj.player.Player.run"),
+                patch("uvicorn.run") as mock_uvicorn,
+                caplog.at_level(logging.INFO, logger="autodj.server"),
+            ):
+                serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None)
+            return caplog.text, mock_uvicorn.call_args.args[0]
+
+        first_log, first_app = start()
+        code = first_app.state.security_policy.current_pairing_code()
+        assert f"using code: {code}" in first_log
+        # Starting with nothing paired counts as asking for that code.
+        registry = DeviceRegistry(tmp_path / ".paired-devices.sqlite3")
+        assert registry.pair_on_request("First browser") is not None
+
+        second_log, _second_app = start()
+        assert code not in second_log
+        assert "autodj devices pairing-code" in second_log
+        assert registry.pair_on_request("Unasked") is None
 
     @pytest.mark.parametrize(
         ("origin", "tls"),

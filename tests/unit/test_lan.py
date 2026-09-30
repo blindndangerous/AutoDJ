@@ -381,6 +381,14 @@ def test_banner_without_pairing_says_no_code_is_needed() -> None:
     assert "no pairing" in text.lower()
 
 
+def test_banner_without_a_code_says_how_to_request_one() -> None:
+    text = format_lan_banner(["http://nas:8080"], None, code_on_request=True)
+
+    assert "autodj devices pairing-code" in text
+    assert "Show pairing code" in text
+    assert "no pairing" not in text.lower()
+
+
 def test_banner_handles_no_detected_address() -> None:
     text = format_lan_banner([], ("12345678", 60))
 

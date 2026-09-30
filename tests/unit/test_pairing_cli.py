@@ -236,7 +236,9 @@ def test_devices_pairing_code_and_reset_manage_all_browsers() -> None:
     assert code.exit_code == 0
     # stdout stays the bare code for scripts; the validity note goes to stderr.
     assert re.fullmatch(r"[0-9]{8}\n", code.stdout)
-    assert re.search(r"Valid for about \d+ more seconds\. A new code starts in \d+", code.stderr)
+    assert re.search(
+        r"Pairs one browser within about \d+ seconds\. A new code starts in \d+", code.stderr
+    )
     assert _SECRET not in code.output
     assert reset.exit_code == 0
     assert "Revoked 2 paired browser(s)." in reset.output
@@ -261,3 +263,18 @@ def test_devices_commands_report_empty_and_missing_configuration() -> None:
     assert "Configure LAN access" in code.output
     assert revoked.exit_code == 1
     assert "was not found" in revoked.output
+
+
+def test_devices_pairing_code_lets_one_browser_pair_on_the_running_server() -> None:
+    runner = CliRunner()
+
+    with runner.isolated_filesystem():
+        _write_config()
+        registry = DeviceRegistry(Path("index/.paired-devices.sqlite3"))
+        assert registry.pair_on_request("Before asking") is None
+
+        result = runner.invoke(cli, ["--config", "config.toml", "devices", "pairing-code"])
+
+        assert result.exit_code == 0
+        assert registry.pair_on_request("Kitchen tablet") is not None
+        assert registry.pair_on_request("Second phone") is None

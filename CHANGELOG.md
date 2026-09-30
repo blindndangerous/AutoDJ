@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- A pairing code works only after someone asks for one, and each one pairs one device. Before,
+  the current code always worked, whether or not anyone had asked, and any number of browsers
+  could pair with it. Ask with `autodj devices pairing-code` or **Show pairing code** in a paired
+  browser. Startup prints a code only while no browser is paired, so once one is, the log never
+  holds a working code. When a device pairs while the code is shown, the page says so and hides the used
+  code.
+
 ### Fixed
 
 - ALAC and other `.m4a`, `.mp4` and `.aac` files are no longer skipped by the server mix and

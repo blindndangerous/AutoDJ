@@ -31,7 +31,7 @@ _TEST_DEVICE_ID = "d" * 32
 
 def _pair(client: TestClient, *, name: str = "Test browser"):
     """Pair client through public API using current short-lived code."""
-    code = client.app.state.security_policy.current_pairing_code()
+    code = client.app.state.request_pairing_code()[0]
     return client.post("/api/pair", json={"code": code, "device_name": name})
 
 

@@ -69,7 +69,7 @@ Before every release, each flow below must be sampled with either NVDA and Firef
 - Settings changes and their status or error feedback.
 - Settings, Browser access: renaming a device (focus back on its Rename, the new name said
   once), and Show pairing code (the code said once, the countdown silent, a device that pairs
-  meanwhile said once).
+  meanwhile said once, and the used code hidden with focus on Show pairing code).
 - Library-job status and review of the persistent output log. Leave a job running for several
   minutes and confirm the status is spoken once at the start and once at the end, not repeatedly.
 - Stream mode (`serve --stream`): the Settings, Stream section, Copy address, the

@@ -97,13 +97,13 @@ To open AutoDJ from a phone, tablet or another computer on your home network, st
 uv run autodj serve --lan
 ```
 
-Startup prints the addresses to open, such as `http://nas:8080` and `http://192.168.1.20:8080`,
-and an 8-digit pairing code with how many seconds it stays valid; the code changes every five
-minutes. Open one of the addresses on the other device and enter the code once; that browser
-stays paired. Run `uv run autodj devices pairing-code` for the current code later. In the
-web page, Settings, Browser access lists the paired devices with Rename and Revoke buttons, shows
-the current pairing code for adding another device, and **Sign out this browser** ends this
-browser's pairing. To make
+Startup prints the addresses to open, such as `http://nas:8080` and `http://192.168.1.20:8080`.
+While no browser is paired yet, it also prints an 8-digit pairing code with how many seconds it
+stays valid. Open one of the addresses on the other device and enter the code once; that browser
+stays paired. Each code pairs one device and works only after someone asks for it: run
+`uv run autodj devices pairing-code` for the next device. In the web page, Settings, Browser
+access lists the paired devices with Rename and Revoke buttons, has **Show pairing code** for
+adding another device, and **Sign out this browser** ends this browser's pairing. To make
 it permanent, set `[server] lan = true` in `config.toml` or `config.local.toml`, or
 `AUTODJ_LAN=1`.
 
@@ -299,8 +299,9 @@ docker compose --profile lan up autodj-lan
 ```
 
 Replace `radio.local` with the hostname or IP browsers use. AutoDJ writes a gitignored `.env`,
-generates its server secret, and prints an 8-digit pairing code during startup. Enter that code
-once in each browser. Paired browsers receive distinct, persistent device sessions and do not
+generates its server secret, and prints an 8-digit pairing code during startup while no browser is
+paired. Enter that code in the first browser; each code pairs one device, and
+`autodj devices pairing-code` gives one for the next. Paired browsers receive distinct, persistent device sessions and do not
 need to sign in again unless revoked or expired.
 
 For a native LAN server, use `--lan` or `[server] lan = true` as described under

@@ -61,6 +61,15 @@ class DeviceRegistry:
                 )
                 """
             )
+            # At most one open pairing request: the time its code stops working.
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS pairing_request (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    open_until INTEGER NOT NULL
+                )
+                """
+            )
 
     @staticmethod
     def _name(value: str) -> str:
@@ -90,6 +99,55 @@ class DeviceRegistry:
                 (device_id, normalized, timestamp, timestamp),
             )
         return PairedDevice(device_id, normalized, timestamp, timestamp, None)
+
+    def open_pairing(self, seconds: int) -> None:
+        """Let one device pair in the next *seconds*, replacing any open request.
+
+        Pairing codes are derived from the server secret and the clock, so
+        one always exists; this is what makes it usable.  The server and
+        ``autodj devices pairing-code`` share this file, so a code requested
+        from either one works on the running server.
+        """
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO pairing_request (id, open_until) VALUES (1, ?)",
+                (int(self._now()) + seconds,),
+            )
+
+    def pair_on_request(self, name: str) -> PairedDevice | None:
+        """Pair a device if a pairing request is open, closing the request.
+
+        Returns ``None`` when no request is open or it has expired.  Taking
+        the request and adding the device are one transaction, so two
+        browsers racing with one code cannot both pair.
+
+        Raises:
+            ValueError: *name* is not 1 to 64 printable characters.  The
+                request stays open.
+        """
+        normalized = self._name(name)
+        timestamp = int(self._now())
+        device_id = uuid.uuid4().hex
+        with self._connect() as connection:
+            taken = connection.execute(
+                "DELETE FROM pairing_request WHERE id = 1 AND open_until >= ?",
+                (timestamp,),
+            ).rowcount
+            if taken != 1:
+                return None
+            connection.execute(
+                "INSERT INTO paired_devices VALUES (?, ?, ?, ?, NULL)",
+                (device_id, normalized, timestamp, timestamp),
+            )
+        return PairedDevice(device_id, normalized, timestamp, timestamp, None)
+
+    def has_active_devices(self) -> bool:
+        """Return whether any device is paired and not revoked."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM paired_devices WHERE revoked_at IS NULL LIMIT 1"
+            ).fetchone()
+        return row is not None
 
     def is_active(self, device_id: str) -> bool:
         """Return whether device exists and has not been revoked."""

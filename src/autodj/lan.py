@@ -306,16 +306,28 @@ def lan_urls(
     return [f"{scheme}://{f'[{name}]' if ':' in name else name}:{server.port}" for name in names]
 
 
+PAIRING_ON_REQUEST_HINT = (
+    "To pair a device, run `autodj devices pairing-code`, or choose Show pairing code in "
+    "Settings, Browser access on a paired browser. Each code pairs one device."
+)
+
+
 def format_lan_banner(
-    urls: list[str], pairing: tuple[str, int] | None, *, in_container: bool = False
+    urls: list[str],
+    pairing: tuple[str, int] | None,
+    *,
+    in_container: bool = False,
+    code_on_request: bool = False,
 ) -> str:
     """Return the start-up block: where to open AutoDJ and how to pair.
 
     Args:
         urls: Addresses from :func:`lan_urls`, the working one first.
-        pairing: The current pairing code and the seconds it stays valid, or
-            ``None`` when no pairing is needed.
+        pairing: A pairing code and the seconds it stays valid, or ``None``
+            when none was requested.
         in_container: Add a line saying container addresses are unreachable.
+        code_on_request: Pairing is on but no code was requested; say how to
+            get one.  Without it, ``pairing=None`` means no pairing is needed.
 
     Returns:
         Multi-line text. It never contains the access token.
@@ -326,14 +338,16 @@ def format_lan_banner(
         lines.append("  (no address was detected; use this machine's name or IP address)")
     if in_container:
         lines.append("Container addresses are not reachable from your network.")
-    if pairing is None:
-        lines.append(
-            "No pairing needed (--insecure-lan): any device on your network can control AutoDJ."
-        )
-    else:
+    if pairing is not None:
         code, valid_for = pairing
         lines.append(
             f"Pairing code: {code} (valid for about {valid_for} more seconds). "
-            "Enter it once in each browser; `autodj devices pairing-code` prints a fresh one."
+            "It pairs one browser; `autodj devices pairing-code` gives one for the next."
+        )
+    elif code_on_request:
+        lines.append(PAIRING_ON_REQUEST_HINT)
+    else:
+        lines.append(
+            "No pairing needed (--insecure-lan): any device on your network can control AutoDJ."
         )
     return "\n".join(lines)

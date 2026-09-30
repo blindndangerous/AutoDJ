@@ -66,8 +66,10 @@ the matching `https://` origins too. It uses a configured
 `access_token` or `AUTODJ_ACCESS_TOKEN` when there is one; otherwise it loads or creates
 `<index_dir>/.access-token`. On Linux and macOS only you can read that file. On Windows it gets the index folder's permissions, and if the index folder is on a network share, anyone who can read the share can read the token. Deleting `.access-token` makes the next start create a new
 token, which ends every paired session; each browser must pair again. Startup prints the addresses
-to open and the current pairing code with how long it stays valid; it never prints the token.
-`uv run autodj devices pairing-code` also works with the saved token and says so on stderr.
+to open and, while no browser is paired, a pairing code with how long it stays valid; it never
+prints the token. After that no code is printed or usable until someone asks for one:
+`uv run autodj devices pairing-code` prints a code that pairs one browser, and it also works with
+the saved token and says so on stderr.
 
 `uv run autodj doctor` shows the detected hosts and whether the token will be created. Doctor sees
 LAN mode only from `[server] lan` or `AUTODJ_LAN`, not from a `--lan` given only to
@@ -123,10 +125,11 @@ the replaced files within five minutes.
 
 In the web page, Settings, Browser access lists every paired device with when it was paired and
 when it was last seen, and marks this browser. Each row has Rename and Revoke. Names are 1 to 64
-printable characters. **Show pairing code** shows the current code with a Copy button and how long
-it stays valid; the code changes by itself every five minutes and cannot be edited. While the code
-is shown the page checks the list every five seconds and says the name of any device that pairs.
-Any paired device can show the code, so any paired device can pair another one.
+printable characters. **Show pairing code** shows a code with a Copy button and how long it stays
+valid; the code changes by itself every five minutes and cannot be edited. Each code pairs one
+device. While the code is shown the page checks the list every five seconds; when a device pairs
+it says the device's name and hides the used code. Any paired device can show a code, so any
+paired device can pair another one.
 
 From the command line, `autodj devices list` prints each device's id, `autodj devices rename
 DEVICE_ID NAME` renames one, `autodj devices revoke DEVICE_ID` revokes one, `autodj devices reset`
