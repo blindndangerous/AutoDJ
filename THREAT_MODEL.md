@@ -63,6 +63,12 @@ When `server.access_token` or `AUTODJ_ACCESS_TOKEN` is set:
 - The server derives that code as `HMAC-SHA256(token, "pair:<window>")` reduced to eight decimal
   digits, where the window advances every 300 seconds. Current and previous windows are both
   accepted, so one code stays usable for at most ten minutes and is compared in constant time.
+- A right code pairs nothing on its own. It works only while a pairing request is open, and each
+  request pairs one device. `autodj devices pairing-code`, `GET /api/pairing-code` and a startup
+  with no active paired device open a request until the code they hand out expires. The request
+  lives in the paired-devices database, which the CLI and the server share. Taking the request and
+  recording the device are one SQLite transaction, so two browsers racing with one code cannot
+  both pair. A right code with no open request gets the same 401 as a wrong one.
 - A browser posts the code and a device name to `/api/pair`. On success the server records a new
   device identity and returns a session bound to that device.
 - The session is `<expiry>.<device>.<nonce>` signed with HMAC-SHA256 under the same token and
@@ -75,9 +81,9 @@ When `server.access_token` or `AUTODJ_ACCESS_TOKEN` is set:
 - A paired browser can list paired devices (`GET /api/devices`), rename any of them
   (`PATCH /api/devices/{id}`) and revoke any of them (`DELETE /api/devices/{id}`) from Settings,
   Browser access. All three need a valid session.
-- A paired browser can also show the current pairing code (`GET /api/pairing-code`), so any
-  paired device can pair another one. The route needs a valid session, answers 409 when pairing
-  is off, and never logs the code.
+- A paired browser can also ask for a pairing code (`GET /api/pairing-code`), so any paired
+  device can pair one more. The route needs a valid session, answers 409 when pairing is off,
+  and never logs the code.
 - "Sign out this browser" (`POST /api/logout`) revokes the calling device as well as deleting its
   cookie, so a copied cookie stops working at once instead of lasting out its 90 days.
 - The pairing body is limited to 4096 bytes before downstream parsing.
@@ -146,7 +152,8 @@ on a network share, anyone who can read that share can read the token and derive
 the token. A configured `access_token` or `AUTODJ_ACCESS_TOKEN` always wins. Anyone who can read
 the index directory can derive pairing codes, the same as for a token in `config.local.toml`;
 deleting the file rotates the token and ends every paired session on the next start. Startup
-prints the addresses and pairing code, never the token. `--lan --insecure-lan` keeps the
+prints the addresses, and a pairing code only while no browser is paired; it never prints the
+token. `--lan --insecure-lan` keeps the
 automatic allowlists without any token.
 
 Name lookups for detection (the fully qualified name and the resolver addresses) run in a

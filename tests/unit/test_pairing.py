@@ -239,3 +239,48 @@ def test_pairing_code_seconds_left_covers_the_grace_window() -> None:
     policy = SecurityPolicy(ServerConfig(access_token=_SECRET), now=lambda: 1_000)
     # Window 900..1200 plus the following grace window to 1500.
     assert policy.pairing_code_seconds_left() == (500, 200)
+
+
+def test_pairing_needs_an_open_request_and_closes_it(tmp_path) -> None:
+    registry = DeviceRegistry(tmp_path / "devices.sqlite3", now=lambda: 1_000)
+
+    assert registry.pair_on_request("Unasked") is None
+    registry.open_pairing(300)
+    first = registry.pair_on_request("Kitchen tablet")
+    second = registry.pair_on_request("Second phone")
+
+    assert first is not None and first.name == "Kitchen tablet"
+    assert second is None
+    assert [device.name for device in registry.list_devices()] == ["Kitchen tablet"]
+
+
+def test_pairing_request_expires(tmp_path) -> None:
+    clock = [1_000.0]
+    registry = DeviceRegistry(tmp_path / "devices.sqlite3", now=lambda: clock[0])
+    registry.open_pairing(300)
+
+    clock[0] = 1_301.0
+
+    assert registry.pair_on_request("Too late") is None
+    assert registry.list_devices() == []
+
+
+def test_bad_device_name_keeps_the_pairing_request_open(tmp_path) -> None:
+    registry = DeviceRegistry(tmp_path / "devices.sqlite3", now=lambda: 1_000)
+    registry.open_pairing(300)
+
+    with pytest.raises(ValueError, match="1 to 64 printable"):
+        registry.pair_on_request("   ")
+
+    assert registry.pair_on_request("Den") is not None
+
+
+def test_has_active_devices_ignores_revoked_ones(tmp_path) -> None:
+    registry = DeviceRegistry(tmp_path / "devices.sqlite3", now=lambda: 1_000)
+    assert registry.has_active_devices() is False
+
+    device = registry.pair("Old phone")
+    assert registry.has_active_devices() is True
+
+    registry.revoke(device.device_id)
+    assert registry.has_active_devices() is False

@@ -527,7 +527,7 @@ def cmd_setup_lan(host_name: str | None) -> None:
         raise click.ClickException(message) from exc
     click.echo(f"LAN setup saved to .env. Open {origin} after startup.")
     click.echo("Start: docker compose --profile lan up autodj-lan")
-    click.echo("AutoDJ will print a short pairing code during startup.")
+    click.echo("AutoDJ prints a short pairing code during startup while no browser is paired.")
 
 
 @cli.group("devices")
@@ -623,7 +623,7 @@ def _server_with_saved_token(cfg: AutoDJConfig) -> ServerConfig:
 @devices_group.command("pairing-code")
 @click.pass_context
 def cmd_devices_pairing_code(ctx: click.Context) -> None:
-    """Print current short-lived code for pairing another browser."""
+    """Print a short-lived code that pairs one more browser."""
     from autodj.security import SecurityPolicy
 
     cfg, registry = _device_registry(ctx)
@@ -633,11 +633,13 @@ def cmd_devices_pairing_code(ctx: click.Context) -> None:
     except RuntimeError as exc:
         raise click.ClickException("Configure LAN access before requesting a code.") from exc
     valid_for, next_code_in = policy.pairing_code_seconds_left()
+    # The running server shares this registry, so the code works there now.
+    registry.open_pairing(valid_for)
     click.echo(code)
     # stderr keeps stdout to the bare code for scripts such as container_smoke.sh.
     click.echo(
-        f"Valid for about {valid_for} more seconds. A new code starts in {next_code_in} "
-        "seconds; if the server says pairing is paused, use that one.",
+        f"Pairs one browser within about {valid_for} seconds. A new code starts in "
+        f"{next_code_in} seconds; if the server says pairing is paused, run this again then.",
         err=True,
     )
 
@@ -1119,7 +1121,7 @@ def cmd_analyse(
     help=(
         "Use AutoDJ from other devices on your network: listen on all interfaces, "
         "allow this machine's names and addresses, and require pairing.  Startup "
-        "prints the addresses to open and a pairing code."
+        "prints the addresses to open, and a pairing code while no browser is paired."
     ),
 )
 @click.option(

@@ -399,20 +399,31 @@ describe("browser access", () => {
       expect(els.pairCode.textContent).toContain("8765 4321");
       expect(said).toHaveLength(1);
 
-      // Another device pairs while the code is shown: said once.
-      listed = [...devices, { ...devices[0], device_id: "c".repeat(32), name: "Laptop" }];
-      await vi.advanceTimersByTimeAsync(10_000);
-      expect(els.list.querySelectorAll("li")).toHaveLength(3);
-      expect(said).toEqual([
-        "Pairing code 1 2 3 4, 5 6 7 8, valid for 8 minutes.",
-        "New device paired: Laptop.",
-      ]);
-
       // Refresh code says the current code again, once.
       els.pairRefresh.click();
       await vi.advanceTimersByTimeAsync(0);
       expect(said.at(-1)).toMatch(/^Pairing code 8 7 6 5, 4 3 2 1, valid for \d+ minutes\.$/);
+      expect(said).toHaveLength(2);
+
+      // Another device pairs while the code is shown: said once, and the
+      // code, which pairs one device, is hidden with focus kept in reach.
+      els.pairCopy.focus();
+      listed = [...devices, { ...devices[0], device_id: "c".repeat(32), name: "Laptop" }];
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(els.list.querySelectorAll("li")).toHaveLength(3);
+      expect(said.at(-1)).toBe("New device paired: Laptop.  That code is used up.  "
+        + "Choose Show pairing code to pair another device.");
       expect(said).toHaveLength(3);
+      expect(els.pairPanel.hidden).toBe(true);
+      expect(els.pairCode.textContent).toBe("");
+      expect(els.pairToggle.getAttribute("aria-expanded")).toBe("false");
+      expect(document.activeElement).toBe(els.pairToggle);
+
+      // Showing it again asks the server for a code for the next device.
+      els.pairToggle.click();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(els.pairPanel.hidden).toBe(false);
+      expect(said).toHaveLength(4);
 
       els.pairToggle.click();
       expect(els.pairPanel.hidden).toBe(true);

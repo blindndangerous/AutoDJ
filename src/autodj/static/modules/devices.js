@@ -15,7 +15,8 @@
 // shown and on Refresh code.  The code on screen and its countdown are
 // not live: the code changes by itself every five minutes and is swapped
 // in silently, and the countdown ticks every second.  While the code is
-// shown the list is polled, and a newly paired device is said once.
+// shown the list is polled, and a newly paired device is said once.  Each
+// code pairs one device, so the code is hidden then.
 
 import {
   captureAuthenticatedRequestEpoch,
@@ -146,9 +147,16 @@ export function installAccess(els, { onSignedOut }) {
         say(`Device list refreshed.  ${count} paired ${count === 1 ? "device" : "devices"}.`);
       } else if (reportNew) {
         const added = devices.filter((device) => !known.has(device.device_id));
-        if (added.length === 1) say(`New device paired: ${added[0].name}.`);
-        else if (added.length > 1) {
-          say(`New devices paired: ${added.map((device) => device.name).join(", ")}.`);
+        if (added.length > 0) {
+          const names = added.map((device) => device.name).join(", ");
+          const paired = added.length === 1
+            ? `New device paired: ${names}.`
+            : `New devices paired: ${names}.`;
+          // The code on screen is used up; keep focus off the hidden panel.
+          const focusInPanel = Boolean(pairPanel && pairPanel.contains(doc.activeElement));
+          hideCode();
+          if (focusInPanel && pairToggle) pairToggle.focus();
+          say(`${paired}  That code is used up.  Choose Show pairing code to pair another device.`);
         }
       }
       return true;

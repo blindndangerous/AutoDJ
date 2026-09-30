@@ -21,7 +21,7 @@ def _paired_client(bridge, tmp_path) -> tuple[TestClient, DeviceRegistry]:
 
 def test_browser_pairs_once_and_reuses_device_session(bridge, tmp_path) -> None:
     client, registry = _paired_client(bridge, tmp_path)
-    code = client.app.state.security_policy.current_pairing_code()
+    code = client.app.state.request_pairing_code()[0]
 
     response = client.post(
         "/api/pair",
@@ -54,7 +54,7 @@ def test_invalid_pairing_code_cannot_create_device(bridge, tmp_path) -> None:
 
 def test_revoked_device_loses_api_access_without_server_restart(bridge, tmp_path) -> None:
     client, registry = _paired_client(bridge, tmp_path)
-    code = client.app.state.security_policy.current_pairing_code()
+    code = client.app.state.request_pairing_code()[0]
     paired = client.post(
         "/api/pair",
         json={"code": code, "device_name": "Old phone"},
@@ -86,7 +86,7 @@ def test_pairing_rejects_untrusted_browser_origin(bridge, tmp_path) -> None:
     response = client.post(
         "/api/pair",
         json={
-            "code": client.app.state.security_policy.current_pairing_code(),
+            "code": client.app.state.request_pairing_code()[0],
             "device_name": "Unknown browser",
         },
         headers={"Origin": "http://evil.example"},
@@ -124,7 +124,7 @@ def test_pairing_rejects_unsafe_device_name_without_creating_identity(bridge, tm
     response = client.post(
         "/api/pair",
         json={
-            "code": client.app.state.security_policy.current_pairing_code(),
+            "code": client.app.state.request_pairing_code()[0],
             "device_name": "hidden\u202ename",
         },
     )
@@ -135,7 +135,7 @@ def test_pairing_rejects_unsafe_device_name_without_creating_identity(bridge, tm
 
 def test_legacy_login_endpoint_is_removed(bridge, tmp_path) -> None:
     client, registry = _paired_client(bridge, tmp_path)
-    code = client.app.state.security_policy.current_pairing_code()
+    code = client.app.state.request_pairing_code()[0]
     paired = client.post(
         "/api/pair",
         json={"code": code, "device_name": "Current browser"},
@@ -162,13 +162,13 @@ def test_pairing_and_auth_status_keep_sqlite_off_the_event_loop(
         return await real_to_thread(function, *args, **kwargs)
 
     monkeypatch.setattr("autodj.server.asyncio.to_thread", recording_to_thread)
-    code = client.app.state.security_policy.current_pairing_code()
+    code = client.app.state.request_pairing_code()[0]
 
     assert client.post("/api/pair", json={"code": code, "device_name": "Den"}).status_code == 200
     assert client.get("/api/auth/status").json()["authenticated"] is True
-    # registry.pair, the active-device check behind issuing the session, and
+    # registry.pair_on_request, the active-device check behind issuing the session, and
     # the touch + verify pair in /api/auth/status all hit SQLite.
-    assert {"pair", "issue_device_session", "_status"} <= set(offloaded)
+    assert {"pair_on_request", "issue_device_session", "_status"} <= set(offloaded)
 
 
 def test_locked_out_client_gets_429_with_retry_after_even_for_the_right_code(
@@ -218,7 +218,7 @@ def test_healthz_and_version_hide_details_until_paired(bridge, tmp_path) -> None
     assert client.get("/healthz").json() == {"status": "ok"}
     assert set(client.get("/api/version").json()) == {"version"}
 
-    code = client.app.state.security_policy.current_pairing_code()
+    code = client.app.state.request_pairing_code()[0]
     paired = client.post("/api/pair", json={"code": code, "device_name": "Kitchen tablet"})
     assert paired.status_code == 200
 
@@ -227,7 +227,7 @@ def test_healthz_and_version_hide_details_until_paired(bridge, tmp_path) -> None
 
 
 def _pair(client: TestClient, name: str) -> str:
-    code = client.app.state.security_policy.current_pairing_code()
+    code = client.app.state.request_pairing_code()[0]
     response = client.post("/api/pair", json={"code": code, "device_name": name})
     assert response.status_code == 200
     return response.json()["device_id"]
@@ -345,3 +345,52 @@ def test_pairing_code_while_paused_says_to_wait(bridge, tmp_path) -> None:
     assert response.status_code == 429
     assert response.headers["retry-after"] == "200"
     assert "paused" in response.json()["detail"]
+
+
+def test_right_code_does_not_pair_until_someone_asks_for_one(bridge, tmp_path) -> None:
+    client, registry = _paired_client(bridge, tmp_path)
+    code = client.app.state.security_policy.current_pairing_code()
+
+    response = client.post("/api/pair", json={"code": code, "device_name": "Unasked"})
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid or expired pairing code"
+    assert registry.list_devices() == []
+
+
+def test_each_requested_code_pairs_one_device(bridge, tmp_path) -> None:
+    client, registry = _paired_client(bridge, tmp_path)
+    code = client.app.state.request_pairing_code()[0]
+    other = TestClient(client.app)
+
+    first = client.post("/api/pair", json={"code": code, "device_name": "Kitchen tablet"})
+    second = other.post("/api/pair", json={"code": code, "device_name": "Second phone"})
+
+    assert first.status_code == 200
+    assert second.status_code == 401
+    assert [device.name for device in registry.list_devices()] == ["Kitchen tablet"]
+
+
+def test_a_paired_browser_showing_the_code_lets_one_more_device_pair(bridge, tmp_path) -> None:
+    client, registry = _paired_client(bridge, tmp_path)
+    _pair(client, "Kitchen tablet")
+    code = client.get("/api/pairing-code").json()["code"]
+
+    new = TestClient(client.app).post("/api/pair", json={"code": code, "device_name": "Den"})
+    again = TestClient(client.app).post("/api/pair", json={"code": code, "device_name": "Hall"})
+
+    assert new.status_code == 200
+    assert again.status_code == 401
+    assert [device.name for device in registry.list_devices()] == ["Kitchen tablet", "Den"]
+
+
+def test_bad_device_name_does_not_use_up_the_code(bridge, tmp_path) -> None:
+    client, registry = _paired_client(bridge, tmp_path)
+    code = client.app.state.request_pairing_code()[0]
+
+    bad = client.post("/api/pair", json={"code": code, "device_name": "   "})
+    good = client.post("/api/pair", json={"code": code, "device_name": "Den"})
+
+    assert bad.status_code == 422
+    assert good.status_code == 200
+    assert [device.name for device in registry.list_devices()] == ["Den"]

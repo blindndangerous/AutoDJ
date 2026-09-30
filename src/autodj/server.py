@@ -78,7 +78,7 @@ from autodj._bridge import (
 )
 from autodj.icy import METAINT
 from autodj.index_manifest import IndexConsistencyError, read_manifest
-from autodj.lan import format_lan_banner, lan_urls, running_in_container
+from autodj.lan import PAIRING_ON_REQUEST_HINT, format_lan_banner, lan_urls, running_in_container
 from autodj.pairing import DeviceRegistry
 from autodj.security import (
     COOKIE_NAME,
@@ -1058,6 +1058,24 @@ def create_app(
     # routes and the middleware use these same objects directly.
     app.state.security_policy = policy
     app.state.device_registry = device_registry
+
+    def request_pairing_code() -> tuple[str, int, int]:
+        """Return the current pairing code and let one device pair with it.
+
+        Returns ``(code, valid_seconds, next_code_seconds)``.  The code works
+        until it expires or one device pairs with it, whichever comes first.
+
+        Raises:
+            RuntimeError: Pairing is not enabled.
+        """
+        if device_registry is None:
+            raise RuntimeError("pairing is not enabled")
+        code, valid_for, next_code_in = policy.pairing_code_now()
+        device_registry.open_pairing(valid_for)
+        return code, valid_for, next_code_in
+
+    # serve() asks for the first code when no browser is paired yet.
+    app.state.request_pairing_code = request_pairing_code
     # Request bodies the middleware caps before any route parses them.
     body_limits: dict[str, Callable[[], int]] = {
         "/api/pair": lambda: PAIRING_BODY_MAX_BYTES,
@@ -1172,10 +1190,13 @@ def create_app(
             )
         if not request_policy.verify_pairing_code(body.code, client):
             raise HTTPException(status_code=401, detail="Invalid or expired pairing code")
+        # A right code works only after someone asked for it, for one device.
         try:
-            device = await asyncio.to_thread(registry.pair, body.device_name)
+            device = await asyncio.to_thread(registry.pair_on_request, body.device_name)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if device is None:
+            raise HTTPException(status_code=401, detail="Invalid or expired pairing code")
         # Issuing checks the device is still active, another SQLite read.
         session = await asyncio.to_thread(request_policy.issue_device_session, device.device_id)
         response = JSONResponse(
@@ -1293,7 +1314,7 @@ def create_app(
 
     @app.get("/api/pairing-code")
     async def api_pairing_code() -> JSONResponse:
-        """Show the current pairing code to an already paired browser.
+        """Show a paired browser a pairing code that one more device can use.
 
         Any paired browser may pair another one, the same as the operator
         running ``autodj devices pairing-code``.  The code is never logged.
@@ -1307,7 +1328,7 @@ def create_app(
                 detail=paused.detail,
                 headers={"Retry-After": str(paused.retry_after)},
             )
-        code, valid_for, next_code_in = policy.pairing_code_now()
+        code, valid_for, next_code_in = await asyncio.to_thread(request_pairing_code)
         return JSONResponse(
             {"code": code, "valid_seconds": valid_for, "next_code_seconds": next_code_in},
             headers=_NO_STORE,
@@ -2280,11 +2301,19 @@ def serve(
     )
 
     startup_policy: SecurityPolicy = app.state.security_policy
+    startup_registry: DeviceRegistry | None = app.state.device_registry
+    # Starting with no paired browser counts as asking for a code; once one
+    # is paired, codes come only from `autodj devices pairing-code` or a
+    # paired browser, and none is logged.
+    pairing: tuple[str, int] | None = None
+    if (
+        startup_policy.authentication_required
+        and startup_registry is not None
+        and not startup_registry.has_active_devices()
+    ):
+        code, valid_for, _next_code_in = app.state.request_pairing_code()
+        pairing = (code, valid_for)
     if cfg.server.lan:
-        pairing = None
-        if startup_policy.authentication_required:
-            valid_for, _next_code_in = startup_policy.pairing_code_seconds_left()
-            pairing = (startup_policy.current_pairing_code(), valid_for)
         in_container = running_in_container()
         urls = lan_urls(
             cfg.server,
@@ -2292,12 +2321,19 @@ def serve(
             in_container=in_container,
             configured_hosts=lan_configured_hosts or (),
         )
-        logger.info("%s", format_lan_banner(urls, pairing, in_container=in_container))
-    elif startup_policy.authentication_required:
         logger.info(
-            "Pair this browser within five minutes using code: %s",
-            startup_policy.current_pairing_code(),
+            "%s",
+            format_lan_banner(
+                urls,
+                pairing,
+                in_container=in_container,
+                code_on_request=startup_policy.authentication_required,
+            ),
         )
+    elif pairing is not None:
+        logger.info("Pair this browser within five minutes using code: %s", pairing[0])
+    elif startup_policy.authentication_required:
+        logger.info("%s", PAIRING_ON_REQUEST_HINT)
 
     if stream:
         audio_mode = "radio stream" + (" + server-audio" if not no_playback else "")
