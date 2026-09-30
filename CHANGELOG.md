@@ -10,6 +10,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- ALAC and other `.m4a`, `.mp4` and `.aac` files are no longer skipped by the server mix and
+  stream mode, and they now get cue points and intro and outro markers. `autodj index` already
+  decoded them through FFmpeg, but the server mix and the background analysis that runs when a
+  track starts only tried soundfile and librosa, which cannot read MP4 files, and logged
+  "Format not recognised". Both now decode these files through FFmpeg too.
 - In the Full intro and outro and Fixed (skip silence) transition modes, and with Outro and intro
   align on, the next track no longer starts partway into its first verse. AutoDJ skipped
   everything before the point where a track first got loud, so a verse sung over a quiet intro was
