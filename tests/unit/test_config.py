@@ -12,6 +12,7 @@ import pytest
 from autodj.config import (
     ENVIRONMENT_OVERLAY,
     AutoDJConfig,
+    DjMixConfig,
     HuggingFaceConfig,
     IndexConfig,
     LibraryConfig,
@@ -953,3 +954,28 @@ class TestServerConfig:
     def test_origin_helper_rejects_non_string_without_value_echo(self) -> None:
         with pytest.raises(TypeError, match="allowed_origins"):
             canonicalize_allowed_origin(123)  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# Skip style, liner talk-ups and the vocal guard
+# ---------------------------------------------------------------------------
+
+
+class TestMixFeatureSettings:
+    def test_defaults(self) -> None:
+        playback = PlaybackConfig()
+        assert playback.skip_style == "fade"
+        assert playback.liners_talk_up is False
+        assert DjMixConfig().vocal_guard is True
+
+    @pytest.mark.parametrize("style", ["fade", "echo_out", "backspin", "loop_roll"])
+    def test_every_skip_style_loads(self, style: str) -> None:
+        assert PlaybackConfig.from_dict({"skip_style": style}).skip_style == style
+
+    def test_an_unknown_skip_style_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="skip_style"):
+            PlaybackConfig.from_dict({"skip_style": "scratch"})
+
+    def test_switches_are_coerced_to_booleans(self) -> None:
+        assert PlaybackConfig.from_dict({"liners_talk_up": 1}).liners_talk_up is True
+        assert DjMixConfig.from_dict({"vocal_guard": 0}).vocal_guard is False

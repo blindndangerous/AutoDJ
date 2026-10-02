@@ -80,7 +80,9 @@ second before it and the level holding for three seconds after. Breakdowns count
 point only when you marked them. A pair mixes the usual way when the new song would have to start
 more than 90 seconds in, when the ending song would stop more than 32 seconds earlier than usual,
 or when there is less than 4 seconds of build-up. The overlap is the usual crossfade length, at
-most 30 seconds. Look for "Drop mix:" lines in the log to see which pairs used it.
+most 30 seconds. A drop mix is not moved or shortened by `vocal_guard`: the build-up before a
+drop rarely has singing, and moving the crossfade would take the drop off the downbeat. Look for
+"Drop mix:" lines in the log to see which pairs used it.
 
 `key_shift` plays the next song one or two semitones higher or lower during the crossfade when
 its key clashes with the ending song's but the shifted key would mix (by the Camelot rule, or by
@@ -478,7 +480,20 @@ Media, then Open Network Stream, then paste the stream address (or point VLC at 
 ### Controls while streaming
 
 - **Skip** takes effect immediately on the server with a short fade. A speaker hears it a few
-  seconds later, once its own playback buffer catches up.
+  seconds later, once its own playback buffer catches up. **Skip style** (Settings, Playback, or
+  `[playback] skip_style`) can make it a DJ-style exit instead: Echo out, Backspin or Loop roll.
+  Each lasts one to two beats, at most 2 seconds, and ends on a beat when the song's tempo is
+  trusted; then the next song starts. Skip style applies to stream mode and server audio only;
+  browser playback keeps its own skip.
+- **Voice liners** fire on the same triggers as in the browser. With **Talk up to the vocal**
+  (Voice liners, Mix, or `[playback] liners_talk_up`), a liner due as a song starts is timed to end
+  just before the singing comes in: at the first line of the song's synced lyrics, or else at its
+  detected intro end. A liner too long for the intro starts during the crossfade when that fits,
+  and otherwise plays as the song starts. Liners played by the browser are not timed this way.
+- **Keep vocals apart** (Settings, DJ-mix toggles, or `[djmix] vocal_guard`, on by default) shortens
+  or moves a crossfade when both songs have synced lyrics, so the outgoing singer finishes before
+  the incoming one starts. The fade never gets longer, or shorter than 1 second; when nothing
+  avoids the clash it is left as it was. Songs without synced lyrics crossfade as before.
 - **Pause** holds the stream for everyone; it plays silence rather than disconnecting, so
   speakers stay connected and resume from the same spot. It also keeps the set alive past the
   idle timeout below.

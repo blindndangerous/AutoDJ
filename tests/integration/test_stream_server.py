@@ -261,7 +261,7 @@ def test_on_track_started_hands_the_liner_check_to_a_worker() -> None:
     started = threading.Event()
     caller: list[threading.Thread] = []
 
-    def on_track_start() -> None:
+    def on_track_start(_track=None) -> None:
         caller.append(threading.current_thread())
         started.set()
 
@@ -766,7 +766,7 @@ def test_shutdown_does_not_wait_for_a_liner_decode() -> None:
     release = threading.Event()
     running = threading.Event()
 
-    def slow_decode() -> None:
+    def slow_decode(_track=None) -> None:
         running.set()
         release.wait(5.0)
 

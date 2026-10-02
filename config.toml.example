@@ -254,8 +254,18 @@ key_sync_fx = true
 
 # Beatmatch when the user presses Skip: the browser pitch-preserves the new
 # track onto the outgoing tempo instead of cold-cutting.  Server-side audio
-# cold-cuts regardless.
+# ignores it and uses skip_style below.
 beatmatch_on_skip = false
+
+# How Skip ends the playing track when the server mixes (--stream and
+# --server-audio); browser playback keeps its own skip.
+#   "fade"       quick 150 ms fade-out.  Default.
+#   "echo_out"   the music cuts and its echoes ring out.
+#   "backspin"   the record spins backwards to a stop.
+#   "loop_roll"  a short loop repeats, rolling faster as it fades.
+# The effects last one to two beats (at most 2 seconds) and end on a beat
+# when the track's tempo is trusted; then the next track starts.
+skip_style = "fade"
 
 # Voice liners — short spoken clips layered over the mix.  Triggers are
 # evaluated in the browser when it plays the audio, and on the server with
@@ -269,6 +279,12 @@ liners_enabled = false
 # liners_random_max_minutes = 25.0     # random window, upper bound
 liners_pick_mode = "random"            # random | sequential
 liners_duck_db = -12.0                 # how far the music ducks under a liner, -30 to 0 dB
+# Talk-ups ("hitting the post"), server mix only: a liner due as a track
+# starts is timed to end just before the incoming vocal (its first synced
+# lyric line, else its detected intro end).  A liner too long for the intro
+# starts during the crossfade when that fits; otherwise it plays as the
+# track starts, as with this off.
+liners_talk_up = false
 
 # Longest track the server mixes with --server-audio or --stream, in
 # minutes (1 to 600).  The server decodes each track whole, at about 21 MB
@@ -364,6 +380,13 @@ phrase_bars  = 8
 # filter-out energy lift that DJs use to launch into a build.
 filter_sweep = false
 filter_sweep_floor_hz = 250.0
+
+# Vocal-clash guard, on by default: when both tracks have synced (LRC)
+# lyrics, shorten or move the crossfade so the outgoing track's last sung
+# line ends before the incoming track starts singing.  The fade is never
+# lengthened or made shorter than 1 second; when nothing avoids the clash
+# it stays as it was.  Server mix only.
+vocal_guard = true
 
 # ---------------------------------------------------------------------------
 # Transition effects layered on every crossfade

@@ -82,6 +82,7 @@ const djDropMix       = document.getElementById("dj-drop-mix");
 const djKeyShift      = document.getElementById("dj-key-shift");
 const djPhraseAlign   = document.getElementById("dj-phrase-align");
 const djOutroIntro    = document.getElementById("dj-outro-intro");
+const djVocalGuard    = document.getElementById("dj-vocal-guard");
 const pbEqDuck        = document.getElementById("pb-eq-duck");
 const pbPickMode      = document.getElementById("pb-pick-mode");
 const pbShowLyrics    = document.getElementById("pb-show-lyrics");
@@ -90,6 +91,8 @@ const pbReplayGain    = document.getElementById("pb-replaygain");
 const pbBeatSyncFx    = document.getElementById("pb-beat-sync-fx");
 const pbKeySyncFx     = document.getElementById("pb-key-sync-fx");
 const pbBeatmatchSkip = document.getElementById("pb-beatmatch-on-skip");
+const pbSkipStyle     = document.getElementById("pb-skip-style");
+const lnTalkUp        = document.getElementById("ln-talk-up");
 const pbTransitionMode = document.getElementById("pb-transition-mode");
 const pbPostQueueSeed  = document.getElementById("pb-post-queue-seed");
 const keyNotation     = document.getElementById("key-notation");
@@ -669,10 +672,10 @@ import {
 
 const _settingsEls = () => ({
   presetSelect, transitionSelect, harmonicMode,
-  djBeatmatch, djDropMix, djKeyShift, djPhraseAlign, djOutroIntro,
+  djBeatmatch, djDropMix, djKeyShift, djPhraseAlign, djOutroIntro, djVocalGuard,
   pbEqDuck, pbPickMode, pbShowLyrics, pbAnchorSeed,
   pbReplayGain,
-  pbBeatSyncFx, pbKeySyncFx, pbBeatmatchSkip,
+  pbBeatSyncFx, pbKeySyncFx, pbBeatmatchSkip, pbSkipStyle, lnTalkUp,
   pbTransitionMode, pbPostQueueSeed,
   keyNotation, keyPreferFlats,
   bpmLo, bpmHi,

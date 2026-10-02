@@ -381,6 +381,22 @@ class TestDropMix:
         assert _rms(layer, len(layer) - 4096) > 2.0 * _rms(layer, len(layer) - 3 * SR)
         assert not np.any(layer[: len(layer) - 6 * SR])
 
+    def test_vocal_guard_does_not_move_a_drop_mix(self) -> None:
+        player, cur, nxt = _player(vocal_guard=True)
+        moved: list[int] = []
+
+        def guard(*_a: object, crossfade: int, **_k: object) -> tuple[int, int]:
+            moved.append(crossfade)
+            return 0, crossfade // 2
+
+        player._guard_vocals = guard  # type: ignore[method-assign]
+        first, *_ = _render(player, cur, nxt)
+        assert moved == []
+        assert len(first.audio) == round(_A_BEATS[112] * SR)
+        # Without a drop to land, the guard has its say as usual.
+        plain, *_ = _render(player, cur, nxt, b_cues=())
+        assert moved and len(plain.audio) == plain.overlap_frames
+
     def test_an_effect_chosen_by_name_is_kept(self) -> None:
         player, cur, nxt = _player()
         player._cfg.transitions.effect = "echo_out"

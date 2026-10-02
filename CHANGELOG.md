@@ -18,13 +18,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   builds up to the drop. Drops you marked in Rekordbox, Traktor, Serato or Mixxx are used first; a
   drop AutoDJ found itself is used only when it is unmistakable. Songs that do not fit, for example
   because the drop is more than 90 seconds in or the old song would be cut more than 32 seconds
-  short, are mixed the usual way.
+  short, are mixed the usual way. A drop mix keeps its timing even with **Keep vocals apart** on,
+  since moving the crossfade would take the drop off the beat.
 - In stream mode and with server audio, the new **Key shift** setting (`key_shift` in the
   `[djmix]` section, off by default) makes clashing keys mix. When the new song's key clashes with
   the old one but would fit one or two semitones higher or lower, the new song plays that much
   higher or lower during the crossfade, at the same tempo, then slides back to its own key over
   the next few bars, so it plays in its true key from then on. The Auto transition effect treats
   such a pair as matching keys.
+- In stream mode and with server audio, Skip can now end the song the way a DJ would. **Skip
+  style** in Settings (`[playback] skip_style`) offers Echo out (the music cuts and its echoes ring
+  out), Backspin (the record spins backwards to a stop) and Loop roll (a short loop repeats, rolling
+  faster as it fades), as well as the quick fade it always used, which stays the default. Each
+  effect lasts one to two beats, at most 2 seconds, and ends on a beat when the song's tempo is
+  trusted; then the next song starts exactly as before. Browser playback keeps its own skip.
+- Voice liners can now talk up to the vocal, the way a radio presenter "hits the post". With
+  **Talk up to the vocal** on (`[playback] liners_talk_up`, off by default), a liner due as a
+  song starts is timed to finish just before the singing comes in: at the first line of the song's
+  synced lyrics, or else at its detected intro end. A liner too long for the intro starts during the
+  crossfade instead when that fits, and otherwise plays as the song starts, as it did before. The
+  music ducks under it as usual. This works in stream mode and with server audio; liners played by
+  the browser are not timed this way.
+- In stream mode and with server audio, crossfades now keep two singers from overlapping. When both
+  songs have synced (LRC) lyrics, the crossfade is shortened, or moved a little, so the song that
+  is ending finishes its last line before the next song starts singing. The fade is never made
+  longer, or shorter than 1 second, and when nothing avoids the clash it stays as it was. It is
+  on by default; turn off **Keep vocals apart** in Settings (`[djmix] vocal_guard`) to mix as before.
 - In stream mode and with server audio, **Beatmatch** now lines up the beats as well as the
   tempos. When both songs have a confident tempo and an analysed beat grid, the crossfade starts at
   the moment that puts the new song's first downbeat on a downbeat of the song that is ending, so
