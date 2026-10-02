@@ -32,8 +32,26 @@ const BLOCKED_TEXT = "The browser blocked playback. Press Listen here again.";
 const NOT_LOADED_TEXT = "The stream did not load. It may be full or not running.";
 const DROPPED_TEXT = "The stream connection dropped.";
 const STALLED_TEXT = "The stream stopped responding.";
-// A stalled or waiting stream that has not played again by then is dead.
+// A stalled or waiting stream whose playback has not moved on by then is
+// dead.
 const STALL_TIMEOUT_MS = 15000;
+// Playback that moved less than this over the timeout has not moved.
+const STALL_PROGRESS_S = 1;
+// HTMLMediaElement.HAVE_FUTURE_DATA: enough is buffered to keep playing.
+const HAVE_FUTURE_DATA = 3;
+// The silent retry after a drop asks for the link again.  When that
+// request cannot reach AutoDJ (the network or a tunnel in front of it is
+// down for a moment) it is tried again after each of these waits, which
+// together stay inside the server's 30 s idle grace, before the drop is
+// reported.
+const LOOKUP_RETRY_MS = [2000, 4000, 8000, 12000];
+
+// A link lookup that never reached AutoDJ, as opposed to one it refused.
+function isUnreachable(err) {
+  const name = err && err.name;
+  if (name === "TypeError" || name === "NetworkError") return true;
+  return Boolean(err) && err.unreachable === true;
+}
 
 // A failed start, from play() or the link lookup, in plain words.
 function startFailureText(err) {
@@ -71,6 +89,8 @@ export function createStreamMode({
   let retried = false;
   let hasPlayed = false;
   let stallTimer = null;
+  let lookupRetries = 0;
+  let lookupTimer = null;
   let seenFirstApply = false;
   let lastEventKey = null;
   // Set while this page's own "Make new link" is in flight.  The token
@@ -101,12 +121,20 @@ export function createStreamMode({
     stallTimer = null;
   }
 
+  function clearLookupRetry() {
+    lookupRetries = 0;
+    if (lookupTimer === null) return;
+    clearTimeout(lookupTimer);
+    lookupTimer = null;
+  }
+
   // Only a real listen is torn down; a browser-mode push is a no-op.
   // Bumping the generation cancels a start still waiting on the link.
   function stop() {
     if (!listening) return;
     generation += 1;
     clearStall();
+    clearLookupRetry();
     setListening(false);
     release();
   }
@@ -129,6 +157,17 @@ export function createStreamMode({
       await audio.play();
     } catch (err) {
       if (mine !== generation) return;
+      if (retry && isUnreachable(err) && lookupRetries < LOOKUP_RETRY_MS.length) {
+        // Still listening, quietly: the page's connection status already
+        // says the link is down.
+        const delay = LOOKUP_RETRY_MS[lookupRetries];
+        lookupRetries += 1;
+        lookupTimer = setTimeout(() => {
+          lookupTimer = null;
+          if (mine === generation && listening) void connect({ retry: true });
+        }, delay);
+        return;
+      }
       fail(retry ? DROPPED_TEXT : startFailureText(err));
     }
   }
@@ -139,6 +178,9 @@ export function createStreamMode({
   // reported.
   function onDropped() {
     if (!listening) return;
+    // The stall countdown belongs to the connection that dropped; the
+    // retry gets its own.
+    clearStall();
     if (!hasPlayed || retried) {
       fail(mediaFailureText(audio, hasPlayed));
       return;
@@ -152,15 +194,44 @@ export function createStreamMode({
     hasPlayed = true;
     retried = false;
     clearStall();
+    clearLookupRetry();
   });
   // A connection can hang without ever raising an error.  The first stall
-  // signal starts one countdown; audio playing again cancels it.
-  function onStalled() {
-    if (!listening || stallTimer !== null) return;
+  // signal starts one countdown; audio playing again cancels it.  A
+  // "stalled" event only says the download paused, and it fires while the
+  // buffer still covers playback (with no "waiting", so no "playing"
+  // after it), so the countdown fails the stream only when playback
+  // itself has not moved on and nothing is buffered to play.
+  function position() {
+    try {
+      return audio.currentTime;
+    } catch (_) {
+      return 0;
+    }
+  }
+  function playingWell() {
+    try {
+      return !audio.paused && audio.readyState >= HAVE_FUTURE_DATA;
+    } catch (_) {
+      return false;
+    }
+  }
+  function armStall() {
+    const startedAt = position();
     stallTimer = setTimeout(() => {
       stallTimer = null;
-      if (listening) fail(STALLED_TEXT);
+      if (!listening || playingWell()) return;
+      // Still moving, just not well: watch it for another round.
+      if (position() - startedAt >= STALL_PROGRESS_S) {
+        armStall();
+        return;
+      }
+      fail(STALLED_TEXT);
     }, STALL_TIMEOUT_MS);
+  }
+  function onStalled() {
+    if (!listening || stallTimer !== null) return;
+    armStall();
   }
   audio.addEventListener("stalled", onStalled);
   audio.addEventListener("waiting", onStalled);

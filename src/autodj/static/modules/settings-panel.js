@@ -28,6 +28,40 @@ function confirmValue(control) {
   _confirmed.set(control, isToggle(control) ? control.checked : control.value);
 }
 
+function controlValue(control) {
+  return isToggle(control) ? control.checked : control.value;
+}
+
+// The save in flight for each control, and then the value it saved until
+// a push carries it.  A push that left the server before the save holds
+// the old value, and writing it back unticked a checkbox the listener had
+// just ticked (and spoke nothing).  So a pushed value is not written to a
+// control while its save is out, nor after the reply until a push agrees
+// with it; a failed save ends the hold at once (revertAfterFailure).
+// ECHO_WAIT_MS only backstops an echo that never comes, for instance a
+// value the server stores in another form.
+const _saves = new WeakMap();   // control -> { value, answeredAt }
+const ECHO_WAIT_MS = 5000;
+
+function sameValue(pushed, saved) {
+  if (typeof saved === "boolean") return Boolean(pushed) === saved;
+  if (pushed == null) return saved === "";
+  if (String(pushed) === saved) return true;
+  return saved !== "" && Number(pushed) === Number(saved);
+}
+
+// True while a pushed value must be kept off *control*.
+export function saveHolds(control, pushed) {
+  const save = control && _saves.get(control);
+  if (!save) return false;
+  if (save.answeredAt === 0) return true;
+  if (sameValue(pushed, save.value) || Date.now() - save.answeredAt > ECHO_WAIT_MS) {
+    _saves.delete(control);
+    return false;
+  }
+  return true;
+}
+
 function spokenValue(control) {
   if (isToggle(control)) return control.checked ? "on" : "off";
   if (control.tagName === "SELECT") {
@@ -69,16 +103,24 @@ export function resetSettingsState(els) {
 
 export async function postSettings(url, body, { settingsStatus, control } = {}) {
   const epoch = captureAuthenticatedRequestEpoch();
+  const save = control ? { value: controlValue(control), answeredAt: 0 } : null;
+  if (save) _saves.set(control, save);
+  const ownSave = () => save !== null && _saves.get(control) === save;
   try {
     await withDisabled(control, () => requestJson(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }));
-    if (!isAuthenticatedRequestCurrent(epoch)) return false;
+    if (!isAuthenticatedRequestCurrent(epoch)) {
+      if (ownSave()) _saves.delete(control);
+      return false;
+    }
+    if (ownSave()) save.answeredAt = Date.now();
     if (control) confirmValue(control);
     return true;
   } catch (err) {
+    if (ownSave()) _saves.delete(control);
     if (!isAuthenticatedRequestCurrent(epoch)) return false;
     const reverted = revertAfterFailure(control);
     // The settings card is several screens tall, so the failure has to
@@ -189,26 +231,33 @@ export function applySettingsState(st, els) {
     const control = els[spec.key];
     if (!control) continue;
     const value = pushedValue(spec, control, st);
-    if (value == null) continue;
+    if (value == null || saveHolds(control, value)) continue;
     if (isToggle(control)) control.checked = value;
     else if (doc.activeElement !== control && control.value !== String(value)) control.value = value;
   }
-  if (pbPickMode && doc.activeElement !== pbPickMode) {
-    pbPickMode.value = st.playback?.pure_shuffle ? "pure" : "similarity";
+  const pickMode = st.playback?.pure_shuffle ? "pure" : "similarity";
+  if (pbPickMode && doc.activeElement !== pbPickMode && !saveHolds(pbPickMode, pickMode)) {
+    pbPickMode.value = pickMode;
   }
-  if (st.bpm_range && bpmLo && doc.activeElement !== bpmLo) bpmLo.value = st.bpm_range.lo ?? "";
-  if (st.bpm_range && bpmHi && doc.activeElement !== bpmHi) bpmHi.value = st.bpm_range.hi ?? "";
+  for (const [input, bound] of [[bpmLo, "lo"], [bpmHi, "hi"]]) {
+    if (!st.bpm_range || !input || doc.activeElement === input) continue;
+    const value = st.bpm_range[bound] ?? "";
+    if (!saveHolds(input, value)) input.value = value;
+  }
   // One concept, one answer: the checkbox tracks the same runtime flag
   // the Now Playing Discovery button toggles, so the two controls can no
   // longer disagree.
   const discOn = st.discovery_every != null && Boolean(st.discovery_enabled);
-  discEnabled.checked = discOn;
-  if (doc.activeElement !== discEvery && discOn) {
+  if (!saveHolds(discEnabled, discOn)) {
+    discEnabled.checked = discOn;
+    discEvery.disabled = !discOn;
+  }
+  if (doc.activeElement !== discEvery && discOn && !saveHolds(discEvery, st.discovery_every)) {
     discEvery.value = st.discovery_every;
   }
-  discEvery.disabled = !discOn;
-  // A focused control may hold a change still being saved.
+  // A focused control may hold a change still being saved, and so may
+  // one whose save is out: neither shows a confirmed value.
   for (const control of Object.values(els)) {
-    if (control && control !== doc.activeElement) confirmValue(control);
+    if (control && control !== doc.activeElement && !_saves.has(control)) confirmValue(control);
   }
 }

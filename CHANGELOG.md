@@ -19,6 +19,47 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Listening no longer stops when the page's connection to AutoDJ drops for a moment. A Cloudflare
+  tunnel in front of AutoDJ closes that connection every few minutes, and each time the page
+  stopped Listen here (and browser playback) without a word, said "Disconnected, retrying" and
+  then "Live" as if all was well, and the server ended the set 30 seconds later. The music now
+  plays on through the drop: Listen here has a connection of its own, and browser playback plays
+  from what it has loaded and asks for the next track again once the connection is back. If a
+  track runs out or stops loading while AutoDJ cannot be reached, the page says once that the music
+  stopped and carries on when the connection returns. Playback still stops at once when the page
+  learns that its session has ended (it expired or this browser was signed out), and a server that
+  comes back louder than the page was playing is still held at the page's level.
+- When AutoDJ stays out of reach while you are signed in through Cloudflare Access, the page now
+  says once, in plain words, that you may need to reload the page to sign in again, and keeps
+  trying in the background. Before, an expired Cloudflare sign-in left the page retrying silently
+  forever after a single "Disconnected, retrying".
+- Listen here no longer stops with "The stream stopped responding." while the stream is still
+  playing. A pause in the download started a 15-second countdown that only a fresh "playing"
+  event cancelled, and none comes while the buffer still covers playback. The stream now counts
+  as stopped only when playback itself has not moved on. A dropped stream also keeps trying for
+  up to about half a minute while AutoDJ cannot be reached, instead of giving up after one try.
+- In browser playback, the music no longer stops dead at the end of a track after you have paused
+  and resumed, with a crossfade of 0 seconds, the Fixed transition mode, or no next track lined up.
+- In browser playback, the page no longer fades back to the track it has just left. A status update
+  sent just before the server moved on could arrive after the page had already faded into the next
+  track and start a fade back to the old one, saying its name again. The page now waits for the
+  server to confirm the move, and tells it which track it is moving on from.
+- In browser playback, a track that fails to load because the connection dropped is no longer
+  skipped and marked as bad. The page loads it again once the connection is back, and only a
+  second failure with the connection up counts as a bad file.
+- Voice liners set to play every few songs in browser playback no longer talk over the
+  transition between tracks or break its fade. They wait until the transition has finished, and
+  they now turn down both tracks during a transition instead of only one.
+- Moving or removing a queued track no longer drops keyboard focus to the top of the page when a
+  status update redraws the queue before the change is saved. Focus lands on the moved track's
+  button, or on the row that took a removed track's place.
+- A checkbox in Settings, the volume slider or an EQ slider no longer jumps back to its old value
+  while your change is still being saved. On a slow connection the page took the old value from
+  the next status update; it now keeps your change until the server confirms it, and puts the old
+  value back only if the save fails.
+- Beatmatch on skip in browser playback now holds the new track's tempo for the whole transition,
+  however long the transition effect runs, and then eases back over a few seconds instead of
+  jumping. Like the server mix, it no longer stretches a tempo that is more than 8 percent away.
 - In stream mode and with server audio, the auto-DJ no longer plays two songs back and forth. It
   picks each next song in the background as soon as a song starts, but the song that was starting
   was recorded as played a moment later, so the pick could choose it again; two songs that were

@@ -197,3 +197,68 @@ describe("postSettings", () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe("a setting being saved", () => {
+  const state = (beatmatch) => ({
+    available_presets: [], preset: "", transition: "echo_out",
+    djmix: { harmonic_mode: "off", beatmatch, phrase_align: false, outro_intro_align: false },
+    playback: {}, bpm_range: { lo: null, hi: null },
+    discovery_every: null, discovery_enabled: false,
+  });
+
+  it("keeps a ticked checkbox while its save is out, until the server echoes it", async () => {
+    document.body.innerHTML = "";
+    const els = makeEls();
+    for (const control of Object.values(els)) document.body.append(control);
+    applySettingsState(state(false), els);
+    let answer;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => {
+      answer = () => resolve(new globalThis.Response('{"ok":true}', {
+        headers: { "Content-Type": "application/json" },
+      }));
+    })));
+    const status = document.createElement("p");
+    installSettingsControls(els, (url, body, control) =>
+      postSettings(url, body, { settingsStatus: status, control }));
+
+    els.djBeatmatch.focus();
+    els.djBeatmatch.checked = true;
+    els.djBeatmatch.dispatchEvent(new Event("change"));
+    // The push from before the save would untick it under the listener.
+    applySettingsState(state(false), els);
+    expect(els.djBeatmatch.checked).toBe(true);
+
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+    answer();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    applySettingsState(state(false), els);
+    expect(els.djBeatmatch.checked).toBe(true);
+    // Echoed: from here the box follows the server again.
+    applySettingsState(state(true), els);
+    applySettingsState(state(false), els);
+    expect(els.djBeatmatch.checked).toBe(false);
+    vi.unstubAllGlobals();
+  });
+
+  it("puts a checkbox back when its save fails", async () => {
+    document.body.innerHTML = "";
+    const els = makeEls();
+    for (const control of Object.values(els)) document.body.append(control);
+    applySettingsState(state(false), els);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new globalThis.Response(
+      '{"detail":"Settings locked"}',
+      { status: 423, headers: { "Content-Type": "application/json" } },
+    )));
+    const status = document.createElement("p");
+    installSettingsControls(els, (url, body, control) =>
+      postSettings(url, body, { settingsStatus: status, control }));
+
+    els.djBeatmatch.checked = true;
+    els.djBeatmatch.dispatchEvent(new Event("change"));
+    await vi.waitFor(() => expect(status.textContent).toContain("Settings locked"));
+    expect(els.djBeatmatch.checked).toBe(false);
+    applySettingsState(state(false), els);
+    expect(els.djBeatmatch.checked).toBe(false);
+    vi.unstubAllGlobals();
+  });
+});

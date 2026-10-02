@@ -227,22 +227,32 @@ export function handleWebSocketAuthenticationClose(
   return true;
 }
 
+// After an abnormal close (1006) the auth status is checked before the
+// reconnect.  A 401, or a reply that says this browser is no longer
+// paired, ends the session.  A probe that does not reach AutoDJ is
+// reported to onUnreachable and the retry goes on: signInRedirect is true
+// when something in front of AutoDJ (Cloudflare Access) redirected the
+// probe to a sign-in page, which only a page reload can follow.
 export async function reconnectWebSocketAfterClose({
   event,
   fetchImpl = fetch,
   auth,
   onExpired = () => {},
+  onUnreachable = () => {},
   reconnect,
 }) {
   if (event?.code === 1006) {
     try {
-      const response = await fetchImpl("/api/auth/status");
-      if (response.status === 401) {
+      // Not followed: a redirect here is a sign-in page on another origin,
+      // which a script reading it would only see as a network error.
+      const response = await fetchImpl("/api/auth/status", { redirect: "manual" });
+      if (response.type === "opaqueredirect") {
+        onUnreachable({ signInRedirect: true });
+      } else if (response.status === 401) {
         onExpired();
         auth.show(SIGNED_OUT_TEXT);
         return false;
-      }
-      if (response.ok) {
+      } else if (response.ok) {
         const authState = await response.json();
         if (!validAuthState(authState)
             || (authState.required && !authState.authenticated)) {
@@ -252,8 +262,9 @@ export async function reconnectWebSocketAfterClose({
         }
       }
     } catch (_errorValue) {
-      // Status can be unavailable during a genuine server restart.
-      // Preserve the existing WebSocket retry path in that case.
+      // Status can be unavailable during a genuine server restart, or a
+      // network outage.  The WebSocket retry goes on either way.
+      onUnreachable({ signInRedirect: false });
     }
   }
   reconnect();
