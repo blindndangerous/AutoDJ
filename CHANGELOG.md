@@ -10,6 +10,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- In stream mode and with server audio, **Beatmatch** now lines up the beats as well as the
+  tempos. When both songs have a confident tempo and an analysed beat grid, the crossfade starts at
+  the moment that puts the new song's first downbeat on a downbeat of the song that is ending, so
+  the kicks land together instead of flamming. The crossfade moves by less than a bar to do this;
+  with **Phrase align** on, the new song's downbeat lands on the phrase boundary when one fits. A
+  first-downbeat cue or intro start marked in Rekordbox, Traktor or Mixxx tells AutoDJ which beats
+  are downbeats. The new song still comes in at the same point as before, so no more of its intro is
+  cut. Songs whose tempo or beat grid is uncertain are still matched by BPM, as before.
+- **Beatmatch** now mixes songs at half or double tempo, such as 70 BPM into 140 BPM, as long as
+  the stretch stays within `beatmatch_max_stretch`. They used to be mixed without beatmatching.
+- After a beatmatched crossfade the new song now eases back to its own tempo over a few bars
+  instead of jumping back at the end of the fade. `beatmatch_glide_bars` in the `[djmix]` section
+  of `config.toml` sets how many bars this takes (8 by default, at most 30 seconds; 0 returns
+  straight away).
 - Phrase align now works for crossfades played in the browser, not only when the server does the
   mixing. With **Phrase align** on, a crossfade in the browser starts on the phrase boundary
   nearest the point where it would otherwise begin, so the next track comes in at the end of a
@@ -41,6 +55,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Beatmatch** in stream mode and with server audio now stretches only the part of the new song
+  that plays during the crossfade and the glide after it, not the whole song. On a 4-minute song
+  this cut the work from about 5.5 seconds of processor time and 1.5 GB of memory to under one
+  second and about 350 MB, so a small server keeps up much more easily. Drums in the stretched part
+  also stay sharper.
 - Crossfades the browser plays now use the transition effect AutoDJ chose for that pair of songs,
   the same one the page's state names for the next crossfade. **auto** now works in the browser
   too, where it used to play a plain crossfade, and **random** and **rotate** no longer make a
@@ -57,6 +76,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- In stream mode and with server audio, a beatmatched song no longer jumps back to its own tempo,
+  by up to 8 %, the moment the crossfade ends.
 - In stream mode and with server audio, "beatmatched 1.04 times" now describes the song that just
   started. It used to give the stretch planned for the song after it, so a song that came in
   untouched could be announced as beatmatched and the other way round.

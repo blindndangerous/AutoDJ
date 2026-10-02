@@ -21,9 +21,7 @@ from autodj.player import (
     PlayerState,
     _apply_crossfade,
     _apply_crossfade_ducked,
-    _time_stretch,
     apply_filter_sweep,
-    beatmatch_incoming,
     load_audio,
 )
 from autodj.similarity import SimilarityError
@@ -975,60 +973,6 @@ class TestPlayerRun:
 
 
 # ---------------------------------------------------------------------------
-# beatmatch_incoming
-# ---------------------------------------------------------------------------
-
-
-class TestBeatmatchIncoming:
-    def test_zero_bpm_a_disables(self) -> None:
-        b = _sine_audio(0.5)
-        out, ratio = beatmatch_incoming(b, 0.0, 120.0)
-        assert ratio == 1.0
-        np.testing.assert_array_equal(out, b)
-
-    def test_zero_bpm_b_disables(self) -> None:
-        b = _sine_audio(0.5)
-        _out, ratio = beatmatch_incoming(b, 120.0, 0.0)
-        assert ratio == 1.0
-
-    def test_within_max_stretch_applies(self) -> None:
-        b = _sine_audio(2.0)
-        _out, ratio = beatmatch_incoming(b, 120.0, 124.0, max_stretch=0.08)
-        # 124/120 ≈ 1.033 — within 8 %, so stretch applied
-        assert abs(ratio - (124.0 / 120.0)) < 1e-6
-
-    def test_beyond_max_stretch_skipped(self) -> None:
-        b = _sine_audio(0.5)
-        out, ratio = beatmatch_incoming(b, 100.0, 140.0, max_stretch=0.08)
-        # 140/100 = 1.40 — too far, refuse
-        assert ratio == 1.0
-        np.testing.assert_array_equal(out, b)
-
-    def test_equal_bpm_passes_through(self) -> None:
-        b = _sine_audio(0.5)
-        _out, ratio = beatmatch_incoming(b, 120.0, 120.0)
-        assert ratio == 1.0
-
-
-class TestTimeStretch:
-    def test_ratio_one_returns_input(self) -> None:
-        a = _sine_audio(0.5)
-        out = _time_stretch(a, 1.0)
-        np.testing.assert_array_equal(out, a)
-
-    def test_near_one_ratio_returns_input(self) -> None:
-        a = _sine_audio(0.5)
-        out = _time_stretch(a, 1.005)
-        np.testing.assert_array_equal(out, a)
-
-    def test_stretch_changes_length(self) -> None:
-        a = _sine_audio(0.5)
-        out = _time_stretch(a, 1.10)
-        # librosa stretch: rate=1/ratio so ratio>1 → output is longer
-        assert len(out) != len(a) or out is a  # falls back to input on librosa failure
-
-
-# ---------------------------------------------------------------------------
 # apply_filter_sweep
 # ---------------------------------------------------------------------------
 
@@ -1272,8 +1216,11 @@ class TestRenderTrackFeatures:
         cur, nxt = player._sim.entries[0], player._sim.entries[1]
         cur.bpm, nxt.bpm = 120.0, 124.0  # within max_stretch
         rendered = self._render(player)
-        # The measured stretch rides on the render (1.0 when librosa leaves it alone).
-        assert isinstance(rendered.beatmatch_ratio, float)
+        # Only the overlap is stretched here; the rest of the glide is
+        # left to the next track's own render.
+        assert rendered.beatmatch_ratio == pytest.approx(124.0 / 120.0)
+        assert rendered.next_glide is not None
+        assert rendered.next_start_offset == rendered.next_glide.origin
 
     def test_crossfade_eq_duck_path(self) -> None:
         self._render(self._make_player_with_audio(crossfade_eq_duck=True))
@@ -1908,13 +1855,6 @@ class TestApplyTransitionEffectWetMix:
 
 
 class TestPlayerCoverageErrorPaths:
-    def test_time_stretch_failure_returns_original_audio(self) -> None:
-        audio = _sine_audio(0.1)
-        with patch("librosa.effects.time_stretch", side_effect=RuntimeError("bad stretch")):
-            result = _time_stretch(audio, 1.1)
-
-        assert result is audio
-
     def test_filter_failure_keeps_current_chunk(self) -> None:
         audio = _sine_audio(0.1)
         with patch("autodj.player.butter", side_effect=ValueError("bad filter")):
@@ -2094,7 +2034,7 @@ def test_next_rendered_carries_offset_between_tracks(monkeypatch):
     p._last_pick_mode = "similar"
     calls = []
 
-    def fake_render(current, nxt, offset):
+    def fake_render(current, nxt, offset, **_kw):
         calls.append((current, nxt, offset))
         return RenderedTrack(current, np.zeros((10, 2), np.float32), nxt, 99, "")
 
@@ -2121,7 +2061,7 @@ def test_next_rendered_skips_unrenderable_tracks_and_stops_without_a_cursor() ->
     p._choose_next = lambda _current, _context: (next(picks), "similarity")
     p._last_pick_mode = "similarity"
 
-    def fake_render(current, nxt, _offset):
+    def fake_render(current, nxt, _offset, **_kw):
         if current is bad:
             return None
         return RenderedTrack(current, np.zeros((10, 2), np.float32), nxt, 7, "")
@@ -2148,7 +2088,7 @@ def test_next_rendered_gives_up_after_five_failed_renders() -> None:
     p._choose_next = lambda _current, _context: (MagicMock(), "similarity")
     p._last_pick_mode = "similarity"
     attempts = []
-    p._render_track = lambda current, _nxt, _offset: attempts.append(current)
+    p._render_track = lambda current, _nxt, _offset, **_kw: attempts.append(current)
     p._pending_entry = MagicMock()
     p._pending_offset = 0
     assert p._next_rendered() is None
@@ -2248,13 +2188,13 @@ def test_rendering_ahead_leaves_the_playing_tracks_state_alone() -> None:
     player._last_transition_fx = "playing-fx"
     player._beatmatch_ratio = 0.5
 
-    with (
-        patch("autodj.player.load_stereo", return_value=np.zeros((10 * 44100, 2), np.float32)),
-        patch("autodj.player.beatmatch_incoming", side_effect=lambda a, **_k: (a, 1.03)),
+    with patch(
+        "autodj.player.load_stereo", side_effect=lambda *_a: np.zeros((10 * 44100, 2), np.float32)
     ):
         rendered = player._render_track(cur, nxt, 0)
 
     assert rendered is not None
+    assert rendered.beatmatch_ratio == pytest.approx(124.0 / 120.0)
     assert rendered.transition_fx == "echo_out"
     assert player._last_transition_fx == "playing-fx"
     assert player._beatmatch_ratio == 0.5
@@ -2366,7 +2306,7 @@ def _bus_player(n: int = 6) -> Player:
     return player
 
 
-def _stub_render(current, nxt, offset):
+def _stub_render(current, nxt, offset, **_kw):
     from autodj.mixbus import RenderedTrack
 
     return RenderedTrack(current, np.zeros((10, 2), np.float32), nxt, 33, "", start_offset=offset)
@@ -2643,7 +2583,7 @@ class TestPeekThenCommit:
         player._state.queue.append(a)
         calls = []
 
-        def render(current, nxt, offset):
+        def render(current, nxt, offset, **_kw):
             calls.append(current)
             if current is bad:
                 raise MemoryError("analysis blew up")
@@ -2664,7 +2604,7 @@ class TestPeekThenCommit:
         bad, a = player._sim.entries[2], player._sim.entries[3]
         player._state.queue.extend([bad, a])
 
-        def render(current, nxt, offset):
+        def render(current, nxt, offset, **_kw):
             if current is bad:
                 raise ValueError("n_fft is too large")  # e.g. librosa ParameterError
             return _stub_render(current, nxt, offset)
@@ -2681,7 +2621,7 @@ class TestPeekThenCommit:
         player = _bus_player()
         bad, good = player._sim.entries[1], player._sim.entries[2]
 
-        def render(current, nxt, offset):
+        def render(current, nxt, offset, **_kw):
             if current is bad:
                 raise sqlite3.OperationalError("database is locked")
             return _stub_render(current, nxt, offset)
@@ -2703,7 +2643,7 @@ class TestPeekThenCommit:
         bad, a = player._sim.entries[2], player._sim.entries[3]
         player._state.queue.extend([bad, a])
 
-        def render(current, nxt, offset):
+        def render(current, nxt, offset, **_kw):
             return None if current is bad else _stub_render(current, nxt, offset)
 
         player._render_track = render  # type: ignore[method-assign]

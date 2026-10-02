@@ -161,13 +161,6 @@ def test_filter_sweep_accepts_stereo() -> None:
     np.testing.assert_allclose(st_out[:, 1], mono_out, atol=1e-5)
 
 
-def test_time_stretch_accepts_stereo() -> None:
-    a = _tone(22050)
-    out = player._time_stretch(stereo.to_stereo(a), 1.05)
-    assert out.ndim == 2 and out.shape[1] == 2
-    np.testing.assert_allclose(out[:, 0], out[:, 1], atol=1e-6)
-
-
 def test_eq_stateful_stereo_matches_mono() -> None:
     filters = eq.make_eq_filters(44100)
     a = _tone(1764)

@@ -80,6 +80,7 @@ def make_cfg_mock() -> MagicMock:
     cfg.djmix.harmonic_mode = "off"
     cfg.djmix.beatmatch = False
     cfg.djmix.beatmatch_max_stretch = 0.08
+    cfg.djmix.beatmatch_glide_bars = 8
     cfg.djmix.outro_intro_align = False
     cfg.djmix.phrase_align = False
     cfg.djmix.phrase_bars = 8

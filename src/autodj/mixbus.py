@@ -15,6 +15,7 @@ from autodj.eq import apply_eq, make_eq_filters, make_eq_state, reset_eq_state
 from autodj.stereo import SAMPLE_RATE
 
 if TYPE_CHECKING:
+    from autodj.beatmatch import Glide
     from autodj.indexer import IndexEntry
 
 logger = logging.getLogger(__name__)
@@ -36,15 +37,17 @@ class RenderedTrack:
         next_start_offset: Samples of *next_entry*'s audio already played in
             the overlap (including any skipped leading silence), so the following
             render call knows where to continue without replaying them.
-            Expressed in *next_entry*'s own, as-loaded-fresh timeline (i.e.
-            already converted back out of any beat-match stretch).
+            Expressed in *next_entry*'s own, as-loaded-fresh timeline.  After
+            a beatmatch it is *next_glide*'s ``origin``: where the following
+            render starts so that its positions match the file once the
+            tempo glide is over.
         transition_fx: Name of the effect used for the overlap into
             *next_entry* (``"none"`` for a plain crossfade), or ``""``
             when there is no overlap.
-        beatmatch_ratio: Measured stretch ratio applied to *next_entry*'s
-            audio for the overlap (``len(stretched) / len(original)``), or
-            ``1.0`` when it was not stretched (or there is no overlap).
-            It describes the *next* track; see *mixed_in_ratio*.
+        beatmatch_ratio: Stretch applied to *next_entry*'s audio during the
+            overlap (output over input duration), or ``1.0`` when it was
+            not stretched (or there is no overlap).  It describes the
+            *next* track; see *mixed_in_ratio*.
         mixed_in_fx: The previous render's *transition_fx*: the effect
             this track came in with, ``""`` when it did not come in
             through an overlap (a set's first track, a jump).
@@ -66,6 +69,11 @@ class RenderedTrack:
         previous_entry: The track rendered just before this one (the one
             the bus plays before it), or ``None`` when not known.  A
             re-render of this track keeps excluding it from the next pick.
+        next_glide: How *next_entry* is stretched from its entry back to
+            its own tempo after a beatmatched overlap, or ``None``; the
+            following render plays the rest of it.
+        glide_in: The previous render's *next_glide*: how this track's
+            opening returns to its own tempo (kept for re-renders).
     """
 
     entry: IndexEntry
@@ -83,6 +91,8 @@ class RenderedTrack:
     previous_entry: IndexEntry | None = None
     mixed_in_fx: str = ""
     mixed_in_ratio: float = 1.0
+    next_glide: Glide | None = None
+    glide_in: Glide | None = None
 
 
 class Output(Protocol):
