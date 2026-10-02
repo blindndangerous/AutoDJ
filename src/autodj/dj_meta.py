@@ -466,10 +466,11 @@ class Cue:
         time_s: Cue timestamp in seconds from track start.
         type: ``"first_downbeat"``, ``"drop"``, ``"breakdown"``,
             ``"build"``, ``"phrase"`` or ``"outro_downbeat"`` from
-            :func:`detect_cues`, ``"user"``, or any custom string from a
-            DJ-software import (``autodj.dj_cues_import``) — the player
-            only special-cases the built-ins; unknown types render as
-            plain markers.
+            :func:`detect_cues`, ``"user"``, the intro and outro markers
+            of :data:`MARKER_CUE_TYPES` from a DJ-software import
+            (``autodj.dj_cues_import``), or any custom string — the
+            player only special-cases the built-ins; unknown types
+            render as plain markers.
         label: Optional human label.  ``""`` for auto-detected cues.
         source: Provenance — ``"auto"`` (librosa), ``"mixxx"``,
             ``"rekordbox"``, ``"serato"``, ``"traktor"``, or ``"user"``.
@@ -1015,11 +1016,43 @@ def detect_cues(
     return cues
 
 
+_CUE_PRIORITY: dict[str, int] = {
+    "user": 4,
+    "mixxx": 3,
+    "rekordbox": 3,
+    "serato": 3,
+    "traktor": 3,
+    "auto": 1,
+}
+
+MARKER_CUE_TYPES: frozenset[str] = frozenset(
+    {"intro_start", "intro_end", "outro_start", "outro_end"}
+)
+"""Cue types that carry an intro or outro marker set in DJ software.
+
+See :mod:`autodj.dj_cues_import` for which program provides which.
+"""
+
+# The DjMeta field each marker sets (DjMeta has no outro end).
+_MARKER_FIELDS: dict[str, str] = {
+    "intro_start": "intro_start_s",
+    "intro_end": "intro_end_s",
+    "outro_start": "outro_start_s",
+}
+
+
+def _cue_rank(cue: Cue) -> tuple[int, bool]:
+    """Which of two cues at the same time to keep: source first, then a marker."""
+    return (_CUE_PRIORITY.get(cue.source, 0), cue.type in MARKER_CUE_TYPES)
+
+
 def merge_cues(*sources: list[Cue]) -> list[Cue]:
     """Merge cue lists from multiple sources, sorted, dedup'd by time.
 
     When two cues fall within ~250 ms of each other, the one with the
-    higher-priority source wins (user / DJ-software beats auto).
+    higher-priority source wins (user / DJ-software beats auto); between
+    equal sources an intro or outro marker beats any other cue, because
+    Mixxx puts its main cue and intro start on the same first sound.
 
     Args:
         *sources: Lists of cues to merge.  Order does not matter.
@@ -1027,7 +1060,6 @@ def merge_cues(*sources: list[Cue]) -> list[Cue]:
     Returns:
         New sorted list of cues.
     """
-    priority = {"user": 4, "mixxx": 3, "rekordbox": 3, "serato": 3, "traktor": 3, "auto": 1}
     flat: list[Cue] = []
     for src in sources:
         flat.extend(src)
@@ -1035,11 +1067,55 @@ def merge_cues(*sources: list[Cue]) -> list[Cue]:
     out: list[Cue] = []
     for c in flat:
         if out and abs(c.time_s - out[-1].time_s) < 0.25:
-            if priority.get(c.source, 0) > priority.get(out[-1].source, 0):
+            if _cue_rank(c) > _cue_rank(out[-1]):
                 out[-1] = c
             continue
         out.append(c)
     return out
+
+
+def imported_markers(cues: list[Cue]) -> dict[str, float]:
+    """The intro and outro markers the user or DJ software set, by cue type.
+
+    Only cues of a :data:`MARKER_CUE_TYPES` type that were not
+    auto-detected count.  When several sources set the same marker the
+    priority of :func:`merge_cues` decides (user over DJ software), then
+    the earliest time.
+
+    Returns:
+        ``{cue type: time in seconds}`` for each marker found.
+    """
+    best: dict[str, Cue] = {}
+    for cue in cues:
+        if cue.type not in MARKER_CUE_TYPES or cue.source == "auto":
+            continue
+        held = best.get(cue.type)
+        rank = (_CUE_PRIORITY.get(cue.source, 0), -cue.time_s)
+        if held is None or rank > (_CUE_PRIORITY.get(held.source, 0), -held.time_s):
+            best[cue.type] = cue
+    return {kind: cue.time_s for kind, cue in best.items()}
+
+
+def apply_imported_markers(meta: DjMeta) -> None:
+    """Let the user's intro and outro markers set *meta*'s mix points, in place.
+
+    ``intro_start_s``, ``intro_end_s`` and ``outro_start_s`` take the
+    times of the imported ``intro_start``, ``intro_end`` and
+    ``outro_start`` cues (:func:`imported_markers`), so they decide where
+    the crossfade starts and how long it is; fields without an imported
+    marker keep the detected value.  A detected intro end at or before
+    an imported intro start is dropped (``0.0``, no intro), as is a
+    detected intro start at or after an imported intro end.
+    """
+    markers = imported_markers(meta.cues)
+    for kind, field_name in _MARKER_FIELDS.items():
+        if kind in markers:
+            setattr(meta, field_name, markers[kind])
+    if 0.0 < meta.intro_end_s <= (meta.intro_start_s or 0.0):
+        if "intro_end" in markers and "intro_start" not in markers:
+            meta.intro_start_s = 0.0
+        else:
+            meta.intro_end_s = 0.0
 
 
 def analyse_audio(audio: np.ndarray, sr: int) -> DjMeta:

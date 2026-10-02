@@ -9,6 +9,11 @@ export const CUE_COLORS = {
   breakdown:       "#5a7bff",
   first_downbeat:  "#69d0ff",
   outro_downbeat:  "#ffb454",
+  // Intro and outro markers imported from DJ software.
+  intro_start:     "#69d0ff",
+  intro_end:       "#69d0ff",
+  outro_start:     "#ffb454",
+  outro_end:       "#ffb454",
   phrase:          "rgba(255,255,255,0.45)",
   user:            "#a4ff7a",
 };

@@ -1313,7 +1313,7 @@ class TestRenderedEffectLevels:
 
     @pytest.mark.parametrize(
         "effect",
-        sorted(TRANSITION_EFFECT_NAMES - {"none", "random", "rotate"}),
+        sorted(TRANSITION_EFFECT_NAMES - {"none", "random", "rotate", "auto"}),
     )
     def test_render_peaks_at_the_music_level(self, effect: str) -> None:
         from autodj.audio_meta import ReplayGain
@@ -1525,6 +1525,7 @@ class TestMinFxDurationCoverage:
             "none",
             "random",
             "rotate",
+            "auto",
             "highpass_sweep",
             "lowpass_sweep",
             "cross_eq_swap",
@@ -2086,6 +2087,7 @@ def test_next_rendered_carries_offset_between_tracks(monkeypatch):
     p._set_generation = 0
     p._pending_pick_mode = "seed"
     p._pending_from_queue = False
+    p._cfg = MagicMock()
     first, second, third = MagicMock(), MagicMock(), MagicMock()
     picks = iter([second, third])
     p._choose_next = lambda _current, _context: (next(picks), "similarity")
@@ -2113,6 +2115,7 @@ def test_next_rendered_skips_unrenderable_tracks_and_stops_without_a_cursor() ->
     p._set_generation = 0
     p._pending_pick_mode = "seed"
     p._pending_from_queue = False
+    p._cfg = MagicMock()
     bad, good, after = MagicMock(), MagicMock(), MagicMock()
     picks = iter([good, after])
     p._choose_next = lambda _current, _context: (next(picks), "similarity")
@@ -2141,6 +2144,7 @@ def test_next_rendered_gives_up_after_five_failed_renders() -> None:
     p._set_generation = 0
     p._pending_pick_mode = "seed"
     p._pending_from_queue = False
+    p._cfg = MagicMock()
     p._choose_next = lambda _current, _context: (MagicMock(), "similarity")
     p._last_pick_mode = "similarity"
     attempts = []
@@ -2151,10 +2155,12 @@ def test_next_rendered_gives_up_after_five_failed_renders() -> None:
     assert len(attempts) == 5
 
 
-def _rendered(entry, next_entry=None, frames=44100, fx="echo_out", ratio=0.97):
+def _rendered(entry, next_entry=None, frames=44100, fx="echo_out", ratio=0.97, **fields):
     from autodj.mixbus import RenderedTrack
 
-    return RenderedTrack(entry, np.zeros((frames, 2), np.float32), next_entry, 0, fx, ratio)
+    return RenderedTrack(
+        entry, np.zeros((frames, 2), np.float32), next_entry, 0, fx, ratio, **fields
+    )
 
 
 class TestOnTrackStart:
@@ -2172,7 +2178,9 @@ class TestOnTrackStart:
         started = []
         player.on_track_started = started.append
 
-        player._on_track_start(_rendered(entry, nxt, frames=4410))
+        player._on_track_start(
+            _rendered(entry, nxt, frames=4410, mixed_in_fx="reverb_tail", mixed_in_ratio=1.04)
+        )
 
         assert player._state.current_track is entry
         assert player._state.next_track is nxt
@@ -2180,8 +2188,10 @@ class TestOnTrackStart:
         assert player._current_sr == 44100
         assert player._playback_pos[0] == 0
         assert player._playback_len == 4410
-        assert player._last_transition_fx == "echo_out"
-        assert player._beatmatch_ratio == pytest.approx(0.97)
+        # How *entry* came in, not the echo_out / 0.97 its own tail uses
+        # to mix *nxt* in.
+        assert player._last_transition_fx == "reverb_tail"
+        assert player._beatmatch_ratio == pytest.approx(1.04)
         assert player._state.track_number == 1
         assert entry.path in player._state.recently_played
         player.load_lyrics_in_background.assert_called_once_with(entry.path)

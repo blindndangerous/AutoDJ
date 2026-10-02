@@ -38,11 +38,19 @@ class RenderedTrack:
             render call knows where to continue without replaying them.
             Expressed in *next_entry*'s own, as-loaded-fresh timeline (i.e.
             already converted back out of any beat-match stretch).
-        transition_fx: Name of the effect used for the overlap, or ``""``
-            when no effect was applied.
+        transition_fx: Name of the effect used for the overlap into
+            *next_entry* (``"none"`` for a plain crossfade), or ``""``
+            when there is no overlap.
         beatmatch_ratio: Measured stretch ratio applied to *next_entry*'s
             audio for the overlap (``len(stretched) / len(original)``), or
             ``1.0`` when it was not stretched (or there is no overlap).
+            It describes the *next* track; see *mixed_in_ratio*.
+        mixed_in_fx: The previous render's *transition_fx*: the effect
+            this track came in with, ``""`` when it did not come in
+            through an overlap (a set's first track, a jump).
+        mixed_in_ratio: The previous render's *beatmatch_ratio*: how this
+            track's opening was stretched while it was mixed in, ``1.0``
+            when it was not.
         start_offset: Samples into *entry*'s own file where *audio*
             begins (the part the previous overlap already played), so
             elapsed time and seeks can be shown in the track's timeline.
@@ -73,6 +81,8 @@ class RenderedTrack:
     next_from_queue: bool = False
     set_generation: int = 0
     previous_entry: IndexEntry | None = None
+    mixed_in_fx: str = ""
+    mixed_in_ratio: float = 1.0
 
 
 class Output(Protocol):

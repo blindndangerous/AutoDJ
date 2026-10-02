@@ -342,3 +342,52 @@ def test_get_state_reads_the_current_track_once(bridge) -> None:
     state = bridge.get_state()
     assert state["current_track"]["path"] == entry.path
     assert state["duration"] == 200.0
+
+
+class TestNextTransitionFx:
+    """``next_transition_fx`` names the effect of the coming crossfade."""
+
+    def test_bus_mode_reports_the_effect_the_render_used(self, bridge) -> None:
+        import numpy as np
+
+        from autodj.mixbus import RenderedTrack
+
+        state = bridge.player._state
+        bridge.player.bus = object()
+        bridge.player._playing_render = RenderedTrack(
+            state.current_track, np.zeros((4, 2), np.float32), state.next_track, 0, "tape_stop"
+        )
+        assert bridge.get_state()["next_transition_fx"] == "tape_stop"
+
+    def test_bus_mode_without_an_overlap_is_a_plain_fade(self, bridge) -> None:
+        import numpy as np
+
+        from autodj.mixbus import RenderedTrack
+
+        state = bridge.player._state
+        bridge.player.bus = object()
+        bridge.player._playing_render = RenderedTrack(
+            state.current_track, np.zeros((4, 2), np.float32), state.next_track, 0, ""
+        )
+        assert bridge.get_state()["next_transition_fx"] == "none"
+
+    def test_browser_mode_reports_the_plan_with_the_pick_mode(self, bridge) -> None:
+        state = bridge.player._state
+        bridge.player.planned_transition.return_value = "backspin"
+        bridge.player._next_pick = (state.next_track.path, "discovery")
+        assert bridge.get_state()["next_transition_fx"] == "backspin"
+        bridge.player.planned_transition.assert_called_with(
+            state.current_track, state.next_track, "discovery"
+        )
+
+    def test_pick_mode_of_another_track_is_not_used(self, bridge) -> None:
+        state = bridge.player._state
+        bridge.player._next_pick = ("Z:/elsewhere.flac", "discovery")
+        bridge.get_state()
+        bridge.player.planned_transition.assert_called_with(
+            state.current_track, state.next_track, ""
+        )
+
+    def test_no_next_track_no_effect(self, bridge) -> None:
+        bridge.player._state.next_track = None
+        assert bridge.get_state()["next_transition_fx"] is None

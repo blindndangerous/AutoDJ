@@ -18,6 +18,7 @@ import pytest
 
 from autodj.beat_sync import (
     bar_seconds,
+    downbeat_offset,
     extract_downbeats,
     key_to_hz,
     synthesize_downbeats,
@@ -90,3 +91,15 @@ class TestKeyToHz:
     def test_unknown_key(self) -> None:
         assert key_to_hz(-1) is None
         assert key_to_hz(12) is None
+
+
+class TestDownbeatOffset:
+    def test_next_downbeat_after_the_moment(self) -> None:
+        assert downbeat_offset([10.0, 12.0, 14.0], 11.5) == pytest.approx(0.5)
+
+    def test_a_downbeat_just_passed_counts_as_now(self) -> None:
+        assert downbeat_offset([10.0, 12.0], 12.004) == 0.0
+
+    def test_no_downbeat_left(self) -> None:
+        assert downbeat_offset([10.0, 12.0], 13.0) == 0.0
+        assert downbeat_offset([], 5.0) == 0.0

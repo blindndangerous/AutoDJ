@@ -230,15 +230,26 @@ key_prefer_flats = false
 # they analyse a track, and by the player when it has to analyse a track
 # while playing (`autodj serve` reads the three libraries once at startup,
 # in the background); the web page has no switch for it.
+# Intro and outro markers set in that software also move the mix: Mixxx's
+# intro start and end and outro start, and Rekordbox's and Traktor's fade-in
+# and fade-out points (read as intro start and outro start) replace the
+# detected intro_start, intro_end and outro_start that transition_mode uses.
+# A song analysed before this was added picks them up the first time it
+# plays while `autodj serve` runs.
 import_external_cues = true
 
-# Beat-sync transition FX, browser crossfades only: effect lengths round to
+# Beat-sync transition FX.  Browser crossfades: effect lengths round to
 # whole bars at the outgoing tempo when its BPM and outro are known, and scratch, beat_repeat, sidechain_pump,
-# transformer and stutter_build start on the next downbeat.  The server mix
-# ignores it.
+# transformer and stutter_build start on the next downbeat.  Server mix
+# (stream mode, server audio): echo_out, dub_delay, gate_stutter,
+# transformer, stutter_build, sidechain_pump, beat_repeat and scratch take
+# their timing from the outgoing song's tempo, and the gates, loops and pump
+# start on its next downbeat.  The server only trusts a tempo between 40 and
+# 250 BPM whose beat tracking was confident (tempo_confidence 0.5 or more);
+# otherwise the effects keep their fixed timings.
 beat_sync_fx = true
-# Key-sync pitched FX, browser crossfades only: air_horn, dub_siren and
-# ring_modulator tune to the song's root note.  The server mix ignores it.
+# Key-sync pitched FX: air_horn, dub_siren and ring_modulator tune to the
+# songs' root notes, in browser crossfades and in the server mix.
 key_sync_fx = true
 
 # Beatmatch when the user presses Skip: the browser pitch-preserves the new
@@ -346,6 +357,15 @@ filter_sweep_floor_hz = 250.0
 #   "cross_eq_swap"   outgoing keeps highs / incoming brings bass
 #   "random"          pick uniformly at random per crossfade
 #   "rotate"          cycle through all real effects in order
+#   "auto"            pick one to suit each pair of songs: backspin, dub
+#                     siren or vinyl rewind into a discovery pick; echo out,
+#                     tape stop, reverb tail, backspin or a low-pass sweep to
+#                     hide tempos more than 8 % apart or clashing keys; noise
+#                     riser or stutter build into a song at least 30 % louder;
+#                     cross-EQ swap, high-pass sweep or a plain fade between
+#                     songs in the same key within 3 % in tempo; otherwise a
+#                     filter sweep, cross-EQ swap or echo out.  Server mix
+#                     only for now: browser crossfades play it plain.
 #
 # That list is a sample.  The Settings tab's Transition effect dropdown
 # offers every accepted name.

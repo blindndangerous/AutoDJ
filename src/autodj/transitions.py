@@ -32,15 +32,58 @@ against the peak of the two tracks it is mixed over.  That audio has
 already had ReplayGain applied, so the effects follow it too.
 
 None of the effects raise on short / silent buffers.
+
+Tempo and key sync
+------------------
+:func:`apply_transition` takes an optional :class:`BeatSync`.  With a
+trusted outgoing tempo, the rhythmic effects take their timing from the
+beat instead of fixed values, with the subdivisions the browser engine
+(``static/modules/audio-engine.js``) uses: echo_out repeats every eighth
+note, dub_delay every quarter note, gate_stutter and transformer step in
+sixteenth notes, stutter_build speeds up from quarter to thirty-second
+notes, beat_repeat loops an eighth-note slice back to back, scratch
+works a one-beat slice and sidechain_pump ducks on every beat.  Those six
+gate, loop and pump effects also start on the tail's first downbeat
+(:attr:`BeatSync.downbeat_s`); the audio before it plays untouched.  With
+a known key, air_horn sweeps from half the outgoing root to twice the
+incoming one, dub_siren from the outgoing root to two octaves over the
+incoming one, and ring_modulator's carrier sits an octave under the
+outgoing root.  Whatever is unknown keeps the fixed values.
+
+The ``auto`` effect
+-------------------
+``auto`` picks an effect for each crossfade from the two tracks
+(:func:`choose_auto_effect`): a random one from the first of these
+categories that applies (:func:`auto_category`).
+
+1. ``scene_change``: the incoming track is a discovery pick.  Backspin,
+   dub_siren or vinyl_rewind mark the change of direction.
+2. ``disguise``: the tempos are more than 8 % apart (double and half
+   time count as the same tempo) or the keys clash (not
+   Camelot-compatible).  Echo_out, tape_stop, reverb_tail, backspin or
+   lowpass_sweep hide the change.
+3. ``lift``: the incoming track's average loudness
+   (``IndexEntry.energy``) is at least 30 % above the outgoing one's.
+   Noise_riser or stutter_build build into it.
+4. ``clean``: the same key and tempos within 3 % of each other.
+   Cross_eq_swap, highpass_sweep or a plain fade (none).
+5. ``smooth``: anything else, unknown keys or tempos included.
+   Highpass_sweep, lowpass_sweep, cross_eq_swap or echo_out.
+
+A tempo counts only when :func:`trusted_bpm` accepts it (40-250 BPM with
+a ``tempo_confidence`` of at least 0.5); a key counts only when both
+tracks have one.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+import math
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from enum import StrEnum
 from functools import partial
-from typing import cast
+from typing import Protocol, cast
 
 import numpy as np
 
@@ -93,23 +136,88 @@ class TransitionFx(StrEnum):
     HALFTIME = "halftime"  # tempo halve, pitch preserved (vs pitch_fall pitch-down)
     RANDOM = "random"  # pick uniformly at random per crossfade
     ROTATE = "rotate"  # cycle through the catalogue in order
+    AUTO = "auto"  # chosen from the two tracks (see choose_auto_effect)
 
 
 TRANSITION_EFFECT_NAMES: frozenset[str] = frozenset(fx.value for fx in TransitionFx)
-"""Every selectable effect name, including ``none``, ``random`` and ``rotate``.
+"""Every selectable effect name, including ``none`` and the meta-modes.
 
 Single source of truth for the web-UI allowlist and the
 persisted web-state validator, so a new enum member cannot be offered by one
 surface and rejected by another.
 """
 
+META_MODES: frozenset[TransitionFx] = frozenset(
+    {TransitionFx.RANDOM, TransitionFx.ROTATE, TransitionFx.AUTO}
+)
+"""Modes that stand for a concrete effect chosen per crossfade."""
 
 # Catalogue used by RANDOM / ROTATE — every effect except NONE and the meta-modes.
 _REAL_EFFECTS: list[TransitionFx] = [
-    fx
-    for fx in TransitionFx
-    if fx not in (TransitionFx.NONE, TransitionFx.RANDOM, TransitionFx.ROTATE)
+    fx for fx in TransitionFx if fx is not TransitionFx.NONE and fx not in META_MODES
 ]
+
+
+@dataclass(frozen=True)
+class BeatSync:
+    """Tempo, key and beat grid around one crossfade, for the synced effects.
+
+    Attributes:
+        bpm: The outgoing track's tempo, or 0.0 when it is unknown or not
+            trusted (see :func:`trusted_bpm`); the rhythmic effects then
+            keep their fixed timings.
+        out_root_hz: Root note of the outgoing track's key (octave 4, as
+            :func:`autodj.beat_sync.key_to_hz` gives it), or ``None``.
+        in_root_hz: Root note of the incoming track's key, or ``None``.
+        downbeat_s: Seconds into the tail where its first downbeat falls;
+            the gate, loop and pump effects start there.
+    """
+
+    bpm: float = 0.0
+    out_root_hz: float | None = None
+    in_root_hz: float | None = None
+    downbeat_s: float = 0.0
+
+    @property
+    def beat_s(self) -> float | None:
+        """Seconds per beat at :attr:`bpm`, or ``None`` when it is unknown."""
+        return 60.0 / self.bpm if self.bpm > 0 else None
+
+    @property
+    def roots(self) -> tuple[float, float] | None:
+        """``(outgoing, incoming)`` roots; one known key stands for both, as in the browser."""
+        out, inn = self.out_root_hz, self.in_root_hz
+        if not out and not inn:
+            return None
+        return (out or inn or 0.0, inn or out or 0.0)
+
+
+# A tempo counts only with at least this tempo_confidence (the beats
+# detected over the beats expected at the estimated tempo, 0-1) and
+# inside this BPM range.
+MIN_TEMPO_CONFIDENCE = 0.5
+_BPM_RANGE = (40.0, 250.0)
+
+
+def _as_float(value: object) -> float:
+    """*value* as a finite float, 0.0 when it is not a number."""
+    if not isinstance(value, int | float):
+        return 0.0
+    number = float(value)
+    return number if math.isfinite(number) else 0.0
+
+
+def trusted_bpm(bpm: object, tempo_confidence: object) -> float:
+    """*bpm* when it is believable enough to time effects by, else 0.0.
+
+    Believable means 40-250 BPM with a ``tempo_confidence`` of at least
+    :data:`MIN_TEMPO_CONFIDENCE`.  Anything that is not a number counts
+    as unknown.
+    """
+    value = _as_float(bpm)
+    if not _BPM_RANGE[0] <= value <= _BPM_RANGE[1]:
+        return 0.0
+    return value if _as_float(tempo_confidence) >= MIN_TEMPO_CONFIDENCE else 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -574,15 +682,20 @@ def _scratch(tail: np.ndarray, sample_rate: int, *, passes: int, slice_ms: float
 
 
 def _beat_repeat(
-    tail: np.ndarray, sample_rate: int, *, slice_ms: float, repeats: int
+    tail: np.ndarray, sample_rate: int, *, slice_ms: float, repeats: int | None
 ) -> np.ndarray:
-    """Loop roll: the last *slice_ms* of the tail retriggered *repeats* times across it."""
+    """Loop roll: the last *slice_ms* of the tail retriggered *repeats* times across it.
+
+    ``repeats=None`` retriggers it back to back, once per slice length.
+    """
     n = len(tail)
     if n < 4:
         return tail
     slice_samples = min(max(2, int(slice_ms * sample_rate / 1000.0)), n // 2)
     src = tail[-slice_samples:].astype(np.float32, copy=True)
     _edge_fades(src, sample_rate)
+    if repeats is None:
+        repeats = max(1, n // slice_samples)
 
     out = np.zeros(n, dtype=np.float32)
     chunk_len = n // repeats
@@ -721,12 +834,19 @@ def _halftime(tail: np.ndarray, sample_rate: int) -> np.ndarray:
     return result
 
 
-def _air_horn(n_samples: int, sample_rate: int, _seed: int | None) -> np.ndarray:
-    """Synth air horn rising 220 → 880 Hz, peaking at 1.0 (set against the music later)."""
+def _air_horn(
+    n_samples: int,
+    sample_rate: int,
+    _seed: int | None,
+    *,
+    start_hz: float = 220.0,
+    end_hz: float = 880.0,
+) -> np.ndarray:
+    """Synth air horn rising *start_hz* → *end_hz*, peaking at 1.0 (set against the music later)."""
     n = n_samples
     if n <= 0:
         return np.zeros(0, dtype=np.float32)
-    freq = 220.0 + 660.0 * (np.arange(n) / max(1, n - 1))
+    freq = start_hz + (end_hz - start_hz) * (np.arange(n) / max(1, n - 1))
     phase = np.cumsum(2 * np.pi * freq / sample_rate)
     # Square-ish horn via tanh of sine
     horn = np.tanh(2.5 * np.sin(phase)).astype(np.float32)
@@ -742,13 +862,21 @@ def _air_horn(n_samples: int, sample_rate: int, _seed: int | None) -> np.ndarray
     return horn
 
 
-def _dub_siren(n_samples: int, sample_rate: int, _seed: int | None) -> np.ndarray:
-    """Reggae sine siren, 440 → 1760 Hz with 5 Hz vibrato and a slow fade-in, peaking at 1.0."""
+def _dub_siren(
+    n_samples: int,
+    sample_rate: int,
+    _seed: int | None,
+    *,
+    start_hz: float = 440.0,
+    end_hz: float = 1760.0,
+) -> np.ndarray:
+    """Reggae sine siren gliding *start_hz* → *end_hz* (exponentially), with 5 Hz
+    vibrato and a slow fade-in, peaking at 1.0."""
     n = n_samples
     if n <= 0:
         return np.zeros(0, dtype=np.float32)
     pos = np.arange(n, dtype=np.float32) / max(1, n - 1)
-    base_freq = 440.0 * (4.0**pos)  # exponential 440 → 1760 Hz
+    base_freq = start_hz * ((end_hz / start_hz) ** pos)
     vibrato = 0.0087 * np.sin(2 * np.pi * 5.0 * np.arange(n) / sample_rate)  # ±15 cents
     freq = base_freq * (1.0 + vibrato.astype(np.float32))
     siren = np.sin(np.cumsum(2 * np.pi * freq / sample_rate)).astype(np.float32)
@@ -934,12 +1062,108 @@ _LAYERS: dict[TransitionFx, Callable[[int, int, int | None], np.ndarray]] = {
 }
 
 
+def _clamped(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
+
+
+# Tail effects timed by the beat: each builds the effect from the seconds
+# per beat, with the browser engine's subdivisions (see the module
+# docstring).  _TAIL_EFFECTS holds the fixed timings used without a tempo.
+_BEAT_SYNCED: dict[TransitionFx, Callable[[float], Callable[[np.ndarray, int], np.ndarray]]] = {
+    # An eighth-note echo and a quarter-note dub delay, clamped as in the
+    # browser so very slow or fast tempos stay usable.
+    TransitionFx.ECHO_OUT: lambda beat: partial(
+        _delay, delay_ms=1000.0 * _clamped(beat / 2, 0.05, 1.5), feedback=0.55, wet=0.65
+    ),
+    TransitionFx.DUB_DELAY: lambda beat: partial(
+        _delay,
+        delay_ms=1000.0 * _clamped(beat, 0.2, 1.8),
+        feedback=0.55,
+        wet=0.55,
+        damping_hz=1500.0,
+        direct=True,
+    ),
+    # Sixteenth-note gates.
+    TransitionFx.GATE_STUTTER: lambda beat: partial(
+        _gate, rate_hz=4.0 / beat, pattern=(1,), duty=0.5, max_fade=64
+    ),
+    TransitionFx.TRANSFORMER: lambda beat: partial(
+        _gate, rate_hz=4.0 / beat, pattern=(1, 0, 1, 0, 0, 1, 0, 1), duty=1.0, max_fade=32
+    ),
+    # Quarter notes speeding up to thirty-second notes.
+    TransitionFx.STUTTER_BUILD: lambda beat: partial(
+        _stutter_build, start_hz=1.0 / beat, end_hz=8.0 / beat
+    ),
+    TransitionFx.SIDECHAIN_PUMP: lambda beat: partial(_sidechain_pump, bpm=60.0 / beat, depth=0.7),
+    # An eighth-note slice looped back to back; a one-beat scratch slice.
+    TransitionFx.BEAT_REPEAT: lambda beat: partial(
+        _beat_repeat, slice_ms=500.0 * beat, repeats=None
+    ),
+    TransitionFx.SCRATCH: lambda beat: partial(_scratch, passes=4, slice_ms=1000.0 * beat),
+}
+
+# Synced effects that start on the tail's first downbeat (the ones the
+# browser starts at _BS.nextDownbeat, plus gate_stutter).
+_ON_DOWNBEAT: frozenset[TransitionFx] = frozenset(
+    {
+        TransitionFx.GATE_STUTTER,
+        TransitionFx.TRANSFORMER,
+        TransitionFx.STUTTER_BUILD,
+        TransitionFx.SIDECHAIN_PUMP,
+        TransitionFx.BEAT_REPEAT,
+        TransitionFx.SCRATCH,
+    }
+)
+
+
+def _synced_tail_effect(
+    effect: TransitionFx, sync: BeatSync | None
+) -> Callable[[np.ndarray, int], np.ndarray] | None:
+    """The tail effect for *effect*, timed or tuned by *sync* where it can be."""
+    beat = sync.beat_s if sync is not None else None
+    build = _BEAT_SYNCED.get(effect)
+    if build is not None and beat is not None:
+        return build(beat)
+    roots = sync.roots if sync is not None else None
+    if effect == TransitionFx.RING_MODULATOR and roots is not None:
+        # An octave under the outgoing root, so the sidebands stay in key.
+        return partial(_ring_modulator, carrier_hz=roots[0] * 0.5)
+    return _TAIL_EFFECTS.get(effect)
+
+
+def _synced_layer(
+    effect: TransitionFx, sync: BeatSync | None
+) -> Callable[[int, int, int | None], np.ndarray] | None:
+    """The synthesised layer for *effect*, tuned to the keys in *sync* when known."""
+    roots = sync.roots if sync is not None else None
+    if roots is not None:
+        out_root, in_root = roots
+        if effect == TransitionFx.AIR_HORN:
+            return partial(_air_horn, start_hz=out_root * 0.5, end_hz=max(50.0, in_root * 2.0))
+        if effect == TransitionFx.DUB_SIREN:
+            return partial(_dub_siren, start_hz=out_root, end_hz=max(80.0, in_root * 4.0))
+    return _LAYERS.get(effect)
+
+
+def _downbeat_samples(effect: TransitionFx, sync: BeatSync | None, n: int, sample_rate: int) -> int:
+    """Samples of the tail to leave dry so *effect* starts on the downbeat.
+
+    Zero unless the effect is one that starts on a downbeat, the tempo is
+    trusted, and the downbeat falls inside the first half of the tail.
+    """
+    if sync is None or sync.beat_s is None or effect not in _ON_DOWNBEAT:
+        return 0
+    skip = int(sync.downbeat_s * sample_rate)
+    return skip if 0 < skip <= n // 2 else 0
+
+
 def _apply_transition_mono(
     tail: np.ndarray,
     head: np.ndarray,
     sample_rate: int,
     effect: TransitionFx,
     seed: int | None,
+    sync: BeatSync | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Apply *effect* to a mono (tail, head) overlap and return processed buffers.
 
@@ -947,10 +1171,14 @@ def _apply_transition_mono(
         ``(tail, head, extra_layer)``, all mono.
     """
     empty_extra = np.zeros(0, dtype=np.float32)
-    fn = _TAIL_EFFECTS.get(effect)
+    fn = _synced_tail_effect(effect, sync)
     if fn is not None:
+        dry = _downbeat_samples(effect, sync, len(tail), sample_rate)
+        if dry:
+            treated = np.concatenate([tail[:dry], fn(tail[dry:], sample_rate)])
+            return treated.astype(np.float32), head, empty_extra
         return fn(tail, sample_rate), head, empty_extra
-    layer = _LAYERS.get(effect)
+    layer = _synced_layer(effect, sync)
     if layer is not None:
         return tail, head, layer(len(tail), sample_rate, seed)
     if effect == TransitionFx.GLITCH:
@@ -973,11 +1201,16 @@ def apply_transition(
     effect: TransitionFx,
     *,
     seed: int | None = None,
+    sync: BeatSync | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Apply *effect* to a crossfade, for mono or stereo audio.
 
     Stereo input is processed one channel at a time with the same *seed*,
     so effects that use randomness treat both channels identically.
+
+    With *sync*, the rhythmic effects follow its tempo and downbeat and
+    the tonal layers its keys (see the module docstring); without it, or
+    for whatever it leaves unknown, every effect keeps its fixed values.
 
     The results are held to the music's level: a treated tail starts as
     the untouched audio and a treated head ends as it (``_join_seam``),
@@ -994,15 +1227,20 @@ def apply_transition(
         effect: Concrete effect to apply.
         seed: Seed for effects that use randomness.  ``None`` draws a fresh
             seed, which is then shared by both channels.
+        sync: Tempo, keys and downbeat of the crossfade, or ``None``.
 
     Returns:
         ``(tail, head, extra_layer)`` in the input's channel layout.  The
         extra layer is empty (length 0) when the effect adds none.
     """
     if tail.ndim == 1:
-        out_tail, out_head, extra = _apply_transition_mono(tail, head, sample_rate, effect, seed)
+        out_tail, out_head, extra = _apply_transition_mono(
+            tail, head, sample_rate, effect, seed, sync
+        )
     else:
-        out_tail, out_head, extra = _apply_transition_stereo(tail, head, sample_rate, effect, seed)
+        out_tail, out_head, extra = _apply_transition_stereo(
+            tail, head, sample_rate, effect, seed, sync
+        )
     music_peak = max(_peak(tail), _peak(head))
     out_tail = _join_seam(tail, out_tail, sample_rate, tail=True)
     out_head = _join_seam(head, out_head, sample_rate, tail=False)
@@ -1019,6 +1257,7 @@ def _apply_transition_stereo(
     sample_rate: int,
     effect: TransitionFx,
     seed: int | None,
+    sync: BeatSync | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Apply *effect* to ``(n, channels)`` buffers one channel at a time."""
     shared_seed = seed if seed is not None else int(np.random.default_rng().integers(2**31))
@@ -1029,6 +1268,7 @@ def _apply_transition_stereo(
             sample_rate,
             effect,
             shared_seed,
+            sync,
         )
         for c in range(tail.shape[1])
     ]
@@ -1050,7 +1290,9 @@ def pick_effect(
 ) -> TransitionFx:
     """Resolve a meta-mode (RANDOM / ROTATE) to a concrete effect.
 
-    Concrete effects pass through unchanged.  NONE returns NONE.
+    Concrete effects pass through unchanged.  NONE returns NONE.  AUTO
+    needs the two tracks (see :func:`choose_auto_effect`); without them
+    it picks from the ``smooth`` category.
 
     Args:
         mode: A :class:`TransitionFx`.
@@ -1068,4 +1310,131 @@ def pick_effect(
         chosen = _REAL_EFFECTS[_rotate_cursor % len(_REAL_EFFECTS)]
         _rotate_cursor += 1
         return chosen
+    if mode == TransitionFx.AUTO:
+        return _pick_from(AUTO_CATEGORIES["smooth"], rng)
     return mode
+
+
+# ---------------------------------------------------------------------------
+# The "auto" effect
+# ---------------------------------------------------------------------------
+
+
+class TrackTraits(Protocol):
+    """What :func:`choose_auto_effect` reads from a track (an ``IndexEntry``)."""
+
+    bpm: float
+    tempo_confidence: float
+    key: int
+    mode: int
+    energy: float
+
+
+AUTO_CATEGORIES: dict[str, tuple[TransitionFx, ...]] = {
+    "scene_change": (TransitionFx.BACKSPIN, TransitionFx.DUB_SIREN, TransitionFx.VINYL_REWIND),
+    "disguise": (
+        TransitionFx.ECHO_OUT,
+        TransitionFx.TAPE_STOP,
+        TransitionFx.REVERB_TAIL,
+        TransitionFx.BACKSPIN,
+        TransitionFx.LOWPASS_SWEEP,
+    ),
+    "lift": (TransitionFx.NOISE_RISER, TransitionFx.STUTTER_BUILD),
+    "clean": (TransitionFx.CROSS_EQ_SWAP, TransitionFx.HIGHPASS_SWEEP, TransitionFx.NONE),
+    "smooth": (
+        TransitionFx.HIGHPASS_SWEEP,
+        TransitionFx.LOWPASS_SWEEP,
+        TransitionFx.CROSS_EQ_SWAP,
+        TransitionFx.ECHO_OUT,
+    ),
+}
+"""The effects ``auto`` chooses between in each category (module docstring)."""
+
+# Tempo gap (fraction, double and half time folded in) that counts as a
+# clash, and the one under which two tempos count as the same.  8 % is
+# also the default [djmix] beatmatch_max_stretch.
+_TEMPO_CLASH = 0.08
+_TEMPO_CLOSE = 0.03
+# Incoming over outgoing average loudness that counts as an energy lift.
+_ENERGY_LIFT = 1.3
+
+
+def _tempo_gap(out_bpm: float, in_bpm: float) -> float:
+    """How far apart two tempos are, as a fraction; double and half time count as equal."""
+    octaves = math.log2(in_bpm / out_bpm)
+    nearest = min(abs(octaves - shift) for shift in (-1.0, 0.0, 1.0))
+    return float(2.0**nearest - 1.0)
+
+
+def _known_key(track: TrackTraits) -> tuple[int, int] | None:
+    key, mode = getattr(track, "key", -1), getattr(track, "mode", -1)
+    if not isinstance(key, int) or not isinstance(mode, int):
+        return None
+    return (key, mode) if 0 <= key <= 11 and mode in (0, 1) else None
+
+
+def auto_category(outgoing: TrackTraits, incoming: TrackTraits, pick_mode: str = "") -> str:
+    """The ``auto`` category for a crossfade from *outgoing* into *incoming*.
+
+    The first rule that applies wins (see the module docstring):
+    ``scene_change``, ``disguise``, ``lift``, ``clean``, else ``smooth``.
+
+    Args:
+        outgoing: The track playing out.
+        incoming: The track coming in.
+        pick_mode: How *incoming* was chosen (``"discovery"`` and so on).
+
+    Returns:
+        A key of :data:`AUTO_CATEGORIES`.
+    """
+    from autodj.dj_meta import harmonic_compatible
+
+    if pick_mode == "discovery":
+        return "scene_change"
+    out_bpm = trusted_bpm(getattr(outgoing, "bpm", 0.0), getattr(outgoing, "tempo_confidence", 0))
+    in_bpm = trusted_bpm(getattr(incoming, "bpm", 0.0), getattr(incoming, "tempo_confidence", 0))
+    gap = _tempo_gap(out_bpm, in_bpm) if out_bpm and in_bpm else None
+    out_key, in_key = _known_key(outgoing), _known_key(incoming)
+    clash = (
+        out_key is not None
+        and in_key is not None
+        and not harmonic_compatible(out_key[0], out_key[1], in_key[0], in_key[1])
+    )
+    if clash or (gap is not None and gap > _TEMPO_CLASH):
+        return "disguise"
+    out_energy = _as_float(getattr(outgoing, "energy", 0.0))
+    in_energy = _as_float(getattr(incoming, "energy", 0.0))
+    if out_energy > 0 and in_energy >= out_energy * _ENERGY_LIFT:
+        return "lift"
+    if out_key is not None and out_key == in_key and gap is not None and gap <= _TEMPO_CLOSE:
+        return "clean"
+    return "smooth"
+
+
+def _pick_from(choices: Sequence[TransitionFx], rng: np.random.Generator | None) -> TransitionFx:
+    if rng is None:
+        rng = np.random.default_rng()
+    return choices[int(rng.integers(0, len(choices)))]
+
+
+def choose_auto_effect(
+    outgoing: TrackTraits,
+    incoming: TrackTraits,
+    pick_mode: str = "",
+    rng: np.random.Generator | None = None,
+) -> TransitionFx:
+    """Choose the ``auto`` effect for a crossfade from *outgoing* into *incoming*.
+
+    A random effect from :func:`auto_category`'s category, so a long
+    set does not repeat one effect for every similar pair.
+
+    Args:
+        outgoing: The track playing out.
+        incoming: The track coming in.
+        pick_mode: How *incoming* was chosen.
+        rng: Optional numpy RNG (defaults to a fresh instance).
+
+    Returns:
+        A concrete :class:`TransitionFx` (possibly NONE: a plain fade).
+    """
+    return _pick_from(AUTO_CATEGORIES[auto_category(outgoing, incoming, pick_mode)], rng)

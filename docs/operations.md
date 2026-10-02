@@ -34,6 +34,11 @@ analysis that `autodj analyse` also runs: intro and outro, beat grid and cue poi
 track that has none yet. Both commands print one progress line every 25 tracks, and the file
 checks one every 5000 files, so the log in the web page's library tools stays readable.
 
+With `[playback] import_external_cues` on (the default), intro and outro markers set in Mixxx,
+Rekordbox or Traktor take the place of the detected intro and outro, so the crossfade follows
+them. A track analysed before AutoDJ read those markers gets them the first time it plays while
+`autodj serve` runs; there is no need to analyse it again.
+
 Each run publishes the tracks embedded so far as a new index generation every 100 tracks and at
 the end, so an interrupted run resumes where it stopped. `autodj analyse` saves its results every
 25 tracks.

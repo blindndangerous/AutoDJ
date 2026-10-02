@@ -291,7 +291,7 @@ class TestMixxxImporter:
         # Outro at 60 s
         outro = next(c for c in cues if c.label == "Outro")
         assert abs(outro.time_s - 60.0) < 0.1
-        assert outro.type == "outro_downbeat"
+        assert outro.type == "outro_start"
 
     def test_skips_invalid_type_zero(self, tmp_path: Path) -> None:
         db = tmp_path / "mixxx.db"
@@ -305,7 +305,7 @@ class TestMixxxImporter:
         key = str(Path("/music/song.mp3"))
         types_seen = {c.type for c in result[key]}
         # type=0 is silently skipped (mapped to None in type_map)
-        assert "user" in types_seen or "outro_downbeat" in types_seen
+        assert "user" in types_seen or "outro_start" in types_seen
 
 
 # ---------------------------------------------------------------------------
@@ -362,7 +362,7 @@ class TestRekordboxImporter:
         assert hot.color == "#ff0080"
         assert hot.source == "rekordbox"
         fade = next(c for c in cues if c.label == "FadeOut")
-        assert fade.type == "outro_downbeat"
+        assert fade.type == "outro_start"
 
     def test_malformed_xml_returns_empty(self, tmp_path: Path) -> None:
         path = tmp_path / "broken.xml"

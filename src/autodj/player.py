@@ -59,6 +59,7 @@ if TYPE_CHECKING:
     from autodj.dj_meta import Cue, DjMeta
     from autodj.presets import Preset
     from autodj.similarity import SimilarityIndex
+    from autodj.transitions import BeatSync, TransitionFx
 
 logger = logging.getLogger(__name__)
 
@@ -507,6 +508,45 @@ class _PickContext:
     protected: frozenset[str] = frozenset()
 
 
+@dataclass(frozen=True)
+class _FxPlan:
+    """The transition effect chosen for one crossfade, and what it syncs to.
+
+    Attributes:
+        name: The concrete effect (a :class:`~autodj.transitions.TransitionFx`
+            value, never a meta-mode).
+        sync: Tempo and keys for the synced effects, or ``None``.
+        downbeats: The outgoing track's downbeats, in its own timeline.
+        origin_s: Where in that timeline the rendered audio starts.
+    """
+
+    name: str
+    sync: BeatSync | None = None
+    downbeats: tuple[float, ...] = ()
+    origin_s: float = 0.0
+
+
+def _effect_mode(name: object) -> TransitionFx:
+    """The :class:`~autodj.transitions.TransitionFx` called *name*, NONE when unknown."""
+    from autodj.transitions import TransitionFx
+
+    try:
+        return TransitionFx(str(name).lower())
+    except ValueError:
+        return TransitionFx.NONE
+
+
+def _mixed_in_by(rendered: RenderedTrack | None) -> tuple[str, float]:
+    """The effect and stretch that *rendered*'s next track comes in with.
+
+    ``("", 1.0)`` when *rendered* has no overlap with it: the next track
+    then starts on its own.
+    """
+    if rendered is None or not rendered.transition_fx:
+        return ("", 1.0)
+    return (rendered.transition_fx, rendered.beatmatch_ratio)
+
+
 # ---------------------------------------------------------------------------
 # Audio loading
 # ---------------------------------------------------------------------------
@@ -577,6 +617,16 @@ class Player:
     # not yet started: it goes back if its set stops first.  Only the bus
     # thread touches it (_take_render, then _on_track_start).
     _taken_queue_pick: RenderedTrack | None = None
+    # How the render cursor's track comes in: the previous render's
+    # transition effect and stretch (RenderedTrack.mixed_in_fx / _ratio).
+    _pending_mixed_in: tuple[str, float] = ("", 1.0)
+    # Guards the per-pair effect plans of planned_transition.
+    _fx_plan_lock: ClassVar[threading.Lock] = threading.Lock()
+    # Plans kept, most recent last: a few pairs cover the playing track,
+    # the one rendered ahead and a queue edit's re-render.
+    _FX_PLANS_KEPT: ClassVar[int] = 8
+    # Browser mode: (path, pick mode) of the last pick made for next_track.
+    _next_pick: tuple[str, str] | None = None
 
     def __init__(
         self,
@@ -652,10 +702,17 @@ class Player:
         self._library_cues_lock = threading.Lock()
         self._bg_lyrics_inflight: set[str] = set()
         self._bg_lyrics_lock = threading.Lock()
-        # Current track's beatmatch ratio (1.0 = no stretch) — exposed via state
+        # How the playing track's opening was stretched while it was mixed
+        # in (1.0 = not stretched) — exposed via state
         self._beatmatch_ratio: float = 1.0
-        # Last transition effect applied (string name) — exposed via state
+        # The transition effect the playing track came in with — exposed
+        # via state
         self._last_transition_fx: str = "none"
+        # Effect chosen per (outgoing, incoming) path pair, with the
+        # [transitions] effect setting it was chosen under.
+        self._fx_plans: dict[tuple[str, str], tuple[str, str]] = {}
+        # Tracks whose stored library cues were re-merged this session.
+        self._cues_refreshed: set[str] = set()
         # Shared RNG for transition effects that use randomness, so a single
         # seed drives both stereo channels identically (see apply_transition).
         self._rng: np.random.Generator = np.random.default_rng()
@@ -955,6 +1012,7 @@ class Player:
             offset, pick_mode = self._pending_offset, self._pending_pick_mode
             current_from_queue = self._pending_from_queue
             previous = self._pending_previous
+            mixed_in_fx, mixed_in_ratio = self._pending_mixed_in
             context = self._pick_context(
                 pending=current,
                 starting=previous,
@@ -973,6 +1031,10 @@ class Player:
                 )
                 next_entry, next_mode = None, "similarity"
             try:
+                if next_entry is not None:
+                    # Plan the effect knowing how next_entry was picked;
+                    # the render then finds this plan.
+                    self.planned_transition(current, next_entry, next_mode)
                 rendered = self._render_track(current, next_entry, offset)
             except Exception:
                 logger.exception("Rendering %s failed; skipping it.", current.path)
@@ -987,6 +1049,7 @@ class Player:
                 from_queue=next_mode == "queue",
                 # A track that failed to render never starts.
                 previous=current if rendered is not None else previous,
+                mixed_in=_mixed_in_by(rendered),
             )
             if rendered is not None:
                 return replace(
@@ -998,6 +1061,8 @@ class Player:
                     next_from_queue=next_mode == "queue",
                     set_generation=generation,
                     previous_entry=previous,
+                    mixed_in_fx=mixed_in_fx,
+                    mixed_in_ratio=mixed_in_ratio,
                 )
         return None
 
@@ -1008,17 +1073,21 @@ class Player:
         pick_mode: str,
         from_queue: bool = False,
         previous: IndexEntry | None = None,
+        mixed_in: tuple[str, float] = ("", 1.0),
     ) -> None:
         """Point the render-ahead cursor at *entry* (worker idle or queued).
 
         *previous* is the track rendered just before *entry*; ``None`` after
-        a jump, where it is not known.
+        a jump, where it is not known.  *mixed_in* is the effect and
+        stretch *entry* comes in with (see ``RenderedTrack.mixed_in_fx``);
+        the default is a track that starts on its own.
         """
         self._pending_entry = entry
         self._pending_offset = offset
         self._pending_pick_mode = pick_mode
         self._pending_from_queue = from_queue
         self._pending_previous = previous
+        self._pending_mixed_in = mixed_in
 
     def _rewind_render_cursor(self, track: RenderedTrack) -> None:
         """Point the cursor back at *track*'s own start (to re-render it).
@@ -1032,6 +1101,7 @@ class Player:
             track.pick_mode,
             track.from_queue,
             previous=track.previous_entry,
+            mixed_in=(track.mixed_in_fx, track.mixed_in_ratio),
         )
 
     def _skip_past_render(self, track: RenderedTrack) -> None:
@@ -1046,6 +1116,7 @@ class Player:
             track.next_pick_mode,
             track.next_from_queue,
             previous=track.entry,
+            mixed_in=_mixed_in_by(track),
         )
 
     def reset_render_ahead(
@@ -1249,8 +1320,11 @@ class Player:
         self._current_sr = SAMPLE_RATE
         self._playback_pos[0] = rendered.start_offset
         self._playback_len = rendered.start_offset + len(rendered.audio)
-        self._last_transition_fx = rendered.transition_fx
-        self._beatmatch_ratio = rendered.beatmatch_ratio
+        # How this track came in, from the previous render's overlap: the
+        # render's own transition_fx and beatmatch_ratio describe the
+        # NEXT track, which its tail mixes in.
+        self._last_transition_fx = rendered.mixed_in_fx
+        self._beatmatch_ratio = rendered.mixed_in_ratio
         self._last_pick_mode = rendered.pick_mode
         seed_start = entry is self._seed_awaiting_start
         with self._pick_lock:
@@ -1306,6 +1380,7 @@ class Player:
             if seed_playing:
                 if picked is not None and state.next_track is None:
                     state.next_track, self._last_pick_mode = picked
+                    self._next_pick = (picked[0].path, picked[1])
                 self._current_sr = _DEFAULT_SR
                 self._playback_len = int(
                     (current.length if current.length and current.length > 0 else 5.0)
@@ -1511,6 +1586,7 @@ class Player:
         """
         entry, mode = self._choose_next(current, self._pick_context())
         self._last_pick_mode = mode
+        self._next_pick = (entry.path, mode)
         return entry
 
     def _choose_next(self, current: IndexEntry, context: _PickContext) -> tuple[IndexEntry, str]:
@@ -1855,7 +1931,7 @@ class Player:
         if not meta.analysed:
             meta = self._analyse(mono(audio_a), sr_a, path)
             self._dj_cache.flush(batch=10)
-        return meta
+        return self._refresh_library_cues(path, meta)
 
     def _analyse(self, audio: np.ndarray, sr: int, path: str) -> DjMeta:
         """Analyse *path*'s audio the way ``autodj analyse`` does, and cache it.
@@ -1893,10 +1969,10 @@ class Player:
         ``autodj serve`` runs this on its own thread at startup when
         ``[playback] import_external_cues`` is on, so neither playback nor
         pacing waits on a large library file.  Tracks :meth:`_analyse`
-        stored before the read finished have their library cues merged here.
+        stored before the read finished have their library cues merged here,
+        intro and outro markers included.
         """
-        from autodj.dj_cues_import import auto_import_cues
-        from autodj.dj_meta import merge_cues
+        from autodj.dj_cues_import import auto_import_cues, remerge_library_cues
 
         music_dir = self._cfg.library.music_dir
         found = auto_import_cues(library_root=music_dir if isinstance(music_dir, Path) else None)
@@ -1908,10 +1984,43 @@ class Player:
             if cache is None or not late:
                 return
             for path in late:
-                meta = cache.get(path)
-                meta.cues = merge_cues(meta.cues, found[path])
-                cache.set(path, meta)
+                updated = remerge_library_cues(cache.get(path), found[path])
+                if updated is not None:
+                    cache.set(path, updated)
+                self._cues_refreshed.add(path)
         cache.flush(force=True)
+
+    def _refresh_library_cues(self, path: str, meta: DjMeta) -> DjMeta:
+        """Bring a stored track's library cues up to date, once a session.
+
+        A track analysed before AutoDJ read intro and outro markers keeps
+        its old cues (and mix points) in the cache; the first time it
+        comes up in a session its library cues are merged again (see
+        :func:`autodj.dj_cues_import.remerge_library_cues`).  Only tracks
+        that play are touched, so a large DJ library costs nothing extra.
+
+        Returns:
+            The meta to use: the updated one, or *meta* unchanged.
+        """
+        cache = self._dj_cache
+        library = getattr(self, "_library_cues", None)
+        refreshed = getattr(self, "_cues_refreshed", None)
+        if cache is None or not library or refreshed is None or path in refreshed:
+            return meta
+        cues = library.get(path)
+        if not cues or not meta.analysed:
+            refreshed.add(path)
+            return meta
+        from autodj.dj_cues_import import remerge_library_cues
+
+        with self._library_cues_lock:
+            refreshed.add(path)
+            updated = remerge_library_cues(cache.get(path), cues)
+            if updated is None:
+                return meta
+            cache.set(path, updated)
+        cache.flush()
+        return updated
 
     def analyse_track_in_background(self, path: str) -> None:
         """Run analyse_audio + detect_cues for *path* on a background thread.
@@ -1946,6 +2055,8 @@ class Player:
         if self._dj_cache is None:
             return
         existing = self._dj_cache.get(path)
+        if existing.analysed:
+            existing = self._refresh_library_cues(path, existing)
         if existing.analysed and existing.intro_start_s is not None:
             return
         intro_start_only = existing.analysed
@@ -2066,7 +2177,7 @@ class Player:
         if self._dj_cache is None:
             return None
         meta = self._dj_cache.get(next_entry.path)
-        return meta if meta.analysed else None
+        return self._refresh_library_cues(next_entry.path, meta) if meta.analysed else None
 
     def _effective_crossfade_seconds(
         self,
@@ -2222,7 +2333,13 @@ class Player:
         )
         return audio_b
 
-    def _skip_incoming_silence_samples(self, audio_b: np.ndarray, sr_a: int) -> int:
+    def _skip_incoming_silence_samples(
+        self,
+        audio_b: np.ndarray,
+        sr_a: int,
+        meta_b: DjMeta | None = None,
+        stretch: float = 1.0,
+    ) -> int:
         """Return how many of *audio_b*'s leading samples to drop as silence.
 
         ``djmix.outro_intro_align`` and the marker-aware transition modes
@@ -2230,15 +2347,21 @@ class Player:
         track at its first sound, as Mixxx does.  The intro itself plays
         under the outgoing outro, so a verse sung over it stays whole.
         Measured on *audio_b* itself, so the offset stays right after a
-        beatmatch stretch.
+        beatmatch stretch.  An intro start set in DJ software (an imported
+        ``intro_start`` cue in *meta_b*) is used instead of the
+        measurement, scaled by the beatmatch *stretch*.
         """
-        from autodj.dj_meta import detect_intro_start
+        from autodj.dj_meta import detect_intro_start, imported_markers
 
         mode = self._cfg.playback.transition_mode
         marker_skip = mode in ("full_intro_outro", "fixed_skip_silence")
         if not (self._cfg.djmix.outro_intro_align or marker_skip):
             return 0
-        first_sound = int(detect_intro_start(audio_b, sr_a) * sr_a)
+        marked = imported_markers(meta_b.cues).get("intro_start") if meta_b else None
+        if marked is not None:
+            first_sound = int(marked * stretch * sr_a)
+        else:
+            first_sound = int(detect_intro_start(audio_b, sr_a) * sr_a)
         return min(first_sound, len(audio_b) // 2)
 
     def _apply_outgoing_filter_sweep(
@@ -2295,6 +2418,87 @@ class Player:
         "halftime": 3.0,  # tempo halve, pitch preserved
     }
 
+    def planned_transition(
+        self, current: IndexEntry, upcoming: IndexEntry, pick_mode: str = ""
+    ) -> str:
+        """The concrete effect for the crossfade from *current* into *upcoming*.
+
+        Resolves the ``[transitions] effect`` setting (``auto`` with
+        :func:`~autodj.transitions.choose_auto_effect`, ``random`` and
+        ``rotate`` with :func:`~autodj.transitions.pick_effect`) once per
+        pair and remembers it, so the server mix and the web state agree:
+        the render ahead uses this choice and ``next_transition_fx`` in the
+        state reports it.  A changed setting chooses again.
+
+        Args:
+            current: The outgoing track.
+            upcoming: The incoming track.
+            pick_mode: How *upcoming* was chosen (``"discovery"`` steers
+                ``auto``); only the first call for a pair uses it.
+
+        Returns:
+            A :class:`~autodj.transitions.TransitionFx` value, never a
+            meta-mode.
+        """
+        from autodj.transitions import TransitionFx, choose_auto_effect, pick_effect
+
+        setting = str(self._cfg.transitions.effect).lower()
+        key = (str(current.path), str(upcoming.path))
+        rng = getattr(self, "_rng", None)
+        with self._fx_plan_lock:
+            plans = self.__dict__.setdefault("_fx_plans", {})
+            planned = plans.pop(key, None)
+            if planned is None or planned[0] != setting:
+                mode = _effect_mode(setting)
+                if mode == TransitionFx.AUTO:
+                    chosen = choose_auto_effect(current, upcoming, pick_mode, rng)
+                else:
+                    chosen = pick_effect(mode, rng)
+                planned = (setting, chosen.value)
+            plans[key] = planned  # most recent last
+            while len(plans) > self._FX_PLANS_KEPT:
+                del plans[next(iter(plans))]
+        return planned[1]
+
+    def _fx_plan(
+        self,
+        current: IndexEntry,
+        next_entry: IndexEntry,
+        meta_a: DjMeta | None,
+        start_offset: int,
+    ) -> _FxPlan:
+        """The planned effect for *current* → *next_entry*, with its sync data.
+
+        The tempo counts only when ``[playback] beat_sync_fx`` is on and
+        :func:`~autodj.transitions.trusted_bpm` accepts it, and the keys
+        only with ``key_sync_fx``; the beat grid comes from *meta_a* or,
+        without it, the DJ-meta cache (never a fresh analysis).
+        """
+        from autodj.beat_sync import extract_downbeats, key_to_hz
+        from autodj.transitions import BeatSync, trusted_bpm
+
+        name = self.planned_transition(current, next_entry)
+        playback = self._cfg.playback
+        bpm = 0.0
+        if bool(playback.beat_sync_fx):
+            bpm = trusted_bpm(current.bpm, getattr(current, "tempo_confidence", 0.0))
+        roots: list[float | None] = [None, None]
+        if bool(playback.key_sync_fx):
+            for i, entry in enumerate((current, next_entry)):
+                key = getattr(entry, "key", -1)
+                roots[i] = key_to_hz(key) if isinstance(key, int) else None
+        if not bpm and roots == [None, None]:
+            return _FxPlan(name)
+        if meta_a is None and bpm:
+            meta_a = self._peek_incoming_meta(current)
+        beats = meta_a.beats if meta_a is not None and bpm else []
+        return _FxPlan(
+            name,
+            BeatSync(bpm=bpm, out_root_hz=roots[0], in_root_hz=roots[1]),
+            downbeats=tuple(extract_downbeats(beats)),
+            origin_s=start_offset / SAMPLE_RATE,
+        )
+
     def _apply_transition_effect(
         self,
         audio_a_trimmed: np.ndarray,
@@ -2302,26 +2506,26 @@ class Player:
         b_head: np.ndarray,
         sr_a: int,
         crossfade_samples: int,
+        plan: _FxPlan | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, str]:
-        """Apply the configured transition effect.
+        """Apply the transition effect *plan* names (by default the configured one).
 
         Returns the effect's name instead of storing it, because this runs
         while rendering ahead and ``self._last_transition_fx`` describes
-        the playing track.
+        the playing track.  With the plan's beat grid, the synced effects
+        start on the first downbeat of the treated tail.
 
         Returns:
             ``(a_trimmed, b_head, extra_layer, effect_name)``.
         """
+        from autodj.beat_sync import downbeat_offset
         from autodj.transitions import TransitionFx, apply_transition, pick_effect
 
         extra_shape = (0,) if audio_a_trimmed.ndim == 1 else (0, 2)
         extra_layer = np.zeros(extra_shape, dtype=np.float32)
-        fx_name = self._cfg.transitions.effect
-        try:
-            fx_mode = TransitionFx(fx_name)
-        except ValueError:
-            fx_mode = TransitionFx.NONE
-        chosen_fx = pick_effect(fx_mode)
+        if plan is None:
+            plan = _FxPlan(pick_effect(_effect_mode(self._cfg.transitions.effect)).value)
+        chosen_fx = _effect_mode(plan.name)
         if chosen_fx == TransitionFx.NONE:
             return audio_a_trimmed, b_head, extra_layer, chosen_fx.value
 
@@ -2334,12 +2538,17 @@ class Player:
 
         tail = audio_a_trimmed[-effect_samples:].copy()
         head_for_fx = audio_b[:effect_samples] if len(audio_b) >= effect_samples else b_head
+        sync = plan.sync
+        if sync is not None and plan.downbeats:
+            tail_start_s = plan.origin_s + (len(audio_a_trimmed) - effect_samples) / sr_a
+            sync = replace(sync, downbeat_s=downbeat_offset(plan.downbeats, tail_start_s))
         tail_fx, head_fx, extra_layer = apply_transition(
             tail,
             head_for_fx,
             sr_a,
             chosen_fx,
             seed=int(self._rng.integers(2**31)),
+            sync=sync,
         )
 
         wet = max(0.0, min(1.0, self._cfg.transitions.wet_mix))
@@ -2470,7 +2679,9 @@ class Player:
                 return n
             return int(n * pre_stretch_len / post_stretch_len)
 
-        intro = self._skip_incoming_silence_samples(audio_b, SAMPLE_RATE)
+        intro = self._skip_incoming_silence_samples(
+            audio_b, SAMPLE_RATE, meta_b=meta_b, stretch=measured_ratio
+        )
         audio_b = audio_b[intro:]
         if a_start + crossfade > len(audio_a):
             crossfade = max(0, len(audio_a) - a_start)
@@ -2488,7 +2699,12 @@ class Player:
         b_head = audio_b[:crossfade]
         a_trimmed = self._apply_outgoing_filter_sweep(a_trimmed, SAMPLE_RATE, crossfade)
         a_trimmed, b_head, extra, fx_name = self._apply_transition_effect(
-            a_trimmed, audio_b, b_head, SAMPLE_RATE, crossfade
+            a_trimmed,
+            audio_b,
+            b_head,
+            SAMPLE_RATE,
+            crossfade,
+            plan=self._fx_plan(current, next_entry, meta_a, start_offset),
         )
         mixed = self._mix_overlap(a_trimmed, b_head, crossfade, SAMPLE_RATE, extra)
         return RenderedTrack(
