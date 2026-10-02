@@ -820,8 +820,13 @@ class PlayerBridge:
             "lyric_text": active.text if active else None,
             "lyrics_plain": getattr(self.player, "_current_lyrics_plain", "") or "",
             "eq": self.get_eq(),
+            # How the playing track came in: the stretch of its opening and
+            # the effect of that crossfade (server mix only; the page plays
+            # its own crossfades in browser mode, where these stay 1.0 and
+            # "none").
             "beatmatch_ratio": round(getattr(self.player, "_beatmatch_ratio", 1.0), 3),
             "last_transition_fx": getattr(self.player, "_last_transition_fx", "none"),
+            "next_transition_fx": self._next_transition_fx(current, upcoming),
             "why_this_track": _build_why(self.player, current),
             "library_job": _library_job_snapshot(),
             # Browser-side audio drives playback only when the server is
@@ -839,6 +844,31 @@ class PlayerBridge:
             "stream_listeners": int(self.stream.listener_count) if self.stream_mode else 0,
             "stream_event": self._current_station_event(),
         }
+
+    def _next_transition_fx(self, current: Any, upcoming: Any) -> str | None:
+        """The effect for the crossfade from *current* into *upcoming*.
+
+        On the mix bus that is the effect the playing render used for its
+        tail when it mixed *upcoming* in (``"none"`` when there was no room
+        for an overlap); before a render exists, and in browser mode, it is
+        the player's plan for the pair (:meth:`Player.planned_transition`),
+        which a later render of the pair uses too.  Always a concrete
+        effect name, never ``random``, ``rotate`` or ``auto``; ``None``
+        when there is no next track.
+        """
+        if current is None or upcoming is None:
+            return None
+        player = self.player
+        playing = getattr(player, "_playing_render", None) if self._bus_mode() else None
+        if playing is not None and playing.entry is current and playing.next_entry is upcoming:
+            return str(playing.transition_fx or "none")
+        picked = getattr(player, "_next_pick", None)
+        pick_mode = picked[1] if picked and picked[0] == upcoming.path else ""
+        try:
+            return str(player.planned_transition(current, upcoming, pick_mode))
+        except Exception:  # pragma: no cover -- defensive log-only path
+            logger.debug("next_transition_fx: planning failed", exc_info=True)
+            return None
 
     def _current_station_event(self) -> dict | None:
         """Return a copy of the latest station event, or ``None``."""

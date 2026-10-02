@@ -354,12 +354,17 @@ class PlaybackConfig(_Section):
     # blended from outgoing -> incoming track tempo.  Envelope FX
     # (sweeps, risers) bar-round their length but don't snap start.
     # Falls back to seconds-based timing when no beat grid /
-    # tempo is known.  Default ON.
+    # tempo is known.  Default ON.  The server mix times echo_out,
+    # dub_delay, gate_stutter, transformer, stutter_build, sidechain_pump,
+    # beat_repeat and scratch by the outgoing tempo when it is trusted
+    # (transitions.trusted_bpm) and starts the gates, loops and pump on
+    # the next downbeat; it does not round effect lengths to bars.
     beat_sync_fx: bool = True
     # Key-sync pitched FX: oscillator-based effects (pitch_swell,
     # pitch_fall, dub_siren, ring_modulator, air_horn) tune their
     # carrier frequency to the song's root note.  Lerps in log space
     # from outgoing root -> incoming root across the fade.  Default ON.
+    # The server mix tunes air_horn, dub_siren and ring_modulator.
     key_sync_fx: bool = True
     # Beatmatch on skip: when the user presses Skip / N hotkey mid-track,
     # the browser-side crossfade applies playbackRate = outgoing_bpm /
@@ -556,7 +561,10 @@ class TransitionsConfig(_Section):
             is accepted, for example ``"echo_out"``, ``"reverb_tail"``,
             ``"highpass_sweep"``, ``"tape_stop"`` or ``"halftime"``.
             Meta modes: ``"random"`` (uniform random per crossfade),
-            ``"rotate"`` (cycle through all real effects in order).
+            ``"rotate"`` (cycle through all real effects in order),
+            ``"auto"`` (an effect suited to the two tracks' tempo, key,
+            energy and pick; rules in :mod:`autodj.transitions`).  An
+            unknown name plays a plain crossfade.
         wet_mix: Global wet/dry of the transition effect's contribution
             to the final overlap (0.0 = effect inaudible, 1.0 = full).
             Some effects already have their own internal wet — this is

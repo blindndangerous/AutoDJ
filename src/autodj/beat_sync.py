@@ -1,10 +1,10 @@
-"""Beat- and key-synchronisation data for the browser's transition effects.
+"""Beat- and key-synchronisation data for the transition effects.
 
 The browser engine (``static/modules/audio-engine.js``) aligns transition
 effects with the beat grid and root note of the tracks on each side of a
-crossfade.  The server computes that data for it here, and the web state
-payload (:mod:`autodj._bridge`) is this module's only caller; the server
-mix does not use it:
+crossfade, and so does the server mix (:mod:`autodj.transitions`,
+through :class:`autodj.transitions.BeatSync`).  The web state payload
+(:mod:`autodj._bridge`) and the player use these helpers:
 
 - :func:`extract_downbeats` — subsample a dense beat grid to one
   timestamp per bar (every 4 beats by default).
@@ -17,6 +17,8 @@ mix does not use it:
 - :func:`bar_seconds` — seconds per bar for a given BPM.
 - :func:`key_to_hz` — chromatic key 0-11 → root frequency in Hz (A4 =
   440 reference, octave 4).  Mode does not affect the root.
+- :func:`downbeat_offset` — seconds from a moment to the next downbeat,
+  where the server mix starts its rhythmic effects.
 
 Module is dependency-free so it imports cleanly under both the indexer
 process (where librosa is loaded) and the headless CLI / web server
@@ -131,8 +133,29 @@ def key_to_hz(key: int, octave: int = 4) -> float | None:
     return _C4_HZ * (2.0 ** ((key + 12 * (octave - 4)) / 12.0))
 
 
+def downbeat_offset(downbeats: Sequence[float], at_s: float) -> float:
+    """Seconds from *at_s* to the first downbeat at or after it.
+
+    Like the browser's ``_BS.nextDownbeat``, a downbeat up to 5 ms before
+    *at_s* counts as on it.
+
+    Args:
+        downbeats: Sorted downbeat times in seconds (see
+            :func:`extract_downbeats`).
+        at_s: The moment, on the same timeline.
+
+    Returns:
+        The offset in seconds, ``0.0`` when no downbeat follows *at_s*.
+    """
+    for downbeat in downbeats:
+        if downbeat >= at_s - 0.005:
+            return max(0.0, float(downbeat) - at_s)
+    return 0.0
+
+
 __all__ = [
     "bar_seconds",
+    "downbeat_offset",
     "extract_downbeats",
     "key_to_hz",
     "synthesize_downbeats",

@@ -16,7 +16,7 @@ import pytest
 from autodj.transitions import TRANSITION_EFFECT_NAMES
 
 _STATIC = Path(__file__).resolve().parents[2] / "src" / "autodj" / "static"
-_META_MODES = frozenset({"none", "random", "rotate"})
+_META_MODES = frozenset({"none", "random", "rotate", "auto"})
 
 
 class TestServerAcceptsEveryEffect:

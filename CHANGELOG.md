@@ -18,6 +18,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   crossfade keeps its usual start when the track has no detected beat grid,
   when no boundary is within half a phrase, or when starting on the boundary would leave too
   little of the track for the whole fade.
+- In stream mode and with server audio, the rhythmic transition effects now follow the tempo of
+  the song that is ending: echo out repeats on eighth notes, dub delay on quarter notes, gate
+  stutter and transformer chop in sixteenth notes, stutter build speeds up from quarter to
+  thirty-second notes, beat repeat loops an eighth-note slice, scratch works a one-beat slice, and
+  sidechain pump ducks on every beat. The gates, loops and pump start on the song's next downbeat.
+  Air horn, dub siren and ring modulator are tuned to the songs' keys. This matches what the
+  browser already did. A tempo is only used when beat tracking was confident about it; otherwise
+  the effects keep their old fixed timings. The **Beat-sync** and **Key-sync** settings now apply
+  to the server mix as well.
+- A new transition effect, **auto**, picks an effect to suit each pair of songs: a backspin, dub
+  siren or vinyl rewind into a discovery pick; an echo, tape stop, reverb, backspin or low-pass
+  sweep to hide tempos more than 8 % apart or keys that clash; a noise riser or stutter build into
+  a clearly louder song; a cross-EQ swap, high-pass sweep or plain fade between songs in the same
+  key and tempo; otherwise a filter sweep, cross-EQ swap or echo. There is still some variety
+  within each kind. It works in stream mode and with server audio; crossfades the browser plays
+  stay plain for now. The page's state now names the effect coming up for the next crossfade.
+- Intro and outro markers set in Mixxx, Rekordbox or Traktor now move the mix. Mixxx's intro start,
+  intro end and outro start, and Rekordbox's and Traktor's fade-in and fade-out points, replace
+  the intro and outro AutoDJ detects, so the crossfade starts and ends where you marked it. The cue
+  strip lists them as intro start, intro end, outro start and outro end. Songs analysed before
+  this pick the markers up the first time they play.
 
 ### Changed
 
@@ -30,6 +51,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- In stream mode and with server audio, "beatmatched 1.04 times" now describes the song that just
+  started. It used to give the stretch planned for the song after it, so a song that came in
+  untouched could be announced as beatmatched and the other way round.
 - In stream mode and with server audio, the music no longer stops for good when no song fits the
   settings. A BPM range or harmonic mode that no song matches, or a library reload that removed the
   song coming up, made every pick fail, and the station played silence until a restart. AutoDJ now

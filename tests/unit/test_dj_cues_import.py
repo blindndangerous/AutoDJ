@@ -92,10 +92,10 @@ class TestImportFromMixxx:
         assert len(cues) == 2
         # Sorted by time after normalisation.
         assert cues[0].time_s == pytest.approx(5.0)
-        assert cues[0].type == "first_downbeat"
+        assert cues[0].type == "intro_start"
         assert cues[0].source == "mixxx"
         assert cues[1].time_s == pytest.approx(200.0)
-        assert cues[1].type == "outro_downbeat"
+        assert cues[1].type == "outro_start"
 
     def test_skips_n60db_sound_range(self, tmp_path) -> None:
         # type 8 is Mixxx's hidden "audible sound" range, not an outro
@@ -179,9 +179,9 @@ class TestImportFromRekordbox:
         cues = result.get(str(Path("/music/a.mp3")), [])
         assert len(cues) == 2
         assert cues[0].time_s == pytest.approx(5.0)
-        assert cues[0].type == "first_downbeat"
+        assert cues[0].type == "intro_start"
         assert cues[0].source == "rekordbox"
-        assert cues[1].type == "outro_downbeat"
+        assert cues[1].type == "outro_start"
 
     def test_skips_track_with_no_location(self, tmp_path) -> None:
         xml = tmp_path / "Library.xml"
@@ -203,7 +203,7 @@ class TestImportFromRekordbox:
         # The track key may exist with empty list, OR be omitted.  Either
         # way the bad mark must NOT show up as a cue.
         for cues in result.values():
-            assert all(c.type != "first_downbeat" or c.time_s != 0 for c in cues)
+            assert all(c.type != "intro_start" or c.time_s != 0 for c in cues)
         assert not any(cues for cues in result.values())
 
     def test_corrupt_xml_returns_empty(self, tmp_path) -> None:

@@ -22,12 +22,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from autodj.transitions import TransitionFx, apply_transition
+from autodj.transitions import META_MODES, TransitionFx, apply_transition
 
 _FILE = Path(__file__).with_name("transition_fingerprints.json")
 _SR = 22050
 _SEGMENTS = 12
-_EFFECTS = [fx for fx in TransitionFx if fx not in (TransitionFx.RANDOM, TransitionFx.ROTATE)]
+_EFFECTS = [fx for fx in TransitionFx if fx not in META_MODES]
 
 
 def _music(seed: int) -> np.ndarray:

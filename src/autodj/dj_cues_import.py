@@ -27,6 +27,22 @@ maintainer, and the tests use hand-built fixtures.
 Source ranking when two readers report a cue at the same time:
     user > mixxx == rekordbox == serato == traktor > auto
 
+Intro and outro markers become cues of their own types, which
+:func:`autodj.dj_meta.apply_imported_markers` turns into the track's
+``intro_start_s``, ``intro_end_s`` and ``outro_start_s``, so they move
+the mix.  Each program provides different ones:
+
+- Mixxx keeps an intro and an outro range: ``intro_start``,
+  ``intro_end``, ``outro_start`` and ``outro_end`` (the outro end is
+  shown on the cue strip but nothing in the mix uses it yet).
+- Rekordbox and Traktor have a fade-in and a fade-out point, read as
+  ``intro_start`` and ``outro_start``: where the track should come in
+  and where it should start to go out.
+- Serato has no intro or outro markers, only hot cues and loops.
+
+Main and load cues stay ``first_downbeat``: a load point is where a DJ
+cues the track up, not a mix point.
+
 The library readers are best-effort: a missing or corrupt file is logged at
 DEBUG level and yields no cues, so one bad source never breaks the overall
 import.  A Serato tag that is present but malformed is logged as a warning.
@@ -54,10 +70,11 @@ import struct
 # install separately for a feature with no real attack surface.
 import xml.etree.ElementTree as ET  # nosec B405
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from autodj.dj_meta import Cue, DjMeta, merge_cues
+from autodj.dj_meta import Cue, DjMeta, apply_imported_markers, merge_cues
 from autodj.sqlite_utils import readonly_uri
 
 logger = logging.getLogger(__name__)
@@ -79,8 +96,16 @@ def import_from_mixxx(db_path: Path) -> dict[str, list[Cue]]:
 
     - 0 = invalid, 3 = beat (unused), 8 = N60dBSound (not shown): skipped
     - 1 = hot cue, 4 = loop, 5 = jump: ``"user"``
-    - 2 = main cue, 6 = intro (position = intro start): ``"first_downbeat"``
-    - 7 = outro (position = outro start): ``"outro_downbeat"``
+    - 2 = main cue: ``"first_downbeat"``
+    - 6 = intro: ``"intro_start"`` and ``"intro_end"``
+    - 7 = outro: ``"outro_start"`` and ``"outro_end"``
+
+    Intro and outro are ranges.  ``cues.length`` (engine samples, like
+    the position) gives the end: ``position + length``, or ``length``
+    alone when the start is unset (``position`` -1), which is how Mixxx's
+    ``Cue`` reads them back (src/track/cue.cpp).  A length of 0 means no
+    end; an unset start gives no start cue.  Databases without a
+    ``length`` column give starts only.
 
     Cues on tracks without a known sample rate are skipped.
 
@@ -96,15 +121,6 @@ def import_from_mixxx(db_path: Path) -> dict[str, list[Cue]]:
 
     out: dict[str, list[Cue]] = {}
 
-    type_map = {
-        1: "user",  # hot cue
-        2: "first_downbeat",  # main / load cue ≈ where the DJ wants to start
-        4: "user",  # loop — surface as a cue marker
-        5: "user",  # jump
-        6: "first_downbeat",  # intro range; position is its start
-        7: "outro_downbeat",  # outro range; position is its start
-    }
-
     try:
         # read-only — we never write to a Mixxx database we don't own
         con = sqlite3.connect(readonly_uri(db_path), uri=True)
@@ -114,19 +130,21 @@ def import_from_mixxx(db_path: Path) -> dict[str, list[Cue]]:
 
     try:
         cur = con.cursor()
+        # Older or hand-built databases may lack the length column; only
+        # one of these two fixed strings is ever put into the query.
+        columns = {row[1] for row in cur.execute("PRAGMA table_info(cues)")}
+        length = "cues.length" if "length" in columns else "0"
         cur.execute(
-            "SELECT track_locations.location, cues.position, cues.type, cues.label, "
-            "library.samplerate "
+            "SELECT track_locations.location, cues.position, cues.type, cues.label, "  # nosec B608
+            f"library.samplerate, {length} "
             "FROM cues "
             "JOIN library ON library.id = cues.track_id "
             "JOIN track_locations ON track_locations.id = library.location",
         )
         for row in cur.fetchall():
-            entry = _mixxx_row_to_cue(row, type_map)
-            if entry is None:
-                continue
-            location, cue = entry
-            out.setdefault(location, []).append(cue)
+            location, cues = _mixxx_row_to_cues(row)
+            if cues:
+                out.setdefault(location, []).extend(cues)
     except sqlite3.DatabaseError as exc:
         logger.debug("Mixxx db read failed: %s", exc)
     finally:
@@ -136,25 +154,39 @@ def import_from_mixxx(db_path: Path) -> dict[str, list[Cue]]:
     return _normalise_keys(out)
 
 
-def _mixxx_row_to_cue(
-    row: tuple[Any, ...],
-    type_map: dict[int, str],
-) -> tuple[str, Cue] | None:
-    """Convert one Mixxx ``cues`` row into ``(track_path, Cue)`` or None."""
-    location, position, ctype, label, samplerate = row
-    if not location or position is None or not samplerate:
-        return None
-    mapped = type_map.get(int(ctype) if ctype is not None else 0)
-    if mapped is None:
-        return None
+# Mixxx CueType -> (cue type at the start, cue type at the end of a range).
+_MIXXX_TYPES: dict[int, tuple[str, str | None]] = {
+    1: ("user", None),  # hot cue
+    2: ("first_downbeat", None),  # main / load cue ≈ where the DJ wants to start
+    4: ("user", None),  # loop — surface as a cue marker
+    5: ("user", None),  # jump
+    6: ("intro_start", "intro_end"),  # intro range
+    7: ("outro_start", "outro_end"),  # outro range
+}
+
+
+def _mixxx_row_to_cues(row: tuple[Any, ...]) -> tuple[str, list[Cue]]:
+    """Convert one Mixxx ``cues`` row into ``(track_path, cues)``.
+
+    The list is empty when the row has nothing usable.
+    """
+    location, position, ctype, label, samplerate, length = row
+    kinds = _MIXXX_TYPES.get(int(ctype) if ctype is not None else 0)
+    if not location or position is None or not samplerate or kinds is None:
+        return (location, [])
     # Engine samples are interleaved stereo: two per frame.
-    time_s = float(position) / (float(samplerate) * 2.0)
-    if time_s < 0:
-        return None
-    return (
-        location,
-        Cue(time_s=time_s, type=mapped, label=str(label or ""), source="mixxx"),
-    )
+    per_second = float(samplerate) * 2.0
+    start_kind, end_kind = kinds
+    text = str(label or "")
+    cues: list[Cue] = []
+    start_s = float(position) / per_second
+    if start_s >= 0:
+        cues.append(Cue(time_s=start_s, type=start_kind, label=text, source="mixxx"))
+    if end_kind is not None and length:
+        end_s = (max(0.0, float(position)) + float(length)) / per_second
+        if end_s > max(start_s, 0.0):
+            cues.append(Cue(time_s=end_s, type=end_kind, label=text, source="mixxx"))
+    return (location, cues)
 
 
 # ---------------------------------------------------------------------------
@@ -197,8 +229,8 @@ def import_from_rekordbox_xml(xml_path: Path) -> dict[str, list[Cue]]:
 
     rb_type_map = {
         "0": "user",  # hot cue
-        "1": "first_downbeat",  # fade-in
-        "2": "outro_downbeat",  # fade-out
+        "1": "intro_start",  # fade-in: where the track comes in
+        "2": "outro_start",  # fade-out: where it starts to go out
         "3": "first_downbeat",  # load
         "4": "user",  # loop
     }
@@ -270,8 +302,8 @@ def import_from_traktor_nml(nml_path: Path) -> dict[str, list[Cue]]:
     out: dict[str, list[Cue]] = {}
     nml_type_map = {
         "0": "user",
-        "1": "first_downbeat",
-        "2": "outro_downbeat",
+        "1": "intro_start",  # fade-in
+        "2": "outro_start",  # fade-out
         "3": "first_downbeat",
         "4": "phrase",
         "5": "user",
@@ -535,13 +567,39 @@ def merge_imported_cues(meta: DjMeta, path: str, library_cues: Mapping[str, list
 
     *library_cues* is what :func:`auto_import_cues` found; the Serato cues
     are read from the file's own tags here.  :func:`autodj.dj_meta.merge_cues`
-    lets imported cues win on conflict and keeps detected ones elsewhere.
+    lets imported cues win on conflict and keeps detected ones elsewhere,
+    and imported intro and outro markers then set the track's mix points
+    (:func:`autodj.dj_meta.apply_imported_markers`).
     ``autodj index``, ``autodj analyse`` and the player all merge through
     this when ``[playback] import_external_cues`` is on.
     """
     external = [*library_cues.get(path, ()), *import_from_serato_tags(Path(path))]
     if external:
         meta.cues = merge_cues(meta.cues, external)
+        apply_imported_markers(meta)
+
+
+LIBRARY_SOURCES: frozenset[str] = frozenset({"mixxx", "rekordbox", "traktor"})
+"""Cue sources read from library files by :func:`auto_import_cues`."""
+
+
+def remerge_library_cues(meta: DjMeta, library_cues: list[Cue]) -> DjMeta | None:
+    """*meta* with its library cues replaced by *library_cues*, markers re-applied.
+
+    For a track analysed earlier: its stored library cues (perhaps from
+    a reader that mapped intro and outro markers differently) are
+    dropped, *library_cues* merged in, and the imported markers applied
+    to its mix points.  Serato and detected cues stay.  A mix point set
+    by a marker that has since been removed keeps that value until the
+    track is analysed again, since the detected one is gone.
+
+    Returns:
+        The updated copy, or ``None`` when nothing changes.
+    """
+    kept = [cue for cue in meta.cues if cue.source not in LIBRARY_SOURCES]
+    updated = replace(meta, cues=merge_cues(kept, library_cues))
+    apply_imported_markers(updated)
+    return None if updated == meta else updated
 
 
 def _gather_candidate_paths(
