@@ -60,6 +60,7 @@ function installAudioContext() {
     return context;
   }));
   window.AudioContext = globalThis.AudioContext;
+  return context;
 }
 
 // 120 BPM, 180 s track: the server sends the last 32 bars (116 s to
@@ -90,10 +91,11 @@ function installClock(deck) {
 let engine;
 let clock;
 let advanceAt;   // the outgoing deck's position at each /api/advance
+let audioContext;
 
 async function startEngine() {
   installDom();
-  installAudioContext();
+  audioContext = installAudioContext();
   advanceAt = [];
   vi.stubGlobal("fetch", vi.fn(async (url) => {
     if (url === "/api/advance") advanceAt.push(engine.decks[engine.activeIdx].audio.currentTime);
@@ -219,6 +221,25 @@ describe("phrase-aligned crossfade trigger", () => {
     expect(engine.crossfading).toBe(false);
     tick(170.1);
     expect(engine.crossfading).toBe(true);
+  });
+
+  it("anchors a late phrase start's beat-synced effect on the boundary", async () => {
+    await startEngine();
+    push({ ...outroFade, transition: "sidechain_pump",
+      playback: { transition_mode: "outro_fade", beat_sync_fx: true } });
+    tick(143.3);         // arms the timer for the 144 s boundary
+    clock.at += 0.03;    // the deck runs 30 ms ahead: the timer fires 30 ms late
+    await vi.advanceTimersByTimeAsync(700);
+    expect(engine.crossfading).toBe(true);
+    // The context reads 2 s when the fade starts and the deck is 30 ms
+    // past the boundary, so the boundary is context time 1.97.  The pump's
+    // first duck lands there, not a bar later on 146 s (context 3.97).
+    const ducks = audioContext.createGain.mock.results
+      .flatMap(({ value }) => value.gain.setValueAtTime.mock.calls)
+      .filter(([level]) => Math.abs(level - 0.3) < 1e-9);
+    expect(ducks.length).toBeGreaterThan(0);
+    // (Within the fake timer's millisecond rounding.)
+    expect(ducks[0][1]).toBeCloseTo(1.97, 2);
   });
 
   it("does not start on the boundary after a pause since the timer was armed", async () => {

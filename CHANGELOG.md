@@ -14,7 +14,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   mixing. With **Phrase align** on, a crossfade in the browser starts on the phrase boundary
   nearest the point where it would otherwise begin, so the next track comes in at the end of a
   phrase rather than mid-bar. **Phrase length (bars)** sets how long a phrase is, as it does for
-  the server mix. The crossfade keeps its usual start when the track has no detected beat grid,
+  the server mix. Beat-synced transition effects count the boundary as their first beat. The
+  crossfade keeps its usual start when the track has no detected beat grid,
   when no boundary is within half a phrase, or when starting on the boundary would leave too
   little of the track for the whole fade.
 
