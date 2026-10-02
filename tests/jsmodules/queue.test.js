@@ -462,3 +462,80 @@ describe("queue Top and Clear queue", () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe("queue focus while a change is saved", () => {
+  const setupQueue = () => {
+    document.body.innerHTML = '<p id="announce"></p><ol id="queue" tabindex="-1"></ol>';
+    const els = {
+      queueList: document.querySelector("#queue"),
+      queueCount: document.createElement("span"),
+      queueAnnounce: document.querySelector("#announce"),
+    };
+    const queue = [
+      { path: "a.mp3", display_name: "Alpha" },
+      { path: "b.mp3", display_name: "Bravo" },
+      { path: "c.mp3", display_name: "Charlie" },
+    ];
+    applyQueueState(queue, els);
+    installQueueButtons(els);
+    let resolveRequest;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => {
+      resolveRequest = (status = 200) => resolve(new globalThis.Response(
+        status === 200 ? '{"ok":true}' : '{"detail":"write failed"}',
+        { status, headers: { "Content-Type": "application/json" } },
+      ));
+    })));
+    return { els, queue, reply: (status) => resolveRequest(status) };
+  };
+  const pressFocused = (els, path, action) => {
+    const button = els.queueList.querySelector(`[data-path="${path}"][data-action="${action}"]`);
+    button.focus();
+    button.click();
+  };
+
+  it("keeps focus on the moved track when a push redraws the list first", async () => {
+    const { els, reply } = setupQueue();
+    pressFocused(els, "c.mp3", "up");
+    // Another page added a track; its push lands before this reply.
+    applyQueueState([
+      { path: "a.mp3", display_name: "Alpha" },
+      { path: "c.mp3", display_name: "Charlie" },
+      { path: "b.mp3", display_name: "Bravo" },
+      { path: "d.mp3", display_name: "Delta" },
+    ], els);
+    reply();
+    await vi.waitFor(() => expect(els.queueList.getAttribute("aria-busy")).toBe("false"));
+
+    const focused = document.activeElement;
+    expect(focused.closest("li")?.dataset.path).toBe("c.mp3");
+    expect(focused.dataset.action).toBe("up");
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps focus in the list when a push redraws it and the save fails", async () => {
+    const { els, reply } = setupQueue();
+    pressFocused(els, "b.mp3", "remove");
+    applyQueueState([
+      { path: "a.mp3", display_name: "Alpha" },
+      { path: "c.mp3", display_name: "Charlie" },
+      { path: "d.mp3", display_name: "Delta" },
+    ], els);
+    reply(500);
+    await vi.waitFor(() => expect(els.queueAnnounce.textContent).toContain("write failed"));
+
+    expect(els.queueList.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement.closest("li")?.dataset.path).toBe("c.mp3");
+    vi.unstubAllGlobals();
+  });
+
+  it("does not redraw the old order from a push sent before the change", async () => {
+    const { els, queue, reply } = setupQueue();
+    pressFocused(els, "c.mp3", "top");
+    applyQueueState(queue, els);
+    expect(els.queueList.querySelector("li").dataset.path).toBe("c.mp3");
+    reply();
+    await vi.waitFor(() => expect(els.queueList.getAttribute("aria-busy")).toBe("false"));
+    expect(document.activeElement.closest("li")?.dataset.path).toBe("c.mp3");
+    vi.unstubAllGlobals();
+  });
+});

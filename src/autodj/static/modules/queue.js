@@ -15,6 +15,10 @@ import { confirmAction } from "./confirm-dialog.js";
 
 let _lastKey = "";
 let _renderGeneration = 0;
+// The queue as it stood before a reorder or removal still in flight.  A
+// push of exactly that queue left the server before the change did, and
+// would only show the old order again for a second.
+let _pendingFromKey = null;
 
 function _queueKey(queue) {
   return JSON.stringify(queue.map((t) => t.path));
@@ -56,7 +60,7 @@ function _restoreQueueFocus(queueList, spot) {
 
 export function applyQueueState(queue, els) {
   const key = _queueKey(queue);
-  if (key === _lastKey) return;
+  if (key === _lastKey || key === _pendingFromKey) return;
   _lastKey = key;
   const spot = els.queueList ? _focusedQueueSpot(els.queueList) : null;
   renderQueue(queue, els);
@@ -65,6 +69,7 @@ export function applyQueueState(queue, els) {
 
 export function resetQueueState(els) {
   const empty = [];
+  _pendingFromKey = null;
   _lastKey = _queueKey(empty);
   renderQueue(empty, els);
 }
@@ -222,6 +227,12 @@ export function installQueueButtons(els) {
       return;
     }
 
+    // Whether the pressed button had focus.  The optimistic render below
+    // destroys it, so focus sits on the page itself until the reply; a
+    // push that rebuilds the list meanwhile has nothing to put back
+    // (applyQueueState), so the reply places focus whatever the order.
+    const hadFocus = queueList.contains(queueList.ownerDocument.activeElement);
+
     // Optimistic local render so the user sees instant feedback.
     mutationPending = true;
     queueList.setAttribute("aria-busy", "true");
@@ -229,10 +240,9 @@ export function installQueueButtons(els) {
     renderQueue(newQueue, els);
     const optimisticGeneration = _renderGeneration;
     const newPaths = newQueue.map((item) => item.path);
+    _pendingFromKey = _queueKey(snapshot);
     _lastKey = _queueKey(newQueue);
     let ownsRenderedQueue = true;
-    let successful = false;
-    let rolledBack = false;
 
     try {
       const duplicateRemoval = action === "remove" && paths.indexOf(path) !== idx;
@@ -244,55 +254,53 @@ export function installQueueButtons(els) {
         body: JSON.stringify(action === "remove" && !duplicateRemoval ? { path } : { paths: newPaths }),
         },
       );
-      if (!isAuthenticatedRequestCurrent(epoch)) {
-        ownsRenderedQueue = false;
-        focusIndex = -1;
-        return;
-      }
+      if (!isAuthenticatedRequestCurrent(epoch)) return;
       ownsRenderedQueue = _renderGeneration === optimisticGeneration;
-      if (!ownsRenderedQueue) focusIndex = -1;
-      successful = ownsRenderedQueue;
       // force: a second "Move up" on the same track is a second action,
       // and silence would read as the button not working.
       announceStatus(queueAnnounce, announceMsg, { dwellMs: 3000, force: true });
     } catch (errorValue) {
-      if (!isAuthenticatedRequestCurrent(epoch)) {
-        ownsRenderedQueue = false;
-        focusIndex = -1;
-        return;
-      }
+      if (!isAuthenticatedRequestCurrent(epoch)) return;
       if (_renderGeneration === optimisticGeneration) {
         renderQueue(snapshot, els);
         _lastKey = _queueKey(snapshot);
         focusIndex = idx;
         focusAction = action;
-        rolledBack = true;
+        focusQueueList = false;
       } else {
         ownsRenderedQueue = false;
-        focusIndex = -1;
       }
-      focusQueueList = false;
       announceStatus(queueAnnounce,
         `Could not update queue: ${errorValue.message}`,
         { dwellMs: 6000, force: true, tone: "error" });
     } finally {
       mutationPending = false;
+      _pendingFromKey = null;
       queueList.setAttribute("aria-busy", "false");
     }
 
-    if ((!successful && !rolledBack) || !ownsRenderedQueue) return;
+    if (!isAuthenticatedRequestCurrent(epoch)) return;
+    if (!ownsRenderedQueue) {
+      // A push drew the list the server has.  Focus that was on the
+      // pressed button goes to the same track's button there, or to the
+      // row now where it was; focus that was elsewhere stays put.
+      if (!hadFocus) return;
+      const active = queueList.ownerDocument.activeElement;
+      if (active && active !== queueList.ownerDocument.body) return;
+      const rows = Array.from(queueList.querySelectorAll("li[data-path]"));
+      const own = action === "remove" ? -1 : rows.findIndex((row) => row.dataset.path === path);
+      focusQueueList = rows.length === 0;
+      focusIndex = own >= 0 ? own : Math.max(0, Math.min(idx, rows.length - 1));
+    }
     if (focusQueueList) {
       queueList.focus();
       return;
     }
-    if (focusIndex >= 0) {
-      const target = queueList.querySelector(
-        `li[data-queue-index="${focusIndex}"] .queue-btn[data-action="${focusAction}"]`
-      );
-      if (target) {
-        target.disabled = false;
-        if (!target.disabled) target.focus();
-      }
-    }
+    // The moved track's button, the neighbour that took a removed row's
+    // place, or the pressed button again after a rollback.
+    const row = queueList.querySelector(`li[data-queue-index="${focusIndex}"]`);
+    const target = row?.querySelector(`.queue-btn[data-action="${focusAction}"]:not(:disabled)`)
+      || row?.querySelector(".queue-btn:not(:disabled)");
+    target?.focus();
   });
 }

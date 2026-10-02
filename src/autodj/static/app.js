@@ -184,10 +184,11 @@ function invalidateReconnectAttempt() {
   }
 }
 
-// Everything this page plays stops when the link drops or the session
-// ends, and stays stopped: the listener presses Play (or Listen here)
-// to start again.  The level the page was playing at becomes a ceiling
-// for the volumes the server pushes afterwards (see applyState).
+// Everything this page plays stops when the session ends (it expired or
+// was revoked), and stays stopped: the listener presses Play (or Listen
+// here) to start again.  The level the page was playing at becomes a
+// ceiling for the volumes the server pushes afterwards (see applyState).
+// A link that only drops stops nothing (see ws.onclose).
 function stopProtectedPlayback() {
   holdVolumeCeiling();
   stopAllDecks();
@@ -272,13 +273,13 @@ function clearProtectedSessionData() {
   document.title = "AutoDJ";
 }
 
-function expireAuthenticatedSession({ playbackStopped = false } = {}) {
+function expireAuthenticatedSession() {
   if (!authExpiryHandled) {
     authExpiryHandled = true;
     invalidateAuthenticatedRequestEpoch();
     invalidateReconnectAttempt();
     authenticatedActivityActive = false;
-    if (!playbackStopped) stopProtectedPlayback();
+    stopProtectedPlayback();
     clearProtectedSessionData();
     const socket = _ws;
     _ws = null;
@@ -391,6 +392,11 @@ function setAttributeIfChanged(element, name, value) {
 }
 
 function applyState(s) {
+  // A push that left the server before it took this page's advance still
+  // names the track the page has just faded out of.  Applied, it brought
+  // that track back on the decks and said its name a second time; the
+  // next push (or the advance's own answer) carries the real state.
+  if (isStaleAdvanceState(s)) return;
   _stateApplicationGeneration += 1;
   _lastState = s;
   bumpLinerTrackCount(s);
@@ -557,7 +563,7 @@ function applyState(s) {
   // page's listening follows the server's volume and mute.
   const pageOnlyVolume = inStream && !_lastStreamServerAudio;
   const takeServerLevel = !pageOnlyVolume || !_pageLevelSet;
-  if (takeServerLevel && Date.now() - _lastUserVolTs > 600) {
+  if (takeServerLevel && !volumeSaveHolds(s.volume)) {
     // After the link has dropped, a server volume above the page's own
     // level is held at that level until the listener sets the volume
     // here: a restarted server once pushed 100 % (D15).
@@ -927,7 +933,7 @@ import {
   setVolume, setMuted, applyBrowserPlaybackState, startCrossfade, stopAllDecks,
   applyEqState, loadCoverArt,
   resetTrackCaches, resetTransitionCaches,
-  ensureAudioGraph, unlockAndPlay,
+  ensureAudioGraph, unlockAndPlay, duckMusic, isStaleAdvanceState, setLinkUp,
   _ctx, _master, decks, activeIdx, _lastBrowserPlayback, playbackEnabled,
   _outBpmCache, _inBpmCache,
   _crossfadeSecondsCache, _nextTrackPathCache,
@@ -1130,8 +1136,12 @@ function connectWS() {
       reconnectDelayMs = RECONNECT_BASE_MS;
       setConnStatus("connected", "Live");
       if (recovered) showVisibleStatus("Reconnected.");
+      _unreachableProbes = 0;
+      _outageNoticeSaid = false;
       applyPageLevel();
       setPlaybackStale(false);
+      // An advance or a deck load that failed in the outage goes again.
+      setLinkUp(true);
     }
   };
 
@@ -1154,11 +1164,19 @@ function connectWS() {
       setConnStatus("error", "Disconnected, retrying");
     }
     setPlaybackStale(true);
-    // A transient transport loss stops audible/protected activity but
-    // preserves the recoverable session projection. The auth recheck below
-    // promotes this to a full teardown only when expiry is confirmed.
+    // A dropped link is not a stop.  A tunnel in front of AutoDJ closes
+    // the websocket every few minutes (codes 1005 and 1006), and stopping
+    // here silently ended Listen here and the decks while the next "Live"
+    // claimed all was well.  The music plays on: Listen here is its own
+    // connection, and the decks have their buffered files and retry a
+    // load or an advance once the link is back.  Playback stops only when
+    // the session really ended: a 4401 close (handled above), any request
+    // answered 401, or the auth recheck below, which all end in
+    // expireAuthenticatedSession.  The level now playing becomes the
+    // ceiling, so a restarted server cannot push the page louder (D15).
+    holdVolumeCeiling();
+    setLinkUp(false);
     authenticatedActivityActive = false;
-    stopProtectedPlayback();
     invalidateReconnectAttempt();
     const generation = reconnectGeneration;
     reconnectTimer = setTimeout(() => {
@@ -1166,7 +1184,8 @@ function connectWS() {
       void reconnectWebSocketAfterClose({
         event,
         auth,
-        onExpired: () => expireAuthenticatedSession({ playbackStopped: true }),
+        onExpired: expireAuthenticatedSession,
+        onUnreachable: noteUnreachableProbe,
         reconnect: () => {
           if (authExpiryHandled || generation !== reconnectGeneration) return;
           authenticatedActivityActive = true;
@@ -1191,7 +1210,33 @@ function connectWS() {
       setConnStatus("error", "Disconnected, retrying");
     }
     setPlaybackStale(true);
+    setLinkUp(false);
   };
+}
+
+// Behind Cloudflare Access, a sign-in that has expired turns every
+// request into a redirect to the sign-in page, which a page script
+// cannot follow, so the reconnect failed quietly forever.  The auth probe
+// reports each failure: a redirect is said at once, and a run of plain
+// network failures is said after a few, in case they are the same thing.
+// Said once per outage; retrying goes on quietly.
+const SIGN_IN_EXPIRED_TEXT =
+  "Your sign-in to this site has expired. Reload the page to sign in again.";
+const STILL_UNREACHABLE_TEXT =
+  "AutoDJ still cannot be reached. If this site asks you to sign in, "
+  + "reload the page to sign in again.";
+const UNREACHABLE_PROBES_BEFORE_SAYING = 3;
+let _unreachableProbes = 0;
+let _outageNoticeSaid = false;
+
+function noteUnreachableProbe({ signInRedirect = false } = {}) {
+  _unreachableProbes += 1;
+  if (_outageNoticeSaid) return;
+  if (!signInRedirect && _unreachableProbes < UNREACHABLE_PROBES_BEFORE_SAYING) return;
+  _outageNoticeSaid = true;
+  announceStatus(document.getElementById("sr-status"),
+    signInRedirect ? SIGN_IN_EXPIRED_TEXT : STILL_UNREACHABLE_TEXT,
+    { dwellMs: 10000, tone: "error" });
 }
 
 // ----------------------------------------------------------------
@@ -1246,6 +1291,47 @@ btnPause.addEventListener("click", async () => {
 // (`_lastBrowserPlayback` is declared up in the audio playback module so
 // the click handler can safely reference it before the first WS push.)
 
+// Beatmatch-on-skip stretches the incoming track's tempo to the outgoing
+// one, as the server mix does: at most 8 % either way
+// (beatmatch_max_stretch), and a wider gap is left alone.
+const BEATMATCH_MAX_STRETCH = 0.08;
+// After the transition the new track eases back to its own tempo over
+// this long, as a DJ moves the pitch fader, instead of jumping.
+const BEATMATCH_RETURN_MS = 4000;
+const BEATMATCH_RETURN_STEP_MS = 100;
+
+function beatmatchRate() {
+  if (!_beatmatchOnSkip || !(_outBpmCache > 0) || !(_inBpmCache > 0)) return null;
+  const ratio = _outBpmCache / _inBpmCache;
+  return Math.abs(ratio - 1) <= BEATMATCH_MAX_STRETCH ? ratio : null;
+}
+
+// `finished` is startCrossfade's result: true once the transition has
+// really ended (the engine's own timeline, the effect length included),
+// false when it was cut short by a stop.
+function returnToOwnTempo({ audio, rate, prevRate, prevPitch }, finished) {
+  const restore = () => {
+    try { audio.playbackRate = prevRate; } catch (_) {}
+    try { audio.preservesPitch = prevPitch; } catch (_) {}
+  };
+  if (!finished) {
+    restore();
+    return;
+  }
+  const steps = Math.round(BEATMATCH_RETURN_MS / BEATMATCH_RETURN_STEP_MS);
+  let step = 0;
+  const timer = setInterval(() => {
+    step += 1;
+    // A stop or the next transition takes the deck over: hand it back now.
+    if (step >= steps || !playbackEnabled || crossfading) {
+      clearInterval(timer);
+      restore();
+      return;
+    }
+    try { audio.playbackRate = rate + (prevRate - rate) * (step / steps); } catch (_) {}
+  }, BEATMATCH_RETURN_STEP_MS);
+}
+
 btnSkip.addEventListener("click", async () => {
   const epoch = captureAuthenticatedRequestEpoch();
   // In browser-playback mode, run a client-side crossfade with the
@@ -1254,28 +1340,24 @@ btnSkip.addEventListener("click", async () => {
   await withDisabled(btnSkip, async () => {
   if (_lastBrowserPlayback && playbackEnabled && _ctx && _nextTrackPathCache && !crossfading) {
     // Beatmatch-on-skip: when the user opted in AND both BPMs are
-    // known, pitch-shift the standby deck so the new track joins the
+    // known, stretch the standby deck's tempo so the new track joins the
     // existing groove instead of cold-cutting.  preservesPitch=true
-    // gives a tempo-only stretch (proper beatmatch).  Reverted at
-    // crossfade teardown by the timeout below.
-    if (_beatmatchOnSkip && _outBpmCache > 0 && _inBpmCache > 0) {
-      const ratio = _outBpmCache / _inBpmCache;
-      // Clamp ±15% so wildly mismatched tempos don't sound silly.
-      const clamped = Math.max(0.85, Math.min(1.15, ratio));
-      const standby = decks[activeIdx ^ 1];
-      const audio = standby.audio;
-      const prevPitch = audio.preservesPitch;
-      const prevRate = audio.playbackRate;
+    // gives a tempo-only stretch (proper beatmatch).  Held for the whole
+    // transition, however long its effect runs, then eased back.
+    const rate = beatmatchRate();
+    let stretched = null;
+    if (rate !== null) {
+      const audio = decks[activeIdx ^ 1].audio;
+      stretched = {
+        audio, rate, prevRate: audio.playbackRate, prevPitch: audio.preservesPitch,
+      };
       try { audio.preservesPitch = true; } catch (_) {}
-      try { audio.playbackRate = clamped; } catch (_) {}
-      dbg("beatmatch-on-skip: ratio=", clamped.toFixed(3),
+      try { audio.playbackRate = rate; } catch (_) {}
+      dbg("beatmatch-on-skip: ratio=", rate.toFixed(3),
         "(", _outBpmCache.toFixed(1), "/", _inBpmCache.toFixed(1), ")");
-      setTimeout(() => {
-        try { audio.playbackRate = prevRate; } catch (_) {}
-        try { audio.preservesPitch = prevPitch; } catch (_) {}
-      }, _crossfadeSecondsCache * 1000 + 200);
     }
-    await startCrossfade(_nextTrackPathCache, _crossfadeSecondsCache);
+    const finished = await startCrossfade(_nextTrackPathCache, _crossfadeSecondsCache);
+    if (stretched) returnToOwnTempo(stretched, finished);
   } else {
     await requestJson("/api/skip", { method: "POST" });
   }
@@ -1560,10 +1642,28 @@ function _gainToSlider(gain) {
   return Math.max(0, Math.min(100, Math.round(pct)));
 }
 
-// Last user-initiated volume change (ms epoch).  WS state echoes that
-// arrive within ~600 ms of a local change are ignored so the slider
-// can't fight the in-flight POST.
-let _lastUserVolTs = 0;
+// The volume change this page is still saving.  A state push that left
+// the server before the save carries the old volume and threw the slider
+// back under the listener's arrow keys.  A fixed 600 ms guard still lost
+// to a slow round trip, so the guard is the save itself: from the slider's
+// input, through the debounce and the request, until a push carries the
+// saved volume.  A failed save ends it, so the next push puts the slider
+// back where the server has it.  VOLUME_ECHO_WAIT_MS only backstops an
+// echo that never comes.
+let _volumeSave = null;   // { sent: gain | null, answeredAt }
+const VOLUME_ECHO_WAIT_MS = 5000;
+
+function volumeSaveHolds(pushed) {
+  const save = _volumeSave;
+  if (!save) return false;
+  if (save.sent === null) return true;
+  if ((Number.isFinite(pushed) && Math.abs(pushed - save.sent) < 1e-9)
+      || Date.now() - save.answeredAt > VOLUME_ECHO_WAIT_MS) {
+    _volumeSave = null;
+    return false;
+  }
+  return true;
+}
 
 // The loudest gain the page may take from the server without a volume
 // change made on this page; null when there is no limit.  Set when the
@@ -1616,7 +1716,6 @@ volSlider.addEventListener("input", () => {
   // Down arrow shortcuts); otherwise NVDA said the volume twice.
   volSlider.setAttribute("aria-valuetext", `${val}%`);
   const spokenBySlider = document.activeElement === volSlider;
-  _lastUserVolTs = Date.now();
   // Stream mode drives this page's listening, and goes to the server only
   // when --server-audio plays the mix on the machine's speakers too.  The
   // station's listeners never hear the change.
@@ -1641,15 +1740,25 @@ volSlider.addEventListener("input", () => {
 });
 
 function sendVolume(val) {
+  const save = _volumeSave = { sent: null, answeredAt: 0 };
   clearTimeout(volTimer);
   volTimer = setTimeout(() => {
     // Send the perceptual gain (matches what we drive locally) so the
     // server-side player + WebSocket echo stay in sync with the slider.
+    const gain = _sliderToGain(val);
     void requestJsonBestEffort("/api/volume", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ volume: _sliderToGain(val) }),
-    }, reportBackgroundRequestError);
+      body: JSON.stringify({ volume: gain }),
+    }, reportBackgroundRequestError).then((reply) => {
+      if (_volumeSave !== save) return;   // a newer change owns the slider
+      if (reply === null) {
+        _volumeSave = null;
+        return;
+      }
+      save.sent = Number.isFinite(reply.volume) ? reply.volume : gain;
+      save.answeredAt = Date.now();
+    });
   }, 120);
 }
 
@@ -2045,10 +2154,12 @@ function startAuthenticatedApp(initialState) {
   installLiners(_linerEls, {
     postSettings,
     // Scheduled liners join music that is playing: none fires while
-    // paused, or after a hard stop (a lost link) until the listener has
-    // pressed Play again.
+    // paused, or after a hard stop (the session ended) until the listener
+    // has pressed Play again.  Nor during a crossfade: "every N songs"
+    // counts the new track the moment the fade starts, and a liner then
+    // talked over the transition.  It waits for the fade to finish.
     canPlay: () => authenticatedActivityActive && !!_ctx && !!_lastBrowserPlayback
-      && playbackEnabled && !_lastState?.is_paused,
+      && playbackEnabled && !_lastState?.is_paused && !crossfading,
     // Whenever the server mixes the audio (stream mode or --server-audio),
     // Test asks the server to play the liner into that mix; only browser
     // playback plays it on this page.
@@ -2085,16 +2196,11 @@ function startAuthenticatedApp(initialState) {
       const duckLin = Math.pow(10, duckDb / 20);
       const dur = audioBuf.duration;
       const t0 = audioContext.currentTime;
-      // Only music that is playing is ducked: a stopped deck's gain is
-      // left for Play to set.
-      if (playbackEnabled && !_lastState?.is_paused) {
-        const active = decks[activeIdx];
-        active.gain.gain.cancelScheduledValues(t0);
-        active.gain.gain.setValueAtTime(active.gain.gain.value, t0);
-        active.gain.gain.linearRampToValueAtTime(duckLin, t0 + 0.2);
-        active.gain.gain.setValueAtTime(duckLin, t0 + dur - 0.2);
-        active.gain.gain.linearRampToValueAtTime(1, t0 + dur + 0.2);
-      }
+      // Only music that is playing is ducked.  The duck has a gain of its
+      // own after both decks, so a crossfade running under the liner (a
+      // Test press, or a fade that starts mid-liner) keeps its ramps and
+      // both of its decks are ducked.
+      if (playbackEnabled && !_lastState?.is_paused) duckMusic(duckLin, dur);
       activeLinerSources.add(src);
       src.addEventListener("ended", () => activeLinerSources.delete(src), { once: true });
       src.start(t0);

@@ -91,6 +91,16 @@ async function importEngine(options) {
   return { context, engine };
 }
 
+// Press Play on the page, with a fetch of its own, so the test's fetch
+// mock sees only the requests under test.  A deck error on a page that
+// is not playing is ignored.
+async function startPlaying(engine, path = "current.mp3") {
+  const testFetch = globalThis.fetch;
+  vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({ current_track: { path } })));
+  await engine.unlockAndPlay();
+  vi.stubGlobal("fetch", testFetch);
+}
+
 async function flushPromises() {
   await Promise.resolve();
   await Promise.resolve();
@@ -225,6 +235,7 @@ describe("audio engine request recovery", () => {
   it("reports a deck error on the status region and ignores aborts", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ ok: true })));
     const { engine } = await importEngine();
+    await startPlaying(engine);
     const standby = engine.decks[1];
     const error = { code: 1 };
     Object.defineProperty(standby.audio, "error", { configurable: true, get: () => error });
@@ -249,6 +260,7 @@ describe("audio engine request recovery", () => {
       .mockResolvedValueOnce(jsonResponse({ ok: true }));
     vi.stubGlobal("fetch", fetchImpl);
     const { engine } = await importEngine();
+    await startPlaying(engine);
     const standby = engine.decks[1];
     Object.defineProperty(standby.audio, "error", {
       configurable: true,
@@ -277,6 +289,7 @@ describe("audio engine request recovery", () => {
       .mockImplementationOnce(() => second.promise);
     vi.stubGlobal("fetch", fetchImpl);
     const { engine } = await importEngine();
+    await startPlaying(engine);
     const standby = engine.decks[1];
     Object.defineProperty(standby.audio, "error", {
       configurable: true,
@@ -302,6 +315,7 @@ describe("audio engine request recovery", () => {
       .mockImplementationOnce(() => first.promise)
       .mockImplementationOnce(() => second.promise));
     const { engine } = await importEngine();
+    await startPlaying(engine);
     const applyState = vi.fn();
     engine.setApplyState(applyState);
     const standby = engine.decks[1];
@@ -376,6 +390,7 @@ describe("audio engine request recovery", () => {
       .mockImplementationOnce(() => stale.promise)
       .mockImplementationOnce(() => current.promise));
     const { engine } = await importEngine();
+    await startPlaying(engine);
     const applyState = vi.fn();
     engine.setApplyState(applyState);
     const standby = engine.decks[1];
@@ -392,6 +407,9 @@ describe("audio engine request recovery", () => {
     stale.resolve(jsonResponse({ ok: true, next_track: { path: "stale.mp3" } }));
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(applyState).not.toHaveBeenCalled();
+    engine.setApplyState(null);
+    await startPlaying(engine);
+    engine.setApplyState(applyState);
 
     standby.path = "current-bad.mp3";
     standby.audio.dispatchEvent(new Event("error"));
@@ -435,8 +453,51 @@ describe("audio engine request recovery", () => {
     expect(low.value).toBe("80");
 
     await vi.advanceTimersByTimeAsync(700);
+    // The echo of the saved bands ends the hold; later pushes apply.
+    engine.applyEqState({ low: 0.8, mid: 1, high: 1 });
     engine.applyEqState({ low: 0.8, mid: 1, high: 0.5 });
     expect(document.querySelector("#eq-high").value).toBe("50");
+  });
+
+  it("holds an EQ change through a slow save, not for a fixed time", async () => {
+    vi.useFakeTimers();
+    const reply = deferred();
+    vi.stubGlobal("fetch", vi.fn(() => reply.promise));
+    const { engine } = await importEngine();
+    const low = document.querySelector("#eq-low");
+
+    low.value = "80";
+    low.dispatchEvent(new Event("input"));
+    // Two seconds into a slow round trip, a push still has the old bands.
+    await vi.advanceTimersByTimeAsync(2000);
+    engine.applyEqState({ low: 1, mid: 1, high: 1 });
+    expect(low.value).toBe("80");
+
+    // Answered: a push from before the save still does not undo it ...
+    reply.resolve(jsonResponse({ low: 0.8, mid: 1, high: 1 }));
+    for (let i = 0; i < 5; i += 1) await flushPromises();
+    engine.applyEqState({ low: 1, mid: 1, high: 1 });
+    expect(low.value).toBe("80");
+    // ... and the echo of the saved bands hands the sliders back.
+    engine.applyEqState({ low: 0.8, mid: 1, high: 1 });
+    engine.applyEqState({ low: 0.6, mid: 1, high: 1 });
+    expect(low.value).toBe("60");
+  });
+
+  it("gives the sliders back to the server when an EQ save fails", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      jsonResponse({ detail: "EQ unavailable" }, 503),
+    ));
+    const { engine } = await importEngine();
+    const low = document.querySelector("#eq-low");
+
+    low.value = "80";
+    low.dispatchEvent(new Event("input"));
+    await vi.advanceTimersByTimeAsync(121);
+    await flushPromises();
+    engine.applyEqState({ low: 1, mid: 1, high: 1 });
+    expect(low.value).toBe("100");
   });
 
   it("reports rejected EQ updates", async () => {
@@ -804,5 +865,209 @@ describe("page volume", () => {
     engine.setVolume(0.5);
     expect(engine._master.gain.value).toBe(0);
     expect(engine._master.gain.setValueAtTime).not.toHaveBeenCalledWith(0.5, 2);
+  });
+});
+
+describe("browser playback robustness", () => {
+  const push = (engine, current, next = null, extra = {}) => engine.applyBrowserPlaybackState({
+    browser_playback: true,
+    current_track: current ? { path: current } : null,
+    next_track: next ? { path: next } : null,
+    is_muted: false,
+    is_paused: false,
+    settings: { transition: "none", playback: { crossfade_seconds: 1, fade_in_seconds: 0 } },
+    ...extra,
+  });
+  const advanceCalls = () => fetch.mock.calls.filter(([url]) => url === "/api/advance");
+
+  it("keeps the music going at the end of a track after a pause and resume", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({ current_track: { path: "next.mp3" } })));
+    const { engine } = await importEngine();
+    await startPlaying(engine, "current.mp3");
+    push(engine, "current.mp3", null, { is_paused: true });
+    push(engine, "current.mp3", null, { is_paused: false });
+    fetch.mockClear();
+
+    // Crossfade 0 or no next track: "ended" is what moves on.
+    engine.decks[engine.activeIdx].audio.dispatchEvent(new Event("ended"));
+    await vi.waitFor(() => expect(advanceCalls()).toHaveLength(1));
+    expect(JSON.parse(advanceCalls()[0][1].body)).toEqual({ from_path: "current.mp3" });
+  });
+
+  it("never fades back to the track it left when a push predates the advance", async () => {
+    const answer = deferred();
+    vi.stubGlobal("fetch", vi.fn((url) => (url === "/api/advance"
+      ? answer.promise
+      : Promise.resolve(jsonResponse({ current_track: { path: "a.mp3" } })))));
+    const { engine } = await importEngine();
+    await startPlaying(engine, "a.mp3");
+    engine.setApplyState((state) => engine.applyBrowserPlaybackState(state));
+    vi.useFakeTimers();
+    push(engine, "a.mp3", "b.mp3");
+
+    void engine.startCrossfade("b.mp3", 1);
+    expect(JSON.parse(advanceCalls()[0][1].body)).toEqual({ from_path: "a.mp3" });
+    await vi.advanceTimersByTimeAsync(1200);
+    expect(engine.crossfading).toBe(false);
+    const playing = engine.decks[engine.activeIdx];
+    expect(playing.path).toBe("b.mp3");
+
+    // Sent before the server took the advance, delivered after the swap.
+    push(engine, "a.mp3", "b.mp3");
+    expect(engine.crossfading).toBe(false);
+    expect(engine.decks[engine.activeIdx ^ 1].path).toBeNull();
+
+    answer.resolve(jsonResponse({
+      browser_playback: true, current_track: { path: "b.mp3" }, next_track: { path: "c.mp3" },
+      is_muted: false, is_paused: false, settings: { playback: { crossfade_seconds: 1 } },
+    }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(engine._nextTrackPathCache).toBe("c.mp3");
+    // A push from before the advance can still land after its answer.
+    push(engine, "a.mp3", "b.mp3");
+    expect(engine.crossfading).toBe(false);
+    // Once a push has moved on too, the server is followed again.
+    push(engine, "b.mp3", "c.mp3");
+    push(engine, "a.mp3", "c.mp3");
+    expect(engine.crossfading).toBe(true);
+  });
+
+  it("sends an advance that could not reach the server again once the link is back", async () => {
+    let reachable = false;
+    vi.stubGlobal("fetch", vi.fn(async (url) => {
+      if (url === "/api/advance" && !reachable) throw new TypeError("Failed to fetch");
+      return jsonResponse({ current_track: { path: url === "/api/advance" ? "b.mp3" : "a.mp3" } });
+    }));
+    const { engine } = await importEngine();
+    await startPlaying(engine, "a.mp3");
+    const applyState = vi.fn();
+    engine.setApplyState(applyState);
+    engine.setLinkUp(false);
+
+    engine.decks[engine.activeIdx].audio.dispatchEvent(new Event("ended"));
+    await vi.waitFor(() => expect(advanceCalls()).toHaveLength(1));
+    await flushPromises();
+    // The outage is already said by the connection status: no error here.
+    expect(document.querySelector("#sr-status").textContent).toBe("");
+    // The state the server had before the outage is not applied meanwhile.
+    expect(engine.isStaleAdvanceState({ current_track: { path: "a.mp3" } })).toBe(true);
+
+    reachable = true;
+    engine.setLinkUp(true);
+    await vi.waitFor(() => expect(applyState).toHaveBeenCalledOnce());
+    expect(advanceCalls()).toHaveLength(2);
+    expect(JSON.parse(advanceCalls()[1][1].body)).toEqual({ from_path: "a.mp3" });
+  });
+
+  it("says once that the music stopped when a track ran out with the link down", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url) => {
+      if (url === "/api/advance") throw new TypeError("Failed to fetch");
+      return jsonResponse({ current_track: { path: "a.mp3" } });
+    }));
+    const { engine } = await importEngine();
+    await startPlaying(engine, "a.mp3");
+    engine.setLinkUp(false);
+    const deck = engine.decks[engine.activeIdx];
+    Object.defineProperty(deck.audio, "ended", { configurable: true, value: true });
+    const status = document.querySelector("#sr-status");
+    const said = vi.spyOn(status, "textContent", "set");
+
+    deck.audio.dispatchEvent(new Event("ended"));
+    await vi.waitFor(() => expect(status.textContent).toContain("The music stopped"));
+    deck.audio.dispatchEvent(new Event("ended"));
+    await flushPromises();
+    expect(said.mock.calls.filter(([text]) => String(text).includes("The music stopped")))
+      .toHaveLength(1);
+  });
+
+  it("does not skip or replace a track over a network error while the link is down", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({ current_track: { path: "a.mp3" } })));
+    const { engine } = await importEngine();
+    await startPlaying(engine, "a.mp3");
+    fetch.mockClear();
+    const active = engine.decks[engine.activeIdx];
+    const standby = engine.decks[engine.activeIdx ^ 1];
+    for (const deck of engine.decks) {
+      Object.defineProperty(deck.audio, "error", { configurable: true, value: { code: 2 } });
+    }
+    standby.path = "b.mp3";
+    engine.setLinkUp(false);
+
+    active.audio.dispatchEvent(new Event("error"));
+    standby.audio.dispatchEvent(new Event("error"));
+    await flushPromises();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(standby.path).toBe("b.mp3");
+    expect(document.querySelector("#sr-status").textContent)
+      .toBe("The music stopped: the connection to AutoDJ dropped. "
+        + "It carries on when the connection is back.");
+
+    active.audio.play.mockClear();
+    standby.audio.load.mockClear();
+    engine.setLinkUp(true);
+    expect(active.audio.play).toHaveBeenCalledOnce();
+    expect(active.path).toBe("a.mp3");
+    expect(standby.audio.load).toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("treats a file as bad only when it fails again with the link up", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({ current_track: { path: "a.mp3" } })));
+    const { engine } = await importEngine();
+    await startPlaying(engine, "a.mp3");
+    fetch.mockClear();
+    vi.useFakeTimers();
+    const active = engine.decks[engine.activeIdx];
+    active.audio.play.mockClear();
+    Object.defineProperty(active.audio, "error", { configurable: true, value: { code: 2 } });
+
+    // A network error with the link up gets one more load.
+    active.audio.dispatchEvent(new Event("error"));
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(active.audio.play).toHaveBeenCalledOnce();
+
+    active.audio.dispatchEvent(new Event("error"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(advanceCalls()).toHaveLength(1);
+    expect(document.querySelector("#sr-status").textContent).toContain("auto-skipping");
+  });
+
+  it("ignores a deck error on a page that has stopped", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({ current_track: { path: "a.mp3" } })));
+    const { engine } = await importEngine();
+    await startPlaying(engine, "a.mp3");
+    const active = engine.decks[engine.activeIdx];
+    engine.stopAllDecks();
+    fetch.mockClear();
+    Object.defineProperty(active.audio, "error", { configurable: true, value: { code: 3 } });
+    active.path = "a.mp3";
+
+    active.audio.dispatchEvent(new Event("error"));
+    await flushPromises();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(document.querySelector("#sr-status").textContent).toBe("");
+  });
+
+  it("ducks a liner on its own stage, leaving a crossfade's deck ramps alone", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({ current_track: { path: "a.mp3" } })));
+    const { context, engine } = await importEngine();
+    await startPlaying(engine, "a.mp3");
+    for (const deck of engine.decks) {
+      deck.gain.gain.cancelScheduledValues.mockClear();
+      deck.gain.gain.linearRampToValueAtTime.mockClear();
+    }
+    const gainsBefore = context.createGain.mock.results.length;
+
+    engine.duckMusic(0.25, 3);
+
+    const duck = context.createGain.mock.results[gainsBefore].value;
+    expect(duck.gain.linearRampToValueAtTime).toHaveBeenCalledWith(0.25, 2.2);
+    expect(duck.gain.linearRampToValueAtTime).toHaveBeenLastCalledWith(1, 5.2);
+    expect(duck.connect).toHaveBeenCalledWith(engine._master);
+    for (const deck of engine.decks) {
+      expect(deck.gain.gain.cancelScheduledValues).not.toHaveBeenCalled();
+      expect(deck.gain.gain.linearRampToValueAtTime).not.toHaveBeenCalled();
+    }
   });
 });

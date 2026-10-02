@@ -9,6 +9,7 @@
 // has, so the field never shows a setting that is not in effect.
 
 import { announceStatus } from "./live-region.js";
+import { saveHolds } from "./settings-panel.js";
 
 const NUMBER_FIELDS = [
   {
@@ -86,13 +87,17 @@ export function applyMixSettings(st, els) {
     const input = els[spec.key];
     const value = spec.read(st);
     if (!input || typeof value !== "number") continue;
+    // A save still out (or not yet echoed) keeps the field's new value.
+    if (saveHolds(input, value)) continue;
     _serverValue.set(input, value);
     if (doc?.activeElement !== input && input.value !== String(value)) {
       input.value = String(value);
     }
   }
-  if (els.djFilterSweep && st.djmix && typeof st.djmix.filter_sweep === "boolean") {
-    els.djFilterSweep.checked = st.djmix.filter_sweep;
+  const sweep = els.djFilterSweep;
+  if (sweep && st.djmix && typeof st.djmix.filter_sweep === "boolean"
+      && !saveHolds(sweep, st.djmix.filter_sweep)) {
+    sweep.checked = st.djmix.filter_sweep;
   }
 }
 

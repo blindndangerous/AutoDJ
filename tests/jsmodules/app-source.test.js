@@ -75,7 +75,9 @@ async function setupApp({
     deckActive: vi.fn(),
     decks: [],
     deckStandby: vi.fn(),
+    duckMusic: vi.fn(),
     ensureAudioGraph: vi.fn(),
+    isStaleAdvanceState: vi.fn(() => false),
     eqValueLabel: vi.fn(),
     loadCoverArt,
     playbackEnabled: false,
@@ -85,6 +87,7 @@ async function setupApp({
     resetTransitionCaches,
     setApplyState: vi.fn(),
     setLastBrowserPlayback,
+    setLinkUp: vi.fn(),
     setMuted: vi.fn(),
     setSrcOnDeck: vi.fn(),
     setVolume: vi.fn(),
@@ -679,7 +682,7 @@ describe("app request behavior", () => {
     await vi.waitFor(() => expect(status.textContent).toBe("Playing"));
   });
 
-  it("stops transient socket activity without clearing recoverable session data", async () => {
+  it("keeps playing through a dropped link without clearing session data", async () => {
     let linerDeps;
     const source = {
       addEventListener: vi.fn(),
@@ -743,10 +746,12 @@ describe("app request behavior", () => {
 
     webSocket.onclose({ code: 1006, wasClean: false });
 
-    expect(stopAllDecks).toHaveBeenCalledOnce();
-    expect(source.stop).toHaveBeenCalledOnce();
+    // A tunnel drops the link every few minutes: the decks and the liner
+    // play on, and the next track's markers are kept for the fade.
+    expect(stopAllDecks).not.toHaveBeenCalled();
+    expect(source.stop).not.toHaveBeenCalled();
     expect(resetTrackCaches).not.toHaveBeenCalled();
-    expect(resetTransitionCaches).toHaveBeenCalledOnce();
+    expect(resetTransitionCaches).not.toHaveBeenCalled();
     expect(loadCoverArt).not.toHaveBeenCalledWith(null);
     expect(nowPlaying.textContent).toContain("Track 5");
     expect(dialog.showModal).not.toHaveBeenCalled();
@@ -1101,11 +1106,12 @@ describe("app request behavior", () => {
       state: "suspended",
     };
     const ensureAudioGraph = vi.fn(() => audioContext);
+    const duckMusic = vi.fn();
     let linerDeps;
     const { webSocket } = await setupApp({
       audio: {
         _ctx: audioContext, _lastBrowserPlayback: true, _master: master,
-        decks: [{ audio: {}, gain: { gain: deckGain } }], ensureAudioGraph,
+        decks: [{ audio: {}, gain: { gain: deckGain } }], duckMusic, ensureAudioGraph,
         playbackEnabled: true,
       },
       initialState: { browser_playback: true, is_paused: true },
@@ -1122,16 +1128,19 @@ describe("app request behavior", () => {
     expect(audioContext.resume).toHaveBeenCalled();
     expect(await linerDeps.playLiner(new ArrayBuffer(1), -12)).toBe(true);
     expect(source.connect).toHaveBeenCalledWith(master);
-    expect(deckGain.linearRampToValueAtTime).not.toHaveBeenCalled();
+    expect(duckMusic).not.toHaveBeenCalled();
 
     push({ is_paused: false, is_muted: true });
     expect(linerDeps.prepareTest()).toBe("Muted, so the liner was not played.");
 
-    // Playing and unmuted: the liner ducks the live deck.
+    // Playing and unmuted: the liner ducks the music, on its own stage
+    // after the decks, so no deck gain (a crossfade's ramps) is touched.
     push({ is_paused: false, is_muted: false });
     expect(linerDeps.canPlay()).toBe(true);
     expect(await linerDeps.playLiner(new ArrayBuffer(1), -12)).toBe(true);
-    expect(deckGain.linearRampToValueAtTime).toHaveBeenCalled();
+    expect(duckMusic).toHaveBeenCalledExactlyOnceWith(10 ** (-12 / 20), 1);
+    expect(deckGain.cancelScheduledValues).not.toHaveBeenCalled();
+    expect(deckGain.linearRampToValueAtTime).not.toHaveBeenCalled();
   });
 
   it("fires no scheduled liner while playback is stopped, as after a lost link", async () => {
@@ -1187,6 +1196,7 @@ describe("app request behavior", () => {
     slider.value = "50";
     slider.dispatchEvent(new Event("input"));
     await vi.advanceTimersByTimeAsync(700);
+    push(10 ** (-30 / 20));   // the server's echo of the change
     push(1);
     expect(slider.value).toBe("100");
     expect(setVolume).toHaveBeenLastCalledWith(1);
@@ -1767,9 +1777,48 @@ describe("stream mode", () => {
     expect(audio.getAttribute("src")).toBeNull();
   });
 
-  it("stops listening when the link drops and stays stopped after it returns", async () => {
+  it("keeps listening when the link drops and after it returns", async () => {
     const { webSocket, WebSocketImpl } = await setupApp({
       initialState: streamState,
+      onRequest: (url) => url === "/api/stream"
+        ? jsonResponse({ path: "/stream/SECRET.mp3", m3u_path: "/stream/SECRET.m3u" })
+        : lyricsFor("a.mp3"),
+    });
+    const audio = document.getElementById("stream-audio");
+    audio.play = vi.fn().mockResolvedValue();
+    audio.pause = vi.fn();
+    const listen = document.getElementById("btn-listen");
+    const status = document.getElementById("sr-status");
+    listen.click();
+    await vi.waitFor(() => expect(audio.play).toHaveBeenCalledOnce());
+    vi.useFakeTimers();
+
+    // A tunnel in front of AutoDJ closes the websocket every few minutes.
+    // Listen here is its own connection and plays on; the server ended the
+    // set 30 s after the page used to stop it here.
+    webSocket.onclose({ code: 1006, wasClean: false });
+    expect(listen.getAttribute("aria-pressed")).toBe("true");
+    expect(audio.getAttribute("src")).toBe("/stream/SECRET.mp3");
+    expect(audio.pause).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(3000);
+    await vi.waitFor(() => expect(WebSocketImpl).toHaveBeenCalledTimes(2));
+    webSocket.onopen();
+    webSocket.onmessage({ data: JSON.stringify(streamState) });
+
+    expect(document.getElementById("conn-status").textContent).toBe("Live");
+    expect(listen.getAttribute("aria-pressed")).toBe("true");
+    expect(audio.pause).not.toHaveBeenCalled();
+    expect(status.textContent).toBe("");
+  });
+
+  it("stops listening once the reconnect check finds the session ended", async () => {
+    let authChecks = 0;
+    const { dialog, webSocket } = await setupApp({
+      initialState: streamState,
+      onAuthStatus: () => {
+        authChecks += 1;
+        return jsonResponse({ required: true, authenticated: authChecks === 1 });
+      },
       onRequest: (url) => url === "/api/stream"
         ? jsonResponse({ path: "/stream/SECRET.mp3", m3u_path: "/stream/SECRET.m3u" })
         : lyricsFor("a.mp3"),
@@ -1783,17 +1832,12 @@ describe("stream mode", () => {
     vi.useFakeTimers();
 
     webSocket.onclose({ code: 1006, wasClean: false });
+    expect(listen.getAttribute("aria-pressed")).toBe("true");
+    await vi.advanceTimersByTimeAsync(3000);
+    await vi.waitFor(() => expect(dialog.showModal).toHaveBeenCalledOnce());
+
     expect(listen.getAttribute("aria-pressed")).toBe("false");
     expect(audio.getAttribute("src")).toBeNull();
-    // The dropped stream's error gets no silent retry either.
-    audio.dispatchEvent(new Event("error"));
-    await vi.advanceTimersByTimeAsync(3000);
-    await vi.waitFor(() => expect(WebSocketImpl).toHaveBeenCalledTimes(2));
-    webSocket.onopen();
-    webSocket.onmessage({ data: JSON.stringify(streamState) });
-
-    expect(audio.play).toHaveBeenCalledOnce();
-    expect(listen.getAttribute("aria-pressed")).toBe("false");
   });
 
   it("refuses seeking and answers status keys from the server clock", async () => {
@@ -1927,8 +1971,9 @@ describe("stream mode", () => {
     expect(mute.getAttribute("aria-pressed")).toBe("true");
 
     // A change made elsewhere (another page, the terminal) reaches this
-    // page's listening as well as the slider and Mute.
-    await new Promise((resolve) => setTimeout(resolve, 650));
+    // page's listening as well as the slider and Mute, once the server
+    // has echoed this page's own change.
+    webSocket.onmessage({ data: JSON.stringify({ ...serverState, volume: 0.03, is_muted: true }) });
     webSocket.onmessage({ data: JSON.stringify({ ...serverState, volume: 0.1, is_muted: false }) });
     expect(slider.value).toBe(String(Math.round((20 * Math.log10(0.1) / 30 + 2) * 50)));
     expect(audio.volume).toBeCloseTo(0.1, 4);
@@ -2021,12 +2066,14 @@ describe("stream mode", () => {
       expect(audio.muted).toBe(false);
       expect(audio.volume).toBeCloseTo(half, 6);
 
-      // The dropped link stops listening; the level survives the return.
+      // A dropped link keeps listening, at the same level after the return.
       await reconnect(3);
+      expect(listen.getAttribute("aria-pressed")).toBe("true");
       expect(audio.volume).toBeCloseTo(half, 6);
-      await vi.advanceTimersByTimeAsync(700);
       push();
       expect(audio.volume).toBeCloseTo(half, 6);
+      // Listening again after a stop starts at the page level too.
+      listen.click();
       listen.click();
       await vi.waitFor(() => expect(plays).toHaveLength(2));
       expect(plays[1].volume).toBeCloseTo(half, 6);
@@ -2431,6 +2478,219 @@ describe("stream mode", () => {
       await vi.waitFor(() => expect(document.getElementById("settings-status").textContent)
         .toBe("Could not save Quality; it is still 192 kbps. stream encoder failed"));
       await vi.waitFor(() => expect(quality.value).toBe("192"));
+    });
+  });
+});
+
+describe("browser robustness", () => {
+  it("tells the decks when the link drops and when it is back", async () => {
+    const setLinkUp = vi.fn();
+    const { webSocket, WebSocketImpl } = await setupApp({
+      audio: { setLinkUp },
+      initialState: { current_track: { path: "current.mp3", title: "Current" } },
+      onRequest: () => jsonResponse({ ok: true }),
+    });
+    vi.useFakeTimers();
+    webSocket.onopen();
+    expect(setLinkUp).toHaveBeenLastCalledWith(true);
+
+    webSocket.onclose({ code: 1006, wasClean: false });
+    expect(setLinkUp).toHaveBeenLastCalledWith(false);
+    await vi.advanceTimersByTimeAsync(3000);
+    await vi.waitFor(() => expect(WebSocketImpl).toHaveBeenCalledTimes(2));
+    webSocket.onopen();
+    expect(setLinkUp).toHaveBeenLastCalledWith(true);
+  });
+
+  it("stops the decks once the reconnect check finds the session ended", async () => {
+    let authChecks = 0;
+    const { dialog, stopAllDecks, webSocket } = await setupApp({
+      initialState: { current_track: { path: "current.mp3", title: "Current" } },
+      onAuthStatus: () => {
+        authChecks += 1;
+        return jsonResponse({ required: true, authenticated: authChecks === 1 });
+      },
+      onRequest: () => jsonResponse({ ok: true }),
+    });
+    vi.useFakeTimers();
+
+    webSocket.onclose({ code: 1006, wasClean: false });
+    expect(stopAllDecks).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(3000);
+    await vi.waitFor(() => expect(dialog.showModal).toHaveBeenCalledOnce());
+    expect(stopAllDecks).toHaveBeenCalledOnce();
+  });
+
+  it("holds scheduled liners while a crossfade runs", async () => {
+    let linerDeps;
+    await setupApp({
+      audio: {
+        _ctx: {}, _lastBrowserPlayback: true, crossfading: true,
+        decks: [{ audio: {} }], playbackEnabled: true,
+      },
+      initialState: { browser_playback: true },
+      onInstallLiners: (_elements, deps) => { linerDeps = deps; },
+    });
+    expect(linerDeps.canPlay()).toBe(false);
+  });
+
+  it("ignores a push that predates this page's advance, saying nothing", async () => {
+    const applyBrowserPlaybackState = vi.fn();
+    const isStaleAdvanceState = vi.fn((state) => state.current_track?.path === "old.mp3");
+    const { webSocket } = await setupApp({
+      audio: { applyBrowserPlaybackState, isStaleAdvanceState },
+      initialState: {
+        browser_playback: true,
+        current_track: { path: "new.mp3", title: "New" },
+      },
+      onRequest: () => jsonResponse({ lyrics: [] }),
+    });
+    const announce = document.querySelector("#track-announce");
+    const said = vi.spyOn(announce, "textContent", "set");
+    applyBrowserPlaybackState.mockClear();
+
+    webSocket.onmessage({ data: JSON.stringify({
+      browser_playback: true, current_track: { path: "old.mp3", title: "Old" },
+      queue: [], eq: {}, volume: 1,
+    }) });
+
+    expect(applyBrowserPlaybackState).not.toHaveBeenCalled();
+    expect(document.querySelector("#now-playing-title").textContent).toContain("New");
+    expect(said).not.toHaveBeenCalled();
+  });
+
+  it("holds the volume slider through a slow save, not for a fixed time", async () => {
+    let answer;
+    const { webSocket } = await setupApp({
+      initialState: { volume: 1 },
+      onRequest: (url, options) => (url === "/api/volume"
+        ? new Promise((resolve) => { answer = () => resolve(jsonResponse(JSON.parse(options.body))); })
+        : jsonResponse({ ok: true })),
+    });
+    const slider = document.querySelector("#vol");
+    const push = (volume) => webSocket.onmessage({ data: JSON.stringify({
+      current_track: null, queue: [], eq: {}, volume,
+    }) });
+    vi.useFakeTimers();
+
+    slider.value = "50";
+    slider.dispatchEvent(new Event("input"));
+    // Two seconds into a slow save, a push still carries the old volume.
+    await vi.advanceTimersByTimeAsync(2000);
+    push(1);
+    expect(slider.value).toBe("50");
+
+    answer();
+    await vi.advanceTimersByTimeAsync(0);
+    push(1);
+    expect(slider.value).toBe("50");
+    // The echo of the saved volume hands the slider back to the server.
+    push(10 ** (-30 / 20));
+    push(10 ** (-15 / 20));
+    expect(slider.value).toBe("75");
+  });
+
+  it("says once, after a few failed checks, that the page may need a reload to sign in", async () => {
+    let authChecks = 0;
+    const { webSocket, WebSocketImpl } = await setupApp({
+      initialState: { current_track: { path: "current.mp3", title: "Current" } },
+      onAuthStatus: () => {
+        authChecks += 1;
+        if (authChecks === 1) return jsonResponse({ required: true, authenticated: true });
+        return Promise.reject(new TypeError("Failed to fetch"));
+      },
+      onRequest: () => jsonResponse({ ok: true }),
+    });
+    const status = document.querySelector("#sr-status");
+    const said = vi.spyOn(status, "textContent", "set");
+    vi.useFakeTimers();
+
+    let delay = 3000;
+    for (let cycle = 0; cycle < 6; cycle += 1) {
+      webSocket.onclose({ code: 1006, wasClean: false });
+      await vi.advanceTimersByTimeAsync(delay);
+      await vi.waitFor(() => expect(WebSocketImpl).toHaveBeenCalledTimes(cycle + 2));
+      delay = Math.min(delay * 2, 60000);
+      if (cycle === 1) expect(said).not.toHaveBeenCalled();
+    }
+
+    const notices = said.mock.calls.filter(([text]) => String(text).includes("reload the page"));
+    expect(notices).toHaveLength(1);
+    expect(notices[0][0]).toBe("AutoDJ still cannot be reached. If this site asks you to sign in, "
+      + "reload the page to sign in again.");
+  });
+
+  it("says at once that the sign-in expired when the check is sent to a sign-in page", async () => {
+    let authChecks = 0;
+    const { webSocket } = await setupApp({
+      initialState: { current_track: { path: "current.mp3", title: "Current" } },
+      onAuthStatus: () => {
+        authChecks += 1;
+        if (authChecks === 1) return jsonResponse({ required: true, authenticated: true });
+        return { type: "opaqueredirect", status: 0, ok: false };
+      },
+      onRequest: () => jsonResponse({ ok: true }),
+    });
+    vi.useFakeTimers();
+
+    webSocket.onclose({ code: 1006, wasClean: false });
+    await vi.advanceTimersByTimeAsync(3000);
+    await vi.waitFor(() => expect(document.querySelector("#sr-status").textContent)
+      .toBe("Your sign-in to this site has expired. Reload the page to sign in again."));
+  });
+
+  describe("beatmatch on Skip", () => {
+    const skipWith = async ({ outBpm, inBpm }) => {
+      let finish;
+      const startCrossfade = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
+      const standby = { playbackRate: 1, preservesPitch: false };
+      await setupApp({
+        audio: {
+          _beatmatchOnSkip: true,
+          _ctx: {},
+          _inBpmCache: inBpm,
+          _lastBrowserPlayback: true,
+          _nextTrackPathCache: "next.mp3",
+          _outBpmCache: outBpm,
+          crossfading: false,
+          decks: [{ audio: { duration: Number.NaN } }, { audio: standby }],
+          playbackEnabled: true,
+          startCrossfade,
+        },
+        initialState: {
+          browser_playback: true,
+          current_track: { path: "current.mp3", title: "Current" },
+          next_track: { path: "next.mp3", title: "Next" },
+        },
+        onRequest: () => jsonResponse({ ok: true }),
+      });
+      vi.useFakeTimers();
+      document.querySelector("#btn-skip").click();
+      await vi.waitFor(() => expect(startCrossfade).toHaveBeenCalledOnce());
+      return { finish, standby };
+    };
+
+    it("holds the stretch for the whole transition, then eases back", async () => {
+      const { finish, standby } = await skipWith({ outBpm: 120, inBpm: 125 });
+      expect(standby.playbackRate).toBeCloseTo(0.96, 6);
+      expect(standby.preservesPitch).toBe(true);
+      // An effect can run up to 12 s, well past crossfade seconds.
+      await vi.advanceTimersByTimeAsync(11000);
+      expect(standby.playbackRate).toBeCloseTo(0.96, 6);
+
+      finish(true);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(standby.playbackRate).toBeGreaterThan(0.96);
+      expect(standby.playbackRate).toBeLessThan(1);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(standby.playbackRate).toBe(1);
+      expect(standby.preservesPitch).toBe(false);
+    });
+
+    it("leaves a tempo more than 8 percent away alone, as the server does", async () => {
+      const { standby } = await skipWith({ outBpm: 120, inBpm: 140 });
+      expect(standby.playbackRate).toBe(1);
+      expect(standby.preservesPitch).toBe(false);
     });
   });
 });

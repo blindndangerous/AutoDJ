@@ -7,14 +7,16 @@
 // are exposed as ES-module live bindings so consumers (transport
 // handlers, liners scheduler, websocket reset) see the latest value
 // without explicit accessors.  Reassignment must happen inside this
-// module; resetTransitionCaches() handles the WebSocket-reconnect reset
-// and resetTrackCaches() the full reset after the session expires.
+// module; resetTransitionCaches() and resetTrackCaches() reset them
+// after the session expires.  A dropped link resets nothing: the decks
+// play on, and the first state after the reconnect refreshes the caches.
 
 import { dbg } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 import {
   captureAuthenticatedRequestEpoch,
   isAuthenticatedRequestCurrent,
+  isServerUnreachable,
   makeSingleFlight,
   postJsonBestEffort,
   probeResource,
@@ -49,21 +51,43 @@ function eqValueLabel(v100) {
   return `${sign}${db.toFixed(1)} dB`;
 }
 
-// Last user change to an EQ slider or Reset (ms epoch).  The slider
-// posts 120 ms after input, so a websocket push landing in that gap
-// carried the old value and threw the slider (and an arrow press) back.
-// Same 600 ms guard the volume slider uses.
-let _lastUserEqTs = 0;
-const EQ_ECHO_GUARD_MS = 600;
+// The EQ change this page is still saving.  A push that left the server
+// before the save carries the old bands and threw the slider (and the
+// arrow press after it) back; a fixed 600 ms guard still lost on a slow
+// round trip.  Set by a slider or Reset, it holds pushes off while the
+// save waits out its debounce and while it is in flight, and after the
+// reply until a push carries the saved bands.  A failed save clears it,
+// so the next push puts the sliders back where the server has them.
+// ECHO_WAIT_MS is only a backstop for an echo that never comes.
+let _eqSave = null;   // { sent: [low, mid, high] | null, answeredAt }
+const ECHO_WAIT_MS = 5000;
+
+function eqBands(eq) {
+  return [Math.round(eq.low * 100), Math.round(eq.mid * 100), Math.round(eq.high * 100)];
+}
+
+function eqSaveHolds(eq) {
+  const save = _eqSave;
+  if (!save) return false;
+  if (save.sent === null) return true;
+  const pushed = eqBands(eq);
+  if (pushed.every((value, i) => value === save.sent[i])
+      || Date.now() - save.answeredAt > ECHO_WAIT_MS) {
+    _eqSave = null;
+    return false;
+  }
+  return true;
+}
 
 export function applyEqState(eq) {
   if (!eq) return;
-  if (Date.now() - _lastUserEqTs < EQ_ECHO_GUARD_MS) return;
+  if (eqSaveHolds(eq)) return;
   // Server gives 0.0–2.0 floats; convert to 0–200 ints for the slider.
+  const [low, mid, high] = eqBands(eq);
   const map = [
-    [eqLow, eqLowVal, Math.round(eq.low * 100)],
-    [eqMid, eqMidVal, Math.round(eq.mid * 100)],
-    [eqHigh, eqHighVal, Math.round(eq.high * 100)],
+    [eqLow, eqLowVal, low],
+    [eqMid, eqMidVal, mid],
+    [eqHigh, eqHighVal, high],
   ];
   for (const [slider, span, value] of map) {
     if (parseInt(slider.value, 10) !== value) {
@@ -93,20 +117,29 @@ function announceRequestError(errorValue) {
 }
 
 export function postEq() {
+  const save = _eqSave = { sent: null, answeredAt: 0 };
   clearTimeout(eqDebounceTimer);
   eqDebounceTimer = setTimeout(() => {
+    const sent = [eqLow, eqMid, eqHigh].map((slider) => parseInt(slider.value, 10));
     void postJsonBestEffort("/api/eq", {
-        low:  parseInt(eqLow.value, 10) / 100,
-        mid:  parseInt(eqMid.value, 10) / 100,
-        high: parseInt(eqHigh.value, 10) / 100,
-    }, announceRequestError);
+        low:  sent[0] / 100,
+        mid:  sent[1] / 100,
+        high: sent[2] / 100,
+    }, announceRequestError).then((reply) => {
+      if (_eqSave !== save) return;   // a newer change owns the sliders
+      if (reply === null) {
+        _eqSave = null;
+        return;
+      }
+      save.sent = sent;
+      save.answeredAt = Date.now();
+    });
   }, 120);
 }
 
 [eqLow, eqMid, eqHigh].forEach((slider, i) => {
   const span = [eqLowVal, eqMidVal, eqHighVal][i];
   slider.addEventListener("input", () => {
-    _lastUserEqTs = Date.now();
     const label = eqValueLabel(parseInt(slider.value, 10));
     slider.setAttribute("aria-valuetext", label);
     span.textContent = label;
@@ -115,7 +148,6 @@ export function postEq() {
 });
 
 btnEqReset.addEventListener("click", () => {
-  _lastUserEqTs = Date.now();
   eqLow.value = eqMid.value = eqHigh.value = "100";
   for (const [s, sp] of [[eqLow, eqLowVal], [eqMid, eqMidVal], [eqHigh, eqHighVal]]) {
     s.setAttribute("aria-valuetext", "Unity");
@@ -256,12 +288,16 @@ function deckActive() { return decks[activeIdx]; }
 function deckStandby() { return decks[activeIdx ^ 1]; }
 
 export function stopAllDecks() {
-  // Hard stop — used when the server disconnects so audio doesn't keep
-  // playing from buffered files after the control surface is gone.
-  // Nothing plays again until the listener presses Play: a server that
-  // comes back must not restart the music on its own (D15).
+  // Hard stop -- used when the session ends (expired or revoked), so
+  // protected audio does not keep playing from buffered files.  A link
+  // that only drops does not stop the decks: they play on from what they
+  // have buffered.  Nothing plays again until the listener presses Play:
+  // a server that comes back must not restart the music on its own (D15).
   _playbackGeneration += 1;
   playbackEnabled = false;
+  clearAdvance();
+  for (const retry of _mediaRetry.values()) clearTimeout(retry.timer);
+  _mediaRetry.clear();
   if (_pendingCrossfade) {
     const pending = _pendingCrossfade;
     _pendingCrossfade = null;
@@ -279,6 +315,12 @@ export function stopAllDecks() {
         d.gain.gain.value = 0;
       } catch (_) {}
     }
+  }
+  if (_duck) {
+    try {
+      _duck.gain.cancelScheduledValues(_ctx.currentTime);
+      _duck.gain.value = 1;
+    } catch (_) {}
   }
   crossfading = false;
   suppressAdvance = false;
@@ -350,6 +392,30 @@ function applyVolume() {
   _masterTarget = target;
   _master.gain.cancelScheduledValues(now);
   _master.gain.setValueAtTime(target, now);
+}
+
+// Voice liners duck the music here, on a gain of its own between the
+// music (decks and effects) and the master, so a duck never touches the
+// deck gains a crossfade is ramping, and a crossfade never cuts a duck
+// short.  Made the first time a liner ducks.
+let _duck = null;
+
+export function duckMusic(level, seconds) {
+  if (!_ctx) return;
+  if (!_duck) {
+    _duck = _ctx.createGain();
+    _duck.gain.value = 1;
+    _program.disconnect();
+    _program.connect(_duck);
+    _duck.connect(_master);
+  }
+  const t0 = _ctx.currentTime;
+  const gain = _duck.gain;
+  gain.cancelScheduledValues(t0);
+  gain.setValueAtTime(gain.value, t0);
+  gain.linearRampToValueAtTime(level, t0 + 0.2);
+  gain.setValueAtTime(level, t0 + Math.max(0.2, seconds - 0.2));
+  gain.linearRampToValueAtTime(1, t0 + seconds + 0.2);
 }
 
 // Live deck at full, standby silent.  stopAllDecks leaves both at 0, and
@@ -1741,20 +1807,153 @@ function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
 // MUST NOT POST /api/advance again or the server steps forward a
 // second time and a fresh state push triggers another catch-up
 // crossfade -- cascading "shuffles every few seconds" bug.
-const runAdvance = makeSingleFlight(async (epoch, playbackGeneration) => {
-  const isCurrent = () => isAuthenticatedRequestCurrent(epoch)
-    && playbackGeneration === _playbackGeneration;
-  if (!isCurrent()) return null;
-  const state = await requestJsonBestEffort(
-    "/api/advance", { method: "POST" }, (errorValue) => {
-      if (isCurrent()) announceRequestError(errorValue);
-    },
-  );
-  if (state && _applyState && isCurrent()) _applyState(state);
+//
+// The advance this page has asked for (the end of a track, or Skip while
+// this page plays the music), from the request until the server has
+// moved on.  A state push can leave the server before it handles the
+// request and arrive after the page has already crossfaded into the new
+// track; applied, it started a crossfade straight back to the old one.
+// While the advance is pending, a state that still names the track the
+// page left (fromPath) is stale and is not applied (isStaleAdvanceState).
+// It stays pending after the answer until a push names another track,
+// because a push sent before the advance can still land after it.
+//
+// The request carries from_path, the track this page believes is
+// playing, so a server that has already moved on does not advance twice.
+// A request that never reached the server (the link was down) is sent
+// again once the link is back.  The time limits are backstops only, so
+// a lost answer or echo never leaves the page deaf to the server.
+let _advance = null;
+let _applyingAdvanceAnswer = false;
+const ADVANCE_ANSWER_WAIT_MS = 15000;
+const ADVANCE_ECHO_WAIT_MS = 5000;
+const ADVANCE_RETRY_MS = 5000;
+const ADVANCE_MAX_SENDS = 4;
+const ADVANCE_WAITING_TEXT =
+  "The music stopped: AutoDJ could not be reached for the next track. "
+  + "It carries on when the connection is back.";
+
+// Whether the page's link to the server (its websocket) is up.  app.js
+// reports it; requests and media loads that fail while it is down wait
+// for it instead of being treated as failures.
+let _linkUp = true;
+
+function clearAdvance() {
+  if (_advance && _advance.timer !== null) clearTimeout(_advance.timer);
+  _advance = null;
+}
+
+function advanceIsCurrent(advance) {
+  return _advance === advance
+    && isAuthenticatedRequestCurrent(advance.epoch)
+    && advance.generation === _playbackGeneration;
+}
+
+function retryAdvanceLater(advance) {
+  if (!_linkUp) {
+    advance.waitingForLink = true;
+    // A deck that has run out stays silent until then: say so once.
+    if (!advance.waitingSpoken && deckActive().audio.ended) {
+      advance.waitingSpoken = true;
+      announceEngineError(ADVANCE_WAITING_TEXT);
+    }
+    return;
+  }
+  advance.timer = setTimeout(() => {
+    advance.timer = null;
+    if (!advanceIsCurrent(advance)) return;
+    if (_linkUp) void sendAdvance(advance);
+    else retryAdvanceLater(advance);
+  }, ADVANCE_RETRY_MS);
+}
+
+async function sendAdvance(advance) {
+  if (!advanceIsCurrent(advance)) return null;
+  advance.sends += 1;
+  advance.waitingForLink = false;
+  advance.until = Date.now() + ADVANCE_ANSWER_WAIT_MS;
+  let state;
+  try {
+    state = await requestJson("/api/advance", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(advance.fromPath ? { from_path: advance.fromPath } : {}),
+    });
+  } catch (errorValue) {
+    if (!advanceIsCurrent(advance)) return null;
+    if (isServerUnreachable(errorValue) && advance.sends < ADVANCE_MAX_SENDS) {
+      retryAdvanceLater(advance);
+      return null;
+    }
+    clearAdvance();
+    announceRequestError(errorValue);
+    return null;
+  }
+  if (!advanceIsCurrent(advance)) return null;
+  const path = state && state.current_track ? state.current_track.path : null;
+  if (path === advance.fromPath) {
+    // The server stayed on that track: follow it.
+    clearAdvance();
+  } else {
+    advance.answered = true;
+    advance.until = Date.now() + ADVANCE_ECHO_WAIT_MS;
+  }
+  if (_applyState) {
+    _applyingAdvanceAnswer = true;
+    try { _applyState(state); } finally { _applyingAdvanceAnswer = false; }
+  }
   return state;
-});
-function requestAdvance() {
-  return runAdvance(captureAuthenticatedRequestEpoch(), _playbackGeneration);
+}
+
+function requestAdvance(fromPath = deckActive().path) {
+  if (_advance && _advance.fromPath === fromPath && !_advance.answered) {
+    return _advance.promise;
+  }
+  clearAdvance();
+  const advance = {
+    fromPath,
+    epoch: captureAuthenticatedRequestEpoch(),
+    generation: _playbackGeneration,
+    answered: false,
+    until: 0,
+    sends: 0,
+    timer: null,
+    waitingForLink: false,
+    waitingSpoken: false,
+    promise: null,
+  };
+  _advance = advance;
+  advance.promise = sendAdvance(advance);
+  return advance.promise;
+}
+
+// True for a state the page must not apply because it predates the
+// advance this page is waiting on (see _advance above).  A state that
+// names another track ends the wait once the server has answered.
+export function isStaleAdvanceState(s) {
+  const advance = _advance;
+  if (!advance || _applyingAdvanceAnswer) return false;
+  const path = s && s.current_track ? s.current_track.path : null;
+  if (path !== advance.fromPath) {
+    if (advance.answered) clearAdvance();
+    return false;
+  }
+  if (!advance.waitingForLink && advance.timer === null && Date.now() > advance.until) {
+    clearAdvance();
+    return false;
+  }
+  return true;
+}
+
+// Called by app.js when the websocket opens (true) or drops (false).
+export function setLinkUp(up) {
+  _linkUp = Boolean(up);
+  if (!_linkUp) return;
+  if (_advance && _advance.waitingForLink) void sendAdvance(_advance);
+  for (const deck of Array.from(_mediaRetry.keys())) {
+    const retry = _mediaRetry.get(deck);
+    if (retry.waitingForLink) reloadDeck(deck, retry);
+  }
 }
 
 // The repick in flight: a newer one makes its answer stale.
@@ -1876,8 +2075,11 @@ export function startCrossfade(nextPath, fadeSec, serverLed = false) {
   const teardownFx = applyTransitionFx(fxName, effectDur, active, standby);
 
   suppressAdvance = true;
+  // The next track is spoken for: until a state names a newer one, it
+  // must not be faded into a second time (a long outage sends no state).
+  if (_nextTrackPathCache === nextPath) _nextTrackPathCache = null;
   if (!serverLed) {
-    void requestAdvance();
+    void requestAdvance(active.path);
   }
 
   return new Promise((resolve) => {
@@ -1909,12 +2111,89 @@ export function startCrossfade(nextPath, fadeSec, serverLed = false) {
   });
 }
 
+// A deck whose file stopped loading with a network error, and how it is
+// being retried.  A network error says nothing about the file: during an
+// outage every load fails.  So the load is tried again, once the link is
+// back if it is down, and only a second network error with the link up
+// counts the file as bad (skipped, or replaced as the next track).
+const _mediaRetry = new Map();   // deck -> { path, position, tried, waitingForLink, spoken, timer }
+const MEDIA_RETRY_MS = 2000;
+const MEDIA_WAITING_TEXT =
+  "The music stopped: the connection to AutoDJ dropped. "
+  + "It carries on when the connection is back.";
+
+function reloadDeck(deck, retry) {
+  retry.waitingForLink = false;
+  if (!playbackEnabled || deck.path !== retry.path) {
+    _mediaRetry.delete(deck);
+    return;
+  }
+  // A new src, even for the same file, so the element fetches again.
+  deck.path = null;
+  setSrcOnDeck(deck, retry.path);
+  if (deck !== deckActive() && !crossfading) {
+    try { deck.audio.load(); } catch (_) {}
+    return;
+  }
+  const resumeAt = () => {
+    try { deck.audio.currentTime = retry.position; } catch (_) {}
+  };
+  if (retry.position > 0) deck.audio.addEventListener("loadedmetadata", resumeAt, { once: true });
+  if (!_paused) playOnDeck(deck);
+}
+
+// Returns true when the error is being retried, false when the file
+// should be treated as bad.
+function retryAfterNetworkError(deck) {
+  const known = _mediaRetry.get(deck);
+  if (known && known.path === deck.path && known.tried && _linkUp) {
+    _mediaRetry.delete(deck);
+    return false;
+  }
+  const retry = known && known.path === deck.path
+    ? known
+    : {
+      path: deck.path, position: 0, tried: false, waitingForLink: false, spoken: false, timer: null,
+    };
+  _mediaRetry.set(deck, retry);
+  try {
+    const position = deck.audio.currentTime;
+    if (Number.isFinite(position) && position > 0) retry.position = position;
+  } catch (_) {}
+  clearTimeout(retry.timer);
+  retry.timer = null;
+  if (!_linkUp) {
+    retry.waitingForLink = true;
+    if (deck === deckActive() && !retry.spoken) {
+      retry.spoken = true;
+      announceEngineError(MEDIA_WAITING_TEXT);
+    }
+    return true;
+  }
+  retry.tried = true;
+  retry.timer = setTimeout(() => {
+    retry.timer = null;
+    if (_mediaRetry.get(deck) !== retry) return;
+    if (_linkUp) reloadDeck(deck, retry);
+    else retry.waitingForLink = true;
+  }, MEDIA_RETRY_MS);
+  return true;
+}
+
 // "ended" on either deck = unconditional advance to next track when not
 // already mid-crossfade (no next_track queued, or fade window missed).
 for (const d of decks) {
   d.audio.addEventListener("ended", () => {
     if (suppressAdvance || crossfading) return;
     void requestAdvance();
+  });
+  // A deck that plays again has recovered from any network error.
+  d.audio.addEventListener("playing", () => {
+    const retry = _mediaRetry.get(d);
+    if (retry && retry.path === d.path) {
+      clearTimeout(retry.timer);
+      _mediaRetry.delete(d);
+    }
   });
   d.audio.addEventListener("error", () => {
     const e = d.audio.error;
@@ -1930,6 +2209,10 @@ for (const d of decks) {
     // Aborted (code 1) is usually triggered by us tearing down a deck, so
     // ignore those entirely — they don't represent a real playback failure.
     if (e && e.code === 1) return;
+    // A stopped page has nothing to skip: the error belongs to a deck the
+    // stop tore down, and skipping would move the server for every page.
+    if (!playbackEnabled) return;
+    if (e && e.code === 2 && d.path && retryAfterNetworkError(d)) return;
     const isActive = d === deckActive();
     if (isActive) {
       // Active deck failed mid-playback — auto-advance.
@@ -2152,6 +2435,9 @@ export function applyBrowserPlaybackState(s) {
   // When the server has its own audio output, the browser stays out of
   // the way (no decks fired up, no crossfade, no advance posts).
   if (!s.browser_playback) return;
+  // A push from before the server took this page's advance: applying it
+  // would fade back to the track the page has just left.
+  if (isStaleAdvanceState(s)) return;
 
   // 0 is a real setting (cut between tracks), not a missing one.
   const crossfade = s.settings && s.settings.playback
@@ -2273,6 +2559,11 @@ export function applyBrowserPlaybackState(s) {
         try { d.audio.pause(); } catch (_) {}
       }
     } else {
+      // Pause set suppressAdvance; only a crossfade still running may keep
+      // it.  Left set, the "ended" fallback stayed off after any pause, and
+      // with no crossfade to start the next track the music stopped dead
+      // at the end of the track.
+      if (!crossfading) suppressAdvance = false;
       // Resume.  Active deck must always start playing again; standby is
       // a no-op resume when not crossfading (paused but with no src in
       // the steady state).  During a crossfade, both decks were paused
@@ -2334,8 +2625,8 @@ export function loadCoverArt(trackPath) {
 }
 
 
-// Reset only reconnect-sensitive transition state. A transient socket
-// close uses this without canceling recoverable art/decode ownership.
+// Reset only the transition markers, without canceling art or decode
+// ownership.  Part of the hard stop after the session ends.
 export function resetTransitionCaches() {
   _currentOutroLenCache    = null;
   _currentOutroStartCache  = null;
