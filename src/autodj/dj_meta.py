@@ -12,7 +12,11 @@ similarity engine:
   Downbeats are taken as every 4th beat
   (:func:`autodj.beat_sync.extract_downbeats`).
 - :func:`harmonic_compatible` — Camelot wheel test that lets the picker
-  filter candidates to harmonically-compatible keys.
+  filter candidates to harmonically-compatible keys, and
+  :func:`key_shift_semitones`, the smallest key shift that makes two
+  keys mix (``[djmix] key_shift``).
+- :func:`mix_drops` and :func:`mix_anchors` — the drops and breakdowns
+  reliable enough to time a drop-to-drop mix by (``[djmix] drop_mix``).
 - :class:`DjMetaCache` — SQLite-backed cache
   (``<index_dir>/<name>/dj_meta.db``) so
   the heavy librosa analysis only runs once per track, then is reused.
@@ -37,6 +41,7 @@ import atexit
 import contextlib
 import json
 import logging
+import re
 import sqlite3
 import threading
 import time
@@ -358,6 +363,45 @@ def harmonic_compatible(
         return True
     allowed = _HARMONIC_RULES.get(mode, _HARMONIC_RULES["compatible"])
     return (pos_a[1] == pos_b[1], (pos_b[0] - pos_a[0]) % 12) in allowed
+
+
+# Key shifts tried by key_shift_semitones, in order: the smallest first,
+# and down before up.
+_KEY_SHIFTS = (-1, 1, -2, 2)
+
+
+def key_shift_semitones(
+    key_a: int, mode_a: int, key_b: int, mode_b: int, harmonic_mode: str = "off"
+) -> int:
+    """Semitones to move track B by so it mixes harmonically with track A.
+
+    0 when either key is unknown, when the keys already mix (by the
+    classic ``compatible`` rule, or by *harmonic_mode* when it is on, so
+    an ``energy_boost`` pick is not undone), or when no shift of one or
+    two semitones makes them mix.
+
+    Args:
+        key_a: Track A's chromatic key, 0-11 (-1 unknown).
+        mode_a: Track A's mode, 1 major or 0 minor (-1 unknown).
+        key_b: Track B's key.
+        mode_b: Track B's mode.
+        harmonic_mode: The ``[djmix] harmonic_mode`` setting.
+
+    Returns:
+        -2, -1, 1, 2 or 0.
+    """
+    if camelot_position(key_a, mode_a) is None or camelot_position(key_b, mode_b) is None:
+        return 0
+
+    def mixes(key: int) -> bool:
+        return harmonic_compatible(key_a, mode_a, key, mode_b) or (
+            harmonic_mode != "off"
+            and harmonic_compatible(key_a, mode_a, key, mode_b, harmonic_mode)
+        )
+
+    if mixes(key_b):
+        return 0
+    return next((shift for shift in _KEY_SHIFTS if mixes((key_b + shift) % 12)), 0)
 
 
 def camelot_label(key: int, mode: int) -> str:
@@ -1116,6 +1160,112 @@ def apply_imported_markers(meta: DjMeta) -> None:
             meta.intro_start_s = 0.0
         else:
             meta.intro_end_s = 0.0
+
+
+# ---------------------------------------------------------------------------
+# Drops and breakdowns that can time a drop-to-drop mix
+# ---------------------------------------------------------------------------
+
+# A detected drop times a drop mix only when the second after its beat is
+# at least this many times as loud (RMS) as the second before it: 18 dB.
+# _detect_drop's floor, a half-second block 1.6 times its 2 s rolling
+# mean, is a jump of 4 (12 dB) for a drop that starts on a block.
+_CONFIDENT_JUMP = 8.0
+# ... and when the level then holds (3/4 of that first second's) for
+# the next three seconds.
+_DROP_HOLD_S = 3.0
+_DROP_LABEL = re.compile(r"\bdrop\b", re.IGNORECASE)
+_BREAKDOWN_LABEL = re.compile(r"\bbreak(?:down)?\b", re.IGNORECASE)
+
+
+def _set_by_hand(cue: Cue, kind: str, label: re.Pattern[str]) -> bool:
+    """Whether *cue* is a *kind* cue set by the user or in DJ software.
+
+    A cue of that type counts, and so does a hot or memory cue whose name
+    says so ("Drop", "Breakdown 2").  Auto-detected cues never do.
+    """
+    if cue.source == "auto":
+        return False
+    return cue.type == kind or (
+        cue.type not in MARKER_CUE_TYPES and label.search(cue.label) is not None
+    )
+
+
+def confident_drop(audio: np.ndarray, sr: int, at_s: float, beats: list[float]) -> float | None:
+    """The beat a detected drop starts on, when it is clearly a drop.
+
+    The detector's drop is the start of a half-second block, moved to the
+    nearest beat, so the real onset can be a beat either side.  Each beat
+    from 0.75 s before *at_s* to 1 s after it is measured: the level of
+    the second after it over the second before it.  The drop is the beat
+    where that jump is largest, and it counts only when the jump is at
+    least :data:`_CONFIDENT_JUMP` and the level holds for
+    :data:`_DROP_HOLD_S` more (a single loud hit is not a drop).
+
+    Args:
+        audio: The track, mono.
+        sr: Its sample rate.
+        at_s: The detected drop.
+        beats: The track's beat grid in seconds.
+
+    Returns:
+        The drop's beat in seconds, or ``None`` when the drop is not clear.
+    """
+
+    def level(lo_s: float, hi_s: float) -> float:
+        part = audio[max(0, round(lo_s * sr)) : max(0, round(hi_s * sr))]
+        return float(np.sqrt(np.mean(part**2))) if len(part) else 0.0
+
+    def jump(beat: float) -> float:
+        return level(beat, beat + 1.0) / (level(beat - 1.0, beat) + 1e-9)
+
+    candidates = [b for b in beats if at_s - 0.75 <= b <= at_s + 1.0 and b >= 1.0]
+    if not candidates:
+        return None
+    onset = max(candidates, key=jump)
+    held = level(onset + 1.0, onset + 1.0 + _DROP_HOLD_S)
+    enough = (len(audio) - onset * sr) >= (1.0 + _DROP_HOLD_S) * sr
+    if jump(onset) < _CONFIDENT_JUMP or not enough or held < 0.75 * level(onset, onset + 1.0):
+        return None
+    return onset
+
+
+def mix_drops(cues: list[Cue], audio: np.ndarray, sr: int, beats: list[float]) -> list[float]:
+    """The drops of a track reliable enough to time a drop mix by, ascending.
+
+    Drops set by hand or in DJ software (:func:`_set_by_hand`) come first:
+    when there are any, they are the only ones.  Otherwise a detected
+    drop counts when :func:`confident_drop` finds it clear.
+
+    Args:
+        cues: The track's cues.
+        audio: The track, mono, for checking a detected drop.
+        sr: Its sample rate.
+        beats: Its beat grid in seconds.
+
+    Returns:
+        Drop times in seconds.
+    """
+    marked = sorted(cue.time_s for cue in cues if _set_by_hand(cue, "drop", _DROP_LABEL))
+    if marked:
+        return marked
+    found = (
+        confident_drop(audio, sr, cue.time_s, beats)
+        for cue in cues
+        if cue.type == "drop" and cue.source == "auto"
+    )
+    return sorted(t for t in found if t is not None)
+
+
+def mix_anchors(cues: list[Cue], audio: np.ndarray, sr: int, beats: list[float]) -> list[float]:
+    """Section starts of a track that a drop mix can count phrases from, ascending.
+
+    Its reliable drops (:func:`mix_drops`) and the breakdowns set by hand
+    or in DJ software; a detected breakdown is the middle of a quiet
+    stretch, not a section start, so it never counts.
+    """
+    breakdowns = [cue.time_s for cue in cues if _set_by_hand(cue, "breakdown", _BREAKDOWN_LABEL)]
+    return sorted([*mix_drops(cues, audio, sr, beats), *breakdowns])
 
 
 def analyse_audio(audio: np.ndarray, sr: int) -> DjMeta:

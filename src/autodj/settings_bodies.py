@@ -96,6 +96,8 @@ class DjMixBody(BaseModel):
 
     harmonic_mode: str | None = None
     beatmatch: bool | None = None
+    drop_mix: bool | None = None
+    key_shift: bool | None = None
     phrase_align: bool | None = None
     outro_intro_align: bool | None = None
     filter_sweep: bool | None = None

@@ -78,6 +78,8 @@ const presetSelect    = document.getElementById("preset-select");
 const transitionSelect= document.getElementById("transition-select");
 const harmonicMode    = document.getElementById("harmonic-mode");
 const djBeatmatch     = document.getElementById("dj-beatmatch");
+const djDropMix       = document.getElementById("dj-drop-mix");
+const djKeyShift      = document.getElementById("dj-key-shift");
 const djPhraseAlign   = document.getElementById("dj-phrase-align");
 const djOutroIntro    = document.getElementById("dj-outro-intro");
 const pbEqDuck        = document.getElementById("pb-eq-duck");
@@ -667,7 +669,7 @@ import {
 
 const _settingsEls = () => ({
   presetSelect, transitionSelect, harmonicMode,
-  djBeatmatch, djPhraseAlign, djOutroIntro,
+  djBeatmatch, djDropMix, djKeyShift, djPhraseAlign, djOutroIntro,
   pbEqDuck, pbPickMode, pbShowLyrics, pbAnchorSeed,
   pbReplayGain,
   pbBeatSyncFx, pbKeySyncFx, pbBeatmatchSkip,

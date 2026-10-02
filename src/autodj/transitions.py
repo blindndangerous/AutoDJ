@@ -1373,7 +1373,9 @@ def _known_key(track: TrackTraits) -> tuple[int, int] | None:
     return (key, mode) if 0 <= key <= 11 and mode in (0, 1) else None
 
 
-def auto_category(outgoing: TrackTraits, incoming: TrackTraits, pick_mode: str = "") -> str:
+def auto_category(
+    outgoing: TrackTraits, incoming: TrackTraits, pick_mode: str = "", key_shift: int = 0
+) -> str:
     """The ``auto`` category for a crossfade from *outgoing* into *incoming*.
 
     The first rule that applies wins (see the module docstring):
@@ -1383,6 +1385,9 @@ def auto_category(outgoing: TrackTraits, incoming: TrackTraits, pick_mode: str =
         outgoing: The track playing out.
         incoming: The track coming in.
         pick_mode: How *incoming* was chosen (``"discovery"`` and so on).
+        key_shift: Semitones the server mix moves *incoming*'s key by
+            during the crossfade (``[djmix] key_shift``); its key is
+            judged as it will be heard.
 
     Returns:
         A key of :data:`AUTO_CATEGORIES`.
@@ -1395,6 +1400,8 @@ def auto_category(outgoing: TrackTraits, incoming: TrackTraits, pick_mode: str =
     in_bpm = trusted_bpm(getattr(incoming, "bpm", 0.0), getattr(incoming, "tempo_confidence", 0))
     gap = _tempo_gap(out_bpm, in_bpm) if out_bpm and in_bpm else None
     out_key, in_key = _known_key(outgoing), _known_key(incoming)
+    if in_key is not None and key_shift:
+        in_key = ((in_key[0] + key_shift) % 12, in_key[1])
     clash = (
         out_key is not None
         and in_key is not None
@@ -1422,6 +1429,8 @@ def choose_auto_effect(
     incoming: TrackTraits,
     pick_mode: str = "",
     rng: np.random.Generator | None = None,
+    *,
+    key_shift: int = 0,
 ) -> TransitionFx:
     """Choose the ``auto`` effect for a crossfade from *outgoing* into *incoming*.
 
@@ -1433,8 +1442,11 @@ def choose_auto_effect(
         incoming: The track coming in.
         pick_mode: How *incoming* was chosen.
         rng: Optional numpy RNG (defaults to a fresh instance).
+        key_shift: Semitones the incoming key is moved by
+            (see :func:`auto_category`).
 
     Returns:
         A concrete :class:`TransitionFx` (possibly NONE: a plain fade).
     """
-    return _pick_from(AUTO_CATEGORIES[auto_category(outgoing, incoming, pick_mode)], rng)
+    category = auto_category(outgoing, incoming, pick_mode, key_shift)
+    return _pick_from(AUTO_CATEGORIES[category], rng)
