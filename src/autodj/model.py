@@ -311,7 +311,7 @@ class _MuqConformerAdapter(torch.nn.Module):
         config._attn_implementation = "eager"
         for module in encoder.modules():
             if getattr(module, "config", None) is previous:
-                module.config = config  # type: ignore[assignment]  # Third-party non-module attribute.
+                module.config = config  # type: ignore[assignment, unused-ignore]  # Third-party attribute; unused on some torch builds.
         self.encoder = encoder
 
     def forward(
