@@ -438,6 +438,27 @@ function restoreDeckGains() {
 let _lastTransitionFx = "none";
 let _rotateCursor = -1;
 
+// The server's effect for a crossfade (the state's next_transition_fx),
+// as { from, to, fx }: the plan for current_track -> next_track from the
+// latest state, and the one before it.  A skip makes the server advance
+// before the page fades, so that fade (old track -> new current track)
+// is the pair the previous state planned.
+let _fxPlan = null;
+let _prevFxPlan = null;
+
+function _noteFxPlan(s) {
+  const from = s.current_track ? s.current_track.path : null;
+  const to = s.next_track ? s.next_track.path : null;
+  const fx = typeof s.next_transition_fx === "string" ? s.next_transition_fx : null;
+  // A pair with no plan (fx null) is kept too: the latest word on a pair
+  // wins over an older plan for it.
+  const plan = from && to ? { from, to, fx } : null;
+  if (_fxPlan && !(plan && plan.from === _fxPlan.from && plan.to === _fxPlan.to)) {
+    _prevFxPlan = _fxPlan;
+  }
+  _fxPlan = plan;
+}
+
 // Random and rotate pick only effects that can run; a chosen effect
 // that can't is played as a plain crossfade.
 const _canRun = (name) => !Object.hasOwn(_WORKLET_OF, name) || _workletReady[_WORKLET_OF[name]] === true;
@@ -449,7 +470,24 @@ function _resolveTransition(name) {
     _rotateCursor = (_rotateCursor + 1) % real.length;
     return real[_rotateCursor];
   }
-  return name && _canRun(name) ? name : "none";
+  // auto (and any name this page lacks) has no effect of its own here.
+  return Object.hasOwn(_EFFECTS, name) && _canRun(name) ? name : "none";
+}
+
+// The effect the server planned for the fade from `fromPath` into
+// `toPath`, when it is one this page can play; otherwise null, and the
+// page chooses (_resolveTransition).
+function _plannedFx(fromPath, toPath) {
+  const plan = [_fxPlan, _prevFxPlan].find((p) => p && p.from === fromPath && p.to === toPath);
+  if (!plan) return null;
+  if (plan.fx === "none") return "none";
+  return Object.hasOwn(_EFFECTS, plan.fx) && _canRun(plan.fx) ? plan.fx : null;
+}
+
+// The effect for the fade from the active deck into `nextPath`: the
+// server's plan, or the page's own pick from the setting.
+function _fxForFade(active, nextPath) {
+  return _plannedFx(active.path, nextPath) ?? _resolveTransition(_lastTransitionFx);
 }
 
 // disconnect() drops every output of the deck's source, the silence
@@ -2042,7 +2080,7 @@ export function startCrossfade(nextPath, fadeSec, serverLed = false, phraseAt = 
   const cut = !(fadeSec > 0);
 
   // Resolve + apply the chosen transition effect over the fade window.
-  const fxName = cut ? "none" : _resolveTransition(_lastTransitionFx);
+  const fxName = cut ? "none" : _fxForFade(active, nextPath);
   // Resolve effect-preferred duration UP FRONT so the gain ramp, the
   // effect scheduling, and the cleanup setTimeout all use the SAME
   // timeline.  Earlier code resolved this inside applyTransitionFx
@@ -2447,14 +2485,15 @@ export function _phraseBoundary(downbeats, firstBar, bars, target, fadeDur, trac
 }
 
 // Seconds the next crossfade's effect will run, as startCrossfade works it
-// out.  Random and rotate are not chosen until the fade starts, so they
-// count as their longest effect.
+// out.  Without a server plan, random and rotate are not chosen until the
+// fade starts, so they count as their longest effect.
 function _plannedEffectDur(fadeSec) {
   if (!(fadeSec > 0)) return 0;
   const name = _lastTransitionFx;
-  const names = name === "random" || name === "rotate"
+  const planned = _plannedFx(deckActive().path, _nextTrackPathCache);
+  const names = planned === null && (name === "random" || name === "rotate")
     ? Object.keys(_EFFECTS).filter(_canRun)
-    : [_resolveTransition(name)];
+    : [planned ?? _resolveTransition(name)];
   return Math.max(0, ...names.map((n) => _effectDurationFor(n, fadeSec, _currentOutroLenCache)));
 }
 
@@ -2602,6 +2641,7 @@ export function applyBrowserPlaybackState(s) {
     ? s.settings.playback.fade_in_seconds : 3.0;
   _nextTrackPathCache = s.next_track ? s.next_track.path : null;
   _lastTransitionFx = (s.settings && s.settings.transition) || "none";
+  _noteFxPlan(s);
   _transitionMode = (s.settings && s.settings.playback &&
     s.settings.playback.transition_mode) || "full_intro_outro";
   const wetMix = s.settings && s.settings.playback
@@ -2793,6 +2833,8 @@ export function resetTransitionCaches() {
   _nextTrackIntroEndCache  = null;
   _nextTrackIntroStartCache = null;
   _nextTrackPathCache      = null;
+  _fxPlan = null;
+  _prevFxPlan = null;
 }
 
 // Full protected-session reset used only after confirmed auth expiry.

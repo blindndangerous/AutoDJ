@@ -46,8 +46,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   sweep to hide tempos more than 8 % apart or keys that clash; a noise riser or stutter build into
   a clearly louder song; a cross-EQ swap, high-pass sweep or plain fade between songs in the same
   key and tempo; otherwise a filter sweep, cross-EQ swap or echo. There is still some variety
-  within each kind. It works in stream mode and with server audio; crossfades the browser plays
-  stay plain for now. The page's state now names the effect coming up for the next crossfade.
+  within each kind. The page's state now names the effect coming up for the next crossfade.
 - Intro and outro markers set in Mixxx, Rekordbox or Traktor now move the mix. Mixxx's intro start,
   intro end and outro start, and Rekordbox's and Traktor's fade-in and fade-out points, replace
   the intro and outro AutoDJ detects, so the crossfade starts and ends where you marked it. The cue
@@ -61,6 +60,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   this cut the work from about 5.5 seconds of processor time and 1.5 GB of memory to under one
   second and about 350 MB, so a small server keeps up much more easily. Drums in the stretched part
   also stay sharper.
+- Crossfades the browser plays now use the transition effect AutoDJ chose for that pair of songs,
+  the same one the page's state names for the next crossfade. **auto** now works in the browser
+  too, where it used to play a plain crossfade, and **random** and **rotate** no longer make a
+  separate choice in the browser. With **Phrase align** on, the browser checks that the chosen
+  effect fits before the end of the song, instead of allowing for the longest effect. Over plain
+  HTTP, an effect the browser cannot play there (gate stutter, bitcrusher, freeze, glitch) is
+  swapped as before: random and rotate pick another one, and the others play a plain crossfade.
 - A pairing code works only after someone asks for one, and each one pairs one device. Before,
   the current code always worked, whether or not anyone had asked, and any number of browsers
   could pair with it. Ask with `autodj devices pairing-code` or **Show pairing code** in a paired
