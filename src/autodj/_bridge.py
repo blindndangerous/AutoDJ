@@ -687,8 +687,16 @@ class PlayerBridge:
             entry: IndexEntry | None,
             outro_start: float | None,
             intro_end: float | None,
-        ) -> tuple[list[float], list[float]]:
-            """Return ``(downbeats_outro, downbeats_intro)`` rounded to 3 dp.
+        ) -> tuple[list[float], list[float], int | None]:
+            """Return ``(downbeats_outro, downbeats_intro, outro_first_bar)``.
+
+            Downbeat times are rounded to 3 dp.  ``outro_first_bar`` is
+            the bar number (0-based, counted from the first detected beat,
+            as :func:`autodj.dj_meta.nearest_phrase_boundary` counts) of
+            ``downbeats_outro[0]``, so the browser can find phrase
+            boundaries on the same grid as the server mix.  It is ``None``
+            when the grid is synthesised from BPM or empty: the server mix
+            does not phrase-align those tracks either.
 
             Outro window: last 32 bars before ``length`` (or whole grid if
             shorter).  Intro window: first 32 bars from ``intro_end`` (or
@@ -699,7 +707,7 @@ class PlayerBridge:
             failed.
             """
             if entry is None or not entry.length:
-                return ([], [])
+                return ([], [], None)
             beats: list[float] = []
             if dj_cache is not None:
                 try:
@@ -710,9 +718,10 @@ class PlayerBridge:
                     beats = list(getattr(meta, "beats", []))
 
             downbeats = extract_downbeats(beats)
+            synthesised = len(downbeats) < 8 and bool(entry.bpm and entry.bpm > 0)
             # Synthesize when beat grid missing OR too sparse to cover the
             # last 64 s at 120 BPM (~32 bars).
-            if len(downbeats) < 8 and entry.bpm and entry.bpm > 0:
+            if synthesised:
                 anchor = float(outro_start) if outro_start is not None else 0.0
                 downbeats = synthesize_downbeats(
                     float(entry.bpm),
@@ -721,7 +730,7 @@ class PlayerBridge:
                 )
 
             if not downbeats:
-                return ([], [])
+                return ([], [], None)
 
             # Outro window: 32 bars before length.  At 120 BPM 4/4 ~64 s.
             # Use bar_seconds derived from the bpm if known so the window
@@ -734,13 +743,15 @@ class PlayerBridge:
             intro_anchor = float(intro_end) if intro_end is not None else 0.0
             intro_hi = intro_anchor + 32 * bar_s
             d_in = [round(d, 3) for d in downbeats if intro_anchor - bar_s <= d <= intro_hi]
-            return (d_out, d_in)
+            # The grid is sorted, so the outro window is its tail.
+            first_bar = None if synthesised or not d_out else len(downbeats) - len(d_out)
+            return (d_out, d_in, first_bar)
 
         def _track_dict(entry: IndexEntry | None) -> dict | None:
             if entry is None:
                 return None
             intro_start, intro_end, outro_start, outro_len = _markers(entry)
-            d_out, d_in = _downbeats(entry, outro_start, intro_end)
+            d_out, d_in, out_first_bar = _downbeats(entry, outro_start, intro_end)
             key_hz = key_to_hz(entry.key) if entry.key is not None else None
             return {
                 "title": entry.title,
@@ -772,6 +783,7 @@ class PlayerBridge:
                 "outro_len": round(outro_len, 2) if outro_len is not None else None,
                 "cues": _cues(entry),
                 "downbeats_outro": d_out,
+                "downbeats_outro_first_bar": out_first_bar,
                 "downbeats_intro": d_in,
                 "key_hz": round(key_hz, 3) if key_hz is not None else None,
             }

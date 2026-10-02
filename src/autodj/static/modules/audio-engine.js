@@ -757,7 +757,9 @@ const _BS = {
   outKeyHz: null,
   inKeyHz: null,
 
-  refresh(outDeck, fxStartCtx, fxDurCtx) {
+  // ctxNow is the context time now; fxStartCtx is earlier than it when a
+  // phrase-timed fade is anchored on a boundary its timer reached late.
+  refresh(outDeck, fxStartCtx, fxDurCtx, ctxNow = fxStartCtx) {
     this.enabled = !!_beatSyncEnabled;
     this.keyEnabled = !!_keySyncEnabled;
     this.outBpm = _outBpmCache || 0;
@@ -770,7 +772,7 @@ const _BS = {
     // Build the audio<->ctx offset from the active deck's currentTime now.
     let audioT = 0;
     try { audioT = outDeck.audio.currentTime || 0; } catch (_) { audioT = 0; }
-    this.audioToCtxOffset = fxStartCtx - audioT;
+    this.audioToCtxOffset = ctxNow - audioT;
 
     // Translate outgoing downbeats (audio time) into ctx time + drop those
     // strictly in the past so callers iterate forward only.
@@ -1777,12 +1779,12 @@ const _EFFECTS = {
   },
 };
 
-function applyTransitionFx(effect, fadeSec, outDeck, inDeck) {
+function applyTransitionFx(effect, fadeSec, outDeck, inDeck, t0) {
   const ctx = _ctx;
   if (!ctx || effect === "none" || !effect) return () => {};
   // Caller (startCrossfade) resolves the effect-preferred duration and
-  // passes it in so the gain ramp and the effect share one timeline.
-  const t0 = ctx.currentTime;
+  // its start, and passes them in so the gain ramp and the effect share
+  // one timeline.
   const wet = _wetMixCache;
   const teardowns = [];
   _fxBus.gain.cancelScheduledValues(t0);
@@ -1980,7 +1982,12 @@ function requestRepick(blacklist) {
   );
 }
 
-export function startCrossfade(nextPath, fadeSec, serverLed = false) {
+// `phraseAt`, for a fade started on a phrase boundary, is that boundary
+// in the outgoing deck's time.  A timer or timeupdate that reached it a
+// little late (up to _PHRASE_SNAP_S) anchors the whole fade there, so the
+// beat-synced effects take the boundary as their first downbeat instead
+// of waiting a bar for the next one.
+export function startCrossfade(nextPath, fadeSec, serverLed = false, phraseAt = null) {
   if (!_ctx || crossfading || !nextPath) return Promise.resolve(false);
   crossfading = true;
   const operationGeneration = _playbackGeneration;
@@ -2028,7 +2035,8 @@ export function startCrossfade(nextPath, fadeSec, serverLed = false) {
   playOnDeck(standby);
 
   const active = deckActive();
-  const t0 = _ctx.currentTime;
+  const ctxNow = _ctx.currentTime;
+  const t0 = ctxNow - _phraseLateness(active, phraseAt);
   // A fade of 0 (crossfade seconds 0) is a cut, as in the server mix:
   // no transition effect, the incoming deck at full at once.
   const cut = !(fadeSec > 0);
@@ -2044,7 +2052,7 @@ export function startCrossfade(nextPath, fadeSec, serverLed = false) {
   const effectDur = cut ? 0 : _effectDurationFor(fxName, fadeSec, _currentOutroLenCache);
   // Refresh the beat-sync cache up front so applyTransitionFx can read
   // _BS.beatSec / barSec / nextDownbeat / rootHzAt while scheduling.
-  _BS.refresh(active, t0, effectDur);
+  _BS.refresh(active, t0, effectDur, ctxNow);
   console.debug("autodj transition:", fxName, "duration:", effectDur.toFixed(2),
     "s | bpm:", _BS.outBpm.toFixed(1), "->", _BS.inBpm.toFixed(1),
     "| keyHz:", _BS.outKeyHz, "->", _BS.inKeyHz);
@@ -2072,7 +2080,7 @@ export function startCrossfade(nextPath, fadeSec, serverLed = false) {
 
   // Pass the resolved duration so applyTransitionFx no longer recomputes
   // it -- prevents the duration drift that caused cuts.
-  const teardownFx = applyTransitionFx(fxName, effectDur, active, standby);
+  const teardownFx = applyTransitionFx(fxName, effectDur, active, standby, t0);
 
   suppressAdvance = true;
   // The next track is spoken for: until a state names a newer one, it
@@ -2244,11 +2252,7 @@ for (const d of decks) {
     const dur = d.audio.duration;
     if (!isFinite(dur) || dur <= 0) return;
     const remaining = dur - d.audio.currentTime;
-    const baseFade = _crossfadeSecondsCache;
-    const fadeSec = _resolveFadeSec(
-      _transitionMode, baseFade,
-      _currentOutroLenCache, _nextTrackIntroEndCache, _nextTrackIntroStartCache,
-    );
+    const fadeSec = _fadeSecNow();
     // For outro_fade + full_intro_outro, the fade should begin AT the
     // outgoing outro_start (when known) rather than just "fadeSec from
     // the end".  Triggers as soon as currentTime crosses outro_start.
@@ -2262,13 +2266,30 @@ for (const d of decks) {
                        || _transitionMode === "full_intro_outro")
                       && outroValid
                       && _nextTrackPathCache;
-    if (useMarker && d.audio.currentTime >= _currentOutroStartCache) {
-      startCrossfade(_nextTrackPathCache, fadeSec);
-      return;
-    }
-    if (remaining > 0 && remaining < fadeSec && _nextTrackPathCache) {
-      startCrossfade(_nextTrackPathCache, fadeSec);
-      return;
+    // Phrase align: start on the phrase boundary nearest the time one of
+    // the two triggers below would fire.  timeupdate comes only about 4
+    // times a second, so the start is timed with a timer armed shortly
+    // before the boundary.  A boundary missed by more than a moment (a
+    // seek past it, a grid that arrived late) leaves today's triggers.
+    const phraseStart = _nextTrackPathCache ? _phraseStartFor(dur, fadeSec, useMarker) : null;
+    const ahead = phraseStart === null ? -Infinity : phraseStart - d.audio.currentTime;
+    if (ahead >= -_PHRASE_LATE_S) {
+      if (ahead <= 0) {
+        _cancelPhraseStart();
+        startCrossfade(_nextTrackPathCache, fadeSec, false, phraseStart);
+        return;
+      }
+      if (ahead <= _PHRASE_LOOKAHEAD_S) _armPhraseStart(d, phraseStart);
+    } else {
+      _cancelPhraseStart();
+      if (useMarker && d.audio.currentTime >= _currentOutroStartCache) {
+        startCrossfade(_nextTrackPathCache, fadeSec);
+        return;
+      }
+      if (remaining > 0 && remaining < fadeSec && _nextTrackPathCache) {
+        startCrossfade(_nextTrackPathCache, fadeSec);
+        return;
+      }
     }
     // Silence detector — fire the crossfade EARLY when the active deck
     // has gone quiet at the very end of a fade-out tail.  Eliminates the
@@ -2324,6 +2345,11 @@ export let _inBpmCache = 0;
 let _outDownbeatsCache = [];
 let _outKeyHzCache = null;
 let _inKeyHzCache = null;
+// Phrase alignment ([djmix] phrase_align / phrase_bars) and the bar number
+// of _outDownbeatsCache[0] in the server's grid (null when synthesised).
+let _phraseAlignCache = false;
+let _phraseBarsCache = 8;
+let _outFirstBarCache = null;
 
 // Mixxx-style fade-length picker.  Mirrors AutoDJProcessor's
 // TransitionMode enum -- see CHANGELOG entry for 0.12.3.
@@ -2348,6 +2374,134 @@ export function _resolveFadeSec(mode, baseFade, outroLen, nextIntroEnd, nextIntr
     return clamp(outroLen);
   }
   return baseFade;
+}
+
+// The fade length the timeupdate trigger uses (crossfade seconds, or the
+// outro and intro markers in the marker modes).
+function _fadeSecNow() {
+  return _resolveFadeSec(
+    _transitionMode, _crossfadeSecondsCache,
+    _currentOutroLenCache, _nextTrackIntroEndCache, _nextTrackIntroStartCache,
+  );
+}
+
+// --- Phrase-aligned crossfade start ([djmix] phrase_align, phrase_bars).
+//
+// The same rule as the server mix (Player._crossfade_start_in_a with
+// dj_meta.nearest_phrase_boundary): a phrase boundary is every
+// phrase_bars-th bar of the beat grid, counted from its first beat.  The
+// boundary nearest the time the fade would start anyway is used when it
+// lies within half a phrase of that time and the fade still ends by the
+// end of the track; otherwise the start is left as it was.  Where the
+// page differs from the server:
+//   - It has only the outro part of the grid (downbeats_outro, the last
+//     32 bars) and the bar number of its first downbeat
+//     (downbeats_outro_first_bar), so a fade that would start earlier
+//     than about 32 bars from the end is not moved.  Boundaries are a
+//     phrase apart, so a boundary within half a phrase is the only one;
+//     when the window holds it, it is the boundary the server picks.
+//   - A phrase's length in seconds comes from the window's bar spacing;
+//     the server averages the beat spacing over the whole track.
+//   - The fade checked against the track end is the effect length this
+//     page will play (_effectDurationFor), which can be longer than the
+//     crossfade seconds the server checks.
+//   - "Too short" counts bars (at least phrase_bars of them), where the
+//     server counts beats (at least 4 x phrase_bars).
+//   - A grid synthesised from the BPM (no detected beats) has no bar
+//     number, so it is not used, as the server has no grid to use either.
+const _PHRASE_LOOKAHEAD_S = 1.0;  // arm the start timer this long before the boundary
+const _PHRASE_LATE_S = 0.5;       // a boundary passed by more than this is missed
+const _PHRASE_SNAP_S = 0.1;       // a fade this late still anchors on its boundary
+
+// Seconds since `deck` passed the phrase boundary `at` (its audio time):
+// how far back a phrase-timed fade is anchored.  0 for any other start,
+// and past _PHRASE_SNAP_S, so a fade is never scheduled far in the past.
+function _phraseLateness(deck, at) {
+  if (at === null) return 0;
+  let late = 0;
+  try { late = (deck.audio.currentTime - at) / (deck.audio.playbackRate || 1); } catch (_) {}
+  return late > 0 && late <= _PHRASE_SNAP_S ? late : 0;
+}
+
+// Pure boundary pick: the phrase boundary in `downbeats` (bar `firstBar`
+// of the grid onward) nearest `target`, or null when there is none within
+// half a phrase, the grid is too short, or a fade of `fadeDur` seconds
+// from the boundary would run past `trackEnd`.
+export function _phraseBoundary(downbeats, firstBar, bars, target, fadeDur, trackEnd) {
+  if (!Array.isArray(downbeats) || downbeats.length < 2) return null;
+  if (!Number.isInteger(firstBar) || firstBar < 0) return null;
+  if (!Number.isInteger(bars) || bars < 1) return null;
+  if (firstBar + downbeats.length < bars || !Number.isFinite(target)) return null;
+  const barSec = (downbeats[downbeats.length - 1] - downbeats[0]) / (downbeats.length - 1);
+  if (!(barSec > 0)) return null;
+  let best = null;
+  // Ties go to the earlier boundary, as Python's min() does.
+  for (let i = (bars - (firstBar % bars)) % bars; i < downbeats.length; i += bars) {
+    if (best === null || Math.abs(downbeats[i] - target) < Math.abs(best - target)) {
+      best = downbeats[i];
+    }
+  }
+  if (best === null || Math.abs(best - target) > (bars * barSec) / 2) return null;
+  if (best < 0 || best + fadeDur > trackEnd) return null;
+  return best;
+}
+
+// Seconds the next crossfade's effect will run, as startCrossfade works it
+// out.  Random and rotate are not chosen until the fade starts, so they
+// count as their longest effect.
+function _plannedEffectDur(fadeSec) {
+  if (!(fadeSec > 0)) return 0;
+  const name = _lastTransitionFx;
+  const names = name === "random" || name === "rotate"
+    ? Object.keys(_EFFECTS).filter(_canRun)
+    : [_resolveTransition(name)];
+  return Math.max(0, ...names.map((n) => _effectDurationFor(n, fadeSec, _currentOutroLenCache)));
+}
+
+// Where the timeupdate trigger should start the fade with phrase align
+// on, or null to leave it alone.  The unaligned start is the outro start
+// in the marker modes, or fadeSec before the end, whichever comes first.
+function _phraseStartFor(dur, fadeSec, useMarker) {
+  if (!_phraseAlignCache) return null;
+  const today = useMarker ? Math.min(_currentOutroStartCache, dur - fadeSec) : dur - fadeSec;
+  return _phraseBoundary(
+    _outDownbeatsCache, _outFirstBarCache, _phraseBarsCache,
+    today, _plannedEffectDur(fadeSec), dur,
+  );
+}
+
+// The armed start: { deck, at, id }, or null.
+let _phraseTimer = null;
+
+function _cancelPhraseStart() {
+  if (_phraseTimer) clearTimeout(_phraseTimer.id);
+  _phraseTimer = null;
+}
+
+// Start the crossfade when `deck` reaches `at` (its audio time).  The
+// callback checks again that the fade is still wanted: a pause, a skip
+// or a seek back since arming leaves it to the next timeupdate.
+function _armPhraseStart(deck, at) {
+  if (_phraseTimer && _phraseTimer.deck === deck && _phraseTimer.at === at) return;
+  _cancelPhraseStart();
+  const generation = _playbackGeneration;
+  const audio = deck.audio;
+  const wait = (at - audio.currentTime) / (audio.playbackRate || 1);
+  const timer = { deck, at, id: 0 };
+  timer.id = setTimeout(() => {
+    _phraseTimer = null;
+    if (generation !== _playbackGeneration || deck !== deckActive() || crossfading
+        || !playbackEnabled || audio.paused || !_nextTrackPathCache) return;
+    const early = at - audio.currentTime;
+    if (early > 0.005) {
+      // Woke before the boundary (timer granularity, a stalled deck):
+      // wait out the rest.  Further off means a seek back.
+      if (early <= _PHRASE_LOOKAHEAD_S) _armPhraseStart(deck, at);
+      return;
+    }
+    startCrossfade(_nextTrackPathCache, _fadeSecNow(), false, at);
+  }, Math.max(0, wait * 1000));
+  _phraseTimer = timer;
 }
 
 const BLOCKED_PLAY_TEXT = "The browser did not start playback. Press Play again.";
@@ -2483,6 +2637,12 @@ export function applyBrowserPlaybackState(s) {
     ? s.next_track.bpm : 0;
   _outDownbeatsCache = (s.current_track && Array.isArray(s.current_track.downbeats_outro))
     ? s.current_track.downbeats_outro : [];
+  _outFirstBarCache = (s.current_track
+      && Number.isInteger(s.current_track.downbeats_outro_first_bar))
+    ? s.current_track.downbeats_outro_first_bar : null;
+  const djmix = s.settings && s.settings.djmix;
+  _phraseAlignCache = Boolean(djmix && djmix.phrase_align);
+  _phraseBarsCache = djmix && Number.isInteger(djmix.phrase_bars) ? djmix.phrase_bars : 8;
   _outKeyHzCache = (s.current_track && typeof s.current_track.key_hz === "number")
     ? s.current_track.key_hz : null;
   _inKeyHzCache = (s.next_track && typeof s.next_track.key_hz === "number")
