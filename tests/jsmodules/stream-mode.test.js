@@ -240,7 +240,8 @@ describe("stream mode", () => {
     expect(audio.getAttribute("src")).toBeNull();
   });
 
-  it("reports a failed reconnect as a dropped connection", async () => {
+  it("reports a failed reconnect as a dropped connection, after quiet retries", async () => {
+    vi.useFakeTimers();
     let calls = 0;
     const fetchInfo = vi.fn(async () => {
       calls += 1;
@@ -248,14 +249,44 @@ describe("stream mode", () => {
       return { path: "/stream/SECRET.mp3" };
     });
     const { mode, audio, button, sr } = setup({ fetchInfo });
+    const say = vi.spyOn(sr, "textContent", "set");
     mode.apply({ stream_mode: true, stream_state: "playing" });
     button.focus();
     await mode.toggleListen();
     audio.dispatchEvent(new Event("playing"));
     audio.dispatchEvent(new Event("error"));
-    await tick();
+    // The link lookup cannot reach AutoDJ: it is tried again, quietly,
+    // for as long as the server keeps the set for a returning listener.
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(button.getAttribute("aria-pressed")).toBe("true");
+    expect(sr.textContent).toBe("");
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(fetchInfo).toHaveBeenCalledTimes(6);
     expect(button.getAttribute("aria-pressed")).toBe("false");
     expect(sr.textContent).toBe(DROPPED);
+    expect(say.mock.calls.filter(([text]) => text === DROPPED)).toHaveLength(1);
+    vi.useRealTimers();
+  });
+
+  it("plays on after a drop once AutoDJ can be reached again", async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    const fetchInfo = vi.fn(async () => {
+      calls += 1;
+      if (calls === 2 || calls === 3) throw new TypeError("Failed to fetch");
+      return { path: "/stream/SECRET.mp3" };
+    });
+    const { mode, audio, button, sr } = setup({ fetchInfo });
+    mode.apply({ stream_mode: true, stream_state: "playing" });
+    await mode.toggleListen();
+    audio.dispatchEvent(new Event("playing"));
+    audio.dispatchEvent(new Event("error"));
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(fetchInfo).toHaveBeenCalledTimes(4);
+    expect(audio.play).toHaveBeenCalledTimes(2);
+    expect(button.getAttribute("aria-pressed")).toBe("true");
+    expect(sr.textContent).toBe("");
+    vi.useRealTimers();
   });
 
   it("allows a fresh reconnect after the stream played again", async () => {
@@ -334,6 +365,59 @@ describe("stream mode", () => {
       await vi.advanceTimersByTimeAsync(14000);
       audio.dispatchEvent(new Event("playing"));
       await vi.advanceTimersByTimeAsync(20000);
+      expect(button.getAttribute("aria-pressed")).toBe("true");
+      expect(sr.textContent).toBe("");
+    });
+
+    it("keeps a stalled stream whose buffer is still playing", async () => {
+      vi.useFakeTimers();
+      const { mode, audio, button, sr } = setup();
+      mode.apply({ stream_mode: true, stream_state: "playing" });
+      await mode.toggleListen();
+      audio.dispatchEvent(new Event("playing"));
+      // "stalled" only says the download paused; with audio buffered no
+      // "waiting" follows, so no "playing" either.
+      Object.defineProperty(audio, "paused", { configurable: true, value: false });
+      Object.defineProperty(audio, "readyState", { configurable: true, value: 4 });
+      audio.dispatchEvent(new Event("stalled"));
+      await vi.advanceTimersByTimeAsync(20000);
+      expect(button.getAttribute("aria-pressed")).toBe("true");
+      expect(sr.textContent).toBe("");
+    });
+
+    it("keeps watching a stream that still moves, and fails it once it stops", async () => {
+      vi.useFakeTimers();
+      const { mode, audio, button, sr } = setup();
+      mode.apply({ stream_mode: true, stream_state: "playing" });
+      await mode.toggleListen();
+      audio.dispatchEvent(new Event("playing"));
+      let position = 10;
+      Object.defineProperty(audio, "currentTime", {
+        configurable: true, get: () => position, set: () => {},
+      });
+      audio.dispatchEvent(new Event("waiting"));
+      await vi.advanceTimersByTimeAsync(10000);
+      position = 13;   // played on in fits and starts
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(button.getAttribute("aria-pressed")).toBe("true");
+      // Stuck from here: the next round fails it.
+      await vi.advanceTimersByTimeAsync(15000);
+      expect(button.getAttribute("aria-pressed")).toBe("false");
+      await vi.advanceTimersByTimeAsync(1);
+      expect(sr.textContent).toBe(STALLED);
+    });
+
+    it("drops the old stall countdown before the silent retry", async () => {
+      vi.useFakeTimers();
+      const { mode, audio, button, fetchInfo, sr } = setup();
+      mode.apply({ stream_mode: true, stream_state: "playing" });
+      await mode.toggleListen();
+      audio.dispatchEvent(new Event("playing"));
+      audio.dispatchEvent(new Event("stalled"));
+      await vi.advanceTimersByTimeAsync(10000);
+      audio.dispatchEvent(new Event("error"));
+      await vi.advanceTimersByTimeAsync(10000);
+      expect(fetchInfo).toHaveBeenCalledTimes(2);
       expect(button.getAttribute("aria-pressed")).toBe("true");
       expect(sr.textContent).toBe("");
     });

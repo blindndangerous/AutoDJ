@@ -54,8 +54,17 @@ async function rawRequest(url, options) {
   } catch (cause) {
     // A cancelled request is the caller's own doing, not a failure.
     if (cause?.name === "AbortError") throw cause;
-    throw new ApiError(UNREACHABLE_TEXT, { cause });
+    const error = new ApiError(UNREACHABLE_TEXT, { cause });
+    error.unreachable = true;
+    throw error;
   }
+}
+
+// True for a request that never reached the server (the network or a
+// tunnel in between was down), as opposed to one the server answered
+// with an error.  Such a request can be sent again once the link is back.
+export function isServerUnreachable(errorValue) {
+  return errorValue instanceof ApiError && errorValue.unreachable === true;
 }
 
 function isJsonResponse(response) {

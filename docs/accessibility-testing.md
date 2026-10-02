@@ -61,7 +61,11 @@ When adding a status message, write it through `announceStatus()` rather than as
 
 Before every release, each flow below must be sampled with either NVDA and Firefox or NVDA and Chrome, by a person or by an agent that drives the page and captures NVDA's speech; the record says which:
 
-- Authentication, session expiry, and connection-status changes.
+- Authentication, session expiry, and connection-status changes. A dropped connection says
+  "Disconnected, retrying" once and "Live" once when it returns, and playback (Listen here and
+  browser playback) keeps playing through it; a session that has ended stops playback and opens
+  the pairing dialog. When AutoDJ stays out of reach, the page says once that a reload may be
+  needed to sign in again, and nothing more while it retries.
 - Section-tab and disclosure navigation using the keyboard, including focus placement.
 - Playback controls, seeking, volume, and the spoken hotkeys.
 - Search, queue additions, reordering, removal, and empty states.
@@ -73,7 +77,8 @@ Before every release, each flow below must be sampled with either NVDA and Firef
 - Library-job status and review of the persistent output log. Leave a job running for several
   minutes and confirm the status is spoken once at the start and once at the end, not repeatedly.
 - Stream mode (`serve --stream`): the Settings, Stream section, Copy address, the
-  quality choice and listener count, and Listen here starting and stopping the stream in the page.
+  quality choice and listener count, and Listen here starting and stopping the stream in the page,
+  and still playing, with nothing said by the stream, after the page's connection drops and returns.
 - Voice liners: uploading a liner, Test now, and each rotation mode, including the spoken
   result when an upload or test fails.
 - EQ: each band's slider, its spoken value, and resetting the bands.

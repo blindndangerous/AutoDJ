@@ -499,7 +499,7 @@ describe("handleWebSocketAuthenticationClose", () => {
 
     expect(didReconnect).toBe(false);
     expect(fetchImpl).toHaveBeenCalledOnce();
-    expect(fetchImpl).toHaveBeenCalledWith("/api/auth/status");
+    expect(fetchImpl).toHaveBeenCalledWith("/api/auth/status", { redirect: "manual" });
     expect(onExpired).toHaveBeenCalledOnce();
     expect(auth.show).toHaveBeenCalledOnce();
     expect(reconnect).not.toHaveBeenCalled();
@@ -533,7 +533,7 @@ describe("handleWebSocketAuthenticationClose", () => {
       });
 
       expect(didReconnect).toBe(true);
-      expect(fetchImpl).toHaveBeenCalledWith("/api/auth/status");
+      expect(fetchImpl).toHaveBeenCalledWith("/api/auth/status", { redirect: "manual" });
       expect(onExpired).not.toHaveBeenCalled();
       expect(auth.show).not.toHaveBeenCalled();
       expect(reconnect).toHaveBeenCalledOnce();
@@ -669,6 +669,9 @@ describe("app startup integration", () => {
       setVolume: vi.fn(),
       startCrossfade: vi.fn(),
       stopAllDecks: vi.fn(),
+      duckMusic: vi.fn(),
+      isStaleAdvanceState: vi.fn(() => false),
+      setLinkUp: vi.fn(),
       unlockAndPlay: vi.fn(),
     }));
 
@@ -814,6 +817,9 @@ describe("app startup integration", () => {
       setVolume: vi.fn(),
       startCrossfade: vi.fn(),
       stopAllDecks: vi.fn(),
+      duckMusic: vi.fn(),
+      isStaleAdvanceState: vi.fn(() => false),
+      setLinkUp: vi.fn(),
       unlockAndPlay: vi.fn(),
     }));
 
@@ -920,5 +926,49 @@ describe("pairing dialog markup", () => {
     expect(parsed.querySelector("#auth-form")?.contains(
       parsed.querySelector("#auth-status"),
     )).toBe(false);
+  });
+});
+
+describe("reconnect probe that cannot reach AutoDJ", () => {
+  it.each([
+    ["a redirect to a sign-in page", () => Promise.resolve({ type: "opaqueredirect", status: 0, ok: false }), true],
+    ["a network failure", () => Promise.reject(new TypeError("Failed to fetch")), false],
+  ])("reports %s and keeps retrying", async (_caseName, result, signInRedirect) => {
+    const authModule = await import("../../src/autodj/static/modules/auth.js");
+    const fetchImpl = vi.fn(result);
+    const auth = { show: vi.fn() };
+    const onExpired = vi.fn();
+    const onUnreachable = vi.fn();
+    const reconnect = vi.fn();
+
+    const didReconnect = await authModule.reconnectWebSocketAfterClose({
+      event: { code: 1006, wasClean: false },
+      fetchImpl,
+      auth,
+      onExpired,
+      onUnreachable,
+      reconnect,
+    });
+
+    expect(didReconnect).toBe(true);
+    expect(onUnreachable).toHaveBeenCalledExactlyOnceWith({ signInRedirect });
+    expect(onExpired).not.toHaveBeenCalled();
+    expect(auth.show).not.toHaveBeenCalled();
+    expect(reconnect).toHaveBeenCalledOnce();
+  });
+
+  it("reports nothing when AutoDJ answers", async () => {
+    const authModule = await import("../../src/autodj/static/modules/auth.js");
+    const onUnreachable = vi.fn();
+    await authModule.reconnectWebSocketAfterClose({
+      event: { code: 1006, wasClean: false },
+      fetchImpl: vi.fn().mockResolvedValue(response({
+        ok: true, status: 200, json: { required: true, authenticated: true },
+      })),
+      auth: { show: vi.fn() },
+      onUnreachable,
+      reconnect: vi.fn(),
+    });
+    expect(onUnreachable).not.toHaveBeenCalled();
   });
 });
