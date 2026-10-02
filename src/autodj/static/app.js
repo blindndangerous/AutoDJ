@@ -394,6 +394,7 @@ function applyState(s) {
   _stateApplicationGeneration += 1;
   _lastState = s;
   bumpLinerTrackCount(s);
+  noteTrackForHistory(s);
 
   // Stream mode never starts the deck engine, whatever browser_playback
   // says, so every browser-playback branch below reads browserMode.
@@ -1820,6 +1821,36 @@ import { formatPlayedAt, historyNeedsDates } from "./modules/history-format.js";
 let _histPage = 1;
 // The history request in flight: a newer one aborts it.
 let historyRequest = null;
+// Page 1's newest played_at and whether its rows show dates; null when
+// page 1 is not on screen, so a track change rebuilds instead of adding.
+let _histNewestAt = null;
+let _histWithDate = false;
+// The playing track's path, to notice a track change on the 1 Hz push.
+let _histPlayingPath = null;
+
+function historyRowHtml(it, withDate) {
+  return `<tr>
+      <td>${escHtml(formatPlayedAt(it.played_at, withDate))}</td>
+      <td>${escHtml(it.title)}</td>
+      <td>${escHtml(it.artist)}</td>
+      <td>${_fmtDuration(it.duration)}</td>
+    </tr>`;
+}
+
+function showHistoryPaging(data) {
+  const pageText = `Page ${data.page} of ${data.pages}`;
+  document.getElementById("hist-page-info").textContent = pageText;
+  const goto = document.getElementById("hist-goto");
+  if (goto) goto.value = data.page;
+  // aria-disabled, not disabled: Next is usually the focused control
+  // when the last page arrives, and disabling it would drop focus to
+  // the top of the page.  The click handlers honour the attribute.
+  document.getElementById("hist-prev")
+    .setAttribute("aria-disabled", String(data.page <= 1));
+  document.getElementById("hist-next")
+    .setAttribute("aria-disabled", String(data.page >= data.pages));
+  return pageText;
+}
 
 function _fmtDuration(sec) {
   const s = Math.round(sec || 0);
@@ -1841,8 +1872,7 @@ async function fetchHistory(page, { announce = false } = {}) {
     const table = document.getElementById("history-table");
     const empty = document.getElementById("history-empty");
     const pag   = document.getElementById("history-pagination");
-    const info  = document.getElementById("hist-page-info");
-    const goto  = document.getElementById("hist-goto");
+    _histNewestAt = null;
     if (!data.total) {
       table.setAttribute("hidden", "");
       pag.setAttribute("hidden", "");
@@ -1857,22 +1887,12 @@ async function fetchHistory(page, { announce = false } = {}) {
     empty.setAttribute("hidden", "");
     table.removeAttribute("hidden");
     const withDate = historyNeedsDates(data.items);
-    tbody.innerHTML = data.items.map(it => `<tr>
-      <td>${escHtml(formatPlayedAt(it.played_at, withDate))}</td>
-      <td>${escHtml(it.title)}</td>
-      <td>${escHtml(it.artist)}</td>
-      <td>${_fmtDuration(it.duration)}</td>
-    </tr>`).join("");
-    const pageText = `Page ${data.page} of ${data.pages}`;
-    info.textContent = pageText;
-    if (goto) goto.value = data.page;
-    // aria-disabled, not disabled: Next is usually the focused control
-    // when the last page arrives, and disabling it would drop focus to
-    // the top of the page.  The click handlers honour the attribute.
-    document.getElementById("hist-prev")
-      .setAttribute("aria-disabled", String(data.page <= 1));
-    document.getElementById("hist-next")
-      .setAttribute("aria-disabled", String(data.page >= data.pages));
+    tbody.innerHTML = data.items.map((it) => historyRowHtml(it, withDate)).join("");
+    if (data.page === 1) {
+      _histNewestAt = data.items[0].played_at;
+      _histWithDate = withDate;
+    }
+    const pageText = showHistoryPaging(data);
     pag.removeAttribute("hidden");
     // Prev / Next / Go leave focus where it was, so say where they landed.
     // The page label is already on screen, hence no visible mirror.
@@ -1883,6 +1903,7 @@ async function fetchHistory(page, { announce = false } = {}) {
     }
   } catch (err) {
     if (request.signal.aborted) return;
+    _histNewestAt = null;
     const tbody = document.getElementById("history-tbody");
     const table = document.getElementById("history-table");
     const pag = document.getElementById("history-pagination");
@@ -1904,6 +1925,48 @@ async function fetchHistory(page, { announce = false } = {}) {
 
 function historyViewShown() {
   return (location.hash || "").replace(/^#/, "") === "history";
+}
+
+// A new track while History shows page 1 adds its row on top.  The rows
+// already there are left alone, so a screen reader reading the table
+// keeps its place, and nothing is said: the table is not a live region.
+async function addNewHistoryRows() {
+  if (_histNewestAt === null) {
+    await fetchHistory(1);
+    return;
+  }
+  const newestShown = _histNewestAt;
+  historyRequest?.abort();
+  const request = historyRequest = new AbortController();
+  let data;
+  try {
+    data = await requestJson("/api/history?page=1&per_page=50", { signal: request.signal });
+  } catch (_) {
+    return;  // The next track change or Refresh tries again.
+  }
+  if (request.signal.aborted || _histPage !== 1 || _histNewestAt !== newestShown) return;
+  const fresh = data.items.filter((it) => it.played_at > newestShown);
+  if (!fresh.length) return;
+  if (historyNeedsDates(data.items) !== _histWithDate) {
+    await fetchHistory(1);  // Every row's time changes format.
+    return;
+  }
+  const tbody = document.getElementById("history-tbody");
+  // A template parses table rows on their own, without a table around them.
+  const rows = document.createElement("template");
+  rows.innerHTML = fresh.map((it) => historyRowHtml(it, _histWithDate)).join("");
+  tbody.prepend(rows.content);
+  while (tbody.children.length > 50) tbody.lastElementChild.remove();
+  _histNewestAt = data.items[0].played_at;
+  showHistoryPaging(data);
+}
+
+function noteTrackForHistory(s) {
+  const path = (s && s.current_track && s.current_track.path) || null;
+  if (path === _histPlayingPath) return;
+  const changed = _histPlayingPath !== null && path !== null;
+  _histPlayingPath = path;
+  if (changed && historyViewShown() && _histPage === 1) void addNewHistoryRows();
 }
 
 {
