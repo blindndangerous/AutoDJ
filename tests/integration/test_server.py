@@ -4062,3 +4062,129 @@ class TestHistoryEndpoint:
 # helper edge cases, PlayerBridge re-export sanity.  Kept in their own class
 # so the fixture seam is obvious.
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# /api/advance double-advance guard
+# ---------------------------------------------------------------------------
+
+
+class TestAdvanceFromPath:
+    """Two tabs (or a retried request) must not advance twice."""
+
+    @staticmethod
+    def _browser_bridge(bridge):
+        bridge.player._dry_run = True
+        bridge.player._pick_next.return_value = _make_entry(99)
+        return bridge
+
+    def test_advance_from_the_playing_track_advances(self, bridge) -> None:
+        from fastapi.testclient import TestClient
+
+        bridge = self._browser_bridge(bridge)
+        playing = bridge.player._state.current_track
+        upcoming = bridge.player._state.next_track
+        tc = TestClient(create_app(bridge))
+        resp = tc.post("/api/advance", json={"from_path": playing.path})
+        assert resp.status_code == 200
+        assert bridge.player._state.current_track is upcoming
+        assert resp.json()["current_track"]["path"] == upcoming.path
+
+    def test_a_second_advance_from_the_same_track_changes_nothing(self, bridge) -> None:
+        from fastapi.testclient import TestClient
+
+        bridge = self._browser_bridge(bridge)
+        playing = bridge.player._state.current_track
+        upcoming = bridge.player._state.next_track
+        tc = TestClient(create_app(bridge))
+        tc.post("/api/advance", json={"from_path": playing.path})
+        after_first = bridge.player._state.next_track
+        resp = tc.post("/api/advance", json={"from_path": playing.path})
+        assert resp.status_code == 200
+        assert bridge.player._state.current_track is upcoming
+        assert bridge.player._state.next_track is after_first
+        assert resp.json()["current_track"]["path"] == upcoming.path
+
+    def test_server_audio_advance_from_a_stale_track_does_not_skip(self, bridge) -> None:
+        from fastapi.testclient import TestClient
+
+        tc = TestClient(create_app(bridge))
+        tc.post("/api/advance", json={"from_path": "Z:/Music/not-playing.flac"})
+        bridge.player._skip_event.set.assert_not_called()
+
+    def test_advance_with_nothing_playing_and_a_from_path_does_nothing(self, bridge) -> None:
+        bridge.player._state.current_track = None
+        assert bridge.advance("Z:/Music/song_0.flac") is False
+        bridge.player._skip_event.set.assert_not_called()
+
+    @pytest.mark.parametrize("body", [None, {"from_path": 3}, ["from_path"], {}])
+    def test_advance_without_a_usable_from_path_advances_as_before(self, bridge, body) -> None:
+        from fastapi.testclient import TestClient
+
+        tc = TestClient(create_app(bridge))
+        if body is None:
+            tc.post("/api/advance")
+        else:
+            tc.post("/api/advance", json=body)
+        bridge.player._skip_event.set.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# WebSocket state pushes survive a failure
+# ---------------------------------------------------------------------------
+
+
+class TestBroadcastStateOnce:
+    @staticmethod
+    def _push(bridge, clients, failures) -> None:
+        from autodj.server import _broadcast_state_once
+
+        asyncio.run(_broadcast_state_once(bridge, clients, asyncio.Lock(), failures))
+
+    def test_a_failing_state_is_logged_and_the_next_push_still_runs(
+        self, bridge, caplog, monkeypatch
+    ) -> None:
+        import logging
+
+        from autodj.server import _BroadcastFailureLog
+
+        sent = AsyncMock()
+        monkeypatch.setattr("autodj.server._broadcast_and_prune", sent)
+        now = [0.0]
+        failures = _BroadcastFailureLog(clock=lambda: now[0], every_s=60.0)
+        clients = {object()}
+        real_get_state = bridge.get_state
+        bridge.get_state = MagicMock(side_effect=AttributeError("current track vanished"))
+        with caplog.at_level(logging.INFO, logger="autodj.server"):
+            for _ in range(3):
+                self._push(bridge, clients, failures)  # never raises
+            errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+            assert len(errors) == 1 and errors[0].exc_info is not None
+            assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+            now[0] = 61.0
+            self._push(bridge, clients, failures)
+            warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+            assert len(warnings) == 1 and "3 failures" in warnings[0].getMessage()
+            bridge.get_state = real_get_state
+            self._push(bridge, clients, failures)
+            assert "works again" in caplog.text
+        sent.assert_awaited_once()
+
+    def test_a_new_kind_of_failure_gets_its_own_traceback(self, bridge, caplog) -> None:
+        import logging
+
+        from autodj.server import _BroadcastFailureLog
+
+        failures = _BroadcastFailureLog(clock=lambda: 0.0)
+        bridge.get_state = MagicMock(side_effect=[KeyError("a"), ValueError("b")])
+        with caplog.at_level(logging.ERROR, logger="autodj.server"):
+            self._push(bridge, {object()}, failures)
+            self._push(bridge, {object()}, failures)
+        assert len([r for r in caplog.records if r.exc_info]) == 2
+
+    def test_no_clients_means_no_state_is_built(self, bridge) -> None:
+        from autodj.server import _BroadcastFailureLog
+
+        bridge.get_state = MagicMock()
+        self._push(bridge, set(), _BroadcastFailureLog())
+        bridge.get_state.assert_not_called()

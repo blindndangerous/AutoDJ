@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -324,6 +325,39 @@ def test_forget_track_removes_the_newest_matching_row() -> None:
     assert [row["title"] for row in bridge.history_snapshot()] == ["Song 1", "Song 2"]
     bridge.forget_track(_make_entry(9))  # never played: nothing to forget
     assert len(bridge.history_snapshot()) == 2
+
+
+def test_forget_track_keeps_an_older_play_when_the_cut_short_start_was_ignored() -> None:
+    """The set stopped between the player making the track current and the
+    start hook, so that start was never recorded.  Forgetting it removed the
+    row of an earlier play of the same song instead."""
+    bridge, _stream = _stream_bridge()
+    song, other = _make_entry(1), _make_entry(2)
+    _started(bridge, song)
+    _started(bridge, other)
+    bridge.player._state.current_track = None  # end_set ran first
+    bridge.on_track_started(song)  # ignored
+    bridge.forget_track(song)
+    assert [row["title"] for row in bridge.history_snapshot()] == ["Song 1", "Song 2"]
+
+
+def test_forget_track_before_its_start_hook_keeps_the_history() -> None:
+    bridge, _stream = _stream_bridge()
+    song, other = _make_entry(1), _make_entry(2)
+    _started(bridge, song)
+    _started(bridge, other)
+    bridge.forget_track(_make_entry(1))  # cut short before its hook ran
+    assert [row["title"] for row in bridge.history_snapshot()] == ["Song 1", "Song 2"]
+
+
+def test_forget_track_removes_only_the_play_that_ended() -> None:
+    bridge, _stream = _stream_bridge()
+    song = _make_entry(1)
+    _started(bridge, song)
+    _started(bridge, song)  # the same song again later
+    bridge.forget_track(song)
+    bridge.forget_track(song)  # a second stop forgets nothing more
+    assert [row["title"] for row in bridge.history_snapshot()] == ["Song 1"]
 
 
 def test_pause_moves_the_bus_too() -> None:
@@ -652,12 +686,21 @@ def test_head_with_a_wrong_secret_is_404(stream_app) -> None:
     assert client.head("/stream/" + "z" * 43 + ".mp3").status_code == 404
 
 
+def _real_station(bridge: PlayerBridge, *, playing: bool) -> Any:
+    """Give *bridge* a real station over a mock bus that is (not) playing."""
+    from autodj.station import Station
+
+    bus = MagicMock(playing=playing)
+    bridge.station = Station(bus, bridge.stream, bridge.player, idle_grace=30.0)
+    return bridge.station
+
+
 def test_idle_play_now_sets_the_next_sets_first_track() -> None:
     bridge, _stream = _stream_bridge()
-    bridge.station.start_with.return_value = True
+    station = _real_station(bridge, playing=False)
     entry = bridge.sim.entries[2]
     assert bridge.play_next(entry.path, now=True) is True
-    bridge.station.start_with.assert_called_once_with(entry, "queue")
+    assert (station._start_entry, station._start_mode) == (entry, "queue")
     bridge.player.play_now.assert_not_called()
     assert bridge.player._state.queued_next is None
 
@@ -665,20 +708,42 @@ def test_idle_play_now_sets_the_next_sets_first_track() -> None:
 def test_play_now_during_a_set_plays_it_now() -> None:
     bridge, _stream = _stream_bridge()
     bridge.player.bus = MagicMock()
-    bridge.station.start_with.return_value = False
+    station = _real_station(bridge, playing=True)
     entry = bridge.sim.entries[2]
     assert bridge.play_next(entry.path, now=True) is True
     bridge.player.play_now.assert_called_once_with(entry)
+    assert station._start_entry is None
+
+
+def test_play_now_holds_the_station_lock_so_the_set_cannot_stop_meanwhile() -> None:
+    """The idle grace stopping the set between "is a set playing?" and
+    playing the track lost the track and started the next set elsewhere."""
+    bridge, _stream = _stream_bridge()
+    bridge.player.bus = MagicMock()
+    station = _real_station(bridge, playing=True)
+    held: list[bool] = []
+    bridge.player.play_now.side_effect = lambda *_a, **_k: held.append(station._lock.locked())
+    assert bridge.play_next(bridge.sim.entries[2].path, now=True) is True
+    assert bridge.reseed_random() is True
+    assert held == [True, True]
 
 
 def test_idle_random_sets_the_next_sets_first_track() -> None:
     bridge, _stream = _stream_bridge()
-    bridge.station.start_with.return_value = True
+    station = _real_station(bridge, playing=False)
     assert bridge.reseed_random() is True
-    entry, mode = bridge.station.start_with.call_args.args
-    assert entry in bridge.sim.entries
-    assert mode == "seed"
+    assert station._start_entry in bridge.sim.entries
+    assert station._start_mode == "seed"
     bridge.player.play_now.assert_not_called()
+
+
+def test_random_during_a_set_plays_it_now() -> None:
+    bridge, _stream = _stream_bridge()
+    _real_station(bridge, playing=True)
+    assert bridge.reseed_random() is True
+    entry = bridge.player.play_now.call_args.args[0]
+    assert entry in bridge.sim.entries
+    assert bridge.player.play_now.call_args.kwargs == {"pick_mode": "seed"}
 
 
 def test_hook_ignores_a_start_from_a_stopped_set() -> None:

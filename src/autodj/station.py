@@ -22,10 +22,12 @@ class Station:
     """Start a set on the first listener; stop it after the idle grace period.
 
     Thread-safety: :meth:`tick` runs on a worker thread about once a
-    second and :meth:`start_with` on request threads, so both decide under
-    one short lock.  Starting or stopping a set only moves the render
-    cursor and flips the bus, which is quick, so neither call blocks for
-    long.  The station itself never holds the player's queue lock.
+    second and :meth:`start_with` and :meth:`play_now` on request threads,
+    so all of them decide under one short lock.  Starting or stopping a
+    set, or playing a track now, only moves the render cursor and flips
+    the bus, which is quick, so no call blocks for long.  The station lock
+    comes first in the lock order: it is taken before the bus lock and the
+    player's locks, and nothing holding those calls into the station.
     """
 
     def __init__(
@@ -112,6 +114,27 @@ class Station:
                 return False
             self._start_entry, self._start_mode = entry, pick_mode
             return True
+
+    def play_now(self, entry: Any, pick_mode: str, play: Callable[[], None]) -> None:
+        """Play *entry* now: in the playing set, or as the next set's first track.
+
+        Decided and done under the station lock, so the idle grace cannot
+        stop the set between the check and *play*; that lost *entry* and
+        started the next set somewhere else.
+
+        Args:
+            entry: The track to play.
+            pick_mode: How it was chosen (``"queue"`` or ``"seed"``), used
+                when the station is idle.
+            play: Plays *entry* in the playing set (the player's
+                ``play_now``).  Called with the station lock held, so it
+                must not call back into the station.
+        """
+        with self._lock:
+            if not self._bus.playing:
+                self._start_entry, self._start_mode = entry, pick_mode
+                return
+            play()
 
     def _start(self) -> None:
         """Begin a new set (station lock held, queue lock not held)."""

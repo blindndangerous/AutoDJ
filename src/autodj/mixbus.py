@@ -55,6 +55,9 @@ class RenderedTrack:
             queue (it stays queued until it starts).
         set_generation: The stream set the bus took this track for; a
             track start from a set that has since stopped is ignored.
+        previous_entry: The track rendered just before this one (the one
+            the bus plays before it), or ``None`` when not known.  A
+            re-render of this track keeps excluding it from the next pick.
     """
 
     entry: IndexEntry
@@ -69,6 +72,7 @@ class RenderedTrack:
     next_pick_mode: str = "similarity"
     next_from_queue: bool = False
     set_generation: int = 0
+    previous_entry: IndexEntry | None = None
 
 
 class Output(Protocol):

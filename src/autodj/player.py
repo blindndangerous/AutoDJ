@@ -12,10 +12,12 @@ or the stream encoder in 20 ms blocks.
 from __future__ import annotations
 
 import logging
+import sqlite3
 import threading
 import time
 from collections import deque
 from collections.abc import Callable
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
@@ -390,6 +392,12 @@ class PlayerState:
             edits them while the server-audio thread pops from them, so
             every read-modify-write of either must hold this lock.
             Reentrant because some holders call into others.
+        history_lock: Guards the recently-played deques and
+            ``track_number``.  The mix bus records track starts, request
+            threads record browser-mode advances and resize the windows,
+            and picks copy the history (``Player._pick_lock`` is this
+            lock).  A leaf lock: hold it only for the record, resize or
+            copy itself.
     """
 
     current_track: IndexEntry | None = None
@@ -415,6 +423,7 @@ class PlayerState:
     track_number: int = 0
     discovery_enabled: bool = False
     queue_lock: threading.RLock = field(default_factory=threading.RLock, repr=False, compare=False)
+    history_lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         """Initialise the bounded recently-played deques."""
@@ -428,9 +437,12 @@ class PlayerState:
         """Change both repeat windows, keeping the most recent history.
 
         A shorter window keeps the newest entries; a longer one keeps all
-        of them and simply remembers more from now on.
+        of them and simply remembers more from now on.  The deques are
+        replaced under ``history_lock``, the lock every record and copy
+        holds, so a track start is never recorded into a deque that is
+        being thrown away, and a copy never iterates one being resized.
         """
-        with self.queue_lock:
+        with self.history_lock:
             self.no_repeat_window = no_repeat_window
             self.artist_repeat_window = artist_repeat_window
             self.recently_played = deque(self.recently_played, maxlen=no_repeat_window)
@@ -446,6 +458,8 @@ class PlayerState:
         avoid back-to-back same-artist sequences, two songs from the
         same album in a row, and re-runs of the same title (which
         catches different recordings / live versions of one song).
+
+        Hold ``history_lock``.
 
         Args:
             entry: The track that just started playing.
@@ -478,6 +492,9 @@ class _PickContext:
             ahead: a queue pick leaves the queue when it starts).
         queue_reserved: A pending track peeked from the queue that has not
             started yet; its queue slot is skipped.
+        protected: Paths no pick may return even after relaxing the repeat
+            window: the track the pick follows, the track the bus is
+            starting, the latest recorded track and the playing one.
     """
 
     recent: deque
@@ -487,6 +504,7 @@ class _PickContext:
     track_number: int
     peek_queue: bool = False
     queue_reserved: IndexEntry | None = None
+    protected: frozenset[str] = frozenset()
 
 
 # ---------------------------------------------------------------------------
@@ -555,6 +573,10 @@ class Player:
     # The track rendered just before the render cursor's track: the bus is
     # starting it while the worker picks what follows the cursor's track.
     _pending_previous: IndexEntry | None = None
+    # A queue pick the bus has taken (which removed it from the queue) and
+    # not yet started: it goes back if its set stops first.  Only the bus
+    # thread touches it (_take_render, then _on_track_start).
+    _taken_queue_pick: RenderedTrack | None = None
 
     def __init__(
         self,
@@ -697,16 +719,29 @@ class Player:
         )
         # The render the bus is playing (set when it starts).
         self._playing_render: RenderedTrack | None = None
-        # Guards the recently-played history and track_number: the mix bus
-        # thread records track starts while a pick copies them (see
-        # _pick_context).  It is held only for that copy or that record,
-        # never across a similarity search, so a track start never waits
-        # for a pick.
+        # _pick_lock (PlayerState.history_lock) guards the recently-played
+        # history and track_number: the mix bus thread records track starts
+        # while a pick copies them (see _pick_context).  It is held only for
+        # that copy or that record, never across a similarity search, so a
+        # track start never waits for a pick.
         #
-        # Lock order: _set_lock, then _pick_lock.  _pick_lock is a leaf:
-        # nothing else is taken while it is held.  queue_lock is never
-        # held together with either.
-        self._pick_lock = threading.Lock()
+        # Lock order: the station lock, then _advance_lock (browser mode
+        # only), then either _set_lock or queue_lock -- never both at once:
+        # _on_track_start gives a queue pick back only after releasing
+        # _set_lock -- then _pick_lock.  _pick_lock is a leaf: nothing else
+        # is taken while it is held.  (The bus lock and the render-ahead
+        # worker's lock come between the station lock and queue_lock; see
+        # _take_render.)
+        #
+        # _advance_lock: in browser mode, advance_now (a request thread) and
+        # the startup pick in _run_headless (the player thread) both change
+        # the now-playing state; holding it makes each change whole.
+        self._advance_lock = threading.Lock()
+        # Set once the picker has fallen back to a random track, so one
+        # episode of failed picks logs one warning (see _fallback_pick).
+        self._pick_fallback_active = False
+        self._dj_cache_lock = threading.Lock()
+        self._dj_cache_retry_at = 0.0
         # The seed, recorded by run() before the bus starts it; its first
         # _on_track_start must not record it a second time.
         self._seed_awaiting_start: IndexEntry | None = None
@@ -721,6 +756,11 @@ class Player:
         # the liner scheduler on it.  It stays idle until a set starts.
         if not dry_run:
             self._build_bus()
+
+    @property
+    def _pick_lock(self) -> threading.Lock:
+        """The history lock (``PlayerState.history_lock``); see :meth:`__init__`."""
+        return self._state.history_lock
 
     def stop(self) -> None:
         """Wake and stop the playback loop, including empty-library waiting."""
@@ -856,7 +896,8 @@ class Player:
         which skips recording it again.
         """
         self._state.current_track = seed
-        self._state.record_played(seed)
+        with self._pick_lock:
+            self._state.record_played(seed)
         self._seed_awaiting_start = seed
 
     def _stop_when_requested(self, stop: threading.Event) -> None:
@@ -895,6 +936,11 @@ class Player:
         pick that cannot be rendered at all is dropped from the queue,
         since it will never start.
 
+        A pick that fails outright (nothing at all is left to play, or an
+        unexpected picker error) never fails the render either: the track
+        is rendered with no successor, so the worker parks on an empty
+        cursor instead of retrying the same failing pick every second.
+
         Returns:
             The rendered track, or ``None`` when nothing could be rendered.
         """
@@ -908,13 +954,24 @@ class Player:
                 return None
             offset, pick_mode = self._pending_offset, self._pending_pick_mode
             current_from_queue = self._pending_from_queue
+            previous = self._pending_previous
             context = self._pick_context(
                 pending=current,
-                starting=self._pending_previous,
+                starting=previous,
                 peek_queue=True,
                 queue_reserved=current if current_from_queue else None,
             )
-            next_entry, next_mode = self._choose_next(current, context)
+            next_entry: IndexEntry | None
+            try:
+                next_entry, next_mode = self._choose_next(current, context)
+            except Exception as exc:
+                # A failed search already fell back to a random track, so
+                # this is an empty (or all-silent) library: play this track
+                # out and park on an empty cursor.
+                logger.warning(
+                    "No track can follow %s (%s); it plays out alone.", current.path, exc
+                )
+                next_entry, next_mode = None, "similarity"
             try:
                 rendered = self._render_track(current, next_entry, offset)
             except Exception:
@@ -929,7 +986,7 @@ class Player:
                 next_mode,
                 from_queue=next_mode == "queue",
                 # A track that failed to render never starts.
-                previous=current if rendered is not None else self._pending_previous,
+                previous=current if rendered is not None else previous,
             )
             if rendered is not None:
                 return replace(
@@ -940,6 +997,7 @@ class Player:
                     next_pick_mode=next_mode,
                     next_from_queue=next_mode == "queue",
                     set_generation=generation,
+                    previous_entry=previous,
                 )
         return None
 
@@ -963,13 +1021,31 @@ class Player:
         self._pending_previous = previous
 
     def _rewind_render_cursor(self, track: RenderedTrack) -> None:
-        """Point the cursor back at *track*'s own start (to re-render it)."""
-        self._set_render_cursor(track.entry, track.start_offset, track.pick_mode, track.from_queue)
+        """Point the cursor back at *track*'s own start (to re-render it).
+
+        The track before it is the one it was rendered after, so the
+        re-render's pick still excludes the track the bus is starting.
+        """
+        self._set_render_cursor(
+            track.entry,
+            track.start_offset,
+            track.pick_mode,
+            track.from_queue,
+            previous=track.previous_entry,
+        )
 
     def _skip_past_render(self, track: RenderedTrack) -> None:
-        """Point the cursor just after *track* (the bus took it as a fallback)."""
+        """Point the cursor just after *track* (the bus took it as a fallback).
+
+        *track* is the one starting now, so the next pick excludes it even
+        before its start is recorded.
+        """
         self._set_render_cursor(
-            track.next_entry, track.next_start_offset, track.next_pick_mode, track.next_from_queue
+            track.next_entry,
+            track.next_start_offset,
+            track.next_pick_mode,
+            track.next_from_queue,
+            previous=track.entry,
         )
 
     def reset_render_ahead(
@@ -1068,11 +1144,12 @@ class Player:
         """
         with self._state.queue_lock:
             track = self._render_ahead.pop()
-            if track is not None and track.from_queue:
-                self._commit_queue_pick(track.entry)
+            if track is not None and track.from_queue and self._commit_queue_pick(track.entry):
+                # Given back if its set stops before it starts.
+                self._taken_queue_pick = track
         return track
 
-    def _commit_queue_pick(self, entry: IndexEntry) -> None:
+    def _commit_queue_pick(self, entry: IndexEntry) -> bool:
         """Remove one queued occurrence of *entry* now that it starts.
 
         ``queued_next`` is checked first (it is peeked first), then the
@@ -1080,15 +1157,19 @@ class Player:
         removed it, there is nothing to do: it plays anyway only because
         it was already mixed into the previous track's tail.  Hold
         ``queue_lock``.
+
+        Returns:
+            Whether an occurrence was removed.
         """
         state = self._state
         if state.queued_next is not None and state.queued_next.path == entry.path:
             state.queued_next = None
-            return
+            return True
         for index, queued in enumerate(state.queue):
             if queued.path == entry.path:
                 del state.queue[index]
-                return
+                return True
+        return False
 
     def _peek_user_queue(self, reserved: IndexEntry | None) -> IndexEntry | None:
         """The queue head a render would pick, skipping *reserved*'s slot.
@@ -1131,37 +1212,53 @@ class Player:
         begins ``rendered.start_offset`` samples into the file.
 
         A render taken for a stream set that has since stopped (its
-        callback ran after :meth:`end_set`) is ignored entirely.  The hook
+        callback ran after :meth:`end_set`) is ignored entirely, except
+        that a queue pick goes back to the head of the queue: the bus took
+        it, which removed it from the queue, but it never played.  The hook
         is called with ``_set_lock`` released: it can reach the stream
         output, whose listener notifications may start a set.
         """
         entry = rendered.entry
         with self._set_lock:
-            if rendered.set_generation != self._set_generation:
-                return
-            self._playing_render = rendered
-            if entry is not self._state.current_track:
-                self._previous_track = self._state.current_track
-            self._state.current_track = entry
-            self._state.next_track = rendered.next_entry
-            self._current_sr = SAMPLE_RATE
-            self._playback_pos[0] = rendered.start_offset
-            self._playback_len = rendered.start_offset + len(rendered.audio)
-            self._last_transition_fx = rendered.transition_fx
-            self._beatmatch_ratio = rendered.beatmatch_ratio
-            self._last_pick_mode = rendered.pick_mode
-            seed_start = entry is self._seed_awaiting_start
-            with self._pick_lock:
-                if seed_start:
-                    self._seed_awaiting_start = None  # run() already recorded it
-                else:
-                    self._state.record_played(entry)
-                    self._state.track_number += 1
+            stale = rendered.set_generation != self._set_generation
+            if not stale:
+                self._start_playing(rendered)
+        taken_from_queue = self._taken_queue_pick is rendered
+        if taken_from_queue:
+            self._taken_queue_pick = None  # do not hold its audio
+        if stale:
+            if taken_from_queue:
+                # Outside _set_lock: queue_lock is never held together with it.
+                with self._state.queue_lock:
+                    self._state.queue.insert(0, entry)
+            return
         self._current_lyrics = []
         self._current_lyrics_plain = ""
         self.load_lyrics_in_background(entry.path)
         if self.on_track_started is not None:
             self.on_track_started(entry)
+
+    def _start_playing(self, rendered: RenderedTrack) -> None:
+        """Make *rendered* the playing track and record it (hold ``_set_lock``)."""
+        entry = rendered.entry
+        self._playing_render = rendered
+        if entry is not self._state.current_track:
+            self._previous_track = self._state.current_track
+        self._state.current_track = entry
+        self._state.next_track = rendered.next_entry
+        self._current_sr = SAMPLE_RATE
+        self._playback_pos[0] = rendered.start_offset
+        self._playback_len = rendered.start_offset + len(rendered.audio)
+        self._last_transition_fx = rendered.transition_fx
+        self._beatmatch_ratio = rendered.beatmatch_ratio
+        self._last_pick_mode = rendered.pick_mode
+        seed_start = entry is self._seed_awaiting_start
+        with self._pick_lock:
+            if seed_start:
+                self._seed_awaiting_start = None  # run() already recorded it
+            else:
+                self._state.record_played(entry)
+                self._state.track_number += 1
 
     def _on_position(self, frames: int) -> None:
         """Record mix-bus progress, in the playing track's own timeline."""
@@ -1189,22 +1286,41 @@ class Player:
         # to mutate state synchronously.  This loop never advances on
         # its own — that was the source of the "song changed while page
         # idle" bug.
-        self._state.current_track = current
-        if self._state.next_track is None:
-            self._state.next_track = self._pick_next(current)
-        # Browser-driven mode never renders on the server, so lyrics and
-        # DJ meta (cue points, intro_end_s, outro_start_s, beat grid)
-        # would otherwise stay empty for the seed track and the web UI
-        # would hide its lyrics card / show an empty cue list even when
-        # the data was easy to derive.  Both can touch slow NAS/local
-        # audio files, so keep them off the control path.
-        self.load_lyrics_in_background(current.path)
-        self.analyse_track_in_background(current.path)
-        self._current_sr = _DEFAULT_SR
-        self._playback_len = int(
-            (current.length if current.length and current.length > 0 else 5.0) * _DEFAULT_SR,
-        )
-        self._playback_pos[0] = 0
+        #
+        # The page can POST /api/advance while the first pick is still
+        # searching, so the pick runs unlocked and is committed under
+        # _advance_lock only if the seed is still playing and nothing has
+        # filled next_track meanwhile; an advance that got in first keeps
+        # its state, timer included.
+        state = self._state
+        picked: tuple[IndexEntry, str] | None = None
+        if state.next_track is None:
+            try:
+                picked = self._choose_next(current, self._pick_context())
+            except Exception:
+                logger.warning("No track can follow the seed yet", exc_info=True)
+        with self._advance_lock:
+            if state.current_track is None:
+                state.current_track = current
+            seed_playing = state.current_track is current
+            if seed_playing:
+                if picked is not None and state.next_track is None:
+                    state.next_track, self._last_pick_mode = picked
+                self._current_sr = _DEFAULT_SR
+                self._playback_len = int(
+                    (current.length if current.length and current.length > 0 else 5.0)
+                    * _DEFAULT_SR,
+                )
+                self._playback_pos[0] = 0
+        if seed_playing:
+            # Browser-driven mode never renders on the server, so lyrics and
+            # DJ meta (cue points, intro_end_s, outro_start_s, beat grid)
+            # would otherwise stay empty for the seed track and the web UI
+            # would hide its lyrics card / show an empty cue list even when
+            # the data was easy to derive.  Both can touch slow NAS/local
+            # audio files, so keep them off the control path.
+            self.load_lyrics_in_background(current.path)
+            self.analyse_track_in_background(current.path)
 
         # Park until shutdown.  No fallback timer, no auto-advance.
         while not self._state.should_stop:  # pragma: no cover
@@ -1270,8 +1386,21 @@ class Player:
         with self._pick_lock:
             paths, artists, albums, titles = self._recent_exclusions(pending, starting)
             track_number = self._state.track_number
+            recorded = self._state.recently_played
+            latest = recorded[-1] if recorded else None
+        playing = self._state.current_track
+        protected = {e.path for e in (pending, starting, playing) if e is not None}
+        if latest is not None:
+            protected.add(latest)
         return _PickContext(
-            paths, artists, albums, titles, track_number, peek_queue, queue_reserved
+            paths,
+            artists,
+            albums,
+            titles,
+            track_number,
+            peek_queue,
+            queue_reserved,
+            frozenset(protected),
         )
 
     def _recent_exclusions(
@@ -1308,16 +1437,19 @@ class Player:
             lowered(state.recently_played_titles, "title"),
         )
 
-    def _pick_pure_shuffle(self, recent: deque) -> IndexEntry:
-        """Random pick from tracks not in *recent*, honouring the hard BPM range.
+    def _pick_pure_shuffle(self, current: IndexEntry, context: _PickContext) -> IndexEntry:
+        """Random pick from tracks not in *context*'s history, honouring the BPM range.
 
-        Silent tracks are never picked.
+        Silent tracks are never picked.  When every eligible track was
+        played recently, the history is relaxed to *current* and the
+        protected tracks (the one starting and the one playing), so the
+        pick never returns to any of them.
         """
         import random as _rnd
 
         from autodj.similarity import SimilarityError
 
-        excluded = set(recent)
+        excluded = set(context.recent)
 
         def eligible(entry: IndexEntry) -> bool:
             if entry.is_silent:
@@ -1333,10 +1465,8 @@ class Player:
             logger.warning(
                 "Pure shuffle exhausted eligible non-recent tracks; relaxing recent-track exclusion"
             )
-            current_path = (
-                self._state.current_track.path if self._state.current_track is not None else None
-            )
-            pool = [e for e in entries if e.path != current_path and eligible(e)]
+            protected = context.protected | {current.path}
+            pool = [e for e in entries if e.path not in protected and eligible(e)]
         if not pool:
             raise SimilarityError("No candidates satisfy hard filters for pure shuffle.")
         return _rnd.choice(pool)  # nosec B311 -- non-security
@@ -1394,8 +1524,12 @@ class Player:
            surprising).
         4. Normal FAISS similarity search, optionally biased by preset BPM.
 
-        Falls back to excluding only the current track if the no-repeat
-        window covers the entire index.  Reads the history only from
+        Relaxes the no-repeat window to the protected tracks if it covers
+        the entire index.  When the pick still fails -- the hard filters
+        (BPM range, harmonic mode) leave nothing, *current* has left the
+        index after a reload, or anything else goes wrong in the search --
+        a random track is played instead (see :meth:`_fallback_pick`), so
+        a failed pick never stops the music.  Reads the history only from
         *context*, so it runs without ``_pick_lock``.
 
         Args:
@@ -1404,13 +1538,26 @@ class Player:
 
         Returns:
             ``(entry, pick_mode)``.
+
+        Raises:
+            SimilarityError: The library has no track that is not silent.
         """
         queued = self._pop_user_queue(context.peek_queue, context.queue_reserved)
         if queued is not None:
             return queued, "queue"
+        try:
+            picked = self._choose_by_mode(current, context)
+        except Exception as exc:
+            return self._fallback_pick(current, context, exc), "fallback"
+        if self._pick_fallback_active:
+            self._pick_fallback_active = False
+            logger.info("Picking the next track works again.")
+        return picked
 
+    def _choose_by_mode(self, current: IndexEntry, context: _PickContext) -> tuple[IndexEntry, str]:
+        """Pick by pure shuffle, discovery or similarity (see :meth:`_choose_next`)."""
         if self._pure_shuffle:
-            return self._pick_pure_shuffle(context.recent), "pure_shuffle"
+            return self._pick_pure_shuffle(current, context), "pure_shuffle"
 
         from autodj.similarity import SimilarityError
 
@@ -1445,15 +1592,89 @@ class Player:
         try:
             return self._sim.find_next_for_path(recently_played=context.recent, **search), mode
         except SimilarityError:
-            # The repeat window is >= index size — relax it to just the
-            # current track so we can keep playing.
+            # The repeat window is >= index size — relax it to the tracks
+            # that must never follow (this one, the one starting, the one
+            # playing), so we can keep playing without going back and forth.
+            protected = context.protected | {current.path}
             logger.info(
                 "No candidates after applying repeat window (%d tracks) — "
-                "relaxing to avoid only the current track.",
+                "relaxing to avoid only the %d tracks around this one.",
                 len(context.recent),
+                len(protected),
             )
-            relaxed = self._sim.find_next_for_path(recently_played=deque([current.path]), **search)
+            relaxed = self._sim.find_next_for_path(
+                recently_played=deque(sorted(protected)), **search
+            )
             return relaxed, mode
+
+    def _fallback_pick(
+        self, current: IndexEntry, context: _PickContext, reason: Exception
+    ) -> IndexEntry:
+        """Pick a random track after the normal pick failed with *reason*.
+
+        Ignores the soft filters (harmonic mode, artist and album windows)
+        but avoids repeats as far as the library allows: first a track
+        outside the recent history, then one that is not protected (see
+        :class:`_PickContext`), then anything but *current*, then *current*
+        itself (a one-track library).  Every step is tried first among the
+        tracks inside the hard BPM range, the same rule pure shuffle uses;
+        only when no track at all is inside the range are the steps tried
+        again without it.  Silent tracks are never picked.
+
+        The first fallback of an episode logs a warning, saying when the
+        BPM range had to be ignored; later ones log at debug until a
+        normal pick succeeds again.
+
+        Raises:
+            SimilarityError: The library has no track that is not silent.
+        """
+        import random as _rnd
+
+        from autodj.similarity import SimilarityError
+
+        audible = [entry for entry in self._sim.entries_snapshot() if not entry.is_silent]
+        bpm_range = self._bpm_range
+        in_range = audible
+        if bpm_range is not None:
+            lo, hi = bpm_range
+            in_range = [entry for entry in audible if entry.bpm > 0 and lo <= entry.bpm <= hi]
+        recent = set(context.recent) | {current.path}
+        tiers: tuple[AbstractSet[str], ...] = (
+            recent,
+            context.protected | {current.path},
+            {current.path},
+            set(),
+        )
+        chosen: IndexEntry | None = None
+        range_ignored = False
+        for candidates in (in_range, audible):
+            for excluded in tiers:
+                pool = [entry for entry in candidates if entry.path not in excluded]
+                if pool:
+                    chosen = _rnd.choice(pool)  # nosec B311 -- non-security
+                    break
+            if chosen is not None:
+                break
+            range_ignored = bpm_range is not None
+        ignored_note = " The BPM range was ignored: no track is inside it." if range_ignored else ""
+        if self._pick_fallback_active:
+            logger.debug(
+                "Normal pick still failing (%s); picking at random.%s", reason, ignored_note
+            )
+        else:
+            self._pick_fallback_active = True
+            logger.warning(
+                "Could not pick a track to follow %s (%s: %s); picking one at random "
+                "instead until the normal pick works again.%s",
+                current.display_name,
+                type(reason).__name__,
+                reason,
+                ignored_note,
+                exc_info=not isinstance(reason, SimilarityError),
+            )
+        if chosen is None:
+            raise SimilarityError("The library has no track that is not silent.")
+        return chosen
 
     # ------------------------------------------------------------------
     # _render_track helpers — broken out so the renderer stays readable.
@@ -1578,29 +1799,44 @@ class Player:
         )
         thread.start()
 
+    # Seconds between attempts to open a DJ-meta cache that failed to open.
+    _DJ_CACHE_RETRY_S: ClassVar[float] = 30.0
+
     def _ensure_dj_cache(self) -> None:
         """Lazy-init the DJ-meta cache on first real use.
 
         Cheap by design: it only opens ``dj_meta.db``.  Safe to call from
         an asyncio handler (e.g. ``PlayerBridge.get_state``) without
         blocking the event loop.
+
+        Thread-safe: a caller that arrives while another thread is opening
+        the cache waits for it rather than carrying on without one.  The
+        cache counts as initialised only once it opened; after a failure
+        (logged once until it succeeds) it is tried again on a later call,
+        at most every :attr:`_DJ_CACHE_RETRY_S` seconds.
         """
         if self._dj_cache_initialised:
             return
-        self._dj_cache_initialised = True
-        try:
-            from autodj.dj_meta import get_cache
+        with self._dj_cache_lock:
+            if self._dj_cache_initialised or time.monotonic() < self._dj_cache_retry_at:
+                return
+            try:
+                from autodj.dj_meta import get_cache
 
-            if isinstance(self._cfg.index.active_dir, Path):
-                self._dj_cache = get_cache(
-                    self._cfg.index.active_dir,
-                    music_dir=self._cfg.library.music_dir
-                    if isinstance(self._cfg.library.music_dir, Path)
-                    else None,
-                )
-        except (OSError, ValueError) as exc:
-            logger.warning("DJ cache unavailable: %s", exc)
-            self._dj_cache = None
+                if isinstance(self._cfg.index.active_dir, Path):
+                    self._dj_cache = get_cache(
+                        self._cfg.index.active_dir,
+                        music_dir=self._cfg.library.music_dir
+                        if isinstance(self._cfg.library.music_dir, Path)
+                        else None,
+                    )
+            except (OSError, ValueError, sqlite3.Error) as exc:
+                log = logger.debug if self._dj_cache_retry_at else logger.warning
+                log("DJ cache unavailable: %s", exc)
+                self._dj_cache = None
+                self._dj_cache_retry_at = time.monotonic() + self._DJ_CACHE_RETRY_S
+                return
+            self._dj_cache_initialised = True
 
     def _outgoing_meta(self, audio_a: np.ndarray, sr_a: int, path: str) -> DjMeta | None:
         """Get / compute DjMeta for the outgoing track when needed for alignment.
@@ -1790,8 +2026,22 @@ class Player:
         logger.debug("Measured first sound of %s at %.2fs", Path(path).name, intro_start)
 
     def wait_for_background_analysis(self, timeout: float | None = None) -> bool:
-        """Wait for registered DJ-metadata workers within one total timeout."""
+        """Wait for every DJ-metadata writer within one total timeout.
+
+        The writers are the registered background-analysis workers and the
+        render-ahead worker, which analyses a track it renders when the
+        cache has no markers for it.  The render-ahead worker is told to
+        stop first; a render in flight (which can spend a while in
+        analysis) still finishes before it exits.
+
+        Returns:
+            Whether every writer finished in time, so the cache can close.
+        """
         deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+        self._render_ahead.stop(timeout=0)
+        render_timeout = None if deadline is None else deadline - time.monotonic()
+        if not self._render_ahead.join(render_timeout):
+            return False
         while True:
             with self._bg_analysis_lock:
                 workers = tuple(self._bg_analysis_threads)

@@ -819,3 +819,66 @@ class TestDjMetaHarmonic:
 
     def test_energy_boost_same_side_too_far(self) -> None:
         assert harmonic_compatible(*_key_for(1, "A"), *_key_for(5, "A"), "energy_boost") is False
+
+
+class TestDjMetaCacheSeesOtherWriters:
+    """``autodj analyse`` writes rows from another process while serve runs."""
+
+    def test_a_row_written_later_by_another_process_is_seen(self, tmp_path) -> None:
+        now = [100.0]
+        path = tmp_path / "cache.db"
+        with DjMetaCache(path, clock=lambda: now[0]) as server:
+            assert server.get("song.flac").analysed is False
+            with DjMetaCache(path) as analyser:
+                analyser.set("song.flac", DjMeta(intro_end_s=8.0, analysed=True))
+                analyser.flush(force=True)
+            # Within the miss expiry the server does not query SQLite again.
+            assert server.get("song.flac").analysed is False
+            now[0] += DjMetaCache.MISS_TTL_S
+            meta = server.get("song.flac")
+            assert meta.analysed is True and meta.intro_end_s == 8.0
+
+    def test_analysed_rows_stay_cached(self, tmp_path) -> None:
+        now = [0.0]
+        path = tmp_path / "cache.db"
+        with DjMetaCache(path) as writer:
+            writer.set("song.flac", DjMeta(intro_end_s=1.0, analysed=True))
+            writer.flush(force=True)
+        with DjMetaCache(path, clock=lambda: now[0]) as server:
+            first = server.get("song.flac")
+            assert server._conn is not None
+            server._conn.execute("DELETE FROM dj_meta")
+            now[0] += 3600.0
+            assert server.get("song.flac") is first
+
+    def test_a_local_write_replaces_a_remembered_miss(self, tmp_path) -> None:
+        with DjMetaCache(tmp_path / "cache.db", clock=lambda: 0.0) as cache:
+            assert cache.get("song.flac").analysed is False
+            cache.set("song.flac", DjMeta(analysed=True))
+            cache.flush(force=True)
+            assert cache.get("song.flac").analysed is True
+            assert cache.prune_to_paths(set()) == 1
+            assert cache.get("song.flac").analysed is False
+
+
+class TestClosedDjMetaCache:
+    """A worker that outlives shutdown must not crash on the closed cache."""
+
+    def test_reads_return_empty_meta_after_close(self, tmp_path, caplog) -> None:
+        cache = DjMetaCache(tmp_path / "cache.db")
+        cache.close()
+        with caplog.at_level("WARNING", logger="autodj.dj_meta"):
+            assert cache.get("a.flac") == DjMeta()
+            assert cache.get("b.flac") == DjMeta()
+        assert caplog.text.count("after it was closed") == 1
+
+    def test_writes_and_prunes_are_dropped_after_close(self, tmp_path) -> None:
+        path = tmp_path / "cache.db"
+        cache = DjMetaCache(path)
+        cache.close()
+        cache.set("late.flac", DjMeta(analysed=True))
+        cache.flush(force=True)
+        assert cache._buf == {}
+        assert cache.prune_to_paths(set()) == 0
+        with DjMetaCache(path) as reopened:
+            assert reopened.get("late.flac").analysed is False
