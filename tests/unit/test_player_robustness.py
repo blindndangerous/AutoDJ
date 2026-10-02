@@ -74,14 +74,62 @@ class TestFailedPickRecovers:
         assert rendered.next_entry.path in {entry.path for entry in player._sim.entries}
         assert rendered.next_pick_mode == "fallback"
 
-    def test_fallback_ignores_the_bpm_range_and_the_harmonic_mode(self) -> None:
+    def test_fallback_stays_inside_the_bpm_range_when_tracks_are_there(self) -> None:
+        """A failed harmonic pick must not jump to any tempo when the range has tracks."""
+        sim = make_sim_index(6, bpms=[124.0, 90.0, 0.0, 160.0, 126.0, 128.0])
+        player = Player(make_cfg_mock(), sim)
+        player._bpm_range = (120.0, 130.0)
+        player._cfg.djmix.harmonic_mode = "strict"
+        player._sim.find_next_for_path = MagicMock(  # type: ignore[method-assign]
+            side_effect=SimilarityError("No candidates satisfy hard filters: harmonic.")
+        )
+        current = sim.entries[0]
+        for _ in range(20):
+            entry, mode = player._choose_next(current, player._pick_context(current))
+            assert mode == "fallback"
+            assert entry.path in {sim.entries[4].path, sim.entries[5].path}
+
+    def test_fallback_in_range_prefers_a_repeat_inside_the_range(self) -> None:
+        """Every in-range track played recently: repeat one inside the range first."""
+        sim = make_sim_index(5, bpms=[124.0, 126.0, 90.0, 95.0, 100.0])
+        player = Player(make_cfg_mock(), sim)
+        player._state = PlayerState(no_repeat_window=10, artist_repeat_window=0)
+        player._bpm_range = (120.0, 130.0)
+        player._state.record_played(sim.entries[1])
+        player._sim.find_next_for_path = MagicMock(  # type: ignore[method-assign]
+            side_effect=SimilarityError("no candidates")
+        )
+        current = sim.entries[0]
+        context = player._pick_context(current)
+        entry, _mode = player._choose_next(current, context)
+        assert entry.path == sim.entries[1].path
+
+    def test_fallback_leaves_the_bpm_range_only_when_nothing_is_in_it(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         player = _player(4)
         player._bpm_range = (200.0, 210.0)  # no track qualifies
         player._cfg.djmix.harmonic_mode = "strict"
         current = player._sim.entries[0]
-        entry, mode = player._choose_next(current, player._pick_context(current))
+        with caplog.at_level(logging.WARNING, logger="autodj.player"):
+            entry, mode = player._choose_next(current, player._pick_context(current))
         assert mode == "fallback"
         assert entry.path != current.path
+        assert "BPM range was ignored" in caplog.text
+
+    def test_fallback_inside_the_range_does_not_mention_ignoring_it(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        player = _player(4)
+        player._bpm_range = (110.0, 130.0)  # every fake track is 120 BPM
+        player._sim.find_next_for_path = MagicMock(  # type: ignore[method-assign]
+            side_effect=SimilarityError("no candidates")
+        )
+        current = player._sim.entries[0]
+        with caplog.at_level(logging.WARNING, logger="autodj.player"):
+            player._choose_next(current, player._pick_context(current))
+        assert "picking one at random" in caplog.text
+        assert "BPM range was ignored" not in caplog.text
 
     def test_pure_shuffle_with_nothing_in_the_bpm_range_falls_back(self) -> None:
         player = _player(4)

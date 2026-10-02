@@ -17,6 +17,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
@@ -1611,13 +1612,18 @@ class Player:
     ) -> IndexEntry:
         """Pick a random track after the normal pick failed with *reason*.
 
-        Ignores every filter (BPM range, harmonic mode, artist and album
-        windows) but avoids repeats as far as the library allows: first a
-        track outside the recent history, then one that is not protected
-        (see :class:`_PickContext`), then anything but *current*, then
-        *current* itself (a one-track library).  Silent tracks are never
-        picked.  The first fallback of an episode logs a warning; later
-        ones log at debug until a normal pick succeeds again.
+        Ignores the soft filters (harmonic mode, artist and album windows)
+        but avoids repeats as far as the library allows: first a track
+        outside the recent history, then one that is not protected (see
+        :class:`_PickContext`), then anything but *current*, then *current*
+        itself (a one-track library).  Every step is tried first among the
+        tracks inside the hard BPM range, the same rule pure shuffle uses;
+        only when no track at all is inside the range are the steps tried
+        again without it.  Silent tracks are never picked.
+
+        The first fallback of an episode logs a warning, saying when the
+        BPM range had to be ignored; later ones log at debug until a
+        normal pick succeeds again.
 
         Raises:
             SimilarityError: The library has no track that is not silent.
@@ -1626,25 +1632,49 @@ class Player:
 
         from autodj.similarity import SimilarityError
 
+        audible = [entry for entry in self._sim.entries_snapshot() if not entry.is_silent]
+        bpm_range = self._bpm_range
+        in_range = audible
+        if bpm_range is not None:
+            lo, hi = bpm_range
+            in_range = [entry for entry in audible if entry.bpm > 0 and lo <= entry.bpm <= hi]
+        recent = set(context.recent) | {current.path}
+        tiers: tuple[AbstractSet[str], ...] = (
+            recent,
+            context.protected | {current.path},
+            {current.path},
+            set(),
+        )
+        chosen: IndexEntry | None = None
+        range_ignored = False
+        for candidates in (in_range, audible):
+            for excluded in tiers:
+                pool = [entry for entry in candidates if entry.path not in excluded]
+                if pool:
+                    chosen = _rnd.choice(pool)  # nosec B311 -- non-security
+                    break
+            if chosen is not None:
+                break
+            range_ignored = bpm_range is not None
+        ignored_note = " The BPM range was ignored: no track is inside it." if range_ignored else ""
         if self._pick_fallback_active:
-            logger.debug("Normal pick still failing (%s); picking at random.", reason)
+            logger.debug(
+                "Normal pick still failing (%s); picking at random.%s", reason, ignored_note
+            )
         else:
             self._pick_fallback_active = True
             logger.warning(
                 "Could not pick a track to follow %s (%s: %s); picking one at random "
-                "instead until the normal pick works again.",
+                "instead until the normal pick works again.%s",
                 current.display_name,
                 type(reason).__name__,
                 reason,
+                ignored_note,
                 exc_info=not isinstance(reason, SimilarityError),
             )
-        audible = [entry for entry in self._sim.entries_snapshot() if not entry.is_silent]
-        recent = set(context.recent) | {current.path}
-        for excluded in (recent, context.protected | {current.path}, {current.path}, set()):
-            pool = [entry for entry in audible if entry.path not in excluded]
-            if pool:
-                return _rnd.choice(pool)  # nosec B311 -- non-security
-        raise SimilarityError("The library has no track that is not silent.")
+        if chosen is None:
+            raise SimilarityError("The library has no track that is not silent.")
+        return chosen
 
     # ------------------------------------------------------------------
     # _render_track helpers — broken out so the renderer stays readable.

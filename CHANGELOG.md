@@ -23,7 +23,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   settings. A BPM range or harmonic mode that no song matches, or a library reload that removed the
   song coming up, made every pick fail, and the station played silence until a restart. AutoDJ now
   plays a random song instead, avoiding recent songs as far as the library allows, logs one warning,
-  and goes back to normal picks as soon as they work. "Why this track" says it was a random pick.
+  and goes back to normal picks as soon as they work. The random song stays inside your BPM range
+  whenever any song is in it; the warning says when none is. "Why this track" says it was a random
+  pick.
 - When every song in a small library has played recently, the auto-DJ no longer goes back to the
   song that is starting or the one before it. The no-repeat window also follows the library size
   after an index reload, so a library that started empty and then filled is not stuck repeating a
