@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Phrase align now works for crossfades played in the browser, not only when the server does the
+  mixing. With **Phrase align** on, a crossfade in the browser starts on the phrase boundary
+  nearest the point where it would otherwise begin, so the next track comes in at the end of a
+  phrase rather than mid-bar. **Phrase length (bars)** sets how long a phrase is, as it does for
+  the server mix. The crossfade keeps its usual start when the track has no detected beat grid,
+  when no boundary is within half a phrase, or when starting on the boundary would leave too
+  little of the track for the whole fade.
+
 ### Changed
 
 - A pairing code works only after someone asks for one, and each one pairs one device. Before,

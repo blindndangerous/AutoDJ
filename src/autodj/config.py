@@ -491,8 +491,9 @@ class DjMixConfig(_Section):
             outgoing track's outro start (auto-detected on first play)
             and the incoming track enters at its first sound.
         phrase_align: When ``True``, the crossfade start time is snapped
-            to the nearest 8-bar phrase boundary (uses the cached beat
-            grid).
+            to the nearest ``phrase_bars``-bar phrase boundary (uses the
+            cached beat grid).  Applies to the server mix and to browser
+            crossfades (``static/modules/audio-engine.js``).
         phrase_bars: Phrase length in bars used by phrase alignment.
         filter_sweep: When ``True``, applies a low-pass sweep on the
             outgoing tail (cutoff sliding from full-range down to

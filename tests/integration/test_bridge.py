@@ -155,6 +155,29 @@ class TestStateHelpers:
         st = bridge.get_state()
         assert st["current_track"]["downbeats_outro"] == []
         assert st["current_track"]["downbeats_intro"] == []
+        assert st["current_track"]["downbeats_outro_first_bar"] is None
+
+    def test_downbeats_outro_first_bar_counts_from_first_beat(self, bridge) -> None:
+        # 120 BPM, 180 s: one beat every 0.5 s, one bar every 2 s.  The
+        # outro window starts 32 bars (64 s) before the end, at 116 s,
+        # which is bar 58 counted from the first beat.
+        entry = _entry()
+        bridge.player._state.current_track = entry
+        beats = [i * 0.5 for i in range(360)]
+        _attach_cache(bridge, _StaticCache({entry.path: DjMeta(analysed=True, beats=beats)}))
+        st = bridge.get_state()
+        assert st["current_track"]["downbeats_outro"][0] == 116.0
+        assert st["current_track"]["downbeats_outro_first_bar"] == 58
+
+    def test_downbeats_outro_first_bar_none_for_synthesised_grid(self, bridge) -> None:
+        # No beat grid: the browser gets a BPM-synthesised grid for its
+        # effects, but no bar number, so it does not phrase-align on it.
+        entry = _entry()
+        bridge.player._state.current_track = entry
+        _attach_cache(bridge, _StaticCache({entry.path: DjMeta(analysed=True, beats=[])}))
+        st = bridge.get_state()
+        assert st["current_track"]["downbeats_outro"]
+        assert st["current_track"]["downbeats_outro_first_bar"] is None
 
 
 class TestActiveLyric:

@@ -287,10 +287,12 @@ max_clip_safe_gain = 1.0
 # ---------------------------------------------------------------------------
 # Pro-DJ mixing layer (beatmatch, harmonic, phrase-align, outro/intro,
 # filter sweep).  Every option is opt-in.  harmonic_mode steers the picker
-# in every mode; the other options shape the server mix only (--server-audio,
-# --stream), and the browser ignores them.  Track analysis (intro/outro
-# times + beat grid) comes from `autodj index` / `autodj analyse`, or is
-# done on first play, and is cached in <index_dir>/<name>/dj_meta.db.
+# in every mode, and phrase_align / phrase_bars shape browser crossfades as
+# well as the server mix; the other options shape the server mix only
+# (--server-audio, --stream), and the browser ignores them.  Track
+# analysis (intro/outro times + beat grid) comes from `autodj index` /
+# `autodj analyse`, or is done on first play, and is cached in
+# <index_dir>/<name>/dj_meta.db.
 # ---------------------------------------------------------------------------
 [djmix]
 # Restrict next-track candidates to harmonically-compatible keys.  Tracks
@@ -316,6 +318,8 @@ outro_intro_align = false
 
 # Snap the crossfade start time to the nearest phrase_bars-bar phrase
 # boundary using the cached beat grid.  Pro-feel transitions on rhythmic music.
+# Applies to the server mix and to crossfades played in the browser; a track
+# with no detected beat grid crossfades at its usual point.
 phrase_align = false
 phrase_bars  = 8
 
