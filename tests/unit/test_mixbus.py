@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from autodj.mixbus import BusEvents, MixBus, RenderedTrack, SystemClock
+from autodj.mixbus import BusEvents, LinerCue, MixBus, RenderedTrack, SkipTail, SystemClock
 from tests.unit._fakes import FakeClock
 
 
@@ -328,3 +328,273 @@ def test_seek_clamps_within_track() -> None:
     bus.seek(2_000)
     bus.render_block()
     assert positions[-1] == 2_000 + 882
+
+
+# ---------------------------------------------------------------------------
+# DJ-style skips: an effect tail made off the bus thread
+# ---------------------------------------------------------------------------
+
+
+def _ramp_track(frames: int, name: str) -> RenderedTrack:
+    """A track whose sample values are their own frame numbers / 1e6."""
+    entry = MagicMock()
+    entry.path = name
+    values = (np.arange(frames, dtype=np.float32) / 1e6)[:, None]
+    return RenderedTrack(entry, np.repeat(values, 2, axis=1), None, 0, "")
+
+
+def _tail_bus(tracks, maker) -> tuple[MixBus, list]:
+    started: list[RenderedTrack] = []
+    queue = list(tracks)
+    events = BusEvents(
+        on_track_start=started.append,
+        on_position=lambda _pos: None,
+        on_need_track=lambda: queue.pop(0) if queue else None,
+    )
+    return MixBus(events, eq_gains=lambda: (1.0, 1.0, 1.0), skip_tail=maker), started
+
+
+def test_skip_plays_the_effect_then_the_next_track_in_the_same_block() -> None:
+    first, second = _track(0.2, 100_000, "a"), _track(0.5, 100_000, "b")
+    effect = np.full((1000, 2), 0.9, np.float32)
+    bus, started = _tail_bus([first, second], lambda track, pos: SkipTail(track, pos + 400, effect))
+    bus.start_set()
+    bus.render_block()
+    bus.skip()
+    block = bus.render_block()
+    np.testing.assert_allclose(block[:400, 0], 0.2)  # dry until the effect starts
+    np.testing.assert_allclose(block[400:, 0], 0.9)
+    block = bus.render_block()
+    rest = 1000 - (882 - 400)
+    np.testing.assert_allclose(block[:rest, 0], 0.9)
+    np.testing.assert_allclose(block[rest:, 0], 0.5)  # the next track, no gap
+    assert started == [first, second]
+
+
+def test_the_effect_is_made_on_the_skipping_thread_never_the_bus_thread() -> None:
+    first, second = _track(0.2, 400_000, "a"), _track(0.5, 400_000, "b")
+    made_on: list[int] = []
+
+    def maker(track, pos):
+        made_on.append(threading.get_ident())
+        return SkipTail(track, pos, np.zeros((2000, 2), np.float32))
+
+    bus, _started = _tail_bus([first, second], maker)
+    bus.start_set()
+    stop = threading.Event()
+    runner = threading.Thread(target=bus.run, args=(stop,))
+    runner.start()
+    try:
+        bus.skip()
+    finally:
+        stop.set()
+        runner.join(5.0)
+    assert made_on == [threading.get_ident()]
+    assert runner.ident not in made_on
+
+
+def test_rendering_blocks_never_makes_an_effect() -> None:
+    maker = MagicMock(side_effect=AssertionError("made on the bus thread"))
+    bus, _ = _tail_bus([_track(0.2, 50_000), _track(0.1, 50_000)], maker)
+    bus.start_set()
+    for _ in range(120):
+        bus.render_block()
+    maker.assert_not_called()
+
+
+def test_an_effect_installed_late_takes_over_from_where_the_bus_is() -> None:
+    first = _ramp_track(200_000, "a")
+    holder: dict[str, MixBus] = {}
+
+    def maker(track, pos):
+        # The bus plays two more blocks while the effect is being made.
+        holder["bus"].render_block()
+        holder["bus"].render_block()
+        return SkipTail(track, pos, np.full((5000, 2), 0.7, np.float32))
+
+    bus, _ = _tail_bus([first, _track(0.1, 50_000)], maker)
+    holder["bus"] = bus
+    bus.start_set()
+    bus.render_block()
+    bus.skip()
+    block = bus.render_block()
+    # It starts from the dry audio 3 blocks in and crosses to the effect.
+    assert block[0, 0] == pytest.approx(3 * 882 / 1e6, abs=1e-6)
+    np.testing.assert_allclose(block[441:, 0], 0.7)
+
+
+def test_an_effect_that_is_too_late_falls_back_to_the_fade() -> None:
+    first = _track(1.0, 200_000, "a")
+    holder: dict[str, MixBus] = {}
+
+    def maker(track, pos):
+        for _ in range(3):
+            holder["bus"].render_block()
+        return SkipTail(track, pos, np.full((100, 2), 0.7, np.float32))
+
+    bus, _ = _tail_bus([first, _track(0.1, 50_000)], maker)
+    holder["bus"] = bus
+    bus.start_set()
+    bus.render_block()
+    bus.skip()
+    assert bus._tail is None
+    assert bus._skip_fade > 0
+
+
+@pytest.mark.parametrize("outcome", ["none", "raises", "other_track"])
+def test_skip_falls_back_to_the_fade(outcome: str) -> None:
+    first, second = _track(1.0, 100_000, "a"), _track(0.5, 100_000, "b")
+
+    def maker(track, pos):
+        if outcome == "raises":
+            raise RuntimeError("boom")
+        if outcome == "other_track":
+            return SkipTail(second, pos, np.zeros((100, 2), np.float32))
+        return None
+
+    bus, _ = _tail_bus([first, second], maker)
+    bus.start_set()
+    bus.render_block()
+    bus.skip()
+    assert bus._skip_fade > 0
+    block = bus.render_block()
+    assert block[0, 0] > block[-1, 0]  # the 150 ms fade
+
+
+def test_skip_during_an_effect_and_seek_are_ignored() -> None:
+    first = _track(0.2, 100_000, "a")
+    maker = MagicMock(
+        side_effect=lambda track, pos: SkipTail(track, pos, np.ones((9000, 2), np.float32))
+    )
+    bus, _ = _tail_bus([first, _track(0.5, 1000)], maker)
+    bus.start_set()
+    bus.render_block()
+    bus.skip()
+    bus.skip()
+    assert maker.call_count == 1
+    bus.render_block()
+    pos = bus._pos
+    bus.seek(50_000)
+    assert bus._pos == pos
+
+
+def test_a_track_change_while_the_effect_is_made_still_skips() -> None:
+    first, second = _track(0.2, 100_000, "a"), _track(0.5, 100_000, "b")
+    third = _track(0.7, 100_000, "c")
+    holder: dict[str, MixBus] = {}
+
+    def maker(track, pos):
+        holder["bus"].stop_set()
+        holder["bus"].start_set()
+        holder["bus"].render_block()  # now playing "b"
+        return SkipTail(track, pos, np.zeros((100, 2), np.float32))
+
+    bus, started = _tail_bus([first, second, third], maker)
+    holder["bus"] = bus
+    bus.start_set()
+    bus.render_block()
+    bus.skip()
+    assert started[-1] is second
+    assert bus._skip_fade > 0
+
+
+def test_a_skip_racing_the_end_of_the_set_does_nothing() -> None:
+    holder: dict[str, MixBus] = {}
+
+    def maker(track, pos):
+        holder["bus"].stop_set()
+        return SkipTail(track, pos, np.zeros((100, 2), np.float32))
+
+    bus, _ = _tail_bus([_track(0.2, 100_000)], maker)
+    holder["bus"] = bus
+    bus.start_set()
+    bus.render_block()
+    bus.skip()
+    assert bus._tail is None
+    assert bus._skip_fade == 0
+
+
+def test_stop_set_drops_a_pending_effect() -> None:
+    bus, _ = _tail_bus(
+        [_track(0.2, 100_000)],
+        lambda track, pos: SkipTail(track, pos + 5000, np.ones((100, 2), np.float32)),
+    )
+    bus.start_set()
+    bus.render_block()
+    bus.skip()
+    assert bus._tail is not None
+    bus.stop_set()
+    assert bus._tail is None
+
+
+# ---------------------------------------------------------------------------
+# Liner cues: a liner that waits for a point in a track
+# ---------------------------------------------------------------------------
+
+
+def test_a_cued_liner_starts_at_its_frame() -> None:
+    track = _track(0.0, 100_000, "a")
+    bus, _, _ = _bus([track])
+    bus.start_set()
+    bus.render_block()
+    cue = LinerCue(track, 3000)
+    bus.play_liner(np.full((882, 2), 0.3, np.float32), duck_db=0.0, at=cue)
+    np.testing.assert_array_equal(bus.render_block(), 0.0)  # at 1764: not yet
+    assert not cue.started
+    bus.render_block()  # 2646
+    assert not cue.started
+    block = bus.render_block()  # reaches 3528: the liner starts in this block
+    assert cue.started
+    np.testing.assert_allclose(block[:, 0], 0.3)
+
+
+def test_a_cue_already_passed_starts_at_once() -> None:
+    track = _track(0.0, 100_000, "a")
+    bus, _, _ = _bus([track])
+    bus.start_set()
+    bus.render_block()
+    cue = LinerCue(track, 10)
+    bus.play_liner(np.full((882, 2), 0.3, np.float32), duck_db=0.0, at=cue)
+    assert cue.started
+    np.testing.assert_allclose(bus.render_block()[:, 0], 0.3)
+
+
+def test_a_cue_is_dropped_when_its_track_ends_first() -> None:
+    first, second = _track(0.0, 2000, "a"), _track(0.0, 100_000, "b")
+    bus, _, _ = _bus([first, second])
+    bus.start_set()
+    bus.render_block()
+    cue = LinerCue(first, 5000)
+    bus.play_liner(np.full((882, 2), 0.3, np.float32), duck_db=0.0, at=cue)
+    for _ in range(10):
+        np.testing.assert_array_equal(bus.render_block(), 0.0)
+    assert not cue.started
+
+
+def test_a_cue_late_in_the_last_block_of_its_track_still_starts() -> None:
+    first, second = _track(0.0, 2000, "a"), _track(0.0, 100_000, "b")
+    bus, _, _ = _bus([first, second])
+    bus.start_set()
+    bus.render_block()
+    cue = LinerCue(first, 1900)
+    bus.play_liner(np.full((882, 2), 0.3, np.float32), duck_db=0.0, at=cue)
+    bus.render_block()  # to 1764
+    assert not cue.started
+    bus.render_block()  # "a" ends at 2000 and "b" starts in this block
+    assert cue.started
+
+
+def test_a_cue_in_a_skip_effect_still_starts() -> None:
+    track = _track(0.0, 100_000, "a")
+    bus, _ = _tail_bus(
+        [track, _track(0.0, 100_000, "b")],
+        lambda t, pos: SkipTail(t, pos, np.zeros((5000, 2), np.float32)),
+    )
+    bus.start_set()
+    bus.render_block()
+    cue = LinerCue(track, 2500)
+    bus.play_liner(np.full((882, 2), 0.3, np.float32), duck_db=0.0, at=cue)
+    bus.skip()
+    bus.render_block()
+    bus.render_block()
+    assert cue.started

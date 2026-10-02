@@ -74,6 +74,8 @@ def make_cfg_mock() -> MagicMock:
     cfg.playback.pick_temperature = 0.0
     cfg.playback.server_max_track_minutes = 15.0
     cfg.playback.import_external_cues = False
+    cfg.playback.skip_style = "fade"
+    cfg.playback.liners_talk_up = False
     cfg.replaygain.enabled = False
     cfg.replaygain.target_db = -14.0
     cfg.replaygain.max_clip_safe_gain = 1.0
@@ -86,6 +88,7 @@ def make_cfg_mock() -> MagicMock:
     cfg.djmix.phrase_bars = 8
     cfg.djmix.filter_sweep = False
     cfg.djmix.filter_sweep_floor_hz = 250.0
+    cfg.djmix.vocal_guard = True
     cfg.transitions.effect = "none"
     cfg.transitions.wet_mix = 1.0
     cfg.library.beets_db = None

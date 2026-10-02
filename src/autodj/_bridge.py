@@ -235,15 +235,18 @@ class PlayerBridge:
             )
         worker = self._liner_worker
         if worker is not None:
+            # The render that started, for liner talk-ups to time against.
+            render = getattr(self.player, "_playing_render", None)
+            track = render if getattr(render, "entry", None) is entry else None
             try:
-                worker.submit(self._liner_track_start)
+                worker.submit(self._liner_track_start, track)
             except RuntimeError:
                 logger.debug("Liner worker is shut down; skipping the track-start check")
 
-    def _liner_track_start(self) -> None:
+    def _liner_track_start(self, track: Any = None) -> None:
         """Let the liner scheduler count a track start (liner worker thread)."""
         try:
-            self.liner_scheduler.on_track_start()
+            self.liner_scheduler.on_track_start(track)
         except Exception:
             logger.exception("Liner track-start check failed")
 
@@ -1209,6 +1212,7 @@ class PlayerBridge:
                 "phrase_align": cfg.djmix.phrase_align,
                 "outro_intro_align": cfg.djmix.outro_intro_align,
                 "filter_sweep": cfg.djmix.filter_sweep,
+                "vocal_guard": bool(cfg.djmix.vocal_guard),
                 "phrase_bars": int(cfg.djmix.phrase_bars),
             },
             "playback": {
@@ -1231,6 +1235,7 @@ class PlayerBridge:
                 "library_size": int(p._sim.ntotal if p._sim else 0),
                 "key_sync_fx": bool(pb.key_sync_fx),
                 "beatmatch_on_skip": bool(pb.beatmatch_on_skip),
+                "skip_style": pb.skip_style,
                 "prefetch_next_track": pb.prefetch_next_track,
                 "silence_trigger_crossfade": pb.silence_trigger_crossfade,
                 "liners_enabled": bool(pb.liners_enabled),
@@ -1240,6 +1245,7 @@ class PlayerBridge:
                 "liners_random_max_minutes": pb.liners_random_max_minutes,
                 "liners_pick_mode": pb.liners_pick_mode,
                 "liners_duck_db": pb.liners_duck_db,
+                "liners_talk_up": bool(pb.liners_talk_up),
                 "stream_bitrate": int(cfg.stream.bitrate),
                 "volume": float(p._state.volume),
                 "is_muted": bool(p._state.is_muted),

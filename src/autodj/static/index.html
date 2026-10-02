@@ -538,6 +538,14 @@
       <span class="setting-desc" id="dj-filter-sweep-desc">
         Close a low-pass filter over the outgoing track during the crossfade, so it fades out muffled while the new track comes in clear.  Used when the server does the mixing, in stream mode or with server audio; crossfades played by this browser ignore it.
       </span>
+
+      <div class="settings-check">
+        <input type="checkbox" id="dj-vocal-guard" checked aria-describedby="dj-vocal-guard-desc">
+        <label for="dj-vocal-guard">Keep vocals apart</label>
+      </div>
+      <span class="setting-desc" id="dj-vocal-guard-desc">
+        When both tracks have synced lyrics, shorten or move the crossfade so the outgoing singer finishes before the incoming one starts.  The fade is never made longer, or shorter than 1 second; when nothing works it stays as it was.  On by default.  Used when the server does the mixing, in stream mode or with server audio; crossfades played by this browser ignore it.
+      </span>
     </fieldset>
 
     <fieldset>
@@ -632,7 +640,20 @@
         <label for="pb-beatmatch-on-skip">Beatmatch on skip</label>
       </div>
       <span class="setting-desc" id="pb-beatmatch-on-skip-desc">
-        When you press Skip, pitch-stretch the incoming track so its tempo matches the outgoing one (preserves musical pitch).  Without this, the skip crossfades into the new track at its own tempo.  Capped at <span aria-hidden="true">+-</span><span class="visually-hidden">plus or minus </span>15% so wildly mismatched tracks don't sound silly.  Browser only: when the server does the mixing, a skip is a short fade-out.
+        When you press Skip, pitch-stretch the incoming track so its tempo matches the outgoing one (preserves musical pitch).  Without this, the skip crossfades into the new track at its own tempo.  Capped at <span aria-hidden="true">+-</span><span class="visually-hidden">plus or minus </span>15% so wildly mismatched tracks don't sound silly.  Browser only: when the server does the mixing, Skip style below decides how a skip sounds.
+      </span>
+
+      <div class="settings-row">
+        <label for="pb-skip-style">Skip style</label>
+        <select id="pb-skip-style" aria-describedby="pb-skip-style-desc">
+          <option value="fade" selected>Quick fade</option>
+          <option value="echo_out">Echo out</option>
+          <option value="backspin">Backspin</option>
+          <option value="loop_roll">Loop roll</option>
+        </select>
+      </div>
+      <span class="setting-desc" id="pb-skip-style-desc">
+        How Skip ends the playing track when the server does the mixing, in stream mode or with server audio.  <em>Quick fade</em> (the default) fades it out in a fraction of a second.  <em>Echo out</em> cuts the music and lets its echoes ring out.  <em>Backspin</em> spins the record backwards to a stop.  <em>Loop roll</em> repeats a short loop that rolls faster as it fades.  Each effect lasts one to two beats, at most 2 seconds, and ends on a beat when the track's tempo is known; then the next track starts.  Browser playback keeps its own skip.
       </span>
 
       <div class="settings-row">
@@ -883,6 +904,13 @@
       </div>
       <span class="setting-desc" id="ln-duck-db-desc">
         How far the music drops while a liner plays, from 0 (no drop) to minus 30 (nearly silent).  Minus 12 is the default.
+      </span>
+      <div class="settings-check">
+        <input type="checkbox" id="ln-talk-up" aria-describedby="ln-talk-up-desc">
+        <label for="ln-talk-up">Talk up to the vocal</label>
+      </div>
+      <span class="setting-desc" id="ln-talk-up-desc">
+        Time a liner that is due as a track starts so it ends just before the singing comes in, like a presenter talking over the intro.  It uses the track's synced lyrics, or else its detected intro end.  A liner too long for the intro starts during the crossfade instead; if it still does not fit, it plays as the track starts.  Stream mode and server audio only; liners played by this browser are not timed.
       </span>
       <button type="button" id="ln-test">Test now</button>
     </fieldset>
