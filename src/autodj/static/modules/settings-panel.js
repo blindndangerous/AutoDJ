@@ -152,6 +152,9 @@ const FIELDS = [
     read: (st) => Boolean(st.djmix?.phrase_align) },
   { key: "djOutroIntro", url: DJMIX, field: "outro_intro_align",
     read: (st) => Boolean(st.djmix?.outro_intro_align) },
+  // On unless the server says otherwise.
+  { key: "djVocalGuard", url: DJMIX, field: "vocal_guard",
+    read: (st) => Boolean(st.djmix) && st.djmix.vocal_guard !== false },
   { key: "pbEqDuck", field: "crossfade_eq_duck" },
   { key: "pbShowLyrics", field: "show_lyrics",
     read: (st) => Boolean(st.playback) && st.playback.show_lyrics !== false },
@@ -161,6 +164,8 @@ const FIELDS = [
   { key: "pbKeySyncFx", field: "key_sync_fx" },
   { key: "pbBeatmatchSkip", field: "beatmatch_on_skip",
     read: (st) => st.playback?.beatmatch_on_skip === true },
+  { key: "pbSkipStyle", field: "skip_style" },
+  { key: "lnTalkUp", field: "liners_talk_up" },
   { key: "pbTransitionMode", field: "transition_mode" },
   { key: "pbPostQueueSeed", field: "post_queue_seed" },
   // No extra announcement for these two: the select and checkbox already

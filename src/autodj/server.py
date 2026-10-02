@@ -855,7 +855,11 @@ def _start_stream_station(
         forget_track=bridge.forget_track,
     )
     scheduler = LinerScheduler(
-        cfg.playback, liner_folder, bus, can_fire=lambda: station.state == "playing"
+        cfg.playback,
+        liner_folder,
+        bus,
+        can_fire=lambda: station.state == "playing",
+        vocal_start=player.vocal_start_s,
     )
     if first_track is not None:
         station.start_with(first_track, "seed")
@@ -885,6 +889,7 @@ def _start_server_audio_liners(bridge: PlayerBridge, liner_folder: Path) -> None
         liner_folder,
         bus,
         can_fire=lambda: bus.playing and not player._state.is_paused,
+        vocal_start=player.vocal_start_s,
     )
     bridge.attach_liner_scheduler(scheduler)
 

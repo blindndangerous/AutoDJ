@@ -50,7 +50,7 @@ from autodj.beatmatch import (
     tempo_ratio,
 )
 from autodj.indexer import IndexEntry
-from autodj.mixbus import BusEvents, MixBus, RenderedTrack
+from autodj.mixbus import BusEvents, MixBus, RenderedTrack, SkipTail
 from autodj.render_ahead import RenderAhead
 from autodj.stereo import (
     FFMPEG_FORMATS,
@@ -64,6 +64,7 @@ from autodj.stereo import (
 )
 
 if TYPE_CHECKING:
+    from autodj.audio_meta import LyricLine
     from autodj.config import AutoDJConfig
     from autodj.dj_meta import Cue, DjMeta
     from autodj.presets import Preset
@@ -611,6 +612,11 @@ class Player:
     _FX_PLANS_KEPT: ClassVar[int] = 8
     # Browser mode: (path, pick mode) of the last pick made for next_track.
     _next_pick: tuple[str, str] | None = None
+    # Creates the sung-span cache of the mix features on first use.
+    _vocal_cache_lock: ClassVar[threading.Lock] = threading.Lock()
+    # How far ahead of the playing position a skip effect starts, so it is
+    # ready before the bus gets there: 0.1 s.
+    _SKIP_LOOKAHEAD: ClassVar[int] = SAMPLE_RATE // 10
 
     def __init__(
         self,
@@ -862,8 +868,40 @@ class Player:
                 on_need_track=self._take_render,
             ),
             eq_gains=lambda: (self._eq_low, self._eq_mid, self._eq_high),
+            skip_tail=self._plan_skip,
         )
         return self.bus
+
+    def _plan_skip(self, track: RenderedTrack, pos: int) -> SkipTail | None:
+        """The ``[playback] skip_style`` effect for skipping *track* at *pos*.
+
+        The mix bus's ``skip_tail``: it runs on the thread that asked for
+        the skip, never on the bus thread.  The effect starts a moment
+        ahead of *pos* (:attr:`_SKIP_LOOKAHEAD`) and is timed by the
+        track's tempo when :func:`~autodj.transitions.trusted_bpm` trusts
+        it, ending on a beat of its cached grid (never a fresh analysis).
+
+        Returns:
+            The effect, or ``None`` for the plain fade (the ``"fade"``
+            style, or too close to the end of the track).
+        """
+        from autodj.skip_fx import SKIP_STYLES, render_tail, tail_frames
+        from autodj.transitions import trusted_bpm
+
+        style = self._cfg.playback.skip_style
+        start = pos + self._SKIP_LOOKAHEAD
+        if style == "fade" or style not in SKIP_STYLES or start >= len(track.audio):
+            return None
+        entry = track.entry
+        bpm = trusted_bpm(entry.bpm, getattr(entry, "tempo_confidence", 0.0))
+        beats: list[int] = []
+        if bpm:
+            meta = self._peek_incoming_meta(entry)
+            if meta is not None:
+                beats = [round(t * SAMPLE_RATE) - track.start_offset for t in meta.beats]
+        frames = tail_frames(start, bpm, beats)
+        beat = round(60.0 / bpm * SAMPLE_RATE) if bpm else 0
+        return SkipTail(track, start, render_tail(style, track.audio, start, frames, beat))
 
     def _run_stream(self) -> None:
         """Run the stream-mode mix bus until the player stops.
@@ -1779,16 +1817,22 @@ class Player:
         wins, timestamped text lands in the first element and untimed text
         in the second -- never both.
         """
+        # Respect the lyric-display toggle — when off we skip ALL lyric
+        # work and the web UI hides its card.
+        if not self._cfg.playback.show_lyrics:
+            return [], ""
+        return self._read_any_lyrics(path)
+
+    def _read_any_lyrics(self, path: str) -> tuple[list, str]:
+        """:meth:`_read_lyrics_for_path` whether or not lyrics are shown.
+
+        The mix reads lyric timing for itself (:meth:`_sung_spans`).
+        """
         from autodj.audio_meta import (
             load_lrc_for,
             parse_embedded_lyrics,
             read_plain_lyrics,
         )
-
-        # Respect the lyric-display toggle — when off we skip ALL lyric
-        # work and the web UI hides its card.
-        if not self._cfg.playback.show_lyrics:
-            return [], ""
 
         lyrics = load_lrc_for(path)
         if lyrics:
@@ -1829,6 +1873,117 @@ class Player:
         # mentions a time.  parse_embedded_lyrics requires a clear majority
         # of leading stamps, and cleans the plain branch instead.
         return parse_embedded_lyrics(plain)
+
+    def _timed_lyrics(self, path: str) -> list[LyricLine]:
+        """Synced lyric lines of *path* for the mix; empty when none or unreadable."""
+        try:
+            return list(self._read_any_lyrics(path)[0])
+        except Exception as exc:
+            logger.debug("Lyric timing unavailable for %s: %s", path, exc)
+            return []
+
+    def _sung_spans(self, path: str) -> tuple[tuple[float, float], ...]:
+        """Sung spans of *path* (:func:`~autodj.vocals.sung_spans`), cached."""
+        from autodj.vocals import VocalCache
+
+        with self._vocal_cache_lock:
+            cache = self.__dict__.get("_vocal_cache")
+            if cache is None:
+                cache = self.__dict__["_vocal_cache"] = VocalCache(self._timed_lyrics)
+        return cache.spans(str(path))
+
+    def vocal_start_s(self, entry: IndexEntry) -> float | None:
+        """Seconds into *entry*'s file where its vocal starts, if known.
+
+        Its first synced lyric line, else its detected intro end, else
+        ``None``.  Used to time liner talk-ups.
+        """
+        from autodj.vocals import first_vocal_s
+
+        first = first_vocal_s(self._sung_spans(entry.path))
+        if first is not None:
+            return first
+        meta = self._peek_incoming_meta(entry)
+        if meta is not None and meta.intro_end_s > 0:
+            return float(meta.intro_end_s)
+        return None
+
+    def _guard_vocals(
+        self,
+        current: IndexEntry,
+        next_entry: IndexEntry,
+        meta_a: DjMeta | None,
+        match: _BeatmatchPlan,
+        *,
+        entry: int,
+        crossfade: int,
+        earliest: int,
+        length: int,
+    ) -> tuple[int, int]:
+        """Fade start and length that keep the two tracks' vocals apart.
+
+        ``[djmix] vocal_guard``: with synced lyrics on both tracks the
+        fade is shortened or moved (:func:`~autodj.vocals.guard_fade`) so
+        the outgoing track's last sung line ends before the incoming one
+        starts singing.  Moves go in whole beats of *meta_a*'s grid, so a
+        beatmatched fade stays phase locked.
+
+        Args:
+            current: The outgoing track.
+            next_entry: The incoming track.
+            meta_a: The outgoing track's DJ meta.
+            match: The beatmatch plan (its fade start and stretch).
+            entry: Sample of the incoming track where it enters.
+            crossfade: Fade length in samples.
+            earliest: Earliest allowed fade start (already played before it).
+            length: The outgoing track's length in samples.
+
+        Returns:
+            ``(fade_start, crossfade)`` in samples; the plan's own when
+            the guard is off or changes nothing.
+        """
+        from autodj.vocals import first_vocal_s, guard_fade
+
+        fade_start = match.fade_start
+        if self._cfg.djmix.vocal_guard is not True:
+            return fade_start, crossfade
+        out_spans = self._sung_spans(current.path)
+        in_spans = self._sung_spans(next_entry.path) if out_spans else ()
+        in_first = first_vocal_s(in_spans, after=entry / SAMPLE_RATE)
+        if in_first is None:
+            return fade_start, crossfade
+        ratio = match.ratio if abs(match.ratio - 1.0) > NO_STRETCH else 1.0
+        beat_s = local_period(meta_a.beats, fade_start / SAMPLE_RATE) if meta_a else None
+        guarded = guard_fade(
+            out_spans,
+            in_first,
+            start_s=fade_start / SAMPLE_RATE,
+            fade_s=crossfade / SAMPLE_RATE,
+            entry_s=entry / SAMPLE_RATE,
+            ratio=ratio,
+            earliest_s=earliest / SAMPLE_RATE,
+            end_s=length / SAMPLE_RATE,
+            beat_s=beat_s,
+        )
+        if guarded is None:
+            return fade_start, crossfade
+        start = (
+            fade_start
+            if guarded[0] == fade_start / SAMPLE_RATE
+            else round(guarded[0] * SAMPLE_RATE)
+        )
+        start = max(earliest, start)
+        fade = max(0, min(crossfade, round(guarded[1] * SAMPLE_RATE), length - start))
+        logger.info(
+            "Vocal guard: %s -> %s fades for %.1f s at %.1f s (was %.1f s at %.1f s)",
+            current.path,
+            next_entry.path,
+            fade / SAMPLE_RATE,
+            start / SAMPLE_RATE,
+            crossfade / SAMPLE_RATE,
+            fade_start / SAMPLE_RATE,
+        )
+        return start, fade
 
     def load_lyrics_in_background(self, path: str) -> None:
         """Load lyrics for *path* on a daemon thread.
@@ -2780,7 +2935,17 @@ class Player:
             earliest=start_offset,
             latest=len(audio_a_full) - crossfade,
         )
-        a_start = max(0, match.fade_start - start_offset)
+        fade_start, crossfade = self._guard_vocals(
+            current,
+            next_entry,
+            meta_a,
+            match,
+            entry=intro,
+            crossfade=crossfade,
+            earliest=start_offset,
+            length=len(audio_a_full),
+        )
+        a_start = max(0, fade_start - start_offset)
         audio_b = audio_b_loaded[intro:]
         if a_start + crossfade > len(audio_a):
             crossfade = max(0, len(audio_a) - a_start)
@@ -2819,4 +2984,6 @@ class Player:
             glide.ratio if glide else 1.0,
             start_offset=start_offset,
             next_glide=glide,
+            overlap_frames=crossfade,
+            next_entry_offset=intro,
         )

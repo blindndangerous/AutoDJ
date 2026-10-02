@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 
 _SKIP_FADE_FRAMES = int(0.15 * SAMPLE_RATE)
 _DUCK_RAMP_FRAMES = int(0.04 * SAMPLE_RATE)
+# Frames over which a skip effect that is installed late takes over.
+_TAIL_BLEND_FRAMES = int(0.01 * SAMPLE_RATE)
 
 
 @dataclass(frozen=True)
@@ -74,6 +76,11 @@ class RenderedTrack:
             following render plays the rest of it.
         glide_in: The previous render's *next_glide*: how this track's
             opening returns to its own tempo (kept for re-renders).
+        overlap_frames: Frames at the end of *audio* where *next_entry*
+            is mixed in, ``0`` when there is no overlap.
+        next_entry_offset: Sample of *next_entry*'s own file where it
+            enters at the start of the overlap (after any skipped leading
+            silence).
     """
 
     entry: IndexEntry
@@ -93,6 +100,39 @@ class RenderedTrack:
     mixed_in_ratio: float = 1.0
     next_glide: Glide | None = None
     glide_in: Glide | None = None
+    overlap_frames: int = 0
+    next_entry_offset: int = 0
+
+
+@dataclass(frozen=True)
+class SkipTail:
+    """A skip effect prepared for the playing render (``[playback] skip_style``).
+
+    Attributes:
+        track: The render the effect was made from.
+        start: Frame of *track*'s audio where the effect takes over.
+        audio: ``(n, 2)`` float32 effect audio; the track ends with it.
+    """
+
+    track: RenderedTrack
+    start: int
+    audio: np.ndarray
+
+
+@dataclass(eq=False)
+class LinerCue:
+    """Where a liner waits to start: *frame* frames into *track*'s audio.
+
+    Attributes:
+        track: The render the liner is timed against.
+        frame: Frame of *track*'s audio where the liner starts.
+        started: Set by the bus when the liner starts; a cue whose track
+            stops playing first is dropped and never starts.
+    """
+
+    track: RenderedTrack
+    frame: int
+    started: bool = False
 
 
 class Output(Protocol):
@@ -196,6 +236,7 @@ class MixBus:
         events: BusEvents,
         eq_gains: Callable[[], tuple[float, float, float]],
         clock: Clock | None = None,
+        skip_tail: Callable[[RenderedTrack, int], SkipTail | None] | None = None,
     ) -> None:
         """Create an idle bus.
 
@@ -204,6 +245,10 @@ class MixBus:
             eq_gains: Returns the current ``(low, mid, high)`` EQ gains.
             clock: Time source for :meth:`run`; defaults to
                 :class:`SystemClock`.
+            skip_tail: Prepares the skip effect for a render at a
+                position, or returns ``None`` for the plain fade.  Called
+                by :meth:`skip` on the caller's thread, never on the bus
+                thread and never with the bus lock held.
         """
         self._events = events
         self._eq_gains = eq_gains
@@ -215,6 +260,12 @@ class MixBus:
         self._paused = False
         self._playing = False
         self._skip_fade = 0
+        self._skip_tail_maker = skip_tail
+        self._tail: SkipTail | None = None
+        self._tail_pos = 0
+        self._liner_cue: LinerCue | None = None
+        self._cued_liner: np.ndarray | None = None
+        self._cued_duck = 1.0
         self._liner: np.ndarray | None = None
         self._liner_pos = 0
         self._duck_gain = 1.0
@@ -247,24 +298,71 @@ class MixBus:
             self._paused = paused
 
     def skip(self) -> None:
-        """Fade the current track out over 150 ms, then move to the next."""
+        """End the current track with the skip effect, then move to the next.
+
+        The effect comes from the *skip_tail* callable given to the bus,
+        computed here on the caller's thread with the lock released, so
+        the bus thread keeps producing blocks meanwhile.  The tail takes
+        over where the bus has got to when it is installed.  Without an
+        effect (the ``"fade"`` style, no callable, a failure, or a track
+        change while it was computed) the track fades out over 150 ms as
+        before.  Either way the next track follows in the same block.
+        """
         with self._lock:
-            if self._current is not None and self._skip_fade == 0:
+            if self._current is None or self._skip_fade or self._tail is not None:
+                return
+            track, pos = self._current, self._pos
+        tail = None
+        if self._skip_tail_maker is not None:
+            try:
+                tail = self._skip_tail_maker(track, pos)
+            except Exception:
+                logger.exception("Skip effect failed; fading out instead")
+        with self._lock:
+            if self._current is None or self._skip_fade or self._tail is not None:
+                return
+            if tail is not None and tail.track is self._current:
+                self._tail = self._join_tail(tail)
+                self._tail_pos = 0
+            if self._tail is None:
                 self._skip_fade = _SKIP_FADE_FRAMES
+
+    def _join_tail(self, tail: SkipTail) -> SkipTail | None:
+        """Fit *tail* to where the bus has got to (lock held).
+
+        The bus may already be past the effect's start, having played on
+        while it was computed: the effect then takes over from here, with
+        its first frames crossed from the dry audio, so nothing repeats or
+        clicks.  ``None`` when it is too late for any of it.
+        """
+        late = self._pos - tail.start
+        if late <= 0:
+            return tail
+        audio = tail.audio[late:].copy()
+        if len(audio) == 0:
+            return None
+        blend = min(_TAIL_BLEND_FRAMES, len(audio))
+        dry = np.zeros((blend, 2), np.float32)
+        piece = tail.track.audio[self._pos : self._pos + blend]
+        dry[: len(piece)] = piece
+        mix = np.linspace(0.0, 1.0, blend, dtype=np.float32)[:, None]
+        audio[:blend] = dry * (1.0 - mix) + audio[:blend] * mix
+        return SkipTail(tail.track, self._pos, audio)
 
     def seek(self, frames: int) -> None:
         """Jump to *frames* into the current track.
 
         Clamped to the track, stopping one frame short of its end so a
         seek never ends the track by itself.  Ignored when nothing is
-        playing.
+        playing, and while a skip effect is ending the track (the effect
+        was made from the audio where it starts).
         """
         with self._lock:
-            if self._current is not None:
+            if self._current is not None and self._tail is None:
                 last = len(self._current.audio) - 1
                 self._pos = max(0, min(int(frames), last))
 
-    def play_liner(self, audio: np.ndarray, duck_db: float) -> None:
+    def play_liner(self, audio: np.ndarray, duck_db: float, at: LinerCue | None = None) -> None:
         """Mix *audio* over the music, ducking the music by *duck_db* dB.
 
         The music ramps to the duck level — and, once the liner ends,
@@ -276,11 +374,40 @@ class MixBus:
                 the next rendered block.
             duck_db: Decibel attenuation applied to the music bed while
                 the liner plays (negative values quiet the music).
+            at: Start the liner when the bus reaches this cue instead,
+                and set its ``started``; a cue whose track stops playing
+                first is dropped.  One cue waits at a time: a new one
+                replaces it.  A cue already passed starts at once.
         """
+        audio = audio.astype(np.float32, copy=False)
+        gain = float(10 ** (duck_db / 20.0))
         with self._lock:
-            self._liner = audio.astype(np.float32, copy=False)
-            self._liner_pos = 0
-            self._start_duck_ramp(float(10 ** (duck_db / 20.0)))
+            if at is not None and not (at.track is self._current and self._pos >= at.frame):
+                self._liner_cue, self._cued_liner, self._cued_duck = at, audio, gain
+                return
+            if at is not None:
+                at.started = True
+                self._liner_cue = None
+                self._cued_liner = None
+            self._start_liner(audio, gain)
+
+    def _start_liner(self, audio: np.ndarray, gain: float) -> None:
+        """Start *audio* on the next block and duck the music to *gain* (lock held)."""
+        self._liner = audio
+        self._liner_pos = 0
+        self._start_duck_ramp(gain)
+
+    def _check_cue(self, track: RenderedTrack, pos: int) -> None:
+        """Start the waiting liner once *track* has played to its cue (lock held)."""
+        cue = self._liner_cue
+        if cue is None or cue.track is not track or pos < cue.frame:
+            return
+        audio = self._cued_liner
+        self._liner_cue = None
+        self._cued_liner = None
+        if audio is not None:
+            cue.started = True
+            self._start_liner(audio, self._cued_duck)
 
     def start_set(self) -> None:
         """Begin (or resume) pulling tracks from ``on_need_track``.
@@ -300,11 +427,14 @@ class MixBus:
             self._current = None
             self._pos = 0
             self._skip_fade = 0
+            self._tail = None
             self._drop_liner()
 
     def _drop_liner(self) -> None:
         """Forget any liner and put the music back at full level (lock held)."""
         self._liner = None
+        self._liner_cue = None
+        self._cued_liner = None
         self._duck_gain = 1.0
         self._duck_target = 1.0
         self._duck_step = 0.0
@@ -315,6 +445,10 @@ class MixBus:
         self._current = self._events.on_need_track()
         self._pos = 0
         self._skip_fade = 0
+        self._tail = None
+        if self._liner_cue is not None and self._liner_cue.track is not self._current:
+            self._liner_cue = None  # its track ended before the cue
+            self._cued_liner = None
         if self._current is not None:
             track = self._current
             pending.append(lambda: self._events.on_track_start(track))
@@ -328,8 +462,13 @@ class MixBus:
                 self._advance(pending)
                 if self._current is None:
                     break
+            if self._tail is not None and self._pos >= self._tail.start:
+                filled += self._play_tail(out[filled:frames])
+                continue
             audio = self._current.audio
             take = min(frames - filled, len(audio) - self._pos)
+            if self._tail is not None:
+                take = min(take, self._tail.start - self._pos)
             fading = self._skip_fade > 0
             if fading:
                 take = min(take, self._skip_fade)
@@ -343,6 +482,7 @@ class MixBus:
             out[filled : filled + take] = chunk
             self._pos += take
             filled += take
+            self._check_cue(self._current, self._pos)
             if fading and self._skip_fade == 0:
                 # Fade just completed: abandon the rest of this track now,
                 # in the same block, so the next track's audio starts right
@@ -351,6 +491,25 @@ class MixBus:
             elif self._pos >= len(audio):
                 self._current = None
         return out
+
+    def _play_tail(self, out: np.ndarray) -> int:
+        """Fill *out* from the skip effect; end the track with it (lock held).
+
+        Returns:
+            The frames written.
+        """
+        tail = self._tail
+        assert tail is not None and self._current is not None
+        take = min(len(out), len(tail.audio) - self._tail_pos)
+        out[:take] = tail.audio[self._tail_pos : self._tail_pos + take]
+        self._tail_pos += take
+        self._pos = min(self._pos + take, len(self._current.audio))
+        self._check_cue(self._current, self._pos)
+        if self._tail_pos >= len(tail.audio):
+            # Like the end of a skip fade: the next track starts right here.
+            self._tail = None
+            self._current = None
+        return take
 
     def _start_duck_ramp(self, target: float) -> None:
         """(Re)start a linear duck-gain ramp from the current gain to *target*.

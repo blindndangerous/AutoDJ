@@ -27,6 +27,7 @@ def validate_playback_choices(values: Mapping[str, Any]) -> None:
     from autodj.config import (
         _validate_key_notation,
         _validate_post_queue_seed,
+        _validate_skip_style,
         _validate_transition_mode,
     )
     from autodj.liners import LINER_PICK_MODES
@@ -35,6 +36,7 @@ def validate_playback_choices(values: Mapping[str, Any]) -> None:
         ("transition_mode", _validate_transition_mode),
         ("post_queue_seed", _validate_post_queue_seed),
         ("key_notation", _validate_key_notation),
+        ("skip_style", _validate_skip_style),
     )
     for key, check in checks:
         if (value := values.get(key)) is not None:
@@ -99,6 +101,7 @@ class DjMixBody(BaseModel):
     phrase_align: bool | None = None
     outro_intro_align: bool | None = None
     filter_sweep: bool | None = None
+    vocal_guard: bool | None = None
     phrase_bars: Annotated[int, Field(ge=1, le=64)] | None = None
 
     @field_validator("harmonic_mode")
@@ -141,7 +144,9 @@ class PlaybackSettingsBody(BaseModel):
     beat_sync_fx: bool | None = None
     key_sync_fx: bool | None = None
     beatmatch_on_skip: bool | None = None
+    skip_style: str | None = None
     liners_enabled: bool | None = None
+    liners_talk_up: bool | None = None
     # 0 turns a liner trigger off.
     liners_every_n_songs: Annotated[int, Field(ge=0)] | None = None
     liners_every_minutes: NonNegativeFloat | None = None

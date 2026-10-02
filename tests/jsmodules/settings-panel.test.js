@@ -36,6 +36,7 @@ function makeEls() {
     djBeatmatch:     cb(),
     djPhraseAlign:   cb(),
     djOutroIntro:    cb(),
+    djVocalGuard:    cb(),
     pbEqDuck:        cb(),
     pbSmartShuffle:  cb(),
     pbPureShuffle:   cb(),
@@ -45,6 +46,8 @@ function makeEls() {
     pbBeatSyncFx:    cb(),
     pbKeySyncFx:     cb(),
     pbBeatmatchSkip: cb(),
+    pbSkipStyle:     sel(["fade", "echo_out", "backspin", "loop_roll"]),
+    lnTalkUp:        cb(),
     pbTransitionMode: sel(["full_intro_outro", "fixed"]),
     pbPickMode:      sel(["similarity", "pure"]),
     bpmLo:           num(),
@@ -103,6 +106,20 @@ describe("applySettingsState", () => {
     expect(els.discEvery.value).toBe("5");
   });
 
+  it("shows the skip style, talk-up and vocal guard the server reports", () => {
+    const els = makeEls();
+    applySettingsState({
+      djmix: { vocal_guard: false },
+      playback: { skip_style: "loop_roll", liners_talk_up: true },
+    }, els);
+    expect(els.pbSkipStyle.value).toBe("loop_roll");
+    expect(els.lnTalkUp.checked).toBe(true);
+    expect(els.djVocalGuard.checked).toBe(false);
+    // The vocal guard is on unless the server says it is off.
+    applySettingsState({ djmix: { harmonic_mode: "off" }, playback: {} }, els);
+    expect(els.djVocalGuard.checked).toBe(true);
+  });
+
   it("keeps the discovery checkbox in step with the runtime toggle", () => {
     const els = makeEls();
 
@@ -147,6 +164,11 @@ describe("installSettingsControls", () => {
     expect(change(els.pbPickMode, "pure"))
       .toEqual(["/api/playback-settings", { pure_shuffle: true }]);
     expect(change(els.bpmLo, "90")).toEqual(["/api/bpm-range", { lo: 90, hi: null }]);
+    expect(change(els.pbSkipStyle, "backspin"))
+      .toEqual(["/api/playback-settings", { skip_style: "backspin" }]);
+    expect(change(els.lnTalkUp, true))
+      .toEqual(["/api/playback-settings", { liners_talk_up: true }]);
+    expect(change(els.djVocalGuard, false)).toEqual(["/api/djmix", { vocal_guard: false }]);
     els.discEvery.value = "7";
     expect(change(els.discEnabled, true)).toEqual(["/api/discovery", { every: 7 }]);
     expect(els.discEvery.disabled).toBe(false);

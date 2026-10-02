@@ -187,6 +187,10 @@ KEY_NOTATIONS: tuple[str, ...] = (
     "musical",
 )
 
+#: How a skip ends the playing track in the server mix
+#: (``[playback] skip_style``); see :mod:`autodj.skip_fx`.
+SKIP_STYLES: tuple[str, ...] = ("fade", "echo_out", "backspin", "loop_roll")
+
 
 POST_QUEUE_SEED_MODES = ("last_queued", "pre_queue")
 # The longest crossfade or fade-in, in seconds; the Settings page, the web
@@ -246,6 +250,7 @@ _validate_post_queue_seed = partial(
 _validate_transition_mode = partial(
     _one_of, options=TRANSITION_MODES, field_name="playback.transition_mode"
 )
+_validate_skip_style = partial(_one_of, options=SKIP_STYLES, field_name="playback.skip_style")
 
 
 @dataclass
@@ -270,6 +275,20 @@ class PlaybackConfig(_Section):
         crossfade_bass_cutoff_hz: Frequency below which the outgoing track is
             progressively attenuated during an EQ-ducked crossfade.  Default
             180 Hz covers kick drums and sub-bass.
+        skip_style: How a skip ends the playing track when the server
+            mixes (stream mode and server audio), one of
+            :data:`SKIP_STYLES`: ``"fade"`` (default) fades out over
+            150 ms; ``"echo_out"``, ``"backspin"`` and ``"loop_roll"``
+            play a one-to-two-beat effect, at most 2 seconds, that ends
+            on a beat when the tempo is trusted.  Browser playback keeps
+            its own skip.
+        liners_talk_up: When ``True``, a liner due as a track starts in
+            the server mix is timed to end just before the incoming
+            track's vocal (its first synced lyric line, else its detected
+            intro end), starting over the crossfade when it is too long
+            for the intro alone.  Without room for it, or with nothing to
+            time it by, it plays as the track starts.  Browser playback
+            ignores it.  Default ``False``.
     """
 
     SECTION: ClassVar[str] = "playback"
@@ -375,6 +394,9 @@ class PlaybackConfig(_Section):
     # Server-mixed playback ignores this flag: a skip there is a short
     # fade-out.
     beatmatch_on_skip: bool = False
+    # How a skip ends the playing track when the server mixes; see the
+    # class docstring.  Browser playback keeps its own skip.
+    skip_style: str = "fade"
     # Voice liners — DJ-style spoken drops layered over the live mix.
     # ``liners_folder`` is the source directory (``~`` is expanded; default
     # ``<index_dir>/<name>/liners``).  The browser evaluates the triggers
@@ -389,6 +411,9 @@ class PlaybackConfig(_Section):
     liners_random_max_minutes: float | None = None
     liners_pick_mode: str = "random"
     liners_duck_db: float = -12.0
+    # Server mix only: time a liner due at a track start to end just
+    # before the incoming vocal ("hitting the post").
+    liners_talk_up: bool = False
     # Server-side mixing (--server-audio and --stream) decodes each track
     # whole, at about 21 MB per minute, and holds a few such buffers at
     # once (the playing track, the next one, and the render in progress).
@@ -429,6 +454,7 @@ class PlaybackConfig(_Section):
         self.discovery_every = _optional(int, self.discovery_every)
         self.crossfade_bass_cutoff_hz = float(self.crossfade_bass_cutoff_hz)
         self.transition_mode = _validate_transition_mode(str(self.transition_mode))
+        self.skip_style = _validate_skip_style(str(self.skip_style))
         self.post_queue_seed = _validate_post_queue_seed(str(self.post_queue_seed))
         self.pick_top_k = int(self.pick_top_k)
         if self.pick_top_k < 1:
@@ -447,6 +473,7 @@ class PlaybackConfig(_Section):
             "key_sync_fx",
             "beatmatch_on_skip",
             "liners_enabled",
+            "liners_talk_up",
         ):
             setattr(self, name, bool(getattr(self, name)))
         self.liners_folder = (
@@ -516,6 +543,12 @@ class DjMixConfig(_Section):
             of :data:`autodj.dj_meta.HARMONIC_MODES`.  ``"off"`` (the
             default) applies no key filter; see
             :func:`autodj.dj_meta.harmonic_compatible` for the others.
+        vocal_guard: When ``True`` (the default, unlike the options
+            above) and both tracks have synced (LRC) lyrics, the server
+            crossfade is shortened or moved so the outgoing track's last
+            sung line ends before the incoming track starts singing.  The
+            fade is never lengthened or made shorter than 1 second; when
+            nothing avoids the clash it stays as it was.
     """
 
     SECTION: ClassVar[str] = "djmix"
@@ -529,6 +562,7 @@ class DjMixConfig(_Section):
     filter_sweep: bool = False
     filter_sweep_floor_hz: float = 250.0
     harmonic_mode: str = "off"
+    vocal_guard: bool = True
 
     def __post_init__(self) -> None:
         """Coerce the TOML values and validate ``harmonic_mode``.
@@ -557,6 +591,7 @@ class DjMixConfig(_Section):
         self.phrase_align = bool(self.phrase_align)
         self.phrase_bars = int(self.phrase_bars)
         self.filter_sweep = bool(self.filter_sweep)
+        self.vocal_guard = bool(self.vocal_guard)
         self.filter_sweep_floor_hz = float(self.filter_sweep_floor_hz)
 
 

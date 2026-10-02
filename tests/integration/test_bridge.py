@@ -202,7 +202,7 @@ class TestActiveLyric:
 class TestPlaybackChoiceValidation:
     @pytest.mark.parametrize(
         "field",
-        ["transition_mode", "post_queue_seed", "key_notation", "liners_pick_mode"],
+        ["transition_mode", "post_queue_seed", "key_notation", "liners_pick_mode", "skip_style"],
     )
     def test_bad_choice_raises_before_any_field_applies(self, bridge, field) -> None:
         pb = bridge.player._cfg.playback

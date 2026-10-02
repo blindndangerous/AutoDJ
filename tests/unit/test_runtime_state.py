@@ -32,6 +32,7 @@ def _make_player() -> SimpleNamespace:
         beat_sync_fx=True,
         key_sync_fx=True,
         beatmatch_on_skip=False,
+        skip_style="fade",
         prefetch_next_track=True,
         silence_trigger_crossfade=True,
         liners_enabled=False,
@@ -41,6 +42,7 @@ def _make_player() -> SimpleNamespace:
         liners_random_max_minutes=None,
         liners_pick_mode="random",
         liners_duck_db=-12.0,
+        liners_talk_up=False,
         no_repeat_window=20,
         artist_repeat_window=3,
     )
@@ -52,6 +54,7 @@ def _make_player() -> SimpleNamespace:
             phrase_align=False,
             outro_intro_align=False,
             filter_sweep=False,
+            vocal_guard=True,
             phrase_bars=8,
         ),
         playback=playback,
@@ -387,6 +390,9 @@ class TestRoundTrip:
         p1._cfg.playback.beat_sync_fx = False
         p1._cfg.playback.key_sync_fx = False
         p1._cfg.playback.beatmatch_on_skip = True
+        p1._cfg.playback.skip_style = "backspin"
+        p1._cfg.playback.liners_talk_up = True
+        p1._cfg.djmix.vocal_guard = False
         p1._cfg.playback.prefetch_next_track = False
         p1._cfg.playback.silence_trigger_crossfade = False
         p1._cfg.playback.liners_enabled = True
@@ -421,6 +427,7 @@ class TestRoundTrip:
             "phrase_align",
             "outro_intro_align",
             "filter_sweep",
+            "vocal_guard",
             "phrase_bars",
         }
         assert set(saved["playback"]) == {
@@ -438,6 +445,7 @@ class TestRoundTrip:
             "beat_sync_fx",
             "key_sync_fx",
             "beatmatch_on_skip",
+            "skip_style",
             "prefetch_next_track",
             "silence_trigger_crossfade",
             "liners_enabled",
@@ -447,6 +455,7 @@ class TestRoundTrip:
             "liners_random_max_minutes",
             "liners_pick_mode",
             "liners_duck_db",
+            "liners_talk_up",
             "stream_bitrate",
             "no_repeat_window",
             "artist_repeat_window",
