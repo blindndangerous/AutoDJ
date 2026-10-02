@@ -364,8 +364,7 @@ filter_sweep_floor_hz = 250.0
 #                     riser or stutter build into a song at least 30 % louder;
 #                     cross-EQ swap, high-pass sweep or a plain fade between
 #                     songs in the same key within 3 % in tempo; otherwise a
-#                     filter sweep, cross-EQ swap or echo out.  Server mix
-#                     only for now: browser crossfades play it plain.
+#                     filter sweep, cross-EQ swap or echo out.
 #
 # That list is a sample.  The Settings tab's Transition effect dropdown
 # offers every accepted name.
