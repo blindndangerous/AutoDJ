@@ -552,6 +552,10 @@ class Player:
         server_audio_too: In stream mode, also play the mix on the sound card.
     """
 
+    # The track rendered just before the render cursor's track: the bus is
+    # starting it while the worker picks what follows the cursor's track.
+    _pending_previous: IndexEntry | None = None
+
     def __init__(
         self,
         cfg: AutoDJConfig,
@@ -906,6 +910,7 @@ class Player:
             current_from_queue = self._pending_from_queue
             context = self._pick_context(
                 pending=current,
+                starting=self._pending_previous,
                 peek_queue=True,
                 queue_reserved=current if current_from_queue else None,
             )
@@ -923,6 +928,8 @@ class Player:
                 rendered.next_start_offset if rendered else 0,
                 next_mode,
                 from_queue=next_mode == "queue",
+                # A track that failed to render never starts.
+                previous=current if rendered is not None else self._pending_previous,
             )
             if rendered is not None:
                 return replace(
@@ -937,13 +944,23 @@ class Player:
         return None
 
     def _set_render_cursor(
-        self, entry: IndexEntry | None, offset: int, pick_mode: str, from_queue: bool = False
+        self,
+        entry: IndexEntry | None,
+        offset: int,
+        pick_mode: str,
+        from_queue: bool = False,
+        previous: IndexEntry | None = None,
     ) -> None:
-        """Point the render-ahead cursor at *entry* (worker idle or queued)."""
+        """Point the render-ahead cursor at *entry* (worker idle or queued).
+
+        *previous* is the track rendered just before *entry*; ``None`` after
+        a jump, where it is not known.
+        """
         self._pending_entry = entry
         self._pending_offset = offset
         self._pending_pick_mode = pick_mode
         self._pending_from_queue = from_queue
+        self._pending_previous = previous
 
     def _rewind_render_cursor(self, track: RenderedTrack) -> None:
         """Point the cursor back at *track*'s own start (to re-render it)."""
@@ -1226,6 +1243,7 @@ class Player:
         self,
         pending: IndexEntry | None = None,
         *,
+        starting: IndexEntry | None = None,
         peek_queue: bool = False,
         queue_reserved: IndexEntry | None = None,
     ) -> _PickContext:
@@ -1235,45 +1253,59 @@ class Player:
         which has not started yet) is added as if it had just been
         recorded -- pushed through the same bounded windows, so the
         oldest entry drops out exactly as :meth:`PlayerState.record_played`
-        would do it.
+        would do it.  So is *starting*, the track before it, unless it is
+        already the latest recorded track.
 
         Args:
             pending: A track to treat as just played.
+            starting: The track the bus is starting.  The bus hands it over
+                first and records it once the block that holds its start
+                is done, and the hand-over is what wakes the render-ahead
+                worker, so the pick usually runs before it is recorded.
+                Without it, every pick could return to the track before,
+                and two close tracks played back and forth.
             peek_queue: See :class:`_PickContext`.
             queue_reserved: See :class:`_PickContext`.
         """
         with self._pick_lock:
-            paths, artists, albums, titles = self._recent_exclusions(pending)
+            paths, artists, albums, titles = self._recent_exclusions(pending, starting)
             track_number = self._state.track_number
         return _PickContext(
             paths, artists, albums, titles, track_number, peek_queue, queue_reserved
         )
 
     def _recent_exclusions(
-        self, pending: IndexEntry | None = None
+        self, pending: IndexEntry | None = None, starting: IndexEntry | None = None
     ) -> tuple[deque, set[str], set[str], set[str]]:
-        """Copy the recently-played history, plus *pending* (hold ``_pick_lock``).
+        """Copy the history plus *starting*, then *pending* (hold ``_pick_lock``).
+
+        *starting* is skipped when it is already the latest recorded track
+        or is *pending* itself, so it never fills a window slot twice.
 
         Returns ``(paths, artists, albums, titles)``.
         """
         state = self._state
+        recorded = state.recently_played
+        if starting is not None and (
+            (recorded and recorded[-1] == starting.path)
+            or (pending is not None and starting.path == pending.path)
+        ):
+            starting = None
+        added = [entry for entry in (starting, pending) if entry is not None]
 
-        def window(history: deque, value: str | None) -> deque:
+        def window(history: deque, values: list[str]) -> deque:
             copy = deque(history, maxlen=history.maxlen)
-            if value:
-                copy.append(value)
+            copy.extend(value for value in values if value)
             return copy
 
-        paths = window(state.recently_played, pending.path if pending else None)
-
-        def lowered(history: deque, value: str | None) -> set[str]:
-            return set(window(history, value.lower() if (pending and value) else None))
+        def lowered(history: deque, field_name: str) -> set[str]:
+            return set(window(history, [getattr(e, field_name).lower() for e in added]))
 
         return (
-            paths,
-            lowered(state.recently_played_artists, pending.artist if pending else None),
-            lowered(state.recently_played_albums, pending.album if pending else None),
-            lowered(state.recently_played_titles, pending.title if pending else None),
+            window(recorded, [entry.path for entry in added]),
+            lowered(state.recently_played_artists, "artist"),
+            lowered(state.recently_played_albums, "album"),
+            lowered(state.recently_played_titles, "title"),
         )
 
     def _pick_pure_shuffle(self, recent: deque) -> IndexEntry:

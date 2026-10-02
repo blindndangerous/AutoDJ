@@ -19,6 +19,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- In stream mode and with server audio, the auto-DJ no longer plays two songs back and forth. It
+  picks each next song in the background as soon as a song starts, but the song that was starting
+  was recorded as played a moment later, so the pick could choose it again; two songs that were
+  each other's closest match then alternated for as long as the set ran. The song that is starting
+  now counts as played for that pick.
+- The History page adds each new song to the top of the table while page 1 is shown, without
+  Refresh. The rows already there are left as they are, so a screen reader reading the table keeps
+  its place, and nothing is said.
 - ALAC and other `.m4a`, `.mp4` and `.aac` files are no longer skipped by the server mix and
   stream mode, and they now get cue points and intro and outro markers. `autodj index` already
   decoded them through FFmpeg, but the server mix and the background analysis that runs when a

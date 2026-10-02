@@ -1334,6 +1334,44 @@ describe("app request behavior", () => {
     }
   });
 
+  it("adds a new track to the top of history page 1 without rebuilding the rows", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+    window.location.hash = "#history";
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const first = { played_at: "2026-01-01T00:00:00Z", title: "First", artist: "A", duration: 60 };
+    const second = { played_at: "2026-01-01T00:03:00Z", title: "Second", artist: "B", duration: 60 };
+    let items = [first];
+    try {
+      const { webSocket } = await setupApp({
+        initialState: { current_track: { path: "first.flac", title: "First" } },
+        onRequest: (url) => url.startsWith("/api/history")
+          ? jsonResponse({ total: items.length, page: 1, pages: 1, items })
+          : jsonResponse({ ok: true }),
+      });
+      const tbody = document.querySelector("#history-tbody");
+      await vi.waitFor(() => expect(tbody.children).toHaveLength(1));
+      const firstRow = tbody.children[0];
+      const status = document.querySelector("#sr-status");
+      const pushTrack = (path, title) => webSocket.onmessage({ data: JSON.stringify({
+        browser_playback: false, current_track: { path, title }, discovery_available: false,
+        duration: 60, elapsed: 0, eq: {}, is_muted: false, is_paused: false,
+        next_track: null, queue: [], settings: null, volume: 1,
+      }) });
+      pushTrack("first.flac", "First");
+
+      items = [second, first];
+      pushTrack("second.flac", "Second");
+
+      await vi.waitFor(() => expect(tbody.children).toHaveLength(2));
+      expect(tbody.children[0].textContent).toContain("Second");
+      expect(tbody.children[1]).toBe(firstRow);
+      expect(status.textContent).toBe("");
+    } finally {
+      window.location.hash = "";
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  });
+
   it("clears stale history and exposes a current load failure", async () => {
     await setupApp({
       onRequest: (url) => url.startsWith("/api/history")

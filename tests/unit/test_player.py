@@ -2460,6 +2460,42 @@ class TestRenderAheadRepeatAvoidance:
         assert list(paths) == [b.path, current.path]
         assert artists == {"artist 2"}
 
+    def test_pick_excludes_the_track_starting_before_it_is_recorded(self) -> None:
+        """The bus hands over track N+1 and wakes the worker, which picks
+        what follows N+2 before N+1 is recorded.  Two close tracks then
+        played back and forth."""
+        player = _bus_player()
+        player._state = PlayerState(no_repeat_window=10, artist_repeat_window=3)
+        seed, starting, pending, pick = player._sim.entries[:4]
+        player._state.record_played(seed)
+        player._render_track = _stub_render  # type: ignore[method-assign]
+        find = MagicMock(return_value=pick)
+        player._sim.find_next_for_path = find  # type: ignore[method-assign]
+        # The worker rendered *starting* (which picked *pending*) last.
+        player.reset_render_ahead(starting, 0)
+        player._choose_next = lambda _current, _context: (pending, "similarity")  # type: ignore[method-assign]
+        player._next_rendered()
+        del player._choose_next
+
+        player._next_rendered()
+
+        kwargs = find.call_args.kwargs
+        assert list(kwargs["recently_played"]) == [seed.path, starting.path, pending.path]
+        assert kwargs["excluded_artists"] == {"artist 0", "artist 1", "artist 2"}
+        assert list(player._state.recently_played) == [seed.path]
+
+    def test_a_recorded_starting_track_does_not_take_a_second_slot(self) -> None:
+        player = _bus_player()
+        player._state = PlayerState(no_repeat_window=3, artist_repeat_window=2)
+        older, starting, pending = player._sim.entries[:3]
+        player._state.record_played(older)
+        player._state.record_played(starting)
+
+        paths, artists, _albums, _titles = player._recent_exclusions(pending, starting)
+
+        assert list(paths) == [older.path, starting.path, pending.path]
+        assert artists == {"artist 1", "artist 2"}
+
     def test_pure_shuffle_never_repeats_the_track_it_follows(self) -> None:
         player = _bus_player(3)
         player._pure_shuffle = True

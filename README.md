@@ -186,7 +186,7 @@ After `autodj serve`, point a browser at `http://localhost:8080`.  Five tabs:
 
 - **Now Playing.**  What is playing, the next track, album art, lyrics, the cue strip on the progress bar.
 - **Queue & Search.**  Find any track in your library and choose Play now, Play next (straight after the current track) or Add to queue (at the end).  Move queued tracks up, down or to the top, remove them, or clear the whole queue; each move says the new position, such as "Moved Alpha to position 2 of 5".
-- **History.**  What has played, newest first, one page at a time.  Times get a date when the page holds tracks from before today.  Refresh history reloads the page you are on.
+- **History.**  What has played, newest first, one page at a time.  Times get a date when the page holds tracks from before today.  While page 1 is shown, each new song is added to the top on its own.  Refresh history reloads the page you are on.
 - **Settings.**  Pick a preset, change the crossfade length, switch transition effects and their level, set a BPM range, set how soon a song or an artist may repeat, toggle voice liners, choose an audio output device.  **Profiles** saves the current settings under a name to apply later.  **Browser access** (with `--lan`) signs this browser out, renames or revokes paired devices, and shows the pairing code for adding another.
 - **Library tools.**  Run index, enrich, analyse, prune and stats jobs without leaving the page.  One job runs at a time; the index stats and the full job log refresh when it finishes.
 

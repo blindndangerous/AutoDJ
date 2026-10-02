@@ -77,7 +77,8 @@ Before every release, each flow below must be sampled with either NVDA and Firef
 - Voice liners: uploading a liner, Test now, and each rotation mode, including the spoken
   result when an upload or test fails.
 - EQ: each band's slider, its spoken value, and resetting the bands.
-- History: the History tab's table read with table navigation, its pagination, and the empty state.
+- History: the History tab's table read with table navigation, its pagination, the empty state,
+  and a new song added to the top of page 1 without the reading position moving or anything said.
 - Why this track: reading the reasons for the current pick, and confirming they are not read
   again on their own when the track changes.
 
