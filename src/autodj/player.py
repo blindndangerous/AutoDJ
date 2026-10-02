@@ -45,6 +45,7 @@ from autodj.beatmatch import (
     ON_BEAT_S,
     Glide,
     downbeats,
+    drop_landing,
     local_period,
     phase_locked_start,
     tempo_ratio,
@@ -468,12 +469,31 @@ class _BeatmatchPlan:
             vocoder frames.
         beats: The incoming track's beats as samples, when its grid is
             trusted (transients are kept on them); empty otherwise.
+        semitones: Key shift of the incoming track during the overlap
+            (``[djmix] key_shift``), 0 for none.
     """
 
     ratio: float
     fade_start: int
     ramp_frames: int = 0
     beats: tuple[int, ...] = ()
+    semitones: int = 0
+
+
+@dataclass(frozen=True)
+class _DropMix:
+    """A drop-to-drop mix (``[djmix] drop_mix``): the overlap ends on the incoming drop.
+
+    Attributes:
+        entry: Sample of the incoming track where it enters.
+        overlap: Overlap length in samples.
+        match: The beatmatch plan; its fade start puts the incoming drop
+            on the outgoing landing (:func:`~autodj.beatmatch.drop_landing`).
+    """
+
+    entry: int
+    overlap: int
+    match: _BeatmatchPlan
 
 
 @dataclass(frozen=True)
@@ -2499,8 +2519,6 @@ class Player:
             The plan; a ratio of 1.0 and the given fade start when the
             tracks are not beatmatched.
         """
-        from autodj.transitions import trusted_bpm
-
         cfg_dj = self._cfg.djmix
         if not cfg_dj.beatmatch:
             return _BeatmatchPlan(1.0, fade_start)
@@ -2510,15 +2528,16 @@ class Player:
         ratio: float | None = None
         in_period: float | None = None
         beats: tuple[int, ...] = ()
-        trusted = all(
-            trusted_bpm(entry_.bpm, getattr(entry_, "tempo_confidence", 0.0))
-            for entry_ in (current, next_entry)
+        matched = self._grid_match(
+            current,
+            next_entry,
+            meta_a,
+            meta_b,
+            out_at_s=(fade_start + crossfade / 2) / SAMPLE_RATE,
+            in_at_s=entry / SAMPLE_RATE,
         )
-        if trusted and meta_a is not None and meta_b is not None:
-            out_period = local_period(meta_a.beats, (fade_start + crossfade / 2) / SAMPLE_RATE)
-            in_period = local_period(meta_b.beats, entry / SAMPLE_RATE)
-            if out_period is not None and in_period is not None:
-                ratio = tempo_ratio(out_period, in_period, max_stretch)
+        if matched is not None and meta_a is not None and meta_b is not None:
+            ratio, in_period = matched
             if ratio is not None:
                 entry_s = entry / SAMPLE_RATE
                 phrase = meta_a.beats[:: cfg_dj.phrase_bars * 4] if cfg_dj.phrase_align else []
@@ -2544,9 +2563,225 @@ class Player:
                 ratio = tempo_ratio(60.0 / current.bpm, 60.0 / next_entry.bpm, max_stretch)
         if ratio is None:
             return _BeatmatchPlan(1.0, fade_start)
-        bar_s = 4.0 * (in_period or 60.0 / next_entry.bpm)
-        glide_s = min(self._MAX_GLIDE_S, max(0, int(cfg_dj.beatmatch_glide_bars)) * bar_s)
-        return _BeatmatchPlan(ratio, fade_start, round(glide_s * SAMPLE_RATE / HOP), beats)
+        return _BeatmatchPlan(ratio, fade_start, self._glide_frames(next_entry, in_period), beats)
+
+    def _grid_match(
+        self,
+        current: IndexEntry,
+        next_entry: IndexEntry,
+        meta_a: DjMeta | None,
+        meta_b: DjMeta | None,
+        *,
+        out_at_s: float,
+        in_at_s: float,
+    ) -> tuple[float | None, float] | None:
+        """The stretch the two beat grids call for, when both can be trusted.
+
+        Both tempos must be trusted (:func:`~autodj.transitions.trusted_bpm`)
+        and both grids steady around the mix (*out_at_s* in the outgoing
+        track, *in_at_s* in the incoming one).
+
+        Returns:
+            ``(ratio, incoming seconds per beat)``, the ratio ``None`` when
+            the tempos are further apart than ``beatmatch_max_stretch``;
+            ``None`` when a tempo or grid is not trusted.
+        """
+        from autodj.transitions import trusted_bpm
+
+        trusted = all(
+            trusted_bpm(entry_.bpm, getattr(entry_, "tempo_confidence", 0.0))
+            for entry_ in (current, next_entry)
+        )
+        if not trusted or meta_a is None or meta_b is None:
+            return None
+        out_period = local_period(meta_a.beats, out_at_s)
+        in_period = local_period(meta_b.beats, in_at_s)
+        if out_period is None or in_period is None:
+            return None
+        max_stretch = float(self._cfg.djmix.beatmatch_max_stretch)
+        return (tempo_ratio(out_period, in_period, max_stretch), in_period)
+
+    def _glide_frames(self, next_entry: IndexEntry, in_period: float | None) -> int:
+        """Vocoder frames of the glide back to *next_entry*'s own tempo and key.
+
+        ``beatmatch_glide_bars`` bars, at the grid's tempo when it is
+        trusted (*in_period*) or the indexed BPM, at most
+        :attr:`_MAX_GLIDE_S`; 0 when neither tempo is known.
+        """
+        bpm = getattr(next_entry, "bpm", 0.0)
+        period = in_period or (60.0 / bpm if isinstance(bpm, int | float) and bpm > 0 else 0.0)
+        bars = max(0, int(self._cfg.djmix.beatmatch_glide_bars))
+        glide_s = min(self._MAX_GLIDE_S, bars * 4.0 * period)
+        return round(glide_s * SAMPLE_RATE / HOP)
+
+    def _key_shift(self, current: IndexEntry, next_entry: IndexEntry) -> int:
+        """Semitones *next_entry* is moved by while it mixes in (``[djmix] key_shift``).
+
+        See :func:`~autodj.dj_meta.key_shift_semitones`; 0 when the
+        setting is off or a key is not a known one.
+        """
+        from autodj.dj_meta import key_shift_semitones
+
+        cfg_dj = self._cfg.djmix
+        if cfg_dj.key_shift is not True:
+            return 0
+        key_a, mode_a, key_b, mode_b = (
+            getattr(entry, field, -1)
+            for entry in (current, next_entry)
+            for field in ("key", "mode")
+        )
+        if not all(isinstance(value, int) for value in (key_a, mode_a, key_b, mode_b)):
+            return 0
+        return key_shift_semitones(key_a, mode_a, key_b, mode_b, str(cfg_dj.harmonic_mode))
+
+    # Drop mixing ([djmix] drop_mix): the latest point of the incoming
+    # track it may enter at, the shortest and longest overlap, and how much
+    # earlier than usual the outgoing track may end.
+    _DROP_MAX_ENTRY_S: ClassVar[float] = 90.0
+    _DROP_MIN_OVERLAP_S: ClassVar[float] = 4.0
+    _DROP_MAX_OVERLAP_S: ClassVar[float] = 30.0
+    _DROP_MAX_EARLY_S: ClassVar[float] = 32.0
+
+    def _drop_mix(
+        self,
+        current: IndexEntry,
+        next_entry: IndexEntry,
+        meta_a: DjMeta | None,
+        meta_b: DjMeta | None,
+        audio_a: np.ndarray,
+        audio_b: np.ndarray,
+        *,
+        entry: int,
+        fade_start: int,
+        crossfade: int,
+        earliest: int,
+    ) -> _DropMix | None:
+        """A drop-to-drop mix of *next_entry* into *current* (``[djmix] drop_mix``).
+
+        The incoming track's build-up plays under the end of an outgoing
+        section and its drop lands on the outgoing track's next section
+        start (:func:`~autodj.beatmatch.drop_landing`), where the overlap
+        ends: the incoming drop comes in at full level just as the
+        outgoing track has faded out, never two drops on top of each
+        other.  The overlap is the usual crossfade length (at most
+        :attr:`_DROP_MAX_OVERLAP_S`), shorter when the incoming drop
+        comes sooner after its first sound, and never under
+        :attr:`_DROP_MIN_OVERLAP_S`.
+
+        It needs beatmatch with both grids trusted (phase lock), a reliable
+        drop in the incoming track (:func:`~autodj.dj_meta.mix_drops`) that
+        lets it enter within :attr:`_DROP_MAX_ENTRY_S`, and a drop or
+        breakdown in the outgoing track
+        (:func:`~autodj.dj_meta.mix_anchors`) giving a landing no more than
+        :attr:`_DROP_MAX_EARLY_S` before the fade would otherwise end.
+
+        Args:
+            current: The outgoing track.
+            next_entry: The incoming track.
+            meta_a: The outgoing track's DJ meta, or ``None`` to peek the cache.
+            meta_b: The incoming track's DJ meta.
+            audio_a: The outgoing track, whole, as decoded.
+            audio_b: The incoming track, whole, as decoded.
+            entry: Where the incoming track would enter (its first sound).
+            fade_start: Where the fade would start in the outgoing track.
+            crossfade: The fade length in samples.
+            earliest: Earliest allowed fade start.
+
+        Returns:
+            The plan, or ``None`` to mix as usual.
+        """
+        from autodj.dj_meta import mix_anchors, mix_drops
+
+        cfg_dj = self._cfg.djmix
+        if cfg_dj.drop_mix is not True or not cfg_dj.beatmatch:
+            return None
+        if meta_a is None:
+            meta_a = self._peek_incoming_meta(current)
+        if meta_a is None or meta_b is None:
+            return None
+        drops = mix_drops(meta_b.cues, mono(audio_b), SAMPLE_RATE, meta_b.beats)
+        if not drops:
+            return None
+        matched = self._grid_match(
+            current,
+            next_entry,
+            meta_a,
+            meta_b,
+            out_at_s=(fade_start + crossfade / 2) / SAMPLE_RATE,
+            in_at_s=drops[0],
+        )
+        found, in_period = matched or (None, None)
+        if found is None:
+            return None
+        # A stretch too small to apply is not applied, so the drop has to
+        # land by the unstretched track.
+        ratio = 1.0 if abs(found - 1.0) <= NO_STRETCH else found
+        anchors = mix_anchors(meta_a.cues, mono(audio_a), SAMPLE_RATE, meta_a.beats)
+        longest = min(crossfade, round(self._DROP_MAX_OVERLAP_S * SAMPLE_RATE))
+        shortest = min(crossfade, round(self._DROP_MIN_OVERLAP_S * SAMPLE_RATE))
+        target = fade_start + crossfade
+        for drop_s in drops:
+            drop = round(drop_s * SAMPLE_RATE)
+            overlap = min(longest, int((drop - entry) * ratio))
+            enter = drop - round(overlap / ratio)
+            if enter > self._DROP_MAX_ENTRY_S * SAMPLE_RATE:
+                break
+            if overlap < max(1, shortest):
+                continue
+            landing = drop_landing(
+                meta_a.beats,
+                anchors,
+                phrase_beats=4 * int(cfg_dj.phrase_bars),
+                overlap_s=overlap / SAMPLE_RATE,
+                target_s=target / SAMPLE_RATE,
+                earliest_s=max(earliest + overlap, target - self._DROP_MAX_EARLY_S * SAMPLE_RATE)
+                / SAMPLE_RATE,
+                latest_s=len(audio_a) / SAMPLE_RATE,
+            )
+            if landing is None:
+                continue
+            beats = {round(t * SAMPLE_RATE) for t in meta_b.beats if t * SAMPLE_RATE >= enter}
+            match = _BeatmatchPlan(
+                ratio,
+                round(landing * SAMPLE_RATE) - overlap,
+                self._glide_frames(next_entry, in_period),
+                tuple(sorted(beats | {drop})),
+            )
+            logger.info(
+                "Drop mix: %s drops at %.1f s, on %s at %.1f s.",
+                next_entry.path,
+                drop_s,
+                current.path,
+                landing,
+            )
+            return _DropMix(enter, overlap, match)
+        return None
+
+    def _with_key_shift(
+        self,
+        match: _BeatmatchPlan,
+        current: IndexEntry,
+        next_entry: IndexEntry,
+        meta_b: DjMeta | None,
+        entry: int,
+    ) -> _BeatmatchPlan:
+        """*match* with the key shift of ``[djmix] key_shift``, when one is due.
+
+        Without beatmatching the plan has no beats or glide yet: the
+        incoming grid's beats are added when it is steady, so transients
+        stay in place, and the key glides back over
+        ``beatmatch_glide_bars`` bars.
+        """
+        shift = self._key_shift(current, next_entry)
+        if not shift:
+            return match
+        beats, ramp = match.beats, match.ramp_frames
+        entry_s = entry / SAMPLE_RATE
+        if not beats and meta_b is not None and local_period(meta_b.beats, entry_s) is not None:
+            beats = tuple(round(t * SAMPLE_RATE) for t in meta_b.beats if t >= entry_s - ON_BEAT_S)
+        if not ramp:
+            ramp = self._glide_frames(next_entry, None)
+        return replace(match, ramp_frames=ramp, beats=beats, semitones=shift)
 
     @staticmethod
     def _incoming_glide(
@@ -2555,17 +2790,23 @@ class Player:
         """The stretch for *audio_b*, or ``None`` when none is needed or fits.
 
         A track too short for the whole glide gets the shortest one; one
-        too short even for that plays unstretched.
+        too short even for that plays unstretched.  A key shift
+        (:attr:`_BeatmatchPlan.semitones`) is dropped before the stretch
+        is: a track too short for the shortest key glide mixes in at its
+        own key.
         """
-        if abs(plan.ratio - 1.0) <= NO_STRETCH:
-            return None
-        for ramp in (plan.ramp_frames, 0):
+        stretch = abs(plan.ratio - 1.0) > NO_STRETCH
+        tries = [(ramp, plan.semitones) for ramp in (plan.ramp_frames, 0) if plan.semitones]
+        if stretch:
+            tries += [(plan.ramp_frames, 0), (0, 0)]
+        for ramp, semitones in tries:
             glide = Glide(
                 entry=entry,
-                ratio=plan.ratio,
+                ratio=plan.ratio if stretch else 1.0,
                 played=crossfade,
                 ramp_frames=ramp,
                 beats=plan.beats,
+                semitones=semitones,
             )
             if glide.origin >= 0 and glide.fits(len(audio_b)):
                 return glide
@@ -2691,22 +2932,27 @@ class Player:
             pick_mode: How *upcoming* was chosen (``"discovery"`` steers
                 ``auto``); only the first call for a pair uses it.
 
+        With ``[djmix] key_shift`` on, ``auto`` judges the incoming key as
+        it will be heard (:meth:`_key_shift`), so a pair the shift makes
+        compatible is not treated as a clash.
+
         Returns:
             A :class:`~autodj.transitions.TransitionFx` value, never a
             meta-mode.
         """
         from autodj.transitions import TransitionFx, choose_auto_effect, pick_effect
 
-        setting = str(self._cfg.transitions.effect).lower()
+        shift = self._key_shift(current, upcoming)
+        setting = (str(self._cfg.transitions.effect).lower(), shift)
         key = (str(current.path), str(upcoming.path))
         rng = getattr(self, "_rng", None)
         with self._fx_plan_lock:
             plans = self.__dict__.setdefault("_fx_plans", {})
             planned = plans.pop(key, None)
             if planned is None or planned[0] != setting:
-                mode = _effect_mode(setting)
+                mode = _effect_mode(setting[0])
                 if mode == TransitionFx.AUTO:
-                    chosen = choose_auto_effect(current, upcoming, pick_mode, rng)
+                    chosen = choose_auto_effect(current, upcoming, pick_mode, rng, key_shift=shift)
                 else:
                     chosen = pick_effect(mode, rng)
                 planned = (setting, chosen.value)
@@ -2715,19 +2961,40 @@ class Player:
                 del plans[next(iter(plans))]
         return planned[1]
 
+    def _plan_drop_riser(self, current: IndexEntry, next_entry: IndexEntry) -> None:
+        """Make a drop mix's ``auto`` effect a noise riser, which ends on the drop.
+
+        A synthesised layer ends where the overlap ends, and a drop mix
+        ends the overlap on the incoming drop.  An effect chosen by name
+        is kept.
+        """
+        from autodj.transitions import TransitionFx
+
+        setting = (str(self._cfg.transitions.effect).lower(), self._key_shift(current, next_entry))
+        if _effect_mode(setting[0]) != TransitionFx.AUTO:
+            return
+        with self._fx_plan_lock:
+            plans = self.__dict__.setdefault("_fx_plans", {})
+            plans[(str(current.path), str(next_entry.path))] = (
+                setting,
+                TransitionFx.NOISE_RISER.value,
+            )
+
     def _fx_plan(
         self,
         current: IndexEntry,
         next_entry: IndexEntry,
         meta_a: DjMeta | None,
         start_offset: int,
+        semitones: int = 0,
     ) -> _FxPlan:
         """The planned effect for *current* → *next_entry*, with its sync data.
 
         The tempo counts only when ``[playback] beat_sync_fx`` is on and
         :func:`~autodj.transitions.trusted_bpm` accepts it, and the keys
         only with ``key_sync_fx``; the beat grid comes from *meta_a* or,
-        without it, the DJ-meta cache (never a fresh analysis).
+        without it, the DJ-meta cache (never a fresh analysis).  The
+        incoming key is the one heard, *semitones* away from its own.
         """
         from autodj.beat_sync import extract_downbeats, key_to_hz
         from autodj.transitions import BeatSync, trusted_bpm
@@ -2739,9 +3006,10 @@ class Player:
             bpm = trusted_bpm(current.bpm, getattr(current, "tempo_confidence", 0.0))
         roots: list[float | None] = [None, None]
         if bool(playback.key_sync_fx):
-            for i, entry in enumerate((current, next_entry)):
+            for i, (entry, shift) in enumerate(((current, 0), (next_entry, semitones))):
                 key = getattr(entry, "key", -1)
-                roots[i] = key_to_hz(key) if isinstance(key, int) else None
+                heard = (key + shift) % 12 if isinstance(key, int) and key >= 0 else key
+                roots[i] = key_to_hz(heard) if isinstance(heard, int) else None
         if not bpm and roots == [None, None]:
             return _FxPlan(name)
         if meta_a is None and bpm:
@@ -2924,27 +3192,47 @@ class Player:
             # Too long to mix in: play this track out; the next render skips it.
             return RenderedTrack(current, audio_a, next_entry, 0, "", start_offset=start_offset)
         intro = self._skip_incoming_silence_samples(audio_b_loaded, SAMPLE_RATE, meta_b=meta_b)
-        match = self._beatmatch_plan(
+        drop = self._drop_mix(
             current,
             next_entry,
             meta_a,
             meta_b,
+            audio_a_full,
+            audio_b_loaded,
             entry=intro,
             fade_start=a_start_full,
             crossfade=crossfade,
             earliest=start_offset,
-            latest=len(audio_a_full) - crossfade,
         )
-        fade_start, crossfade = self._guard_vocals(
-            current,
-            next_entry,
-            meta_a,
-            match,
-            entry=intro,
-            crossfade=crossfade,
-            earliest=start_offset,
-            length=len(audio_a_full),
-        )
+        if drop is not None:
+            # The drop mix sets the fade to end on the incoming drop; the
+            # vocal guard would move it off the drop, so it stays out.
+            intro, crossfade, match = drop.entry, drop.overlap, drop.match
+            fade_start = match.fade_start
+            self._plan_drop_riser(current, next_entry)
+        else:
+            match = self._beatmatch_plan(
+                current,
+                next_entry,
+                meta_a,
+                meta_b,
+                entry=intro,
+                fade_start=a_start_full,
+                crossfade=crossfade,
+                earliest=start_offset,
+                latest=len(audio_a_full) - crossfade,
+            )
+            fade_start, crossfade = self._guard_vocals(
+                current,
+                next_entry,
+                meta_a,
+                match,
+                entry=intro,
+                crossfade=crossfade,
+                earliest=start_offset,
+                length=len(audio_a_full),
+            )
+        match = self._with_key_shift(match, current, next_entry, meta_b, intro)
         a_start = max(0, fade_start - start_offset)
         audio_b = audio_b_loaded[intro:]
         if a_start + crossfade > len(audio_a):
@@ -2964,6 +3252,12 @@ class Player:
             except Exception as exc:
                 logger.warning("Beatmatch stretch failed; mixing unstretched: %s", exc)
                 glide = None
+            if glide is not None and glide.semitones:
+                logger.info(
+                    "Key shift: %s mixes in %+d semitones from its own key.",
+                    next_entry.path,
+                    int(glide.semitones),
+                )
         b_head = audio_b[:crossfade]
         a_trimmed = self._apply_outgoing_filter_sweep(a_trimmed, SAMPLE_RATE, crossfade)
         a_trimmed, b_head, extra, fx_name = self._apply_transition_effect(
@@ -2972,7 +3266,13 @@ class Player:
             b_head,
             SAMPLE_RATE,
             crossfade,
-            plan=self._fx_plan(current, next_entry, meta_a, start_offset),
+            plan=self._fx_plan(
+                current,
+                next_entry,
+                meta_a,
+                start_offset,
+                int(glide.semitones) if glide is not None else 0,
+            ),
         )
         mixed = self._mix_overlap(a_trimmed, b_head, crossfade, SAMPLE_RATE, extra)
         return RenderedTrack(

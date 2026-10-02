@@ -508,6 +508,22 @@
       </span>
 
       <div class="settings-check">
+        <input type="checkbox" id="dj-drop-mix" aria-describedby="dj-drop-mix-desc">
+        <label for="dj-drop-mix">Drop mixing</label>
+      </div>
+      <span class="setting-desc" id="dj-drop-mix-desc">
+        When both songs have a clear drop, bring the new song in so its drop hits exactly as the ending song finishes a section: the new song's build-up plays under the end of the old one, and its drop arrives on the downbeat where the crossfade ends.  With the Auto transition effect a noise riser builds up to that drop.  Needs Beatmatch on.  Drops you marked in Rekordbox, Traktor, Serato or Mixxx (a cue named Drop) are used first; a detected drop only counts when it is unmistakable.  Songs that do not fit, for example because the drop is more than 90 seconds in or the ending song would be cut more than 32 seconds short, mix the usual way.  Used when the server does the mixing, in stream mode or with server audio; crossfades played by this browser ignore it.
+      </span>
+
+      <div class="settings-check">
+        <input type="checkbox" id="dj-key-shift" aria-describedby="dj-key-shift-desc">
+        <label for="dj-key-shift">Key shift</label>
+      </div>
+      <span class="setting-desc" id="dj-key-shift-desc">
+        When the new song's key clashes with the ending song but would fit one or two semitones higher or lower, play it that much higher or lower during the crossfade, without changing its tempo, then slide it back to its own key over the next few bars.  After the transition every song plays in its true key.  Songs with an unknown key, or that would need a bigger shift, mix unchanged.  Used when the server does the mixing, in stream mode or with server audio; crossfades played by this browser ignore it.
+      </span>
+
+      <div class="settings-check">
         <input type="checkbox" id="dj-phrase-align" aria-describedby="dj-phrase-desc">
         <label for="dj-phrase-align">Phrase align</label>
       </div>

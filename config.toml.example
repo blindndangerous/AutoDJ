@@ -347,6 +347,23 @@ beatmatch_max_stretch = 0.08      # ±8% — typical DJ practice
 # after the crossfade (at most 30 seconds); 0 returns it at once.
 beatmatch_glide_bars = 8
 
+# Drop-to-drop mixing (needs beatmatch).  When both tracks have a reliable
+# drop, the incoming build-up plays under the outgoing track and the
+# incoming drop lands on the downbeat that starts the outgoing track's next
+# section (whole phrase_bars phrases after its drop or breakdown), where the
+# crossfade ends.  With the "auto" transition effect a noise riser builds up
+# to it.  Drops set in DJ software (a drop cue, or a hot cue named "Drop")
+# come first; a detected drop counts only when it is unmistakable.  Pairs
+# that do not fit (incoming drop more than 90 s in, outgoing track cut more
+# than 32 s short, beat grids not trusted) mix as usual.
+drop_mix = false
+
+# Harmonic key shift.  When the incoming key clashes with the outgoing one
+# but would mix one or two semitones higher or lower, the incoming track
+# plays that much higher or lower (same tempo) during the crossfade, then
+# slides back to its own key over beatmatch_glide_bars bars (at least 4 s).
+key_shift = false
+
 # Auto-detect each track's outro start and start the crossfade there, with
 # the incoming track entering at its first sound.
 outro_intro_align = false

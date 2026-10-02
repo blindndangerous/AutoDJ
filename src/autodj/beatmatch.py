@@ -22,6 +22,16 @@ never the whole song:
    own phases over :data:`_STEER_FRAMES` frames (a frequency offset of a
    fraction of a hertz), after which its output *is* the source, so the
    mix carries on with the decoded audio itself and no seam is left.
+4. With ``[djmix] key_shift`` the incoming track also plays a semitone or
+   two higher or lower while the tracks overlap (:attr:`Glide.semitones`)
+   and slides back to its own key over the same glide.  The vocoder then
+   reads a resampled copy of the track (:class:`_KeyMap`): played faster
+   by the pitch factor, which raises the pitch and the tempo together,
+   then stretched back by the same factor, so only the pitch moves.  The
+   time map from the output to the track is unchanged, so beats, phase
+   lock and the render boundary stay where they were.  The copy is
+   offset from the track by a whole number of frames once the pitch is
+   home, so the steering in step 3 lands on the decoded audio as before.
 
 The render of the outgoing track plays the overlap; the render of the
 incoming track recomputes the same plan (the computation is
@@ -40,6 +50,7 @@ from dataclasses import dataclass, field
 from itertools import pairwise
 
 import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 
 # STFT frame size and hop of the vocoder (librosa's defaults).
 N_FFT = 2048
@@ -60,6 +71,16 @@ MIN_RAMP_FRAMES = 8
 NO_STRETCH = 0.002
 # Downbeat or beat that counts as "on" a moment, in seconds.
 ON_BEAT_S = 0.005
+# Largest key shift, in semitones.
+MAX_SEMITONES = 2
+# Shortest glide after a key shift, in frames (4 s at 44.1 kHz): the pitch
+# slides back over at least this long.
+KEY_RAMP_FRAMES = 344
+# The windowed-sinc resampler of a key shift: taps on each side, phase
+# steps a sample, and samples read with one cutoff.
+_TAPS = 8
+_PHASES = 4096
+_CHUNK = 1 << 15
 
 
 def tempo_ratio(out_period: float, in_period: float, max_stretch: float) -> float | None:
@@ -187,6 +208,55 @@ def phase_locked_start(
     return None
 
 
+def drop_landing(
+    out_beats: Sequence[float],
+    anchors: Sequence[float],
+    *,
+    phrase_beats: int,
+    overlap_s: float,
+    target_s: float,
+    earliest_s: float,
+    latest_s: float,
+) -> float | None:
+    """Where in the outgoing track the incoming drop should land, for a drop mix.
+
+    Dance tracks are built in phrases counted from their drops and
+    breakdowns, so the landing is a whole number of phrases (at least
+    one) after one of *anchors*, counted in beats of the outgoing grid:
+    the start of a section, where the outgoing drop or breakdown has
+    run its course.  The overlap before it must start after the anchor,
+    so the outgoing drop is heard in full.  Of the landings in bounds,
+    the one nearest *target_s* (where the fade would end without drop
+    mixing) wins.
+
+    Args:
+        out_beats: The outgoing beat grid, in seconds.
+        anchors: Its drops and breakdowns (:func:`autodj.dj_meta.mix_anchors`).
+        phrase_beats: Beats in a phrase.
+        overlap_s: Length of the overlap that ends on the landing.
+        target_s: Where the fade would end otherwise.
+        earliest_s: Earliest allowed landing.
+        latest_s: Latest allowed landing.
+
+    Returns:
+        The landing in seconds, or ``None`` when no landing is in bounds or
+        no anchor sits on the grid (within a quarter of a beat).
+    """
+    if len(out_beats) < 2 or phrase_beats < 1:
+        return None
+    grid = np.asarray(out_beats, dtype=np.float64)
+    spacing = float(np.median(np.diff(grid)))
+    landings: list[float] = []
+    for anchor in anchors:
+        nearest = int(np.argmin(np.abs(grid - anchor)))
+        if abs(grid[nearest] - anchor) > spacing / 4:
+            continue
+        for land in grid[nearest + phrase_beats :: phrase_beats]:
+            if earliest_s <= land <= latest_s and land - overlap_s >= anchor:
+                landings.append(float(land))
+    return min(landings, key=lambda t: abs(t - target_s)) if landings else None
+
+
 @dataclass(frozen=True)
 class Glide:
     """How the incoming track is stretched from its entry back to its own tempo.
@@ -203,6 +273,10 @@ class Glide:
         beats: Source samples of the incoming track's beats (from a
             trusted beat grid), where transients are kept in place; empty
             when the grid is not trusted.
+        semitones: Pitch shift of the incoming track while the tracks
+            overlap, at most :data:`MAX_SEMITONES` either way; it slides
+            back to 0 over the glide, which then lasts at least
+            :data:`KEY_RAMP_FRAMES`.  0 for none.
     """
 
     entry: int
@@ -210,6 +284,7 @@ class Glide:
     played: int
     ramp_frames: int
     beats: tuple[int, ...] = field(default=(), repr=False)
+    semitones: float = 0.0
 
     def _steps(self) -> tuple[np.ndarray, int]:
         """Input frame (from the entry) for each output frame, and the ramp's end.
@@ -221,7 +296,7 @@ class Glide:
         """
         speed = 1.0 / self.ratio
         overlap = -(-self.played // HOP)
-        ramp_len = max(MIN_RAMP_FRAMES, self.ramp_frames)
+        ramp_len = max(KEY_RAMP_FRAMES if self.semitones else MIN_RAMP_FRAMES, self.ramp_frames)
         ramp = speed + (1.0 - speed) * np.arange(1, ramp_len + 1) / (ramp_len + 1)
         reach = overlap * speed + float(ramp.sum())
         landed = round(reach)
@@ -233,6 +308,15 @@ class Glide:
         np.cumsum(moving[:-1], out=steps[1 : len(moving)])
         steps[len(moving) :] = landed + np.arange(steady)
         return steps, len(moving)
+
+    def _key_map(self, steps: np.ndarray, steady_from: int) -> _KeyMap | None:
+        """The resampled copy a key shift reads, or ``None`` without one."""
+        if not self.semitones:
+            return None
+        overlap = -(-self.played // HOP)
+        return _KeyMap.build(
+            self.semitones, float(steps[overlap]) * HOP, float(steps[steady_from]) * HOP
+        )
 
     @property
     def _cut_frame(self) -> int:
@@ -306,14 +390,19 @@ class Glide:
         import librosa
 
         steps, steady_from = self._steps()
+        key_map = self._key_map(steps, steady_from)
+        # Frames read from the track, or from its resampled copy for a key shift.
+        reads = steps if key_map is None else key_map.reads(steps)
         pre = min(_PRE_FRAMES, self.entry // HOP)
         needed = min(len(steps), frames + _EDGE_FRAMES + 1)
-        times = steps[:needed] + pre
-        start = self.entry - pre * HOP
+        times = reads[:needed] + pre
+        start = -pre * HOP
         stop = start + (int(times[-1]) + 2) * HOP + N_FFT
-        spectrum = librosa.stft(
-            np.ascontiguousarray(audio[start:stop].T), n_fft=N_FFT, hop_length=HOP
-        )
+        if key_map is None:
+            segment = audio[self.entry + start : self.entry + stop]
+        else:
+            segment = key_map.signal(audio, self.entry, start, stop)
+        spectrum = librosa.stft(np.ascontiguousarray(segment.T), n_fft=N_FFT, hop_length=HOP)
         whole = np.floor(times).astype(np.int64)
         frac = (times - whole).astype(np.float32)
         after = np.minimum(whole + 1, spectrum.shape[-1] - 1)
@@ -324,10 +413,15 @@ class Glide:
         advance = source_phase[..., after] - source_phase[..., whole]
         phase = np.empty_like(out_mag)
         phase[..., 0] = source_phase[..., whole[0]]
+        # A key shift stretches by up to a fifth, where bins drifting apart
+        # around a partial thin it out: their phases stay locked to the peaks.
+        lock = None if key_map is None else _PeakLock.of(out_mag, source_phase[..., whole])
         bounds = [0, *self._reset_frames(steps[:needed], steady_from), needed]
         for begin, end in pairwise(bounds):
             if begin:
                 phase[..., begin] = phase[..., begin - 1] + advance[..., begin - 1]
+                if lock is not None:
+                    phase[..., begin] = lock.apply(phase[..., begin], begin)
                 # The bins a beat's transient raises, in this frame and the
                 # two before it (which already overlap the transient).
                 rising = (
@@ -337,11 +431,14 @@ class Glide:
                 for k in range(max(bounds[0] + 1, begin - _EDGE_FRAMES), begin + 1):
                     exact = _phase_between(source_phase, int(whole[k]), float(frac[k]))
                     phase[..., k] = np.where(rising, exact, phase[..., k])
-            if end - begin > 1:
+            if end - begin > 1 and lock is not None:
+                for k in range(begin + 1, end):
+                    phase[..., k] = lock.apply(phase[..., k - 1] + advance[..., k - 1], k)
+            elif end - begin > 1:
                 phase[..., begin + 1 : end] = phase[..., begin, None] + np.cumsum(
                     advance[..., begin : end - 1], axis=-1
                 )
-        del magnitude, advance
+        del magnitude, advance, lock
         if needed > steady_from:
             target = source_phase[..., whole[steady_from:]]
             drift = np.angle(np.exp(1j * (phase[..., steady_from] - target[..., 0])))
@@ -354,6 +451,211 @@ class Glide:
         del out_mag, phase
         out = librosa.istft(stretched, hop_length=HOP, n_fft=N_FFT, length=needed * HOP)
         return np.ascontiguousarray(out.T[: frames * HOP], dtype=np.float32)
+
+
+@dataclass(frozen=True)
+class _KeyMap:
+    """Where a key shift's resampled copy of the track reads the track.
+
+    Positions are in samples from the entry: *v* in the track, *u* in the
+    copy.  The pitch factor ``P(v)`` is the shift for the whole overlap
+    (up to *ramp_from*), slides back to 1.0 in a straight line in
+    semitones until *ramp_to*, and is 1.0 from there on.  The copy plays
+    the track ``P`` times as fast, so ``du/dv = 1 / P(v) = 1 - g(v)`` and
+    ``u(v) = v - G(v)`` with ``G`` the integral of ``g``.  Once the pitch
+    is home the copy is the track delayed by :attr:`offset` samples.  A
+    small bump in ``g`` over the slide (zero at both of its ends, under a
+    twentieth of a semitone) makes that a whole number of frames.
+
+    Attributes:
+        semitones: The shift over the overlap.
+        ramp_from: Track position where the pitch starts back.
+        ramp_to: Track position where it is home.
+        bump: Height of the correction bump in ``g``.
+        offset: ``v - u`` once the pitch is home, a multiple of :data:`HOP`.
+    """
+
+    semitones: float
+    ramp_from: float
+    ramp_to: float
+    bump: float
+    offset: int
+
+    @classmethod
+    def build(cls, semitones: float, ramp_from: float, ramp_to: float) -> _KeyMap:
+        """The map for *semitones*, sliding home between the two track positions."""
+        g0 = 1.0 - 2.0 ** (-semitones / 12.0)
+        span = ramp_to - ramp_from
+        rate = semitones * math.log(2.0) / (12.0 * span)
+        slide = span - (1.0 - math.exp(-rate * span)) / rate
+        natural = g0 * ramp_from + slide
+        offset = HOP * round(natural / HOP)
+        return cls(semitones, ramp_from, ramp_to, (offset - natural) / (span / 2.0), offset)
+
+    @property
+    def _g0(self) -> float:
+        return 1.0 - 2.0 ** (-self.semitones / 12.0)
+
+    @property
+    def _rate(self) -> float:
+        return self.semitones * math.log(2.0) / (12.0 * (self.ramp_to - self.ramp_from))
+
+    def _g(self, v: np.ndarray) -> np.ndarray:
+        """``1 - 1 / P`` at track positions *v*."""
+        span = self.ramp_to - self.ramp_from
+        t = np.clip((v - self.ramp_from) / span, 0.0, 1.0)
+        sliding = 1.0 - np.exp(-self._rate * span * (1.0 - t))
+        return sliding + self.bump * np.sin(np.pi * t) ** 2
+
+    def _u(self, v: np.ndarray) -> np.ndarray:
+        """Copy positions of track positions *v*."""
+        span = self.ramp_to - self.ramp_from
+        rate = self._rate
+        t = np.clip((v - self.ramp_from) / span, 0.0, 1.0)
+        into = t * span
+        slid = into - (np.exp(-rate * span * (1.0 - t)) - math.exp(-rate * span)) / rate
+        bumped = self.bump * (into / 2.0 - span * np.sin(2.0 * np.pi * t) / (4.0 * np.pi))
+        held = self._g0 * np.minimum(v, self.ramp_from)
+        return np.where(v >= self.ramp_to, v - self.offset, v - held - slid - bumped)
+
+    def reads(self, steps: np.ndarray) -> np.ndarray:
+        """The copy's frame for each of the glide's track frames *steps*."""
+        return self._u(steps * float(HOP)) / HOP
+
+    def _track_positions(self, u: np.ndarray) -> np.ndarray:
+        """Track positions the copy positions *u* (ascending) read.
+
+        Solved by Newton's method every :data:`_MAP_STEP` samples and
+        interpolated in between: ``u(v)`` bends so slowly that the
+        straight lines are within a thousandth of a sample of it.
+        """
+        held_end = self.ramp_from * (1.0 - self._g0)
+        home = self.ramp_to - self.offset
+        coarse = np.append(u[::_MAP_STEP], u[-1])
+        guess = self.ramp_from + (coarse - held_end) * (self.ramp_to - self.ramp_from) / (
+            home - held_end
+        )
+        for _ in range(4):
+            guess = guess - (self._u(guess) - coarse) / (1.0 - self._g(guess))
+        solved = np.where(
+            coarse <= held_end,
+            coarse / (1.0 - self._g0),
+            np.where(coarse >= home, coarse + self.offset, guess),
+        )
+        return np.interp(u, coarse, solved)
+
+    def signal(self, audio: np.ndarray, entry: int, start: int, stop: int) -> np.ndarray:
+        """Samples *start* to *stop* of the copy (from the entry), as a track segment.
+
+        Read through a windowed sinc low-passed below the copy's Nyquist
+        where it plays the track faster; from where the pitch is home on,
+        the samples are the track's own.
+        """
+        home = round(self.ramp_to) - self.offset
+        split = min(max(start, home), stop)
+        parts = []
+        if split > start:
+            v = self._track_positions(np.arange(start, split, dtype=np.float64))
+            scale = np.minimum(1.0, 1.0 - self._g(v))
+            parts.append(_read(audio, entry + v, scale))
+        if stop > split:
+            lo = entry + split + self.offset
+            parts.append(_padded(audio, lo, lo + stop - split))
+        return np.concatenate(parts).astype(np.float32, copy=False)
+
+
+# Copy positions between two exact solutions of a key shift's map.
+_MAP_STEP = 32
+
+
+def _padded(audio: np.ndarray, lo: int, hi: int) -> np.ndarray:
+    """``audio[lo:hi]``, with silence for whatever lies outside the track."""
+    inside = audio[max(0, lo) : max(0, min(hi, len(audio)))]
+    before = min(max(0, -lo), hi - lo)
+    after = hi - lo - before - len(inside)
+    if not before and not after:
+        return inside
+    pad = (*audio.shape[1:],)
+    return np.concatenate(
+        [np.zeros((before, *pad), audio.dtype), inside, np.zeros((after, *pad), audio.dtype)]
+    )
+
+
+def _read(audio: np.ndarray, positions: np.ndarray, scale: np.ndarray) -> np.ndarray:
+    """*audio* at ascending fractional *positions*, low-passed to *scale* times its Nyquist.
+
+    A Hann-windowed sinc over :data:`_TAPS` samples each side, its phase
+    rounded to :data:`_PHASES` steps a sample and its cutoff held for
+    :data:`_CHUNK` samples at a time (the cutoff moves over seconds);
+    samples outside the track count as silence.  At a whole position with
+    *scale* 1.0 it returns the sample itself.
+    """
+    frames = audio.reshape(len(audio), -1)
+    base = np.floor(positions).astype(np.int64)
+    phase = np.rint((positions - base) * _PHASES).astype(np.int64)
+    source = _padded(frames, int(base[0]) - _TAPS + 1, int(base[-1]) + _TAPS + 1)
+    windows = sliding_window_view(source, 2 * _TAPS, axis=0)
+    lead = base - base[0]
+    out = np.empty((len(positions), frames.shape[1]), dtype=np.float32)
+    kernels: dict[float, np.ndarray] = {}
+    for lo in range(0, len(positions), _CHUNK):
+        part = slice(lo, lo + _CHUNK)
+        cutoff = round(float(scale[lo]), 3)
+        if cutoff not in kernels:
+            kernels[cutoff] = _kernel(cutoff)
+        weights = kernels[cutoff][phase[part]]
+        out[part] = np.matmul(windows[lead[part]], weights[:, :, None])[..., 0]
+    return out.reshape(len(positions), *audio.shape[1:])
+
+
+def _kernel(scale: float) -> np.ndarray:
+    """Tap weights of :func:`_read` for each phase step, ``(_PHASES + 1, 2 * _TAPS)``."""
+    dist = (np.arange(_PHASES + 1) / _PHASES)[:, None] + (_TAPS - 1) - np.arange(2 * _TAPS)
+    window = 0.5 + 0.5 * np.cos(np.pi * dist / _TAPS)
+    return np.asarray(scale * np.sinc(scale * dist) * window, dtype=np.float32)
+
+
+@dataclass(frozen=True)
+class _PeakLock:
+    """Identity phase locking (Laroche and Dolson) for the frames of a key shift.
+
+    Each bin belongs to the spectral peak nearest it in its frame; only
+    the peaks' phases advance on their own, and every other bin keeps the
+    phase offset from its peak that the source has there, so the bins
+    around a partial stay one partial however far it is stretched.
+
+    Attributes:
+        peaks: For each bin and output frame, its peak's bin, ``(..., bins, frames)``.
+        offsets: The source's phase of each bin minus its peak's, same shape.
+    """
+
+    peaks: np.ndarray
+    offsets: np.ndarray
+
+    @classmethod
+    def of(cls, magnitude: np.ndarray, source_phase: np.ndarray) -> _PeakLock:
+        """The lock for output *magnitude* and the source phases read for each frame."""
+        bins = magnitude.shape[-2]
+        # Bin numbers fit 16 bits, which halves the memory the scans walk.
+        index = np.arange(bins, dtype=np.int16).reshape(bins, 1)
+        is_peak = np.zeros(magnitude.shape, dtype=bool)
+        is_peak[..., 1:-1, :] = (magnitude[..., 1:-1, :] >= magnitude[..., :-2, :]) & (
+            magnitude[..., 1:-1, :] > magnitude[..., 2:, :]
+        )
+        none_below, none_above = np.int16(-bins), np.int16(2 * bins)
+        below = np.maximum.accumulate(np.where(is_peak, index, none_below), axis=-2)
+        above = np.flip(
+            np.minimum.accumulate(np.flip(np.where(is_peak, index, none_above), -2), axis=-2), -2
+        )
+        nearer = np.where(index - below <= above - index, below, above)
+        peaks = np.where((nearer >= 0) & (nearer < bins), nearer, index)
+        offsets = source_phase - np.take_along_axis(source_phase, peaks, axis=-2)
+        return cls(peaks, offsets.astype(np.float32))
+
+    def apply(self, phases: np.ndarray, frame: int) -> np.ndarray:
+        """Frame *frame*'s *phases* (``(..., bins)``) with every bin locked to its peak."""
+        peaks = self.peaks[..., frame]
+        return np.take_along_axis(phases, peaks, axis=-1) + self.offsets[..., frame]
 
 
 def _phase_between(source_phase: np.ndarray, frame: int, frac: float) -> np.ndarray:
@@ -374,11 +676,14 @@ def _phase_between(source_phase: np.ndarray, frame: int, frac: float) -> np.ndar
 
 __all__ = [
     "HOP",
+    "KEY_RAMP_FRAMES",
+    "MAX_SEMITONES",
     "MIN_RAMP_FRAMES",
     "NO_STRETCH",
     "ON_BEAT_S",
     "Glide",
     "downbeats",
+    "drop_landing",
     "local_period",
     "phase_locked_start",
     "tempo_ratio",

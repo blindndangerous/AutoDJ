@@ -10,6 +10,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- In stream mode and with server audio, the new **Drop mixing** setting (`drop_mix` in the
+  `[djmix]` section of `config.toml`, off by default) mixes songs drop to drop. When both songs
+  have a reliable drop and **Beatmatch** can lock their beats, the new song's build-up plays under
+  the end of the old song, and its drop lands on the downbeat that starts the old song's next
+  section, just as the old song has faded out. With the Auto transition effect a noise riser
+  builds up to the drop. Drops you marked in Rekordbox, Traktor, Serato or Mixxx are used first; a
+  drop AutoDJ found itself is used only when it is unmistakable. Songs that do not fit, for example
+  because the drop is more than 90 seconds in or the old song would be cut more than 32 seconds
+  short, are mixed the usual way. A drop mix keeps its timing even with **Keep vocals apart** on,
+  since moving the crossfade would take the drop off the beat.
+- In stream mode and with server audio, the new **Key shift** setting (`key_shift` in the
+  `[djmix]` section, off by default) makes clashing keys mix. When the new song's key clashes with
+  the old one but would fit one or two semitones higher or lower, the new song plays that much
+  higher or lower during the crossfade, at the same tempo, then slides back to its own key over
+  the next few bars, so it plays in its true key from then on. The Auto transition effect treats
+  such a pair as matching keys.
 - In stream mode and with server audio, Skip can now end the song the way a DJ would. **Skip
   style** in Settings (`[playback] skip_style`) offers Echo out (the music cuts and its echoes ring
   out), Backspin (the record spins backwards to a stop) and Loop roll (a short loop repeats, rolling

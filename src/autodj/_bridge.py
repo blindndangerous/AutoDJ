@@ -1209,6 +1209,8 @@ class PlayerBridge:
             "djmix": {
                 "harmonic_mode": cfg.djmix.harmonic_mode,
                 "beatmatch": cfg.djmix.beatmatch,
+                "drop_mix": cfg.djmix.drop_mix,
+                "key_shift": cfg.djmix.key_shift,
                 "phrase_align": cfg.djmix.phrase_align,
                 "outro_intro_align": cfg.djmix.outro_intro_align,
                 "filter_sweep": cfg.djmix.filter_sweep,

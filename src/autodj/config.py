@@ -526,6 +526,22 @@ class DjMixConfig(_Section):
             beatmatched track eases back to its own tempo once the
             crossfade ends, at most 30 seconds.  ``0`` returns it straight
             away.
+        drop_mix: When ``True`` (and ``beatmatch`` is on), a pair of
+            tracks with reliable drops is mixed drop to drop: the
+            incoming build-up plays under the outgoing track and the
+            incoming drop lands on the downbeat that starts the outgoing
+            track's next section, where the crossfade ends.  Drops set by
+            hand or in DJ software count; a detected drop only when it is
+            clear.  Any pair that does not fit (no reliable drop, beat
+            grids not trusted, the incoming drop more than 90 s in, or
+            the outgoing track cut more than 32 s short) mixes as usual.
+            Server mix only.
+        key_shift: When ``True``, an incoming track whose key clashes with
+            the outgoing one, but would mix after moving it one or two
+            semitones, is played that much higher or lower (tempo
+            unchanged) during the crossfade and slides back to its own
+            key over the following ``beatmatch_glide_bars`` bars (at
+            least 4 seconds).  Server mix only.
         outro_intro_align: When ``True``, the crossfade starts at the
             outgoing track's outro start (auto-detected on first play)
             and the incoming track enters at its first sound.
@@ -556,6 +572,8 @@ class DjMixConfig(_Section):
     beatmatch: bool = False
     beatmatch_max_stretch: float = 0.08
     beatmatch_glide_bars: int = 8
+    drop_mix: bool = False
+    key_shift: bool = False
     outro_intro_align: bool = False
     phrase_align: bool = False
     phrase_bars: int = 8
@@ -570,6 +588,7 @@ class DjMixConfig(_Section):
         Raises:
             ValueError: If ``harmonic_mode`` is not one of
                 :data:`autodj.dj_meta.HARMONIC_MODES`.
+            TypeError: If ``drop_mix`` or ``key_shift`` is not a boolean.
         """
         if isinstance(self.harmonic_mode, str):
             self.harmonic_mode = self.harmonic_mode.lower()
@@ -587,6 +606,9 @@ class DjMixConfig(_Section):
         self.beatmatch = bool(self.beatmatch)
         self.beatmatch_max_stretch = float(self.beatmatch_max_stretch)
         self.beatmatch_glide_bars = max(0, int(self.beatmatch_glide_bars))
+        for name in ("drop_mix", "key_shift"):
+            if not isinstance(getattr(self, name), bool):
+                raise TypeError(f"djmix.{name} must be true or false")
         self.outro_intro_align = bool(self.outro_intro_align)
         self.phrase_align = bool(self.phrase_align)
         self.phrase_bars = int(self.phrase_bars)

@@ -148,6 +148,8 @@ const FIELDS = [
     read: (st) => st.transition || "none" },
   { key: "harmonicMode", url: DJMIX, field: "harmonic_mode", read: (st) => st.djmix?.harmonic_mode },
   { key: "djBeatmatch", url: DJMIX, field: "beatmatch", read: (st) => Boolean(st.djmix?.beatmatch) },
+  { key: "djDropMix", url: DJMIX, field: "drop_mix", read: (st) => Boolean(st.djmix?.drop_mix) },
+  { key: "djKeyShift", url: DJMIX, field: "key_shift", read: (st) => Boolean(st.djmix?.key_shift) },
   { key: "djPhraseAlign", url: DJMIX, field: "phrase_align",
     read: (st) => Boolean(st.djmix?.phrase_align) },
   { key: "djOutroIntro", url: DJMIX, field: "outro_intro_align",

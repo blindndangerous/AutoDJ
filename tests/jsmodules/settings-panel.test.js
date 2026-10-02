@@ -34,6 +34,8 @@ function makeEls() {
     transitionSelect: sel(["echo_out", "reverb_tail"]),
     harmonicMode:    sel(["off", "compatible"]),
     djBeatmatch:     cb(),
+    djDropMix:       cb(),
+    djKeyShift:      cb(),
     djPhraseAlign:   cb(),
     djOutroIntro:    cb(),
     djVocalGuard:    cb(),
@@ -79,6 +81,8 @@ describe("applySettingsState", () => {
       djmix: {
         harmonic_mode: "compatible",
         beatmatch: true,
+        drop_mix: true,
+        key_shift: false,
         phrase_align: false,
         outro_intro_align: true,
       },
@@ -102,6 +106,8 @@ describe("applySettingsState", () => {
     expect(els.transitionSelect.value).toBe("echo_out");
     expect(els.harmonicMode.value).toBe("compatible");
     expect(els.djBeatmatch.checked).toBe(true);
+    expect(els.djDropMix.checked).toBe(true);
+    expect(els.djKeyShift.checked).toBe(false);
     expect(els.discEnabled.checked).toBe(true);
     expect(els.discEvery.value).toBe("5");
   });
@@ -157,6 +163,8 @@ describe("installSettingsControls", () => {
     };
 
     expect(change(els.djPhraseAlign, true)).toEqual(["/api/djmix", { phrase_align: true }]);
+    expect(change(els.djDropMix, true)).toEqual(["/api/djmix", { drop_mix: true }]);
+    expect(change(els.djKeyShift, true)).toEqual(["/api/djmix", { key_shift: true }]);
     expect(change(els.pbReplayGain, true))
       .toEqual(["/api/playback-settings", { replaygain_enabled: true }]);
     expect(change(els.transitionSelect, "reverb_tail"))

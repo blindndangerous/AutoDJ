@@ -51,6 +51,8 @@ def _make_player() -> SimpleNamespace:
         djmix=SimpleNamespace(
             harmonic_mode="off",
             beatmatch=False,
+            drop_mix=False,
+            key_shift=False,
             phrase_align=False,
             outro_intro_align=False,
             filter_sweep=False,
@@ -424,6 +426,8 @@ class TestRoundTrip:
         assert set(saved["djmix"]) == {
             "harmonic_mode",
             "beatmatch",
+            "drop_mix",
+            "key_shift",
             "phrase_align",
             "outro_intro_align",
             "filter_sweep",

@@ -1973,6 +1973,18 @@ class TestSettingsEndpoints:
         assert bridge.player._cfg.djmix.beatmatch is True
         assert bridge.player._cfg.djmix.harmonic_mode == "strict"
 
+    def test_post_djmix_drop_mix_and_key_shift(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        bridge.player._cfg.index.active_dir = tmp_path
+        tc = TestClient(create_app(bridge))
+        settings = tc.post("/api/djmix", json={"drop_mix": True, "key_shift": True}).json()
+        assert bridge.player._cfg.djmix.drop_mix is True
+        assert bridge.player._cfg.djmix.key_shift is True
+        assert settings["djmix"]["drop_mix"] is True
+        assert settings["djmix"]["key_shift"] is True
+        assert tc.post("/api/djmix", json={"key_shift": "maybe"}).status_code == 422
+
     def test_post_djmix_skips_none_fields(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
