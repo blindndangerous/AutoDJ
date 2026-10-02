@@ -39,6 +39,8 @@ import json
 import logging
 import sqlite3
 import threading
+import time
+from collections.abc import Callable
 from collections.abc import Set as AbstractSet
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -523,6 +525,15 @@ class DjMetaCache:
     operations are thread-safe (the player loads tracks on a background
     thread while the server reads cache state for the API).
 
+    Analysed rows are kept in memory once read.  A track with no analysed
+    row is looked up again after :attr:`MISS_TTL_S` seconds, because
+    ``autodj analyse`` (run from the web Library panel) writes rows from
+    another process while the server is running.
+
+    After :meth:`close`, reads return an empty :class:`DjMeta` and writes
+    are dropped, each logged once: a worker that outlives shutdown must
+    not crash on the closed connection.
+
     Schema (one table)::
 
         CREATE TABLE dj_meta (
@@ -559,10 +570,14 @@ class DjMetaCache:
         );
     """
 
+    # Seconds before a track with no analysed row is looked up again.
+    MISS_TTL_S = 5.0
+
     def __init__(
         self,
         sidecar_path: Path,
         music_dir: Path | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         """Initialise the cache, opening or creating the SQLite store.
 
@@ -570,6 +585,7 @@ class DjMetaCache:
             sidecar_path: Path to the SQLite database (``*.db``).
             music_dir: Optional library root used to store cache keys as
                 portable relative paths.
+            clock: Monotonic seconds, for the miss expiry.
 
         Raises:
             ValueError: If the cache stores an absolute track path, which only
@@ -582,8 +598,14 @@ class DjMetaCache:
         # Pending writes — flushed in a single transaction by `flush()`.
         self._buf: dict[str, DjMeta] = {}
         # Read-through cache so repeat get() calls (e.g. server JSON
-        # serialization) never hit SQLite twice for the same row.
+        # serialization) never hit SQLite twice for the same analysed row.
         self._mem_cache: dict[str, DjMeta] = {}
+        # Tracks with no analysed row: (expiry, what the read returned).
+        # Expiring them lets rows another process writes show up, while
+        # get_state's few lookups a second stay off SQLite meanwhile.
+        self._misses: dict[str, tuple[float, DjMeta]] = {}
+        self._clock = clock
+        self._warned_closed = False
         self._conn: sqlite3.Connection | None = None
         self._open()
 
@@ -675,15 +697,31 @@ class DjMetaCache:
                 return self._buf[key]
             if key in self._mem_cache:
                 return self._mem_cache[key]
-            assert self._conn is not None
+            now = self._clock()
+            miss = self._misses.get(key)
+            if miss is not None and now < miss[0]:
+                return miss[1]
+            if self._conn is None:
+                self._warn_closed_locked("read")
+                return DjMeta()
             row = self._conn.execute(
                 "SELECT intro_end_s, outro_start_s, analysed, beats, cues, intro_start_s "
                 "FROM dj_meta WHERE path = ?",
                 (key,),
             ).fetchone()
             meta = self._row_to_meta(row) if row else DjMeta()
-            self._mem_cache[key] = meta
+            if meta.analysed:
+                self._mem_cache[key] = meta
+                self._misses.pop(key, None)
+            else:
+                self._misses[key] = (now + self.MISS_TTL_S, meta)
             return meta
+
+    def _warn_closed_locked(self, action: str) -> None:
+        """Log, once, a *action* on the closed cache (hold the lock)."""
+        if not self._warned_closed:
+            self._warned_closed = True
+            logger.warning("DJ meta cache %s after it was closed; ignoring it.", action)
 
     def set(self, path: str, meta: DjMeta) -> None:
         """Store *meta* under *path* and mark the cache dirty."""
@@ -691,6 +729,7 @@ class DjMetaCache:
         with self._lock:
             self._buf[key] = meta
             self._mem_cache[key] = meta
+            self._misses.pop(key, None)
             self._dirty += 1
 
     def _write_buffer_locked(self) -> None:
@@ -734,7 +773,11 @@ class DjMetaCache:
             if not self._buf:
                 self._dirty = 0
                 return
-            assert self._conn is not None
+            if self._conn is None:
+                self._warn_closed_locked("written")
+                self._buf.clear()
+                self._dirty = 0
+                return
             with immediate_transaction(self._conn):
                 self._write_buffer_locked()
             self._buf.clear()
@@ -748,7 +791,9 @@ class DjMetaCache:
         """
         valid_keys = {self._key(path) for path in valid_paths}
         with self._lock:
-            assert self._conn is not None
+            if self._conn is None:
+                self._warn_closed_locked("pruned")
+                return 0
             with immediate_transaction(self._conn):
                 self._write_buffer_locked()
                 existing = [str(row[0]) for row in self._conn.execute("SELECT path FROM dj_meta")]
@@ -761,6 +806,7 @@ class DjMetaCache:
             self._dirty = 0
             for path in stale:
                 self._mem_cache.pop(path, None)
+                self._misses.pop(path, None)
             return len(stale)
 
     def close(self) -> None:

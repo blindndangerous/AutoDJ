@@ -404,7 +404,10 @@ class TestPlayerPickNext:
         player._state.current_track = entries[0]
 
         with pytest.raises(SimilarityError, match="hard filters for pure shuffle"):
-            player._pick_next(entries[0])
+            player._pick_pure_shuffle(entries[0], player._pick_context())
+        # The pick itself falls back to a random track rather than failing.
+        assert player._pick_next(entries[0]).path != entries[0].path
+        assert player._last_pick_mode == "fallback"
 
     def test_pure_shuffle_logs_once_when_recent_exclusion_is_relaxed(self, caplog) -> None:
         import logging
@@ -812,13 +815,13 @@ class TestRunHeadlessSeedHooks:
         existing_next = player._sim.entries[2]
         player._state.next_track = existing_next
         with (
-            patch.object(player, "_pick_next") as pick_next,
+            patch.object(player, "_choose_next") as choose_next,
             patch.object(player, "load_lyrics_in_background"),
             patch.object(player, "analyse_track_in_background"),
         ):
             player._run_headless(seed)
         assert player._state.next_track is existing_next
-        pick_next.assert_not_called()
+        choose_next.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -925,14 +928,14 @@ class TestPlayerRun:
         """Run the player loop for exactly one track, then stop."""
         seed = player._sim.entries[seed_idx]
         call_count = [0]
-        original_pick = player._pick_next
+        original_pick = player._choose_next
 
-        def stopping_pick(current):
+        def stopping_pick(current, context):
             call_count[0] += 1
             player._state.should_stop = True
-            return original_pick(current)
+            return original_pick(current, context)
 
-        player._pick_next = stopping_pick  # type: ignore[method-assign]
+        player._choose_next = stopping_pick  # type: ignore[method-assign]
 
         with patch("autodj.player.time.sleep"):  # skip the 0.1 s dry-run sleep
             player.run(seed_entry=seed)
@@ -948,14 +951,14 @@ class TestPlayerRun:
         player = self._make_dry_player()
         seed = player._sim.entries[0]
         call_count = [0]
-        original_pick = player._pick_next
+        original_pick = player._choose_next
 
-        def stopping_pick(current):
+        def stopping_pick(current, context):
             call_count[0] += 1
             player._state.should_stop = True
-            return original_pick(current)
+            return original_pick(current, context)
 
-        player._pick_next = stopping_pick  # type: ignore[method-assign]
+        player._choose_next = stopping_pick  # type: ignore[method-assign]
         with patch("autodj.player.time.sleep"):
             player.run(seed_entry=seed)
 
@@ -2056,7 +2059,7 @@ class TestPlayerCoverageErrorPaths:
             player._ensure_dj_cache()
 
         assert player._dj_cache is None
-        assert player._dj_cache_initialised is True
+        assert player._dj_cache_initialised is False  # tried again later
 
     def test_unbounded_background_wait_joins_registered_worker(self) -> None:
         player = Player(_make_cfg_mock(), _make_sim_index(2))
@@ -2074,14 +2077,12 @@ class TestPlayerCoverageErrorPaths:
 
 
 def test_next_rendered_carries_offset_between_tracks(monkeypatch):
-    import threading
 
     from autodj import player as player_mod
     from autodj.mixbus import RenderedTrack
 
     p = player_mod.Player.__new__(player_mod.Player)
     p._state = player_mod.PlayerState()
-    p._pick_lock = threading.Lock()
     p._set_generation = 0
     p._pending_pick_mode = "seed"
     p._pending_from_queue = False
@@ -2104,13 +2105,11 @@ def test_next_rendered_carries_offset_between_tracks(monkeypatch):
 
 
 def test_next_rendered_skips_unrenderable_tracks_and_stops_without_a_cursor() -> None:
-    import threading
 
     from autodj.mixbus import RenderedTrack
 
     p = Player.__new__(Player)
     p._state = PlayerState()
-    p._pick_lock = threading.Lock()
     p._set_generation = 0
     p._pending_pick_mode = "seed"
     p._pending_from_queue = False
@@ -2136,11 +2135,9 @@ def test_next_rendered_skips_unrenderable_tracks_and_stops_without_a_cursor() ->
 
 
 def test_next_rendered_gives_up_after_five_failed_renders() -> None:
-    import threading
 
     p = Player.__new__(Player)
     p._state = PlayerState()
-    p._pick_lock = threading.Lock()
     p._set_generation = 0
     p._pending_pick_mode = "seed"
     p._pending_from_queue = False

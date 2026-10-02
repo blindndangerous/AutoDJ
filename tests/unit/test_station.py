@@ -372,6 +372,27 @@ def test_start_with_is_refused_while_a_set_plays() -> None:
     assert rig.player.begin_set.call_args_list[-1].args == (rig.shuffle_pick, "seed")
 
 
+def test_play_now_while_idle_makes_it_the_next_sets_first_track() -> None:
+    rig = _Rig()
+    chosen = MagicMock(name="chosen")
+    play = MagicMock()
+    rig.station.play_now(chosen, "seed", play)
+    play.assert_not_called()
+    rig.listeners(1)
+    rig.player.begin_set.assert_called_once_with(chosen, "seed")
+
+
+def test_play_now_during_a_set_plays_it_under_the_station_lock() -> None:
+    rig = _Rig()
+    rig.listeners(1)
+    held: list[bool] = []
+    rig.station.play_now(
+        MagicMock(name="now"), "queue", lambda: held.append(rig.station._lock.locked())
+    )
+    assert held == [True]
+    assert rig.station._start_entry is None
+
+
 def test_real_player_ignores_a_track_start_left_over_from_a_stopped_set() -> None:
     player, bridge, stream, station, now, _sim = _real_rig()
     player._render_ahead.start()

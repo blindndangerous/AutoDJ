@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from autodj.dj_meta import Cue, DjMeta
@@ -287,3 +289,33 @@ def test_repeat_windows_resize_the_running_history(bridge) -> None:
     bridge.set_playback_settings(PlaybackSettingsBody(no_repeat_window=500))
     assert state.recently_played.maxlen == 90
     assert bridge.get_settings()["playback"]["no_repeat_window"] == 500
+
+
+class _SetStoppingState:
+    """Player state whose current track vanishes after its first two reads.
+
+    That is what a stream set stopping on its worker thread (``end_set``)
+    does to a ``get_state`` call in progress.
+    """
+
+    def __init__(self, entry: IndexEntry) -> None:
+        self._reads = [entry, entry]
+        self.next_track = None
+        self.queue: list[IndexEntry] = []
+        self.queue_lock = threading.RLock()
+        self.is_paused = False
+        self.volume = 1.0
+        self.is_muted = False
+        self.discovery_enabled = False
+
+    @property
+    def current_track(self) -> IndexEntry | None:
+        return self._reads.pop(0) if self._reads else None
+
+
+def test_get_state_reads_the_current_track_once(bridge) -> None:
+    entry = _entry(length=200.0)
+    bridge.player._state = _SetStoppingState(entry)
+    state = bridge.get_state()
+    assert state["current_track"]["path"] == entry.path
+    assert state["duration"] == 200.0

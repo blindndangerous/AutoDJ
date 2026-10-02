@@ -111,6 +111,22 @@ class RenderAhead:
         if thread is not None and timeout > 0 and thread is not threading.current_thread():
             thread.join(timeout)
 
+    def join(self, timeout: float | None = None) -> bool:
+        """Wait up to *timeout* seconds (``None``: forever) for the worker to exit.
+
+        Only useful after :meth:`stop`.  Never waits on the calling thread
+        itself.
+
+        Returns:
+            Whether no worker is running any more.
+        """
+        with self._cond:
+            thread = self._thread
+        if thread is None or thread is threading.current_thread():
+            return True
+        thread.join(None if timeout is None else max(0.0, timeout))
+        return not thread.is_alive()
+
     def pop(self) -> RenderedTrack | None:
         """Take the next track without blocking, or return ``None``.
 

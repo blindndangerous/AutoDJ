@@ -263,6 +263,81 @@ async def _broadcast_and_prune(
     return dead
 
 
+class _BroadcastFailureLog:
+    """Rate-limit the log of failed state pushes to the web pages.
+
+    The first failure with each exception type logs its traceback; after
+    that, at most one warning per *every_s* seconds says the pushes still
+    fail and how many failures went unreported.  A success after failures
+    logs once that pushes work again.
+    """
+
+    def __init__(self, clock: Callable[[], float] = time.monotonic, every_s: float = 60.0) -> None:
+        """Start with nothing failing.
+
+        Args:
+            clock: Monotonic seconds.
+            every_s: Least seconds between two repeat warnings.
+        """
+        self._clock = clock
+        self._every_s = every_s
+        self._seen: set[type[BaseException]] = set()
+        self._next_warning = 0.0
+        self._unreported = 0
+        self._failing = False
+
+    def failed(self, exc: Exception) -> None:
+        """Log (or count) one failed push."""
+        self._failing = True
+        now = self._clock()
+        if type(exc) not in self._seen:
+            self._seen.add(type(exc))
+            logger.error("Pushing state to the web pages failed; trying again", exc_info=exc)
+        elif now >= self._next_warning:
+            logger.warning(
+                "Pushing state to the web pages still fails (%s: %s); "
+                "%d failures since the last report",
+                type(exc).__name__,
+                exc,
+                self._unreported + 1,
+            )
+        else:
+            self._unreported += 1
+            return
+        self._unreported = 0
+        self._next_warning = now + self._every_s
+
+    def succeeded(self) -> None:
+        """Note a push that worked, ending a run of failures."""
+        if self._failing:
+            self._failing = False
+            self._unreported = 0
+            logger.info("Pushing state to the web pages works again")
+
+
+async def _broadcast_state_once(
+    bridge: PlayerBridge,
+    clients: set[_WebSocketClient],
+    clients_lock: asyncio.Lock,
+    failures: _BroadcastFailureLog,
+) -> None:
+    """Push the player state to every WebSocket client, if any are connected.
+
+    A failure (building the state, encoding it, or sending it) is logged
+    through *failures* and never raised, so the next push still runs:
+    one bad state must not stop every page's updates until a restart.
+    """
+    if not clients:
+        return
+    try:
+        payload = json.dumps(bridge.get_state())
+        await _broadcast_and_prune(clients, clients_lock, payload)
+    except Exception as exc:
+        failures.failed(exc)
+    else:
+        failures.succeeded()
+
+
 async def reload_published_generation_once(bridge: PlayerBridge) -> bool:
     """Reload the index when its manifest differs from the loaded one.
 
@@ -1836,15 +1911,28 @@ def create_app(
         return FileResponse(audio_path, media_type=_audio_mime(audio_path), stat_result=metadata)
 
     @app.post("/api/advance")
-    async def api_advance() -> JSONResponse:
+    async def api_advance(request: Request) -> JSONResponse:
         """Browser signals end-of-track — server picks next track.
 
         Returns the fresh state synchronously so the browser can update
         ``current_track`` / ``next_track`` immediately without waiting
         for the 1 Hz WS broadcast.  Decouples advance latency from the
         broadcast cadence.
+
+        Optional JSON body: ``{"from_path": "<the track the page is
+        playing>"}``.  When it is not the server's current track, another
+        tab (or a retried request) already advanced, so nothing changes
+        and the current state is returned.  Without it, the server
+        advances unconditionally.
         """
-        bridge.skip()
+        from_path = None
+        try:
+            body = await request.json()
+        except (ValueError, TypeError):
+            body = None  # no JSON body: advance unconditionally
+        if isinstance(body, dict) and isinstance(body.get("from_path"), str):
+            from_path = body["from_path"]
+        bridge.advance(from_path)
         return JSONResponse(bridge.get_state())
 
     @app.post("/api/repick-next")
@@ -2131,12 +2219,10 @@ def create_app(
 
     async def _broadcast_loop() -> None:  # pragma: no cover — long-running task
         """Push state JSON to all connected WebSocket clients once per second."""
+        failures = _BroadcastFailureLog()
         while True:
             await asyncio.sleep(1)
-            if not _ws_clients:
-                continue
-            payload = json.dumps(bridge.get_state())
-            await _broadcast_and_prune(_ws_clients, _ws_lock, payload)
+            await _broadcast_state_once(bridge, _ws_clients, _ws_lock, failures)
 
     async def _index_watcher_loop() -> None:  # pragma: no cover — long-running task
         """Reload each newly published index generation every 10 seconds."""
