@@ -31,7 +31,7 @@ def _player(n: int = 6, **kwargs) -> Player:
     return player
 
 
-def _stub_render(current, nxt, offset):
+def _stub_render(current, nxt, offset, **_kw):
     return RenderedTrack(current, np.zeros((10, 2), np.float32), nxt, 33, "", start_offset=offset)
 
 

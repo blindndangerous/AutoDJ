@@ -42,7 +42,7 @@ def renderer(monkeypatch: pytest.MonkeyPatch) -> player_mod.Player:
     p._peek_incoming_meta = lambda _e: None
     p._effective_crossfade_seconds = lambda *_a: 2.0
     p._crossfade_start_in_a = lambda audio_a, _sr, _meta, cf: len(audio_a) - cf
-    p._maybe_beatmatch = lambda audio_b, *_a: audio_b
+    p._beatmatch_plan = lambda *_a, fade_start, **_k: player_mod._BeatmatchPlan(1.0, fade_start)
     p._skip_incoming_silence_samples = lambda _audio_b, _sr, **_k: 0
     p._apply_outgoing_filter_sweep = lambda a, *_a: a
     p._apply_transition_effect = lambda a, _b, head, *_a, **_k: (
@@ -95,30 +95,27 @@ def test_offset_beyond_track_returns_none(renderer: player_mod.Player) -> None:
     assert renderer._render_track(_entry("short"), None, start_offset=500) is None
 
 
-def test_offset_scaled_by_beatmatch_ratio(renderer: player_mod.Player) -> None:
-    def _stretch(audio_b: np.ndarray, *_a: object) -> np.ndarray:
-        return np.repeat(audio_b, 2, axis=0)[: int(len(audio_b) * 1.25)]
+def test_beatmatched_offset_is_where_the_glide_resumes(renderer: player_mod.Player) -> None:
+    renderer._beatmatch_plan = lambda *_a, fade_start, **_k: player_mod._BeatmatchPlan(
+        1.04, fade_start, ramp_frames=40
+    )
+    out = renderer._render_track(_entry("a"), _entry("b"), start_offset=0)
+    assert out is not None and out.next_glide is not None
+    # The next render starts at the glide's origin, in the file's own
+    # timeline: the overlap played about 2 s / 1.04 of it, and the glide
+    # (slower than real time) a little less than it took.
+    assert out.next_start_offset == out.next_glide.origin
+    assert 0 < out.next_start_offset < int(2 * 44100 / 1.04)
+    assert out.beatmatch_ratio == pytest.approx(1.04)
 
-    renderer._maybe_beatmatch = _stretch
+
+def test_tiny_stretch_is_left_alone(renderer: player_mod.Player) -> None:
+    renderer._beatmatch_plan = lambda *_a, fade_start, **_k: player_mod._BeatmatchPlan(
+        1.001, fade_start
+    )
     out = renderer._render_track(_entry("a"), _entry("b"), start_offset=0)
     assert out is not None
-    # The offset is converted using the actual (measured) length ratio
-    # between the pre- and post-stretch buffers, not self._beatmatch_ratio.
-    assert out.next_start_offset == int((2 * 44100) / 1.25)
-    assert out.beatmatch_ratio == pytest.approx(1.25)
-
-
-def test_offset_unscaled_when_beatmatch_reports_ratio_but_is_a_noop(
-    renderer: player_mod.Player,
-) -> None:
-    """beatmatch_incoming can report a near-1.0 ratio while leaving the
-    audio untouched (below its stretch threshold, or a failed stretch
-    falling back to the original) -- self._beatmatch_ratio must not be
-    trusted for the offset conversion, only the buffer's actual length."""
-    renderer._maybe_beatmatch = lambda audio_b, *_a: audio_b  # unchanged length
-    renderer._beatmatch_ratio = 1.009
-    out = renderer._render_track(_entry("a"), _entry("b"), start_offset=0)
-    assert out is not None
+    assert out.next_glide is None
     assert out.next_start_offset == 2 * 44100
     assert out.beatmatch_ratio == 1.0
 

@@ -165,7 +165,7 @@ def test_run_stream_with_server_audio_adds_and_closes_the_sound_card() -> None:
 
 def test_run_stream_renders_ahead_once_a_set_begins() -> None:
     player = _player(stream_mode=True)
-    player._render_track = lambda cur, nxt, off: RenderedTrack(  # type: ignore[method-assign]
+    player._render_track = lambda cur, nxt, off, **_k: RenderedTrack(  # type: ignore[method-assign]
         cur, np.zeros((MixBus.BLOCK * 4, 2), np.float32), nxt, 0, "", start_offset=off
     )
     with patch("autodj.sound_output.SoundDeviceOutput"):
@@ -199,7 +199,7 @@ def test_each_set_gets_a_new_generation() -> None:
 
 def test_render_is_stamped_with_the_set_generation() -> None:
     player = _player(stream_mode=True)
-    player._render_track = lambda cur, nxt, off: RenderedTrack(  # type: ignore[method-assign]
+    player._render_track = lambda cur, nxt, off, **_k: RenderedTrack(  # type: ignore[method-assign]
         cur, np.zeros((4, 2), np.float32), nxt, 0, "", start_offset=off
     )
     player.begin_set(player._sim.entries[0], "seed")

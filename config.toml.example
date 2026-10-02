@@ -318,10 +318,18 @@ max_clip_safe_gain = 1.0
 #   "energy_boost" same side, two steps up the wheel — set lifts over time.
 harmonic_mode = "off"
 
-# Pitch-stretch the incoming track so its BPM matches the outgoing track
-# during the crossfade.  Refuses to stretch beyond ±beatmatch_max_stretch.
+# Time-stretch the incoming track (pitch preserved) so its BPM matches the
+# outgoing track during the crossfade, then ease it back to its own tempo.
+# When both tracks have a confident tempo and an analysed beat grid, the
+# crossfade start also moves (by under a bar, or onto a phrase boundary with
+# phrase_align) so the two tracks' downbeats land together.  Half and double
+# time count as the same tempo (70 BPM mixes with 140).  Refuses to stretch
+# beyond ±beatmatch_max_stretch.
 beatmatch = false
 beatmatch_max_stretch = 0.08      # ±8% — typical DJ practice
+# Bars of the incoming track over which it glides back to its own tempo
+# after the crossfade (at most 30 seconds); 0 returns it at once.
+beatmatch_glide_bars = 8
 
 # Auto-detect each track's outro start and start the crossfade there, with
 # the incoming track entering at its first sound.

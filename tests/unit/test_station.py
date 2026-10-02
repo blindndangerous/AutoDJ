@@ -269,7 +269,7 @@ def _real_rig():
     sim = make_sim_index(12)
     player = Player(make_cfg_mock(), sim, stream_mode=True)
 
-    def fake_render(current, nxt, offset):
+    def fake_render(current, nxt, offset, **_kw):
         return RenderedTrack(
             current, np.full((FRAMES, 2), 0.1, np.float32), nxt, 0, "", start_offset=offset
         )

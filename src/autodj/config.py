@@ -486,12 +486,19 @@ class DjMixConfig(_Section):
     unchanged; opt in only as you want each feature.
 
     Attributes:
-        beatmatch: When ``True``, the incoming track is pitch-stretched
-            (up to ±``beatmatch_max_stretch``) so its BPM matches the
-            outgoing track during the crossfade.  Requires both tracks
-            to have a known BPM in the index.
+        beatmatch: When ``True``, the incoming track is time-stretched,
+            pitch preserved (up to ±``beatmatch_max_stretch``), so its
+            BPM matches the outgoing track during the crossfade, and the
+            two tracks' downbeats are lined up when both have a trusted
+            beat grid.  Requires both tracks to have a known BPM in the
+            index.
         beatmatch_max_stretch: Maximum allowed stretch ratio deviation
-            from 1.0.  ``0.08`` = ±8 % (typical DJ practice).
+            from 1.0.  ``0.08`` = ±8 % (typical DJ practice).  Half and
+            double time count as the same tempo.
+        beatmatch_glide_bars: Bars (of the incoming track) over which a
+            beatmatched track eases back to its own tempo once the
+            crossfade ends, at most 30 seconds.  ``0`` returns it straight
+            away.
         outro_intro_align: When ``True``, the crossfade starts at the
             outgoing track's outro start (auto-detected on first play)
             and the incoming track enters at its first sound.
@@ -515,6 +522,7 @@ class DjMixConfig(_Section):
 
     beatmatch: bool = False
     beatmatch_max_stretch: float = 0.08
+    beatmatch_glide_bars: int = 8
     outro_intro_align: bool = False
     phrase_align: bool = False
     phrase_bars: int = 8
@@ -544,6 +552,7 @@ class DjMixConfig(_Section):
             _one_of(self.harmonic_mode, HARMONIC_MODES, "djmix.harmonic_mode")
         self.beatmatch = bool(self.beatmatch)
         self.beatmatch_max_stretch = float(self.beatmatch_max_stretch)
+        self.beatmatch_glide_bars = max(0, int(self.beatmatch_glide_bars))
         self.outro_intro_align = bool(self.outro_intro_align)
         self.phrase_align = bool(self.phrase_align)
         self.phrase_bars = int(self.phrase_bars)

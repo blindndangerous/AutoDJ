@@ -39,6 +39,16 @@ except ImportError:  # pragma: no cover — minimal install path
 # sounddevice is imported only by autodj.sound_output, lazily, when server
 # audio actually opens a device.
 
+from autodj.beatmatch import (
+    HOP,
+    NO_STRETCH,
+    ON_BEAT_S,
+    Glide,
+    downbeats,
+    local_period,
+    phase_locked_start,
+    tempo_ratio,
+)
 from autodj.indexer import IndexEntry
 from autodj.mixbus import BusEvents, MixBus, RenderedTrack
 from autodj.render_ahead import RenderAhead
@@ -50,7 +60,6 @@ from autodj.stereo import (
     load_stereo,
     load_with_ffmpeg,
     mono,
-    per_channel,
     to_stereo,
 )
 
@@ -198,68 +207,6 @@ def _apply_crossfade_ducked(
     # above full scale during the overlap on densely arranged music.
     np.clip(overlap, -1.0, 1.0, out=overlap)
     return np.concatenate([a_body, overlap, b_body]).astype(np.float32)
-
-
-# ---------------------------------------------------------------------------
-# Beatmatch (tempo-aligned crossfade)
-# ---------------------------------------------------------------------------
-
-
-def _time_stretch(audio: np.ndarray, ratio: float) -> np.ndarray:
-    """Pitch-preserving time-stretch via librosa.
-
-    Args:
-        audio: Mono or stereo float32 audio array.
-        ratio: Output_duration / input_duration.  Values >1 slow the
-            track down (longer); values <1 speed it up (shorter).
-
-    Returns:
-        Stretched float32 array.  Falls back to the input array if
-        librosa.effects.time_stretch raises (e.g. too-short audio).
-    """
-    if abs(ratio - 1.0) < 0.01:
-        return audio
-    try:
-        import librosa
-
-        # librosa's parameter is "rate" = playback speed = 1/ratio
-        return per_channel(
-            lambda channel: librosa.effects.time_stretch(y=channel, rate=1.0 / ratio),
-            audio,
-        ).astype(np.float32)
-    except Exception as exc:
-        logger.debug("Time-stretch failed (ratio=%.3f): %s", ratio, exc)
-        return audio
-
-
-def beatmatch_incoming(
-    audio_b: np.ndarray,
-    bpm_a: float,
-    bpm_b: float,
-    max_stretch: float = 0.08,
-) -> tuple[np.ndarray, float]:
-    """Time-stretch the incoming track so its BPM matches the outgoing track.
-
-    Refuses to stretch beyond *max_stretch* (default ±8 %) — bigger
-    adjustments sound noticeably warped and aren't typical DJ practice.
-    Returns the stretched audio and the actual ratio applied (1.0 = no
-    change).
-
-    Args:
-        audio_b: Mono or stereo float32 audio of the incoming track.
-        bpm_a: BPM of the outgoing track.  Anything ``<= 0`` disables matching.
-        bpm_b: BPM of the incoming track.  Anything ``<= 0`` disables matching.
-        max_stretch: Maximum allowed ``|ratio - 1|``.  0.08 = ±8 %.
-
-    Returns:
-        Tuple ``(stretched_audio, ratio)``.
-    """
-    if bpm_a <= 0 or bpm_b <= 0:
-        return audio_b, 1.0
-    ratio = bpm_b / bpm_a
-    if abs(ratio - 1.0) > max_stretch:
-        return audio_b, 1.0
-    return _time_stretch(audio_b, ratio), ratio
 
 
 # ---------------------------------------------------------------------------
@@ -509,6 +456,26 @@ class _PickContext:
 
 
 @dataclass(frozen=True)
+class _BeatmatchPlan:
+    """How the incoming track is beatmatched into one crossfade.
+
+    Attributes:
+        ratio: Stretch of the incoming track during the overlap (output
+            over input duration), 1.0 for none.
+        fade_start: Sample of the outgoing track where the fade starts.
+        ramp_frames: Length of the glide back to the native tempo, in
+            vocoder frames.
+        beats: The incoming track's beats as samples, when its grid is
+            trusted (transients are kept on them); empty otherwise.
+    """
+
+    ratio: float
+    fade_start: int
+    ramp_frames: int = 0
+    beats: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
 class _FxPlan:
     """The transition effect chosen for one crossfade, and what it syncs to.
 
@@ -545,6 +512,20 @@ def _mixed_in_by(rendered: RenderedTrack | None) -> tuple[str, float]:
     if rendered is None or not rendered.transition_fx:
         return ("", 1.0)
     return (rendered.transition_fx, rendered.beatmatch_ratio)
+
+
+def _grid_anchor(meta: DjMeta) -> float | None:
+    """A time *meta*'s track has a downbeat on, set in DJ software, or ``None``.
+
+    An imported first-downbeat (main / load) cue counts first, then an
+    imported intro start; auto-detected cues never do.
+    """
+    from autodj.dj_meta import imported_markers
+
+    for cue in meta.cues:
+        if cue.type == "first_downbeat" and cue.source != "auto":
+            return cue.time_s
+    return imported_markers(meta.cues).get("intro_start")
 
 
 # ---------------------------------------------------------------------------
@@ -620,6 +601,9 @@ class Player:
     # How the render cursor's track comes in: the previous render's
     # transition effect and stretch (RenderedTrack.mixed_in_fx / _ratio).
     _pending_mixed_in: tuple[str, float] = ("", 1.0)
+    # How the render cursor's track is stretched back to its own tempo
+    # after the overlap (RenderedTrack.next_glide), or None.
+    _pending_glide: Glide | None = None
     # Guards the per-pair effect plans of planned_transition.
     _fx_plan_lock: ClassVar[threading.Lock] = threading.Lock()
     # Plans kept, most recent last: a few pairs cover the playing track,
@@ -1013,6 +997,7 @@ class Player:
             current_from_queue = self._pending_from_queue
             previous = self._pending_previous
             mixed_in_fx, mixed_in_ratio = self._pending_mixed_in
+            glide = self._pending_glide
             context = self._pick_context(
                 pending=current,
                 starting=previous,
@@ -1035,7 +1020,7 @@ class Player:
                     # Plan the effect knowing how next_entry was picked;
                     # the render then finds this plan.
                     self.planned_transition(current, next_entry, next_mode)
-                rendered = self._render_track(current, next_entry, offset)
+                rendered = self._render_track(current, next_entry, offset, glide_in=glide)
             except Exception:
                 logger.exception("Rendering %s failed; skipping it.", current.path)
                 rendered = None
@@ -1050,6 +1035,7 @@ class Player:
                 # A track that failed to render never starts.
                 previous=current if rendered is not None else previous,
                 mixed_in=_mixed_in_by(rendered),
+                glide=rendered.next_glide if rendered else None,
             )
             if rendered is not None:
                 return replace(
@@ -1063,6 +1049,7 @@ class Player:
                     previous_entry=previous,
                     mixed_in_fx=mixed_in_fx,
                     mixed_in_ratio=mixed_in_ratio,
+                    glide_in=glide,
                 )
         return None
 
@@ -1074,13 +1061,16 @@ class Player:
         from_queue: bool = False,
         previous: IndexEntry | None = None,
         mixed_in: tuple[str, float] = ("", 1.0),
+        glide: Glide | None = None,
     ) -> None:
         """Point the render-ahead cursor at *entry* (worker idle or queued).
 
         *previous* is the track rendered just before *entry*; ``None`` after
         a jump, where it is not known.  *mixed_in* is the effect and
         stretch *entry* comes in with (see ``RenderedTrack.mixed_in_fx``);
-        the default is a track that starts on its own.
+        the default is a track that starts on its own.  *glide* is how
+        *entry* returns to its own tempo after a beatmatched overlap (see
+        ``RenderedTrack.next_glide``).
         """
         self._pending_entry = entry
         self._pending_offset = offset
@@ -1088,6 +1078,7 @@ class Player:
         self._pending_from_queue = from_queue
         self._pending_previous = previous
         self._pending_mixed_in = mixed_in
+        self._pending_glide = glide
 
     def _rewind_render_cursor(self, track: RenderedTrack) -> None:
         """Point the cursor back at *track*'s own start (to re-render it).
@@ -1102,6 +1093,7 @@ class Player:
             track.from_queue,
             previous=track.previous_entry,
             mixed_in=(track.mixed_in_fx, track.mixed_in_ratio),
+            glide=track.glide_in,
         )
 
     def _skip_past_render(self, track: RenderedTrack) -> None:
@@ -1117,6 +1109,7 @@ class Player:
             track.next_from_queue,
             previous=track.entry,
             mixed_in=_mixed_in_by(track),
+            glide=track.next_glide,
         )
 
     def reset_render_ahead(
@@ -2310,35 +2303,143 @@ class Player:
         current = self._playback_pos[0] / sr
         return self.seek_to(current + delta_seconds)
 
-    def _maybe_beatmatch(
+    # Longest tempo glide after a beatmatched overlap, in seconds.
+    _MAX_GLIDE_S: ClassVar[float] = 30.0
+
+    def _beatmatch_plan(
         self,
-        audio_b: np.ndarray,
         current: IndexEntry,
         next_entry: IndexEntry,
-    ) -> np.ndarray:
-        """Time-stretch audio_b to match the outgoing BPM (if configured).
+        meta_a: DjMeta | None,
+        meta_b: DjMeta | None,
+        *,
+        entry: int,
+        fade_start: int,
+        crossfade: int,
+        earliest: int,
+        latest: int,
+    ) -> _BeatmatchPlan:
+        """How to beatmatch *next_entry* into *current* (``[djmix] beatmatch``).
 
-        Leaves ``self._beatmatch_ratio`` alone: this runs while rendering
-        ahead, and that attribute describes the *playing* track (see
-        :meth:`_on_track_start`).
+        With both tempos trusted (:func:`~autodj.transitions.trusted_bpm`)
+        and both beat grids steady around the mix, the stretch comes from
+        the grids and the fade start moves so the downbeats coincide
+        (:func:`~autodj.beatmatch.phase_locked_start`).  Otherwise the
+        stretch comes from the indexed BPMs and the fade keeps its start,
+        as before phase lock existed.  Half and double time match too.
+
+        Args:
+            current: The outgoing track.
+            next_entry: The incoming track.
+            meta_a: The outgoing track's DJ meta, when already at hand; the
+                cache is peeked otherwise (never a fresh analysis).
+            meta_b: The incoming track's DJ meta.
+            entry: Sample where the incoming track enters.
+            fade_start: Sample of the outgoing track where the fade starts.
+            crossfade: Fade length in samples.
+            earliest: Earliest allowed fade start (already played before it).
+            latest: Latest allowed fade start.
+
+        Returns:
+            The plan; a ratio of 1.0 and the given fade start when the
+            tracks are not beatmatched.
         """
+        from autodj.transitions import trusted_bpm
+
         cfg_dj = self._cfg.djmix
-        if not (cfg_dj.beatmatch and current.bpm > 0 and next_entry.bpm > 0):
-            return audio_b
-        audio_b, _ratio = beatmatch_incoming(
-            audio_b,
-            bpm_a=current.bpm,
-            bpm_b=next_entry.bpm,
-            max_stretch=cfg_dj.beatmatch_max_stretch,
+        if not cfg_dj.beatmatch:
+            return _BeatmatchPlan(1.0, fade_start)
+        max_stretch = float(cfg_dj.beatmatch_max_stretch)
+        if meta_a is None:
+            meta_a = self._peek_incoming_meta(current)
+        ratio: float | None = None
+        in_period: float | None = None
+        beats: tuple[int, ...] = ()
+        trusted = all(
+            trusted_bpm(entry_.bpm, getattr(entry_, "tempo_confidence", 0.0))
+            for entry_ in (current, next_entry)
         )
-        return audio_b
+        if trusted and meta_a is not None and meta_b is not None:
+            out_period = local_period(meta_a.beats, (fade_start + crossfade / 2) / SAMPLE_RATE)
+            in_period = local_period(meta_b.beats, entry / SAMPLE_RATE)
+            if out_period is not None and in_period is not None:
+                ratio = tempo_ratio(out_period, in_period, max_stretch)
+            if ratio is not None:
+                entry_s = entry / SAMPLE_RATE
+                phrase = meta_a.beats[:: cfg_dj.phrase_bars * 4] if cfg_dj.phrase_align else []
+                locked = phase_locked_start(
+                    downbeats(meta_a.beats, _grid_anchor(meta_a)),
+                    downbeats(meta_b.beats, _grid_anchor(meta_b)),
+                    entry_s=entry_s,
+                    ratio=ratio,
+                    start_s=fade_start / SAMPLE_RATE,
+                    fade_s=crossfade / SAMPLE_RATE,
+                    earliest_s=earliest / SAMPLE_RATE,
+                    latest_s=latest / SAMPLE_RATE,
+                    phrase_starts=phrase,
+                )
+                if locked is not None:
+                    fade_start = round(locked * SAMPLE_RATE)
+                beats = tuple(
+                    round(t * SAMPLE_RATE) for t in meta_b.beats if t >= entry_s - ON_BEAT_S
+                )
+        if ratio is None:
+            in_period = None
+            if current.bpm > 0 and next_entry.bpm > 0:
+                ratio = tempo_ratio(60.0 / current.bpm, 60.0 / next_entry.bpm, max_stretch)
+        if ratio is None:
+            return _BeatmatchPlan(1.0, fade_start)
+        bar_s = 4.0 * (in_period or 60.0 / next_entry.bpm)
+        glide_s = min(self._MAX_GLIDE_S, max(0, int(cfg_dj.beatmatch_glide_bars)) * bar_s)
+        return _BeatmatchPlan(ratio, fade_start, round(glide_s * SAMPLE_RATE / HOP), beats)
+
+    @staticmethod
+    def _incoming_glide(
+        audio_b: np.ndarray, entry: int, plan: _BeatmatchPlan, crossfade: int
+    ) -> Glide | None:
+        """The stretch for *audio_b*, or ``None`` when none is needed or fits.
+
+        A track too short for the whole glide gets the shortest one; one
+        too short even for that plays unstretched.
+        """
+        if abs(plan.ratio - 1.0) <= NO_STRETCH:
+            return None
+        for ramp in (plan.ramp_frames, 0):
+            glide = Glide(
+                entry=entry,
+                ratio=plan.ratio,
+                played=crossfade,
+                ramp_frames=ramp,
+                beats=plan.beats,
+            )
+            if glide.origin >= 0 and glide.fits(len(audio_b)):
+                return glide
+        return None
+
+    @staticmethod
+    def _play_glide_in(audio: np.ndarray, start_offset: int, glide: Glide | None) -> None:
+        """Write the rest of *glide* into *audio*, in place.
+
+        *audio* is this track as decoded for its own render, and *glide*
+        how the previous render brought it in.  Everything after the
+        overlap up to the end of the glide is replaced by the stretched
+        audio, so the render, which starts at *start_offset* (the glide's
+        :attr:`~autodj.beatmatch.Glide.origin`), plays on with no sample
+        repeated or skipped.  When the glide cannot be computed the track
+        plays on at its own tempo from there.
+        """
+        if glide is None or glide.origin != start_offset or not glide.fits(len(audio)):
+            return
+        try:
+            audio[glide.origin : glide.source_end] = glide.continuation(audio)
+        except Exception as exc:
+            logger.warning("Tempo glide failed; the track plays at its own tempo: %s", exc)
 
     def _skip_incoming_silence_samples(
         self,
         audio_b: np.ndarray,
         sr_a: int,
         meta_b: DjMeta | None = None,
-        stretch: float = 1.0,
     ) -> int:
         """Return how many of *audio_b*'s leading samples to drop as silence.
 
@@ -2346,10 +2447,9 @@ class Player:
         (``full_intro_outro`` / ``fixed_skip_silence``) start the incoming
         track at its first sound, as Mixxx does.  The intro itself plays
         under the outgoing outro, so a verse sung over it stays whole.
-        Measured on *audio_b* itself, so the offset stays right after a
-        beatmatch stretch.  An intro start set in DJ software (an imported
-        ``intro_start`` cue in *meta_b*) is used instead of the
-        measurement, scaled by the beatmatch *stretch*.
+        An intro start set in DJ software (an imported ``intro_start`` cue
+        in *meta_b*) is used instead of the measurement.  *audio_b* is the
+        track as decoded: a beatmatch stretch starts from this point.
         """
         from autodj.dj_meta import detect_intro_start, imported_markers
 
@@ -2359,7 +2459,7 @@ class Player:
             return 0
         marked = imported_markers(meta_b.cues).get("intro_start") if meta_b else None
         if marked is not None:
-            first_sound = int(marked * stretch * sr_a)
+            first_sound = int(marked * sr_a)
         else:
             first_sound = int(detect_intro_start(audio_b, sr_a) * sr_a)
         return min(first_sound, len(audio_b) // 2)
@@ -2604,18 +2704,24 @@ class Player:
         current: IndexEntry,
         next_entry: IndexEntry | None,
         start_offset: int,
+        *,
+        glide_in: Glide | None = None,
     ) -> RenderedTrack | None:
         """Render *current* from *start_offset* into the head of *next_entry*.
 
         The overlap with *next_entry* is mixed in, and the returned
-        ``next_start_offset`` tells the next call where the incoming track's
-        audio continues, so no sample plays twice.
+        ``next_start_offset`` (with ``next_glide`` after a beatmatch) tells
+        the next call where the incoming track's audio continues, so no
+        sample plays twice.
 
         Args:
             current: Track to render.
             next_entry: Track mixed into the tail, or ``None`` for no overlap.
             start_offset: Samples of *current* already played by the previous
                 overlap (including any skipped leading silence).
+            glide_in: How the previous overlap stretched *current*
+                (``RenderedTrack.next_glide``); the render opens with the
+                rest of that stretch, back to the track's own tempo.
 
         Returns:
             The rendered track, or ``None`` when *current* cannot be loaded,
@@ -2644,6 +2750,7 @@ class Player:
         # be the playing track's (_on_track_start loads them).
         self._ensure_dj_cache()
         meta_a = self._outgoing_meta(audio_a_full, SAMPLE_RATE, current.path)
+        self._play_glide_in(audio_a_full, start_offset, glide_in)
         audio_a = audio_a_full[start_offset:]
         if next_entry is None:
             return RenderedTrack(current, audio_a, None, 0, "", start_offset=start_offset)
@@ -2657,45 +2764,41 @@ class Player:
         # audio_a, which already had start_offset samples cut off the
         # front.  Re-express the result in audio_a's own coordinates after.
         a_start_full = self._crossfade_start_in_a(audio_a_full, SAMPLE_RATE, meta_a, crossfade)
-        a_start = max(0, a_start_full - start_offset)
         audio_b_loaded = self._load_incoming(next_entry, SAMPLE_RATE, crossfade)
         if audio_b_loaded is None:
             # Too long to mix in: play this track out; the next render skips it.
             return RenderedTrack(current, audio_a, next_entry, 0, "", start_offset=start_offset)
-        pre_stretch_len = len(audio_b_loaded)
-        audio_b = self._maybe_beatmatch(audio_b_loaded, current, next_entry)
-        post_stretch_len = len(audio_b)
-        # Measure the actual stretch from the buffer lengths rather than
-        # trusting the reported ratio -- beatmatch_incoming can report a
-        # non-1.0 ratio even when it left the audio untouched (stretch below
-        # its no-op threshold, or a failed time-stretch falling back to the
-        # original).  Sample counts below are in audio_b's (possibly
-        # stretched) timeline; next_entry is loaded fresh next call, so they
-        # must be converted back to its own, unstretched sample count.
-        measured_ratio = post_stretch_len / pre_stretch_len if pre_stretch_len else 1.0
-
-        def _to_unstretched(n: int) -> int:
-            if post_stretch_len == 0 or pre_stretch_len == post_stretch_len:
-                return n
-            return int(n * pre_stretch_len / post_stretch_len)
-
-        intro = self._skip_incoming_silence_samples(
-            audio_b, SAMPLE_RATE, meta_b=meta_b, stretch=measured_ratio
+        intro = self._skip_incoming_silence_samples(audio_b_loaded, SAMPLE_RATE, meta_b=meta_b)
+        match = self._beatmatch_plan(
+            current,
+            next_entry,
+            meta_a,
+            meta_b,
+            entry=intro,
+            fade_start=a_start_full,
+            crossfade=crossfade,
+            earliest=start_offset,
+            latest=len(audio_a_full) - crossfade,
         )
-        audio_b = audio_b[intro:]
+        a_start = max(0, match.fade_start - start_offset)
+        audio_b = audio_b_loaded[intro:]
         if a_start + crossfade > len(audio_a):
             crossfade = max(0, len(audio_a) - a_start)
         a_trimmed = audio_a[: a_start + crossfade]
         if crossfade == 0 or len(audio_b) < crossfade:
             return RenderedTrack(
-                current,
-                a_trimmed,
-                next_entry,
-                _to_unstretched(intro),
-                "",
-                measured_ratio,
-                start_offset=start_offset,
+                current, a_trimmed, next_entry, intro, "", start_offset=start_offset
             )
+        glide = self._incoming_glide(audio_b_loaded, intro, match, crossfade)
+        if glide is not None:
+            # Only the overlap (and what a long effect reaches past it) is
+            # stretched here; the next render plays the rest of the glide.
+            head = max(crossfade, int(max(self._MIN_FX_DURATION_S.values()) * SAMPLE_RATE))
+            try:
+                audio_b = glide.head(audio_b_loaded, head)
+            except Exception as exc:
+                logger.warning("Beatmatch stretch failed; mixing unstretched: %s", exc)
+                glide = None
         b_head = audio_b[:crossfade]
         a_trimmed = self._apply_outgoing_filter_sweep(a_trimmed, SAMPLE_RATE, crossfade)
         a_trimmed, b_head, extra, fx_name = self._apply_transition_effect(
@@ -2711,8 +2814,9 @@ class Player:
             current,
             to_stereo(mixed),
             next_entry,
-            _to_unstretched(intro + crossfade),
+            glide.origin if glide else intro + crossfade,
             fx_name,
-            measured_ratio,
+            glide.ratio if glide else 1.0,
             start_offset=start_offset,
+            next_glide=glide,
         )

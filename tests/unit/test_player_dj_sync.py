@@ -98,7 +98,7 @@ class TestPlannedTransition:
         player = _player("auto")
         cur, nxt = player._sim.entries[:2]
         player._choose_next = lambda _c, _ctx: (nxt, "discovery")  # type: ignore[method-assign]
-        player._render_track = lambda c, n, _o: RenderedTrack(  # type: ignore[method-assign]
+        player._render_track = lambda c, n, _o, **_k: RenderedTrack(  # type: ignore[method-assign]
             c, np.zeros((10, 2), np.float32), n, 0, player.planned_transition(c, n)
         )
         player._set_render_cursor(cur, 0, "seed")
@@ -215,7 +215,7 @@ class TestMixedIn:
         player._choose_next = lambda _c, _ctx: (next(picks), "similarity")  # type: ignore[method-assign]
         ratios = {id(first): ("echo_out", 1.05), id(second): ("none", 0.97)}
 
-        def render(current, nxt, _offset):
+        def render(current, nxt, _offset, **_kw):
             fx, ratio = ratios[id(current)]
             return RenderedTrack(current, np.zeros((10, 2), np.float32), nxt, 5, fx, ratio)
 
@@ -232,7 +232,7 @@ class TestMixedIn:
         player = _bare_player()
         first, second = MagicMock(), MagicMock()
         player._choose_next = lambda _c, _ctx: (second, "similarity")  # type: ignore[method-assign]
-        player._render_track = lambda c, n, _o: RenderedTrack(  # type: ignore[method-assign]
+        player._render_track = lambda c, n, _o, **_k: RenderedTrack(  # type: ignore[method-assign]
             c, np.zeros((10, 2), np.float32), n, 0, "", 1.2
         )
         player._set_render_cursor(first, 0, "seed")
@@ -295,8 +295,8 @@ class TestImportedMarkers:
         player._cfg.playback.transition_mode = "full_intro_outro"
         audio = np.full((10 * _SR, 2), 0.2, np.float32)  # sound from the start
         meta = DjMeta(analysed=True, cues=[Cue(1.5, "intro_start", source="mixxx")])
-        skipped = player._skip_incoming_silence_samples(audio, _SR, meta_b=meta, stretch=1.02)
-        assert skipped == int(1.5 * 1.02 * _SR)
+        skipped = player._skip_incoming_silence_samples(audio, _SR, meta_b=meta)
+        assert skipped == int(1.5 * _SR)
         # Without a marker the first sound is measured: here at once.
         assert player._skip_incoming_silence_samples(audio, _SR, meta_b=DjMeta()) == 0
 
