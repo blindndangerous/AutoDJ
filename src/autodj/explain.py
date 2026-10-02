@@ -127,7 +127,7 @@ def explain_pick(
         cur: The freshly-picked track to explain.
         mode: Picker mode label.  One of ``"similarity"`` (default),
             ``"pure_shuffle"``, ``"anchored"``,
-            ``"discovery"``, ``"queue"``, ``"seed"``.
+            ``"discovery"``, ``"queue"``, ``"seed"``, ``"fallback"``.
 
     Returns:
         Ordered list of sentences.  Empty if *cur* is ``None``.
@@ -148,6 +148,8 @@ def explain_pick(
         out.append("Random walk — uniformly random, no similarity filter.")
     elif mode == "anchored":
         out.append("Anchored to the session seed — similarity from the seed track.")
+    elif mode == "fallback":
+        out.append("Random pick — no track matched the current settings.")
     else:
         out.append("Sonically similar to the previous track.")
 

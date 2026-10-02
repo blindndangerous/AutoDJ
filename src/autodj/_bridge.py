@@ -34,11 +34,10 @@ class StreamSeekUnavailable(Exception):
     """Seeking was asked for while serving the mix as a radio stream."""
 
 
-def _build_why(player: Any) -> list[str]:
-    """Build the 'why this track' sentence list for the bridge state."""
+def _build_why(player: Any, cur: Any) -> list[str]:
+    """Build the 'why this track' sentence list for *cur*, the playing track."""
     from autodj.explain import explain_pick
 
-    cur = getattr(player._state, "current_track", None)
     prev = getattr(player, "_previous_track", None)
     mode = getattr(player, "_last_pick_mode", "similarity")
     return explain_pick(prev, cur, mode=mode)
@@ -72,9 +71,11 @@ class PlayerBridge:
 
     Exposes playback control methods that can be called from the asyncio
     event loop while the Player runs in a separate thread.  Queue edits hold
-    ``PlayerState.queue_lock``, the history and event lists have their own
-    locks, and the remaining ``PlayerState`` access is single-field reads
-    and writes that rely on Python's GIL.
+    ``PlayerState.queue_lock``, recently-played edits hold
+    ``PlayerState.history_lock`` (``Player._pick_lock``), browser-mode
+    advances hold ``Player._advance_lock``, the session history and event
+    lists have their own locks, and the remaining ``PlayerState`` access is
+    single-field reads and writes that rely on Python's GIL.
 
     Attributes:
         player: The running :class:`~autodj.player.Player` instance.
@@ -110,6 +111,10 @@ class PlayerBridge:
     # liner for seconds, off the mix-bus thread.
     _liner_worker: ThreadPoolExecutor | None = field(default=None, init=False)
     _event_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
+    # The track the mix bus started last and its history row (history lock):
+    # forget_track removes exactly that row, never an older play of the
+    # same song.  None when the last start was ignored or forgotten.
+    _open_play: tuple[Any, dict] | None = field(default=None, init=False)
     _station_event: dict | None = field(default=None, init=False)
     # Identifies this server process in ``stream_event`` so a page that
     # outlives a restart does not mistake the new seq 1 for one it announced.
@@ -219,8 +224,11 @@ class PlayerBridge:
         """
         with self._history_lock:
             if self.stream_mode and self.player._state.current_track is not entry:
+                self._open_play = None
                 return
-            self._play_history.append(_history_entry(entry))
+            row = _history_entry(entry)
+            self._play_history.append(row)
+            self._open_play = (entry, row)
         if self.stream is not None:
             self.stream.set_title(
                 getattr(entry, "artist", "") or "", getattr(entry, "title", "") or ""
@@ -240,12 +248,18 @@ class PlayerBridge:
             logger.exception("Liner track-start check failed")
 
     def forget_track(self, entry: Any) -> None:
-        """Remove the newest history row for *entry* (a track cut short)."""
-        row = _history_entry(entry)
-        keys = ("title", "artist", "duration")
+        """Remove the history row of *entry*'s play that a set stop cut short.
+
+        Only the row :meth:`on_track_started` added for the play that is
+        ending is removed.  When that start was never recorded (the set
+        stopped first), nothing is: an older play of the same song stays.
+        """
         with self._history_lock:
+            play, self._open_play = self._open_play, None
+            if play is None or play[0] is not entry:
+                return
             for index in range(len(self._play_history) - 1, -1, -1):
-                if all(self._play_history[index].get(k) == row[k] for k in keys):
+                if self._play_history[index] is play[1]:
                     del self._play_history[index]
                     return
 
@@ -300,6 +314,26 @@ class PlayerBridge:
         else:
             self.player._skip_event.set()
 
+    def advance(self, from_path: str | None = None) -> bool:
+        """End-of-track advance from the page: :meth:`skip`, unless already done.
+
+        Args:
+            from_path: The track the page believes is playing.  When given
+                and it is not the current track, another tab or a retried
+                request already advanced past it, so nothing happens.
+                ``None`` advances unconditionally.
+
+        Returns:
+            Whether the player advanced.
+        """
+        if from_path is not None:
+            current = self.player._state.current_track
+            if current is None or current.path != from_path:
+                logger.debug("Advance from %s ignored: no longer playing", from_path)
+                return False
+        self.skip()
+        return True
+
     def repick_next(self, blacklist_path: str | None = None) -> None:
         """Replace state.next_track without advancing current.
 
@@ -323,7 +357,8 @@ class PlayerBridge:
         # silently if the helper isn't available on this player build.
         if blacklist_path:
             try:
-                state.recently_played.append(blacklist_path)
+                with p._pick_lock:  # the history lock: picks copy it meanwhile
+                    state.recently_played.append(blacklist_path)
             except Exception:  # pragma: no cover -- defensive log-only path
                 logger.debug("repick_next: blacklist append failed", exc_info=True)
         try:
@@ -344,8 +379,14 @@ class PlayerBridge:
 
         The ``Player`` thread parked in ``_run_headless`` is *not*
         consulted — its sole job is to hold the seed and keep the
-        process alive.
+        process alive.  Its one-off startup pick commits under the same
+        ``_advance_lock`` this holds, so neither overwrites the other.
         """
+        with self.player._advance_lock:
+            self._advance_now_locked()
+
+    def _advance_now_locked(self) -> None:
+        """Body of :meth:`advance_now` (hold ``player._advance_lock``)."""
         p = self.player
         state = p._state
         cur = state.current_track
@@ -399,8 +440,9 @@ class PlayerBridge:
         # excluded from the next pick.  Without this, every song after
         # the seed played twice: nxt was not yet in recently_played when
         # _pick_next(nxt) ran, so nxt was returned as next_track again.
-        state.record_played(nxt)
-        state.track_number += 1
+        with p._pick_lock:  # the history lock
+            state.record_played(nxt)
+            state.track_number += 1
         p._previous_track = cur
         # Refresh next_track for the browser's prefetcher.  Failure here
         # leaves current_track set but next_track empty -- browser will
@@ -538,6 +580,10 @@ class PlayerBridge:
             ``volume``, ``is_muted``, ``elapsed`` and ``duration``.
         """
         state = self.player._state
+        # Read the shared fields once: other threads (a stream set stopping,
+        # the mix bus starting a track) change them while this runs.
+        current = state.current_track
+        upcoming = state.next_track
         pos = self.player._playback_pos[0]
         sr = self.player._current_sr
 
@@ -759,16 +805,14 @@ class PlayerBridge:
                     break
 
         return {
-            "current_track": _track_dict(state.current_track),
-            "next_track": _track_dict(state.next_track),
+            "current_track": _track_dict(current),
+            "next_track": _track_dict(upcoming),
             "queue": [_track_dict(e) for e in self._queue_snapshot()],
             "is_paused": state.is_paused,
             "volume": state.volume,
             "is_muted": state.is_muted,
             "elapsed": elapsed,
-            "duration": round(state.current_track.length, 1)
-            if state.current_track and state.current_track.length
-            else 0.0,
+            "duration": round(current.length, 1) if current and current.length else 0.0,
             "discovery_enabled": state.discovery_enabled,
             "discovery_available": discovery_every is not None,
             "has_lyrics": bool(lyrics),
@@ -778,7 +822,7 @@ class PlayerBridge:
             "eq": self.get_eq(),
             "beatmatch_ratio": round(getattr(self.player, "_beatmatch_ratio", 1.0), 3),
             "last_transition_fx": getattr(self.player, "_last_transition_fx", "none"),
-            "why_this_track": _build_why(self.player),
+            "why_this_track": _build_why(self.player, current),
             "library_job": _library_job_snapshot(),
             # Browser-side audio drives playback only when the server is
             # headless (dry_run: no --server-audio, or missing audio deps) and
@@ -937,16 +981,22 @@ class PlayerBridge:
         entry = similarity.entry_for_path(path)
         if entry is None:
             return False
-        if now and self.stream_mode and self.station.start_with(entry, "queue"):
-            return True  # idle station: the next set starts with it
-        if now and self._bus_mode():
+        if now and (self.stream_mode or self._bus_mode()):
             # Play now on the mix bus: render *entry* from its start and fade
             # the playing track out.  queued_next is left alone so the track
             # does not also play a second time later, and anything queued
             # (including the track that was coming up) plays after it.
-            with self.player._state.queue_lock:
-                self._capture_pre_queue_seed()
-            self.player.play_now(entry)
+            def play() -> None:
+                with self.player._state.queue_lock:
+                    self._capture_pre_queue_seed()
+                self.player.play_now(entry)
+
+            if self.stream_mode:
+                # Idle station: the next set starts with it.  Decided under
+                # the station lock, so the set cannot stop in between.
+                self.station.play_now(entry, "queue", play)
+            else:
+                play()
             return True
         with self.player._state.queue_lock:
             self._capture_pre_queue_seed()
@@ -972,8 +1022,12 @@ class PlayerBridge:
         chosen = self.sim.random_entry()
         if chosen is None:
             return False
-        if self.stream_mode and self.station.start_with(chosen, "seed"):
-            return True  # idle station: the next set starts with it
+        if self.stream_mode:
+            # Idle station: the next set starts with it.
+            self.station.play_now(
+                chosen, "seed", lambda: self.player.play_now(chosen, pick_mode="seed")
+            )
+            return True
         if self._bus_mode():
             self.player.play_now(chosen, pick_mode="seed")
             return True
@@ -1301,4 +1355,11 @@ class PlayerBridge:
         cfg = getattr(self.player, "_cfg", None)
         if cfg is None:
             return self.sim.ntotal
-        return self.sim.reload_from_disk(cfg.index.active_dir, music_dir=cfg.library.music_dir)
+        count = self.sim.reload_from_disk(cfg.index.active_dir, music_dir=cfg.library.music_dir)
+        # The no-repeat window is clamped to the library size; a library
+        # that grew from empty (or shrank) needs it worked out again, or
+        # the picker keeps relaxing (or refusing) its history.
+        from autodj.player import apply_repeat_windows
+
+        apply_repeat_windows(self.player)
+        return count

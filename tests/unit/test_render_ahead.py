@@ -380,6 +380,35 @@ def test_stop_can_be_signalled_without_waiting(worker_factory) -> None:
     assert not thread.is_alive()
 
 
+def test_join_waits_for_a_render_in_flight_after_stop(worker_factory) -> None:
+    worker, cursor = worker_factory()
+    assert worker.join(0) is True  # never started
+    cursor.gate.clear()
+    worker.start()
+    assert cursor.rendering.wait(WAIT)
+    worker.stop(timeout=0)
+    assert worker.join(0.02) is False  # still rendering
+    cursor.gate.set()
+    assert worker.join(WAIT) is True
+    assert worker.join() is True  # already gone: returns at once
+
+
+def test_join_from_the_worker_itself_does_not_wait(worker_factory) -> None:
+    joined: list[bool] = []
+
+    def render() -> RenderedTrack | None:
+        worker.stop(timeout=0)
+        joined.append(worker.join(WAIT))
+        return None
+
+    worker, _ = worker_factory(render)
+    worker.start()
+    thread = worker._thread
+    assert thread is not None
+    thread.join(WAIT)
+    assert joined == [True]
+
+
 def test_empty_render_during_stop_exits_without_retry_wait(
     worker_factory, monkeypatch: pytest.MonkeyPatch
 ) -> None:

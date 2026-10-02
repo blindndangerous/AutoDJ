@@ -29,6 +29,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- In stream mode and with server audio, the music no longer stops for good when no song fits the
+  settings. A BPM range or harmonic mode that no song matches, or a library reload that removed the
+  song coming up, made every pick fail, and the station played silence until a restart. AutoDJ now
+  plays a random song instead, avoiding recent songs as far as the library allows, logs one warning,
+  and goes back to normal picks as soon as they work. The random song stays inside your BPM range
+  whenever any song is in it; the warning says when none is. "Why this track" says it was a random
+  pick.
+- When every song in a small library has played recently, the auto-DJ no longer goes back to the
+  song that is starting or the one before it. The no-repeat window also follows the library size
+  after an index reload, so a library that started empty and then filled is not stuck repeating a
+  few songs.
+- In stream mode and with server audio, editing the queue while the next song is ready no longer
+  lets the song after it be the one that is just starting, which could make two songs alternate.
+- In stream mode, a queued song is no longer lost when the set stops just as that song starts: it
+  goes back to the top of the queue. The History page no longer loses an earlier play of a song
+  when a set stops as that song starts again.
+- In stream mode, **Play now** and **Random** no longer lose the chosen song when the set stops at
+  the same moment because nobody is listening; the next set starts with it.
+- The web page no longer stops updating when a stream set stops while the page's state is being
+  built. One failed update now only logs an error, and the next update runs a second later.
+- Cue points, intro and outro markers written by **Analyse** in the Library panel now show up for
+  songs AutoDJ had already looked up, within a few seconds, without restarting the server.
+- When the DJ meta database cannot be opened at startup (for example because it is locked), AutoDJ
+  tries again every 30 seconds instead of running without cue points until a restart.
+- Changing the no-repeat window in Settings while music plays can no longer drop the song that is
+  starting from the recently played list.
+- Stopping the server while a song is being analysed for the server mix no longer logs an error
+  about the closed DJ meta database; shutdown waits for that work like it does for other analysis.
+- In browser playback, the first song's Up next and length are no longer overwritten when the page
+  advances while the server is still picking at startup.
 - Listening no longer stops when the page's connection to AutoDJ drops for a moment. A Cloudflare
   tunnel in front of AutoDJ closes that connection every few minutes, and each time the page
   stopped Listen here (and browser playback) without a word, said "Disconnected, retrying" and
