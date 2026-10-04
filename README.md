@@ -151,29 +151,45 @@ Every command takes `--help`, for example `uv run autodj serve --help`. The glob
 - `autodj list-devices` lists the audio output devices available to `serve --server-audio`.
 - `autodj doctor` checks configuration, paths, dependencies, the model, and security settings.
 - `autodj backup` and `autodj restore` archive and restore index and user data.
-- `autodj setup-lan` writes a `.env` for the authenticated Compose LAN service.
 - `autodj devices list`, `rename`, `revoke`, `reset`, and `pairing-code` manage paired browsers.
 
 ## Containers
 
-If you have Docker Compose installed:
+In Docker, AutoDJ runs in LAN mode: it listens on all of the machine's network interfaces, and
+each browser pairs once before it can control playback. A bare-metal `autodj serve` stays
+local-only unless you pass `--lan`.
+
+Put the folder paths in a `.env` file beside `compose.yaml`:
+
+```dotenv
+AUTODJ_MUSIC_DIR=/path/to/music
+AUTODJ_INDEX_DIR=./index
+AUTODJ_MODEL_DIR=./models
+# The owner of those folders (`id -u` and `id -g`), so no chown is needed.
+AUTODJ_UID=1000
+AUTODJ_GID=1000
+```
+
+Then build, index, and start:
 
 ```bash
 git clone https://github.com/blindndangerous/AutoDJ
 cd AutoDJ
-mkdir -p music index models
-sudo chown 10001:10001 music index models
-chmod 0755 music index models
-# Copy your audio files into music/ before indexing.
-AUTODJ_MUSIC_DIR=./music AUTODJ_INDEX_DIR=./index AUTODJ_MODEL_DIR=./models \
-  docker compose run --rm --build autodj index
-AUTODJ_MUSIC_DIR=./music AUTODJ_INDEX_DIR=./index AUTODJ_MODEL_DIR=./models \
-  docker compose up --build
+mkdir -p index models
+docker compose run --rm --build autodj index
+docker compose up -d --build
 ```
 
-Open `http://localhost:8080`. Container runs as UID/GID 10001. Default Compose publication is host
-loopback only. See [Operations](docs/operations.md) for WSL2, bind mounts, and authenticated LAN
-startup.
+Startup prints the addresses to open and an 8-digit pairing code; `docker compose logs autodj`
+shows them again. The container uses the host network, so those are the machine's own names and
+addresses, and it restarts after a crash or a reboot.
+
+Settings such as HTTPS certificates, extra host names, and `[stream] enabled` go in `config.toml`
+and `config.local.toml` beside `compose.yaml`, as on bare metal. The container reads them from that
+folder, so give relative paths such as `ssl_certfile = "certs/fullchain.pem"`. To use a beets
+library, set `AUTODJ_BEETS_PATH` to the folder that holds `library.db`, and set
+`beets_db = "/beets/library.db"` in `config.local.toml`. See [Operations](docs/operations.md) for
+more.
 
 Put your audio files in `music/` before running the indexing command. This setup needs no host
 Python installation. The image ships the CPU-only PyTorch build, so the container indexes on CPU,
@@ -291,16 +307,9 @@ For anonymous access on the same computer, keep the default loopback binding:
 uv run autodj serve
 ```
 
-For a fresh-clone Compose LAN server, run setup once and start the LAN profile:
-
-```bash
-uv run autodj setup-lan --host-name radio.local
-docker compose --profile lan up autodj-lan
-```
-
-Replace `radio.local` with the hostname or IP browsers use. AutoDJ writes a gitignored `.env`,
-generates its server secret, and prints an 8-digit pairing code during startup while no browser is
-paired. Enter that code in the first browser; each code pairs one device, and
+For a LAN server, run `uv run autodj serve --lan` or start the Docker container (see
+[Containers](#containers)). AutoDJ generates its server secret, saves it in the index folder, and
+prints an 8-digit pairing code during startup while no browser is paired. Enter that code in the first browser; each code pairs one device, and
 `autodj devices pairing-code` gives one for the next. Paired browsers receive distinct, persistent device sessions and do not
 need to sign in again unless revoked or expired.
 
@@ -490,7 +499,7 @@ Then delete the checkout itself. For Compose, remove the containers and the name
 directory name), then the image:
 
 ```bash
-docker compose --profile lan --profile stream down --volumes
+docker compose down --volumes
 docker image rm autodj:local
 ```
 

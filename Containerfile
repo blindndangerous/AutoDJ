@@ -53,7 +53,10 @@ ENV HOME=/home/autodj \
 
 USER 10001:10001
 EXPOSE 8080
-HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=6 \
-    CMD ["/opt/venv/bin/python", "-c", "import ipaddress, os, re, urllib.request; raw = os.environ['AUTODJ_HOST'].strip(); host = raw[1:-1] if raw.startswith('[') and raw.endswith(']') else raw; port = int(os.environ['AUTODJ_PORT']); assert 1 <= port <= 65535; ipv6 = ':' in host; assert (ipv6 and ipaddress.ip_address(host).version == 6) or (not ipv6 and re.fullmatch(r'(?!-)(?:[A-Za-z0-9-]{1,63}\\.)*[A-Za-z0-9-]{1,63}', host) and all(not label.endswith('-') for label in host.split('.'))); probe = '[::1]' if ipv6 else '127.0.0.1'; urllib.request.build_opener(urllib.request.ProxyHandler({})).open(f'http://{probe}:{port}/healthz', timeout=2).read()"]
+# Probe the local listener over HTTP, then HTTPS for a server with TLS set in
+# config.toml. The certificate is not checked: it names the public host, and
+# this only asks the server on this machine whether it is up.
+HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=6 \
+    CMD ["/opt/venv/bin/python", "-c", "import os, ssl, urllib.request\nhost = os.environ['AUTODJ_HOST'].strip('[] ')\nprobe = '[::1]' if ':' in host else '127.0.0.1'\nport = int(os.environ['AUTODJ_PORT'])\nopener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=ssl._create_unverified_context()))\ntry:\n    opener.open(f'http://{probe}:{port}/healthz', timeout=2).read()\nexcept Exception:\n    opener.open(f'https://{probe}:{port}/healthz', timeout=2).read()"]
 ENTRYPOINT ["/opt/venv/bin/autodj"]
 CMD ["serve"]

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Build the image and smoke-test the Compose service: LAN mode on the host
+# network, pairing, the health check, folder ownership, the CPU-only torch
+# build, and stream mode switched on through config.toml.
 set -euo pipefail
 
 temp_parent="${RUNNER_TEMP:-/tmp}"
@@ -8,41 +11,27 @@ if [[ -z "$temp_parent" || "$temp_parent" != /* || ! -d "$temp_parent" || ! -w "
   exit 1
 fi
 
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$repo_root"
+if [[ -e config.toml ]]; then
+  echo "config.toml already exists; the smoke test writes its own, so run it from a clean checkout" >&2
+  exit 1
+fi
+
 smoke_root=""
 compose_touched=false
-lan_phase_active=false
-
-emit_lan_failure_logs() {
-  timeout --signal=TERM --kill-after=5s 15s \
-    docker compose --profile lan logs --no-color --tail 200 autodj-lan >&2 || true
-}
+base_url="http://127.0.0.1:8080"
 
 emit_failure_diagnostics() {
   timeout --signal=TERM --kill-after=5s 15s \
     docker compose logs --no-color --tail 200 >&2 || true
   timeout --signal=TERM --kill-after=5s 10s \
     docker inspect --format '{{json .State}}' autodj >&2 || true
-  if [[ "$lan_phase_active" == true ]]; then
-    emit_lan_failure_logs
-    timeout --signal=TERM --kill-after=5s 10s \
-      docker inspect --format '{{json .State}}' autodj-lan >&2 || true
-  fi
 }
 
 bounded_compose_down() {
-  # Both profile flags are required: Compose only tears down a profiled service's containers
-  # when its profile is passed to `down`, so passing only --profile lan would leave a running
-  # autodj-stream (and its port 8080 binding) behind.
   timeout --signal=TERM --kill-after=5s 30s \
-    docker compose --profile lan --profile stream down --volumes --remove-orphans
-}
-
-reclaim_smoke_root() {
-  if [[ ! -d "$smoke_root" || ! -O "$smoke_root" || "$smoke_root" != "$temp_parent"/autodj-smoke.* ]]; then
-    return 0
-  fi
-  rm -rf -- "$smoke_root" && return 0
-  sudo chown -R "$(id -u):$(id -g)" -- "$smoke_root" && rm -rf -- "$smoke_root"
+    docker compose down --volumes --remove-orphans
 }
 
 cleanup() {
@@ -55,13 +44,9 @@ cleanup() {
   if [[ "$compose_touched" == true ]]; then
     bounded_compose_down || cleanup_exit_code=$?
   fi
-  if [[ -n "${smoke_root:-}" ]]; then
-    reclaim_smoke_root || {
-      removal_exit_code=$?
-      if [[ "$cleanup_exit_code" -eq 0 ]]; then
-        cleanup_exit_code=$removal_exit_code
-      fi
-    }
+  rm -f config.toml
+  if [[ -n "${smoke_root:-}" && -d "$smoke_root" && "$smoke_root" == "$temp_parent"/autodj-smoke.* ]]; then
+    rm -rf -- "$smoke_root" || cleanup_exit_code=$?
   fi
   if [[ "$exit_code" -ne 0 ]]; then
     exit "$exit_code"
@@ -70,68 +55,88 @@ cleanup() {
 }
 trap cleanup EXIT
 
+wait_until_healthy() {
+  local status=""
+  for _attempt in $(seq 1 60); do
+    status="$(
+      docker inspect autodj --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' \
+        2>/dev/null || true
+    )"
+    case "$status" in
+      healthy) return 0 ;;
+      unhealthy)
+        echo "Container became unhealthy" >&2
+        return 1
+        ;;
+    esac
+    sleep 1
+  done
+  echo "Container did not become healthy (status: $status)" >&2
+  return 1
+}
+
 smoke_root="$(mktemp -d -- "$temp_parent/autodj-smoke.XXXXXXXX")"
 chmod 0700 "$smoke_root"
-if [[ "$smoke_root" != "$temp_parent"/autodj-smoke.* || ! -O "$smoke_root" ]]; then
-  echo "mktemp returned an unexpected or unowned smoke directory" >&2
-  exit 1
-fi
 
+# Folders owned by the invoking user, and the container running as that user:
+# the documented way to use host folders without chown.
 export AUTODJ_MUSIC_DIR="$smoke_root/music"
 export AUTODJ_INDEX_DIR="$smoke_root/index"
 export AUTODJ_MODEL_DIR="$smoke_root/models"
+AUTODJ_UID="$(id -u)"
+AUTODJ_GID="$(id -g)"
+export AUTODJ_UID AUTODJ_GID
 mkdir -p "$AUTODJ_MUSIC_DIR" "$AUTODJ_INDEX_DIR" "$AUTODJ_MODEL_DIR"
 chmod 0755 "$AUTODJ_MUSIC_DIR" "$AUTODJ_INDEX_DIR" "$AUTODJ_MODEL_DIR"
-sudo chown 10001:10001 "$AUTODJ_MUSIC_DIR" "$AUTODJ_INDEX_DIR" "$AUTODJ_MODEL_DIR"
+unset AUTODJ_ACCESS_TOKEN
 
-unset AUTODJ_ACCESS_TOKEN AUTODJ_LAN_HOST AUTODJ_LAN_ORIGIN
 docker compose config >/dev/null
-docker compose --profile lan config >/dev/null
-docker compose --profile stream config >/dev/null
 docker compose build --pull
-lan_negative_log="$smoke_root/autodj-lan-negative.log"
 compose_touched=true
-set +e
-timeout 15s docker compose --profile lan run --rm --no-deps autodj-lan \
-  >"$lan_negative_log" 2>&1
-lan_exit_code=$?
-set -e
-if [[ "$lan_exit_code" -eq 0 ]]; then
-  echo "LAN service unexpectedly started without authentication/origin inputs" >&2
-  exit 1
-fi
-if [[ "$lan_exit_code" -eq 124 ]]; then
-  echo "LAN validation timed out instead of rejecting incomplete security inputs" >&2
-  cat "$lan_negative_log" >&2
-  exit 1
-fi
-grep -Eiq 'requires|access[ _-]token|allowed[ _-](host|origin)|invalid.*origin' \
-  "$lan_negative_log"
 docker compose up -d
-health_payload=""
-for _attempt in $(seq 1 30); do
-  container_state="$(docker inspect autodj --format '{{.State.Status}}' 2>/dev/null || true)"
-  container_health="$(
-    docker inspect autodj --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' \
-      2>/dev/null || true
-  )"
-  case "$container_state/$container_health" in
-    exited/*|dead/*|*/unhealthy)
-      echo "Default container failed readiness (state: $container_state, health: $container_health)" >&2
-      exit 1
-      ;;
-  esac
-  if health_payload="$(curl --fail --silent --show-error http://127.0.0.1:8080/healthz)"; then
-    break
-  fi
-  sleep 1
+wait_until_healthy
+
+test "$(docker inspect autodj --format '{{.HostConfig.NetworkMode}}')" = "host"
+test "$(docker compose exec -T autodj id -u)" = "$AUTODJ_UID"
+test "$(docker compose exec -T autodj id -g)" = "$AUTODJ_GID"
+for dir in /music /index /models; do
+  test "$(docker compose exec -T autodj stat -c '%u:%g:%a' "$dir")" = "$AUTODJ_UID:$AUTODJ_GID:755"
 done
-if [[ -z "$health_payload" ]]; then
-  echo "Default container did not become ready after 30 attempts" >&2
+docker compose exec -T autodj sh -ceu 'touch /index/.write-test; rm /index/.write-test'
+docker compose exec -T autodj sh -ceu 'touch /models/.write-test; rm /models/.write-test'
+# The server secret is created on first start and saved in the index folder.
+test -s "$AUTODJ_INDEX_DIR/.access-token"
+# Tag reading needs mutagen in the image; torch must be the CPU build with no CUDA wheels.
+docker compose exec -T autodj /opt/venv/bin/python -c '
+import importlib.metadata
+import mutagen, scipy, torch, torchaudio
+assert torch.version.cuda is None, torch.version.cuda
+names = [dist.metadata["Name"].lower() for dist in importlib.metadata.distributions()]
+cuda = [name for name in names if name.startswith(("nvidia-", "cuda-")) or name == "triton"]
+assert not cuda, cuda
+'
+
+# LAN mode hides library details until a browser pairs.
+test "$(curl --fail --silent --show-error "$base_url/healthz")" = '{"status":"ok"}'
+curl --silent --output /dev/null --write-out '%{http_code}' "$base_url/api/status" | grep -qx '401'
+
+cookie_jar="$smoke_root/autodj.cookies"
+pairing_code="$(docker compose exec -T autodj autodj devices pairing-code)"
+if [[ ! "$pairing_code" =~ ^[0-9]{8}$ ]]; then
+  echo "Container returned an invalid pairing code" >&2
   exit 1
 fi
+curl --fail --silent --show-error \
+  --header "Origin: $base_url" \
+  --header "Content-Type: application/json" \
+  --cookie-jar "$cookie_jar" \
+  --data-binary @- \
+  "$base_url/api/pair" >/dev/null <<JSON
+{"code":"$pairing_code","device_name":"Container smoke browser"}
+JSON
+curl --fail --silent --show-error --cookie "$cookie_jar" "$base_url/api/status" >/dev/null
+health_payload="$(curl --fail --silent --show-error --cookie "$cookie_jar" "$base_url/healthz")"
 python3 - "$health_payload" <<'PY'
-# HEALTH_VALIDATOR_START
 import json
 import sys
 
@@ -145,124 +150,22 @@ if (
     or tracks != 0
 ):
     raise SystemExit(f"unexpected health payload: {payload!r}")
-# HEALTH_VALIDATOR_END
 PY
 
-test "$(docker compose exec -T autodj id -u)" = "10001"
-test "$(docker compose exec -T autodj id -g)" = "10001"
-test "$(docker compose exec -T autodj stat -c '%u:%g:%a' /music)" = "10001:10001:755"
-test "$(docker compose exec -T autodj stat -c '%u:%g:%a' /index)" = "10001:10001:755"
-test "$(docker compose exec -T autodj stat -c '%u:%g:%a' /models)" = "10001:10001:755"
-docker compose exec -T autodj sh -ceu 'touch /index/.write-test; rm /index/.write-test'
-docker compose exec -T autodj sh -ceu 'touch /models/.write-test; rm /models/.write-test'
-# Tag reading needs mutagen in the image; torch must be the CPU build with no CUDA wheels.
-docker compose exec -T autodj /opt/venv/bin/python -c '
-import importlib.metadata
-import mutagen, scipy, torch, torchaudio
-assert torch.version.cuda is None, torch.version.cuda
-names = [dist.metadata["Name"].lower() for dist in importlib.metadata.distributions()]
-cuda = [name for name in names if name.startswith(("nvidia-", "cuda-")) or name == "triton"]
-assert not cuda, cuda
-'
+# Stream mode comes from config.toml, which the container reads from this folder.
+printf '[stream]\nenabled = true\n' > config.toml
+docker compose up -d --force-recreate
+wait_until_healthy
+stream_secret="$(cat "$AUTODJ_INDEX_DIR/.stream-secret")"
 
-host_ip="$(docker inspect autodj --format '{{(index (index .NetworkSettings.Ports "8080/tcp") 0).HostIp}}')"
-test "$host_ip" = "127.0.0.1"
-
-bounded_compose_down
-export AUTODJ_LAN_BIND_ADDRESS=127.0.0.1
-export AUTODJ_ACCESS_TOKEN
-AUTODJ_ACCESS_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
-export AUTODJ_LAN_HOST=radio.local
-export AUTODJ_LAN_ORIGIN=http://radio.local:8080
-lan_phase_active=true
-docker compose --profile lan up -d autodj-lan
-
-lan_health_status=""
-for _attempt in $(seq 1 30); do
-  lan_health_status="$(
-    docker inspect autodj-lan --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' \
-      2>/dev/null || true
-  )"
-  case "$lan_health_status" in
-    healthy) break ;;
-    unhealthy)
-      exit 1
-      ;;
-  esac
-  sleep 1
-done
-if [[ "$lan_health_status" != healthy ]]; then
-  echo "Authenticated LAN container did not become healthy (status: $lan_health_status)" >&2
-  exit 1
-fi
-
-curl --fail --silent --show-error \
-  --header "Host: $AUTODJ_LAN_HOST" \
-  http://127.0.0.1:8080/healthz >/dev/null
-
-lan_cookie_jar="$smoke_root/autodj-lan.cookies"
-pairing_code="$(
-  docker compose --profile lan exec -T autodj-lan autodj devices pairing-code
-)"
-if [[ ! "$pairing_code" =~ ^[0-9]{8}$ ]]; then
-  echo "LAN service returned an invalid pairing code" >&2
-  exit 1
-fi
-curl --fail --silent --show-error \
-  --header "Host: $AUTODJ_LAN_HOST" \
-  --header "Origin: $AUTODJ_LAN_ORIGIN" \
-  --header "Content-Type: application/json" \
-  --cookie-jar "$lan_cookie_jar" \
-  --data-binary @- \
-  http://127.0.0.1:8080/api/pair >/dev/null <<JSON
-{"code":"$pairing_code","device_name":"Container smoke browser"}
-JSON
-curl --fail --silent --show-error \
-  --header "Host: $AUTODJ_LAN_HOST" \
-  --cookie "$lan_cookie_jar" \
-  http://127.0.0.1:8080/api/status >/dev/null
-
-# Radio stream: docker compose --profile stream up autodj-stream runs serve --lan --stream on
-# the same authenticated LAN setup as autodj-lan. Stop autodj-lan first; both publish host
-# port 8080.
-bounded_compose_down
-docker compose --profile stream up -d autodj-stream
-
-stream_health_status=""
-for _attempt in $(seq 1 30); do
-  stream_health_status="$(
-    docker inspect autodj-stream --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' \
-      2>/dev/null || true
-  )"
-  case "$stream_health_status" in
-    healthy) break ;;
-    unhealthy)
-      exit 1
-      ;;
-  esac
-  sleep 1
-done
-if [[ "$stream_health_status" != healthy ]]; then
-  echo "Stream container did not become healthy (status: $stream_health_status)" >&2
-  exit 1
-fi
-
-stream_secret="$(
-  docker compose --profile stream exec -T autodj-stream cat /index/.stream-secret
-)"
-
-# The smoke library has no tracks ("tracks": 0 above), so no set can ever start: the stream
-# only carries the encoded silence the bus sends while idle. Checking music would mean bundling
-# audio fixtures just for this script. Instead assert that the route, secret and encoder wiring
-# answer correctly: 200, the audio/mpeg content type, and ICY metadata headers, all within a
-# few seconds. A check of real music frames is left to manual verification against a real
-# library.
+# The smoke library has no tracks, so the stream only carries the encoded silence the bus sends
+# while idle. Assert that the route, secret and encoder wiring answer: 200, audio/mpeg, and ICY
+# metadata headers. A check of real music frames is left to a real library.
 stream_headers="$smoke_root/autodj-stream-headers.txt"
 curl --silent --show-error --max-time 5 \
   --dump-header "$stream_headers" --output /dev/null \
-  --header "Host: $AUTODJ_LAN_HOST" \
   --header "Icy-MetaData: 1" \
-  "http://127.0.0.1:8080/stream/${stream_secret}.mp3" || true
+  "$base_url/stream/${stream_secret}.mp3" || true
 grep -Eiq '^HTTP/[0-9.]+ 200' "$stream_headers"
 grep -Eiq '^content-type: *audio/mpeg' "$stream_headers"
 grep -Eiq '^icy-name:' "$stream_headers"

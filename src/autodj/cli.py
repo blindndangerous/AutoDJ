@@ -16,9 +16,7 @@ from __future__ import annotations
 import io
 import logging
 import os
-import secrets
 import shutil
-import socket
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -456,78 +454,6 @@ def cmd_doctor(ctx: click.Context, as_json: bool) -> None:
     click.echo(report.to_json() if as_json else render_text(report))
     if report.exit_code:
         raise click.exceptions.Exit(report.exit_code)
-
-
-@cli.command("setup-lan")
-@click.option("--host-name", help="Hostname or IP that browsers use to reach AutoDJ.")
-def cmd_setup_lan(host_name: str | None) -> None:
-    """Create secure fresh-clone Compose settings for browser pairing."""
-    from autodj.config import ServerConfig, validate_server_exposure
-
-    suggested = socket.gethostname().strip().lower() or "autodj.local"
-    selected_host = (host_name or click.prompt("LAN hostname or IP", default=suggested)).strip()
-    token = secrets.token_hex(32)
-    port = 8080
-    try:
-        selected_host = ServerConfig(host=selected_host).host
-        rendered_host = f"[{selected_host}]" if ":" in selected_host else selected_host
-        origin = f"http://{rendered_host}:{port}"
-        server_config = ServerConfig(
-            host="0.0.0.0",  # nosec B104 - explicit LAN setup command
-            port=port,
-            access_token=token,
-            allowed_hosts=[selected_host, "127.0.0.1"],
-            allowed_origins=[origin],
-            session_ttl_seconds=90 * 24 * 60 * 60,
-        )
-        validate_server_exposure(server_config)
-    except (TypeError, ValueError) as exc:
-        raise click.ClickException(f"LAN hostname is invalid: {exc}") from exc
-
-    destination = Path(".env")
-    if destination.exists():
-        raise click.ClickException(
-            ".env already exists; it was not changed. Add AUTODJ_ACCESS_TOKEN, "
-            "AUTODJ_LAN_HOST, and AUTODJ_LAN_ORIGIN there manually."
-        )
-    content = (
-        f"AUTODJ_ACCESS_TOKEN={token}\n"
-        f"AUTODJ_LAN_HOST={selected_host}\n"
-        f"AUTODJ_LAN_ORIGIN={origin}\n"
-    )
-    created = False
-    descriptor = -1
-    try:
-        descriptor = os.open(
-            destination,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-            0o600,
-        )
-        created = True
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
-            descriptor = -1
-            stream.write(content)
-        destination.chmod(0o600)
-    except OSError as exc:
-        cleanup_error: OSError | None = None
-        if descriptor >= 0:
-            try:
-                os.close(descriptor)
-            except OSError as close_exc:
-                cleanup_error = close_exc
-        if created:
-            try:
-                destination.unlink()
-            except OSError as cleanup_exc:
-                if cleanup_error is None:
-                    cleanup_error = cleanup_exc
-        message = f"Could not create .env: {exc}"
-        if cleanup_error is not None:
-            message += f"; remove the incomplete .env manually: {cleanup_error}"
-        raise click.ClickException(message) from exc
-    click.echo(f"LAN setup saved to .env. Open {origin} after startup.")
-    click.echo("Start: docker compose --profile lan up autodj-lan")
-    click.echo("AutoDJ prints a short pairing code during startup while no browser is paired.")
 
 
 @cli.group("devices")

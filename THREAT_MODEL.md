@@ -9,8 +9,8 @@ AutoDJ is a single-user local music player with these exposed surfaces:
 - CLI commands read local audio and configuration, then write index, profile, liner or backup
   data as the invoking user. Play history is kept in memory only.
 - The web UI uses FastAPI and WebSocket. The default host process binds to `127.0.0.1:8080`.
-  The default Compose service listens on container-internal `0.0.0.0` but publishes only on host
-  `127.0.0.1`.
+  The Compose service runs `serve --lan` on the host network, so it listens on every host
+  interface on port 8080 and every browser must pair.
 - LAN mode requires either an access token or explicit `--insecure-lan`, plus exact Host and Origin
   allowlists. `AUTODJ_ACCESS_TOKEN` is supported for secret injection. `serve --lan` fills in
   both allowlists and the token automatically; see "Automatic LAN mode" below.
@@ -161,13 +161,15 @@ background thread that start-up waits on for at most two seconds, so broken DNS 
 startup. A fully qualified name is used only when it extends the hostname and is not in a
 reverse-DNS zone (`in-addr.arpa` or `ip6.arpa`), so ISP reverse-DNS names are not allowed;
 `<hostname>.home.arpa` (RFC 8375) is kept. Names whose first label is `localhost` are
-skipped. Inside a container the start-up block prints only the explicitly configured hosts,
-because container addresses are not reachable from the network; they are still allowed.
+skipped. Inside a container with its own network the start-up block prints only the explicitly
+configured hosts, because container addresses are not reachable from the network; they are still
+allowed. The Compose service uses the host network and sets `AUTODJ_HOST_NETWORK=1`, so it prints
+the detected addresses as a bare-metal server does.
 
 ## Stream URL, secret and security
 
-Stream mode (`autodj serve --stream`, `[stream] enabled = true`, or the Compose `stream`
-profile) serves the live mix as MP3 at `/stream/<secret>.mp3`, plus `/stream/<secret>.m3u`, a
+Stream mode (`autodj serve --stream`, or `[stream] enabled = true`, which the Compose service
+reads from `config.toml`) serves the live mix as MP3 at `/stream/<secret>.mp3`, plus `/stream/<secret>.m3u`, a
 one-line playlist naming the same URL. The secret is a bearer credential for listening only:
 
 - It is 32 random bytes, URL-safe base64, created on first start in stream mode and stored in
@@ -226,10 +228,13 @@ controls them and can race filesystem operations.
 
 ## Container and dependency controls
 
-The container image runs as UID/GID 10001 with all capabilities dropped and `no-new-privileges`.
-Base images and the copied `uv` binary use immutable digests. CI builds and smoke-tests the image.
-It verifies bind ownership and host loopback publication, generates a CycloneDX SBOM, and blocks on
-Trivy HIGH or CRITICAL findings with fixes available.
+The container image runs as UID/GID 10001 by default with all capabilities dropped and
+`no-new-privileges`. The Compose service can run as the host folders' owner instead
+(`AUTODJ_UID` and `AUTODJ_GID`), so bind mounts need no ownership changes. It mounts its own
+folder read-only for `config.toml`. Base images and the copied `uv` binary use immutable digests.
+CI builds and smoke-tests the image. It verifies the host network, pairing before any API access,
+folder ownership, and the health check, generates a CycloneDX SBOM, and blocks on Trivy HIGH or
+CRITICAL findings with fixes available.
 
 `uv.lock` and `package-lock.json` are committed. CI uses frozen installs, runs `pip-audit` and
 `npm audit`, scans source tree with Trivy and OSV-Scanner, checks secrets with Gitleaks, and produces

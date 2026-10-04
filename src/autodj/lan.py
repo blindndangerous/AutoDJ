@@ -9,6 +9,7 @@ loads or creates a private access token in the index directory.
 from __future__ import annotations
 
 import logging
+import os
 import socket
 import threading
 from dataclasses import replace
@@ -24,7 +25,7 @@ from autodj.config import (
 from autodj.stream_secret import load_or_create_secret, read_secret
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping
 
     from autodj.config import ServerConfig
 
@@ -154,12 +155,22 @@ def detect_lan_hosts(*, timeout: float = LOOKUP_TIMEOUT_SECONDS) -> list[str]:
     return sorted(detected.union(_LOOPBACK_HOSTS))
 
 
-def running_in_container(markers: Iterable[Path] = CONTAINER_MARKERS) -> bool:
-    """Return whether AutoDJ runs inside a Docker or Podman container.
+def running_in_container(
+    markers: Iterable[Path] = CONTAINER_MARKERS, environ: Mapping[str, str] | None = None
+) -> bool:
+    """Return whether AutoDJ runs in a container with its own, unreachable addresses.
+
+    A container on the host network (``AUTODJ_HOST_NETWORK=1``, which the
+    Compose file sets) shares the machine's names and addresses, so it counts
+    as not in a container.
 
     Args:
         markers: Files whose presence means a container.
+        environ: Environment to read; defaults to ``os.environ``.
     """
+    environment = os.environ if environ is None else environ
+    if environment.get("AUTODJ_HOST_NETWORK") == "1":
+        return False
     return any(marker.exists() for marker in markers)
 
 

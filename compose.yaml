@@ -1,88 +1,46 @@
-# Default startup binds inside the container on 0.0.0.0 but publishes only on host loopback.
-# --insecure-lan acknowledges that internal bind; it does not authorize host LAN exposure.
-# Authenticated LAN startup: docker compose --profile lan up autodj-lan
-# Targeting autodj-lan prevents the default service from competing for host port 8080.
-# Radio stream startup: docker compose --profile stream up autodj-stream (same .env, adds
-# --stream). Only one of the lan and stream profiles can run at a time; both use host port 8080.
-
-x-autodj-common: &autodj-common
-  build:
-    context: .
-    dockerfile: Containerfile
-  image: autodj:local
-  restart: unless-stopped
-  volumes:
-    - ${AUTODJ_MUSIC_DIR:-./music}:/music:ro
-    - ${AUTODJ_INDEX_DIR:-autodj-index}:/index
-    - ${AUTODJ_MODEL_DIR:-autodj-models}:/models
-  cap_drop: [ALL]
-  security_opt: [no-new-privileges:true]
+# AutoDJ in Docker runs in LAN mode: it listens on all interfaces (0.0.0.0)
+# and every browser must pair before it can control playback. Bare-metal
+# `autodj serve` stays local-only unless you pass --lan.
+#
+# Host networking lets LAN mode see this machine's own names and addresses,
+# so browsers can use them without extra settings. Startup prints the
+# addresses to open and a pairing code. The pairing secret is created on first
+# start and saved in the index folder.
+#
+# Optional settings go in .env beside this file (see the README):
+#   AUTODJ_MUSIC_DIR, AUTODJ_INDEX_DIR, AUTODJ_MODEL_DIR  host folders
+#   AUTODJ_BEETS_PATH  host folder holding beets' library.db, mounted at /beets
+#   AUTODJ_UID, AUTODJ_GID  the owner of those host folders
+# Server and library settings come from config.toml and config.local.toml in
+# this folder, as on bare metal.
 
 services:
   autodj:
-    <<: *autodj-common
+    build:
+      context: .
+      dockerfile: Containerfile
+    image: autodj:local
     container_name: autodj
-    ports:
-      - "127.0.0.1:8080:8080"
-    # Acknowledge only the container-internal 0.0.0.0 bind; host publication stays loopback-only.
-    command:
-      - serve
-      - --insecure-lan
-      - --allowed-host
-      - 127.0.0.1
-      - --allowed-host
-      - localhost
-      - --allowed-origin
-      - http://127.0.0.1:8080
-      - --allowed-origin
-      - http://localhost:8080
-
-  autodj-lan:
-    <<: *autodj-common
-    profiles: [lan]
-    container_name: autodj-lan
-    ports:
-      - "${AUTODJ_LAN_BIND_ADDRESS:-0.0.0.0}:8080:8080"
+    restart: unless-stopped
+    network_mode: host
+    user: "${AUTODJ_UID:-10001}:${AUTODJ_GID:-10001}"
+    # config.toml and config.local.toml are read from the working directory.
+    working_dir: /config
+    command: ["serve", "--lan"]
     environment:
-      # Empty defaults keep inactive-profile interpolation safe. Application validation below
-      # rejects the selected wildcard service until real auth/host/origin values are supplied.
-      AUTODJ_ACCESS_TOKEN: ${AUTODJ_ACCESS_TOKEN:-}
-    command:
-      - serve
-      # --lan adds the names and addresses AutoDJ detects. Inside the container it only sees
-      # container addresses, so the operator's LAN host and origin from .env stay explicit and
-      # merge with them. AUTODJ_ACCESS_TOKEN from .env wins over a saved token file.
-      - --lan
-      # The image healthcheck probes the container-local IPv4 listener. Keep this
-      # exact loopback Host alongside, never instead of, the operator's LAN Host.
-      - --allowed-host
-      - 127.0.0.1
-      - --allowed-host
-      - "${AUTODJ_LAN_HOST:-}"
-      - --allowed-origin
-      - "${AUTODJ_LAN_ORIGIN:-}"
-
-  # Radio stream: the same authenticated LAN setup as autodj-lan, plus --stream so Sonos, VLC
-  # and other network players can open the live mix. Reuses setup-lan's .env; run
-  # `docker compose --profile stream up autodj-stream` instead of the lan profile.
-  autodj-stream:
-    <<: *autodj-common
-    profiles: [stream]
-    container_name: autodj-stream
-    ports:
-      - "${AUTODJ_LAN_BIND_ADDRESS:-0.0.0.0}:8080:8080"
-    environment:
-      AUTODJ_ACCESS_TOKEN: ${AUTODJ_ACCESS_TOKEN:-}
-    command:
-      - serve
-      - --lan
-      - --stream
-      - --allowed-host
-      - 127.0.0.1
-      - --allowed-host
-      - "${AUTODJ_LAN_HOST:-}"
-      - --allowed-origin
-      - "${AUTODJ_LAN_ORIGIN:-}"
+      # Tells LAN mode the addresses it detects are the machine's own.
+      AUTODJ_HOST_NETWORK: "1"
+      # Writable for any AUTODJ_UID; the image's home belongs to uid 10001.
+      HOME: /tmp
+      XDG_CACHE_HOME: /tmp/.cache
+    volumes:
+      - ${AUTODJ_MUSIC_DIR:-./music}:/music:ro
+      - ${AUTODJ_INDEX_DIR:-autodj-index}:/index
+      - ${AUTODJ_MODEL_DIR:-autodj-models}:/models
+      - ${AUTODJ_BEETS_PATH:-./container}:/beets:ro
+      - ./:/config:ro
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
 
 volumes:
   autodj-index:

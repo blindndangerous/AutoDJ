@@ -89,6 +89,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Docker runs AutoDJ in LAN mode on the host network: `docker compose up -d --build` starts one
+  `autodj` service that listens on all of the machine's interfaces, prints the machine's own
+  addresses, and requires each browser to pair. The server secret is created on first start and
+  kept in the index folder. It reads `config.toml` and `config.local.toml` from the checkout, so
+  HTTPS, extra host names and stream mode are set there, as on bare metal. `.env` sets the music,
+  index and model folders, `AUTODJ_UID` and `AUTODJ_GID` (the folders' owner, so no `chown` is
+  needed), and `AUTODJ_BEETS_PATH` for a beets library. The health check also works with HTTPS.
+  Bare-metal `autodj serve` stays local-only unless you pass `--lan`.
 - **Beatmatch** in stream mode and with server audio now stretches only the part of the new song
   that plays during the crossfade and the glide after it, not the whole song. On a 4-minute song
   this cut the work from about 5.5 seconds of processor time and 1.5 GB of memory to under one
@@ -107,6 +115,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   browser. Startup prints a code only while no browser is paired, so once one is, the log never
   holds a working code. When a device pairs while the code is shown, the page says so and hides the used
   code.
+
+### Removed
+
+- `autodj setup-lan` and the Compose `lan` and `stream` profiles. The Docker service detects the
+  machine's addresses itself, so there is no host or origin to write into `.env`; delete
+  `AUTODJ_LAN_HOST`, `AUTODJ_LAN_ORIGIN` and `AUTODJ_LAN_BIND_ADDRESS` from an existing `.env`.
 
 ### Fixed
 
