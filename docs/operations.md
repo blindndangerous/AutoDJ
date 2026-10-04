@@ -1,8 +1,8 @@
 # AutoDJ operations
 
 Commands labeled Bash require a Linux host or WSL2. Native Windows operators should use the
-PowerShell equivalents below. Run Linux container ownership and smoke commands inside WSL2 with
-the repository on a WSL filesystem so UID 10001 and POSIX modes have their documented meaning.
+PowerShell equivalents below. Run Linux container commands inside WSL2 with the repository on a
+WSL filesystem so user IDs and POSIX modes have their documented meaning.
 
 ## Configuration precedence
 
@@ -184,52 +184,59 @@ From the command line, `autodj devices list` prints each device's id, `autodj de
 DEVICE_ID NAME` renames one, `autodj devices revoke DEVICE_ID` revokes one, `autodj devices reset`
 revokes them all, and `autodj devices pairing-code` prints the current code.
 
-## Container ownership and exposure
+## Docker
 
-Create bind sources before startup:
+In Docker, AutoDJ always runs `serve --lan` on the host network: it listens on all of the
+machine's interfaces (`0.0.0.0`), detects the machine's own names and addresses, and requires every
+browser to pair. A bare-metal `autodj serve` stays local-only unless you pass `--lan`.
 
-```bash
-# Linux/WSL2 Bash
-mkdir -p music index models
-sudo chown 10001:10001 music index models
-chmod 0755 music index models
-AUTODJ_MUSIC_DIR=./music AUTODJ_INDEX_DIR=./index AUTODJ_MODEL_DIR=./models \
-  docker compose up --build
+Settings come from three places beside `compose.yaml`:
+
+- `.env` holds the host folders and the user the container runs as. Set `AUTODJ_UID` and
+  `AUTODJ_GID` to the owner of the folders (`id -u` and `id -g`), so the container writes files
+  you own and nothing needs a `chown`. Without them it runs as UID and GID 10001.
+- `config.toml` and `config.local.toml` hold everything else, as on bare metal. The container
+  mounts this folder read-only and starts in it, so relative paths in them, such as
+  `ssl_certfile = "certs/fullchain.pem"`, are read from here.
+- `AUTODJ_BEETS_PATH` in `.env` mounts the folder holding beets' `library.db` read-only at `/beets`;
+  set `beets_db = "/beets/library.db"` in `config.local.toml` to use it.
+
+```dotenv
+AUTODJ_MUSIC_DIR=/path/to/music
+AUTODJ_INDEX_DIR=./index
+AUTODJ_MODEL_DIR=./models
+AUTODJ_UID=1000
+AUTODJ_GID=1000
+#AUTODJ_BEETS_PATH=/home/you/.config/beets
 ```
 
-The default process listens on container-internal `0.0.0.0` so Docker networking can reach it.
-The Compose `--insecure-lan` flag acknowledges only that internal wildcard bind. Compose publishes
-the port only on host `127.0.0.1` (`127.0.0.1:8080:8080`), so the default does not expose the
-service to the host LAN.
-
-Create fresh-clone LAN settings and start the authenticated service. The `lan` profile runs
-`serve --lan`; inside a container detection only finds container addresses, so the host and
-origin that setup writes to `.env` stay explicit and merge with them:
+Without `.env`, music comes from `./music` and the index and model live in the named volumes
+`autodj-index` and `autodj-models`.
 
 ```bash
-uv run autodj setup-lan --host-name radio.local
-docker compose --profile lan up autodj-lan
+docker compose up -d --build
+docker compose logs autodj
 ```
 
-Substitute the DNS name or IP that clients use. Setup writes the generated server secret and
-Host/Origin policy to gitignored `.env`. Startup prints an 8-digit code. Enter it once in each
-browser; subsequent visits reuse that browser's paired-device cookie.
+The log shows the addresses to open and, while no browser is paired, an 8-digit pairing code. The
+server secret is created on first start and saved in the index folder. Enter the code once in each
+browser; later visits reuse that browser's paired-device cookie. The container restarts after a
+crash or a reboot unless you stop it with `docker compose down`.
 
 Manage paired browsers from the running container:
 
 ```bash
-docker compose --profile lan exec autodj-lan autodj devices list
-docker compose --profile lan exec autodj-lan autodj devices pairing-code
-docker compose --profile lan exec autodj-lan autodj devices revoke DEVICE_ID
+docker compose exec autodj autodj devices list
+docker compose exec autodj autodj devices pairing-code
+docker compose exec autodj autodj devices revoke DEVICE_ID
 ```
 
-HTTP does not protect the pairing code or session cookie from network observers. Use this Compose LAN
-profile only on a trusted private network. For browser or LAN access on an untrusted network, use
-end-to-end TLS: run `autodj serve` directly with a certificate trusted by every browser
-(`[server] ssl_certfile` and `ssl_keyfile`, or `--ssl-certfile` and `--ssl-keyfile`). A proxy
-that ends TLS and talks plain HTTP to AutoDJ is not supported: the `Secure` cookie flag and the
-origin checks follow AutoDJ's own TLS setting. For remote access, see
-[HTTPS with your own domain](#https-with-your-own-domain).
+Over plain HTTP, network observers can see the pairing code and session cookie. Use it only on a
+trusted private network. Otherwise set a certificate trusted by every browser
+(`[server] ssl_certfile` and `ssl_keyfile`). A proxy that ends TLS and talks plain HTTP to AutoDJ
+is not supported: the `Secure` cookie flag and the origin checks follow AutoDJ's own TLS setting.
+For remote access, see [HTTPS with your own domain](#https-with-your-own-domain). The image's
+health check tries HTTP and then HTTPS, so it works either way.
 
 ### Advanced overrides
 
@@ -237,28 +244,11 @@ origin checks follow AutoDJ's own TLS setting. For remote access, see
 in your router's DNS or a CNAME, add it with `--allowed-host` and `--allowed-origin` (or
 `[server] allowed_hosts` and `allowed_origins`); with `--lan` these merge with the detected
 lists, and without it they replace them. These flags and `--access-token` are hidden from
-`autodj serve --help`. To share the Compose secret with a native server, note that the native
-server needs the same server secret, but only Compose reads `.env` on its own;
-`uv run autodj` does not. Either copy the secret into gitignored `config.local.toml` as
-`[server] access_token`, or load `.env` into the shell that starts the server so
-`AUTODJ_ACCESS_TOKEN` is set. In Bash:
+`autodj serve --help`. In Docker, put the names in `config.toml`.
 
-```bash
-set -a; . ./.env; set +a
-```
-
-In Windows PowerShell:
-
-```powershell
-Get-Content .env | ForEach-Object {
-  $name, $value = $_ -split '=', 2
-  Set-Item -Path "Env:$name" -Value $value
-}
-```
-
-Only Compose reads `AUTODJ_LAN_HOST` and `AUTODJ_LAN_ORIGIN`, and that origin uses `http://`, so
-pass the HTTPS host and origin as flags. With `AUTODJ_ACCESS_TOKEN` set in the same shell, start a
-private LAN server with TLS for a custom name without `--lan`:
+To start a private LAN server with TLS for a custom name without `--lan`, set
+`AUTODJ_ACCESS_TOKEN` (or `[server] access_token` in `config.local.toml`) and pass the host and
+origin as flags:
 
 ```bash
 uv run autodj serve --host 0.0.0.0 \
@@ -427,27 +417,7 @@ uv run autodj serve --lan --stream
 ```
 
 `[stream] enabled = true` in `config.toml`, or `AUTODJ_STREAM_ENABLED=1`, does the same without
-the flag. For Compose, run the `stream` profile instead of `lan`, after the same one-time
-`setup-lan` step described under "Container ownership and exposure" above:
-
-```bash
-docker compose --profile stream up autodj-stream
-```
-
-`autodj-stream` reuses the same `.env` that `setup-lan` wrote (`AUTODJ_ACCESS_TOKEN`,
-`AUTODJ_LAN_HOST`, `AUTODJ_LAN_ORIGIN`) and runs `serve --lan --stream`; auto-detection inside
-the container only sees container addresses, so the operator's host and origin stay explicit and
-merge with them, the same as the `lan` profile. Only one of the `lan` and `stream` profiles can
-run at a time; both publish host port 8080.
-
-Stopping one profile does not stop the other: `docker compose --profile lan down` only removes
-the `lan` profile's container, so it leaves `autodj-stream` running if that is the one you
-started. Pass both profiles to stop whichever is actually running, whether that is one or the
-other:
-
-```bash
-docker compose --profile lan --profile stream down --volumes --remove-orphans
-```
+the flag. In Docker, set it in `config.toml` and restart with `docker compose up -d`.
 
 `uv run autodj doctor` warns, without failing, if stream mode is on but the server only listens
 on loopback, since no other device could reach it.
@@ -555,16 +525,10 @@ For the separate experimental AMD GPU environment, follow
 [Experimental Windows AMD GPU setup](windows-amd.md). Its launcher and dependencies are separate
 from the standard locked `.venv`.
 
-Create authenticated LAN settings without placing a secret on the command line:
-
-```powershell
-uv run autodj setup-lan --host-name radio.local
-docker compose --profile lan up autodj-lan
-```
-
-Docker Desktop bind-mount ownership depends on its WSL2/Linux filesystem mapping. Run
-`bash scripts/container_smoke.sh` inside WSL2 for the authoritative UID and mode gate. Do not
-replace the 0755 and UID 10001 contract with world-writable Windows mounts.
+For Docker on Windows, run Compose inside WSL2 (see [Docker](#docker)). Docker Desktop
+bind-mount ownership depends on its WSL2/Linux filesystem mapping, and its host networking must
+be turned on in Docker Desktop's settings. Run `bash scripts/container_smoke.sh` inside WSL2 for
+the authoritative check. Do not use world-writable Windows mounts.
 
 ## More than one machine
 
@@ -660,7 +624,7 @@ tell whether AutoDJ is running, and a running AutoDJ would keep using the files 
 
 ```bash
 # Linux/WSL2 Bash
-docker compose --profile lan --profile stream down
+docker compose down
 uv run autodj restore --force backups/autodj-2026-08-02.zip
 docker compose up
 ```

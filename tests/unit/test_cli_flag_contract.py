@@ -72,9 +72,8 @@ def _declared_flags(subcommand: str) -> set[str]:
 def test_extraction_actually_finds_the_deployment_invocations() -> None:
     """Guard the guard: an extractor that finds nothing would pass vacuously."""
     assert _container_invocations() == [["serve"]]
-    assert len(_compose_invocations()) == 3
+    assert _compose_invocations() == [["serve", "--lan"]]
     assert len(_workflow_invocations()) >= 2
-    assert any("--insecure-lan" in argv for argv in _compose_invocations())
 
 
 @pytest.mark.parametrize("argv", _invocations(), ids=lambda argv: " ".join(argv))

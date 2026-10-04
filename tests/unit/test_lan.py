@@ -517,6 +517,7 @@ def test_container_markers_are_checked(tmp_path: Path) -> None:
     assert running_in_container([tmp_path / "absent", marker]) is True
     assert Path("/.dockerenv") in CONTAINER_MARKERS
     assert Path("/run/.containerenv") in CONTAINER_MARKERS
+    assert running_in_container([marker], environ={"AUTODJ_HOST_NETWORK": "1"}) is False
 
 
 def test_lan_bind_host_rule() -> None:
