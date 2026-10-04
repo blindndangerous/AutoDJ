@@ -25,68 +25,47 @@ uploaded to a cloud service.
 
 Install [Git](https://git-scm.com/downloads) and
 [uv](https://docs.astral.sh/uv/getting-started/installation/) first. The project requires Python
-3.14; `uv sync` can install that interpreter. Running AutoDJ does not need Node.js; the server
+3.14; the launcher can obtain that interpreter. Running AutoDJ does not need Node.js; the server
 serves the web UI files as they are in the checkout. Install [FFmpeg](https://ffmpeg.org/download.html)
-and put it on the PATH if your library has `.m4a`, `.mp4` or `.aac` files: AutoDJ decodes those
+and put it on the PATH if your library has `.mp3`, `.m4a`, `.mp4` or `.aac` files: AutoDJ indexes those
 with FFmpeg, and without it `autodj index` skips them with a warning. Stream mode also needs it.
 
 ```bash
 git clone https://github.com/blindndangerous/AutoDJ
 cd AutoDJ
-
-# Install exactly the dependencies recorded in uv.lock.
-uv sync --frozen --all-extras
-mkdir -p music index models
 ```
 
-In Windows PowerShell, create the folders with
-`New-Item -ItemType Directory -Force music, index, models` instead of `mkdir -p`.
-
-This is the supported install. `--frozen` gives you the exact dependency versions CI tested.
-
-On Windows, the standard locked environment uses CPU-only PyTorch. For an experimental AMD ROCm
-environment, see [Windows AMD GPU setup](docs/windows-amd.md); use its launcher for GPU indexing
-and serving.
-
-AutoDJ works without a configuration file. Its defaults use `music/`, `index/`, and `models/`
-under the current directory and listen on `127.0.0.1:8080`. To change those defaults, copy the
-example to a private configuration file. On Windows PowerShell:
+On Windows PowerShell:
 
 ```powershell
-Copy-Item config.toml.example config.toml
+.\autodj.cmd setup
+.\autodj.cmd serve
 ```
 
 On macOS or Linux:
 
 ```bash
-cp config.toml.example config.toml
+./autodj setup
+./autodj serve
 ```
 
-If you created `config.toml`, set `[library] music_dir` for your music folder. Set
-`[library] beets_db` to your beets database, or set it to `""` if you do not use beets. Settings
-for one machine, such as its paths and `[server]` section, can go in `config.local.toml`, which
-AutoDJ reads only when `config.toml` exists: copy `config.local.toml.example`, then delete every
-line you do not want to change, because each value in it replaces the one in `config.toml`. Run
-doctor before indexing and serving:
+Setup detects supported hardware, installs the appropriate CPU, NVIDIA, or AMD runtime, verifies
+it with a real calculation, and remembers it. It asks for your music folder and port and preserves
+existing configuration. Unsupported hardware gets an explicit CPU recommendation. Starting a command
+interactively before setup also opens this flow. There is no separate AMD launcher to remember.
+
+Open the address printed by `serve` (normally `http://127.0.0.1:8080`). Use the same launcher for
+diagnostics and indexing; substitute `./autodj.cmd` in Windows PowerShell:
 
 ```bash
-# Check configuration, paths, dependencies, and security settings without writing the index.
-uv run autodj doctor
-
-# Point AutoDJ at your music folder once and let it learn the library.
-# For a quick embed-only smoke test, skip the post-passes.
-uv run autodj index --limit 50 --no-enrich --no-analyse
-uv run autodj index               # full library, can take hours
-
-# Start the web UI.
-uv run autodj serve
-
-# Open http://localhost:8080 in your browser.
+./autodj doctor
+./autodj index --limit 50 --no-enrich --no-analyse   # optional small trial
+./autodj index                                    # full library
 ```
 
-Future runs of `autodj index` embed new files and refresh the post-processing cache. See
-[Operations](docs/operations.md) for diagnosis, `autodj backup`, `autodj restore`, container
-ownership, and upgrades.
+Future indexing runs skip unchanged tracks. See [Setup](docs/setup.md) for supported runtime
+selection, unattended installation, and development; [AMD GPU support](docs/windows-amd.md) for
+AMD compatibility; and [Operations](docs/operations.md) for diagnosis, backups, and upgrades.
 
 ## Use it from other devices
 
@@ -94,7 +73,7 @@ To open AutoDJ from a phone, tablet or another computer on your home network, st
 `--lan`:
 
 ```bash
-uv run autodj serve --lan
+./autodj serve --lan
 ```
 
 Startup prints the addresses to open, such as `http://nas:8080` and `http://192.168.1.20:8080`.

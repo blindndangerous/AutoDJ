@@ -13,11 +13,11 @@ import sys
 
 
 def test_module_entry_point_exists_and_calls_the_cli() -> None:
-    """The module wires straight to the Click group the console script uses."""
+    """The module and console script use the same saved-runtime launcher."""
     import autodj.__main__ as module
-    from autodj.cli import cli
+    from autodj.launcher import main
 
-    assert module.main is cli
+    assert module.main is main
 
 
 def test_python_dash_m_autodj_help_exits_zero() -> None:

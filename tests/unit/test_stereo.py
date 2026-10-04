@@ -97,6 +97,63 @@ def test_load_stereo_decodes_m4a_with_ffmpeg_at_the_target_rate() -> None:
     assert out.shape == (44100, 2)
 
 
+def test_ffmpeg_success_logs_complete_stderr_warning(caplog: pytest.LogCaptureFixture) -> None:
+    diagnostic = b"[mp3 @ 0x1] first warning\n[decoder] second warning\n"
+    decoded = np.zeros(8, dtype=np.float32)
+    with (
+        patch.object(stereo.shutil, "which", return_value="/usr/bin/ffmpeg"),
+        patch.object(
+            stereo.subprocess,
+            "run",
+            return_value=MagicMock(returncode=0, stderr=diagnostic),
+        ) as run,
+        patch.object(stereo.sf, "read", return_value=(decoded, 44100)),
+        caplog.at_level("WARNING", logger="autodj.stereo"),
+    ):
+        audio, sr = stereo.load_with_ffmpeg("damaged.mp3", channels=1)
+
+    assert audio is decoded
+    assert sr == 44100
+    assert run.call_args.args[0][1:3] == ["-v", "warning"]
+    assert len(caplog.records) == 1
+    assert caplog.records[0].message == (
+        "Audio decode warning for damaged.mp3:\n[mp3 @ 0x1] first warning\n[decoder] second warning"
+    )
+
+
+def test_ffmpeg_success_with_empty_stderr_does_not_warn(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with (
+        patch.object(stereo.shutil, "which", return_value="/usr/bin/ffmpeg"),
+        patch.object(
+            stereo.subprocess,
+            "run",
+            return_value=MagicMock(returncode=0, stderr=b""),
+        ),
+        patch.object(stereo.sf, "read", return_value=(np.zeros(1, dtype=np.float32), 44100)),
+        caplog.at_level("WARNING", logger="autodj.stereo"),
+    ):
+        stereo.load_with_ffmpeg("clean.mp3", channels=1)
+
+    assert not caplog.records
+
+
+def test_ffmpeg_failure_keeps_filename_and_stderr_in_exception() -> None:
+    with (
+        patch.object(stereo.shutil, "which", return_value="/usr/bin/ffmpeg"),
+        patch.object(
+            stereo.subprocess,
+            "run",
+            return_value=MagicMock(returncode=1, stderr=b"bad frame\nno audio stream\n"),
+        ),
+        pytest.raises(RuntimeError, match=r"broken\.mp3") as caught,
+    ):
+        stereo.load_with_ffmpeg("broken.mp3", channels=1)
+
+    assert "bad frame\nno audio stream" in str(caught.value)
+
+
 def test_load_stereo_refuses_an_m4a_longer_than_max_seconds() -> None:
     decoded = np.zeros((44100 * 3, 2), dtype=np.float32)
     which, run, read = _fake_ffmpeg(decoded, 44100)

@@ -59,6 +59,7 @@ from autodj.index_manifest import (
     require_manifest,
     sha256_file,
 )
+from autodj.progress import TrackProgress
 from autodj.sqlite_utils import readonly_uri
 
 # soundfile is an optional extra, so the lighter commands (`enrich`,
@@ -405,7 +406,9 @@ def walk_music_dir(music_dir: Path, formats: list[str]) -> Iterator[Path]:
 
 # Formats handled natively by soundfile (fast C library, no Python overhead).
 _SOUNDFILE_FORMATS = {".flac", ".wav", ".ogg", ".aif", ".aiff"}
-_FFMPEG_FORMATS = {".aac", ".m4a", ".mp4"}  # keep in step with autodj.stereo.FFMPEG_FORMATS
+# MP3 decoding through libsndfile prints native diagnostics directly to stderr,
+# corrupting the live progress line. FFmpeg isolates and logs them per file.
+_FFMPEG_FORMATS = {".mp3", ".aac", ".m4a", ".mp4"}
 
 
 def _load_audio_ffmpeg(path: Path) -> tuple[np.ndarray, int]:
@@ -424,7 +427,7 @@ def _load_audio_ffmpeg(path: Path) -> tuple[np.ndarray, int]:
 def _load_audio(path: Path) -> tuple[np.ndarray, int]:
     """Load an audio file to a mono float32 array at its native sample rate.
 
-    Uses soundfile for FLAC/WAV, FFmpeg for MP4-container audio such as ALAC,
+    Uses soundfile for FLAC/WAV, FFmpeg for MP3 and MP4-container audio such as ALAC,
     and librosa for other formats.  FFmpeg is also the final fallback when
     libsndfile rejects an otherwise valid file.
 
@@ -1173,21 +1176,22 @@ def backfill_dj_meta(
     throttle_s = cfg.index.throttle_ms / 1000.0
     done = 0
     try:
-        for count, path in enumerate(pending, start=1):
-            if throttle_s:
-                time.sleep(throttle_s)
-            try:
-                meta = _analyse_one_track(path)
-            except Exception as exc:
-                logger.warning("DJ-meta analysis failed for %s: %s", path, exc)
-                meta = None
-            if meta is not None:
-                if import_cues:
-                    merge_imported_cues(meta, path, library_cues)
-                cache.set(path, meta)
-                done += 1
-                cache.flush()
-            _log_progress("Analysing", count, total)
+        with TrackProgress("Analysing", total, logger) as progress:
+            for count, path in enumerate(pending, start=1):
+                if throttle_s:
+                    time.sleep(throttle_s)
+                try:
+                    meta = _analyse_one_track(path)
+                except Exception as exc:
+                    logger.warning("DJ-meta analysis failed for %s: %s", path, exc)
+                    meta = None
+                if meta is not None:
+                    if import_cues:
+                        merge_imported_cues(meta, path, library_cues)
+                    cache.set(path, meta)
+                    done += 1
+                    cache.flush()
+                progress.update(count)
     except KeyboardInterrupt:  # pragma: no cover - Ctrl+C
         cache.flush(force=True)
         print(
@@ -1473,35 +1477,36 @@ def _embed_new_tracks(  # pragma: no cover -- threaded indexer pipeline
             _submit_next()
 
         done = 0
-        while pending:
-            track, mtime, future = pending.popleft()
-            _submit_next()
-            done += 1
-            try:
-                librosa_vec, audio, sr, extra_meta = future.result()
-                embedding_vec = wrapper.embed_array(audio, sample_rate=sr)
-                combined = _combine_features(embedding_vec, librosa_vec)
-                if not np.isfinite(combined).all():
-                    raise ValueError(
-                        "embedding contains NaN or Inf — track may be silent or corrupted"
-                    )
-                entry = IndexEntry.from_track(track, embedded_at=mtime)
-                _apply_analysis_metadata(entry, extra_meta)
+        with TrackProgress("Indexing", len(new_tracks), logger) as progress:
+            while pending:
+                track, mtime, future = pending.popleft()
+                _submit_next()
+                done += 1
+                try:
+                    librosa_vec, audio, sr, extra_meta = future.result()
+                    embedding_vec = wrapper.embed_array(audio, sample_rate=sr)
+                    combined = _combine_features(embedding_vec, librosa_vec)
+                    if not np.isfinite(combined).all():
+                        raise ValueError(
+                            "embedding contains NaN or Inf — track may be silent or corrupted"
+                        )
+                    entry = IndexEntry.from_track(track, embedded_at=mtime)
+                    _apply_analysis_metadata(entry, extra_meta)
 
-                from autodj.beets import parse_initial_key as _parse_key
+                    from autodj.beets import parse_initial_key as _parse_key
 
-                if getattr(track, "initial_key", ""):
-                    parsed = _parse_key(track.initial_key)
-                    if parsed is not None:
-                        entry.key, entry.mode = parsed
-                new_entries.append(entry)
-                new_vectors.append(combined)
-            except Exception as exc:
-                logger.warning("Skipping %s: %s", track.path, exc)
-                continue
-            finally:
-                _log_progress("Indexing", done, len(new_tracks))
-            checkpoint(new_entries, new_vectors)
+                    if getattr(track, "initial_key", ""):
+                        parsed = _parse_key(track.initial_key)
+                        if parsed is not None:
+                            entry.key, entry.mode = parsed
+                    new_entries.append(entry)
+                    new_vectors.append(combined)
+                except Exception as exc:
+                    logger.warning("Skipping %s: %s", track.path, exc)
+                    continue
+                finally:
+                    progress.update(done)
+                checkpoint(new_entries, new_vectors)
 
     return new_entries, new_vectors
 

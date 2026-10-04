@@ -1,84 +1,66 @@
-# Experimental Windows AMD GPU setup
+# AMD GPU support
 
-The default Windows `uv` environment installs the PyTorch build in `uv.lock`, which uses the CPU.
-AutoDJ's indexer can use an AMD GPU when PyTorch has ROCm support, but this project does not
-install AMD's ROCm packages by default. This guide creates a separate `.uv/amd` environment and
-launcher; it leaves the standard `.venv`, `pyproject.toml`, and `uv.lock` alone.
-
-This setup was tested on an AMD Ryzen AI 7 PRO 350 with Radeon 860M integrated graphics (`gfx1152`),
-Python 3.14.6, PyTorch 2.12.0+rocm7.14.1, torchvision 0.27.0+rocm7.14.1, and torchaudio
-2.11.0+rocm7.14.1, with Transformers 5.17.0. That is one tested configuration, not a general compatibility guarantee. Check
-AMD's [ROCm 7.14.1 compatibility matrix](https://rocm.docs.amd.com/en/docs-7.14.1/compatibility/compatibility-matrix.html)
-for supported Windows versions and drivers. AMD's [PyTorch install page](https://rocm.docs.amd.com/projects/ai-ecosystem/en/latest/frameworks/pytorch/install.html)
-lists the device-specific wheel command below.
-
-## Install
-
-From a PowerShell prompt in the repository root, create an isolated environment and install AMD's
-ROCm PyTorch wheels for `gfx1152`:
+AMD uses the same [setup flow](setup.md) and launcher as every other installation:
 
 ```powershell
-uv venv --python 3.14.6 --seed .uv/amd
-& .\.uv\amd\Scripts\python.exe -m pip install --index-url https://repo.amd.com/rocm/whl-multi-arch/ `
-  "torch[device-gfx1152]==2.12.0+rocm7.14.1" `
-  "torchvision[device-gfx1152]==0.27.0+rocm7.14.1" `
-  "torchaudio==2.11.0+rocm7.14.1"
-uv pip install --python .uv/amd/Scripts/python.exe -e ".[all]" "pillow>=12.3.0"
+.\autodj.cmd setup
+.\autodj.cmd serve
 ```
 
-The AMD wheel command follows the versions and index on AMD's install page. For another GPU, select
-the matching `device-gfx*` extra and supported versions from that page. The launcher uses MIOpen
-caches under `.uv/amd/miopen/` so they stay with this environment.
+On Linux, use `./autodj`. Setup detects the graphics card, installs the matching ROCm
+PyTorch packages, and verifies a GPU calculation before saving the runtime. No separate AMD
+launcher or manual settings file is required. The driver must already be installed.
 
-Keep the project's Transformers dependency current. AutoDJ adapts MuQ's configuration and
-final-layer output when loading the model; downgrading to Transformers 4 is neither required nor
-recommended. This compatibility layer serves AutoDJ's final-layer embeddings, not MuQ's optional
-intermediate-layer inspection APIs.
+## Automatic detection
 
-The tested AMD wheel requires `setuptools<82`, which prevents installing the fix in setuptools 83
-for [PYSEC-2026-3447](https://osv.dev/vulnerability/PYSEC-2026-3447). The advisory concerns Unicode
-filename exclusions when building source distributions on macOS; ordinary Windows inference does
-not exercise that operation. The separate AMD environment still reports this audit finding. Do not
-override the wheel's dependency constraint or suppress the advisory: a compatible patched AMD wheel
-is needed to resolve it. See [PyTorch's dependency tracking issue](https://github.com/pytorch/pytorch/issues/187188).
-The Pillow floor above also avoids retaining an older vulnerable version from the AMD wheel install.
+The Windows/Linux x86-64 installer maps explicit Radeon model names to device-specific
+packages from AMD's [PyTorch installer](https://rocm.docs.amd.com/projects/ai-ecosystem/en/latest/frameworks/pytorch/install.html).
+It uses ROCm 7.14.1 with PyTorch 2.12.0, torchvision 0.27.0, and torchaudio 2.11.0.
+The model mappings live in `scripts/setup_hardware.py`; package recipes live in
+`scripts/setup-profiles.json`.
 
-## Check the GPU and run AutoDJ
+Detection covers selected RX 9000 and RX 7000 desktop cards, Radeon PRO cards, and Radeon
+700M, 800M, and 8000S integrated graphics. This is an explicit model list, not a promise that
+every card in those series works. Unknown AMD adapters and combinations requiring different
+device packages receive a CPU recommendation with an explanation. Existing compatible
+environments can be adopted with `setup --backend amd --environment PATH`.
 
-Confirm that PyTorch sees the Radeon device and reports its HIP runtime:
+Package availability and a matching architecture are sufficient to offer setup; the actual GPU
+test decides whether setup succeeds. Check AMD's installation documentation for OS and driver
+requirements. A failing GPU test leaves the previous runtime selection intact and reports the
+problem. Fix the driver or explicitly choose `setup --backend cpu`.
+
+The Radeon 860M (`gfx1152`) has been tested locally with a real GPU calculation. Other mapped
+models have detection and installation-plan tests, but have not all been physically tested.
+
+## Everyday use
 
 ```powershell
-& .\.uv\amd\Scripts\python.exe -c "import torch; print('available:', torch.cuda.is_available()); print('HIP:', torch.version.hip); print('device:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'none')"
+.\autodj.cmd doctor
+.\autodj.cmd index
+.\autodj.cmd serve
 ```
 
-Start indexing or the web server through the repository launcher:
+The launcher remembers the verified environment, including for imports started from the web UI.
+It does not replace AMD packages with the project's CPU lockfile. Existing configurations,
+model downloads, and indexes are preserved. To preview setup, run `setup --dry-run`.
 
-```powershell
-.\scripts\autodj-amd.cmd doctor
-.\scripts\autodj-amd.cmd index --limit 50 --no-enrich --no-analyse
-.\scripts\autodj-amd.cmd serve
-```
+The indexer displays the device name and `ROCm GPU`. PyTorch exposes AMD through its `torch.cuda`
+API; that name does not mean an NVIDIA card is being used. MuQ embeddings use the GPU, while
+audio decoding and DJ analysis still use the CPU. Incremental indexing skips unchanged tracks;
+switching devices alone does not require rebuilding the library.
 
-Open the address printed by `serve` (by default `http://127.0.0.1:8080`). Use this launcher for web-based imports too:
-the usual `uv run autodj serve` starts the standard environment, which uses CPU PyTorch on Windows.
-The launcher can use a different environment for testing by setting `AUTODJ_AMD_ENV`; a relative
-path is resolved from the repository root.
-
-AMD uses the same automatic GPU selection and embedding pipeline as NVIDIA. PyTorch's ROCm build
-exposes the GPU through `torch.cuda`, so the indexer prints `CUDA (GPU)` for AMD too. If no usable
-GPU is detected, AutoDJ falls back to CPU. Only MuQ embedding uses the GPU; beat grids and other DJ
-analysis run on the CPU with librosa. To index on the CPU instead, run the standard
-`uv run autodj index` rather than the launcher.
-
-Existing indexed tracks do not need to be re-embedded. Normal incremental indexing skips unchanged
-files on either device. GPU processing improves throughput rather than embedding quality; small
-floating-point differences are possible. Omit `--no-enrich --no-analyse` for the full maintenance
-pipeline. `--workers` controls audio prefetch threads in the same way as other GPU installations.
-
-The first inference can be much slower while MIOpen initializes and compiles kernels. The launcher
-keeps its user database and kernel cache in the environment directory using AMD's documented
+Initial inference can be slower while MIOpen compiles kernels. The launcher retains its database
+and kernel cache inside the selected environment, following AMD's
 [MIOpen cache settings](https://rocm.docs.amd.com/projects/MIOpen/en/develop/conceptual/tuningdb.html).
 
-On the tested laptop, one small repeated inference benchmark ran about 1.9x faster on GPU than CPU
-after warmup. This is a smoke-test result; full index time also depends on audio decoding, model
-loading, enrichment, and the particular GPU and driver.
+## Dependency notes
+
+Keep the project's Transformers dependency current. AutoDJ adapts MuQ's configuration and
+final-layer output; downgrading Transformers is not required.
+
+The tested AMD wheel requires `setuptools<82`, preventing installation of the setuptools 83 fix
+for [PYSEC-2026-3447](https://osv.dev/vulnerability/PYSEC-2026-3447). That advisory concerns Unicode
+filename exclusions while building source distributions on macOS; ordinary Windows inference
+does not exercise that operation. A compatible patched AMD wheel is needed to resolve the
+dependency finding. See [PyTorch's tracking issue](https://github.com/pytorch/pytorch/issues/187188).

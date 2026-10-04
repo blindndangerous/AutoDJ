@@ -589,6 +589,21 @@ class TestPruneIndex:
         assert [entry.title for entry in loaded] == ["Concurrent replacement"]
         assert int(np.argmax(loaded_vectors.reconstruct(0))) == 23
 
+    def test_mp3_decode_uses_isolated_ffmpeg_path(self, tmp_path: Path) -> None:
+        from autodj.indexer import _load_audio
+
+        path = tmp_path / "track.MP3"
+        samples = np.zeros(128, dtype=np.float32)
+        with (
+            patch("autodj.indexer._load_audio_ffmpeg", return_value=(samples, 44100)) as decode,
+            patch("librosa.load") as native_decode,
+        ):
+            audio, rate = _load_audio(path)
+        decode.assert_called_once_with(path)
+        native_decode.assert_not_called()
+        assert audio is samples
+        assert rate == 44100
+
     def test_load_audio_falls_back_to_librosa_when_soundfile_errors(self, tmp_path: Path) -> None:
         # Some FLACs over NFS make libsndfile raise "flac decoder lost sync"
         # mid-stream — librosa's audioread/ffmpeg path decodes them fine and
@@ -1213,8 +1228,16 @@ class TestBackfillDjMeta:
                 raise RuntimeError("bad file")
             return DjMeta(analysed=True, intro_end_s=1.0)
 
-        with patch("autodj.indexer._analyse_one_track", side_effect=analyse):
+        with (
+            patch("autodj.indexer._analyse_one_track", side_effect=analyse),
+            patch("autodj.indexer.TrackProgress") as progress,
+        ):
             backfill_dj_meta(cfg, entries)
+
+        assert [
+            call.args[0]
+            for call in progress.return_value.__enter__.return_value.update.call_args_list
+        ] == [1, 2]
 
         assert cache.get(entries[0].path).intro_end_s == 1.0
         assert not cache.get(entries[1].path).analysed
@@ -1490,9 +1513,12 @@ class TestIncrementalCheckpoint:
 
         with (
             patch("autodj.indexer._extract_librosa_features", return_value=features),
+            patch("autodj.indexer.TrackProgress") as progress,
             pytest.raises(OSError, match="checkpoint failed"),
         ):
             _embed_new_tracks([track], wrapper, 1, fail, 0.0)
+        progress.return_value.__enter__.return_value.update.assert_called_once_with(1)
+        progress.return_value.__exit__.assert_called_once()
 
 
 class TestIndexRecoveryPaths:

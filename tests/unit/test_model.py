@@ -286,6 +286,36 @@ class TestMuqWrapper:
 
 
 class TestLoadModel:
+    def test_prepares_weight_norm_before_loading_checkpoint(self, tmp_path: Path) -> None:
+        """The compatibility loader must be installed before checkpoint loading."""
+        from autodj.model import load_model
+
+        events = []
+        model = MagicMock()
+        model.to.return_value = model
+        muq = MagicMock()
+
+        def load_checkpoint(path):
+            assert path == str(tmp_path)
+            events.append("load")
+            return model
+
+        muq.MuQ.from_pretrained.side_effect = load_checkpoint
+        with (
+            patch.dict(sys.modules, {"muq": muq}),
+            patch("autodj.compute.device_string", return_value="cpu"),
+            patch(
+                "autodj.model._prepare_muq_weight_norm",
+                side_effect=lambda: events.append("prepare"),
+            ),
+            patch("autodj.model._prepare_muq_conformer"),
+        ):
+            wrapper = load_model(tmp_path)
+
+        assert events == ["prepare", "load"]
+        assert wrapper.model is model
+        model.eval.assert_called_once()
+
     def test_raises_if_muq_package_missing(self, tmp_path: Path) -> None:
         """If 'muq' is not installed, a clear ModelLoadError is raised."""
         from autodj.model import load_model

@@ -14,9 +14,36 @@ key in either file, such as a setting a newer AutoDJ removed, is an error that n
 
 ## Diagnose before serving
 
+If `autodj serve` exits with an error, it suggests running `autodj doctor` to troubleshoot.
+Use the same `--config` option when diagnosing a custom configuration.
+
 Run `uv run autodj doctor`. Use `uv run autodj doctor --json` for automation. A required failed
-check returns exit 1. Doctor redacts both server and Hugging Face tokens and writes nothing,
-except that its index check takes the index lock, as `serve` does.
+check returns exit 1. In an interactive terminal, doctor offers to remove unsupported config
+keys and create missing index/model directories. Doctor collects unsupported keys across all known
+config sections and shows the proposed removals together for one confirmation. It removes them
+in one edit per affected file, saving one uniquely named backup beside each original file,
+preserving unrelated settings and formatting, then retrying validation.
+Review the key names before accepting: a misspelled setting may need correcting instead of removing.
+Complex TOML edits that cannot be made safely are left for manual correction.
+
+Use `uv run autodj doctor --fix` to apply supported repairs automatically without prompting.
+Without flags, doctor asks before each repair in an interactive terminal. Use `--no-fix`
+for diagnostics without repair prompts. `--json` and noninteractive runs without `--fix`
+remain read-only, except that the index check takes the index lock, as `serve` does.
+`--json` cannot be combined with `--fix`. Doctor rechecks after repairs; remaining required
+failures still return exit 1. Doctor also offers to run its recommended AutoDJ recovery commands:
+indexing (including `index --force` for an outdated or inconsistent index), downloading missing
+models through indexing, DJ metadata analysis, and `serve --lan` for network streaming.
+These commands use the same Python environment, configuration, and named index. Doctor explains
+the work before asking; indexing and analysis can take a long time. `--fix` approves these commands
+too. Dependency installation remains manual.
+
+Each recovery runs at most once, and doctor rechecks afterwards so it can skip commands that are
+no longer needed. Failed commands are reported and cause exit 1. For an old or corrupt DJ metadata
+cache, doctor first moves the cache and its SQLite sidecar files into a backup directory; stop
+serving and indexing before accepting this repair. `serve --lan` runs until stopped and does not
+change the saved configuration. Doctor redacts both server and Hugging Face tokens in its
+configuration report.
 
 The `index` check loads the index with the same code `serve` uses. It passes with the generation
 number and track count, warns when there is no index yet or the index is empty, and otherwise
@@ -31,8 +58,10 @@ PATH: indexing then skips `.m4a`, `.mp4` and `.aac` files, and stream mode canno
 
 `autodj index` embeds new tracks, then by default enriches them from beets and runs the DJ
 analysis that `autodj analyse` also runs: intro and outro, beat grid and cue points for every
-track that has none yet. Both commands print one progress line every 25 tracks, and the file
-checks one every 5000 files, so the log in the web page's library tools stays readable.
+track that has none yet. In a terminal, both commands update one status line after each track,
+showing the completed count and percentage. Redirected output and web job logs keep plain progress
+messages every 25 tracks and at completion. File checks report every 5000 files, so the log
+in the web page's library tools stays readable.
 
 With `[playback] import_external_cues` on (the default), intro and outro markers set in Mixxx,
 Rekordbox or Traktor take the place of the detected intro and outro, so the crossfade follows

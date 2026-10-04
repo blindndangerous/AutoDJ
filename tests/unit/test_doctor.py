@@ -139,7 +139,7 @@ def test_healthy_report_is_read_only_and_redacts_tokens(tmp_path: Path) -> None:
     assert before == _tree_snapshot(tmp_path)
 
 
-def test_import_and_empty_index_check_do_not_import_heavy_runtimes() -> None:
+def test_import_and_empty_index_check_do_not_import_heavy_runtimes(tmp_path: Path) -> None:
     result = subprocess.run(
         [
             sys.executable,
@@ -159,6 +159,7 @@ def test_import_and_empty_index_check_do_not_import_heavy_runtimes() -> None:
         check=False,
         capture_output=True,
         text=True,
+        cwd=tmp_path,
     )
 
     assert result.returncode == 0, result.stderr
@@ -174,6 +175,7 @@ def test_index_without_manifest_fails_actionably(tmp_path: Path, remaining: str)
 
     assert check.status is doctor.CheckStatus.FAIL
     assert "autodj index --force" in check.detail
+    assert check.repair == "rebuild-index"
 
 
 def test_corrupt_published_index_fails(tmp_path: Path) -> None:
@@ -187,6 +189,7 @@ def test_corrupt_published_index_fails(tmp_path: Path) -> None:
 
     assert check.status is doctor.CheckStatus.FAIL
     assert "autodj index" in check.detail
+    assert check.repair == "rebuild-index"
 
 
 def test_corrupt_dj_meta_fails_without_touching_file(tmp_path: Path) -> None:
@@ -200,6 +203,7 @@ def test_corrupt_dj_meta_fails_without_touching_file(tmp_path: Path) -> None:
 
     assert check.status is doctor.CheckStatus.FAIL
     assert "rebuild" in check.detail.lower()
+    assert check.repair == "rebuild-dj-meta"
     assert db.stat().st_mtime_ns == before
 
 
@@ -242,6 +246,24 @@ def test_dj_meta_with_absolute_key_fails_like_serve(tmp_path: Path) -> None:
     assert check.status is doctor.CheckStatus.FAIL
     assert check.summary == "old DJ metadata cache"
     assert "Delete it and run `autodj analyse`" in check.detail
+    assert check.repair == "rebuild-dj-meta"
+
+
+def test_unknown_index_exception_does_not_select_repair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _config(tmp_path)
+    cfg.index.active_dir.mkdir()
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("untrusted text says autodj index --force")
+
+    monkeypatch.setattr("autodj.similarity.SimilarityIndex.from_index_dir", fail)
+
+    check = doctor._index_check(cfg)
+
+    assert check.status is doctor.CheckStatus.FAIL
+    assert check.repair is None
 
 
 def test_sqlite_checks_close_read_only_connections(tmp_path: Path) -> None:
@@ -669,6 +691,22 @@ def test_report_structured_serialization_is_stable() -> None:
     assert json.loads(report.to_json()) == expected
 
 
+def test_repair_ids_are_structured_and_omitted_when_absent(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    missing_index = doctor._index_check(cfg)
+    absent_meta = doctor._dj_meta_database_check(cfg)
+    ordinary = doctor.DoctorCheck("ordinary", doctor.CheckStatus.PASS, "ok")
+
+    report = doctor.DoctorReport((missing_index, absent_meta, ordinary))
+    checks = report.to_dict()["checks"]
+
+    assert missing_index.repair == "index"
+    assert absent_meta.repair == "analyse"
+    assert checks[0]["repair"] == "index"
+    assert checks[1]["repair"] == "analyse"
+    assert "repair" not in checks[2]
+
+
 def test_configuration_detail_is_structured_and_redacted(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
 
@@ -729,7 +767,9 @@ def test_stream_check_warns_on_loopback_only(
     monkeypatch.setattr(doctor.shutil, "which", lambda _n: "/usr/bin/ffmpeg")
     cfg.server = replace(cfg.server, host="127.0.0.1")
 
-    assert doctor._stream_check(cfg).status is doctor.CheckStatus.WARN
+    check = doctor._stream_check(cfg)
+    assert check.status is doctor.CheckStatus.WARN
+    assert check.repair == "serve-lan"
 
 
 def test_stream_check_passes_enabled_with_ffmpeg_and_non_loopback_bind(
@@ -865,3 +905,16 @@ def test_published_empty_index_warns_instead_of_passing(tmp_path: Path) -> None:
     assert check.status is doctor.CheckStatus.WARN
     assert check.summary == "generation 1: 0 tracks"
     assert "empty" in check.detail
+
+
+def test_locked_metadata_is_not_offered_a_destructive_rebuild(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    cfg.index.active_dir.mkdir()
+    (cfg.index.active_dir / "dj_meta.db").write_bytes(b"cache")
+    error = sqlite3.OperationalError("database is locked")
+    error.sqlite_errorcode = sqlite3.SQLITE_BUSY
+    with patch("autodj.doctor.sqlite3.connect", side_effect=error):
+        check = doctor._dj_meta_database_check(cfg)
+    assert check.status is CheckStatus.FAIL
+    assert check.repair is None
+    assert "permissions" in check.detail

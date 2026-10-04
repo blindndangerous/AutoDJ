@@ -1,0 +1,4 @@
+#!/bin/sh
+# One source-checkout launcher for setup and normal use.
+root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1
+exec uv run --no-project --python 3.14 "$root/scripts/run.py" "$@"

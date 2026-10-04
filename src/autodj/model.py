@@ -333,6 +333,19 @@ class _MuqConformerAdapter(torch.nn.Module):
         )
 
 
+def _prepare_muq_weight_norm() -> None:
+    """Use modern weight normalization for MuQ's quantizer convolutions.
+
+    MuQ 0.1.0 prefers the deprecated API while it remains importable. Change
+    only its module-local binding before constructing/loading the model; the
+    PyTorch parametrization loader accepts legacy weight_g/weight_v keys.
+    Checkpoints on disk and PyTorch's global API remain untouched.
+    """
+    from muq.muq.modules import rvq
+
+    rvq.weight_norm = torch.nn.utils.parametrizations.weight_norm
+
+
 def _prepare_muq_conformer(model: torch.nn.Module) -> None:
     """Adapt the standard MuQ Conformer; leave alternate encoders unchanged."""
     from transformers.models.wav2vec2_conformer.modeling_wav2vec2_conformer import (
@@ -383,6 +396,7 @@ def load_model(model_path: Path) -> MuqWrapper:
     logger.info("Loading MuQ model from %s on device=%s", model_path, device)  # pragma: no cover
 
     try:  # pragma: no cover
+        _prepare_muq_weight_norm()
         model = MuQ.from_pretrained(str(model_path))
         _prepare_muq_conformer(model)
     except Exception as exc:  # pragma: no cover
