@@ -504,14 +504,25 @@ class TestCmdServe:
             result = CliRunner().invoke(cli, ["serve", "--port", "9999"])
         assert "9999" in result.output or result.exit_code == 0
 
-    def test_lan_bind_requires_token_or_acknowledgement_before_index_load(self) -> None:
+    def test_manual_allowlists_on_a_network_host_still_require_a_token(self) -> None:
         cfg = _make_cfg()
         with (
             patch("autodj.config.load_config", return_value=cfg),
             patch("autodj.similarity.SimilarityIndex.from_index_dir") as load_index,
             patch("autodj.server.serve") as serve_mock,
         ):
-            result = CliRunner().invoke(cli, ["serve", "--host", "0.0.0.0"])
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "serve",
+                    "--host",
+                    "0.0.0.0",
+                    "--allowed-host",
+                    "radio.local",
+                    "--allowed-origin",
+                    "http://radio.local:8080",
+                ],
+            )
 
         assert result.exit_code == 1
         assert "LAN binding requires" in result.output

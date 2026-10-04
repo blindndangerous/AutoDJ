@@ -89,6 +89,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `autodj serve --host ADDRESS --port PORT` now works with a network address: with no allowlists,
+  access token or `--insecure-lan`, it serves there in LAN mode, with pairing and the machine's
+  detected names allowed, instead of stopping with "LAN binding requires an access token". Without
+  `--host`, `autodj serve` still listens only on this machine.
 - Docker runs AutoDJ in LAN mode on the host network: `docker compose up -d --build` starts one
   `autodj` service that listens on all of the machine's interfaces, prints the machine's own
   addresses, and requires each browser to pair. The server secret is created on first start and

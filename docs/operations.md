@@ -120,6 +120,12 @@ prints the token. After that no code is printed or usable until someone asks for
 `uv run autodj devices pairing-code` prints a code that pairs one browser, and it also works with
 the saved token and says so on stderr.
 
+Giving a network address with `--host` (or `[server] host`) does the same at that address, so
+`uv run autodj serve --host 192.168.1.20 --port 9000` serves on 192.168.1.20 port 9000 with
+pairing. Without `--host`, `autodj serve` listens only on this machine (`127.0.0.1:8080`). A
+network host keeps its old manual behaviour when you also give allowlists, an access token, or
+`--insecure-lan` (see [Advanced overrides](#advanced-overrides)).
+
 `uv run autodj doctor` shows the detected hosts and whether the token will be created. Doctor sees
 LAN mode only from `[server] lan` or `AUTODJ_LAN`, not from a `--lan` given only to
 `autodj serve`. Name lookups are given two seconds; on a machine with broken DNS, detection keeps

@@ -250,7 +250,9 @@ def _stage_serve_server(
 
     CLI values replace config values; with LAN mode on, detected hosts and
     their origins are added and the saved access token is used when no token
-    is configured.  The result has passed :func:`validate_server_exposure`.
+    is configured.  A non-loopback host with no allowlists, token or
+    ``--insecure-lan`` turns LAN mode on, so ``serve --host 192.168.1.20
+    --port 9000`` serves there with pairing.  The result has passed :func:`validate_server_exposure`.
 
     Args:
         cfg: Loaded configuration (not modified).
@@ -271,7 +273,7 @@ def _stage_serve_server(
     """
     from dataclasses import replace
 
-    from autodj.config import validate_server_exposure
+    from autodj.config import is_loopback_bind, validate_server_exposure
     from autodj.lan import AccessTokenError, lan_server_config
     from autodj.stream_secret import access_token_path
 
@@ -292,6 +294,18 @@ def _stage_serve_server(
             ssl_certfile=ssl_certfile if cli_tls else server.ssl_certfile,
             ssl_keyfile=ssl_keyfile if cli_tls else server.ssl_keyfile,
         )
+        # A network host with nothing else set would be refused for lack of a
+        # token; serve it in LAN mode at that address instead: detected names
+        # and origins for the port, a saved token, pairing.
+        if (
+            not staged.lan
+            and not is_loopback_bind(staged.host)
+            and not staged.allowed_hosts
+            and not staged.allowed_origins
+            and not staged.access_token
+            and not staged.insecure_lan
+        ):
+            staged = replace(staged, lan=True)
         if staged.lan:
             staged = lan_server_config(
                 staged, tls=staged.ssl_certfile is not None, token_path=access_token_path(cfg)

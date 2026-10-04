@@ -169,6 +169,26 @@ def test_explicit_non_loopback_host_is_kept(tmp_path: Path) -> None:
     assert "https://192.168.1.20:8080" in (staged.allowed_origins or [])
 
 
+def test_network_host_and_port_without_lan_flag_serve_there_with_pairing(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    staged = _stage(cfg, host="192.168.1.20", port=9000)
+
+    assert staged.lan is True
+    assert (staged.host, staged.port) == ("192.168.1.20", 9000)
+    assert "http://192.168.1.20:9000" in (staged.allowed_origins or [])
+    assert staged.access_token == load_or_create_access_token(
+        Path(cfg.index.index_dir) / ".access-token"
+    )
+
+
+def test_loopback_host_and_port_stay_local(tmp_path: Path) -> None:
+    staged = _stage(_cfg(tmp_path), host="127.0.0.1", port=9000)
+
+    assert staged.lan is False
+    assert (staged.host, staged.port) == ("127.0.0.1", 9000)
+    assert staged.access_token is None
+
+
 def test_config_lan_with_extra_hosts_and_tls_matches_the_cli_flags(tmp_path: Path) -> None:
     tls = _tls_files(tmp_path)
     domain = "autodj.devils-edge.net"
