@@ -14,7 +14,7 @@ Example:
 
 from __future__ import annotations
 
-from autodj.cli import cli as main
+from autodj.launcher import main
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

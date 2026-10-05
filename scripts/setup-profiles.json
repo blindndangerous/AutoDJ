@@ -1,0 +1,64 @@
+{
+  "cpu": {
+    "notice": "Install the official PyTorch CPU wheels for Windows or Linux x86-64 and force CPU processing.",
+    "source": "https://download.pytorch.org/whl/cpu/",
+    "platforms": {
+      "Windows": {
+        "index": "https://download.pytorch.org/whl/cpu/",
+        "packages": ["torch==2.14.0+cpu", "torchvision==0.29.0+cpu", "torchaudio==2.11.0+cpu"]
+      },
+      "Linux": {
+        "index": "https://download.pytorch.org/whl/cpu/",
+        "packages": ["torch==2.14.0+cpu", "torchvision==0.29.0+cpu", "torchaudio==2.11.0+cpu"]
+      }
+    }
+  },
+  "nvidia": {
+    "notice": "Requires an NVIDIA GPU and a driver compatible with CUDA 13.0. Setup verifies a GPU calculation after installation.",
+    "source": "https://download.pytorch.org/whl/cu130/",
+    "platforms": {
+      "Windows": {
+        "index": "https://download.pytorch.org/whl/cu130/",
+        "packages": ["torch==2.14.0+cu130", "torchvision==0.29.0+cu130", "torchaudio==2.11.0+cu130"]
+      },
+      "Linux": {
+        "index": "https://download.pytorch.org/whl/cu130/",
+        "packages": ["torch==2.14.0+cu130", "torchvision==0.29.0+cu130", "torchaudio==2.11.0+cu130"]
+      }
+    }
+  },
+  "amd": {
+    "notice": "AMD ROCm setup for explicitly mapped Radeon models. Requires an AMD-supported driver and OS; setup verifies a GPU calculation after installation.",
+    "source": "https://repo.amd.com/rocm/whl-multi-arch/",
+    "platforms": {
+      "Windows": {
+        "index": "https://repo.amd.com/rocm/whl-multi-arch/",
+        "architectures": {
+          "gfx1201": ["torch[device-gfx1201]==2.12.0+rocm7.14.1", "torchvision[device-gfx1201]==0.27.0+rocm7.14.1", "torchaudio==2.11.0+rocm7.14.1"],
+          "gfx1200": ["torch[device-gfx1200]==2.12.0+rocm7.14.1", "torchvision[device-gfx1200]==0.27.0+rocm7.14.1", "torchaudio==2.11.0+rocm7.14.1"],
+          "gfx1100": ["torch[device-gfx1100]==2.12.0+rocm7.14.1", "torchvision[device-gfx1100]==0.27.0+rocm7.14.1", "torchaudio==2.11.0+rocm7.14.1"],
+          "gfx1101": ["torch[device-gfx1101]==2.12.0+rocm7.14.1", "torchvision[device-gfx1101]==0.27.0+rocm7.14.1", "torchaudio==2.11.0+rocm7.14.1"],
+          "gfx1102": ["torch[device-gfx1102]==2.12.0+rocm7.14.1", "torchvision[device-gfx1102]==0.27.0+rocm7.14.1", "torchaudio==2.11.0+rocm7.14.1"],
+          "gfx1151": ["torch[device-gfx1151]==2.12.0+rocm7.14.1", "torchvision[device-gfx1151]==0.27.0+rocm7.14.1", "torchaudio==2.11.0+rocm7.14.1"],
+          "gfx1150": ["torch[device-gfx1150]==2.12.0+rocm7.14.1", "torchvision[device-gfx1150]==0.27.0+rocm7.14.1", "torchaudio==2.11.0+rocm7.14.1"],
+          "gfx1152": ["torch[device-gfx1152]==2.12.0+rocm7.14.1", "torchvision[device-gfx1152]==0.27.0+rocm7.14.1", "torchaudio==2.11.0+rocm7.14.1"],
+          "gfx1103": ["torch[device-gfx1103]==2.12.0+rocm7.14.1", "torchvision[device-gfx1103]==0.27.0+rocm7.14.1", "torchaudio==2.11.0+rocm7.14.1"]
+        }
+      },
+      "Linux": {
+        "index": "https://repo.amd.com/rocm/whl-multi-arch/",
+        "architectures": {
+          "gfx1201": ["torch[device-gfx1201]==2.12.0+rocm7.14.1", "torchvision[device-gfx1201]==0.27.0+rocm7.14.1", "torchaudio==2.11.0+rocm7.14.1"],
+          "gfx1200": ["torch[device-gfx1200]==2.12.0+rocm7.14.1", "torchvision[device-gfx1200]==0.27.0+rocm7.14.1", "torchaudio==2.11.0+rocm7.14.1"],
+          "gfx1100": ["torch[device-gfx1100]==2.12.0+rocm7.14.1", "torchvision[device-gfx1100]==0.27.0+rocm7.14.1", "torchaudio==2.11.0+rocm7.14.1"],
+          "gfx1101": ["torch[device-gfx1101]==2.12.0+rocm7.14.1", "torchvision[device-gfx1101]==0.27.0+rocm7.14.1", "torchaudio==2.11.0+rocm7.14.1"],
+          "gfx1102": ["torch[device-gfx1102]==2.12.0+rocm7.14.1", "torchvision[device-gfx1102]==0.27.0+rocm7.14.1", "torchaudio==2.11.0+rocm7.14.1"],
+          "gfx1151": ["torch[device-gfx1151]==2.12.0+rocm7.14.1", "torchvision[device-gfx1151]==0.27.0+rocm7.14.1", "torchaudio==2.11.0+rocm7.14.1"],
+          "gfx1150": ["torch[device-gfx1150]==2.12.0+rocm7.14.1", "torchvision[device-gfx1150]==0.27.0+rocm7.14.1", "torchaudio==2.11.0+rocm7.14.1"],
+          "gfx1152": ["torch[device-gfx1152]==2.12.0+rocm7.14.1", "torchvision[device-gfx1152]==0.27.0+rocm7.14.1", "torchaudio==2.11.0+rocm7.14.1"],
+          "gfx1103": ["torch[device-gfx1103]==2.12.0+rocm7.14.1", "torchvision[device-gfx1103]==0.27.0+rocm7.14.1", "torchaudio==2.11.0+rocm7.14.1"]
+        }
+      }
+    }
+  }
+}

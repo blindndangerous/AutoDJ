@@ -232,7 +232,16 @@ def _reject_unknown_keys(section: str, data: Mapping[str, Any], known: Iterable[
     """
     unknown = set(data) - set(known)
     if unknown:
-        raise ValueError(f"unknown [{section}] keys: {sorted(unknown)}")
+        raise UnknownConfigKeysError(section, sorted(unknown))
+
+
+class UnknownConfigKeysError(ValueError):
+    """Raised when a TOML section contains keys the current version rejects."""
+
+    def __init__(self, section: str, keys: Iterable[str]) -> None:
+        self.section = section
+        self.keys = tuple(sorted(keys))
+        super().__init__(f"unknown [{section}] keys: {list(self.keys)}")
 
 
 def _field_names(cls: Any) -> set[str]:
@@ -955,7 +964,7 @@ class ServerConfig(_Section):
             raise TypeError("server section must be a table")
         data = dict(data)
         if "liner_upload_max_bytes" in data:
-            raise ValueError("unknown [server] keys: ['liner_upload_max_bytes']")
+            raise UnknownConfigKeysError("server", ["liner_upload_max_bytes"])
         max_mib = _require_int(data.pop("liner_upload_max_mib", 50), "server.liner_upload_max_mib")
         if not 1 <= max_mib <= MAX_LINER_UPLOAD_MIB:
             raise ValueError("server.liner_upload_max_mib must be between 1 and 1024")
@@ -1209,6 +1218,30 @@ _SECTION_TYPES: tuple[type[_Section], ...] = (
     ServerConfig,
     StreamConfig,
 )
+
+
+def unknown_config_keys(raw: Mapping[str, Any]) -> dict[str, tuple[str, ...]]:
+    """Return unknown keys in known top-level TOML sections.
+
+    This reports key names only; normal config loading remains responsible for
+    validation and still raises at the first invalid section.
+    """
+    unknown: dict[str, tuple[str, ...]] = {}
+    for section_type in _SECTION_TYPES:
+        section = section_type.SECTION
+        table = raw.get(section)
+        if not isinstance(table, Mapping):
+            continue
+        known = _field_names(section_type)
+        # ServerConfig exposes this public TOML alias and translates it to
+        # the internal byte-valued dataclass field in its from_dict override.
+        if section == "server":
+            known.discard("liner_upload_max_bytes")
+            known.add("liner_upload_max_mib")
+        keys = tuple(sorted(set(table) - known))
+        if keys:
+            unknown[section] = keys
+    return unknown
 
 
 def _build_config(

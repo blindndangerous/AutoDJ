@@ -20,7 +20,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from autodj.config import is_loopback_bind
-from autodj.index_manifest import OldDjMetaCacheError, first_absolute_path
+from autodj.index_manifest import (
+    IndexConsistencyError,
+    OldDjMetaCacheError,
+    UnsupportedIndexError,
+    first_absolute_path,
+)
 from autodj.sqlite_utils import readonly_uri
 
 if TYPE_CHECKING:
@@ -51,6 +56,7 @@ class DoctorCheck:
     status: CheckStatus
     summary: str
     detail: str | dict[str, Any] = ""
+    repair: str | None = None
 
 
 @dataclass(frozen=True)
@@ -66,7 +72,13 @@ class DoctorReport:
 
     def to_dict(self) -> dict[str, Any]:
         """Return a stable JSON-serializable report."""
-        return {"exit_code": self.exit_code, "checks": [asdict(check) for check in self.checks]}
+        checks = []
+        for check in self.checks:
+            item = asdict(check)
+            if item["repair"] is None:
+                del item["repair"]
+            checks.append(item)
+        return {"exit_code": self.exit_code, "checks": checks}
 
     def to_json(self) -> str:
         """Serialize the report without exposing configuration secrets."""
@@ -180,14 +192,26 @@ def _index_check(cfg: AutoDJConfig) -> DoctorCheck:
     index_dir = cfg.index.active_dir
     if not index_dir.exists():
         return DoctorCheck(
-            "index", CheckStatus.WARN, "no index", f"{index_dir}; run `autodj index`"
+            "index", CheckStatus.WARN, "no index", f"{index_dir}; run `autodj index`", "index"
         )
     try:
         from autodj.similarity import SimilarityIndex
 
         sim = SimilarityIndex.from_index_dir(index_dir, music_dir=cfg.library.music_dir)
     except FileNotFoundError as exc:
-        return DoctorCheck("index", CheckStatus.WARN, "no index", str(exc))
+        return DoctorCheck(
+            "index", CheckStatus.WARN, "no index", f"{exc}; run `autodj index`", "index"
+        )
+    except UnsupportedIndexError as exc:
+        return DoctorCheck("index", CheckStatus.FAIL, type(exc).__name__, str(exc), "rebuild-index")
+    except IndexConsistencyError as exc:
+        return DoctorCheck(
+            "index",
+            CheckStatus.FAIL,
+            type(exc).__name__,
+            f"{exc}; run `autodj index --force`",
+            "rebuild-index",
+        )
     except Exception as exc:  # report whatever serve would fail with
         return DoctorCheck("index", CheckStatus.FAIL, type(exc).__name__, str(exc))
     manifest = sim.manifest
@@ -208,6 +232,7 @@ def _dj_meta_database_check(cfg: AutoDJConfig) -> DoctorCheck:
             CheckStatus.WARN,
             "database absent",
             f"{path}; run `autodj analyse` when DJ metadata is needed",
+            "analyse",
         )
     try:
         conn = sqlite3.connect(readonly_uri(path), uri=True)
@@ -220,13 +245,36 @@ def _dj_meta_database_check(cfg: AutoDJConfig) -> DoctorCheck:
         if absolute is not None:
             raise OldDjMetaCacheError(path, absolute)
     except OldDjMetaCacheError as exc:
-        return DoctorCheck("dj-meta-db", CheckStatus.FAIL, "old DJ metadata cache", str(exc))
-    except (OSError, sqlite3.DatabaseError) as exc:
+        return DoctorCheck(
+            "dj-meta-db", CheckStatus.FAIL, "old DJ metadata cache", str(exc), "rebuild-dj-meta"
+        )
+    except OSError as exc:
+        return DoctorCheck(
+            "dj-meta-db",
+            CheckStatus.FAIL,
+            "cannot access database",
+            f"{exc}; check file and directory permissions",
+        )
+    except sqlite3.DatabaseError as exc:
+        if getattr(exc, "sqlite_errorcode", None) in {
+            sqlite3.SQLITE_BUSY,
+            sqlite3.SQLITE_LOCKED,
+            sqlite3.SQLITE_CANTOPEN,
+            sqlite3.SQLITE_PERM,
+            sqlite3.SQLITE_READONLY,
+        }:
+            return DoctorCheck(
+                "dj-meta-db",
+                CheckStatus.FAIL,
+                "cannot access database",
+                f"{exc}; stop other AutoDJ processes and check file and directory permissions",
+            )
         return DoctorCheck(
             "dj-meta-db",
             CheckStatus.FAIL,
             "integrity check failed",
             f"{exc}; rebuild it with `autodj analyse`",
+            "rebuild-dj-meta",
         )
     return DoctorCheck("dj-meta-db", CheckStatus.PASS, "integrity valid", f"{path}; rows={count}")
 
@@ -259,7 +307,8 @@ def _dependency_check() -> DoctorCheck:
     if not ffmpeg:
         issues.append("FFmpeg missing")
         details.append(
-            "Install FFmpeg to index, analyse and mix .m4a, .mp4 and .aac files, which are "
+            "Install FFmpeg for MP3 indexing and analysis, and to index, analyse and mix "
+            ".m4a, .mp4 and .aac files, which are "
             "skipped without it, and to use stream mode. Optional ALAC browser transcoding is "
             "unavailable; raw ALAC fallback remains available."
         )
@@ -289,6 +338,7 @@ def _model_cache_check(cfg: AutoDJConfig) -> DoctorCheck:
         CheckStatus.WARN,
         str(status.path),
         f"{status.reason}; run `autodj index` to download or validate the model",
+        "index",
     )
 
 
@@ -390,6 +440,7 @@ def _stream_check(cfg: AutoDJConfig) -> DoctorCheck:
             CheckStatus.WARN,
             "stream mode on, but the server only listens on this machine",
             "Speakers on your network cannot reach it. Start with `autodj serve --lan`.",
+            "serve-lan",
         )
     return DoctorCheck("stream", CheckStatus.PASS, f"stream mode on at {cfg.stream.bitrate} kbps")
 

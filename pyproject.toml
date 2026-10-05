@@ -59,7 +59,7 @@ all = [
 ]
 
 [project.scripts]
-autodj = "autodj.cli:cli"
+autodj = "autodj.launcher:main"
 
 [build-system]
 requires = ["hatchling==1.31.0"]

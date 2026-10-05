@@ -19,7 +19,7 @@ import os
 import shutil
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 # Force UTF-8 output on Windows (default terminal encoding is cp1252 which
 # cannot print Unicode box-drawing characters or em-dashes used in track names).
@@ -42,6 +42,7 @@ from autodj.stream_secret import paired_devices_path
 if TYPE_CHECKING:
     from autodj.beets import Track
     from autodj.config import AutoDJConfig, ServerConfig
+    from autodj.doctor import DoctorReport
     from autodj.indexer import IndexEntry
     from autodj.pairing import DeviceRegistry
     from autodj.similarity import SimilarityIndex
@@ -411,10 +412,21 @@ def cli(ctx: click.Context, config_path: str | None, verbose: bool) -> None:
     # disconnect, background analysis progress, and external-cue import
     # results without having to opt into -v.  -v drops to DEBUG.
     level = logging.DEBUG if verbose else logging.INFO
+    handler: logging.Handler
+    if sys.stderr.isatty():
+        from rich.logging import RichHandler
+
+        from autodj.progress import get_progress_console
+
+        handler = RichHandler(
+            console=get_progress_console(), show_time=False, show_level=False, show_path=False
+        )
+    else:
+        handler = logging.StreamHandler(sys.stderr)
     logging.basicConfig(
         format="%(levelname)s %(name)s: %(message)s",
         level=level,
-        stream=sys.stderr,
+        handlers=[handler],
         force=True,
     )
     # basicConfig honours `force=True` to wipe any pre-existing handlers
@@ -434,10 +446,25 @@ def cli(ctx: click.Context, config_path: str | None, verbose: bool) -> None:
 # ---------------------------------------------------------------------------
 
 
+@cli.command("setup", add_help_option=False, context_settings={"ignore_unknown_options": True})
+@click.argument("arguments", nargs=-1, type=click.UNPROCESSED)
+def cmd_setup(arguments: tuple[str, ...]) -> None:
+    """Detect hardware, install its runtime, and configure AutoDJ."""
+    from autodj.launcher import run_setup
+
+    raise click.exceptions.Exit(run_setup(list(arguments)))
+
+
 @cli.command("doctor")
 @click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+@click.option(
+    "--fix/--no-fix",
+    default=None,
+    help="Apply supported repairs without prompting, or disable repairs. "
+    "By default, ask before each repair in an interactive terminal.",
+)
 @click.pass_context
-def cmd_doctor(ctx: click.Context, as_json: bool) -> None:
+def cmd_doctor(ctx: click.Context, as_json: bool, fix: bool | None) -> None:
     """Check configuration, storage, dependencies, model, network, and stream health."""
     from autodj.doctor import (
         CheckStatus,
@@ -447,8 +474,11 @@ def cmd_doctor(ctx: click.Context, as_json: bool) -> None:
         run_doctor,
     )
 
+    if as_json and fix:
+        raise click.UsageError("--json is read-only; run repairs separately with --fix.")
+    offer_repairs = not as_json and (sys.stdin.isatty() if fix is None else fix)
     try:
-        cfg = _load_cfg_or_exit(ctx.obj["config_path"], show_error=not as_json)
+        cfg = _doctor_load_config(ctx.obj["config_path"], offer_repairs, fix is True, as_json)
     except click.exceptions.Exit:
         if not as_json:
             raise
@@ -466,8 +496,83 @@ def cmd_doctor(ctx: click.Context, as_json: bool) -> None:
         raise click.exceptions.Exit(1) from None
     report = run_doctor(cfg)
     click.echo(report.to_json() if as_json else render_text(report))
-    if report.exit_code:
-        raise click.exceptions.Exit(report.exit_code)
+    if offer_repairs and _doctor_create_directories(cfg, report, fix is True):
+        click.echo("Rechecking after repairs...")
+        report = run_doctor(cfg)
+        click.echo(render_text(report))
+    recovery_failed = False
+    if offer_repairs:
+        from autodj.doctor_commands import run_recovery_commands
+
+        report, recovery_failed = run_recovery_commands(cfg, report, auto_fix=fix is True)
+    if report.exit_code or recovery_failed:
+        raise click.exceptions.Exit(1)
+
+
+def _doctor_load_config(
+    config_path: str | None,
+    offer_repairs: bool,
+    auto_fix: bool,
+    as_json: bool,
+) -> AutoDJConfig:
+    """Offer backed-up repairs for unsupported keys, then retry normal validation."""
+    from autodj.config import UnknownConfigKeysError
+    from autodj.doctor_repair import plan_unknown_key_repairs
+
+    try:
+        return _load_cfg_or_exit(config_path, show_error=not as_json)
+    except click.exceptions.Exit as exc:
+        if as_json:
+            raise
+        if not offer_repairs:
+            if isinstance(exc.__cause__, UnknownConfigKeysError):
+                click.echo(
+                    "Run `autodj doctor` in a terminal to review repairs, or use --fix "
+                    "to apply supported repairs automatically, with the same --config."
+                )
+            raise
+        try:
+            repairs = plan_unknown_key_repairs(config_path)
+            if not repairs:
+                if isinstance(exc.__cause__, UnknownConfigKeysError):
+                    click.echo("No safe automatic edit is available; edit these keys manually.")
+                raise exc
+            for repair in repairs:
+                click.echo(f"Remove unsupported keys from {repair.path}:")
+                for section, keys in repair.keys_by_section.items():
+                    click.echo(f"  [{section}]: {list(keys)}")
+            if not auto_fix and not click.confirm(
+                "Apply this repair (one backup per affected file)?", default=False
+            ):
+                raise exc
+            for repair in repairs:
+                backup = repair.apply()
+                click.echo(f"Repaired {repair.path}. Backup: {backup}")
+        except (OSError, ValueError, RuntimeError) as repair_error:
+            raise click.ClickException(
+                f"Could not repair configuration: {repair_error}"
+            ) from repair_error
+    return _load_cfg_or_exit(config_path)
+
+
+def _doctor_create_directories(cfg: AutoDJConfig, report: DoctorReport, auto_fix: bool) -> bool:
+    """Offer only missing writable storage directories identified by the checks."""
+    from autodj.doctor import CheckStatus
+
+    paths = {"index-path": cfg.index.index_dir, "model-path": cfg.index.model_dir}
+    changed = False
+    for check in report.checks:
+        path = paths.get(check.name)
+        if path is None or check.status is not CheckStatus.WARN or path.exists():
+            continue
+        click.echo(f"Create missing {check.name} directory: {path}")
+        if auto_fix or click.confirm("Create this directory?", default=False):
+            try:
+                path.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                raise click.ClickException(f"Could not create {path}: {exc}") from exc
+            changed = True
+    return changed
 
 
 @cli.group("devices")
@@ -746,9 +851,9 @@ def cmd_index(
     _apply_index_name(cfg, index_name)
 
     # Detect compute device + warn about CPU performance for big libraries.
-    from autodj.compute import device_string
+    from autodj.compute import device_description
 
-    device = "CUDA (GPU)" if device_string() == "cuda" else "CPU"
+    device = device_description()
 
     console.print(Panel("[bold green]AutoDJ Indexer[/]", expand=False))
     console.print(f"  Music dir  : {cfg.library.music_dir}")
@@ -1044,7 +1149,27 @@ def cmd_analyse(
 # ---------------------------------------------------------------------------
 
 
-@cli.command("serve")
+class _ServeCommand(click.Command):
+    """Point failed serve invocations to diagnostics without changing the error."""
+
+    def invoke(self, ctx: click.Context) -> Any:
+        try:
+            return super().invoke(ctx)
+        except click.Abort:
+            raise
+        except (Exception, SystemExit) as exc:
+            clean_exit = (isinstance(exc, click.exceptions.Exit) and exc.exit_code == 0) or (
+                isinstance(exc, SystemExit) and exc.code in (None, 0)
+            )
+            if not clean_exit:
+                hint = "Run `autodj doctor` to troubleshoot."
+                if ctx.obj and ctx.obj.get("config_path"):
+                    hint += " Use the same --config option."
+                click.echo(hint, err=True)
+            raise
+
+
+@cli.command("serve", cls=_ServeCommand)
 @click.option(
     "--seed",
     default=None,

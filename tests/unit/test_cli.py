@@ -492,6 +492,67 @@ class TestCmdServe:
         ):
             result = CliRunner().invoke(cli, ["serve"])
         assert result.exit_code == 0
+        assert "autodj doctor" not in result.output
+
+    @pytest.mark.parametrize(
+        ("failure", "expected_code", "exception_type"),
+        [
+            (RuntimeError("server failed"), 1, RuntimeError),
+            (SystemExit(7), 7, SystemExit),
+            # CliRunner normalizes Click's Exit to SystemExit while retaining its code.
+            (click.exceptions.Exit(8), 8, SystemExit),
+        ],
+    )
+    def test_serve_failure_prints_doctor_hint_and_preserves_failure(
+        self,
+        failure: BaseException,
+        expected_code: int,
+        exception_type: type[BaseException],
+    ) -> None:
+        with (
+            patch("autodj.config.load_config", return_value=_make_cfg()),
+            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=_make_sim()),
+            patch("autodj.server.serve", side_effect=failure),
+        ):
+            result = CliRunner().invoke(cli, ["serve"])
+
+        assert result.exit_code == expected_code
+        assert isinstance(result.exception, exception_type)
+        assert "autodj doctor" in result.output
+
+    def test_serve_config_error_prints_doctor_hint_without_config_value(
+        self, tmp_path: Path
+    ) -> None:
+        config_path = tmp_path / "private-config.toml"
+        with patch(
+            "autodj.config.load_config",
+            side_effect=ValueError("invalid configuration"),
+        ):
+            result = CliRunner().invoke(cli, ["--config", str(config_path), "serve"])
+
+        assert result.exit_code != 0
+        assert "autodj doctor" in result.output
+        assert "--config" in result.output
+        assert str(config_path) not in result.output
+
+    @pytest.mark.parametrize(
+        "failure",
+        [KeyboardInterrupt(), click.Abort(), click.exceptions.Exit(0)],
+    )
+    def test_serve_interruption_and_zero_exit_do_not_print_doctor_hint(
+        self, failure: BaseException
+    ) -> None:
+        with (
+            patch("autodj.config.load_config", return_value=_make_cfg()),
+            patch(
+                "autodj.similarity.SimilarityIndex.from_index_dir",
+                return_value=_make_sim(),
+            ),
+            patch("autodj.server.serve", side_effect=failure),
+        ):
+            result = CliRunner().invoke(cli, ["serve"])
+
+        assert "autodj doctor" not in result.output
 
     def test_serve_prints_web_ui_url(self) -> None:
         cfg_mock = _make_cfg()

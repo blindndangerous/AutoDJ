@@ -7,6 +7,7 @@ helpers let that code run on each channel without rewriting it.
 
 from __future__ import annotations
 
+import logging
 import shutil
 import subprocess  # nosec B404 -- FFmpeg runs with a fixed argv and no shell
 import tempfile
@@ -17,6 +18,7 @@ import numpy as np
 import soundfile as sf
 
 SAMPLE_RATE = 44_100
+logger = logging.getLogger(__name__)
 
 # MP4-container audio (ALAC, AAC).  libsndfile cannot open it and librosa 1.0
 # has no other decoder, so FFmpeg decodes it.
@@ -135,7 +137,7 @@ def load_with_ffmpeg(
         raise RuntimeError(
             f"FFmpeg is required to decode {Path(path).suffix or 'this audio format'} files"
         )
-    command = [ffmpeg, "-v", "error", "-nostdin", "-i", str(path), "-map", "0:a:0"]
+    command = [ffmpeg, "-v", "warning", "-nostdin", "-i", str(path), "-map", "0:a:0"]
     command += ["-ac", str(channels)]
     if sample_rate is not None:
         command += ["-ar", str(sample_rate)]
@@ -153,9 +155,14 @@ def load_with_ffmpeg(
             stderr=subprocess.PIPE,
             check=False,
         )
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
         if result.returncode != 0:
-            detail = result.stderr.decode("utf-8", errors="replace").strip()
             raise RuntimeError(f"FFmpeg could not decode {path}: {detail or 'unknown error'}")
+        if detail:
+            # A decoder can recover and succeed while still reporting damaged
+            # frames. Preserve those diagnostics through the progress console,
+            # with the filename even when multiple tracks decode concurrently.
+            logger.warning("Audio decode warning for %s:\n%s", path, detail)
         decoded.seek(0)
         audio, sr = sf.read(decoded, dtype="float32", always_2d=channels > 1)
     return audio, int(sr)
