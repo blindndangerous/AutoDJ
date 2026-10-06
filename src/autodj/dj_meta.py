@@ -45,7 +45,7 @@ import re
 import sqlite3
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from collections.abc import Set as AbstractSet
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -853,6 +853,57 @@ class DjMetaCache:
                 self._mem_cache.pop(path, None)
                 self._misses.pop(path, None)
             return len(stale)
+
+    def rekey_many(self, moves: Iterable[tuple[str, str]]) -> int:
+        """Move cache rows to new paths after their files moved.
+
+        Each ``(old, new)`` pair is applied only when a row exists under
+        *old* and none under *new*, so running it again after a crash, or
+        when the track was already analysed at *new*, changes nothing.  All
+        pairs go in one transaction.
+
+        Args:
+            moves: ``(old, new)`` track paths, absolute or relative as
+                :meth:`get` takes them.
+
+        Returns:
+            Number of rows re-keyed.
+        """
+        pairs = [(self._key(old), self._key(new)) for old, new in moves]
+        with self._lock:
+            if self._conn is None:
+                self._warn_closed_locked("re-keyed")
+                return 0
+            rekeyed = 0
+            with immediate_transaction(self._conn):
+                self._write_buffer_locked()
+                for old, new in pairs:
+                    if old == new:
+                        continue
+                    taken = self._conn.execute(
+                        "SELECT 1 FROM dj_meta WHERE path = ?", (new,)
+                    ).fetchone()
+                    if taken is not None:
+                        continue
+                    cur = self._conn.execute(
+                        "UPDATE dj_meta SET path = ? WHERE path = ?", (new, old)
+                    )
+                    rekeyed += cur.rowcount
+            self._buf.clear()
+            self._dirty = 0
+            for old, new in pairs:
+                for key in (old, new):
+                    self._mem_cache.pop(key, None)
+                    self._misses.pop(key, None)
+            return rekeyed
+
+    def rekey(self, old: str, new: str) -> bool:
+        """Move one cache row from *old* to *new*; see :meth:`rekey_many`.
+
+        Returns:
+            ``True`` when a row was re-keyed.
+        """
+        return self.rekey_many([(old, new)]) == 1
 
     def close(self) -> None:
         """Close the underlying SQLite connection.  Idempotent."""

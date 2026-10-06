@@ -26,6 +26,7 @@ Example:
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import logging
 import os
 import sqlite3
@@ -125,20 +126,23 @@ _TRACKS_SCHEMA = """
         length REAL NOT NULL DEFAULT 0, energy REAL NOT NULL DEFAULT 0,
         key INTEGER NOT NULL DEFAULT -1, mode INTEGER NOT NULL DEFAULT -1,
         tempo_confidence REAL NOT NULL DEFAULT 0,
-        embedded_at REAL NOT NULL DEFAULT 0
+        embedded_at REAL NOT NULL DEFAULT 0,
+        size INTEGER NOT NULL DEFAULT 0,
+        fingerprint TEXT NOT NULL DEFAULT ''
     );
 """
 
 _TRACKS_INSERT_SQL = (
     "INSERT INTO tracks (vec_row, path, title, artist, album, genre, bpm, year, "
-    "length, energy, key, mode, tempo_confidence, embedded_at) "
+    "length, energy, key, mode, tempo_confidence, embedded_at, size, fingerprint) "
     "VALUES (:vec_row, :path, :title, :artist, :album, :genre, :bpm, :year, "
-    ":length, :energy, :key, :mode, :tempo_confidence, :embedded_at)"
+    ":length, :energy, :key, :mode, :tempo_confidence, :embedded_at, :size, :fingerprint)"
 )
 
 _TRACKS_SELECT_SQL = (
     "SELECT path, title, artist, album, genre, bpm, year, length, energy, "
-    "key, mode, tempo_confidence, embedded_at FROM tracks ORDER BY vec_row ASC"
+    "key, mode, tempo_confidence, embedded_at, size, fingerprint "
+    "FROM tracks ORDER BY vec_row ASC"
 )
 
 
@@ -163,6 +167,8 @@ def _entry_to_row(entry: IndexEntry, music_dir: Path | None, vec_row: int) -> di
         "mode": int(entry.mode),
         "tempo_confidence": float(entry.tempo_confidence),
         "embedded_at": float(entry.embedded_at),
+        "size": int(entry.size),
+        "fingerprint": entry.fingerprint,
     }
 
 
@@ -182,6 +188,8 @@ def _row_to_entry(row: tuple) -> IndexEntry:
         mode=int(row[10] if row[10] is not None else -1),
         tempo_confidence=float(row[11] or 0.0),
         embedded_at=float(row[12] or 0.0),
+        size=int(row[13] or 0),
+        fingerprint=row[14] or "",
     )
 
 
@@ -255,6 +263,35 @@ def source_mtime(path: str | Path) -> float:
         return time.time()
 
 
+#: Bytes read from the middle of a file for its fingerprint.
+FINGERPRINT_BYTES: int = 64 * 1024
+
+
+def file_fingerprint(path: str | Path) -> tuple[int, str]:
+    """Return ``(size, fingerprint)`` identifying a file's bytes, wherever it lives.
+
+    The fingerprint is the SHA-256 hex digest of up to
+    :data:`FINGERPRINT_BYTES` read from the middle of the file, so it costs
+    one small read however long the track is, and a move or rename keeps it.
+    Retagging a file changes its size or the bytes at its middle, which makes
+    it a different file here.
+
+    Args:
+        path: Path to the source audio file.
+
+    Returns:
+        ``(size, hex digest)``, or ``(0, "")`` when the file cannot be read;
+        an unknown identity never matches anything.
+    """
+    try:
+        with Path(path).open("rb") as fh:
+            size = os.fstat(fh.fileno()).st_size
+            fh.seek(max(0, size // 2 - FINGERPRINT_BYTES // 2))
+            return size, hashlib.sha256(fh.read(FINGERPRINT_BYTES)).hexdigest()
+    except OSError:
+        return 0, ""
+
+
 # ---------------------------------------------------------------------------
 # Data types
 # ---------------------------------------------------------------------------
@@ -292,6 +329,10 @@ class IndexEntry:
             1`` on the next ``index`` run the entry is dropped and
             re-embedded.
             ``0.0`` = never stamped; the next ``index`` run re-embeds it.
+        size: The source file's size in bytes when it was embedded, 0 = unknown.
+        fingerprint: :func:`file_fingerprint` of the file when it was embedded,
+            ``""`` = unknown.  With *size* it identifies the file's bytes, so
+            ``autodj index`` can tell a moved file from a new one.
     """
 
     path: str
@@ -307,15 +348,25 @@ class IndexEntry:
     mode: int
     tempo_confidence: float
     embedded_at: float = 0.0
+    size: int = 0
+    fingerprint: str = ""
 
     @classmethod
-    def from_track(cls, track: Track, embedded_at: float | None = None) -> IndexEntry:
+    def from_track(
+        cls,
+        track: Track,
+        embedded_at: float | None = None,
+        size: int = 0,
+        fingerprint: str = "",
+    ) -> IndexEntry:
         """Create an :class:`IndexEntry` from a beets :class:`~autodj.beets.Track`.
 
         Args:
             track: A track loaded from the beets library.
             embedded_at: Stale-check stamp to store.  Defaults to the source
                 file's own modification time.
+            size: The file's size in bytes, from :func:`file_fingerprint`.
+            fingerprint: The file's :func:`file_fingerprint` digest.
 
         Returns:
             An :class:`IndexEntry` with the same metadata.  ``embedded_at``
@@ -342,6 +393,8 @@ class IndexEntry:
             mode=-1,
             tempo_confidence=0.0,
             embedded_at=embedded_at,
+            size=size,
+            fingerprint=fingerprint,
         )
 
     @property
@@ -1249,15 +1302,116 @@ def _detect_stale_entries(entries: list[IndexEntry], mtimes: list[float | None])
     }
 
 
+def _stat_size_mtime(path: str) -> tuple[int, float] | None:
+    """Return ``(size, mtime)`` of *path*, or ``None`` when it cannot be read."""
+    try:
+        st = Path(path).stat()
+    except OSError:
+        return None
+    return st.st_size, st.st_mtime
+
+
+def _detect_moves(
+    entries: list[IndexEntry],
+    missing_paths: set[str],
+    candidates: list[Track],
+) -> dict[str, tuple[Track, float]]:
+    """Match entries whose file vanished to new files with the same bytes.
+
+    An entry and a candidate match when they share ``(size, fingerprint)``
+    and nothing else does: exactly one missing entry and exactly one
+    candidate hold that identity, and no entry whose file still exists holds
+    it (that candidate is a copy, not a move).  Anything else is left alone,
+    so the caller prunes and embeds as usual.  Fingerprints are read only for
+    candidates whose size equals the size of some missing entry.
+
+    Args:
+        entries: Existing index entries (absolute paths).
+        missing_paths: Paths of *entries* whose file is gone.
+        candidates: Files on disk that are not in the index.
+
+    Returns:
+        Old entry path mapped to ``(candidate track, candidate mtime)``.
+    """
+    missing = [e for e in entries if e.path in missing_paths and e.size and e.fingerprint]
+    if not missing or not candidates:
+        return {}
+    missing_sizes = {e.size for e in missing}
+    present = {
+        (e.size, e.fingerprint)
+        for e in entries
+        if e.path not in missing_paths and e.size and e.fingerprint
+    }
+
+    def _identify(track: Track) -> tuple[Track, float, tuple[int, str]] | None:
+        stat = _stat_size_mtime(str(track.path))
+        if stat is None or stat[0] not in missing_sizes:
+            return None
+        return track, stat[1], file_fingerprint(track.path)
+
+    by_id_missing: dict[tuple[int, str], list[IndexEntry]] = {}
+    for e in missing:
+        by_id_missing.setdefault((e.size, e.fingerprint), []).append(e)
+    by_id_new: dict[tuple[int, str], list[tuple[Track, float]]] = {}
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        for done, found in enumerate(pool.map(_identify, candidates), start=1):
+            _log_progress("Checking new files", done, len(candidates), _STAT_PROGRESS_EVERY)
+            if found is None or not found[2][1]:
+                continue
+            by_id_new.setdefault(found[2], []).append((found[0], found[1]))
+    moves: dict[str, tuple[Track, float]] = {}
+    for identity, olds in by_id_missing.items():
+        news = by_id_new.get(identity, [])
+        if len(olds) == 1 and len(news) == 1 and identity not in present:
+            moves[olds[0].path] = news[0]
+    return moves
+
+
+def _apply_move(entry: IndexEntry, track: Track, mtime: float) -> None:
+    """Re-path *entry* to *track*'s file and refresh its metadata from *track*.
+
+    The vector stays.  Metadata follows the :func:`enrich_from_beets` rules,
+    using what the track carries (beets values when beets is configured).
+    """
+    from autodj.beets import parse_initial_key
+
+    entry.path = str(track.path)
+    entry.embedded_at = mtime
+    row = {
+        "title": track.title,
+        "artist": track.artist,
+        "album": track.album,
+        "genre": track.genre,
+        "bpm": track.bpm,
+        "year": track.year,
+        "length": track.length,
+        "initial_key": track.initial_key,
+    }
+    _apply_beets_row(entry, row, ("title", "artist", "album", "genre"), True, parse_initial_key)
+
+
 def _load_existing_index(
     index_dir: Path,
     music_dir: Path,
     force: bool,
+    find_new: Callable[[set[str]], list[Track]] | None = None,
 ) -> tuple[list[IndexEntry], list[np.ndarray], int]:
     """Load the live generation, dropping missing and replaced files.
 
     One stat() per entry gives both existence (missing files are pruned)
     and mtime (replaced files are dropped so they are embedded again).
+
+    When files are missing and *find_new* is given, files that moved are
+    found first (:func:`_detect_moves`): their entries keep their vectors
+    under the new path and their ``dj_meta.db`` rows are re-keyed, before
+    anything is pruned or the prune-safety check runs.
+
+    Args:
+        index_dir: The index directory.
+        music_dir: Library root.
+        force: Ignore the existing index.
+        find_new: Called with every stored path except replaced files, when
+            something is missing; returns the files not in the index.
 
     Returns:
         ``(entries, vectors, base_generation)``.  With *force*, no entries;
@@ -1295,15 +1449,32 @@ def _load_existing_index(
     )
     mtimes = _stat_mtimes(entries)
     missing_paths = {e.path for e, mt in zip(entries, mtimes, strict=True) if mt is None}
+    stale = _detect_stale_entries(entries, mtimes)
+    moves: dict[str, tuple[Track, float]] = {}
+    if missing_paths and find_new is not None:
+        candidates = find_new({e.path for e in entries} - stale)
+        moves = _detect_moves(
+            entries, missing_paths, [t for t in candidates if str(t.path) not in stale]
+        )
+    if moves:
+        from autodj.dj_meta import get_cache
+
+        cache = get_cache(index_dir, music_dir=music_dir)
+        if cache is not None:
+            cache.rekey_many((old, str(track.path)) for old, (track, _) in moves.items())
+        for e in entries:
+            if e.path in moves:
+                _apply_move(e, *moves[e.path])
+        missing_paths -= moves.keys()
+        print(f"[AutoDJ] {len(moves)} moved files re-pathed.", flush=True)
     try:
         _check_prune_safety(len(missing_paths), len(entries), allow_mass_prune=False)
     except PruneSafetyError as exc:
         print(f"[AutoDJ] Skipping auto-prune (safety check): {exc}")
         missing_paths = set()  # keep everything; safety failure means user config is wrong
 
-    stale = _detect_stale_entries(entries, mtimes)
     drop_paths = missing_paths | stale
-    if not drop_paths:
+    if not drop_paths and not moves:
         return entries, vectors, base_generation
     if missing_paths:
         print(
@@ -1457,7 +1628,7 @@ def _embed_new_tracks(  # pragma: no cover -- threaded indexer pipeline
     prefetch = max(1, workers)
     throttle_s = throttle_ms / 1000.0
     track_iter = iter(new_tracks)
-    pending: deque[tuple[Track, float, Future]] = deque()
+    pending: deque[tuple[Track, float, tuple[int, str], Future]] = deque()
 
     with ThreadPoolExecutor(max_workers=prefetch) as pool:
 
@@ -1470,7 +1641,12 @@ def _embed_new_tracks(  # pragma: no cover -- threaded indexer pipeline
             # Stat before decoding so a file edited mid-run is still seen
             # as stale on the next pass.
             pending.append(
-                (t, source_mtime(t.path), pool.submit(_extract_librosa_features, t.path))
+                (
+                    t,
+                    source_mtime(t.path),
+                    file_fingerprint(t.path),
+                    pool.submit(_extract_librosa_features, t.path),
+                )
             )
 
         for _ in range(prefetch):
@@ -1479,7 +1655,7 @@ def _embed_new_tracks(  # pragma: no cover -- threaded indexer pipeline
         done = 0
         with TrackProgress("Indexing", len(new_tracks), logger) as progress:
             while pending:
-                track, mtime, future = pending.popleft()
+                track, mtime, (size, fingerprint), future = pending.popleft()
                 _submit_next()
                 done += 1
                 try:
@@ -1490,7 +1666,9 @@ def _embed_new_tracks(  # pragma: no cover -- threaded indexer pipeline
                         raise ValueError(
                             "embedding contains NaN or Inf — track may be silent or corrupted"
                         )
-                    entry = IndexEntry.from_track(track, embedded_at=mtime)
+                    entry = IndexEntry.from_track(
+                        track, embedded_at=mtime, size=size, fingerprint=fingerprint
+                    )
                     _apply_analysis_metadata(entry, extra_meta)
 
                     from autodj.beets import parse_initial_key as _parse_key
@@ -1543,12 +1721,22 @@ def build_index(  # pragma: no cover -- end-to-end pipeline, exercised by integr
     index_dir.mkdir(parents=True, exist_ok=True)
     music_dir = cfg.library.music_dir
 
+    scanned: list[Track] | None = None
+
+    def find_new(indexed: set[str]) -> list[Track]:
+        nonlocal scanned
+        scanned = _collect_tracks_to_index(cfg, indexed, None)
+        return scanned
+
     existing_entries, existing_vectors, base_generation = _load_existing_index(
-        index_dir, music_dir, force
+        index_dir, music_dir, force, find_new
     )
     existing_paths = {e.path for e in existing_entries}
 
-    new_tracks = _collect_tracks_to_index(cfg, existing_paths, limit)
+    if scanned is None:
+        new_tracks = _collect_tracks_to_index(cfg, existing_paths, limit)
+    else:  # the move check already scanned for every new file
+        new_tracks = [t for t in scanned if str(t.path) not in existing_paths][:limit]
 
     logger.info(
         "%d new tracks to index%s",

@@ -274,6 +274,20 @@ class TestDjMetaCache:
             rows = reopened._conn.execute("SELECT path FROM dj_meta ORDER BY path").fetchall()
             assert rows == [("bad.flac",), ("before.flac",), ("good.flac",)]
 
+    def test_rekey_moves_a_row_once_and_never_overwrites(self, tmp_path) -> None:
+        with DjMetaCache(tmp_path / "cache.db") as cache:
+            cache.set("old.flac", DjMeta(intro_end_s=4.0, analysed=True))
+            cache.set("taken.flac", DjMeta(intro_end_s=9.0, analysed=True))
+            cache.flush(force=True)
+
+            assert cache.rekey("old.flac", "new.flac") is True
+            assert cache.rekey("old.flac", "new.flac") is False  # re-run after a crash
+            assert cache.rekey("new.flac", "taken.flac") is False  # target already analysed
+
+            assert cache.get("new.flac").intro_end_s == 4.0
+            assert cache.get("taken.flac").intro_end_s == 9.0
+            assert cache.get("old.flac").analysed is False
+
     def test_context_manager_closes_connection(self, tmp_path) -> None:
         cache = DjMetaCache(tmp_path / "cache.db")
         with cache:

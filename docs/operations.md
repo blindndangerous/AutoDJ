@@ -565,6 +565,28 @@ bind-mount ownership depends on its WSL2/Linux filesystem mapping, and its host 
 be turned on in Docker Desktop's settings. Run `bash scripts/container_smoke.sh` inside WSL2 for
 the authoritative check. Do not use world-writable Windows mounts.
 
+## Moved files
+
+`autodj index` recognises a track that moved, for example after `beet move`, by its size and a
+fingerprint of 64 KiB from the middle of the file. A moved track keeps its vector, its metadata
+refreshed from beets, and its DJ analysis and cues; nothing is embedded again. It also works when
+the whole library moved. A track is re-pathed only when exactly one missing file and exactly one
+new file match. A copy, two identical files, or a file whose bytes changed (retagged) is indexed
+the usual way. The run prints `N moved files re-pathed`.
+
+This needs index schema 4. AutoDJ refuses an index from before it, with an error naming the
+conversion script. Convert once, with `autodj serve` and `autodj index` stopped. If a move has not
+happened yet, write a JSON file of old to new paths relative to `music_dir`, such as
+`{"Old/a.flac": "New/a.flac"}`, and pass it as `--map`:
+
+```bash
+uv run python scripts/convert_index_v3_to_v4.py --index-dir index --music-dir /music --map moves.json
+uv run python scripts/convert_index_v3_to_v4.py --index-dir index --music-dir /music --map moves.json --apply
+```
+
+The first command is a dry run. The script reuses the vectors, re-keys `dj_meta.db` with the map,
+and lists files it could not read.
+
 ## More than one machine
 
 AutoDJ stores track paths relative to `music_dir`, so an index built on one machine works on

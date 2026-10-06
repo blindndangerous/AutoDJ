@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `autodj index` now recognises tracks that moved, for example after `beet move`, and keeps their
+  vectors and DJ cues instead of embedding them again. The index format changed (schema 4): an
+  index from an older AutoDJ is refused. Convert one with `scripts/convert_index_v3_to_v4.py`;
+  `docs/operations.md` explains how.
 - In stream mode and with server audio, the new **Drop mixing** setting (`drop_mix` in the
   `[djmix]` section of `config.toml`, off by default) mixes songs drop to drop. When both songs
   have a reliable drop and **Beatmatch** can lock their beats, the new song's build-up plays under

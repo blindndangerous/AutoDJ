@@ -1620,3 +1620,48 @@ class TestIndexRecoveryPaths:
                 prune_index(index_dir, music_dir=tmp_path)
             else:
                 enrich_from_beets(index_dir, music_dir=tmp_path, beets_db=tmp_path / "b.db")
+
+
+# ---------------------------------------------------------------------------
+# file_fingerprint + _detect_moves
+# ---------------------------------------------------------------------------
+
+
+class TestFingerprint:
+    def test_reads_one_64k_block_from_the_middle(self, tmp_path: Path) -> None:
+        import hashlib
+
+        from autodj.indexer import file_fingerprint
+
+        data = bytes(range(256)) * 4096  # 1 MiB
+        path = tmp_path / "big.flac"
+        path.write_bytes(data)
+        middle = len(data) // 2 - 32 * 1024
+
+        assert file_fingerprint(path) == (
+            len(data),
+            hashlib.sha256(data[middle : middle + 64 * 1024]).hexdigest(),
+        )
+        assert file_fingerprint(tmp_path / "gone.flac") == (0, "")
+
+    def test_only_candidates_with_a_missing_entrys_size_are_fingerprinted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import autodj.indexer as indexer
+        from autodj.beets import Track
+
+        gone = IndexEntry("gone.flac", "", "", "", "", 0, 0, 0, 0, -1, -1, 0, size=100)
+        gone.fingerprint = "f" * 64
+        candidates = []
+        for name, size in (("a.flac", 100), ("b.flac", 200), ("c.flac", 300)):
+            (tmp_path / name).write_bytes(b"x" * size)
+            candidates.append(Track(tmp_path / name, "", "", "", "", 0.0, 0, 0.0))
+        seen: list[Path] = []
+        real = indexer.file_fingerprint
+        monkeypatch.setattr(
+            indexer, "file_fingerprint", lambda p: (seen.append(Path(p)), real(p))[1]
+        )
+
+        indexer._detect_moves([gone], {"gone.flac"}, candidates)
+
+        assert seen == [tmp_path / "a.flac"]

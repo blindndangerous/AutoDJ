@@ -79,7 +79,7 @@ def test_failed_write_leaves_the_live_generation_and_no_temporary_files(tmp_path
 
 def _manifest_payload(**changes: object) -> dict[str, object]:
     payload: dict[str, object] = {
-        "schema_version": 3,
+        "schema_version": 4,
         "generation": 1,
         "vector_count": 2,
         "published_at": "2026-08-02T00:00:00+00:00",
@@ -98,6 +98,13 @@ def test_older_manifest_schema_names_the_rebuild(tmp_path: Path) -> None:
     _write_manifest(tmp_path, _manifest_payload(schema_version=2, tracks_file="x"))
 
     with pytest.raises(UnsupportedIndexError, match=r"older AutoDJ.*autodj index --force"):
+        read_manifest(tmp_path)
+
+
+def test_schema_3_manifest_points_at_the_conversion_script(tmp_path: Path) -> None:
+    _write_manifest(tmp_path, _manifest_payload(schema_version=3, tracks_file="x"))
+
+    with pytest.raises(UnsupportedIndexError, match=r"older AutoDJ.*convert_index_v3_to_v4"):
         read_manifest(tmp_path)
 
 
