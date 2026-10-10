@@ -1055,7 +1055,7 @@ class Player:
                 key = f"{current.path}\n{upcoming.path}"
                 points = self.saved_points(current)
                 seconds = float(points.get("segue") or points.get("outro") or current.length)
-                name = plan(key, tracks_ahead=2, seconds_ahead=seconds)
+                name = plan(key, tracks_ahead=1, seconds_ahead=seconds)
                 if name:
                     record = self._library.record_for_id(name)
                     entry = self._library.entry_for_path(record["path"]) if record else None

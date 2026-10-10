@@ -226,6 +226,7 @@ def test_basic_entry_is_playable_while_audio_preparation_runs_and_analysis_can_s
     manager = manager_factory(music=music)
     entered = threading.Event()
     release = threading.Event()
+    captured = {}
 
     def slow_prepare(path, cache_dir, kind="music"):
         del path, cache_dir, kind
@@ -235,7 +236,7 @@ def test_basic_entry_is_playable_while_audio_preparation_runs_and_analysis_can_s
 
     class Jobs:
         def configure(self, **kwargs):
-            del kwargs
+            captured.update(kwargs)
 
         def start(self, command):
             assert command == "analyse-library"
@@ -256,6 +257,8 @@ def test_basic_entry_is_playable_while_audio_preparation_runs_and_analysis_can_s
         release.set()
         manager._thread.join(timeout=3)
         assert not manager._thread.is_alive()
+    assert captured["index_dir"] == manager.cfg.index.index_dir
+    assert captured["index_dir"] != manager.cfg.index.active_dir
 
 
 def test_invalid_automatic_point_does_not_block_basic_track(manager_factory, tmp_path):

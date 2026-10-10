@@ -2299,9 +2299,12 @@ def create_app(
         for source in library.catalog.sources(slot.kind):
             root = os.path.normcase(os.path.abspath(os.path.expanduser(source["path"])))
             try:
-                if os.path.commonpath((root, target)) != root:
-                    continue
+                common = os.path.commonpath((root, target))
             except ValueError:
+                continue
+            if slot.recursive and common == target:
+                return True
+            if common != root:
                 continue
             relative = os.path.relpath(target, root)
             if relative == os.curdir or source["recursive"]:

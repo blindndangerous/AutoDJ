@@ -174,7 +174,7 @@ def load_stereo(
     """Load an audio file as stereo float32 at *target_sr*.
 
     Uses FFmpeg for MP4-container audio such as ALAC, and soundfile for
-    the rest, falling back to librosa for formats soundfile cannot read.
+    the rest, falling back to librosa and then FFmpeg if decoding fails.
     All paths resample to *target_sr*.
 
     A decoded track costs about 21 MB per minute (stereo float32 at
@@ -191,8 +191,7 @@ def load_stereo(
         ``(frames, 2)`` float32 audio.
 
     Raises:
-        RuntimeError: ``soundfile.LibsndfileError`` when neither decoder can
-            read the file, or FFmpeg's error for MP4-container audio.
+        RuntimeError: If none of the available decoders can read the file.
         TrackTooLongError: If the track is longer than *max_seconds*.
     """
     if Path(path).suffix.lower() in FFMPEG_FORMATS:

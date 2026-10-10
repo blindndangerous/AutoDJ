@@ -51,14 +51,22 @@ export async function audit(name, launcher) {
     if (await page.locator("#tab-settings").getAttribute("aria-selected") !== "true") {
       throw new Error("Settings tab did not become selected");
     }
-    await page.locator("#transition-select").waitFor({ state: "visible" });
-    // Cycle the transition select to fire postSettings.
-    await page.selectOption("#transition-select", "highpass_sweep");
-    await page.waitForTimeout(200);
-    await page.selectOption("#transition-select", "freeze");
-    await page.waitForTimeout(200);
-    await page.selectOption("#transition-select", "pitch_fall");
-    await page.waitForTimeout(200);
+    const transition = page.locator("#transition-select");
+    if (await transition.isVisible()) {
+      // Keep the existing transition-control exercise in modes where it applies.
+      const original = await transition.inputValue();
+      try {
+        await page.selectOption("#transition-select", "highpass_sweep");
+        await page.waitForTimeout(200);
+        await page.selectOption("#transition-select", "freeze");
+        await page.waitForTimeout(200);
+        await page.selectOption("#transition-select", "pitch_fall");
+        await page.waitForTimeout(200);
+      } finally {
+        await page.selectOption("#transition-select", original);
+        await page.waitForTimeout(200);
+      }
+    }
   } catch (e) { out.unhandled.push("select " + e); }
 
   // Click each visible tab so panels render

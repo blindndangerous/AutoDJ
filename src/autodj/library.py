@@ -522,7 +522,7 @@ class LibraryManager:
         manager = get_manager()
         manager.configure(
             config_path=self.cfg.config_path,
-            index_dir=self.cfg.index.active_dir,
+            index_dir=self.cfg.index.index_dir,
             index_name=self.cfg.index.name,
         )
         if not manager.start("analyse-library"):

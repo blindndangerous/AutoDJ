@@ -94,3 +94,37 @@ def test_clock_api_save_preserves_cursor_and_requires_matching_recursive_source(
         assert saved["cursor"] == 4
         assert saved["resync_minutes"] == []
         assert catalog.get_setting("clock")["cursor"] == 4
+
+
+def test_recursive_clock_parent_can_cover_registered_child_sources(tmp_path):
+    station = tmp_path / "station" / "throwback"
+    first, second = station / "album-one", station / "album-two"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+    with LibraryCatalog(tmp_path / "library.sqlite") as catalog:
+        catalog.add_source(first, "music", recursive=False, advanced=False)
+        catalog.add_source(second, "music", recursive=False, advanced=False)
+        _app, _bridge, routes = app_for(catalog)
+
+        saved = asyncio.run(
+            routes[("POST", "/api/library/clock")](
+                ClockBody(
+                    name="Throwback",
+                    slots=[{"folder": str(station), "recursive": True}],
+                    resync_minutes=[0],
+                )
+            )
+        )
+        assert saved["slots"][0]["folder"] == str(station)
+
+        with pytest.raises(HTTPException, match="not covered") as rejected:
+            asyncio.run(
+                routes[("POST", "/api/library/clock")](
+                    ClockBody(
+                        name="Throwback",
+                        slots=[{"folder": str(station), "recursive": False}],
+                        resync_minutes=[0],
+                    )
+                )
+            )
+        assert rejected.value.status_code == 400

@@ -1075,7 +1075,8 @@ def cmd_analyse_library(ctx: click.Context, index_name: str | None) -> None:
     _apply_index_name(cfg, index_name)
     try:
         model_path = download_model_if_needed(cfg.model, cfg.index, hf_token=cfg.huggingface.token)
-        analyse_library(cfg, load_model(model_path))
+        completed = analyse_library(cfg, load_model(model_path))
+        click.echo(f"[AutoDJ] Advanced analysis embedded {completed} tracks.")
     except Exception as exc:
         raise click.ClickException(f"Library analysis failed: {exc}") from exc
 

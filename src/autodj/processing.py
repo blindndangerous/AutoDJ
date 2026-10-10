@@ -7,14 +7,18 @@ import json
 import math
 import os
 import re
-import subprocess
+import subprocess  # nosec B404 -- audio preparation uses only fixed FFmpeg argv, no shell
 import tempfile
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import soundfile as sf
 
 from autodj.stereo import SAMPLE_RATE, load_stereo
+
+if TYPE_CHECKING:
+    from autodj.indexer import IndexEntry
 
 PREPARATION_VERSION = "type-b-v1"
 HEADROOM_DB = -6.0
@@ -37,7 +41,7 @@ _TIMEOUT_S = 600
 def _run(command: list[str | Path]) -> str:
     args = [str(part) for part in command]
     try:
-        result = subprocess.run(
+        result = subprocess.run(  # nosec B603 -- fixed FFmpeg argv, no shell
             args,
             capture_output=True,
             timeout=_TIMEOUT_S,
@@ -230,7 +234,7 @@ def prepare_source(source: Path, cache_dir: Path, kind: str = "music") -> Path:
             path.unlink(missing_ok=True)
 
 
-def analyze_basic(source: Path):
+def analyze_basic(source: Path) -> tuple[IndexEntry, dict[str, float | None]]:
     """Return basic library metadata and conservative timing suggestions.
 
     Full beat-grid and embedding analysis remain separate background work.
