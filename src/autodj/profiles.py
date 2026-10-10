@@ -77,6 +77,8 @@ class ProfileSnapshot:
         crossfade_seconds: Crossfade window length.
         fade_in_seconds: Incoming track's fade-in length.
         pure_shuffle: Pure-shuffle toggle.
+        pick_mode: Music-picking strategy.
+        loudness_processing: Loudness processing mode.
         anchor_to_seed: Anchor-to-seed toggle.
         liners_enabled: Voice liner master toggle.
         liners_pick_mode: Liner rotation mode.
@@ -95,6 +97,8 @@ class ProfileSnapshot:
     crossfade_seconds: float | None = None
     fade_in_seconds: float | None = None
     pure_shuffle: bool | None = None
+    pick_mode: str | None = None
+    loudness_processing: str | None = None
     anchor_to_seed: bool | None = None
     liners_enabled: bool | None = None
     liners_pick_mode: str | None = None

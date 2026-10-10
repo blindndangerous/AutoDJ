@@ -15,6 +15,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Existing matching vectors are reused, and confirmed file moves retain their saved data.
 - Station playout foundations include a saved-point handoff planner, cached Type B source
   preparation, a continuous output processor and a safe importer for PAL folder rotations.
+- Library tools can add several music and liner folders, save their subfolder and analysis
+  choices, and edit points with a separate audio preview. New songs become playable before
+  advanced matching analysis finishes. Removing a folder keeps its files and saved points.
+- Use saved segue points gives server playback the station fade and fits complete liners
+  around the saved Outro and Intro. One Overlap start field also handles jingles with tails.
+  The page identifies the already-prepared handoff when editing the upcoming queue.
+- Pick mode adds Least recently played and Clockwheel. Import a supported PAL folder
+  rotation, choose each track as needed, and restart the rotation at a natural handoff near
+  the hour or other chosen minutes. Only heard tracks update their last-played time.
+- Loudness processing offers Off, ReplayGain and Smooth (Type B). Stream settings can keep
+  the station playing with no listeners, for unattended playout.
 - `autodj index` now recognises tracks that moved, for example after `beet move`, and keeps their
   vectors and DJ cues instead of embedding them again. The index format changed (schema 4): an
   index from an older AutoDJ is refused. Convert one with `scripts/convert_index_v3_to_v4.py`;

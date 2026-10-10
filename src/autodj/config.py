@@ -180,7 +180,11 @@ TRANSITION_MODES: tuple[str, ...] = (
     "outro_fade",
     "fixed_skip_silence",
     "fixed",
+    "saved_points",
 )
+
+PICK_MODES: tuple[str, ...] = ("similarity", "random", "least_recent", "clock")
+LOUDNESS_PROCESSING_MODES: tuple[str, ...] = ("off", "replaygain", "smooth")
 
 KEY_NOTATIONS: tuple[str, ...] = (
     "camelot",
@@ -259,6 +263,12 @@ _validate_post_queue_seed = partial(
 _validate_transition_mode = partial(
     _one_of, options=TRANSITION_MODES, field_name="playback.transition_mode"
 )
+_validate_pick_mode = partial(_one_of, options=PICK_MODES, field_name="playback.pick_mode")
+_validate_loudness_processing = partial(
+    _one_of,
+    options=LOUDNESS_PROCESSING_MODES,
+    field_name="playback.loudness_processing",
+)
 _validate_skip_style = partial(_one_of, options=SKIP_STYLES, field_name="playback.skip_style")
 
 
@@ -326,6 +336,11 @@ class PlaybackConfig(_Section):
     #   - "fixed": plain fixed crossfade_seconds at the
     #     end of the outgoing track.  No marker alignment.
     transition_mode: str = "full_intro_outro"
+    # Similarity is the default. Random preserves the legacy pure-shuffle
+    # choice; the other pickers are selected by newer playback controls.
+    pick_mode: str = "similarity"
+    # None follows the legacy [replaygain].enabled setting.
+    loudness_processing: str | None = None
     # Where the similarity engine seeds from after a user-built queue
     # empties.  "last_queued" (default) continues from the final queued
     # track -- the user steered the set, the auto-DJ follows.
@@ -463,6 +478,9 @@ class PlaybackConfig(_Section):
         self.discovery_every = _optional(int, self.discovery_every)
         self.crossfade_bass_cutoff_hz = float(self.crossfade_bass_cutoff_hz)
         self.transition_mode = _validate_transition_mode(str(self.transition_mode))
+        self.pick_mode = _validate_pick_mode(str(self.pick_mode))
+        if self.loudness_processing is not None:
+            self.loudness_processing = _validate_loudness_processing(str(self.loudness_processing))
         self.skip_style = _validate_skip_style(str(self.skip_style))
         self.post_queue_seed = _validate_post_queue_seed(str(self.post_queue_seed))
         self.pick_top_k = int(self.pick_top_k)
@@ -1073,6 +1091,7 @@ class StreamConfig(_Section):
     SECTION: ClassVar[str] = "stream"
 
     enabled: bool = False
+    continuous: bool = False
     bitrate: int = 320
     idle_grace_seconds: float = 30.0
     max_listeners: int = 8
@@ -1082,6 +1101,8 @@ class StreamConfig(_Section):
         """Validate every field."""
         if not isinstance(self.enabled, bool):
             raise TypeError("stream.enabled must be true or false")
+        if not isinstance(self.continuous, bool):
+            raise TypeError("stream.continuous must be true or false")
         if isinstance(self.bitrate, bool) or not isinstance(self.bitrate, int):
             raise TypeError("stream.bitrate must be an integer")
         if self.bitrate not in STREAM_BITRATES:
@@ -1175,6 +1196,7 @@ ENVIRONMENT_OVERLAY: dict[str, tuple[str, str, Callable[[str], object]]] = {
     "AUTODJ_LAN": ("server", "lan", parse_env_bool),
     "AUTODJ_HUGGINGFACE_TOKEN": ("huggingface", "token", str),
     "AUTODJ_STREAM_ENABLED": ("stream", "enabled", parse_env_bool),
+    "AUTODJ_STREAM_CONTINUOUS": ("stream", "continuous", parse_env_bool),
     "AUTODJ_STREAM_BITRATE": ("stream", "bitrate", int),
     "AUTODJ_STREAM_IDLE_GRACE_SECONDS": ("stream", "idle_grace_seconds", float),
     "AUTODJ_STREAM_MAX_LISTENERS": ("stream", "max_listeners", int),

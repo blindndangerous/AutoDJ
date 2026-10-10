@@ -48,7 +48,7 @@ import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator
 from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, BinaryIO
+from typing import TYPE_CHECKING, Any, BinaryIO, Literal
 
 from fastapi import (
     FastAPI,
@@ -64,18 +64,21 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
+from pydantic import Field as PydanticField
 from starlette.background import BackgroundTask
 from starlette.datastructures import Headers
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.staticfiles import NotModifiedResponse
 from starlette.types import Receive, Scope, Send
 
-# PlayerBridge lives in autodj._bridge; it is re-exported here.
 from autodj._bridge import (
     STREAM_SEEK_UNAVAILABLE,
     PlayerBridge,
     StreamSeekUnavailable,
 )
+
+# PlayerBridge lives in autodj._bridge; it is re-exported here.
+from autodj.clockwheel import ClockSlot, parse_pal, validate_clock, validate_resync_minutes
 from autodj.icy import METAINT
 from autodj.index_manifest import IndexConsistencyError, read_manifest
 from autodj.lan import PAIRING_ON_REQUEST_HINT, format_lan_banner, lan_urls, running_in_container
@@ -515,6 +518,8 @@ class ProfileSaveBody(BaseModel):
     crossfade_seconds: FadeSeconds | None = None
     fade_in_seconds: FadeSeconds | None = None
     pure_shuffle: bool | None = None
+    pick_mode: Literal["similarity", "random", "least_recent", "clock"] | None = None
+    loudness_processing: Literal["off", "replaygain", "smooth"] | None = None
     anchor_to_seed: bool | None = None
     liners_enabled: bool | None = None
     liners_pick_mode: str | None = None
@@ -596,6 +601,64 @@ class LibraryJobBody(BaseModel):
 
     name: str
     args: list[str] = []
+
+
+class LibraryFolderBody(BaseModel):
+    """Register one operator-selected audio folder."""
+
+    model_config = ConfigDict(extra="forbid")
+    path: str
+    kind: Literal["music", "liner"] = "music"
+    recursive: bool = True
+    advanced: bool = True
+
+
+class LibraryFolderUpdateBody(BaseModel):
+    """Change a registered folder's scan options."""
+
+    model_config = ConfigDict(extra="forbid")
+    recursive: bool | None = None
+    advanced: bool | None = None
+
+
+class SongPointsBody(BaseModel):
+    """Editable points; the catalog validates their times against the recording."""
+
+    model_config = ConfigDict(extra="forbid")
+    path: str
+    points: dict[str, Any]
+
+
+class ClockBody(BaseModel):
+    """Validated repeating clock configuration."""
+
+    model_config = ConfigDict(extra="forbid")
+    name: str = PydanticField(default="Clock", min_length=1, max_length=120)
+    slots: list[dict[str, Any]] = PydanticField(max_length=256)
+    resync_minutes: list[Any] = PydanticField(default_factory=lambda: [0], max_length=60)
+
+    @model_validator(mode="after")
+    def validate_name(self) -> ClockBody:
+        if not self.name.strip():
+            raise ValueError("clock name must not be empty")
+        return self
+
+
+class PalImportBody(BaseModel):
+    """PAL text is parsed as a small declarative subset, never executed."""
+
+    model_config = ConfigDict(extra="forbid")
+    text: str
+    name: str = PydanticField(default="Clock", min_length=1, max_length=120)
+    resync_minutes: list[Any] | None = PydanticField(default=None, max_length=60)
+
+    @model_validator(mode="after")
+    def validate_import(self) -> PalImportBody:
+        if len(self.text.encode("utf-8")) > 256 * 1024:
+            raise ValueError("PAL text must be 256 KB or smaller")
+        if not self.name.strip():
+            raise ValueError("clock name must not be empty")
+        return self
 
 
 class PairBody(BaseModel):
@@ -853,6 +916,7 @@ def _start_stream_station(
         cfg.stream.idle_grace_seconds,
         on_event=bridge.announce_station_event,
         forget_track=bridge.forget_track,
+        continuous=lambda: cfg.stream.continuous,
     )
     scheduler = LinerScheduler(
         cfg.playback,
@@ -860,6 +924,12 @@ def _start_stream_station(
         bus,
         can_fire=lambda: station.state == "playing",
         vocal_start=player.vocal_start_s,
+        registered_liners=functools.partial(_registered_liners, bridge)
+        if bridge.library is not None
+        else None,
+        path_decoder=functools.partial(_prepared_liner, bridge)
+        if bridge.library is not None
+        else None,
     )
     if first_track is not None:
         station.start_with(first_track, "seed")
@@ -890,8 +960,35 @@ def _start_server_audio_liners(bridge: PlayerBridge, liner_folder: Path) -> None
         bus,
         can_fire=lambda: bus.playing and not player._state.is_paused,
         vocal_start=player.vocal_start_s,
+        registered_liners=functools.partial(_registered_liners, bridge)
+        if bridge.library is not None
+        else None,
+        path_decoder=functools.partial(_prepared_liner, bridge)
+        if bridge.library is not None
+        else None,
     )
     bridge.attach_liner_scheduler(scheduler)
+
+
+def _registered_liners(bridge: PlayerBridge) -> list[tuple[str, Path]]:
+    return [
+        (record["id"], Path(entry.path))
+        for entry in bridge.library.entries_snapshot("liner")
+        if (record := bridge.library.catalog.record_for_path(entry.path)) is not None
+    ]
+
+
+def _prepared_liner(bridge: PlayerBridge, path: Path) -> Any:
+    from autodj.stereo import SAMPLE_RATE
+
+    entry = bridge.library.entry_for_path(path)
+    if entry is None:
+        raise ValueError("The liner is no longer registered")
+    audio = bridge.player._load_playout_audio(entry)
+    points = bridge.player.saved_points(entry)
+    first = round((points.get("start") or 0.0) * SAMPLE_RATE)
+    last = round((points.get("end") or entry.length) * SAMPLE_RATE)
+    return audio[first:last]
 
 
 async def _stop_stream_station(bridge: PlayerBridge, stream_out: StreamOutput) -> None:
@@ -1019,6 +1116,10 @@ def create_app(
             stream_ticker = asyncio.create_task(_tick_stream_workers(bridge))
         broadcast = asyncio.create_task(_broadcast_loop())
         watcher = asyncio.create_task(_index_watcher_loop())
+        library_ticker = None
+        if bridge.library is not None:
+            bridge.library.start_scan()
+            library_ticker = asyncio.create_task(_tick_library())
         try:
             yield
         finally:
@@ -1075,6 +1176,14 @@ def create_app(
                     "did not stop within %.2f seconds",
                     _SHUTDOWN_TIMEOUT_S,
                 )
+            if library_ticker is not None:
+                library_ticker.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await library_ticker
+                await asyncio.to_thread(bridge.library.close)
+            master = getattr(bridge.player, "_continuous_master", None)
+            if master is not None:
+                await asyncio.to_thread(master.close)
             for task in (broadcast, watcher):
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -1090,6 +1199,14 @@ def create_app(
                 logger.warning(
                     "Server shutdown completed in degraded mode: DJ-meta cache could not be closed."
                 )
+
+    async def _tick_library() -> None:
+        while True:
+            await asyncio.to_thread(bridge.library.tick)
+            from autodj.player import apply_repeat_windows
+
+            apply_repeat_windows(bridge.player)
+            await asyncio.sleep(2)
 
     # No /docs, /redoc or /openapi.json: the web UI does not use them, and
     # a full map of every route and body schema is reconnaissance material
@@ -1582,10 +1699,13 @@ def create_app(
     async def api_stream_settings(body: StreamSettingsBody) -> dict:
         """Change the stream bitrate (listeners reconnect) and remember it."""
         _require_stream_mode()
-        try:
-            await asyncio.to_thread(bridge.set_stream_bitrate, body.bitrate)
-        except EncoderUnavailableError as exc:
-            raise HTTPException(status_code=503, detail="stream encoder failed") from exc
+        if body.bitrate is not None:
+            try:
+                await asyncio.to_thread(bridge.set_stream_bitrate, body.bitrate)
+            except EncoderUnavailableError as exc:
+                raise HTTPException(status_code=503, detail="stream encoder failed") from exc
+        if body.continuous is not None:
+            bridge.player._cfg.stream.continuous = body.continuous
         await asyncio.to_thread(bridge.save_persistent_state)
         return bridge.stream_info()
 
@@ -1696,12 +1816,48 @@ def create_app(
         # directory is operator-controlled and may live on a slow mount, so
         # keep the walk off the event loop.
         lib = await asyncio.to_thread(LinerLibrary.from_folder, folder)
+        items: list[dict[str, Any]] = []
+        catalog_paths: set[str] = set()
+        library = bridge.library
+        if library is not None:
+            for entry in await asyncio.to_thread(library.entries_snapshot, "liner"):
+                record = await asyncio.to_thread(library.catalog.record_for_path, entry.path)
+                if not record or record.get("kind") != "liner":
+                    continue
+                path = Path(record["path"])
+                catalog_paths.add(os.path.normcase(os.path.abspath(path)))
+                items.append(
+                    {
+                        "id": record["id"],
+                        "name": path.name,
+                        "path": str(path),
+                        "kind": "liner",
+                        "editable": True,
+                        "length": record.get("length"),
+                        "points": record.get("points", {}),
+                    }
+                )
+        for file_path in lib.files:
+            normalized = os.path.normcase(os.path.abspath(file_path))
+            if normalized not in catalog_paths:
+                items.append(
+                    {
+                        "id": file_path.name,
+                        "name": file_path.name,
+                        "path": str(file_path),
+                        "kind": "liner",
+                        "editable": False,
+                    }
+                )
         return {
             # Echo the operator's configured string verbatim; only the derived
             # default is rendered from a Path.
             "folder": cfg.playback.liners_folder or str(folder),
             "files": [f.name for f in lib.files],
             "count": len(lib.files),
+            "items": items,
+            "metadata": {item["id"]: item for item in items},
+            "folders": library.catalog.sources("liner") if library is not None else [],
             "config": {
                 "enabled": bool(cfg.playback.liners_enabled),
                 "every_n_songs": cfg.playback.liners_every_n_songs,
@@ -1756,6 +1912,30 @@ def create_app(
         """Remove one validated plain liner file."""
         from autodj.liner_files import InvalidLinerName, delete_liner_file
 
+        library = bridge.library
+        record = library.record_for_id(name) if library is not None else None
+        if (
+            record is not None
+            and record.get("kind") == "liner"
+            and library.entry_for_path(record["path"]) is not None
+        ):
+            path = Path(record["path"])
+            try:
+                from autodj.liner_files import validate_liner_name
+
+                validate_liner_name(path.name)
+                if path.is_symlink() or not path.is_file():
+                    raise FileNotFoundError(path.name)
+                path.unlink()
+                await asyncio.to_thread(library.refresh)
+            except InvalidLinerName as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            except FileNotFoundError as exc:
+                raise HTTPException(status_code=404, detail="Liner not found") from exc
+            except OSError as exc:
+                raise HTTPException(status_code=500, detail="Unable to delete liner") from exc
+            return {"deleted": path.name}
+
         try:
             await asyncio.to_thread(delete_liner_file, _resolve_liner_folder(), name)
         except InvalidLinerName as exc:
@@ -1770,6 +1950,19 @@ def create_app(
     async def api_liner_file(name: str) -> FileResponse:
         """Serve one validated plain liner file."""
         from autodj.liner_files import InvalidLinerName, open_liner_file
+
+        library = bridge.library
+        record = library.record_for_id(name) if library is not None else None
+        if (
+            record is not None
+            and record.get("kind") == "liner"
+            and library.entry_for_path(record["path"]) is not None
+        ):
+            path = Path(record["path"])
+            if path.is_symlink() or not path.is_file():
+                raise HTTPException(status_code=404, detail="Liner not found")
+            metadata = await asyncio.to_thread(path.stat)
+            return FileResponse(path, media_type=_audio_mime(path), stat_result=metadata)
 
         folder = _resolve_liner_folder()
         try:
@@ -1871,8 +2064,7 @@ def create_app(
         """Return the embedded album art for a track (304 if unchanged)."""
         # Only serve art for tracks that exist in the index — prevents
         # arbitrary file access through the path parameter.
-        similarity = bridge.sim
-        known = similarity.entry_for_path(path) is not None
+        known = bridge.entry_for_path(path) is not None
         if not known:
             raise HTTPException(status_code=404, detail="Track not in index")
         result = await asyncio.to_thread(bridge.cover_art_for, path)
@@ -1886,7 +2078,7 @@ def create_app(
         """Return timed lyric lines for one exact indexed track path."""
         similarity = bridge.sim
         authorized_manifest = similarity.manifest
-        if similarity.entry_for_path(path) is None:
+        if bridge.entry_for_path(path) is None:
             raise HTTPException(status_code=404, detail="Track not in index")
         lyrics = await _read_lyrics_owned(path)
         if similarity.manifest != authorized_manifest:
@@ -1900,7 +2092,7 @@ def create_app(
     @app.api_route("/api/audio", methods=["GET", "HEAD"])
     async def api_audio(path: str, request: Request) -> Response:
         """Serve indexed audio with byte ranges; ALAC is transcoded to MP3."""
-        if bridge.sim.entry_for_path(path) is None:
+        if bridge.entry_for_path(path) is None:
             raise HTTPException(status_code=404, detail="Track not in index")
         audio_path = Path(path)
         try:
@@ -2046,6 +2238,203 @@ def create_app(
     # Library tools — index / enrich / prune / stats from the web UI
     # ------------------------------------------------------------------
 
+    def _catalog_library() -> Any:
+        if bridge.library is None:
+            raise HTTPException(status_code=503, detail="Folder library is not attached")
+        return bridge.library
+
+    @app.get("/api/library/folders")
+    async def api_library_folders() -> dict:
+        return _catalog_library().snapshot()
+
+    @app.post("/api/library/folders")
+    async def api_library_add_folder(body: LibraryFolderBody) -> dict:
+        library = _catalog_library()
+        try:
+            await asyncio.to_thread(
+                library.catalog.add_source,
+                body.path,
+                body.kind,
+                body.recursive,
+                body.advanced if body.kind == "music" else False,
+            )
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        library.start_scan()
+        return library.snapshot()
+
+    @app.patch("/api/library/folders/{source_id}")
+    async def api_library_update_folder(source_id: str, body: LibraryFolderUpdateBody) -> dict:
+        library = _catalog_library()
+        source = next((s for s in library.catalog.sources() if s["id"] == source_id), None)
+        if source is None:
+            raise HTTPException(status_code=404, detail="Folder not registered")
+        recursive = source["recursive"] if body.recursive is None else body.recursive
+        advanced = source["advanced"] if body.advanced is None else body.advanced
+        await asyncio.to_thread(
+            library.catalog.update_source,
+            source_id,
+            recursive,
+            advanced if source["kind"] == "music" else False,
+        )
+        library.start_scan()
+        return library.snapshot()
+
+    @app.delete("/api/library/folders/{source_id}")
+    async def api_library_remove_folder(source_id: str) -> dict:
+        library = _catalog_library()
+        if not await asyncio.to_thread(library.catalog.remove_source, source_id):
+            raise HTTPException(status_code=404, detail="Folder not registered")
+        await asyncio.to_thread(library.refresh)
+        return library.snapshot()
+
+    @app.post("/api/library/rescan")
+    async def api_library_rescan() -> dict:
+        library = _catalog_library()
+        library.start_scan()
+        return library.snapshot()
+
+    def _clock_slot_covered(library: Any, slot: ClockSlot) -> bool:
+        target = os.path.normcase(os.path.abspath(os.path.expanduser(slot.folder)))
+        for source in library.catalog.sources(slot.kind):
+            root = os.path.normcase(os.path.abspath(os.path.expanduser(source["path"])))
+            try:
+                if os.path.commonpath((root, target)) != root:
+                    continue
+            except ValueError:
+                continue
+            relative = os.path.relpath(target, root)
+            if relative == os.curdir or source["recursive"]:
+                return True
+        return False
+
+    def _validate_clock_config(
+        library: Any, name: str, slot_json: list[dict], minutes: Any
+    ) -> dict:
+        if len(slot_json) > 256:
+            raise ValueError("clock may contain at most 256 slots")
+        slots = validate_clock([ClockSlot.from_json(item) for item in slot_json])
+        for slot in slots:
+            if not _clock_slot_covered(library, slot):
+                raise ValueError(
+                    f"{slot.kind} folder is not covered by a registered source: {slot.folder}"
+                )
+        return {
+            "name": name.strip(),
+            "slots": [slot.to_json() for slot in slots],
+            "resync_minutes": validate_resync_minutes(minutes),
+        }
+
+    def _clock_snapshot(library: Any) -> dict:
+        config = library.catalog.get_setting(
+            "clock",
+            {
+                "name": "Clock",
+                "slots": [],
+                "resync_minutes": [0],
+                "cursor": 0,
+            },
+        )
+        slots = [ClockSlot.from_json(item) for item in config.get("slots", [])]
+        pools = {
+            "music": library.catalog.entries_snapshot("music"),
+            "liner": library.catalog.entries_snapshot("liner"),
+        }
+        rendered_slots = []
+        for slot in slots:
+            count = sum(1 for entry in pools[slot.kind] if _clock_path_matches(slot, entry.path))
+            rendered_slots.append({**slot.to_json(), "ready_count": count})
+        result = {
+            **config,
+            "slots": rendered_slots,
+            "cursor": (getattr(bridge.player, "_clock", None) or config).get("cursor", 0),
+            "last_status": getattr(bridge.player, "_clock_status", None),
+        }
+        return result
+
+    def _clock_path_matches(slot: ClockSlot, path: str) -> bool:
+        root = os.path.normcase(os.path.normpath(os.path.abspath(os.path.expanduser(slot.folder))))
+        value = os.path.normcase(os.path.normpath(os.path.abspath(os.path.expanduser(path))))
+        try:
+            if os.path.commonpath((root, value)) != root:
+                return False
+        except ValueError:
+            return False
+        relative = os.path.relpath(value, root)
+        return relative != os.curdir and (slot.recursive or os.sep not in relative)
+
+    async def _save_clock(library: Any, config: dict) -> dict:
+        old = library.catalog.get_setting("clock", {})
+        config["cursor"] = old.get("cursor", 0) if isinstance(old, dict) else 0
+        library.catalog.set_setting("clock", config)
+        reload_clock = getattr(bridge.player, "configure_clock", None)
+        if callable(reload_clock):
+            await asyncio.to_thread(reload_clock)
+        return _clock_snapshot(library)
+
+    @app.get("/api/library/clock")
+    async def api_library_clock() -> dict:
+        return _clock_snapshot(_catalog_library())
+
+    @app.post("/api/library/clock")
+    async def api_library_save_clock(body: ClockBody) -> dict:
+        library = _catalog_library()
+        try:
+            config = _validate_clock_config(library, body.name, body.slots, body.resync_minutes)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return await _save_clock(library, config)
+
+    @app.post("/api/library/clock/import")
+    async def api_library_import_clock(body: PalImportBody) -> dict:
+        library = _catalog_library()
+        try:
+            slots = parse_pal(
+                body.text, [source["path"] for source in library.catalog.sources("liner")]
+            )
+            if len(slots) > 256:
+                raise ValueError("clock may contain at most 256 slots")
+            previous = library.catalog.get_setting("clock", {})
+            minutes = body.resync_minutes
+            if minutes is None:
+                minutes = previous.get("resync_minutes", [0]) if isinstance(previous, dict) else [0]
+            config = _validate_clock_config(
+                library,
+                body.name,
+                [slot.to_json() for slot in slots],
+                minutes,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return await _save_clock(library, config)
+
+    @app.get("/api/library/points")
+    async def api_library_points(path: str) -> dict:
+        library = _catalog_library()
+        entry = library.entry_for_path(path)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="Recording not in library")
+        return await asyncio.to_thread(library.catalog.record_for_path, path)
+
+    @app.post("/api/library/points")
+    async def api_library_save_points(body: SongPointsBody) -> dict:
+        library = _catalog_library()
+        entry = library.entry_for_path(body.path)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="Recording not in library")
+        if library.catalog.record_for_path(body.path).get("kind") == "liner":
+            allowed = {"start", "end", "overlap_start"}
+            if set(body.points) - allowed:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Liner points support only start, end, and overlap_start",
+                )
+        try:
+            await asyncio.to_thread(library.catalog.set_points, body.path, body.points)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return await asyncio.to_thread(library.catalog.record_for_path, body.path)
+
     @app.get("/api/library/job")
     async def api_library_job_status() -> dict:
         """Return the live library job status."""
@@ -2093,7 +2482,11 @@ def create_app(
         4×O(N).  Negligible at 1 k tracks; measurable at 70 k.
         """
         similarity = bridge.sim
-        entries = similarity.entries_snapshot()
+        entries = (
+            bridge.library.entries_snapshot()
+            if bridge.library is not None
+            else similarity.entries_snapshot()
+        )
         n = len(entries)
         bpm_count = 0
         bpm_sum = 0.0
@@ -2355,7 +2748,11 @@ def serve(
         stream_mode=stream,
         server_audio_too=stream and not no_playback,
     )
-    bridge = PlayerBridge(player=player, sim=sim)
+    from autodj.library import LibraryManager
+
+    library = LibraryManager(cfg, sim)
+    player._library = library
+    bridge = PlayerBridge(player=player, sim=sim, library=library)
     # The mix bus announces every track it starts: session history, the
     # stream title and liner counting all hang off this hook.
     player.on_track_started = bridge.on_track_started
@@ -2363,6 +2760,18 @@ def serve(
     # Restore the settings saved from the web page, so the user doesn't
     # re-tick everything on restart.
     bridge.load_persistent_state()
+    player.configure_clock()
+    if player.bus is not None:
+        from autodj.mastering import ContinuousMaster
+
+        player._continuous_master = ContinuousMaster()
+        player.bus.set_master(
+            player._continuous_master,
+            enabled=lambda: (
+                getattr(player, "_active_processing_mode", cfg.playback.loudness_processing)
+                == "smooth"
+            ),
+        )
 
     if cfg.playback.import_external_cues:
         # Read the DJ-software libraries once, off the playback thread.

@@ -26,6 +26,8 @@ import {
   withDisabled,
 } from "./modules/api-client.js";
 import { installSeekController } from "./modules/seek-controller.js";
+import { installLibraryFolders } from "./modules/library-folders.js";
+import { installClockwheelPanel } from "./modules/clockwheel-panel.js";
 import { createStreamMode, createStreamSettings } from "./modules/stream-mode.js";
 
 if (isDebug()) {
@@ -161,6 +163,8 @@ const streamSettings = createStreamSettings({
     () => requestJson("/api/stream/rotate", { method: "POST" })),
   saveBitrate: (value, control) =>
     postSettings("/api/stream/settings", { bitrate: value }, control),
+  saveContinuous: (value, control) =>
+    postSettings("/api/stream/settings", { continuous: value }, control),
   claimLinkChange: () => streamMode.claimLinkChange(),
   srStatus: document.getElementById("sr-status"),
   settingsStatus,
@@ -601,6 +605,17 @@ function applyState(s) {
     if (s.next_track) nextText.textContent = fmtTrack(s.next_track);
     else setNoValue(nextText, "None");
   }
+  const handoffStatus = document.getElementById("handoff-status");
+  if (handoffStatus) {
+    const playout = s.playout || {};
+    let message = "";
+    if (playout.error && s.current_track && s.next_track) {
+      message = "The next handoff could not be prepared. The player will use its regular transition.";
+    } else if (!s.browser_playback && s.current_track && s.next_track && playout.queue_locked) {
+      message = `The next handoff is prepared. Queue edits apply after ${fmtTrack(s.next_track)}; Play now interrupts.`;
+    }
+    if (handoffStatus.textContent !== message) handoffStatus.textContent = message;
+  }
 
   // Discovery button — show only when discovery is configured
   if (s.discovery_available) {
@@ -674,7 +689,8 @@ const _settingsEls = () => ({
   presetSelect, transitionSelect, harmonicMode,
   djBeatmatch, djDropMix, djKeyShift, djPhraseAlign, djOutroIntro, djVocalGuard,
   pbEqDuck, pbPickMode, pbShowLyrics, pbAnchorSeed,
-  pbReplayGain,
+  pbReplayGain, pbLoudness: pbReplayGain,
+  pbSavedPointsNote: document.getElementById("pb-saved-points-note"),
   pbBeatSyncFx, pbKeySyncFx, pbBeatmatchSkip, pbSkipStyle, lnTalkUp,
   pbTransitionMode, pbPostQueueSeed,
   keyNotation, keyPreferFlats,
@@ -2114,6 +2130,13 @@ window.addEventListener("hashchange", () => {
 import { initViewRouter } from "./modules/tabs.js";
 
 initViewRouter();
+
+installLibraryFolders({
+  getCurrentTrack: () => _lastState?.current_track || null,
+  getCurrentPosition: () => _lastElapsed,
+});
+
+installClockwheelPanel();
 
 import { installLiners, bumpLinerTrackCount } from "./modules/liners.js";
 

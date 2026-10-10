@@ -74,6 +74,19 @@ def test_load_stereo_keeps_two_channels(tmp_path: Path) -> None:
     np.testing.assert_allclose(out[:, 1], right, atol=1e-4)
 
 
+def test_load_stereo_recovers_mp3_after_both_default_decoders_fail() -> None:
+    audio = np.ones((100, 2), dtype=np.float32)
+    with (
+        patch.object(stereo.sf, "SoundFile", side_effect=RuntimeError("bad frame")),
+        patch("librosa.load", side_effect=RuntimeError("bad frame")),
+        patch.object(stereo, "load_with_ffmpeg", return_value=(audio, 44100)) as decode,
+    ):
+        assert stereo.load_stereo("recoverable.mp3", max_seconds=60) is audio
+        decode.assert_called_once_with(
+            "recoverable.mp3", channels=2, sample_rate=44100, max_seconds=61
+        )
+
+
 def _fake_ffmpeg(decoded: np.ndarray, sr: int):
     """Patchers that make FFmpeg "decode" any file to *decoded* at *sr*."""
     return (

@@ -42,6 +42,8 @@ class TestProfileSnapshotRoundTrip:
             bpm_lo=70.0,
             bpm_hi=120.0,
             beat_sync_fx=True,
+            pick_mode="least_recent",
+            loudness_processing="smooth",
         )
         d = snap.to_dict()
         again = ProfileSnapshot.from_dict(d)

@@ -71,6 +71,8 @@ def make_cfg_mock() -> MagicMock:
     cfg.playback.silence_trigger_crossfade = True
     cfg.playback.discovery_every = None
     cfg.playback.pick_top_k = 1
+    cfg.playback.pick_mode = "similarity"
+    cfg.playback.loudness_processing = None
     cfg.playback.pick_temperature = 0.0
     cfg.playback.server_max_track_minutes = 15.0
     cfg.playback.import_external_cues = False

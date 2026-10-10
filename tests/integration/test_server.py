@@ -251,6 +251,120 @@ class TestSeek:
 
 
 class TestLiners:
+    def test_registered_nested_liner_id_is_listed_previewed_and_deleted_safely(
+        self, bridge, tmp_path
+    ) -> None:
+        from fastapi.testclient import TestClient
+
+        from autodj.catalog import _path
+
+        path = tmp_path / "registered" / "nested" / "voice.mp3"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"registered-audio")
+        record = {
+            "id": "stable-liner-id",
+            "path": str(path),
+            "kind": "liner",
+            "length": 3.0,
+            "points": {"start": 0.2, "end": 2.8},
+        }
+
+        class Catalog:
+            def record_for_path(self, value):
+                return record if _path(value) == _path(path) and path.exists() else None
+
+            def sources(self, kind=None):
+                return [
+                    {
+                        "id": "source-1",
+                        "path": str(path.parent.parent),
+                        "kind": "liner",
+                        "recursive": True,
+                        "advanced": False,
+                    }
+                ]
+
+        class Library:
+            catalog = Catalog()
+
+            def entries_snapshot(self, kind="music"):
+                return (
+                    (SimpleNamespace(path=str(path)),) if kind == "liner" and path.exists() else ()
+                )
+
+            def entry_for_path(self, value):
+                return (
+                    SimpleNamespace(path=str(path))
+                    if _path(value) == _path(path) and path.exists()
+                    else None
+                )
+
+            def record_for_id(self, value):
+                return record if value == record["id"] and path.exists() else None
+
+            def refresh(self):
+                return ()
+
+        bridge.library = Library()
+        bridge.player._cfg.playback.liners_folder = str(tmp_path / "empty-flat")
+        tc = TestClient(create_app(bridge))
+        listing = tc.get("/api/liners").json()
+        assert listing["items"] == [
+            {
+                "id": "stable-liner-id",
+                "name": "voice.mp3",
+                "path": str(path),
+                "kind": "liner",
+                "editable": True,
+                "length": 3.0,
+                "points": {"start": 0.2, "end": 2.8},
+            }
+        ]
+        response = tc.get("/api/liners/file/stable-liner-id")
+        assert response.status_code == 200
+        assert response.content == b"registered-audio"
+        deleted = tc.delete("/api/liners/file/stable-liner-id")
+        assert deleted.status_code == 200
+        assert deleted.json() == {"deleted": "voice.mp3"}
+        assert not path.exists()
+
+    def test_liner_points_endpoint_restricts_visible_liner_fields(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        from autodj.catalog import _path
+
+        path = tmp_path / "voice.wav"
+        path.write_bytes(b"liner")
+        record = {"id": "liner-1", "path": str(path), "kind": "liner", "length": 4.0, "points": {}}
+
+        class Catalog:
+            def record_for_path(self, value):
+                return record if _path(value) == _path(path) else None
+
+            def set_points(self, value, points):
+                record["points"] = points
+
+        class Library:
+            catalog = Catalog()
+
+            def entry_for_path(self, value):
+                return SimpleNamespace(path=str(path)) if _path(value) == _path(path) else None
+
+        bridge.library = Library()
+        tc = TestClient(create_app(bridge))
+        assert (
+            tc.post(
+                "/api/library/points", json={"path": str(path), "points": {"intro": 1}}
+            ).status_code
+            == 400
+        )
+        saved = tc.post(
+            "/api/library/points",
+            json={"path": str(path), "points": {"start": 0.2, "end": 3.8, "overlap_start": 0}},
+        )
+        assert saved.status_code == 200
+        assert saved.json()["points"] == {"start": 0.2, "end": 3.8, "overlap_start": 0}
+
     def test_liners_empty_folder(self, client) -> None:
         resp = client.get("/api/liners")
         assert resp.status_code == 200
@@ -1440,6 +1554,17 @@ class TestLifespan:
 
 
 class TestServeFunction:
+    @pytest.fixture(autouse=True)
+    def isolate_station_resources(self):
+        """Startup routing tests do not scan real folders or launch FFmpeg."""
+        with (
+            patch("autodj.library.LibraryManager") as manager,
+            patch("autodj.mastering.ContinuousMaster"),
+        ):
+            manager.return_value.catalog.get_setting.return_value = None
+            manager.return_value.entries_snapshot.return_value = ()
+            yield
+
     def test_serve_starts_uvicorn(self, caplog) -> None:
         """serve() should call uvicorn.run with the FastAPI app."""
         import logging

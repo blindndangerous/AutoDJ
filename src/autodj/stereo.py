@@ -216,7 +216,16 @@ def load_stereo(
         import librosa
 
         duration = None if max_seconds is None else max_seconds + 1.0
-        audio, sr = librosa.load(path, sr=None, mono=False, duration=duration)
+        try:
+            audio, sr = librosa.load(path, sr=None, mono=False, duration=duration)
+        except Exception:
+            # FFmpeg can recover MP3 frames that both soundfile paths reject.
+            decoded, rate = load_with_ffmpeg(
+                path, channels=2, sample_rate=target_sr, max_seconds=duration
+            )
+            if max_seconds is not None and len(decoded) > max_seconds * rate:
+                raise TrackTooLongError(path, len(decoded) / rate) from None
+            return to_stereo(decoded)
         if max_seconds is not None and audio.shape[-1] > max_seconds * sr:
             raise TrackTooLongError(path, audio.shape[-1] / sr) from None
         audio = audio.T if audio.ndim == 2 else audio

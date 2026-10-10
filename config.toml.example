@@ -44,6 +44,7 @@
 #   AUTODJ_LAN
 #   AUTODJ_HUGGINGFACE_TOKEN
 #   AUTODJ_STREAM_ENABLED
+#   AUTODJ_STREAM_CONTINUOUS
 #   AUTODJ_STREAM_BITRATE
 #   AUTODJ_STREAM_IDLE_GRACE_SECONDS
 #   AUTODJ_STREAM_MAX_LISTENERS
@@ -121,6 +122,10 @@ liner_upload_max_mib = 50
 # ---------------------------------------------------------------------------
 [stream]
 enabled = false
+
+# Keep the station playing when nobody is connected. When false, the first
+# listener starts playback and the station stops after the idle grace period.
+continuous = false
 
 # MP3 bitrate in kbps.  One of 128, 192, 256, 320.  The quality chosen on
 # the Settings page is saved (web_state.json) and, like the other playback

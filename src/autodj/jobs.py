@@ -80,7 +80,14 @@ class JobManager:
 
     # Subcommands that accept ``--name``.  ``list-indexes`` reports on every
     # index, so it has no single one to be given.
-    _NAME_AWARE: ClassVar[set[str]] = {"index", "enrich", "analyse", "analyse-library", "prune", "stats"}
+    _NAME_AWARE: ClassVar[set[str]] = {
+        "index",
+        "enrich",
+        "analyse",
+        "analyse-library",
+        "prune",
+        "stats",
+    }
 
     def __init__(self) -> None:
         self._config_path: str | None = None

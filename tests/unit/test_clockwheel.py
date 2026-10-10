@@ -101,6 +101,12 @@ def test_runtime_picker_uses_exact_and_recursive_folder_scope_once():
     assert recursive.entry.path in {r"C:\Music\one.flac", r"C:\Music\album\two.flac"}
 
 
+def test_posix_clock_folders_preserve_case_sensitivity():
+    tracks = [Track("/Music/artist/song.mp3"), Track("/music/artist/song.mp3")]
+    picked = pick_slot([ClockSlot("/Music", recursive=True)], 0, tracks, {}, lambda _: True)
+    assert picked.entry.path == "/Music/artist/song.mp3"
+
+
 def test_runtime_picker_applies_rules_and_returns_liner_with_music_cursor():
     slots = [
         ClockSlot(r"C:\liners", kind="liner", selection="random"),
@@ -126,7 +132,9 @@ def test_runtime_picker_uses_least_recent_after_repeat_rules_filter_candidates()
     ]
     slot = ClockSlot(r"C:\music", selection="least_recent", enforce_rules=True)
     picked = pick_slot(
-        [slot], 0, entries,
+        [slot],
+        0,
+        entries,
         {entries[0].path: now, entries[1].path: now - timedelta(days=10)},
         lambda entry: entry.artist != "same artist",
     )
@@ -181,3 +189,18 @@ def test_resync_minute_validation_and_next_local_boundary():
     local = datetime(2025, 1, 1, 10, 15, tzinfo=timezone(timedelta(hours=5, minutes=30)))
     assert next_boundary(local, [0, 15]) == datetime(2025, 1, 1, 11, 0, tzinfo=local.tzinfo)
     assert next_boundary(local, []) is None
+
+
+@pytest.mark.parametrize(
+    "entry,duration,boundary,expected",
+    [
+        (3500, 240, 3600, True),
+        (3400, 240, 3600, False),
+        (3601, 180, 3600, True),
+        (3200, 180, 3600, False),
+    ],
+)
+def test_resync_uses_nearest_handoff(entry, duration, boundary, expected):
+    from autodj.clockwheel import resync_due
+
+    assert resync_due(entry, duration, boundary) is expected

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ntpath
+import posixpath
 import random
 import re
 from collections.abc import Mapping, Sequence
@@ -54,12 +55,19 @@ _CLEAR = re.compile(r"(?i)^Queue\.Clear\s*;\s*$")
 
 
 def _normalized(path: str) -> str:
+    if path.startswith("/") and not path.startswith("//") and "\\" not in path:
+        normalized = posixpath.normpath(path)
+        return normalized if normalized == "/" else normalized.rstrip("/")
     return ntpath.normcase(ntpath.normpath(path.replace("/", "\\"))).rstrip("\\")
 
 
 def _under(path: str, root: str) -> bool:
     path, root = _normalized(path), _normalized(root)
-    return path == root or path.startswith(root + "\\")
+    posix = path.startswith("/") and not path.startswith("//")
+    if posix != (root.startswith("/") and not root.startswith("//")):
+        return False
+    separator = "/" if posix else "\\"
+    return path == root or path.startswith(root.rstrip(separator) + separator)
 
 
 def parse_pal(text: str, liner_folders: Sequence[str] = ()) -> list[ClockSlot]:
@@ -124,6 +132,7 @@ def validate_clock(slots: Sequence[ClockSlot]) -> list[ClockSlot]:
 
 def _slot_entries(slot: ClockSlot, entries: Sequence[Any]) -> list[Any]:
     root = _normalized(slot.folder)
+    separator = "/" if root.startswith("/") and not root.startswith("//") else "\\"
     found: list[Any] = []
     paths: set[str] = set()
     for entry in entries:
@@ -131,9 +140,10 @@ def _slot_entries(slot: ClockSlot, entries: Sequence[Any]) -> list[Any]:
         if not isinstance(path, str):
             continue
         normalized = _normalized(path)
-        if not normalized.startswith(root + "\\"):
+        if not _under(normalized, root) or normalized == root:
             continue
-        if not slot.recursive and _normalized(ntpath.dirname(normalized)) != root:
+        parent = posixpath.dirname(normalized) if separator == "/" else ntpath.dirname(normalized)
+        if not slot.recursive and _normalized(parent) != root:
             continue
         if normalized not in paths:
             paths.add(normalized)
@@ -220,6 +230,14 @@ def validate_resync_minutes(minutes: Sequence[int] | None = None) -> list[int]:
     if any(type(value) is not int or not 0 <= value <= 59 for value in values):
         raise ValueError("resync minutes must be integers from 0 to 59")
     return sorted(set(values))
+
+
+def resync_due(entry_time: float, duration: float, boundary: float) -> bool:
+    """Use the nearer natural handoff, without cutting the playing song early."""
+    if entry_time >= boundary:
+        return True
+    after = entry_time + max(0.0, duration)
+    return after >= boundary and boundary - entry_time <= after - boundary
 
 
 def next_boundary(now: datetime, minutes: Sequence[int] | None = None) -> datetime | None:

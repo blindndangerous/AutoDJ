@@ -226,6 +226,7 @@ class TestDefaultAndEnvironmentConfig:
             "AUTODJ_LAN",
             "AUTODJ_HUGGINGFACE_TOKEN",
             "AUTODJ_STREAM_ENABLED",
+            "AUTODJ_STREAM_CONTINUOUS",
             "AUTODJ_STREAM_BITRATE",
             "AUTODJ_STREAM_IDLE_GRACE_SECONDS",
             "AUTODJ_STREAM_MAX_LISTENERS",
@@ -711,6 +712,24 @@ class TestPlaybackTransitionMode:
         for mode in TRANSITION_MODES:
             p = PlaybackConfig.from_dict({"transition_mode": mode})
             assert p.transition_mode == mode
+
+
+def test_playback_pick_and_loudness_modes_validate_and_keep_legacy_default() -> None:
+    import pytest
+
+    from autodj.config import PlaybackConfig
+
+    defaults = PlaybackConfig.from_dict({})
+    assert defaults.pick_mode == "similarity"
+    assert defaults.loudness_processing is None
+    for mode in ("similarity", "random", "least_recent", "clock"):
+        assert PlaybackConfig.from_dict({"pick_mode": mode}).pick_mode == mode
+    for mode in ("off", "replaygain", "smooth"):
+        assert PlaybackConfig.from_dict({"loudness_processing": mode}).loudness_processing == mode
+    with pytest.raises(ValueError, match="pick_mode"):
+        PlaybackConfig.from_dict({"pick_mode": "unknown"})
+    with pytest.raises(ValueError, match="loudness_processing"):
+        PlaybackConfig.from_dict({"loudness_processing": "unknown"})
 
 
 class TestServerConfig:

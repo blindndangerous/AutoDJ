@@ -39,6 +39,7 @@ class Station:
         clock: Callable[[], float] = time.monotonic,
         on_event: Callable[[str], None] | None = None,
         forget_track: Callable[[Any], None] | None = None,
+        continuous: Callable[[], bool] = lambda: False,
     ) -> None:
         """Create an idle station.
 
@@ -60,6 +61,7 @@ class Station:
         self._clock = clock
         self._on_event = on_event or (lambda _event: None)
         self._forget = forget_track or (lambda _entry: None)
+        self._continuous = continuous
         self._lock = threading.Lock()
         self._empty_since: float | None = None
         self._warned_empty = False
@@ -86,6 +88,11 @@ class Station:
         count = self._stream.listener_count
         with self._lock:
             if count > 0:
+                self._empty_since = None
+                if not self._bus.playing:
+                    self._start()
+                return
+            if self._continuous():
                 self._empty_since = None
                 if not self._bus.playing:
                     self._start()

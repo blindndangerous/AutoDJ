@@ -371,6 +371,7 @@ export function createStreamSettings({
   fetchInfo,
   rotate,
   saveBitrate,
+  saveContinuous = async () => false,
   claimLinkChange = () => () => {},
   srStatus,
   settingsStatus,
@@ -395,6 +396,7 @@ export function createStreamSettings({
   const copy = doc.getElementById("stream-copy");
   const m3u = doc.getElementById("stream-m3u");
   const bitrate = doc.getElementById("stream-bitrate");
+  const continuous = doc.getElementById("stream-continuous");
   const rotateBtn = doc.getElementById("stream-rotate");
   const listeners = doc.getElementById("stream-listeners");
   let active = false;
@@ -438,6 +440,7 @@ export function createStreamSettings({
     if (bitrateBusy()) return;
     savedBitrate = String(info.bitrate);
     if (doc.activeElement !== bitrate) bitrate.value = savedBitrate;
+    if (doc.activeElement !== continuous) continuous.checked = Boolean(info.continuous);
   }
 
   async function refresh() {
@@ -609,6 +612,15 @@ export function createStreamSettings({
     pendingBitrate = bitrate.value;
     clearTimeout(settleTimer);
     settleTimer = setTimeout(() => void flushBitrate(), BITRATE_SETTLE_MS);
+  });
+  continuous.addEventListener("change", async () => {
+    const chosen = continuous.checked;
+    continuous.disabled = true;
+    try {
+      if (!await saveContinuous(chosen, continuous)) continuous.checked = !chosen;
+    } finally {
+      continuous.disabled = false;
+    }
   });
 
   // Claims the link_changed event this rotation causes, both for speech

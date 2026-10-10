@@ -140,6 +140,56 @@ def decode_liner(
         return np.frombuffer(result.stdout, dtype=np.float32).reshape(-1, 2).copy()
 
 
+def decode_liner_path(
+    path: Path,
+    *,
+    runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+) -> np.ndarray:
+    """Decode a path supplied by the active registered-liner provider.
+
+    This entry point deliberately accepts paths only for trusted callers
+    that resolve them through the current liner catalog first. HTTP input
+    must never be passed here as a path.
+    """
+    path = Path(path)
+    if path.suffix.lower() not in {".mp3", ".wav", ".ogg", ".m4a", ".flac", ".aac"}:
+        raise LinerDecodeError(f"unsupported liner type: {path.name}")
+    data = path.read_bytes()
+    try:
+        audio, sr = sf.read(io.BytesIO(data), dtype="float32", always_2d=True)
+        audio = to_stereo(audio)
+        if int(sr) != SAMPLE_RATE:
+            import librosa
+
+            audio = librosa.resample(audio, orig_sr=int(sr), target_sr=SAMPLE_RATE, axis=0)
+        return to_stereo(audio)
+    except Exception:
+        result = runner(
+            [
+                "ffmpeg",
+                "-v",
+                "error",
+                "-i",
+                "pipe:0",
+                "-f",
+                "f32le",
+                "-ac",
+                "2",
+                "-ar",
+                str(SAMPLE_RATE),
+                "pipe:1",
+            ],
+            input=data,
+            capture_output=True,
+            check=False,
+            timeout=30,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if result.returncode != 0 or not result.stdout or len(result.stdout) % 8:
+            raise LinerDecodeError(f"cannot decode liner {path.name!r}") from None
+        return np.frombuffer(result.stdout, dtype=np.float32).reshape(-1, 2).copy()
+
+
 class LinerScheduler:
     """Fire voice liners into the mix bus on the configured triggers.
 
@@ -175,6 +225,8 @@ class LinerScheduler:
         decoder: Callable[[Path, str], np.ndarray] = decode_liner,
         can_fire: Callable[[], bool] = lambda: True,
         vocal_start: Callable[[IndexEntry], float | None] | None = None,
+        registered_liners: Callable[[], list[tuple[str, Path]]] | None = None,
+        path_decoder: Callable[[Path], np.ndarray] | None = None,
     ) -> None:
         """Build a scheduler.
 
@@ -203,6 +255,9 @@ class LinerScheduler:
         self._decoder = decoder
         self._can_fire = can_fire
         self._vocal_start = vocal_start
+        self._registered_liners = registered_liners
+        self._path_decoder = path_decoder or decode_liner_path
+        self._registered_cursor = 0
         self._prepared: _Prepared | None = None
         self._lock = threading.Lock()
         self._tracks_since = 0
@@ -214,6 +269,9 @@ class LinerScheduler:
         # auto-fire before one has played (by the test route, or by
         # another trigger).
         self._random_target: float | None = None
+        # At most one future render may own an automatic handoff pick.
+        self._planned_key: str | None = None
+        self._planned_name: str | None = None
 
     def _trigger(self) -> LinerTrigger:
         """Build a :class:`LinerTrigger` from the current config values."""
@@ -247,6 +305,30 @@ class LinerScheduler:
             The liner, or ``None`` when the library is empty or the clip
             cannot be decoded (logged).
         """
+        registered = self._registered_entries()
+        if name is not None and registered:
+            match = next(((key, path) for key, path in registered if key == name), None)
+            if match is not None:
+                try:
+                    return _Prepared(name, self._path_decoder(match[1]))
+                except Exception:
+                    logger.warning(
+                        "Skipping registered liner %s: it could not be decoded", name, exc_info=True
+                    )
+                    return None
+        if name is None and registered:
+            if self._cfg.liners_pick_mode == "sequential":
+                key, path = registered[self._registered_cursor % len(registered)]
+                self._registered_cursor = (self._registered_cursor + 1) % len(registered)
+            else:
+                key, path = self._rng.choice(registered)
+            try:
+                return _Prepared(key, self._path_decoder(path))
+            except Exception:
+                logger.warning(
+                    "Skipping registered liner %s: it could not be decoded", key, exc_info=True
+                )
+                return None
         if name is None:
             self._refresh_library()
             picked = self._library.pick(self._cfg.liners_pick_mode, rng=self._rng)
@@ -259,6 +341,16 @@ class LinerScheduler:
             logger.warning("Skipping liner %s: it could not be decoded", name, exc_info=True)
             return None
         return _Prepared(name, audio)
+
+    def _registered_entries(self) -> list[tuple[str, Path]]:
+        """Return current active catalog liner ids and their paths."""
+        if self._registered_liners is None:
+            return []
+        try:
+            return [(str(key), Path(path)) for key, path in self._registered_liners()]
+        except Exception:
+            logger.warning("Could not refresh registered liner entries", exc_info=True)
+            return []
 
     def _fired_locked(self) -> None:
         """Restart the trigger counts after a liner played. Caller holds ``_lock``."""
@@ -320,7 +412,13 @@ class LinerScheduler:
         decoded now; if it only fits before the next track's vocal when it
         starts during the crossfade, it is cued there in *track*'s tail.
         """
-        if track is None or not self._talk_up() or not self._can_fire():
+        if (
+            track is None
+            or not self._talk_up()
+            or not self._can_fire()
+            or self._planner_mode()
+            or getattr(self._cfg, "pick_mode", None) == "clock"
+        ):
             return
         upcoming = track.next_entry
         if upcoming is None or track.overlap_frames <= 0:
@@ -364,6 +462,8 @@ class LinerScheduler:
         self, track: RenderedTrack | None = None, prepared: _Prepared | None = None
     ) -> None:
         """Fire when the current trigger config says it is due. Caller holds ``_lock``."""
+        if self._planner_mode() or getattr(self._cfg, "pick_mode", None) == "clock":
+            return
         if not self._can_fire() or self._armed_cue_waiting():
             return
         minutes = (self._clock() - self._last_fire) / 60.0
@@ -411,3 +511,74 @@ class LinerScheduler:
         """
         with self._lock:
             return self._fire_locked(name)
+
+    def _planner_mode(self) -> bool:
+        """Whether saved-point talk-ups are owned by the renderer planner."""
+        return getattr(self._cfg, "transition_mode", None) == "saved_points" and self._talk_up()
+
+    def plan_for_handoff(self, key: str, tracks_ahead: int, seconds_ahead: float) -> str | None:
+        """Reserve an automatic liner for a future saved-point handoff.
+
+        The planner returns a stable catalog id (or legacy filename) without
+        decoding or playing it. A reservation is consumed only when the
+        corresponding handoff is heard via :meth:`mark_planned_fired`.
+        """
+        if not isinstance(key, str) or not key or tracks_ahead < 0:
+            return None
+        try:
+            seconds = float(seconds_ahead)
+        except (TypeError, ValueError):
+            return None
+        if not np.isfinite(seconds) or seconds < 0:
+            return None
+        with self._lock:
+            if not self._planner_mode() or not self._cfg.liners_enabled:
+                return None
+            if self._planned_key is not None:
+                return self._planned_name if self._planned_key == key else None
+            minutes = (self._clock() - self._last_fire + seconds) / 60.0
+            if not self._trigger().should_fire(
+                track_count=self._tracks_since + tracks_ahead,
+                minutes_since_last=minutes,
+                random_target_minutes=self._random_target,
+            ):
+                return None
+            registered = self._registered_entries()
+            if registered:
+                if self._cfg.liners_pick_mode == "sequential":
+                    index = self._registered_cursor % len(registered)
+                    name = registered[index][0]
+                else:
+                    name = self._rng.choice(registered)[0]
+            else:
+                self._refresh_library()
+                if not self._library.files:
+                    return None
+                if self._cfg.liners_pick_mode == "sequential":
+                    name = self._library.files[self._library.cursor % len(self._library.files)].name
+                else:
+                    name = self._rng.choice(self._library.files).name
+            self._planned_key, self._planned_name = key, name
+            return name
+
+    def release_plan(self, key: str | None = None) -> bool:
+        """Release a discarded render's reservation, if it owns the slot."""
+        with self._lock:
+            if self._planned_key is None or (key is not None and key != self._planned_key):
+                return False
+            self._planned_key = self._planned_name = None
+            return True
+
+    def mark_planned_fired(self, key: str) -> bool:
+        """Commit a reservation when the planned liner actually becomes audible."""
+        with self._lock:
+            if self._planned_key != key:
+                return False
+            self._planned_key = self._planned_name = None
+            if self._registered_liners is not None and self._cfg.liners_pick_mode == "sequential":
+                # Position callbacks must not perform provider or filesystem I/O.
+                self._registered_cursor += 1
+            elif self._cfg.liners_pick_mode == "sequential":
+                self._library.cursor += 1
+            self._fired_locked()
+            return True

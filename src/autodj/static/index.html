@@ -182,6 +182,36 @@
            the same cues twice.  #cue-details is the one browsable copy. -->
       <p id="cue-summary" class="visually-hidden" aria-hidden="true">No cue points</p>
       <p id="cue-details" class="visually-hidden">No cue points</p>
+      <button type="button" id="edit-current-points">Edit song points</button>
+      <section id="points-editor" aria-labelledby="points-heading" hidden>
+        <h3 id="points-heading">Song points</h3>
+        <label for="points-path">Track path</label>
+        <input id="points-path" type="text" autocomplete="off">
+        <button type="button" id="points-load">Load points</button>
+        <div id="points-fields">
+          <label>Start (seconds or MM:SS) <input type="text" inputmode="decimal" data-point="start" aria-label="Start time"><span data-point-source="start"></span></label>
+          <button type="button" data-set-current="start" aria-label="Set Start to current position">Set to current position</button>
+          <button type="button" data-preview="start">Preview Start</button>
+          <label>Intro (seconds or MM:SS) <input type="text" inputmode="decimal" data-point="intro" aria-label="Intro time"><span data-point-source="intro"></span></label>
+          <button type="button" data-set-current="intro" aria-label="Set Intro to current position">Set to current position</button>
+          <button type="button" data-preview="intro">Preview Intro</button>
+          <label>Outro (seconds or MM:SS) <input type="text" inputmode="decimal" data-point="outro" aria-label="Outro time"><span data-point-source="outro"></span></label>
+          <button type="button" data-set-current="outro" aria-label="Set Outro to current position">Set to current position</button>
+          <button type="button" data-preview="outro">Preview Outro</button>
+          <label>Segue (seconds or MM:SS) <input type="text" inputmode="decimal" data-point="segue" aria-label="Segue time"><span data-point-source="segue"></span></label>
+          <button type="button" data-set-current="segue" aria-label="Set Segue to current position">Set to current position</button>
+          <button type="button" data-preview="segue">Preview Segue</button>
+          <label>End (seconds or MM:SS) <input type="text" inputmode="decimal" data-point="end" aria-label="End time"><span data-point-source="end"></span></label>
+          <button type="button" data-set-current="end" aria-label="Set End to current position">Set to current position</button>
+          <button type="button" data-preview="end">Preview End</button>
+          <label>Overlap start (seconds or MM:SS) <input type="text" inputmode="decimal" data-point="overlap_start" aria-label="Overlap start time"><span data-point-source="overlap_start"></span></label>
+          <button type="button" data-set-current="overlap_start" aria-label="Set Overlap start to current position">Set to current position</button>
+          <button type="button" data-preview="overlap_start">Preview Overlap start</button>
+        </div>
+        <button type="button" id="points-save">Save points</button>
+        <audio id="points-preview" controls preload="none" aria-label="Song point preview"></audio>
+        <p id="points-status" role="status" aria-live="polite" aria-atomic="true"></p>
+      </section>
     </div>
   </details>
 
@@ -297,6 +327,7 @@
     <!-- Not live: it changes in the same tick as the track title, which
          is the one track-change announcement.  Shift+N speaks it. -->
     <p id="next-track-text"><span aria-hidden="true">—</span><span class="visually-hidden">None</span></p>
+    <p id="handoff-status" aria-live="polite" aria-atomic="true" class="setting-desc"></p>
   </details>
 
   <!-- Lyrics — collapsed disclosure, shown only when the current track
@@ -579,10 +610,12 @@
         <select id="pb-pick-mode" aria-describedby="pb-pick-mode-desc">
           <option value="similarity">Similarity (default)</option>
           <option value="pure">Random walk (uniform random)</option>
+          <option value="least_recent">Least recently played</option>
+          <option value="clock">Clockwheel</option>
         </select>
       </div>
       <span class="setting-desc" id="pb-pick-mode-desc">
-        How AutoDJ picks the next track.  <em>Similarity</em> picks the closest sonic neighbour to whatever just played.  <em>Random walk</em> picks uniformly at random and ignores similarity and key; only the BPM range still applies.  Neither mode picks a silent track.  Switch back to <em>Similarity</em> mid-set and AutoDJ resumes from the song currently playing.
+        How AutoDJ picks the next track. <em>Similarity</em> picks the closest sonic neighbour to whatever just played. <em>Random walk</em> picks uniformly at random. <em>Least recently played</em> prefers tracks with the oldest play history. <em>Clockwheel</em> follows the configured clock slots and resynchronizes at selected minute marks. Similarity and random modes resume from the song currently playing when selected mid-set.
       </span>
 
       <div class="settings-check">
@@ -702,11 +735,13 @@
           <option value="outro_fade">Outro fade</option>
           <option value="fixed_skip_silence">Fixed (skip silence)</option>
           <option value="fixed">Fixed</option>
+          <option value="saved_points">Use saved segue points</option>
         </select>
       </div>
       <span class="setting-desc" id="pb-transition-mode-desc">
         Mirrors Mixxx's AutoDJ transition modes.  <em>Full intro<span aria-hidden="true">/</span><span class="visually-hidden"> and </span>outro</em> starts the fade at the outgoing outro, brings the incoming track in at its first sound so its intro plays under the outro, and sizes the fade to whichever is shorter, 1 to 12 seconds — best when both tracks have detected intro and outro markers.  <em>Outro fade</em> begins the fade at the outgoing outro_start and uses outro length only.  <em>Fixed (skip silence)</em> uses the Crossfade-seconds value and brings the incoming track in at its first sound, skipping leading silence.  <em>Fixed</em> fades for the Crossfade-seconds value at the end of the outgoing track, with no marker alignment.
       </span>
+      <p id="pb-saved-points-note" hidden>Uses each track’s saved Segue point and the configured crossfade length. Other transition effects and alignment options are not used.</p>
 
       <div class="settings-row">
         <label for="pb-post-queue-seed">After queue empties, seed from</label>
@@ -841,6 +876,13 @@
       </div>
       <span class="setting-desc" id="stream-bitrate-desc">
         Higher sounds better and uses more network.  Changing it makes every speaker reconnect for a moment.
+      </span>
+      <div class="settings-check">
+        <input type="checkbox" id="stream-continuous" aria-describedby="stream-continuous-desc">
+        <label for="stream-continuous">Keep playing without listeners</label>
+      </div>
+      <span class="setting-desc" id="stream-continuous-desc">
+        When off, the station starts for a listener and stops after the idle grace period. This setting is independent of whether this browser is listening.
       </span>
       <div class="settings-row">
         <button type="button" id="stream-rotate" aria-describedby="stream-rotate-desc">Make new link</button>
@@ -1082,6 +1124,38 @@
         running starts nothing and tells you which job is running.  Index
         stats refresh by themselves when a job finishes.
       </p>
+
+      <section aria-labelledby="source-folders-heading">
+        <h3 id="source-folders-heading">Music folders and Voice liner folders</h3>
+        <p>Enter a folder path on the machine running AutoDJ. Music folders include advanced analysis by default; liner folders do not.</p>
+        <label for="source-folder-path">Folder path</label>
+        <input id="source-folder-path" type="text" autocomplete="off">
+        <label for="source-folder-kind">Folder type</label>
+        <select id="source-folder-kind"><option value="music">Music</option><option value="liner">Voice liner</option></select>
+        <label><input id="source-folder-recursive" type="checkbox" checked> Add subfolders</label>
+        <label><input id="source-folder-advanced" type="checkbox" checked> Perform advanced analysis</label>
+        <button type="button" id="source-folder-add">Add folder</button>
+        <button type="button" id="source-folder-rescan">Rescan</button>
+        <p id="source-folders-status">Loading folders…</p>
+        <ul id="source-folders" aria-label="Registered music and liner folders"><li>No folders loaded.</li></ul>
+      </section>
+
+      <section aria-labelledby="clockwheel-heading">
+        <h3 id="clockwheel-heading">Clockwheel</h3>
+        <p>Import a PAL text file to define a repeating order of music and voice liner folders. Only supported folder queue lines are imported; other statements are rejected.</p>
+        <label for="clock-name">Clock name</label>
+        <input id="clock-name" type="text" maxlength="120" value="Clock">
+        <label for="clock-pal-file">PAL text file</label>
+        <input id="clock-pal-file" type="file" accept=".pal,text/plain">
+        <button type="button" id="clock-import">Import PAL</button>
+        <ol id="clock-slots" aria-label="Clock slots"><li>No clock imported yet.</li></ol>
+        <p id="clock-next">No clock slots are configured.</p>
+        <label for="clock-resync-minutes">Resync at minute(s) each hour (comma separated, 0–59)</label>
+        <input id="clock-resync-minutes" type="text" inputmode="numeric" value="0" aria-describedby="clock-resync-help">
+        <p id="clock-resync-help">Use 0 for the top of the hour, or enter several minutes such as 0, 30. Leave empty to disable resync boundaries.</p>
+        <button type="button" id="clock-save">Save clock settings</button>
+        <p id="clock-status">Clock settings not loaded.</p>
+      </section>
 
       <!-- Stats card -->
       <h3 id="library-stats-heading">Index stats</h3>

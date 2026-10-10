@@ -360,10 +360,14 @@ def _run_serve(
     sim.ntotal = 0
     with (
         patch("autodj.player.Player.run"),
+        patch("autodj.library.LibraryManager") as library,
+        patch("autodj.mastering.ContinuousMaster"),
         patch("uvicorn.run"),
         patch("autodj.server.running_in_container", return_value=in_container),
         caplog.at_level(logging.INFO, logger="autodj.server"),
     ):
+        library.return_value.catalog.get_setting.return_value = None
+        library.return_value.entries_snapshot.return_value = ()
         serve(cfg=cfg, sim=sim, seed_entry=None, lan_configured_hosts=configured_hosts)
     return caplog.text
 

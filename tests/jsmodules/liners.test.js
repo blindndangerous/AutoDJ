@@ -245,6 +245,20 @@ describe("liner file controls", () => {
     expect(onDelete).toHaveBeenCalledWith(filename, button);
   });
 
+  it("keeps duplicate filenames distinct and offers an Edit points action", async () => {
+    const { renderLinerFileList } = await import("../../src/autodj/static/modules/liners.js");
+    const list = document.createElement("ul");
+    const onDelete = vi.fn();
+    renderLinerFileList(list, [
+      { id: "record-a", name: "same.wav", path: "X:/one/same.wav" },
+      { id: "record-b", name: "same.wav", path: "Y:/two/same.wav" },
+    ], onDelete);
+    expect(list.querySelectorAll("li")).toHaveLength(2);
+    expect(list.querySelectorAll('button[aria-label="Edit points for same.wav"]')).toHaveLength(2);
+    list.querySelector("button").click();
+    expect(onDelete).toHaveBeenCalledWith("record-a", expect.anything(), "same.wav");
+  });
+
   it("says so when there are no liner files", async () => {
     const { renderLinerFileList } = await import(
       "../../src/autodj/static/modules/liners.js"

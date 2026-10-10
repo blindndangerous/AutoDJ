@@ -72,8 +72,12 @@ class LibraryManager:
         self._tracks_indexed = 0
         self.catalog = LibraryCatalog(cfg.index.active_dir / "library.db")
         liner_root = cfg.playback.liners_folder or str(cfg.index.active_dir / "liners")
-        self.catalog.seed_sources(cfg.library.music_dir, liner_root)
-        self.seed_index(sim.entries_snapshot(), self._legacy_vectors())
+        try:
+            self.catalog.seed_sources(cfg.library.music_dir, liner_root)
+            self.seed_index(sim.entries_snapshot(), self._legacy_vectors())
+        except BaseException:
+            self.catalog.close()
+            raise
 
     def _legacy_vectors(self) -> np.ndarray:
         count = int(self.sim.faiss_index.ntotal)
@@ -241,6 +245,43 @@ class LibraryManager:
         with self._lock:
             self._state = cast(_ImportState, {**self._state, **values})
 
+    def _publish_entry(self, entry: IndexEntry, kind: str) -> None:
+        """Publish newly readable metadata to cached lookups without a full reload."""
+        with self._lock:
+            key = _path(entry.path)
+            self._by_path[key] = entry
+            attr = "_liner_entries" if kind == "liner" else "_entries"
+            current = getattr(self, attr)
+            if not any(_path(item.path) == key for item in current):
+                setattr(self, attr, (*current, entry))
+            else:
+                setattr(
+                    self,
+                    attr,
+                    tuple(entry if _path(item.path) == key else item for item in current),
+                )
+            self._tracks_ready = len(self._entries)
+
+    @staticmethod
+    def _valid_basic_points(points: dict[str, Any], entry: IndexEntry) -> dict[str, Any]:
+        """Keep imperfect automatic cue suggestions from rejecting a playable file."""
+        length = max(float(entry.length), 0.001)
+        start = points.get("start")
+        end = points.get("end")
+        start = 0.0 if start is None else float(start)
+        end = length if end is None else float(end)
+        if not 0 <= start < end <= length:
+            start, end = 0.0, length
+        result: dict[str, Any] = {"start": start, "end": end}
+        for field in ("intro", "outro", "segue"):
+            value = points.get(field)
+            if value is None:
+                result[field] = None
+                continue
+            value = float(value)
+            result[field] = value if start <= value <= end else None
+        return result
+
     def _discover(self) -> list[tuple[str, Path]]:
         formats = {f".{ext.lower().lstrip('.')}" for ext in self.cfg.library.supported_formats}
         found: dict[str, tuple[str, Path]] = {}
@@ -386,7 +427,7 @@ class LibraryManager:
         self._set_state(running=True, phase="discovering", done=0, total=0, current="")
         try:
             found = self._discover()
-            self._set_state(total=len(found), phase="preparing")
+            self._set_state(total=len(found), phase="reading tracks")
             self._reconcile_moves(found)
             cache_dir = self.cfg.index.active_dir / "prepared"
             for kind, path in found:
@@ -402,8 +443,6 @@ class LibraryManager:
                         and old["points"].get("start") is not None
                         and old["points"].get("end") is not None
                         and old["points"]["end"] > old["points"]["start"]
-                        and old["prepared_path"]
-                        and Path(old["prepared_path"]).is_file()
                     ):
                         pass
                     else:
@@ -413,17 +452,39 @@ class LibraryManager:
                         for name, value in suggestions.items():
                             if points.get(name) is None:
                                 points[name] = value
-                        prepared = prepare_source(path, cache_dir, kind)
+                        points = self._valid_basic_points(points, fresh)
                         self.catalog.put_entry(
                             fresh,
                             kind,
                             points=points,
                             point_source="analysis",
-                            prepared_path=str(prepared),
                         )
-                        self.refresh()
+                        self._publish_entry(fresh, kind)
                 except Exception as exc:
-                    logger.warning("Library preparation failed for %s: %s", path, exc)
+                    logger.warning("Basic library scan failed for %s: %s", path, exc)
+                    with self._lock:
+                        self._import_errors.append({"path": str(path), "error": str(exc)})
+                finally:
+                    with self._lock:
+                        self._state["done"] += 1
+            self.refresh()
+            self._set_state(phase="preparing audio", done=0, total=len(found), current="")
+            for kind, path in found:
+                if self._stop.is_set():
+                    break
+                self._set_state(current=str(path))
+                try:
+                    record = self.catalog.record_for_path(path)
+                    if record is None:
+                        continue
+                    prepared_path = record["prepared_path"]
+                    if prepared_path and Path(prepared_path).is_file():
+                        continue
+                    prepared = prepare_source(path, cache_dir, kind)
+                    entry = self._entry_from_record(record)
+                    self.catalog.put_entry(entry, kind, prepared_path=str(prepared))
+                except Exception as exc:
+                    logger.warning("Audio preparation failed for %s: %s", path, exc)
                     with self._lock:
                         self._import_errors.append({"path": str(path), "error": str(exc)})
                 finally:
@@ -447,12 +508,15 @@ class LibraryManager:
         return pending
 
     def schedule_analysis(self) -> bool:
-        if self._scan_lock.locked() or not self.analysis_pending():
-            return False
         with self._lock:
+            phase = self._state["phase"]
+            if self._scan_lock.locked() and phase != "preparing audio":
+                return False
             generation = self._scan_generation
             if self._analysis_started_generation == generation:
                 return False
+        if not self.analysis_pending():
+            return False
         from autodj.jobs import get_manager
 
         manager = get_manager()

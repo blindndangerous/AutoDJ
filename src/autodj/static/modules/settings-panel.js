@@ -161,7 +161,11 @@ const FIELDS = [
   { key: "pbShowLyrics", field: "show_lyrics",
     read: (st) => Boolean(st.playback) && st.playback.show_lyrics !== false },
   { key: "pbAnchorSeed", field: "anchor_to_seed" },
-  { key: "pbReplayGain", field: "replaygain_enabled" },
+  {
+    key: "pbLoudness", field: "loudness_processing",
+    read: (st) => st.playback?.loudness_processing ??
+      (st.playback?.replaygain_enabled ? "replaygain" : "off"),
+  },
   { key: "pbBeatSyncFx", field: "beat_sync_fx" },
   { key: "pbKeySyncFx", field: "key_sync_fx" },
   { key: "pbBeatmatchSkip", field: "beatmatch_on_skip",
@@ -182,6 +186,40 @@ function pushedValue(spec, control, st) {
   return isToggle(control) ? Boolean(value) : value;
 }
 
+function setControlVisible(control, visible) {
+  if (!control) return;
+  const row = control.closest(".settings-row, .settings-check");
+  if (row) row.hidden = !visible;
+  for (const id of (control.getAttribute("aria-describedby") || "").split(/\\s+/)) {
+    if (id) {
+      const description = control.ownerDocument.getElementById(id);
+      if (description) description.hidden = !visible;
+    }
+  }
+}
+
+function applyModeVisibility(st, els, doc) {
+  const savedPoints = (els.pbTransitionMode?.value || st.playback?.transition_mode)
+    === "saved_points";
+  for (const key of [
+    "transitionSelect", "pbEqDuck", "djBeatmatch", "djDropMix", "djKeyShift",
+    "djPhraseAlign", "djOutroIntro", "djVocalGuard",
+    "pbBeatSyncFx", "pbKeySyncFx",
+  ]) {
+    setControlVisible(els[key], !savedPoints);
+  }
+  setControlVisible(els.djFilterSweep || doc.getElementById("dj-filter-sweep"), !savedPoints);
+  setControlVisible(els.pbFadeIn || doc.getElementById("pb-fade-in"), !savedPoints);
+  setControlVisible(els.djPhraseBars || doc.getElementById("dj-phrase-bars"), !savedPoints);
+  setControlVisible(els.txWetMix || doc.getElementById("tx-wet-mix"), !savedPoints);
+  const loudness = els.pbLoudness?.value || st.playback?.loudness_processing ||
+    (st.playback?.replaygain_enabled ? "replaygain" : "off");
+  setControlVisible(els.pbRgTarget || doc.getElementById("pb-rg-target"),
+    loudness === "replaygain");
+  const note = els.pbSavedPointsNote || doc.getElementById("pb-saved-points-note");
+  if (note) note.hidden = !savedPoints;
+}
+
 // save(url, body, control) is postSettings with the page's status region.
 export function installSettingsControls(els, save) {
   for (const spec of FIELDS) {
@@ -194,9 +232,9 @@ export function installSettingsControls(els, save) {
     });
   }
   const { pbPickMode, bpmLo, bpmHi, discEnabled, discEvery } = els;
-  // The pick mode select is the server's pure_shuffle flag.
   pbPickMode?.addEventListener("change", () => {
-    void save(PLAYBACK, { pure_shuffle: pbPickMode.value === "pure" }, pbPickMode);
+    const mode = pbPickMode.value === "pure" ? "random" : pbPickMode.value;
+    void save(PLAYBACK, { pick_mode: mode }, pbPickMode);
   });
   const saveBpmRange = (control) => {
     const lo = parseFloat(bpmLo.value);
@@ -242,7 +280,8 @@ export function applySettingsState(st, els) {
     if (isToggle(control)) control.checked = value;
     else if (doc.activeElement !== control && control.value !== String(value)) control.value = value;
   }
-  const pickMode = st.playback?.pure_shuffle ? "pure" : "similarity";
+  const pickMode = st.playback?.pick_mode ??
+    (st.playback?.pure_shuffle ? "random" : "similarity");
   if (pbPickMode && doc.activeElement !== pbPickMode && !saveHolds(pbPickMode, pickMode)) {
     pbPickMode.value = pickMode;
   }
@@ -262,6 +301,7 @@ export function applySettingsState(st, els) {
   if (doc.activeElement !== discEvery && discOn && !saveHolds(discEvery, st.discovery_every)) {
     discEvery.value = st.discovery_every;
   }
+  applyModeVisibility(st, els, doc);
   // A focused control may hold a change still being saved, and so may
   // one whose save is out: neither shows a confirmed value.
   for (const control of Object.values(els)) {

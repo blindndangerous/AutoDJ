@@ -315,7 +315,14 @@ def apply_repeat_windows(player: Any) -> None:
     """
     pb = player._cfg.playback
     sim = player._sim
-    library_size = int(sim.ntotal) if sim is not None else 0
+    library = getattr(player, "_library", None)
+    library_size = (
+        len(library.entries_snapshot())
+        if library is not None
+        else int(sim.ntotal)
+        if sim is not None
+        else 0
+    )
     player._state.resize_repeat_windows(
         effective_no_repeat_window(int(pb.no_repeat_window), library_size),
         int(pb.artist_repeat_window),
@@ -615,6 +622,7 @@ class Player:
     # The track rendered just before the render cursor's track: the bus is
     # starting it while the worker picks what follows the cursor's track.
     _pending_previous: IndexEntry | None = None
+    _library: Any = None
     # A queue pick the bus has taken (which removed it from the queue) and
     # not yet started: it goes back if its set stops first.  Only the bus
     # thread touches it (_take_render, then _on_track_start).
@@ -625,6 +633,13 @@ class Player:
     # How the render cursor's track is stretched back to its own tempo
     # after the overlap (RenderedTrack.next_glide), or None.
     _pending_glide: Glide | None = None
+    _pending_reserved_liners: tuple[IndexEntry, ...] = ()
+    _pending_clock_cursor: int | None = None
+    _pending_clock_boundary: float | None = None
+    _clock: dict[str, Any] | None = None
+    liner_scheduler: Any = None
+    _skip_next_intro: bool = False
+    _continuous_master: Any = None
     # Guards the per-pair effect plans of planned_transition.
     _fx_plan_lock: ClassVar[threading.Lock] = threading.Lock()
     # Plans kept, most recent last: a few pairs cover the playing track,
@@ -877,7 +892,176 @@ class Player:
 
     def _random_start_entry(self) -> IndexEntry | None:
         """Pick a starting track the way Shuffle does, or ``None`` if there is none."""
+        if self._library is not None:
+            import random
+
+            from autodj.clockwheel import least_recent
+
+            entries = [e for e in self.playable_entries() if not e.is_silent]
+            if not entries:
+                return None
+            if self._cfg.playback.pick_mode == "clock":
+                picked = self._clock_pick(self._pick_context(), None)
+                if picked.entry is not None:
+                    if picked.liner is not None:
+                        self._seed_clock_cursor = (picked.next_cursor - 1) % len(self._clock_slots)
+                        return picked.liner
+                    self._seed_clock_cursor = picked.next_cursor
+                return picked.entry
+            if self._cfg.playback.pick_mode == "least_recent":
+                return least_recent(entries, self._library.last_played())
+            return random.choice(entries)  # nosec B311 -- music selection
         return self._sim.random_entry()
+
+    def playable_entries(self) -> tuple[IndexEntry, ...]:
+        """Return basic-ready music, or the legacy index when no catalog is attached."""
+        collection = self._library if self._library is not None else self._sim
+        return collection.entries_snapshot()
+
+    def configure_clock(self) -> None:
+        """Load a saved clock without marking any selected music played."""
+        from autodj.clockwheel import ClockSlot, validate_clock, validate_resync_minutes
+
+        setting = self._library.catalog.get_setting("clock") if self._library else None
+        if not setting or not setting.get("slots"):
+            self._clock = None
+            self._clock_status = "No clock has been imported"
+            self._clock_next_boundary = None
+            return
+        slots = [ClockSlot.from_json(slot) for slot in setting["slots"]]
+        validate_clock(slots)
+        validate_resync_minutes(setting.get("resync_minutes", [0]))
+        self._clock = dict(setting)
+        self._clock_slots = slots
+        self._clock_status = "Ready"
+        from datetime import datetime
+
+        from autodj.clockwheel import next_boundary
+
+        boundary = next_boundary(datetime.now().astimezone(), setting.get("resync_minutes", [0]))
+        self._clock_next_boundary = boundary.timestamp() if boundary else None
+
+    def _clock_pick(self, context: _PickContext, cursor: int | None) -> Any:
+        from autodj.clockwheel import ClockPick, pick_slot
+
+        if self._clock is None:
+            self._clock_status = "No clock has been imported"
+            return ClockPick(None, None, 0, [self._clock_status])
+        position = self._clock.get("cursor", 0) if cursor is None else cursor
+
+        def allowed(entry: IndexEntry) -> bool:
+            return (
+                not entry.is_silent
+                and entry.path not in context.recent
+                and entry.path not in context.protected
+                and entry.artist.lower() not in context.artists
+            )
+
+        picked = pick_slot(
+            self._clock_slots,
+            position,
+            self.playable_entries(),
+            self._library.last_played(),
+            allowed,
+            liners=self._library.entries_snapshot("liner"),
+        )
+        self._clock_status = "; ".join(picked.skipped) or "Ready"
+        return picked
+
+    def _station_queue(
+        self,
+        reserved: IndexEntry | None,
+        reserved_liners: tuple[IndexEntry, ...],
+    ) -> tuple[list[IndexEntry], IndexEntry | None]:
+        with self._state.queue_lock:
+            waiting = ([self._state.queued_next] if self._state.queued_next else []) + list(
+                self._state.queue
+            )
+            for used in (*reserved_liners, *((reserved,) if reserved else ())):
+                for number, item in enumerate(waiting):
+                    if item.path == used.path:
+                        del waiting[number]
+                        break
+        liner_paths = {entry.path for entry in self._library.entries_snapshot("liner")}
+        liners: list[IndexEntry] = []
+        for entry in waiting:
+            if entry.path not in liner_paths:
+                return liners, entry
+            liners.append(entry)
+        return liners, None
+
+    def _choose_station_next(
+        self,
+        current: IndexEntry,
+        context: _PickContext,
+    ) -> tuple[IndexEntry, str, tuple[tuple[IndexEntry, bool], ...], int | None, str]:
+        liners, queued = self._station_queue(context.queue_reserved, self._pending_reserved_liners)
+        cursor = self._pending_clock_cursor
+        if queued is not None:
+            upcoming, mode = queued, "queue"
+        elif self._cfg.playback.pick_mode == "clock":
+            picked = self._clock_pick(context, cursor)
+            if picked.entry is None:
+                raise ValueError(self._clock_status)
+            boundary = self._pending_clock_boundary or getattr(self, "_clock_next_boundary", None)
+            if boundary is not None:
+                from datetime import datetime
+
+                from autodj.clockwheel import next_boundary, resync_due
+
+                points = self.saved_points(current)
+                segue = (
+                    points.get("segue")
+                    or points.get("outro")
+                    or points.get("end")
+                    or current.length
+                )
+                when = time.time() + max(0.0, segue - self._pending_offset / SAMPLE_RATE)
+                playing = self._playing_render
+                if playing is not None and playing.next_entry is current:
+                    when += max(
+                        0.0,
+                        (len(playing.audio) + playing.start_offset - self._playback_pos[0])
+                        / SAMPLE_RATE,
+                    )
+                duration = self.saved_points(picked.entry)
+                duration_s = (
+                    duration.get("segue") or duration.get("outro") or picked.entry.length
+                ) - (duration.get("start") or 0)
+                if resync_due(when, duration_s, boundary):
+                    reset = self._clock_pick(context, 0)
+                    if reset.entry is not None:
+                        picked = reset
+                        self._clock_status = "Restarting the clock at the nearest song handoff"
+                        following = next_boundary(
+                            datetime.fromtimestamp(max(boundary, when)).astimezone(),
+                            (self._clock or {}).get("resync_minutes", [0]),
+                        )
+                        self._pending_clock_boundary = following.timestamp() if following else None
+            upcoming, mode, cursor = picked.entry, "clock", picked.next_cursor
+            if picked.liner is not None and not liners:
+                return upcoming, mode, ((picked.liner, False),), cursor, ""
+        else:
+            try:
+                upcoming, mode = self._choose_by_mode(current, context)
+            except Exception as exc:
+                upcoming, mode = self._fallback_pick(current, context, exc), "fallback"
+        selected = tuple((entry, True) for entry in liners)
+        key = ""
+        scheduler = self.liner_scheduler
+        if not selected and scheduler is not None and self._cfg.playback.pick_mode != "clock":
+            plan = getattr(scheduler, "plan_for_handoff", None)
+            if plan is not None:
+                key = f"{current.path}\n{upcoming.path}"
+                points = self.saved_points(current)
+                seconds = float(points.get("segue") or points.get("outro") or current.length)
+                name = plan(key, tracks_ahead=2, seconds_ahead=seconds)
+                if name:
+                    record = self._library.record_for_id(name)
+                    entry = self._library.entry_for_path(record["path"]) if record else None
+                    if entry is not None:
+                        selected = ((entry, False),)
+        return upcoming, mode, selected, cursor, key
 
     def _build_bus(self) -> MixBus:
         """Create the mix bus, fed by the render-ahead worker, as :attr:`bus`."""
@@ -1050,12 +1234,32 @@ class Player:
             generation = self._set_generation
             current = self._pending_entry
             if current is None:
-                return None
+                if self._library is not None and self.bus is not None and self.bus.playing:
+                    current = self._random_start_entry()
+                    if current is not None:
+                        self._set_render_cursor(
+                            current,
+                            0,
+                            "seed",
+                            clock_cursor=getattr(self, "_seed_clock_cursor", None),
+                        )
+                if current is None:
+                    return None
             offset, pick_mode = self._pending_offset, self._pending_pick_mode
             current_from_queue = self._pending_from_queue
             previous = self._pending_previous
             mixed_in_fx, mixed_in_ratio = self._pending_mixed_in
             glide = self._pending_glide
+            reserved_liners = self._pending_reserved_liners
+            clock_cursor = self._pending_clock_cursor
+            clock_boundary = self._pending_clock_boundary or getattr(
+                self, "_clock_next_boundary", None
+            )
+            station_mode = (
+                self._library is not None and self._cfg.playback.transition_mode == "saved_points"
+            )
+            liners: tuple[tuple[IndexEntry, bool], ...] = ()
+            next_cursor, liner_key = clock_cursor, ""
             context = self._pick_context(
                 pending=current,
                 starting=previous,
@@ -1064,7 +1268,12 @@ class Player:
             )
             next_entry: IndexEntry | None
             try:
-                next_entry, next_mode = self._choose_next(current, context)
+                if station_mode:
+                    next_entry, next_mode, liners, next_cursor, liner_key = (
+                        self._choose_station_next(current, context)
+                    )
+                else:
+                    next_entry, next_mode = self._choose_next(current, context)
             except Exception as exc:
                 # A failed search already fell back to a random track, so
                 # this is an empty (or all-silent) library: play this track
@@ -1078,7 +1287,12 @@ class Player:
                     # Plan the effect knowing how next_entry was picked;
                     # the render then finds this plan.
                     self.planned_transition(current, next_entry, next_mode)
-                rendered = self._render_track(current, next_entry, offset, glide_in=glide)
+                if liners:
+                    rendered = self._render_track(
+                        current, next_entry, offset, glide_in=glide, liners=liners
+                    )
+                else:
+                    rendered = self._render_track(current, next_entry, offset, glide_in=glide)
             except Exception:
                 logger.exception("Rendering %s failed; skipping it.", current.path)
                 rendered = None
@@ -1094,11 +1308,14 @@ class Player:
                 previous=current if rendered is not None else previous,
                 mixed_in=_mixed_in_by(rendered),
                 glide=rendered.next_glide if rendered else None,
+                reserved_liners=rendered.next_reserved_liners if rendered else (),
+                clock_cursor=next_cursor,
+                clock_boundary=self._pending_clock_boundary or clock_boundary,
             )
             if rendered is not None:
                 return replace(
                     rendered,
-                    start_offset=offset,
+                    start_offset=rendered.start_offset if station_mode else offset,
                     pick_mode=pick_mode,
                     from_queue=current_from_queue,
                     next_pick_mode=next_mode,
@@ -1108,6 +1325,12 @@ class Player:
                     mixed_in_fx=mixed_in_fx,
                     mixed_in_ratio=mixed_in_ratio,
                     glide_in=glide,
+                    reserved_liners=reserved_liners,
+                    clock_cursor=clock_cursor,
+                    next_clock_cursor=next_cursor,
+                    clock_boundary=clock_boundary,
+                    next_clock_boundary=self._pending_clock_boundary,
+                    liner_plan_key=liner_key,
                 )
         return None
 
@@ -1120,6 +1343,9 @@ class Player:
         previous: IndexEntry | None = None,
         mixed_in: tuple[str, float] = ("", 1.0),
         glide: Glide | None = None,
+        reserved_liners: tuple[IndexEntry, ...] = (),
+        clock_cursor: int | None = None,
+        clock_boundary: float | None = None,
     ) -> None:
         """Point the render-ahead cursor at *entry* (worker idle or queued).
 
@@ -1137,6 +1363,9 @@ class Player:
         self._pending_previous = previous
         self._pending_mixed_in = mixed_in
         self._pending_glide = glide
+        self._pending_reserved_liners = reserved_liners
+        self._pending_clock_cursor = clock_cursor
+        self._pending_clock_boundary = clock_boundary
 
     def _rewind_render_cursor(self, track: RenderedTrack) -> None:
         """Point the cursor back at *track*'s own start (to re-render it).
@@ -1144,6 +1373,8 @@ class Player:
         The track before it is the one it was rendered after, so the
         re-render's pick still excludes the track the bus is starting.
         """
+        if track.liner_plan_key and self.liner_scheduler is not None:
+            self.liner_scheduler.release_plan(track.liner_plan_key)
         self._set_render_cursor(
             track.entry,
             track.start_offset,
@@ -1152,6 +1383,9 @@ class Player:
             previous=track.previous_entry,
             mixed_in=(track.mixed_in_fx, track.mixed_in_ratio),
             glide=track.glide_in,
+            reserved_liners=track.reserved_liners,
+            clock_cursor=track.clock_cursor,
+            clock_boundary=track.clock_boundary,
         )
 
     def _skip_past_render(self, track: RenderedTrack) -> None:
@@ -1168,6 +1402,9 @@ class Player:
             previous=track.entry,
             mixed_in=_mixed_in_by(track),
             glide=track.next_glide,
+            reserved_liners=track.next_reserved_liners,
+            clock_cursor=track.next_clock_cursor,
+            clock_boundary=track.next_clock_boundary,
         )
 
     def reset_render_ahead(
@@ -1187,7 +1424,14 @@ class Player:
             pick_mode: How *entry* was chosen, for "why this track".
         """
         with self._state.queue_lock:
-            self._render_ahead.reset(lambda: self._set_render_cursor(entry, offset, pick_mode))
+            self._skip_next_intro = False
+            cursor = getattr(self, "_seed_clock_cursor", None)
+            self._seed_clock_cursor = None
+            self._render_ahead.reset(
+                lambda: self._set_render_cursor(entry, offset, pick_mode, clock_cursor=cursor)
+            )
+        if self.liner_scheduler is not None and hasattr(self.liner_scheduler, "release_plan"):
+            self.liner_scheduler.release_plan()
 
     def begin_set(self, entry: IndexEntry, pick_mode: str) -> None:
         """Point a new stream set at *entry*, from its first sample.
@@ -1266,10 +1510,31 @@ class Player:
         """
         with self._state.queue_lock:
             track = self._render_ahead.pop()
+            if track is not None and self._skip_next_intro:
+                self._skip_next_intro = False
+                if track.full_audio is not None:
+                    prefix = track.start_offset - track.source_start_offset
+                    track = replace(
+                        track,
+                        audio=track.full_audio,
+                        start_offset=track.source_start_offset,
+                        liner_events=tuple(
+                            (at + prefix, entry, queued) for at, entry, queued in track.liner_events
+                        ),
+                    )
             if track is not None and track.from_queue and self._commit_queue_pick(track.entry):
                 # Given back if its set stops before it starts.
                 self._taken_queue_pick = track
         return track
+
+    def skip_current(self) -> None:
+        """An early skip starts the next song at Start, before any unheard overlap."""
+        track = self._playing_render
+        if track is not None and track.full_audio is not None:
+            relative = self._playback_pos[0] - track.start_offset
+            self._skip_next_intro = relative < len(track.audio) - track.overlap_frames
+        if self.bus is not None:
+            self.bus.skip()
 
     def _commit_queue_pick(self, entry: IndexEntry) -> bool:
         """Remove one queued occurrence of *entry* now that it starts.
@@ -1318,6 +1583,17 @@ class Player:
         gone; a render that picked by similarity is stale once the queue
         has anything, because the queue takes priority.
         """
+        if self._library is not None and self._cfg.playback.transition_mode == "saved_points":
+            liners, head = self._station_queue(
+                track.entry if track.from_queue else None, track.reserved_liners
+            )
+            if tuple(e.path for e in liners) != tuple(e.path for e in track.next_reserved_liners):
+                return True
+            if track.next_from_queue:
+                return (
+                    head is None or track.next_entry is None or head.path != track.next_entry.path
+                )
+            return head is not None
         with self._state.queue_lock:
             head = self._peek_user_queue(track.entry if track.from_queue else None)
         if track.next_from_queue:
@@ -1364,6 +1640,13 @@ class Player:
         """Make *rendered* the playing track and record it (hold ``_set_lock``)."""
         entry = rendered.entry
         self._playing_render = rendered
+        self._heard_liner_events: set[int] = set()
+        self._heard_next_entry = False
+        self._active_processing_mode = rendered.loudness_processing
+        if self._clock is not None and rendered.clock_cursor is not None:
+            self._clock = {**self._clock, "cursor": rendered.clock_cursor}
+            self._library.remember_setting("clock", self._clock)
+            self._clock_next_boundary = rendered.clock_boundary
         if entry is not self._state.current_track:
             self._previous_track = self._state.current_track
         self._state.current_track = entry
@@ -1389,6 +1672,31 @@ class Player:
         """Record mix-bus progress, in the playing track's own timeline."""
         playing = self._playing_render
         self._playback_pos[0] = frames + (playing.start_offset if playing else 0)
+        if playing is not None:
+            if (
+                playing.next_entry is not None
+                and playing.overlap_frames > 0
+                and frames > len(playing.audio) - playing.overlap_frames
+                and not self._heard_next_entry
+            ):
+                self._heard_next_entry = True
+                if self._library is not None:
+                    self._library.remember_play(playing.next_entry.path)
+                    if self._clock is not None and playing.next_clock_cursor is not None:
+                        self._clock = {**self._clock, "cursor": playing.next_clock_cursor}
+                        self._library.remember_setting("clock", self._clock)
+                        self._clock_next_boundary = playing.next_clock_boundary
+            for index, (at, entry, queued) in enumerate(playing.liner_events):
+                if frames > at and index not in self._heard_liner_events:
+                    self._heard_liner_events.add(index)
+                    if queued:
+                        with self._state.queue_lock:
+                            self._commit_queue_pick(entry)
+                    if self._library is not None:
+                        self._library.remember_play(entry.path)
+                    scheduler = self.liner_scheduler
+                    if scheduler is not None and hasattr(scheduler, "mark_planned_fired"):
+                        scheduler.mark_planned_fired(playing.liner_plan_key)
 
     def _run_headless(self, current: IndexEntry) -> None:
         """Track-picking loop with no server audio output.
@@ -1585,16 +1893,30 @@ class Player:
             lo, hi = self._bpm_range
             return entry.bpm > 0 and lo <= entry.bpm <= hi
 
-        entries = self._sim.entries_snapshot()
-        pool = [e for e in entries if e.path not in excluded and eligible(e)]
+        entries = self.playable_entries()
+        pool = [
+            e
+            for e in entries
+            if e.path not in excluded and e.artist.lower() not in context.artists and eligible(e)
+        ]
         if not pool:
             logger.warning(
                 "Pure shuffle exhausted eligible non-recent tracks; relaxing recent-track exclusion"
             )
             protected = context.protected | {current.path}
-            pool = [e for e in entries if e.path not in protected and eligible(e)]
+            pool = [
+                e
+                for e in entries
+                if e.path not in protected
+                and e.artist.lower() not in context.artists
+                and eligible(e)
+            ]
         if not pool:
             raise SimilarityError("No candidates satisfy hard filters for pure shuffle.")
+        if self._cfg.playback.pick_mode == "least_recent" and self._library is not None:
+            from autodj.clockwheel import least_recent
+
+            return least_recent(pool, self._library.last_played())
         return _rnd.choice(pool)  # nosec B311 -- non-security
 
     def _try_discovery(self, current: IndexEntry, context: _PickContext) -> IndexEntry | None:
@@ -1683,8 +2005,11 @@ class Player:
 
     def _choose_by_mode(self, current: IndexEntry, context: _PickContext) -> tuple[IndexEntry, str]:
         """Pick by pure shuffle, discovery or similarity (see :meth:`_choose_next`)."""
-        if self._pure_shuffle:
-            return self._pick_pure_shuffle(current, context), "pure_shuffle"
+        if self._pure_shuffle or self._cfg.playback.pick_mode in {"random", "least_recent"}:
+            mode = (
+                "least_recent" if self._cfg.playback.pick_mode == "least_recent" else "pure_shuffle"
+            )
+            return self._pick_pure_shuffle(current, context), mode
 
         from autodj.similarity import SimilarityError
 
@@ -1759,7 +2084,7 @@ class Player:
 
         from autodj.similarity import SimilarityError
 
-        audible = [entry for entry in self._sim.entries_snapshot() if not entry.is_silent]
+        audible = [entry for entry in self.playable_entries() if not entry.is_silent]
         bpm_range = self._bpm_range
         in_range = audible
         if bpm_range is not None:
@@ -1810,7 +2135,10 @@ class Player:
 
     def _apply_replaygain(self, audio: np.ndarray, path: str) -> np.ndarray:
         """Apply ReplayGain normalisation when enabled in config; else no-op."""
-        if not self._cfg.replaygain.enabled:
+        if (
+            self._cfg.playback.loudness_processing in {"off", "smooth"}
+            or not self._cfg.replaygain.enabled
+        ):
             return audio
         from autodj.audio_meta import read_replaygain, replaygain_multiplier
 
@@ -1823,6 +2151,131 @@ class Player:
         if gain == 1.0:
             return audio
         return (audio * gain).astype(np.float32)
+
+    def _load_playout_audio(self, entry: IndexEntry) -> np.ndarray:
+        """Use prepared sources in Smooth mode, retaining original sample positions."""
+        if self._cfg.playback.loudness_processing != "smooth":
+            audio = load_stereo(entry.path, SAMPLE_RATE, self._max_render_seconds())
+            return self._apply_replaygain(audio, entry.path)
+        from autodj.processing import prepare_source
+
+        record = self._library.catalog.record_for_path(entry.path) if self._library else None
+        prepared = record.get("prepared_path") if record else None
+        if not prepared or not Path(prepared).is_file():
+            kind = record["kind"] if record else "music"
+            prepared = str(
+                prepare_source(Path(entry.path), self._cfg.index.active_dir / "prepared", kind=kind)
+            )
+            if record:
+                self._library.catalog.put_entry(entry, kind=kind, prepared_path=prepared)
+        return load_stereo(prepared, SAMPLE_RATE, self._max_render_seconds())
+
+    def saved_points(self, entry: IndexEntry) -> dict[str, Any]:
+        """Source-file cue times, with no assumed safe talk-over space."""
+        points = self._library.catalog.points(entry.path) if self._library else {}
+        return {"start": 0.0, "end": entry.length, **points}
+
+    def _render_saved_track(
+        self,
+        current: IndexEntry,
+        next_entry: IndexEntry | None,
+        start_offset: int,
+        liners: tuple[tuple[IndexEntry, bool], ...] = (),
+    ) -> RenderedTrack | None:
+        from autodj.playout import render_handoff
+
+        source = self._load_playout_audio(current)
+        points = self.saved_points(current)
+        source_start = round((points.get("start") or 0.0) * SAMPLE_RATE)
+        start = max(start_offset, source_start)
+        end = min(len(source), round((points.get("end") or current.length) * SAMPLE_RATE))
+        if start >= end:
+            return None
+        processing = self._cfg.playback.loudness_processing or ""
+        if next_entry is None:
+            return RenderedTrack(
+                current,
+                source[start:end],
+                None,
+                0,
+                "",
+                start_offset=start,
+                loudness_processing=processing,
+                full_audio=source[source_start:end],
+                source_start_offset=source_start,
+            )
+        is_liner = self._library is not None and any(
+            entry.path == current.path for entry in self._library.entries_snapshot("liner")
+        )
+        clips, events, release = [], [], 0.0
+        frames = 0
+        if is_liner:
+            clips.append(source[source_start:end])
+            frames = end - source_start
+            release = float(points.get("overlap_start") or 0)
+        for liner_entry, queued in liners:
+            try:
+                clip = self._load_playout_audio(liner_entry)
+                cues = self.saved_points(liner_entry)
+                first = round((cues.get("start") or 0) * SAMPLE_RATE)
+                last = round((cues.get("end") or liner_entry.length) * SAMPLE_RATE)
+                clip = clip[first:last]
+                if not len(clip):
+                    continue
+                overlap = float(cues.get("overlap_start") or 0)
+                if overlap > 0:
+                    release = max(release, frames / SAMPLE_RATE + overlap)
+                events.append((frames, liner_entry, queued))
+                clips.append(clip)
+                frames += len(clip)
+            except (OSError, ValueError, RuntimeError):
+                logger.exception(
+                    "Cannot prepare liner %s; leaving music playable", liner_entry.path
+                )
+                if queued:
+                    with self._state.queue_lock:
+                        self._commit_queue_pick(liner_entry)
+        incoming_points = self.saved_points(next_entry)
+        handoff = render_handoff(
+            np.zeros((1, 2), dtype=np.float32) if is_liner else source,
+            {"start": 0, "end": 0, "segue": 0} if is_liner else points,
+            incoming_points,
+            start_offset=0 if is_liner else source_start,
+            fade_seconds=self._cfg.playback.crossfade_seconds,
+            liner=np.concatenate(clips) if clips else None,
+            overlap_start=release,
+        )
+        overlap = len(handoff.next_overlay)
+        tail = handoff.next_overlay.copy()
+        if overlap:
+            try:
+                incoming = self._load_playout_audio(next_entry)
+                head = incoming[handoff.next_start_offset : handoff.next_start_offset + overlap]
+                tail[: len(head)] += head
+            except (OSError, ValueError, RuntimeError):
+                logger.exception("Cannot prepare incoming track %s", next_entry.path)
+        full_audio = np.concatenate((handoff.audio, tail))
+        audio = full_audio[start - source_start :]
+        liner_start = (
+            source_start if is_liner else round((handoff.liner_s or 0.0) * SAMPLE_RATE)
+        ) - start
+        return RenderedTrack(
+            current,
+            audio,
+            next_entry,
+            handoff.next_start_offset + overlap,
+            "none",
+            start_offset=start,
+            overlap_frames=overlap,
+            next_entry_offset=handoff.next_start_offset,
+            liner_events=tuple(
+                (liner_start + frame, entry, queued) for frame, entry, queued in events
+            ),
+            next_reserved_liners=tuple(entry for _, entry, queued in events if queued),
+            loudness_processing=processing,
+            full_audio=full_audio,
+            source_start_offset=source_start,
+        )
 
     def _read_lyrics_for_path(self, path: str) -> tuple[list, str]:
         """Return ``(timestamped, plain)`` lyrics for *path* without mutating state.
@@ -1918,6 +2371,11 @@ class Player:
         Its first synced lyric line, else its detected intro end, else
         ``None``.  Used to time liner talk-ups.
         """
+        if self._library is not None:
+            record = self._library.catalog.record_for_path(entry.path)
+            if record is not None:
+                return record["points"].get("intro")
+
         from autodj.vocals import first_vocal_s
 
         first = first_vocal_s(self._sung_spans(entry.path))
@@ -2095,7 +2553,11 @@ class Player:
             cfg_dj.outro_intro_align or cfg_dj.phrase_align or marker_mode
         ):
             return None
-        meta = self._dj_cache.get(path)
+        try:
+            meta = self._dj_cache.get(path)
+        except ValueError:
+            # Additional source folders do not share the legacy cache root.
+            return None
         if not meta.analysed:
             meta = self._analyse(mono(audio_a), sr_a, path)
             self._dj_cache.flush(batch=10)
@@ -2222,7 +2684,10 @@ class Player:
         self._ensure_dj_cache()
         if self._dj_cache is None:
             return
-        existing = self._dj_cache.get(path)
+        try:
+            existing = self._dj_cache.get(path)
+        except ValueError:
+            return
         if existing.analysed:
             existing = self._refresh_library_cues(path, existing)
         if existing.analysed and existing.intro_start_s is not None:
@@ -2344,7 +2809,10 @@ class Player:
         """
         if self._dj_cache is None:
             return None
-        meta = self._dj_cache.get(next_entry.path)
+        try:
+            meta = self._dj_cache.get(next_entry.path)
+        except ValueError:
+            return None
         return self._refresh_library_cues(next_entry.path, meta) if meta.analysed else None
 
     def _effective_crossfade_seconds(
@@ -2436,8 +2904,7 @@ class Player:
         (and logged) when its own render comes round.
         """
         try:
-            audio_b = load_stereo(str(next_entry.path), sr_a, self._max_render_seconds())
-            return self._apply_replaygain(audio_b, next_entry.path)
+            return self._load_playout_audio(next_entry)
         except TrackTooLongError:
             return None
         except (OSError, ValueError, RuntimeError) as exc:
@@ -2940,6 +3407,8 @@ class Player:
             A :class:`~autodj.transitions.TransitionFx` value, never a
             meta-mode.
         """
+        if self._cfg.playback.transition_mode == "saved_points":
+            return "none"
         from autodj.transitions import TransitionFx, choose_auto_effect, pick_effect
 
         shift = self._key_shift(current, upcoming)
@@ -3129,6 +3598,7 @@ class Player:
         start_offset: int,
         *,
         glide_in: Glide | None = None,
+        liners: tuple[tuple[IndexEntry, bool], ...] = (),
     ) -> RenderedTrack | None:
         """Render *current* from *start_offset* into the head of *next_entry*.
 
@@ -3153,7 +3623,9 @@ class Player:
             *start_offset*.
         """
         try:
-            audio_a_full = load_stereo(str(current.path), SAMPLE_RATE, self._max_render_seconds())
+            if self._cfg.playback.transition_mode == "saved_points":
+                return self._render_saved_track(current, next_entry, start_offset, liners)
+            audio_a_full = self._load_playout_audio(current)
         except TrackTooLongError as exc:
             logger.warning(
                 "Skipping %s: it is %.0f minutes long, and [playback] "
@@ -3166,7 +3638,6 @@ class Player:
         except (OSError, ValueError, RuntimeError) as exc:
             logger.error("Cannot load %s: %s — skipping.", current.path, exc)
             return None
-        audio_a_full = self._apply_replaygain(audio_a_full, current.path)
         if start_offset >= len(audio_a_full):
             return None
         # No lyrics here: this runs ahead of time, and the lyrics shown must

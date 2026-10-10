@@ -2112,6 +2112,7 @@ describe("stream mode", () => {
     expect(found.plays.map((line) => line.replace(/^([^:]+):.*\| /, "$1: "))).toEqual([
       "modules/audio-engine.js: return deck.audio.play().catch((err) => {",
       "modules/audio-engine.js: await deck.audio.play();",
+      "modules/library-folders.js: await preview.play();",
       "modules/stream-mode.js: await audio.play();",
     ]);
     expect(found.plays.find((line) => line.startsWith("modules/stream-mode.js")))
@@ -2215,7 +2216,7 @@ describe("stream mode", () => {
     const options = mediaSession.installMediaActionHandlers.mock.calls[0][0];
     document.querySelector("#search-input").value = "song";
     document.querySelector("#btn-search").click();
-    await vi.waitFor(() => expect(document.querySelectorAll(".result-btn")).toHaveLength(3));
+    await vi.waitFor(() => expect(document.querySelectorAll(".result-btn")).toHaveLength(4));
     const [playNow, playNext, addToQueue] = document.querySelectorAll(".result-btn");
     const posts = () => fetchImpl.mock.calls.filter(([url]) => url === "/api/play-next"
       || url === "/api/queue/add").map(([url, init]) => [url, JSON.parse(init.body)]);

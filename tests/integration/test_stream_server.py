@@ -154,6 +154,7 @@ def test_stream_info(stream_app) -> None:
         "path": f"/stream/{secret.value}.mp3",
         "m3u_path": f"/stream/{secret.value}.m3u",
         "bitrate": 320,
+        "continuous": False,
         "listeners": 2,
         "state": "idle",
     }
@@ -168,6 +169,18 @@ def test_bitrate_setting_validated_and_applied(stream_app, bridge) -> None:
     assert client.post("/api/stream/settings", json={"bitrate": 192}).json()["bitrate"] == 192
     stream.set_bitrate.assert_called_once_with(192)
     assert bridge.player._cfg.stream.bitrate == 192
+    bridge.save_persistent_state.assert_called_once()
+
+
+def test_continuous_setting_is_strict_and_persisted(stream_app, bridge) -> None:
+    client, _secret, stream = stream_app
+    bridge.save_persistent_state = MagicMock()
+    assert client.post("/api/stream/settings", json={"continuous": "true"}).status_code == 422
+    response = client.post("/api/stream/settings", json={"continuous": True})
+    assert response.status_code == 200
+    assert response.json()["continuous"] is True
+    assert bridge.player._cfg.stream.continuous is True
+    stream.set_bitrate.assert_not_called()
     bridge.save_persistent_state.assert_called_once()
 
 
@@ -192,6 +205,7 @@ def test_state_reports_stream_mode(stream_app) -> None:
     assert state["stream_listeners"] == 3
     assert state["stream_event"] is None
     assert state["settings"]["playback"]["stream_bitrate"] == 320
+    assert state["settings"]["playback"]["stream_continuous"] is False
     assert state["stream_server_audio"] is False
 
 

@@ -97,6 +97,10 @@ export function installSearch({
                 aria-label="Add ${name} to queue"
                 data-path="${path}"
                 data-now="false">Add to queue</button>
+        <button class="result-btn"
+                aria-label="Edit points for ${name}"
+                data-path="${path}"
+                data-points="true">Edit points</button>
       </li>`;
     }).join("");
     // The server caps at SEARCH_RESULT_LIMIT; say so, otherwise a full
@@ -127,6 +131,13 @@ export function installSearch({
     if (!btn || !searchResults.contains(btn)) return;
     const epoch = captureAuthenticatedRequestEpoch();
     const path = btn.dataset.path;
+    if (btn.dataset.points === "true") {
+      searchResults.dispatchEvent(new CustomEvent("autodj:edit-points", {
+        bubbles: true,
+        detail: { path, kind: "music" },
+      }));
+      return;
+    }
     const now  = btn.dataset.now === "true";
     const name = btn.closest("li").querySelector(".result-name").textContent;
     try {

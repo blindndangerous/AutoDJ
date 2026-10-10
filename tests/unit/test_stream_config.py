@@ -13,11 +13,13 @@ def test_defaults() -> None:
     cfg = StreamConfig()
     assert (
         cfg.enabled,
+        cfg.continuous,
         cfg.bitrate,
         cfg.idle_grace_seconds,
         cfg.max_listeners,
         cfg.station_name,
     ) == (
+        False,
         False,
         320,
         30.0,
@@ -42,6 +44,7 @@ def test_valid_bitrates(bitrate: int) -> None:
         {"max_listeners": "eight"},
         {"station_name": ""},
         {"enabled": "yes"},
+        {"continuous": "true"},
         {"unknown": 1},
     ],
 )
@@ -58,6 +61,13 @@ def test_toml_and_environment(tmp_path: Path) -> None:
     )
     assert cfg.stream.bitrate == 256
     assert cfg.stream.enabled is False
+
+
+def test_continuous_config_and_environment(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text("[stream]\ncontinuous = true\n", encoding="utf-8")
+    cfg = load_config(path, environ={"AUTODJ_STREAM_CONTINUOUS": "off"})
+    assert cfg.stream.continuous is False
 
 
 @pytest.mark.parametrize(

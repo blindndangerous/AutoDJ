@@ -145,6 +145,30 @@ def test_seeds_legacy_records_and_vectors_without_touching_faiss_generation(tmp_
         manager.close()
 
 
+def test_constructor_closes_catalog_when_legacy_vectors_are_invalid(tmp_path, monkeypatch):
+    music = tmp_path / "Music"
+    music.mkdir()
+    song = music / "gold.flac"
+    song.write_bytes(b"gold")
+    cfg = make_config(tmp_path, music=music)
+    invalid = Similarity([make_entry(song)], np.zeros((1, FEATURE_DIM - 1), dtype=np.float32))
+    opened = []
+    catalog_factory = LibraryCatalog
+
+    def capture_catalog(path):
+        catalog = catalog_factory(path)
+        opened.append(catalog)
+        return catalog
+
+    with (
+        patch("autodj.library.LibraryCatalog", side_effect=capture_catalog),
+        pytest.raises(ValueError, match="legacy vectors do not match"),
+    ):
+        LibraryManager(cfg, invalid)
+    assert len(opened) == 1
+    assert opened[0]._conn is None
+
+
 def test_scan_imports_recursive_music_and_liners_and_reuses_preparation(manager_factory, tmp_path):
     music = tmp_path / "Music"
     nested = music / "nested"
@@ -190,6 +214,66 @@ def test_scan_continues_after_per_file_failure(manager_factory, tmp_path):
     assert manager.entry_for_path(good) is not None
     assert manager.entry_for_path(bad) is None
     assert any("bad.flac" in error for error in manager.snapshot()["import"]["errors"])
+
+
+def test_basic_entry_is_playable_while_audio_preparation_runs_and_analysis_can_start(
+    manager_factory, tmp_path
+):
+    music = tmp_path / "Music"
+    music.mkdir()
+    song = music / "song.flac"
+    song.write_bytes(b"music")
+    manager = manager_factory(music=music)
+    entered = threading.Event()
+    release = threading.Event()
+
+    def slow_prepare(path, cache_dir, kind="music"):
+        del path, cache_dir, kind
+        entered.set()
+        release.wait(timeout=3)
+        return tmp_path / "prepared.wav"
+
+    class Jobs:
+        def configure(self, **kwargs):
+            del kwargs
+
+        def start(self, command):
+            assert command == "analyse-library"
+            return True
+
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic),
+        patch("autodj.library.prepare_source", side_effect=slow_prepare),
+        patch("autodj.jobs.get_manager", return_value=Jobs()),
+    ):
+        assert manager.start_scan()
+        assert entered.wait(timeout=3)
+        assert manager.entry_for_path(song) is not None
+        assert manager.catalog.points(song)["end"] == 179.0
+        assert manager.snapshot()["import"]["phase"] == "preparing audio"
+        assert len(manager.analysis_pending()) == 1
+        assert manager.schedule_analysis()
+        release.set()
+        manager._thread.join(timeout=3)
+        assert not manager._thread.is_alive()
+
+
+def test_invalid_automatic_point_does_not_block_basic_track(manager_factory, tmp_path):
+    music = tmp_path / "Music"
+    music.mkdir()
+    song = music / "song.flac"
+    song.write_bytes(b"music")
+    manager = manager_factory(music=music)
+    invalid_points = {"start": 0.0, "intro": 40.0, "outro": None, "segue": None, "end": 20.0}
+    with (
+        patch("autodj.library.analyze_basic", return_value=(make_entry(song), invalid_points)),
+        patch("autodj.library.prepare_source", side_effect=fake_prepare),
+    ):
+        manager.scan()
+    assert manager.entry_for_path(song) is not None
+    assert manager.catalog.points(song)["intro"] is None
+    assert manager.catalog.points(song)["end"] == 20.0
+    assert not any("song.flac" in error for error in manager.snapshot()["import"]["errors"])
 
 
 def test_confirmed_move_preserves_points_prepared_audio_vector_and_play_history(

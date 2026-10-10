@@ -588,6 +588,7 @@ function settingsDom() {
       <a id="stream-m3u" download="autodj.m3u">Download playlist file (.m3u)</a>
       <label for="stream-bitrate">Quality</label>
       <select id="stream-bitrate"><option value="128">128 kbps</option><option value="192">192 kbps</option><option value="256">256 kbps</option><option value="320">320 kbps</option></select>
+      <input id="stream-continuous" type="checkbox">
       <button type="button" id="stream-rotate">Make new link</button>
       <p id="stream-listeners"></p>
     </fieldset>
@@ -674,6 +675,18 @@ describe("stream settings", () => {
     makeSettings();
     const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
     expect(byId("stream-loopback-note").hidden).toBe(!loopback);
+  });
+
+  it("saves the keep-playing choice independently of listener controls", async () => {
+    settingsDom();
+    const saveContinuous = vi.fn(async () => true);
+    const { ui } = makeSettings({ saveContinuous });
+    ui.apply({ stream_mode: true, stream_listeners: 0 });
+    await vi.waitFor(() => expect(byId("stream-url").value).not.toBe(""));
+    const control = byId("stream-continuous");
+    control.checked = true;
+    control.dispatchEvent(new Event("change"));
+    await vi.waitFor(() => expect(saveContinuous).toHaveBeenCalledWith(true, control));
   });
 
   it("stays hidden and fetches nothing outside stream mode", () => {

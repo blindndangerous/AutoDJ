@@ -233,12 +233,12 @@ class LibraryCatalog:
         placeholders = ",".join("?" for _ in _ENTRY_FIELDS)
         if row:
             self._db().execute(
-                f"UPDATE catalog_entries SET kind=?, {','.join(f'{n}=?' for n in _ENTRY_FIELDS)} WHERE path=?",
+                f"UPDATE catalog_entries SET kind=?, {','.join(f'{n}=?' for n in _ENTRY_FIELDS)} WHERE path=?",  # nosec B608 -- constant field names; values are bound
                 (kind, *values, path),
             )
         else:
             self._db().execute(
-                f"INSERT INTO catalog_entries (id,path,kind,{cols}) VALUES (?,?,?,{placeholders})",
+                f"INSERT INTO catalog_entries (id,path,kind,{cols}) VALUES (?,?,?,{placeholders})",  # nosec B608 -- constant field names; values are bound
                 (record_id, path, kind, *values),
             )
         if prepared_path is not None:

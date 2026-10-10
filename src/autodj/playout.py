@@ -45,7 +45,7 @@ def _frames(seconds: float, name: str) -> int:
     return round(frames)
 
 
-def _audio(value: np.ndarray, name: str, *, optional: bool = False) -> np.ndarray | None:
+def _audio(value: np.ndarray | None, name: str, *, optional: bool = False) -> np.ndarray | None:
     if value is None and optional:
         return None
     if (
@@ -76,7 +76,9 @@ def render_handoff(
     fade tail and the remaining voice tail are returned as ``next_overlay``.
     Point times are seconds in their source files; offsets are sample frames.
     """
-    outgoing = _audio(outgoing, "outgoing")
+    checked = _audio(outgoing, "outgoing")
+    assert checked is not None
+    outgoing = checked
     liner = _audio(liner, "liner", optional=True)
     if not isinstance(outgoing_points, dict) or not isinstance(incoming_points, dict):
         raise ValueError("point sets must be dictionaries")

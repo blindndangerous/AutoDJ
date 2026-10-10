@@ -667,6 +667,7 @@
        out of the accessibility tree together. */
     body:has(#dj-phrase-align:not(:checked)) [data-show-when="dj-phrase-align"],
     body:has(#pb-replaygain:not(:checked)) [data-show-when="pb-replaygain"],
+    body:not(:has(#pb-replaygain option[value="replaygain"]:checked)) [data-show-when="loudness_processing=replaygain"],
     body:has(#key-notation option[value="musical"]:not(:checked)) [data-show-when="key-notation=musical"],
     body:has(#disc-enabled:not(:checked)) [data-show-when="disc-enabled"],
     body:has(#ln-enabled:not(:checked)) [data-show-when="ln-enabled"] {

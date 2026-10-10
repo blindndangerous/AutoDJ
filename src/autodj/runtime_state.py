@@ -49,7 +49,9 @@ STATE_VERSION = 2
 
 #: Saved under ``playback`` but set by their own routes (``/api/volume``,
 #: ``/api/mute``, ``/api/stream/settings``).
-_OWN_ROUTE_PLAYBACK_FIELDS = frozenset({"volume", "is_muted", "stream_bitrate"})
+_OWN_ROUTE_PLAYBACK_FIELDS = frozenset(
+    {"volume", "is_muted", "stream_bitrate", "stream_continuous"}
+)
 #: Playback keys mirrored into ``web_state.json``.
 PERSISTED_PLAYBACK_FIELDS = frozenset(PlaybackSettingsBody.model_fields) | (
     _OWN_ROUTE_PLAYBACK_FIELDS
@@ -148,6 +150,12 @@ def _restore_playback(bridge: PlayerBridge, playback: dict[str, Any]) -> None:
         )
         if bitrate is not _INVALID:
             player._cfg.stream.bitrate = bitrate
+    if "stream_continuous" in playback:
+        continuous = _checked(
+            StreamSettingsBody, "continuous", playback["stream_continuous"], "stream_continuous"
+        )
+        if continuous is not _INVALID:
+            player._cfg.stream.continuous = continuous
 
     values: dict[str, Any] = {}
     for field, saved in playback.items():
