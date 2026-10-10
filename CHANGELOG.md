@@ -10,6 +10,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A separate playable-library catalog preserves source folders, editable cue points,
+  prepared audio and play history while detailed matching analysis runs in the background.
+  Existing matching vectors are reused, and confirmed file moves retain their saved data.
+- Station playout foundations include a saved-point handoff planner, cached Type B source
+  preparation, a continuous output processor and a safe importer for PAL folder rotations.
 - `autodj index` now recognises tracks that moved, for example after `beet move`, and keeps their
   vectors and DJ cues instead of embedding them again. The index format changed (schema 4): an
   index from an older AutoDJ is refused. Convert one with `scripts/convert_index_v3_to_v4.py`;

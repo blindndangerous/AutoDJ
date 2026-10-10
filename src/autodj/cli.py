@@ -1063,6 +1063,23 @@ def cmd_enrich(ctx: click.Context, index_name: str | None) -> None:
 # ---------------------------------------------------------------------------
 
 
+@cli.command("analyse-library")
+@click.option("--name", "index_name", default=None, type=str)
+@click.pass_context
+def cmd_analyse_library(ctx: click.Context, index_name: str | None) -> None:
+    """Analyse basic-ready songs from folders with advanced analysis enabled."""
+    from autodj.library import analyse_library
+    from autodj.model import download_model_if_needed, load_model
+
+    cfg = _load_cfg_or_exit(ctx.obj["config_path"])
+    _apply_index_name(cfg, index_name)
+    try:
+        model_path = download_model_if_needed(cfg.model, cfg.index, hf_token=cfg.huggingface.token)
+        analyse_library(cfg, load_model(model_path))
+    except Exception as exc:
+        raise click.ClickException(f"Library analysis failed: {exc}") from exc
+
+
 @cli.command("analyse")
 @click.option(
     "--name",
