@@ -1,6 +1,6 @@
 **Points for the supplied audio**
 
-The [playout plan](playout.md) describes how these will be used. These music points come from the accepted [round-nine recordings](playout-round9/index.html), with exact source details in [results.json](playout-round9/results.json). Times refer to positions in the original file. A dash means a point has not been supplied; for playback, an unset Intro gives no intro time and an unset Outro gives no early talk-over time.
+The [playout guide](playout.md) describes how these are used. These music points come from the accepted [round-nine recordings](playout-round9/index.html), with exact source details in [results.json](playout-round9/results.json). Times refer to positions in the original file. A dash means a point has not been supplied; for playback, an unset Intro gives no intro time and an unset Outro gives no early talk-over time.
 
 | Track | Start | Intro | Outro | Segue | End |
 | --- | --- | --- | --- | --- | --- |
@@ -28,4 +28,4 @@ White Town starts at 0:00.250, leaving 11.75 seconds before its 0:12 vocal. Keep
 
 The Christmas recording retains 8.692 seconds after its selected Start; internal pauses remain. Plague's 5.3-second overlap start allows even a cold song to enter there and retains reverb to 8.809 seconds. Ordinary voices and IDs stay at the default zero and are fitted to the available outro/intro window.
 
-The Overlap start column describes the simplified proposal. The existing audio examples have not been regenerated: round nine still contains the older ID/voice differences, including its quarter-second cold-entry allowance. Those differences are to be removed from the implementation plan, not treated as new per-recording exceptions.
+The Overlap start column describes the implemented timing rule. The older round-nine examples still contain ID/voice differences, including a quarter-second cold-entry allowance. The station implementation uses the shared rule without those exceptions.
