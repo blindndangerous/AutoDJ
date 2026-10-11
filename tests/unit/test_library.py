@@ -714,7 +714,7 @@ def test_start_scan_reruns_with_new_sources_when_requested_during_scan(manager_f
     assert repeated.wait(timeout=1)
     manager._thread.join(timeout=1)
     assert len(observed) == 2
-    assert any("second" in source for source in observed[1])
+    assert os.path.normcase(str(second_root.resolve())) in observed[1]
 
 
 def test_failed_scan_thread_start_releases_worker_for_retry(manager_factory):

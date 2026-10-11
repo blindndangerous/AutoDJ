@@ -106,7 +106,7 @@ def _tree(path: Path) -> dict[str, bytes]:
     return {
         file.relative_to(path).as_posix(): file.read_bytes()
         for file in path.rglob("*")
-        if file.is_file()
+        if file.is_file() and file.name != ".index-publication.lock"
     }
 
 
