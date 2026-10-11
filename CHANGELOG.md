@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Public now-playing history and its webhooks include only artist, title, duration and play time;
+  local file paths and internal event IDs remain available in operator history.
+
 ### Added
 
 - Several named clockwheels (Library tools, Clockwheels): create, duplicate, rename, delete,
