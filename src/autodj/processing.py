@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 PREPARATION_VERSION = "loudness-v1"
 TARGET_LUFS = {"music": -28.0, "liner": -25.0}
 MIN_GAIN_DB, MAX_GAIN_DB = -60.0, 18.0
+_FFMPEG_TIMEOUT_S = 600
 VOICE_FILTER = (
     "highpass=f=70,acompressor=threshold=0.063095734:ratio=3:attack=10:release=180:"
     "makeup=1:knee=4:link=maximum:detection=rms"
@@ -34,6 +35,19 @@ MASTER_FILTER = (
 )
 
 _LUFS = re.compile(r"\bI:\s*(-?\d+(?:\.\d+)?)\s* LUFS")
+
+
+def _run_ffmpeg(command: list[str]) -> subprocess.CompletedProcess[bytes]:
+    try:
+        return subprocess.run(  # nosec B603 -- fixed FFmpeg argv, no shell
+            command,
+            capture_output=True,
+            check=False,
+            timeout=_FFMPEG_TIMEOUT_S,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"ffmpeg timed out after {_FFMPEG_TIMEOUT_S}s: {command[0]}") from exc
 
 
 def _kind(kind: str) -> float:
@@ -51,7 +65,7 @@ def analyze_loudness(source: Path, kind: str = "music") -> dict[str, object]:
     filters = "aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo"
     if kind == "liner":
         filters += f",{VOICE_FILTER}"
-    result = subprocess.run(  # nosec B603 -- fixed FFmpeg argv, no shell
+    result = _run_ffmpeg(
         [
             shutil.which("ffmpeg") or "ffmpeg",
             "-hide_banner",
@@ -68,8 +82,6 @@ def analyze_loudness(source: Path, kind: str = "music") -> dict[str, object]:
             "null",
             "-",
         ],
-        capture_output=True,
-        check=False,
     )
     log = (result.stdout + result.stderr).decode("utf-8", errors="replace")
     if result.returncode:
@@ -153,7 +165,7 @@ def load_processed_audio(
     if max_seconds is not None:
         command += ["-t", str(max_seconds + 1.0)]
     command += ["-f", "f32le", "pipe:1"]
-    result = subprocess.run(command, capture_output=True, check=False)  # nosec B603
+    result = _run_ffmpeg(command)
     detail = result.stderr.decode(errors="replace").strip()
     if result.returncode:
         raise RuntimeError(f"ffmpeg audio processing failed for {source}: {detail[-1000:]}")

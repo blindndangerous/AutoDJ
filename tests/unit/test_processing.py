@@ -131,6 +131,39 @@ def test_loudness_measurement_reports_ffmpeg_decode_failure(tmp_path: Path) -> N
         processing.analyze_loudness(damaged)
 
 
+@pytest.mark.parametrize("operation", ["measure", "decode"])
+def test_ffmpeg_timeout_is_bounded_and_reported(
+    tmp_path: Path, monkeypatch, operation: str
+) -> None:
+    source = tmp_path / "song.wav"
+    source.write_bytes(b"source")
+    stat = source.stat()
+    measurement = {
+        "version": processing.PREPARATION_VERSION,
+        "kind": "music",
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+        "lufs": -20.0,
+        "gain_db": -8.0,
+    }
+    calls = []
+
+    def timeout(command, **kwargs):
+        calls.append(kwargs)
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr(processing.subprocess, "run", timeout)
+    with pytest.raises(RuntimeError, match="ffmpeg timed out"):
+        if operation == "measure":
+            processing.analyze_loudness(source)
+        else:
+            processing.load_processed_audio(source, measurement)
+
+    assert len(calls) == 1
+    assert calls[0]["timeout"] == 600
+    assert calls[0]["creationflags"] == getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
 def test_basic_suggestions_keep_segue_unset_without_sustained_tail_drop(
     tmp_path: Path,
 ) -> None:
