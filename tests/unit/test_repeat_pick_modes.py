@@ -220,6 +220,7 @@ def test_automatic_start_honours_restored_repeat_history(mode: str) -> None:
     entries = player.playable_entries()
     history = {
         entries[1].path: datetime.now(UTC) - timedelta(days=3),
+        entries[2].path: datetime.now(UTC) - timedelta(days=2),
         entries[0].path: datetime.now(UTC) - timedelta(days=1),
     }
     player._library = _library(player)

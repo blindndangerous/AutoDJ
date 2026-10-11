@@ -1004,6 +1004,7 @@ class Player:
 
         In DMCA mode it keeps the complement too (see :meth:`_dmca_checked`).
         """
+        chosen: IndexEntry | None
         dmca = self._pick_context() if self._state.dmca_enabled else None
         if self._library is not None:
             entries = [e for e in self.playable_entries() if not e.is_silent]
