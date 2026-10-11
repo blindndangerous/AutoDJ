@@ -183,6 +183,28 @@ the detected addresses as a bare-metal server does.
 
 ## Radio stream listening
 
+`GET /api/nowplaying` and `HEAD /api/nowplaying` are public and exempt from pairing, and so is the
+status page `GET /status` (and HEAD), which renders the same snapshot as HTML.
+They expose only the station name, artist/title/album/duration/timing of the current
+and optional next song, a capped recent history, the local stream listener count and
+the stream path. They contain no file paths, internal IDs, credentials or pairing
+state. The response is cached on track and listener changes, and only this route has
+the wildcard CORS header. The next song is left out unless the operator turns on `show_next`.
+The feed adds today's peak listener count and the server uptime; both reveal roughly when
+AutoDJ restarted and how popular the station is, which the operator accepts by running a public
+station. The status page HTML-escapes every value (station names and song tags are
+operator- or file-controlled text), sends `Content-Security-Policy: default-src 'none';
+script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'`,
+`X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`, and loads only
+`/modules/status-page.js` and `/modules/status-page.css`, which were already public with the
+rest of `/modules/`. It has no forms or controls, so framing it elsewhere gains nothing.
+
+Configured webhooks make outbound HTTP requests to operator-chosen URLs after track
+changes. Their URLs can contain tokens and are accepted only from `config.local.toml`;
+the paired status API exposes the host and last result, never the URL or response body.
+The send-test route requires pairing. Operators should choose destinations they trust,
+since each receives the public now-playing metadata.
+
 Stream mode (`autodj serve --stream`, or `[stream] enabled = true`, which the Compose service
 reads from `config.toml`) serves the live mix as MP3 at `/stream.mp3`, plus `/stream.m3u`, a
 one-line playlist naming the same address. Like an Icecast mount with no listener

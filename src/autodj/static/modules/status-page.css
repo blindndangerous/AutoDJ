@@ -1,0 +1,83 @@
+/* The public status page (/status).  System colours and fonts, so it
+   follows the reader's light or dark preference and forced colours. */
+
+:root {
+  color-scheme: light dark;
+}
+
+body {
+  margin: 0 auto;
+  max-width: 40rem;
+  padding: 1rem;
+  font-family: system-ui, sans-serif;
+  font-size: 1.125rem;
+  line-height: 1.5;
+  background: Canvas;
+  color: CanvasText;
+}
+
+h1 {
+  margin: 0;
+  font-size: 1.75rem;
+}
+
+h2 {
+  margin: 1.5rem 0 0.25rem;
+  font-size: 1.25rem;
+}
+
+header p,
+footer {
+  margin: 0.25rem 0;
+}
+
+dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 1rem;
+  margin: 0.5rem 0;
+}
+
+dt {
+  font-weight: 600;
+}
+
+dd {
+  margin: 0;
+}
+
+a {
+  color: LinkText;
+  text-decoration: underline;
+}
+
+button {
+  min-height: 44px;
+  padding: 0.25rem 0.75rem;
+  font: inherit;
+  color: ButtonText;
+  background: ButtonFace;
+  border: 2px solid ButtonText;
+  border-radius: 4px;
+}
+
+/* Pressed is also said in words ("Updates paused.") beside it. */
+button[aria-pressed="true"] {
+  border-width: 4px;
+}
+
+button:focus-visible,
+a:focus-visible {
+  outline: 3px solid currentcolor;
+  outline-offset: 2px;
+}
+
+footer {
+  margin-top: 2rem;
+}
+
+@media (max-width: 24rem) {
+  dl {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1298,7 +1298,8 @@
 
 /* Settings > Stream ------------------------------------------------- */
 
-#stream-url {
+#stream-url,
+#np-url {
   flex: 1;
   min-width: 0;
 }

@@ -111,7 +111,9 @@ def test_restore_reproduces_what_was_backed_up(tmp_path: Path) -> None:
     liners = active / "liners"
     profiles = active.parent / "profiles"
     _publish(cfg, "Kept")
-    (active / "web_state.json").write_text('{"volume": 1}', encoding="utf-8")
+    (active / "web_state.json").write_text(
+        '{"playback": {"nowplaying_show_next": false}}', encoding="utf-8"
+    )
     liners.mkdir()
     (liners / "station.mp3").write_bytes(b"liner")
     (profiles / "night").mkdir(parents=True)
@@ -148,7 +150,9 @@ def test_restore_reproduces_what_was_backed_up(tmp_path: Path) -> None:
         "tracks.g00000000000000000001.db",
         "vectors.g00000000000000000001.index",
     ]
-    assert (active / "web_state.json").read_text(encoding="utf-8") == '{"volume": 1}'
+    assert (active / "web_state.json").read_text(encoding="utf-8") == (
+        '{"playback": {"nowplaying_show_next": false}}'
+    )
     assert sorted(path.name for path in liners.iterdir()) == ["station.mp3"]
     assert (profiles / "night" / "profile.json").read_text(encoding="utf-8") == "{}"
     with closing(sqlite3.connect(active / "dj_meta.db")) as conn:

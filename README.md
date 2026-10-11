@@ -119,6 +119,11 @@ server can listen without a key. Browser controls still require pairing in LAN m
 keyed addresses such as `/stream/<secret>.mp3` no longer work, so set any player saved with one
 to `/stream.mp3`.
 
+The public `/api/nowplaying` JSON feed lets pages show the station's current song, upcoming song,
+recent plays and listener count, and the public `/status` page shows the same to listeners as plain text. The upcoming song is hidden unless you turn on `[nowplaying] show_next`. Track-change
+webhooks can send the same metadata to other services or Discord; configure their URLs in
+`config.local.toml`. See [Operations](docs/operations.md#now-playing-feed-and-webhooks).
+
 ### Relay to Icecast or Shoutcast
 
 Stream mode can also push the station to hosted Icecast 2.4, Shoutcast 1 or Shoutcast 2 servers,

@@ -29,6 +29,7 @@ import { installSeekController } from "./modules/seek-controller.js";
 import { installLibraryFolders } from "./modules/library-folders.js";
 import { installClockwheelPanel } from "./modules/clockwheel-panel.js";
 import { createStreamMode, createStreamSettings } from "./modules/stream-mode.js";
+import { installNowPlayingSettings } from "./modules/nowplaying-settings.js";
 import { initSubtabs } from "./modules/subtabs.js";
 
 if (isDebug()) {
@@ -172,6 +173,15 @@ const streamSettings = createStreamSettings({
   srStatus: document.getElementById("sr-status"),
   settingsStatus,
 });
+// Settings > Stream > Now-playing feed: its link, show-next and webhooks.
+const nowPlayingSettings = installNowPlayingSettings({
+  doc: document,
+  request: requestJson,
+  saveShowNext: (value, control) =>
+    postSettings("/api/stream/settings", { show_next: value }, control),
+  srStatus: document.getElementById("sr-status"),
+  settingsStatus,
+});
 // A lookup that failed while another tab showed was never heard; opening
 // Settings tries again.
 window.addEventListener("hashchange", () => {
@@ -215,6 +225,7 @@ function clearProtectedSessionData() {
   _seekController?.cancel();
   streamMode.stop();
   streamSettings.reset();
+  nowPlayingSettings?.reset();
   resetTrackCaches();
   historyRequest?.abort();
   resetLyricState();
@@ -447,6 +458,7 @@ function applyState(s) {
   _lastStreamServerAudio = inStream && Boolean(s.stream_server_audio);
   streamMode.apply(s);
   streamSettings.apply(s);
+  nowPlayingSettings?.apply(s);
   const browserMode = Boolean(s.browser_playback) && !inStream;
 
   // Now Playing

@@ -1171,6 +1171,43 @@
       <span class="setting-desc" id="stream-continuous-desc">
         Keep the station running even when nobody is listening. When off, it starts when a listener connects and stops after a short wait once the last listener leaves.
       </span>
+      <!-- The public now-playing feed and the webhooks from
+           config.local.toml; nowplaying-settings.js fills it.  Nested so
+           it shows, hides and hands focus away with the Stream settings.
+           The webhook list and its empty note are plain text, not live:
+           results of Copy, the show-next save and Send test go to the
+           status regions. -->
+      <fieldset id="np-settings">
+        <legend>Now-playing feed</legend>
+        <div class="settings-row">
+          <label for="np-url">Now-playing link</label>
+          <input type="text" id="np-url" readonly aria-describedby="np-url-desc">
+          <button type="button" id="np-copy">Copy now-playing link</button>
+        </div>
+        <span class="setting-desc" id="np-url-desc">
+          Public JSON for web pages, overlays and other services: the station name, the song playing, recent songs, the listener count, today's peak and the uptime. Anyone who can reach AutoDJ can read it without pairing. It never includes file paths.
+        </span>
+        <div class="settings-row">
+          <label for="np-status-url">Status page link</label>
+          <input type="text" id="np-status-url" readonly aria-describedby="np-status-url-desc">
+          <button type="button" id="np-status-copy">Copy status page link</button>
+        </div>
+        <span class="setting-desc" id="np-status-url-desc">
+          A public page for listeners with the same details as plain text, updated every 15 seconds. It needs no pairing.
+        </span>
+        <p class="stream-detail"><a id="np-status-open" href="/status" target="_blank" rel="noopener">Open the status page (new tab)</a></p>
+        <p class="stream-detail" id="np-loopback-note" hidden>These links only work on this computer. Open AutoDJ using its network address (see the start-up message) to copy links other devices can reach.</p>
+        <div class="settings-check">
+          <input type="checkbox" id="np-show-next" aria-describedby="np-show-next-desc">
+          <label for="np-show-next">Show the next song publicly</label>
+        </div>
+        <span class="setting-desc" id="np-show-next-desc">
+          Add the upcoming song to the now-playing feed. Off by default, because some webcasting licences, such as the US statutory licence, do not allow announcing songs in advance.
+        </span>
+        <p class="stream-detail" id="np-webhooks-intro">Track-change webhooks</p>
+        <ul class="stream-detail" id="np-webhooks-list" aria-labelledby="np-webhooks-intro" hidden></ul>
+        <p class="stream-detail" id="np-webhooks-empty" hidden></p>
+      </fieldset>
     </fieldset>
   </div>
 

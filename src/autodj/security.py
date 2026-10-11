@@ -42,6 +42,9 @@ _PUBLIC_FILES = frozenset(
         "/healthz",
         "/api/version",
         "/api/auth/status",
+        "/api/nowplaying",
+        # The public station status page; see status_page.py.
+        "/status",
         "/api/pair",
     }
 )
