@@ -307,6 +307,47 @@ def test_stereotool_output_lifts_quiet_audio_and_limits_peaks() -> None:
     assert np.max(np.abs(resample_poly(output, 4, 1, axis=0))) <= 10 ** (-1 / 20)
 
 
+def test_stereotool_output_stage_adds_no_sample_delay() -> None:
+    from autodj.mastering import _STEREOTOOL_OUTPUT_FILTER, _ffmpeg_command
+
+    impulse = np.zeros((44100, 2), dtype=np.float32)
+    impulse[10_000] = 0.2
+    result = subprocess.run(
+        _ffmpeg_command(_STEREOTOOL_OUTPUT_FILTER),
+        input=impulse.tobytes(),
+        capture_output=True,
+        check=True,
+        timeout=10,
+    )
+    output = np.frombuffer(result.stdout, dtype=np.float32).reshape(-1, 2)
+    assert output.shape == impulse.shape
+    assert int(np.argmax(np.abs(output[:, 0]))) == 10_000
+
+
+@pytest.mark.parametrize("signal", ["noise", "square"])
+def test_stereotool_output_true_peak_stays_below_ceiling_after_resample(signal: str) -> None:
+    from scipy.signal import resample_poly
+
+    from autodj.mastering import _STEREOTOOL_OUTPUT_FILTER, _ffmpeg_command
+
+    samples = np.arange(44100 * 3)
+    if signal == "noise":
+        hot = np.clip(np.random.default_rng(1).normal(0, 0.4, len(samples)), -1, 1)
+    else:
+        hot = 0.9 * np.sign(np.sin(2 * np.pi * 1000 * samples / 44100))
+    source = np.column_stack((hot, hot)).astype(np.float32)
+    result = subprocess.run(
+        _ffmpeg_command(_STEREOTOOL_OUTPUT_FILTER),
+        input=source.tobytes(),
+        capture_output=True,
+        check=True,
+        timeout=10,
+    )
+    output = np.frombuffer(result.stdout, dtype=np.float32).reshape(-1, 2)[22050:]
+    true_peak = np.max(np.abs(resample_poly(output, 4, 1, axis=0)))
+    assert 20 * np.log10(true_peak) <= -1.2
+
+
 def test_output_limiter_start_failure_cleans_up_stereotool() -> None:
     primary = MagicMock()
     primary.poll.return_value = None

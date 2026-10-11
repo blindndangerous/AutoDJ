@@ -26,15 +26,23 @@ STARTUP_BLOCKS: Final = 12
 # The extra cushion absorbs short Windows pipe/thread scheduling gaps, including
 # the first blocks after a restarted FFmpeg process.
 _OUTPUT_GUARD_BLOCKS: Final = STARTUP_BLOCKS + 6
-# Stereo Tool and its output limiter use this cushion for roughly 480 ms total delay.
+# Stereo Tool buffers about two blocks more than FFmpeg, so it needs two fewer
+# guard blocks for the same 24-block (480 ms) delay.  Its FFmpeg output limiter
+# stage adds no sample delay (alimiter compensates its look-ahead; see the
+# tests) and, fed in real time, its pipe added at most one block before the
+# first output and none in steady state, so the total stays 480-500 ms.
 _STEREOTOOL_GUARD_BLOCKS: Final = 16
 _MEASURED_PIPELINE_BLOCKS: Final = _OUTPUT_GUARD_BLOCKS + 6
 _QUEUE_BLOCKS: Final = _OUTPUT_GUARD_BLOCKS + 20
 _LIMIT: Final = 0.87096359
 _MAKEUP: Final = 10 ** (9.01 / 20)
+# The limiter works at 176.4 kHz; the final 44.1 kHz resample adds up to about
+# 0.55 dB of inter-sample overshoot on hot noise and square waves, so a -1.8 dBFS
+# ceiling keeps the resampled true peak at or below -1.2 dBTP.
+_STEREOTOOL_CEILING: Final = 10 ** (-1.8 / 20)
 _STEREOTOOL_OUTPUT_FILTER: Final = (
-    "volume=5.8dB,aresample=176400,alimiter=limit=0.87096359:attack=5:release=100:"
-    "level=0:latency=1,aresample=44100"
+    f"volume=5.8dB,aresample=176400,alimiter=limit={_STEREOTOOL_CEILING:.8f}:attack=5:"
+    "release=100:level=0:latency=1,aresample=44100"
 )
 
 
