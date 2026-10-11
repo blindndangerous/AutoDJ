@@ -1438,6 +1438,7 @@ def create_app(
     body_limits: dict[str, Callable[[], int]] = {
         "/api/pair": lambda: PAIRING_BODY_MAX_BYTES,
         "/api/liners/upload": lambda: _liner_upload_max_bytes() + _MULTIPART_OVERHEAD_BYTES,
+        "/api/carts/upload": lambda: _liner_upload_max_bytes() + _MULTIPART_OVERHEAD_BYTES,
         "/api/stereo-tool-presets/upload": lambda: MAX_PRESET_BYTES + _MULTIPART_OVERHEAD_BYTES,
         "/api/schedule": lambda: _SCHEDULE_BODY_MAX_BYTES,
     }
@@ -2110,7 +2111,10 @@ def create_app(
         """Save (or overwrite) a profile bundle."""
         from autodj.profiles import ProfileSnapshot
 
-        snap = ProfileSnapshot(**body.model_dump())
+        values = body.model_dump()
+        # The cart page shown now is part of the profile.
+        values["cart_page"] = cart_store.page(cart_store.wall.active_page).name
+        snap = ProfileSnapshot(**values)
         with _profile_http_errors():
             target = await asyncio.to_thread(_profile_store().save, snap)
         return {"saved": snap.name, "path": str(target)}
@@ -2150,7 +2154,7 @@ def create_app(
         # Playback flags: every snapshot field not applied on its own below.
         kw: dict = {}
         for fld in fields(ProfileSnapshot):
-            if fld.name in {"name", "preset", "bpm_lo", "bpm_hi", "harmonic_mode"}:
+            if fld.name in {"name", "preset", "bpm_lo", "bpm_hi", "harmonic_mode", "cart_page"}:
                 continue
             v = getattr(snap, fld.name)
             if v is not None:
@@ -2166,6 +2170,23 @@ def create_app(
             raise HTTPException(
                 status_code=400, detail=f"Profile {name} is invalid: {exc}"
             ) from exc
+        # The profile names its cart page.  A page renamed since then refuses
+        # the profile before anything changes, like a missing preset.
+        cart_page = None
+        if snap.cart_page is not None:
+            cart_page = next(
+                (
+                    number
+                    for number, page in enumerate(cart_store.wall.pages, 1)
+                    if page.name.casefold() == snap.cart_page.casefold()
+                ),
+                None,
+            )
+            if cart_page is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Profile {name} uses cart page {snap.cart_page!r}, which does not exist",
+                )
         bridge.set_playback_settings(playback)
         # BPM range
         if bpm.lo is not None and bpm.hi is not None:
@@ -2179,6 +2200,11 @@ def create_app(
         if snap.preset is not None:
             bridge.set_preset(snap.preset)
             applied.append("preset")
+        if cart_page is not None:
+            cart_store.wall.active_page = cart_page
+            await asyncio.to_thread(cart_store.save)
+            await _publish_schedule({"type": "cart_changed"})
+            applied.append("cart_page")
         bridge.save_persistent_state()
         if recorder is not None:
             recorder.show_changed()
@@ -3180,6 +3206,10 @@ def create_app(
     async def _publish_schedule(message: dict[str, Any]) -> None:
         await _broadcast_and_prune(_ws_clients, _ws_lock, json.dumps(message))
 
+    from autodj.carts import install_carts
+
+    cart_store, cart_action = install_carts(app, bridge, _publish_schedule, _resolve_liner_folder)
+
     def _liner_names() -> list[str]:
         from autodj.liners import LinerLibrary
 
@@ -3196,6 +3226,7 @@ def create_app(
         liner_names=_liner_names,
         publish=_publish_schedule,
     )
+    station_schedule.register(cart_action)
 
     for name, description, call in (
         ("start", "Start recording", Recorder.start),

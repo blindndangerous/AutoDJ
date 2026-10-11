@@ -75,20 +75,41 @@ describe("tab arrow keys", () => {
     }
   });
 
-  it("places Track info after Queue & Search in both cached markup and keyboard order", async () => {
+  it("places Carts, then Track info, after Queue & Search in cached markup and keyboard order", async () => {
     installIndex();
+    const carts = document.getElementById("tab-carts");
     const info = document.getElementById("tab-track-info");
-    expect(document.getElementById("tab-queue").nextElementSibling).toBe(info);
-    info.parentElement.append(info);
+    expect(document.getElementById("tab-queue").nextElementSibling).toBe(carts);
+    expect(carts.nextElementSibling).toBe(info);
+    // A cached page with the tabs in another order is put right.
+    info.parentElement.append(carts, info);
     vi.resetModules();
     const { initViewRouter: freshRouter } = await import(
       "../../src/autodj/static/modules/tabs.js");
     freshRouter();
     const queue = document.getElementById("tab-queue");
-    expect(queue.nextElementSibling).toBe(info);
+    expect(queue.nextElementSibling).toBe(carts);
+    expect(carts.nextElementSibling).toBe(info);
     queue.focus();
     queue.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    expect(document.activeElement).toBe(carts);
+    expect(document.getElementById("panel-carts").hidden).toBe(false);
+    carts.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
     expect(document.activeElement).toBe(info);
+    window.location.hash = "";
+  });
+
+  it("focuses the Carts heading when the tab is chosen", async () => {
+    installIndex();
+    window.location.hash = "#now";
+    vi.resetModules();
+    const { initViewRouter: freshRouter } = await import(
+      "../../src/autodj/static/modules/tabs.js");
+    freshRouter();
+    document.querySelector("#tab-carts").click();
+    await vi.waitFor(() => expect(document.querySelector("#panel-carts").hidden).toBe(false));
+    expect(document.activeElement.id).toBe("carts-heading");
+    expect(window.location.hash).toBe("#carts");
     window.location.hash = "";
   });
 

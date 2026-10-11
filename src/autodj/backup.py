@@ -6,9 +6,11 @@ that wrote it and the list of files) and these members:
 - ``index/index-manifest.json`` and the two generation files it names
   (``tracks.gN.db`` and ``vectors.gN.index``): the live index generation.
 - ``index/dj_meta.db``, ``index/library.db``, ``index/web_state.json``,
-  ``index/related-artists.toml``, ``index/schedule.json``, ``index/time_checks.json``,
-  ``index/listener_bans.json`` and ``index/recording.json`` from the active index folder.
-- ``liners/...``, ``time_checks/...`` and ``profiles/...``: every file in those folders.
+  ``index/related-artists.toml``, ``index/schedule.json``, ``index/carts.json``,
+  ``index/time_checks.json``, ``index/listener_bans.json`` and ``index/recording.json``
+  from the active index folder.
+- ``liners/...``, ``carts/...``, ``time_checks/...`` and ``profiles/...``: every file in
+  those folders.
 - ``stereo-tool-presets/...``: the uploaded ``.sts`` presets.
 
 Broadcast recordings are archives, not station state: they can run to many
@@ -43,12 +45,13 @@ INDEX_FILES = (
     "web_state.json",
     "related-artists.toml",
     "schedule.json",
+    "carts.json",
     "time_checks.json",
     "listener_bans.json",
     "recording.json",
     im.MANIFEST_NAME,
 )
-_FOLDERS = ("liners", "time_checks", "profiles", "stereo-tool-presets")
+_FOLDERS = ("liners", "carts", "time_checks", "profiles", "stereo-tool-presets")
 
 
 class BackupError(RuntimeError):
@@ -61,6 +64,7 @@ def _roots(cfg: AutoDJConfig) -> dict[str, Path]:
     return {
         "index": active,
         "liners": Path(cfg.playback.liners_folder or active / "liners"),
+        "carts": active / "carts",
         "time_checks": Path(cfg.time_checks.clips_folder or active / "time_checks"),
         "profiles": active.parent / "profiles",
         "stereo-tool-presets": active.parent / "stereo-tool-presets",
@@ -146,6 +150,7 @@ def create_backup(cfg: AutoDJConfig, destination: Path, *, force: bool) -> Path:
                 for name in (
                     "web_state.json",
                     "schedule.json",
+                    "carts.json",
                     "time_checks.json",
                     "listener_bans.json",
                     "recording.json",

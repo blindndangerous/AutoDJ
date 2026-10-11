@@ -22,6 +22,10 @@
 // s/S and m/M are shuffle and mute in either case, so no status key may
 // use them.  Status keys: T N R B K L E V Q J.
 //
+// Reserved for the cart wall (modules/cart-wall.js), which handles them
+// only while focus is on the wall: the digits, minus, equals, Page Up and
+// Page Down.  No shortcut here may use them.
+//
 // WCAG 2.1.4: single-key shortcuts can be switched off with the
 // Settings > Keyboard checkbox.  The choice is kept per browser in
 // localStorage and defaults to on; storage that is blocked or throws
@@ -100,7 +104,7 @@ let _shortcutsOn = null;
 
 // Read lazily, never at import: touching localStorage at module load is
 // what dom-helpers.js avoids too.
-function shortcutsEnabled() {
+export function shortcutsEnabled() {
   if (_shortcutsOn === null) {
     try {
       _shortcutsOn = globalThis.localStorage?.getItem(SHORTCUTS_STORAGE_KEY) !== "off";

@@ -139,6 +139,14 @@ AutoDJ checks its size before reading and refuses files larger than 1 MiB. Brows
 not include artist names or unexpected top-level keys from that file.
 Treat a paired browser as trusted.
 
+The cart wall routes under `/api/carts` require a paired browser like every other `/api` route.
+A slot names a voice liner by catalog ID or liner-folder file name, or an uploaded clip by file
+name, never a path; the names pass the same checks as `/api/liners/file`. Uploaded clips go to
+the `carts` folder in the active index folder, with the voice liner size cap and extension list,
+are never overwritten, and are deleted again if they do not decode. `carts.json` is validated
+when the server starts, and a file that fails is set aside. Backups include the wall and the
+uploads. A paired browser can play carts into the server audio or stream output.
+
 Time check settings, preview, and test routes under `/api/time-checks` also require a paired
 browser. The browser receives clip coverage and the station time zone, but no configured clip
 paths or TTS command. It can change only enabled, hour format, and rule; paths and executable

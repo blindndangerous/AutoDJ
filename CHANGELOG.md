@@ -10,6 +10,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A cart wall (the Carts tab) with four pages of twelve numbered carts for station IDs, jingles
+  and sound effects. Assign a voice liner or an uploaded clip, then play it with its button or,
+  with focus on the wall, keys 1 to 9, 0, minus and equals; Page Up and Page Down change the
+  page. A cart ducks the music, plays over it, or replaces it until the cart ends, in browser
+  playback, server audio and stream mode. Every open page announces when a cart starts and ends.
+  The wall and the uploads are kept on the server and in backups, profiles remember the page
+  shown, and the scheduler can play a cart.
+
 - Spoken time checks (Settings, Time checks) use a recorded `HH_MM` clip or a cached external
   TTS command, with optional intro and outro clips. They play from a Schedule action or after the
   song that crosses the hour, in the station time zone, with the voice liner duck and talk-up; the

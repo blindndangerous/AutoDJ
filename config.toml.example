@@ -107,6 +107,7 @@ insecure_lan = false
 # allowed_hosts = ["radio.local"]
 # allowed_origins = ["https://radio.local:8080"]
 session_ttl_seconds = 7776000  # 90 days; revoke paired browsers with `autodj devices`.
+# Largest voice liner or cart clip upload, in MiB.
 liner_upload_max_mib = 50
 # Serve HTTPS: a PEM certificate chain and its private key, both or neither.  Both files
 # must exist at startup; --ssl-certfile and --ssl-keyfile replace them.  Renewed files are

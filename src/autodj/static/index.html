@@ -79,6 +79,7 @@
   <div role="tablist" aria-orientation="horizontal">
     <button type="button" role="tab" id="tab-now"      data-view="now"      aria-selected="true"  tabindex="0">Now Playing</button>
     <button type="button" role="tab" id="tab-queue"    data-view="queue"    aria-selected="false" tabindex="-1">Queue &amp; Search</button>
+    <button type="button" role="tab" id="tab-carts"    data-view="carts"    aria-selected="false" tabindex="-1">Carts</button>
     <button type="button" role="tab" id="tab-track-info" data-view="track-info" aria-selected="false" tabindex="-1">Track info</button>
     <button type="button" role="tab" id="tab-history"  data-view="history"  aria-selected="false" tabindex="-1">History</button>
     <button type="button" role="tab" id="tab-settings" data-view="settings" aria-selected="false" tabindex="-1">Settings</button>
@@ -1639,6 +1640,99 @@
 
   </section>
   <!-- ============================================================
+       View: Carts — the cart wall: twelve numbered carts per page for
+       station IDs, jingles and effects (modules/cart-wall.js).  The
+       module finds everything inside #cart-wall.
+       ============================================================ -->
+  <section data-view="carts" id="panel-carts" role="tabpanel" hidden aria-labelledby="tab-carts">
+    <h2 id="carts-heading">Carts</h2>
+    <div id="cart-wall">
+      <p id="cart-keys-help">
+        Press a cart to play it; an empty cart opens in the editor below.
+        With focus on a cart, keys 1 to 9 and 0, minus and equals play carts 1 to 12 on this page,
+        and Page Up and Page Down change the page.
+        With NVDA, switch to focus mode first (NVDA+Space).
+        These keys do nothing in text fields and dropdowns, and the Enable keyboard shortcuts
+        checkbox under Settings, Display and keys turns them off.
+      </p>
+      <div class="settings-row">
+        <label for="cart-page">Cart page</label>
+        <select id="cart-page"></select>
+      </div>
+      <!-- role="list": list-style none drops the list role in Safari. -->
+      <ol id="cart-slots" role="list" aria-label="Carts"></ol>
+      <button type="button" id="cart-stop">Stop carts</button>
+      <!-- What the user just did.  Cart start and end are spoken through
+           #sr-status, so they are heard on every tab. -->
+      <div id="cart-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+
+      <section class="card" aria-labelledby="cart-editor-heading">
+        <h3 id="cart-editor-heading">Edit a cart</h3>
+        <div class="settings-row">
+          <label for="cart-edit-slot">Cart to edit</label>
+          <select id="cart-edit-slot"></select>
+        </div>
+        <div class="settings-row">
+          <label for="cart-name">Cart name</label>
+          <input type="text" id="cart-name" maxlength="80" autocomplete="off">
+        </div>
+        <div class="settings-row">
+          <label for="cart-source">Clip from</label>
+          <select id="cart-source">
+            <option value="liner">Voice liners</option>
+            <option value="upload">Uploaded clips</option>
+          </select>
+        </div>
+        <div class="settings-row">
+          <label for="cart-clip">Clip</label>
+          <select id="cart-clip"></select>
+        </div>
+        <div class="settings-row">
+          <label for="cart-mode">Music during the cart</label>
+          <select id="cart-mode" aria-describedby="cart-mode-desc">
+            <option value="duck">Duck</option>
+            <option value="over">Over</option>
+            <option value="replace">Replace</option>
+          </select>
+        </div>
+        <span class="setting-desc" id="cart-mode-desc">
+          Duck lowers the music by the voice liner duck depth. Over leaves the music at full volume.
+          Replace fades the music out; the song keeps playing silently and fades back in when the cart ends.
+        </span>
+        <div>
+          <button type="button" id="cart-save">Save cart</button>
+          <button type="button" id="cart-clear">Clear cart</button>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="cart-upload-heading">
+        <h3 id="cart-upload-heading">Uploaded clips</h3>
+        <div class="settings-row">
+          <label for="cart-upload-file">Audio clip</label>
+          <input type="file" id="cart-upload-file" aria-describedby="cart-upload-desc"
+                 accept=".mp3,.wav,.ogg,.m4a,.flac,.aac,audio/*">
+          <button type="button" id="cart-upload">Upload clip</button>
+        </div>
+        <span class="setting-desc" id="cart-upload-desc">
+          MP3, WAV, OGG, M4A, FLAC or AAC, up to the voice liner upload size. A clip with the same file name is never replaced.
+        </span>
+        <button type="button" id="cart-delete-upload" aria-describedby="cart-delete-desc" disabled>Delete uploaded clip</button>
+        <span class="setting-desc" id="cart-delete-desc">
+          Deletes the uploaded clip chosen under Clip in the editor. A clip still on a cart cannot be deleted.
+        </span>
+      </section>
+
+      <section class="card" aria-labelledby="cart-page-heading">
+        <h3 id="cart-page-heading">Rename this page</h3>
+        <div class="settings-row">
+          <label for="cart-page-name">Page name</label>
+          <input type="text" id="cart-page-name" maxlength="80" autocomplete="off">
+          <button type="button" id="cart-rename">Rename page</button>
+        </div>
+      </section>
+    </div>
+  </section>
+  <!-- ============================================================
        View: Library tools — index / enrich / analyse / prune / stats
        jobs and the index stats, run from the web UI.
        ============================================================ -->
@@ -1840,6 +1934,8 @@
     <dt><kbd><span aria-hidden="true">,</span><span class="visually-hidden">Comma</span></kbd> <span aria-hidden="true">/</span><span class="visually-hidden">or</span> <kbd><span aria-hidden="true">.</span><span class="visually-hidden">Period</span></kbd></dt><dd>Seek back <span aria-hidden="true">/</span><span class="visually-hidden">or</span> forward 1 measure (BPM-derived; falls back to 5 s). Not available in stream mode.</dd>
     <dt><kbd><span aria-hidden="true">?</span><span class="visually-hidden">question mark</span></kbd></dt><dd>Open <span aria-hidden="true">/</span><span class="visually-hidden">or</span> close this dialog</dd>
     <dt><kbd>Esc</kbd></dt><dd>Close this dialog</dd>
+    <dt style="margin-top:0.5rem">Number keys 1 to 9 and 0, <kbd><span aria-hidden="true">-</span><span class="visually-hidden">minus</span></kbd>, <kbd><span aria-hidden="true">=</span><span class="visually-hidden">equals</span></kbd></dt><dd style="margin-top:0.5rem">Play carts 1 to 12 on the cart page shown. Only with focus on the cart wall, in the Carts tab.</dd>
+    <dt><kbd>Page Up</kbd> <span aria-hidden="true">/</span><span class="visually-hidden">or</span> <kbd>Page Down</kbd></dt><dd>Previous <span aria-hidden="true">/</span><span class="visually-hidden">or</span> next cart page. Only with focus on the cart wall.</dd>
     <dt style="margin-top:0.5rem"><kbd>Shift+T</kbd></dt><dd style="margin-top:0.5rem">Speak current track (artist – title)</dd>
     <dt><kbd>Shift+N</kbd></dt><dd>Speak next track (artist, title, BPM)</dd>
     <dt><kbd>Shift+R</kbd></dt><dd>Speak time remaining</dd>
