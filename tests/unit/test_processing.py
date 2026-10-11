@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import shutil
 from pathlib import Path
 
@@ -18,6 +17,13 @@ def _source(path: Path, *, silence: bool = False) -> Path:
     t = np.arange(rate * 3, dtype=np.float32) / rate
     signal = np.zeros_like(t) if silence else 0.12 * np.sin(2 * np.pi * 440 * t)
     sf.write(path, np.column_stack((signal, signal)), rate, subtype="PCM_16")
+    return path
+
+
+def _mono_48k_source(path: Path) -> Path:
+    rate = 48_000
+    t = np.arange(rate * 2, dtype=np.float32) / rate
+    sf.write(path, 0.12 * np.sin(2 * np.pi * 440 * t), rate, subtype="PCM_16")
     return path
 
 
@@ -47,8 +53,9 @@ def test_liner_filter_preserves_duration_and_relative_level(tmp_path: Path) -> N
     assert np.isfinite(liner_audio).all()
     assert liner_measurement["lufs"] != pytest.approx(music["lufs"], abs=0.05)
     # Targets preserve the requested 3 dB liner advantage.
-    assert (liner_measurement["lufs"] + liner_measurement["gain_db"]
-            - music["lufs"] - music["gain_db"]) == pytest.approx(3.0)
+    assert (
+        liner_measurement["lufs"] + liner_measurement["gain_db"] - music["lufs"] - music["gain_db"]
+    ) == pytest.approx(3.0)
 
 
 def test_loudness_validation_rejects_silence_stale_and_bad_gain(tmp_path: Path) -> None:
@@ -74,6 +81,31 @@ def test_processed_audio_obeys_max_seconds(tmp_path: Path) -> None:
     liner_measurement = processing.analyze_loudness(source, "liner")
     with pytest.raises(ValueError):
         processing.load_processed_audio(source, liner_measurement, "liner", max_seconds=1.0)
+
+
+@pytest.mark.parametrize("kind", ["music", "liner"])
+def test_mono_48k_processing_uses_only_memory_pipe(tmp_path: Path, monkeypatch, kind: str) -> None:
+    source = _mono_48k_source(tmp_path / f"{kind}.wav")
+    monkeypatch.setattr(
+        "tempfile.SpooledTemporaryFile",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("disk spool used")),
+    )
+    measurement = processing.analyze_loudness(source, kind)
+    audio = processing.load_processed_audio(source, measurement, kind)
+
+    assert audio.shape == (2 * processing.SAMPLE_RATE, 2)
+    assert np.isfinite(audio).all() and np.any(audio)
+    assert measurement["lufs"] + measurement["gain_db"] == pytest.approx(
+        processing.TARGET_LUFS[kind]
+    )
+
+
+def test_loudness_measurement_reports_ffmpeg_decode_failure(tmp_path: Path) -> None:
+    damaged = tmp_path / "damaged.wav"
+    damaged.write_bytes(b"not an audio file")
+    with pytest.raises(RuntimeError, match="loudness measurement failed"):
+        processing.analyze_loudness(damaged)
+
 
 def test_basic_suggestions_keep_segue_unset_without_sustained_tail_drop(
     tmp_path: Path,

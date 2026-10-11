@@ -1,4 +1,4 @@
-"""Offline source preparation for smooth radio playback."""
+"""In-memory audio preparation and cue analysis for radio playback."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
+
 from autodj.stereo import SAMPLE_RATE, TrackTooLongError, load_stereo
 
 if TYPE_CHECKING:
@@ -48,9 +49,21 @@ def analyze_loudness(source: Path, kind: str = "music") -> dict[str, object]:
     if kind == "liner":
         filters += f",{VOICE_FILTER}"
     result = subprocess.run(
-        [shutil.which("ffmpeg") or "ffmpeg", "-hide_banner", "-nostats", "-i", str(source),
-         "-vn", "-af", f"{filters},ebur128=peak=none", "-f", "null", "-"],
-        capture_output=True, check=False,
+        [
+            shutil.which("ffmpeg") or "ffmpeg",
+            "-hide_banner",
+            "-nostats",
+            "-i",
+            str(source),
+            "-vn",
+            "-af",
+            f"{filters},ebur128=peak=none",
+            "-f",
+            "null",
+            "-",
+        ],
+        capture_output=True,
+        check=False,
     )
     log = (result.stdout + result.stderr).decode("utf-8", errors="replace")
     if result.returncode:
@@ -67,8 +80,14 @@ def analyze_loudness(source: Path, kind: str = "music") -> dict[str, object]:
     gain_db = _kind(kind) - lufs
     if not MIN_GAIN_DB <= gain_db <= MAX_GAIN_DB:
         raise ValueError(f"required gain outside safe range: {source}")
-    return {"version": PREPARATION_VERSION, "kind": kind, "size": before.st_size,
-            "mtime_ns": before.st_mtime_ns, "lufs": lufs, "gain_db": gain_db}
+    return {
+        "version": PREPARATION_VERSION,
+        "kind": kind,
+        "size": before.st_size,
+        "mtime_ns": before.st_mtime_ns,
+        "lufs": lufs,
+        "gain_db": gain_db,
+    }
 
 
 def loudness_matches(measurement: dict | None, source: Path, kind: str = "music") -> bool:
@@ -79,38 +98,59 @@ def loudness_matches(measurement: dict | None, source: Path, kind: str = "music"
         target = _kind(kind)
         stat = Path(source).stat()
         lufs, gain = float(measurement["lufs"]), float(measurement["gain_db"])
-        return (measurement["version"] == PREPARATION_VERSION and measurement["kind"] == kind
-                and measurement["size"] == stat.st_size and measurement["mtime_ns"] == stat.st_mtime_ns
-                and math.isfinite(lufs) and lufs > -65 and math.isfinite(gain)
-                and MIN_GAIN_DB <= gain <= MAX_GAIN_DB and math.isclose(gain, target - lufs, abs_tol=0.01))
+        return (
+            measurement["version"] == PREPARATION_VERSION
+            and measurement["kind"] == kind
+            and measurement["size"] == stat.st_size
+            and measurement["mtime_ns"] == stat.st_mtime_ns
+            and math.isfinite(lufs)
+            and lufs > -65
+            and math.isfinite(gain)
+            and MIN_GAIN_DB <= gain <= MAX_GAIN_DB
+            and math.isclose(gain, target - lufs, abs_tol=0.01)
+        )
     except (KeyError, TypeError, ValueError, OSError):
         return False
 
 
-def load_processed_audio(source: Path, measurement: dict, kind: str = "music",
-                         max_seconds: float | None = None) -> np.ndarray:
+def load_processed_audio(
+    source: Path, measurement: dict, kind: str = "music", max_seconds: float | None = None
+) -> np.ndarray:
     """Decode the original source and apply its cached constant loudness gain."""
     _kind(kind)
     if not loudness_matches(measurement, source, kind):
         raise ValueError("stale or invalid loudness measurement")
     source = Path(source)
     gain_db = float(measurement["gain_db"])
-    if kind == "music":
-        audio = load_stereo(str(source), max_seconds=max_seconds)
-        audio *= np.float32(10 ** (gain_db / 20))
-    else:
-        command = [shutil.which("ffmpeg") or "ffmpeg", "-hide_banner", "-v", "error", "-i", str(source),
-                   "-vn", "-af", f"{VOICE_FILTER},volume={gain_db:.9f}dB",
-                   "-ar", str(SAMPLE_RATE), "-ac", "2"]
-        if max_seconds is not None:
-            command += ["-t", str(max_seconds + 1.0)]
-        command += ["-f", "f32le", "pipe:1"]
-        result = subprocess.run(command, capture_output=True, check=False)
-        if result.returncode:
-            raise RuntimeError(f"ffmpeg liner processing failed: {result.stderr.decode(errors='replace')[-1000:]}")
-        audio = np.frombuffer(result.stdout, dtype="<f4").reshape(-1, 2).copy()
-        if max_seconds is not None and len(audio) > max_seconds * SAMPLE_RATE:
-            raise TrackTooLongError(str(source), len(audio) / SAMPLE_RATE)
+    filters = "aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo"
+    if kind == "liner":
+        filters += f",{VOICE_FILTER}"
+    filters += f",volume={gain_db:.9f}dB"
+    command = [
+        shutil.which("ffmpeg") or "ffmpeg",
+        "-hide_banner",
+        "-v",
+        "error",
+        "-i",
+        str(source),
+        "-vn",
+        "-af",
+        filters,
+        "-ar",
+        str(SAMPLE_RATE),
+        "-ac",
+        "2",
+    ]
+    if max_seconds is not None:
+        command += ["-t", str(max_seconds + 1.0)]
+    command += ["-f", "f32le", "pipe:1"]
+    result = subprocess.run(command, capture_output=True, check=False)
+    if result.returncode:
+        detail = result.stderr.decode(errors="replace")
+        raise RuntimeError(f"ffmpeg audio processing failed for {source}: {detail[-1000:]}")
+    audio = np.frombuffer(result.stdout, dtype="<f4").reshape(-1, 2).copy()
+    if max_seconds is not None and len(audio) > max_seconds * SAMPLE_RATE:
+        raise TrackTooLongError(str(source), len(audio) / SAMPLE_RATE)
     after = source.stat()
     if (after.st_size, after.st_mtime_ns) != (measurement["size"], measurement["mtime_ns"]):
         raise RuntimeError(f"source changed during audio decode: {source}")
