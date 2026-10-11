@@ -146,6 +146,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Set once the web app has finished starting.  The CLI offers Doctor only for
+# failures before this point, never for a crash in the middle of a broadcast.
+STARTUP_COMPLETE = threading.Event()
+
 
 class RecordingSettingsBody(BaseModel):
     """Runtime recording settings; the archive folder stays config-only."""
@@ -1247,6 +1251,7 @@ def create_app(
             bridge.library.start_scan()
             library_ticker = asyncio.create_task(_tick_library())
         webhooks.start()
+        STARTUP_COMPLETE.set()
         try:
             yield
         finally:

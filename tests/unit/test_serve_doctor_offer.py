@@ -8,7 +8,16 @@ import click
 import pytest
 from click.testing import CliRunner
 
+from autodj import server
 from autodj.cli import _ServeCommand
+
+
+@pytest.fixture(autouse=True)
+def _not_started():
+    """Other tests run the app's lifespan, which marks startup complete."""
+    server.STARTUP_COMPLETE.clear()
+    yield
+    server.STARTUP_COMPLETE.clear()
 
 
 @pytest.mark.parametrize(
@@ -71,3 +80,24 @@ def test_doctor_launch_failure_preserves_serve_failure(doctor_error):
         result = CliRunner().invoke(command, input="y\n")
     assert result.exception is failure
     assert "Doctor did not finish" in result.output
+
+
+def test_no_offer_after_startup_completed():
+    """A crash mid-broadcast exits at once so a restart loop is never left waiting."""
+    failure = RuntimeError("crashed while on air")
+
+    @click.command(cls=_ServeCommand)
+    def command():
+        server.STARTUP_COMPLETE.set()
+        raise failure
+
+    with (
+        patch("click.testing._NamedTextIOWrapper.isatty", return_value=True),
+        patch.dict(os.environ, {"AUTODJ_DOCTOR_ACTIVE": ""}),
+        patch("subprocess.run") as subprocess_run,
+    ):
+        result = CliRunner().invoke(command, input="y\n")
+    assert result.exception is failure
+    assert not subprocess_run.called
+    assert "Run AutoDJ Doctor now?" not in result.output
+    assert "autodj doctor" in result.output

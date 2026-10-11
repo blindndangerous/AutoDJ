@@ -1274,7 +1274,13 @@ class _ServeCommand(click.Command):
                 if ctx.obj and ctx.obj.get("config_path"):
                     hint += " Use the same --config option."
                 click.echo(hint, err=True)
-                if sys.stdin.isatty() and not os.environ.get("AUTODJ_DOCTOR_ACTIVE"):
+                server = sys.modules.get("autodj.server")
+                started = server is not None and server.STARTUP_COMPLETE.is_set()
+                if (
+                    sys.stdin.isatty()
+                    and not started
+                    and not os.environ.get("AUTODJ_DOCTOR_ACTIVE")
+                ):
                     import subprocess  # nosec B404 -- fixed command, argv only, no shell
 
                     try:
