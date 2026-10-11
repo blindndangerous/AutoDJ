@@ -10,22 +10,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- A separate playable-library catalog preserves source folders, editable cue points,
-  prepared audio and play history while detailed matching analysis runs in the background.
-  Existing matching vectors are reused, and confirmed file moves retain their saved data.
-- Station playout foundations include a saved-point handoff planner, cached Type B source
-  preparation, a continuous output processor and a safe importer for PAL folder rotations.
-- Library tools can add several music and liner folders, save their subfolder and analysis
-  choices, and edit points with a separate audio preview. New songs become playable before
-  advanced matching analysis finishes. Removing a folder keeps its files and saved points.
-- Use saved segue points gives server playback the station fade and fits complete liners
-  around the saved Outro and Intro. One Overlap start field also handles jingles with tails.
-  The page identifies the already-prepared handoff when editing the upcoming queue.
-- Pick mode adds Least recently played and Clockwheel. Import a supported PAL folder
-  rotation, choose each track as needed, and restart the rotation at a natural handoff near
-  the hour or other chosen minutes. Only heard tracks update their last-played time.
-- Loudness processing offers Off, ReplayGain and Smooth (Type B). Stream settings can keep
-  the station playing with no listeners, for unattended playout.
+- Add multiple music and liner folders from Library tools, with separate choices for
+  subfolders and background analysis. Songs can play before advanced analysis finishes.
+  Browse by folder and see analysis progress. Confirmed file moves keep their saved data;
+  removing a folder leaves its files and cues intact.
+- **Use saved segue points** gives stream and server audio playback station-style fades.
+  Liners fit around the songs' Outro and Intro cues. **Overlap start** controls when music
+  can enter a liner or jingle, while its Segue cue keeps reverb tails from delaying the song.
+  The queue shows which handoff is already prepared.
+- **Track info** brings together metadata, analysis status, last-played time and cue editing
+  for songs and liners. Open it from Now Playing, the library, search or the queue. Preview
+  cues without changing station playback; Save or Discard protects edits when switching tracks.
+- **Least recently played** chooses songs that have waited longest. **Clockwheel** follows
+  music and liner folder slots, choosing each track as needed. Import supported PAL folder
+  rotations and restart the rotation at a song handoff near the hour or other chosen minutes.
+  Only tracks that actually start playing update their last-played time.
+- Play history survives restarts and is kept without an expiry limit. The history viewer
+  shows the latest 500 entries; each track also retains its last-played time for selection.
+- **Output processing** offers Off, ReplayGain, Smooth and Stereo Tool for stream and server
+  audio. Smooth balances source levels and compresses the continuous mix. Stereo Tool uses
+  the same source preparation with a bundled free preset and a separately installed executable.
+- **Keep playing without listeners** lets the stream run unattended.
 - `autodj index` now recognises tracks that moved, for example after `beet move`, and keeps their
   vectors and DJ cues instead of embedding them again. The index format changed (schema 4): an
   index from an older AutoDJ is refused. Convert one with `scripts/convert_index_v3_to_v4.py`;
@@ -109,6 +114,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Settings help uses plainer language and explains which controls apply to saved segue
+  playback. The processing selector is labelled **Output processing**.
 - `autodj serve --host ADDRESS --port PORT` now works with a network address: with no allowlists,
   access token or `--insecure-lan`, it serves there in LAN mode, with pairing and the machine's
   detected names allowed, instead of stopping with "LAN binding requires an access token". Without
@@ -148,6 +155,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Neutral EQ no longer colours the server mix, and moving EQ sliders changes the sound smoothly.
+- Replacing audio at an existing path no longer leaves stale cues that can break a rescan.
+  Changed file contents reset cue and analysis caches, including when a file is retagged;
+  unchanged files and confirmed moves keep their cues.
+- Cue times round correctly across second and minute boundaries, and oversized values are
+  rejected instead of silently clearing a cue. Random walk now displays correctly in Settings.
+- Signing out clears folder, clockwheel and Track info data, including previews and unsaved
+  drafts. Responses from the old session cannot put that data back on screen.
 - In stream mode and with server audio, a beatmatched song no longer jumps back to its own tempo,
   by up to 8 %, the moment the crossfade ends.
 - In stream mode and with server audio, "beatmatched 1.04 times" now describes the song that just
