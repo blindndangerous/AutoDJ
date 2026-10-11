@@ -11,7 +11,7 @@ from fastapi import HTTPException
 
 from autodj.catalog import LibraryCatalog
 from autodj.clockwheel_store import OLD_CLOCK_MESSAGE
-from autodj.config import ServerConfig, StreamConfig
+from autodj.config import ServerConfig, StreamConfig, TimeChecksConfig
 from autodj.server import ClockBody, ClockNameBody, NewClockNameBody, PalImportBody, create_app
 
 PAL = """Queue.Clear;
@@ -25,6 +25,7 @@ def app_for(catalog, root):
     cfg = SimpleNamespace(
         server=ServerConfig(),
         stream=StreamConfig(),
+        time_checks=TimeChecksConfig(),
         index=SimpleNamespace(active_dir=root),
         presets={},
     )

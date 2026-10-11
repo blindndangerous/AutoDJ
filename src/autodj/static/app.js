@@ -29,6 +29,7 @@ import { installSeekController } from "./modules/seek-controller.js";
 import { installLibraryFolders } from "./modules/library-folders.js";
 import { installClockwheelPanel } from "./modules/clockwheel-panel.js";
 import { installSchedulerPanel } from "./modules/scheduler-panel.js";
+import { installCartWall } from "./modules/cart-wall.js";
 import { createStreamMode, createStreamSettings } from "./modules/stream-mode.js";
 import { createRecordingControls } from "./modules/recording-controls.js";
 import { installNowPlayingSettings } from "./modules/nowplaying-settings.js";
@@ -208,6 +209,7 @@ let authExpiryHandled = false;
 let libraryFoldersControls = null;
 let clockwheelPanelControls = null;
 let schedulerPanelControls = null;
+let cartWallControls = null;
 let reconnectGeneration = 0;
 let reconnectTimer = null;
 
@@ -305,6 +307,7 @@ function clearProtectedSessionData() {
   libraryFoldersControls?.clearProtectedData();
   clockwheelPanelControls?.clearProtectedData();
   schedulerPanelControls?.clear();
+  cartWallControls?.clear();
   const browseFolder = document.getElementById("library-browse-folder");
   if (browseFolder) {
     const option = (value, label) => {
@@ -458,6 +461,7 @@ function applyState(s) {
   _stateApplicationGeneration += 1;
   _lastState = s;
   bumpLinerTrackCount(s);
+  timeCheckControls?.noteTrack(s);
   noteTrackForHistory(s);
 
   // Stream mode never starts the deck engine, whatever browser_playback
@@ -1255,7 +1259,9 @@ function connectWS() {
     if (_ws !== ws || !isAuthenticatedRequestCurrent(socketEpoch)) return;
     try {
       const message = JSON.parse(ev.data);
-      if (message.type === "schedule_changed" || message.type === "schedule_run") {
+      if (message.type === "cart" || message.type === "cart_changed") {
+        cartWallControls?.event(message);
+      } else if (message.type === "schedule_changed" || message.type === "schedule_run") {
         void schedulerPanelControls?.refresh();
       } else applyState(message);
     } catch (_) {}
@@ -2333,6 +2339,9 @@ clockwheelPanelControls = installClockwheelPanel();
 schedulerPanelControls = installSchedulerPanel();
 
 import { installLiners, bumpLinerTrackCount } from "./modules/liners.js";
+import { installTimeChecks } from "./modules/time-checks.js";
+
+let timeCheckControls = null;
 
 const _linerEls = {
   lnEnabled:       document.getElementById("ln-enabled"),
@@ -2353,16 +2362,72 @@ const _linerEls = {
 
 let authenticatedAppStarted = false;
 const activeLinerSources = new Set();
-const LINER_MUTED_TEXT = "Muted, so the liner was not played.";
-const LINER_OFFLINE_TEXT = "Liner not played: the page is not connected to AutoDJ.";
-const LINER_NO_AUDIO_TEXT = "Liner not played: this browser cannot play audio here.";
+const activeCartSources = new Set();
 
-function stopActiveLiners() {
-  const sources = Array.from(activeLinerSources);
-  activeLinerSources.clear();
-  for (const source of sources) {
+function stopSources(sources) {
+  const playing = Array.from(sources);
+  sources.clear();
+  for (const source of playing) {
     try { source.stop(); } catch (_) {}
   }
+  return playing.length > 0;
+}
+
+function stopActiveLiners() {
+  stopSources(activeLinerSources);
+  stopActiveCarts();
+}
+
+// A cart stopped early brings the music straight back up.
+function stopActiveCarts() {
+  if (stopSources(activeCartSources)) duckMusic(1, 0);
+}
+
+// Why browser playback cannot play a liner or cart (`what`) on this page,
+// or null.  Runs inside the click or key press, so the audio graph can
+// start here.
+function prepareBrowserClip(what) {
+  const Name = what[0].toUpperCase() + what.slice(1);
+  if (!authenticatedInteractionEnabled() || !_lastBrowserPlayback) {
+    return `${Name} not played: the page is not connected to AutoDJ.`;
+  }
+  if (_lastState?.is_muted) return `Muted, so the ${what} was not played.`;
+  const audioContext = ensureAudioGraph();
+  if (!audioContext) return `${Name} not played: this browser cannot play audio here.`;
+  if (audioContext.state === "suspended") {
+    void audioContext.resume().catch(() => {});
+  }
+  return null;
+}
+
+// The browser's liner path, shared by voice liners and carts: decode the
+// clip, duck the music by duckDb (minus Infinity silences it, 0 leaves it)
+// and play the clip through the master gain.
+async function playBrowserClip(arrayBuf, duckDb, sources, epoch) {
+  if (!authenticatedInteractionEnabled() || !_ctx
+      || !isAuthenticatedRequestCurrent(epoch)) return false;
+  const audioContext = _ctx;
+  const audioBuf = await audioContext.decodeAudioData(arrayBuf);
+  if (!authenticatedInteractionEnabled() || _ctx !== audioContext
+      || !isAuthenticatedRequestCurrent(epoch)) return false;
+  const src = audioContext.createBufferSource();
+  src.buffer = audioBuf;
+  // The clip goes through the master gain like the music it ducks,
+  // so it follows the page volume and Mute, but not Pause.
+  src.connect(_master);
+  const dur = audioBuf.duration;
+  const t0 = audioContext.currentTime;
+  // Only music that is playing is ducked.  The duck has a gain of its
+  // own after both decks, so a crossfade running under the clip (a
+  // Test press, or a fade that starts mid-clip) keeps its ramps and
+  // both of its decks are ducked.
+  if (duckDb < 0 && playbackEnabled && !_lastState?.is_paused) {
+    duckMusic(Math.pow(10, duckDb / 20), dur);
+  }
+  sources.add(src);
+  src.addEventListener("ended", () => sources.delete(src), { once: true });
+  src.start(t0);
+  return true;
 }
 
 function startAuthenticatedApp(initialState) {
@@ -2376,62 +2441,43 @@ function startAuthenticatedApp(initialState) {
   installLibraryJobs(_libEls);
   // Audio dependencies are owned by the audio engine. Inject closures
   // that read its live bindings and stop liner playback after auth expiry.
-  installLiners(_linerEls, {
-    postSettings,
-    // Scheduled liners join music that is playing: none fires while
-    // paused, or after a hard stop (the session ended) until the listener
-    // has pressed Play again.  Nor during a crossfade: "every N songs"
-    // counts the new track the moment the fade starts, and a liner then
-    // talked over the transition.  It waits for the fade to finish.
-    canPlay: () => authenticatedActivityActive && !!_ctx && !!_lastBrowserPlayback
-      && playbackEnabled && !_lastState?.is_paused && !crossfading,
-    // Whenever the server mixes the audio (stream mode or --server-audio),
-    // Test asks the server to play the liner into that mix; only browser
-    // playback plays it on this page.
-    testOnServer: () => _lastStreamMode || _lastState?.browser_playback === false,
+  // Whenever the server mixes the audio (stream mode or --server-audio),
+  // Test asks the server to play the liner or time check into that mix;
+  // only browser playback plays it on this page.
+  const testOnServer = () => _lastStreamMode || _lastState?.browser_playback === false;
+  // Scheduled liners and the time check after the hour join music that is
+  // playing: none plays while paused, or after a hard stop (the session
+  // ended) until the listener has pressed Play again.  Nor during a
+  // crossfade: "every N songs" counts the new track the moment the fade
+  // starts, and a liner then talked over the transition.  It waits for the
+  // fade to finish.
+  const canPlayLiner = () => authenticatedActivityActive && !!_ctx && !!_lastBrowserPlayback
+    && playbackEnabled && !_lastState?.is_paused && !crossfading;
+  // Liners, time checks and carts all play through playBrowserClip.
+  const linerAudio = {
+    canPlay: canPlayLiner,
+    testOnServer,
     // Test in browser playback is a preview: it plays at the page volume
     // whether or not music is playing, and only Mute keeps it silent.
-    // Runs inside the click, so the audio graph can start here.
-    prepareTest: () => {
-      if (!authenticatedInteractionEnabled() || !_lastBrowserPlayback) {
-        return LINER_OFFLINE_TEXT;
-      }
-      if (_lastState?.is_muted) return LINER_MUTED_TEXT;
-      const audioContext = ensureAudioGraph();
-      if (!audioContext) return LINER_NO_AUDIO_TEXT;
-      if (audioContext.state === "suspended") {
-        void audioContext.resume().catch(() => {});
-      }
-      return null;
-    },
-    playLiner: async (
-      arrayBuf, duckDb, epoch = captureAuthenticatedRequestEpoch(),
-    ) => {
-      if (!authenticatedInteractionEnabled() || !_ctx
-          || !isAuthenticatedRequestCurrent(epoch)) return false;
-      const audioContext = _ctx;
-      const audioBuf = await audioContext.decodeAudioData(arrayBuf);
-      if (!authenticatedInteractionEnabled() || _ctx !== audioContext
-          || !isAuthenticatedRequestCurrent(epoch)) return false;
-      const src = audioContext.createBufferSource();
-      src.buffer = audioBuf;
-      // The liner goes through the master gain like the music it ducks,
-      // so it follows the page volume and Mute, but not Pause.
-      src.connect(_master);
-      const duckLin = Math.pow(10, duckDb / 20);
-      const dur = audioBuf.duration;
-      const t0 = audioContext.currentTime;
-      // Only music that is playing is ducked.  The duck has a gain of its
-      // own after both decks, so a crossfade running under the liner (a
-      // Test press, or a fade that starts mid-liner) keeps its ramps and
-      // both of its decks are ducked.
-      if (playbackEnabled && !_lastState?.is_paused) duckMusic(duckLin, dur);
-      activeLinerSources.add(src);
-      src.addEventListener("ended", () => activeLinerSources.delete(src), { once: true });
-      src.start(t0);
-      return true;
-    },
+    prepareTest: () => prepareBrowserClip("liner"),
+    playLiner: (arrayBuf, duckDb, epoch = captureAuthenticatedRequestEpoch()) =>
+      playBrowserClip(arrayBuf, duckDb, activeLinerSources, epoch),
+  };
+  timeCheckControls = installTimeChecks(linerAudio);
+  installLiners(_linerEls, { postSettings, ...linerAudio });
+  // When the server mixes, it plays the cart itself and the page only
+  // shows and announces it.
+  cartWallControls = installCartWall(undefined, {
+    prepare: () => (testOnServer() ? null : prepareBrowserClip("cart")),
+    playAudio: (arrayBuf, mode, duckDb) => playBrowserClip(
+      arrayBuf,
+      { over: 0, replace: -Infinity }[mode] ?? duckDb,
+      activeCartSources,
+      captureAuthenticatedRequestEpoch(),
+    ),
+    stopAudio: stopActiveCarts,
   });
+  void cartWallControls?.refresh();
   applyState(initialState);
   connectWS();
   // Opening the page straight at #history fires no hashchange, so the

@@ -18,6 +18,10 @@ uploaded to a cloud service.
 - Several named clockwheels: repeating orders of music folders, liners, tracks and preset
   changes, edited from the keyboard, imported from SAM Broadcaster `.PAL` files and switched by
   the scheduler.
+- A cart wall for instant jingles, station IDs and sound effects, with numbered keys and
+  duck, over or replace playback modes.
+- Spoken time checks from recorded minute clips or an external TTS command, scheduled or after
+  the song that crosses the hour.
 - A scheduler that switches profiles, presets or the clockwheel, plays liners, starts or stops the
   stream and turns discovery on or off at set times.
 - Broadcast recording to dated MP3 files, with hourly or show splits, scheduled controls and retention.
@@ -182,7 +186,9 @@ Every command takes `--help`, for example `uv run autodj serve --help`. The glob
 - `autodj serve` starts the browser interface; `autodj serve --lan` opens it to your local
   network; `autodj serve --stream` also serves the live mix as an MP3 radio station.
 - `autodj list-devices` lists the audio output devices available to `serve --server-audio`.
-- `autodj doctor` checks configuration, paths, dependencies, the model, and security settings.
+- `autodj doctor` checks configuration, saved browser settings, paths, dependencies, the model,
+  and security settings. Use `--name` to check a specific index. If `serve` fails in a terminal,
+  it offers to run Doctor; repairs still require confirmation.
 - `autodj backup` and `autodj restore` archive and restore index and user data.
 - `autodj devices list`, `rename`, `revoke`, `reset`, and `pairing-code` manage paired browsers.
 
@@ -446,8 +452,9 @@ Set repeat limits in **Settings > Picking > Repeats**. Artist, album, track and 
 have separate Tracks and Minutes boxes. Zero turns off a limit; when both are set,
 both must be satisfied before a repeat is allowed. Save applies the rules to future
 picks and remembers them across restarts. Old repeat keys in `config.toml` or
-`web_state.json` are rejected. Remove them by hand and re-enter limits in
-**Settings > Picking > Repeats**.
+`web_state.json` produce warnings and are ignored. Re-enter any limits that still use
+the old keys in **Settings > Picking > Repeats**. Current repeat rules are preserved;
+Doctor can optionally remove obsolete keys with a backup.
 
 **Use related artists** applies the artist limit to the links in your editable TOML file.
 The page shows its fixed location, `index/<name>/related-artists.toml`. AutoDJ copies

@@ -187,6 +187,37 @@ def test_music_returns_to_full_level_after_liner_ends() -> None:
     np.testing.assert_allclose(block[:, 0], 0.5, atol=0.01)
 
 
+def test_stop_liner_fades_the_liner_out_and_brings_the_music_back() -> None:
+    bus, _, _ = _bus([_track(0.5, 50_000)])
+    bus.start_set()
+    bus.play_liner(np.full((882 * 50, 2), 0.2, np.float32), duck_db=float("-inf"))
+    for _ in range(3):
+        silenced = bus.render_block()
+    np.testing.assert_allclose(silenced[:, 0], 0.2, atol=1e-6)  # music replaced
+    bus.stop_liner()
+    fade = np.concatenate([bus.render_block(), bus.render_block()])
+    # The liner falls away over 40 ms instead of cutting off with a click.
+    assert np.all(np.diff(fade[:, 0]) <= 1e-6)
+    for _ in range(3):
+        block = bus.render_block()
+    np.testing.assert_allclose(block[:, 0], 0.5, atol=1e-6)
+    bus.stop_liner()  # nothing playing: no effect
+    np.testing.assert_allclose(bus.render_block()[:, 0], 0.5, atol=1e-6)
+
+
+def test_stop_liner_leaves_a_cued_liner_waiting() -> None:
+    track = _track(0.5, 50_000)
+    bus, _, _ = _bus([track])
+    bus.start_set()
+    bus.render_block()
+    bus.play_liner(np.full((882, 2), 0.2, np.float32), duck_db=0.0)
+    bus.play_liner(np.full((882, 2), 0.3, np.float32), duck_db=0.0, at=LinerCue(track, 882 * 4))
+    bus.stop_liner()
+    blocks = [bus.render_block() for _ in range(6)]
+    # The cued liner still plays when the track reaches its cue.
+    assert max(block[-1, 0] for block in blocks) == pytest.approx(0.8, abs=1e-6)
+
+
 def test_stop_set_drops_tracks_and_goes_silent() -> None:
     bus, _, _ = _bus([_track(0.5, 50_000), _track(0.5, 50_000)])
     bus.start_set()

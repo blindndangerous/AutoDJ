@@ -79,6 +79,7 @@
   <div role="tablist" aria-orientation="horizontal">
     <button type="button" role="tab" id="tab-now"      data-view="now"      aria-selected="true"  tabindex="0">Now Playing</button>
     <button type="button" role="tab" id="tab-queue"    data-view="queue"    aria-selected="false" tabindex="-1">Queue &amp; Search</button>
+    <button type="button" role="tab" id="tab-carts"    data-view="carts"    aria-selected="false" tabindex="-1">Carts</button>
     <button type="button" role="tab" id="tab-track-info" data-view="track-info" aria-selected="false" tabindex="-1">Track info</button>
     <button type="button" role="tab" id="tab-history"  data-view="history"  aria-selected="false" tabindex="-1">History</button>
     <button type="button" role="tab" id="tab-settings" data-view="settings" aria-selected="false" tabindex="-1">Settings</button>
@@ -453,6 +454,7 @@
     <button type="button" role="tab" id="stab-sound" data-subview="sound" data-panel="spanel-sound" aria-selected="false" tabindex="-1">Sound</button>
     <button type="button" role="tab" id="stab-display" data-subview="display" data-panel="spanel-display" aria-selected="false" tabindex="-1">Display and keys</button>
     <button type="button" role="tab" id="stab-liners" data-subview="liners" data-panel="spanel-liners" aria-selected="false" tabindex="-1">Voice liners</button>
+    <button type="button" role="tab" id="stab-time-checks" data-subview="time-checks" data-panel="spanel-time-checks" aria-selected="false" tabindex="-1">Time checks</button>
     <button type="button" role="tab" id="stab-schedule" data-subview="schedule" data-panel="spanel-schedule" aria-selected="false" tabindex="-1">Schedule</button>
     <button type="button" role="tab" id="stab-stream" data-subview="stream" data-panel="spanel-stream" aria-selected="false" tabindex="-1" hidden>Stream</button>
     <button type="button" role="tab" id="stab-access" data-subview="access" data-panel="spanel-access" aria-selected="false" tabindex="-1">Profiles and access</button>
@@ -1193,6 +1195,54 @@
     </fieldset>
   </div>
 
+  <div class="card" role="tabpanel" id="spanel-time-checks" aria-labelledby="stab-time-checks" hidden>
+    <h3>Time checks</h3>
+    <!-- time-checks.js fills this panel when it is seen.  The clip folder,
+         intro and outro clips and the text-to-speech command are set only in
+         config.toml.  Each result of a setting or the button is said once
+         through #tc-status. -->
+    <p class="card-desc">
+      Say the station time over the music, from a recorded clip for each minute or from text to speech. The clip folder, intro and outro clips and the text-to-speech command are set in config.toml.
+    </p>
+
+    <div id="tc-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+
+    <div class="settings-check">
+      <input type="checkbox" id="tc-enabled" aria-describedby="tc-enabled-desc">
+      <label for="tc-enabled">Enable time checks</label>
+    </div>
+    <span class="setting-desc" id="tc-enabled-desc">
+      Lets the rule below and Time check events in Schedule play. Play a time check now works either way.
+    </span>
+    <div class="settings-row">
+      <label for="tc-hour-format">Hour format</label>
+      <select id="tc-hour-format" aria-describedby="tc-hour-format-desc">
+        <option value="12">12-hour</option>
+        <option value="24">24-hour</option>
+      </select>
+    </div>
+    <span class="setting-desc" id="tc-hour-format-desc">
+      How text to speech says the time: “It’s 3:05” or “It’s 15:05”, and on the hour “It’s 3 o’clock” or “It’s 15 hundred”, with “It’s midnight” and “It’s noon” in both. Recorded clips play as they are.
+    </span>
+    <div class="settings-row">
+      <label for="tc-rule">When to play</label>
+      <select id="tc-rule" aria-describedby="tc-rule-desc">
+        <option value="off">Only from Schedule or the button</option>
+        <option value="after_hour_song">After the song that crosses the hour</option>
+      </select>
+    </div>
+    <span class="setting-desc" id="tc-rule-desc">
+      After the song playing at the top of the hour ends, say the time as the next song starts, in place of a voice liner. It uses the voice liner duck depth and, when the server mixes the music, Talk up to the vocal. For set times, add a Time check event in Schedule.
+    </span>
+
+    <h4>Recordings</h4>
+    <p id="tc-clips-status"></p>
+    <button type="button" id="tc-test" aria-describedby="tc-test-desc">Play a time check now</button>
+    <span class="setting-desc" id="tc-test-desc">
+      Plays the current time on the stream or server audio when the server mixes the music; otherwise in this browser.
+    </span>
+  </div>
+
   <div class="card" role="tabpanel" id="spanel-schedule" aria-labelledby="stab-schedule" hidden>
     <h3>Schedule</h3>
     <!-- scheduler-panel.js fills this panel when it is seen, and again when
@@ -1590,6 +1640,99 @@
 
   </section>
   <!-- ============================================================
+       View: Carts — the cart wall: twelve numbered carts per page for
+       station IDs, jingles and effects (modules/cart-wall.js).  The
+       module finds everything inside #cart-wall.
+       ============================================================ -->
+  <section data-view="carts" id="panel-carts" role="tabpanel" hidden aria-labelledby="tab-carts">
+    <h2 id="carts-heading">Carts</h2>
+    <div id="cart-wall">
+      <p id="cart-keys-help">
+        Press a cart to play it; an empty cart opens in the editor below.
+        With focus on a cart, keys 1 to 9 and 0, minus and equals play carts 1 to 12 on this page,
+        and Page Up and Page Down change the page.
+        With NVDA, switch to focus mode first (NVDA+Space).
+        These keys do nothing in text fields and dropdowns, and the Enable keyboard shortcuts
+        checkbox under Settings, Display and keys turns them off.
+      </p>
+      <div class="settings-row">
+        <label for="cart-page">Cart page</label>
+        <select id="cart-page"></select>
+      </div>
+      <!-- role="list": list-style none drops the list role in Safari. -->
+      <ol id="cart-slots" role="list" aria-label="Carts"></ol>
+      <button type="button" id="cart-stop">Stop carts</button>
+      <!-- What the user just did.  Cart start and end are spoken through
+           #sr-status, so they are heard on every tab. -->
+      <div id="cart-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+
+      <section class="card" aria-labelledby="cart-editor-heading">
+        <h3 id="cart-editor-heading">Edit a cart</h3>
+        <div class="settings-row">
+          <label for="cart-edit-slot">Cart to edit</label>
+          <select id="cart-edit-slot"></select>
+        </div>
+        <div class="settings-row">
+          <label for="cart-name">Cart name</label>
+          <input type="text" id="cart-name" maxlength="80" autocomplete="off">
+        </div>
+        <div class="settings-row">
+          <label for="cart-source">Clip from</label>
+          <select id="cart-source">
+            <option value="liner">Voice liners</option>
+            <option value="upload">Uploaded clips</option>
+          </select>
+        </div>
+        <div class="settings-row">
+          <label for="cart-clip">Clip</label>
+          <select id="cart-clip"></select>
+        </div>
+        <div class="settings-row">
+          <label for="cart-mode">Music during the cart</label>
+          <select id="cart-mode" aria-describedby="cart-mode-desc">
+            <option value="duck">Duck</option>
+            <option value="over">Over</option>
+            <option value="replace">Replace</option>
+          </select>
+        </div>
+        <span class="setting-desc" id="cart-mode-desc">
+          Duck lowers the music by the voice liner duck depth. Over leaves the music at full volume.
+          Replace fades the music out; the song keeps playing silently and fades back in when the cart ends.
+        </span>
+        <div>
+          <button type="button" id="cart-save">Save cart</button>
+          <button type="button" id="cart-clear">Clear cart</button>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="cart-upload-heading">
+        <h3 id="cart-upload-heading">Uploaded clips</h3>
+        <div class="settings-row">
+          <label for="cart-upload-file">Audio clip</label>
+          <input type="file" id="cart-upload-file" aria-describedby="cart-upload-desc"
+                 accept=".mp3,.wav,.ogg,.m4a,.flac,.aac,audio/*">
+          <button type="button" id="cart-upload">Upload clip</button>
+        </div>
+        <span class="setting-desc" id="cart-upload-desc">
+          MP3, WAV, OGG, M4A, FLAC or AAC, up to the voice liner upload size. A clip with the same file name is never replaced.
+        </span>
+        <button type="button" id="cart-delete-upload" aria-describedby="cart-delete-desc" disabled>Delete uploaded clip</button>
+        <span class="setting-desc" id="cart-delete-desc">
+          Deletes the uploaded clip chosen under Clip in the editor. A clip still on a cart cannot be deleted.
+        </span>
+      </section>
+
+      <section class="card" aria-labelledby="cart-page-heading">
+        <h3 id="cart-page-heading">Rename this page</h3>
+        <div class="settings-row">
+          <label for="cart-page-name">Page name</label>
+          <input type="text" id="cart-page-name" maxlength="80" autocomplete="off">
+          <button type="button" id="cart-rename">Rename page</button>
+        </div>
+      </section>
+    </div>
+  </section>
+  <!-- ============================================================
        View: Library tools — index / enrich / analyse / prune / stats
        jobs and the index stats, run from the web UI.
        ============================================================ -->
@@ -1852,6 +1995,8 @@
     <dt><kbd><span aria-hidden="true">,</span><span class="visually-hidden">Comma</span></kbd> <span aria-hidden="true">/</span><span class="visually-hidden">or</span> <kbd><span aria-hidden="true">.</span><span class="visually-hidden">Period</span></kbd></dt><dd>Seek back <span aria-hidden="true">/</span><span class="visually-hidden">or</span> forward 1 measure (BPM-derived; falls back to 5 s). Not available in stream mode.</dd>
     <dt><kbd><span aria-hidden="true">?</span><span class="visually-hidden">question mark</span></kbd></dt><dd>Open <span aria-hidden="true">/</span><span class="visually-hidden">or</span> close this dialog</dd>
     <dt><kbd>Esc</kbd></dt><dd>Close this dialog</dd>
+    <dt style="margin-top:0.5rem">Number keys 1 to 9 and 0, <kbd><span aria-hidden="true">-</span><span class="visually-hidden">minus</span></kbd>, <kbd><span aria-hidden="true">=</span><span class="visually-hidden">equals</span></kbd></dt><dd style="margin-top:0.5rem">Play carts 1 to 12 on the cart page shown. Only with focus on the cart wall, in the Carts tab.</dd>
+    <dt><kbd>Page Up</kbd> <span aria-hidden="true">/</span><span class="visually-hidden">or</span> <kbd>Page Down</kbd></dt><dd>Previous <span aria-hidden="true">/</span><span class="visually-hidden">or</span> next cart page. Only with focus on the cart wall.</dd>
     <dt style="margin-top:0.5rem"><kbd>Shift+T</kbd></dt><dd style="margin-top:0.5rem">Speak current track (artist – title)</dd>
     <dt><kbd>Shift+N</kbd></dt><dd>Speak next track (artist, title, BPM)</dd>
     <dt><kbd>Shift+R</kbd></dt><dd>Speak time remaining</dd>

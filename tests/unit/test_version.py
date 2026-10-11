@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import autodj
+from autodj.config import TimeChecksConfig
 from autodj.server import _version_info, create_app
 from autodj.version import (
     _project_version,
@@ -145,6 +146,7 @@ def test_api_version_derives_from_project_metadata(tmp_path: Path) -> None:
     bridge = MagicMock()
     bridge.player._cfg.server.station_timezone = "UTC"
     bridge.player._cfg.index.active_dir = tmp_path
+    bridge.player._cfg.time_checks = TimeChecksConfig()
     assert create_app(bridge).version == current_version()
 
 

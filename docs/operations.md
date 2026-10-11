@@ -10,12 +10,16 @@ AutoDJ resolves defaults, `config.toml`, sibling `config.local.toml`, environmen
 explicit CLI flags. `config.local.toml` is read only when a `config.toml` was loaded next to it;
 on its own it is ignored. Omitting `--config` is valid. Explicitly naming a missing file is an error. Put
 access tokens only in ignored local configuration or `AUTODJ_ACCESS_TOKEN`. An unknown section or
-key in either file, such as a setting a newer AutoDJ removed, is an error that names it.
+key in either file, such as a setting a newer AutoDJ removed, produces a warning and is ignored.
+Invalid values for supported settings still need fixing.
 
 ## Diagnose before serving
 
-If `autodj serve` exits with an error, it suggests running `autodj doctor` to troubleshoot.
-Use the same `--config` option when diagnosing a custom configuration.
+If `autodj serve` exits with an error in an interactive terminal, it offers to run
+`autodj doctor` with the same Python environment, configuration and named index.
+Doctor still asks before repairs. After resolving the checks, run your serve command again.
+In scripts, serve prints the suggestion without prompting. To run Doctor yourself, use the
+same `--config` and `--name` options as serve.
 
 Run `uv run autodj doctor`. Use `uv run autodj doctor --json` for automation. A required failed
 check returns exit 1. In an interactive terminal, doctor offers to remove unsupported config
@@ -25,6 +29,13 @@ in one edit per affected file, saving one uniquely named backup beside each orig
 preserving unrelated settings and formatting, then retrying validation.
 Review the key names before accepting: a misspelled setting may need correcting instead of removing.
 Complex TOML edits that cannot be made safely are left for manual correction.
+
+Doctor also warns about obsolete repeat settings in `web_state.json` in the selected index.
+Startup ignores those keys and loads the other settings. Doctor offers optional cleanup,
+with a backup, while preserving current
+repeat limits, EQ and other saved values. An empty old `related_artists_file` setting can be
+removed this way. A nonempty path needs manual review so you can preserve its related-artist
+data. Malformed files and unsupported saved-state versions are left unchanged.
 
 Use `uv run autodj doctor --fix` to apply supported repairs automatically without prompting.
 Without flags, doctor asks before each repair in an interactive terminal. Use `--no-fix`
@@ -1197,7 +1208,7 @@ the rules and the collecting societies are different.
 
 Repeat limits are edited in Settings > Picking > Repeats and stored in
 `web_state.json`. Old repeat keys in `config.toml` or `web_state.json` are
-rejected; remove them by hand and re-enter limits in that panel. The related
+ignored with a warning; re-enter any limits that still use those keys in that panel. The related
 artists file is `index/<name>/related-artists.toml` and is read only when
 **Use related artists** is enabled. It must be at most 1 MiB.
 
@@ -1216,6 +1227,8 @@ artists file is `index/<name>/related-artists.toml` and is read only when
   complete play history.
 - Every file in the liners folder (`[playback] liners_folder`, or `index/<name>/liners`) and in
   `index/profiles`, plus uploaded presets in `index/stereo-tool-presets`.
+- `time_checks.json` and every recorded clip in `[time_checks] clips_folder` (or the default
+  time_checks folder under the active index). Generated TTS cache files are rebuilt when needed.
 - `manifest.json`, which records the AutoDJ version that made the archive and lists its files.
 
 Backups do not include `config.toml` or `config.local.toml`. Copy those yourself
@@ -1311,6 +1324,43 @@ These steps apply to a native installation from a source checkout.
 7. Start loopback-only and check that the version in the page footer is the release you checked
    out before enabling LAN access.
 
+## Cart wall
+
+The **Carts** tab, after Queue & Search, holds four pages of twelve numbered carts for station
+IDs, jingles and sound effects. Each button is named for its cart, for example "Cart 3, Station
+ID, 0:07", or "Cart 4, empty". Press a cart to play it; an empty cart opens in the editor.
+
+In the editor, choose the cart, its name, its clip and what happens to the music while it plays:
+
+- Duck lowers the music by the voice liner duck depth.
+- Over leaves the music at full volume.
+- Replace fades the music out. The song keeps playing silently under the cart and fades back in
+  when the cart ends, so it resumes at its later position.
+
+A clip is a voice liner from the library or the liner folder, or an audio file uploaded under
+**Uploaded clips**. Uploads use the voice liner extensions and the `[server]
+liner_upload_max_mib` limit, must decode as audio, and never replace a clip with the same name. A
+clip still on a cart cannot be deleted. **Rename this page** names the page shown.
+
+One cart plays at a time: a new one cuts off the last, and **Stop carts** fades it out. Each
+open paired page says "Cart 3, Station ID, playing" when a cart starts and "... ended" or
+"... stopped" when it finishes, from any tab.
+
+With focus on the cart wall, keys 1 to 9, 0, minus and equals play carts 1 to 12 on the page
+shown, and Page Up and Page Down change the page. The keys do nothing in text fields and
+dropdowns, and the **Enable keyboard shortcuts** checkbox (Settings, Display and keys) turns
+them off. With NVDA, switch to focus mode first (NVDA+Space).
+
+Carts play through the voice liner path. In server audio and stream mode the server mixes them
+in, and they need playback running: a cart is refused while the stream is idle or paused. In
+browser playback the page that plays the cart plays it, as the voice liner Test button does.
+
+The server keeps the wall in `carts.json` in the active index folder and the uploads in its
+`carts/` folder. The file is versioned; one that cannot be read is moved aside as
+`carts.json.bad-<id>` and an empty wall loads. Backups include the wall and the uploads. Saving
+a profile records the name of the cart page shown, and applying the profile shows that page; a
+profile whose page has been renamed is refused.
+
 ## Scheduler
 
 Open **Settings**, then **Schedule** to add timed station events. An event runs once, every day,
@@ -1332,6 +1382,9 @@ Actions:
 - Change song picking. Besides similar songs, random and least recently played, the choices are
   the active clockwheel and each saved clockwheel by name; a named one also becomes the active one.
 - Play a voice liner or station ID. This needs server audio or stream mode.
+- Play a cart by page and cart number, with its saved duck, over or replace mode. This needs
+  server audio or stream mode.
+- Play a time check. This needs server audio or stream mode.
 - Start or stop the stream (stream mode). Start keeps the station playing without listeners,
   stop keeps it off the air even with listeners, and automatic hands control back to the
   listener count. The choice lasts until the next stream event or a restart.
@@ -1414,3 +1467,75 @@ is refused: register the parent folder, or edit that step after the import.
 Upgrading from the single clockwheel: the clock saved by earlier versions is not read. The
 Clockwheels section and the server log say so. Import the `.PAL` file again under a name, then
 press **Activate**.
+
+## Spoken time checks
+
+Open **Settings**, then **Time checks**, and turn on **Enable time checks** (or set
+`[time_checks] enabled = true`). Choose 12- or 24-hour speech, and choose **After the song that
+crosses the hour** to hear the time when the song playing at the top of the hour ends. The
+Schedule panel also offers a **Time check** action for set times; it needs server audio or
+stream mode. Both use `[server] station_timezone` (or the detected system zone), and the time
+said is the time when the check plays. A check plays at most once an hour from the rule: when a
+scheduled check already played in that hour, the rule stays quiet.
+
+A check is one clip: the optional intro, the time, and the optional outro. It plays like a
+voice liner, with the liner duck depth. After the hour, in server audio or stream mode, it takes
+the place of the automatic liner due at that song change and uses **Talk up to the vocal** when
+the clip fits before the singing. When a talk-up liner is already playing over the crossfade
+into that song, the check waits for the following song rather than cutting the liner off. In
+browser playback the page plays it when the next song starts; there it does not replace a voice
+liner due at the same song change, so the two can overlap. The **Play a time check now** button plays one straight away: on the server in server
+audio or stream mode, and in this browser otherwise.
+
+Record one clip per minute in the configured `clips_folder` (by default the `time_checks`
+folder in the active index folder): `00_00.wav` through `23_59.wav`, using 24-hour names even
+when speech uses 12 hours. MP3, FLAC and OGG are also accepted. For example, `03_05.wav` plays
+at 3:05 in the morning and `15_05.wav` at 3:05 in the afternoon. The Settings panel says how
+many minute clips there are. Run `uv run autodj doctor` for the number missing, the first ten
+missing names, and warnings for a missing folder, intro or outro clip or TTS program. A minute
+without a clip uses TTS when it is configured. Without a clip or working TTS command, the check
+is skipped and the server logs one warning.
+
+The speech says "It's 3:05", or "It's 15:05" in 24-hour mode. On the hour it says "It's 3
+o'clock" in 12-hour mode and "It's 15 hundred" in 24-hour mode, and in both modes "It's midnight"
+at 00:00 and "It's noon" at 12:00.
+
+The `tts_command` is an argument array in `config.toml`. AutoDJ passes the spoken text on stdin,
+replaces `{out}` with a temporary WAV path, replaces `{text}` with the text as one argument,
+allows 20 seconds, and caches the result for each command and text. It runs the program
+directly, never through a shell, and on a worker thread. A command that fails, times out or
+writes a WAV with no sound is skipped with a warning. Examples:
+
+```toml
+# Piper, with an installed voice model (Linux or Windows)
+[time_checks]
+tts_command = ["piper", "--model", "/voices/en_US-lessac-medium.onnx", "--output_file", "{out}"]
+```
+
+```toml
+# espeak-ng in a Linux container
+[time_checks]
+tts_command = ["espeak-ng", "-w", "{out}", "{text}"]
+```
+
+```toml
+# Windows SAPI, with the full path to the script in your AutoDJ folder
+[time_checks]
+tts_command = [
+  "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+  "-File", "C:/AutoDJ/scripts/time_check_sapi.ps1", "{out}", "-Voice", "Microsoft Zira Desktop",
+]
+```
+
+The SAPI script speaks the text as plain text and never runs it. Name a voice with `-Voice`:
+the Windows default voice can be a screen reader's SAPI bridge, such as NVDA's, which speaks
+through the screen reader and writes no sound to the file. To list the installed voices, run
+`powershell -NoProfile -Command "Add-Type -AssemblyName System.Speech;
+[System.Speech.Synthesis.SpeechSynthesizer]::new().GetInstalledVoices().VoiceInfo.Name"`.
+
+Choose one command, and test it with **Play a time check now**. `intro_clip`, `outro_clip`,
+`clips_folder`, and `tts_command` are local file settings only; the browser cannot change or
+read them. The enabled switch, hour format, and rule live in versioned `time_checks.json` in
+the index folder after you change them in Settings, and a wrong version stops startup with an
+error. Backups include `time_checks.json` and the recorded clips; copy `config.toml` yourself
+if you use custom paths or a TTS command.

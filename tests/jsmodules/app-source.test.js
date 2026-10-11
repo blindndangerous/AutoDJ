@@ -1152,6 +1152,95 @@ describe("app request behavior", () => {
     expect(deckGain.linearRampToValueAtTime).not.toHaveBeenCalled();
   });
 
+  it("plays carts through the liner path in browser playback and speaks their events", async () => {
+    const sources = [];
+    const audioContext = {
+      createBufferSource: vi.fn(() => {
+        const source = { addEventListener: vi.fn(), connect: vi.fn(), start: vi.fn(), stop: vi.fn() };
+        sources.push(source);
+        return source;
+      }),
+      currentTime: 2,
+      decodeAudioData: vi.fn().mockResolvedValue({ duration: 7 }),
+      resume: vi.fn().mockResolvedValue(),
+      state: "running",
+    };
+    const master = { gain: { value: 1 } };
+    const duckMusic = vi.fn();
+    const slot = (number, mode) => ({ name: `Cart${number}`, source: "liner", clip: "id", mode, duration: 7 });
+    const slots = Array(12).fill(null);
+    slots[0] = slot(1, "replace");
+    slots[1] = slot(2, "over");
+    slots[2] = slot(3, "duck");
+    const wall = {
+      wall: { active_page: 1, pages: [1, 2, 3, 4].map((n) => ({ name: `Page ${n}`, slots: n === 1 ? slots : Array(12).fill(null) })) },
+      liners: [{ id: "id", name: "id.wav" }],
+      uploads: [],
+    };
+    const requests = [];
+    const { webSocket } = await setupApp({
+      audio: {
+        _ctx: audioContext, _lastBrowserPlayback: true, _master: master,
+        decks: [{ audio: {} }], duckMusic, ensureAudioGraph: vi.fn(() => audioContext),
+        playbackEnabled: true,
+      },
+      initialState: { browser_playback: true },
+      onRequest: (url, options = {}) => {
+        requests.push(`${options.method || "GET"} ${url}`);
+        if (url === "/api/carts") return jsonResponse(wall);
+        const play = url.match(/slots\/(\d+)\/play$/);
+        if (play) {
+          const mode = slots[play[1] - 1].mode;
+          return jsonResponse({ label: "x", mode, duck_db: -12, duration: 7, url: "/api/liners/file/id" });
+        }
+        if (url === "/api/liners/file/id") {
+          return new globalThis.Response(new Uint8Array([1, 2]), { headers: { "Content-Type": "audio/wav" } });
+        }
+        if (url === "/api/carts/stop") return jsonResponse({ stopped: true });
+        throw new Error(`Unexpected request: ${url}`);
+      },
+    });
+    const cart = (number) => document.querySelector(`#cart-slots [data-slot="${number}"]`);
+    await vi.waitFor(() => expect(cart(1).textContent).toBe("Cart 1, Cart1, 0:07"));
+
+    cart(1).click();
+    await vi.waitFor(() => expect(sources).toHaveLength(1));
+    await vi.waitFor(() => expect(sources[0].start).toHaveBeenCalled());
+    expect(sources[0].connect).toHaveBeenCalledWith(master);
+    expect(duckMusic).toHaveBeenLastCalledWith(0, 7);  // Replace silences the music
+    cart(2).click();
+    await vi.waitFor(() => expect(sources).toHaveLength(2));
+    await vi.waitFor(() => expect(sources[1].start).toHaveBeenCalled());
+    // The new cart cut off the last one, and Over leaves the music alone.
+    expect(sources[0].stop).toHaveBeenCalled();
+    expect(duckMusic).toHaveBeenLastCalledWith(1, 0);
+    cart(3).click();
+    await vi.waitFor(() => expect(sources).toHaveLength(3));
+    await vi.waitFor(() => expect(duckMusic).toHaveBeenLastCalledWith(10 ** (-12 / 20), 7));
+
+    // Stop carts stops this page's clip and brings the music back up.
+    duckMusic.mockClear();
+    document.querySelector("#cart-stop").click();
+    expect(sources[2].stop).toHaveBeenCalled();
+    expect(duckMusic).toHaveBeenCalledExactlyOnceWith(1, 0);
+    await vi.waitFor(() => expect(requests).toContain("POST /api/carts/stop"));
+
+    webSocket.onmessage({ data: JSON.stringify({
+      type: "cart", event: "start", page: 1, slot: 3, label: "Cart 3, Cart3",
+    }) });
+    await vi.waitFor(() => expect(document.querySelector("#sr-status").textContent)
+      .toBe("Cart 3, Cart3, playing."));
+
+    webSocket.onmessage({ data: JSON.stringify({
+      browser_playback: true, current_track: null, queue: [], eq: {}, volume: 1, is_muted: true,
+    }) });
+    const before = requests.length;
+    cart(1).click();
+    await vi.waitFor(() => expect(document.querySelector("#cart-status").textContent)
+      .toBe("Muted, so the cart was not played."));
+    expect(requests.slice(before)).toEqual([]);
+  });
+
   it("fires no scheduled liner while playback is stopped, as after a lost link", async () => {
     for (const playbackEnabled of [false, true]) {
       let linerDeps;

@@ -339,3 +339,31 @@ def test_concurrent_fires_are_mutually_exclusive(tmp_path: Path) -> None:
     assert not t2.is_alive()
     assert max_concurrent[0] == 1
     assert bus.play_liner.call_count == 2
+
+
+def test_carts_decode_like_fire_and_play_without_resetting_the_triggers(tmp_path: Path) -> None:
+    clip = tmp_path / "library" / "id.wav"
+    clip.parent.mkdir()
+    clip.touch()
+    bus = MagicMock()
+    trimmed = np.zeros((300, 2), np.float32)
+    scheduler = LinerScheduler(
+        _cfg(liners_every_n_songs=2),
+        _folder(tmp_path),
+        bus,
+        registered_liners=lambda: [("record-id", clip)],
+        path_decoder=lambda path: trimmed,
+    )
+    assert scheduler.decode("record-id") is trimmed
+    assert len(scheduler.decode("a.wav")) == 441
+    with pytest.raises(LinerDecodeError):
+        scheduler.decode("missing.wav")
+
+    scheduler.on_track_start()
+    scheduler.play_cart(trimmed, float("-inf"))
+    bus.play_liner.assert_called_once_with(trimmed, duck_db=float("-inf"))
+    scheduler.stop_cart()
+    bus.stop_liner.assert_called_once_with()
+    # A cart is not a liner: the every-2-songs count carries on.
+    scheduler.on_track_start()
+    assert bus.play_liner.call_count == 2

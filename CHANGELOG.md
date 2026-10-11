@@ -20,6 +20,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Broadcaster `.PAL` file into a new clockwheel, and now accepts folders inside a registered
   library folder.
 
+- A cart wall (the Carts tab) with four pages of twelve numbered carts for station IDs, jingles
+  and sound effects. Assign a voice liner or an uploaded clip, then play it with its button or,
+  with focus on the wall, keys 1 to 9, 0, minus and equals; Page Up and Page Down change the
+  page. A cart ducks the music, plays over it, or replaces it until the cart ends, in browser
+  playback, server audio and stream mode. Every open page announces when a cart starts and ends.
+  The wall and the uploads are kept on the server and in backups, profiles remember the page
+  shown, and the scheduler can play a cart.
+
+- Spoken time checks (Settings, Time checks) use a recorded `HH_MM` clip or a cached external
+  TTS command, with optional intro and outro clips. They play from a Schedule action or after the
+  song that crosses the hour, in the station time zone, with the voice liner duck and talk-up; the
+  check after the hour takes the place of that song change's automatic liner. Settings choose
+  12- or 24-hour speech; doctor reports missing recordings, and backups include the clips and the
+  saved switches. `scripts/time_check_sapi.ps1` speaks with a chosen Windows SAPI voice.
+
 - DMCA mode (`[dmca] enabled = true`): every pick mode, the clockwheel included, keeps to the
   US statutory webcasting licence's performance complement (at most 3 songs from one album, 2 in
   a row, and 4 by one artist or from one box set, 3 in a row, in any three hours; featured
@@ -138,6 +153,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Unknown or removed configuration settings now produce warnings and are ignored instead of
+  blocking startup. Saved browser settings follow the same rule, preserving valid repeat limits
+  alongside obsolete keys. Invalid values for supported configuration settings still fail validation.
+  Doctor offers optional cleanup with a backup; nonempty old related-artist paths need manual review.
+  Failed `serve` commands offer to run Doctor in a terminal with the same configuration and named
+  index. `autodj doctor --name` also lets you select that index yourself.
+
 - When a liner's segue moves earlier, move any later saved overlap back to the segue.
   Track Info now matches playback, and subsequent cue edits can be saved.
 
@@ -152,8 +174,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- Old repeat keys in `config.toml` and `web_state.json` are rejected. Remove them by hand
-  and re-enter limits in Settings > Picking > Repeats.
+- Old repeat keys in `config.toml` and `web_state.json` are ignored with a warning.
+  Re-enter any limits that still use those keys in Settings > Picking > Repeats.
 - Random walk, least recently played and clock picks now hold back the same album and the same
   song title as well as the same artist, like similarity picks always did. Discovery picks now
   follow the artist, album and title rules too.
