@@ -52,9 +52,10 @@ def test_wrong_secret_is_404(stream_app) -> None:
     stream.add_listener.assert_not_called()
 
 
-def test_right_secret_streams_mp3(stream_app) -> None:
+@pytest.mark.parametrize("query", ["", "?connection=new-listener"])
+def test_right_secret_streams_mp3(stream_app, query) -> None:
     client, secret, stream = stream_app
-    with client.stream("GET", f"/stream/{secret.value}.mp3") as response:
+    with client.stream("GET", f"/stream/{secret.value}.mp3{query}") as response:
         assert response.status_code == 200
         assert response.headers["content-type"] == "audio/mpeg"
         assert response.headers["cache-control"] == "no-store"

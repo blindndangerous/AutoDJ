@@ -1768,7 +1768,8 @@ describe("stream mode", () => {
 
     listen.click();
     await vi.waitFor(() => expect(audio.play).toHaveBeenCalledOnce());
-    expect(audio.getAttribute("src")).toBe("/stream/SECRET.mp3");
+    expect(new URL(audio.src).pathname).toBe("/stream/SECRET.mp3");
+    expect(new URL(audio.src).searchParams.has("connection")).toBe(true);
     expect(listen.getAttribute("aria-pressed")).toBe("true");
     expect(lookups()).toBe(before + 1);
 
@@ -1796,9 +1797,10 @@ describe("stream mode", () => {
     // A tunnel in front of AutoDJ closes the websocket every few minutes.
     // Listen here is its own connection and plays on; the server ended the
     // set 30 s after the page used to stop it here.
+    const sourceBeforeDrop = audio.getAttribute("src");
     webSocket.onclose({ code: 1006, wasClean: false });
     expect(listen.getAttribute("aria-pressed")).toBe("true");
-    expect(audio.getAttribute("src")).toBe("/stream/SECRET.mp3");
+    expect(audio.getAttribute("src")).toBe(sourceBeforeDrop);
     expect(audio.pause).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(3000);
     await vi.waitFor(() => expect(WebSocketImpl).toHaveBeenCalledTimes(2));

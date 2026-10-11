@@ -152,7 +152,11 @@ export function createStreamMode({
     try {
       const info = await fetchInfo();
       if (mine !== generation) return;
-      audio.src = info.path;
+      // Firefox can reuse an old stream offset after reload, even with no-store.
+      const source = new URL(info.path, audio.ownerDocument.baseURI);
+      const connection = `${Date.now()}-${mine}-${Math.random().toString(36).slice(2)}`;
+      source.searchParams.set("connection", connection);
+      audio.src = source.href;
       beforePlay();
       await audio.play();
     } catch (err) {

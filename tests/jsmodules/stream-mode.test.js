@@ -146,6 +146,30 @@ describe("stream mode", () => {
     expect(audio.src).toContain("/stream/TWO.mp3");
   });
 
+  it("gives every listen a fresh media URL while preserving path query and hash", async () => {
+    const { mode, audio } = setup({
+      fetchInfo: vi.fn(async () => ({ path: "/stream/SECRET.mp3?format=mp3#live" })),
+    });
+    mode.apply({ stream_mode: true, stream_state: "playing" });
+    await mode.toggleListen();
+    const first = new URL(audio.src);
+    await mode.toggleListen();
+    await mode.toggleListen();
+    const second = new URL(audio.src);
+
+    expect(first.pathname).toBe("/stream/SECRET.mp3");
+    expect(first.searchParams.get("format")).toBe("mp3");
+    expect(first.hash).toBe("#live");
+    expect(first.searchParams.get("connection")).toBeTruthy();
+    expect(second.searchParams.get("connection")).not.toBe(first.searchParams.get("connection"));
+    await mode.toggleListen();
+    const reloaded = setup();
+    await reloaded.mode.toggleListen();
+    expect(new URL(reloaded.audio.src).searchParams.get("connection"))
+      .not.toBe(first.searchParams.get("connection"));
+    reloaded.mode.stop();
+  });
+
   it("cancels a start that is still fetching when pressed again", async () => {
     let resolveInfo;
     const fetchInfo = vi.fn(() => new Promise((resolve) => { resolveInfo = resolve; }));
