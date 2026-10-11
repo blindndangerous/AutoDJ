@@ -58,8 +58,6 @@ def test_password_is_not_in_repr() -> None:
         {**ICECAST, "bitrate": True},
         {**ICECAST, "public": "yes"},
         {**ICECAST, "enabled": 1},
-        {**ICECAST, "format": "mp3"},
-        {**ICECAST, "name": "other"},
         {"type": "icecast", "host": "h", "password": "pw"},
         {"type": "shoutcast1", "host": "h", "password": "pw", "mount": "/live"},
         {"type": "shoutcast1", "host": "h", "password": "pw", "user": "source"},
@@ -130,3 +128,16 @@ def test_a_host_with_a_port_points_at_the_port_key() -> None:
 @pytest.mark.parametrize("host", ["::1", "fe80::1", "2001:db8::5"])
 def test_an_ipv6_address_is_a_valid_host(host: str) -> None:
     assert RelayConfig.from_table("main", {**ICECAST, "host": host}).host == host
+
+
+@pytest.mark.parametrize("key", ["format", "name"])
+def test_unknown_relay_keys_warn_and_preserve_valid_settings(key, caplog):
+    relay = StreamConfig.from_dict({"relays": {"main": {**ICECAST, key: "private-value"}}}).relays[
+        "main"
+    ]
+    assert relay.name == "main"
+    assert relay.host == ICECAST["host"]
+    assert relay.password == ICECAST["password"]
+    assert "Ignoring unknown config keys in [stream.relays.main]" in caplog.text
+    assert key in caplog.text
+    assert "private-value" not in caplog.text

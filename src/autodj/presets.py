@@ -230,18 +230,18 @@ def preset_from_config(name: str, section: dict[str, Any]) -> Preset:
         A :class:`Preset` instance.
 
     Raises:
-        ValueError: If the section holds an unknown key or a nested table,
-            or required BPM fields are missing.
+        ValueError: If required BPM fields are missing or a known value is invalid.
     """
+    unknown = sorted(set(section) - _PRESET_KEYS)
+    if unknown:
+        logger.warning("Preset '%s': ignoring unknown keys %s", name, unknown)
+        section = {key: value for key, value in section.items() if key in _PRESET_KEYS}
     nested = sorted(key for key, value in section.items() if isinstance(value, dict))
     if nested:
         raise ValueError(
             f"Preset '{name}': nested tables {nested} are not preset keys; each preset "
             "is one [presets.NAME] table in config.toml."
         )
-    unknown = sorted(set(section) - _PRESET_KEYS)
-    if unknown:
-        raise ValueError(f"Preset '{name}': unknown keys {unknown}")
     horizon: int = int(section.get("horizon_tracks", 30))
     discovery_every_raw = section.get("discovery_every")
     discovery_every: int | None = (
