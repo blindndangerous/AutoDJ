@@ -155,6 +155,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Adding folders accepts quoted Windows paths copied from File Explorer. Failed additions
+  keep their error visible and focus the folder field so the reason can be read.
 - Neutral EQ no longer colours the server mix, and moving EQ sliders changes the sound smoothly.
 - Replacing audio at an existing path no longer leaves stale cues that can break a rescan.
   Changed file contents reset cue and analysis caches, including when a file is retagged;

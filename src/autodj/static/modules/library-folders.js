@@ -55,6 +55,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
   let folderSignature = null;
   let protectedGeneration = 0;
   let suspended = false;
+  let addError = null;
 
   function requestCurrent(epoch, generation) {
     return !suspended && generation === protectedGeneration && isAuthenticatedRequestCurrent(epoch);
@@ -63,6 +64,18 @@ export function installLibraryFolders({ document: doc = document, request = requ
   function say(message, error = false) {
     status.textContent = message;
     status.dataset.tone = error ? "error" : "info";
+  }
+  function clearAddError() {
+    addError = null;
+    pathInput.removeAttribute("aria-invalid");
+    pathInput.removeAttribute("aria-describedby");
+  }
+  function reportAddError(message) {
+    addError = message;
+    pathInput.setAttribute("aria-invalid", "true");
+    pathInput.setAttribute("aria-describedby", status.id);
+    say(message, true);
+    pathInput.focus();
   }
   function pointSay(message, error = false) {
     pointStatus.textContent = message;
@@ -91,7 +104,9 @@ export function installLibraryFolders({ document: doc = document, request = requ
         (replacement || doc.getElementById("source-folder-add")).focus();
       }
     }
-    if (data.import?.running) {
+    if (addError) {
+      say(addError, true);
+    } else if (data.import?.running) {
       const job = data.import;
       say(`Importing tracks (${job.phase || "working"}): ${job.done || 0} of ${job.total || 0}${job.current ? `; ${job.current}` : ""}${job.errors?.length ? `; errors: ${job.errors.join("; ")}` : ""}`, Boolean(job.errors?.length));
     } else if (data.import?.errors?.length) {
@@ -126,19 +141,28 @@ export function installLibraryFolders({ document: doc = document, request = requ
     advancedInput.disabled = kindInput.value === "liner";
     advancedInput.checked = kindInput.value !== "liner";
   });
+  pathInput.addEventListener("input", () => {
+    if (addError) {
+      const previousError = addError;
+      clearAddError();
+      if (status.textContent === previousError) say("");
+    }
+  });
   doc.getElementById("source-folder-add").addEventListener("click", async () => {
     if (suspended) return;
+    clearAddError();
     const epoch = captureAuthenticatedRequestEpoch();
     const generation = protectedGeneration;
-    const path = pathInput.value.trim();
-    if (!path) { say("Enter a folder path on the AutoDJ machine.", true); pathInput.focus(); return; }
+    let path = pathInput.value.trim();
+    if (/^"(?:[A-Za-z]:[\\/]|\\\\)/.test(path) && path.endsWith('"')) path = path.slice(1, -1);
+    if (!path) { reportAddError("Enter a folder path on the AutoDJ machine."); return; }
     try {
       await request("/api/library/folders", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path, kind: kindInput.value, recursive: recursiveInput.checked, advanced: kindInput.value === "music" && advancedInput.checked }) });
       if (!requestCurrent(epoch, generation)) return;
       pathInput.value = "";
       say("Folder added.");
       await refresh();
-    } catch (error) { if (requestCurrent(epoch, generation)) say(`Could not add folder: ${error.message}`, true); }
+    } catch (error) { if (requestCurrent(epoch, generation)) reportAddError(`Could not add folder: ${error.message}`); }
   });
   list.addEventListener("change", async (event) => {
     if (suspended) return;
@@ -409,6 +433,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     list.replaceChildren();
     folderSignature = null;
     pathInput.value = "";
+    clearAddError();
     status.textContent = "";
     pointStatus.textContent = "";
     pointPath.value = "";

@@ -75,9 +75,62 @@ describe("clock folder and points controls", () => {
     document.getElementById("source-folder-add").click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(request).toHaveBeenCalledWith("/api/library/folders", expect.objectContaining({ method: "POST" }));
+    expect(JSON.parse(request.mock.calls[1][1].body).path).toBe("C:/music");
     expect(document.getElementById("source-folders").textContent).toContain("C:/music");
     expect(document.getElementById("source-folders-status").textContent).toContain("12 tracks ready");
     controls.destroy();
+  });
+
+  it("removes surrounding quotes from pasted Windows paths and preserves literal Unix quotes", async () => {
+    const request = vi.fn(async () => ({}));
+    installLibraryFolders({ document, request });
+    const pathInput = document.getElementById("source-folder-path");
+    const add = document.getElementById("source-folder-add");
+
+    pathInput.value = '  "C:\\station\\specialty\\holiday"  ';
+    add.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(JSON.parse(request.mock.calls[0][1].body).path).toBe("C:\\station\\specialty\\holiday");
+
+    pathInput.value = '/music/"live"';
+    add.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(JSON.parse(request.mock.calls[1][1].body).path).toBe('/music/"live"');
+
+    pathInput.value = '"\\\\server\\share"';
+    add.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(JSON.parse(request.mock.calls[2][1].body).path).toBe("\\\\server\\share");
+
+    pathInput.value = "/music/'live'";
+    add.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(JSON.parse(request.mock.calls[3][1].body).path).toBe("/music/'live'");
+  });
+
+  it("keeps Add failures visible through refresh and associates them with the path field", async () => {
+    const request = vi.fn(async (_url, options) => {
+      if (options?.method === "POST") throw new Error("Folder is unavailable");
+      return { folders: [], tracks_ready: 0, tracks_indexed: 0 };
+    });
+    const controls = installLibraryFolders({ document, request });
+    const pathInput = document.getElementById("source-folder-path");
+    pathInput.value = "C:/missing";
+    document.getElementById("source-folder-add").click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(pathInput.getAttribute("aria-invalid")).toBe("true");
+    expect(pathInput.getAttribute("aria-describedby")).toBe("source-folders-status");
+    expect(document.activeElement).toBe(pathInput);
+    document.getElementById("panel-library").hidden = false;
+    await controls.refresh();
+    expect(request).toHaveBeenCalledWith("/api/library/folders");
+    expect(document.getElementById("source-folders-status").textContent).toContain("Folder is unavailable");
+
+    pathInput.value = "C:/fixed";
+    pathInput.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(pathInput.hasAttribute("aria-invalid")).toBe(false);
+    expect(pathInput.hasAttribute("aria-describedby")).toBe(false);
   });
 
   it("saves changed folder scan choices and removes the source", async () => {
