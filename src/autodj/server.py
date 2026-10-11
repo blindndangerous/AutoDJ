@@ -1562,12 +1562,7 @@ def create_app(
         page: int = Query(1, ge=1),
         per_page: int = Query(50, ge=1, le=500),
     ) -> JSONResponse:
-        """Return this session's play history (newest first), one page.
-
-        History is an in-memory ``deque`` capped at 500 (see PlayerBridge),
-        so this endpoint cannot grow unbounded across a long-running
-        ``serve``.
-        """
+        """Return recent play history across restarts (newest first), one page."""
         hist = bridge.history_snapshot()
         total = len(hist)
         pages = max(1, (total + per_page - 1) // per_page)
@@ -2774,7 +2769,7 @@ def serve(
     library = LibraryManager(cfg, sim)
     player._library = library
     bridge = PlayerBridge(player=player, sim=sim, library=library)
-    # The mix bus announces every track it starts: session history, the
+    # The mix bus announces every track it starts: play history, the
     # stream title and liner counting all hang off this hook.
     player.on_track_started = bridge.on_track_started
 

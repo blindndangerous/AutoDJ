@@ -2024,7 +2024,7 @@ async function fetchHistory(page, { announce = false } = {}) {
     if (!data.total) {
       table.setAttribute("hidden", "");
       pag.setAttribute("hidden", "");
-      empty.textContent = "No tracks played yet this session.";
+      empty.textContent = "No playback history yet.";
       empty.removeAttribute("hidden");
       if (announce === "refresh") {
         announceStatus(document.getElementById("sr-status"),

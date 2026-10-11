@@ -1080,11 +1080,10 @@ class TestPlayerBridge:
 
     def test_record_seed_skipped_when_history_already_populated(self, bridge) -> None:
         seed = _make_entry(1)
-        bridge._play_history = [{"existing": True}]
+        bridge.on_track_started(seed)
         bridge.record_seed(seed)
-        # Already-populated history is left alone -- only the very first
-        # seed gets appended.
-        assert bridge._play_history == [{"existing": True}]
+        assert len(bridge._play_history) == 1
+        assert bridge._play_history[0]["title"] == seed.title
 
     def test_search_by_title(self, bridge) -> None:
         results = bridge.search("song")
