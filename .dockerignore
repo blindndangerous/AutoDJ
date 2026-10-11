@@ -7,6 +7,7 @@
 __pycache__
 *.py[cod]
 node_modules
+tools
 config.toml
 config.local.toml*
 *.pem
